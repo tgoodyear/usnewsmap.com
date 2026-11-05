@@ -17,6 +17,8 @@ const ACCESS_INTERVAL: Duration = Duration::from_secs(60 * 60);
 const EVICTION_LOCK: &str = "search-preview-quota-lock/eviction.lock";
 const EVICTION_LOCK_STALE: Duration = Duration::from_secs(10 * 60);
 const DELETE_CONCURRENCY: usize = 32;
+const PUBLICATION_RECHECK: Duration = Duration::from_secs(5 * 60);
+const EVICTION_PASSES: usize = 3;
 const SCAN_IDLE: u8 = 0;
 const SCAN_RUNNING: u8 = 1;
 const SCAN_RERUN: u8 = 2;
@@ -41,7 +43,41 @@ struct Image {
     body: Vec<u8>,
     stored: AtomicBool,
     persistence: tokio::sync::Mutex<()>,
-    last_access: std::sync::atomic::AtomicU64,
+    last_access: AtomicU64,
+    /// When the stored PNG was last seen in the store, in Unix seconds.
+    verified: AtomicU64,
+    revalidating: AtomicBool,
+}
+
+impl Image {
+    fn new(body: Vec<u8>, stored: bool) -> Arc<Self> {
+        Arc::new(Self {
+            body,
+            stored: AtomicBool::new(stored),
+            persistence: tokio::sync::Mutex::new(()),
+            last_access: AtomicU64::new(0),
+            verified: AtomicU64::new(if stored { now_secs() } else { 0 }),
+            revalidating: AtomicBool::new(false),
+        })
+    }
+
+    fn mark_stored(&self) {
+        self.verified.store(now_secs(), Ordering::Release);
+        self.stored.store(true, Ordering::Release);
+    }
+
+    fn recently_verified(&self) -> bool {
+        now_secs().saturating_sub(self.verified.load(Ordering::Acquire))
+            < PUBLICATION_RECHECK.as_secs()
+    }
+}
+
+fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+        .max(1)
 }
 
 impl Default for Service {
@@ -63,36 +99,34 @@ impl Service {
         self.renders.available_permits() == 2
     }
 
-    /// Metadata discovery never waits for storage or advertises a local-only PNG.
-    pub(super) async fn is_published(&self, key: &str) -> bool {
-        self.images
-            .get(key)
-            .await
-            .is_some_and(|image| image.stored.load(Ordering::Acquire))
+    /// Metadata discovery never waits for storage or advertises a local-only
+    /// PNG. Another replica may have evicted it, so a publication not seen in
+    /// the store recently is rechecked in the background and not advertised
+    /// until it is confirmed or republished.
+    pub(super) async fn is_published(&self, key: &str, persistent: Persistent) -> bool {
+        let Some(image) = self.images.get(key).await else {
+            return false;
+        };
+        if !image.stored.load(Ordering::Acquire) {
+            return false;
+        }
+        if image.recently_verified() {
+            return true;
+        }
+        revalidate(image, persistent, self.quota.clone());
+        false
     }
 
     /// Read a published image without admitting a new render.
     pub(super) async fn lookup(&self, key: &str, persistent: Persistent) -> Option<Vec<u8>> {
         if let Some(image) = self.images.get(key).await {
-            if image.stored.load(Ordering::Acquire) {
-                self.schedule_quota_check(&persistent);
-            }
-            retry_persistence(image.clone(), persistent.clone(), self.quota.clone());
-            touch_recent(image.clone(), persistent);
+            self.refresh(&image, &persistent);
             return Some(image.body.clone());
         }
         let (store, path) = persistent?;
         let body = read(store.as_ref(), &path).await?;
         self.images
-            .insert(
-                key.to_owned(),
-                Arc::new(Image {
-                    body: body.clone(),
-                    stored: AtomicBool::new(true),
-                    persistence: tokio::sync::Mutex::new(()),
-                    last_access: std::sync::atomic::AtomicU64::new(0),
-                }),
-            )
+            .insert(key.to_owned(), Image::new(body.clone(), true))
             .await;
         if let Some(image) = self.images.get(key).await {
             self.schedule_quota_check(&Some((store.clone(), path.clone())));
@@ -110,11 +144,7 @@ impl Service {
     ) -> Result<Vec<u8>, Arc<RenderError>> {
         if !background {
             if let Some(image) = self.images.get(&key).await {
-                if image.stored.load(Ordering::Acquire) {
-                    self.schedule_quota_check(&persistent);
-                }
-                retry_persistence(image.clone(), persistent.clone(), self.quota.clone());
-                touch_recent(image.clone(), persistent);
+                self.refresh(&image, &persistent);
                 return Ok(image.body.clone());
             }
         }
@@ -123,12 +153,7 @@ impl Service {
             .try_get_with(key, async {
                 if let Some((store, path)) = &persistent {
                     if let Some(body) = read(store.as_ref(), path).await {
-                        return Ok(Arc::new(Image {
-                            body,
-                            stored: AtomicBool::new(true),
-                            persistence: tokio::sync::Mutex::new(()),
-                            last_access: std::sync::atomic::AtomicU64::new(0),
-                        }));
+                        return Ok(Image::new(body, true));
                     }
                 }
                 // One background worker starts only with both slots free,
@@ -143,12 +168,7 @@ impl Service {
                 }
                 let body = render.await?;
                 drop(permit);
-                Ok(Arc::new(Image {
-                    body,
-                    stored: AtomicBool::new(false),
-                    persistence: tokio::sync::Mutex::new(()),
-                    last_access: std::sync::atomic::AtomicU64::new(0),
-                }))
+                Ok(Image::new(body, false))
             })
             .await?;
         persist(&image, persistent.clone(), self.quota.clone()).await;
@@ -157,6 +177,16 @@ impl Service {
         }
         touch_recent(image.clone(), persistent);
         Ok(image.body.clone())
+    }
+
+    /// Background upkeep for an image served from memory.
+    fn refresh(&self, image: &Arc<Image>, persistent: &Persistent) {
+        if image.stored.load(Ordering::Acquire) {
+            self.schedule_quota_check(persistent);
+        }
+        retry_persistence(image.clone(), persistent.clone(), self.quota.clone());
+        revalidate(image.clone(), persistent.clone(), self.quota.clone());
+        touch_recent(image.clone(), persistent.clone());
     }
 
     fn schedule_quota_check(&self, persistent: &Persistent) {
@@ -168,11 +198,7 @@ impl Service {
 }
 
 fn schedule_quota_scan(store: Arc<dyn ObjectStore>, quota: Arc<Quota>, force: bool) {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-        .max(1);
+    let now = now_secs();
     if !force {
         let last = quota.last_check.load(Ordering::Acquire);
         if last != 0 && now.saturating_sub(last) < 60 * 60 {
@@ -231,6 +257,34 @@ fn retry_persistence(image: Arc<Image>, persistent: Persistent, quota: Arc<Quota
     }
 }
 
+/// Confirm off the response path that a published PNG is still stored, and
+/// republish it from memory if another replica's eviction removed it.
+fn revalidate(image: Arc<Image>, persistent: Persistent, quota: Arc<Quota>) {
+    let Some((store, path)) = persistent.clone() else {
+        return;
+    };
+    if !image.stored.load(Ordering::Acquire)
+        || image.recently_verified()
+        || image.revalidating.swap(true, Ordering::AcqRel)
+    {
+        return;
+    }
+    tokio::spawn(async move {
+        match tokio::time::timeout(STORE_TIMEOUT, store.exists(&path)).await {
+            Ok(Ok(true)) => image.verified.store(now_secs(), Ordering::Release),
+            Ok(Ok(false)) => {
+                image.stored.store(false, Ordering::Release);
+                persist(&image, persistent.clone(), quota).await;
+                touch_recent(image.clone(), persistent);
+            }
+            Ok(Err(_)) | Err(_) => {
+                tracing::warn!("search preview publication check failed");
+            }
+        }
+        image.revalidating.store(false, Ordering::Release);
+    });
+}
+
 fn touch_recent(image: Arc<Image>, persistent: Persistent) {
     let Some((store, path)) = persistent else {
         return;
@@ -238,11 +292,7 @@ fn touch_recent(image: Arc<Image>, persistent: Persistent) {
     if !image.stored.load(Ordering::Acquire) {
         return;
     }
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-        .max(1);
+    let now = now_secs();
     let last = image.last_access.load(Ordering::Acquire);
     if last != 0 && now.saturating_sub(last) < ACCESS_INTERVAL.as_secs() {
         return;
@@ -275,54 +325,58 @@ fn access_path(path: &str) -> String {
     format!("search-preview-lru/{}.access", digest(path))
 }
 
+enum Publication {
+    Created,
+    Existing,
+    Conflict,
+}
+
 async fn persist(image: &Image, persistent: Persistent, quota: Arc<Quota>) {
     let Ok(_turn) = image.persistence.try_lock() else {
         return;
     };
-    if let Some((store, path)) = persistent {
-        if !image.stored.load(Ordering::Acquire) {
-            match tokio::time::timeout(
-                STORE_TIMEOUT,
-                store.put_new(&path, image.body.clone(), "image/png"),
-            )
-            .await
-            {
-                Ok(Ok(true)) => {
-                    image.stored.store(true, Ordering::Release);
-                    schedule_quota_scan(store.clone(), quota.clone(), true);
-                }
-                Ok(Ok(false)) if read(store.as_ref(), &path).await.is_some() => {
-                    image.stored.store(true, Ordering::Release);
-                }
-                Ok(Ok(false)) => {
-                    match tokio::time::timeout(
-                        STORE_TIMEOUT,
-                        store.put_new(&path, image.body.clone(), "image/png"),
-                    )
-                    .await
-                    {
-                        Ok(Ok(true)) => {
-                            image.stored.store(true, Ordering::Release);
-                            schedule_quota_scan(store.clone(), quota.clone(), true);
-                        }
-                        Ok(Ok(false)) => {
-                            tracing::warn!(
-                                "search preview persistence conflict remains unresolved"
-                            );
-                        }
-                        Ok(Err(_)) => {
-                            tracing::warn!("search preview persistence retry failed");
-                        }
-                        Err(_) => tracing::warn!("search preview persistence retry timed out"),
-                    }
-                }
-                // Store errors can contain the query-derived filename.
-                Ok(Err(_)) => {
-                    tracing::warn!("search preview persistence failed");
-                }
-                Err(_) => tracing::warn!("search preview persistence timed out"),
-            }
+    let Some((store, path)) = persistent else {
+        return;
+    };
+    if image.stored.load(Ordering::Acquire) {
+        return;
+    }
+    // One deadline covers the create, the conflict check and repair, and the
+    // retry, so a rendered PNG never waits on several storage timeouts.
+    let publication = tokio::time::timeout(STORE_TIMEOUT, async {
+        if store
+            .put_new(&path, image.body.clone(), "image/png")
+            .await?
+        {
+            return Ok(Publication::Created);
         }
+        if read(store.as_ref(), &path).await.is_some() {
+            return Ok(Publication::Existing);
+        }
+        Ok::<_, usnm_store::StoreError>(
+            if store
+                .put_new(&path, image.body.clone(), "image/png")
+                .await?
+            {
+                Publication::Created
+            } else {
+                Publication::Conflict
+            },
+        )
+    })
+    .await;
+    match publication {
+        Ok(Ok(Publication::Created)) => {
+            image.mark_stored();
+            schedule_quota_scan(store, quota, true);
+        }
+        Ok(Ok(Publication::Existing)) => image.mark_stored(),
+        Ok(Ok(Publication::Conflict)) => {
+            tracing::warn!("search preview persistence conflict remains unresolved");
+        }
+        // Store errors can contain the query-derived filename.
+        Ok(Err(_)) => tracing::warn!("search preview persistence failed"),
+        Err(_) => tracing::warn!("search preview persistence timed out"),
     }
 }
 
@@ -430,7 +484,33 @@ fn lock_written(body: &[u8]) -> Option<SystemTime> {
     UNIX_EPOCH.checked_add(Duration::from_secs(seconds))
 }
 
+enum Eviction {
+    Evicted(usnm_store::ObjectInfo),
+    /// Accessed since the listing; kept as now among the most recent.
+    Recent,
+    /// Gone or rewritten since the listing, so the listed sizes are stale.
+    Changed,
+}
+
 async fn evict_lru(store: &dyn ObjectStore, quota: u64) -> Result<u64, usnm_store::StoreError> {
+    let mut evicted = 0_u64;
+    for _ in 0..EVICTION_PASSES {
+        let (bytes, settled) = evict_pass(store, quota).await?;
+        evicted = evicted.saturating_add(bytes);
+        if settled {
+            break;
+        }
+    }
+    Ok(evicted)
+}
+
+/// Evict from one listing. Unsettled when a delete missed or failed: the
+/// listing no longer accounts for the store, so no newer PNG is chosen from
+/// it and the caller lists again.
+async fn evict_pass(
+    store: &dyn ObjectStore,
+    quota: u64,
+) -> Result<(u64, bool), usnm_store::StoreError> {
     let mut images = store
         .list_info("search-preview")
         .await?
@@ -444,7 +524,7 @@ async fn evict_lru(store: &dyn ObjectStore, quota: u64) -> Result<u64, usnm_stor
         .into_iter()
         .map(|object| (object.path.clone(), object))
         .collect::<HashMap<_, _>>();
-    let mut active_markers = images
+    let active_markers = images
         .iter()
         .map(|image| access_path(&image.path))
         .collect::<std::collections::HashSet<_>>();
@@ -453,7 +533,7 @@ async fn evict_lru(store: &dyn ObjectStore, quota: u64) -> Result<u64, usnm_stor
         .fold(0_u64, |total, image| total.saturating_add(image.size));
     if used <= quota {
         cleanup_orphan_markers(store, &by_path, &active_markers).await;
-        return Ok(0);
+        return Ok((0, true));
     }
     images.sort_by_key(|image| {
         by_path
@@ -471,8 +551,9 @@ async fn evict_lru(store: &dyn ObjectStore, quota: u64) -> Result<u64, usnm_stor
         })
         .collect::<Vec<_>>();
     let mut evicted = 0_u64;
+    let mut settled = true;
     let mut candidates = candidates.into_iter();
-    while used > quota {
+    while settled && used > quota {
         let excess = used - quota;
         let mut batch = Vec::new();
         let mut selected_bytes = 0_u64;
@@ -486,48 +567,47 @@ async fn evict_lru(store: &dyn ObjectStore, quota: u64) -> Result<u64, usnm_stor
         if batch.is_empty() {
             break;
         }
-        let results = stream::iter(batch.iter().cloned())
+        let results = stream::iter(batch)
             .map(|(image, marker)| async move {
-                if !store.delete_if_match(&image.path, &image.etag).await? {
-                    return Ok::<_, usnm_store::StoreError>(None);
-                }
-                let marker_deleted = match marker {
-                    Some(marker) => match store.delete_if_match(&marker.path, &marker.etag).await {
-                        Ok(deleted) => deleted,
-                        Err(_) => {
-                            tracing::warn!("search preview access marker eviction failed");
-                            false
-                        }
-                    },
-                    None => false,
+                // Claim the sampled access time before deleting the PNG: an
+                // access since the listing rewrites the marker and keeps it.
+                let unchanged = match &marker {
+                    Some(marker) => store.delete_if_match(&marker.path, &marker.etag).await?,
+                    None => !store.exists(&access_path(&image.path)).await?,
                 };
-                Ok(Some((image, marker_deleted)))
+                if !unchanged {
+                    return Ok::<_, usnm_store::StoreError>(Eviction::Recent);
+                }
+                Ok(if store.delete_if_match(&image.path, &image.etag).await? {
+                    Eviction::Evicted(image)
+                } else {
+                    Eviction::Changed
+                })
             })
             .buffer_unordered(DELETE_CONCURRENCY)
             .collect::<Vec<_>>()
             .await;
         for result in results {
             match result {
-                Ok(Some((image, marker_deleted))) => {
+                Ok(Eviction::Evicted(image)) => {
                     used = used.saturating_sub(image.size);
                     evicted = evicted.saturating_add(image.size);
-                    // A marker left behind is now an orphan for the cleanup below.
-                    let marker = access_path(&image.path);
-                    active_markers.remove(&marker);
-                    if marker_deleted {
-                        by_path.remove(&marker);
-                    }
+                    by_path.remove(&access_path(&image.path));
                 }
-                Ok(None) => {}
-                Err(_) => tracing::warn!("search preview eviction delete failed"),
+                Ok(Eviction::Recent) => {}
+                Ok(Eviction::Changed) => settled = false,
+                Err(_) => {
+                    tracing::warn!("search preview eviction delete failed");
+                    settled = false;
+                }
             }
         }
     }
     cleanup_orphan_markers(store, &by_path, &active_markers).await;
-    if used > quota {
+    if settled && used > quota {
         tracing::warn!(bytes = used, "search preview byte quota remains exceeded");
     }
-    Ok(evicted)
+    Ok((evicted, settled))
 }
 
 async fn cleanup_orphan_markers(
@@ -793,8 +873,16 @@ mod tests {
     }
 
     #[derive(Debug)]
+    enum Interleave {
+        Access(String),
+        Expire(String),
+    }
+
+    #[derive(Debug)]
     struct ProbeStore {
         inner: usnm_store::LocalStore,
+        root: std::path::PathBuf,
+        interleave: std::sync::Mutex<Option<Interleave>>,
         hide_times: bool,
         marker_delete_failures: std::sync::atomic::AtomicUsize,
         scans: std::sync::atomic::AtomicUsize,
@@ -805,6 +893,8 @@ mod tests {
         fn new(root: &std::path::Path) -> Self {
             Self {
                 inner: usnm_store::LocalStore::new(root),
+                root: root.to_owned(),
+                interleave: std::sync::Mutex::new(None),
                 hide_times: false,
                 marker_delete_failures: std::sync::atomic::AtomicUsize::new(0),
                 scans: std::sync::atomic::AtomicUsize::new(0),
@@ -859,6 +949,18 @@ mod tests {
             path: &str,
             etag: &str,
         ) -> Result<bool, usnm_store::StoreError> {
+            let interleave = self.interleave.lock().unwrap().take();
+            match interleave {
+                Some(Interleave::Access(marker)) => {
+                    self.inner
+                        .put(&marker, Vec::new(), "application/octet-stream")
+                        .await?
+                }
+                Some(Interleave::Expire(path)) => {
+                    tokio::fs::remove_file(self.root.join(path)).await.unwrap()
+                }
+                None => {}
+            }
             if path.ends_with(".access")
                 && self
                     .marker_delete_failures
@@ -904,7 +1006,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn evicted_previews_do_not_strand_markers_whose_delete_failed() {
+    async fn marker_claim_errors_relist_instead_of_evicting_newer_previews() {
         let dir = tempfile::tempdir().unwrap();
         let store = ProbeStore::new(dir.path());
         store.marker_delete_failures.store(1, Ordering::SeqCst);
@@ -926,7 +1028,88 @@ mod tests {
         );
         assert!(store.get(old).await.unwrap().is_none());
         assert!(store.get(&access_path(old)).await.unwrap().is_none());
+        assert_eq!(store.get(recent).await.unwrap().unwrap(), body);
         assert!(store.get(&access_path(recent)).await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn previews_accessed_after_the_listing_are_not_evicted() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ProbeStore::new(dir.path());
+        let old = "search-preview/old-rev/old-search.png";
+        let recent = "search-preview/new-rev/new-search.png";
+        let body = image();
+        for path in [old, recent] {
+            store.put(path, body.clone(), "image/png").await.unwrap();
+            store
+                .put(&access_path(path), Vec::new(), "application/octet-stream")
+                .await
+                .unwrap();
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        *store.interleave.lock().unwrap() = Some(Interleave::Access(access_path(old)));
+
+        assert_eq!(
+            evict_lru(&store, body.len() as u64).await.unwrap(),
+            body.len() as u64
+        );
+        assert_eq!(store.get(old).await.unwrap().unwrap(), body);
+        assert!(store.get(&access_path(old)).await.unwrap().is_some());
+        assert!(store.get(recent).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn eviction_relists_after_a_preview_disappears_instead_of_evicting_newer_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ProbeStore::new(dir.path());
+        let old = "search-preview/old-rev/old-search.png";
+        let recent = "search-preview/new-rev/new-search.png";
+        let body = image();
+        for path in [old, recent] {
+            store.put(path, body.clone(), "image/png").await.unwrap();
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        *store.interleave.lock().unwrap() = Some(Interleave::Expire(old.to_owned()));
+
+        assert_eq!(evict_lru(&store, body.len() as u64).await.unwrap(), 0);
+        assert!(store.get(old).await.unwrap().is_none());
+        assert_eq!(store.get(recent).await.unwrap().unwrap(), body);
+    }
+
+    #[tokio::test]
+    async fn publications_evicted_elsewhere_are_not_advertised_and_are_republished() {
+        let dir = tempfile::tempdir().unwrap();
+        let store: Arc<dyn ObjectStore> = Arc::new(usnm_store::LocalStore::new(dir.path()));
+        let path = "search-preview/0123456789abcdef/evicted.png";
+        let persistent = || Some((store.clone(), path.to_owned()));
+        let service = Service::default();
+        let body = image();
+        service
+            .get(path.to_owned(), persistent(), false, async {
+                Ok(body.clone())
+            })
+            .await
+            .unwrap();
+        assert!(service.is_published(path, persistent()).await);
+
+        // Another replica evicts the PNG while this one still holds it.
+        let stored = store
+            .list_info("search-preview/0123456789abcdef")
+            .await
+            .unwrap()
+            .remove(0);
+        assert!(store.delete_if_match(path, &stored.etag).await.unwrap());
+        let cached = service.images.get(path).await.unwrap();
+        cached.verified.store(1, Ordering::Release);
+        assert!(!service.is_published(path, persistent()).await);
+        tokio::time::timeout(STORE_TIMEOUT, async {
+            while !service.is_published(path, persistent()).await {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(store.get(path).await.unwrap().unwrap(), body);
     }
 
     #[tokio::test]
