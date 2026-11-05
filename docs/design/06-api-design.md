@@ -63,6 +63,15 @@ Principles:
 - **No cookies and no sessions.**
 - **Public, read-only.** Anonymous use is limited by rate; researchers can get a higher-limit key later.
 
+**MCP adapter.** The Rust API also exposes stateless Streamable HTTP through the official `rmcp` SDK at
+`https://usnewsmap.com/mcp` (canonical) and `https://api.usnewsmap.com/mcp` ([client guide](../mcp.md)).
+Its JSON-RPC POST requests perform only reads through the existing in-process handlers:
+`search` summarizes `/v1/aggregate`, `search_pages` wraps `/v1/hits`, and `get_corpus_info`
+wraps `/v1/meta`. The adapter shares API caches, computation budgets, rate limiting, pending-computation
+responses, citations and OCR provenance. It does not introduce sessions, writes, a second index,
+entity extraction or semantic search. MCP searches send DNT and are not admitted to the public
+search log. The GET-only principle above continues to describe the `/v1` REST contract.
+
 ### 6.3.1 Common query parameters
 
 | Param        | Type                                | Example           | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
