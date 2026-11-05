@@ -159,8 +159,9 @@ pub fn wordlist(code: &str) -> Option<&'static str> {
         };
     }
     lists!(
-        "ar", "bg", "chr", "cs", "da", "de", "el", "en", "es", "fi", "fil", "fr", "haw", "he", "hu", "is",
-        "it", "lt", "lv", "nb", "nl", "pl", "pt", "ro", "ru", "sh", "sk", "sl", "sv", "uk", "yi",
+        "ar", "bg", "chr", "cs", "da", "de", "el", "en", "es", "fi", "fil", "fr", "haw", "he",
+        "hu", "is", "it", "lt", "lv", "nb", "nl", "pl", "pt", "ro", "ru", "sh", "sk", "sl", "sv",
+        "uk", "yi",
     )
 }
 
