@@ -262,12 +262,13 @@ L397-L403][client-state-397-403]). `set_min_rpc_time` keeps the later of the two
 | 7                 | 64–128 min              | 64–128 min     | 64–128 min                   |
 | 8 to 10           | 2–4 h                   | 2–4 h          | 2–4 h                        |
 
-The eleventh failure in a row also schedules a fresh fetch of the project's master page, and n
-starts again at 1 ([scheduler_op.cpp L179-L187][scheduler-op-179-187]). A successful request sets n
-back to 0 ([cs_scheduler.cpp L1198-L1199][cs-scheduler-1198-1199]), so a client that asked during a
-short gap comes back once, 20 minutes later. If the server can't be reached over HTTP at all, there
-is no reply and no `request_delay`, and only the backoff applies ([scheduler_op.cpp
-L507-L509][scheduler-op-507-509], [L212-L213][scheduler-op-212-213]).
+The eleventh failure in a row is the exception to that rule. It clears the time the reply just set,
+schedules a fresh fetch of the project's master page and starts n again at 1, so that client waits
+only 1–2 minutes, `maintenance_delay` or not ([scheduler_op.cpp L179-L187][scheduler-op-179-187]). A
+successful request sets n back to 0 ([cs_scheduler.cpp L1198-L1199][cs-scheduler-1198-1199]), so a
+client that asked during a short gap comes back once, 20 minutes later. If the server can't be
+reached over HTTP at all, there is no reply and no `request_delay`, and only the backoff applies
+([scheduler_op.cpp L507-L509][scheduler-op-507-509], [L212-L213][scheduler-op-212-213]).
 
 ## Procedure
 
