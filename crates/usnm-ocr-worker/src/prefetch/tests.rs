@@ -1327,18 +1327,28 @@ fn unreadable_source_truncated_lines_are_skipped_and_named() {
         reason: "cut short".into(),
         at: "2026-11-05T00:00:00Z".into(),
     };
-    // A blank line, a line that isn't JSON, and one cut off mid-write.
-    let text = format!(
-        "{}\n\nnot json\n{{\"doc_id\":\"sn1_1890-05-03_ed-1_seq-1",
-        serde_json::to_string(&line).unwrap()
-    );
+    let later = SourceTruncatedLine {
+        doc_id: "sn1_1890-05-03_ed-1_seq-12".into(),
+        ..line.clone()
+    };
+    // A blank line, a line that isn't JSON, one cut off mid-character, and one
+    // cut off mid-write.
+    let mut text = format!("{}\n\nnot json\n", serde_json::to_string(&line).unwrap()).into_bytes();
+    text.extend_from_slice(b"{\"reason\":\"\xe2\x80\n");
+    text.extend_from_slice(format!("{}\n", serde_json::to_string(&later).unwrap()).as_bytes());
+    text.extend_from_slice(b"{\"doc_id\":\"sn1_1890-05-03_ed-1_seq-1");
     std::fs::write(&path, text).unwrap();
     let (keys, unreadable) = read_truncated(&path).unwrap();
+    let mut keys = keys.into_iter().collect::<Vec<_>>();
+    keys.sort();
     assert_eq!(
-        keys.into_iter().collect::<Vec<_>>(),
-        [(doc.to_owned(), "xx_test".to_owned(), 1)]
+        keys,
+        [
+            (doc.to_owned(), "xx_test".to_owned(), 1),
+            (later.doc_id.clone(), "xx_test".to_owned(), 1)
+        ]
     );
-    assert_eq!(unreadable, [3, 4]);
+    assert_eq!(unreadable, [3, 4, 6]);
     let (keys, unreadable) = read_truncated(&dir.path().join("absent.jsonl")).unwrap();
     assert!(keys.is_empty() && unreadable.is_empty());
 }

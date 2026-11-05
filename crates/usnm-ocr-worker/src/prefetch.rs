@@ -1051,26 +1051,37 @@ pub struct SourceTruncatedLine {
 
 /// The pages `source-truncated.jsonl` lists, and the numbers of its lines that
 /// can't be read, such as one cut off by a crash mid-write. Such a line's page
-/// is fetched, judged and listed again.
+/// is fetched, judged and listed again. The file only grows, so it is read a
+/// line at a time, as bytes: a line cut off mid-character is one unreadable
+/// line, not an unreadable file.
 fn read_truncated(
     path: &Path,
 ) -> anyhow::Result<(std::collections::HashSet<TruncatedKey>, Vec<usize>)> {
-    let text = match std::fs::read_to_string(path) {
-        Ok(t) => t,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+    use std::io::BufRead;
+    let mut file = match std::fs::File::open(path) {
+        Ok(f) => std::io::BufReader::new(f),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Default::default()),
         Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
     };
     let mut keys = std::collections::HashSet::new();
     let mut unreadable = Vec::new();
-    for (n, l) in text.lines().enumerate() {
-        if l.trim().is_empty() {
+    let mut line = Vec::new();
+    for n in 1.. {
+        line.clear();
+        let read = file
+            .read_until(b'\n', &mut line)
+            .with_context(|| format!("reading {}", path.display()))?;
+        if read == 0 {
+            break;
+        }
+        if line.iter().all(u8::is_ascii_whitespace) {
             continue;
         }
-        match serde_json::from_str::<SourceTruncatedLine>(l) {
+        match serde_json::from_slice::<SourceTruncatedLine>(&line) {
             Ok(l) => {
                 keys.insert((l.doc_id, l.batch, l.batch_version));
             }
-            Err(_) => unreadable.push(n + 1),
+            Err(_) => unreadable.push(n),
         }
     }
     Ok((keys, unreadable))
