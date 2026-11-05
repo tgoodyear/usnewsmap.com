@@ -7,7 +7,7 @@ import re
 import shutil
 
 SOURCE_KEYS = ("doc_id", "batch", "batch_version", "bytes", "sha256")
-DOC = r"sn\d+_\d{4}-\d{2}-\d{2}_ed-\d+_seq-\d+"
+DOC = r"[a-z0-9]{1,16}_\d{4}-\d{2}-\d{2}_ed-\d+_seq-\d+"
 NAME = r"[a-z0-9][a-z0-9-]{0,40}"
 
 
