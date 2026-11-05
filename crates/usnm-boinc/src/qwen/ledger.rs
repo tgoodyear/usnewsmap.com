@@ -155,37 +155,23 @@ pub fn accepted_readings(
             .first()
             .with_context(|| format!("{}: accepted with no record", page.doc_id))?;
         let path = pages.join(&job.id).join(&page.doc_id).join(first);
-        let record: serde_json::Value = serde_json::from_slice(&read(&path, MAX_RECORD)?)
+        let record: PageRecord = serde_json::from_slice(&read(&path, MAX_RECORD)?)
             .with_context(|| format!("{}", path.display()))?;
         anyhow::ensure!(
-            record["status"] == PAGE_AGREED,
+            record.status == PAGE_AGREED,
             "{}: not an agreeing record",
             path.display()
         );
-        let side = record["results"]
-            .as_array()
-            .filter(|sides| sides.len() == 2)
-            .and_then(|sides| {
-                sides
-                    .iter()
-                    .map(|s| s["result"].as_str().map(|name| (name, s)))
-                    .collect::<Option<Vec<_>>>()
-            })
-            .and_then(|sides| sides.into_iter().min_by_key(|(name, _)| *name))
-            .map(|(_, s)| s)
-            .with_context(|| format!("{}: not two named sides", path.display()))?;
-        let device = side["device"]
-            .as_str()
-            .with_context(|| format!("{}: the agreeing side has no device", path.display()))?;
+        let [a, b] = record.results;
+        let side = if b.result < a.result { b } else { a };
         anyhow::ensure!(
-            side["outcome"] == serde_json::to_value(Outcome::Ok)?,
+            side.outcome == Outcome::Ok,
             "{}: the agreeing side did not run to the end",
             path.display()
         );
         let prefix = format!("{}:", page.doc_id);
-        let readings: Vec<Reading> = serde_json::from_value(side["readings"].clone())
-            .with_context(|| format!("{}: readings", path.display()))?;
-        let readings = readings
+        let readings = side
+            .readings
             .into_iter()
             .map(|r| {
                 let id = r.id.strip_prefix(&prefix).map(str::to_owned);
@@ -196,9 +182,9 @@ pub fn accepted_readings(
         let readings = Readings {
             v: VERSION,
             job_id: job.id.clone(),
-            device: device.to_owned(),
+            device: side.device,
             diag: BTreeMap::new(),
-            model: side["model"].as_str().map(str::to_owned),
+            model: side.model,
             outcome: Outcome::Ok,
             prompt_version: job.prompt_version,
             readings,
@@ -206,6 +192,22 @@ pub fn accepted_readings(
         out.insert(page.doc_id, readings);
     }
     Ok(out)
+}
+
+/// What `accepted_readings` reads of a pair record (`validate::record_page`).
+#[derive(serde::Deserialize)]
+struct PageRecord {
+    status: String,
+    results: [RecordSide; 2],
+}
+
+#[derive(serde::Deserialize)]
+struct RecordSide {
+    result: String,
+    device: String,
+    model: Option<String>,
+    outcome: Outcome,
+    readings: Vec<Reading>,
 }
 
 /// The page's status from its pair records. A record that does not name
@@ -432,7 +434,10 @@ pub(crate) mod tests {
         std::fs::write(&record_path, serde_json::to_vec(&record).unwrap()).unwrap();
         let err =
             accepted_readings(&root, &units(&root).join("bundle-00001"), &job, &pages).unwrap_err();
-        assert!(err.to_string().contains("no device"), "{err:#}");
+        assert!(
+            format!("{err:#}").contains("missing field `device`"),
+            "{err:#}"
+        );
         let stray = record_path.with_file_name("stray.json");
         std::fs::create_dir(&stray).unwrap();
         assert_eq!(
