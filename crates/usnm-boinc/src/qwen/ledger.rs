@@ -23,6 +23,10 @@ use usnm_ocr_contract::qwen::{Job, Outcome, Reading, Readings, MAX_JOB_JSON, VER
 pub(crate) const MAX_MEMBERSHIP: usize = 256 * 1024;
 const MAX_RECORD: usize = 4 * 1024 * 1024;
 
+/// The status of a page with an agreeing pair record, the one
+/// `accepted_readings` joins.
+const ACCEPTED: &str = "accepted";
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct PageStatus {
     pub workunit: String,
@@ -152,7 +156,7 @@ pub fn accepted_readings(
 ) -> anyhow::Result<BTreeMap<String, Readings>> {
     let mut out = BTreeMap::new();
     for page in unit_pages(root, unit, job, pages)? {
-        if page.status != "accepted" {
+        if page.status != ACCEPTED {
             continue;
         }
         let first = page
@@ -293,7 +297,7 @@ fn page_records(
         }
     }
     let status = if !agreed.is_empty() {
-        "accepted"
+        ACCEPTED
     } else if !disagreed.is_empty() {
         "disagreed"
     } else {
