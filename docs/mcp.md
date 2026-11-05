@@ -56,7 +56,7 @@ The default page size is 10 (maximum 50); pass `next_cursor` back as `cursor` wi
 and sort. Set `v` to the returned `index_version` for a reproducible pagination session; if the API
 reports a version change, remove `v` and restart rather than mixing versions.
 
-Searches use the existing [query language](design/06-api-design.md#64-query-language):
+Searches use the existing [query language](design/06-api-design.md#64-query-language-and-validation):
 quoted phrases, all/any words, `OR`, exclusions, proximity and OCR-tolerant matching.
 Dates, state, newspaper, language and source filters narrow the scope. `search` defaults to yearly
 timeline buckets and omits the large map cube. This is **lexical OCR search**, not entity extraction
