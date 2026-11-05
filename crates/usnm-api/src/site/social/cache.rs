@@ -22,6 +22,7 @@ pub(crate) struct Service {
 struct Image {
     body: Vec<u8>,
     stored: AtomicBool,
+    persistence: tokio::sync::Mutex<()>,
 }
 
 impl Default for Service {
@@ -45,7 +46,7 @@ impl Service {
     /// Read a published image without admitting a new render.
     pub(super) async fn lookup(&self, key: &str, persistent: Persistent) -> Option<Vec<u8>> {
         if let Some(image) = self.images.get(key).await {
-            persist(&image, persistent).await;
+            retry_persistence(image.clone(), persistent);
             return Some(image.body.clone());
         }
         let (store, path) = persistent?;
@@ -56,6 +57,7 @@ impl Service {
                 Arc::new(Image {
                     body: body.clone(),
                     stored: AtomicBool::new(true),
+                    persistence: tokio::sync::Mutex::new(()),
                 }),
             )
             .await;
@@ -69,6 +71,12 @@ impl Service {
         background: bool,
         render: impl Future<Output = Result<Vec<u8>, RenderError>>,
     ) -> Result<Vec<u8>, Arc<RenderError>> {
+        if !background {
+            if let Some(image) = self.images.get(&key).await {
+                retry_persistence(image.clone(), persistent);
+                return Ok(image.body.clone());
+            }
+        }
         let image = self
             .images
             .try_get_with(key, async {
@@ -77,6 +85,7 @@ impl Service {
                         return Ok(Arc::new(Image {
                             body,
                             stored: AtomicBool::new(true),
+                            persistence: tokio::sync::Mutex::new(()),
                         }));
                     }
                 }
@@ -95,6 +104,7 @@ impl Service {
                 Ok(Arc::new(Image {
                     body,
                     stored: AtomicBool::new(false),
+                    persistence: tokio::sync::Mutex::new(()),
                 }))
             })
             .await?;
@@ -103,7 +113,18 @@ impl Service {
     }
 }
 
+fn retry_persistence(image: Arc<Image>, persistent: Persistent) {
+    if persistent.is_some() && !image.stored.load(Ordering::Acquire) {
+        // A ready PNG must not wait on storage and lose the sharing deadline.
+        // `persist` coalesces writes and bounds the detached retry.
+        tokio::spawn(async move { persist(&image, persistent).await });
+    }
+}
+
 async fn persist(image: &Image, persistent: Persistent) {
+    let Ok(_turn) = image.persistence.try_lock() else {
+        return;
+    };
     if let Some((store, path)) = persistent {
         if !image.stored.load(Ordering::Acquire) {
             match tokio::time::timeout(STORE_TIMEOUT, async {
@@ -218,6 +239,23 @@ mod tests {
         super::super::png(&super::super::Card::new("/datasets", "").unwrap()).unwrap()
     }
 
+    async fn stored(service: &Service, path: &str) {
+        tokio::time::timeout(STORE_TIMEOUT, async {
+            while !service
+                .images
+                .get(path)
+                .await
+                .unwrap()
+                .stored
+                .load(Ordering::Acquire)
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
     #[tokio::test]
     async fn failed_persistence_retries_from_memory_without_rerendering() {
         let dir = tempfile::tempdir().unwrap();
@@ -250,6 +288,7 @@ mod tests {
                 .unwrap(),
             body
         );
+        stored(&service, path).await;
         assert_eq!(store.get(path).await.unwrap().unwrap(), body);
     }
 
@@ -274,10 +313,98 @@ mod tests {
         tokio::fs::remove_file(&root).await.unwrap();
         tokio::fs::create_dir(&root).await.unwrap();
         assert_eq!(service.lookup(path, persistent()).await.unwrap(), body);
+        stored(&service, path).await;
         assert_eq!(store.get(path).await.unwrap().unwrap(), body);
         let restarted = Service::default();
         assert_eq!(restarted.lookup(path, persistent()).await.unwrap(), body);
         assert!(restarted.lookup("missing.png", None).await.is_none());
+    }
+
+    #[derive(Debug)]
+    struct SlowStore {
+        inner: usnm_store::LocalStore,
+        started: tokio::sync::Notify,
+        release: tokio::sync::Notify,
+        writes: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl ObjectStore for SlowStore {
+        async fn get(&self, path: &str) -> Result<Option<Vec<u8>>, usnm_store::StoreError> {
+            self.inner.get(path).await
+        }
+        async fn put_new(
+            &self,
+            path: &str,
+            body: Vec<u8>,
+            content_type: &str,
+        ) -> Result<bool, usnm_store::StoreError> {
+            self.writes.fetch_add(1, Ordering::SeqCst);
+            self.started.notify_one();
+            self.release.notified().await;
+            self.inner.put_new(path, body, content_type).await
+        }
+        async fn put(
+            &self,
+            path: &str,
+            body: Vec<u8>,
+            content_type: &str,
+        ) -> Result<(), usnm_store::StoreError> {
+            self.inner.put(path, body, content_type).await
+        }
+        async fn list(&self, prefix: &str) -> Result<Vec<String>, usnm_store::StoreError> {
+            self.inner.list(prefix).await
+        }
+    }
+
+    #[tokio::test]
+    async fn warm_images_do_not_wait_for_slow_storage_and_retries_coalesce() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(SlowStore {
+            inner: usnm_store::LocalStore::new(dir.path()),
+            started: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+            writes: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let path = "search-preview/0123456789abcdef/custom.png";
+        let persistent = || Some((store.clone() as Arc<dyn ObjectStore>, path.to_owned()));
+        let service = Service::default();
+        let body = image();
+        service
+            .get(path.to_owned(), None, false, async { Ok(body.clone()) })
+            .await
+            .unwrap();
+        let ready = tokio::time::timeout(
+            Duration::from_millis(250),
+            service.get(path.to_owned(), persistent(), false, async {
+                panic!("must not render")
+            }),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(ready, body);
+        tokio::time::timeout(STORE_TIMEOUT, store.started.notified())
+            .await
+            .unwrap();
+        for _ in 0..5 {
+            let ready = tokio::time::timeout(
+                Duration::from_millis(250),
+                service.lookup(path, persistent()),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert_eq!(ready, body);
+        }
+        tokio::task::yield_now().await;
+        assert_eq!(store.writes.load(Ordering::SeqCst), 1);
+        store.release.notify_one();
+        stored(&service, path).await;
+        assert_eq!(
+            Service::default().lookup(path, persistent()).await.unwrap(),
+            body
+        );
     }
 
     #[tokio::test]
