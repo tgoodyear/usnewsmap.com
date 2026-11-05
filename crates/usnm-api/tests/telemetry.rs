@@ -11,14 +11,14 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use opentelemetry::metrics::MeterProvider as _;
-use serde_json::Value;
+use serde_json::{json, Value};
 use tower::ServiceExt;
 use tracing_subscriber::layer::SubscriberExt;
 use usnm_api::config::Config;
 use usnm_api::prewarm::{self, Trigger};
 use usnm_api::refdata::RefData;
 use usnm_api::telemetry::{observe_index_version, Metrics, SERVICE};
-use usnm_api::{app, AppState};
+use usnm_api::{app, AppState, Snapshot};
 use usnm_core::params::Filters;
 use usnm_core::query::Node;
 use usnm_core::time::BucketSpec;
@@ -402,6 +402,138 @@ async fn requests_are_exported_by_route_template_without_search_text() {
         .filter(|l| l["fields"]["message"] == "request")
         .count();
     assert_eq!(request_lines, 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mcp_requests_keep_route_and_served_version_metadata() {
+    let (endpoint, seen) = fake_ingestion().await;
+    let conn = format!(
+        "InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint={endpoint}"
+    );
+    let (tracer, meter_provider) =
+        usnm_telemetry::providers(&conn, Plain::with_token("tok"), SERVICE).unwrap();
+    let subscriber =
+        tracing_subscriber::registry().with(usnm_telemetry::otel_layer(&tracer, SERVICE));
+    let guard = tracing::subscriber::set_default(subscriber);
+    let request = |path: &str, host: &str, tool: &str, args: Value| {
+        Request::builder()
+            .method("POST")
+            .uri(path)
+            .header("host", host)
+            .header("content-type", "application/json")
+            .header("accept", "application/json, text/event-stream")
+            .header("mcp-protocol-version", "2025-11-25")
+            .body(Body::from(
+                json!({
+                    "jsonrpc":"2.0","id":1,"method":"tools/call",
+                    "params":{"name":tool,"arguments":args}
+                })
+                .to_string(),
+            ))
+            .unwrap()
+    };
+    let mut cfg = config();
+    cfg.rate_limit = Some(usnm_api::config::RateLimit {
+        per_minute: 1.try_into().unwrap(),
+        burst: 1.try_into().unwrap(),
+    });
+    let limited = Arc::new(AppState::new(
+        cfg,
+        Arc::new(fixture_backend()),
+        refdata().await,
+    ));
+    for (path, host, expected) in [
+        ("/mcp", "usnewsmap.com", StatusCode::OK),
+        ("/mcp", "usnewsmap.com", StatusCode::TOO_MANY_REQUESTS),
+        ("/mcp/", "evil.example", StatusCode::FORBIDDEN),
+    ] {
+        let response = app(limited.clone())
+            .oneshot(request(path, host, "get_corpus_info", json!({})))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), expected);
+        response.into_body().collect().await.unwrap();
+    }
+
+    let mut cfg = config();
+    cfg.fixture_slow = Some(("gold".into(), Duration::from_millis(300)));
+    let state = Arc::new(AppState::new(
+        cfg,
+        Arc::new(fixture_backend()),
+        refdata().await,
+    ));
+    let mut updated = refdata().await;
+    updated.current.index_version = "fixture-v2".into();
+    let reload = async {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while state.flights.is_empty() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        state.snapshot.store(Arc::new(Snapshot {
+            refdata: updated,
+            backend: Arc::new(fixture_backend()),
+            congress_dropped: false,
+        }));
+    };
+    let (response, ()) = tokio::join!(
+        app(state.clone()).oneshot(request(
+            "/mcp",
+            "usnewsmap.com",
+            "search",
+            json!({"q":"gold"})
+        )),
+        reload
+    );
+    let response = response.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let body: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(
+        body["result"]["structuredContent"]["untrusted_data"]["index_version"],
+        "fixture-v1"
+    );
+    assert_eq!(state.snapshot.load().refdata.version(), "fixture-v2");
+
+    drop(guard);
+    tokio::task::spawn_blocking(move || {
+        tracer.shutdown().unwrap();
+        meter_provider.shutdown().unwrap();
+    })
+    .await
+    .unwrap();
+    let mut requests = Vec::new();
+    for envelope in envelopes(
+        &seen
+            .uploads()
+            .iter()
+            .map(|u| u.json.clone())
+            .collect::<Vec<_>>(),
+    ) {
+        if envelope["data"]["baseType"] == "RequestData" {
+            let data = &envelope["data"]["baseData"];
+            assert_eq!(
+                data["properties"]["usnm.index_version"], "fixture-v1",
+                "{data}"
+            );
+            requests.push((
+                data["name"].as_str().unwrap().to_owned(),
+                data["responseCode"].as_str().unwrap().to_owned(),
+            ));
+        }
+    }
+    requests.sort();
+    assert_eq!(
+        requests,
+        [
+            ("POST /mcp".into(), "200".into()),
+            ("POST /mcp".into(), "200".into()),
+            ("POST /mcp".into(), "429".into()),
+            ("POST /mcp/".into(), "403".into()),
+        ]
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

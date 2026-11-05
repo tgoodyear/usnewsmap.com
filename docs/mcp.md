@@ -48,6 +48,10 @@ The agent can call:
 
 Then call `search_pages` with the same query/date filters and an `lccn` from `top_newspapers`.
 Results retain publication dates, titles, source viewer links, snippet provenance and OCR credits.
+Successful tool results use an envelope with a fixed `safety_notice` and the payload under
+`untrusted_data` (for example, `untrusted_data.total` or `untrusted_data.items`). This boundary
+labels evidence; it does not sanitize it or guarantee prompt-injection prevention. Clients must
+keep source content separate from instructions and enforce their own tool-use policies.
 The default page size is 10 (maximum 50); pass `next_cursor` back as `cursor` with the same filters
 and sort. Set `v` to the returned `index_version` for a reproducible pagination session; if the API
 reports a version change, remove `v` and restart rather than mixing versions.
@@ -97,3 +101,6 @@ Implementation lives in `crates/usnm-api/src/mcp.rs`, with fixture-backed protoc
 `crates/usnm-api/tests/api/mcp.rs` and a search-log privacy regression. Run
 `cargo test -p usnm-api --locked`. Publication follows the existing reviewed, main-only API image
 pipeline and the on-prem serving updater; the same image serves the Azure standby.
+Before rollout, synchronize the zone's emergency rate-limit rule with
+`scripts/onprem/serving/flood-rule.json`, including both MCP paths. Keep it disabled outside a
+flood, as described in the [flood runbook](design/09-operations-security-cost.md#931-on-prem-serving).
