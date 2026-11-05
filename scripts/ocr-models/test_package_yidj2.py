@@ -64,6 +64,7 @@ class SyntheticBuild(unittest.TestCase):
 
     def test_build_is_reproducible_and_verifies(self):
         self.build("first", update_sums=True)
+        (self.inputs / "recipe/study8.sh").write_bytes(b"another study\n")
         self.build("second")
         first, second = self.root / "first", self.root / "second"
         names = sorted(p.name for p in first.iterdir())
@@ -82,10 +83,10 @@ class SyntheticBuild(unittest.TestCase):
         with self.assertRaisesRegex(pkg.PackageError, "training split"):
             self.build("bad")
         (self.inputs / "split.txt").write_bytes(b"a b c\n")
-        (self.inputs / "recipe/extra.txt").write_bytes(b"")
-        with self.assertRaisesRegex(pkg.PackageError, "doesn't pin: extra.txt"):
+        (self.inputs / "recipe/study10.sh").write_bytes(b"edited\n")
+        with self.assertRaisesRegex(pkg.PackageError, "recipe file"):
             self.build("bad")
-        (self.inputs / "recipe/extra.txt").unlink()
+        (self.inputs / "recipe/study10.sh").write_bytes(b"#!/bin/sh\n")
         (self.model_dir / "NOTICE.md").write_text("notice, edited\n")
         with self.assertRaisesRegex(pkg.PackageError, "--update-sums"):
             self.build("drift")

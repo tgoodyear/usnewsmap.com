@@ -109,11 +109,9 @@ def build(model, base_license, training_split, recipe_dir, out, model_dir=MODEL_
         raise PackageError(f"model {model}: {model.stat().st_size} bytes, provenance.json says {m['bytes']}")
     expect(base_license, base["license_file"]["sha256"], "base licence")
     expect(training_split, data["page_list"]["sha256"], "training split")
+    # The pinned recipe folder holds other studies' scripts too; only the pinned files go in the tar.
     for name, want in recipe["files"].items():
         expect(recipe_dir / name, want, "recipe file")
-    extra = sorted(p.name for p in recipe_dir.iterdir() if p.name not in recipe["files"])
-    if extra:
-        raise PackageError(f"recipe dir {recipe_dir} has files provenance.json doesn't pin: {', '.join(extra)}")
 
     if out.exists() and any(out.iterdir()):
         raise PackageError(f"{out} is not empty")
@@ -168,7 +166,7 @@ def main(argv=None):
     b.add_argument("--model", type=Path, required=True, help="yidj2.traineddata")
     b.add_argument("--base-license", type=Path, required=True, help="tessdata_best's LICENSE at the pinned commit")
     b.add_argument("--training-split", type=Path, required=True, help="Study 10's training-split hash list")
-    b.add_argument("--recipe-dir", type=Path, required=True, help="#1428's scripts/yiddish/ files that provenance.json pins")
+    b.add_argument("--recipe-dir", type=Path, required=True, help="#1428's scripts/yiddish/ folder; only the files provenance.json pins are packed")
     b.add_argument("--out", type=Path, required=True, help="output directory, absent or empty")
     b.add_argument("--update-sums", action="store_true", help=f"rewrite the committed {SUMS} instead of checking it")
     v = sub.add_parser("verify", help="check a downloaded release against the committed SHA256SUMS")

@@ -92,7 +92,7 @@ Making it the default is #1479's step 4. It waits on the newspaper score: a qual
 
 ## Build and verify the release
 
-The inputs aren't in the repository: the model and the training-split list are kept with Study 10's runs, the Apache licence is tessdata_best's `LICENSE` at commit `e12c65a9`, and the recipe is #1428's `docs/reports/2026-11-gpu-studies/scripts/yiddish/` at commit `4ca78f01`. `build` refuses any input whose sha256 differs from `provenance.json`, packs the recipe into a tar that depends only on the files' names and bytes, and fails unless the result matches the committed `SHA256SUMS`:
+The inputs aren't in the repository: the model and the training-split list are kept with Study 10's runs, the Apache licence is tessdata_best's `LICENSE` at commit `e12c65a9`, and the recipe is #1428's `docs/reports/2026-11-gpu-studies/scripts/yiddish/` at commit `4ca78f01`. Pass that folder as it is: `build` takes only the four files `provenance.json` pins and ignores the other studies' scripts. It refuses any input whose sha256 differs from `provenance.json`, packs the recipe into a tar that depends only on the files' names and bytes, and fails unless the result matches the committed `SHA256SUMS`:
 
 ```sh
 scripts/ocr-models/package_yidj2.py build --model yidj2.traineddata --base-license LICENSE \
