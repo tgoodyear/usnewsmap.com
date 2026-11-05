@@ -219,7 +219,9 @@ pub fn issue(v: &Value, want: &IssueRef, hosts: &Hosts) -> anyhow::Result<Vec<Pa
             .pointer("/resource/service/@id")
             .and_then(Value::as_str)
             .with_context(|| format!("{url}: canvas {n} has no image service"))?;
-        let ident = service.strip_prefix(&hosts.images).unwrap_or_default();
+        let ident = service
+            .strip_prefix(&hosts.images)
+            .with_context(|| format!("{url}: canvas {n}'s image service isn't GHN's: {service}"))?;
         // One path segment: GHN writes the identifier's own slashes as %2F.
         let ident_ok = !ident.is_empty()
             && ident
@@ -227,7 +229,8 @@ pub fn issue(v: &Value, want: &IssueRef, hosts: &Hosts) -> anyhow::Result<Vec<Pa
                 .all(|b| b.is_ascii_alphanumeric() || b"._-%".contains(&b));
         ensure!(
             ident_ok,
-            "{url}: canvas {n}'s image service isn't GHN's: {service}"
+            "{url}: canvas {n}'s image identifier isn't one path segment of letters, digits, \
+             '.', '_', '-' and '%': {service}"
         );
         // The page's number is GHN's own, from its page link, never the canvas's position.
         let seq = image

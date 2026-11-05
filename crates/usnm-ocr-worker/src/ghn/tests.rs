@@ -149,11 +149,16 @@ fn a_manifest_is_refused_for_a_foreign_image_or_an_unnumbered_or_repeated_page()
     let h = Hosts::ghn();
     let i = issue("sn89053815", "1876-10-15", 1);
     let refused = |v: Value| iiif::issue(&v, &i, &h).is_err();
+    let why = |v: Value| format!("{:#}", iiif::issue(&v, &i, &h).unwrap_err());
     let mut v = issue_doc(&h, &i, &[(1, "a.jp2")]);
     v["sequences"][0]["canvases"][0]["images"][0]["resource"]["service"]["@id"] =
         "https://elsewhere.example/iiif/2/newspapers/a.jp2".into();
-    assert!(refused(v));
-    assert!(refused(issue_doc(&h, &i, &[(1, "a/../b.jp2")])));
+    assert!(why(v).contains("isn't GHN's"));
+    let e = why(issue_doc(&h, &i, &[(1, "a/../b.jp2")]));
+    assert!(
+        e.contains("one path segment") && !e.contains("isn't GHN's"),
+        "{e}"
+    );
     let mut v = issue_doc(&h, &i, &[(1, "a.jp2")]);
     v["sequences"][0]["canvases"][0]["images"][0]["rendering"] = json!([]);
     assert!(refused(v));
