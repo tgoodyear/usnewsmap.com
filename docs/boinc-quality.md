@@ -1400,12 +1400,24 @@ Only pages our OCR has done or is about to do are left out: rows in `quality.ocr
 
 **The moderate sample shows nothing until its pages are OCRed.** A quality unit on a page our OCR hasn't read gives image features and LoC's agreement with American Stories. A gain needs a `quality.ocr_outputs` row for the page, compared with LoC's damage score.
 
-Two things limit how a list reaches the fetcher and the feed. `follow` takes every fetched page under its own campaign, so a page fetched from one of these manifests lands there unless `follow`'s `--staged` list names it; `plan.jsonl` still tells the bands apart. And a manifest named `queue-quality-*` takes JP2s only from LoC's bucket or a mirror, so pages of batches the bucket doesn't serve wait in that queue.
+Two things limit how a list reaches the fetcher and the feed. `follow` takes every fetched page under its own campaign, so a page fetched from one of these manifests lands there unless `follow`'s `--staged` list names it; `plan.jsonl` still tells the bands apart. And when the scan fetcher is installed with `--no-loc-prefixes queue-quality-` (`USNM_PREFETCH_NO_LOC_PREFIXES`), a manifest named `queue-quality-*` takes JP2s only from LoC's bucket or a mirror, so pages of batches the bucket doesn't serve wait in that queue. Without it, those pages are fetched from LoC within the global LoC budget.
 
 `quality_feed.py follow` (`usnm-quality-follow.service`) gives every page the fetcher writes
 that no campaign has staged (OCR's and the pass's) a unit, in fetch order, and deletes the
 pass's buffer scans once their chunk has shipped; OCR's scans and the keep set are never
 deleted. `quality-feed-install.sh --follow` turns both on with the shipper.
+
+**What bounds the supply.** Each round, `follow` takes every full-resolution scan in the index
+that has no unit or staging record, isn't in `--staged` and isn't done, up to the outbox's
+room. While the shipper keeps up, it holds no backlog, so the pages it feeds in an hour are the
+pages the fetcher wrote in that hour. Those come from the pass's manifests (`--pass-pages` a
+run, with the timer's 2 hours between the end of one run and the start of the next) and from
+whatever OCR's and the other manifests fetch. The pass's size and the bucket bound the first.
+The rest depends on which batches the other manifests reach, how many of their pages are
+already held, and LoC's budget. A held scan that a campaign staged before isn't fed again.
+Raising the supply therefore needs more bucket or LoC requests, or feeding staged pages again,
+and each of those is the maintainer's choice. The [measurements of 5 November
+2026](notes/2026-11-05-quality-supply.md) split the supply by source.
 
 ## Calibration
 
