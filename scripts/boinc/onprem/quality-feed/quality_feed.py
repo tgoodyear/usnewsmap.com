@@ -698,7 +698,7 @@ def delete_shipped(a, camp_dir, done_path, quality_docs, deleted_path, kept_path
     # Retention needs kept.tsv to carry it from round to round: with no kept_path, none.
     budget = (getattr(a, "keep_bytes", 0) or 0) if kept_path else 0
     kept = read_kept(kept_path)
-    now = time.time()
+    now = int(time.time())
     with open(done_path) as f:
         rows = [line.rstrip("\n").split("\t") for line in f if "\t" in line]
     pending = {os.path.basename(d) for d in glob.glob(os.path.join(camp_dir, "c[0-9]*"))}
@@ -715,11 +715,12 @@ def delete_shipped(a, camp_dir, done_path, quality_docs, deleted_path, kept_path
         shipped[doc] = (scan, size, damage, now)
     # Set once the scan server doesn't answer: the round's other requests wait for the next
     # round, which finds every page this one couldn't finish where it was.
-    unreachable = []
+    unreachable = False
 
     def delete(doc, scan):
         """Whether the scan is gone. A failure is logged, never raised, so the round's
         bookkeeping is still written."""
+        nonlocal unreachable
         if unreachable:
             return False
         req = urllib.request.Request(f"{a.scan_server.rstrip('/')}/scans/{scan}", method="DELETE",
@@ -733,7 +734,7 @@ def delete_shipped(a, camp_dir, done_path, quality_docs, deleted_path, kept_path
                 return False
         except (urllib.error.URLError, OSError) as e:
             log("buffer delete failed; the rest wait for the next round", doc_id=doc, error=str(e)[:200])
-            unreachable.append(doc)
+            unreachable = True
             return False
         return True
 
@@ -750,7 +751,7 @@ def delete_shipped(a, camp_dir, done_path, quality_docs, deleted_path, kept_path
                 log("kept scan check failed; next round", doc_id=doc, error=str(e)[:200])
                 if isinstance(e, urllib.error.HTTPError):
                     continue  # the server answered, so it's this scan: go on to the next
-                unreachable.append(doc)
+                unreachable = True
                 break  # no answer (down or unreachable): one timeout a round, not --keep-verify
             # With its sidecar gone (marked done: OCR's worker read it, or a DELETE of ours
             # got that far and failed), a DELETE makes sure the bytes are gone too.
