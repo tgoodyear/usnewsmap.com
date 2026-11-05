@@ -336,6 +336,16 @@
       "description": "Alert on the on-prem OCR pickup (#1139): a failed ocr-sync run, no run through the pickup for more than 2 hours, and node output left in ocr-out over 72 hours (usnm-ocrs-failed-alert-<env>, usnm-ocrs-stale-alert-<env>, usnm-ocrs-backlog-alert-<env>), from the metrics it sends to the environment's Application Insights. With USNM_OCR_SYNC_ONPREM and alert emails.",
       "type": "boolean"
     },
+    "USNM_BOINC_FEED_ALERTS": {
+      "x-usnm-visibility": "public",
+      "description": "Alert on the live BOINC feed health (#1441): a data collection rule for the evaluator host's local0 lines into the OCR nodes' workspace (usnm-boinc-feed-dcr-<env>) and two log alerts through the action group (usnm-boinc-feed-condition-alert-<env>, usnm-boinc-feed-missing-alert-<env>). With USNM_OCR_NODES, alert emails and USNM_BOINC_FEED_MACHINE; after provisioning, associate the host with the rule by hand (docs/boinc/boundaries-and-monitoring.md).",
+      "type": "boolean"
+    },
+    "USNM_BOINC_FEED_MACHINE": {
+      "x-usnm-visibility": "private",
+      "description": "Private: in the settings store, under the environment's label. The BOINC feed evaluator host's Arc machine name in the environment's resource group, with USNM_BOINC_FEED_ALERTS (#1441).",
+      "not": {}
+    },
     "USNM_BATCH_HOST": {
       "x-usnm-visibility": "private",
       "description": "Private: in the settings store, under the environment's label. The object id of the batch container's own Arc machine identity (usnm-batch-arcs-<env>, pve-laptop CT 215), with USNM_OCR_SYNC_ONPREM.",
