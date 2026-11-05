@@ -290,6 +290,14 @@ DPI, silently drops malformed coordinates or substitutes whole-page text for
 a crop. This is a crop transcription adapter, **not whole-page reading-order
 evaluation**. OCR inference cost is `unknown`, not zero.
 
+To score an audited package, add `--audit-inventory artifacts.json
+--audit-inventory-sha256 HASH` (the `loc_archive.py --out` inventory). Each
+binding's page URL must then be an NDNP page in that inventory, and its
+`alto_sha256` must be that page's audited ALTO member. Any other binding is an
+error. Aligned rows record the archive, member and embedded software. This
+binds bytes to a page ID, not to the source scan; registration stays the
+operator's evidence. See [the note](notes/2026-11-05-loc-audit-binding.md).
+
 ```sh
 python3 scripts/ocr-bench/loc_align.py \
   --release RELEASE --subset SUBSET --baseline loc-refreshed-v1 \
