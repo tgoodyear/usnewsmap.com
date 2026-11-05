@@ -6,7 +6,7 @@
 #   quality-ship.sh --campaign NAME --engine-image sha256:<worker digest>
 #     [--outbox /var/lib/usnm-quality-feed/outbox] [--server-host pve.tjg.fyi] [--server-ct 230]
 #     [--readers loc-hist,as,ours-ndlocr,ours-paddle,ours-surya,ours-tesseract]
-#     [--bundle-size 200] [--max-unsent 300] [--max-chunks 1] [--min-free-gb 40] [--what-if]
+#     [--bundle-size 500] [--max-unsent 300] [--max-chunks 1] [--min-free-gb 40] [--what-if]
 #     [--qwen-engine-plan /project/.../plan.json --qwen-models /project/.../models]
 #     [--qwen-max-ready 1000] (fresh native original replicas, not retry replicas)
 #     [--qwen-subsets] (explicit frozen subset transactions; existing Temporal owner only)
@@ -59,7 +59,7 @@ done
 
 CAMPAIGN="" ENGINE="" OUTBOX=/var/lib/usnm-quality-feed/outbox SERVER=pve.tjg.fyi CT=230
 READERS=loc-hist,as,ours-ndlocr,ours-paddle,ours-surya,ours-tesseract
-BUNDLE=200 MAX_UNSENT=300 MAX_CHUNKS=1 MIN_FREE=40 WHAT_IF=false
+BUNDLE=500 MAX_UNSENT=300 MAX_CHUNKS=1 MIN_FREE=40 WHAT_IF=false
 SHARE=/srv/usnm-boinc/project STEP=/usr/local/sbin/usnm-boinc-step
 QWEN_PLAN="" QWEN_MODELS="" QWEN_MAX_READY=1000 STEP_WINDOW=0
 PROMPT=1 QWEN_ROOT="" YIDDISH_ROOT="" YIDDISH_PROMPT=4 SUBMIT_BINARY=""

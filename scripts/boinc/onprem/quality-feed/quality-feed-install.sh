@@ -5,9 +5,10 @@
 #
 #   quality-feed-install.sh --campaign NAME --engine-image sha256:<worker digest>
 #     [--host pve-laptop.tjg.fyi] [--ctid 215] [--scan-server http://usnm-scanfetch.tjg.fyi:8380]
-#     [--chunk-pages 200] [--max-pending 8] [--workers 4]
-#     [--max-unsent 300] [--max-chunks 30] [--bundle-size 200] [--enable]
-#     [--follow [--strata 1] [--pass-pages 2000] [--pass-batches /srv/locstats/bucket-batches.tsv]]
+#     [--chunk-pages 500] [--max-pending 8] [--workers 4]
+#     [--max-unsent 300] [--max-chunks 30] [--bundle-size 500] [--enable]
+#     [--follow [--strata 1] [--pass-pages 2000] [--pass-batches /srv/locstats/bucket-batches.tsv]
+#       [--keep-bytes 1000000000000]]
 #
 # Before it: home-infra's scripts/host-ssh-trust.sh --from pve-laptop.tjg.fyi --to pve.tjg.fyi
 # and scripts/lab/batch-ct-quality.sh --mounts on pve-laptop (the curated copy at /srv/curated
@@ -28,8 +29,9 @@
 # (/var/lib/usnm-quality-feed/<campaign>/pages.jsonl in the container, from
 # quality_feed.py select) must be there before --enable starts the feeder and the timer.
 # --follow runs the piggyback and the full image pass instead: usnm-quality-follow (every
-# page the fetcher writes gets a unit, in fetch order; the pass's buffer scans are deleted
-# once shipped), usnm-quality-build.timer (the pass's next manifest from usnm_quality's
+# page the fetcher writes gets a unit, in fetch order, in full chunks; the pass's buffer scans
+# are deleted once shipped, except the most damaged, up to --keep-bytes, which stay for
+# re-OCR), usnm-quality-build.timer (the pass's next manifest from usnm_quality's
 # ranking, --strata issues per title and decade, --pass-pages a manifest, --pass-batches the
 # only batches it takes pages from, a path in the container) and the shipper.
 set -euo pipefail
@@ -38,8 +40,8 @@ die() { echo "error: $*" >&2; exit 1; }
 HERE=$(cd "$(dirname "$0")" && pwd)
 
 CAMPAIGN="" ENGINE="" HOST=pve-laptop.tjg.fyi CTID=215 SCAN_SERVER=http://usnm-scanfetch.tjg.fyi:8380
-CHUNK=200 PENDING=8 WORKERS=4 MAX_UNSENT=300 MAX_CHUNKS=30 BUNDLE=200 ENABLE=false
-FOLLOW=false STRATA=1 PASS_PAGES=2000 PASS_BATCHES=""
+CHUNK=500 PENDING=8 WORKERS=4 MAX_UNSENT=300 MAX_CHUNKS=30 BUNDLE=500 ENABLE=false
+FOLLOW=false STRATA=1 PASS_PAGES=2000 PASS_BATCHES="" KEEP_BYTES=1000000000000
 while [ $# -gt 0 ]; do
   case $1 in
     --campaign) CAMPAIGN=${2:-}; shift 2 ;;
@@ -58,6 +60,7 @@ while [ $# -gt 0 ]; do
     --strata) STRATA=${2:-}; shift 2 ;;
     --pass-pages) PASS_PAGES=${2:-}; shift 2 ;;
     --pass-batches) PASS_BATCHES=${2:-}; shift 2 ;;
+    --keep-bytes) KEEP_BYTES=${2:-}; shift 2 ;;
     -h | --help) usage ;;
     *) die "unknown argument: $1" ;;
   esac
@@ -67,7 +70,7 @@ done
 [[ $HOST =~ ^[a-z0-9][a-z0-9.-]*$ ]] || die "--host: a host name"
 [[ $SCAN_SERVER =~ ^http://[a-z0-9][a-z0-9.-]*:[0-9]+$ ]] || die "--scan-server: http://<host>:<port>"
 [[ -z $PASS_BATCHES || $PASS_BATCHES =~ ^/[A-Za-z0-9._/-]+$ ]] || die "--pass-batches: an absolute path in the container"
-for n in "$CTID" "$CHUNK" "$PENDING" "$WORKERS" "$MAX_UNSENT" "$MAX_CHUNKS" "$BUNDLE" "$STRATA" "$PASS_PAGES"; do
+for n in "$CTID" "$CHUNK" "$PENDING" "$WORKERS" "$MAX_UNSENT" "$MAX_CHUNKS" "$BUNDLE" "$STRATA" "$PASS_PAGES" "$KEEP_BYTES"; do
   [[ $n =~ ^[0-9]+$ ]] || die "numbers only: $n"
 done
 SSH=(ssh -o BatchMode=yes -o ConnectTimeout=15 "root@$HOST")
@@ -88,10 +91,10 @@ scp -q "$HERE/quality_feed.py" "$HERE/scan_quarantine.py" "$HERE/quality_campaig
   "$HERE/../ocr-feed/usnm-quality-build.service" "$HERE/../ocr-feed/usnm-quality-build.timer" "root@$HOST:$stage/"
 
 "${SSH[@]}" bash -s -- "$CTID" "$stage" "$CAMPAIGN" "$SCAN_SERVER" "$CHUNK" "$PENDING" "$WORKERS" \
-  "$ENGINE" "$MAX_UNSENT" "$MAX_CHUNKS" "$BUNDLE" "$ENABLE" "$FOLLOW" "$STRATA" "$PASS_PAGES" "$PASS_BATCHES" <<'REMOTE'
+  "$ENGINE" "$MAX_UNSENT" "$MAX_CHUNKS" "$BUNDLE" "$ENABLE" "$FOLLOW" "$STRATA" "$PASS_PAGES" "$KEEP_BYTES" "$PASS_BATCHES" <<'REMOTE'
 set -euo pipefail
 ct=$1 stage=$2 campaign=$3 scan=$4 chunk=$5 pending=$6 workers=$7 engine=$8 unsent=$9 chunks=${10} bundle=${11} enable=${12}
-follow=${13} strata=${14} pass_pages=${15} pass_batches=${16:-}  # ssh drops an empty last argument
+follow=${13} strata=${14} pass_pages=${15} keep_bytes=${16} pass_batches=${17:-}  # ssh drops an empty last argument
 in_ct() { pct exec "$ct" -- "$@"; }
 in_ct test -d /srv/curated/pages || { echo "error: no curated copy in CT $ct: run batch-ct-quality.sh --mounts" >&2; exit 1; }
 in_ct bash -c 'export DEBIAN_FRONTEND=noninteractive; apt-get install -y -q python3-venv postgresql-client > /dev/null'
@@ -109,7 +112,8 @@ pct push "$ct" "$stage/usnm-quality-locwc-load.timer" /etc/systemd/system/usnm-q
 for u in usnm-quality-follow.service usnm-quality-build.service usnm-quality-build.timer; do
   pct push "$ct" "$stage/$u" "/etc/systemd/system/$u"
 done
-printf 'CAMPAIGN=%s\nSCAN_SERVER=%s\n' "$campaign" "$scan" | in_ct sh -c 'cat > /etc/usnm/quality-follow.env'
+printf 'CAMPAIGN=%s\nSCAN_SERVER=%s\nKEEP_BYTES=%s\n' "$campaign" "$scan" "$keep_bytes" |
+  in_ct sh -c 'cat > /etc/usnm/quality-follow.env'
 printf 'STRATA=%s\nMAX_PAGES=%s\nSCAN_SERVER=%s\nBATCHES=%s\n' "$strata" "$pass_pages" "$scan" "$pass_batches" |
   in_ct sh -c 'cat > /etc/usnm/quality-build.env'
 pct push "$ct" "$stage/usnm-quality-feed.service" /etc/systemd/system/usnm-quality-feed.service
