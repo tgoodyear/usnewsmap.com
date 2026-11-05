@@ -1698,6 +1698,20 @@ class BatchedStepsTests(unittest.TestCase):
                             batch_collect=True)
         self.assertEqual(self.steps(t, lambda: (t.submit_batch([]), t.collect_batch([]))), [])
 
+    def test_batched_collect_runs_jobs_at_once_only_when_asked(self):
+        # #1447: COLLECT_PARALLEL goes to the batched collect only above one.
+        pairs = [(self.J1, self.S1), (self.J2, self.S2)]
+        for parallel, extra in ((1, {}), (4, {"COLLECT_PARALLEL": "4"})):
+            with self.subTest(parallel=parallel):
+                t = batch.Transport(queue_config(), Path("."), batch_collect=True, collect_parallel=parallel)
+                sent = self.steps(t, lambda: t.collect_batch(pairs))
+                self.assertEqual([v for _, name, v in sent if name == "collect"],
+                                 [{"JOB_IDS": f"{self.J1},{self.J2}", **extra}])
+        for bad in ({"collect_parallel": 2}, {"batch_collect": True, "collect_parallel": 0},
+                    {"batch_collect": True, "collect_parallel": 9}):
+            with self.subTest(bad=bad), self.assertRaisesRegex(ValueError, "collect_parallel"):
+                batch.Transport(queue_config(), Path("."), **bad)
+
     def test_flags_reach_the_transport(self):
         seen = {}
 
@@ -1712,9 +1726,15 @@ class BatchedStepsTests(unittest.TestCase):
             (Path(d) / "state.json").write_text(json.dumps({"config_sha256": "x"}))
             with self.assertRaises(SystemExit):
                 batch.main(["--config", "c.json", "--state-dir", d, "--apply",
-                            "--batch-submit", "--batch-collect"])
-        self.assertEqual((seen["batch_submit"], seen["batch_spool_out"], seen["batch_collect"]),
-                         (True, False, True))
+                            "--batch-submit", "--batch-collect", "--collect-parallel", "3"])
+            self.assertEqual((seen["batch_submit"], seen["batch_spool_out"], seen["batch_collect"],
+                              seen["collect_parallel"]), (True, False, True, 3))
+            for bad, message in ((["--batch-collect", "--collect-parallel", "9"], "invalid --collect-parallel"),
+                                 (["--collect-parallel", "2"], "needs --batch-collect")):
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err):
+                    self.assertEqual(batch.main(["--config", "c.json", "--state-dir", d, "--apply", *bad]), 1)
+                self.assertIn(message, err.getvalue())
 
     def test_batch_export_sends_every_batch_in_one_execution(self):
         pages = [{"page": "sn1/1890-05-03/ed-1/seq-1", "batch": "dlc_bbb", "scan": "/tank/ocr/scans/keep/dlc_bbb/sn1/1890-05-03/1/1.jp2"},

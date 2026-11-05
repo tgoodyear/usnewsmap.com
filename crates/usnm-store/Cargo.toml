@@ -14,6 +14,7 @@ bytes.workspace = true
 futures.workspace = true
 httpdate.workspace = true
 reqwest = { workspace = true, features = ["stream"] }
+rustix = { workspace = true, features = ["process"] }
 rustls.workspace = true
 rustls-pki-types.workspace = true
 serde.workspace = true

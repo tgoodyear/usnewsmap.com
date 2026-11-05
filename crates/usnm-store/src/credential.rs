@@ -8,9 +8,13 @@
 //! (`IDENTITY_ENDPOINT` + `IMDS_ENDPOINT`, no `IDENTITY_HEADER`) issues them
 //! after a challenge ([`ArcIdentity`]). Elsewhere (a developer machine) the
 //! Azure CLI's signed-in account is used. Tokens are cached until five minutes
-//! before they expire, and one refresh at a time is in flight.
+//! before they expire, and one refresh at a time is in flight. With
+//! `USNM_TOKEN_CACHE` set, processes share them too ([`FileCache`]).
 
 use std::fmt;
+use std::io::{Read, Write};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -88,21 +92,201 @@ pub fn from_env() -> Arc<Credential> {
 }
 
 /// The ambient credential for another resource (e.g. [`COSMOS_RESOURCE`]).
+/// With `USNM_TOKEN_CACHE` set to a directory, a managed or Arc identity's
+/// tokens are shared through it ([`FileCache`]).
 pub fn from_env_for(resource: &'static str) -> Arc<Credential> {
     let var = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
-    match (
+    let (source, identity): (Box<dyn TokenSource>, Option<String>) = match (
         var("IDENTITY_ENDPOINT"),
         var("IDENTITY_HEADER"),
         var("IMDS_ENDPOINT"),
     ) {
-        (Some(endpoint), Some(header), _) => Arc::new(Credential::new(
-            ManagedIdentity::new(endpoint, header, var("AZURE_CLIENT_ID")).with_resource(resource),
-        )),
+        (Some(endpoint), Some(header), _) => {
+            let client_id = var("AZURE_CLIENT_ID");
+            let identity = format!("managed {endpoint} {}", client_id.as_deref().unwrap_or(""));
+            (
+                Box::new(ManagedIdentity::new(endpoint, header, client_id).with_resource(resource)),
+                Some(identity),
+            )
+        }
         // The Arc agent sets both endpoints and no header.
-        (Some(endpoint), None, Some(_)) => Arc::new(Credential::new(
-            ArcIdentity::new(endpoint).with_resource(resource),
+        (Some(endpoint), None, Some(_)) => (
+            Box::new(ArcIdentity::new(endpoint.clone()).with_resource(resource)),
+            Some(format!("arc {endpoint}")),
+        ),
+        // Never shared: the CLI's account can change under it (az login, AZURE_CONFIG_DIR).
+        _ => (Box::new(AzureCli { resource }), None),
+    };
+    let source: Box<dyn TokenSource> = match (var("USNM_TOKEN_CACHE"), identity) {
+        (Some(dir), Some(identity)) => Box::new(FileCache::new(
+            dir,
+            &format!("{identity} {resource}"),
+            source,
         )),
-        _ => Arc::new(Credential::new(AzureCli { resource })),
+        _ => source,
+    };
+    Arc::new(Credential {
+        source,
+        cached: Mutex::new(None),
+    })
+}
+
+/// How long [`FileCache`] waits for another process's fetch before fetching
+/// on its own: longer than the two 15-second requests of an Arc fetch.
+const CACHE_LOCK_WAIT: Duration = Duration::from_secs(45);
+
+/// The largest token file read: a token is a few kilobytes.
+const CACHE_FILE_MAX_BYTES: u64 = 64 * 1024;
+
+/// A managed or Arc identity's tokens shared between processes through a
+/// private directory (`USNM_TOKEN_CACHE`). The BOINC hand-off job runs several
+/// `usnm-boinc` processes for each job it collects, and each fetched its own
+/// tokens: with four collects at once the Arc agent answered HTTP 429 (#1447).
+/// One process fetches at a time, under an exclusive `flock`, and writes the
+/// token for the others; a token is reused until five minutes before it
+/// expires. The directory must be this user's, with no access for group or
+/// others, and the files are 0600: they hold bearer tokens. When the directory
+/// or a file can't be used, the token is fetched as without the cache.
+#[derive(Debug)]
+pub struct FileCache {
+    dir: PathBuf,
+    name: String,
+    inner: Box<dyn TokenSource>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct CachedToken {
+    access_token: String,
+    expires_on: u64,
+}
+
+impl FileCache {
+    /// `key` names the identity and resource: tokens are shared only between
+    /// sources with the same key.
+    pub fn new(dir: impl Into<PathBuf>, key: &str, inner: Box<dyn TokenSource>) -> Self {
+        use sha2::Digest;
+        let digest = sha2::Sha256::digest(key.as_bytes());
+        let name = digest[..8].iter().map(|b| format!("{b:02x}")).collect();
+        Self {
+            dir: dir.into(),
+            name,
+            inner,
+        }
+    }
+
+    fn path(&self, suffix: &str) -> PathBuf {
+        self.dir.join(format!("token-{}{suffix}", self.name))
+    }
+
+    fn check_dir(&self) -> std::io::Result<()> {
+        let meta = std::fs::symlink_metadata(&self.dir)?;
+        if !meta.is_dir()
+            || meta.uid() != rustix::process::geteuid().as_raw()
+            || meta.mode() & 0o077 != 0
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "not a directory of this user's with no access for group or others",
+            ));
+        }
+        Ok(())
+    }
+
+    /// The lock file, locked: held while a token is read or fetched.
+    async fn lock(&self) -> std::io::Result<std::fs::File> {
+        self.check_dir()?;
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .mode(0o600)
+            .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
+            .open(self.path(".lock"))?;
+        let deadline = tokio::time::Instant::now() + CACHE_LOCK_WAIT;
+        loop {
+            match rustix::fs::flock(&file, rustix::fs::FlockOperation::NonBlockingLockExclusive) {
+                Ok(()) => return Ok(file),
+                Err(e) if e == rustix::io::Errno::WOULDBLOCK => {
+                    if tokio::time::Instant::now() >= deadline {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::TimedOut,
+                            "another process's fetch is taking too long",
+                        ));
+                    }
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
+    }
+
+    /// The cached token, if there is one that isn't about to expire.
+    fn read(&self) -> Option<AccessToken> {
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
+            .open(self.path(".json"))
+            .ok()?;
+        let mut bytes = Vec::new();
+        file.take(CACHE_FILE_MAX_BYTES)
+            .read_to_end(&mut bytes)
+            .ok()?;
+        let cached: CachedToken = serde_json::from_slice(&bytes).ok()?;
+        let token = AccessToken {
+            token: cached.access_token,
+            expires_at: UNIX_EPOCH + Duration::from_secs(cached.expires_on),
+        };
+        (!token.token.is_empty() && token.expires_at > SystemTime::now() + REFRESH_MARGIN)
+            .then_some(token)
+    }
+
+    /// Write a token for the other processes: a whole file, renamed into place.
+    fn write(&self, token: &AccessToken) -> std::io::Result<()> {
+        let expires_on = token
+            .expires_at
+            .duration_since(UNIX_EPOCH)
+            .map_err(std::io::Error::other)?
+            .as_secs();
+        let bytes = serde_json::to_vec(&CachedToken {
+            access_token: token.token.clone(),
+            expires_on,
+        })?;
+        let partial = self.path(&format!(".{}.partial", std::process::id()));
+        let result = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .mode(0o600)
+            .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
+            .open(&partial)
+            .and_then(|mut f| f.write_all(&bytes))
+            .and_then(|()| std::fs::rename(&partial, self.path(".json")));
+        if result.is_err() {
+            let _ = std::fs::remove_file(&partial);
+        }
+        result
+    }
+}
+
+#[async_trait]
+impl TokenSource for FileCache {
+    async fn fetch(&self) -> Result<AccessToken, StoreError> {
+        let lock = match self.lock().await {
+            Ok(lock) => lock,
+            Err(error) => {
+                tracing::warn!(dir = %self.dir.display(), %error, "token cache unusable; fetching without it");
+                return self.inner.fetch().await;
+            }
+        };
+        if let Some(token) = self.read() {
+            return Ok(token);
+        }
+        let fresh = self.inner.fetch().await?;
+        if let Err(error) = self.write(&fresh) {
+            tracing::warn!(dir = %self.dir.display(), %error, "could not cache the token");
+        }
+        drop(lock);
+        Ok(fresh)
     }
 }
 
@@ -584,5 +768,113 @@ mod tests {
         assert!(ArcIdentity::new("http://[::1]:40342/x".into())
             .check_endpoint()
             .is_ok());
+    }
+
+    /// A [`Counting`] source that takes a while, as the Arc agent's two requests do.
+    #[derive(Debug)]
+    struct Slow(Arc<AtomicU32>);
+
+    #[async_trait]
+    impl TokenSource for Slow {
+        async fn fetch(&self) -> Result<AccessToken, StoreError> {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            Counting(self.0.clone(), 3600).fetch().await
+        }
+    }
+
+    /// A directory for [`FileCache`]: this user's only, as `mktemp -d` makes.
+    fn private_dir() -> tempfile::TempDir {
+        use std::os::unix::fs::PermissionsExt;
+        tempfile::Builder::new()
+            .permissions(std::fs::Permissions::from_mode(0o700))
+            .tempdir()
+            .unwrap()
+    }
+
+    /// A credential sharing tokens through `dir`. Each stands for a process:
+    /// it opens the lock file itself.
+    fn shared(dir: &std::path::Path, key: &str, source: impl TokenSource + 'static) -> Credential {
+        Credential::new(FileCache::new(dir, key, Box::new(source)))
+    }
+
+    #[tokio::test]
+    async fn processes_share_a_token_through_the_cache() {
+        let dir = private_dir();
+        let n = Arc::new(AtomicU32::new(0));
+        for _ in 0..3 {
+            let first = shared(dir.path(), "arc a", Counting(n.clone(), 3600));
+            assert_eq!(first.token().await.unwrap(), "t0");
+        }
+        // Another identity or resource has a token of its own.
+        let other = shared(dir.path(), "arc b", Counting(n.clone(), 3600));
+        assert_eq!(other.token().await.unwrap(), "t1");
+        assert_eq!(n.load(Ordering::SeqCst), 2);
+        // The files hold bearer tokens: only this user may read them.
+        let tokens: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .filter(|p| p.extension().is_some_and(|e| e == "json"))
+            .collect();
+        assert_eq!(tokens.len(), 2);
+        for token in tokens {
+            assert_eq!(std::fs::metadata(token).unwrap().mode() & 0o777, 0o600);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_shared_token_near_expiry_is_fetched_again() {
+        let dir = private_dir();
+        let n = Arc::new(AtomicU32::new(0));
+        let token = |secs| shared(dir.path(), "k", Counting(n.clone(), secs));
+        assert_eq!(token(60).token().await.unwrap(), "t0");
+        assert_eq!(token(3600).token().await.unwrap(), "t1");
+        assert_eq!(token(3600).token().await.unwrap(), "t1");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn processes_fetching_at_once_wait_for_one_fetch() {
+        let dir = private_dir();
+        let n = Arc::new(AtomicU32::new(0));
+        let tasks: Vec<_> = (0..8)
+            .map(|_| {
+                let credential = shared(dir.path(), "k", Slow(n.clone()));
+                tokio::spawn(async move { credential.token().await.unwrap() })
+            })
+            .collect();
+        for task in tasks {
+            assert_eq!(task.await.unwrap(), "t0");
+        }
+        assert_eq!(n.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn a_directory_others_can_reach_is_not_used() {
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        let dir = private_dir();
+        let n = Arc::new(AtomicU32::new(0));
+        let open = dir.path().join("open");
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&open)
+            .unwrap();
+        std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let private = dir.path().join("private");
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&private)
+            .unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&private, &link).unwrap();
+        let mut expected = 0;
+        for unusable in [&open, &link, &dir.path().join("missing")] {
+            // Each fetches as without the cache, and writes nothing.
+            for _ in 0..2 {
+                let credential = shared(unusable, "k", Counting(n.clone(), 3600));
+                assert_eq!(credential.token().await.unwrap(), format!("t{expected}"));
+                expected += 1;
+            }
+        }
+        assert_eq!(std::fs::read_dir(&open).unwrap().count(), 0);
+        assert_eq!(std::fs::read_dir(&private).unwrap().count(), 0);
     }
 }

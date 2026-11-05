@@ -34,6 +34,7 @@ DEFAULT_MAX_GLOBAL_PENDING = 1000
 FEEDER_SHMEM_SLOTS = 4096
 MAX_STATUS_BYTES = 1024 * 1024
 MAX_FAILURE_OUTPUT_CHARS = 16384
+MAX_COLLECT_PARALLEL = 8  # handoff-job.sh's COLLECT_PARALLEL
 OCR_APP_NAME = "usnm_ocr"
 SUPPORTED_COHORT_APPS = (OCR_APP_NAME,)
 SURYA_APP_NAME = "usnm_surya"
@@ -600,7 +601,7 @@ ONPREM_HANDOFF = {"claim": ("claim", "release", "dead-letter"), "collect": ("col
 class Transport:
     def __init__(self, config, directory, *, status_url=None, status_file=None,
                  batch_submit=False, batch_spool_out=False, batch_collect=False, batch_export=False,
-                 onprem_handoff=(), timings=None, rest_journals=False):
+                 onprem_handoff=(), timings=None, rest_journals=False, collect_parallel=1):
         self.config = config
         self.directory = directory
         self.status_url = status_url
@@ -611,6 +612,10 @@ class Transport:
         self.batch_submit = batch_submit
         self.batch_spool_out = batch_spool_out
         self.batch_collect = batch_collect
+        # Jobs the batched collect runs at once (COLLECT_PARALLEL, #1447): one by default.
+        require(1 <= collect_parallel <= MAX_COLLECT_PARALLEL and (collect_parallel == 1 or batch_collect),
+                f"collect_parallel is 1 to {MAX_COLLECT_PARALLEL}, and above 1 only with batch_collect")
+        self.collect_parallel = collect_parallel
         # One hand-off execution for all of a tick's export batches (HANDOFF_BATCHES), instead of
         # one per base batch: queued pages come from many batches.
         self.batch_export = batch_export
@@ -1166,7 +1171,8 @@ class Transport:
                     errors.append(error)
         if self.batch_collect:
             try:
-                self.step("handoff", "collect", JOB_IDS=",".join(j for j, _ in pairs))
+                parallel = {"COLLECT_PARALLEL": str(self.collect_parallel)} if self.collect_parallel > 1 else {}
+                self.step("handoff", "collect", JOB_IDS=",".join(j for j, _ in pairs), **parallel)
             except RuntimeError as error:
                 errors.append(error)
         else:
@@ -2131,6 +2137,9 @@ def main(argv=None):
                         help="spool out a tick's results in one bridge execution (needs spool-out with HANDOFF_SPOOLS)")
     parser.add_argument("--batch-collect", action="store_true",
                         help="collect a tick's results in one hand-off execution (needs a hand-off image whose collect takes JOB_IDS)")
+    parser.add_argument("--collect-parallel", type=int, default=1,
+                        help=f"with --batch-collect, collect up to this many jobs at once (1 to {MAX_COLLECT_PARALLEL}, "
+                             "default 1; needs a hand-off image whose collect takes COLLECT_PARALLEL, #1447)")
     parser.add_argument("--dead-letter-failed", action="store_true",
                         help="send a queue-fed page whose BOINC workunit failed for good to ocr-deadletter and go on "
                              "(#1154; needs the hand-off identity's sender role on ocr-deadletter); without it such a "
@@ -2169,6 +2178,8 @@ def main(argv=None):
                     "invalid other_app_budget")
         if args.server_status_url is not None:
             _validate_status_url(args.server_status_url)
+        require(1 <= args.collect_parallel <= MAX_COLLECT_PARALLEL, "invalid --collect-parallel")
+        require(args.collect_parallel == 1 or args.batch_collect, "--collect-parallel needs --batch-collect")
         surya = config.get("app") == SURYA_APP_NAME
         require(not args.onprem_handoff or (config.get("step_command") and not surya),
                 "--onprem-handoff needs a hand-off plan with step_command")
@@ -2233,7 +2244,7 @@ def main(argv=None):
                 batch_submit=args.batch_submit, batch_spool_out=args.batch_spool_out,
                 batch_collect=args.batch_collect, batch_export=args.batch_export,
                 onprem_handoff=tuple(args.onprem_handoff), rest_journals=args.rest_journals,
-                timings=timings,
+                collect_parallel=args.collect_parallel, timings=timings,
             )
             tick_kwargs = {"drain": args.drain, "dead_letter_failed": args.dead_letter_failed}
             if args.low_watermark is not None:

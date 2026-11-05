@@ -348,7 +348,8 @@ class OnpremStep(unittest.TestCase):
         self.assertIn("handoff.env", done.stdout)
         self.assertIn("HANDOFF_STEP=claim", done.stdout)
         self.assertNotIn("BRIDGE_STEP", done.stdout)
-        for command in ("--env prod --target handoff --step collect --var JOB_IDS=" + "a" * 64 + " --what-if",
+        for command in ("--env prod --target handoff --step collect --var JOB_IDS=" + "a" * 64 +
+                        " --var COLLECT_PARALLEL=4 --what-if",
                         "--env prod --target handoff --step collect --var JOB_ID=" + "a" * 64 +
                         " --var HOST_ID=7 --what-if",
                         "--env prod --target handoff --step release --var HANDOFF_DOCS=a_b,c_d --what-if",

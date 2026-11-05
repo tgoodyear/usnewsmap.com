@@ -413,6 +413,14 @@ storage, Cosmos and the queues, and the controller runs one at a time. `spool-ou
 `batch-inventory` take it too: they only read the project and the database. A collect of 100 jobs
 doesn't keep publishing or submits waiting, and a publish doesn't fail a claim or a spool-out.
 
+Every `usnm-boinc` process of a hand-off step needs access tokens from the Arc agent, and a
+collect runs several processes for each job. Four collects at once drew HTTP 429 from the agent
+(#1447). So `handoff-job.sh` gives an execution's processes one token cache (`USNM_TOKEN_CACHE`, a
+private directory it removes when it ends): one process fetches a token and the others reuse it
+until five minutes before it expires. With that image, a batched `collect` takes
+`COLLECT_PARALLEL=<1 to 8>` (the controller's `--collect-parallel`) and collects that many jobs
+at once. The default is still one at a time.
+
 To ship a hand-off fix without a new server image, build the changed `usnm-boinc` or
 `handoff-job.sh` over the running image, built on bookworm from the running image's source plus the
 fix, and put the new image's `sha256:<id>` in `/etc/usnm-boinc/handoff-image`. Only hand-off steps

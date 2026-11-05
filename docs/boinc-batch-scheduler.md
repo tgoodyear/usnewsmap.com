@@ -340,6 +340,12 @@ of the configuration, so turning them on or off changes no hash:
   submission.
 - `--batch-spool-out`: `spool-out` with `HANDOFF_SPOOLS=<id>=<spool>,...`.
 - `--batch-collect`: the hand-off `collect` with `JOB_IDS=<id>,...`.
+- `--collect-parallel N`: with `--batch-collect`, that collect runs up to N jobs at once
+  (`COLLECT_PARALLEL=N`, 1 to 8, default 1, #1447). One at a time, collect takes about 2.5 s a
+  job. The jobs' `usnm-boinc` processes share one token cache, so they don't each ask the
+  identity endpoint for tokens ([boinc-onprem.md](boinc-onprem.md#hand-off-steps-on-prem)). It
+  needs the hand-off image whose collect takes `COLLECT_PARALLEL`, and on-prem a host
+  `usnm-boinc-step` that allows it.
 - `--rest-journals`: list and fetch the job journals over the storage REST API with az's token,
   16 requests at a time, instead of one `az` process per list or file. A list of the dispatch
   prefix (32,000 blobs in November 2026) took az 25 seconds and 20 of CPU; this takes 2. Changed

@@ -78,7 +78,7 @@ HANDOFF_DEAD_LETTER_VARS=" JOB_IDS "
 # An operator's settlement of a page claimed again after its dead letter (#1417), as root on the
 # host only: never the controller's key.
 HANDOFF_DEAD_LETTER_OPERATOR_VARS="SUPERSEDES_FAILED_JOB CONFIRM_MESSAGE_SHA256 "
-HANDOFF_COLLECT_VARS=" JOB_ID JOB_IDS HOST_ID "
+HANDOFF_COLLECT_VARS=" JOB_ID JOB_IDS HOST_ID COLLECT_PARALLEL "
 HANDOFF_EXPORT_VARS=" HANDOFF_PAGES HANDOFF_BATCH HANDOFF_BATCHES HANDOFF_PLAN HANDOFF_MANIFEST ENGINE_IMAGE HANDOFF_SCANS HANDOFF_JOBS HANDOFF_CLAIMS "
 # handoff.env must set these, as the Azure job sets them (its AZURE_CLIENT_ID is Container
 # Apps' identity; the Arc identity needs none).
