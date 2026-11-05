@@ -80,7 +80,7 @@ def assert_submitted(root):
 
 def source_fingerprint(page):
     if (not isinstance(page, dict)
-            or not re.fullmatch(r"sn\d+_\d{4}-\d{2}-\d{2}_ed-\d+_seq-\d+", page.get("doc_id", ""))
+            or not re.fullmatch(r"[a-z0-9]{1,16}_\d{4}-\d{2}-\d{2}_ed-\d+_seq-\d+", page.get("doc_id", ""))
             or not re.fullmatch(r"[a-z]+_[a-zA-Z0-9]+", page.get("batch", ""))
             or type(page.get("batch_version")) is not int or not 1 <= page["batch_version"] <= 99
             or type(page.get("bytes")) is not int or page["bytes"] < 1

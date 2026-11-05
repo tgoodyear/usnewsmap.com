@@ -14,7 +14,7 @@ import time
 import urllib.request
 
 
-PAGE = re.compile(r"sn\d+_\d{4}-\d{2}-\d{2}_ed-\d+_seq-\d+")
+PAGE = re.compile(r"[a-z0-9]{1,16}_\d{4}-\d{2}-\d{2}_ed-\d+_seq-\d+")
 BATCH = re.compile(r"([a-z]+_[a-zA-Z0-9]+)_ver(0[1-9]|[1-9][0-9])")
 
 

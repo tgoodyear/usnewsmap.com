@@ -1242,6 +1242,22 @@ class SourceRequestTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 source.specification(value, cap, "test")
 
+    def test_page_ids_take_every_lccn_form(self):
+        # Not every LCCN starts with sn: usnm_core's PageKey takes up to 16 lowercase letters and digits.
+        for lccn in ("sn1", "2010270504", "n78890351", "a" * 16):
+            page = frozen_page(f"{lccn}_1900-01-02_ed-1_seq-3")
+            self.assertEqual(submit.source_fingerprint(page), page)
+            self.assertEqual(shipment.source(page), page)
+            self.assertEqual(source.specification(page["doc_id"], 1, "test")["kind"], "page")
+        for lccn in ("", "SN1", "sn-1", "a" * 17):
+            page = frozen_page(f"{lccn}_1900-01-02_ed-1_seq-3")
+            with self.assertRaises(ValueError):
+                submit.source_fingerprint(page)
+            with self.assertRaises(ValueError):
+                shipment.source(page)
+            with self.assertRaises(ValueError):
+                source.specification(page["doc_id"], 1, "test")
+
     def test_frozen_priority_replays_and_completed_requests_do_not_starve_normal_feed(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
