@@ -45,6 +45,7 @@ import hashlib
 import heapq
 import io
 import json
+import mmap
 import os
 import re
 import shutil
@@ -1194,7 +1195,12 @@ def wait_for_room(camp_dir, max_pending, every_secs, busy, poll_secs=15, min_sec
 def cmd_jp2_check(a):
     for path in a.scan:
         with open(path, "rb") as f:
-            reason = jp2_truncation(f.read())
+            if os.fstat(f.fileno()).st_size == 0:
+                reason = jp2_truncation(b"")
+            else:
+                # Mapped, so only the headers the check reads come off the disk.
+                with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as raw:
+                    reason = jp2_truncation(raw)
         print("ok" if reason is None else f"truncated\t{reason}")
 
 

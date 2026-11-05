@@ -893,6 +893,19 @@ class SourceTruncatedTest(unittest.TestCase):
             with self.subTest(vector["name"]):
                 self.assertEqual(feed.jp2_truncation(bytes.fromhex(vector["hex"])), vector["reason"])
 
+    def test_jp2_check_judges_each_scan_file_as_jp2_truncation_judges_its_bytes(self):
+        vectors = json.loads(JP2_VECTORS.read_text()) + [{"name": "empty", "hex": "", "reason": None}]
+        with tempfile.TemporaryDirectory() as d:
+            paths = []
+            for n, vector in enumerate(vectors):
+                paths.append(Path(d) / f"{n}.jp2")
+                paths[-1].write_bytes(bytes.fromhex(vector["hex"]))
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                feed.main(["jp2-check", *(arg for path in paths for arg in ("--scan", str(path)))])
+        self.assertEqual(out.getvalue().splitlines(),
+                         ["ok" if v["reason"] is None else f"truncated\t{v['reason']}" for v in vectors])
+
     def test_a_truncated_jp2_is_recorded_once_and_is_never_fetched_or_decoded_again(self):
         good_raw, bad_raw = jp2(codestream(2)), jp2(codestream(2)[:-2])
         good, bad = self.page(1, good_raw), self.page(2, bad_raw)
