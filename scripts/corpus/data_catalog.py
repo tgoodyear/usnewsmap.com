@@ -1793,13 +1793,17 @@ def live_boinc_results(stored, at):
     return found
 
 
-def live_boinc_result_ids(db, found, batch_id):
+def live_boinc_result_ids(db, found, batch_id, deadline=None):
     """The event ids of `found`, chosen as live_event_id chooses a stage's, read in one
     connection."""
     if not found:
         return []
-    conn = connect(db, writable=True)
+    conn = connect(db, writable=True, deadline=deadline)
     try:
+        if deadline is not None:
+            interrupt_after(conn, deadline)
+            wait_until(conn, deadline)
+        conn.execute("BEGIN")  # One read lock, so one wait, for all the lookups.
         ids = []
         for observed, payload in found:
             current = conn.execute("SELECT event_id,observed_at,data FROM latest WHERE key=?", (digest(
@@ -1841,7 +1845,7 @@ def refresh_live(db, throughput, evidence_dir, out):
         validate_event(event)
         events.append(canonical(event) + "\n")
     results = live_boinc_results(stored, at)
-    for (observed, payload), event_id in zip(results, live_boinc_result_ids(db, results, batch_id)):
+    for (observed, payload), event_id in zip(results, live_boinc_result_ids(db, results, batch_id, deadline)):
         event = {"schema_version": 1, "batch_id": batch_id, "event_id": event_id,
                  "kind": "boinc_results", "source": LIVE_SOURCE, "observed_at": observed,
                  "page_id": None, "payload": payload}

@@ -217,7 +217,9 @@ class CatalogTests(unittest.TestCase):
             with self.assertRaisesRegex(c.CatalogError, "deadline exceeded"):
                 c.snapshot(self.db)
             catalog = self.refresh(path)
+            self.refresh(self.boinc_history(), "2026-11-01T18:56:00.000000Z")
         self.assertEqual(catalog["artifacts"]["locations"], 200)
+        self.assertTrue(self.boinc_results())
         with mock.patch.object(c, "REFRESH_SECONDS", -1):
             with self.assertRaisesRegex(c.CatalogError, "deadline exceeded"):
                 self.refresh(path, "2026-11-01T19:55:00.000000Z")
