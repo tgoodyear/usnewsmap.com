@@ -416,14 +416,11 @@ pub async fn run_selected(opts: &Options, members: Option<&Path>) -> anyhow::Res
         }
         job.validate()
             .with_context(|| format!("{name}: staged job"))?;
-        let json = serde_json::to_vec_pretty(&job)?;
-        if json.len() > MAX_JOB_JSON {
-            mark_too_large(&unit, &job.doc_id, "qwen.json", json.len())?;
+        if publish(&unit, &job)? {
+            summary.staged += 1;
+        } else {
             summary.too_large += 1;
-            continue;
         }
-        atomic(&unit.join(JOB_FILE), &json)?;
-        summary.staged += 1;
     }
     if let Some(held) = &bundling {
         let (bundles, too_large) = pack_bundles(&page_dir, &units_dir, bundle_size, held)?;
@@ -431,6 +428,21 @@ pub async fn run_selected(opts: &Options, members: Option<&Path>) -> anyhow::Res
         summary.too_large += too_large;
     }
     Ok(summary)
+}
+
+/// Writes a staged page's `qwen.json`, or, when that would pass
+/// `MAX_JOB_JSON`, keeps it as `rejected-qwen.json` and marks the page
+/// `too_large`: as for an oversized crop text, the evidence is the page's
+/// disposition for the feed. Returns whether the job was written.
+fn publish(unit: &Path, job: &Job) -> anyhow::Result<bool> {
+    let json = serde_json::to_vec_pretty(job)?;
+    if json.len() > MAX_JOB_JSON {
+        atomic(&unit.join("rejected-qwen.json"), &json)?;
+        mark_too_large(unit, &job.doc_id, "qwen.json", json.len())?;
+        return Ok(false);
+    }
+    atomic(&unit.join(JOB_FILE), &json)?;
+    Ok(true)
 }
 
 /// Marks a staged page `too_large`: its `qwen.json` (`what`) would be `len`
@@ -1183,6 +1195,42 @@ pub(crate) mod tests {
         )
         .unwrap();
         assert_eq!(again, j.crops);
+    }
+
+    #[test]
+    fn a_job_over_the_manifest_limit_is_kept_as_evidence() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("q");
+        crate::quality::work::tests::unit(&source);
+        let mut job = local_unit(
+            &source.join("page.jpg"),
+            &source.join("loc.xml"),
+            &tmp.path().join("u"),
+            engine(),
+            522,
+            4,
+            600,
+            4,
+        )
+        .unwrap();
+        let crop = job.crops[0].clone();
+        // Every crop text within its limit, the page's qwen.json over its own.
+        job.crops = (0..usnm_ocr_contract::qwen::MAX_CROPS)
+            .map(|n| Crop {
+                id: format!("c{n:02}"),
+                loc_text: "\"".repeat(MAX_CROP_TEXT),
+                ..crop.clone()
+            })
+            .collect();
+        job.id = job.identity().unwrap();
+        job.validate().unwrap();
+        let unit = tmp.path().join("big");
+        std::fs::create_dir(&unit).unwrap();
+        assert!(!publish(&unit, &job).unwrap());
+        let evidence = std::fs::read(unit.join("rejected-qwen.json")).unwrap();
+        assert!(evidence.len() > MAX_JOB_JSON);
+        assert_eq!(serde_json::from_slice::<Job>(&evidence).unwrap(), job);
+        assert!(unit.join(TOO_LARGE).exists() && !unit.join(JOB_FILE).exists());
     }
 
     #[tokio::test]
