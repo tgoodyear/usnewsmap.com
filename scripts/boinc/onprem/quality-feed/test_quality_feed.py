@@ -784,8 +784,9 @@ class FollowTest(unittest.TestCase):
             done.write_text("new\tc1\tbuffer/b/new.jp2\t40\t0.9\n")
             # An eviction of ours marked half's sidecar done but couldn't unlink it, so OCR's
             # worker won't read it: asking for it doesn't make its bytes go.
-            kept.write_text("half\tbuffer/b/half.jp2\t40\t0.1\t0\n")
-            a = types.SimpleNamespace(scan_server="http://s", keep_bytes=60, keep_verify=10)
+            kept.write_text("half\tbuffer/b/half.jp2\t40\t0.1\t0\nother\tbuffer/b/other.jp2\t10\t0.95\t1\n")
+            # Looking half up doesn't use up the one --keep-verify lookup a round.
+            a = types.SimpleNamespace(scan_server="http://s", keep_bytes=60, keep_verify=1)
             calls, status = [], {"buffer/b/half.jp2.json": 404, "buffer/b/half.jp2": 500}
 
             def fake(req, timeout=0):
@@ -801,14 +802,15 @@ class FollowTest(unittest.TestCase):
                 # half stays listed and counted, and isn't evicted: new doesn't fit beside it.
                 self.assertEqual(ship(), 1)
                 self.assertEqual(calls, [("GET", "buffer/b/half.jp2.json"), ("DELETE", "buffer/b/half.jp2"),
-                                         ("DELETE", "buffer/b/new.jp2")])
-                self.assertEqual(set(feed.read_kept(str(kept))), {"half"})
+                                         ("GET", "buffer/b/other.jp2.json"), ("DELETE", "buffer/b/new.jp2")])
+                self.assertEqual(set(feed.read_kept(str(kept))), {"half", "other"})
 
                 calls.clear()
                 status["buffer/b/half.jp2"] = 0
                 self.assertEqual(ship(), 0)
-                self.assertEqual(calls, [("GET", "buffer/b/half.jp2.json"), ("DELETE", "buffer/b/half.jp2")])
-                self.assertEqual(feed.read_kept(str(kept)), {})
+                self.assertEqual(calls, [("GET", "buffer/b/half.jp2.json"), ("DELETE", "buffer/b/half.jp2"),
+                                         ("GET", "buffer/b/other.jp2.json")])
+                self.assertEqual(set(feed.read_kept(str(kept))), {"other"})
                 self.assertEqual(feed.read_lines(str(deleted)), {"new", "half"})
 
     def test_a_kept_scan_that_fails_to_go_holds_its_place_and_its_replacement_is_deleted(self):

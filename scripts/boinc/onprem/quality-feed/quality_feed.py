@@ -795,9 +795,8 @@ def delete_shipped(a, camp_dir, done_path, quality_docs, deleted_path, kept_path
         if unreachable:
             break
     if budget and verify and not unreachable:
-        for doc, k in heapq.nsmallest(getattr(a, "keep_verify", 0), kept.items(), key=lambda kv: kv[1][3]):
-            if doc in ocr_docs:
-                continue
+        unclaimed = ((doc, k) for doc, k in kept.items() if doc not in claimed)
+        for doc, k in heapq.nsmallest(getattr(a, "keep_verify", 0), unclaimed, key=lambda kv: kv[1][3]):
             try:
                 there = scan_exists(a.scan_server, k[0])
             except (urllib.error.URLError, OSError) as e:
