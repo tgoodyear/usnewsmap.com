@@ -71,6 +71,16 @@ pub fn issue_dir(date: NaiveDate, edition: u16) -> String {
     format!("{}{edition:02}", date.format("%Y%m%d"))
 }
 
+/// The date and edition an issue's directory name (`<YYYYMMDD><EE>`) gives.
+pub fn parse_issue_dir(dir: &str) -> Option<(NaiveDate, u16)> {
+    if dir.len() != 10 || !dir.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let date = NaiveDate::parse_from_str(&dir[..8], "%Y%m%d").ok()?;
+    let edition: u16 = dir[8..].parse().ok()?;
+    (edition > 0).then_some((date, edition))
+}
+
 /// The batch's directory on the storage service, ending in `/`: under
 /// `storage_root` (`https://tile.loc.gov/storage-services/service/ndnp/`),
 /// `<inst>/batch_<batch dir>/`.
@@ -196,6 +206,13 @@ impl BagIndex {
 
     pub fn issue(&self, lccn: &str, dir: &str) -> Option<&IssueFiles> {
         self.issues.get(&(lccn.to_owned(), dir.to_owned()))
+    }
+
+    /// Every issue: (lccn, issue directory, its files), in no set order.
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &str, &IssueFiles)> {
+        self.issues
+            .iter()
+            .map(|((lccn, dir), files)| (lccn.as_str(), dir.as_str(), files))
     }
 
     pub fn issues(&self) -> usize {

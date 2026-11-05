@@ -94,8 +94,9 @@ mod types;
 pub use batch_route::{Bag, BatchPage};
 pub use pacer::Pacer;
 pub use types::{
-    iiif_base, image_url, issue_id, page_images, FetchError, ImageSize, LocConfig, Scan,
-    ScanFormat, Server, DEFAULT_MAX_IN_FLIGHT, IIIF_ROOT, MAX_IMAGE_BYTES, STORAGE_SERVICE_ROOT,
+    iiif_base, image_url, issue_id, item_url, page_images, page_texts, FetchError, ImageSize,
+    LocConfig, Scan, ScanFormat, Server, DEFAULT_MAX_IN_FLIGHT, IIIF_ROOT, MAX_IMAGE_BYTES,
+    STORAGE_SERVICE_ROOT,
 };
 
 use fetch::{challenge, html_page, retry_after, ApiHealth, Got};
@@ -107,9 +108,9 @@ pub const USER_AGENT: &str = concat!(
 );
 
 /// The largest item JSON read.
-const MAX_ITEM_BYTES: usize = 16 * 1024 * 1024;
+pub(crate) const MAX_ITEM_BYTES: usize = 16 * 1024 * 1024;
 /// The largest batch manifest read (a 10,000-page batch's is about 3 MB).
-const MAX_BAG_BYTES: usize = 128 * 1024 * 1024;
+pub(crate) const MAX_BAG_BYTES: usize = 128 * 1024 * 1024;
 /// The largest issue METS read (about 16 KB; a signed one 55 KB).
 const MAX_METS_BYTES: usize = 4 * 1024 * 1024;
 /// A file at most this big may be asked for again to check that its
@@ -254,7 +255,7 @@ impl LocClient {
 
     /// The item JSON URL of `key`'s issue.
     pub fn item_url(&self, key: &PageKey) -> String {
-        format!("{}/item/{}/?fo=json", self.cfg.api_root, issue_id(key))
+        item_url(&self.cfg.api_root, key)
     }
 
     /// seq → IIIF base for `key`'s issue, from the cache or one API request.

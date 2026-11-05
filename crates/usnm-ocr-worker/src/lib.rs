@@ -26,6 +26,8 @@ pub mod loc_alto;
 pub mod loc_alto_words;
 /// Which software made LoC's OCR, one row per bulk OCR archive.
 pub mod loc_software;
+/// LoC's own text of pages a bulk OCR archive lacks, from loc.gov's item API (#1419).
+pub mod loc_text;
 /// Fetching scans ahead of the workers (#368).
 pub mod prefetch;
 /// The page's `run_id` and runs record (13 §13.8, #307).

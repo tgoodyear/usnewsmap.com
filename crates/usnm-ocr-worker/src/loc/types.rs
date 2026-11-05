@@ -291,6 +291,29 @@ pub fn page_images(iiif_root: &str, item: &Value) -> BTreeMap<u16, String> {
     out
 }
 
+/// seq → the page's text service URL from loc.gov's issue JSON: the
+/// `fulltext_service` of the `text/plain` file in each page's list, in seq
+/// order as for [`page_images`].
+pub fn page_texts(item: &Value) -> BTreeMap<u16, String> {
+    let files = item["resources"][0]["files"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let mut out = BTreeMap::new();
+    for (i, page) in files.iter().enumerate() {
+        let Ok(seq) = u16::try_from(i + 1) else { break };
+        let url = page.as_array().and_then(|fs| {
+            fs.iter()
+                .find(|f| f["mimetype"] == "text/plain")
+                .and_then(|f| f["fulltext_service"].as_str())
+        });
+        if let Some(url) = url {
+            out.insert(seq, url.to_owned());
+        }
+    }
+    out
+}
+
 /// `<lccn>/<date>/ed-<n>`, an issue as loc.gov's item URLs name it.
 pub fn issue_id(key: &PageKey) -> String {
     format!(
@@ -299,4 +322,9 @@ pub fn issue_id(key: &PageKey) -> String {
         key.date.format("%Y-%m-%d"),
         key.edition
     )
+}
+
+/// The item JSON URL of `key`'s issue under `api_root` (`https://www.loc.gov`).
+pub fn item_url(api_root: &str, key: &PageKey) -> String {
+    format!("{api_root}/item/{}/?fo=json", issue_id(key))
 }
