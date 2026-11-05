@@ -13,9 +13,9 @@
 //! an x-range where most of a block's lines have no word, which lines on both
 //! sides cross with only a narrow gap there (a merged pair of justified column
 //! lines), with line ends aligned on both sides of it, and which no body-size
-//! line prints across. The columns it separates must be at least
-//! [`MIN_COL`] line heights wide and hold [`MIN_WORDS`] words on each side, so
-//! a table's narrow cells or a river in one column aren't read as columns.
+//! line prints across. The columns it separates must be at least four line
+//! heights wide and hold two words on each side, so a table's narrow cells or
+//! a river in one column aren't read as columns.
 //! Lines of display type (a masthead or headline set larger) may cross it
 //! and stay whole. Each line that crosses a gutter is cut there, its words
 //! going to the side their centre is on; then the run of blocks that held
@@ -34,37 +34,37 @@ use crate::model::{Block, Dir, Granularity, Line, Page, Rect};
 
 /// Words narrower than this many line heights (a rule read as `|`, stray
 /// punctuation) don't count as printing in a line.
-pub const THIN: f64 = 0.2;
+const THIN: f64 = 0.2;
 /// The narrowest gutter, in line heights: the width of the window the
 /// evidence for one is counted in.
-pub const MIN_GAP: f64 = 0.2;
+const MIN_GAP: f64 = 0.2;
 /// How far around a block's lines, in line heights, other lines count as
 /// evidence, and how far a gutter reaches past the last line that showed it.
-pub const BAND: f64 = 8.0;
+const BAND: f64 = 8.0;
 /// The evidence a gutter needs: lines that cross it with a gap there, plus
 /// line ends aligned on both sides of it.
-pub const SUPPORT: usize = 3;
+const SUPPORT: usize = 3;
 /// Lines that cross a gutter with a gap there, at least: a lone merged line
 /// isn't enough.
-pub const MIN_STRADDLERS: usize = 2;
+const MIN_STRADDLERS: usize = 2;
 /// A line whose words are more than this many times the usual height is
 /// display type (a masthead, a headline) and may cross a gutter.
-pub const DISPLAY: f64 = 1.5;
+const DISPLAY: f64 = 1.5;
 /// How many supporting lines one body line printed across a gutter
 /// outweighs.
-pub const RATIO: usize = 4;
+const RATIO: usize = 4;
 /// The widest gap, in line heights, a line crossing a gutter may have there:
 /// two justified column lines read as one leave a narrow gap, a table row or
 /// a tab stop a wide one.
-pub const MAX_GAP: f64 = 2.0;
+const MAX_GAP: f64 = 2.0;
 /// How near the window, in line heights, a line's end must be to count as
 /// aligned with a gutter.
-pub const EDGE: f64 = 0.5;
+const EDGE: f64 = 0.5;
 /// The narrowest column, in line heights: the median width of the words on
 /// each side of a gutter in the lines that cross it.
-pub const MIN_COL: f64 = 4.0;
+const MIN_COL: f64 = 4.0;
 /// The fewest words on each side of a gutter, in the median line crossing it.
-pub const MIN_WORDS: f64 = 2.0;
+const MIN_WORDS: f64 = 2.0;
 
 /// What [`split_columns`] changed.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -719,8 +719,10 @@ fn runs(per_block: &[Vec<Unit>], split: &[bool], h: f64) -> Vec<(usize, usize)> 
                 bx = bx.union(&r);
             }
         }
-        while lo > 0 && !split[lo - 1] && inside(lo - 1, &bx) && !runs.iter().any(|r| lo - 1 <= r.1)
-        {
+        // Runs are found in order, so the blocks before `i` no run took are
+        // those after the last run's end.
+        let free = runs.last().map_or(0, |r| r.1 + 1);
+        while lo > free && !split[lo - 1] && inside(lo - 1, &bx) {
             lo -= 1;
         }
         runs.push((lo, hi));

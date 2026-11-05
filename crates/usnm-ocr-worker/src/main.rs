@@ -729,6 +729,10 @@ enum Command {
         /// The OCR engine tag the pages were read with, for the hyphenation rules.
         #[arg(long)]
         ocr_engine: String,
+        /// The scans' dpi, for engine ALTO in `inch1200` or `mm10`. Stored ALTO is in pixels and
+        /// needs none.
+        #[arg(long)]
+        dpi: Option<f64>,
         /// Directory for the texts.
         #[arg(long)]
         out: PathBuf,
@@ -1653,6 +1657,7 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
             alto,
             language,
             ocr_engine,
+            dpi,
             out,
         } => {
             let files = if alto.is_dir() {
@@ -1666,14 +1671,17 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
                 vec![alto]
             };
             std::fs::create_dir_all(&out)?;
+            let opts = usnm_alto::ParseOptions {
+                dpi,
+                ..usnm_alto::ParseOptions::default()
+            };
             for file in files {
                 let stem = file
                     .file_stem()
                     .and_then(|s| s.to_str())
                     .context("an ALTO file has no name")?;
-                let page =
-                    usnm_alto::parse(&std::fs::read(&file)?, &usnm_alto::ParseOptions::default())
-                        .with_context(|| format!("{}", file.display()))?;
+                let page = usnm_alto::parse(&std::fs::read(&file)?, &opts)
+                    .with_context(|| format!("{}", file.display()))?;
                 let (text, repair) =
                     usnm_ocr_worker::stored::column_text(&page, &ocr_engine, &language);
                 let txt = out.join(format!("{stem}.txt"));
