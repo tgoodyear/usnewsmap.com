@@ -487,7 +487,9 @@ pub async fn enqueue(opts: EnqueueOptions, stop: watch::Receiver<bool>) -> anyho
     plan.first_date = planned.iter().map(|k| k.date).min();
     plan.last_date = planned.iter().map(|k| k.date).max();
     let queue_path = opts.out.join(QUEUE);
-    let mut queue = read_queue(&queue_path).await?.unwrap_or_else(|| Queue {
+    let existing = read_queue(&queue_path).await?;
+    let fresh = existing.is_none();
+    let mut queue = existing.unwrap_or_else(|| Queue {
         batch: opts.batch.clone(),
         pages: BTreeSet::new(),
     });
@@ -512,7 +514,8 @@ pub async fn enqueue(opts: EnqueueOptions, stop: watch::Receiver<bool>) -> anyho
         }
     }
     plan.queued = queue.pages.len();
-    if !opts.dry_run && plan.added > 0 {
+    // A first enqueue writes the queue even when it's empty, so a run reports done.
+    if !opts.dry_run && (fresh || plan.added > 0) {
         write_atomic(&queue_path, &serde_json::to_vec(&queue)?)
             .await
             .with_context(|| queue_path.display().to_string())?;

@@ -325,6 +325,20 @@ async fn enqueue_plans_the_bag_pages_curation_lacks_once() {
     assert!(e.to_string().contains("no issues of sn99999999"), "{e}");
 }
 
+/// A title curation holds whole still gets its (empty) queue, so its run is done at once.
+#[tokio::test]
+async fn a_title_missing_nothing_queues_nothing_and_its_run_is_done() {
+    let r = Rig::new().await;
+    let b = batch_files(r.dir.path());
+    let plan = enqueue(enqueue_opts(r.out(), &b, Some(OTHER), false), no_stop())
+        .await
+        .unwrap();
+    assert_eq!((plan.planned, plan.added, plan.queued), (0, 0, 0));
+    let s = run(r.run_opts(), no_stop()).await.unwrap();
+    assert_eq!((s.state.as_str(), s.queued, s.fetched), ("done", 0, 0));
+    assert_eq!(r.s.hits_under("/"), 0);
+}
+
 /// Through the queue to the records: each names its responses' checksums, keeps the responses
 /// as they came, and carries nothing of the bulk archive's.
 #[tokio::test]
