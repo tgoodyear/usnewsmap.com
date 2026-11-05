@@ -1057,7 +1057,8 @@ enum LocTextCommand {
         /// loc.gov's API.
         #[arg(long, default_value = usnm_ocr_worker::loc_text::API_ROOT)]
         api_root: String,
-        /// Stop starting pages after this many hours (LoC may stop programs that run past 24).
+        /// Stop starting pages after this many hours, at most 23 (LoC may stop programs that
+        /// run past 24).
         #[arg(long, default_value_t = 20.0)]
         max_hours: f64,
         /// At most this many pages this run.
@@ -1679,7 +1680,7 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
                     out,
                     api_root,
                     loc: loc.access()?,
-                    max_hours: max_hours.clamp(0.0, 23.0),
+                    max_hours,
                     limit,
                 },
                 stop_signal(),

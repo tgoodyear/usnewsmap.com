@@ -29,8 +29,9 @@
 //! URL and the SHA-256 of that response, and `ocr_source = "loc-api-fulltext"`. It names no
 //! archive and carries no archive checksum, because the text didn't come from one.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use anyhow::{bail, Context};
@@ -63,6 +64,8 @@ const LOCK: &str = ".loc-text.lock";
 const WHO: &str = "LoC text";
 /// The largest text service answer read (a dense page's text is under 100 KB).
 const MAX_TEXT_BYTES: usize = 8 * 1024 * 1024;
+/// The longest run, in hours: LoC may stop programs that run past 24.
+const MAX_HOURS: f64 = 23.0;
 /// Transient failures in a row that end a run.
 const MAX_TRANSIENT_IN_A_ROW: usize = 5;
 
@@ -149,7 +152,7 @@ pub struct RunOptions {
     /// loc.gov's API (`https://www.loc.gov`).
     pub api_root: String,
     pub loc: LocAccess,
-    /// Stop starting pages after this long.
+    /// Stop starting pages after this many hours (at most 23).
     pub max_hours: f64,
     /// At most this many pages this run.
     pub limit: Option<usize>,
@@ -221,14 +224,48 @@ fn record_path(out: &Path, doc_id: &str) -> PathBuf {
     out.join("pages").join(format!("{doc_id}.json"))
 }
 
+/// The doc_ids of the pages with a record.
+async fn recorded(out: &Path) -> anyhow::Result<HashSet<String>> {
+    let dir = out.join("pages");
+    let mut found = HashSet::new();
+    let mut entries = match tokio::fs::read_dir(&dir).await {
+        Ok(e) => e,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(found),
+        Err(e) => return Err(e).with_context(|| dir.display().to_string()),
+    };
+    while let Some(e) = entries
+        .next_entry()
+        .await
+        .with_context(|| dir.display().to_string())?
+    {
+        if let Some(doc_id) = e.file_name().to_str().and_then(|n| n.strip_suffix(".json")) {
+            found.insert(doc_id.to_owned());
+        }
+    }
+    Ok(found)
+}
+
+/// Writes `body` to a temporary file of this writer's own beside `path`, then renames it over
+/// `path`, so a reader sees all of one write or none of it.
 async fn write_atomic(path: &Path, body: &[u8]) -> std::io::Result<()> {
+    static WRITES: AtomicU64 = AtomicU64::new(0);
     if let Some(dir) = path.parent() {
         tokio::fs::create_dir_all(dir).await?;
     }
     let mut tmp = path.as_os_str().to_owned();
-    tmp.push(".tmp");
-    tokio::fs::write(&tmp, body).await?;
-    tokio::fs::rename(&tmp, path).await
+    tmp.push(format!(
+        ".{}.{}.tmp",
+        std::process::id(),
+        WRITES.fetch_add(1, Ordering::Relaxed)
+    ));
+    let written = match tokio::fs::write(&tmp, body).await {
+        Ok(()) => tokio::fs::rename(&tmp, path).await,
+        Err(e) => Err(e),
+    };
+    if written.is_err() {
+        let _ = tokio::fs::remove_file(&tmp).await;
+    }
+    written
 }
 
 async fn read_queue(path: &Path) -> anyhow::Result<Option<Queue>> {
@@ -462,9 +499,10 @@ pub async fn enqueue(opts: EnqueueOptions, stop: watch::Receiver<bool>) -> anyho
             opts.batch
         );
     }
+    let recorded = recorded(&opts.out).await?;
     for k in &planned {
         let doc_id = k.doc_id();
-        if record_path(&opts.out, &doc_id).exists() {
+        if recorded.contains(&doc_id) {
             plan.already_fetched += 1;
         }
         if queue.pages.insert(doc_id) {
@@ -615,6 +653,10 @@ async fn write_status(out: &Path, s: &RunStatus) -> anyhow::Result<()> {
 
 /// Fetches the queued pages that have no record yet.
 pub async fn run(opts: RunOptions, stop: watch::Receiver<bool>) -> anyhow::Result<RunStatus> {
+    if !opts.max_hours.is_finite() {
+        bail!("max hours: {} isn't a number of hours", opts.max_hours);
+    }
+    let hours = opts.max_hours.clamp(0.0, MAX_HOURS);
     tokio::fs::create_dir_all(&opts.out).await?;
     let _lock = hold_lock(&opts.out.join(LOCK))?;
     let queue_path = opts.out.join(QUEUE);
@@ -636,8 +678,9 @@ pub async fn run(opts: RunOptions, stop: watch::Receiver<bool>) -> anyhow::Resul
         queued: keys.len(),
         ..RunStatus::default()
     };
+    let recorded = recorded(&opts.out).await?;
     keys.retain(|k| {
-        let done = record_path(&opts.out, &k.doc_id()).exists();
+        let done = recorded.contains(&k.doc_id());
         s.done += usize::from(done);
         !done
     });
@@ -654,7 +697,7 @@ pub async fn run(opts: RunOptions, stop: watch::Receiver<bool>) -> anyhow::Resul
         }
     }
     tracing::info!(queued = s.queued, done = s.done, "LoC text run starting");
-    let deadline = Instant::now() + Duration::from_secs_f64(opts.max_hours.max(0.0) * 3600.0);
+    let deadline = Instant::now() + Duration::from_secs_f64(hours * 3600.0);
     let mut tried = 0usize;
     let mut transient_in_a_row = 0usize;
     let mut end: Option<(&'static str, Option<anyhow::Error>)> = None;

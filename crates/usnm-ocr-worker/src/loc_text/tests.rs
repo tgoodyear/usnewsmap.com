@@ -399,6 +399,7 @@ async fn pages_are_kept_with_each_responses_checksum_and_no_archive_checksum() {
         if p.is_dir() {
             files.extend(std::fs::read_dir(&p).unwrap().map(|e| e.unwrap().path()));
         } else {
+            assert!(!p.to_string_lossy().ends_with(".tmp"), "{}", p.display());
             let text = String::from_utf8_lossy(&std::fs::read(&p).unwrap()).into_owned();
             assert!(!text.contains(ARCHIVE_SHA256), "{}", p.display());
             assert!(!text.contains("archive"), "{}", p.display());
@@ -437,6 +438,20 @@ async fn a_rerun_skips_pages_done_and_kept_items() {
     let third = run(r.run_opts(), no_stop()).await.unwrap();
     assert_eq!((third.state.as_str(), third.fetched), ("done", 0));
     assert_eq!(r.pacer_state().sent, 4);
+}
+
+#[tokio::test]
+async fn a_run_needs_a_number_of_hours() {
+    let r = Rig::new().await;
+    r.issue("1902-03-27", 1);
+    r.queue(&[key("1902-03-27", 1)]);
+    for hours in [f64::NAN, f64::INFINITY] {
+        let mut o = r.run_opts();
+        o.max_hours = hours;
+        let e = run(o, no_stop()).await.unwrap_err().to_string();
+        assert!(e.contains("isn't a number of hours"), "{e}");
+    }
+    assert_eq!(r.s.hits_under("/"), 0);
 }
 
 #[tokio::test]
