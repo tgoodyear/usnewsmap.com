@@ -337,6 +337,8 @@ def settle(args, policy):
         sys.exit("the policy is empty: nothing to settle")
     report, chosen, _, results = plan(args, policy)
     chosen = chosen[: args.max_units]
+    if "settle" in report:
+        report["settle"] = [u["id"] for u in chosen]
     by_unit = collections.defaultdict(list)
     for r in results:
         by_unit[r["workunitid"]].append(r)

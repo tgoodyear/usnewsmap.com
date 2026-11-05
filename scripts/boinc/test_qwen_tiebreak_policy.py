@@ -144,7 +144,8 @@ class FakeDB:
         db = self
 
         class Cursor:
-            description, rows, rowcount = None, [], 0
+            def __init__(self):
+                self.description, self.rows, self.rowcount = None, [], 0
 
             def execute(self, sql, params=None):
                 db.log.append((sql, params))
@@ -274,6 +275,8 @@ class Settle(unittest.TestCase):
         self.assertEqual(report["would settle"], [{"workunit": 1, "group": "yid v1", "cancel": [13]},
                                                   {"workunit": 2, "group": "yid v1", "cancel": [24]}])
         self.assertEqual(self.writes(), [])
+        report = self.run_main("settle", "--stop-tiebreakers", "yid:1", "--list-units", "--max-units", "1")
+        self.assertEqual((report["settle"], len(report["would settle"])), ([1], 1))
         for flags in (["--max-units", "5"], ["--journal", str(self.journal)], ["--max-units", "0", "--journal", str(self.journal)]):
             with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
                 self.run_main("settle", "--stop-tiebreakers", "yid:1", "--apply", *flags)
