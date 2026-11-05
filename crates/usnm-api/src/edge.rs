@@ -1,5 +1,5 @@
-//! What Cloudflare may keep of a search (06 §6.5), and of an example's
-//! revisioned no-JavaScript map (`/search-preview/`).
+//! What Cloudflare may keep of a search (06 §6.5), and of published
+//! revisioned search screenshots (`/search-preview/`).
 //!
 //! Searches stay at the edge for two weeks. Their URLs carry `v`, so a new
 //! index version is a new URL, and `g`, the generation of [`generation`], so

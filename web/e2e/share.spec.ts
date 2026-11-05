@@ -1,5 +1,18 @@
 import { expect, test, type APIRequestContext } from "@playwright/test";
 
+const revisionedPreview = /^\/search-preview\/[0-9a-f]{16}\/[a-z0-9]+(?:-[a-z0-9]+)*\.png$/;
+
+function advertisedImage(html: string, name = "og:image"): string {
+  const image = new RegExp(`(?:property|name)="${name}" content="([^"]+)"`).exec(html)?.[1];
+  expect(image).toBeDefined();
+  const url = new URL(image!.replaceAll("&amp;", "&"));
+  const path = url.pathname + url.search;
+  expect(url.hash).toBe("");
+  if (url.pathname === "/share-image.png") expect(url.search).not.toBe("");
+  else expect(path).toMatch(revisionedPreview);
+  return path;
+}
+
 test("Share copies immediately and warms the actual current view without preview status text", async ({
   page,
   request,
@@ -17,7 +30,8 @@ test("Share copies immediately and warms the actual current view without preview
   });
   const requests: string[] = [];
   page.on("request", (request) => {
-    if (new URL(request.url()).pathname === "/share-image.png") requests.push(request.url());
+    const url = new URL(request.url());
+    if (url.pathname === "/share-image.png" || revisionedPreview.test(url.pathname)) requests.push(request.url());
   });
   await page.goto("/search/cross-of-gold?from=1896-01-01&to=1896-12-31&state=IL&bucket=week");
   const share = page.getByRole("button", { name: "Share", exact: true });
@@ -41,11 +55,16 @@ test("Share copies immediately and warms the actual current view without preview
   await expect(page.getByRole("button", { name: "Link copied", exact: true })).toBeEnabled({ timeout: 50_000 });
   await expect(page.locator(".share-status")).toBeEmpty();
   expect(requests.length).toBeGreaterThan(0);
-  expect(new URL(requests[0]!).searchParams.get("state")).toBe("IL");
+  const requested = new URL(requests[0]!);
+  if (requested.pathname === "/share-image.png") expect(requested.searchParams.get("state")).toBe("IL");
+  else expect(requested.search).toBe("");
   const cached = await request.get(requests[0]!);
   expect(cached.status()).toBe(200);
   expect(cached.headers()["cache-control"]).toContain("max-age=86400");
+  expect(cached.headers()["cloudflare-cdn-cache-control"]).toBe("public, max-age=1209600");
   expect((await cached.body()).subarray(0, 8)).toEqual(Buffer.from("\x89PNG\r\n\x1a\n", "binary"));
+  const warmHtml = await (await request.get(link!)).text();
+  expect(advertisedImage(warmHtml)).toBe(new URL(cached.url()).pathname);
 });
 
 async function screenshot(request: APIRequestContext, path: string): Promise<Buffer> {
@@ -66,20 +85,51 @@ async function screenshot(request: APIRequestContext, path: string): Promise<Buf
   return png;
 }
 
-test("search previews are rendered PNGs of the linked view and cached", async ({ request, isMobile }) => {
+test("filtered search previews publish immutable PNGs and legacy redirects after rendering", async ({
+  request,
+  isMobile,
+}) => {
   test.skip(!process.env.PW_BASE_URL || isMobile, "requires the API serving the built app and Chromium");
   test.setTimeout(90_000);
-  const search = "q=cross+of+gold&from=1896-01-01&to=1896-12-31";
-  const html = await (await request.get(`/?${search}`)).text();
-  const image = /property="og:image" content="([^"]+)"/.exec(html)?.[1];
-  expect(image).toContain("/share-image.png?");
-  const imagePath = new URL(image!.replaceAll("&amp;", "&")).pathname + new URL(image!.replaceAll("&amp;", "&")).search;
+  const filters = "from=1896-01-01&to=1896-12-31&state=IL";
+  const search = `q=cross+of+gold&${filters}`;
+  const pagePath = `/search/cross-of-gold?${filters}`;
+  const html = await (await request.get(pagePath)).text();
+  const imagePath = advertisedImage(html);
   const png = await screenshot(request, imagePath);
   expect(png.subarray(0, 8)).toEqual(Buffer.from("\x89PNG\r\n\x1a\n", "binary"));
   expect(png.readUInt32BE(16)).toBe(1200);
   expect(png.readUInt32BE(20)).toBe(630);
-  expect(await (await request.get(imagePath)).body()).toEqual(png);
-  expect(await screenshot(request, `${imagePath}&state=GA&t=1896-08-01`)).not.toEqual(png);
+  const generic = await (await request.get("/og-image.png")).body();
+  expect(png).not.toEqual(generic);
+
+  const legacyPath = `/share-image.png?page=%2F&${search}&v=2`;
+  const legacy = await request.get(legacyPath, { maxRedirects: 0 });
+  expect(legacy.status()).toBe(307);
+  expect(legacy.headers()["cache-control"]).toBe("no-store");
+  const preview = legacy.headers()["location"] ?? "";
+  expect(preview).toMatch(revisionedPreview);
+  const published = await request.get(preview);
+  expect(published.status()).toBe(200);
+  expect(published.headers()["content-type"]).toBe("image/png");
+  expect(published.headers()["cache-control"]).toBe("public, max-age=86400");
+  expect(published.headers()["cloudflare-cdn-cache-control"]).toBe("public, max-age=1209600");
+  expect(await published.body()).toEqual(png);
+  const followed = await request.get(legacyPath);
+  expect(followed.status()).toBe(200);
+  expect(new URL(followed.url()).pathname).toBe(preview);
+  expect(followed.headers()["cache-control"]).toBe("public, max-age=86400");
+  expect(followed.headers()["cloudflare-cdn-cache-control"]).toBe("public, max-age=1209600");
+  expect(await followed.body()).toEqual(png);
+
+  const warmHtml = await (await request.get(pagePath)).text();
+  expect(advertisedImage(warmHtml)).toBe(preview);
+  expect(advertisedImage(warmHtml, "twitter:image")).toBe(preview);
+  expect(advertisedImage(await (await request.get(`/?${search}`)).text())).toBe(preview);
+  const changedHtml = await (
+    await request.get("/search/cross-of-gold?from=1896-01-01&to=1896-12-31&state=GA&t=1896-08-01&z=6&c=-83,33")
+  ).text();
+  expect(await screenshot(request, advertisedImage(changedHtml))).not.toEqual(png);
 });
 
 test("the no-JavaScript map uses the same rendered search view, never the generic share image", async ({

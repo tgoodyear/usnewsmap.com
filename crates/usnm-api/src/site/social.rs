@@ -15,7 +15,7 @@ pub(crate) use cache::Service;
 
 const SITE: &str = "https://usnewsmap.com";
 const IMAGE: &str = "/share-image.png";
-/// `/search-preview/<revision>/<example>.png`: a no-JavaScript map whose URL
+/// `/search-preview/<revision>/<name>.png`: a cached search image whose URL
 /// names its render, so the edge can keep it (06 §6.5).
 pub(super) const PREVIEW: &str = "/search-preview/";
 /// Hex digits of the render key that a preview URL carries.
@@ -42,6 +42,12 @@ struct Card {
     image: String,
 }
 
+#[derive(Debug)]
+struct Rendered {
+    body: Vec<u8>,
+    preview: Option<String>,
+}
+
 fn clean(value: &str, limit: usize) -> String {
     value
         .chars()
@@ -65,6 +71,28 @@ fn escape(value: &str) -> String {
 }
 
 impl Card {
+    fn is_search(&self) -> bool {
+        self.url.starts_with(&format!("{SITE}/?"))
+            || self.url.starts_with(&format!("{SITE}/search/"))
+            || self.url.starts_with(&format!("{SITE}/examples/"))
+    }
+
+    fn name(&self) -> String {
+        let path = self.url.strip_prefix(SITE).unwrap_or_default();
+        if let Some(example) = super::examples::for_path(path.split('?').next().unwrap_or(path)) {
+            return example.id.clone();
+        }
+        let slug = self
+            .title
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join("-")
+            .to_ascii_lowercase();
+        let slug = slug[..slug.len().min(64)].trim_end_matches('-');
+        if slug.is_empty() { "search" } else { slug }.to_owned()
+    }
+
     fn new(path: &str, query: &str) -> Option<Self> {
         if let Some(example) = super::examples::for_path(path) {
             let mut card = Self::new("/", &super::examples::view_query(example, query))?;
@@ -261,7 +289,7 @@ pub(super) fn details(path: &str, query: &str) -> Option<String> {
     Card::new(path, query).map(|card| card.details)
 }
 
-pub(super) fn shell(uri: &Uri, index: Vec<u8>) -> Vec<u8> {
+pub(super) async fn shell(uri: &Uri, index: Vec<u8>, state: &AppState) -> Vec<u8> {
     let Some(card) = Card::new(uri.path(), uri.query().unwrap_or_default()) else {
         return index;
     };
@@ -272,11 +300,23 @@ pub(super) fn shell(uri: &Uri, index: Vec<u8>) -> Vec<u8> {
             return error.into_bytes();
         }
     };
+    let mut image = card.image.clone();
+    if card.is_search() {
+        match preview_key(state, &card).await {
+            Ok(key) => {
+                let path = preview_path(&key, &card);
+                if state.previews.is_published(&path).await {
+                    image = format!("{SITE}{path}");
+                }
+            }
+            Err(error) => tracing::warn!(%error, "sharing preview identity unavailable"),
+        }
+    }
     // The alt text describes the card's own image, whatever the page says.
     let mut tags = vec![
         ("property", "og:url", escape(&card.url)),
-        ("property", "og:image", escape(&card.image)),
-        ("name", "twitter:image", escape(&card.image)),
+        ("property", "og:image", escape(&image)),
+        ("name", "twitter:image", escape(&image)),
         ("property", "og:image:alt", escape(&card.description())),
         ("name", "twitter:image:alt", escape(&card.description())),
     ];
@@ -459,14 +499,14 @@ pub(super) async fn search_map(OriginalUri(uri): OriginalUri, state: Arc<AppStat
     } else if key != "example" {
         return (StatusCode::BAD_REQUEST, "search map requires an example").into_response();
     }
-    let Some((example, card)) = admitted_example(&state, query) else {
+    let Some((_, card)) = admitted_example(&state, query) else {
         return StatusCode::NOT_FOUND.into_response();
     };
     match preview_key(&state, &card).await {
         Ok(key) => (
             StatusCode::TEMPORARY_REDIRECT,
             [
-                (header::LOCATION, preview_path(&key, example)),
+                (header::LOCATION, preview_path(&key, &card)),
                 (header::CACHE_CONTROL, "no-store".to_owned()),
             ],
         )
@@ -485,11 +525,32 @@ pub(super) async fn search_map_path(
 ) -> Option<String> {
     let card = Card::new(&super::examples::path(example), "")?;
     let key = preview_key(state, &card).await.ok()?;
-    Some(preview_path(&key, example))
+    Some(preview_path(&key, &card))
 }
 
-fn preview_path(key: &str, example: &crate::prewarm::Example) -> String {
-    format!("{PREVIEW}{}/{}.png", revision(key), example.id)
+fn preview_path(key: &str, card: &Card) -> String {
+    format!("{PREVIEW}{}/{}.png", revision(key), card.name())
+}
+
+async fn published(state: &AppState, path: &str) -> Option<Vec<u8>> {
+    let persistent = state
+        .responses
+        .as_ref()
+        .map(|store| (store.clone(), path.trim_start_matches('/').to_owned()));
+    state.previews.lookup(path, persistent).await
+}
+
+fn preview_response(body: Vec<u8>) -> Response {
+    let mut response = (
+        [
+            (header::CONTENT_TYPE, "image/png"),
+            (header::CACHE_CONTROL, "public, max-age=86400"),
+        ],
+        body,
+    )
+        .into_response();
+    crate::edge::keep(response.headers_mut(), true);
+    response
 }
 
 /// Which render a preview URL names: a prefix of its cache key's digest, so
@@ -498,10 +559,9 @@ fn revision(key: &str) -> String {
     digest(key)[..REVISION_LEN].to_owned()
 }
 
-/// A no-JavaScript map. The edge keeps it only when its revision is the render
-/// served, from before the capture to after it. Another revision, from a page
-/// loaded before a release or from the other color during one, gets the current
-/// map, kept only briefly and only by browsers.
+/// A published screenshot is served unchanged, including across releases.
+/// Only admitted example base maps may render on a cache miss. Other views
+/// are published by the bounded legacy sharing endpoint, never by guessed URLs.
 pub(super) async fn search_preview(
     OriginalUri(uri): OriginalUri,
     state: Arc<AppState>,
@@ -527,12 +587,22 @@ pub(super) async fn search_preview(
         && requested
             .bytes()
             .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
-    let admitted = well_formed
-        .then(|| admitted_example(&state, id))
-        .flatten()
-        .filter(|(example, _)| example.id == id);
+    let valid_name = !id.is_empty()
+        && id.len() <= 64
+        && !id.starts_with('-')
+        && !id.ends_with('-')
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+    if !well_formed || !valid_name {
+        return (StatusCode::NOT_FOUND, [(header::CACHE_CONTROL, "no-store")]).into_response();
+    }
+    if let Some(body) = published(&state, uri.path()).await {
+        return preview_response(body);
+    }
+    let admitted = admitted_example(&state, id).filter(|(example, _)| example.id == id);
     let Some((_, card)) = admitted else {
-        return StatusCode::NOT_FOUND.into_response();
+        return (StatusCode::NOT_FOUND, [(header::CACHE_CONTROL, "no-store")]).into_response();
     };
     let before = match preview_key(&state, &card).await {
         Ok(key) => key,
@@ -541,6 +611,11 @@ pub(super) async fn search_preview(
             return map_unavailable();
         }
     };
+    // The same name can now describe filtered views. Never substitute the
+    // base example when a missing URL names some other render.
+    if requested != revision(&before) {
+        return (StatusCode::NOT_FOUND, [(header::CACHE_CONTROL, "no-store")]).into_response();
+    }
     let render = {
         let (state, card) = (state.clone(), card.clone());
         tokio::spawn(async move { cached(&state, card, false).await })
@@ -549,33 +624,19 @@ pub(super) async fn search_preview(
         return map_unavailable();
     };
     let after = preview_key(&state, &card).await.ok();
-    let keep = requested == revision(&before) && after.as_deref() == Some(before.as_str());
-    let mut response = (
-        [
-            (header::CONTENT_TYPE, "image/png"),
-            (
-                header::CACHE_CONTROL,
-                if keep {
-                    "public, max-age=86400"
-                } else {
-                    "public, max-age=300"
-                },
-            ),
-        ],
-        body,
-    )
-        .into_response();
-    crate::edge::keep(response.headers_mut(), keep);
-    response
+    if after.as_deref() != Some(before.as_str()) {
+        return map_unavailable();
+    }
+    preview_response(body)
 }
 
 /// A finished static map render; without one the caller answers
 /// [`map_unavailable`], never another image.
 async fn map_body(
-    render: tokio::task::JoinHandle<Result<Vec<u8>, Arc<RenderError>>>,
+    render: tokio::task::JoinHandle<Result<Rendered, Arc<RenderError>>>,
 ) -> Option<Vec<u8>> {
     match tokio::time::timeout(std::time::Duration::from_secs(45), render).await {
-        Ok(Ok(Ok(body))) => Some(body),
+        Ok(Ok(Ok(image))) => Some(image.body),
         _ => {
             tracing::warn!("static search map unavailable");
             None
@@ -688,12 +749,9 @@ async fn cached(
     state: &AppState,
     card: Card,
     background: bool,
-) -> Result<Vec<u8>, Arc<RenderError>> {
-    let browser = card.url.starts_with(&format!("{SITE}/?"))
-        || card.url.starts_with(&format!("{SITE}/search/"))
-        || card.url.starts_with(&format!("{SITE}/examples/"));
-    if !browser {
-        return state
+) -> Result<Rendered, Arc<RenderError>> {
+    if !card.is_search() {
+        let body = state
             .previews
             .get(
                 format!("static/{}", digest(&card.image)),
@@ -706,28 +764,22 @@ async fn cached(
                         .map_err(RenderError::Failed)
                 },
             )
-            .await;
+            .await?;
+        return Ok(Rendered {
+            body,
+            preview: None,
+        });
     }
     let identity = identity(state).await.map_err(Arc::new)?;
     let normalized = overview_key(&card.image);
-    let key = render_key(&identity, &normalized);
-    let admitted_base = card
-        .url
-        .strip_prefix(SITE)
-        .and_then(|path| path.parse::<Uri>().ok())
-        .is_some_and(|uri| {
-            super::examples::for_path(uri.path()).is_some() && !super::noindex(&uri, &state.sitemap)
-        });
-    let persistent = (admitted_base
-        || EXAMPLE_CARDS
-            .iter()
-            .any(|(_, example)| overview_key(&example.image) == normalized))
-    .then(|| state.responses.clone())
-    .flatten()
-    .map(|store| (store, key.clone()));
-    state
+    let key = preview_path(&render_key(&identity, &normalized), &card);
+    let persistent = state
+        .responses
+        .as_ref()
+        .map(|store| (store.clone(), key.trim_start_matches('/').to_owned()));
+    let body = state
         .previews
-        .get(key, persistent, background, async {
+        .get(key.clone(), persistent, background, async {
             let body = screenshot(&card).await.map_err(RenderError::Failed)?;
             if self::identity(state).await? != identity {
                 return Err(RenderError::Failed(
@@ -736,7 +788,9 @@ async fn cached(
             }
             Ok(body)
         })
-        .await
+        .await?;
+    let preview = state.previews.is_published(&key).await.then_some(key);
+    Ok(Rendered { body, preview })
 }
 
 fn can_warm(state: &AppState) -> bool {
@@ -797,12 +851,26 @@ pub(crate) fn spawn(state: Arc<AppState>) {
 }
 
 async fn render_response(
-    render: tokio::task::JoinHandle<Result<Vec<u8>, Arc<RenderError>>>,
+    render: tokio::task::JoinHandle<Result<Rendered, Arc<RenderError>>>,
 ) -> Response {
     // Dropping the timed-out JoinHandle detaches, rather than aborts, the render.
     // Only successful renders enter the cache; a later request can get the screenshot.
     match tokio::time::timeout(RESPONSE_TIMEOUT, render).await {
-        Ok(Ok(Ok(body))) => (
+        Ok(Ok(Ok(Rendered {
+            preview: Some(path),
+            ..
+        }))) => (
+            StatusCode::TEMPORARY_REDIRECT,
+            [
+                (header::LOCATION, path),
+                (header::CACHE_CONTROL, "no-store".to_owned()),
+            ],
+        )
+            .into_response(),
+        Ok(Ok(Ok(Rendered {
+            body,
+            preview: None,
+        }))) => (
             [
                 (header::CONTENT_TYPE, "image/png"),
                 (header::CACHE_CONTROL, "public, max-age=86400"),
@@ -899,7 +967,7 @@ mod tests {
         state
             .previews
             .get(
-                preview_key(&state, &card).await.unwrap(),
+                preview_path(&preview_key(&state, &card).await.unwrap(), &card),
                 None,
                 false,
                 async move { Ok(seeded) },
@@ -922,33 +990,22 @@ mod tests {
         assert_eq!(old.headers()[header::LOCATION], current.as_str());
         assert_eq!(old.headers()[header::CACHE_CONTROL], "no-store");
 
-        let other = if revision == "0".repeat(REVISION_LEN) {
-            "1"
-        } else {
-            "0"
-        };
-        for (uri, edge, browser) in [
-            (
-                current.clone(),
-                "public, max-age=1209600",
-                "public, max-age=86400",
-            ),
-            (
-                format!("{PREVIEW}{}/whigs.png", other.repeat(REVISION_LEN)),
-                "no-store",
-                "public, max-age=300",
-            ),
-        ] {
-            let response = search_preview(OriginalUri(uri.parse().unwrap()), state.clone()).await;
-            assert_eq!(response.status(), StatusCode::OK, "{uri}");
-            assert_eq!(response.headers()[header::CONTENT_TYPE], "image/png");
-            assert_eq!(response.headers()[EDGE], edge, "{uri}");
-            assert_eq!(response.headers()[header::CACHE_CONTROL], browser, "{uri}");
-            let body = response.into_body().collect().await.unwrap().to_bytes();
-            assert_eq!(body.as_ref(), rendered.as_slice());
-        }
+        let response = search_preview(OriginalUri(current.parse().unwrap()), state.clone()).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[header::CONTENT_TYPE], "image/png");
+        assert_eq!(response.headers()[EDGE], "public, max-age=1209600");
+        assert_eq!(
+            response.headers()[header::CACHE_CONTROL],
+            "public, max-age=86400"
+        );
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(body.as_ref(), rendered.as_slice());
 
         for (uri, status) in [
+            (
+                format!("{PREVIEW}{}/whigs.png", "0".repeat(REVISION_LEN)),
+                StatusCode::NOT_FOUND,
+            ),
             (format!("{current}?x=1"), StatusCode::BAD_REQUEST),
             (format!("{current}?"), StatusCode::BAD_REQUEST),
             (
@@ -973,6 +1030,203 @@ mod tests {
             assert_eq!(response.status(), status, "{uri}");
             assert!(!response.headers().contains_key(EDGE), "{uri}");
         }
+    }
+
+    #[tokio::test]
+    async fn all_cached_search_views_publish_stable_images_and_sharing_metadata() {
+        use http_body_util::BodyExt;
+
+        for (page, query) in [
+            ("/search/unlisted-phrase", "state=GA&z=4.30"),
+            ("/examples/whigs", "state=GA&tab=table"),
+            ("/", "q=gold&source=congress&series=globe"),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let store: Arc<dyn usnm_store::ObjectStore> =
+                Arc::new(usnm_store::LocalStore::new(dir.path()));
+            let mut state = state().await;
+            Arc::get_mut(&mut state).unwrap().responses = Some(store.clone());
+            let card = Card::new(page, query).unwrap();
+            let path = preview_path(&preview_key(&state, &card).await.unwrap(), &card);
+            let uri: Uri = card.url[SITE.len()..].parse().unwrap();
+            let index = std::fs::read(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../web/index.html"),
+            )
+            .unwrap();
+            let cold = String::from_utf8(shell(&uri, index.clone(), &state).await).unwrap();
+            assert!(cold.contains(
+                r#"property="og:image" content="https://usnewsmap.com/share-image.png?"#
+            ));
+            let body = png(&card).unwrap();
+            state
+                .previews
+                .get(
+                    path.clone(),
+                    Some((store.clone(), path.trim_start_matches('/').to_owned())),
+                    false,
+                    async { Ok(body.clone()) },
+                )
+                .await
+                .unwrap();
+
+            let legacy = image(
+                OriginalUri(card.image[SITE.len()..].parse().unwrap()),
+                state.clone(),
+            )
+            .await;
+            assert_eq!(legacy.status(), StatusCode::TEMPORARY_REDIRECT);
+            assert_eq!(legacy.headers()[header::LOCATION], path);
+            assert_eq!(legacy.headers()[header::CACHE_CONTROL], "no-store");
+            let warm = String::from_utf8(shell(&uri, index, &state).await).unwrap();
+            assert!(warm.contains(&format!(r#"property="og:image" content="{SITE}{path}""#)));
+            assert!(warm.contains(&format!(r#"name="twitter:image" content="{SITE}{path}""#)));
+
+            // A second replica/release needs only the published PNG, not a
+            // query registry or the renderer that originally produced it.
+            let mut restarted = self::state().await;
+            Arc::get_mut(&mut restarted).unwrap().responses = Some(store);
+            restarted
+                .previews
+                .frontend
+                .set("new frontend".to_owned())
+                .unwrap();
+            let response = search_preview(OriginalUri(path.parse().unwrap()), restarted).await;
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(
+                response.headers()["cloudflare-cdn-cache-control"],
+                "public, max-age=1209600"
+            );
+            assert_eq!(
+                response
+                    .into_body()
+                    .collect()
+                    .await
+                    .unwrap()
+                    .to_bytes()
+                    .as_ref(),
+                body
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn unknown_search_previews_do_not_render_and_view_changes_get_distinct_urls() {
+        let state = state().await;
+        let card = Card::new("/search/unlisted-phrase", "").unwrap();
+        let path = preview_path(&preview_key(&state, &card).await.unwrap(), &card);
+        let missing = search_preview(OriginalUri(path.parse().unwrap()), state.clone()).await;
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+        assert_eq!(missing.headers()[header::CACHE_CONTROL], "no-store");
+        assert!(published(&state, &path).await.is_none());
+        for query in ["state=GA", "z=4.30", "tab=table", "source=congress"] {
+            let changed = Card::new("/search/unlisted-phrase", query).unwrap();
+            assert_eq!(changed.name(), card.name());
+            assert_ne!(
+                preview_path(&preview_key(&state, &changed).await.unwrap(), &changed),
+                path
+            );
+        }
+        let variant = Card::new("/examples/whigs", "state=GA").unwrap();
+        let variant_path = preview_path(&preview_key(&state, &variant).await.unwrap(), &variant);
+        let missing =
+            search_preview(OriginalUri(variant_path.parse().unwrap()), state.clone()).await;
+        assert_eq!(
+            missing.status(),
+            StatusCode::NOT_FOUND,
+            "never substitute the base example"
+        );
+        for card in EXAMPLE_CARDS.iter().map(|(_, card)| card).chain([
+            &Card::new("/", "q=%22%3Cscript%3E%22").unwrap(),
+            &Card::new("/", "q=%E6%96%B0%E8%81%9E").unwrap(),
+            &Card::new("/", &format!("q={}", "a".repeat(256))).unwrap(),
+        ]) {
+            let name = card.name();
+            assert!(!name.is_empty() && name.len() <= 64);
+            assert!(name
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'));
+        }
+    }
+
+    #[tokio::test]
+    async fn unpublished_images_are_served_directly_until_shared_storage_recovers() {
+        use http_body_util::BodyExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("store");
+        tokio::fs::write(&root, b"storage unavailable")
+            .await
+            .unwrap();
+        let mut state = state().await;
+        Arc::get_mut(&mut state).unwrap().responses =
+            Some(Arc::new(usnm_store::LocalStore::new(&root)));
+        let card = Card::new("/search/unlisted-phrase", "state=GA").unwrap();
+        let path = preview_path(&preview_key(&state, &card).await.unwrap(), &card);
+        let body = png(&card).unwrap();
+        state
+            .previews
+            .get(path.clone(), None, false, async { Ok(body.clone()) })
+            .await
+            .unwrap();
+        let index = std::fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../web/index.html"),
+        )
+        .unwrap();
+        let uri = card.url[SITE.len()..].parse().unwrap();
+        let html = String::from_utf8(shell(&uri, index.clone(), &state).await).unwrap();
+        assert!(
+            html.contains(r#"property="og:image" content="https://usnewsmap.com/share-image.png?"#)
+        );
+        let response = image(
+            OriginalUri(card.image[SITE.len()..].parse().unwrap()),
+            state.clone(),
+        )
+        .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "no redirect to replica-local data"
+        );
+        assert_eq!(
+            response.headers()[header::CACHE_CONTROL],
+            "public, max-age=86400"
+        );
+        assert_eq!(
+            response
+                .into_body()
+                .collect()
+                .await
+                .unwrap()
+                .to_bytes()
+                .as_ref(),
+            body
+        );
+        assert!(!state.previews.is_published(&path).await);
+
+        tokio::fs::remove_file(&root).await.unwrap();
+        tokio::fs::create_dir(&root).await.unwrap();
+        // A later sharing request retries publication while still serving the PNG.
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            while !state.previews.is_published(&path).await {
+                let _ = image(
+                    OriginalUri(card.image[SITE.len()..].parse().unwrap()),
+                    state.clone(),
+                )
+                .await;
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let response = image(
+            OriginalUri(card.image[SITE.len()..].parse().unwrap()),
+            state.clone(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(response.headers()[header::LOCATION], path);
+        let html = String::from_utf8(shell(&uri, index, &state).await).unwrap();
+        assert!(html.contains(&format!(r#"property="og:image" content="{SITE}{path}""#)));
     }
 
     #[tokio::test]
@@ -1059,7 +1313,10 @@ mod tests {
             wait.await.unwrap();
             IMAGES.insert(cache_key, body.clone()).await;
             finished.send(()).unwrap();
-            Ok(body)
+            Ok(Rendered {
+                body,
+                preview: None,
+            })
         });
         let response = render_response(render).await;
         assert_eq!(response.status(), StatusCode::OK);
@@ -1073,9 +1330,12 @@ mod tests {
         release.send(()).unwrap();
         done.await.unwrap();
         assert_eq!(IMAGES.get(&key).await.unwrap(), screenshot);
-        let response = render_response(tokio::spawn(
-            async move { Ok(IMAGES.get(&key).await.unwrap()) },
-        ))
+        let response = render_response(tokio::spawn(async move {
+            Ok(Rendered {
+                body: IMAGES.get(&key).await.unwrap(),
+                preview: None,
+            })
+        }))
         .await;
         assert_eq!(
             response.into_body().collect().await.unwrap().to_bytes(),
@@ -1142,8 +1402,8 @@ mod tests {
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
-    #[test]
-    fn metadata_uses_the_permalink_and_escapes_untrusted_text() {
+    #[tokio::test]
+    async fn metadata_uses_the_permalink_and_escapes_untrusted_text() {
         let index = std::fs::read(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../web/index.html"),
         )
@@ -1151,7 +1411,8 @@ mod tests {
         let uri = "/?q=%22%3Cscript%3E%26%22&from=1896-01-01&state=GA&utm_source=test"
             .parse()
             .unwrap();
-        let html = String::from_utf8(shell(&uri, index)).unwrap();
+        let state = state().await;
+        let html = String::from_utf8(shell(&uri, index, &state).await).unwrap();
         assert!(html.contains("&quot;&lt;script&gt;&amp;&quot;"));
         assert!(html.contains("share-image.png?page=%2F&amp;q="));
         assert!(html.contains("1896-01-01 to latest"));
