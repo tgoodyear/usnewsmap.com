@@ -24,8 +24,10 @@
 //! `USNM_MEASURE_SPLITS` sets the split targets (default `1500,5000,15000`),
 //! `USNM_MEASURE_DOCS` the corpus size (default 200,000 pages),
 //! `USNM_MEASURE_WORDS` the mean words a page (default 600),
-//! `USNM_MEASURE_ROUNDS` the recorded rounds (default 5) and
-//! `USNM_MEASURE_THREADS` the searcher's threads (default 4).
+//! `USNM_MEASURE_ROUNDS` the recorded rounds (default 5),
+//! `USNM_MEASURE_THREADS` the searcher's threads (default 4) and
+//! `USNM_MEASURE_PORT` the first of the ports it listens on (default 7440;
+//! two for each writer, then two for the searcher).
 //! `USNM_MEASURE_DIR` keeps the indexes in that directory rather than a
 //! temporary one, and a later run searches them again rather than building
 //! them; it refuses an index built from another page count or page length
@@ -371,11 +373,28 @@ fn median(v: &[f64]) -> String {
     }
     let mut v = v.to_vec();
     v.sort_by(f64::total_cmp);
-    format!("{:.0}", v[v.len() / 2])
+    let n = v.len();
+    let m = if n % 2 == 1 {
+        v[n / 2]
+    } else {
+        (v[n / 2 - 1] + v[n / 2]) / 2.0
+    };
+    format!("{m:.0}")
 }
 
-/// The CPU time is counted in 10 ms ticks, too coarse for a median of a
-/// few rounds, so it's the mean.
+/// `port` and the gRPC port after it, checked free, so that a clash fails
+/// here with a clear message rather than in Quickwit's startup.
+fn free_pair(port: u16) -> u16 {
+    for p in [port, port + 1] {
+        if let Err(e) = std::net::TcpListener::bind(("127.0.0.1", p)) {
+            panic!("port {p} is taken ({e}): set USNM_MEASURE_PORT to another base");
+        }
+    }
+    port
+}
+
+/// The CPU time is counted in clock ticks (10 ms at the usual 100 a
+/// second), too coarse for a median of a few rounds, so it's the mean.
 fn mean(v: &[f64]) -> String {
     if v.is_empty() {
         return "-".into();
@@ -391,11 +410,20 @@ async fn measure_split_latency() {
         return;
     };
     let bin = Path::new(&bin);
-    let targets: Vec<u64> = std::env::var("USNM_MEASURE_SPLITS")
+    let mut targets: Vec<u64> = std::env::var("USNM_MEASURE_SPLITS")
         .unwrap_or_else(|_| "1500,5000,15000".into())
         .split(',')
-        .map(|t| t.trim().parse().expect("USNM_MEASURE_SPLITS: page counts"))
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(|t| {
+            t.parse()
+                .unwrap_or_else(|_| panic!("USNM_MEASURE_SPLITS: {t:?} isn't a page count"))
+        })
         .collect();
+    targets.sort_unstable();
+    targets.dedup();
+    assert!(!targets.is_empty(), "USNM_MEASURE_SPLITS names no target");
+    let base_port = env("USNM_MEASURE_PORT", 7440u16);
     let docs = env("USNM_MEASURE_DOCS", 200_000u64);
     let words_per_page = env("USNM_MEASURE_WORDS", 600u64);
     let rounds = env("USNM_MEASURE_ROUNDS", 5usize);
@@ -437,7 +465,7 @@ async fn measure_split_latency() {
             }
             Err(_) => {
                 let work = qw.join(format!("writer-{target}"));
-                let port = 7440 + 2 * i as u16;
+                let port = free_pair(base_port + 2 * i as u16);
                 let layout = build(bin, &store, &work, port, &id, target, corpus).await;
                 let layout = serde_json::to_value(layout).unwrap();
                 let record = serde_json::json!({ "corpus": corpus_settings, "layout": layout });
@@ -459,7 +487,8 @@ async fn measure_split_latency() {
     }
 
     let ids: Vec<String> = targets.iter().map(|t| format!("pages-split-{t}")).collect();
-    let searcher = Searcher::start(bin, &store, &qw, 7470, &ids).await;
+    let port = free_pair(base_port + 2 * targets.len() as u16);
+    let searcher = Searcher::start(bin, &store, &qw, port, &ids).await;
     let backend = Timed {
         inner: QuickwitBackend::new(&searcher.url, Duration::from_secs(120)).unwrap(),
         calls: Mutex::default(),

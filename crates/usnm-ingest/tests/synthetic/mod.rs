@@ -91,7 +91,13 @@ impl Words {
 /// drawn in proportion to 1 / (rank + 1).
 pub fn word(rank: usize) -> String {
     static VOCABULARY: std::sync::OnceLock<Words> = std::sync::OnceLock::new();
-    VOCABULARY.get_or_init(|| Words::new(&mut Rng(SEED))).words[rank].clone()
+    let words = &VOCABULARY.get_or_init(|| Words::new(&mut Rng(SEED))).words;
+    assert!(
+        rank < words.len(),
+        "word rank {rank}: the vocabulary has {} words",
+        words.len()
+    );
+    words[rank].clone()
 }
 
 /// What [`corpus`] makes.
