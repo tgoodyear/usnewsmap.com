@@ -895,6 +895,44 @@ class FollowTest(unittest.TestCase):
             self.assertEqual(set(feed.read_kept(str(kept))), {"new"})
             self.assertEqual(feed.read_lines(str(deleted)), {"old"})
 
+    @unittest.skipUnless(importlib.util.find_spec("pyarrow"), "PyArrow required for the follower")
+    def test_a_new_campaign_cleans_up_after_the_last_and_looks_after_the_kept_list_from_the_start(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "curated/pages").mkdir(parents=True)
+            (root / "state/old").mkdir(parents=True)
+            (root / "outbox/old/c00002").mkdir(parents=True)  # not shipped yet: left alone
+            (root / "state/followed.txt").write_text("old\n")
+            # q1's chunk was shipped after old's follower last ran; q2 is still in the outbox.
+            (root / "state/old/done.txt").write_text("q1\tc00001\tbuffer/b/q1.jp2\t40\t0.1\n"
+                                                     "q2\tc00002\tbuffer/b/q2.jp2\t40\t0.1\n")
+            # k1 was kept, and OCR's worker has since read it; q1 doesn't fit beside it.
+            (root / "state/kept.tsv").write_text("k1\tbuffer/b/k1.jp2\t20\t0.9\t0\n")
+            (root / "quality-docs.txt").write_text("q1\nq2\nk1\n")
+            calls = []
+
+            def fake(req, timeout=0):
+                path = req.full_url.removeprefix("http://scan/scans/")
+                calls.append((req.get_method(), path))
+                if path == "buffer/b/k1.jp2.json":
+                    raise urllib.error.HTTPError(req.full_url, 404, "Not Found", {}, None)
+                return io.BytesIO(b"{}")
+
+            argv = ["follow", "--campaign", "new", "--curated", str(root / "curated"), "--scan-server", "http://scan",
+                    "--outbox", str(root / "outbox"), "--state", str(root / "state"), "--staged-dsn", "test",
+                    "--quality-docs", str(root / "quality-docs.txt"), "--keep-bytes", "30", "--once"]
+            with mock.patch.object(feed, "staged_from_db", return_value=set()), \
+                    mock.patch.object(feed, "index_rows", return_value={}), \
+                    mock.patch.object(feed.urllib.request, "urlopen", fake), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                feed.main(argv)
+            self.assertEqual(calls, [("DELETE", "buffer/b/q1.jp2"), ("GET", "buffer/b/k1.jp2.json"),
+                                     ("DELETE", "buffer/b/k1.jp2")])
+            self.assertEqual(feed.read_lines(root / "state/old/deleted.txt"), {"q1"})
+            self.assertEqual(feed.read_lines(root / "state/new/deleted.txt"), {"k1"})
+            self.assertEqual(feed.read_kept(str(root / "state/kept.tsv")), {})
+            self.assertEqual(feed.read_lines(root / "state/followed.txt"), {"old", "new"})
+
     def test_an_unreadable_kept_line_is_weighed_again_not_fatal(self):
         with tempfile.TemporaryDirectory() as d:
             camp, done, deleted, kept = Path(d, "camp"), Path(d, "done.txt"), Path(d, "deleted.txt"), Path(d, "kept.tsv")

@@ -703,7 +703,8 @@ def scan_exists(server, scan):
         raise
 
 
-def delete_shipped(a, camp_dir, done_path, quality_docs, deleted_path, kept_path=None, ocr_docs=frozenset()):
+def delete_shipped(a, camp_dir, done_path, quality_docs, deleted_path, kept_path=None, ocr_docs=frozenset(),
+                   verify=True):
     """DELETEs the buffer scans of the quality pass's shipped pages (the shipper has removed
     their chunk from the outbox), bar the most damaged, which stay for re-OCR.
 
@@ -717,8 +718,9 @@ def delete_shipped(a, camp_dir, done_path, quality_docs, deleted_path, kept_path
     A kept scan leaves the list, no longer counting against the budget, once OCR asks for it
     (it's in `ocr_docs`, never inferred from `quality_docs`, which a missing list would empty;
     OCR's worker deletes it after reading it), or once its sidecar is found gone and a DELETE
-    confirms its bytes are too. --keep-verify of the longest-unchecked are looked up a round;
-    one the scan server doesn't answer ends the round's lookups and deletes.
+    confirms its bytes are too. --keep-verify of the longest-unchecked are looked up a round
+    (with `verify`; the follower asks once a round, whatever its campaigns); one the scan
+    server doesn't answer ends the round's lookups and deletes.
 
     `deleted_path` gets every page this is done with, deleted or released, so neither is
     weighed again. Returns how many were DELETEd (or already gone); releases aren't counted.
@@ -728,8 +730,10 @@ def delete_shipped(a, camp_dir, done_path, quality_docs, deleted_path, kept_path
     budget = (getattr(a, "keep_bytes", 0) or 0) if kept_path else 0
     kept = read_kept(kept_path)
     now = int(time.time())
-    with open(done_path) as f:
-        rows = [line.rstrip("\n").split("\t") for line in f if "\t" in line]
+    rows = []
+    if os.path.exists(done_path):
+        with open(done_path) as f:
+            rows = [line.rstrip("\n").split("\t") for line in f if "\t" in line]
     pending = {os.path.basename(d) for d in glob.glob(os.path.join(camp_dir, "c[0-9]*"))}
     shipped = {}
     for doc, chunk, *rest in rows:
@@ -742,6 +746,8 @@ def delete_shipped(a, camp_dir, done_path, quality_docs, deleted_path, kept_path
         size = int(rest[1]) if len(rest) > 1 and rest[1] else 0
         damage = float(rest[2]) if len(rest) > 2 and rest[2] else None
         shipped[doc] = (scan, size, damage, now)
+    if not verify and not shipped:
+        return 0  # nothing of this campaign's, and the kept list is another call's
     # Set once the scan server doesn't answer: the round's other requests wait for the next
     # round, which finds every page this one couldn't finish where it was.
     unreachable = False
@@ -768,7 +774,7 @@ def delete_shipped(a, camp_dir, done_path, quality_docs, deleted_path, kept_path
         return True
 
     released = [doc for doc in kept if doc in ocr_docs]
-    if budget:
+    if budget and verify:
         for doc, k in heapq.nsmallest(getattr(a, "keep_verify", 0), kept.items(), key=lambda kv: kv[1][3]):
             if doc in ocr_docs:
                 continue
@@ -881,6 +887,12 @@ def cmd_follow(a):
     deleted_path = os.path.join(state, "deleted.txt")
     # One list for every campaign, so a new campaign's budget counts the scans an earlier one kept.
     kept_path = os.path.join(a.state, "kept.tsv")
+    # Every campaign followed here: one switched away from still has chunks the shipper took
+    # after its last round, whose scans are deleted (or kept) from here.
+    followed_path = os.path.join(a.state, "followed.txt")
+    if a.campaign not in read_lines(followed_path):
+        with open(followed_path, "a") as f:
+            f.write(a.campaign + "\n")
     texts = Texts(a.curated)
     absent_path = os.path.join(state, "absent.txt")
     while True:
@@ -902,14 +914,19 @@ def cmd_follow(a):
         ocr_docs = read_lines(a.ocr_docs) if a.ocr_docs else set()
         done = read_lines(done_path) | read_lines(skip_path)
         quality_docs = read_lines(a.quality_docs) if a.quality_docs else set()
-        if os.path.exists(done_path):
-            # kept.tsv is every campaign's: one follower at a time reads and rewrites it.
-            with open(kept_path + ".lock", "a") as lock:
-                fcntl.flock(lock, fcntl.LOCK_EX)
-                gone = delete_shipped(a, camp_dir, done_path, quality_docs - ocr_docs, deleted_path, kept_path,
-                                      ocr_docs)
-            if gone:
-                log("buffer scans deleted after shipping", pages=gone)
+        # kept.tsv is every campaign's: one follower at a time reads and rewrites it. It's
+        # looked after every round, before this campaign has shipped anything too.
+        gone = 0
+        with open(kept_path + ".lock", "a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            quality_only = quality_docs - ocr_docs
+            past = sorted(c for c in read_lines(followed_path) if c != a.campaign and CAMPAIGN_RE.match(c))
+            for c in past:
+                gone += delete_shipped(a, os.path.join(a.outbox, c), os.path.join(a.state, c, "done.txt"), quality_only,
+                                       os.path.join(a.state, c, "deleted.txt"), kept_path, ocr_docs, verify=False)
+            gone += delete_shipped(a, camp_dir, done_path, quality_only, deleted_path, kept_path, ocr_docs)
+        if gone:
+            log("buffer scans deleted after shipping", pages=gone)
         quarantined = scan_quarantine.quarantined(state) if getattr(a, "quarantine_decode", False) else []
         blocked_ids = {record["id"] for record in quarantined}
         blocked_docs = {record["source"]["doc_id"] for record in quarantined}
