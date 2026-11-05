@@ -454,6 +454,24 @@ fake migration.
      are staged separately as `<sticky/><no_delete/>` inputs in `download/` using the
      plan-class-specific model input templates (`usnm_qwen_8b_in` for 8B classes and
      `usnm_qwen_2b_in` for 2B/`mt` classes).
+   - **`usnm_ocr_native` and `usnm_gold_native`** (#1418, `docs/boinc-native-ocr.md`):
+     `.github/workflows/boinc-ocr-native.yml` builds the worker, the static Tesseract and the
+     locked models into one directory with its manifest, `usnm_native_build.json`, and uploads it
+     as an artifact. `--build-dir` takes that directory whole, for `x86_64-pc-linux-gnu` with no
+     plan class. Before anything reaches the signing host,
+     `scripts/boinc/check-native-ocr-build.py` refuses a build whose Tesseract isn't the version
+     `ocr/engines/tesseract/Containerfile` installs, whose models aren't exactly
+     `ocr/engines/tesseract/models.lock`, or whose files aren't the ones its manifest lists. It
+     prints the build's `engine.image` and `engine.base`, the identity for the Gold binding in
+     `gold-engine-platforms.json`. Files are named for their content, so the two apps share one
+     download, and the models aren't copied into each slot. `check_appver.py` checks that layout.
+     Publishing needs the app in `contrib-compute/boinc/project.xml` first; neither app is
+     registered yet (`docs/boinc-native-ocr.md`, Rollout):
+
+   ```sh
+   scripts/boinc/boinc-app-release.sh --env prod --app usnm_gold_native --version 1.0 --kind native \
+     --build-dir /path/to/boinc-ocr-native-x86_64-pc-linux-gnu/build --signing-host HOST
+   ```
 
 ## What it needs
 

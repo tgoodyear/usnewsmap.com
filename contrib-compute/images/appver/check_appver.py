@@ -9,11 +9,15 @@ Refuses:
 - a staged file (other than version.xml) without a signature;
 - a signature that BOINC's crypt_prog -verify rejects against the public key;
 - a version.xml that names a physical_name that isn't staged;
-- a version directory that holds anything but plain files.
+- a version directory that holds anything but plain files;
+- a native OCR version (usnm_ocr_native, usnm_gold_native) whose files aren't the ones its
+  build manifest lists, or aren't named for their content.
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 from pathlib import Path
 import re
 import shutil
@@ -22,7 +26,11 @@ import sys
 import xml.etree.ElementTree as ET
 
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
-APPS = ("usnm_ndlocr", "usnm_ocr", "usnm_assess", "usnm_gold", "usnm_surya", "usnm_quality", "usnm_qwen_train", "usnm_qwen", "usnm_iris")
+# Longer names first: an app is inferred from the main program's name by substring.
+APPS = ("usnm_ocr_native", "usnm_gold_native", "usnm_ndlocr", "usnm_ocr", "usnm_assess", "usnm_gold", "usnm_surya", "usnm_quality", "usnm_qwen_train", "usnm_qwen", "usnm_iris")
+NATIVE_OCR_APPS = ("usnm_ocr_native", "usnm_gold_native")
+NATIVE_OCR_MANIFEST = "usnm_native_build.json"
+NATIVE_OCR_ENGINE = "usnm_tesseract"
 PLATFORMS = (
     "x86_64-pc-linux-gnu",
     "aarch64-unknown-linux-gnu",
@@ -63,6 +71,63 @@ def _infer_app_and_platform(
                     resolved_platform = candidate_plat
                     break
     return resolved_app, resolved_platform
+
+
+def _file_entry(path: Path) -> dict:
+    data = path.read_bytes()
+    return {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+
+
+def _check_native_ocr(version_dir: Path, spec: ET.Element, app: str, platform: str | None) -> None:
+    """A native OCR version holds exactly its build: the files its manifest lists, each named
+    for its content (scripts/boinc/install.py, native_ocr_physical). The manifest's name carries
+    its digest, the jobs' engine.image, which the scheduler's Gold gate compares
+    (scripts/boinc/gold-engine-routing.h)."""
+    if platform != "x86_64-pc-linux-gnu" or version_dir.name != platform:
+        raise Refused(f"native {app} is built only for x86_64-pc-linux-gnu, with no plan class")
+    main = next(f for f in spec.findall("file") if f.find("main_program") is not None)
+    extras: dict[str, str] = {}
+    for f in spec.findall("file"):
+        if f is main:
+            continue
+        # The worker links the engine and the models from the project directory.
+        if f.find("copy_file") is not None:
+            raise Refused(f"native {app} extra files must not have <copy_file/>")
+        logical = (f.findtext("logical_name") or "").strip()
+        if logical in extras:
+            raise Refused(f"version.xml names {logical} twice")
+        extras[logical] = f.findtext("physical_name") or ""
+    if NATIVE_OCR_MANIFEST not in extras:
+        raise Refused(f"native {app} version.xml has no {NATIVE_OCR_MANIFEST}")
+    raw = (version_dir / extras[NATIVE_OCR_MANIFEST]).read_bytes()
+    if extras[NATIVE_OCR_MANIFEST] != f"usnm_native_build_{hashlib.sha256(raw).hexdigest()}.json":
+        raise Refused(f"{NATIVE_OCR_MANIFEST} is not named for its digest")
+    try:
+        manifest = json.loads(raw)
+        listed = manifest["files"]
+        valid = manifest["v"] == 1 and manifest["platform"] == platform and isinstance(listed, dict)
+    except (ValueError, KeyError, TypeError):
+        valid = False
+    if not valid:
+        raise Refused(f"{NATIVE_OCR_MANIFEST} is not a build manifest for {platform}")
+    if (
+        "usnm_ocr" not in listed
+        or NATIVE_OCR_ENGINE not in listed
+        or not any(n.startswith("tessdata_") and n.endswith(".traineddata") for n in listed)
+    ):
+        raise Refused(f"{NATIVE_OCR_MANIFEST} lacks the worker, the engine or a model")
+    if set(extras) != (set(listed) - {"usnm_ocr"}) | {NATIVE_OCR_MANIFEST}:
+        raise Refused("the staged files differ from the build manifest")
+    if _file_entry(version_dir / (main.findtext("physical_name") or "")) != listed["usnm_ocr"]:
+        raise Refused("the main program differs from the build manifest's usnm_ocr")
+    for logical, physical in extras.items():
+        if logical == NATIVE_OCR_MANIFEST:
+            continue
+        entry = _file_entry(version_dir / physical)
+        if entry != listed[logical]:
+            raise Refused(f"{logical} differs from the build manifest")
+        if physical != f"usnm_native_{entry['sha256'][:16]}_{logical}":
+            raise Refused(f"{logical} is not named for its content")
 
 
 def check(
@@ -132,8 +197,10 @@ def check(
             raise Refused("native version.xml must have one <main_program/> with <copy_file/>")
         for f in spec.findall("file"):
             if f.find("main_program") is None:
-                if f.find("copy_file") is None or not (f.findtext("logical_name") or "").strip():
+                if (f.find("copy_file") is None and resolved_app not in NATIVE_OCR_APPS) or not (f.findtext("logical_name") or "").strip():
                     raise Refused("native extra files in version.xml must have <logical_name> and <copy_file/>")
+        if resolved_app in NATIVE_OCR_APPS:
+            _check_native_ocr(version_dir, spec, resolved_app, resolved_platform)
         if resolved_app == "usnm_qwen":
             present_logicals = {
                 (f.findtext("logical_name") or "").strip()

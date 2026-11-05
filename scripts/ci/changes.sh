@@ -275,9 +275,10 @@ boinc_ndlocr='^(ocr/engines/ndlocr-lite/|ocr/boinc/ndlocr-lite/|scripts/boinc/sm
 # are assembled by qwen_vulkan_bundle.py within the disk policy's bundle bound and checked
 # against the 6 GB release's runtime (#1234).
 boinc_native='^(ocr/contract/|ocr/boinc/qwen/(amd-device-map\.cpp|disk-policy\.json)$|scripts/boinc/(test_amd_device_map\.py|patch_amd_vulkan_identity\.py|build_amd_vulkan_runtime\.ps1|(test_)?qwen_vulkan_bundle\.py)$|contrib-compute/infra/boinc/releases/prod-onprem-usnm_qwen-nvidia_vulkan_6gb_8b\.json$|rust-toolchain\.toml$)'
-# The native OCR app (boinc-ocr-native.yml) builds usnm-ocr-app and the static Tesseract, and
-# fetches the locked models for its smoke test.
-boinc_ocr_native='^(ocr/boinc/native/|scripts/boinc/smoke-native-ocr\.sh$|ocr/engines/tesseract/models\.lock$|rust-toolchain\.toml$|\.dockerignore$)'
+# The native OCR app (boinc-ocr-native.yml) builds usnm-ocr-app and the static Tesseract,
+# fetches the locked models for its smoke test, and checks and stages the build as a release
+# would, against the container engine's version.
+boinc_ocr_native='^(ocr/boinc/native/|scripts/boinc/(smoke-native-ocr\.sh|check-native-ocr-build\.py|install\.py)$|contrib-compute/images/appver/check_appver\.py$|ocr/engines/tesseract/(models\.lock|Containerfile)$|rust-toolchain\.toml$|\.dockerignore$)'
 # The page-language detector's test on text of known language (05 §5.5.8):
 # the detector, its word lists and the language table it reads them by, its
 # crate's manifest and the lock file, the samples and their test, and the

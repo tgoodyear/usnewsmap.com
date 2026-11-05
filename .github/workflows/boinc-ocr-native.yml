@@ -8,7 +8,11 @@ on:
       - .github/workflows/boinc-ocr-native.yml
       - ocr/boinc/native/**
       - scripts/boinc/smoke-native-ocr.sh
+      - scripts/boinc/check-native-ocr-build.py
+      - scripts/boinc/install.py
+      - contrib-compute/images/appver/check_appver.py
       - ocr/engines/tesseract/models.lock
+      - ocr/engines/tesseract/Containerfile
       - ocr/engines/engines.toml
       - .dockerignore
       - crates/**
@@ -92,6 +96,27 @@ jobs:
             --tessdata tessdata --out build/usnm_native_build.json | tee build.txt
       - name: Read a page, and refuse a job for another build
         run: scripts/boinc/smoke-native-ocr.sh --build build --fixture target/x86_64-unknown-linux-musl/release/examples/native_fixture
+      # What boinc-app-release.sh and the appver image do to this build, short of signing: check it
+      # is the container worker's engine and models, stage it, and check the staged version. The
+      # signatures need the private key, so a stand-in verifier accepts any.
+      - name: Check and stage the build as a release would
+        run: |
+          extras=()
+          for f in build/*; do [ "${f##*/}" = usnm_ocr ] || extras+=(--extra-file "${f##*/}=$f"); done
+          python3 scripts/boinc/check-native-ocr-build.py --binary build/usnm_ocr "${extras[@]}" | tee -a build.txt
+          mkdir release
+          echo unused > release/code_sign_public
+          for app in usnm_ocr_native usnm_gold_native; do
+            mkdir -p "release/$app" "release/$app-sigs"
+            touch "release/$app/config.xml"
+            python3 scripts/boinc/install.py --project "$PWD/release/$app" --kind native --app "$app" \
+              --version 1.0 --binary build/usnm_ocr --bundle-dir build
+            d="release/$app/apps/$app/1.0/x86_64-pc-linux-gnu"
+            for f in "$d"/*; do [ "${f##*/}" = version.xml ] || echo unsigned > "release/$app-sigs/${f##*/}.sig"; done
+            python3 contrib-compute/images/appver/check_appver.py --kind native --app "$app" \
+              --platform x86_64-pc-linux-gnu --version-dir "$d" --sigs "release/$app-sigs" \
+              --public-key release/code_sign_public --crypt-prog /usr/bin/true
+          done
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: boinc-ocr-native-x86_64-pc-linux-gnu

@@ -10,6 +10,12 @@
 #   scripts/boinc/boinc-app-release.sh --env prod --app usnm_qwen --version 1.0 --plan-class docker_nvidia_cuda_8b \
 #     --worker-image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:... --signing-host HOST
 #
+# The native OCR apps (docs/boinc-native-ocr.md, #1418) release the build directory that
+# .github/workflows/boinc-ocr-native.yml uploads, checked against the container worker's engine
+# and models first (scripts/boinc/check-native-ocr-build.py):
+#   scripts/boinc/boinc-app-release.sh --env prod --app usnm_gold_native --version 1.0 --kind native \
+#     --build-dir build --signing-host HOST
+#
 # Steps (contrib-compute/docs/app-release.md):
 # 1. Worker image. Volunteers pull it from the public GHCR package named, by digest, in
 #    images.worker of contrib-compute/infra/boinc/env/<env>.json; .github/workflows/boinc-worker.yml
@@ -45,11 +51,11 @@
 # without deploying or starting the publish job.
 set -euo pipefail
 usage() {
-  echo "usage: scripts/boinc/boinc-app-release.sh --env <prod|dev> --app <usnm_ndlocr|usnm_ocr|usnm_assess|usnm_gold|usnm_quality|usnm_surya|usnm_qwen|usnm_qwen_train|usnm_iris> --version <N.M> --signing-host HOST [--kind container|native] [--binary FILE [--binary-sha256 HEX] [--extra-file LOGICAL=PATH ...]] [--plan-class CLASS] [--worker-image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:...] [--platform PLATFORM [--wrapper FILE --wrapper-sha256 HEX --wrapper-source-pin FILE]] [--signing-key-dir DIR] [--signing-dataset DATASET] [--onprem-host HOST --onprem-ct ID] [--prepare-only] [--acceptance-config FILE --acceptance-evidence FILE [--coordination-claim URL]] [--what-if]" >&2
+  echo "usage: scripts/boinc/boinc-app-release.sh --env <prod|dev> --app <usnm_ndlocr|usnm_ocr|usnm_assess|usnm_gold|usnm_quality|usnm_surya|usnm_qwen|usnm_qwen_train|usnm_iris|usnm_ocr_native|usnm_gold_native> --version <N.M> --signing-host HOST [--kind container|native] [--binary FILE [--binary-sha256 HEX] [--extra-file LOGICAL=PATH ...] | --build-dir DIR] [--plan-class CLASS] [--worker-image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:...] [--platform PLATFORM [--wrapper FILE --wrapper-sha256 HEX --wrapper-source-pin FILE]] [--signing-key-dir DIR] [--signing-dataset DATASET] [--onprem-host HOST --onprem-ct ID] [--prepare-only] [--acceptance-config FILE --acceptance-evidence FILE [--coordination-claim URL]] [--what-if]" >&2
   exit 2
 }
 ENV_NAME="" APP="" VERSION="" SIGNING_HOST="" KIND=container PLAN_CLASS="" PLAN_CLASS_SET=false WORKER_OVERRIDE="" KEY_DIR=/usbbak/signing/boinc KEY_DATASET=usbbak/signing WHAT_IF=false PREPARE_ONLY=false
-PLATFORM=x86_64-pc-linux-gnu WRAPPER="" WRAPPER_SHA="" WRAPPER_PIN="" BINARY="" BINARY_SHA=""
+PLATFORM=x86_64-pc-linux-gnu WRAPPER="" WRAPPER_SHA="" WRAPPER_PIN="" BINARY="" BINARY_SHA="" BUILD_DIR=""
 ACCEPTANCE_CONFIG="" ACCEPTANCE_EVIDENCE="" COORDINATION_CLAIM="" ONPREM_HOST="" ONPREM_CT=""
 ONPREM_MANIFEST="" ARTIFACT_RECEIPT=""
 EXTRA_FILES=()
@@ -63,6 +69,7 @@ while [ $# -gt 0 ]; do
     --binary) [ $# -ge 2 ] || usage; BINARY=$2; shift 2 ;;
     --binary-sha256) [ $# -ge 2 ] || usage; BINARY_SHA=$2; shift 2 ;;
     --extra-file) [ $# -ge 2 ] || usage; EXTRA_FILES+=("$2"); shift 2 ;;
+    --build-dir) [ $# -ge 2 ] || usage; BUILD_DIR=$2; shift 2 ;;
     --plan-class) [ $# -ge 2 ] || usage; PLAN_CLASS=$2; PLAN_CLASS_SET=true; shift 2 ;;
     --worker-image) [ $# -ge 2 ] || usage; WORKER_OVERRIDE=$2; shift 2 ;;
     --platform) [ $# -ge 2 ] || usage; PLATFORM=$2; shift 2 ;;
@@ -95,7 +102,7 @@ fi
 case "$KIND" in
   container)
     $PLAN_CLASS_SET || PLAN_CLASS=docker
-    [ -z "$BINARY$BINARY_SHA" ] && [ "${#EXTRA_FILES[@]}" -eq 0 ] || die "--binary and --extra-file are only valid with --kind native"
+    [ -z "$BINARY$BINARY_SHA$BUILD_DIR" ] && [ "${#EXTRA_FILES[@]}" -eq 0 ] || die "--binary, --extra-file and --build-dir are only valid with --kind native"
     case "$APP:$PLAN_CLASS" in
       usnm_ocr:docker | usnm_assess:docker | usnm_gold:docker | usnm_quality:docker) ;;
       usnm_ndlocr:docker | usnm_surya:docker_mt | usnm_surya:docker_nvidia_cuda | usnm_surya:docker_intel_vulkan | usnm_qwen:docker_mt_2b | usnm_qwen:docker_nvidia_cuda_8b | usnm_qwen_train:docker_nvidia_train | usnm_iris:docker_intel_opencl_4b)
@@ -106,6 +113,18 @@ case "$KIND" in
   native)
     $PLAN_CLASS_SET || PLAN_CLASS=""
     [ -z "$WRAPPER$WRAPPER_SHA$WRAPPER_PIN$WORKER_OVERRIDE" ] || die "--wrapper and --worker-image are only valid with --kind container"
+    if [ -n "$BUILD_DIR" ]; then
+      # A native OCR build directory: the worker is the main program, every other file an extra.
+      case "$APP" in usnm_ocr_native | usnm_gold_native) ;; *) die "--build-dir is only for usnm_ocr_native and usnm_gold_native" ;; esac
+      [ -z "$BINARY" ] && [ "${#EXTRA_FILES[@]}" -eq 0 ] || die "--build-dir replaces --binary and --extra-file"
+      [ -d "$BUILD_DIR" ] || die "--build-dir must be a directory"
+      BUILD_DIR=$(python3 -c 'import pathlib,sys; print(pathlib.Path(sys.argv[1]).resolve())' "$BUILD_DIR")
+      BINARY=$BUILD_DIR/usnm_ocr
+      for build_file in "$BUILD_DIR"/*; do
+        [ "${build_file##*/}" != usnm_ocr ] || continue
+        EXTRA_FILES+=("${build_file##*/}=$build_file")
+      done
+    fi
     [ -n "$BINARY" ] && [ -f "$BINARY" ] || die "--binary must be an existing file when --kind native"
     if [ -n "$BINARY_SHA" ]; then
       [[ $BINARY_SHA =~ ^[0-9a-f]{64}$ ]] || die "--binary-sha256 must be 64 lower-case hex digits"
@@ -119,8 +138,8 @@ sys.exit(0 if hashlib.sha256(a.binary.read_bytes()).hexdigest() == a.sha256 else
 PY
     fi
     case "$APP:$PLAN_CLASS" in
-      usnm_quality: | usnm_qwen:mt | usnm_qwen:apple_gpu_8b | usnm_qwen:nvidia_cuda_8b | usnm_qwen:nvidia_cuda_2b | usnm_qwen:intel_vulkan_8b | usnm_qwen:nvidia_vulkan_8b | usnm_qwen:nvidia_vulkan_6gb_8b | usnm_qwen:nvidia_vulkan_2b | usnm_qwen:amd_vulkan_8b) ;;
-      *) die "--app and --plan-class for --kind native must be usnm_quality with empty --plan-class, or a supported usnm_qwen native class (scripts/boinc/install.py)" ;;
+      usnm_quality: | usnm_ocr_native: | usnm_gold_native: | usnm_qwen:mt | usnm_qwen:apple_gpu_8b | usnm_qwen:nvidia_cuda_8b | usnm_qwen:nvidia_cuda_2b | usnm_qwen:intel_vulkan_8b | usnm_qwen:nvidia_vulkan_8b | usnm_qwen:nvidia_vulkan_6gb_8b | usnm_qwen:nvidia_vulkan_2b | usnm_qwen:amd_vulkan_8b) ;;
+      *) die "--app and --plan-class for --kind native must be usnm_quality, usnm_ocr_native or usnm_gold_native with empty --plan-class, or a supported usnm_qwen native class (scripts/boinc/install.py)" ;;
     esac
     ;;
   *)
@@ -200,6 +219,15 @@ else
       $found_extra || die "native usnm_qwen on $PLATFORM requires --extra-file $req_extra=PATH"
     done
   fi
+  case "$APP" in
+    usnm_ocr_native | usnm_gold_native)
+      [ "$PLATFORM" = x86_64-pc-linux-gnu ] || die "native $APP is built only for x86_64-pc-linux-gnu"
+      check_args=()
+      for spec in "${EXTRA_FILES[@]+"${EXTRA_FILES[@]}"}"; do check_args+=(--extra-file "$spec"); done
+      python3 scripts/boinc/check-native-ocr-build.py --binary "$BINARY" "${check_args[@]+"${check_args[@]}"}" ||
+        die "the native OCR build isn't the container worker's engine and models, or its files aren't the manifest's"
+      ;;
+  esac
 fi
 if [ -n "$ACCEPTANCE_CONFIG" ]; then
   acceptance_args=(--env "$ENV_NAME" --config "$ACCEPTANCE_CONFIG" --app "$APP" --version "$VERSION" --platform "$PLATFORM" --plan-class "$PLAN_CLASS" --evidence "$ACCEPTANCE_EVIDENCE")

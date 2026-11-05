@@ -134,8 +134,8 @@ So on a loaded host a native task gets more clock time than a container task for
 
 Each step needs the one before it.
 
-1. **Merge this.** Nothing changes on the server. The new app names don't exist there, `publish-appver.sh` still refuses them, and `gold-engine-platforms.json` has no native entry.
-2. **Register `usnm_gold_native` only.** Add it to `project.xml` with its validator and assimilator daemons, allow it in `publish-appver.sh`, `check_appver.py` and `boinc-app-release.sh`, add the reviewed binding to `gold-engine-platforms.json`, rebuild the server image for the hook, then sign and publish. No workunit exists yet, so no host gets anything.
+1. **Merge the build and the release tooling.** Done, and nothing changed on the server. The new app names don't exist there, and `gold-engine-platforms.json` has no native entry. `boinc-app-release.sh`, `check_appver.py` and `publish-appver.sh` accept both apps on `x86_64-pc-linux-gnu` with no plan class. A release takes CI's build directory with `--build-dir` and first checks it with `check-native-ocr-build.py`: the manifest's Tesseract must be the version the container engine installs, its models exactly `models.lock`, and every file the one the manifest lists. The check prints the build's `engine.image` and `engine.base`. `contrib-compute/docs/app-release.md` has the command.
+2. **Register `usnm_gold_native` only.** Add it to `project.xml` with its validator and assimilator daemons, add the reviewed binding to `gold-engine-platforms.json` (the identity the check printed), rebuild the server image for the hook, then sign and publish with `boinc-app-release.sh --build-dir`. Until the app is in `project.xml`, publishing fails at registration. No workunit exists yet, so no host gets anything.
 3. **Check the challenge.** A project host with a container runtime runs the calibrated challenge on both builds, and the per-crop counts are compared.
 4. **Gold for named hosts.** `gold-onboard` and `gold-promote` with `GOLD_NATIVE_HOSTS`, one host first. Gold units can't stall a tick. A failure is an alert, and a host that doesn't pass stays off the list.
 5. **Build the OCR dispatch.** None of this exists yet. These are the server-side limits on native OCR work:
@@ -172,4 +172,4 @@ scripts/boinc/native_ocr_client_test.py --boinc boinc --boinccmd boinccmd --buil
   --fixture native_fixture --scan page.jpg --language eng --scenario plain --work client
 ```
 
-`.github/workflows/boinc-ocr-native.yml` runs the build and the smoke test, and keeps the build as an artifact.
+`.github/workflows/boinc-ocr-native.yml` runs the build and the smoke test, checks and stages the build for both apps as a release would (everything but the signatures), and keeps the build as an artifact.
