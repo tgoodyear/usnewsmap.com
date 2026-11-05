@@ -177,6 +177,13 @@ It actually executes:
   `boincadm`. Each live DB session must have a nonempty server-side
   `performance_schema.status_by_thread` `Ssl_cipher`, correlated to its
   daemon-specific queries. All four distinct roles must be present.
+- The Qwen tie-breaker stop (`scripts/boinc/qwen-tiebreak-policy.py`, #1477) on
+  synthetic disputed `usnm_qwen` units, with the runtime credentials: `plan`,
+  then `settle --apply` while a second session holds one unit's row lock, then
+  `settle --apply` again. The locked unit must be skipped unchanged and settled
+  by the second run; units outside the policy or with a replica running must be
+  untouched. The live transitioner must then mark the settled units'
+  inconclusive returns NO_CHECK and make them ready to assimilate.
 - Both PHP APIs and Python from the **copied project**, not only the source
   tree, reporting actual session ciphers.
 - Wrong hostname and unrelated client CA: all three copied consumers and four

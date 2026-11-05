@@ -52,6 +52,7 @@ VALIDATE_INIT, INCONCLUSIVE = 0, 4
 TOO_MANY_TOTAL = 8
 # MySQL errors after which a unit is left to a later pass.
 LOCK_WAIT, DEADLOCK = 1205, 1213
+UNKNOWN_VARIABLE = 1193
 # Units the transitioner is due to handle within this many seconds are left to a later pass.
 DUE_MARGIN = 300
 DEFAULT_POLICY = "/project/usnmocr/qwen/tiebreak-policy.json"
@@ -134,12 +135,22 @@ def connect(args):
     return db, int(cfg.findtext("uldl_dir_fanout") or 1024)
 
 
+def bound_statements(cur):
+    """Stop any one SELECT after 60 s: MySQL's limit, or MariaDB's (the CI fixture's server)."""
+    try:
+        cur.execute("SET SESSION MAX_EXECUTION_TIME=60000")
+    except Exception as e:
+        if getattr(e, "args", (None,))[:1] != (UNKNOWN_VARIABLE,):
+            raise
+        cur.execute("SET SESSION max_statement_time=60")
+
+
 def read_window(db, args, fanout):
     """Units created in the window, their results and the database clock, in
     one READ ONLY transaction; each unit joined to its language and version."""
     cur = db.cursor()
     try:
-        cur.execute("SET SESSION MAX_EXECUTION_TIME=60000")
+        bound_statements(cur)
         cur.execute("START TRANSACTION READ ONLY")
         cur.execute("SELECT UNIX_TIMESTAMP()")
         now = int(cur.fetchone()[0])

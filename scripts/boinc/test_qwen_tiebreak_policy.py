@@ -137,6 +137,7 @@ class FakeDB:
         self.units = {u["id"]: dict(u) for u in units}
         self.results = {r["id"]: dict(r) for r in results}
         self.log, self.saved, self.commits, self.on_lock, self.force_rowcount = [], None, 0, None, None
+        self.mariadb = False
 
     def connect(self, **kw):
         db = self
@@ -176,6 +177,8 @@ class FakeDB:
         wu_cols = ("id", "name", "batch", "canonical_resultid", "error_mask", "need_validate", "transition_time", "max_total_results")
         if sql == "START TRANSACTION":
             self.saved = copy.deepcopy((self.units, self.results))
+        elif "MAX_EXECUTION_TIME" in sql and self.mariadb:
+            raise Exception(1193, "Unknown system variable 'MAX_EXECUTION_TIME'")
         elif sql == "SELECT UNIX_TIMESTAMP()":
             return [(NOW,)]
         elif "FROM app" in sql:
@@ -253,6 +256,11 @@ class Settle(unittest.TestCase):
         sql = [s for s, _ in self.db.log]
         self.assertLess(sql.index("START TRANSACTION READ ONLY"), min(i for i, s in enumerate(sql) if "FROM workunit" in s))
         self.assertEqual(sql[-1], "ROLLBACK")
+
+    def test_plan_bounds_statements_on_mariadb_too(self):
+        self.db.mariadb = True
+        self.assertEqual(self.run_main("plan", "--stop-tiebreakers", "yid:1", "--list-units")["settle"], [1, 2])
+        self.assertIn("SET SESSION max_statement_time=60", [s for s, _ in self.db.log])
 
     def test_without_a_policy_plan_selects_nothing_and_settle_refuses(self):
         self.assertEqual(self.run_main("plan", "--list-units")["settle"], [])
