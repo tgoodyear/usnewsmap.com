@@ -1377,12 +1377,61 @@ Only pages our OCR has done or is about to do are left out: rows in `quality.ocr
 
 **The moderate sample shows nothing until its pages are OCRed.** A quality unit on a page our OCR hasn't read gives image features and LoC's agreement with American Stories. A gain needs a `quality.ocr_outputs` row for the page, compared with LoC's damage score.
 
-Two things limit how a list reaches the fetcher and the feed. `follow` takes every fetched page under its own campaign, so a page fetched from one of these manifests lands there unless `follow`'s `--staged` list names it; `plan.jsonl` still tells the bands apart. And a manifest named `queue-quality-*` takes JP2s only from LoC's bucket or a mirror, so pages of batches the bucket doesn't serve wait in that queue.
+Two things limit how a list reaches the fetcher and the feed. `follow` takes every fetched page under its own campaign, so a page fetched from one of these manifests lands there unless `follow`'s `--staged` list names it; `plan.jsonl` still tells the bands apart. And when the scan fetcher is installed with `--no-loc-prefixes queue-quality-` (`USNM_PREFETCH_NO_LOC_PREFIXES`), a manifest named `queue-quality-*` takes JP2s only from LoC's bucket or a mirror, so pages of batches the bucket doesn't serve wait in that queue. Without it, those pages are fetched from LoC within the global LoC budget.
 
 `quality_feed.py follow` (`usnm-quality-follow.service`) gives every page the fetcher writes
 that no campaign has staged (OCR's and the pass's) a unit, in fetch order, and deletes the
 pass's buffer scans once their chunk has shipped; OCR's scans and the keep set are never
 deleted. `quality-feed-install.sh --follow` turns both on with the shipper.
+
+**What bounds the supply.** Each round, `follow` takes every full-resolution scan in the index
+that has no unit or staging record, isn't in `--staged` and isn't done, up to the outbox's
+room. While the shipper keeps up, it holds no backlog, so the pages it feeds in an hour are the
+pages the fetcher wrote in that hour. Those come from the pass's manifests (`--pass-pages` a
+run, with the timer's 2 hours between the end of one run and the start of the next) and from
+whatever OCR's and the other manifests fetch. The pass's size and the bucket bound the first.
+The rest depends on which batches the other manifests reach, how many of their pages are
+already held, and LoC's budget. A held scan that a campaign staged before isn't fed again.
+Raising the supply therefore needs more bucket or LoC requests, or feeding staged pages again,
+and each of those is the maintainer's choice. The [measurements of 5 November
+2026](notes/2026-11-05-quality-supply.md) split the supply by source.
+
+To update only the follower, for example to turn on `--quarantine-decode`, without the
+installer's other files and its rewrite of every env file, run this from a checkout. It keeps
+preimages in the container and checks the new code before the restart:
+
+```sh
+d=scripts/boinc/onprem/quality-feed stage=/root/usnm-quality-follow-update
+ssh -o BatchMode=yes root@pve-laptop.tjg.fyi "rm -rf $stage && install -d -m 700 $stage"
+scp -q "$d/quality_feed.py" "$d/scan_quarantine.py" "$d/usnm-quality-follow.service" \
+  "root@pve-laptop.tjg.fyi:$stage/"
+ssh -o BatchMode=yes root@pve-laptop.tjg.fyi bash -s -- "$stage" <<'EOF'
+set -euo pipefail
+stage=$1 ct=215 pre=/root/usnm-quality-follow-pre-$(date -u +%Y%m%dT%H%M%SZ)
+in_ct() { pct exec "$ct" -- "$@"; }
+in_ct install -d -m 700 "$pre"
+in_ct cp -a /opt/usnm-quality-feed/quality_feed.py /etc/systemd/system/usnm-quality-follow.service "$pre/"
+in_ct sh -c "[ ! -e /opt/usnm-quality-feed/scan_quarantine.py ] || cp -a /opt/usnm-quality-feed/scan_quarantine.py $pre/"
+pct push "$ct" "$stage/scan_quarantine.py" /opt/usnm-quality-feed/scan_quarantine.py --perms 644
+pct push "$ct" "$stage/quality_feed.py" /opt/usnm-quality-feed/quality_feed.py --perms 755
+pct push "$ct" "$stage/usnm-quality-follow.service" /etc/systemd/system/usnm-quality-follow.service
+in_ct sh -c 'cd /opt/usnm-quality-feed && venv/bin/python quality_feed.py follow --help | grep -q -- --quarantine-decode'
+in_ct systemctl daemon-reload
+in_ct systemctl restart usnm-quality-follow
+echo "preimages: CT $ct $pre"
+EOF
+```
+
+If the check fails, the script stops before the restart; copy the preimages back. A chunk is
+written to a temporary directory and renamed before its pages go into `done.txt`, so a restart
+mid-round loses nothing: pages not yet in `done.txt` are taken again. With
+`--quarantine-decode`, a scan that fails to decode in three rounds is logged as `scan
+quarantined; operator review required` and later rounds log `quarantined scans excluded`. The
+quarantine database is `decode-quarantine.sqlite3` in the campaign's state directory. To roll
+back, copy the preimages back over the two files, then `systemctl daemon-reload` and `systemctl
+restart usnm-quality-follow`. The older code ignores `scan_quarantine.py` and the quarantine
+database. Qwen's feed runs `quality_feed.py select` and `run` from the same directory, so the
+update reaches them too; their options only gain new ones.
 
 ## Calibration
 
