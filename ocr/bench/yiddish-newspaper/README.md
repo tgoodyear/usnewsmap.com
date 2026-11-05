@@ -4,31 +4,32 @@ Step 3 of [#1479](https://github.com/tgoodyear/usnewsmap.com/issues/1479) needs 
 
 **Status:** pages drawn, nothing transcribed. Nothing here is ground truth yet.
 
-| File | What it is |
-| --- | --- |
-| `manifest.json` | The draw: 41 pages and 21 reserves in title × decade cells, the seed, 12 anchor points per page, and the sha256 and size of each scan |
-| `template.jsonl` | One empty record per drawn page: `todo` for selected pages, `reserve` for reserves |
-| [`scripts/ocr-bench/yiddish_newspaper.py`](../../../scripts/ocr-bench/yiddish_newspaper.py) | `inventory`, `select`, `template`, `export` and `check`; standard library only |
+| File                                                                                        | What it is                                                                                                                            |
+| ------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `manifest.json`                                                                             | The draw: 41 pages and 21 reserves in title × decade cells, the seed, 12 anchor points per page, and the sha256 and size of each scan |
+| `template.jsonl`                                                                            | One empty record per drawn page: `todo` for selected pages, `reserve` for reserves                                                    |
+| [`scripts/ocr-bench/yiddish_newspaper.py`](../../../scripts/ocr-bench/yiddish_newspaper.py) | `inventory`, `select`, `template`, `export` and `check`; standard library only                                                        |
 
 The ocr-bench workflow runs `test_yiddish_newspaper.py`. It checks:
+
 - the anchors follow from the seed;
 - the template is what the script makes from the manifest;
 - the template passes `check`.
 
 ## The draw
 
-| Cell (LCCN/decade) | Title | Held | Drawn | Reserves |
-| --- | --- | ---: | ---: | ---: |
-| sn83045837/1910 | Der Morgen Zshurnal = the Jewish Morning Journal | 118 | 5 | 3 |
-| sn86063496/1910 | Yidishes Ṭageblaṭṭ = the Jewish Daily News | 31 | 5 | 3 |
-| sn86063496/1920 | Yidishes Ṭageblaṭṭ | 138 | 5 | 3 |
-| sn83045838/1920 | Der Morgen Zshurnal, Yidishes Ṭageblaṭ (1929 only) | 46 | 5 | 3 |
-| sn83045838/1930 | Der Morgen Zshurnal, Yidishes Ṭageblaṭ | 157 | 5 | 3 |
-| sn83045846/1930 | Der Morgen Zshurnal = Jewish Journal and Daily News | 1 | 1 | 0 |
-| sn83045846/1940 | Der Morgen Zshurnal = Jewish Journal and Daily News | 26 | 5 | 3 |
-| sn83045846/1950 | Der Morgen Zshurnal = Jewish Journal and Daily News | 5 | 5 | 0 |
-| sn83045861/1940 | Der Tog = the Day | 232 | 5 | 3 |
-| sn92063919/1890 | Der Izraeliṭ = the Israelite (Providence) | 0 | gap | |
+| Cell (LCCN/decade) | Title                                               | Held | Drawn | Reserves |
+| ------------------ | --------------------------------------------------- | ---: | ----: | -------: |
+| sn83045837/1910    | Der Morgen Zshurnal = the Jewish Morning Journal    |  118 |     5 |        3 |
+| sn86063496/1910    | Yidishes Ṭageblaṭṭ = the Jewish Daily News          |   31 |     5 |        3 |
+| sn86063496/1920    | Yidishes Ṭageblaṭṭ                                  |  138 |     5 |        3 |
+| sn83045838/1920    | Der Morgen Zshurnal, Yidishes Ṭageblaṭ (1929 only)  |   46 |     5 |        3 |
+| sn83045838/1930    | Der Morgen Zshurnal, Yidishes Ṭageblaṭ              |  157 |     5 |        3 |
+| sn83045846/1930    | Der Morgen Zshurnal = Jewish Journal and Daily News |    1 |     1 |        0 |
+| sn83045846/1940    | Der Morgen Zshurnal = Jewish Journal and Daily News |   26 |     5 |        3 |
+| sn83045846/1950    | Der Morgen Zshurnal = Jewish Journal and Daily News |    5 |     5 |        0 |
+| sn83045861/1940    | Der Tog = the Day                                   |  232 |     5 |        3 |
+| sn92063919/1890    | Der Izraeliṭ = the Israelite (Providence)           |    0 |   gap |          |
 
 That's 41 pages × 3 blocks × 3 lines = 369 target lines.
 
@@ -52,6 +53,7 @@ That's 41 pages × 3 blocks × 3 lines = 369 target lines.
 ## Transcribing
 
 Who transcribes is a maintainer decision (#1479, #738). It needs two people:
+
 - a qualified Yiddish reader who transcribes;
 - a second, independent reader who reviews.
 
@@ -81,6 +83,7 @@ Who transcribes is a maintainer decision (#1479, #738). It needs two people:
    - `other`, with `notes`.
 
    Then change the cell's next reserve from `reserve` to `todo`. Never reject a page for damage or difficulty: damage is what this set measures.
+
 6. **Prefill.** Set `prefill` to `none`. If anyone corrects an engine's output instead of transcribing, name the engine. `check` warns, because that engine's score is biased.
 7. **Status.** `todo`, then `transcribed` (with `transcribed_by`), then `reviewed` (with `reviewed_by`, a different person, and `evidence`). Freeze the text before anyone looks at an engine's output for these pages.
 
@@ -103,6 +106,7 @@ python3 scripts/ocr-bench/yiddish_newspaper.py check --manifest ocr/bench/yiddis
 ```
 
 It prints lines, blocks, characters, skipped anchors and rejections per cell. It fails on any of these:
+
 - an anchor that was passed over;
 - a first line that isn't at its anchor;
 - a box outside the scan;
