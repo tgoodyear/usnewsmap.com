@@ -216,12 +216,22 @@ fn cyrillic() {
 
 #[test]
 fn a_script_with_no_list_takes_the_title_language() {
+    let korean = rep("조선 신문 서울 사람들 오늘 나라", 8);
+    let got = detect(&korean, &["kor", "eng"]);
+    assert_eq!(
+        (got.decision, got.lang.as_str(), got.script, got.share),
+        (Decision::Detected, "kor", "cjk", None)
+    );
+    assert_eq!(detect(&korean, &["eng"]).decision, Decision::Und);
+    // Cherokee has a list (#1581): too few of its words to decide by, a
+    // page still takes the title's only language in its script.
     let cherokee = rep("ᏣᎳᎩ ᎦᏬᏂᎯᏍᏗ ᏧᏬᏪᎳᏅᎯ ᎠᏂᏴᏫᏯ", 8);
     let got = detect(&cherokee, &["chr", "eng"]);
     assert_eq!(
-        (got.decision, got.lang.as_str(), got.script, got.share),
-        (Decision::Detected, "chr", "cherokee", None)
+        (got.decision, got.lang.as_str(), got.script),
+        (Decision::Detected, "chr", "cherokee")
     );
+    assert!(got.share.is_some());
     assert_eq!(detect(&cherokee, &["eng"]).decision, Decision::Und);
 }
 
@@ -259,6 +269,8 @@ fn page_languages_follow_the_decisions() {
     assert_eq!(got(Some(&found("eng")), &["dak", "eng"]), ["dak", "eng"]);
     assert_eq!(got(Some(&found("eng")), &["jpn", "eng"]), ["eng", "jpn"]);
     assert_eq!(got(Some(&found("chr")), &["chr", "eng"]), ["chr"]);
+    // Cherokee has a word list, but stays as it did before it had one (#1581).
+    assert_eq!(got(Some(&found("eng")), &["chr", "eng"]), ["chr", "eng"]);
     assert_eq!(got(None, &["eng", "eng"]), ["eng"]);
 }
 

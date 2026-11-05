@@ -161,10 +161,10 @@ mod tests {
         let mut codes: Vec<&str> = lists().keys().copied().collect();
         codes.sort_unstable();
         assert_eq!(codes, lang::wordlist_codes());
-        assert_eq!(codes.len(), 30);
+        assert_eq!(codes.len(), 31);
         for l in lists().values() {
             assert!(
-                ["latin", "hebrew", "cyrillic", "greek", "arabic"].contains(&l.script),
+                ["latin", "hebrew", "cyrillic", "greek", "arabic", "cherokee"].contains(&l.script),
                 "{}: {}",
                 l.code,
                 l.script
@@ -190,10 +190,11 @@ mod tests {
         ));
         assert_eq!(function_words("srp").unwrap().script, "latin");
         assert_eq!(function_words("yid").unwrap().script, "hebrew");
+        assert_eq!(function_words("chr").unwrap().script, "cherokee");
         assert!(function_words("nor").unwrap().top.contains("paa"));
         assert!(function_words("dan").unwrap().top.contains("paa"));
         assert!(function_words("eng").unwrap().top.contains("the"));
-        for marc in ["chi", "jpn", "cho", "chr", "dak", "lat", "zzz"] {
+        for marc in ["chi", "jpn", "cho", "dak", "lat", "zzz"] {
             assert!(function_words(marc).is_none(), "{marc}");
         }
     }

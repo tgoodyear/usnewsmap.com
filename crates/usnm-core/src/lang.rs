@@ -11,9 +11,9 @@
 //! - **Word lists**: the code of the damage metric's word list for the
 //!   language, copied from `ocr/ja-ocr/damage_v2.py`'s `WORDFREQ` table (wordfreq's
 //!   codes: `hrv` and `srp` are both `sh`, `nor` is `nb`, `tgl` is `fil`) and
-//!   its `LOCAL_WORDLISTS` (Hawaiian `haw`, Yiddish `yi`, our own lists). A
-//!   language with no list (Chinese, Korean, the indigenous languages, Latin,
-//!   Welsh...) has none, as in `damage_v2.py`.
+//!   its `LOCAL_WORDLISTS` (Cherokee `chr`, Hawaiian `haw`, Yiddish `yi`, our
+//!   own lists). A language with no list (Chinese, Korean, Choctaw, Dakota,
+//!   Navajo, Latin, Welsh...) has none, as in `damage_v2.py`.
 //!
 //! With the cargo feature `damage`, [`wordlist`] returns a list's words,
 //! embedded from `data/damage-words/*.txt.zst`, which `build.rs`
@@ -53,7 +53,10 @@ pub static LANGUAGES: &[Language] = &[
     lang("bul", "bul", Some("bg")),
     lang("chi", "zho", None),
     lang("cho", "cho", None),
-    lang("chr", "chr", None),
+    Language {
+        local_list: true,
+        ..lang("chr", "chr", Some("chr"))
+    },
     lang("cze", "ces", Some("cs")),
     lang("dak", "dak", None),
     lang("dan", "dan", Some("da")),
@@ -139,7 +142,7 @@ pub fn wordlist_codes() -> Vec<&'static str> {
 }
 
 /// The words of a word list, most frequent first, one per line: wordfreq
-/// 3.1.1's `top_n_list(code, 5000)`, or our own list for `haw` and `yi`.
+/// 3.1.1's `top_n_list(code, 5000)`, or our own list for `chr`, `haw` and `yi`.
 #[cfg(feature = "damage")]
 pub fn wordlist(code: &str) -> Option<&'static str> {
     macro_rules! lists {
@@ -156,7 +159,7 @@ pub fn wordlist(code: &str) -> Option<&'static str> {
         };
     }
     lists!(
-        "ar", "bg", "cs", "da", "de", "el", "en", "es", "fi", "fil", "fr", "haw", "he", "hu", "is",
+        "ar", "bg", "chr", "cs", "da", "de", "el", "en", "es", "fi", "fil", "fr", "haw", "he", "hu", "is",
         "it", "lt", "lv", "nb", "nl", "pl", "pt", "ro", "ru", "sh", "sk", "sl", "sv", "uk", "yi",
     )
 }
@@ -247,7 +250,7 @@ mod tests {
             .filter(|l| l.local_list)
             .map(|l| l.marc)
             .collect();
-        assert_eq!(local, ["haw", "yid"]);
+        assert_eq!(local, ["chr", "haw", "yid"]);
     }
 
     #[cfg(feature = "damage")]

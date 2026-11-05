@@ -28,6 +28,10 @@ jego mieszkańców.";
 const YIDDISH_TEXT: &str = "דער שטאט ראט האט זיך פֿארזאמלט דינסטיק אין אוונט און נאך א לאנגע וויכוח האט מען באשלאסן אז די נייע \
 שול וועט געבויט ווערן אויף דעם פלאץ וואס די קאמיסיע האט געקויפט פאר א יאר. דער מעיאר האט געזאגט אז ער \
 וועט נישט אונטערשרייבן דעם געזעץ אויב די קאסטן וועלן נישט באצאלט ווערן פון דער אלגעמיינער קאסע.";
+// John 1:1-4, 1860.
+const CHEROKEE_TEXT: &str = "ᏗᏓᎴᏂᏍᎬ ᎧᏃᎮᏛ ᎡᎮᎢ, ᎠᎴ ᎾᏍᎩ ᎧᏃᎮᏛ ᎤᏁᎳᏅᎯ ᎢᏧᎳᎭ ᎠᏁᎮᎢ, ᎠᎴ ᎾᏍᎩ ᎧᏃᎮᏛ ᎤᏁᎳᏅᎯ ᎨᏎᎢ. ᏗᏓᎴᏂᏍᎬᎢ ᎾᏍᎩ ᎤᏁᎳᏅᎯ \
+ᎢᏧᎳᎭ ᎠᏁᎮᎢ. ᏂᎦᎥ ᎪᎱᏍᏗ ᎾᏍᎩ ᎤᏬᏢᏁᎢ, ᎠᎴ ᏂᎦᎥ ᎪᏢᏅᎯ ᏥᎩ ᎥᏝ ᎪᎱᏍᏗ ᎾᏍᎩ ᏄᏬᏢᏅᎾ ᏱᎩ. ᎾᏍᎩ ᎧᏃᎮᏛ ᎬᏂᏛ ᎤᏪᎮᎢ; \
+ᎠᎴ ᎾᏍᎩ ᎬᏂᏛ ᏴᏫ ᎢᎦ ᎤᎾᏘᏍᏓᏁᎯ ᎨᏎᎢ.";
 const HAWAIIAN_TEXT: &str = "Ua hiki mai ka moku mai Kaleponi mai i ka la mua o keia mahina, a ua lawe mai oia i na leka he nui loa no \
 na kanaka o keia aina. Ua olelo ia mai e hele ana ke Alii i Hawaii i keia pule aku, a e noho ana oia ma \
 Hilo no kekahi manawa. Ua nui ka ua ma Honolulu i keia pule, a ua piha na kahawai a pau.";
@@ -95,6 +99,26 @@ fn languages_without_a_word_list_are_und() {
         ),
         (Decision::Und, "und", None, None)
     );
+}
+
+#[test]
+fn cherokee_has_our_own_word_list() {
+    // ocr/ja-ocr/wordlists/chr.txt, from the 1860 New Testament.
+    let got = score(CHEROKEE_TEXT, &["chr", "eng"]);
+    assert_eq!(
+        (got.decision, got.lang.as_str(), got.damage_rate),
+        (Decision::Detected, "chr", Some(0.0))
+    );
+    assert!(got.function_share.unwrap() > 0.3);
+    // Small letters fold to the capitals.
+    let small = score(&CHEROKEE_TEXT.to_lowercase(), &["chr"]);
+    assert_eq!(
+        (small.lang.as_str(), small.function_share),
+        ("chr", got.function_share)
+    );
+    // The Cherokee Phoenix's OCR reads ᎾᏍᎩ ("that") as ᏩᏍᎩ.
+    let misread = CHEROKEE_TEXT.replace("ᎾᏍᎩ", "ᏩᏍᎩ");
+    assert!(score(&misread, &["chr", "eng"]).damage_rate.unwrap() > 0.1);
 }
 
 #[test]

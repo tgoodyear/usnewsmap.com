@@ -36,7 +36,7 @@ fn fixture_was_scored_by_this_damage_v2_py() {
     // The models also read our own word lists.
     assert_eq!(
         header.wordlists_sha256.keys().collect::<Vec<_>>(),
-        ["haw", "yi"]
+        ["chr", "haw", "yi"]
     );
     for (code, want) in &header.wordlists_sha256 {
         assert_eq!(
@@ -71,7 +71,7 @@ fn fixture_covers_the_traps_and_the_decisions() {
     for d in ["detected", "mixed", "und"] {
         assert!(has(&|r| r.score.decision == d), "no {d} page");
     }
-    for s in ["latin", "hebrew", "cyrillic", "greek"] {
+    for s in ["latin", "hebrew", "cyrillic", "greek", "cherokee"] {
         assert!(has(&|r| r.score.script == s), "no {s} page");
     }
     assert!(has(&|r| r.text.contains('ß')));

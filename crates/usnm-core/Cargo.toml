@@ -6,8 +6,8 @@ edition.workspace = true
 # The code is MIT. The word lists under data/ (zstd-compressed as .txt.zst,
 # except data/page-language-words.txt) are data exported from wordfreq 3.1.1
 # (CC BY-SA 4.0, with Google Books Ngram terms), except
-# data/damage-words/haw.txt.zst (CC0) and yi.txt.zst (CC BY-SA 4.0), and
-# data/page-language-words.txt, derived from all three (CC BY-SA 4.0):
+# data/damage-words/chr.txt.zst and haw.txt.zst (CC0) and yi.txt.zst (CC BY-SA
+# 4.0), and data/page-language-words.txt, derived from all of them (CC BY-SA 4.0):
 # data/README.md.
 license = "MIT AND CC-BY-SA-4.0 AND CC0-1.0"
 rust-version.workspace = true

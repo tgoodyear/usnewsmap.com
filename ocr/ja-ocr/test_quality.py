@@ -427,6 +427,10 @@ HAWAIIAN_TEXT = (
     "Ua hiki mai ka moku mai Kaleponi mai i ka la mua o keia mahina, a ua lawe mai oia i na leka he nui loa no "
     "na kanaka o keia aina. Ua olelo ia mai e hele ana ke Alii i Hawaii i keia pule aku, a e noho ana oia ma "
     "Hilo no kekahi manawa. Ua nui ka ua ma Honolulu i keia pule, a ua piha na kahawai a pau.")
+CHEROKEE_TEXT = (  # John 1:1-4, 1860
+    "ᏗᏓᎴᏂᏍᎬ ᎧᏃᎮᏛ ᎡᎮᎢ, ᎠᎴ ᎾᏍᎩ ᎧᏃᎮᏛ ᎤᏁᎳᏅᎯ ᎢᏧᎳᎭ ᎠᏁᎮᎢ, ᎠᎴ ᎾᏍᎩ ᎧᏃᎮᏛ ᎤᏁᎳᏅᎯ ᎨᏎᎢ. ᏗᏓᎴᏂᏍᎬᎢ ᎾᏍᎩ ᎤᏁᎳᏅᎯ "
+    "ᎢᏧᎳᎭ ᎠᏁᎮᎢ. ᏂᎦᎥ ᎪᎱᏍᏗ ᎾᏍᎩ ᎤᏬᏢᏁᎢ, ᎠᎴ ᏂᎦᎥ ᎪᏢᏅᎯ ᏥᎩ ᎥᏝ ᎪᎱᏍᏗ ᎾᏍᎩ ᏄᏬᏢᏅᎾ ᏱᎩ. ᎾᏍᎩ ᎧᏃᎮᏛ ᎬᏂᏛ ᎤᏪᎮᎢ; "
+    "ᎠᎴ ᎾᏍᎩ ᎬᏂᏛ ᏴᏫ ᎢᎦ ᎤᎾᏘᏍᏓᏁᎯ ᎨᏎᎢ.")
 
 
 @unittest.skipIf(wordfreq is None, "wordfreq not installed")
@@ -471,6 +475,16 @@ class Detection(unittest.TestCase):
         self.assertGreater(got["function_share"], 0.3)
         garbled = HAWAIIAN_TEXT.replace(" ka ", " kn ").replace(" na ", " nn ").replace(" ua ", " un ")
         self.assertGreater(self.detect(garbled, ("haw", "eng"))["damage_rate"], 0.1)
+
+    def test_cherokee_has_our_own_word_list(self):
+        # wordlists/chr.txt, from the 1860 New Testament. Small letters fold to the capitals.
+        got = self.detect(CHEROKEE_TEXT, ("chr", "eng"))
+        self.assertEqual((got["decision"], got["lang"], got["damage_rate"]), ("detected", "chr", 0.0))
+        self.assertGreater(got["function_share"], 0.3)
+        small = self.detect(CHEROKEE_TEXT.lower(), ("chr",))
+        self.assertEqual((small["lang"], small["function_share"]), ("chr", got["function_share"]))
+        # The Cherokee Phoenix's OCR reads ᎾᏍᎩ ("that") as ᏩᏍᎩ.
+        self.assertGreater(self.detect(CHEROKEE_TEXT.replace("ᎾᏍᎩ", "ᏩᏍᎩ"), ("chr", "eng"))["damage_rate"], 0.1)
 
     def test_too_short_is_und(self):
         got = self.detect("The council met on Tuesday and voted for the new school.", ("eng",))

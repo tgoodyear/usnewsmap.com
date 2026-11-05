@@ -1059,7 +1059,7 @@ def status_summary(tables: dict[str, list[dict]]) -> dict:
     Every field is present; these are null when there is nothing to measure: agreement.differs_share,
     mixed_share and und_share (no sampled page with text), agreement.multilingual_differs_share (no page
     of a multilingual title with text), and a language's function_share_median, damage_rate_median and
-    damaged_share (no page of it scored: a language with no word list, such as Cherokee)."""
+    damaged_share (no page of it scored: a language with no word list, such as Choctaw)."""
     agree = {r["scope"]: r for r in tables["agreement_summary"]}
     a, m = agree.get("all") or {}, agree.get("multilingual_titles") or {}
     languages = [{"damage_rate_median": r["damage_rate_median"], "damaged_share": r["damaged_share"],

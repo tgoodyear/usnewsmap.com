@@ -115,6 +115,7 @@ Each Wikisource text was published in 1930 or earlier, so it is in the public do
 
 Every language has three Wikipedia excerpts. In these languages, Wikisource has fewer than three texts, at any decade, with an author, a sourced year of publication by 1930 and 300 words of prose. The test (`FEWER`) expects exactly these counts:
 
+- Cherokee (`chr`): none. There is no Cherokee Wikisource, and the Cherokee texts on the multilingual one are the 1860 New Testament (the source of the `chr` word list itself), Psalms and hymns, laws, a constitution and a primer; one tract is only in its scans' `Page:` pages, not proofread.
 - Hawaiian (`haw`): none. There is no Hawaiian Wikisource, and the Hawaiian texts on the multilingual one are songs and chants, and the 1894 constitution, which is all articles and lists.
 - Icelandic (`ice`): one. Icelandic Wikisource's other texts of the time (Jón Trausti's novels, for one) have no publication date in Wikidata or on the page.
 - Latvian (`lav`) and Lithuanian (`lit`): two each, from the multilingual Wikisource and Lithuanian Wikisource.

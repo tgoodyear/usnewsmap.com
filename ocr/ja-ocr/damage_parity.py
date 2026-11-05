@@ -3,7 +3,7 @@
 
     jaocr.py damage-parity [--pages 400] [--audit-version pages-v20261003-1]
     python3 damage_parity.py --pages-from FILE --out PATH [--synthetic]
-    python3 damage_parity.py --rescore PATH --out PATH
+    python3 damage_parity.py --rescore PATH --out PATH [--synthetic]
 
 In the cloud (`jaocr.py damage-parity`, on the one-replica audit job, since curated text is reachable only
 inside the VNet), it samples --pages pages from the 10% audit's per-page CSV
@@ -17,10 +17,10 @@ languages, the title's catalog languages), with jaocr.py's pacing, and with --sy
 for the known traps between Python and Rust (casefold, combining marks, separators that str.split takes as
 whitespace). That builds the small fixture CI checks: crates/usnm-core/tests/data/damage-parity.jsonl.zst.
 After a change to damage_v2.py, --rescore scores a file's pages again from the text it holds, with no
-loc.gov requests.
+loc.gov requests; with --synthetic it adds the made-up pages the file doesn't have yet.
 
 Each file is JSON lines, zstd-compressed. The first line is {"header": {...}} with the sha256 of
-damage_v2.py and of our own word lists (wordlists/haw.txt and yi.txt), the wordfreq and Unicode versions and
+damage_v2.py and of our own word lists (wordlists/chr.txt, haw.txt and yi.txt), the wordfreq and Unicode versions and
 the page count. Each other line is a page: doc_id, the title's
 languages, the text, score_v2's output ("score", rates at full precision), detect()'s damage counts
 ("damage": words, function, head, near; score_v2 doesn't return them) and the forced-language score of each
@@ -221,6 +221,9 @@ RUSSIAN = ("Городской совет собрался во вторник �
            "новая школа будет построена на участке, который управление купило в прошлом году. ")
 YIDDISH = ("דער שטאט ראט האט זיך פֿארזאמלט דינסטיק אין אוונט און נאך א לאנגע וויכוח האט מען באשלאסן אז די "
            "נייע שול וועט געבויט ווערן אויף דעם פלאץ וואס די קאמיסיע האט געקויפט פאר א יאר. ")
+CHEROKEE = ("ᏗᏓᎴᏂᏍᎬ ᎧᏃᎮᏛ ᎡᎮᎢ, ᎠᎴ ᎾᏍᎩ ᎧᏃᎮᏛ ᎤᏁᎳᏅᎯ ᎢᏧᎳᎭ ᎠᏁᎮᎢ, ᎠᎴ ᎾᏍᎩ ᎧᏃᎮᏛ ᎤᏁᎳᏅᎯ ᎨᏎᎢ. ᏗᏓᎴᏂᏍᎬᎢ ᎾᏍᎩ "
+            "ᎤᏁᎳᏅᎯ ᎢᏧᎳᎭ ᎠᏁᎮᎢ. ᏂᎦᎥ ᎪᎱᏍᏗ ᎾᏍᎩ ᎤᏬᏢᏁᎢ, ᎠᎴ ᏂᎦᎥ ᎪᏢᏅᎯ ᏥᎩ ᎥᏝ ᎪᎱᏍᏗ ᎾᏍᎩ ᏄᏬᏢᏅᎾ ᏱᎩ. ᎾᏍᎩ "
+            "ᎧᏃᎮᏛ ᎬᏂᏛ ᎤᏪᎮᎢ; ᎠᎴ ᎾᏍᎩ ᎬᏂᏛ ᏴᏫ ᎢᎦ ᎤᎾᏘᏍᏓᏁᎯ ᎨᏎᎢ. ")  # John 1:1-4, 1860
 
 
 def synthetic() -> list[tuple[str, str, tuple]]:
@@ -248,6 +251,12 @@ def synthetic() -> list[tuple[str, str, tuple]]:
         ("synthetic-czech-no-vowels", ("Smrt prst vlk krk " + ENGLISH) * 3, ("cze", "eng")),
         ("synthetic-numbers", ("½ ² ³ Ⅻ 1905 ١٢٣ " + ENGLISH) * 3, ("eng",)),
         ("synthetic-greek", "Ο ΣΙΣΥΦΟΣ και η πόλις της Ελλάδος. " * 12, ("gre", "eng")),
+        ("synthetic-cherokee", CHEROKEE * 4, ("chr", "eng")),
+        ("synthetic-cherokee-mixed", (CHEROKEE + ENGLISH) * 3, ("chr", "eng")),
+        # Cherokee's small letters casefold to its capitals (the other way round from Latin).
+        ("synthetic-cherokee-small", CHEROKEE.lower() * 4, ("chr",)),
+        # The Phoenix's OCR: ᎾᏍᎩ read as ᏩᏍᎩ, Ꮅ as Ꮲ.
+        ("synthetic-cherokee-ocr", CHEROKEE.replace("ᎾᏍᎩ", "ᏩᏍᎩ").replace("Ꮅ", "Ꮲ") * 4, ("chr", "eng")),
         ("synthetic-dano-norwegian", ("Han kom paa Mandag til Byen, og der var mange Folk af alle Slags. " * 6),
          ("nor", "dan", "eng")),
         ("synthetic-short", "The council met.", ("eng",)),
@@ -273,6 +282,9 @@ def main() -> int:
             old = [json.loads(line) for line in zstd_decompress(f.read()).decode().splitlines() if line.strip()]
         head, pages = old[0]["header"], old[1:]
         records = [record(p["doc_id"], p["text"], tuple(p["languages"]), models) for p in pages]
+        if a.synthetic:
+            have = {p["doc_id"] for p in pages}
+            records += [record(d, t, langs, models) for d, t, langs in synthetic() if d not in have]
         with open(a.out, "wb") as f:
             f.write(encode(head["source"], records))
         print(f"{a.out}: {len(records)} pages scored again", file=sys.stderr)
