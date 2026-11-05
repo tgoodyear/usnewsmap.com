@@ -65,7 +65,7 @@ From Study 10, on the corpus's 104 held-out test pages, with Study 8's reference
 - **Settings.** `LANG_TYPE=RTL`, 60,000 iterations, learning rate 0.0001, `RATIO_TRAIN=0.90`, `RANDOM_SEED=0`. One CPU thread at the lowest priority for 1 hour 24 minutes.
 - **Result.** The newest best checkpoint, at 52,300 iterations with a training BCER of 1.470%, converted to a float model. Its character set is stock `yid`'s 73 entries, unchanged, and 29 new ones. Its dictionaries are stock `yid`'s 20,582 words, rebuilt in the visual order Tesseract matches.
 
-`provenance.json` has every pin and `recipe-study10.tar` the commands. Study 10 checked the recipe against the commands as run: it selected the same lines, and rebuilt the stock-network control and run 1's model from its checkpoint byte for byte. Whether training itself repeats exactly is recorded in `provenance.json`'s `reproducibility`.
+`provenance.json` has every pin and `recipe-study10.tar` the commands. Study 10 checked the recipe against the commands as run: it selected the same lines, and rebuilt the stock-network control and run 1's model from its checkpoint byte for byte. `provenance.json`'s `reproducibility` records the repeat of training below.
 
 To repeat run 2, fix the order of the unicharset first. tesstrain joins the line files into `all-gt` in `find` order, and the 29 characters that stock `yid` lacks enter the unicharset in the order they first appear. A fresh copy of the same lines gave the same 102 characters in another order, and so a different network. So have tesstrain build `$DATA_DIR/yidj2/all-gt` (its own make target), put those characters first, then run `make ... unicharset proto-model`:
 
@@ -75,7 +75,7 @@ combine_tessdata -u yidj2.traineddata x.
 mv all-gt.new data/yidj2/all-gt
 ```
 
-Entries 73–101 of the model's unicharset are lines 75–103 of the file. With them first, tesstrain rebuilt Study 10's `unicharset`, `yidj2.unicharset` and proto `yidj2.traineddata` byte for byte.
+Entries 73–101 of the model's unicharset are lines 75–103 of the file. With them first, tesstrain rebuilt Study 10's `unicharset`, `yidj2.unicharset` and proto `yidj2.traineddata` byte for byte. Training from there, with two threads where Study 10 used one, repeated run 2 exactly: the same 600 progress lines and checkpoints, and the 52,300-iteration checkpoint converted to this `yidj2.traineddata` byte for byte.
 
 ## Use in the pipeline
 

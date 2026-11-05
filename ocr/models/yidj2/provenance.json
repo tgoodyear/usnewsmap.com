@@ -125,7 +125,7 @@
   "reproducibility": {
     "conversion": "yidj2.traineddata was converted from the run's checkpoint through study10.sh --step snap",
     "recipe_checked": "study10.sh, run as the recipe, rebuilt the stock-network yidrev model and run 1's 17,900-iteration model byte for byte, selected the same 20,509 lines for run 2 and fetched the same langdata",
-    "training_repeated": "not yet: a repeat of run 2 with that unicharset order is running (#1479)",
+    "training_repeated": "yes: run 2 was repeated on CT 240 on 2026-11-05 (#1479) from the same lines and tools, with the unicharset order below and OMP_THREAD_LIMIT=2 where Study 10 used one thread. All 600 progress lines and the checkpoint names matched Study 10's, and the 52,300-iteration checkpoint converted to a yidj2.traineddata identical byte for byte",
     "unicharset_order": "tesstrain concatenates all-gt in find order over the line folder, and the 29 characters not in stock yid enter the unicharset in first-seen order, so a fresh copy of the same lines gave the same 102 characters in another order and a different network. Putting those characters first in all-gt, in the order of entries 73-101 of yidj2.traineddata's lstm-unicharset, rebuilt Study 10's unicharset and proto model byte for byte (#1479)"
   },
   "start_model": {
