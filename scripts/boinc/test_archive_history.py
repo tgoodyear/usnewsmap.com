@@ -443,7 +443,8 @@ def write_batch(batch, jobs):
     manifest = {"schema_version": 1, "kind": "usnm-boinc-archive-batch", "jobs": sorted(jobs)}
     archive.write_json(batch / "manifest.json", manifest)
     archive.write_json(batch / "receipts/dispatch.json", {
-        "step": "dispatch", "complete": True, "manifest_sha256": archive.sha256_file(batch / "manifest.json")})
+        "step": "dispatch", "batch": batch.name, "complete": True,
+        "manifest_sha256": archive.sha256_file(batch / "manifest.json")})
 
 
 class BridgeTests(unittest.TestCase):
@@ -574,10 +575,28 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(before, self.snapshot())
 
     def test_needs_the_controller_hosts_unchanged_manifest_and_receipt(self):
+        manifest = (self.batch / "manifest.json").read_bytes()
         (self.batch / "manifest.json").write_text('{"jobs": []}')
         code, _, errors = run(self.argv())
         self.assertEqual(code, 1)
         self.assertIn("dispatch step must be complete", errors[-1]["error"])
+        # Batch 0001's files copied into the directory of batch 0002.
+        (self.batch / "manifest.json").write_bytes(manifest)
+        self.batch = self.batch.rename(self.batch.with_name("0002"))
+        code, _, errors = run(self.argv())
+        self.assertEqual(code, 1)
+        self.assertIn("holds batch 0001's receipt", errors[-1]["error"])
+
+    def test_a_bridge_plan_resumes_only_with_its_own_manifest(self):
+        argv = self.argv("--apply", "--confirm-controller-paused")
+        with mock.patch.object(archive, "move", side_effect=archive.Refused("injected")):
+            self.assertEqual(run(argv)[0], 1)
+        write_batch(self.batch, [job_id(n) for n in (1, 2)])
+        before = self.snapshot()
+        code, _, errors = run(argv)
+        self.assertEqual(code, 1)
+        self.assertIn("belongs to another batch", errors[-1]["error"])
+        self.assertEqual(before, self.snapshot())
 
 
 class FakeMysql:

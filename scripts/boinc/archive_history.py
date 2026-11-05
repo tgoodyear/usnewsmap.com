@@ -781,6 +781,8 @@ def dispatched(batch):
     require(receipt.get("complete") is True and receipt.get("manifest_sha256") == sha256_file(manifest_path),
             "copy the batch's manifest.json and receipts/dispatch.json from the controller host unchanged; "
             "the dispatch step must be complete first")
+    require(receipt.get("batch") == batch.name,
+            f"{batch} holds batch {receipt.get('batch')}'s receipt: copy each batch into the directory of its number")
     manifest = read_json(manifest_path)
     require(all(ID.fullmatch(job) for job in manifest["jobs"]), "invalid batch manifest")
     return manifest
@@ -900,10 +902,17 @@ def bridge(args):
     for root in (handoff_dir / "jobs", results):
         require(not batch.is_relative_to(root), "--batch-dir must be outside the bridge journals and results")
     manifest = dispatched(batch)
+    manifest_sha256 = sha256_file(batch / "manifest.json")
     plan_path = batch / "bridge-plan.json"
     receipt_path = batch / "receipts/bridge.json"
+
+    def planned():
+        plan = read_json(plan_path)
+        require(plan.get("manifest_sha256") == manifest_sha256, "bridge-plan.json belongs to another batch")
+        return plan
+
     if not args.apply:
-        plan = read_json(plan_path) if plan_path.is_file() else bridge_plan(manifest, handoff_dir, results)
+        plan = planned() if plan_path.is_file() else bridge_plan(manifest, handoff_dir, results)
         left = [entry["path"] for files in plan["jobs"].values() for entry in files
                 if (handoff_dir / "jobs" / entry["path"]).exists()]
         left += [entry["path"] for entry in plan["spool"] if (results / entry["path"]).exists()]
@@ -922,10 +931,10 @@ def bridge(args):
     # /run is emptied at boot, but the bridge has created its state directory's lock.
     with flocked(locks, existing=[handoff_dir / ".lock"]):
         if plan_path.is_file():
-            plan = read_json(plan_path)
+            plan = planned()
             progress(f"resuming bridge step of batch {batch.name}")
         else:
-            plan = bridge_plan(manifest, handoff_dir, results)
+            plan = {**bridge_plan(manifest, handoff_dir, results), "manifest_sha256": manifest_sha256}
             need = sum(entry["size"] for files in plan["jobs"].values() for entry in files) \
                 + sum(entry["size"] for entry in plan["spool"])
             batch.mkdir(parents=True, exist_ok=True, mode=0o700)

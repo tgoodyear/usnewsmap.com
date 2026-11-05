@@ -947,9 +947,11 @@ The maintainer approves each live run. To archive:
 4. Copy that batch's `manifest.json` and `receipts/dispatch.json`, unchanged, to
    `/srv/usnm-boinc/project/archive/batches/<NNNN>/` on the BOINC host, and
    `archive_history.py` from the same checkout to `/srv/usnm-boinc/project/archive/`.
-   Then dry-run and apply the `bridge` step there as root. The apply holds the
-   bridge step locks (`/run/usnm-boinc-step.lock`, `/run/usnm-boinc-handoff.lock`
-   and `$HANDOFF_DIR/.lock`), so other bridge steps fail while it runs.
+   Use the same `<NNNN>`: the step refuses a receipt for another batch, and a
+   `bridge-plan.json` made from another manifest. Then dry-run and apply the
+   `bridge` step there as root. The apply holds the bridge step locks
+   (`/run/usnm-boinc-step.lock`, `/run/usnm-boinc-handoff.lock` and
+   `$HANDOFF_DIR/.lock`), so other bridge steps fail while it runs.
 
    ```sh
    python3 /srv/usnm-boinc/project/archive/archive_history.py bridge \
