@@ -1039,7 +1039,8 @@ enum LocTextCommand {
         #[arg(long)]
         dry_run: bool,
         /// Fetch the bag manifest into `--bag-manifest` when it's missing: one request,
-        /// inside the global LoC budget (needs `--loc-global-pacer`). Never on a dry run.
+        /// inside the global LoC budget (only then needs `--loc-global-pacer`). Never on a dry
+        /// run.
         #[arg(long)]
         fetch_manifest: bool,
         /// Where the batch directories are.
@@ -1085,7 +1086,6 @@ struct LocTextAccess {
 
 impl LocTextAccess {
     fn access(self) -> anyhow::Result<usnm_ocr_worker::loc_text::LocAccess> {
-        use usnm_ocr_worker::loc_text::MIN_GAP;
         Ok(usnm_ocr_worker::loc_text::LocAccess {
             global_pacer: self
                 .loc_global_pacer
@@ -1094,7 +1094,7 @@ impl LocTextAccess {
                 Some(dir) => usnm_ocr_worker::fetcher::Policies::load_dir(&dir)?,
                 None => usnm_ocr_worker::fetcher::Policies::builtin(),
             },
-            gap: self.gap_secs.map(|s| Duration::from_secs(s).max(MIN_GAP)),
+            gap: self.gap_secs.map(Duration::from_secs),
         })
     }
 }
@@ -1643,7 +1643,12 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
                     loc,
                 },
         } => {
-            let fetch_manifest = if fetch_manifest {
+            // LoC's budget is needed only for a fetch: not on a dry run, nor for a manifest
+            // that's there.
+            let fetch_manifest = if fetch_manifest
+                && !dry_run
+                && matches!(tokio::fs::try_exists(&bag_manifest).await, Ok(false))
+            {
                 Some((batches_root, loc.access()?))
             } else {
                 None

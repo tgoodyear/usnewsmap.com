@@ -54,7 +54,7 @@ pub const OCR_SOURCE: &str = "loc-api-fulltext";
 pub const API_ROOT: &str = "https://www.loc.gov";
 /// Chronicling America's batch directories, which redirect to the storage service.
 pub const BATCHES_ROOT: &str = "https://chroniclingamerica.loc.gov/data/batches/";
-/// The shortest gap `--gap-secs` takes: www.loc.gov's `Crawl-Delay`.
+/// The shortest gap a `LocAccess` gap override takes: www.loc.gov's `Crawl-Delay`.
 pub const MIN_GAP: Duration = Duration::from_secs(5);
 
 const QUEUE: &str = "queue.json";
@@ -75,7 +75,7 @@ pub struct LocAccess {
     /// The host's global LoC budget.
     pub global_pacer: PathBuf,
     pub policies: Policies,
-    /// This process's gap between requests, in place of the LoC policy's.
+    /// This process's gap between requests, in place of the LoC policy's: at least `MIN_GAP`.
     pub gap: Option<Duration>,
 }
 
@@ -102,7 +102,8 @@ pub struct EnqueueOptions {
     /// `bulk-ocr`'s copy of LoC's datasets table, for the pages LoC lists in the batch.
     pub datasets: Option<PathBuf>,
     pub dry_run: bool,
-    /// Fetch a missing bag manifest from under this root (`.../data/batches/`).
+    /// Fetch a missing bag manifest from under this root (`.../data/batches/`). Never on a
+    /// dry run.
     pub fetch_manifest: Option<(String, LocAccess)>,
 }
 
@@ -285,7 +286,7 @@ fn engine(loc: &LocAccess, out: &Path) -> anyhow::Result<(Engine, Policies)> {
         .named_mut(LOC)
         .context("the policies have none for LoC")?;
     if let Some(gap) = loc.gap {
-        p.min_gap_secs = gap.as_secs();
+        p.min_gap_secs = gap.max(MIN_GAP).as_secs();
     }
     let budgets = FileBudgets::new(None).with_file(
         LOC,
@@ -352,7 +353,7 @@ async fn fetch_manifest(
     out: &Path,
     stop: &watch::Receiver<bool>,
 ) -> anyhow::Result<Vec<u8>> {
-    let url = format!("{root}{batch}/manifest-md5.txt");
+    let url = format!("{}/{batch}/manifest-md5.txt", root.trim_end_matches('/'));
     let (engine, policies) = engine(loc, out)?;
     on_loc(&policies, &url).map_err(anyhow::Error::msg)?;
     engine.check_not_slowed(&url).await?;
@@ -388,8 +389,8 @@ pub async fn enqueue(opts: EnqueueOptions, stop: watch::Receiver<bool>) -> anyho
     let manifest = match tokio::fs::read(&opts.bag_manifest).await {
         Ok(b) => b,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => match &opts.fetch_manifest {
-            Some(_) if opts.dry_run => bail!(
-                "{} is missing, and a dry run asks LoC nothing",
+            _ if opts.dry_run => bail!(
+                "{} is missing, and a dry run asks LoC nothing (`--fetch-manifest` fetches it)",
                 opts.bag_manifest.display()
             ),
             Some((root, loc)) => {

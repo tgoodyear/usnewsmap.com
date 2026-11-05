@@ -81,7 +81,8 @@ impl Rig {
         LocAccess {
             global_pacer: self.pacer(),
             policies: Policies::new(policies).unwrap(),
-            gap: Some(Duration::ZERO),
+            // The test policies have no gap of their own.
+            gap: None,
         }
     }
 
@@ -564,7 +565,10 @@ async fn a_missing_manifest_is_fetched_once_but_never_on_a_dry_run() {
     r.s.put(&storage, body.clone());
     r.s.redirect(&format!("/data/batches/{BATCH}/manifest-md5.txt"), &storage);
     let opts = |dry_run| EnqueueOptions {
-        fetch_manifest: Some((r.s.batches_root(), r.access(vec![policy(LOC, "127.0.0.1")]))),
+        fetch_manifest: Some((
+            r.s.batches_root().trim_end_matches('/').to_owned(),
+            r.access(vec![policy(LOC, "127.0.0.1")]),
+        )),
         ..enqueue_opts(r.out(), &b, Some(LCCN), dry_run)
     };
 
@@ -585,6 +589,18 @@ async fn a_missing_manifest_is_fetched_once_but_never_on_a_dry_run() {
 
     enqueue(opts(false), no_stop()).await.unwrap();
     assert_eq!(r.s.hits_under("/"), 2, "kept");
+}
+
+#[tokio::test]
+async fn a_gap_is_never_under_locs_crawl_delay() {
+    let r = Rig::new().await;
+    for (gap, want) in [(Duration::ZERO, 5), (Duration::from_secs(60), 60)] {
+        let mut loc = r.access(vec![policy(LOC, "127.0.0.1")]);
+        loc.gap = Some(gap);
+        let (_, policies) = engine(&loc, r.dir.path()).unwrap();
+        let p = policies.iter().find(|p| p.name == LOC).unwrap();
+        assert_eq!(p.min_gap_secs, want, "{gap:?}");
+    }
 }
 
 #[test]
