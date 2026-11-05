@@ -13,13 +13,15 @@ use anyhow::{bail, Context};
 use tokio::io::AsyncWriteExt;
 use usnm_store::ObjectStore;
 
-/// Fetches a URL: its body, or `None` when the server has no such page (404).
+/// Fetches a URL: its body, or `None` when the server has no such page (a
+/// 404, or a redirect to its error page: [`Http::with_error_page`]).
 #[async_trait::async_trait]
 pub trait Fetch: Send + Sync {
     async fn get(&self, url: &str) -> anyhow::Result<Option<Vec<u8>>>;
 
     /// Write the body to `dest` (created or truncated) instead of holding it:
-    /// its length, or `None` on a 404 (`dest` is then empty). The default
+    /// its length, or `None` when there is no such page (`dest` is then
+    /// empty). The default
     /// reads the body with [`Fetch::get`]; [`Http`] streams it.
     async fn download(&self, url: &str, dest: &Path) -> anyhow::Result<Option<u64>> {
         match self.get(url).await? {
@@ -45,6 +47,9 @@ pub trait Fetch: Send + Sync {
 /// is cut to what is left, and the request fails rather than wait to retry
 /// past it, so a request started near the deadline can't hold the replica
 /// past the job's hard timeout.
+///
+/// Redirects are followed. With an error page ([`Http::with_error_page`]),
+/// a request redirected there is taken as a 404 and its body isn't read.
 pub struct Http {
     client: reqwest::Client,
     delay: Duration,
@@ -54,6 +59,8 @@ pub struct Http {
     cutoff: Option<tokio::time::Instant>,
     /// Who the server is, in the logs (`UNT`, `GovInfo`).
     server: &'static str,
+    /// The path the server redirects a page it hasn't to (GovInfo's `/error`).
+    error_page: Option<&'static str>,
     last: tokio::sync::Mutex<Option<tokio::time::Instant>>,
 }
 
@@ -110,8 +117,27 @@ impl Http {
             download_timeout: DOWNLOAD_TIMEOUT,
             cutoff: None,
             server,
+            error_page: None,
             last: tokio::sync::Mutex::new(None),
         })
+    }
+
+    /// The path (`/error`) the server sends a page it hasn't to, with a
+    /// redirect and a `200` HTML page rather than a 404: a request
+    /// redirected there gets `None`, as a 404 does.
+    pub fn with_error_page(mut self, path: &'static str) -> Self {
+        self.error_page = Some(path);
+        self
+    }
+
+    /// Whether a successful answer to `url` is the server's error page,
+    /// reached by a redirect.
+    fn is_error_page(&self, url: &str, r: &reqwest::Response) -> bool {
+        let Some(page) = self.error_page else {
+            return false;
+        };
+        let asked = reqwest::Url::parse(url).map(|u| u.path().to_owned());
+        r.url().path() == page && asked.is_ok_and(|p| p != page)
     }
 
     /// How long one try of a page, and of a download, may take.
@@ -183,6 +209,10 @@ impl Http {
         Fut: std::future::Future<Output = anyhow::Result<T>> + Send,
     {
         match self.client.get(url).send().await {
+            Ok(r) if r.status().is_success() && self.is_error_page(url, &r) => {
+                tracing::debug!(url, server = self.server, error_page = %r.url(), "redirected to the error page: taken as a 404");
+                Ok(Try::NotFound)
+            }
             // The body can fail after the headers (a dropped connection): a
             // try like a failed send.
             Ok(r) if r.status().is_success() => match body(r).await {
@@ -530,6 +560,63 @@ mod tests {
             .unwrap();
         assert_eq!(n, None);
         assert!(std::fs::read(&dest).unwrap().is_empty());
+    }
+
+    /// GovInfo answers a PDF it hasn't with a redirect to `/error`, a 200
+    /// HTML page: with the error page set, a 404 for a page or a download,
+    /// whose body isn't read; without it, the page as before.
+    #[tokio::test]
+    async fn a_redirect_to_the_error_page_is_a_404() {
+        use axum::http::{header, StatusCode};
+        use axum::response::IntoResponse;
+        let error_pages = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let e = error_pages.clone();
+        let app = axum::Router::new().fallback(move |uri: axum::http::Uri| {
+            let e = e.clone();
+            async move {
+                match uri.path() {
+                    "/error" => {
+                        e.fetch_add(1, Ordering::SeqCst);
+                        (
+                            [(header::CONTENT_TYPE, "text/html")],
+                            "<!DOCTYPE html><html>Page not found</html>",
+                        )
+                            .into_response()
+                    }
+                    "/moved.pdf" => {
+                        (StatusCode::FOUND, [(header::LOCATION, "/a.pdf")]).into_response()
+                    }
+                    "/a.pdf" => "%PDF-1.4 a".into_response(),
+                    _ => (StatusCode::FOUND, [(header::LOCATION, "/error")]).into_response(),
+                }
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let http = Http::new(Duration::from_millis(10), "usnm-test", "test")
+            .unwrap()
+            .with_error_page("/error");
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("a.pdf");
+        std::fs::write(&dest, b"stale").unwrap();
+        let missing = format!("http://{addr}/content/pkg/x/pdf/x.pdf");
+        assert_eq!(http.download(&missing, &dest).await.unwrap(), None);
+        assert!(std::fs::read(&dest).unwrap().is_empty());
+        assert_eq!(http.get(&missing).await.unwrap(), None);
+        assert_eq!(error_pages.load(Ordering::SeqCst), 2);
+        // Another redirect is followed; the error page asked for itself is a page.
+        let moved = http.get(&format!("http://{addr}/moved.pdf")).await.unwrap();
+        assert_eq!(moved.as_deref(), Some(&b"%PDF-1.4 a"[..]));
+        assert!(http
+            .get(&format!("http://{addr}/error"))
+            .await
+            .unwrap()
+            .is_some());
+        // Without the error page (UNT), the page is the answer, as before.
+        let plain = Http::new(Duration::from_millis(10), "usnm-test", "test").unwrap();
+        let page = plain.get(&missing).await.unwrap().unwrap();
+        assert!(page.starts_with(b"<!DOCTYPE html>"));
     }
 
     /// A try gets its timeout, cut to what is left before the cutoff; none

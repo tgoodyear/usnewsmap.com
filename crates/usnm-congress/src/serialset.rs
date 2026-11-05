@@ -38,8 +38,11 @@
 //! 5. **Write.** One curated attempt per volume
 //!    (`congress/serialset/{volume}/…`, [`super::curated`]) once every
 //!    document is read or left out for good: undated, or with no PDF where
-//!    its MODS names none. A volume with a document GovInfo answered 404
-//!    for (its MODS, or a PDF its MODS names) or that couldn't be read is
+//!    its MODS names none. GovInfo has no file when it answers 404 or
+//!    redirects to its error page ([`ERROR_PAGE`]), and an answer that
+//!    isn't a PDF is no PDF, never given to `pdftotext`. A volume with a
+//!    document GovInfo has no file for (its MODS, or a PDF its MODS names)
+//!    or that couldn't be read is
 //!    `incomplete`: nothing is written, the 404 isn't kept, and the next
 //!    run fetches it again, since a finished attempt records the volume's
 //!    packages and would not be fetched again. A volume stopped by
@@ -85,6 +88,16 @@ pub const SOURCE: &str = "govinfo";
 /// The Cosmos lock that keeps two fetches from running at once: an item id
 /// in the `ops` container, so no `/`.
 pub const LOCK: &str = "congress-serialset";
+
+/// Where GovInfo redirects a request for a file it hasn't, rather than
+/// answer 404: a `200` HTML page.
+pub const ERROR_PAGE: &str = "/error";
+
+/// The client for GovInfo: [`USER_AGENT`], requests `delay` apart, and a
+/// redirect to [`ERROR_PAGE`] taken as a 404.
+pub fn http(delay: Duration) -> anyhow::Result<fetch::Http> {
+    Ok(fetch::Http::new(delay, USER_AGENT, "GovInfo")?.with_error_page(ERROR_PAGE))
+}
 
 /// The sitemap index, under the base URL.
 const INDEX_PATH: &str = "/sitemap/SERIALSET_sitemap_index.xml";
@@ -904,8 +917,9 @@ pub struct Report {
     pub pages: u64,
     /// Documents by how precisely they are dated.
     pub date_precision: BTreeMap<String, u64>,
-    /// Documents GovInfo answered 404 for the MODS or a PDF its MODS names,
-    /// with which: their volumes are left for the next run.
+    /// Documents GovInfo has no MODS for, or no PDF its MODS names (a 404,
+    /// a redirect to its error page, or an answer that isn't a PDF), with
+    /// which: their volumes are left for the next run.
     pub missing: Vec<String>,
     /// Documents whose MODS or PDF couldn't be read, with why: their volumes
     /// are left for the next run.
@@ -913,8 +927,9 @@ pub struct Report {
     /// Volumes not written because a document of theirs is in `missing` or
     /// `unreadable`, with how many: fetched again by the next run.
     pub incomplete: Vec<String>,
-    /// Documents whose MODS names no PDF and that have none (404): left out
-    /// for good, as they have no text.
+    /// Documents whose MODS names no PDF and that have none (a 404, a
+    /// redirect to GovInfo's error page, or an answer that isn't a PDF):
+    /// left out for good, as they have no text.
     pub no_pdf: Vec<String>,
     /// Documents without a usable date: left out for good (until GPO
     /// changes their MODS, and with it their `lastmod`).
@@ -993,14 +1008,30 @@ async fn list(
 /// One document, read.
 enum Got {
     Pages(Box<Mods>, Vec<String>),
-    /// Its MODS names no PDF, and GovInfo has none (404): no text, for good.
+    /// Its MODS names no PDF, and GovInfo has none (a 404, a redirect to
+    /// [`ERROR_PAGE`], or an answer that isn't a PDF): no text, for good.
     NoPdf,
-    /// GovInfo answered 404 for its `mods`, or for a `pdf` its MODS names:
-    /// taken as passing (the sitemap lists the package), so asked again.
+    /// GovInfo has no `mods`, or no `pdf` its MODS names (as for
+    /// [`Got::NoPdf`]): taken as passing (the sitemap lists the package),
+    /// so asked again.
     Missing(&'static str),
     /// Not read this time (MODS that isn't MODS, a PDF pdftotext can't
     /// read): asked again.
     Unreadable(String),
+}
+
+/// How far into a file a reader looks for the `%PDF-` header.
+const PDF_HEADER_WITHIN: u64 = 1024;
+
+/// Whether a file is a PDF: `%PDF-` in its first [`PDF_HEADER_WITHIN`] bytes.
+async fn looks_like_pdf(path: &Path) -> anyhow::Result<bool> {
+    use tokio::io::AsyncReadExt;
+    let f = tokio::fs::File::open(path)
+        .await
+        .with_context(|| path.display().to_string())?;
+    let mut head = Vec::new();
+    f.take(PDF_HEADER_WITHIN).read_to_end(&mut head).await?;
+    Ok(head.windows(5).any(|w| w == b"%PDF-"))
 }
 
 /// Fetch one document's MODS and page texts, from the raw store when it
@@ -1047,16 +1078,25 @@ async fn fetch_document(
         .suffix(".pdf")
         .tempfile_in(&opts.scratch)
         .with_context(|| format!("a scratch file in {}", opts.scratch.display()))?;
+    let no_pdf = || {
+        if mods.pdf_rendition {
+            Got::Missing("pdf")
+        } else {
+            Got::NoPdf
+        }
+    };
     let Some(bytes) = fetch
         .download(&pdf_url(&opts.base, id), file.path())
         .await?
     else {
-        return Ok(if mods.pdf_rendition {
-            Got::Missing("pdf")
-        } else {
-            Got::NoPdf
-        });
+        return Ok(no_pdf());
     };
+    // An error page served as a 200, or anything else that isn't a PDF, is
+    // no PDF, and never handed to pdftotext.
+    if !looks_like_pdf(file.path()).await? {
+        tracing::warn!(id = %id, bytes, "GovInfo's answer for a PDF isn't a PDF; taken as none");
+        return Ok(no_pdf());
+    }
     let pages = match pdf.pages(file.path()).await {
         Ok(p) if !p.is_empty() => p,
         Ok(_) => return Ok(Got::Unreadable("pdf: no pages".into())),
@@ -1118,7 +1158,7 @@ async fn fetch_volume(
                 left_out.push(format!("{id}: no_pdf"));
             }
             Got::Missing(what) => {
-                tracing::warn!(id = %id, what, "GovInfo answered 404 for a file it lists; the volume is left for the next run");
+                tracing::warn!(id = %id, what, "GovInfo has no copy of a file it lists; the volume is left for the next run");
                 report.missing.push(format!("{id}: {what}"));
                 unread += 1;
             }
@@ -2069,18 +2109,27 @@ mod tests {
     }
 
     /// The recorded responses, answering 404 the first time a URL with one
-    /// of `fail_once` in it is asked for, and with the documents in `no_pdf`
-    /// having no PDF (404), which their MODS doesn't name.
+    /// of `fail_once` in it is asked for, with the documents in `no_pdf`
+    /// having no PDF (404), which their MODS doesn't name, and those in
+    /// `html` answering for their PDF with an HTML page.
     #[derive(Default)]
     struct Flaky {
         inner: Recorded,
         fail_once: std::sync::Mutex<Vec<String>>,
         no_pdf: Vec<&'static str>,
+        html: Vec<&'static str>,
     }
+
+    /// GovInfo's error page, cut short.
+    const ERROR_HTML: &str = "<!DOCTYPE html>\n<html lang=\"en\"><head><title>GovInfo</title>";
 
     #[async_trait::async_trait]
     impl Fetch for Flaky {
         async fn get(&self, url: &str) -> anyhow::Result<Option<Vec<u8>>> {
+            if url.ends_with(".pdf") && self.html.iter().any(|id| url.contains(id)) {
+                self.inner.asked.lock().unwrap().push(url.to_owned());
+                return Ok(Some(ERROR_HTML.as_bytes().to_vec()));
+            }
             let failed = {
                 let mut fail = self.fail_once.lock().unwrap();
                 let at = fail.iter().position(|p| url.contains(p.as_str()));
@@ -2228,6 +2277,124 @@ mod tests {
         let f = curated::finished(&curated).await.unwrap();
         let (counts, _) = curated::read_counts(&curated, &f[0]).await.unwrap();
         assert!(counts.pages < 6, "{}", counts.pages);
+    }
+
+    /// `fake` served over HTTP as GovInfo answers: a body is a 200, and no
+    /// body a redirect to its error page, a 200 HTML page. The base URL.
+    async fn serve(fake: Arc<dyn Fetch>) -> String {
+        use axum::http::{header, StatusCode};
+        use axum::response::IntoResponse;
+        let app = axum::Router::new().fallback(move |uri: axum::http::Uri| {
+            let fake = fake.clone();
+            async move {
+                if uri.path() == ERROR_PAGE {
+                    return ([(header::CONTENT_TYPE, "text/html")], ERROR_HTML).into_response();
+                }
+                match fake.get(&format!("{BASE}{}", uri.path())).await.unwrap() {
+                    Some(body) => body.into_response(),
+                    None => (StatusCode::FOUND, [(header::LOCATION, ERROR_PAGE)]).into_response(),
+                }
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        format!("http://{addr}")
+    }
+
+    /// GovInfo redirects a request for a PDF it hasn't to its error page
+    /// (#1531). Through [`http`] that is no PDF: with no PDF named in the
+    /// MODS, left out for good, and a volume of nothing else is finished
+    /// empty; with one named, missing and asked for again. A MODS is
+    /// missing the same way, and a sitemap fails the run. An HTML page
+    /// served as the PDF is never given to pdftotext.
+    #[tokio::test]
+    async fn govinfo_s_error_page_is_no_pdf() {
+        let dir = tempfile::tempdir().unwrap();
+        let lost = AtomicBool::new(false);
+        let text = RecordedText::default();
+        let read = || text.0.load(Ordering::SeqCst);
+        let gi = http(Duration::from_millis(10)).unwrap();
+        let opts = |base: String| Options {
+            base,
+            serials: vec![33],
+            ..options(dir.path())
+        };
+        let store = |name: &str| usnm_store::LocalStore::new(dir.path().join(name));
+
+        // No PDF named, and the error page for both: an empty volume, done.
+        let curated = store("none");
+        let base = serve(Arc::new(Flaky {
+            no_pdf: vec![D42, D53],
+            ..Flaky::default()
+        }))
+        .await;
+        let r = run(&gi, &text, &curated, None, &opts(base), &lost)
+            .await
+            .unwrap();
+        assert_eq!(r.no_pdf, [D42, D53]);
+        assert!(r.unreadable.is_empty() && r.missing.is_empty() && r.incomplete.is_empty());
+        assert_eq!(r.empty_volumes, ["00033_00_00"]);
+        assert!(r.finished(), "{r:?}");
+        assert_eq!(read(), 0);
+
+        // A PDF named, and a MODS, answered with the error page once:
+        // missing, so the volume is left; the next run finishes it.
+        let curated = store("named");
+        let base = serve(Arc::new(Flaky {
+            fail_once: std::sync::Mutex::new(vec![format!("{D42}/mods.xml"), format!("{D53}.pdf")]),
+            ..Flaky::default()
+        }))
+        .await;
+        let r = run(&gi, &text, &curated, None, &opts(base.clone()), &lost)
+            .await
+            .unwrap();
+        assert_eq!(r.missing, [format!("{D42}: mods"), format!("{D53}: pdf")]);
+        assert!(r.unreadable.is_empty() && r.no_pdf.is_empty());
+        assert_eq!(r.incomplete, ["00033_00_00: 2 of 2"]);
+        assert!(!r.finished());
+        let r = run(&gi, &text, &curated, None, &opts(base), &lost)
+            .await
+            .unwrap();
+        assert_eq!(r.written, [("00033_00_00".to_owned(), 1, 6)]);
+        assert_eq!(read(), 2);
+
+        // An HTML page served as D53's PDF: missing with a PDF named, no
+        // PDF without; pdftotext reads only D42.
+        for (no_pdf, html) in [(vec![], vec![D53]), (vec![D53], vec![D53])] {
+            let curated = store(&format!("html-{}", no_pdf.len()));
+            let base = serve(Arc::new(Flaky {
+                no_pdf: no_pdf.clone(),
+                html,
+                ..Flaky::default()
+            }))
+            .await;
+            let before = read();
+            let r = run(&gi, &text, &curated, None, &opts(base), &lost)
+                .await
+                .unwrap();
+            assert!(r.unreadable.is_empty(), "{:?}", r.unreadable);
+            assert_eq!(read(), before + 1, "only D42 read");
+            if no_pdf.is_empty() {
+                assert_eq!(r.missing, [format!("{D53}: pdf")]);
+                assert_eq!(r.incomplete, ["00033_00_00: 1 of 2"]);
+            } else {
+                assert_eq!(r.no_pdf, [D53]);
+                assert_eq!(r.written.len(), 1);
+                assert!(r.finished(), "{r:?}");
+            }
+        }
+
+        // A sitemap answered with the error page: the run fails.
+        let base = serve(Arc::new(Flaky {
+            fail_once: std::sync::Mutex::new(vec!["SERIALSET_1990_sitemap".into()]),
+            ..Flaky::default()
+        }))
+        .await;
+        let err = run(&gi, &text, &store("sitemap"), None, &opts(base), &lost)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("404"), "{err:#}");
     }
 
     /// A volume all of whose documents are left out for good gets an empty
@@ -2684,7 +2851,7 @@ mod tests {
         assert_eq!(pages[0].trim(), "Letter from the Secretary");
         assert_eq!(pages[1].trim(), "");
         assert_eq!(pages[2].trim(), "of the Treasury");
-        // Not a PDF: an error, which the fetch counts as unreadable.
+        // Not a PDF: an error (the fetch never gives it one: #1531).
         std::fs::write(&pdf, b"<html>not a pdf</html>").unwrap();
         assert!(Pdftotext::new("pdftotext").pages(&pdf).await.is_err());
         assert!(Pdftotext::new("/nonexistent/pdftotext")
