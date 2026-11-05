@@ -18,7 +18,8 @@ import time
 
 # The first app version that reads each request version (qwen-auto-cohort.py keeps the same table).
 REQUEST_MIN_APP = {1: 0, 2: 115, 3: 117, 4: 117}
-# Requests with the loop guard. The server image's own `qwen submit` predates them.
+# Requests with the loop guard. A server image from before #1437 refuses to submit them, so
+# without --submit-binary they go with the stage binary (#1449).
 GUARDED_VERSIONS = (3, 4)
 YIDDISH = "yid"
 
@@ -885,6 +886,9 @@ def main():
     ap.add_argument("--sample", type=Path, help="READY chunk; every source needs a terminal native disposition")
     isolated_stage = Path(__file__).with_name("usnm-boinc-stage")
     ap.add_argument("--stage-binary", default=str(isolated_stage) if isolated_stage.is_file() else "usnm-boinc")
+    ap.add_argument("--submit-binary",
+                    help="submit every request version with this binary (the image's usnm-boinc once it is "
+                         "from #1437 on); without it, versions 3 and 4 submit with --stage-binary")
     ap.add_argument("--max-pages", type=int, default=100)
     ap.add_argument("--prompt-version", type=int, choices=(1, 2, 3, 4), default=1,
                     help="Request version to stage; every dispatchable app version must read it")
@@ -928,6 +932,8 @@ def main():
     if a.transaction:
         if a.preflight:
             ap.error("transaction publication is not a read-only preflight")
+        if a.submit_binary:
+            ap.error("transactions submit with --stage-binary")
         if a.max_ready > 1000 or a.max_unresolved > 2000 or a.min_free_gb < 50:
             ap.error("subset transactions retain the 1000/2000 watermarks and 50 GiB floor")
         try:
@@ -954,7 +960,7 @@ def main():
              "--gpu-timeout-secs", "14400", "--cpu-timeout-secs", "7200", "--bundle-size", "1",
              "--prompt-version", str(a.prompt_version)]
     subprocess.run(stage, check=True)
-    submit_binary = a.stage_binary if a.prompt_version in GUARDED_VERSIONS else "usnm-boinc"
+    submit_binary = a.submit_binary or (a.stage_binary if a.prompt_version in GUARDED_VERSIONS else "usnm-boinc")
     subprocess.run([submit_binary, "qwen", "submit", "--root", str(root), "--project", str(a.project),
                     "--target", "native-8b", "--model-dir", str(a.models), "--max-units", str(a.max_pages)],
                    check=True)

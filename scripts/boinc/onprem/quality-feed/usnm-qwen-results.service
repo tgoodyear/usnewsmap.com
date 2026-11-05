@@ -10,8 +10,10 @@ ConditionPathExists=/etc/usnm/quality-ship.env
 Type=oneshot
 EnvironmentFile=/etc/usnm/quality-ship.env
 Environment=CTID=215
-# One --native-campaign NAME[=COLLECTOR] per root the feed writes (word-split on purpose). The
-# version 1 root keeps the collector and cache it has; roots at 3 and 4 need a build from #1437 on.
+# One --native-campaign NAME[=COLLECTOR] per root the feed writes (word-split on purpose). Roots at
+# 3 and 4 need a build from #1437 on. A root's cache is keyed to its collector, so moving every root
+# to one collector warms the moved roots first (docs/boinc-quality.md, "One submit binary and one
+# collector"). Never name the server image's usnm-boinc, which every rebuild replaces.
 Environment="NATIVE_QWEN_ARGS=--native-campaign qwen-nonenglish-v1"
 Environment=QUALITY_COLLECTOR=/project/ops/quality-results/usnm-boinc
 # Before the validator runs crop-consensus-v2 (#1434), and once every collector named above is from

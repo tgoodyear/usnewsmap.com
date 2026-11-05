@@ -207,10 +207,13 @@ state before and after.
   updates a changed `user_friendly_name`, so the branch's `project.xml` was copied into the
   project and `bin/xadd` run, as the `register-apps` step does.
 - The six validator and assimilator daemons of the three apps keep running with nothing to
-  do. They come from `config.xml`, rendered at container start (`render_config` in
+  do, and so do Surya's two. They come from `config.xml`, rendered at container start (`render_config` in
   `contrib-compute/images/server/lib.sh`), and changing the live copy would change the
-  `config.xml` SHA-256 the Qwen auto-cohort controller pins. Drop them from `render_config`
-  in a later server image, and update that pin, to take them off the status page.
+  `config.xml` SHA-256 the Qwen auto-cohort controller pins. #1449 drops all eight from
+  `render_config`. They leave the status page when the server runs an image built from it. That
+  restart changes the pin (`CONFIG_SHA256` in `/etc/usnm-boinc/qwen-cohort-auto.env`), so
+  disable `usnm-qwen-cohort-auto.timer` before it, and update the pin after it
+  ([boinc-intel-gpu.md](../boinc-intel-gpu.md)).
 
 The state before is saved under `/project/ops/app-tidy-20261102/` with the script that made
 the change. Rollback, in the server container as `boincadm`: run
@@ -218,6 +221,10 @@ the change. Rollback, in the server container as `boincadm`: run
 It restores the app names and `deprecated` flags, the two workunits' `error_mask` and their
 results' state, and the previous `project.xml`, then touches `reread_db`. That trigger
 does not itself refresh the slot map; coordinate the feeder-only boundary after a rollback.
+
+Retiring an app no longer leaves its daemons running. Restoring `usnm_surya`, `usnm_assess`,
+`usnm_iris` or `usnm_qwen_train` now also needs its daemons and validator links back in
+`render_config`, and a new server image.
 
 ## Moving the project share
 

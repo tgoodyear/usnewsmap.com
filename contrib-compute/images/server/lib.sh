@@ -151,42 +151,30 @@ render_config() {
   local daemons
   daemons='<daemon><cmd>sample_trivial_validator --app usnm_ocr</cmd><output>sample_trivial_validator_usnm_ocr.log</output><pid_file>sample_trivial_validator_usnm_ocr.pid</pid_file></daemon>
         <daemon><cmd>batch_collect_assimilator --app usnm_ocr</cmd><output>batch_collect_assimilator_usnm_ocr.log</output><pid_file>batch_collect_assimilator_usnm_ocr.pid</pid_file></daemon>'
-  # The assessment app (#456), the gold check (#462) and the Surya test (#516) validate with usnm-boinc, which only the bridge image carries.
-  # A server run from that image adds its daemons and links the validator scripts into bin/.
+  # The gold check (#462), NDL OCR, QUALITY and Qwen validate with usnm-boinc, which only the bridge image carries.
+  # A server run from that image adds their daemons and links the validator scripts into bin/.
+  # The retired usnm_assess, usnm_surya, usnm_iris and usnm_qwen_train have none (#1449): see
+  # "Retiring an app" in docs/boinc/server-and-apps.md. Links an older image made stay in bin/.
   # Script names only: script_validator then adds "files" (and "files2") itself. Spelled out,
   # the macros never expand at BOINC 22bbebe0, whose split() keeps the delimiter on each token.
   if command -v usnm-boinc >/dev/null 2>&1; then
     daemons="$daemons
-        <daemon><cmd>script_validator --app usnm_assess --init_script usnm_assess_check --compare_script usnm_assess_compare</cmd><output>script_validator_usnm_assess.log</output><pid_file>script_validator_usnm_assess.pid</pid_file></daemon>
-        <daemon><cmd>batch_collect_assimilator --app usnm_assess</cmd><output>batch_collect_assimilator_usnm_assess.log</output><pid_file>batch_collect_assimilator_usnm_assess.pid</pid_file></daemon>
         <daemon><cmd>script_validator --app usnm_gold --init_script usnm_gold_check</cmd><output>script_validator_usnm_gold.log</output><pid_file>script_validator_usnm_gold.pid</pid_file></daemon>
         <daemon><cmd>batch_collect_assimilator --app usnm_gold</cmd><output>batch_collect_assimilator_usnm_gold.log</output><pid_file>batch_collect_assimilator_usnm_gold.pid</pid_file></daemon>
         <daemon><cmd>script_validator --app usnm_ndlocr --init_script usnm_ndlocr_check --compare_script usnm_ndlocr_compare</cmd><output>script_validator_usnm_ndlocr.log</output><pid_file>script_validator_usnm_ndlocr.pid</pid_file></daemon>
         <daemon><cmd>batch_collect_assimilator --app usnm_ndlocr</cmd><output>batch_collect_assimilator_usnm_ndlocr.log</output><pid_file>batch_collect_assimilator_usnm_ndlocr.pid</pid_file></daemon>
-        <daemon><cmd>script_validator --app usnm_surya --init_script usnm_surya_check --compare_script usnm_surya_compare</cmd><output>script_validator_usnm_surya.log</output><pid_file>script_validator_usnm_surya.pid</pid_file></daemon>
-        <daemon><cmd>batch_collect_assimilator --app usnm_surya</cmd><output>batch_collect_assimilator_usnm_surya.log</output><pid_file>batch_collect_assimilator_usnm_surya.pid</pid_file></daemon>
         <daemon><cmd>script_validator --app usnm_quality --init_script usnm_quality_check --compare_script usnm_quality_compare</cmd><output>script_validator_usnm_quality.log</output><pid_file>script_validator_usnm_quality.pid</pid_file></daemon>
         <daemon><cmd>batch_collect_assimilator --app usnm_quality</cmd><output>batch_collect_assimilator_usnm_quality.log</output><pid_file>batch_collect_assimilator_usnm_quality.pid</pid_file></daemon>
         <daemon><cmd>script_validator --app usnm_qwen --init_script usnm_qwen_check --compare_script usnm_qwen_compare</cmd><output>script_validator_usnm_qwen.log</output><pid_file>script_validator_usnm_qwen.pid</pid_file></daemon>
-        <daemon><cmd>batch_collect_assimilator --app usnm_qwen</cmd><output>batch_collect_assimilator_usnm_qwen.log</output><pid_file>batch_collect_assimilator_usnm_qwen.pid</pid_file></daemon>
-        <daemon><cmd>script_validator --app usnm_qwen_train --init_script usnm_qwen_train_check</cmd><output>script_validator_usnm_qwen_train.log</output><pid_file>script_validator_usnm_qwen_train.pid</pid_file></daemon>
-        <daemon><cmd>batch_collect_assimilator --app usnm_qwen_train</cmd><output>batch_collect_assimilator_usnm_qwen_train.log</output><pid_file>batch_collect_assimilator_usnm_qwen_train.pid</pid_file></daemon>
-        <daemon><cmd>script_validator --app usnm_iris --init_script usnm_iris_check</cmd><output>script_validator_usnm_iris.log</output><pid_file>script_validator_usnm_iris.pid</pid_file></daemon>
-        <daemon><cmd>batch_collect_assimilator --app usnm_iris</cmd><output>batch_collect_assimilator_usnm_iris.log</output><pid_file>batch_collect_assimilator_usnm_iris.pid</pid_file></daemon>"
+        <daemon><cmd>batch_collect_assimilator --app usnm_qwen</cmd><output>batch_collect_assimilator_usnm_qwen.log</output><pid_file>batch_collect_assimilator_usnm_qwen.pid</pid_file></daemon>"
     if [ -d "$PROJ/bin" ]; then
-      ln -sfn "$TEMPLATES/usnm_assess_check" "$PROJ/bin/usnm_assess_check"
-      ln -sfn "$TEMPLATES/usnm_assess_compare" "$PROJ/bin/usnm_assess_compare"
       ln -sfn "$TEMPLATES/usnm_gold_check" "$PROJ/bin/usnm_gold_check"
       ln -sfn "$TEMPLATES/usnm_ndlocr_check" "$PROJ/bin/usnm_ndlocr_check"
       ln -sfn "$TEMPLATES/usnm_ndlocr_compare" "$PROJ/bin/usnm_ndlocr_compare"
-      ln -sfn "$TEMPLATES/usnm_surya_check" "$PROJ/bin/usnm_surya_check"
-      ln -sfn "$TEMPLATES/usnm_surya_compare" "$PROJ/bin/usnm_surya_compare"
       ln -sfn "$TEMPLATES/usnm_quality_check" "$PROJ/bin/usnm_quality_check"
       ln -sfn "$TEMPLATES/usnm_quality_compare" "$PROJ/bin/usnm_quality_compare"
       ln -sfn "$TEMPLATES/usnm_qwen_check" "$PROJ/bin/usnm_qwen_check"
       ln -sfn "$TEMPLATES/usnm_qwen_compare" "$PROJ/bin/usnm_qwen_compare"
-      ln -sfn "$TEMPLATES/usnm_qwen_train_check" "$PROJ/bin/usnm_qwen_train_check"
-      ln -sfn "$TEMPLATES/usnm_iris_check" "$PROJ/bin/usnm_iris_check"
     fi
   fi
   DB_PASSWD="$(cat "$SECRETS/db-runtime")" python3 - "$TEMPLATES/config.xml.template" "$SECRETS/config.xml" "$daemons" <<'PY'

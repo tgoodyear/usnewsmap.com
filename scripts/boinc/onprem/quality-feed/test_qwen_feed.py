@@ -2089,26 +2089,42 @@ class SourceTest(unittest.TestCase):
                     with self.assertRaisesRegex(RuntimeError, "does not belong"):
                         submit.assert_request_cohort(job, version)
 
-    def test_guarded_requests_submit_with_the_binary_that_stages_them(self):
-        with tempfile.TemporaryDirectory() as folder:
-            root = Path(folder)
-            plan = root / "plan.json"
-            plan.write_text(json.dumps({"engine": {"image": "image", "llama": "llama", "weights": "weights"}}))
-            argv = ["qwen_submit.py", "--share", str(root), "--project", str(root), "--campaign", "qwen-test",
-                    "--engine-plan", str(plan), "--models", str(root), "--stage-binary", "/guard/usnm-boinc",
-                    "--prompt-version", "3"]
-            state = {"ready": 0, "fresh_pairs": 0, "unresolved_native": 0, "free_bytes": 10**12,
-                     "app_versions": [], "min_version": 0}
-            with mock.patch.object(sys, "argv", argv), \
-                    mock.patch.object(submit, "inventory", return_value=state), \
-                    mock.patch.object(submit.subprocess, "run") as run, \
-                    mock.patch.object(submit, "assert_submitted"), \
-                    mock.patch.object(submit, "audit", return_value={}):
-                submit.main()
-            stage, publish = (call.args[0] for call in run.call_args_list)
-            self.assertEqual(stage[:3], ["/guard/usnm-boinc", "qwen", "stage"])
-            self.assertEqual(stage[stage.index("--prompt-version") + 1], "3")
-            self.assertEqual(publish[:3], ["/guard/usnm-boinc", "qwen", "submit"])
+    def test_guarded_requests_submit_with_the_stage_binary_unless_a_submit_binary_is_set(self):
+        # Until the server image is from #1437 on, versions 3 and 4 submit with the binary that
+        # staged them; --submit-binary then names one binary for every version (#1449).
+        for extra, version, expected in (([], "3", "/guard/usnm-boinc"), ([], "1", "usnm-boinc"),
+                                         (["--submit-binary", "usnm-boinc"], "3", "usnm-boinc"),
+                                         (["--submit-binary", "/image/usnm-boinc"], "1", "/image/usnm-boinc")):
+            with self.subTest(extra=extra, version=version), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                plan = root / "plan.json"
+                plan.write_text(json.dumps({"engine": {"image": "image", "llama": "llama", "weights": "weights"}}))
+                argv = ["qwen_submit.py", "--share", str(root), "--project", str(root), "--campaign", "qwen-test",
+                        "--engine-plan", str(plan), "--models", str(root), "--stage-binary", "/guard/usnm-boinc",
+                        "--prompt-version", version, *extra]
+                state = {"ready": 0, "fresh_pairs": 0, "unresolved_native": 0, "free_bytes": 10**12,
+                         "app_versions": [], "min_version": 0}
+                with mock.patch.object(sys, "argv", argv), \
+                        mock.patch.object(submit, "inventory", return_value=state), \
+                        mock.patch.object(submit.subprocess, "run") as run, \
+                        mock.patch.object(submit, "assert_submitted"), \
+                        mock.patch.object(submit, "audit", return_value={}):
+                    submit.main()
+                stage, publish = (call.args[0] for call in run.call_args_list)
+                self.assertEqual(stage[:3], ["/guard/usnm-boinc", "qwen", "stage"])
+                self.assertEqual(stage[stage.index("--prompt-version") + 1], version)
+                self.assertEqual(publish[:3], [expected, "qwen", "submit"])
+
+    def test_transactions_refuse_a_submit_binary_they_would_not_use(self):
+        argv = ["qwen_submit.py", "--campaign", "qwen-test", "--engine-plan", "plan.json", "--models", "models",
+                "--transaction", "a" * 64, "--submit-binary", "usnm-boinc"]
+        state = {"ready": 0, "fresh_pairs": 0, "unresolved_native": 0, "free_bytes": 10**12,
+                 "app_versions": [], "min_version": 0}
+        with mock.patch.object(sys, "argv", argv), mock.patch.object(submit, "inventory", return_value=state), \
+                mock.patch.object(submit, "run_transaction") as transaction, \
+                mock.patch("sys.stderr"), self.assertRaises(SystemExit):
+            submit.main()
+        transaction.assert_not_called()
 
     def budget_tick(self, root, budget, yiddish, others, german_budget=None, german_pages=None, retryable=()):
         """One feed tick with a stub corpus; returns the filters each select used and the

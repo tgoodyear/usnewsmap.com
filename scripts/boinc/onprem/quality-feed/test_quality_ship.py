@@ -166,11 +166,27 @@ elif "python3" in args and "-" in args:
 
     def test_request_versions_and_roots_are_native_only_and_checked(self):
         for extra, native in ((["--prompt-version", "3"], False), (["--qwen-root", "x"], False),
-                              (["--prompt-version", "5"], True), (["--qwen-root", "Bad_Name"], True)):
+                              (["--prompt-version", "5"], True), (["--qwen-root", "Bad_Name"], True),
+                              (["--qwen-submit-binary", "usnm-boinc"], False),
+                              (["--qwen-submit-binary", "-x"], True), (["--qwen-submit-binary", "a b"], True)):
             with self.subTest(extra=extra):
                 result = self.run_ship(extra, native=native)
                 self.assertEqual(result.returncode, 1, result.stderr)
                 self.assertFalse((self.root / "calls.jsonl").exists())
+
+    def test_a_submit_binary_reaches_only_the_native_submit(self):
+        # #1449: once the image submits every request version, the service names it by config.
+        for extra, expected in (([], None), (["--qwen-submit-binary", "usnm-boinc"], "usnm-boinc"),
+                                (["--qwen-submit-binary", "/project/ops/x/usnm-boinc"], "/project/ops/x/usnm-boinc")):
+            with self.subTest(extra=extra):
+                (self.root / "calls.jsonl").unlink(missing_ok=True)
+                result = self.run_ship([*self.GUARDED, *extra], langs="srp\n")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                preflight, publish = self.native_calls()
+                self.assertIn("--preflight", preflight)
+                self.assertNotIn("--submit-binary", preflight)
+                self.assertEqual(publish[publish.index("--submit-binary") + 1] if expected else None, expected)
+                self.assertEqual(publish.count("--submit-binary"), 1 if expected else 0)
 
     def test_stage_and_submit_do_not_wait_for_the_step_window(self):
         # The stage has its own lock on the host, and only native publication reads the clock.

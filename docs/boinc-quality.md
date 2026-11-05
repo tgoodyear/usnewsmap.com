@@ -599,7 +599,7 @@ Prod's bridge steps run on the on-prem host since 21 October 2026. Run each `scr
 
    Crop source text has a separate, unchanged 8192-byte UTF-8 limit. If any selected crop exceeds it, staging retains the complete candidate as `rejected-qwen.json`, the original `loc.xml`, `quality.json`, `page.jpg` and available `sample.json`, then writes the existing `too_large` terminal marker. Its reason names every oversized crop, box, byte count, text hash and source hashes. No `qwen.json` is published, no text is truncated, and other pages continue within `--max-pages`. Repeats preserve that evidence; feed inventory remembers rejected documents without counting them as submitted work. Other schema errors still fail closed.
 
-   For an isolated reviewed staging-binary rollout, `qwen_submit.py` uses a sibling `usnm-boinc-stage` executable when installed, otherwise the existing `usnm-boinc`; `--stage-binary` can select an explicit executable. Submission and collectors continue using their existing binary, except that requests at versions 3 and 4 submit with the staging binary, because the server image's `qwen submit` refuses them until it is rebuilt from #1437 or later. Install only an approved hash-bound artifact at an idle boundary under the normal project lock. Shared shipper helpers, service units and timers need no changes.
+   For an isolated reviewed staging-binary rollout, `qwen_submit.py` uses a sibling `usnm-boinc-stage` executable when installed, otherwise the existing `usnm-boinc`; `--stage-binary` can select an explicit executable. By default, requests at version 1 submit with the existing `usnm-boinc`, and requests at versions 3 and 4 with the staging binary, because a server image built before #1437 has a `qwen submit` that refuses them. `--submit-binary` names one submit executable for every version (`--qwen-submit-binary` on `quality-ship.sh`, set in `QWEN_SHIP_ARGS`). After the image is rebuilt, the operator switches by configuration alone (see [One submit binary and one collector](#one-submit-binary-and-one-collector-1449)). Transactions (`--transaction`) always submit with the staging binary and refuse `--submit-binary`. Install only an approved hash-bound artifact at an idle boundary under the normal project lock. Shared shipper helpers, service units and timers need no changes.
 
 4. **Submit both apps' workunits (`bridge-job.sh`, `BRIDGE_STEP=quality-submit` and `BRIDGE_STEP=qwen-submit`).** Hands the staged units to `create_work` with two results per workunit (`QUALITY_MAX` default 500, `QWEN_MAX` default 20) and invalidates `$PROJ/html/cache/f2/server_status.php_job_status` so `https://boinc.usnewsmap.com/server_status.php` reflects the new queue immediately (live uncached counts are also always available at `https://boinc.usnewsmap.com/server_status.php?counts=1`):
 
@@ -826,7 +826,8 @@ no LoC request:
    QUALITY scorer's `ENGINE_IMAGE`) in `/etc/usnm/quality-results-qwen.env`, never by
    modifying feeder settings. A collector older than #1437 can't read version 3 or 4
    jobs, so those roots name a newer one, and `qwen-nonenglish-v1` keeps its own so its
-   cached rows stay as they are. A root must exist before it is listed. A root that
+   cached rows stay as they are. [One submit binary and one collector](#one-submit-binary-and-one-collector-1449)
+   moves all three roots to one collector without a cold pass. A root must exist before it is listed. A root that
    fails doesn't stop the next; the service fails at the end and names it. Each pass archives fresh `pages.parquet`, `crops.parquet`
    and summary on the server, then certificate-loads page/reader scores. Readings
    pending quorum remain pending and join on a later pass; they are not reported as
@@ -1283,6 +1284,49 @@ QWEN_FEED_ARGS="--yiddish-budget 40"
 `--german-budget N` does the same for German (`deu`) while it is being calibrated, recorded in `german-budget.json`. German pages come as a chunk of their own after any Yiddish budget, and the normal order leaves German out. A German chunk goes to `--qwen-root` at `--prompt-version`. `--german-pages FILE` (doc_ids, one a line) limits the German budget to a frozen sample, worst damage first. The November calibration used 50 of Study 1's pilot pages from #1428, which already have `frak2021` and `deu_latf` readings. `--exclude-language` on `quality_feed.py select` may repeat.
 
 A new root needs the refill and the collector told about it: add the root to `CAMPAIGN_ARGS` in the refill's env, and to `NATIVE_QWEN_ARGS` once its quality root exists. The version 1 root stays out of the refill, so its backlog goes only to the classes open to it.
+
+### One submit binary and one collector (#1449)
+
+The roots at versions 3 and 4 depend on the static build `/project/ops/qwen-feed/request-guard-44465088/usnm-boinc` (#1437) twice:
+
+- `qwen_submit.py` submits them with it, as `usnm-boinc-stage`, because a server image built before #1437 has a `qwen submit` that refuses them.
+- `usnm-qwen-results` collects them with it, because the collector at `/project/ops/quality-results/usnm-boinc` can't read them. `qwen-nonenglish-v1` keeps that older collector.
+
+Both are settings, so neither move needs a code change. Each is undone by removing what it set.
+
+**Submission, after the server image is rebuilt.** Once the server runs an image built from #1437 or later, add `--qwen-submit-binary usnm-boinc` to `QWEN_SHIP_ARGS` in `/etc/usnm/qwen-feed.env` on the shipping host. The flag needs the `quality-ship.sh` and `qwen_submit.py` from #1449 or later.
+
+```
+QWEN_SHIP_ARGS="--prompt-version 3 --qwen-root NAME --qwen-yiddish-root NAME --yiddish-prompt-version 4 --qwen-submit-binary usnm-boinc"
+```
+
+Every version then submits with the image's `usnm-boinc`. Staging keeps `usnm-boinc-stage`, and so does transactional submission. Watch the next tick that ships a chunk. If the image still refuses a version, the submit fails, the tick fails, and the chunk stays READY. Removing the flag goes back to the static build.
+
+**The collector.** The row cache's key (`Cache::new` in `crates/usnm-boinc/src/quality/collect_cache.rs`) includes the collector's resolved path and its bytes, and the `--qwen-crop-states` directory. A root whose collector changes has every unit dirty. A pass recomputes at most `--max-dirty-units` (8) of them and exits nonzero before publishing, so `qwen-nonenglish-v1` (about 90 units) would fail about 12 ticks, three hours, with no new rows. The old parts stay, so switching back costs nothing while they're there. No single collector keeps every key, because the older one can't read versions 3 and 4. `qwen-nonenglish-v1` moves once, warmed first:
+
+1. Never name the image's `usnm-boinc`, or anything a rebuild replaces, as a collector. Every image rebuild would then rewarm every root. The rebuild for #1449 doesn't change a collector.
+2. Use the static build that versions 3 and 4 already collect with. The versions 3 and 4 keys stay the same (same resolved path, same bytes), and only `qwen-nonenglish-v1` changes. This doesn't depend on the image rebuild. Keep `request-guard-44465088/` in place while it is named.
+3. Warm `qwen-nonenglish-v1` with that build before the switch, so no tick fails. This is the service's own collection with the static build, written to a scratch output directory: the cache is the real one, and the published snapshot isn't touched. Run it on the BOINC host, as root. A pass that still has cold units writes 8 of them, then fails with `collection cache warmed 8 dirty units; at least N deferred`. Repeat it until it exits 0.
+
+   ```sh
+   pct exec 230 -- flock -w 60 /run/usnm-boinc-step.lock podman exec usnm-boinc-server \
+     timeout --signal=TERM --kill-after=30s 20m /project/ops/qwen-feed/request-guard-44465088/usnm-boinc \
+     quality collect --campaign qwen-nonenglish-v1 --root /project/quality/qwen-nonenglish-v1 \
+     --spool /project/usnmocr/results/0 --qwen-root /project/qwen/qwen-nonenglish-v1 \
+     --qwen-spool /project/usnmocr/results/8 --out-dir /project/ops/quality-results/prewarm/qwen-nonenglish-v1 \
+     --cache /project/quality/qwen-nonenglish-v1/collected-parts --max-dirty-units 8
+   ```
+
+4. In `/etc/usnm/quality-results-qwen.env` on the preparation host, name the build once and drop the per-root `=COLLECTOR`:
+
+   ```
+   QUALITY_COLLECTOR=/project/ops/qwen-feed/request-guard-44465088/usnm-boinc
+   NATIVE_QWEN_ARGS="--native-campaign qwen-nonenglish-v1 --native-campaign qwen-guard-v3-20261102 --native-campaign qwen-guard-v4-20261102"
+   ```
+
+   Set it in this file only. `usnm-quality-results` reads `quality-results.env` and the `/project/ops/quality-results/usnm-boinc` link, and keeps its collector. The next tick should print a `loaded_at` line for each of the three roots and exit 0. Then delete `/project/ops/quality-results/prewarm/`.
+
+Turning on the crop rule changes every root's key anyway, through `CROP_STATES_ARGS`, and needs a collector from #1434 (#1490) on, which `request-guard-44465088` predates. If the crop rule is coming soon, make one move instead of two. Install one such build at a new path of its own, warm all three roots with it and `--qwen-crop-states /project/usnmocr/qwen/crop-states`, as in step 3, and then set `QUALITY_COLLECTOR` and `CROP_STATES_ARGS` together.
 
 ### OCR's prefetch manifests (#1055)
 
