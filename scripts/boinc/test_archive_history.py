@@ -561,6 +561,18 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(code, 0, receipt)
         self.assertEqual(target.read_bytes(), b"synthetic page")
 
+    def test_a_symlinked_results_directory_is_refused(self):
+        link = self.results.with_name("results-link")
+        link.symlink_to(self.results, target_is_directory=True)
+        argv = self.argv("--apply", "--confirm-controller-paused")
+        argv[argv.index(str(self.results))] = str(link)
+        before = self.snapshot()
+        code, _, errors = run(argv)
+        self.assertEqual(code, 1)
+        self.assertIn("--results", errors[-1]["error"])
+        self.assertIn("is a symlink", errors[-1]["error"])
+        self.assertEqual(before, self.snapshot())
+
     def test_needs_the_controller_hosts_unchanged_manifest_and_receipt(self):
         (self.batch / "manifest.json").write_text('{"jobs": []}')
         code, _, errors = run(self.argv())

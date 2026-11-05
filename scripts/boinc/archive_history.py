@@ -122,6 +122,18 @@ def write_atomic(path, data):
     fsync_dir(path.parent)
 
 
+def copy_atomic(source, path):
+    """write_atomic for a file's contents, copied a chunk at a time."""
+    partial = path.with_name(path.name + ".partial")
+    partial.unlink(missing_ok=True)
+    with open(source, "rb") as data, open(partial, "wb") as out:
+        shutil.copyfileobj(data, out, 1 << 20)
+        out.flush()
+        os.fsync(out.fileno())
+    os.replace(partial, path)
+    fsync_dir(path.parent)
+
+
 def dump(payload):
     return (json.dumps(payload, sort_keys=True, indent=1) + "\n").encode()
 
@@ -299,7 +311,7 @@ class RestContainer:
 
     def delete(self, name, etag):
         """Deletes the blob only while it is still the version that was archived."""
-        status, _, _ = self.request("DELETE", name, headers={"If-Match": f'"{etag}"'})
+        status, _, _ = self.request("DELETE", name, headers={"If-Match": f'"{bare_etag(etag)}"'})
         if status == 404:
             return False
         require(status != 412, f"{name} changed after it was archived; nothing more was deleted")
@@ -319,16 +331,17 @@ def leased(container, name):
 
 def in_parallel(function, items):
     errors = []
+    results = [None] * len(items)
     with concurrent.futures.ThreadPoolExecutor(REQUESTS) as pool:
-        futures = [pool.submit(function, item) for item in items]
-        for future in concurrent.futures.as_completed(futures):
+        index = {pool.submit(function, item): i for i, item in enumerate(items)}
+        for future in concurrent.futures.as_completed(index):
             try:
-                future.result()
+                results[index[future]] = future.result()
             except Exception as error:  # every worker finishes; the first failure is raised
                 errors.append(error)
     if errors:
         raise errors[0]
-    return [future.result() for future in futures]
+    return results
 
 
 def list_job_blobs(container):
@@ -858,7 +871,7 @@ def move(source, target, entry):
             os.link(source, partial)
             os.replace(partial, target)
         except OSError:
-            write_atomic(target, source.read_bytes())
+            copy_atomic(source, target)
         require(sha256_file(target) == entry["sha256"], f"the archived copy of {source} does not match")
         fsync_dir(target.parent)
         source.unlink()
@@ -880,6 +893,8 @@ def remove_empty(directory):
 
 
 def bridge(args):
+    for option, path in (("--handoff-dir", args.handoff_dir), ("--results", args.results)):
+        require(not path.is_symlink(), f"{option} {path} is a symlink: name the directory it points to")
     batch = args.batch_dir.resolve()
     handoff_dir, results = args.handoff_dir.resolve(), args.results.resolve()
     for root in (handoff_dir / "jobs", results):

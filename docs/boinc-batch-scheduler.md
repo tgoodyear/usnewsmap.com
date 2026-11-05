@@ -960,7 +960,8 @@ The maintainer approves each live run. To archive:
    ```
 
    A spool output of an OCR bundle is archived only once none of the bundle's
-   pages is left on the server.
+   pages is left on the server. The step refuses a `--handoff-dir` or
+   `--results` that is itself a symlink: name the directory it points to.
 
 5. Dry-run and apply the `db` step in `usnm-boinc-server`, where the batch is
    `/project/archive/batches/<NNNN>`. Give it a 0600 mysql defaults file for a
