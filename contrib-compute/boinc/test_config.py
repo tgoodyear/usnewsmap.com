@@ -185,3 +185,9 @@ class DaemonConfig(unittest.TestCase):
         self.assertEqual(root.findtext("./config/max_wus_in_progress"), "32")
         self.assertEqual(root.findtext("./config/daily_result_quota"), "50000")
         self.assertEqual(root.findtext("./config/max_wus_to_send"), "64")
+
+    def test_project_down_replies_ask_clients_back_in_twenty_minutes(self):
+        # #1462: without it, BOINC's default (sched_config.cpp L93 at 22bbebe0) tells every client
+        # that asks during a feeder restart to wait an hour.
+        root = ET.parse(Path(__file__).with_name("config.xml.template"))
+        self.assertEqual(root.findtext("./config/maintenance_delay"), "1200")
