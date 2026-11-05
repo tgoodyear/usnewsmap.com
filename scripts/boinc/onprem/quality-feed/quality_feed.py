@@ -458,6 +458,16 @@ def cached_alto(cache, doc):
 def process_chunk(a, texts, chunk, camp_dir, state, seq, done_path, skip_path):
     """Prepare one chunk of pages and write it to the outbox; returns (pages written, the
     number left for a retry, the next chunk number)."""
+    return fill_chunk(a, texts, chunk, len(chunk), True, camp_dir, state, seq, done_path, skip_path)[:3]
+
+
+def fill_chunk(a, texts, chunk, size, short_ok, camp_dir, state, seq, done_path, skip_path):
+    """Prepare up to `size` of `chunk`'s pages, in order, and write them to the outbox as one
+    chunk. A page that can't be prepared is replaced by the next of `chunk` not yet tried, so
+    pages past `size` are a reserve. A chunk that still comes up short is written only if
+    `short_ok`; otherwise nothing is written or recorded and its pages are left for a later
+    round. Returns (pages written, the number left for a retry, the next chunk number, how
+    many of `chunk`'s pages were dealt with: those after it are for the next chunk)."""
     retry = 0
     docs = {p["doc_id"] for p in chunk}
     loc, as_map, ours = {}, {}, {}
@@ -472,20 +482,59 @@ def process_chunk(a, texts, chunk, camp_dir, state, seq, done_path, skip_path):
         ours.update(texts.ours(lccn, docs))
     skipped = []
     prepared = {}
-    usable = []
+    usable, at = [], []
     blocked = scan_quarantine.quarantined_ids(state) if getattr(a, "quarantine_decode", False) else set()
-    for p in chunk:
+    for i, p in enumerate(chunk):
         if blocked and scan_quarantine.source_id(p) in blocked:
             log("scan remains quarantined", doc_id=p["doc_id"], sha256=p["sha256"])
             continue
         if p["doc_id"] not in loc:
             if complete:
-                skipped.append((p["doc_id"], "no LoC text in the curated copy"))
+                skipped.append((i, p["doc_id"], "no LoC text in the curated copy"))
             continue
         usable.append(p)
+        at.append(i)
+    if len(usable) < size and not short_ok:
+        return 0, 0, seq, 0
+    tried = 0
+    while len(prepared) < size and tried < len(usable):
+        wave = usable[tried : tried + size - len(prepared)]
+        tried += len(wave)
+        retry += prepare_wave(a, texts, wave, loc, as_map, ours, state, prepared)
+    ok = [p for p in usable[:tried] if p["doc_id"] in prepared]
+    if len(ok) < size and not short_ok:
+        log("chunk came up short; its pages wait for the next round", pages=len(ok), chunk_pages=size)
+        return 0, retry, seq, 0
+    used = len(chunk) if tried == len(usable) else at[tried - 1] + 1
+    skipped = [(d, why) for i, d, why in skipped if i < used]
+    if getattr(a, "alto_cache", None):
+        # A corrupt source receipt is an integrity failure, not a permanently skipped page.
+        for doc, (jpg, _, tx, ours_alto_path) in list(prepared.items()):
+            prepared[doc] = (jpg, cached_alto(a.alto_cache, doc), tx, ours_alto_path)
+    if ok:
+        name = f"c{seq:05d}"
+        write_chunk(camp_dir, name, ok, prepared, getattr(a, "alto_cache", None))
+        with open(os.path.join(state, "chunks.txt"), "a") as f:
+            f.write(f"{seq}\n")
+        seq += 1
+        with open(done_path, "a") as f:
+            f.write("".join(f"{p['doc_id']}\t{name}\t{p['scan']}\t{p.get('bytes', '')}\t"
+                            f"{'' if p.get('damage_rate') is None else p['damage_rate']}\n" for p in ok))
+        log("chunk ready", chunk=name, pages=len(ok), with_as=sum(1 for p in ok if p["doc_id"] in as_map),
+            with_ours=sum(1 for p in ok if p["doc_id"] in ours))
+    if skipped:
+        with open(skip_path, "a") as f:
+            f.write("".join(f"{d}\t{why}\n" for d, why in skipped))
+        log("skipped", pages=len(skipped))
+    return len(ok), retry, seq, used
+
+
+def prepare_wave(a, texts, wave, loc, as_map, ours, state, prepared):
+    """Prepares `wave`'s pages into `prepared`; returns how many failed in a way worth a retry."""
+    retry = 0
     with concurrent.futures.ThreadPoolExecutor(max_workers=a.workers) as ex:
         futs = {ex.submit(prepare_page, a.scan_server, texts, p, loc[p["doc_id"]],
-                          as_map.get(p["doc_id"]), ours.get(p["doc_id"])): p for p in usable}
+                          as_map.get(p["doc_id"]), ours.get(p["doc_id"])): p for p in wave}
         for fut in concurrent.futures.as_completed(futs):
             p = futs[fut]
             try:
@@ -518,27 +567,7 @@ def process_chunk(a, texts, chunk, camp_dir, state, seq, done_path, skip_path):
                 if getattr(a, "quarantine_decode", False):
                     scan_quarantine.record_success(state, p)
                 prepared[p["doc_id"]] = result
-    if getattr(a, "alto_cache", None):
-        # A corrupt source receipt is an integrity failure, not a permanently skipped page.
-        for doc, (jpg, _, tx, ours_alto_path) in list(prepared.items()):
-            prepared[doc] = (jpg, cached_alto(a.alto_cache, doc), tx, ours_alto_path)
-    ok = [p for p in usable if p["doc_id"] in prepared]
-    if ok:
-        name = f"c{seq:05d}"
-        write_chunk(camp_dir, name, ok, prepared, getattr(a, "alto_cache", None))
-        with open(os.path.join(state, "chunks.txt"), "a") as f:
-            f.write(f"{seq}\n")
-        seq += 1
-        with open(done_path, "a") as f:
-            f.write("".join(f"{p['doc_id']}\t{name}\t{p['scan']}\t{p.get('bytes', '')}\t"
-                            f"{'' if p.get('damage_rate') is None else p['damage_rate']}\n" for p in ok))
-        log("chunk ready", chunk=name, pages=len(ok), with_as=sum(1 for p in ok if p["doc_id"] in as_map),
-            with_ours=sum(1 for p in ok if p["doc_id"] in ours))
-    if skipped:
-        with open(skip_path, "a") as f:
-            f.write("".join(f"{d}\t{why}\n" for d, why in skipped))
-        log("skipped", pages=len(skipped))
-    return len(ok), retry, seq
+    return retry
 
 
 def cmd_run(a):
@@ -833,7 +862,8 @@ def cmd_follow(a):
     """The piggyback and the quality pass, as a loop: every page the fetcher writes
     (OCR's and the quality pass's) that no campaign has staged gets a unit, in fetch order,
     in chunks of --chunk-pages: a part chunk only once no chunk has been written for
-    --max-wait-secs, so a trickle of fetches doesn't become a stream of small units. The
+    --max-wait-secs, so a trickle of fetches doesn't become a stream of small units, and a
+    page that can't be prepared is replaced by the next rather than shrinking its chunk. The
     quality pass's buffer scans are deleted once their chunk has shipped, except the most
     damaged, up to --keep-bytes, which stay for re-OCR."""
     import pyarrow.parquet as pq
@@ -905,7 +935,9 @@ def cmd_follow(a):
             log("waiting for the curated copy's LoC text", campaign=a.campaign, pages=no_text,
                 batches=sum(1 for v in has_loc.values() if not v))
         rows.sort(key=lambda r: (r.get("fetched_at", ""), r["doc_id"]))
-        room = max(0, a.max_pending - len(pending_chunks(camp_dir))) * a.chunk_pages
+        slots = max(0, a.max_pending - len(pending_chunks(camp_dir)))
+        # Pages past a chunk's --chunk-pages stand in for any that can't be prepared.
+        reserve = max(1, a.chunk_pages // 10)
         overdue = time.time() - last_chunk_at(state) >= a.max_wait_secs
         if len(rows) < a.chunk_pages and not overdue:
             if rows:
@@ -913,7 +945,7 @@ def cmd_follow(a):
             rows = []
         todo = []
         for r in rows:
-            if len(todo) >= room:
+            if not slots or len(todo) >= slots * a.chunk_pages + reserve:
                 break
             st = scan_set(a.scan_server, r)
             if st:
@@ -921,12 +953,7 @@ def cmd_follow(a):
             else:
                 with open(absent_path, "a") as f:
                     f.write(f"{r['doc_id']}\t{r.get('fetched_at', '')}\n")
-        partial = len(todo) % a.chunk_pages
-        if partial and (not overdue or (len(todo) > partial and a.max_wait_secs > 0)):
-            # The newest pages wait for the next round, which has more; a round that writes a
-            # full chunk restarts --max-wait-secs, so its remainder isn't overdue either.
-            log("waiting for a full chunk", campaign=a.campaign, pages=partial, chunk_pages=a.chunk_pages)
-            todo = todo[: len(todo) - partial]
+        wrote = 0
         if todo:
             damage = {}
             for (batch, bv) in sorted({(r["batch"], int(r.get("batch_version") or 1)) for r, _ in todo}):
@@ -939,12 +966,22 @@ def cmd_follow(a):
             pages = [page_of(r, st, damage) for r, st in todo]
             seq = 1 + max([int(os.path.basename(d)[1:]) for d in glob.glob(os.path.join(camp_dir, "c[0-9]*"))]
                           + [int(x) for x in read_lines(os.path.join(state, "chunks.txt"))] + [0])
-            for i in range(0, len(pages), a.chunk_pages):
-                _, _, seq = process_chunk(a, texts, pages[i : i + a.chunk_pages], camp_dir, state, seq,
-                                          done_path, skip_path)
+            pos = 0
+            while pos < len(pages) and wrote < slots:
+                # A part chunk only when overdue; a round that writes a full chunk restarts
+                # --max-wait-secs, so its remainder isn't overdue either.
+                short_ok = overdue and (not wrote or a.max_wait_secs <= 0)
+                n, _, seq, used = fill_chunk(a, texts, pages[pos : pos + a.chunk_pages + reserve], a.chunk_pages,
+                                             short_ok, camp_dir, state, seq, done_path, skip_path)
+                if not used:
+                    log("waiting for a full chunk", campaign=a.campaign, pages=len(pages) - pos,
+                        chunk_pages=a.chunk_pages)
+                    break
+                pos += used
+                wrote += 1 if n else 0
         if a.once:
             return
-        wait_for_room(camp_dir, a.max_pending, a.every_secs, busy=room == 0 or bool(todo))
+        wait_for_room(camp_dir, a.max_pending, a.every_secs, busy=slots == 0 or bool(wrote))
 
 
 def wait_for_room(camp_dir, max_pending, every_secs, busy, poll_secs=15, min_secs=60):

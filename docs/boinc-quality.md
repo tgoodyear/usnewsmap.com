@@ -1388,7 +1388,11 @@ that no campaign has staged (OCR's and the pass's) a unit, in fetch order, in fu
 `--max-wait-secs` (6 hours): it used to chunk whatever had been fetched since its last
 round, a minute or so, and in the 24 hours to 5 November 2026 the median bundle held 16
 pages and ran for seconds. Pages of a batch the curated copy has no LoC text for yet don't
-count towards a full chunk; they wait, logged, until it does.
+count towards a full chunk; they wait, logged, until it does. A page that can't be prepared
+(its scan can't be fetched or decoded) is replaced by the next one, from a reserve of a
+tenth of `--chunk-pages`; a chunk still short after that ("chunk came up short") is
+written only once it's overdue, so a scan server that stops answering mid-chunk doesn't
+ship a small unit.
 
 Once a chunk has shipped, the pass's buffer scans are deleted, except the most damaged
 (LoC's `damage_rate`; unscored pages last), up to `--keep-bytes` in all (1 TB from

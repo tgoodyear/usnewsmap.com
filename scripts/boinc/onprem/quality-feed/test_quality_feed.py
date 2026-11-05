@@ -497,8 +497,10 @@ class DecodeQuarantineTest(unittest.TestCase):
             self.skipTest("Pillow's JPEG2000 codec is required")
         bad_raw, good_raw = self.image("JPEG2000")[:-2], self.image("JPEG2000", value=40)
         bad, good = self.page(1, bad_raw, "jp2"), self.page(2, good_raw, "jp2")
-        rows = {page["doc_id"]: {**page, "format": "jp2", "fetched_at": f"2026-11-03T03:0{i}:00Z"}
-                for i, page in enumerate((bad, good))}
+        later = {page["doc_id"]: {**page, "format": "jp2", "fetched_at": f"2026-11-03T03:0{i}:00Z"}
+                 for i, page in enumerate((bad, good))}
+        # The good page arrives once the bad one is quarantined: before, it would stand in for it.
+        rows = {bad["doc_id"]: later.pop(bad["doc_id"])}
         scans = {bad["scan"]: bad_raw, good["scan"]: good_raw}
         calls = []
 
@@ -520,6 +522,8 @@ class DecodeQuarantineTest(unittest.TestCase):
             self.assertEqual(calls, [bad["scan"]] * 3)
             records = feed.scan_quarantine.quarantined(state)
             self.assertEqual((records[0]["attempts"], records[0]["refetch_state"]), (3, "manual_review"))
+            self.assertIn("chunk came up short", output.getvalue())
+            rows.update(later)
             feed.main(self.follow_argv())
             self.assertEqual(calls, [bad["scan"]] * 3 + [good["scan"]])
             self.assertEqual(scan_set.call_count, 4)
@@ -959,6 +963,47 @@ class FollowChunkTest(unittest.TestCase):
             feed.main(argv)
             self.assertEqual((camp / "c00002/READY").read_text().strip(), "1")
             self.assertEqual(feed.read_lines(state / "done.txt"), set(rows))
+
+    @unittest.skipUnless(importlib.util.find_spec("pyarrow") and importlib.util.find_spec("PIL"),
+                         "PyArrow and Pillow required for the follower")
+    def test_a_page_that_fails_is_replaced_and_a_chunk_still_short_waits(self):
+        raw = DecodeQuarantineTest.image()
+        pages = [DecodeQuarantineTest.page(seq, raw) for seq in (1, 2, 3)]
+        later = {p["doc_id"]: {**p, "format": "jpeg", "fetched_at": f"2026-11-03T03:0{p['seq']}:00Z"}
+                 for p in pages}
+        rows = {d: later.pop(d) for d in (pages[0]["doc_id"], pages[1]["doc_id"])}
+        argv = ["follow", "--campaign", "cpu-test", "--curated", str(self.root / "curated"),
+                "--scan-server", "http://scan", "--outbox", str(self.root / "outbox"),
+                "--state", str(self.root / "state"), "--staged-dsn", "test", "--chunk-pages", "2",
+                "--max-pending", "4", "--workers", "1", "--max-wait-secs", "3600", "--once"]
+        state, camp = self.root / "state/cpu-test", self.root / "outbox/cpu-test"
+        fetched = []
+
+        def fetch(request, timeout):
+            fetched.append(request.full_url.rsplit("/", 1)[1])
+            if request.full_url.endswith("/" + pages[0]["scan"]):
+                raise ConnectionResetError("reset")
+            return io.BytesIO(raw)
+
+        with mock.patch.object(feed, "Texts", return_value=DecodeQuarantineTest.texts(self)), \
+                mock.patch.object(feed, "staged_from_db", return_value=set()), \
+                mock.patch.object(feed, "index_rows", return_value=rows), \
+                mock.patch.object(feed, "scan_set", return_value="buffer"), \
+                mock.patch.object(feed.urllib.request, "urlopen", side_effect=fetch), \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            # Two pages make a full chunk, but one can't be fetched: one page isn't a unit yet.
+            feed.main(argv)
+            self.assertFalse((camp / "c00001").exists())
+            self.assertFalse((state / "done.txt").exists())
+            self.assertIn("chunk came up short", output.getvalue())
+
+            # A third page stands in for the one that fails.
+            rows.update(later)
+            feed.main(argv)
+            self.assertEqual((camp / "c00001/READY").read_text().strip(), "2")
+            self.assertEqual(feed.read_lines(state / "done.txt"), {pages[1]["doc_id"], pages[2]["doc_id"]})
+            self.assertEqual(fetched, [pages[0]["scan"].rsplit("/", 1)[1], pages[1]["scan"].rsplit("/", 1)[1]] * 2
+                             + [pages[2]["scan"].rsplit("/", 1)[1]])
 
     @unittest.skipUnless(importlib.util.find_spec("pyarrow") and importlib.util.find_spec("PIL"),
                          "PyArrow and Pillow required for the follower")
