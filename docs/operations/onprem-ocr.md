@@ -292,6 +292,7 @@ The keep-set scans have been copied to a Cold-tier container, `scans` in the sto
      - the live scan and the snapshot copy.
 
      A sidecar records an md5 only for a JP2 (the bag's); a JPEG's has none, so the md5 is checked against the blob's Content-MD5 only, and a JP2 sidecar without one fails.
+
    - **Safety and output.** It writes only into `--dir`, which must be the empty mountpoint of `--dataset`. It prints timings, a digest of the sample's names and never the names or the token, not even in an error: a missing live scan or sidecar is reported by its index in the sample.
    - **Token.** It asks the Arc agent on 127.0.0.1, never `localhost`. curl tries `::1` first for `localhost`, and on pve-big himds accepted connections on `[::1]:40342` without answering, which hung the first drill attempt. The token requests time out after 30 s.
 
