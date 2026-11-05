@@ -1312,6 +1312,36 @@ async fn a_jp2_cut_short_at_loc_is_listed_not_written_and_never_asked_again() {
 }
 
 #[test]
+fn a_line_cut_off_mid_write_does_not_take_the_next_run_s_first_line_with_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("source-truncated.jsonl");
+    let line = |seq: u32| SourceTruncatedLine {
+        doc_id: format!("sn1_1890-05-03_ed-1_seq-{seq}"),
+        batch: "xx_test".into(),
+        batch_version: 1,
+        loc_url: "https://example.invalid/0011.jp2".into(),
+        md5: None,
+        sha256: sha256(CUT_SHORT_JP2),
+        bytes: 24,
+        reason: "cut short".into(),
+        at: "2026-11-05T00:00:00Z".into(),
+    };
+    let written = format!("{}\n", serde_json::to_string(&line(1)).unwrap());
+    std::fs::write(&path, format!("{written}{{\"doc_id\":\"sn1_1890")).unwrap();
+    let lines = Lines::open(&path).unwrap();
+    lines.push(&line(2)).unwrap();
+    drop(lines);
+    // A file whose last line is whole is appended to as it is.
+    Lines::open(&path).unwrap().push(&line(3)).unwrap();
+    let (keys, unreadable) = read_truncated(&path).unwrap();
+    let mut keys = keys.into_iter().map(|k| k.0).collect::<Vec<_>>();
+    keys.sort();
+    assert_eq!(keys, [1, 2, 3].map(|seq| line(seq).doc_id));
+    assert_eq!(unreadable, [2]);
+    assert_eq!(std::fs::read_to_string(&path).unwrap().lines().count(), 4);
+}
+
+#[test]
 fn unreadable_source_truncated_lines_are_skipped_and_named() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("source-truncated.jsonl");

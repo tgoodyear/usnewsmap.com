@@ -221,14 +221,28 @@ pub(super) async fn write_atomic(path: &Path, body: Vec<u8>) -> anyhow::Result<(
 pub(super) struct Lines(Mutex<std::fs::File>);
 
 impl Lines {
+    /// Open `path` to append to. A last line cut off by a crash mid-write is
+    /// ended first, so the next line is one of its own, not part of that one:
+    /// `source-truncated.jsonl` is appended to across runs.
     pub(super) fn open(path: &Path) -> anyhow::Result<Self> {
-        Ok(Self(Mutex::new(
-            std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(path)
-                .with_context(|| format!("opening {}", path.display()))?,
-        )))
+        use std::io::{Read as _, Seek as _, SeekFrom};
+        let opening = || format!("opening {}", path.display());
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .read(true)
+            .open(path)
+            .with_context(opening)?;
+        let len = f.metadata().with_context(opening)?.len();
+        if len > 0 {
+            let mut last = [0];
+            f.seek(SeekFrom::Start(len - 1)).with_context(opening)?;
+            f.read_exact(&mut last).with_context(opening)?;
+            if last != *b"\n" {
+                f.write_all(b"\n").with_context(opening)?;
+            }
+        }
+        Ok(Self(Mutex::new(f)))
     }
 
     pub(super) fn push(&self, v: &impl Serialize) -> anyhow::Result<()> {
