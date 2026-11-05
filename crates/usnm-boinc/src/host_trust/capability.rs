@@ -459,7 +459,8 @@ pub(super) async fn requirements(c: &Config, app: &str) -> anyhow::Result<Requir
     };
     let bound = match &c.engine_platforms {
         Some(path) => Some(bound_platforms(
-            &crate::read(path, 1 << 20)?,
+            &crate::read(path, 1 << 20)
+                .with_context(|| format!("reading engine_platforms {}", path.display()))?,
             &c.engine.image,
             &c.engine.base,
         )?),

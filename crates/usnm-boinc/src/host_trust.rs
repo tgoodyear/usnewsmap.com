@@ -117,6 +117,10 @@ impl Config {
             "configuration paths must be absolute"
         );
         ensure!(
+            c.engine_platforms.as_ref().is_none_or(|p| p.is_file()),
+            "engine_platforms must be an existing file"
+        );
+        ensure!(
             [
                 &c.root,
                 &c.project,

@@ -311,6 +311,11 @@ async fn onboarding_skips_hosts_no_gold_version_can_run_on() {
         serde_json::from_slice(&std::fs::read(&c.config).unwrap()).unwrap();
     cfg["engine_platforms"] = serde_json::json!(bindings);
     write(&c.config, serde_json::to_vec(&cfg).unwrap());
+    let out = c.command("onboard").output().unwrap();
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("engine_platforms must be an existing file")
+    );
     for (platform, expected) in [("arm64-apple-darwin", "[]"), ("x86_64-pc-linux-gnu", "[3]")] {
         write(
             &bindings,
