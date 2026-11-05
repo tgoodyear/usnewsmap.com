@@ -238,14 +238,13 @@ fn schedule_quota_scan(store: Arc<dyn ObjectStore>, quota: Arc<Quota>, force: bo
     } else {
         quota.last_check.store(now, Ordering::Release);
     }
-    let started =
-        quota
-            .scan
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |state| match state {
-                SCAN_IDLE => Some(SCAN_RUNNING),
-                SCAN_RUNNING if force => Some(SCAN_RERUN),
-                _ => None,
-            });
+    let started = quota
+        .scan
+        .try_update(Ordering::AcqRel, Ordering::Acquire, |state| match state {
+            SCAN_IDLE => Some(SCAN_RUNNING),
+            SCAN_RUNNING if force => Some(SCAN_RERUN),
+            _ => None,
+        });
     if started != Ok(SCAN_IDLE) {
         return;
     }
@@ -254,7 +253,7 @@ fn schedule_quota_scan(store: Arc<dyn ObjectStore>, quota: Arc<Quota>, force: bo
             enforce_quota(store.clone(), PREVIEW_QUOTA_BYTES).await;
             let finished = quota
                 .scan
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |state| match state {
+                .try_update(Ordering::AcqRel, Ordering::Acquire, |state| match state {
                     SCAN_RERUN => Some(SCAN_RUNNING),
                     _ => Some(SCAN_IDLE),
                 });
@@ -1148,7 +1147,7 @@ mod tests {
             if path.ends_with(".access")
                 && self
                     .marker_delete_failures
-                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+                    .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
                     .is_ok()
             {
                 return Err(usnm_store::StoreError::Io("injected".into()));
