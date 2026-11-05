@@ -43,6 +43,14 @@ impl Service {
         self.renders.available_permits() == 2
     }
 
+    /// Metadata discovery never waits for storage or advertises a local-only PNG.
+    pub(super) async fn is_published(&self, key: &str) -> bool {
+        self.images
+            .get(key)
+            .await
+            .is_some_and(|image| image.stored.load(Ordering::Acquire))
+    }
+
     /// Read a published image without admitting a new render.
     pub(super) async fn lookup(&self, key: &str, persistent: Persistent) -> Option<Vec<u8>> {
         if let Some(image) = self.images.get(key).await {

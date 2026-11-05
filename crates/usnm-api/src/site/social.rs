@@ -305,7 +305,7 @@ pub(super) async fn shell(uri: &Uri, index: Vec<u8>, state: &AppState) -> Vec<u8
         match preview_key(state, &card).await {
             Ok(key) => {
                 let path = preview_path(&key, &card);
-                if published(state, &path).await.is_some() {
+                if state.previews.is_published(&path).await {
                     image = format!("{SITE}{path}");
                 }
             }
@@ -789,10 +789,8 @@ async fn cached(
             Ok(body)
         })
         .await?;
-    Ok(Rendered {
-        body,
-        preview: Some(key),
-    })
+    let preview = state.previews.is_published(&key).await.then_some(key);
+    Ok(Rendered { body, preview })
 }
 
 fn can_warm(state: &AppState) -> bool {
@@ -1148,6 +1146,87 @@ mod tests {
                 .bytes()
                 .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'));
         }
+    }
+
+    #[tokio::test]
+    async fn unpublished_images_are_served_directly_until_shared_storage_recovers() {
+        use http_body_util::BodyExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("store");
+        tokio::fs::write(&root, b"storage unavailable")
+            .await
+            .unwrap();
+        let mut state = state().await;
+        Arc::get_mut(&mut state).unwrap().responses =
+            Some(Arc::new(usnm_store::LocalStore::new(&root)));
+        let card = Card::new("/search/unlisted-phrase", "state=GA").unwrap();
+        let path = preview_path(&preview_key(&state, &card).await.unwrap(), &card);
+        let body = png(&card).unwrap();
+        state
+            .previews
+            .get(path.clone(), None, false, async { Ok(body.clone()) })
+            .await
+            .unwrap();
+        let index = std::fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../web/index.html"),
+        )
+        .unwrap();
+        let uri = card.url[SITE.len()..].parse().unwrap();
+        let html = String::from_utf8(shell(&uri, index.clone(), &state).await).unwrap();
+        assert!(
+            html.contains(r#"property="og:image" content="https://usnewsmap.com/share-image.png?"#)
+        );
+        let response = image(
+            OriginalUri(card.image[SITE.len()..].parse().unwrap()),
+            state.clone(),
+        )
+        .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "no redirect to replica-local data"
+        );
+        assert_eq!(
+            response.headers()[header::CACHE_CONTROL],
+            "public, max-age=86400"
+        );
+        assert_eq!(
+            response
+                .into_body()
+                .collect()
+                .await
+                .unwrap()
+                .to_bytes()
+                .as_ref(),
+            body
+        );
+        assert!(!state.previews.is_published(&path).await);
+
+        tokio::fs::remove_file(&root).await.unwrap();
+        tokio::fs::create_dir(&root).await.unwrap();
+        // A later sharing request retries publication while still serving the PNG.
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            while !state.previews.is_published(&path).await {
+                let _ = image(
+                    OriginalUri(card.image[SITE.len()..].parse().unwrap()),
+                    state.clone(),
+                )
+                .await;
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let response = image(
+            OriginalUri(card.image[SITE.len()..].parse().unwrap()),
+            state.clone(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(response.headers()[header::LOCATION], path);
+        let html = String::from_utf8(shell(&uri, index, &state).await).unwrap();
+        assert!(html.contains(&format!(r#"property="og:image" content="{SITE}{path}""#)));
     }
 
     #[tokio::test]
