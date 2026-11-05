@@ -644,7 +644,7 @@ def read_kept(path):
 
 def write_kept(path, kept):
     with open(path + ".tmp", "w") as f:
-        f.write("".join(f"{doc}\t{scan}\t{size}\t{'' if damage is None else damage}\t{checked:.0f}\n"
+        f.write("".join(f"{doc}\t{scan}\t{size}\t{'' if damage is None else damage}\t{int(checked)}\n"
                         for doc, (scan, size, damage, checked) in sorted(kept.items())))
     os.replace(path + ".tmp", path)
 

@@ -112,8 +112,9 @@ class Lake:
 
 
 def cached_rows(lake, state, kind, days, columns):
-    """Every row of ocr-local/<kind>/<day>/*.parquet for the last `days` days, each file
-    read from the lake once and kept under <state>/<kind>/. With no lake, only what's kept."""
+    """Every row of every file kept under <state>/<kind>/, first copying there any
+    ocr-local/<kind>/<day>/*.parquet of the last `days` days not yet kept (with no lake,
+    none). Kept files are never pruned, so rows from earlier days stay in."""
     import pyarrow.parquet as pq
 
     keep = os.path.join(state, kind)
