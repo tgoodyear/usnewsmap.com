@@ -255,9 +255,11 @@ def assert_processed(root, sample):
         if (page / "too_large").exists() and any((page / f).exists() for f in ("rejected-qwen.json", "qwen.json")):
             continue
         if bundled is None:
-            # Only submitted units' jobs are read, not every staged one.
+            # Only a bundled root's submitted units' jobs are read, not every staged one. A root
+            # of single pages (no pages/) reads none, as before bundles.
             bundled = set()
-            for marker in sorted((root / "units").glob("*/submitted")):
+            markers = (root / "units").glob("*/submitted") if (root / "pages").is_dir() else ()
+            for marker in sorted(markers):
                 path = marker.parent / "qwen.json"
                 if not path.exists():
                     continue

@@ -1855,6 +1855,13 @@ class SourceTest(unittest.TestCase):
                     submit.assert_processed(root, sample)
                 if marker:
                     (unit / marker).unlink()
+            # A root of single pages reads no other unit's job.
+            other = root / "units" / "sn1_1900-01-02_ed-1_seq-4"
+            other.mkdir()
+            (other / "qwen.json").write_text("partly written")
+            (other / "submitted").touch()
+            with self.assertRaisesRegex(RuntimeError, "retain READY"):
+                submit.assert_processed(root, sample)
             for files in (("too_large", "rejected-qwen.json"), ("submitted", "qwen.json"), ("no_crops",)):
                 for name in files:
                     (unit / name).touch()
