@@ -99,6 +99,17 @@ German scope include broader reference coverage, revised criteria frozen before
 fresh evaluation, partial-omission/wrong-model controls, and canonical
 exact-image BOINC Gold evidence. The two reserve issues remain unexecuted.
 
+**Held from publication (5 November 2026).** A provisional `deu/frak2021`
+policy (`max_cer` 1.0, 12 hosts) went into the shared `trust.json` on 20
+October. On 1 November the maintainer decided that German pages stay out of
+publishing until calibrated, using the GPU study's measured limit, and that
+OCR can run but its output isn't trusted yet. The reviewed replacement holds
+the scope: a `hold` with no hosts, so German results are kept in quarantine and
+never published, and a calibration must reach `max_cer` 0.179 (pooled
+`frak2021` PSM 3 CER in the GPU study, pending the maintainer's confirmation) to
+lift it ([gold check](boinc/gold-check.md#host-trust-for-usnm_ocr),
+[note](notes/2026-11-05-german-trust-hold.md)).
+
 ## Issue-disjoint current-worker calibration (17 October 2026)
 
 For #527/#751, the original BLN600 archive's publication/date metadata excluded

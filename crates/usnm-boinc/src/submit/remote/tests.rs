@@ -85,6 +85,7 @@ impl Fixture {
                 ledger: None,
                 bundle: None,
                 unbundled: None,
+                held: None,
             },
         )
         .unwrap();

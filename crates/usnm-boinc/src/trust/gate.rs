@@ -1,5 +1,5 @@
-use super::{Scope, Trust};
-use crate::{atomic, load, Stage};
+use super::{PolicyView, Scope, Trust};
+use crate::{atomic, load, save, Lock, Stage};
 use anyhow::bail;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -66,6 +66,9 @@ impl Trust {
                     .into(),
             );
         }
+        if let Some(reason) = held(&policy) {
+            return Some(reason);
+        }
         if policy
             .hosts
             .get(engine_image)
@@ -104,7 +107,10 @@ impl Trust {
         let Some(policy) = self.policy_view(&job.message.language, &job.engine.profile) else {
             return BTreeSet::new();
         };
-        if policy.scope.psm != job.engine.psm || policy.scope.dpi != job.engine.dpi {
+        if policy.scope.psm != job.engine.psm
+            || policy.scope.dpi != job.engine.dpi
+            || policy.hold.is_some()
+        {
             return BTreeSet::new();
         }
         policy
@@ -149,6 +155,9 @@ impl Trust {
                     .into(),
             );
         }
+        if let Some(reason) = held(&policy) {
+            return Some(reason);
+        }
         if policy
             .hosts
             .get(&job.engine.image)
@@ -162,6 +171,31 @@ impl Trust {
             ))
         }
     }
+
+    /// Why `job`'s exact `(language, profile, psm, dpi)` scope is held from publication (#835),
+    /// if it is: its result is kept and never published, whatever host returned it.
+    pub fn scope_hold(&self, job: &usnm_ocr_contract::boinc::Job) -> Option<String> {
+        if !immutable_image(&job.engine.image)
+            || !job.engine.kind.is_tesseract()
+            || self.validate().is_err()
+        {
+            return None;
+        }
+        let policy = self.policy_view(&job.message.language, &job.engine.profile)?;
+        if policy.scope.psm != job.engine.psm || policy.scope.dpi != job.engine.dpi {
+            return None;
+        }
+        held(&policy)
+    }
+}
+
+fn held(policy: &PolicyView<'_>) -> Option<String> {
+    policy.hold.map(|hold| {
+        format!(
+            "scope {}/{} is held from publication: {hold}",
+            policy.scope.language, policy.scope.profile
+        )
+    })
 }
 
 pub(super) fn immutable_image(image: &str) -> bool {
@@ -174,7 +208,21 @@ pub fn quarantine_dir(root: &Path, id: &str) -> PathBuf {
     root.join("quarantine").join(id)
 }
 
+/// What [`collect`] did with a job's result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Collected {
+    /// [`crate::collect`] ran: the result is published (or, with no result, the job failed).
+    Published,
+    /// The job's scope is held from publication (#835), for this reason: the result is kept in
+    /// `<root>/quarantine/<job>/`, the record is marked `held`, and nothing is published.
+    Held(String),
+}
+
 /// `usnm-boinc collect` with the trust check in front of [`crate::collect`].
+///
+/// A result whose host the policy doesn't trust is held back and this fails, leaving the
+/// record as it was. A result of a held scope is kept the same way, but the record is marked
+/// `held` and this succeeds: the hold is policy, not a fault for the feed to stop on.
 pub async fn collect(
     root: &Path,
     spool: &Path,
@@ -183,35 +231,59 @@ pub async fn collect(
     host_id: Option<u64>,
     curated: &dyn ObjectStore,
     out: &dyn ObjectStore,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Collected> {
     let record = load(root, id)?;
     let wu = record.job.workunit();
     // A terminal failure has no canonical result (so no host id): let collect mark it failed.
     let terminal = spool.join(format!("{wu}_error")).exists()
         || spool.join(format!("{wu}_no_output_files")).exists();
     if record.stage != Stage::Published && !terminal {
-        if let Some(reason) = trust.refuse_job(&record.job, host_id) {
-            let q = quarantine_dir(root, id);
-            std::fs::create_dir_all(&q)?;
-            for logical in ["result.json", "text.txt", "layout.xml"] {
-                let f = spool.join(format!("{wu}__file_{logical}"));
-                if f.is_file() {
-                    std::fs::copy(&f, q.join(logical))?;
-                }
+        if let Some(reason) = trust.scope_hold(&record.job) {
+            keep(root, spool, id, &record.job, host_id, &reason)?;
+            let _lock = Lock::take(root)?;
+            let mut record = load(root, id)?;
+            if record.held.as_deref() != Some(reason.as_str()) {
+                record.held = Some(reason.clone());
+                save(root, &record)?;
             }
-            atomic(
-                &q.join("reason.json"),
-                &serde_json::to_vec_pretty(&serde_json::json!({
-                    "at": chrono::Utc::now().to_rfc3339(),
-                    "engine_image": record.job.engine.image,
-                    "host_id": host_id,
-                    "job": id,
-                    "reason": reason,
-                    "workunit": wu,
-                }))?,
-            )?;
+            return Ok(Collected::Held(reason));
+        }
+        if let Some(reason) = trust.refuse_job(&record.job, host_id) {
+            keep(root, spool, id, &record.job, host_id, &reason)?;
             bail!("held back, not published: {reason}");
         }
     }
-    crate::collect(root, spool, id, curated, out).await
+    crate::collect(root, spool, id, curated, out).await?;
+    Ok(Collected::Published)
+}
+
+/// Copies a held-back result's spool files and the reason to `<root>/quarantine/<job>/`.
+fn keep(
+    root: &Path,
+    spool: &Path,
+    id: &str,
+    job: &usnm_ocr_contract::boinc::Job,
+    host_id: Option<u64>,
+    reason: &str,
+) -> anyhow::Result<()> {
+    let wu = job.workunit();
+    let q = quarantine_dir(root, id);
+    std::fs::create_dir_all(&q)?;
+    for logical in ["result.json", "text.txt", "layout.xml"] {
+        let f = spool.join(format!("{wu}__file_{logical}"));
+        if f.is_file() {
+            std::fs::copy(&f, q.join(logical))?;
+        }
+    }
+    atomic(
+        &q.join("reason.json"),
+        &serde_json::to_vec_pretty(&serde_json::json!({
+            "at": chrono::Utc::now().to_rfc3339(),
+            "engine_image": job.engine.image,
+            "host_id": host_id,
+            "job": id,
+            "reason": reason,
+            "workunit": wu,
+        }))?,
+    )
 }

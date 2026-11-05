@@ -1155,3 +1155,229 @@ fn admitting_against_an_expected_version_writes_nothing_once_the_list_changed() 
     let current = usnm_ocr_contract::boinc::sha256(&before);
     assert_eq!(admit(&current).unwrap().added, hosts);
 }
+
+const HOLD: &str = "German pages stay out of publishing until calibrated";
+
+fn deu_scope() -> Scope {
+    Scope {
+        language: "deu".into(),
+        profile: "frak2021".into(),
+        psm: 3,
+        dpi: 300,
+    }
+}
+
+/// Live-shaped v5 list: English trusted for hosts 1 and 8, German held at `cap`.
+fn held_list(cap: f64) -> Trust {
+    let mut list: Trust = serde_json::from_value(two_scope_list()).unwrap();
+    let deu = &mut list.policies[0];
+    assert_eq!(deu.scope, deu_scope());
+    deu.hosts.clear();
+    deu.max_cer = cap;
+    deu.hold = Some(HOLD.into());
+    list.validate().unwrap();
+    list
+}
+
+#[test]
+fn a_hold_needs_a_one_line_reason_no_hosts_and_a_scope_other_than_the_primary() {
+    // The 20 Oct provisional list has no hold and still loads as it is.
+    let live: Trust = serde_json::from_value(two_scope_list()).unwrap();
+    live.validate().unwrap();
+    assert!(live.policies.iter().all(|p| p.hold.is_none()));
+    assert!(!serde_json::to_string(&live).unwrap().contains("hold"));
+
+    let held = held_list(0.179);
+    let json = serde_json::to_string(&held).unwrap();
+    assert_eq!(serde_json::from_str::<Trust>(&json).unwrap(), held);
+    for bad in ["", "   ", "two\nlines", &"x".repeat(513)] {
+        let mut t = held.clone();
+        t.policies[0].hold = Some(bad.into());
+        assert!(t.validate().is_err(), "{bad:?}");
+    }
+    let mut t = held.clone();
+    t.policies[0]
+        .hosts
+        .insert(ADMIT_IMAGE.into(), BTreeSet::from([1]));
+    assert!(t
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("must list no hosts"));
+    let mut t = held.clone();
+    t.policies[1].hold = Some(HOLD.into());
+    t.policies[1].hosts.clear();
+    t.hosts.clear();
+    assert!(t
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("primary trust scope cannot be held"));
+}
+
+#[test]
+fn a_held_scope_is_kept_whatever_the_host_and_other_scopes_are_unaffected() {
+    let held = held_list(0.179);
+    let german = job(ADMIT_IMAGE, "deu", "frak2021");
+    let reason = held.scope_hold(&german).unwrap();
+    assert_eq!(
+        reason,
+        format!("scope deu/frak2021 is held from publication: {HOLD}")
+    );
+    // The hold doesn't depend on the host; a result with no host id is refused for that first.
+    for host in [1, 3, 99] {
+        assert_eq!(held.refuse_job(&german, Some(host)).as_ref(), Some(&reason));
+    }
+    assert!(held.refuse_job(&german, None).is_some());
+    assert!(held.trusted_hosts_for_job(&german).is_empty());
+    assert_eq!(
+        held.refuse_campaign(ADMIT_IMAGE, &"7".repeat(64), &deu_scope(), Some(1)),
+        Some(reason)
+    );
+    // Only the exact held scope: another profile, PSM, DPI or engine is outside it, and so
+    // refused (not kept) as before.
+    let mut other = german.clone();
+    other.engine.profile = "deu".into();
+    assert!(held.scope_hold(&other).is_none() && held.refuse_job(&other, Some(1)).is_some());
+    let mut other = german.clone();
+    other.engine.psm = 6;
+    assert!(held.scope_hold(&other).is_none() && held.refuse_job(&other, Some(1)).is_some());
+    let mut other = german.clone();
+    other.engine.kind = usnm_ocr_contract::routing::EngineKind::NdlocrLite;
+    assert!(held.scope_hold(&other).is_none());
+    let english = job(ADMIT_IMAGE, "eng", "eng");
+    assert!(held.scope_hold(&english).is_none());
+    assert!(held.refuse_job(&english, Some(1)).is_none());
+    assert!(held.refuse_job(&english, Some(3)).is_some());
+    assert_eq!(held.trusted_hosts_for_job(&english), BTreeSet::from([1, 8]));
+}
+
+#[test]
+fn a_hold_is_lifted_only_by_a_calibration_within_its_limit() {
+    let held = held_list(0.179);
+    let calibrated = |max_cer: f64| Trust {
+        hosts: BTreeMap::from([(ADMIT_IMAGE.to_owned(), BTreeSet::from([2]))]),
+        manifest_sha256: Some("9".repeat(64)),
+        scope: Some(deu_scope()),
+        max_cer,
+        policies: Vec::new(),
+        v: TRUST_VERSION,
+    };
+    // The 20 Oct policy again, or anything above the limit, is refused.
+    for max_cer in [1.0, 0.18] {
+        assert!(held
+            .merge(&calibrated(max_cer))
+            .unwrap_err()
+            .to_string()
+            .contains("held until calibrated with max_cer <= 0.179"));
+    }
+    for max_cer in [0.179, 0.05] {
+        let lifted = held.merge(&calibrated(max_cer)).unwrap();
+        let deu = lifted.policy_for("deu", "frak2021").unwrap();
+        assert_eq!((deu.hold, deu.max_cer), (None, max_cer));
+        let german = job(ADMIT_IMAGE, "deu", "frak2021");
+        assert!(lifted.scope_hold(&german).is_none());
+        assert!(lifted.refuse_job(&german, Some(2)).is_none());
+        assert!(lifted.refuse_job(&german, Some(1)).is_some());
+    }
+
+    // Re-promoting English (`gold trust` with --merge) keeps the hold, through the file too.
+    let tmp = tempfile::tempdir().unwrap();
+    let out = tmp.path().join("trust.json");
+    std::fs::write(&out, serde_json::to_vec_pretty(&held).unwrap()).unwrap();
+    let english = Trust {
+        hosts: BTreeMap::from([(ADMIT_IMAGE.to_owned(), BTreeSet::from([1, 8, 9]))]),
+        manifest_sha256: Some(ADMIT_MANIFEST.into()),
+        scope: Some(scope()),
+        max_cer: ADMIT_CER,
+        policies: Vec::new(),
+        v: TRUST_VERSION,
+    };
+    let merged = english.promote_to(&out, None).unwrap();
+    assert_eq!(Trust::load(&out).unwrap(), merged);
+    let deu = merged.policy_for("deu", "frak2021").unwrap();
+    assert_eq!(
+        (deu.hold.as_deref(), deu.max_cer, deu.hosts.is_empty()),
+        (Some(HOLD), 0.179, true)
+    );
+    assert_eq!(merged.hosts[ADMIT_IMAGE], BTreeSet::from([1, 8, 9]));
+    // A calibration above the limit leaves the file as it was.
+    let before = std::fs::read(&out).unwrap();
+    assert!(calibrated(0.2).promote_to(&out, None).is_err());
+    assert_eq!(std::fs::read(&out).unwrap(), before);
+
+    // A hold can be put on a calibrated scope, but not on the primary.
+    let live: Trust = serde_json::from_value(two_scope_list()).unwrap();
+    assert_eq!(live.merge(&held).unwrap(), held);
+    let eng_held = ScopedPolicy {
+        hosts: BTreeMap::new(),
+        manifest_sha256: ADMIT_MANIFEST.into(),
+        scope: scope(),
+        max_cer: ADMIT_CER,
+        hold: Some(HOLD.into()),
+    };
+    let deu_primary = Trust {
+        policies: vec![
+            calibrated(0.1).effective_policies().unwrap()[0].clone(),
+            eng_held,
+        ],
+        ..calibrated(0.1)
+    };
+    assert!(held
+        .merge(&deu_primary)
+        .unwrap_err()
+        .to_string()
+        .contains("primary trust scope cannot be held"));
+}
+
+#[test]
+fn admitting_hosts_refuses_a_held_scope() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("trust.json");
+    std::fs::write(&path, serde_json::to_vec_pretty(&held_list(0.179)).unwrap()).unwrap();
+    let before = std::fs::read(&path).unwrap();
+    let err = Trust::admit_hosts(
+        &path,
+        None,
+        &deu_scope(),
+        &"7".repeat(64),
+        0.179,
+        ADMIT_IMAGE,
+        &BTreeSet::from([1]),
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("held from publication"), "{err}");
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+}
+
+/// The policy reviewed for CT 230 (#835): byte for byte what `gold trust` would write back.
+#[test]
+fn the_reviewed_german_hold_keeps_english_as_it_is_live() {
+    const REVIEWED: &[u8] =
+        include_bytes!("../../../../docs/notes/2026-11-05-german-trust-hold.json");
+    let t = Trust::from_bytes(REVIEWED, Path::new("reviewed")).unwrap();
+    assert_eq!(serde_json::to_vec_pretty(&t).unwrap(), REVIEWED);
+    let german = job(ADMIT_IMAGE, "deu", "frak2021");
+    let reason = t.scope_hold(&german).unwrap();
+    assert!(reason.contains("held from publication") && reason.contains("#835"));
+    for host in 1..=20 {
+        assert_eq!(t.refuse_job(&german, Some(host)).as_ref(), Some(&reason));
+    }
+    let deu = t.policy_for("deu", "frak2021").unwrap();
+    assert_eq!(deu.max_cer, 0.179);
+    let english = job(ADMIT_IMAGE, "eng", "eng");
+    let trusted = BTreeSet::from([1, 2, 8, 9, 10, 12]);
+    assert_eq!(t.trusted_hosts_for_job(&english), trusted);
+    for host in 1..=20 {
+        assert_eq!(
+            t.refuse_job(&english, Some(host)).is_none(),
+            trusted.contains(&host),
+            "{host}"
+        );
+    }
+    let eng = t.policy_for("eng", "eng").unwrap();
+    assert_eq!(
+        (eng.manifest_sha256.as_str(), eng.max_cer),
+        (ADMIT_MANIFEST, ADMIT_CER)
+    );
+}

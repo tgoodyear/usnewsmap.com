@@ -285,6 +285,11 @@ pub struct Record {
     /// never goes into another bundle.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unbundled: Option<String>,
+    /// Why the result was kept but not published: its trust scope is held (#835). The feed
+    /// treats such a job as settled; collecting it again once the hold is lifted publishes it
+    /// and clears this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -738,6 +743,7 @@ pub async fn export(
                 ledger: ledger_row,
                 bundle: None,
                 unbundled: None,
+                held: None,
             };
             save(&opts.root, &record)?;
             record
@@ -867,6 +873,7 @@ pub async fn import(
         .is_some_and(|o| o.outcome == ledger::IMPORTED && o.source == part_name)
     {
         record.stage = Stage::Published;
+        record.held = None;
         save(root, &record)?;
         return Ok(());
     }
@@ -878,6 +885,7 @@ pub async fn import(
         // node imported the page first. That answer stands; this one is not published.
         record.stage = Stage::Published;
         record.error = Some("superseded: another producer imported this page".into());
+        record.held = None;
         save(root, &record)?;
         return Ok(());
     }
@@ -907,6 +915,7 @@ pub async fn import(
     record.stage = Stage::Published;
     record.error = None;
     record.terminal = None;
+    record.held = None;
     save(root, &record)?;
     Ok(())
 }

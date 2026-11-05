@@ -10,6 +10,12 @@
 //!   go to `<root>/quarantine/<job>/`, nothing is published, and the job stays as it was, so a
 //!   later collect (after the host passes a gold unit) can publish it.
 //!
+//! - A scoped policy can be **held** (#835): `hold` says why, and that scope's results are
+//!   collected and kept in quarantine but never published, whatever host returned them. Its
+//!   record is marked `held`, `collect` succeeds, and the feed carries on. A held scope lists
+//!   no hosts, and its `max_cer` is the threshold a calibration must meet to replace it:
+//!   `gold trust` refuses to merge a policy for that scope with a higher one.
+//!
 //! In native mode, BOINC's result-table host ID is authoritative and is checked against the
 //! host claimed by the uploaded report. It remains a BOINC quality signal, not an identity check.
 //! Native outcome snapshots are accepted only when every result of an assimilated workunit is
@@ -26,11 +32,13 @@ mod promote;
 mod tests;
 
 use gate::immutable_image;
-pub use gate::{collect, quarantine_dir};
+pub use gate::{collect, quarantine_dir, Collected};
 pub use promote::Admission;
 
 pub const TRUST_VERSION: u32 = 5;
 const MAX_REPORTS: u64 = 64 << 20;
+/// The longest `hold` reason, in bytes.
+const MAX_HOLD: usize = 512;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -72,7 +80,13 @@ pub struct ScopedPolicy {
     pub hosts: BTreeMap<String, BTreeSet<u64>>,
     pub manifest_sha256: String,
     pub scope: Scope,
+    /// For a held scope, the threshold its calibration must meet; otherwise the one its hosts
+    /// were judged against.
     pub max_cer: f64,
+    /// Why this scope is held from publication (#835): its results are kept, never published,
+    /// until a calibrated policy replaces this one. A held scope lists no hosts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hold: Option<String>,
 }
 
 impl ScopedPolicy {
@@ -82,7 +96,22 @@ impl ScopedPolicy {
             &self.manifest_sha256,
             &self.scope,
             self.max_cer,
-        )
+        )?;
+        if let Some(hold) = &self.hold {
+            anyhow::ensure!(
+                !hold.trim().is_empty()
+                    && hold.len() <= MAX_HOLD
+                    && !hold.chars().any(char::is_control),
+                "a hold needs a reason of 1 to {MAX_HOLD} bytes on one line"
+            );
+            anyhow::ensure!(
+                self.hosts.is_empty(),
+                "held scope {}/{} must list no hosts",
+                self.scope.language,
+                self.scope.profile
+            );
+        }
+        Ok(())
     }
 }
 
@@ -93,6 +122,7 @@ pub struct PolicyView<'a> {
     pub manifest_sha256: &'a str,
     pub scope: &'a Scope,
     pub max_cer: f64,
+    pub hold: Option<&'a str>,
 }
 
 #[derive(Deserialize)]
@@ -163,6 +193,7 @@ impl Trust {
             manifest_sha256,
             scope,
             max_cer: self.max_cer,
+            hold: None,
         })
     }
 
@@ -207,6 +238,11 @@ impl Trust {
                             && policy.max_cer == self.max_cer,
                         "top-level trust scope disagrees with its scoped policy entry"
                     );
+                    // The top-level fields have nowhere to say so.
+                    anyhow::ensure!(
+                        policy.hold.is_none(),
+                        "the primary trust scope cannot be held"
+                    );
                     primary_matched = true;
                 }
             }
@@ -239,6 +275,7 @@ impl Trust {
                     manifest_sha256: &p.manifest_sha256,
                     scope: &p.scope,
                     max_cer: p.max_cer,
+                    hold: p.hold.as_deref(),
                 })
         } else {
             let scope = self.scope.as_ref()?;
@@ -248,6 +285,7 @@ impl Trust {
                 manifest_sha256,
                 scope,
                 max_cer: self.max_cer,
+                hold: None,
             })
         }
     }
@@ -260,6 +298,7 @@ impl Trust {
             manifest_sha256: view.manifest_sha256.to_owned(),
             scope: view.scope.clone(),
             max_cer: view.max_cer,
+            hold: view.hold.map(str::to_owned),
         })
     }
 

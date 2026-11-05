@@ -1632,6 +1632,128 @@ async fn untrusted_host_is_held_back_until_it_passes_gold() {
 }
 
 #[tokio::test]
+async fn a_held_scope_keeps_german_results_until_a_calibration_lifts_it() {
+    use usnm_boinc::trust::{quarantine_dir, Collected, Scope, ScopedPolicy, Trust};
+    let fx = Fixture::new("ger").await;
+    let id = fx.export().await;
+    let record = usnm_boinc::load(&fx.options.root, &id).unwrap();
+    assert_eq!(
+        (
+            record.job.message.language.as_str(),
+            record.job.engine.profile.as_str()
+        ),
+        ("deu", "frak2021")
+    );
+    let files = fx.result(&id);
+    let spool = fx.tmp.path().join("spool");
+    std::fs::create_dir_all(&spool).unwrap();
+    for (source, logical) in [
+        (&files.0, "result.json"),
+        (&files.1, "text.txt"),
+        (&files.2, "layout.xml"),
+    ] {
+        std::fs::copy(
+            source,
+            spool.join(format!("{}__file_{logical}", record.job.workunit())),
+        )
+        .unwrap();
+    }
+    let image = record.job.engine.image.clone();
+    let deu_scope = Scope {
+        language: "deu".into(),
+        profile: "frak2021".into(),
+        psm: 3,
+        dpi: 300,
+    };
+    let eng = ScopedPolicy {
+        hosts: [(image.clone(), [42].into())].into(),
+        manifest_sha256: "b".repeat(64),
+        scope: Scope {
+            language: "eng".into(),
+            profile: "eng".into(),
+            psm: 3,
+            dpi: 300,
+        },
+        max_cer: 0.1,
+        hold: None,
+    };
+    // The 20 Oct policy trusted every host for German; the hold trusts none and keeps them all.
+    let held = Trust {
+        hosts: eng.hosts.clone(),
+        manifest_sha256: Some(eng.manifest_sha256.clone()),
+        scope: Some(eng.scope.clone()),
+        max_cer: eng.max_cer,
+        policies: vec![
+            ScopedPolicy {
+                hosts: Default::default(),
+                manifest_sha256: "c".repeat(64),
+                scope: deu_scope.clone(),
+                max_cer: 0.179,
+                hold: Some("German pages stay out of publishing until calibrated".into()),
+            },
+            eng,
+        ],
+        v: usnm_boinc::trust::TRUST_VERSION,
+    };
+    let run = |t: Trust, host: Option<u64>| {
+        let (root, spool, id) = (fx.options.root.clone(), spool.clone(), id.clone());
+        let stores = &fx.stores;
+        async move {
+            usnm_boinc::trust::collect(
+                &root,
+                &spool,
+                &id,
+                &t,
+                host,
+                stores.curated.as_ref(),
+                stores.out.as_ref(),
+            )
+            .await
+        }
+    };
+    let reason =
+        "scope deu/frak2021 is held from publication: German pages stay out of publishing until calibrated";
+    for host in [Some(42), Some(77), None] {
+        assert_eq!(
+            run(held.clone(), host).await.unwrap(),
+            Collected::Held(reason.into())
+        );
+        let kept = usnm_boinc::load(&fx.options.root, &id).unwrap();
+        assert_eq!(kept.stage, record.stage);
+        assert_eq!(kept.held.as_deref(), Some(reason));
+    }
+    let q = quarantine_dir(&fx.options.root, &id);
+    for kept in ["result.json", "text.txt", "layout.xml"] {
+        assert!(q.join(kept).is_file(), "{kept}");
+    }
+    let why: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(q.join("reason.json")).unwrap()).unwrap();
+    assert_eq!(why["reason"], reason);
+    assert!(fx.stores.out.list("pages").await.unwrap().is_empty());
+    assert!(fx.stores.out.list("alto").await.unwrap().is_empty());
+
+    // Lifting the hold takes a calibration at or below its limit; then collecting again
+    // publishes from a host that calibration trusts, and the record is no longer held.
+    let calibrated = |max_cer: f64| Trust {
+        hosts: [(image.clone(), [77].into())].into(),
+        manifest_sha256: Some("d".repeat(64)),
+        scope: Some(deu_scope.clone()),
+        max_cer,
+        policies: Vec::new(),
+        v: usnm_boinc::trust::TRUST_VERSION,
+    };
+    assert!(held.merge(&calibrated(1.0)).is_err());
+    let lifted = held.merge(&calibrated(0.15)).unwrap();
+    assert!(run(lifted.clone(), Some(42)).await.is_err());
+    assert!(fx.stores.out.list("pages").await.unwrap().is_empty());
+    assert_eq!(run(lifted, Some(77)).await.unwrap(), Collected::Published);
+    let published = usnm_boinc::load(&fx.options.root, &id).unwrap();
+    assert_eq!(published.stage, Stage::Published);
+    assert!(published.held.is_none());
+    assert_eq!(fx.stores.out.list("pages").await.unwrap().len(), 1);
+}
+
+#[tokio::test]
 async fn remote_handoff_retry_restores_accepted_bytes_after_partial_publication() {
     use usnm_boinc::handoff;
     let fx = Fixture::new("eng").await;
@@ -2341,6 +2463,16 @@ mod queue_feed {
                 .await
                 .is_err()
         );
+        // Kept by a held trust scope (#835): settled, and the message still stays hidden.
+        let mut kept = record.clone();
+        kept.held = Some("scope eng/eng is held from publication: test".into());
+        assert_eq!(
+            claim::finish(f.handoff.as_ref(), f.fx.stores.queue.as_ref(), &kept)
+                .await
+                .unwrap(),
+            claim::Ended::Held
+        );
+        assert_eq!(f.fx.stores.queue.approximate_count(BULK).await.unwrap(), 1);
 
         let files = f.fx.result(&id);
         f.fx.import(&id, &files).await.unwrap();

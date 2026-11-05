@@ -288,6 +288,10 @@ async fn promote_with(
         .policy_for(&scope.language, &scope.profile)
         .context("no calibrated trust policy for the onboarding scope")?;
     ensure!(
+        policy.hold.is_none(),
+        "the onboarding scope is held from publication until calibrated; nothing promoted"
+    );
+    ensure!(
         &policy.scope == scope && policy.manifest_sha256 == prepared.manifest_sha256,
         "the onboarding campaign is not the scope's calibrated challenge; nothing promoted"
     );

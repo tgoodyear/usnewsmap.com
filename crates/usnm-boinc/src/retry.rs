@@ -214,6 +214,7 @@ pub async fn prepare(
             ledger: Some(LedgerRow::from_queued(&next)),
             bundle: None,
             unbundled: None,
+            held: None,
         };
         validate(&child)?;
         child
@@ -376,6 +377,7 @@ mod tests {
             ledger: None,
             bundle: None,
             unbundled: None,
+            held: None,
         };
         save(&root, &parent).unwrap();
         let parent_path = dir(&root, &parent.job.id).unwrap();

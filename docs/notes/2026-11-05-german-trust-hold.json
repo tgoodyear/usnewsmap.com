@@ -1,0 +1,55 @@
+{
+  "hosts": {
+    "sha256:247c131a599403645c4c96782c0556dc27f27a5d991c764b4b9565182a8c71aa": [
+      1,
+      2,
+      8,
+      9,
+      10,
+      12
+    ]
+  },
+  "manifest_sha256": "d8cd7279090a6427c0cc6f0e82573e3771c27f90df6500bf5a44b268f6e0f05f",
+  "scope": {
+    "language": "eng",
+    "profile": "eng",
+    "psm": 3,
+    "dpi": 300
+  },
+  "max_cer": 0.08734328574534386,
+  "policies": [
+    {
+      "hosts": {},
+      "manifest_sha256": "74fe47498a994b0624f0ee62c0bb60ad82a15e46c71a55510b5034f4c6021835",
+      "scope": {
+        "language": "deu",
+        "profile": "frak2021",
+        "psm": 3,
+        "dpi": 300
+      },
+      "max_cer": 0.179,
+      "hold": "German pages stay out of publishing until calibrated (maintainer decision, 1 Nov 2026, #835). OCR runs; its output is kept in quarantine, not published."
+    },
+    {
+      "hosts": {
+        "sha256:247c131a599403645c4c96782c0556dc27f27a5d991c764b4b9565182a8c71aa": [
+          1,
+          2,
+          8,
+          9,
+          10,
+          12
+        ]
+      },
+      "manifest_sha256": "d8cd7279090a6427c0cc6f0e82573e3771c27f90df6500bf5a44b268f6e0f05f",
+      "scope": {
+        "language": "eng",
+        "profile": "eng",
+        "psm": 3,
+        "dpi": 300
+      },
+      "max_cer": 0.08734328574534386
+    }
+  ],
+  "v": 5
+}

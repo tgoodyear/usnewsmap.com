@@ -114,7 +114,7 @@ for CT 211. CT 211 holds a checkout of main at `/opt/usnm`, pinned to one commit
 ([Moving the controller checkout](#moving-the-controller-checkout-1412)), the non-secret
 outputs in `/root/.config/usnewsmap/prod/.env`, the configuration in
 `/etc/usnm/boinc-priority-controller.json` (`claim_queues ["ocr-priority"]`,
-`claim_languages ["eng"]`, `lease_hours` 36), its state in
+`claim_languages ["eng", "deu"]`, `lease_hours` 36), its state in
 `/var/lib/usnm-priority-controller`, and the push command
 `/opt/usnm/scripts/ocr-node/push-boinc-scan.sh` (local, no SSH).
 
@@ -848,14 +848,28 @@ message only when all of these hold, and otherwise puts it back:
 - with `claim_languages` (`CLAIM_LANGUAGES`, `--language`), the page's source
   language is one of them (#866).
 
-Set `claim_languages` to the trust calibration's language (`["eng"]` today:
-`trust.json` has one `scope.language`, and German failed its gate in #835).
-Without it the claim takes any language the worker image can read, and
-`collect --trust` holds back a result outside the calibrated scope, so that
-page's message would stay hidden for the whole lease instead of going back to
-a node. The key is optional and changes nothing when absent. Deploy a hand-off
-image that knows `CLAIM_LANGUAGES` before setting it: an older image ignores
-the variable and claims every language.
+Set `claim_languages` to the languages `trust.json` has a policy for. Without
+it the claim takes any language the worker image can read, and `collect
+--trust` holds back a result outside the calibrated scope, so that page's
+message would stay hidden for the whole lease instead of going back to a node.
+The key is optional and changes nothing when absent. Deploy a hand-off image
+that knows `CLAIM_LANGUAGES` before setting it: an older image ignores the
+variable and claims every language.
+
+A language whose scope `trust.json` **holds** (#835, German until it is
+calibrated) can stay in `claim_languages`: its pages are read, and `collect`
+keeps each result without publishing it, marks the job's record `held` and
+succeeds ([gold check](boinc/gold-check.md#host-trust-for-usnm_ocr)). The
+controller counts a held job as settled, like a published one: it isn't
+collected again, isn't `collection_backlog`, and doesn't hold up the refill. The
+tick line reports how many there are as `scope_held`. The page's message stays
+hidden until its lease runs out, then comes back: a later claim keeps the same
+job, but a node can read the page first, and the trust list doesn't govern what
+the nodes publish. Held journals count toward the `MAX_JOBS` caps, and
+`archive_history.py` only moves fully published pages, so drop the language
+from `claim_languages` if `scope_held` grows too far. Once
+a calibration lifts the hold, collect the held jobs again by hand to publish
+them.
 
 A page whose ledger row is already answered is **deleted** from the queue. Any
 other message it can't use is **sent back** (a copy is sent, then the original is

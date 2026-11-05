@@ -311,6 +311,7 @@ pub(crate) mod tests {
                         ledger: None,
                         bundle: None,
                         unbundled: None,
+                        held: None,
                     },
                 )
                 .unwrap();

@@ -324,6 +324,25 @@ client claim; v5 native collection cross-checks it against the authoritative
 BOINC canonical result. This remains a quality signal for trusted volunteers,
 not an identity check.
 
+A scoped policy can be **held** (#835): a `hold` field gives the reason, and
+that scope lists no hosts. `collect --trust` keeps a result of the held
+`(language, profile, psm, dpi)` scope the same way, whatever host returned it:
+its spool files and `reason.json` go to `<root>/quarantine/<job>/` and nothing
+is published. It then marks the job's record `held`, prints `kept, not
+published: ...` and exits 0, so the feed doesn't stop at it. `claim finish`
+answers `Held` and leaves the page's queue message hidden until its lease runs
+out. The controller counts such a job as settled and reports it as `scope_held`
+([batch scheduler](../boinc-batch-scheduler.md#the-claim)). On a held scope,
+`max_cer` is the limit a calibration must meet: `gold trust` refuses to merge a
+policy for that scope with a higher `max_cer`, and host admission refuses the
+scope. The hold can't be on the primary (top-level) scope. To lift it, merge the
+calibrated policy, then collect the kept jobs again (hand-off `collect` with
+`JOB_IDS`: the jobs whose `dispatch/jobs/<id>/record.json` has `held`).
+A published result clears `held`. An older `usnm-boinc` refuses a list with a
+`hold`, so the server and hand-off images must have this code before a held
+list goes live. The reviewed German hold and its deploy steps are in
+[the 5 November note](../notes/2026-11-05-german-trust-hold.md).
+
 Trust is keyed by the **full immutable worker digest**, not a tag, base image or
 engine version. In v5, server `received_time` orders eligible canonical reports
 and attributable terminal client errors within the calibrated scope, regardless

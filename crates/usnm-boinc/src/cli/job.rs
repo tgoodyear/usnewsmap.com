@@ -331,7 +331,8 @@ pub struct CollectArgs {
     #[arg(long)]
     out_url: String,
     /// trust.json from `gold trust`: publish only when --host-id passed the gold check for
-    /// the job's engine image; otherwise hold the result in <root>/quarantine/<job>/.
+    /// the job's engine image; otherwise hold the result in <root>/quarantine/<job>/. A result
+    /// of a held scope is kept there too, its record marked held, and this succeeds.
     #[arg(long)]
     trust: Option<PathBuf>,
     /// The BOINC host id of the canonical result (the result table's hostid).
@@ -353,7 +354,7 @@ pub async fn collect(args: CollectArgs) -> anyhow::Result<()> {
     let out = usnm_store::open(&out_url)?;
     if let Some(trust) = trust {
         let t = crate::trust::Trust::load(&trust)?;
-        crate::trust::collect(
+        if let crate::trust::Collected::Held(reason) = crate::trust::collect(
             &root,
             &spool,
             &job,
@@ -362,7 +363,10 @@ pub async fn collect(args: CollectArgs) -> anyhow::Result<()> {
             curated.as_ref(),
             out.as_ref(),
         )
-        .await?;
+        .await?
+        {
+            eprintln!("kept, not published: {reason}");
+        }
     } else {
         crate::collect(&root, &spool, &job, curated.as_ref(), out.as_ref()).await?;
     }

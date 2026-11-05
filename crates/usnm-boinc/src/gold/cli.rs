@@ -235,6 +235,12 @@ pub async fn run(command: GoldCommands) -> anyhow::Result<()> {
             )?;
             let t = built.promote_to(&out, merge.as_deref())?;
             for policy in t.effective_policies()? {
+                if let Some(hold) = &policy.hold {
+                    eprintln!(
+                        "{}/{}: held from publication: {hold}",
+                        policy.scope.language, policy.scope.profile
+                    );
+                }
                 for (image, hosts) in &policy.hosts {
                     eprintln!(
                         "{}/{}: {image}: {} trusted hosts",

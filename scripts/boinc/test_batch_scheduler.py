@@ -60,6 +60,7 @@ class Fake:
         self.crash_submit = False
         self.hold = False
         self.terminal = False
+        self.scope_held = False
 
     def inventory(self):
         pending = [job_id for job_id, job in self.jobs.items()
@@ -102,6 +103,9 @@ class Fake:
         if self.hold:
             raise RuntimeError("trust gate refused publication")
         row = next(row for row in self.rows if row["job"]["id"] == job_id)
+        if self.scope_held:
+            row["held"] = "scope deu/frak2021 is held from publication: not calibrated"
+            return
         row["stage"] = "failed" if self.terminal else "published"
 
 
@@ -320,6 +324,34 @@ class SchedulerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "terminal"):
             self.tick()
         self.assertEqual(len(self.state["selected"]), 2)
+
+    def test_results_kept_by_a_held_scope_are_settled_and_the_feed_carries_on(self):
+        self.tick()
+        submitted = sorted(self.fake.jobs)
+        self.assertEqual(len(submitted), 2)
+        for job in self.fake.jobs.values():
+            job["spool"] = "/project/usnmocr/results/batch1"
+        self.fake.scope_held = True
+        event = self.tick()
+        self.assertEqual([a for a in self.fake.actions if a[0] == "collect"],
+                         [("collect", job_id) for job_id in submitted])
+        self.assertTrue(all(row["stage"] != "published" and row["held"] for row in self.fake.rows
+                            if row["job"]["id"] in submitted))
+        self.assertEqual((event["scope_held"], event["collection_backlog"], event["collection_held"],
+                          event["published"]), (2, 0, 0, 0))
+        # Settled: never collected again, and the feed refills past them.
+        self.fake.actions.clear()
+        event = self.tick()
+        self.assertFalse(any(a[0] == "collect" for a in self.fake.actions))
+        self.assertTrue(any(a[0] == "submit" for a in self.fake.actions))
+        self.assertEqual((event["scope_held"], event["collection_backlog"]), (2, 0))
+        self.assertGreater(len(self.state["selected"]), 2)
+        # Collected again by hand once the hold is lifted: published, no longer held.
+        for row in self.fake.rows:
+            if row["job"]["id"] in submitted:
+                row["stage"], row["held"] = "published", None
+        event = self.tick()
+        self.assertEqual((event["scope_held"], event["published"]), (0, 2))
 
     def test_allocation_or_pin_collision_is_operator_gate(self):
         self.fake.rows = [record(self.config["pages"][0]["page"], 1)]

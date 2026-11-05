@@ -27,7 +27,8 @@ pub struct Admission {
 
 impl Trust {
     /// Merges `incoming` calibrated scope(s) into `self` without clobbering unrelated scopes.
-    /// Re-promoting an existing `(language, profile)` scope replaces only that scope.
+    /// Re-promoting an existing `(language, profile)` scope replaces only that scope. A held
+    /// scope (#835) is lifted only by a policy whose `max_cer` is at or below the hold's.
     pub fn merge(&self, incoming: &Self) -> anyhow::Result<Self> {
         let existing_policies = self.effective_policies()?;
         let incoming_policies = incoming.effective_policies()?;
@@ -41,10 +42,18 @@ impl Trust {
             );
         }
         for policy in incoming_policies {
-            by_scope.insert(
-                (policy.scope.language.clone(), policy.scope.profile.clone()),
-                policy,
-            );
+            let key = (policy.scope.language.clone(), policy.scope.profile.clone());
+            if let Some(held) = by_scope.get(&key).filter(|p| p.hold.is_some()) {
+                anyhow::ensure!(
+                    policy.hold.is_some() || policy.max_cer <= held.max_cer,
+                    "scope {}/{} is held until calibrated with max_cer <= {}; this policy's max_cer {} is above it",
+                    key.0,
+                    key.1,
+                    held.max_cer,
+                    policy.max_cer
+                );
+            }
+            by_scope.insert(key, policy);
         }
         let primary = by_scope
             .get(&primary_key)
@@ -153,6 +162,12 @@ impl Trust {
         let view = trust
             .policy_view(&scope.language, &scope.profile)
             .context("no calibrated policy for this scope")?;
+        anyhow::ensure!(
+            view.hold.is_none(),
+            "scope {}/{} is held from publication until calibrated; not admitting",
+            scope.language,
+            scope.profile
+        );
         anyhow::ensure!(
             view.scope == scope
                 && view.manifest_sha256 == manifest_sha256
