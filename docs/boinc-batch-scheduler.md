@@ -1236,17 +1236,22 @@ az account get-access-token --resource https://storage.azure.com/ \
 ```
 
 It reads only the `token` and `expires` keys of that JSON object. `expires` must
-be an integer number of seconds since the epoch, which is what `expires_on`
-gives; the tool converts it with `int()`. Don't project `expiresOn`, a local
-time string. The tool asks again 10 minutes before expiry. To use an operator
-identity:
+be a whole number of seconds since the epoch. Azure CLI 2.54.0 and later gives
+that as `expires_on`: `az account get-access-token --resource
+https://storage.azure.com/ --query 'type(expires_on)' -o tsv` prints `number`
+(and no token). Upgrade an older CLI rather than converting. The tool converts
+`expires` with `int()`, which fails on a date string and stops the step. Don't
+project `expiresOn`, a local time string. The tool asks again 10 minutes before
+expiry, and makes no other `az` call. To use an operator identity:
 
 - On CT 211, make a root-owned 0700 directory for the run, such as
   `/root/usnm-archive`. In it, put a 0700 wrapper `azshim/az` that answers only
   that one call, from a 0600 token file at a fixed path there, such as
-  `/root/usnm-archive/.maint-token.json`. Every other call goes to the real `az`
-  by its absolute path (`exec /usr/bin/az "$@"`, or wherever `command -v az`
-  points).
+  `/root/usnm-archive/.maint-token.json`. Fail closed: the wrapper compares its
+  whole argument list with the command above, `--query` and `-o` included, and
+  prints the file only on an exact match. For any other arguments it prints
+  nothing to stdout and exits non-zero. It never calls the real `az`, so the
+  token can't reach any other command.
 - Put the wrapper's directory first on `PATH` for the archive tool's command
   alone (`PATH=/root/usnm-archive/azshim:$PATH python3 archive_history.py …`).
   Never change `PATH` in a profile or for the service.
