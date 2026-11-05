@@ -13,8 +13,9 @@
 //! host row keeps what the client last reported: `os_name`, `p_vendor`, and in `misc` the
 //! client version, any container runtime and the client config's Docker and WSL refusals
 //! (`host_info_json`). Platforms aren't stored, so they're inferred from the OS and CPU vendor,
-//! and a host neither identifies is judged without them. Of a plan class, only what the row
-//! shows is checked: `<docker/>` and the client version bounds.
+//! and a host neither identifies is judged without them; a host with no `misc` is judged
+//! without what it holds. Of a plan class, only what the row shows is checked: `<docker/>` and
+//! the client version bounds.
 use super::{query, Config};
 use anyhow::{ensure, Context};
 use std::collections::{BTreeMap, BTreeSet};
@@ -34,7 +35,6 @@ pub(super) struct PlanClass {
     pub docker: bool,
     pub min_core_client_version: u32,
     pub max_core_client_version: u32,
-    pub min_boinc_wsl_distro_version: u32,
 }
 
 /// A host as its last scheduler request left it.
@@ -43,27 +43,27 @@ pub(super) struct Host {
     pub id: u64,
     pub os_name: String,
     pub p_vendor: String,
-    /// `major * 10000 + minor * 100 + release`, as the scheduler compares it.
+    /// `major * 10000 + minor * 100 + release`, as the scheduler compares it. None when the
+    /// row has no `misc`.
     pub client: Option<u32>,
-    /// `misc.docker`: Docker or Podman, in an allowed WSL distro on Windows.
-    pub docker: bool,
+    /// `misc.docker`: Docker or Podman, in an allowed WSL distro on Windows. None when the row
+    /// has no `misc`.
+    pub docker: Option<bool>,
     /// `misc.config`: the client config's `dont_use_docker` and `dont_use_wsl`.
     pub dont_use_docker: bool,
     pub dont_use_wsl: bool,
 }
 
 impl Host {
-    /// `plan_class_spec.cpp`'s `<docker/>` check. Where a class asks for a BOINC WSL distro
-    /// version, Windows is judged on its client config alone: the row doesn't keep that version.
-    fn passes_docker(&self, class: &PlanClass) -> bool {
-        if self.dont_use_docker {
-            false
-        } else if self.os_name.contains("Windows") {
-            !self.dont_use_wsl && (class.min_boinc_wsl_distro_version > 0 || self.docker)
-        } else {
-            self.docker
-                && (!self.os_name.contains("Darwin") || self.client.is_some_and(|v| v >= 80206))
-        }
+    /// `plan_class_spec.cpp`'s `<docker/>` check. On Windows the row reports Docker only from
+    /// an allowed WSL distro. A class's `min_boinc_wsl_distro_version` isn't checked: the row
+    /// doesn't keep that version, but the BOINC WSL distro reports its Podman as Docker.
+    fn passes_docker(&self) -> bool {
+        let windows = self.os_name.contains("Windows");
+        !self.dont_use_docker
+            && !(windows && self.dont_use_wsl)
+            && self.docker != Some(false)
+            && !(self.os_name.contains("Darwin") && self.client.is_some_and(|v| v < 80206))
     }
 }
 
@@ -96,10 +96,7 @@ fn platforms(host: &Host) -> Option<&'static [&'static str]> {
 }
 
 fn client_within(client: Option<u32>, min: u32, max: u32) -> bool {
-    match client {
-        Some(v) => v >= min && (max == 0 || v <= max),
-        None => min == 0 && max == 0,
-    }
+    client.is_none_or(|v| v >= min && (max == 0 || v <= max))
 }
 
 impl Requirements {
@@ -113,7 +110,7 @@ impl Requirements {
                 && client_within(host.client, v.min_core_version, v.max_core_version)
                 && (v.plan_class.is_empty()
                     || self.plan_classes.get(&v.plan_class).is_some_and(|c| {
-                        (!c.docker || host.passes_docker(c))
+                        (!c.docker || host.passes_docker())
                             && client_within(
                                 host.client,
                                 c.min_core_client_version,
@@ -144,6 +141,10 @@ fn parse_hosts(text: &str) -> anyhow::Result<Vec<Host>> {
         "0" => Ok(false),
         _ => anyhow::bail!("invalid host container field"),
     };
+    let reported = |field: &str| match field {
+        "" => Ok(None),
+        _ => flag(field).map(Some),
+    };
     let mut hosts = Vec::new();
     let mut seen = BTreeSet::new();
     for line in text.lines() {
@@ -156,7 +157,7 @@ fn parse_hosts(text: &str) -> anyhow::Result<Vec<Host>> {
             os_name: f[1].into(),
             p_vendor: f[2].into(),
             client: client_version(f[3]),
-            docker: flag(f[4])?,
+            docker: reported(f[4])?,
             dont_use_docker: flag(f[5])?,
             dont_use_wsl: flag(f[6])?,
         });
@@ -315,12 +316,11 @@ fn packages_engine(
 /// The plan classes of a `plan_class_spec.xml`. The scheduler uses the first of a name.
 fn parse_plan_classes(xml: &str) -> anyhow::Result<BTreeMap<String, PlanClass>> {
     use quick_xml::{events::Event, Reader};
-    const FIELDS: [&str; 5] = [
+    const FIELDS: [&str; 4] = [
         "name",
         "docker",
         "min_core_client_version",
         "max_core_client_version",
-        "min_boinc_wsl_distro_version",
     ];
     let mut reader = Reader::from_str(xml);
     let mut path: Vec<String> = Vec::new();
@@ -368,9 +368,6 @@ fn parse_plan_classes(xml: &str) -> anyhow::Result<BTreeMap<String, PlanClass>> 
                         "docker" => class.docker = number(&text)? != 0,
                         "min_core_client_version" => class.min_core_client_version = number(&text)?,
                         "max_core_client_version" => class.max_core_client_version = number(&text)?,
-                        "min_boinc_wsl_distro_version" => {
-                            class.min_boinc_wsl_distro_version = number(&text)?
-                        }
                         _ => {}
                     }
                 }
@@ -412,7 +409,7 @@ pub(super) async fn inventory(c: &Config) -> anyhow::Result<Vec<Host>> {
             c,
             "SELECT id, LEFT(os_name, 20), LEFT(p_vendor, 12), \
              IF(JSON_VALID(misc), LEFT(JSON_UNQUOTE(JSON_EXTRACT(misc, '$.client_version')), 8), ''), \
-             IF(JSON_VALID(misc), JSON_CONTAINS_PATH(misc, 'one', '$.docker'), 0), \
+             IF(JSON_VALID(misc), JSON_CONTAINS_PATH(misc, 'one', '$.docker'), ''), \
              IF(JSON_VALID(misc), COALESCE(JSON_CONTAINS(misc, 'true', '$.config.dont_use_docker'), 0), 0), \
              IF(JSON_VALID(misc), COALESCE(JSON_CONTAINS(misc, 'true', '$.config.dont_use_wsl'), 0), 0) \
              FROM host WHERE id>0 ORDER BY id LIMIT 100001",
@@ -485,7 +482,7 @@ mod tests {
             os_name: os.into(),
             p_vendor: vendor.into(),
             client: client_version(client),
-            docker,
+            docker: Some(docker),
             dont_use_docker: false,
             dont_use_wsl: false,
         }
@@ -553,9 +550,15 @@ mod tests {
             true
         )));
         assert!(gold.can_run(&host(1, "Darwin", "Apple", "8.2.11", true)));
-        // A container but a client under the class's minimum, or no request on record.
+        // A container but a client under the class's minimum.
         assert!(!gold.can_run(&host(13, "Linux Ubuntu", "AuthenticAMD", "8.2.9", true)));
-        assert!(!gold.can_run(&host(4, "Darwin", "Apple", "", false)));
+        // A row with no misc doesn't show the host can't run it.
+        let unknown = Host {
+            client: None,
+            docker: None,
+            ..host(4, "Darwin", "Apple", "", false)
+        };
+        assert!(gold.can_run(&unknown));
         // Windows with Docker in WSL: no Windows version.
         assert!(!gold.can_run(&host(
             5,
@@ -588,28 +591,22 @@ mod tests {
             ..linux
         };
         assert!(gold.can_run(&no_wsl));
-        let class = |wsl: u32| PlanClass {
-            docker: true,
-            min_boinc_wsl_distro_version: wsl,
-            ..Default::default()
-        };
         let windows = host(5, "Microsoft Windows 11", "AuthenticAMD", "8.2.11", true);
-        assert!(windows.passes_docker(&class(0)));
+        assert!(windows.passes_docker());
         assert!(!Host {
             dont_use_wsl: true,
             ..windows.clone()
         }
-        .passes_docker(&class(0)));
-        // The BOINC WSL distro's version isn't in the row, so only the config is judged.
-        let without = Host {
-            docker: false,
+        .passes_docker());
+        // Windows needs Docker in an allowed WSL distro, whatever WSL distro version a class asks.
+        assert!(!Host {
+            docker: Some(false),
             ..windows
-        };
-        assert!(!without.passes_docker(&class(0)));
-        assert!(without.passes_docker(&class(1)));
+        }
+        .passes_docker());
         // Docker on a Mac needs an 8.2.6 client.
-        assert!(!host(1, "Darwin", "Apple", "8.2.5", true).passes_docker(&class(0)));
-        assert!(host(1, "Darwin", "Apple", "8.2.6", true).passes_docker(&class(0)));
+        assert!(!host(1, "Darwin", "Apple", "8.2.5", true).passes_docker());
+        assert!(host(1, "Darwin", "Apple", "8.2.6", true).passes_docker());
     }
 
     #[test]
@@ -773,7 +770,6 @@ mod tests {
                 docker: false,
                 min_core_client_version: 0,
                 max_core_client_version: 80299,
-                min_boinc_wsl_distro_version: 2,
             }
         );
         let repo = include_str!("../../../../contrib-compute/boinc/plan_class_spec.xml");
@@ -793,7 +789,7 @@ mod tests {
         let hosts = parse_hosts(
             "5\tMicrosoft Windows 11\tAuthenticAMD\t8.2.11\t0\t0\t1\n\
              9\tLinux Debian\tGenuineIntel\t8.2.13\t1\t1\t0\n\
-             4\tDarwin\tApple\t\t0\t0\t0\n",
+             4\tDarwin\tApple\t\t\t0\t0\n",
         )
         .unwrap();
         assert_eq!(
@@ -804,13 +800,16 @@ mod tests {
             }
         );
         assert_eq!(hosts[1].client, Some(80213));
-        assert!(hosts[1].docker && hosts[1].dont_use_docker && !hosts[1].dont_use_wsl);
-        assert_eq!(hosts[2].client, None);
+        assert!(
+            hosts[1].docker == Some(true) && hosts[1].dont_use_docker && !hosts[1].dont_use_wsl
+        );
+        assert_eq!((hosts[2].client, hosts[2].docker), (None, None));
         for bad in [
             "0\tLinux\tGenuineIntel\t8.2.13\t1\t0\t0",
             "1\tLinux\tGenuineIntel\t8.2.13\t1\t0",
             "1\tLinux\tGenuineIntel\t8.2.13\tNULL\t0\t0",
             "1\tLinux\tGenuineIntel\t8.2.13\t1\t0\ttrue",
+            "1\tLinux\tGenuineIntel\t8.2.13\t1\t\t0",
             "1\tLinux\tGenuineIntel\t8.2.13\t1\t0\t0\n1\tLinux\tGenuineIntel\t8.2.13\t1\t0\t0",
         ] {
             assert!(parse_hosts(bad).is_err(), "{bad}");
