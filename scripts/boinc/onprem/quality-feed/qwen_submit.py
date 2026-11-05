@@ -22,8 +22,9 @@ REQUEST_MIN_APP = {1: 0, 2: 115, 3: 117, 4: 117}
 # without --submit-binary they go with the stage binary (#1449).
 GUARDED_VERSIONS = (3, 4)
 YIDDISH = "yid"
-# `qwen stage --bundle-size` above 1 names each bundle unit bundle-NNNNN-<first doc>.
-BUNDLE_UNIT = re.compile(r"bundle-\d{5}-.+")
+# `qwen stage --bundle-size` above 1 names each bundle unit bundle-<index>-<first doc>, the index
+# at least five digits.
+BUNDLE_UNIT = re.compile(r"bundle-\d{5,}-.+")
 
 
 def jobs(root):
@@ -283,9 +284,11 @@ def assert_bundle_layout(root, bundle_size):
     if bundle_size == 1 and (root / "pages").is_dir():
         raise RuntimeError(f"Root {root.name} was staged with bundles; keep its --bundle-size")
     units = root / "units"
-    if bundle_size > 1 and units.is_dir() and any(p.is_dir() and not BUNDLE_UNIT.fullmatch(p.name)
-                                                  for p in units.iterdir()):
-        raise RuntimeError(f"Root {root.name} holds single-page units; a bundled campaign starts in a new root")
+    if bundle_size > 1 and units.is_dir():
+        unit = next((p.name for p in units.iterdir() if p.is_dir() and not BUNDLE_UNIT.fullmatch(p.name)), None)
+        if unit is not None:
+            raise RuntimeError(f"Root {root.name} holds {unit}, a unit not named as a bundle; "
+                               "a bundled campaign starts in a new root")
 
 
 def unreadable_versions(state, prompt_version):

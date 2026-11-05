@@ -1964,12 +1964,12 @@ class SourceTest(unittest.TestCase):
 
     def test_a_bundled_campaign_has_a_root_of_its_own(self):
         for units, pages, extra, error in (
-                ([DOC], False, ["--bundle-size", "8"], "holds single-page units"),
-                ([DOC], False, ["--bundle-size", "8", "--preflight"], "holds single-page units"),
+                ([DOC], False, ["--bundle-size", "8"], "a unit not named as a bundle"),
+                ([DOC], False, ["--bundle-size", "8", "--preflight"], "a unit not named as a bundle"),
                 ([], True, [], "staged with bundles"),
                 ([], True, ["--preflight"], "staged with bundles"),
                 ([DOC], False, [], None), ([], False, ["--bundle-size", "8"], None),
-                ([DOC], True, ["--bundle-size", "8"], "holds single-page units"),
+                ([DOC], True, ["--bundle-size", "8"], "a unit not named as a bundle"),
                 ([], True, ["--bundle-size", "8"], None)):
             with self.subTest(units=units, pages=pages, extra=extra), tempfile.TemporaryDirectory() as folder:
                 root = Path(folder)
@@ -1984,10 +1984,12 @@ class SourceTest(unittest.TestCase):
             unit = root / "qwen" / "qwen-test" / "units" / DOC
             unit.mkdir(parents=True)
             (unit / "too_large").touch()
-            with self.assertRaisesRegex(RuntimeError, "holds single-page units"):
+            with self.assertRaisesRegex(RuntimeError, "a unit not named as a bundle"):
                 self.legacy_stage(root, "--bundle-size", "8")
-        # A bundle's name runs on past its number.
-        for name, error in (("bundle-00001-", "holds single-page units"), ("bundle-00001-" + DOC, None)):
+        # A bundle's name runs on past its number, of five digits or more; a refusal names the unit.
+        for name, error in (("bundle-00001-", r"holds bundle-00001-, a unit not named as a bundle"),
+                            ("bundle-0001-" + DOC, r"holds bundle-0001-sn"),
+                            ("bundle-00001-" + DOC, None), ("bundle-100000-" + DOC, None)):
             with self.subTest(name=name), tempfile.TemporaryDirectory() as folder:
                 root = Path(folder)
                 (root / "qwen" / "qwen-test" / "units" / name).mkdir(parents=True)
