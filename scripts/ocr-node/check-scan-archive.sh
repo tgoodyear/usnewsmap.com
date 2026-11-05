@@ -7,6 +7,8 @@
 # walks the whole keep set, starts a full upload or enables timers.
 # --verify-only writes no blobs.
 set -euo pipefail
+shopt -s nullglob
+export LC_ALL=C
 die() { echo "error: $*" >&2; exit 1; }
 LIMIT=100 VERIFY_ONLY=false MANIFEST="" DEADLINE=1800 PROGRESS=30 MAX_LOAD=""
 while [ $# -gt 0 ]; do
@@ -31,7 +33,7 @@ done
 [ -z "$MANIFEST" ] || { [ -f "$MANIFEST" ] && [ -r "$MANIFEST" ]; } ||
   die "--sample-from must name a readable file"
 [ "$(id -u)" = 0 ] || die "run as root on the host holding the scans"
-for cmd in jq flock systemd-run systemd-tmpfiles systemctl ionice renice find stat sha256sum; do
+for cmd in jq flock systemd-run systemd-tmpfiles systemctl ionice renice stat sha256sum; do
   command -v "$cmd" > /dev/null || die "needs $cmd"
 done
 # Sampling and checking run at idle I/O and lowest CPU priority, like the
@@ -46,7 +48,8 @@ getent passwd usnm > /dev/null || die "missing service user usnm"
 getent group himds > /dev/null || die "missing Arc token group himds"
 [ -r "$ROOT/etc/tmpfiles.d/usnm-scan-archive.conf" ] || die "install the archive tmpfiles configuration first"
 SCANS=$(sed -n 's/^USNM_ARCHIVE_SCANS=//p' "$ENVFILE" | tail -n 1)
-SCANS=${SCANS#\"} SCANS=${SCANS%\"}
+# Like systemd, take the value inside one pair of matching quotes.
+if [[ $SCANS =~ ^\"(.*)\"$ || $SCANS =~ ^\'(.*)\'$ ]]; then SCANS=${BASH_REMATCH[1]}; fi
 SCANS=$ROOT${SCANS:-/tank/ocr/scans}
 [ -d "$SCANS/keep" ] || die "no keep set under $SCANS"
 systemd-tmpfiles --create "$ROOT/etc/tmpfiles.d/usnm-scan-archive.conf"
@@ -83,11 +86,24 @@ if [ -n "$MANIFEST" ]; then
     NR in pick { print $1 }' "$MANIFEST" | sort -u)
   FROM="spread over the $TOTAL lines of $MANIFEST"
 else
-  # The first scans found, in directory order: find stops when head has read
-  # enough, so only the directories on the way are read.
-  mapfile -t NAMES < <(find "$SCANS/keep" \( -name '*.jp2' -o -name '*.jpg' \) ! -name '*.pct*' \
-    -type f -printf 'keep/%P\n' | head -n "$LIMIT")
-  FROM="the first found under $SCANS/keep"
+  # The first scans in name order, depth first: the walk returns as soon as
+  # the sample is full, so only the directories on the way are read.
+  DIRS=0
+  walk() {
+    local entry
+    DIRS=$((DIRS + 1))
+    for entry in "$1"/*; do
+      [ "${#NAMES[@]}" -lt "$LIMIT" ] || return 0
+      [ ! -L "$entry" ] || continue
+      case ${entry##*/} in
+        *.json | *.pct*) ;;
+        *.jp2 | *.jpg) if [ -f "$entry" ]; then NAMES+=("keep/${entry#"$SCANS/keep/"}"); fi ;;
+        *) if [ -d "$entry" ]; then walk "$entry"; fi ;;
+      esac
+    done
+  }
+  walk "$SCANS/keep"
+  FROM="the first in name order under $SCANS/keep ($DIRS directories read)"
 fi
 COUNT=${#NAMES[@]}
 [ "$COUNT" -gt 0 ] || die "no scans to sample"

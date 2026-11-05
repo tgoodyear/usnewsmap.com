@@ -139,17 +139,34 @@ cat "$STUB_REPORT"
         self.assertIn("--verify", calls[0])
         self.assertIn("-p RuntimeMaxSec=600 ", calls[0])
 
-    def test_without_a_manifest_the_sample_stops_at_the_limit(self):
-        for batch in ("b2", "b3"):
+    def test_without_a_manifest_the_walk_stops_at_the_limit(self):
+        for batch in ("b2", "b3", "b4", "b5"):
             for seq in range(1, 6):
                 self.scan(f"keep/{batch}/sn2/1901-01-01/1/{seq}.jp2")
+        # Never followed, even where it would be first in name order.
+        (self.scans / "keep/a0").symlink_to(self.scans / "keep/b5")
         self.report.write_text(json.dumps(dict(self.good, scanned=4, present=4)))
         result = self.run_check("--limit", "4", "--verify-only")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        bound = self.bound(self.calls.read_text())
-        self.assertEqual(len(bound), 8)
-        self.assertTrue(all(re.fullmatch(r"keep/b\d/sn\d/[\d-]+/1/\d\.jp2(\.json)?", b)
-                            for b in bound), bound)
+        scans = [b for b in self.bound(self.calls.read_text()) if b.endswith(".jp2")]
+        self.assertEqual(scans, [f"{EDITION}/1.jp2", f"{EDITION}/2.jp2",
+                                 "keep/b2/sn2/1901-01-01/1/1.jp2",
+                                 "keep/b2/sn2/1901-01-01/1/2.jp2"])
+        # keep, then four levels each under b1 and b2; b3 to b5 are never read.
+        self.assertIn("(9 directories read)", result.stdout)
+
+    def test_quoted_scans_root_in_the_environment_file(self):
+        for quoted in ('"/srv/scans"', "'/srv/scans'"):
+            with self.subTest(quoted=quoted):
+                (self.root / "etc/usnm/scan-archive.env").write_text(
+                    f"USNM_ARCHIVE_URL=https://example\nUSNM_ARCHIVE_SCANS={quoted}\n")
+                self.scans = self.root / "srv/scans"
+                for name in (f"{EDITION}/1.jp2", f"{EDITION}/2.jp2"):
+                    self.scan(name)
+                self.calls.unlink(missing_ok=True)
+                result = self.run_check("--verify-only")
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(len(self.bound(self.calls.read_text())), 4)
 
     def test_manifest_sample_is_spread_over_the_whole_list(self):
         names = [f"keep/b{i}/sn1/1900-01-01/1/1.jp2" for i in range(10)]
