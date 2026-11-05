@@ -627,7 +627,9 @@ pub async fn export(
     let _lock = Lock::take(&opts.root)?;
     // A page this plan journaled already keeps the deadline it was exported with, so a resumed
     // export builds the same job, whatever --timeout-secs is now (#1159). A page journaled
-    // again with another deadline (#1417) keeps its latest message's.
+    // again with another deadline (#1417) keeps its latest message's: the greatest
+    // (`queued_at`, deadline), where a `queued_at` that doesn't parse sorts first and the longer
+    // deadline breaks a tie, so the choice never depends on directory order.
     let mut kept: BTreeMap<String, (Option<chrono::DateTime<chrono::FixedOffset>>, u32)> =
         BTreeMap::new();
     if let Ok(entries) = std::fs::read_dir(opts.root.join("jobs")) {

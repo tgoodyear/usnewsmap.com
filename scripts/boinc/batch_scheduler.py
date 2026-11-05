@@ -1005,8 +1005,10 @@ class Transport:
             # A page whose scan went to another destination (the export moved on-prem, or back,
             # after it was pushed) is pushed again where this export reads it.
             dest = self.push_destination
-            # A deadline retry's page (#1417) was pushed for its failed job, days ago: the scans
-            # pushed to the BOINC host aren't kept that long, so it goes again.
+            # A deadline retry's page (#1417) was pushed for its failed job, days or weeks ago:
+            # neither the BOINC host's staged scans (4 days) nor the hand-off container's
+            # scans/ (30 days) are kept that long for sure, so it goes again, wherever export
+            # reads it. Only an operator's recorded retry names `supersedes`.
             stale = sorted({page["scan_base"] for page in pages
                             if page.get("scan_base") and (page.get("pushed_to", "container") != dest
                                                           or page.get("supersedes"))})

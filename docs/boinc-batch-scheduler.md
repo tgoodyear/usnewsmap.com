@@ -1033,8 +1033,9 @@ record for that job and message:
   controller records the retry in its state (`deadline_retries`: the page, message, `queued_at`
   and deadline) and logs a `boinc_batch_deadline_retry` event.
 
-The next export pushes the page's scan again, because the host's staged copy is pruned after four
-days. It names the failed job in `HANDOFF_DEADLINE_RETRIES`. `usnm-boinc export --deadline-retry
+The next export pushes the page's scan again, wherever export reads it: the host prunes its staged
+copy after four days, and the hand-off container's `scans/` expire after 30. It names the failed
+job in `HANDOFF_DEADLINE_RETRIES`. `usnm-boinc export --deadline-retry
 <failed job>` checks the record again against the failed journal and the claim, then builds the
 page's job with the recorded deadline. That is a new job id and workunit beside the failed one,
 which stays as it was. An export that would build an earlier job of the page instead is refused.
