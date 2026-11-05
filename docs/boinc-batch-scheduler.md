@@ -546,12 +546,13 @@ pages rather than overwriting them, including for historical cohorts.
    without dumping command output or credentials. Past 80% of a lifetime cap
    (`MAX_JOBS` for dispatch journals, claims, bridge journals and existing
    native workunits, and the server's `spool_entries_limit` for spool entries)
-   the tick also writes a `boinc_batch_cap_warning` line to stderr with `cap`,
-   `count` and the `limit` it's measured against, and otherwise runs
-   unchanged: archive drained history before the cap stops it (#1483). Only
-   server images built with this change report `spool_entries` and
-   `spool_entries_limit`. Route stdout/stderr to the controller's existing log
-   sink; this is controller telemetry, not a claim of live workbook ingestion.
+   each tick also writes one `boinc_batch_cap_warning` line for it to stderr
+   with `cap`, `count`, the `limit` it's measured against and the tick's `at`,
+   and otherwise runs unchanged: archive drained history before the cap stops
+   it (#1483). Only server images built with this change report
+   `spool_entries` and `spool_entries_limit`. Route stdout/stderr to the
+   controller's existing log sink; this is controller telemetry, not a claim of
+   live workbook ingestion.
 
 Collection backlog consumes the next ticks before new allocation. A terminal
 failure or a failed or held collection stops that tick, leaves state intact and

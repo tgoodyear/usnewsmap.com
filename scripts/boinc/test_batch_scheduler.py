@@ -151,7 +151,9 @@ class SchedulerTests(unittest.TestCase):
         self.assertEqual(quiet_lines, [])
         warned_event, warned_lines = run(warned, warned_state, 12)
         self.assertEqual((warned_event, warned.actions, warned_state), (quiet_event, quiet.actions, quiet_state))
-        self.assertEqual({line["event"] for line in warned_lines}, {"boinc_batch_cap_warning"})
+        self.assertEqual({(line["event"], line["at"]) for line in warned_lines},
+                         {("boinc_batch_cap_warning", int(NOW))})
+        self.assertEqual(len(warned_lines), 2)
         self.assertEqual({line["cap"]: (line["count"], line["limit"]) for line in warned_lines},
                          {"existing_workunits": (10, 12), "spool_entries": (72001, 90000)})
         with contextlib.redirect_stderr(io.StringIO()) as stderr:

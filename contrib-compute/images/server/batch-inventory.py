@@ -33,35 +33,32 @@ BUNDLE_SPOOL_FILE = re.compile(
 BUNDLE_PREFIX = "ocrb_"
 
 
-def spool_candidates(results, jobs, bundles=(), counted=None):
+def spool_candidates(results, jobs, bundles=()):
     """The regular files under `results` named as a known job's assimilator output, with their
     name match. Walked with os.scandir: a directory listing carries each entry's type, so the
     tens of thousands of other apps' results (usnm_quality's, mostly) cost no stat each, which
     over the SMB project share made the inventory take minutes (#932). Symlinks are neither
-    followed nor yielded, as with rglob, and every entry counts towards MAX_FILES. `counted`, a
-    dict, is given the number of entries walked as "entries" once the walk ends, so read it after
-    the loop that exhausts this generator."""
+    followed nor returned, as with rglob, and every entry counts towards MAX_FILES. Returns the
+    matches and the number of entries walked, which the inventory reports (#1483)."""
     count = 0
+    found = []
     stack = [results]
-    try:
-        while stack:
-            with os.scandir(stack.pop()) as entries:
-                for entry in entries:
-                    count += 1
-                    if count > MAX_FILES:
-                        raise ValueError("inventory spool limit reached; archive drained results")
-                    if entry.is_dir(follow_symlinks=False):
-                        stack.append(entry.path)
-                    elif entry.is_file(follow_symlinks=False):
-                        match = SPOOL_FILE.fullmatch(entry.name)
-                        if match and match[1] in jobs:
-                            yield Path(entry.path), match
-                        match = BUNDLE_SPOOL_FILE.fullmatch(entry.name)
-                        if match and match[1] in bundles:
-                            yield Path(entry.path), match
-    finally:
-        if counted is not None:
-            counted["entries"] = count
+    while stack:
+        with os.scandir(stack.pop()) as entries:
+            for entry in entries:
+                count += 1
+                if count > MAX_FILES:
+                    raise ValueError("inventory spool limit reached; archive drained results")
+                if entry.is_dir(follow_symlinks=False):
+                    stack.append(entry.path)
+                elif entry.is_file(follow_symlinks=False):
+                    match = SPOOL_FILE.fullmatch(entry.name)
+                    if match and match[1] in jobs:
+                        found.append((Path(entry.path), match))
+                    match = BUNDLE_SPOOL_FILE.fullmatch(entry.name)
+                    if match and match[1] in bundles:
+                        found.append((Path(entry.path), match))
+    return found, count
 
 
 def _ids(values, message):
@@ -121,8 +118,8 @@ def inventory(root, results, counts, nonce, pending_ids=(), existing_ids=None,
         raise ValueError("a page is in more than one workunit")
     seen = {}
     locations = {}
-    counted = {"entries": 0}
-    for path, match in spool_candidates(results, jobs, members, counted):
+    candidates, spool_entries = spool_candidates(results, jobs, members)
+    for path, match in candidates:
         if not path.resolve().is_relative_to(results.resolve()):
             raise ValueError("spool escapes results directory")
         key = (match.re is BUNDLE_SPOOL_FILE, match[1])
@@ -154,7 +151,7 @@ def inventory(root, results, counts, nonce, pending_ids=(), existing_ids=None,
         "active_hosts": counts[1],
         "jobs": jobs,
         # Towards MAX_FILES, so the controller can warn before the limit stops it (#1483).
-        "spool_entries": counted["entries"],
+        "spool_entries": spool_entries,
         "spool_entries_limit": MAX_FILES,
     }
 

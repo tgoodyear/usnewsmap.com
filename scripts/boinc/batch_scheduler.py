@@ -63,14 +63,16 @@ def raise_transport_errors(errors):
 CAP_WARNING_PERCENT = 80
 
 
-def warn_near_cap(cap, count, limit):
+def warn_near_cap(cap, count, limit, now=None):
     """One event on stderr while a count that stops the tick at `limit` is past 80% of it, so
-    the cap is a warning before it is an outage (#1483). The tick itself is unchanged."""
+    the cap is a warning before it is an outage (#1483). The tick itself is unchanged. Each cap
+    is checked once a tick, so it repeats each tick until history is archived."""
     if count * 100 <= limit * CAP_WARNING_PERCENT:
         return
     try:
         print(json.dumps({
-            "event": "boinc_batch_cap_warning", "schema_version": 1, "at": int(time.time()),
+            "event": "boinc_batch_cap_warning", "schema_version": 1,
+            "at": int(time.time() if now is None else now),
             "cap": cap, "count": count, "limit": limit,
             "message": f"{cap} at {count} of {limit}: archive drained history (#1483) before it stops the tick",
         }, sort_keys=True), file=sys.stderr, flush=True)
@@ -859,7 +861,6 @@ class Transport:
             require(name not in snapshot, "duplicate journal inventory entry")
             snapshot[name] = etag
         names = list(snapshot)
-        warn_near_cap("dispatch_journals", len(names), MAX_JOBS)
         require(len(names) <= MAX_JOBS and len(set(names)) == len(names),
                 "dispatch inventory limit/consistency failure; reconcile drained journals")
         return snapshot
@@ -1289,7 +1290,6 @@ class QueueFeed:
         self.transport = transport
         self.persist = persist
         self.claims = state.setdefault("claims", {})
-        warn_near_cap("claims", len(self.claims), MAX_JOBS)
         require(len(self.claims) <= MAX_JOBS, "too many claimed pages; archive drained history first")
 
     def restore(self):
@@ -1670,6 +1670,8 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
     now = time.time() if now is None else now
     require(snapshot["schema_version"] == 1 and -60 <= now - snapshot["created_at"] <= 3600,
             "inventory is not fresh")
+    if feed:
+        warn_near_cap("claims", len(feed.claims), MAX_JOBS, now)
     for key in ("pending_workunits", "active_hosts"):
         require(type(snapshot[key]) is int and snapshot[key] >= 0, "invalid capacity inventory")
     pending_jobs = snapshot["pending_jobs"]
@@ -1689,12 +1691,14 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         require(ID.fullmatch(job_id) and isinstance(job, dict) and job.get("stage") in STAGES
                 and (job.get("spool") is None or isinstance(job["spool"], str)),
                 "invalid server job record")
-    warn_near_cap("bridge_journals", len(server), MAX_JOBS)
-    warn_near_cap("existing_workunits", len(existing_jobs), MAX_JOBS)
+    warn_near_cap("bridge_journals", len(server), MAX_JOBS, now)
+    warn_near_cap("existing_workunits", len(existing_jobs), MAX_JOBS, now)
     spool = snapshot.get("spool_entries"), snapshot.get("spool_entries_limit")
     if all(type(value) is int for value in spool) and spool[1] > 0:
-        warn_near_cap("spool_entries", *spool)
+        warn_near_cap("spool_entries", *spool, now)
     records = transport.records()
+    # Here rather than in journal_inventory, which a tick runs several times.
+    warn_near_cap("dispatch_journals", len(records), MAX_JOBS, now)
     owned = owned_records(config, records)
     for record in owned.values():
         job_id = record["job"]["id"]
