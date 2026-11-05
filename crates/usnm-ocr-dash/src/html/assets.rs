@@ -157,6 +157,25 @@ code { font-size:12.5px; overflow-wrap:anywhere; } a { color:var(--fill); }
   .step-rates th:nth-child(2) { width:24%; }
   .step-rates th, .step-rates td { white-space:normal; overflow-wrap:anywhere; }
   .pipeline-table th { white-space:normal; overflow-wrap:anywhere; }
+  /* Each step is a card: its name, its counts two to a line under their
+     labels, then its week of bars the width of the card. */
+  table.steps { min-width:0; }
+  table.steps, .steps > tbody, .steps > tbody > tr, .steps > tbody > tr > td { display:block; }
+  .steps > colgroup { display:none; }
+  /* Hidden as .sr is, so screen readers still have the column names. */
+  .steps > thead { position:absolute; width:1px; height:1px; margin:-1px; overflow:hidden; clip-path:inset(50%); white-space:nowrap; }
+  .steps > tbody { padding:6px 0; border-bottom:1px solid var(--grid); }
+  .steps > tbody > tr:first-child { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:4px 12px; }
+  .steps > tbody > tr > td { padding:0; border-bottom:none; text-align:left; white-space:normal; }
+  .steps > tbody > tr > td:first-child, .steps > tbody > tr > td.chart { grid-column:1 / -1; }
+  .steps > tbody > tr > td[data-label]::before { content:attr(data-label); display:block; color:var(--ink2); font-size:12px; }
+  section.wide .steps svg.spark { display:block; width:100%; height:auto; }
+  .steps > tbody > .step-detail { display:none; }
+  .steps > tbody:has(details[open]) > .step-detail { display:block; }
+  @supports not selector(:has(*)) { .steps > tbody > .step-detail { display:block; } }
+  .steps .detail-body { position:static; max-width:none; grid-template-columns:minmax(0,1fr); }
+  .steps .detail-block table.windows { width:100%; table-layout:fixed; }
+  .steps .detail-block table.windows th, .steps .detail-block table.windows td { white-space:normal; padding-right:6px; }
 }
 "#;
 

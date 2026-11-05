@@ -71,7 +71,7 @@ git archive --format=tar --output=data-flow.tar "$COMMIT" \
   scripts/ocr-node/usnm-data-flow-observer.timer \
   scripts/ocr-node/usnm-data-catalog-refresh.service \
   scripts/ocr-node/usnm-data-catalog-refresh.timer scripts/ocr-node/install-data-flow.py
-git show "$COMMIT:scripts/ocr-node/install-data-flow.py" > install-data-flow.py
+git show "${COMMIT}:scripts/ocr-node/install-data-flow.py" > install-data-flow.py
 shasum -a 256 data-flow.tar
 ```
 
@@ -365,7 +365,7 @@ scripts/azure/provision.sh --env prod
 
 ## The OCR dashboard on the LAN (#296)
 
-`usnm-ocrdash` summarizes source acquisition, local OCR, volunteer compute, evaluation and publication on an access-controlled internal endpoint ([12 §12.2.5](../design/12-onprem-ocr-pipeline.md#1225-the-lan-dashboard)). Pipelines opens directly beneath the summaries, independently of Operational details. On phones, diagrams become readable step cards with the same descriptions and live rates; wider screens retain the SVG maps. Operational details (workers, batches, pages, queues, host stats and provenance) remain collapsed by default. The same data is at `/api/view.json`, and per panel at `/api/hosts.json`, `/api/fetch.json`, `/api/nodes.json`, `/api/next.json`, `/api/ocred.json` and `/api/throughput.json`. DNS, certificates, container provisioning and access rules are infrastructure concerns.
+`usnm-ocrdash` summarizes source acquisition, local OCR, volunteer compute, evaluation and publication on an access-controlled internal endpoint ([12 §12.2.5](../design/12-onprem-ocr-pipeline.md#1225-the-lan-dashboard)). Pipelines opens directly beneath the summaries, independently of Operational details. On phones, diagrams become readable step cards with the same descriptions and live rates, and Step throughput puts each step on a card, its counts under their column names and its week of bars the width of the screen; wider screens retain the SVG maps and the table. Operational details (workers, batches, pages, queues, host stats and provenance) remain collapsed by default. The same data is at `/api/view.json`, and per panel at `/api/hosts.json`, `/api/fetch.json`, `/api/nodes.json`, `/api/next.json`, `/api/ocred.json` and `/api/throughput.json`. DNS, certificates, container provisioning and access rules are infrastructure concerns.
 
 Summaries use fresh reports, not a shared pipeline percentage. Local completions are worker output; BOINC counts are assigned/unsent result replicas, not unique pages or actively computing devices. The evaluation card groups observed assignments by purpose, but campaign readiness, paired results and acceptance decisions are not connected. Catalog counts cover imported evidence only. Missing publication evidence stays unknown, never zero or inferred success. Snapshot generation time is shown separately from evidence age, so old historical observations do not label all live lanes stale.
 
