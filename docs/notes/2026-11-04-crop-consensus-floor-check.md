@@ -104,7 +104,7 @@ A third replica confirms 98.1% of the crops a rescued pair vouched for at 0.5 (4
 ## Limits
 
 - The readings are Xiaomi-OCR-0's, a 0.8B model, except `qwen8b`. Production runs Qwen3-VL 8B, whose readings differ between backends in other ways.
-- No Yiddish, and no Hebrew-script text.
+- No Yiddish, and no Hebrew-script text. `grounded` is ready for a Yiddish set: its error leaves Hebrew points out of the reading and the transcription, as the rule does. What's missing is the transcriptions; who would make them is open in #1479.
 - Legibility is a stand-in: Tesseract's error on the crop, `clean` under 5%, `fair` under 20%, `poor` from 20%.
 - The page-level tables use Study 3's pages, about three crops each.
 

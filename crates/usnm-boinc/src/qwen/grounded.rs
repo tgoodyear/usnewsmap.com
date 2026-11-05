@@ -79,11 +79,17 @@ fn readings(path: &Path) -> anyhow::Result<HashMap<String, (String, bool)>> {
 }
 
 /// A reading's character error against the transcription, both normalised
-/// as the quality tables are.
+/// as the quality tables are and then, as the rule compares readings, with
+/// Hebrew points left out. The normalising is NFC. A pointed presentation
+/// form such as U+FB2E has a canonical decomposition, letter and point, and
+/// Unicode excludes it from composition, so after NFC it is a letter and a
+/// point, and the point is left out with the rest. A Yiddish reading that
+/// differs from its transcription only in points is good, as the rule would
+/// treat it.
 pub fn cer(hyp: &str, reference: &str) -> f64 {
     let (h, r) = (
-        text::normalize(hyp, false),
-        text::normalize(reference, true),
+        consensus::without_hebrew_points(&text::normalize(hyp, false)),
+        consensus::without_hebrew_points(&text::normalize(reference, true)),
     );
     align::rate(
         distance::chars(&h, &r),
@@ -545,6 +551,22 @@ mod tests {
         assert_eq!((t.strict_joined, t.rule_joined), (1, 0));
         assert!(std::fs::read_to_string(&out).unwrap().lines().count() >= 3);
         assert!(table(&got).contains("| a:b | all | 2 |"));
+    }
+
+    #[test]
+    fn yiddish_error_leaves_points_out_as_the_rule_does() {
+        // "der arbeter": the transcription points its alef, one reading
+        // writes it as the presentation form U+FB2E, one leaves it bare.
+        let reference =
+            "\u{5d3}\u{5e2}\u{5e8} \u{5d0}\u{5b7}\u{5e8}\u{5d1}\u{5e2}\u{5d8}\u{5e2}\u{5e8}";
+        let form = "\u{5d3}\u{5e2}\u{5e8} \u{fb2e}\u{5e8}\u{5d1}\u{5e2}\u{5d8}\u{5e2}\u{5e8}";
+        let bare = "\u{5d3}\u{5e2}\u{5e8} \u{5d0}\u{5e8}\u{5d1}\u{5e2}\u{5d8}\u{5e2}\u{5e8}";
+        assert_eq!(cer(form, reference), 0.0);
+        assert_eq!(cer(bare, reference), 0.0);
+        assert_eq!(cer(reference, bare), 0.0);
+        // A wrong letter still counts.
+        let wrong = "\u{5d3}\u{5e2}\u{5e8} \u{5d0}\u{5e8}\u{5d1}\u{5e2}\u{5d8}\u{5e2}\u{5dd}";
+        assert!(cer(wrong, reference) > 0.0);
     }
 
     #[test]
