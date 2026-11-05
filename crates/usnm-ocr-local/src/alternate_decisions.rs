@@ -1,5 +1,6 @@
 //! Append-only, explicitly reviewed alternate decisions. This is a preview
-//! reader: release and scheduling do not consult it.
+//! reader: the release does not consult it, and the seeder consults it only
+//! for pages a pinned supersession list names ([`crate::supersession`]).
 
 use std::collections::BTreeSet;
 
@@ -54,7 +55,8 @@ pub struct Decision {
 pub struct Record {
     pub id: String,
     pub decision: Decision,
-    /// Preview only; no release or queue action follows.
+    /// Preview only; no release action follows, and no queue action unless a
+    /// pinned supersession list names this exact selection.
     pub selected: Option<String>,
 }
 
@@ -319,6 +321,23 @@ async fn validate_action(
 /// Return the current preview only after revalidating selected artifacts and
 /// comparison. Corruption/missing evidence errors rather than falling back.
 pub async fn read(curated: &dyn ObjectStore, subject: &Subject) -> anyhow::Result<Option<Record>> {
+    Ok(current(curated, subject).await?.0)
+}
+
+/// The `select` record behind the current preview's selection, revalidated as
+/// [`read`] does; `None` while the preview is the baseline.
+pub async fn selection(
+    curated: &dyn ObjectStore,
+    subject: &Subject,
+) -> anyhow::Result<Option<Record>> {
+    Ok(current(curated, subject).await?.1)
+}
+
+/// The latest record and the revalidated selection record it derives from.
+async fn current(
+    curated: &dyn ObjectStore,
+    subject: &Subject,
+) -> anyhow::Result<(Option<Record>, Option<Record>)> {
     let head = committed_head(curated, subject).await?;
     let (records, _) = history(curated, subject).await?;
     ensure!(
@@ -326,6 +345,7 @@ pub async fn read(curated: &dyn ObjectStore, subject: &Subject) -> anyhow::Resul
         "decision history does not match committed head"
     );
     let latest = records.last().cloned();
+    let mut current = None;
     if let Some(selected) = latest.as_ref().and_then(|r| r.selected.as_ref()) {
         let selection = records.iter().rev().find(|r| {
             matches!(&r.decision.action, Action::Select {candidate, ..} if candidate == selected)
@@ -343,12 +363,13 @@ pub async fn read(curated: &dyn ObjectStore, subject: &Subject) -> anyhow::Resul
             let bytes = read_retained(curated, object, 65536).await?;
             validate_action(curated, &selection.decision, Some(&bytes)).await?;
         }
+        current = Some(selection.clone());
     }
     ensure!(
         committed_head(curated, subject).await? == head,
         "decision head changed during preview; retry"
     );
-    Ok(latest)
+    Ok((latest, current))
 }
 
 async fn validated_replay(

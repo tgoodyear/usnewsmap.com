@@ -65,6 +65,7 @@ enum Command {
     OcrAlternateStage(ocr::OcrAlternateStageArgs),
     OcrAlternateDecide(ocr::OcrAlternateDecideArgs),
     OcrAlternatePreview(ocr::OcrAlternatePreviewArgs),
+    OcrAlternateSupersession(ocr::OcrAlternateSupersessionArgs),
     OcrSeed(ocr::OcrSeedArgs),
     OcrEnqueue(ocr::OcrEnqueueArgs),
     OcrRequeue(ocr::OcrRequeueArgs),
@@ -159,6 +160,7 @@ impl Command {
             Command::OcrAlternateStage { .. } => "ocr-alternate-stage",
             Command::OcrAlternateDecide { .. } => "ocr-alternate-decide",
             Command::OcrAlternatePreview { .. } => "ocr-alternate-preview",
+            Command::OcrAlternateSupersession { .. } => "ocr-alternate-supersession",
             Command::OcrSeed { .. } => "ocr-seed",
             Command::OcrEnqueue { .. } => "ocr-enqueue",
             Command::OcrRequeue { .. } => "ocr-requeue",
@@ -203,6 +205,7 @@ fn first_step(command: &Command) -> Option<Step> {
         | Command::OcrAlternateStage { .. }
         | Command::OcrAlternateDecide { .. }
         | Command::OcrAlternatePreview { .. }
+        | Command::OcrAlternateSupersession { .. }
         | Command::OcrSeed { .. }
         | Command::OcrEnqueue { .. }
         | Command::OcrRequeue { .. }
@@ -298,6 +301,9 @@ async fn command(
             ocr::ocr_alternate_decide_command(cli, state, args).await
         }
         Command::OcrAlternatePreview(args) => ocr::ocr_alternate_preview_command(cli, args).await,
+        Command::OcrAlternateSupersession(args) => {
+            ocr::ocr_alternate_supersession_command(cli, args).await
+        }
         Command::OcrSeed(args) => ocr::ocr_seed_command(cli, state, start, args).await,
         Command::OcrEnqueue(args) => ocr::ocr_enqueue_command(cli, state, args).await,
         Command::OcrRequeue(args) => ocr::ocr_requeue_command(cli, state, args).await,

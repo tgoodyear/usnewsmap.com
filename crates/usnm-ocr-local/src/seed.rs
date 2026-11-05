@@ -35,6 +35,10 @@
 //! release's rule); pages under the minimum damage. With
 //! `skip_american_stories` (off by default, 12 §12.6 question 8), also
 //! pages whose American Stories text scores under the minimum damage.
+//! With `supersession` (off by default, #811), also new pages a pinned list
+//! names for the copy being queued, while their selected third-party reading
+//! verifies ([`crate::supersession`]); a damage unit with such a page is
+//! never marked finished, so a revoked selection's page is queued again.
 //!
 //! **Retries**, for the plan's own pages: a page outstanding 14 days is
 //! queued again, and so is one dead-lettered with cause `dequeue_count`,
@@ -82,6 +86,7 @@ use usnm_store::ObjectStore;
 
 use super::enqueue::{self, message_language, QueueReport, MAX_PAGES};
 use super::ledger::{self, Ledger, Queued, DEAD_LETTERED, IMPORTED, NOT_SENT, UNROUTABLE};
+use super::supersession;
 use super::sync::Lease;
 use super::{run_id, ROOT};
 use crate::ocr_damage::{self, VersionList};
@@ -145,6 +150,8 @@ pub struct Options {
     /// With [`Source::Fetched`]: the prefetch manifest's index version
     /// (`pages-v20261010-2`); empty: the published version.
     pub manifest: String,
+    /// The SHA-256 of a pinned supersession list; none: off.
+    pub supersession: Option<String>,
 }
 
 /// Where a plan's new pages come from (`USNM_OCR_SEED_SOURCE`).
@@ -188,6 +195,7 @@ impl Default for Options {
             deadline: None,
             source: Source::Damage,
             manifest: String::new(),
+            supersession: None,
         }
     }
 }
@@ -243,6 +251,15 @@ impl Options {
         }
         if !self.manifest.is_empty() && !usnm_store::is_safe_segment(&self.manifest) {
             bail!("unsafe seed manifest version {:?}", self.manifest);
+        }
+        if let Some(sha) = &self.supersession {
+            if sha.len() != 64
+                || !sha
+                    .bytes()
+                    .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+            {
+                bail!("the seed supersession list must be a lowercase SHA-256");
+            }
         }
         if !(self.min_damage > 0.0 && self.min_damage <= 1.0) {
             bail!("the minimum damage must be above 0 and at most 1");
@@ -744,6 +761,60 @@ pub struct SeedReport {
     /// With [`Source::Fetched`]: what the manifest and the list gave.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fetched: Option<FetchedReport>,
+    /// With a pinned supersession list: what it did to new pages.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supersession: Option<SupersessionReport>,
+}
+
+/// A pinned supersession list's counts, over the new pages this run reached.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SupersessionReport {
+    /// The list's SHA-256.
+    pub list: String,
+    pub entries: u64,
+    /// Listed pages left out: their exact selection verified.
+    pub superseded: u64,
+    /// Listed pages queued normally: their selection didn't verify.
+    pub unverified: u64,
+    /// Listed pages queued normally as another batch copy or version.
+    pub other_copy: u64,
+    /// In a dry run, the pages left out.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pages: Vec<String>,
+}
+
+/// Whether a pinned list leaves out new page `doc_id` of `batch`, counted.
+async fn superseded(
+    pinned: &mut Option<supersession::Pinned<'_>>,
+    r: &mut SeedReport,
+    doc_id: &str,
+    batch: &str,
+    batch_version: u16,
+) -> bool {
+    let Some(p) = pinned.as_mut() else {
+        return false;
+    };
+    let check = p.check(doc_id, batch, batch_version).await;
+    let s = r.supersession.get_or_insert_with(Default::default);
+    match check {
+        supersession::Check::Unlisted => false,
+        supersession::Check::Unverified => {
+            s.unverified += 1;
+            false
+        }
+        supersession::Check::OtherCopy => {
+            s.other_copy += 1;
+            false
+        }
+        supersession::Check::Superseded => {
+            s.superseded += 1;
+            if r.dry_run {
+                s.pages.push(doc_id.to_owned());
+            }
+            skip(r, "superseded_alternate", 1);
+            true
+        }
+    }
 }
 
 /// The fetched source's counts.
@@ -1071,6 +1142,22 @@ pub(super) async fn seed(
         dry_run: opts.dry_run,
         ..SeedReport::default()
     };
+    // A pinned list that is missing or invalid fails the run, as other
+    // settings do; one entry that doesn't verify only queues its page.
+    let mut pinned = match &opts.supersession {
+        Some(sha) => {
+            let p = supersession::Pinned::load(curated, sha)
+                .await
+                .context("the pinned seed supersession list (USNM_OCR_SEED_SUPERSESSION)")?;
+            report.supersession = Some(SupersessionReport {
+                list: p.sha256.clone(),
+                entries: p.len() as u64,
+                ..SupersessionReport::default()
+            });
+            Some(p)
+        }
+        None => None,
+    };
 
     // The window.
     report.window = if opts.window > 0 {
@@ -1243,6 +1330,17 @@ pub(super) async fn seed(
             };
             if let Some(why) = why {
                 skip(&mut report, why, 1);
+                continue;
+            }
+            if superseded(
+                &mut pinned,
+                &mut report,
+                doc_id,
+                &row.batch,
+                row.batch_version,
+            )
+            .await
+            {
                 continue;
             }
             let Ok(key) = PageKey::from_doc_id(doc_id) else {
@@ -1429,6 +1527,19 @@ pub(super) async fn seed(
                     skip(&mut report, why, 1);
                     continue;
                 }
+                if superseded(
+                    &mut pinned,
+                    &mut report,
+                    doc_id,
+                    &unit.batch,
+                    unit.batch_version,
+                )
+                .await
+                {
+                    // Look at it again next run: a revoked selection queues it.
+                    finished = false;
+                    continue;
+                }
                 let Ok(key) = PageKey::from_doc_id(doc_id) else {
                     skip(&mut report, "bad_doc_id", 1);
                     continue;
@@ -1490,6 +1601,7 @@ pub(super) async fn seed(
             would_requeue = report.requeued.values().sum::<u64>(),
             units = report.units.len(),
             skipped = ?report.skipped,
+            supersession = ?report.supersession,
             "ocr seed dry run"
         );
         return Ok(report);
@@ -1533,6 +1645,7 @@ pub(super) async fn seed(
         in_flight = report.in_flight,
         queue_depth = report.queue_depth,
         skipped = ?report.skipped,
+        supersession = ?report.supersession,
         ledger = ?report.ledger,
         "ocr seed finished"
     );

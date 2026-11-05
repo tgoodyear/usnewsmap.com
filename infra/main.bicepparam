@@ -109,6 +109,7 @@ param ocrSeed = {
   USNM_OCR_SEED_SKIP_AMERICAN_STORIES: readEnvironmentVariable('USNM_OCR_SEED_SKIP_AMERICAN_STORIES', '')
   USNM_OCR_SEED_SOURCE: readEnvironmentVariable('USNM_OCR_SEED_SOURCE', '')
   USNM_OCR_SEED_MANIFEST: readEnvironmentVariable('USNM_OCR_SEED_MANIFEST', '')
+  USNM_OCR_SEED_SUPERSESSION: readEnvironmentVariable('USNM_OCR_SEED_SUPERSESSION', '')
   USNM_OCR_BULK_WINDOW: readEnvironmentVariable('USNM_OCR_BULK_WINDOW', '')
   USNM_OCR_BULK_REFILL_BELOW: readEnvironmentVariable('USNM_OCR_BULK_REFILL_BELOW', '')
 }
