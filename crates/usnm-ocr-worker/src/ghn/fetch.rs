@@ -11,7 +11,6 @@
 //! there, so a rerun goes on where the last stopped. Nothing is enqueued for OCR.
 
 use std::collections::{HashMap, VecDeque};
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -186,6 +185,19 @@ pub fn page_paths(out: &Path, page: &Page) -> (PathBuf, PathBuf) {
     )
 }
 
+/// Whether the file at `path` is a whole JPEG: it ends with its end-of-image marker (a decoder
+/// may pad a cut-off scan rather than fail) and it decodes.
+fn whole_jpeg(path: &Path) -> Result<(), String> {
+    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+    let end = bytes.iter().rposition(|&b| b != 0).map_or(0, |i| i + 1);
+    if !bytes[..end].ends_with(&[0xFF, 0xD9]) {
+        return Err("no end-of-image marker".to_owned());
+    }
+    image::load_from_memory_with_format(&bytes, image::ImageFormat::Jpeg)
+        .map(drop)
+        .map_err(|e| e.to_string())
+}
+
 impl GhnJobs {
     fn lock(&self) -> std::sync::MutexGuard<'_, Queue> {
         self.q.lock().expect("ghn jobs lock")
@@ -274,7 +286,7 @@ impl GhnJobs {
         Ok(jobs)
     }
 
-    fn page_done(
+    async fn page_done(
         &self,
         job: &Job,
         how: &Attempt,
@@ -285,14 +297,13 @@ impl GhnJobs {
         let Attempt::Fetched { size, sha256, .. } = how else {
             return Ok(());
         };
-        let mut head = [0u8; 3];
-        let jpeg = std::fs::File::open(&job.dest)
-            .and_then(|mut f| f.read_exact(&mut head))
-            .is_ok()
-            && head == [0xFF, 0xD8, 0xFF];
-        if !jpeg {
+        let dest = job.dest.clone();
+        let whole = tokio::task::spawn_blocking(move || whole_jpeg(&dest))
+            .await
+            .context("checking a page image")?;
+        if let Err(why) = whole {
             let _ = std::fs::remove_file(&job.dest);
-            self.problem(&job.name, "not a JPEG; removed");
+            self.problem(&job.name, &format!("not a whole JPEG ({why}); removed"));
             return Ok(());
         }
         let (manifest_url, manifest_sha256) = manifest;
@@ -395,7 +406,10 @@ impl JobStore for GhnJobs {
                 row,
                 manifest_url,
                 manifest_sha256,
-            }) => self.page_done(job, how, &page, &row, (&manifest_url, &manifest_sha256))?,
+            }) => {
+                self.page_done(job, how, &page, &row, (&manifest_url, &manifest_sha256))
+                    .await?
+            }
             None => {}
         }
         Ok(())
@@ -429,7 +443,8 @@ pub async fn run(opts: Options, stop: watch::Receiver<bool>) -> anyhow::Result<S
     let _lock = crate::bulk::hold_lock(&opts.out.join(".ghn.lock"))?;
     let part_dir = opts.out.join(".part");
     std::fs::create_dir_all(&part_dir)?;
-    let engine = Arc::new(super::engine(&opts.policies, &opts.pacer, "ghn-fetch")?);
+    let (engine, _run) = super::engine(&opts.policies, &opts.pacer, "ghn-fetch")?;
+    let engine = Arc::new(engine);
     // After a push-back GHN's budget is slowed for a day; a run waits for it rather than add to it.
     engine.check_not_slowed(&opts.hosts.newspapers()).await?;
     tracing::info!(issues = rows.len(), "GHN fetch starting");

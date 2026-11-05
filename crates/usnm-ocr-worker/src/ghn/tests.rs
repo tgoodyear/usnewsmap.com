@@ -21,8 +21,14 @@ const LACK: &str = "sn22222222";
 const LATE: &str = "sn33333333";
 const BARE: &str = "sn44444444";
 
-/// A JPEG's first bytes and a little more.
-const JPEG: &[u8] = &[0xFF, 0xD8, 0xFF, 0xE0, 1, 2, 3, 4];
+/// A tiny JPEG that decodes whole; `shade` makes each one different.
+fn jpeg(shade: u8) -> Vec<u8> {
+    let mut out = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new(&mut out)
+        .encode(&[shade; 64], 8, 8, image::ExtendedColorType::L8)
+        .unwrap();
+    out
+}
 
 fn day(s: &str) -> NaiveDate {
     NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
@@ -666,18 +672,18 @@ fn images_asked(r: &Rig) -> usize {
 async fn pages_come_after_their_manifest_with_ids_provenance_and_checksums() {
     let mut r = Rig::new().await;
     let i = issue(LACK, "1929-05-01", 1);
-    let p2: &[u8] = &[0xFF, 0xD8, 0xFF, 0xE1, 9, 9];
-    r.issue(&i, &[(1, JPEG), (2, p2)], "unchecked");
+    let (p1, p2) = (jpeg(10), jpeg(200));
+    r.issue(&i, &[(1, &p1[..]), (2, &p2[..])], "unchecked");
     let s = fetch_all(r.opts()).await.unwrap();
     assert_eq!(s.state, "done");
     assert_eq!(s.fetched_this_run, 3, "a manifest and two pages");
-    assert_eq!(std::fs::read(r.page(&i, 1).0).unwrap(), JPEG);
+    assert_eq!(std::fs::read(r.page(&i, 1).0).unwrap(), p1);
     let manifest = r.s.file(&path_of(&i.url(&r.h))).unwrap();
     let side = r.sidecar(&i, 2);
     assert_eq!(side.page_id, format!("ghn:{LACK}_1929-05-01_ed-1_seq-2"));
     assert_eq!(side.source, "ghn");
     assert_eq!((side.seq, side.edition), (2, 1));
-    assert_eq!(side.sha256, sha(p2));
+    assert_eq!(side.sha256, sha(&p2));
     assert_eq!(side.bytes, p2.len() as u64);
     assert_eq!(side.manifest_url, i.url(&r.h));
     assert_eq!(side.manifest_sha256, sha(&manifest));
@@ -702,24 +708,46 @@ async fn pages_come_after_their_manifest_with_ids_provenance_and_checksums() {
     assert_eq!(r.s.hits(".json"), 1, "the manifest kept on disk is used");
 }
 
+/// Only a JPEG that decodes whole gets a sidecar. Anything else, a bare signature or a
+/// cut-off image included, is removed and asked for again on the next run.
 #[tokio::test]
-async fn something_other_than_a_jpeg_is_removed_and_left_to_do() {
+async fn an_image_that_isnt_a_whole_jpeg_is_removed_and_left_to_do() {
     let mut r = Rig::new().await;
     let i = issue(LACK, "1929-05-01", 1);
-    r.issue(&i, &[(1, b"<html>not a page</html>")], "unchecked");
+    let whole = jpeg(10);
+    let cut = &whole[..whole.len() / 2];
+    let html: &[u8] = b"<html>not a page</html>";
+    let bare: &[u8] = &[0xFF, 0xD8, 0xFF, 0xD9];
+    r.issue(&i, &[(1, html), (2, bare), (3, cut)], "unchecked");
     let s = fetch_all(r.opts()).await.unwrap();
     assert_eq!(s.state, "incomplete");
-    let (jpg, json) = r.page(&i, 1);
-    assert!(!jpg.exists() && !json.exists());
+    for seq in 1..=3 {
+        let (jpg, json) = r.page(&i, seq);
+        assert!(!jpg.exists() && !json.exists(), "page {seq}");
+    }
     let problems = std::fs::read_to_string(r.out().join("ghn-problems.tsv")).unwrap();
-    assert!(problems.contains("not a JPEG"), "{problems}");
+    assert_eq!(
+        problems.matches("not a whole JPEG").count(),
+        3,
+        "{problems}"
+    );
+    let third = format!(
+        "{}batch_x%2Fdata%2F{}%2F0003.jp2/full/full/0/default.jpg",
+        r.h.images,
+        i.stem()
+    );
+    r.s.put(&path_of(&third), whole.clone());
+    fetch_all(r.opts()).await.unwrap();
+    assert_eq!(std::fs::read(r.page(&i, 3).0).unwrap(), whole);
+    assert!(r.page(&i, 3).1.exists());
 }
 
 #[tokio::test]
 async fn a_push_back_on_a_page_ends_the_run_and_slows_ghn_for_the_next() {
     let mut r = Rig::new().await;
     let i = issue(LACK, "1929-05-01", 1);
-    r.issue(&i, &[(1, JPEG), (2, JPEG)], "unchecked");
+    let page = jpeg(10);
+    r.issue(&i, &[(1, &page[..]), (2, &page[..])], "unchecked");
     let first = format!(
         "{}batch_x%2Fdata%2F{}%2F0001.jp2/full/full/0/default.jpg",
         r.h.images,
@@ -740,7 +768,7 @@ async fn a_push_back_on_a_page_ends_the_run_and_slows_ghn_for_the_next() {
 async fn a_sidecar_whose_image_is_gone_is_removed_before_the_page_is_asked_again() {
     let mut r = Rig::new().await;
     let i = issue(LACK, "1929-05-01", 1);
-    r.issue(&i, &[(1, JPEG)], "unchecked");
+    r.issue(&i, &[(1, &jpeg(10)[..])], "unchecked");
     assert_eq!(fetch_all(r.opts()).await.unwrap().state, "done");
     let (jpg, json) = r.page(&i, 1);
     std::fs::remove_file(&jpg).unwrap();
@@ -756,13 +784,42 @@ async fn a_sidecar_whose_image_is_gone_is_removed_before_the_page_is_asked_again
     assert!(!json.exists() && !jpg.exists());
 }
 
+/// The pacer spaces requests, but each engine's one-transfer limit and byte cap are its own,
+/// so while one GHN run holds a pacer, a fetch into another output or a catalogue asking
+/// for metadata stops before asking anything.
+#[tokio::test]
+async fn one_ghn_run_at_a_time_holds_a_pacer() {
+    let mut r = Rig::new().await;
+    let i = issue(LACK, "1929-05-01", 1);
+    r.issue(&i, &[(1, &jpeg(10)[..])], "unchecked");
+    let pacer = r.opts().pacer;
+    let running = super::engine(&policies(), &pacer, "a run").unwrap();
+    let mut elsewhere = r.opts();
+    elsewhere.out = r.dir.path().join("elsewhere");
+    let e = format!("{:#}", fetch_all(elsewhere).await.unwrap_err());
+    assert!(e.contains("one GHN run at a time per pacer"), "{e}");
+    let c = Cat::new(&r.h);
+    let mut o = c.opts(&r.h);
+    o.fetch = Some(catalog::Fetch {
+        pacer: pacer.clone(),
+        policies: policies(),
+        max_titles: None,
+    });
+    let e = format!("{:#}", catalogue(o).await.unwrap_err());
+    assert!(e.contains("one GHN run at a time per pacer"), "{e}");
+    assert_eq!(r.s.hits_under("/"), 0);
+    drop(running);
+    assert_eq!(fetch_all(r.opts()).await.unwrap().state, "done");
+}
+
 #[tokio::test]
 async fn the_limit_counts_issues_started() {
     let mut r = Rig::new().await;
     let a = issue(LACK, "1929-05-01", 1);
     let b = issue(LACK, "1929-05-02", 1);
-    r.issue(&a, &[(1, JPEG)], "unchecked");
-    r.issue(&b, &[(1, JPEG)], "unchecked");
+    let page = jpeg(10);
+    r.issue(&a, &[(1, &page[..])], "unchecked");
+    r.issue(&b, &[(1, &page[..])], "unchecked");
     let mut o = r.opts();
     o.limit = Some(1);
     let s = fetch_all(o).await.unwrap();

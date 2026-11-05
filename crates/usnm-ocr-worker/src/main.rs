@@ -565,7 +565,8 @@ enum Command {
         /// Ask GHN for the documents not in the cache, through the `ghn` policy.
         #[arg(long, requires = "pacer")]
         fetch_metadata: bool,
-        /// GHN's budget, shared by every process that asks GHN anything.
+        /// GHN's budget, shared by every process that asks GHN anything; one run holds it at
+        /// a time.
         #[arg(long, env = "USNM_GHN_PACER")]
         pacer: Option<PathBuf>,
         /// A directory of host policies (one `<name>.toml` each), instead of the built-in ones.
@@ -585,7 +586,8 @@ enum Command {
         /// Where manifests and pages go.
         #[arg(long, env = "USNM_GHN_OUT")]
         out: PathBuf,
-        /// GHN's budget, shared by every process that asks GHN anything.
+        /// GHN's budget, shared by every process that asks GHN anything; one run holds it at
+        /// a time.
         #[arg(long, env = "USNM_GHN_PACER")]
         pacer: PathBuf,
         /// A directory of host policies (one `<name>.toml` each), instead of the built-in ones.

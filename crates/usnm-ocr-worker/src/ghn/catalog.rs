@@ -286,13 +286,13 @@ pub async fn run(opts: Options, stop: watch::Receiver<bool>) -> anyhow::Result<S
         None => None,
     };
     let hosts = &opts.hosts;
-    let engine = match &opts.fetch {
+    let (engine, _run) = match &opts.fetch {
         Some(f) => {
-            let e = super::engine(&f.policies, &f.pacer, "ghn-catalog")?;
+            let (e, run) = super::engine(&f.policies, &f.pacer, "ghn-catalog")?;
             e.check_not_slowed(&hosts.newspapers()).await?;
-            Some(e)
+            (Some(e), Some(run))
         }
-        None => None,
+        None => (None, None),
     };
     let list_path = opts.cache.join("newspapers.json");
     if !list_path.exists() {

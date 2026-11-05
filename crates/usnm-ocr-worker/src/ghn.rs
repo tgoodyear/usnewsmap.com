@@ -57,22 +57,39 @@ pub fn is_noc_us(statement: &str) -> bool {
         .any(|p| s.strip_prefix(p) == Some("rightsstatements.org/vocab/NoC-US/1.0"))
 }
 
-/// An engine with the `ghn` policy alone, its budget in `pacer`, so nothing else can be asked.
-pub(crate) fn engine(policies: &Policies, pacer: &Path, who: &str) -> anyhow::Result<Engine> {
+/// An engine with the `ghn` policy alone, its budget in `pacer`, so nothing else can be asked,
+/// and the lock that keeps it the only one on that pacer while it's held. The pacer spaces
+/// requests across processes, but the one-transfer limit and byte cap are each engine's own,
+/// so a second run (`ghn-fetch` beside `ghn-catalog --fetch-metadata`, or a fetch into
+/// another output) is refused rather than let it overlap transfers.
+pub(crate) fn engine(
+    policies: &Policies,
+    pacer: &Path,
+    who: &str,
+) -> anyhow::Result<(Engine, std::fs::File)> {
+    if let Some(dir) = pacer.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    // Not the pacer file itself: its own lock is taken and dropped around each request.
+    let mut run = pacer.as_os_str().to_owned();
+    run.push(".run");
+    let held = crate::bulk::hold_lock(Path::new(&run))
+        .with_context(|| format!("{who}: one GHN run at a time per pacer"))?;
     let ghn = policies
         .iter()
         .find(|p| p.name == GHN)
         .context("no ghn policy")?
         .clone();
     let budgets = FileBudgets::new(None).with_file(GHN, pacer.to_owned(), None);
-    Engine::new(
+    let engine = Engine::new(
         Policies::new(vec![ghn])?,
         Box::new(budgets),
         EngineOptions {
             who: who.to_owned(),
             rate_file: None,
         },
-    )
+    )?;
+    Ok((engine, held))
 }
 
 pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
