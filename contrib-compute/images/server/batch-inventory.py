@@ -18,6 +18,10 @@ QUERY = """
 SELECT
  (SELECT COUNT(*) FROM workunit WHERE assimilate_state != 2),
  (SELECT COUNT(*) FROM host WHERE rpc_time > UNIX_TIMESTAMP() - 86400);
+SELECT 'app', app.name, COUNT(*) FROM workunit JOIN app ON app.id = workunit.appid
+ WHERE workunit.assimilate_state != 2
+ GROUP BY app.id, app.name
+ ORDER BY app.name;
 SELECT name, assimilate_state FROM workunit
  WHERE name REGEXP '^usnm_(ocrb_)?[0-9a-f]{64}$'
  ORDER BY name
@@ -31,6 +35,9 @@ SPOOL_FILE = re.compile(
 BUNDLE_SPOOL_FILE = re.compile(
     r"usnm_ocrb_([0-9a-f]{64})(__file_(results\.json|texts|layouts)|_error|_no_output_files)")
 BUNDLE_PREFIX = "ocrb_"
+APP_NAME = r"[A-Za-z0-9_.-]{1,254}"
+APP_ROW = re.compile(rf"app\t({APP_NAME})\t([0-9]+)")
+MAX_APPS = 100
 
 
 def spool_candidates(results, jobs, bundles=()):
@@ -68,14 +75,20 @@ def _ids(values, message):
 
 
 def inventory(root, results, counts, nonce, pending_ids=(), existing_ids=None,
-              pending_bundles=(), existing_bundles=None):
+              pending_bundles=(), existing_bundles=None, pending_by_app=None):
     """pending_ids/existing_ids are single-page workunits' job ids; pending_bundles and
     existing_bundles are OCR bundle workunits' bundle ids (#1059), reported as their pages,
-    which the server's journals name (record["bundle"])."""
+    which the server's journals name (record["bundle"]). pending_by_app is each app's
+    unassimilated workunits, so the controller can tell other apps' work from OCR's (#1474)."""
     if not re.fullmatch(r"[0-9a-f]{32}", nonce):
         raise ValueError("invalid inventory nonce")
     if len(counts) != 2 or any(type(n) is not int or n < 0 for n in counts):
         raise ValueError("invalid inventory counts")
+    if pending_by_app is not None and (
+            not isinstance(pending_by_app, dict) or len(pending_by_app) > MAX_APPS or
+            any(not isinstance(name, str) or not re.fullmatch(APP_NAME, name) or
+                type(n) is not int or n < 0 for name, n in pending_by_app.items())):
+        raise ValueError("invalid per-app inventory counts")
     if len(pending_ids) > MAX_JOBS or len(set(pending_ids)) != len(pending_ids) or \
             any(not ID.fullmatch(job_id) for job_id in pending_ids):
         raise ValueError("invalid/oversized pending job inventory")
@@ -139,7 +152,7 @@ def inventory(root, results, counts, nonce, pending_ids=(), existing_ids=None,
                 if jobs[job_id]["spool"] not in (None, directory):
                     raise ValueError("multiple assimilator spools for one job")
                 jobs[job_id]["spool"] = directory
-    return {
+    payload = {
         "schema_version": 1,
         "nonce": nonce,
         "created_at": int(time.time()),
@@ -154,6 +167,9 @@ def inventory(root, results, counts, nonce, pending_ids=(), existing_ids=None,
         "spool_entries": spool_entries,
         "spool_entries_limit": MAX_FILES,
     }
+    if pending_by_app is not None:
+        payload["pending_workunits_by_app"] = pending_by_app
+    return payload
 
 
 def main():
@@ -175,10 +191,13 @@ def main():
         check=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=60,
     ).stdout.strip().splitlines()
     counts = output[0].split("\t") if output else []
+    apps = [APP_ROW.fullmatch(value) for value in output[1:] if value.startswith("app\t")]
+    names = [value for value in output[1:] if not value.startswith("app\t")]
     if len(counts) != 2 or any(not value.isdecimal() for value in counts) or \
-            any(not re.fullmatch(r"usnm_(ocrb_)?[0-9a-f]{64}\t-?[0-9]+", value) for value in output[1:]):
+            not all(apps) or len({app[1] for app in apps}) != len(apps) or \
+            any(not re.fullmatch(r"usnm_(ocrb_)?[0-9a-f]{64}\t-?[0-9]+", value) for value in names):
         raise ValueError("invalid database inventory")
-    rows = [value.split("\t") for value in output[1:]]
+    rows = [value.split("\t") for value in names]
     pages = [(name.removeprefix("usnm_"), int(state)) for name, state in rows
              if not name.startswith("usnm_" + BUNDLE_PREFIX)]
     bundles = [(name.removeprefix("usnm_" + BUNDLE_PREFIX), int(state)) for name, state in rows
@@ -187,7 +206,8 @@ def main():
                         [name for name, state in pages if state != 2],
                         [name for name, _ in pages],
                         [name for name, state in bundles if state != 2],
-                        [name for name, _ in bundles])
+                        [name for name, _ in bundles],
+                        pending_by_app={app[1]: int(app[2]) for app in apps})
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(payload, sort_keys=True) + "\n")
 

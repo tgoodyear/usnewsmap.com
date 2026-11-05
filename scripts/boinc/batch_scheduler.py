@@ -1457,10 +1457,11 @@ def resolve_watermarks(config, snapshot, status=None, *,
     else:
         global_cap = high_target
     if other_app_budget is not None:
-        # A budget as large as the cap would leave the cohort no share of it.
-        require(type(other_app_budget) is int and
+        # Against a cap set explicitly, as main checks it in a dry run. A budget as large as
+        # the cap would leave the cohort no share of it.
+        require(explicit_global is not None and type(other_app_budget) is int and
                 0 <= other_app_budget < min(global_cap, FEEDER_SHMEM_SLOTS),
-                "other_app_budget must be below max_global_pending and the feeder's slots")
+                "invalid other_app_budget")
 
     return {
         "app": app,
@@ -1477,19 +1478,24 @@ def resolve_watermarks(config, snapshot, status=None, *,
     }
 
 
-def ocr_share(in_flight, ocr_workunits, status, ocr_app):
-    """The in-flight workunits that are the cohort app's own. Without its per-app status, all
-    of them: unattributed work is treated as the cohort's."""
-    if status is None or ocr_app not in status["apps"]:
-        return in_flight
-    return min(in_flight, max(ocr_workunits, status["apps"][ocr_app]["runnable"]))
+def other_app_workunits(snapshot, app):
+    """Other apps' unassimilated workunits, by the server's per-app count, at most all of
+    `snapshot`'s. None from a server image without the count: then no work is other apps'
+    for the budget, and all of it counts in full."""
+    counts = snapshot.get("pending_workunits_by_app")
+    if counts is None:
+        return None
+    require(isinstance(counts, dict) and all(isinstance(name, str) and type(n) is int and n >= 0
+                                             for name, n in counts.items()),
+            "invalid per-app inventory counts")
+    return min(snapshot["pending_workunits"], sum(n for name, n in counts.items() if name != app))
 
 
 def counted_pending(info, pending, other):
     """The part of `pending` (unassimilated workunits of every app plus retained backlog, `other`
-    of them other apps') that max_global_pending counts. With other_app_budget, other apps'
-    work counts only up to the budget, so a backlog no host can take can't fill the cap and
-    starve the cohort (#1474); without it, all of it counts."""
+    of them other apps' by the server's per-app count) that max_global_pending counts. With
+    other_app_budget, other apps' work counts only up to the budget, so a backlog no host can
+    take can't fill the cap and starve the cohort (#1474); without it, all of it counts."""
     budget = info["other_app_budget"]
     return pending if budget is None else pending - max(0, other - budget)
 
@@ -1792,7 +1798,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
     persist()
     # Before collection: a host admitted now has its held results published by this tick's
     # collect, which otherwise stops at the first result it must hold.
-    gold_runs, gold_reserved = [], 0
+    gold_runs = []
     if not drain and config.get("gold_onboarding"):
         # The same caps and the same retained backlog the refill below counts, from the same
         # status. Without status there is no room for gold units (promotion still runs); the
@@ -1804,16 +1810,15 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
                                       max_global_pending=max_global_pending,
                                       other_app_budget=other_app_budget)
             uncollected, missing = retained_backlog(config, records, owned, selected, pending_jobs)
-            ocr_units = ocr_workunit_counts(snapshot, pending_jobs)[0]
-            in_flight = max(snapshot["pending_workunits"], ocr_units)
+            in_flight = max(snapshot["pending_workunits"], ocr_workunit_counts(snapshot, pending_jobs)[0])
             room = global_room(caps, in_flight + uncollected + len(missing),
-                               in_flight - ocr_share(in_flight, ocr_units, gold_status, caps["app"]))
+                               other_app_workunits(snapshot, caps["app"]) or 0)
         except (ValueError, KeyError, TypeError, OSError, RuntimeError):
             room = 0
-        gold_runs, gold_reserved = gold_onboarding(config, state, transport, persist, now,
-                                                   held=bool(held_jobs), room=room)
+        gold_runs, reserved = gold_onboarding(config, state, transport, persist, now,
+                                              held=bool(held_jobs), room=room)
         # The gold units just issued are in flight too, for this tick's refill.
-        snapshot = {**snapshot, "pending_workunits": snapshot["pending_workunits"] + gold_reserved}
+        snapshot = {**snapshot, "pending_workunits": snapshot["pending_workunits"] + reserved}
     to_collect = []
     for page, record in owned.items():
         job_id = record["job"]["id"]
@@ -1865,6 +1870,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         other_status_results = sum(
             item["runnable"] for name, item in status["apps"].items() if name != ocr_app
         )
+        ocr_in_flight = min(global_in_flight, max(ocr_workunits, ocr_status_results))
     else:
         ocr_unsent = global_in_flight
         ocr_in_progress = 0
@@ -1873,12 +1879,13 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
             item["runnable"] for name, item in (status["apps"].items() if status is not None else ())
             if name != ocr_app
         )
-    ocr_in_flight = ocr_share(global_in_flight, ocr_workunits, status, ocr_app)
+        ocr_in_flight = global_in_flight
 
     other_pending = max(0, global_in_flight - ocr_in_flight)
-    # Other apps' work the budget covers. This tick's gold units count in full: they were
-    # issued from room under the counted cap.
-    budgeted_other = max(0, other_pending - gold_reserved)
+    # By the inventory's per-app count, which leaves out this tick's gold units: they count in
+    # full, having taken room under the cap.
+    other_workunits = other_app_workunits(snapshot, ocr_app)
+    budgeted_other = other_workunits or 0
     ocr_in_flight += bundled_pages
     cohort_pending = ocr_in_flight + uncollected_not_pending + len(missing)
     global_pending = global_in_flight + uncollected_not_pending + len(missing)
@@ -2065,6 +2072,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         "other_app_pending": other_pending,
         "global_pending": global_pending,
         "global_pending_counted": global_pending_counted,
+        "other_app_workunits": other_workunits,
         "cohort_pending_results": cohort_pending_results,
         "other_app_pending_results": other_app_pending_results,
         "global_pending_results": global_pending_results,
@@ -2109,8 +2117,9 @@ def main(argv=None):
                              "batch_size, the default); collection still takes up to batch_size (#1447)")
     parser.add_argument("--other-app-budget", type=int, default=None,
                         help="count at most this many of other apps' unassimilated workunits toward "
-                             "--max-global-pending (below it), and hold all apps' work under the feeder's "
-                             f"{FEEDER_SHMEM_SLOTS} slots (#1474); needs per-app status to take effect")
+                             "--max-global-pending (needed, and above it), and hold all apps' work to the "
+                             f"feeder's {FEEDER_SHMEM_SLOTS} slots (#1474); needs the server's per-app "
+                             "inventory counts to take effect")
     parser.add_argument("--server-status-url", default=None,
                         help="optional https server_status.php?xml=1 URL for per-app queue counts")
     parser.add_argument("--server-status-file", type=Path, default=None,
@@ -2151,10 +2160,11 @@ def main(argv=None):
             require(1 <= args.refill_cap <= 100, "invalid --refill-cap")
             require(config.get("app") != SURYA_APP_NAME, "--refill-cap is for OCR plans")
         if args.other_app_budget is not None:
-            # Checked again against the cap the tick resolves; this catches it in a dry run.
+            # As the tick checks it, so a dry run catches it: below a cap set explicitly.
             cap = (args.max_global_pending if args.max_global_pending is not None
-                   else config.get("max_global_pending", FEEDER_SHMEM_SLOTS))
-            require(0 <= args.other_app_budget < min(cap, FEEDER_SHMEM_SLOTS), "invalid other_app_budget")
+                   else config.get("max_global_pending"))
+            require(cap is not None and 0 <= args.other_app_budget < min(cap, FEEDER_SHMEM_SLOTS),
+                    "invalid other_app_budget")
         if args.server_status_url is not None:
             _validate_status_url(args.server_status_url)
         surya = config.get("app") == SURYA_APP_NAME

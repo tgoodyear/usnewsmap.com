@@ -134,19 +134,35 @@ work (#1474). `--other-app-budget B` (a flag, so the configuration hash doesn't
 change) counts other apps' unassimilated workunits toward
 `--max-global-pending` only up to `B`, which must be below the cap, so other
 apps can't take more than `B` of it: the cohort keeps `cap - B`, less retained
-collection backlog. All work of every app, counted in full, may not pass the
+collection backlog. The cap must be set explicitly (flag or configuration).
+All work of every app, counted in full, may not pass the
 feeder's 4,096 shared-memory slots (`shmem_work_items`); at that bound the
-reason is `global_hard_cap`, which no cap setting lifts. The budget needs
-per-app status: without it all pending work is the cohort's and is counted in
-full. The commit CT 211 is pinned to predates the flag. After moving the
-checkout past it ([Moving the controller checkout](#moving-the-controller-checkout-1412)),
-add it to the drop-in, for example `--max-global-pending 3000 --other-app-budget 2500`,
-which leaves `usnm_ocr` 500 workunits (the 300 high watermark in #1474 and a
-margin). The budget is the operator's choice.
-Check one dry run (the plan event shows `other_app_budget`) and one hand-run
-tick (`global_pending_counted`, `other_app_budget`, `global_hard_cap` and
-`backpressure_reason`) before the timer runs it. Removing the flag restores
-the old accounting.
+reason is `global_hard_cap`, which no cap setting lifts. Which work is other
+apps' comes from the inventory's per-app count of unassimilated workunits
+(`pending_workunits_by_app`), not from the residual after OCR's named
+workunits, so OCR work the inventory doesn't list by name still counts in
+full. Only server images built with this change report the count. Without it
+nothing is discounted, and the tick reports `other_app_workunits: null`.
+
+Neither the commit CT 211 is pinned to nor the running server image has this.
+To use it, in either order (the flag is inert without the count):
+
+1. Roll the on-prem server image to one built from a commit that includes it
+   ([Reviewed resumable release pipeline](boinc-onprem.md#reviewed-resumable-release-pipeline-551)),
+   so `batch-inventory` reports `pending_workunits_by_app`.
+2. Move the controller checkout past it
+   ([Moving the controller checkout](#moving-the-controller-checkout-1412)).
+3. Add the flag to the drop-in's `ExecStart`, for example
+   `--max-global-pending 3000 --other-app-budget 2500`, which leaves
+   `usnm_ocr` 500 workunits (the 300 high watermark in #1474 and a margin).
+   The budget is the operator's choice.
+4. Run the same command without `--apply` (the plan event shows
+   `other_app_budget`, and a budget the cap doesn't allow fails here), then
+   `systemctl daemon-reload` and one tick by hand. Check
+   `other_app_workunits` (not `null`), `global_pending_counted`,
+   `global_hard_cap` and `backpressure_reason` before the timer runs it.
+
+Removing the flag restores the old accounting.
 
 Keep `max_pending: 40`,
 `pages_per_host: 2`, and `batch_size: 10`: OCR admission is bounded by
@@ -661,8 +677,8 @@ pages rather than overwriting them, including for historical cohorts.
    still owns the two jobs**, whose launcher rejects running executions and
    verifies each execution's settings.
 2. Run `batch-inventory`, or wait for it. It reads the bridge journal, complete
-   assimilator outputs (or terminal markers), and two aggregate SQL counts with
-   verified database TLS. It writes only `scheduler/inventory.json` in the
+   assimilator outputs (or terminal markers), and two aggregate SQL counts
+   and each app's unassimilated workunits with verified database TLS. It writes only `scheduler/inventory.json` in the
    hand-off container. A per-tick nonce rejects stale or concurrent snapshots.
    Hand-off journals are downloaded as metadata only, using one Azure CLI batch
    process rather than one CLI invocation per historical job. Each refresh
@@ -684,9 +700,10 @@ pages rather than overwriting them, including for historical cohorts.
    `<unsent>` and `<in_progress>` counts so `usnm_ocr` admission checks
    `usnm_ocr`'s own runnable queued/in-progress work against its cohort low/high
    watermarks rather than letting unrelated GPU/other-app queues starve
-   CPU/native hosts. With `--other-app-budget B` and per-app status, other
-   apps' unassimilated workunits count toward `max_global_pending` only up to
-   `B` (below the cap), so a backlog no host can take, such as stranded
+   CPU/native hosts. With `--other-app-budget B` (below an explicitly set
+   `max_global_pending`), other apps' unassimilated workunits, by the
+   inventory's per-app count, count toward the cap only up to
+   `B`, so a backlog no host can take, such as stranded
    `usnm_qwen` partner replicas, can't fill the cap and starve the cohort
    (#1474). Under a budget every app's work, counted in full, may not pass
    the feeder's 4,096 shared-memory slots (`FEEDER_SHMEM_SLOTS`). The
@@ -735,7 +752,9 @@ pages rather than overwriting them, including for historical cohorts.
    (`cohort_pending`, `other_app_pending`, `global_pending`, `low_watermark`,
    `high_watermark`, `max_global_pending`, `refilling`, `app_queues`), with
    `global_pending_counted` (what the cap counts: `global_pending` unless a
-   budget leaves part of other apps' work out), `other_app_budget` and
+   budget leaves part of other apps' work out), `other_app_workunits` (other
+   apps' share by the inventory's per-app count, `null` from server images
+   without it), `other_app_budget` and
    `global_hard_cap` (4,096 under a budget, otherwise `null`), oldest
    pending age, collection backlog, `backpressure` and `backpressure_reason`,
    plus `starvation_alert` and structured `alerts` (`cohort_starvation` when
