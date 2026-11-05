@@ -116,6 +116,64 @@ class SchedulerTests(unittest.TestCase):
         return batch.tick(self.config, self.state, self.fake,
                           lambda: self.saved.append(copy.deepcopy(self.state)), NOW, drain=drain)
 
+    def test_a_deadline_retry_owns_the_page_only_as_the_controller_recorded_it(self):
+        # #1417: a dead-lettered root, and the root an operator's deadline retry exported.
+        page = self.config["pages"][0]["page"]
+        self.config["pages"] = self.config["pages"][:1]
+        failed = record(page, 1, "failed")
+        failed["job"]["message"]["queued_at"] = "2026-10-25T15:52:00Z"
+        failed["job"]["engine"]["timeout_secs"] = 600
+        retried = record(page, 2)
+        retried["job"]["message"]["queued_at"] = "2026-10-27T09:00:00Z"
+        retried["job"]["engine"]["timeout_secs"] = 3600
+        entry = {"page": page, "message": "e" * 64, "queued_at": "2026-10-27T09:00:00Z", "timeout_secs": 3600}
+        retries = {failed["job"]["id"]: entry}
+        for rows in ([failed, retried], [retried, failed]):
+            self.assertEqual(batch.owned_records(self.config, rows, retries), {page: retried})
+        self.assertEqual(batch.owned_records(self.config, [failed], retries), {page: failed})
+        # A third job's failed retry, retried again: the chain goes on.
+        again = record(page, 3)
+        again["job"]["message"]["queued_at"] = "2026-10-29T09:00:00Z"
+        again["job"]["engine"]["timeout_secs"] = 1800
+        retried["stage"] = "failed"
+        more = {**retries, retried["job"]["id"]: {**entry, "queued_at": "2026-10-29T09:00:00Z",
+                                                   "timeout_secs": 1800}}
+        self.assertEqual(batch.owned_records(self.config, [again, failed, retried], more), {page: again})
+        retried["stage"] = "reserved"
+        other = record(page, 4)
+        other["job"]["message"]["queued_at"] = "2026-10-27T09:00:00Z"
+        other["job"]["engine"]["timeout_secs"] = 600
+        stray = record(page, 5)
+        child = record(page, 6)
+        child["job"].update(v=2, attempt=1, retry_of=failed["job"]["id"])
+        child["retry"] = {"previous_job": failed["job"]["id"], "previous_attempt": 0, "app_version_num": 27}
+        refused = (
+            ([failed, retried], None, "multiple jobs"),
+            ([failed, retried], {}, "multiple jobs"),
+            ([failed, retried], {failed["job"]["id"]: {**entry, "timeout_secs": 1800}}, "multiple jobs"),
+            ([failed, retried], {failed["job"]["id"]: {**entry, "queued_at": "2026-10-28T00:00:00Z"}},
+             "multiple jobs"),
+            ([failed, retried], {failed["job"]["id"]: {**entry, "page": "sn1/1900-01-01/ed-1/seq-1"}},
+             "multiple jobs"),
+            # Two jobs for the recorded message; or one more job no retry explains.
+            ([failed, retried, other], {failed["job"]["id"]: {**entry, "timeout_secs": 600}}, "multiple jobs"),
+            ([failed, retried, stray], retries, "multiple jobs"),
+            # A reviewed retry of the dead-lettered job too.
+            ([failed, retried, child], retries, "branching"),
+        )
+        for rows, given, error in refused:
+            with self.subTest(rows=[row["job"]["id"][-1] for row in rows], given=given):
+                with self.assertRaisesRegex(ValueError, error):
+                    batch.owned_records(self.config, rows, given)
+        # Its job must not have finished well: only a failed one gives way.
+        failed["stage"] = "published"
+        with self.assertRaisesRegex(ValueError, "multiple jobs"):
+            batch.owned_records(self.config, [failed, retried], retries)
+        failed["stage"] = "failed"
+        failed["job"]["engine"]["image"] = "sha256:" + "b" * 64
+        with self.assertRaisesRegex(ValueError, "different allocation/image"):
+            batch.owned_records(self.config, [failed, retried], retries)
+
     def test_reviewed_retry_lineage_is_owned_but_never_automatically_submitted(self):
         page = self.config["pages"][0]["page"]
         self.config["pages"] = self.config["pages"][:1]
@@ -1220,6 +1278,34 @@ class QueueFake(Fake):
     assertions = []
 
 
+class DeadlineFake(QueueFake):
+    """A hand-off container that holds operators' deadline retries (#1417), and an export that
+    builds a retried page's job with the recorded message and deadline."""
+
+    def __init__(self, waiting):
+        super().__init__(waiting)
+        self.retries = {}
+        self.exported = []
+
+    def deadline_retry(self, job_id, message_sha256):
+        self.actions.append(("deadline-retry", job_id, message_sha256))
+        return copy.deepcopy(self.retries.get((job_id, message_sha256)))
+
+    def export(self, pages, job_ids=()):
+        self.exported.append([dict(page) for page in pages])
+        for page in pages:
+            if not page.get("supersedes"):
+                continue
+            self.actions.append(("export-retry", page["page"], page["supersedes"]))
+            found = next(retry for (job, _), retry in self.retries.items() if job == page["supersedes"])
+            if not any(row["job"]["message"].get("queued_at") == found["queued_at"] for row in self.rows):
+                row = record(page["page"], len(self.rows) + 1)
+                row["job"]["message"].update(batch=page["batch"], queued_at=found["queued_at"])
+                row["job"]["engine"]["timeout_secs"] = found["timeout_secs"]
+                self.rows.append(row)
+        super().export([page for page in pages if not page.get("supersedes")], job_ids)
+
+
 class QueueModeTests(unittest.TestCase):
     def setUp(self):
         self.config = queue_config()
@@ -1446,6 +1532,112 @@ class QueueModeTests(unittest.TestCase):
         self.assertEqual(self.state["claims"][fresh["page"]]["message"], fresh["message_sha256"])
         self.assertIn(fresh["page"], self.saved[-1]["claims"])
         self.assertNotEqual(self.state["claims"][other["page"]]["message"], "f" * 64)
+
+    def dead_lettered_page(self):
+        """#1417: page 1's job ran out of time on every host (600 s) and was dead-lettered; the
+        enqueuer queued its next attempt, and the claim step takes that newer message. Returns
+        the failed journal and the newer claim."""
+        self.fake = DeadlineFake([message(number) for number in range(1, 3)])
+        self.tick()
+        page = message(1)["page"]
+        failed = next(row for row in self.fake.rows if row["job"]["message"]["page"] == page)
+        failed["job"]["message"]["queued_at"] = "2026-10-25T15:52:00.000000Z"
+        failed["job"]["engine"]["timeout_secs"] = 600
+        for job in self.fake.jobs.values():
+            job["spool"] = "/project/usnmocr/results/batch1"
+        self.fake.terminal = True
+        batch.tick(self.config, self.state, self.fake, lambda: None, NOW, dead_letter_failed=True)
+        self.fake.terminal = False
+        self.assertIn(failed["job"]["id"], self.state["dead_lettered"])
+        newer = message(1)
+        newer["message_sha256"] = "e" * 64
+        self.fake.waiting = [newer]
+        return next(row for row in self.fake.rows if row["job"]["id"] == failed["job"]["id"]), newer
+
+    def retry_record(self, failed, newer, **changes):
+        return {"v": 1, "failed_job": failed["job"]["id"], "doc_id": newer["doc_id"],
+                "message_sha256": newer["message_sha256"], "queued_at": "2026-10-27T09:00:00.000000Z",
+                "timeout_secs": 3600, **changes}
+
+    def test_a_deadline_retry_takes_the_newer_claim_and_exports_it_with_its_deadline(self):
+        failed, newer = self.dead_lettered_page()
+        page, failed_id = newer["page"], failed["job"]["id"]
+        # Without the operator's record it is the conflict it always was.
+        with self.assertRaisesRegex(ValueError, "different message"):
+            self.tick()
+        self.assertIn(("deadline-retry", failed_id, "e" * 64), self.fake.actions)
+        self.assertNotIn("deadline_retries", self.state)
+        self.assertNotEqual(self.state["claims"][page]["message"], "e" * 64)
+        # The operator recorded it, and the message is claimed again.
+        self.fake.retries[(failed_id, "e" * 64)] = self.retry_record(failed, newer)
+        self.fake.waiting = [newer]
+        self.fake.actions.clear()
+        self.tick()
+        self.assertEqual(self.state["claims"][page]["message"], "e" * 64)
+        self.assertEqual(self.state["claims"][page]["supersedes"], failed_id)
+        self.assertEqual(self.state["deadline_retries"], {failed_id: {
+            "page": page, "message": "e" * 64, "queued_at": "2026-10-27T09:00:00.000000Z",
+            "timeout_secs": 3600}})
+        self.assertIn(("export-retry", page, failed_id), self.fake.actions)
+        retried = [row for row in self.fake.rows if row["job"]["message"]["page"] == page
+                   and row["job"]["id"] != failed_id]
+        self.assertEqual(len(retried), 1)
+        self.assertEqual(retried[0]["job"]["engine"]["timeout_secs"], 3600)
+        self.assertIn(("submit", retried[0]["job"]["id"]), self.fake.actions)
+        self.assertEqual(batch.owned_records(self.config, self.fake.records(),
+                                             self.state["deadline_retries"])[page]["job"]["id"],
+                         retried[0]["job"]["id"])
+        # Only with the controller's state: the page has two jobs otherwise.
+        with self.assertRaisesRegex(ValueError, "multiple jobs"):
+            batch.owned_records(self.config, self.fake.records())
+        # The next ticks don't export it again; its result is collected like any other.
+        self.fake.actions.clear()
+        self.tick()
+        self.assertFalse([a for a in self.fake.actions if a[0] == "export-retry"])
+        self.fake.jobs[retried[0]["job"]["id"]]["spool"] = "/project/usnmocr/results/batch1"
+        self.tick()
+        self.assertIn(("collect", retried[0]["job"]["id"]), self.fake.actions)
+        self.assertEqual(self.fake.rows[self.fake.rows.index(retried[0])]["stage"], "published")
+        self.assertNotIn(retried[0]["job"]["id"], self.state["dead_lettered"])
+
+    def test_a_retried_job_that_fails_again_is_dead_lettered_as_usual(self):
+        failed, newer = self.dead_lettered_page()
+        failed_id = failed["job"]["id"]
+        self.fake.retries[(failed_id, "e" * 64)] = self.retry_record(failed, newer)
+        self.tick()
+        retried = next(row for row in self.fake.rows if row["job"]["message"]["page"] == newer["page"]
+                       and row["job"]["id"] != failed_id)
+        self.fake.jobs[retried["job"]["id"]]["spool"] = "/project/usnmocr/results/batch1"
+        self.fake.terminal = True
+        self.fake.actions.clear()
+        batch.tick(self.config, self.state, self.fake, lambda: None, NOW, dead_letter_failed=True)
+        self.assertIn(("dead-letter", [retried["job"]["id"]]), self.fake.actions)
+        self.assertFalse([a for a in self.fake.actions if a[0] == "export-retry"])
+
+    def test_a_deadline_retry_record_must_name_the_job_message_and_another_deadline(self):
+        for changes in ({"failed_job": "1" * 64}, {"doc_id": "sn1_x"}, {"message_sha256": "d" * 64},
+                        {"timeout_secs": 600}, {"timeout_secs": 3601}, {"timeout_secs": "3600"},
+                        {"queued_at": "2026-10-25T15:52:00.000000Z"}, {"v": 2}):
+            with self.subTest(changes=changes):
+                self.state = {}
+                failed, newer = self.dead_lettered_page()
+                self.fake.retries[(failed["job"]["id"], "e" * 64)] = self.retry_record(failed, newer, **changes)
+                with self.assertRaisesRegex(ValueError, "invalid deadline retry record"):
+                    self.tick()
+                self.assertNotIn("deadline_retries", self.state)
+                self.assertNotIn("supersedes", self.state["claims"][newer["page"]])
+
+    def test_a_deadline_retry_needs_the_job_dead_lettered(self):
+        failed, newer = self.dead_lettered_page()
+        failed_id = failed["job"]["id"]
+        self.fake.retries[(failed_id, "e" * 64)] = self.retry_record(failed, newer)
+        del self.state["dead_lettered"][failed_id]
+        # Failed but not dead-lettered: the tick stops on it first. Even so, the feed doesn't
+        # look for a retry of a job that wasn't dead-lettered.
+        feed = batch.QueueFeed(self.config, self.state, self.fake, lambda: None)
+        owned = batch.owned_records(self.config, self.fake.records())
+        self.assertFalse(feed.deadline_retry(newer["page"], feed.checked(newer)[1], owned))
+        self.assertFalse([a for a in self.fake.actions if a[0] == "deadline-retry"])
 
     def test_claims_made_before_a_failed_claim_step_are_kept(self):
         def failing(count):
@@ -2378,6 +2570,45 @@ class QueueTransportTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "gone from the scan server"):
                 t.export(pages, [])
             step.assert_not_called()
+
+    def test_a_deadline_retry_pushes_its_scan_again_and_names_its_failed_job(self):
+        # #1417: the retried page's scan was pushed for its failed job, days ago.
+        cfg = queue_config()
+        cfg["step_command"] = ["ssh", "root@boinc.example", "--"]
+        cfg["scans_root"] = "/tank/ocr/scans"
+        t = batch.Transport(cfg, Path("."), onprem_handoff=("export",))
+        retried = {"page": "sn1/1890-05-03/ed-1/seq-1", "batch": "dlc_aaa", "pushed_to": "onprem",
+                   "scan_base": "keep/dlc_aaa/sn1/1890-05-03/1/1", "supersedes": "c" * 64,
+                   "scan": "/tank/ocr/scans/keep/dlc_aaa/sn1/1890-05-03/1/1.jp2"}
+        plain = {"page": "sn1/1890-05-03/ed-1/seq-2", "batch": "dlc_bbb", "pushed_to": "onprem",
+                 "scan_base": "keep/dlc_bbb/sn1/1890-05-03/1/2",
+                 "scan": "/tank/ocr/scans/keep/dlc_bbb/sn1/1890-05-03/1/2.jp2"}
+        found = {"keep/dlc_aaa/sn1/1890-05-03/1/1": "keep/dlc_aaa/sn1/1890-05-03/1/1.jp2"}
+        with patch.object(t, "push_pages", return_value=(found, [])) as push, patch.object(t, "step") as step:
+            t.export([retried, plain], [])
+        push.assert_called_once_with(["keep/dlc_aaa/sn1/1890-05-03/1/1"])
+        sent = {call.kwargs["HANDOFF_BATCH"]: call.kwargs for call in step.call_args_list}
+        self.assertEqual(sent["dlc_aaa"]["HANDOFF_DEADLINE_RETRIES"], "c" * 64)
+        self.assertNotIn("HANDOFF_DEADLINE_RETRIES", sent["dlc_bbb"])
+        # Without one, nothing changes: no push, and no variable.
+        with patch.object(t, "push_pages") as push, patch.object(t, "step") as step:
+            t.export([plain], [])
+        push.assert_not_called()
+        self.assertNotIn("HANDOFF_DEADLINE_RETRIES", step.call_args.kwargs)
+
+    def test_deadline_retry_reads_the_record_only_when_it_exists(self):
+        cfg = queue_config()
+        t = batch.Transport(cfg, Path("."))
+        name = f"dispatch/jobs/{'c' * 64}/deadline-retry/{'e' * 64}.json"
+        with patch.object(t, "az", return_value="false\n") as az, patch.object(t, "blob") as blob:
+            self.assertIsNone(t.deadline_retry("c" * 64, "e" * 64))
+        self.assertEqual(az.call_args.args[:3], ("exists", "--name", name))
+        blob.assert_not_called()
+        with patch.object(t, "az", return_value="true\n"), patch.object(t, "blob", return_value={"v": 1}) as blob:
+            self.assertEqual(t.deadline_retry("c" * 64, "e" * 64), {"v": 1})
+        blob.assert_called_once_with(name)
+        with self.assertRaisesRegex(ValueError, "invalid deadline retry lookup"):
+            t.deadline_retry("c" * 64, "../x")
 
     def test_onprem_handoff_needs_step_command_and_known_steps(self):
         with self.assertRaisesRegex(ValueError, "step_command"):

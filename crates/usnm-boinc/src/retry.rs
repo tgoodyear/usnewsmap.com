@@ -87,6 +87,9 @@ pub struct Options<'a> {
     pub app_version_num: u32,
     pub image: &'a str,
     pub reviewed_reason: &'a str,
+    /// The child's page deadline, when it isn't the parent's: a page that ran out of time on
+    /// every host runs out again with the same one (#1159).
+    pub timeout_secs: Option<u32>,
     pub handoff: &'a dyn ObjectStore,
 }
 
@@ -174,6 +177,9 @@ pub async fn prepare(
     job.attempt = job.attempt.checked_add(1).context("attempt overflow")?;
     job.retry_of = Some(previous.job.id.clone());
     job.engine.image = opts.image.into();
+    if let Some(timeout_secs) = opts.timeout_secs {
+        job.engine.timeout_secs = timeout_secs;
+    }
     job.message.queued_at = now.to_rfc3339_opts(SecondsFormat::Micros, true);
     job.id = job.identity()?;
     job.validate()?;
@@ -448,6 +454,7 @@ mod tests {
             app_version_num: 27,
             image: &image,
             reviewed_reason: "reviewed terminal marker and settled native row",
+            timeout_secs: None,
             handoff: curated.as_ref(),
         };
         for stage in [Stage::Submitted, Stage::Submitting] {
@@ -532,10 +539,28 @@ mod tests {
         }
         save(&root, &parent).unwrap();
         assert_eq!(crate::records(&root).unwrap().len(), 1);
+        // #1159: a page that ran out of time is retried with a longer deadline, within a job's.
+        opts.timeout_secs = Some(3601);
+        assert!(prepare(&opts, &state, curated.as_ref(), reference.as_ref())
+            .await
+            .is_err());
+        assert_eq!(crate::records(&root).unwrap().len(), 1);
+        opts.timeout_secs = Some(3600);
         let id = prepare(&opts, &state, curated.as_ref(), reference.as_ref())
             .await
             .unwrap();
         assert_ne!(id, parent.job.id);
+        assert_eq!(load(&root, &id).unwrap().job.engine.timeout_secs, 3600);
+        assert_eq!(parent.job.engine.timeout_secs, 1200);
+        // A resumed retry gives the same deadline; another one is another child, refused.
+        for other in [None, Some(1800)] {
+            opts.timeout_secs = other;
+            assert!(prepare(&opts, &state, curated.as_ref(), reference.as_ref())
+                .await
+                .is_err());
+        }
+        assert_eq!(crate::records(&root).unwrap().len(), 2);
+        opts.timeout_secs = Some(3600);
         assert_eq!(
             prepare(&opts, &state, curated.as_ref(), reference.as_ref())
                 .await

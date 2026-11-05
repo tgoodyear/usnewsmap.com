@@ -985,7 +985,68 @@ same attempt.
 Once the message is gone, no pull returns the page, and the next tick goes on. Nothing on the
 controller changes. A later attempt of the page is a new message and needs the same step again,
 with the same `SUPERSEDES_FAILED_JOB`. This settles the newer attempt as failed without running
-it. Running it instead, with a longer page deadline, would need a controller change (#1417).
+it. To run it instead, use a deadline retry, below.
+
+#### Retrying it with another page deadline
+
+The other choice is to run the newer message, with a longer page deadline. For a page that ran out
+of time on every host, the same deadline would only fail again, and it would be the same job and
+workunit. An operator records the retry as root on the BOINC host, with the hand-off
+`deadline-retry` step. The controller's ssh key can't run it.
+
+```sh
+# Dry run: checks, prints the newer message's sha256 and changes nothing.
+usnm-boinc-step --env prod --target handoff --step deadline-retry \
+  --var SUPERSEDES_FAILED_JOB=<the dead-lettered job's id> --var TIMEOUT_SECS=3600 --wait-mins 10
+# Compare the sha256 with the claim summary's message_sha256 for the page, then confirm it.
+usnm-boinc-step --env prod --target handoff --step deadline-retry \
+  --var SUPERSEDES_FAILED_JOB=<the dead-lettered job's id> --var TIMEOUT_SECS=3600 \
+  --var CONFIRM_MESSAGE_SHA256=<the newer message's sha256> --wait-mins 10
+```
+
+(`usnm-boinc claim deadline-retry --supersedes-failed-job <id> --timeout-secs <s> --curated-url
+<curated> [--confirm-message-sha256 <sha256>]`.) The step makes the superseding dead letter's
+checks. It also checks that the deadline is 1 to 3600 s and isn't the failed job's own, and that
+no superseding dead letter has been started for the message. Then it writes one record,
+`dispatch/jobs/<failed job>/deadline-retry/<message sha256>.json`, holding:
+
+- the failed job;
+- the page's doc id;
+- the message's sha256 and `queued_at`;
+- the deadline.
+
+A rerun prints `already recorded`. Nothing else changes: the claim stays live and its message
+hidden. While the record exists, the superseding dead letter refuses the same job and message.
+Until the controller takes the claim, deleting the record undoes it.
+
+The controller takes the claim when a claim pull returns the message again. That happens when its
+lease runs out, or after the hand-off `release` step with `HANDOFF_DOCS=<doc id>`. On that
+conflict only, and only for a page whose job the controller dead-lettered, the tick looks for the
+record for that job and message:
+
+- With no record, the tick stops as before.
+- With the record, the claim takes the old one's place, naming the job it `supersedes`. The
+  controller records the retry in its state (`deadline_retries`: the page, message, `queued_at`
+  and deadline) and logs a `boinc_batch_deadline_retry` event.
+
+The next export pushes the page's scan again, because the host's staged copy is pruned after four
+days. It names the failed job in `HANDOFF_DEADLINE_RETRIES`. `usnm-boinc export --deadline-retry
+<failed job>` checks the record again against the failed journal and the claim, then builds the
+page's job with the recorded deadline. That is a new job id and workunit beside the failed one,
+which stays as it was. After that the controller takes the new job as the page's: its state
+names the job's `queued_at` and deadline, so it never picks one of two jobs any other way. The
+new job is submitted, collected and finished like any other. If it fails for good too,
+`--dead-letter-failed` dead-letters it as usual. A later attempt of the page is then settled or
+retried again, naming the new job.
+
+Without a record, nothing in a tick changes. Roll out the hand-off image (its `deadline-retry`
+step and export's `--deadline-retry`), the host's `onprem-step.sh` and the controller from one
+revision before recording a retry:
+
+- An older controller never looks for a record.
+- An older host script refuses `HANDOFF_DEADLINE_RETRIES`, so the export fails closed.
+- `archive_history.py` doesn't archive a page with two root jobs
+  (`unresolved_retry_lineage`), so a retried page's jobs stay in place.
 
 ### The queue message's life
 
@@ -1021,8 +1082,8 @@ provisioned. `claims/` expires after 30 days.
 - A message queued again after its claim lapsed (the seeder re-queues a page outstanding
   for 14 days) is a different message and so a different job. The controller then sees two
   jobs on one page and stops for an operator to reconcile, as it does for any two. A page
-  queued again after its job was dead-lettered stops it the same way; settle it as
-  [above](#a-retried-page-claimed-after-its-dead-letter).
+  queued again after its job was dead-lettered stops it the same way; settle it, or retry it
+  with another deadline, as [above](#a-retried-page-claimed-after-its-dead-letter).
 - A claim can lapse while the job is pending, and a node can then import the page. When
   the BOINC result arrives, `collect` finds the page answered by another producer and marks
   the job `published` with a `superseded` note, without publishing anything, so the feed

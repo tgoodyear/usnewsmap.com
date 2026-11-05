@@ -19,6 +19,11 @@
 #                         [HANDOFF_CLAIMS=1] the pages came off the work queues (step claim):
 #                         their claims/<doc_id>.json come down too and each job keeps its queue
 #                         message and ledger row (usnm-boinc export --claims)
+#                         [HANDOFF_DEADLINE_RETRIES=<id>[,...]] with HANDOFF_CLAIMS=1: dead-lettered
+#                         jobs whose page an operator retries with another deadline (step
+#                         deadline-retry, #1417): their journals and deadline-retry/ records come
+#                         down too, and the page's job takes the recorded deadline
+#                         (usnm-boinc export --deadline-retry)
 #                         copies scans/ and the manifest down, runs usnm-boinc export (the
 #                         ocr-sync lease in Cosmos, the native ledger reservation) and writes
 #                         back the journal entries it touched; prints the job ids
@@ -43,6 +48,12 @@
 #                         claimed again with a newer message; prints that message's sha256 and
 #                         changes nothing, or with its sha256 confirmed dead-letters and deletes it
 #                         (docs/boinc-batch-scheduler.md#a-retried-page-claimed-after-its-dead-letter)
+#   HANDOFF_STEP=deadline-retry SUPERSEDES_FAILED_JOB=<id> TIMEOUT_SECS=<1 to 3600>
+#                         [CONFIRM_MESSAGE_SHA256=<sha256>]
+#                         an operator's only (#1417): the other choice for that page, retrying the
+#                         newer message with another page deadline; prints the message's sha256
+#                         and changes nothing, or with its sha256 confirmed records the retry,
+#                         which the controller then exports (same section of the doc)
 #   HANDOFF_STEP=collect  JOB_ID [HOST_ID=<the canonical result's host id>], or JOB_IDS=<id>[,<id>...]
 #                         (up to 100, one execution for a tick's results, #932) and
 #                         [COLLECT_PARALLEL=<1 to 8, default 1>] jobs collected at once (#1447)
@@ -260,6 +271,21 @@ case "${HANDOFF_STEP:-}" in
       done
       claim_args=(--claims "$work/claims")
     fi
+    if [ -n "${HANDOFF_DEADLINE_RETRIES:-}" ]; then
+      [ "${HANDOFF_CLAIMS:-}" = 1 ] || fail "HANDOFF_DEADLINE_RETRIES goes with HANDOFF_CLAIMS=1"
+      [[ $HANDOFF_DEADLINE_RETRIES =~ ^[0-9a-f]{64}(,[0-9a-f]{64}){0,99}$ ]] ||
+        fail "HANDOFF_DEADLINE_RETRIES is 1 to 100 comma-separated job ids"
+      IFS=, read -r -a retried <<< "$HANDOFF_DEADLINE_RETRIES"
+      for id in "${retried[@]}"; do
+        # Before the stamp: neither is written back.
+        [ -f "$root/jobs/$id/record.json" ] ||
+          usnm-boinc handoff get-file --from-url "$HANDOFF_URL" --path "dispatch/jobs/$id/record.json" \
+            --to "$root/jobs/$id/record.json"
+        usnm-boinc handoff get --from-url "$HANDOFF_URL" --prefix "dispatch/jobs/$id/deadline-retry" \
+          --to "$root/jobs/$id/deadline-retry"
+        claim_args+=(--deadline-retry "$id")
+      done
+    fi
     stamp="$work/stamp"
     touch "$stamp"
     sleep 1
@@ -358,6 +384,21 @@ case "${HANDOFF_STEP:-}" in
       # Each dead letter says why its workunit failed (the error mask), from the job's journal.
       usnm-boinc claim dead-letter --handoff-url "$HANDOFF_URL" --queue-url "$QUEUE_URL" "${job_args[@]}"
     fi ;;
+  deadline-retry)
+    # The operator's (#1417): a dead-lettered job's page claimed again with a newer message,
+    # retried with another page deadline. A dry run unless CONFIRM_MESSAGE_SHA256 names that
+    # message. Nothing but the record changes: the controller takes the claim when it is
+    # claimed again.
+    [[ ${SUPERSEDES_FAILED_JOB:-} =~ ^[0-9a-f]{64}$ ]] || fail "SUPERSEDES_FAILED_JOB is a job id (64 hex)"
+    [[ ${TIMEOUT_SECS:-} =~ ^[1-9][0-9]{0,3}$ ]] && [ "$TIMEOUT_SECS" -le 3600 ] ||
+      fail "TIMEOUT_SECS is the retry's page deadline, 1 to 3600 seconds"
+    confirm=()
+    if [ -n "${CONFIRM_MESSAGE_SHA256:-}" ]; then
+      [[ $CONFIRM_MESSAGE_SHA256 =~ ^[0-9a-f]{64}$ ]] || fail "CONFIRM_MESSAGE_SHA256 is a sha256 (64 hex)"
+      confirm=(--confirm-message-sha256 "$CONFIRM_MESSAGE_SHA256")
+    fi
+    usnm-boinc claim deadline-retry --handoff-url "$HANDOFF_URL" --curated-url "$CURATED_URL" \
+      --supersedes-failed-job "$SUPERSEDES_FAILED_JOB" --timeout-secs "$TIMEOUT_SECS" ${confirm[@]+"${confirm[@]}"} ;;
   collect)
     [[ ${JOB_ID:-} =~ ^[0-9a-f]{64}$ ]] || fail "JOB_ID is a job id (64 hex)"
     usnm-boinc handoff get-file --from-url "$HANDOFF_URL" --path "dispatch/jobs/$JOB_ID/record.json" \
@@ -422,5 +463,5 @@ case "${HANDOFF_STEP:-}" in
     fi
     usnm-boinc quality texts-export --curated-url "$CURATED_URL" --out-dir "$work/texts" "${doc_args[@]}"
     usnm-boinc handoff put --from "$work/texts" --to-url "$HANDOFF_URL" --prefix texts ;;
-  *) fail "HANDOFF_STEP must be export, claim, release, collect or texts-export" ;;
+  *) fail "HANDOFF_STEP must be export, claim, release, dead-letter, deadline-retry, collect or texts-export" ;;
 esac

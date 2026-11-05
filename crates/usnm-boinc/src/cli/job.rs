@@ -37,6 +37,12 @@ pub struct ExportArgs {
     /// the work queues, so each job keeps its queue message and ledger row.
     #[arg(long)]
     claims: Option<PathBuf>,
+    /// A dead-lettered job of this plan whose page an operator retries with another deadline
+    /// (`claim deadline-retry`, #1417); repeat for more. Its journal and its
+    /// `deadline-retry/<message_sha256>.json` are under --root; the selected page's job takes
+    /// the recorded deadline in place of the one the plan journaled for the page.
+    #[arg(long = "deadline-retry", requires = "claims")]
+    deadline_retries: Vec<String>,
     #[arg(long)]
     curated_url: String,
     #[arg(long)]
@@ -58,6 +64,7 @@ pub async fn export(args: ExportArgs) -> anyhow::Result<()> {
         image,
         timeout_secs,
         claims,
+        deadline_retries,
         curated_url,
         reference_url,
         state_file,
@@ -83,6 +90,7 @@ pub async fn export(args: ExportArgs) -> anyhow::Result<()> {
             image,
             timeout_secs,
             claims,
+            deadline_retries,
         },
         &State::new(docs),
         store.as_ref(),
@@ -120,6 +128,10 @@ pub struct RetryArgs {
     image: String,
     #[arg(long)]
     reviewed_reason: String,
+    /// The retry's page deadline (`engine.timeout_secs`, 1 to 3600), for a page that ran out of
+    /// time (#1159). Default: the failed job's. A resumed retry must give the same value.
+    #[arg(long)]
+    timeout_secs: Option<u32>,
     #[arg(long)]
     handoff_url: String,
     #[arg(long)]
@@ -157,6 +169,7 @@ pub async fn retry(args: RetryArgs) -> anyhow::Result<()> {
             app_version_num: args.app_version_num,
             image: &args.image,
             reviewed_reason: &args.reviewed_reason,
+            timeout_secs: args.timeout_secs,
             handoff: handoff.as_ref(),
         },
         &State::new(docs),

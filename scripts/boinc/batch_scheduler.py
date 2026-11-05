@@ -706,6 +706,15 @@ class Transport:
         require(path.stat().st_size <= 16 * 1024 * 1024, "hand-off JSON exceeds limit")
         return json.loads(path.read_text())
 
+    def deadline_retry(self, job_id, message_sha256):
+        """The operator's deadline retry of a dead-lettered job's page for its newer message
+        (`usnm-boinc claim deadline-retry`, #1417), or None. Only a claim conflict asks."""
+        require(ID.fullmatch(job_id) and ID.fullmatch(message_sha256), "invalid deadline retry lookup")
+        name = f"dispatch/jobs/{job_id}/deadline-retry/{message_sha256}.json"
+        if self.az("exists", "--name", name, "--query", "exists", "-o", "tsv").strip() != "true":
+            return None
+        return self.blob(name)
+
     @contextlib.contextmanager
     def lock(self):
         if self.config.get("app") == SURYA_APP_NAME:
@@ -996,8 +1005,11 @@ class Transport:
             # A page whose scan went to another destination (the export moved on-prem, or back,
             # after it was pushed) is pushed again where this export reads it.
             dest = self.push_destination
+            # A deadline retry's page (#1417) was pushed for its failed job, days ago: the scans
+            # pushed to the BOINC host aren't kept that long, so it goes again.
             stale = sorted({page["scan_base"] for page in pages
-                            if page.get("scan_base") and page.get("pushed_to", "container") != dest})
+                            if page.get("scan_base") and (page.get("pushed_to", "container") != dest
+                                                          or page.get("supersedes"))})
             if stale:
                 found, missing = self.push_pages(stale)
                 require(not missing, "a claimed page's scan is gone from the scan server; release it")
@@ -1038,6 +1050,9 @@ class Transport:
                 variables["HANDOFF_BATCH"] = batch
             if queue:
                 variables["HANDOFF_CLAIMS"] = "1"
+            retried = sorted({page["supersedes"] for _, page in group if page.get("supersedes")})
+            if retried:
+                variables["HANDOFF_DEADLINE_RETRIES"] = ",".join(retried)
             self.step("handoff", "export", **variables)
 
     @timed("claim")
@@ -1232,7 +1247,38 @@ def units_of(config, records):
     return units
 
 
-def owned_records(config, records):
+def deadline_retried(page, roots, deadline_retries):
+    """A page's root journals when each after the first is an operator's deadline retry of the
+    one before (#1417): the failed job names the newer message's queued_at and deadline in the
+    controller's state (QueueFeed.deadline_retry), and exactly one journal has them. Returns the
+    last one alone, or the roots as they are when they don't form that one chain."""
+    after = {}
+    for record in roots:
+        entry = deadline_retries.get(record["job"]["id"])
+        if not isinstance(entry, dict):
+            continue
+        followers = [other for other in roots if other is not record
+                     and other["job"]["message"].get("queued_at") == entry.get("queued_at")
+                     and other["job"]["engine"].get("timeout_secs") == entry.get("timeout_secs")]
+        if entry.get("page") != page or record["stage"] != "failed" or len(followers) != 1:
+            return roots
+        after[record["job"]["id"]] = followers[0]
+    starts = [record for record in roots
+              if not any(record is follower for follower in after.values())]
+    if len(starts) != 1:
+        return roots
+    chain = [starts[0]]
+    while chain[-1]["job"]["id"] in after and len(chain) <= len(roots):
+        chain.append(after[chain[-1]["job"]["id"]])
+    if len(chain) != len(roots) or len({record["job"]["id"] for record in chain}) != len(roots):
+        return roots
+    return [chain[-1]]
+
+
+def owned_records(config, records, deadline_retries=None):
+    """Each allocated page's current journal: its one root, or its last reviewed retry
+    (#1328). `deadline_retries` (the controller's state of that name, #1417) lets a page's
+    dead-lettered root give way to the root an operator's deadline retry exported."""
     # Each allocated page's base batch: one for the whole cohort, or the claimed page's own.
     wanted = {page["page"]: page.get("batch") or config["batch"] for page in config["pages"]}
     by_page = {}
@@ -1251,10 +1297,13 @@ def owned_records(config, records):
     owned = {}
     for page, history in by_page.items():
         roots = [record for record in history if not record.get("retry")]
+        for record in roots:
+            require(record["job"]["engine"]["image"] == config["image"],
+                    "plan already exists with a different allocation/image; operator migration required")
+        if len(roots) > 1 and deadline_retries:
+            roots = deadline_retried(page, roots, deadline_retries)
         require(len(roots) == 1, "multiple jobs for one allocated page; reconcile before feeding")
         current = roots[0]
-        require(current["job"]["engine"]["image"] == config["image"],
-                "plan already exists with a different allocation/image; operator migration required")
         remaining = [record for record in history if record.get("retry")]
         while remaining:
             children = [record for record in remaining
@@ -1298,13 +1347,15 @@ class QueueFeed:
         self.config = config
         self.transport = transport
         self.persist = persist
+        self.state = state
         self.claims = state.setdefault("claims", {})
         require(len(self.claims) <= MAX_JOBS, "too many claimed pages; archive drained history first")
 
     def restore(self):
         self.config["pages"] = [
             {"page": page, "batch": claim["batch"], "scan": claim["scan"],
-             "scan_base": claim["scan_base"], "pushed_to": claim.get("pushed_to", "container")}
+             "scan_base": claim["scan_base"], "pushed_to": claim.get("pushed_to", "container"),
+             **({"supersedes": claim["supersedes"]} if claim.get("supersedes") else {})}
             for page, claim in sorted(self.claims.items()) if claim.get("scan")]
 
     @staticmethod
@@ -1322,9 +1373,10 @@ class QueueFeed:
         return page, {"page": page, "doc_id": claim["doc_id"], "batch": batch,
                       "scan_base": scan, "scan": None, "message": claim.get("message_sha256")}
 
-    def fill(self, count, selected):
+    def fill(self, count, selected, owned=None):
         """Make `count` more pages ready: claim them (less any already claimed but not yet
-        started), push their scans and give back the ones with none."""
+        started), push their scans and give back the ones with none. `owned` is the tick's
+        owned_records, for a newer claim of a dead-lettered page (deadline_retry)."""
         self.retry_releases()
         started = set(selected)
         waiting = [claim for page, claim in self.claims.items() if page not in started]
@@ -1334,9 +1386,9 @@ class QueueFeed:
                 fresh = self.transport.claim(need)
             except ClaimFailed as error:
                 # Their messages are hidden now: keep the claims that were made, then stop.
-                self.record(error.claims, need)
+                self.record(error.claims, need, owned)
                 raise
-            self.record(fresh, need)
+            self.record(fresh, need, owned)
         unpushed = {page: claim for page, claim in self.claims.items()
                     if claim.get("scan") is None and not claim.get("release")}
         if unpushed:
@@ -1353,7 +1405,7 @@ class QueueFeed:
         self.retry_releases()
         self.restore()
 
-    def record(self, fresh, need):
+    def record(self, fresh, need, owned=None):
         require(isinstance(fresh, list) and len(fresh) <= need, "claimed more pages than asked")
         conflict = False
         for item in fresh:
@@ -1362,12 +1414,53 @@ class QueueFeed:
                 # Its lease ran out while the job was pending and the same message came again,
                 # now hidden for a fresh lease: the existing claim, its scan and its job stand.
                 # A different message for the page is two attempts at once: stop, once the
-                # others are kept. Their messages are hidden for the lease.
+                # others are kept. Their messages are hidden for the lease. Unless an operator
+                # retries the dead-lettered page with another deadline (#1417).
+                if claim["message"] is not None and claim["message"] != self.claims[page].get("message") \
+                        and self.deadline_retry(page, claim, owned):
+                    continue
                 conflict = conflict or claim["message"] is None or claim["message"] != self.claims[page].get("message")
                 continue
             self.claims[page] = claim
         self.persist()
         require(not conflict, "claimed a page already in this plan with a different message")
+
+    def deadline_retry(self, page, claim, owned):
+        """A newer message for a page whose job failed for good and was dead-lettered, which an
+        operator retries with another page deadline (`usnm-boinc claim deadline-retry`, #1417):
+        the hand-off container holds its record, for this job and message. The claim takes the
+        old one's place, naming the job it supersedes, and the next export builds its job with
+        the recorded deadline. Without a record (or a transport that can't read one) it is the
+        conflict it always was."""
+        lookup = getattr(self.transport, "deadline_retry", None)
+        record = (owned or {}).get(page)
+        if lookup is None or record is None or record["stage"] != "failed" or record.get("retry") \
+                or record["job"]["id"] not in self.state.get("dead_lettered", {}):
+            return False
+        job = record["job"]
+        found = lookup(job["id"], claim["message"])
+        if found is None:
+            return False
+        timeout = found.get("timeout_secs") if isinstance(found, dict) else None
+        require(isinstance(found, dict) and found.get("v") == 1 and found.get("failed_job") == job["id"]
+                and found.get("doc_id") == claim["doc_id"] and found.get("message_sha256") == claim["message"]
+                and type(timeout) is int and 1 <= timeout <= 3600
+                and timeout != job["engine"].get("timeout_secs")
+                and isinstance(found.get("queued_at"), str)
+                and found["queued_at"] != job["message"].get("queued_at"),
+                f"invalid deadline retry record for job {job['id'][:12]}")
+        self.claims[page] = {**self.claims[page], "message": claim["message"], "supersedes": job["id"]}
+        self.state.setdefault("deadline_retries", {})[job["id"]] = {
+            "page": page, "message": claim["message"], "queued_at": found["queued_at"],
+            "timeout_secs": timeout}
+        try:
+            print(json.dumps({
+                "event": "boinc_batch_deadline_retry", "schema_version": 1, "page": page,
+                "failed_job": job["id"], "message_sha256": claim["message"],
+                "timeout_secs": timeout}, sort_keys=True), file=sys.stderr, flush=True)
+        except (OSError, ValueError):
+            pass
+        return True
 
     def retry_releases(self):
         pages = sorted(page for page, claim in self.claims.items() if claim.get("release"))
@@ -1765,7 +1858,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
     records = transport.records()
     # Here rather than in journal_inventory, which a tick runs several times.
     warn_near_cap("dispatch_journals", len(records), MAX_JOBS, now)
-    owned = owned_records(config, records)
+    owned = owned_records(config, records, state.get("deadline_retries"))
     for record in owned.values():
         job_id = record["job"]["id"]
         require(server.get(job_id, {}).get("stage") != "submitting",
@@ -1847,7 +1940,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
     count = len(to_collect)
     if count:
         records = transport.records()
-        owned = owned_records(config, records)
+        owned = owned_records(config, records, state.get("deadline_retries"))
     settle_failed(owned)
     status = _extract_status(snapshot, transport, server_status=server_status, drain=drain)
     cohort_info = resolve_watermarks(
@@ -1924,14 +2017,22 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
     if target and not held and not drain:
         if free > 0:
             if feed:
-                feed.fill(min(refill, free), selected)
+                feed.fill(min(refill, free), selected, owned)
             fresh = [page for page in config["pages"] if page["page"] not in selected][
                 :min(refill, free)]
             for page in fresh:
                 selected[page["page"]] = now
             persist()
+
+        def retried(page):
+            # A deadline retry's claim (#1417) whose job isn't exported yet: the page's journal
+            # is still the dead-lettered one it supersedes.
+            record = owned.get(page["page"])
+            return bool(record and record["stage"] == "failed"
+                        and page.get("supersedes") == record["job"]["id"])
+
         export = [page for page in config["pages"] if page["page"] in selected and
-                  (page["page"] not in owned or
+                  (page["page"] not in owned or retried(page) or
                    (owned[page["page"]]["stage"] == "prepared"
                     and not owned[page["page"]].get("retry")))]
         if export:
@@ -1942,7 +2043,10 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
             require(len(journals) <= 100, "too many existing journals for selected pages; reconcile history")
             transport.export(export, journals)
             records = transport.records()
-            owned = owned_records(config, records)
+            owned = owned_records(config, records, state.get("deadline_retries"))
+            stuck = sorted(page["page"] for page in export if retried(page))
+            require(not stuck, f"the deadline retry of {', '.join(stuck)} exported no job of its own; "
+                    "reconcile it before the next tick")
         candidates = {record["job"]["id"] for record in owned.values()
                       if not record.get("retry") and record["stage"] == "reserved"
                       and record["job"]["id"] not in existing_jobs

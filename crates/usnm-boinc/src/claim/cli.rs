@@ -99,6 +99,28 @@ pub enum ClaimCommands {
         #[arg(long, requires = "supersedes_failed_job")]
         confirm_message_sha256: Option<String>,
     },
+    /// Operator only (#1417): a dead-lettered job whose page was claimed again with a newer
+    /// message runs again with another page deadline. Records the retry, which the controller
+    /// and `export --deadline-retry` need; the queue and the claim are left as they are. A dry
+    /// run unless --confirm-message-sha256 is given.
+    DeadlineRetry {
+        #[arg(long)]
+        handoff_url: String,
+        /// The lake, for the ledger that must show the failed job dead-lettered and the newer
+        /// claim outstanding.
+        #[arg(long)]
+        curated_url: String,
+        /// The dead-lettered job (its journal in the hand-off container's dispatch/).
+        #[arg(long)]
+        supersedes_failed_job: String,
+        /// The new job's page deadline (`engine.timeout_secs`): 1 to 3600, not the failed
+        /// job's.
+        #[arg(long)]
+        timeout_secs: u32,
+        /// The newer claim's message_sha256, as the dry run prints it: record the retry.
+        #[arg(long)]
+        confirm_message_sha256: Option<String>,
+    },
     /// Hand-off job: give claimed pages back to the queue, for the nodes.
     Release {
         #[arg(long)]
@@ -323,6 +345,59 @@ pub async fn run(command: ClaimCommands) -> anyhow::Result<()> {
                 lost == 0,
                 "{lost} dead-lettered messages had come back to their queue; delete the copies by hand"
             );
+        }
+        ClaimCommands::DeadlineRetry {
+            handoff_url,
+            curated_url,
+            supersedes_failed_job: job,
+            timeout_secs,
+            confirm_message_sha256,
+        } => {
+            if let Some(sha) = &confirm_message_sha256 {
+                anyhow::ensure!(
+                    usnm_ocr_contract::boinc::is_sha256(sha),
+                    "--confirm-message-sha256 is a sha256 (64 lower-case hex)"
+                );
+            }
+            let handoff = usnm_store::open(&handoff_url)?;
+            let record = failed_record(handoff.as_ref(), &job).await?;
+            let curated = usnm_store::open(&curated_url)?;
+            let ledger = usnm_ocr_local::ledger::load(curated.as_ref()).await?;
+            let r = x::deadline_retry(
+                handoff.as_ref(),
+                &record,
+                &ledger,
+                timeout_secs,
+                confirm_message_sha256.as_deref(),
+            )
+            .await?;
+            println!(
+                "{} claim from {}: message {} (id {}), queued_at {}, ledger attempt {}; supersedes dead-lettered job {job}, which ran with a {} s page deadline: {}",
+                r.doc_id,
+                r.queue,
+                r.message_sha256,
+                r.message_id,
+                r.queued_at,
+                r.attempt,
+                r.failed_timeout_secs,
+                r.failed_error
+                    .as_deref()
+                    .unwrap_or("BOINC workunit failed for good")
+            );
+            match r.recorded {
+                None => println!(
+                    "dry run: nothing changed; to retry this message with a {} s page deadline, give --confirm-message-sha256 {}",
+                    r.timeout_secs, r.message_sha256
+                ),
+                Some(true) => println!(
+                    "{} deadline retry recorded: the controller takes the claim when it is claimed again and exports it with a {} s page deadline",
+                    r.doc_id, r.timeout_secs
+                ),
+                Some(false) => println!(
+                    "{} deadline retry already recorded ({} s)",
+                    r.doc_id, r.timeout_secs
+                ),
+            }
         }
         ClaimCommands::Release {
             handoff_url,

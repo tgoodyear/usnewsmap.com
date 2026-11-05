@@ -529,6 +529,51 @@ fn claimed_rows(
         .collect::<anyhow::Result<_>>()?;
     Ok((rows, claims))
 }
+/// The selected pages that `opts.deadline_retries` retry with another deadline (#1417), with
+/// the failed job and the recorded deadline. Each retry is checked against its failed journal
+/// (this plan's, failed, queue-fed) and the page's claim, which its record names by message.
+fn deadline_retries(
+    opts: &ExportOptions,
+    selected: &BTreeSet<String>,
+    claims: Option<&BTreeMap<String, claim::Claim>>,
+) -> anyhow::Result<BTreeMap<String, (String, u32)>> {
+    let mut retried = BTreeMap::new();
+    for id in &opts.deadline_retries {
+        let failed = load(&opts.root, id)
+            .with_context(|| format!("no journal for deadline-retried job {id}"))?;
+        ensure!(
+            failed.plan == opts.plan
+                && failed.stage == Stage::Failed
+                && failed.ledger.is_some()
+                && failed.retry.is_none(),
+            "deadline-retried job {id} is not a failed queue-fed job of this plan"
+        );
+        let page = &failed.job.message.page;
+        if !selected.contains(page) {
+            continue;
+        }
+        let doc_id = failed.job.message.key()?.doc_id();
+        let claim = claims
+            .and_then(|claims| claims.get(&doc_id))
+            .with_context(|| format!("a deadline retry needs the claim for {doc_id} (--claims)"))?;
+        let sha = boinc::sha256(claim.text.as_bytes());
+        let path = dir(&opts.root, id)?
+            .join("deadline-retry")
+            .join(format!("{sha}.json"));
+        let record: claim::DeadlineRetry = serde_json::from_slice(
+            &read(&path, 64 * 1024)
+                .with_context(|| format!("no deadline retry of job {id} for {doc_id}'s claim"))?,
+        )?;
+        record.check(&failed, claim)?;
+        ensure!(
+            retried
+                .insert(page.clone(), (id.clone(), record.timeout_secs))
+                .is_none(),
+            "two deadline retries for {page}"
+        );
+    }
+    Ok(retried)
+}
 #[derive(Debug, Clone)]
 pub struct ExportOptions {
     pub manifest: PathBuf,
@@ -543,6 +588,11 @@ pub struct ExportOptions {
     /// (`<doc_id>.json`): the pages came off the work queues, so each job
     /// carries its queue message and ledger row instead of a new one.
     pub claims: Option<PathBuf>,
+    /// Dead-lettered jobs of this plan whose page an operator retries with another page
+    /// deadline (#1417): each one's journal, and its `deadline-retry/<message_sha256>.json`
+    /// for the selected page's claim, are under `root`. That page's job takes the recorded
+    /// deadline. A job whose page isn't selected is passed over.
+    pub deadline_retries: Vec<String>,
 }
 /// The Tesseract models the worker image holds, from the model lock.
 pub fn installed_models() -> BTreeSet<String> {
@@ -576,18 +626,30 @@ pub async fn export(
     );
     let _lock = Lock::take(&opts.root)?;
     // A page this plan journaled already keeps the deadline it was exported with, so a resumed
-    // export builds the same job, whatever --timeout-secs is now (#1159).
-    let mut kept_timeouts: BTreeMap<String, u32> = BTreeMap::new();
+    // export builds the same job, whatever --timeout-secs is now (#1159). A page journaled
+    // again with another deadline (#1417) keeps its latest message's.
+    let mut kept: BTreeMap<String, (Option<chrono::DateTime<chrono::FixedOffset>>, u32)> =
+        BTreeMap::new();
     if let Ok(entries) = std::fs::read_dir(opts.root.join("jobs")) {
         for entry in entries.flatten() {
             let id = entry.file_name().to_string_lossy().into_owned();
             if let Ok(old) = load(&opts.root, &id) {
+                let at = chrono::DateTime::parse_from_rfc3339(&old.job.message.queued_at).ok();
                 if old.plan == opts.plan {
-                    kept_timeouts.insert(old.job.message.page.clone(), old.job.engine.timeout_secs);
+                    let latest = kept
+                        .entry(old.job.message.page.clone())
+                        .or_insert((at, old.job.engine.timeout_secs));
+                    if (at, old.job.engine.timeout_secs) > *latest {
+                        *latest = (at, old.job.engine.timeout_secs);
+                    }
                 }
             }
         }
     }
+    let kept_timeouts: BTreeMap<String, u32> = kept
+        .into_iter()
+        .map(|(page, (_, timeout_secs))| (page, timeout_secs))
+        .collect();
     let selected: BTreeSet<String> = String::from_utf8(read(&opts.pages, 64 * 1024)?)?
         .lines()
         .map(str::trim)
@@ -637,13 +699,15 @@ pub async fn export(
             "selected pages missing from manifest/batch"
         }
     );
+    let retried = deadline_retries(opts, &selected, claims.as_ref())?;
     let installed = installed_models();
     let snapshot = ocr_local::boinc::Snapshot::load(state, reference).await?;
     let mut records = Vec::new();
     for (page, row) in chosen {
-        let timeout_secs = kept_timeouts
-            .get(&page)
-            .copied()
+        let retry = retried.get(&page);
+        let timeout_secs = retry
+            .map(|(_, timeout_secs)| *timeout_secs)
+            .or_else(|| kept_timeouts.get(&page).copied())
             .unwrap_or(opts.timeout_secs);
         let (scan, side) = cached(&opts.scans, &row)?;
         let title_languages = snapshot
@@ -713,6 +777,12 @@ pub async fn export(
         };
         job.id = job.identity()?;
         job.validate()?;
+        if let Some((failed, _)) = retry {
+            ensure!(
+                job.id != *failed,
+                "the deadline retry of job {failed} builds that job again"
+            );
+        }
         let job_dir = dir(&opts.root, &job.id)?;
         let record = if job_dir.join("record.json").exists() {
             let old = load(&opts.root, &job.id)?;

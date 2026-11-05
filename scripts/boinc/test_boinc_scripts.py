@@ -1499,6 +1499,64 @@ class HandoffAndBridgeQualitySteps(unittest.TestCase):
             with self.subTest(bad=bad):
                 self.assertNotEqual(self.handoff("dead-letter", QUEUE_URL=queue, **bad).returncode, 0)
 
+    def test_handoff_deadline_retry_is_a_dry_run_unless_confirmed(self):
+        # #1417: an operator retries a dead-lettered job's page with another page deadline.
+        r = self.handoff("deadline-retry", SUPERSEDES_FAILED_JOB="a" * 64, TIMEOUT_SECS="3600")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        (call,) = self.calls()
+        self.assertTrue(call.startswith(
+            "claim deadline-retry --handoff-url https://usnmst.blob.core.windows.net/boinc-handoff "
+            "--curated-url https://usnmst.blob.core.windows.net/curated "), call)
+        self.assertIn("--supersedes-failed-job " + "a" * 64 + " --timeout-secs 3600", call)
+        self.assertNotIn("--confirm-message-sha256", call)
+        r = self.handoff("deadline-retry", SUPERSEDES_FAILED_JOB="a" * 64, TIMEOUT_SECS="1",
+                         CONFIRM_MESSAGE_SHA256="c" * 64)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(self.calls()[-1].endswith("--timeout-secs 1 --confirm-message-sha256 " + "c" * 64))
+        for bad in (dict(SUPERSEDES_FAILED_JOB="a" * 64), dict(TIMEOUT_SECS="3600"),
+                    dict(SUPERSEDES_FAILED_JOB="a" * 63, TIMEOUT_SECS="3600"),
+                    *(dict(SUPERSEDES_FAILED_JOB="a" * 64, TIMEOUT_SECS=t)
+                      for t in ("0", "3601", "0600", "36000", "1e3", "600 ")),
+                    dict(SUPERSEDES_FAILED_JOB="a" * 64, TIMEOUT_SECS="3600", CONFIRM_MESSAGE_SHA256="C" * 64)):
+            with self.subTest(bad=bad):
+                calls = len(self.calls())
+                self.assertNotEqual(self.handoff("deadline-retry", **bad).returncode, 0)
+                self.assertEqual(len(self.calls()), calls)
+
+    def test_handoff_export_brings_down_each_deadline_retry_before_it_runs(self):
+        # #1417: the dead-lettered job's journal and the operator's record, for export to check.
+        self.stub(self.COPY_STUB)
+        failed = "c" * 64
+        common = dict(HANDOFF_MANIFEST="pages-v1/manifest.parquet", HANDOFF_PAGES="sn83045462/1890-05-03/ed-1/seq-1",
+                      HANDOFF_BATCH="dlc_abc", HANDOFF_SCANS="keep/dlc_abc/sn83045462/1890-05-03/1/1.jp2",
+                      HANDOFF_PLAN="queue-feed", ENGINE_IMAGE="sha256:" + "a" * 64, HANDOFF_CLAIMS="1")
+        for jobs in (failed, None):
+            with self.subTest(jobs=jobs):
+                if os.path.exists(self.log):
+                    os.remove(self.log)
+                extra = {"HANDOFF_JOBS": jobs} if jobs else {}
+                r = self.handoff("export", **common, **extra, HANDOFF_DEADLINE_RETRIES=failed)
+                self.assertEqual(r.returncode, 0, r.stderr)
+                calls = self.calls()
+                # Once, with HANDOFF_JOBS or for the retry.
+                self.assertEqual(len([c for c in calls if f"--path dispatch/jobs/{failed}/record.json" in c]), 1)
+                (record,) = [c for c in calls if f"--prefix dispatch/jobs/{failed}/deadline-retry " in c]
+                self.assertTrue(record.startswith("handoff get "), record)
+                (export,) = [c for c in calls if c.startswith("export ")]
+                self.assertIn("--claims ", export)
+                self.assertTrue(export.endswith(" --deadline-retry " + failed), export)
+                self.assertLess(calls.index(record), calls.index(export))
+        os.remove(self.log)
+        for bad, message in ((dict(HANDOFF_CLAIMS=""), "goes with HANDOFF_CLAIMS=1"),
+                             (dict(HANDOFF_DEADLINE_RETRIES="C" * 64), "comma-separated job ids"),
+                             (dict(HANDOFF_DEADLINE_RETRIES=failed + ","), "comma-separated job ids"),
+                             (dict(HANDOFF_DEADLINE_RETRIES=",".join([failed] * 101)), "comma-separated job ids")):
+            with self.subTest(bad=bad):
+                r = self.handoff("export", **{**common, "HANDOFF_DEADLINE_RETRIES": failed, **bad})
+                self.assertNotEqual(r.returncode, 0)
+                self.assertIn(message, r.stderr)
+                self.assertFalse([c for c in self.calls() if c.startswith("export ")])
+
     def test_handoff_export_with_claims_downloads_each_claim_first(self):
         self.stub(self.COPY_STUB)
         r = self.handoff(
@@ -1519,6 +1577,8 @@ class HandoffAndBridgeQualitySteps(unittest.TestCase):
         self.assertEqual(len(export), 1)
         self.assertIn("--claims ", export[0])
         self.assertLess(calls.index(claim_gets[1]), calls.index(export[0]))
+        self.assertNotIn("--deadline-retry", export[0])
+        self.assertFalse([c for c in calls if "/deadline-retry" in c])
 
     def test_handoff_export_without_claims_is_unchanged(self):
         self.stub(self.COPY_STUB)

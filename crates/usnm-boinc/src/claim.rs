@@ -593,35 +593,13 @@ pub async fn dead_letter_superseding(
     ledger: &Ledger,
     confirm: Option<&str>,
 ) -> anyhow::Result<Superseding> {
-    failed.job.validate()?;
-    crate::retry::validate(failed)?;
+    let Newer {
+        doc_id,
+        mut claim,
+        message: new,
+        message_sha256,
+    } = newer_claim(handoff, failed, confirm).await?;
     let id = &failed.job.id;
-    ensure!(
-        failed.stage == crate::Stage::Failed && failed.ledger.is_some() && failed.retry.is_none(),
-        "job {id} is not a failed queue-fed job"
-    );
-    let old = &failed.job.message;
-    let doc_id = old.key()?.doc_id();
-    let Some(mut claim) = load(handoff, &doc_id).await? else {
-        bail!("no claim for {doc_id}");
-    };
-    let new = claim.message()?;
-    ensure!(
-        new.page == old.page && new.batch == old.batch && new.language == old.language,
-        "the claim for {doc_id} is not job {id}'s page"
-    );
-    let at = |m: &OcrMessage| chrono::DateTime::parse_from_rfc3339(&m.queued_at);
-    ensure!(
-        at(&new)? > at(old)?,
-        "the claim for {doc_id} doesn't supersede job {id}: it is that job's message or an older one"
-    );
-    let message_sha256 = usnm_ocr_contract::boinc::sha256(claim.text.as_bytes());
-    if let Some(confirm) = confirm {
-        ensure!(
-            confirm == message_sha256,
-            "the confirmation names message {confirm}, but the claim for {doc_id} is {message_sha256}"
-        );
-    }
     let mut report = Superseding {
         doc_id: doc_id.clone(),
         queue: claim.queue.clone(),
@@ -631,14 +609,8 @@ pub async fn dead_letter_superseding(
         message_sha256: message_sha256.clone(),
         done: None,
     };
-    // Receipts are named by the message's digest as the ledger records its dead letter, so a
-    // later attempt can find the one this sent for the attempt before it.
-    let message_digest = |m: &OcrMessage| -> anyhow::Result<String> {
-        Ok(usnm_ocr_contract::boinc::sha256(&serde_json::to_vec(m)?))
-    };
-    let receipt_path = |digest: &str| format!("dispatch/jobs/{id}/superseding/{digest}.json");
     let new_digest = message_digest(&new)?;
-    let path = receipt_path(&new_digest);
+    let path = superseding_path(id, &new_digest);
     let sent = format!("{path}.sent");
     let was_sent = handoff.get(&sent).await?;
     match claim.ended.as_deref() {
@@ -659,38 +631,18 @@ pub async fn dead_letter_superseding(
     // delete is left, and the receipt holds what was checked.
     let mut drained = false;
     if was_sent.is_none() {
-        let settled = ledger
-            .outcomes
-            .get(&doc_id)
-            .filter(|o| {
-                o.outcome == usnm_ocr_local::ledger::DEAD_LETTERED
-                    && o.cause.as_deref() == Some("permanent")
-            })
-            .and_then(|o| o.message_sha256.as_deref());
+        let settled = permanent_dead_letter(ledger, &doc_id);
         // The dead letter went but its marker wasn't written, and `ocr-sync` has drained it:
         // the ledger names this message, and its receipt is there.
         drained = settled == Some(new_digest.as_str()) && handoff.exists(&path).await?;
         if !drained {
-            // The latest outcome is the failed job's own dead letter, or the one this sent for
-            // an attempt queued after it, so each later attempt can be settled the same way.
-            let failed_digest = message_digest(old)?;
-            let ours = match settled {
-                Some(s) if s == failed_digest => true,
-                Some(s) if usnm_ocr_contract::boinc::is_sha256(s) => {
-                    handoff.exists(&format!("{}.sent", receipt_path(s))).await?
-                }
-                _ => false,
-            };
             ensure!(
-                ours,
-                "job {id} is not dead-lettered: the ledger's latest outcome for {doc_id} isn't its permanent dead letter or one this sent for a later attempt"
+                !handoff
+                    .exists(&deadline_retry_path(id, &message_sha256))
+                    .await?,
+                "an operator retries {doc_id}'s newer message with another deadline; it isn't dead-lettered too"
             );
-            ensure!(
-                ledger
-                    .outstanding(&doc_id)
-                    .is_some_and(|row| LedgerRow::from_queued(row) == claim.ledger),
-                "the claim for {doc_id} isn't the page's outstanding ledger row; leave it to `claim pull`"
-            );
+            ensure_superseded(handoff, failed, &claim, ledger, settled).await?;
         }
     }
     if confirm.is_none() {
@@ -780,6 +732,297 @@ pub async fn dead_letter_superseding(
     );
     save(handoff, &doc_id, &claim).await?;
     report.done = Some(done);
+    Ok(report)
+}
+
+/// A dead-lettered job's page claimed again with a newer message (#1417), as both operator paths
+/// for it find it.
+struct Newer {
+    doc_id: String,
+    claim: Claim,
+    message: OcrMessage,
+    /// The sha256 of the claim's queue text, as `claim pull`'s summary and the controller's
+    /// state name it.
+    message_sha256: String,
+}
+
+/// The claim for `failed`'s page, checked to be that page (page, batch and language) with a
+/// later `queued_at`; `failed` must be a failed queue-fed job, and `confirm`, when given, the
+/// claim's message sha256.
+async fn newer_claim(
+    handoff: &dyn ObjectStore,
+    failed: &crate::Record,
+    confirm: Option<&str>,
+) -> anyhow::Result<Newer> {
+    failed.job.validate()?;
+    crate::retry::validate(failed)?;
+    let id = &failed.job.id;
+    ensure!(
+        failed.stage == crate::Stage::Failed && failed.ledger.is_some() && failed.retry.is_none(),
+        "job {id} is not a failed queue-fed job"
+    );
+    let old = &failed.job.message;
+    let doc_id = old.key()?.doc_id();
+    let Some(claim) = load(handoff, &doc_id).await? else {
+        bail!("no claim for {doc_id}");
+    };
+    let new = claim.message()?;
+    ensure!(
+        new.page == old.page && new.batch == old.batch && new.language == old.language,
+        "the claim for {doc_id} is not job {id}'s page"
+    );
+    let at = |m: &OcrMessage| chrono::DateTime::parse_from_rfc3339(&m.queued_at);
+    ensure!(
+        at(&new)? > at(old)?,
+        "the claim for {doc_id} doesn't supersede job {id}: it is that job's message or an older one"
+    );
+    let message_sha256 = usnm_ocr_contract::boinc::sha256(claim.text.as_bytes());
+    if let Some(confirm) = confirm {
+        ensure!(
+            confirm == message_sha256,
+            "the confirmation names message {confirm}, but the claim for {doc_id} is {message_sha256}"
+        );
+    }
+    Ok(Newer {
+        doc_id,
+        claim,
+        message: new,
+        message_sha256,
+    })
+}
+
+/// The sha256 of a message's JSON, as the ledger records its dead letter.
+fn message_digest(m: &OcrMessage) -> anyhow::Result<String> {
+    Ok(usnm_ocr_contract::boinc::sha256(&serde_json::to_vec(m)?))
+}
+
+/// A superseding dead letter's receipt. It is named by the message's digest as the ledger
+/// records its dead letter, so a later attempt can find the one sent for the attempt before it.
+fn superseding_path(failed_job: &str, digest: &str) -> String {
+    format!("dispatch/jobs/{failed_job}/superseding/{digest}.json")
+}
+
+/// The message digest of the page's latest ledger outcome, when that is a `permanent` dead
+/// letter.
+fn permanent_dead_letter<'a>(ledger: &'a Ledger, doc_id: &str) -> Option<&'a str> {
+    ledger
+        .outcomes
+        .get(doc_id)
+        .filter(|o| {
+            o.outcome == usnm_ocr_local::ledger::DEAD_LETTERED
+                && o.cause.as_deref() == Some("permanent")
+        })
+        .and_then(|o| o.message_sha256.as_deref())
+}
+
+/// That the newer claim is all that's left of `failed`'s page: the ledger's latest outcome
+/// (`settled`) is the failed job's own `permanent` dead letter, or one
+/// [`dead_letter_superseding`] sent for an attempt queued after it, so each later attempt can be
+/// settled the same way; and the claim is the page's outstanding ledger row.
+async fn ensure_superseded(
+    handoff: &dyn ObjectStore,
+    failed: &crate::Record,
+    claim: &Claim,
+    ledger: &Ledger,
+    settled: Option<&str>,
+) -> anyhow::Result<()> {
+    let id = &failed.job.id;
+    let doc_id = failed.job.message.key()?.doc_id();
+    let ours = match settled {
+        Some(s) if s == message_digest(&failed.job.message)? => true,
+        Some(s) if usnm_ocr_contract::boinc::is_sha256(s) => {
+            handoff
+                .exists(&format!("{}.sent", superseding_path(id, s)))
+                .await?
+        }
+        _ => false,
+    };
+    ensure!(
+        ours,
+        "job {id} is not dead-lettered: the ledger's latest outcome for {doc_id} isn't its permanent dead letter or one this sent for a later attempt"
+    );
+    ensure!(
+        ledger
+            .outstanding(&doc_id)
+            .is_some_and(|row| LedgerRow::from_queued(row) == claim.ledger),
+        "the claim for {doc_id} isn't the page's outstanding ledger row; leave it to `claim pull`"
+    );
+    Ok(())
+}
+
+/// The version of a [`DeadlineRetry`].
+pub const DEADLINE_RETRY_VERSION: u32 = 1;
+/// The longest page deadline a job may have (`Job::validate`).
+pub const MAX_TIMEOUT_SECS: u32 = 3600;
+
+/// An operator's deliberate retry of a dead-lettered job's page with another page deadline
+/// (#1417). It is written at `dispatch/jobs/<failed job>/deadline-retry/<message_sha256>.json`
+/// for the page's newer claim. `export --deadline-retry <failed job>` then builds that claim's
+/// job with this deadline in place of the one the plan journaled for the page: a new job and
+/// workunit, since the deadline is part of the job's identity. The controller takes the newer
+/// claim for the page only with this record.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeadlineRetry {
+    pub v: u32,
+    pub failed_job: String,
+    pub doc_id: String,
+    /// The sha256 of the newer claim's queue text.
+    pub message_sha256: String,
+    /// The newer message's `queued_at`: the controller finds the new job by it.
+    pub queued_at: String,
+    /// The new job's `engine.timeout_secs`.
+    pub timeout_secs: u32,
+}
+
+/// Where the deadline retry of `failed_job`'s page, for the newer message `message_sha256`, is.
+pub fn deadline_retry_path(failed_job: &str, message_sha256: &str) -> String {
+    format!("dispatch/jobs/{failed_job}/deadline-retry/{message_sha256}.json")
+}
+
+impl DeadlineRetry {
+    /// That this is the retry of `failed`'s page for `claim`, with a deadline a job may have
+    /// other than the failed job's.
+    pub fn check(&self, failed: &crate::Record, claim: &Claim) -> anyhow::Result<()> {
+        let doc_id = failed.job.message.key()?.doc_id();
+        ensure!(
+            self.v == DEADLINE_RETRY_VERSION
+                && self.failed_job == failed.job.id
+                && self.doc_id == doc_id
+                && self.message_sha256 == usnm_ocr_contract::boinc::sha256(claim.text.as_bytes())
+                && self.queued_at == claim.message()?.queued_at
+                && (1..=MAX_TIMEOUT_SECS).contains(&self.timeout_secs)
+                && self.timeout_secs != failed.job.engine.timeout_secs,
+            "the deadline retry of job {} isn't for the claim for {doc_id}",
+            failed.job.id
+        );
+        Ok(())
+    }
+}
+
+/// What [`deadline_retry`] found and did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeadlineRetried {
+    pub doc_id: String,
+    /// The newer claim's queue, message id and ledger attempt.
+    pub queue: String,
+    pub message_id: String,
+    pub attempt: u32,
+    /// The newer message's `queued_at`.
+    pub queued_at: String,
+    /// The sha256 of the newer claim's queue text: the operator's confirmation must give it.
+    pub message_sha256: String,
+    /// The failed job's page deadline and why it failed (its error mask, #1159).
+    pub failed_timeout_secs: u32,
+    pub failed_error: Option<String>,
+    pub timeout_secs: u32,
+    /// `None` for a dry run: nothing was written. `Some(false)`: it was recorded already.
+    pub recorded: Option<bool>,
+}
+
+/// A page whose job was dead-lettered and whose newer message was claimed again (#1417), retried
+/// deliberately with another page deadline, up to [`MAX_TIMEOUT_SECS`]: the operator's other
+/// choice beside [`dead_letter_superseding`]. A job that ran out of time on every host would
+/// only run out again with the same deadline, and would be the same job and workunit.
+///
+/// It checks what [`dead_letter_superseding`] does: the claim is the failed job's page, newer,
+/// live and the page's outstanding ledger row, and the failed job is the page's latest dead
+/// letter. Then it writes a [`DeadlineRetry`] for the claim's message, once; it changes nothing
+/// else, neither the queue nor the claim. With no `confirm` it changes nothing (a dry run);
+/// `confirm` must be the claim's `message_sha256`. A rerun finds the same record and changes
+/// nothing; one with another deadline is refused.
+pub async fn deadline_retry(
+    handoff: &dyn ObjectStore,
+    failed: &crate::Record,
+    ledger: &Ledger,
+    timeout_secs: u32,
+    confirm: Option<&str>,
+) -> anyhow::Result<DeadlineRetried> {
+    let Newer {
+        doc_id,
+        claim,
+        message,
+        message_sha256,
+    } = newer_claim(handoff, failed, confirm).await?;
+    let id = &failed.job.id;
+    ensure!(
+        (1..=MAX_TIMEOUT_SECS).contains(&timeout_secs),
+        "a page deadline is 1 to {MAX_TIMEOUT_SECS} seconds"
+    );
+    ensure!(
+        timeout_secs != failed.job.engine.timeout_secs,
+        "job {id} ran with a {timeout_secs} s deadline already; the same deadline would be the same job and workunit"
+    );
+    let record = DeadlineRetry {
+        v: DEADLINE_RETRY_VERSION,
+        failed_job: id.clone(),
+        doc_id: doc_id.clone(),
+        message_sha256: message_sha256.clone(),
+        queued_at: message.queued_at.clone(),
+        timeout_secs,
+    };
+    record.check(failed, &claim)?;
+    let mut report = DeadlineRetried {
+        doc_id: doc_id.clone(),
+        queue: claim.queue.clone(),
+        message_id: claim.message_id.clone(),
+        attempt: claim.ledger.attempt,
+        queued_at: message.queued_at.clone(),
+        message_sha256: message_sha256.clone(),
+        failed_timeout_secs: failed.job.engine.timeout_secs,
+        failed_error: failed.error.clone(),
+        timeout_secs,
+        recorded: None,
+    };
+    let path = deadline_retry_path(id, &message_sha256);
+    let same = |bytes: &[u8]| -> anyhow::Result<()> {
+        let saved: DeadlineRetry = serde_json::from_slice(bytes)?;
+        ensure!(
+            saved == record,
+            "{path} retries {doc_id} with a {} s deadline already",
+            saved.timeout_secs
+        );
+        Ok(())
+    };
+    if let Some(saved) = handoff.get(&path).await? {
+        same(&saved)?;
+        report.recorded = Some(false);
+        return Ok(report);
+    }
+    ensure!(
+        claim.ended.is_none(),
+        "the claim for {doc_id} ended {}; its message isn't held to retry",
+        claim.ended.as_deref().unwrap_or_default()
+    );
+    ensure!(
+        !handoff
+            .exists(&superseding_path(id, &message_digest(&message)?))
+            .await?,
+        "{doc_id}'s newer message is being dead-lettered as superseding job {id}; it isn't retried too"
+    );
+    ensure_superseded(
+        handoff,
+        failed,
+        &claim,
+        ledger,
+        permanent_dead_letter(ledger, &doc_id),
+    )
+    .await?;
+    if confirm.is_none() {
+        return Ok(report);
+    }
+    let bytes = serde_json::to_vec_pretty(&record)?;
+    if !handoff.put_new(&path, bytes, "application/json").await? {
+        same(
+            &handoff
+                .get(&path)
+                .await?
+                .context("deadline retry record vanished")?,
+        )?;
+        report.recorded = Some(false);
+        return Ok(report);
+    }
+    report.recorded = Some(true);
     Ok(report)
 }
 

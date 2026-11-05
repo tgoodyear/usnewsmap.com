@@ -160,6 +160,7 @@ impl Fixture {
             image: IMAGE.into(),
             timeout_secs: 600,
             claims: None,
+            deadline_retries: vec![],
         };
         Self {
             tmp,
@@ -3349,6 +3350,282 @@ mod queue_feed {
             .unwrap()
             .is_empty());
         assert_eq!(handoff_claim(&f).await.ended, None);
+    }
+
+    /// Copies the deadline retry of `failed` the hand-off container holds into the export's
+    /// journal root, as the hand-off job's export does.
+    async fn stage_deadline_retry(f: &Fed, failed: &str, sha: &str) {
+        let record = f
+            .handoff
+            .get(&claim::deadline_retry_path(failed, sha))
+            .await
+            .unwrap()
+            .unwrap();
+        let dir =
+            f.fx.options
+                .root
+                .join("jobs")
+                .join(failed)
+                .join("deadline-retry");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(format!("{sha}.json")), record).unwrap();
+    }
+
+    async fn try_export(f: &Fed) -> anyhow::Result<Vec<String>> {
+        usnm_boinc::export(
+            &f.fx.options,
+            &f.fx.state,
+            f.fx.stores.curated.as_ref(),
+            f.fx.stores.reference.as_ref(),
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn a_page_that_ran_out_of_time_is_retried_with_a_longer_deadline_once_confirmed() {
+        let (mut f, failed, newer) = superseded(true, Duration::from_secs(3600)).await;
+        usnm_boinc::save(&f.fx.options.root, &failed).unwrap();
+        let q = f.fx.stores.queue.as_ref();
+        let ledger = ledger::load(f.fx.stores.curated.as_ref()).await.unwrap();
+        let sha = usnm_ocr_contract::boinc::sha256(newer.encode().as_bytes());
+        let id = &failed.job.id;
+        let path = claim::deadline_retry_path(id, &sha);
+        // A dry run names the message and the failed deadline, and writes nothing.
+        let dry = claim::deadline_retry(f.handoff.as_ref(), &failed, &ledger, 3600, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            (
+                dry.recorded,
+                dry.message_sha256.as_str(),
+                dry.attempt,
+                dry.failed_timeout_secs,
+                dry.timeout_secs
+            ),
+            (None, sha.as_str(), f.queued.attempt, 600, 3600)
+        );
+        assert_eq!(dry.queued_at, newer.queued_at);
+        assert_eq!(dry.failed_error, failed.error);
+        assert!(f.handoff.get(&path).await.unwrap().is_none());
+        // Another message, the same deadline, or one no job may have: nothing written.
+        let other = "0".repeat(64);
+        for (secs, confirm) in [
+            (3600, other.as_str()),
+            (600, sha.as_str()),
+            (0, sha.as_str()),
+            (3601, sha.as_str()),
+        ] {
+            assert!(claim::deadline_retry(
+                f.handoff.as_ref(),
+                &failed,
+                &ledger,
+                secs,
+                Some(confirm)
+            )
+            .await
+            .is_err());
+        }
+        assert!(f.handoff.get(&path).await.unwrap().is_none());
+        let done = claim::deadline_retry(f.handoff.as_ref(), &failed, &ledger, 3600, Some(&sha))
+            .await
+            .unwrap();
+        assert_eq!(done.recorded, Some(true));
+        let record: claim::DeadlineRetry =
+            serde_json::from_slice(&f.handoff.get(&path).await.unwrap().unwrap()).unwrap();
+        assert_eq!(
+            record,
+            claim::DeadlineRetry {
+                v: claim::DEADLINE_RETRY_VERSION,
+                failed_job: id.clone(),
+                doc_id: DOC.into(),
+                message_sha256: sha.clone(),
+                queued_at: newer.queued_at.clone(),
+                timeout_secs: 3600,
+            }
+        );
+        // Again, confirmed or not: recorded already. Another deadline is refused.
+        for confirm in [Some(sha.as_str()), None] {
+            assert_eq!(
+                claim::deadline_retry(f.handoff.as_ref(), &failed, &ledger, 3600, confirm)
+                    .await
+                    .unwrap()
+                    .recorded,
+                Some(false)
+            );
+        }
+        let e = claim::deadline_retry(f.handoff.as_ref(), &failed, &ledger, 1800, Some(&sha))
+            .await
+            .unwrap_err();
+        assert!(e.to_string().contains("3600 s deadline already"), "{e}");
+        // Nothing else changed: the claim holds the message, and it can't be dead-lettered
+        // as superseding the job now.
+        assert_eq!(handoff_claim(&f).await.ended, None);
+        assert_eq!(q.approximate_count(BULK).await.unwrap(), 1);
+        let e = claim::dead_letter_superseding(f.handoff.as_ref(), q, &failed, &ledger, Some(&sha))
+            .await
+            .unwrap_err();
+        assert!(e.to_string().contains("another deadline"), "{e}");
+        assert!(q
+            .peek(usnm_store::queue::DEADLETTER, 32)
+            .await
+            .unwrap()
+            .is_empty());
+
+        // The export takes the recorded deadline for the newer claim: a new job, with the
+        // claim's message and ledger row.
+        let queued_files = || f.fx.stores.curated.list("ocr-local/queued");
+        let queued_before = queued_files().await.unwrap().len();
+        f.fx.options.claims = Some(f.fx.tmp.path().join("claims2"));
+        f.fx.options.deadline_retries = vec![id.clone()];
+        assert!(try_export(&f).await.is_err(), "no record staged yet");
+        stage_deadline_retry(&f, id, &sha).await;
+        let retried = f.fx.export().await;
+        assert_ne!(&retried, id);
+        let record = usnm_boinc::load(&f.fx.options.root, &retried).unwrap();
+        assert_eq!(record.job.engine.timeout_secs, 3600);
+        assert_eq!(record.job.message, newer);
+        assert_eq!(record.job.attempt, 0);
+        assert_eq!(record.job.retry_of, None);
+        assert_eq!(record.stage, Stage::Reserved);
+        assert_eq!(record.queued().unwrap(), f.queued);
+        assert_eq!(queued_files().await.unwrap().len(), queued_before);
+        // A replay is the same job; the failed one's journal is left as it was.
+        assert_eq!(f.fx.export().await, retried);
+        assert_eq!(
+            serde_json::to_value(usnm_boinc::load(&f.fx.options.root, id).unwrap()).unwrap(),
+            serde_json::to_value(&failed).unwrap()
+        );
+
+        // It runs and is published like any queue-fed job, and its message is deleted.
+        let files = f.fx.result(&retried);
+        f.fx.import(&retried, &files).await.unwrap();
+        let status = sync::run(
+            &f.fx.state,
+            "test-boinc",
+            &f.fx.stores,
+            &sync::Options::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(status.last_run.imported, 1);
+        let record = usnm_boinc::load(&f.fx.options.root, &retried).unwrap();
+        assert_eq!(record.stage, Stage::Published);
+        let q = f.fx.stores.queue.as_ref();
+        assert_eq!(
+            claim::finish(f.handoff.as_ref(), q, &record).await.unwrap(),
+            claim::Ended::Deleted
+        );
+        assert_eq!(q.approximate_count(BULK).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn an_export_takes_another_deadline_only_from_its_record() {
+        let (mut f, failed, newer) = superseded(true, Duration::from_secs(3600)).await;
+        usnm_boinc::save(&f.fx.options.root, &failed).unwrap();
+        let ledger = ledger::load(f.fx.stores.curated.as_ref()).await.unwrap();
+        let sha = usnm_ocr_contract::boinc::sha256(newer.encode().as_bytes());
+        let id = failed.job.id.clone();
+        claim::deadline_retry(f.handoff.as_ref(), &failed, &ledger, 3600, Some(&sha))
+            .await
+            .unwrap();
+        stage_deadline_retry(&f, &id, &sha).await;
+        f.fx.options.claims = Some(f.fx.tmp.path().join("claims2"));
+        let staged =
+            f.fx.options
+                .root
+                .join("jobs")
+                .join(&id)
+                .join("deadline-retry")
+                .join(format!("{sha}.json"));
+        let good = std::fs::read(&staged).unwrap();
+        f.fx.options.deadline_retries = vec![id.clone()];
+        // A record that names the failed job's own deadline, another message, or another
+        // job, is refused.
+        for (field, value) in [
+            ("timeout_secs", serde_json::json!(600)),
+            ("queued_at", serde_json::json!(failed.job.message.queued_at)),
+            ("failed_job", serde_json::json!("1".repeat(64))),
+        ] {
+            let mut bad: serde_json::Value = serde_json::from_slice(&good).unwrap();
+            bad[field] = value;
+            std::fs::write(&staged, serde_json::to_vec(&bad).unwrap()).unwrap();
+            assert!(try_export(&f).await.is_err(), "{field}");
+        }
+        std::fs::write(&staged, &good).unwrap();
+        // A failed job that isn't journaled failed is no retry's.
+        let mut submitted = failed.clone();
+        submitted.stage = Stage::Submitted;
+        usnm_boinc::save(&f.fx.options.root, &submitted).unwrap();
+        assert!(try_export(&f).await.is_err());
+        usnm_boinc::save(&f.fx.options.root, &failed).unwrap();
+        assert!(usnm_boinc::records(&f.fx.options.root)
+            .unwrap()
+            .iter()
+            .all(|r| r.job.id == id));
+        // Without it, the newer claim takes the deadline the plan journaled for the page, which
+        // is the failed job again, as it was: the retry is only ever the operator's.
+        f.fx.options.deadline_retries.clear();
+        let ordinary = f.fx.export().await;
+        assert_eq!(ordinary, id);
+        let record = usnm_boinc::load(&f.fx.options.root, &ordinary).unwrap();
+        assert_eq!(record.stage, Stage::Failed);
+        assert_eq!(record.job.message, failed.job.message);
+        assert_eq!(record.job.engine.timeout_secs, 600);
+    }
+
+    #[tokio::test]
+    async fn a_page_is_not_retried_with_another_deadline_unless_its_job_was_dead_lettered() {
+        let (f, failed, newer) = superseded(false, Duration::from_secs(3600)).await;
+        let ledger = ledger::load(f.fx.stores.curated.as_ref()).await.unwrap();
+        let sha = usnm_ocr_contract::boinc::sha256(newer.encode().as_bytes());
+        for confirm in [None, Some(sha.as_str())] {
+            let e = claim::deadline_retry(f.handoff.as_ref(), &failed, &ledger, 3600, confirm)
+                .await
+                .unwrap_err();
+            assert!(e.to_string().contains("is not dead-lettered"), "{e}");
+        }
+        assert!(f
+            .handoff
+            .get(&claim::deadline_retry_path(&failed.job.id, &sha))
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn a_page_dead_lettered_as_superseding_its_job_is_not_retried_too() {
+        let (f, failed, newer) = superseded(true, Duration::from_secs(3600)).await;
+        let q = f.fx.stores.queue.as_ref();
+        let ledger = ledger::load(f.fx.stores.curated.as_ref()).await.unwrap();
+        let sha = usnm_ocr_contract::boinc::sha256(newer.encode().as_bytes());
+        claim::dead_letter_superseding(f.handoff.as_ref(), q, &failed, &ledger, Some(&sha))
+            .await
+            .unwrap();
+        for confirm in [None, Some(sha.as_str())] {
+            assert!(
+                claim::deadline_retry(f.handoff.as_ref(), &failed, &ledger, 3600, confirm)
+                    .await
+                    .is_err()
+            );
+        }
+        // Nor is a claim whose lease was given up.
+        let (f, failed, newer) = superseded(true, Duration::from_secs(3600)).await;
+        let sha = usnm_ocr_contract::boinc::sha256(newer.encode().as_bytes());
+        let mut released = handoff_claim(&f).await;
+        released.ended = Some("released".into());
+        f.handoff
+            .put(
+                &claim::path(DOC),
+                serde_json::to_vec(&released).unwrap(),
+                "application/json",
+            )
+            .await
+            .unwrap();
+        let ledger = ledger::load(f.fx.stores.curated.as_ref()).await.unwrap();
+        let e = claim::deadline_retry(f.handoff.as_ref(), &failed, &ledger, 3600, Some(&sha))
+            .await
+            .unwrap_err();
+        assert!(e.to_string().contains("ended released"), "{e}");
     }
 
     #[tokio::test]
