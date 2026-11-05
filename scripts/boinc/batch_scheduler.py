@@ -1658,11 +1658,16 @@ def held_results(state, held_jobs, now):
 
 
 def tick(config, state, transport, persist, now=None, *, drain=False, dead_letter_failed=False,
-         low_watermark=None, high_watermark=None, max_global_pending=None, server_status=None):
+         low_watermark=None, high_watermark=None, max_global_pending=None, server_status=None,
+         refill_cap=None):
     if config.get("app") == SURYA_APP_NAME:
+        require(refill_cap is None, "--refill-cap is for OCR plans")
         return surya_tick(config, state, transport, persist, now, drain=drain,
                           low_watermark=low_watermark, high_watermark=high_watermark,
                           server_status=server_status)
+    # Claims, exports and submits per tick (#1447). Collection still takes up to batch_size, so a
+    # shorter tick doesn't leave held results that stop the next refill.
+    refill = config["batch_size"] if refill_cap is None else min(config["batch_size"], refill_cap)
     feed = QueueFeed(config, state, transport, persist) if config.get("source") == "queue" else None
     if feed:
         feed.restore()
@@ -1851,9 +1856,9 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
     if target and not held and not drain:
         if free > 0:
             if feed:
-                feed.fill(min(config["batch_size"], free), selected)
+                feed.fill(min(refill, free), selected)
             fresh = [page for page in config["pages"] if page["page"] not in selected][
-                :min(config["batch_size"], free)]
+                :min(refill, free)]
             for page in fresh:
                 selected[page["page"]] = now
             persist()
@@ -1862,7 +1867,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
                    (owned[page["page"]]["stage"] == "prepared"
                     and not owned[page["page"]].get("retry")))]
         if export:
-            export = export[:config["batch_size"]]
+            export = export[:refill]
             pages = {page["page"] for page in export}
             journals = [record["job"]["id"] for record in records
                         if record["job"]["message"]["page"] in pages]
@@ -1879,7 +1884,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         backlog += sum(page not in owned for page in selected)
         cohort_submit_room = max(0, target - ocr_in_flight - backlog)
         global_submit_room = max(0, global_cap - global_in_flight - backlog)
-        submit_limit = min(config["batch_size"], cohort_submit_room, global_submit_room)
+        submit_limit = min(refill, cohort_submit_room, global_submit_room)
         to_submit = []
         for record in owned.values():
             job_id = record["job"]["id"]
@@ -1998,6 +2003,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
                                          default=0)),
         "backpressure": backpressure,
         "backpressure_reason": backpressure_reason,
+        "refill_cap": refill,
         "low_watermark": low_target,
         "high_watermark": high_target,
         "cohort_pending": cohort_pending,
@@ -2040,6 +2046,9 @@ def main(argv=None):
                         help="runnable cohort high watermark target for refill")
     parser.add_argument("--max-global-pending", type=int, default=None,
                         help="global safety cap on total unassimilated work across all BOINC apps")
+    parser.add_argument("--refill-cap", type=int, default=None,
+                        help="claim, export and submit at most this many pages a tick (1-100; never more than "
+                             "batch_size, the default); collection still takes up to batch_size (#1447)")
     parser.add_argument("--server-status-url", default=None,
                         help="optional https server_status.php?xml=1 URL for per-app queue counts")
     parser.add_argument("--server-status-file", type=Path, default=None,
@@ -2076,6 +2085,9 @@ def main(argv=None):
             })
         if args.max_global_pending is not None:
             require(1 <= args.max_global_pending <= MAX_GLOBAL_PENDING, "invalid max_global_pending")
+        if args.refill_cap is not None:
+            require(1 <= args.refill_cap <= 100, "invalid --refill-cap")
+            require(config.get("app") != SURYA_APP_NAME, "--refill-cap is for OCR plans")
         if args.server_status_url is not None:
             _validate_status_url(args.server_status_url)
         surya = config.get("app") == SURYA_APP_NAME
@@ -2103,6 +2115,9 @@ def main(argv=None):
                 "allocated_pages": len(config["pages"]),
                 "max_pending": config["max_pending"], "config_sha256": digest(config),
                 "onprem_handoff": sorted(set(args.onprem_handoff)),
+                "batch_size": config["batch_size"],
+                "refill_cap": (config["batch_size"] if args.refill_cap is None
+                               else min(config["batch_size"], args.refill_cap)),
             }
             if args.low_watermark is not None or "low_watermark" in config:
                 plan_event["low_watermark"] = (args.low_watermark if args.low_watermark is not None
@@ -2146,6 +2161,8 @@ def main(argv=None):
                 tick_kwargs["high_watermark"] = args.high_watermark
             if args.max_global_pending is not None:
                 tick_kwargs["max_global_pending"] = args.max_global_pending
+            if args.refill_cap is not None:
+                tick_kwargs["refill_cap"] = args.refill_cap
             with transport.lock():
                 event = tick(config, state, transport, lambda: save(path, state), **tick_kwargs)
             # Again after the lease is released, so the line counts the release too.
