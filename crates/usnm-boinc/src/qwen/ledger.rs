@@ -123,9 +123,12 @@ pub fn record_paths(pages: &Path, job_id: &str, doc_id: &str) -> anyhow::Result<
     for entry in entries {
         let entry = entry?;
         let path = entry.path();
-        // `record_page` writes regular files, staging them through
-        // temporary files in the same directory.
-        if entry.file_type()?.is_file() && path.extension().is_some_and(|x| x == "json") {
+        // `record_page` writes regular files with UTF-8 names, staging them
+        // through temporary files in the same directory.
+        if entry.file_type()?.is_file()
+            && path.file_name().is_some_and(|n| n.to_str().is_some())
+            && path.extension().is_some_and(|x| x == "json")
+        {
             files.push(path);
         }
     }
@@ -251,14 +254,12 @@ fn page_records(
             && r["results"].as_array().is_some_and(|sides| {
                 sides.len() == 2 && sides.iter().all(|s| exact(&s["readings"]))
             });
-        let name = f
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or_default()
-            .to_owned();
+        let Some(name) = f.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
         match r["status"].as_str() {
-            Some(PAGE_AGREED) if own => agreed.push(name),
-            Some(PAGE_DISAGREED) if own => disagreed.push(name),
+            Some(PAGE_AGREED) if own => agreed.push(name.to_owned()),
+            Some(PAGE_DISAGREED) if own => disagreed.push(name.to_owned()),
             _ => {}
         }
     }
@@ -455,6 +456,18 @@ pub(crate) mod tests {
             std::slice::from_ref(&record_path)
         );
         std::fs::remove_dir(&stray).unwrap();
+        // Nor is a file whose name isn't UTF-8 (Linux allows one; APFS doesn't).
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            let odd = record_path.with_file_name(std::ffi::OsStr::from_bytes(b"\xff.json"));
+            std::fs::write(&odd, &original).unwrap();
+            assert_eq!(
+                record_paths(&pages, &job.id, DOCS[0]).unwrap(),
+                std::slice::from_ref(&record_path)
+            );
+            std::fs::remove_file(&odd).unwrap();
+        }
         std::fs::write(&record_path, &original).unwrap();
         assert_eq!(
             ledger[1].page_job_id.as_deref(),

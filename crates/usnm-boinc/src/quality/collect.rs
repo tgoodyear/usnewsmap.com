@@ -2801,6 +2801,19 @@ pub(super) mod tests {
         assert_ne!(key(&opts), agreed);
         assert!(vlm_rows(&collect(&opts).unwrap()).is_empty());
         std::fs::write(&membership, &original).unwrap();
+        // So does a member page unit gone missing: it is keyed as missing, not an error.
+        let member = opts
+            .qwen_root
+            .join("pages")
+            .join(&ours)
+            .join(crate::qwen::JOB_FILE);
+        let moved = member.with_file_name("moved.json");
+        let present = key(&opts);
+        std::fs::rename(&member, &moved).unwrap();
+        assert_ne!(key(&opts), present);
+        assert!(vlm_rows(&collect(&opts).unwrap()).is_empty());
+        std::fs::rename(&moved, &member).unwrap();
+        assert_eq!(key(&opts), present);
 
         // A canonical result, when there is one, is joined instead.
         let canonical = result(&results, &job, "z", |_, _| "the canonical reading".into());
