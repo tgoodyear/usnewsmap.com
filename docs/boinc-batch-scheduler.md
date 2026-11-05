@@ -1236,13 +1236,14 @@ az account get-access-token --resource https://storage.azure.com/ \
 ```
 
 It reads only the `token` and `expires` keys of that JSON object. `expires` must
-be a whole number of seconds since the epoch. Azure CLI 2.54.0 and later gives
-that as `expires_on`: `az account get-access-token --resource
-https://storage.azure.com/ --query 'type(expires_on)' -o tsv` prints `number`
-(and no token). Upgrade an older CLI rather than converting. The tool converts
-`expires` with `int()`, which fails on a date string and stops the step. Don't
-project `expiresOn`, a local time string. The tool asks again 10 minutes before
-expiry, and makes no other `az` call. To use an operator identity:
+be a whole number of seconds since the epoch, so check that `expires_on` is one:
+`az account get-access-token --resource https://storage.azure.com/ --query
+'type(expires_on)' -o tsv` prints `number` (and no token). If it doesn't,
+upgrade the CLI rather than converting: `expires_on` was added in Azure CLI
+2.54.0, and older versions give only `expiresOn`, a local time string; don't
+project that instead. The tool converts `expires` with `int()`, which fails on a
+date string and stops the step. The tool asks again 10 minutes before expiry,
+and makes no other `az` call. To use an operator identity:
 
 - On CT 211, make a root-owned 0700 directory for the run, such as
   `/root/usnm-archive`. In it, put a 0700 wrapper `azshim/az` that answers only
