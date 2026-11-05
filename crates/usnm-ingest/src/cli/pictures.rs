@@ -84,15 +84,18 @@ pub(crate) async fn pictures_command(
 }
 
 /// Report how the picture boxes `pictures` wrote meet the curated pages
-/// (#1102, 04 §4.11), as JSON on stdout: the rows of the revision's newest
-/// finished attempt by class (`page`, `same_batch_day`, `other_version_day`,
-/// `other_batch_day`, `not_curated`, `unplaced`), in total, by kind and by
-/// batch, with the distinct pages placed. A row is put on a page only through
-/// a scan named in a `--placements` file; a frame is never made into a `seq`.
-/// The rest are classed by the curated batches' title-days. Checks every part
-/// against provenance.json first and stops if one differs. Reads the state,
-/// each curated batch's counts.json and the parts; writes nothing and asks LoC
-/// nothing. Prints counts, never rows.
+/// (#1102, 04 §4.11), as JSON in the new file `--out` (stdout has the logs):
+/// the rows of the revision's newest finished attempt by class (`page`,
+/// `same_batch_day`, `other_version_day`, `other_batch_day`, `not_curated`,
+/// `unplaced`), in total, by kind and by batch, with the distinct pages
+/// placed. A row is put on a page only through a scan named in a
+/// `--placements` file, and only if the curated version of the scan's batch
+/// holds that page; a frame is never made into a `seq`. The rest are classed
+/// by the curated batches' title-days. Checks every part against
+/// provenance.json first and stops if one differs. Reads the state, each
+/// curated batch's counts.json, the curated parts of the batches placements
+/// name, and the picture parts; writes only `--out` and asks LoC nothing.
+/// Reports counts, never rows.
 #[derive(Args)]
 pub(crate) struct PicturesJoinArgs {
     /// The dataset revision the rows were written at (the full 40-character
@@ -108,6 +111,9 @@ pub(crate) struct PicturesJoinArgs {
     /// `index-{tag}.jsonl`. Other fields are ignored. Repeat for more files.
     #[arg(long)]
     placements: Vec<PathBuf>,
+    /// The file to write the report to; it must not exist yet.
+    #[arg(long)]
+    out: PathBuf,
 }
 
 pub(crate) async fn pictures_join_command(
@@ -119,7 +125,11 @@ pub(crate) async fn pictures_join_command(
         revision,
         pictures,
         placements,
+        out,
     } = args;
+    if out.exists() {
+        anyhow::bail!("`{}` already exists", out.display());
+    }
     let curated = usnm_store::open(&cli.stores.curated)?;
     let pictures = match pictures {
         Some(location) => usnm_store::open(location)?,
@@ -134,7 +144,8 @@ pub(crate) async fn pictures_join_command(
         &placements,
     )
     .await?;
-    println!("{}", serde_json::to_string_pretty(&report)?);
+    join::write_report(out, &report)?;
+    tracing::info!(out = %out.display(), "pictures-join report written");
     Ok(None)
 }
 
@@ -226,19 +237,28 @@ mod tests {
             revision,
             pictures,
             placements,
-        }) = parse_join(&["--revision", REVISION]).unwrap().command
+            out,
+        }) = parse_join(&["--revision", REVISION, "--out", "join.json"])
+            .unwrap()
+            .command
         else {
             panic!("not pictures-join");
         };
         assert_eq!(revision, REVISION);
         assert_eq!(pictures, None);
         assert!(placements.is_empty());
+        assert_eq!(out, PathBuf::from("join.json"));
 
-        assert!(parse_join(&[]).is_err());
-        assert!(parse_join(&["--revision", "main"]).is_err());
-        assert!(parse_join(&[REVISION]).is_err(), "named arguments only");
+        // The report goes to a file, not stdout, which has the logs.
+        assert!(parse_join(&["--revision", REVISION]).is_err());
+        assert!(parse_join(&["--out", "join.json"]).is_err());
+        assert!(parse_join(&["--revision", "main", "--out", "j"]).is_err());
         assert!(
-            parse_join(&["--revision", REVISION, "a.jsonl"]).is_err(),
+            parse_join(&[REVISION, "--out", "j"]).is_err(),
+            "named arguments only"
+        );
+        assert!(
+            parse_join(&["--revision", REVISION, "--out", "j", "a.jsonl"]).is_err(),
             "named arguments only"
         );
 
@@ -249,6 +269,8 @@ mod tests {
         }) = parse_join(&[
             "--revision",
             REVISION,
+            "--out",
+            "join.json",
             "--pictures",
             "/var/lib/usnm-pictures/curated",
             "--placements",

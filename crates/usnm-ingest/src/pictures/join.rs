@@ -1,5 +1,5 @@
 //! How Newspaper Navigator's boxes meet the curated pages (#1102, 04 §4.11):
-//! `usnm-ingest pictures-join`, a report that writes nothing.
+//! `usnm-ingest pictures-join`, a report that changes no store.
 //!
 //! A row is keyed by its scan (batch, LCCN, reel, issue, frame), a curated
 //! page by `page_key` (LCCN, date, edition, seq). The frame is the JP2's
@@ -10,12 +10,14 @@
 //! here makes a `seq` out of a frame.
 //!
 //! Each row gets the first class that fits, from the most certain to the
-//! least, by the placements and each curated batch's `counts.json`:
+//! least, by the placements, each curated batch's `counts.json` and the page
+//! keys of the curated batches that placements name:
 //!
-//! - `page`: placed on a `doc_id`, and the batch version it was detected in
-//!   is curated with pages of its title on its day.
-//! - `same_batch_day`: not placed, but that batch version is curated with
-//!   the title-day; the page is probably there, at a `seq` not known here.
+//! - `page`: placed on a `doc_id` that is a page of the curated version of
+//!   the batch it was detected in (that version's parts hold the page key).
+//! - `same_batch_day`: not placed on such a page, but that batch version is
+//!   curated with the title-day; the page is probably there, at a `seq` not
+//!   known here.
 //! - `other_version_day`: another version of the batch is curated with the
 //!   title-day (the batch was reissued after 2020).
 //! - `other_batch_day`: only another batch is curated with the title-day.
@@ -28,8 +30,8 @@
 
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::io::BufRead;
-use std::path::PathBuf;
+use std::io::{BufRead, Write};
+use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context};
 use bytes::Bytes;
@@ -248,7 +250,8 @@ impl CuratedDays {
             .chain(self.more.get(&title_day).into_iter().flatten().copied())
     }
 
-    fn class(&self, scan: &ScanKey, placed: bool) -> Class {
+    /// `on_page`: the scan is placed on a page its batch version holds.
+    fn class(&self, scan: &ScanKey, on_page: bool) -> Class {
         let Some((name, version)) = split_batch(&scan.batch) else {
             return Class::Unplaced;
         };
@@ -260,7 +263,7 @@ impl CuratedDays {
             Some(&(i, curated)) if self.on(title_day).any(|b| b == i) => {
                 if curated != version {
                     Class::OtherVersionDay
-                } else if placed {
+                } else if on_page {
                     Class::Page
                 } else {
                     Class::SameBatchDay
@@ -333,6 +336,9 @@ pub struct JoinReport {
     pub curated_batches: u64,
     pub curated_title_days: u64,
     pub placements: PlacementSummary,
+    /// Placements whose `doc_id` is a page of the curated version of the
+    /// scan's batch; only these make `page` rows.
+    pub placements_on_curated_pages: u64,
     pub total: Classes,
     /// Distinct pages with a `page` row.
     pub pages: u64,
@@ -378,6 +384,49 @@ async fn verified_part(
     Ok(rows)
 }
 
+/// The placements (indices into `doc_ids`) whose `doc_id` is a page of the
+/// curated version of the scan's batch. Reads, without their text, the
+/// curated parts of only the batches placements name at their curated
+/// version.
+async fn on_curated_pages(
+    curated: &dyn ObjectStore,
+    batches: &[RunBatch],
+    days: &CuratedDays,
+    placements: &Placements,
+) -> anyhow::Result<HashSet<u32>> {
+    let mut wanted: BTreeMap<u32, HashMap<PageKey, u32>> = BTreeMap::new();
+    for (scan, &i) in &placements.by_scan {
+        let Some((name, version)) = split_batch(&scan.batch) else {
+            continue;
+        };
+        match days.batches.get(name) {
+            Some(&(b, curated_version)) if curated_version == version => {
+                let page = PageKey::from_doc_id(&placements.doc_ids[i as usize])
+                    .context("a placement's doc_id")?;
+                wanted.entry(b).or_default().insert(page, i);
+            }
+            _ => {}
+        }
+    }
+    let mut found = HashSet::new();
+    for (b, pages) in wanted {
+        for path in &batches[b as usize].curated.parts {
+            let bytes = curated
+                .get(path)
+                .await?
+                .with_context(|| format!("curated part `{path}` is missing"))?;
+            crate::curated::read_part(bytes.into(), false, |row| {
+                if let Some(&i) = pages.get(&row.key) {
+                    found.insert(i);
+                }
+                Ok(())
+            })
+            .with_context(|| format!("reading curated part `{path}`"))?;
+        }
+    }
+    Ok(found)
+}
+
 /// Join the newest finished attempt at `revision` in `pictures` to the
 /// curated `batches` and `placements`. Every part is checked against
 /// `provenance.json` first; one that differs stops the report.
@@ -400,6 +449,7 @@ pub async fn join(
         );
     }
     let days = CuratedDays::load(curated, batches).await?;
+    let on_pages = on_curated_pages(curated, batches, &days, placements).await?;
     let dir = attempt_dir(revision, p.attempt);
     let mut report = JoinReport {
         revision: p.revision.clone(),
@@ -407,6 +457,7 @@ pub async fn join(
         curated_batches: batches.len() as u64,
         curated_title_days: days.first.len() as u64,
         placements: placements.summary.clone(),
+        placements_on_curated_pages: on_pages.len() as u64,
         total: Classes::default(),
         pages: 0,
         kinds: BTreeMap::new(),
@@ -421,7 +472,8 @@ pub async fn join(
                 let scan = ScanKey::of(&row);
                 let placed = scan
                     .as_ref()
-                    .and_then(|s| placements.by_scan.get(s).copied());
+                    .and_then(|s| placements.by_scan.get(s).copied())
+                    .filter(|i| on_pages.contains(i));
                 let class = scan
                     .as_ref()
                     .map_or(Class::Unplaced, |s| days.class(s, placed.is_some()));
@@ -469,6 +521,20 @@ pub async fn join(
         "pictures joined"
     );
     Ok(report)
+}
+
+/// Write `report` as JSON to `path`, which must not exist yet. The report
+/// goes to a file because the logs are JSON on stdout.
+pub fn write_report(path: &Path, report: &JoinReport) -> anyhow::Result<()> {
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .with_context(|| format!("creating `{}`", path.display()))?;
+    serde_json::to_writer_pretty(&mut file, report)?;
+    file.write_all(b"\n")?;
+    file.sync_all()
+        .with_context(|| format!("writing `{}`", path.display()))
 }
 
 /// [`join`] against every curated batch in `state`.
@@ -577,6 +643,29 @@ mod tests {
             .unwrap();
     }
 
+    /// A curated part of `b` holding `pages`, listed in `b`'s parts.
+    async fn put_pages(store: &LocalStore, b: &mut RunBatch, pages: &[PageKey]) {
+        let mut w = crate::curated::PartWriter::new();
+        for key in pages {
+            let at = chrono::DateTime::from_timestamp(1_790_000_000, 0).unwrap();
+            let row = crate::curated::CuratedRow::from_ocr(
+                key.clone(),
+                "words on a page",
+                &b.batch,
+                b.curated.version,
+                "loc",
+                at,
+            );
+            assert!(w.push(row).unwrap().is_none());
+        }
+        let path = format!("curated/{}/part-{}.parquet", b.batch, b.curated.parts.len());
+        store
+            .put(&path, w.finish_part().unwrap().unwrap(), "x")
+            .await
+            .unwrap();
+        b.curated.parts.push(path);
+    }
+
     /// An attempt holding `rows`, one part per kind, with its provenance.
     async fn put_attempt(store: &LocalStore, rows: &[Picture]) -> Provenance {
         let dir = attempt_dir(REVISION, 1);
@@ -655,15 +744,21 @@ mod tests {
         let (d1, d2, d3) = (date(1880, 1, 2), date(1880, 1, 9), date(1880, 1, 16));
         let doc =
             |lccn: &str, d: NaiveDate, seq: u16| PageKey::new(lccn, d, 1, seq).unwrap().doc_id();
+        let key =
+            |lccn: &str, d: NaiveDate, ed: u16, seq: u16| PageKey::new(lccn, d, ed, seq).unwrap();
 
         // `ohi_alpha` is curated at version 1, `ohi_beta` at 2 (the dataset
-        // has its version 1), `ohi_gamma` has `b` on d2.
-        let alpha = batch("ohi_alpha", 1);
+        // has its version 1), `ohi_gamma` has `b` on d2. `alpha`'s parts
+        // hold d1's pages 3 and 4 and d2's edition 2.
+        let mut alpha = batch("ohi_alpha", 1);
         let beta = batch("ohi_beta", 2);
         let gamma = batch("ohi_gamma", 1);
         put_counts(&store, &alpha, &[(a, d1), (a, d2)]).await;
         put_counts(&store, &beta, &[(a, d3)]).await;
         put_counts(&store, &gamma, &[(b, d2)]).await;
+        put_pages(&store, &mut alpha, &[key(a, d1, 1, 3), key(a, d1, 1, 4)]).await;
+        put_pages(&store, &mut alpha, &[key(a, d2, 2, 1)]).await;
+        let batches = [alpha, beta, gamma];
 
         let rows = vec![
             // Placed on a page of `alpha`, twice on one scan and once on another.
@@ -672,6 +767,9 @@ mod tests {
             row("map", "ohi_alpha_ver01", a, d1, "0006"),
             // Same batch and day, not placed.
             row("photo", "ohi_alpha_ver01", a, d2, "0010"),
+            // Placed on edition 1 of d2, which the batch's parts don't hold
+            // (they hold edition 2): only on its batch's day.
+            row("map", "ohi_alpha_ver01", a, d2, "0012"),
             // Its batch is curated at another version.
             row("photo", "ohi_beta_ver01", a, d3, "0001"),
             // Only another batch has the title-day: `alpha` is curated, but
@@ -701,6 +799,7 @@ mod tests {
                     // The same pair again, as a second resolution's index has it.
                     line("ohi_alpha_ver01", a, d1, "0005", &doc(a, d1, 3)),
                     line("ohi_beta_ver01", a, d3, "0002", &doc(a, d3, 1)),
+                    line("ohi_alpha_ver01", a, d2, "0012", &doc(a, d2, 1)),
                     String::new(),
                 ],
                 &[
@@ -715,25 +814,26 @@ mod tests {
             places.summary,
             PlacementSummary {
                 files: 2,
-                lines: 7,
-                placed: 3,
+                lines: 8,
+                placed: 4,
                 unreadable: 2,
                 inconsistent: 1,
                 conflicting: 0,
             }
         );
 
-        let r = join(&store, REVISION, &store, &[alpha, beta, gamma], &places)
+        let r = join(&store, REVISION, &store, &batches, &places)
             .await
             .unwrap();
         assert_eq!((r.revision.as_str(), r.attempt), (REVISION, p.attempt));
         assert_eq!((r.curated_batches, r.curated_title_days), (3, 4));
+        assert_eq!(r.placements_on_curated_pages, 2);
         assert_eq!(
             r.total,
             Classes {
-                rows: 11,
+                rows: 12,
                 page: 3,
-                same_batch_day: 1,
+                same_batch_day: 2,
                 other_version_day: 2,
                 other_batch_day: 1,
                 not_curated: 2,
@@ -747,7 +847,7 @@ mod tests {
             (7, 2, 1)
         );
         let map = &r.kinds["map"];
-        assert_eq!((map.classes.rows, map.classes.page, map.pages), (4, 1, 1));
+        assert_eq!((map.classes.rows, map.classes.page, map.pages), (5, 1, 1));
         assert_eq!(
             r.batches.keys().map(String::as_str).collect::<Vec<_>>(),
             [
@@ -760,25 +860,24 @@ mod tests {
             ]
         );
         assert_eq!(r.batches["ohi_beta_ver01"].other_version_day, 2);
+        assert_eq!(r.batches["ohi_alpha_ver01"].same_batch_day, 2);
         assert_eq!(r.batches["ohi_alpha_ver01"].other_batch_day, 1);
         assert_eq!(r.batches["ohi_alpha"].unplaced, 1);
 
+        // The report is written once, to a new file.
+        let out = dir.path().join("join.json");
+        write_report(&out, &r).unwrap();
+        let read: JoinReport = serde_json::from_slice(&std::fs::read(&out).unwrap()).unwrap();
+        assert_eq!(read, r);
+        assert!(write_report(&out, &r).is_err());
+
         // Without placements, the placed rows are only on their batch's day.
         let none = Placements::read(&[]).unwrap();
-        let r = join(
-            &store,
-            REVISION,
-            &store,
-            &[
-                batch("ohi_alpha", 1),
-                batch("ohi_beta", 2),
-                batch("ohi_gamma", 1),
-            ],
-            &none,
-        )
-        .await
-        .unwrap();
-        assert_eq!((r.total.page, r.total.same_batch_day, r.pages), (0, 4, 0));
+        let r = join(&store, REVISION, &store, &batches, &none)
+            .await
+            .unwrap();
+        assert_eq!(r.placements_on_curated_pages, 0);
+        assert_eq!((r.total.page, r.total.same_batch_day, r.pages), (0, 5, 0));
     }
 
     #[test]
