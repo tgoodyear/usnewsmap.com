@@ -46,6 +46,7 @@ jobs:
       quickwit_suites: ${{ steps.f.outputs.quickwit_suites }}
       web: ${{ steps.f.outputs.web }}
       image: ${{ steps.f.outputs.image }}
+      images: ${{ steps.f.outputs.images }}
       e2e: ${{ steps.f.outputs.e2e }}
       fixtures: ${{ steps.f.outputs.fixtures }}
       ops: ${{ steps.f.outputs.ops }}
@@ -60,6 +61,7 @@ jobs:
       ocr_gold: ${{ steps.f.outputs.ocr_gold }}
       boinc_pages: ${{ steps.f.outputs.boinc_pages }}
       edge: ${{ steps.f.outputs.edge }}
+      queue: ${{ steps.f.outputs.queue }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -111,7 +113,7 @@ jobs:
   queue:
     name: queue (PostgreSQL + pgmq, live)
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.queue == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -507,8 +509,10 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
+      # A pull request builds the images its change can affect; main builds all three,
+      # which `publish` pushes from the same cache (scripts/ci/changes.sh).
       matrix:
-        image: [api, ingest, ja-ocr]
+        image: ${{ fromJSON(needs.changes.outputs.images) }}
     # Build and smoke-test the images. Publishing happens per environment in
     # `publish`, from the same build cache.
     permissions:

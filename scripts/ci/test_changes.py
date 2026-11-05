@@ -17,6 +17,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 CARGO = shutil.which("cargo")
 WINDOWS_ONLY = ("windows-core", "windows-result", "windows-strings")
+# The image job's matrix on main: what `publish` pushes.
+ALL_IMAGES = ["api", "ingest", "ja-ocr"]
 
 
 def downgrade_patch(repo: Path, *names: str) -> None:
@@ -66,9 +68,10 @@ class Dispatch(unittest.TestCase):
         result, flags = self.flags("ocr-worker")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual({key for key, value in flags.items() if value == "true"},
-                         {"rust", "ocr_worker"})
-        self.assertEqual(len(flags), 27)
+                         {"rust", "queue", "ocr_worker"})
+        self.assertEqual(len(flags), 28)
         self.assertIn("quickwit_suites=[]", result.stdout)
+        self.assertIn("images=[]", result.stdout)
         self.assertEqual(flags["image"], "false")
         self.assertEqual(flags["contrib"], "false")
         self.assertEqual(flags["edge"], "false")
@@ -87,6 +90,8 @@ class Dispatch(unittest.TestCase):
                 self.assertEqual(flags["quickwit_parity"], "true")
                 self.assertEqual(flags["quickwit_pipeline"], "true")
                 self.assertIn('quickwit_suites=["parity","pipeline"]', result.stdout)
+                self.assertEqual(flags["queue"], "true")
+                self.assertIn('images=["api","ingest","ja-ocr"]', result.stdout)
 
     def test_unknown_dispatch_scope_fails_closed(self):
         result, flags = self.flags("ocr-wroker")
@@ -442,9 +447,10 @@ class BuildInputs(unittest.TestCase):
 
     setUp, tearDown, commit = Quickwit.setUp, Quickwit.tearDown, Quickwit.commit
 
-    def select(self, *changes, env=None) -> set:
+    def select(self, *changes, env=None, event="push") -> set:
         """The outputs that are true after committing each change (a path to append to, or a
-        (path, text) pair to write), as changes.sh sees a push."""
+        (path, text) pair to write), as changes.sh sees a push, or a pull request into the
+        commit before them. self.images is the image job's matrix."""
         before = git(self.repo, "rev-parse", "HEAD")
         for change in changes:
             path, text = change if isinstance(change, tuple) else (change, None)
@@ -460,6 +466,9 @@ class BuildInputs(unittest.TestCase):
         out.write_text("")
         run_env = dict(os.environ, GITHUB_EVENT_NAME="push", BEFORE_SHA=before,
                        GITHUB_SHA=after, GITHUB_OUTPUT=str(out), **(env or {}))
+        if event == "pull_request":
+            git(self.repo, "update-ref", "refs/remotes/origin/pr-base", before)
+            run_env.update(GITHUB_EVENT_NAME="pull_request", GITHUB_BASE_REF="pr-base")
         result = subprocess.run(["scripts/ci/changes.sh"], cwd=self.repo, env=run_env,
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -470,6 +479,11 @@ class BuildInputs(unittest.TestCase):
         self.assertEqual(suites, [s for s in ("parity", "pipeline")
                                   if f"quickwit_{s}" in on])
         self.assertEqual("quickwit" in on, bool(suites))
+        self.images = json.loads(re.search(r"^images=(.*)$", output, re.M)[1])
+        self.assertEqual("image" in on, bool(self.images))
+        if event != "pull_request" and self.images:
+            # What main builds is what `publish` pushes: every image.
+            self.assertEqual(self.images, ALL_IMAGES)
         return on
 
     def stub_tool(self, name: str) -> dict:
@@ -594,6 +608,15 @@ class BuildInputs(unittest.TestCase):
         self.assertIn("needs: [changes, quickwit-tests]", gate)
         self.assertIn("if: always() && needs.changes.outputs.quickwit == 'true'", gate)
         self.assertIn('test "$RESULT" = success', gate)
+
+    def test_the_image_matrix_and_the_queue_job_follow_their_outputs(self):
+        # test_ci_gates.py checks the image job's matrix and its required gate.
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        changes = job_text(workflow, "changes")
+        self.assertIn("images: ${{ steps.f.outputs.images }}", changes)
+        self.assertIn("if: needs.changes.outputs.image == 'true'", job_text(workflow, "image-tests"))
+        self.assertIn("queue: ${{ steps.f.outputs.queue }}", changes)
+        self.assertIn("if: needs.changes.outputs.queue == 'true'", job_text(workflow, "queue"))
 
     def test_parity_fixture_generators_do_not_call_the_excluded_api(self):
         setup = (ROOT / "scripts/dev/quickwit-fixtures.sh").read_text()
@@ -742,6 +765,57 @@ class BuildInputs(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertIn("image", self.select(path))
 
+    def test_a_pull_request_builds_only_the_images_its_change_reaches(self):
+        api, ingest, ja_ocr = (["api"], ["ingest"], ["ja-ocr"])
+        for paths, images in [
+            # #1528: the site's no-JS fallback, its end-to-end tests and its design note.
+            (["crates/usnm-api/src/site.rs", "web/index.html", "web/e2e/seo.spec.ts",
+              "docs/design/09-operations-security-cost.md"], api),
+            (["crates/usnm-api/src/main.rs"], api),
+            (["docker/Dockerfile.api"], api),
+            (["crates/usnm-ingest/src/lib.rs"], ingest),
+            (["crates/usnm-ocr-route/src/lib.rs"], ingest),
+            (["infra/quickwit-image.json"], ingest),
+            (["docker/Dockerfile.ingest"], ingest),
+            (["ocr/ja-ocr/jaocr.py"], ja_ocr),
+            (["docker/Dockerfile.ja-ocr"], ja_ocr),
+            (["scripts/data/build-page-language-words.py"], ja_ocr),
+            (["crates/usnm-core/src/lib.rs"], ["api", "ingest"]),
+            (["ops/index-history.json"], ["api", "ingest"]),
+            # The Japanese OCR image's tests read the Rust port's word list.
+            (["crates/usnm-core/data/page-language-words.txt"], ALL_IMAGES),
+            ([".dockerignore"], ALL_IMAGES),
+            # The image job itself, and what only publishing reads: every image.
+            ([".github/actions/build-check-image/action.yml"], ALL_IMAGES),
+            (["scripts/ci/roll-api.sh"], ALL_IMAGES),
+        ]:
+            with self.subTest(paths=paths):
+                self.assertIn("image", self.select(*paths, event="pull_request"))
+                self.assertEqual(self.images, images)
+        for path in ["crates/usnm-boinc/src/lib.rs", "scripts/onprem/queue/setup.sql"]:
+            with self.subTest(path=path):
+                self.assertNotIn("image", self.select(path, event="pull_request"))
+                self.assertEqual(self.images, [])
+
+    def test_main_builds_every_image_for_any_image_change(self):
+        # select() checks a push's matrix is every image whenever the image job runs.
+        for path in ["web/index.html", "ocr/ja-ocr/jaocr.py", "infra/quickwit-image.json"]:
+            with self.subTest(path=path):
+                self.assertIn("image", self.select(path))
+
+    def test_the_queue_job_runs_for_its_crates_and_schemas_only(self):
+        for path in ["scripts/onprem/queue/setup.sql", "scripts/onprem/queue/ci-fixture.sh",
+                     "scripts/onprem/quality/load.py", "crates/usnm-store/src/lib.rs",
+                     "crates/usnm-state/src/lib.rs", "rust-toolchain.toml"]:
+            with self.subTest(path=path):
+                self.assertIn("queue", self.select(path, event="pull_request"))
+        # The queue's scripts are no crate's input, so they don't run the Rust job.
+        self.assertNotIn("rust", self.select("scripts/onprem/quality/rank.sql", event="pull_request"))
+        for path in ["crates/usnm-api/src/main.rs", "crates/usnm-ingest/src/lib.rs",
+                     "crates/usnm-ocr-dash/src/html.rs", "web/index.html"]:
+            with self.subTest(path=path):
+                self.assertNotIn("queue", self.select(path, event="pull_request"))
+
     def test_a_workflow_or_its_action_runs_only_its_own_job(self):
         for path, job in [
             (".github/workflows/boinc-worker.yml", "boinc_worker"),
@@ -770,6 +844,9 @@ class BuildInputs(unittest.TestCase):
             if "quickwit_suites" in flags:
                 flags.remove("quickwit_suites")
                 flags.update({"quickwit_parity", "quickwit_pipeline"})
+            if "images" in flags:
+                flags.remove("images")
+                flags.add("image")
             for action in re.findall(r"uses: \./\.github/actions/([\w-]+)", text):
                 called.setdefault(action, set()).update(flags)
         self.assertGreaterEqual(len(called), 3)
@@ -813,11 +890,26 @@ class BuildInputs(unittest.TestCase):
         # Only src/ and tests/ are exempt: the manifest is not.
         self.assertIn("infra", self.select("crates/usnm-ocr-dash/Cargo.toml"))
 
+    def test_site_and_web_changes_skip_the_infra_stack_but_not_the_policy_scans(self):
+        for path in ["crates/usnm-api/src/site.rs", "crates/usnm-api/src/site/social.rs",
+                     "web/index.html", "web/src/main.tsx", "web/e2e/seo.spec.ts", "web/package.json"]:
+            with self.subTest(path=path):
+                on = self.select(path, event="pull_request")
+                self.assertIn("code", on)
+                self.assertNotIn("infra", on)
+        self.assertNotIn("infra", self.select("crates/usnm-api/src/site.rs", "web/index.html",
+                                               "crates/usnm-ocr-dash/src/html.rs"))
+
     def test_other_changes_run_the_infra_stack(self):
+        # web/public/ and web/src/examples.json are read by scripts the infra job tests, and
+        # test_boinc_scripts.py reads every shell script.
         for path in ["infra/main.bicep", "scripts/ci/changes.sh", "crates/usnm-api/src/status/sanitize.rs",
-                     "crates/usnm-ocr-contract/src/runs.rs", "Cargo.lock"]:
+                     "crates/usnm-api/src/lib.rs", "crates/usnm-api/src/site_shared.rs",
+                     "crates/usnm-ocr-contract/src/runs.rs", "Cargo.lock", "web/public/robots.txt",
+                     "web/src/examples.json", "web/scripts/build.sh"]:
             with self.subTest(path=path):
                 self.assertIn("infra", self.select(path))
+        self.assertIn("infra", self.select("web/index.html", "web/public/robots.txt"))
 
     def test_the_fallback_worker_runs_its_own_job_and_the_policy_scans_only(self):
         # #1098: JavaScript, a Wrangler config and a shell script under edge/, which no crate,
@@ -1093,27 +1185,47 @@ class Wiring(unittest.TestCase):
                 with self.subTest(step=step.splitlines()[0]):
                     self.assertIn("if: needs.changes.outputs.infra == 'true'", step)
 
-    def test_the_dashboard_sources_are_read_by_nothing_the_infra_stack_runs(self):
-        # changes.sh skips the stack's steps for a change in the dashboard crate's src/ and
-        # tests/. The two scans in the infra job read every crate; no other script, schema or
-        # step may name this one. test_head_of_main.py only names a path of it, in a commit of a
-        # scratch clone, to see which flags changes.sh sets for it; it reads none of its sources.
+    def test_the_exempt_sources_are_read_by_nothing_the_infra_stack_runs(self):
+        # changes.sh skips the stack's steps for a change confined to the dashboard crate's src/
+        # and tests/, the API's site presentation, or web/ but for web/public/,
+        # web/src/examples.json and shell scripts. The two scans in the infra job read every crate
+        # and web/; no other script, schema or step may name these. test_head_of_main.py only
+        # names a path of them, in a commit of a scratch clone, to see which flags changes.sh sets
+        # for it; it reads none of their sources.
         scans = {"scripts/ci/changes.sh", "scripts/ci/test_changes.py", "scripts/ci/no-shared-keys.sh",
                  "scripts/ci/no-positional-args.py", "scripts/ci/test_no_positional_args.py",
                  "scripts/ci/test_head_of_main.py"}
-        tokens = ("usnm-ocr-dash", "usnm_ocr_dash")
+        areas = {
+            "dashboard": (re.compile(r"usnm-ocr-dash|usnm_ocr_dash"), set()),
+            "site": (re.compile(r"usnm-api/src/site\b|\bsite\.rs\b|join\([^)]*[\"']site[\"']"
+                                r"|/ *[\"']site[\"']"), set()),
+            "web": (re.compile(r"(?<![\w.-])web/(?!public\b|src/examples\.json)"
+                               r"|join\([^)]*[\"']web[\"']|/ *[\"']web[\"']"), {
+                # The image job's smoke test, the end-to-end job's API, and a benchmark run by hand.
+                "scripts/ci/check-api-image.sh", "scripts/ci/start-api-fixtures.sh",
+                "scripts/bench-site-lcp.mjs",
+                # A comment, and an assertion's message about web servers.
+                "scripts/ops/load-cold-searches.py", "scripts/boinc/db-tls/full.py",
+            }),
+        }
         for base in ("scripts", "infra"):
             for path in (ROOT / base).rglob("*"):
                 rel = str(path.relative_to(ROOT))
-                if not path.is_file() or rel in scans or "__pycache__" in rel:
+                if not path.is_file() or rel in scans or "__pycache__" in rel or rel.endswith(".md"):
                     continue
                 try:
                     text = path.read_text()
                 except UnicodeDecodeError:
                     continue
-                with self.subTest(path=rel):
-                    self.assertFalse(any(token in text for token in tokens))
-        self.assertFalse(any(token in job_text(self.workflow("ci.yml"), "infra") for token in tokens))
+                for area, (token, readers) in areas.items():
+                    if rel not in readers:
+                        with self.subTest(path=rel, area=area):
+                            self.assertNotRegex(text, token)
+        ci = self.workflow("ci.yml")
+        for job in ("infra-checks", "script-tests", "infra"):
+            for area, (token, _) in areas.items():
+                with self.subTest(job=job, area=area):
+                    self.assertNotRegex(job_text(ci, job), token)
 
     def test_the_dashboard_only_build_keeps_the_release_whole(self):
         ci = self.workflow("ci.yml")
