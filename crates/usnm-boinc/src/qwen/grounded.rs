@@ -80,10 +80,11 @@ fn readings(path: &Path) -> anyhow::Result<HashMap<String, (String, bool)>> {
 
 /// A reading's character error against the transcription, both normalised
 /// as the quality tables are and then, as the rule compares readings, with
-/// Hebrew points left out. The normalising is NFC, which splits a pointed
-/// presentation form such as U+FB2E into its letter and point, so the point
-/// goes too. A Yiddish reading that differs from its transcription only in
-/// points is good, as the rule would treat it.
+/// Hebrew points left out. The normalising is NFC. A pointed presentation
+/// form such as U+FB2E has a canonical decomposition, letter and point, and
+/// Unicode excludes it from composition, so NFC splits it and the point goes
+/// too. A Yiddish reading that differs from its transcription only in points
+/// is good, as the rule would treat it.
 pub fn cer(hyp: &str, reference: &str) -> f64 {
     let (h, r) = (
         consensus::without_hebrew_points(&text::normalize(hyp, false)),
