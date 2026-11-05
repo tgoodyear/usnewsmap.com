@@ -338,6 +338,15 @@ class CheckAppver(unittest.TestCase):
         ca.ET.ElementTree(spec).write(directory / "version.xml", encoding="unicode")
         with self.assertRaisesRegex(ca.Refused, "extra files must not have <copy_file/>"):
             check()
+        item.remove(item.find("copy_file"))
+        # A file with no physical_name, its staged file and signature gone.
+        entry = next(f for f in spec.findall("file") if f.findtext("logical_name") == "usnm_native_build.json")
+        entry.remove(entry.find("physical_name"))
+        ca.ET.ElementTree(spec).write(directory / "version.xml", encoding="unicode")
+        (sigs / (manifest.name + ".sig")).unlink()
+        manifest.unlink()
+        with self.assertRaisesRegex(ca.Refused, "a file with no staged physical_name"):
+            check()
 
     def test_native_ocr_refuses_a_manifest_the_worker_would_not_read(self):
         # The worker reads v as a u32 and refuses unknown fields.

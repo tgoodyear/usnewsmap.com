@@ -121,6 +121,7 @@ case "$KIND" in
       BUILD_DIR=$(python3 -c 'import pathlib,sys; print(pathlib.Path(sys.argv[1]).resolve())' "$BUILD_DIR")
       BINARY=$BUILD_DIR/usnm_ocr
       for build_file in "$BUILD_DIR"/*; do
+        [ -f "$build_file" ] && [ ! -L "$build_file" ] || die "--build-dir must hold only regular files: ${build_file##*/}"
         [ "${build_file##*/}" != usnm_ocr ] || continue
         EXTRA_FILES+=("${build_file##*/}=$build_file")
       done

@@ -74,8 +74,12 @@ def _infer_app_and_platform(
 
 
 def _file_entry(path: Path) -> dict:
-    data = path.read_bytes()
-    return {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+    digest, size = hashlib.sha256(), 0
+    with path.open("rb") as f:
+        while chunk := f.read(1 << 20):
+            digest.update(chunk)
+            size += len(chunk)
+    return {"bytes": size, "sha256": digest.hexdigest()}
 
 
 def _native_ocr_manifest_well_formed(manifest) -> bool:
@@ -97,7 +101,14 @@ def _check_native_ocr(version_dir: Path, spec: ET.Element, app: str, platform: s
     (scripts/boinc/gold-engine-routing.h)."""
     if platform != "x86_64-pc-linux-gnu" or version_dir.name != platform:
         raise Refused(f"native {app} is built only for x86_64-pc-linux-gnu, with no plan class")
-    main = next(f for f in spec.findall("file") if f.find("main_program") is not None)
+    for f in spec.findall("file"):
+        physical = f.findtext("physical_name") or ""
+        if not physical or not (version_dir / physical).is_file():
+            raise Refused(f"native {app} version.xml has a file with no staged physical_name")
+    mains = [f for f in spec.findall("file") if f.find("main_program") is not None]
+    if len(mains) != 1:
+        raise Refused(f"native {app} version.xml must have one <main_program/>")
+    main = mains[0]
     extras: dict[str, str] = {}
     for f in spec.findall("file"):
         if f is main:

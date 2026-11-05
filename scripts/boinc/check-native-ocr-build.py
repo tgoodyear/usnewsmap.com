@@ -67,8 +67,12 @@ def well_formed(manifest) -> bool:
 
 
 def entry(path: Path) -> dict:
-    data = path.read_bytes()
-    return {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+    digest, size = hashlib.sha256(), 0
+    with path.open("rb") as f:
+        while chunk := f.read(1 << 20):
+            digest.update(chunk)
+            size += len(chunk)
+    return {"bytes": size, "sha256": digest.hexdigest()}
 
 
 def is_x86_64_elf(path: Path) -> bool:

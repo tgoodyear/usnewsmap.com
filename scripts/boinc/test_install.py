@@ -521,6 +521,8 @@ class InstallTest(unittest.TestCase):
             (["--app", "usnm_gold_native", "--kind", "native", "--binary", str(worker),
               "--extra-file", f"usnm_tesseract={build / 'usnm_tesseract'}"],
              "a native OCR build requires --extra-file usnm_native_build.json=PATH"),
+            (["--app", "usnm_gold_native", "--kind", "native", "--build-dir", str(build.parent)],
+             "--build-dir must hold only regular files: "),
         ):
             with self.subTest(args=args):
                 res = subprocess.run(["bash", str(release), *base, *args], capture_output=True, text=True)
