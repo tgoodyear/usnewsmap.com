@@ -12,6 +12,7 @@ use std::{
 use tokio::process::Command;
 use usnm_ocr_contract::boinc;
 
+mod capability;
 pub mod cli;
 mod onboard;
 mod promote;
@@ -40,6 +41,10 @@ pub struct Config {
     /// native build suits, and nothing else limits who a campaign reaches.
     #[serde(default)]
     pub native_hosts: BTreeSet<u64>,
+    /// The scheduler gold hook's reviewed bindings (`gold-engine-platforms.json`): onboarding
+    /// skips hosts whose platforms aren't bound to this engine's base (#1418).
+    #[serde(default)]
+    pub engine_platforms: Option<PathBuf>,
     pub max_hosts: usize,
     pub max_spots: usize,
     /// One job in every N, selected deterministically from its digest.
@@ -107,6 +112,10 @@ impl Config {
             );
         }
         ensure!(c.mysql_ca.is_file(), "mysql CA file missing");
+        ensure!(
+            c.engine_platforms.as_ref().is_none_or(|p| p.is_absolute()),
+            "configuration paths must be absolute"
+        );
         ensure!(
             [
                 &c.root,

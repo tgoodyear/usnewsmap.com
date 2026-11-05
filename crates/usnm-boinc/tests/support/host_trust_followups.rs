@@ -38,7 +38,13 @@ impl Controller {
             &bin.join("mysql"),
             r#"#!/bin/sh
 case "$*" in
-  *"SELECT id FROM host"*) printf '%b' "${HOST_IDS:-1\n2\n3\n4\n}";;
+  *"FROM app_version"*) printf '%b' "${GOLD_VERSIONS:-x86_64-pc-linux-gnu\tdocker\t0\t0\n}";;
+  *"FROM host WHERE id>0"*)
+    if [ -n "${HOST_ROWS:-}" ]; then printf '%s' "$HOST_ROWS"; else
+      printf '%b' "${HOST_IDS:-1\n2\n3\n4\n}" | while read -r id; do
+        printf '%s\tLinux Debian GNU/Linux\tGenuineIntel\t8.2.13\t1\n' "$id"
+      done
+    fi;;
   *"usnm_spot_"*) printf '%s\n' "${SPOT_HOST:-2}";;
   *"SELECT r.hostid"*) printf '%s\n' "${SOURCE_HOST:-1}";;
   *"r.workunitid=w.id"*) printf '%b' "${GOLD_STATUS:-}";;
@@ -60,6 +66,11 @@ exit "${CREATE_STATUS:-0}"
         write(
             &project.join("config.xml"),
             "<boinc><config><enable_assignment>1</enable_assignment></config></boinc>",
+        );
+        write(
+            &project.join("plan_class_spec.xml"),
+            "<plan_classes><plan_class><name>docker</name><docker/>\
+             <min_core_client_version>80211</min_core_client_version></plan_class></plan_classes>",
         );
         let defaults = base.join("mysql.cnf");
         write(&defaults, "[client]\npassword=fixture-only\n");
@@ -256,6 +267,53 @@ async fn planning_is_read_only_and_onboarding_is_capped_retry_stable_and_does_no
     assert_eq!(c.calls().lines().count(), 2);
     assert!(!c.calls().contains("--target_host 1"));
     assert!(!c.calls().contains("--target_host 2"));
+}
+
+#[tokio::test]
+async fn onboarding_skips_hosts_no_gold_version_can_run_on() {
+    let c = Controller::new().await;
+    // Hosts 5 and 13 of #1418 report no container runtime, so the container-only usnm_gold
+    // has no version for them; host 3 does.
+    let rows = "1\tLinux Debian GNU/Linux\tGenuineIntel\t8.2.13\t1\n\
+                5\tMicrosoft Windows 11\tAuthenticAMD\t8.2.11\t0\n\
+                13\tLinux Ubuntu\tAuthenticAMD\t8.2.9\t0\n\
+                14\tLinux Debian GNU/Linux\tGenuineIntel\t8.2.13\t1\n";
+    let onboard = |execute: bool| {
+        let mut command = c.command("onboard");
+        command.env("HOST_ROWS", rows);
+        if execute {
+            command.arg("--execute");
+        }
+        command.output().unwrap()
+    };
+    let out = onboard(false);
+    success(&out);
+    assert_eq!(String::from_utf8(out.stdout).unwrap().trim(), "[14]");
+    assert!(String::from_utf8(out.stderr)
+        .unwrap()
+        .contains("skipping 2 host(s) no usnm_gold version can run on: 5, 13"));
+    success(&onboard(true));
+    success(&onboard(true));
+    assert_eq!(c.calls().lines().count(), 1);
+    assert!(c.calls().contains("--target_host 14"));
+
+    // The scheduler's gold hook refuses a unit whose base isn't bound for the version's
+    // platform, so a campaign whose base is bound only for Apple silicon reaches nobody here.
+    let bindings = c.fx.tmp.path().join("gold-engine-platforms.json");
+    let base = format!("fixture@sha256:{}", "c".repeat(64));
+    let mut cfg: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&c.config).unwrap()).unwrap();
+    cfg["engine_platforms"] = serde_json::json!(bindings);
+    write(&c.config, serde_json::to_vec(&cfg).unwrap());
+    for (platform, expected) in [("arm64-apple-darwin", "[]"), ("x86_64-pc-linux-gnu", "[3]")] {
+        write(
+            &bindings,
+            serde_json::to_vec(&serde_json::json!({IMAGE: {platform: base}})).unwrap(),
+        );
+        let out = c.command("onboard").output().unwrap();
+        success(&out);
+        assert_eq!(String::from_utf8(out.stdout).unwrap().trim(), expected);
+    }
 }
 
 #[tokio::test]
