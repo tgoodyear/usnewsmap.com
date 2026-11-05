@@ -157,6 +157,7 @@ async fn build(
 struct Searcher {
     child: tokio::process::Child,
     url: String,
+    ticks_per_sec: Option<u64>,
 }
 
 impl Searcher {
@@ -228,19 +229,34 @@ impl Searcher {
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
-        Self { child, url }
+        Self {
+            child,
+            url,
+            ticks_per_sec: ticks_per_sec(),
+        }
     }
 
     /// The searcher's CPU time so far, in ms: user and system ticks from
-    /// `/proc/<pid>/stat`, at Linux's 100 a second. `None` elsewhere.
+    /// `/proc/<pid>/stat`, at `getconf CLK_TCK` a second. `None` elsewhere.
     fn cpu_ms(&self) -> Option<u64> {
         let stat = std::fs::read_to_string(format!("/proc/{}/stat", self.child.id()?)).ok()?;
         // The fields after the command name, which is in parentheses:
         // utime and stime are the 12th and 13th.
         let fields: Vec<&str> = stat[stat.rfind(')')? + 1..].split_whitespace().collect();
         let ticks = fields.get(11)?.parse::<u64>().ok()? + fields.get(12)?.parse::<u64>().ok()?;
-        Some(ticks * 10)
+        Some(ticks * 1000 / self.ticks_per_sec?)
     }
+}
+
+/// The clock ticks a second in which Linux's `/proc` counts CPU time
+/// (`USER_HZ`, 100 on most systems).
+fn ticks_per_sec() -> Option<u64> {
+    let out = std::process::Command::new("getconf")
+        .arg("CLK_TCK")
+        .output()
+        .ok()?;
+    let hz: u64 = String::from_utf8(out.stdout).ok()?.trim().parse().ok()?;
+    (hz > 0).then_some(hz)
 }
 
 /// The calls `plan::aggregate` makes, timed.

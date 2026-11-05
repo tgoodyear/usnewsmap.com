@@ -90,7 +90,8 @@ impl Words {
 /// are `usnm_core::common_grams::WORDS`; past them come made-up words, each
 /// drawn in proportion to 1 / (rank + 1).
 pub fn word(rank: usize) -> String {
-    Words::new(&mut Rng(SEED)).words[rank].clone()
+    static VOCABULARY: std::sync::OnceLock<Words> = std::sync::OnceLock::new();
+    VOCABULARY.get_or_init(|| Words::new(&mut Rng(SEED))).words[rank].clone()
 }
 
 /// What [`corpus`] makes.
@@ -112,10 +113,15 @@ pub struct Corpus {
 /// 3 to 15 years from a decade drawn by production's weights, its pages by
 /// date. `f` gets each page's document.
 pub fn corpus(c: &Corpus, mut f: impl FnMut(Value)) {
+    let (fewest, most) = c.title_pages;
+    assert!(
+        0 < fewest && fewest < most,
+        "title_pages {:?}: need 0 < fewest < most",
+        c.title_pages
+    );
     let mut rng = Rng(SEED);
     let words = Words::new(&mut rng);
     let total: u32 = WEIGHTS.iter().map(|(_, w)| w).sum();
-    let (fewest, most) = c.title_pages;
     let mut made = 0u64;
     let mut title = 0u32;
     let mut batch = 0u32;
