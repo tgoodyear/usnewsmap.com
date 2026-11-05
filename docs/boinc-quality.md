@@ -1396,43 +1396,6 @@ Raising the supply therefore needs more bucket or LoC requests, or feeding stage
 and each of those is the maintainer's choice. The [measurements of 5 November
 2026](notes/2026-11-05-quality-supply.md) split the supply by source.
 
-To update only the follower, for example to turn on `--quarantine-decode`, without the
-installer's other files and its rewrite of every env file, run this from a checkout. It keeps
-preimages in the container and checks the new code before the restart:
-
-```sh
-d=scripts/boinc/onprem/quality-feed stage=/root/usnm-quality-follow-update
-ssh -o BatchMode=yes root@pve-laptop.tjg.fyi "rm -rf $stage && install -d -m 700 $stage"
-scp -q "$d/quality_feed.py" "$d/scan_quarantine.py" "$d/usnm-quality-follow.service" \
-  "root@pve-laptop.tjg.fyi:$stage/"
-ssh -o BatchMode=yes root@pve-laptop.tjg.fyi bash -s -- "$stage" <<'EOF'
-set -euo pipefail
-stage=$1 ct=215 pre=/root/usnm-quality-follow-pre-$(date -u +%Y%m%dT%H%M%SZ)
-in_ct() { pct exec "$ct" -- "$@"; }
-in_ct install -d -m 700 "$pre"
-in_ct cp -a /opt/usnm-quality-feed/quality_feed.py /etc/systemd/system/usnm-quality-follow.service "$pre/"
-in_ct sh -c "[ ! -e /opt/usnm-quality-feed/scan_quarantine.py ] || cp -a /opt/usnm-quality-feed/scan_quarantine.py $pre/"
-pct push "$ct" "$stage/scan_quarantine.py" /opt/usnm-quality-feed/scan_quarantine.py --perms 644
-pct push "$ct" "$stage/quality_feed.py" /opt/usnm-quality-feed/quality_feed.py --perms 755
-pct push "$ct" "$stage/usnm-quality-follow.service" /etc/systemd/system/usnm-quality-follow.service
-in_ct sh -c 'cd /opt/usnm-quality-feed && venv/bin/python quality_feed.py follow --help | grep -q -- --quarantine-decode'
-in_ct systemctl daemon-reload
-in_ct systemctl restart usnm-quality-follow
-echo "preimages: CT $ct $pre"
-EOF
-```
-
-If the check fails, the script stops before the restart; copy the preimages back. A chunk is
-written to a temporary directory and renamed before its pages go into `done.txt`, so a restart
-mid-round loses nothing: pages not yet in `done.txt` are taken again. With
-`--quarantine-decode`, a scan that fails to decode in three rounds is logged as `scan
-quarantined; operator review required` and later rounds log `quarantined scans excluded`. The
-quarantine database is `decode-quarantine.sqlite3` in the campaign's state directory. To roll
-back, copy the preimages back over the two files, then `systemctl daemon-reload` and `systemctl
-restart usnm-quality-follow`. The older code ignores `scan_quarantine.py` and the quarantine
-database. Qwen's feed runs `quality_feed.py select` and `run` from the same directory, so the
-update reaches them too; their options only gain new ones.
-
 ## Calibration
 
 `usnm-boinc quality calibrate` runs the three-cornered hat per gold crop over `--crops <crops.jsonl>` (gold crops with human transcriptions), two or more `--hyp ENGINE=FILE.jsonl` OCR hypothesis files, and optional `--readings <readings.jsonl>` vision-language readings, and writes `calibration.csv`, `calibration.md` and `by-crop.csv` to `--out`: per reader, true CER, estimated CER, bias, MAE, Pearson and Spearman, both without (`three-ocr`) and with (`three-ocr+vlm`) the vision-language reader. UNVERIFIED on the full multi-engine gold crop campaign.
