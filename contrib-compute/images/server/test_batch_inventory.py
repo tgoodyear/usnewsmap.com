@@ -101,7 +101,8 @@ class InventoryTests(unittest.TestCase):
         for i in range(3):
             (self.spool / f"usnm_quality_{i}").write_text("other app")
         with patch.object(inventory, "MAX_FILES", 4):  # batch1 and its 3 files
-            self.payload()
+            result = self.payload()
+            self.assertEqual((result["spool_entries"], result["spool_entries_limit"]), (4, 4))
         with patch.object(inventory, "MAX_FILES", 3), self.assertRaisesRegex(ValueError, "spool limit"):
             self.payload()
 

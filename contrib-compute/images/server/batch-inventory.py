@@ -38,8 +38,10 @@ def spool_candidates(results, jobs, bundles=()):
     name match. Walked with os.scandir: a directory listing carries each entry's type, so the
     tens of thousands of other apps' results (usnm_quality's, mostly) cost no stat each, which
     over the SMB project share made the inventory take minutes (#932). Symlinks are neither
-    followed nor yielded, as with rglob, and every entry counts towards MAX_FILES."""
+    followed nor returned, as with rglob, and every entry counts towards MAX_FILES. Returns the
+    matches and the number of entries walked, which the inventory reports (#1483)."""
     count = 0
+    found = []
     stack = [results]
     while stack:
         with os.scandir(stack.pop()) as entries:
@@ -52,10 +54,11 @@ def spool_candidates(results, jobs, bundles=()):
                 elif entry.is_file(follow_symlinks=False):
                     match = SPOOL_FILE.fullmatch(entry.name)
                     if match and match[1] in jobs:
-                        yield Path(entry.path), match
+                        found.append((Path(entry.path), match))
                     match = BUNDLE_SPOOL_FILE.fullmatch(entry.name)
                     if match and match[1] in bundles:
-                        yield Path(entry.path), match
+                        found.append((Path(entry.path), match))
+    return found, count
 
 
 def _ids(values, message):
@@ -115,7 +118,8 @@ def inventory(root, results, counts, nonce, pending_ids=(), existing_ids=None,
         raise ValueError("a page is in more than one workunit")
     seen = {}
     locations = {}
-    for path, match in spool_candidates(results, jobs, members):
+    candidates, spool_entries = spool_candidates(results, jobs, members)
+    for path, match in candidates:
         if not path.resolve().is_relative_to(results.resolve()):
             raise ValueError("spool escapes results directory")
         key = (match.re is BUNDLE_SPOOL_FILE, match[1])
@@ -146,6 +150,9 @@ def inventory(root, results, counts, nonce, pending_ids=(), existing_ids=None,
         "existing_jobs": existing,
         "active_hosts": counts[1],
         "jobs": jobs,
+        # Towards MAX_FILES, so the controller can warn before the limit stops it (#1483).
+        "spool_entries": spool_entries,
+        "spool_entries_limit": MAX_FILES,
     }
 
 
