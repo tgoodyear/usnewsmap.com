@@ -113,11 +113,12 @@ def done(records):
     rec = records[0]
     rec.update(status="reviewed", transcribed_by="reader-a", reviewed_by="reader-b", evidence="second reading 2026-11-05")
     rec["blocks"] = [
-        {"anchor": 0, "region": "body", "lines": [
+        {"anchor": 0, "region": "body", "column": [40, 320], "lines": [
             {"box": [50, 90, 300, 112], "text": "דער טאָג איז געקומען"},
             {"box": [50, 115, 300, 137], "text": "װאָס \ufffd האָט", "illegible_spans": [{"start": 4, "end": 5, "reason": "torn"}]},
         ]},
-        {"anchor": 2, "region": "headline", "lines": [{"box": [350, 480, 600, 520], "text": "נײַעס"}], "short_reason": "headline is one line"},
+        {"anchor": 2, "region": "headline", "column": [340, 620], "lines": [{"box": [350, 480, 600, 520], "text": "נײַעס"}],
+         "short_reason": "headline is one line"},
     ]
     rec["skipped_anchors"] = [{"anchor": 1, "reason": "already-used"}]
     return records
@@ -150,8 +151,53 @@ class CheckTests(unittest.TestCase):
 
     def test_first_line_must_be_at_the_anchor(self):
         records = done(yn.template_records(manifest()))
-        records[0]["blocks"][1]["lines"][0]["box"] = [350, 600, 600, 640]
+        records[0]["blocks"][1]["lines"][0]["box"] = [350, 440, 600, 470]
         self.assertError(records, "first line must be the line at anchor 2")
+
+    def test_a_short_first_line_in_the_anchors_column_passes(self):
+        records = done(yn.template_records(manifest()))
+        records[0]["blocks"][1]["lines"][0]["box"] = [450, 480, 600, 520]
+        self.assertEqual(self.check(records)[:2], ([], []))
+
+    def test_lines_stay_in_the_column(self):
+        records = done(yn.template_records(manifest()))
+        records[0]["blocks"][0]["lines"][1]["box"] = [350, 115, 600, 137]
+        self.assertError(records, "every line must lie within the block's column")
+        records = done(yn.template_records(manifest()))
+        records[0]["blocks"][1]["column"] = [450, 620]
+        self.assertError(records, "must contain anchor 2")
+        records[0]["blocks"][1].pop("column")
+        self.assertError(records, "column must be two integers")
+
+    def test_a_gap_needs_a_reason(self):
+        for first, lines in [([350, 600, 600, 640], None), ([350, 480, 600, 520], [350, 600, 600, 640])]:
+            with self.subTest(first=first, second=lines):
+                records = done(yn.template_records(manifest()))
+                block = records[0]["blocks"][1]
+                block["lines"][0]["box"] = first
+                if lines:
+                    block["lines"].append({"box": lines, "text": "נײַעס"})
+                    block.pop("short_reason")
+                self.assertError(records, "needs a gap_reason")
+                block["gap_reason"] = "paragraph break; no line between"
+                errors, warnings, summary = self.check(records)
+                self.assertEqual(errors, [])
+                self.assertTrue(any("paragraph break" in w for w in warnings))
+                self.assertEqual(summary["sn1/1910"]["gaps"], 1)
+
+    def test_a_line_repeated_in_its_own_block_fails(self):
+        records = done(yn.template_records(manifest()))
+        records[0]["blocks"][0]["lines"][1]["box"] = [50, 91, 300, 113]
+        self.assertError(records, "repeats a line")
+
+    def test_a_record_without_image_or_anchors_reports_instead_of_crashing(self):
+        records = done(yn.template_records(manifest()))
+        del records[0]["image"]
+        records[0]["anchors"] = None
+        records[0]["blocks"][0]["lines"].append("not a line")
+        errors, _, _ = self.check(records)
+        for text in ["image differs from the manifest", "anchors differs from the manifest", "line 2: must be an object"]:
+            self.assertTrue(any(text in e for e in errors), f"{text!r} not in {errors}")
 
     def test_line_rules(self):
         cases = [

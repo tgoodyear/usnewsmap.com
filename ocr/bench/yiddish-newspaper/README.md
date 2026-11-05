@@ -61,6 +61,8 @@ Who transcribes is a maintainer decision (#1479, #738). It needs two people:
    - Never hand a transcriber the units folder. It holds Qwen's readings (`qwen.json`).
 2. **Use anchors in order, starting from anchor 0.** At each anchor, find the printed line at that point. If the point falls between lines, take the next line below it in the same column.
    - That line and the next two lines below it in the same column or region form a **block**. Record the block's `region`: `body`, `headline`, `advertisement`, `caption`, `table` or `other`.
+   - Record the block's `column`: `[x0, x1]` in scan pixels, the left and right edges of that column or region. It must contain the anchor and every line of the block.
+   - If the first line starts more than a line's height below the anchor, or two lines of a block are more than a line's height apart, say why in the block's `gap_reason`, for example a paragraph break or a rule. `check` counts these gaps and warns.
    - Skip an anchor only for one of these reasons, recorded in `skipped_anchors`:
      - `non-text`: picture, rule, margin or blank;
      - `already-used`: it falls on a line already in a block;
@@ -92,7 +94,7 @@ A record with one block (the text and coordinates are made up):
 ```json
 {"doc_id": "…", "status": "reviewed", "prefill": "none", "transcribed_by": "reader-a", "reviewed_by": "reader-b",
  "evidence": "independent second reading, 2026-12-01", "skipped_anchors": [{"anchor": 0, "reason": "non-text"}],
- "blocks": [{"anchor": 1, "region": "body", "lines": [
+ "blocks": [{"anchor": 1, "region": "body", "column": [790, 1180], "lines": [
    {"box": [812, 1490, 1160, 1522], "text": "די נײַע שול איז געעפֿנט"},
    {"box": [812, 1524, 1160, 1556], "text": "געװאָרן אין \ufffd", "illegible_spans": []},
    {"box": [812, 1558, 1160, 1590], "text": "מיט הונדערט קינדער."}]}], "...": "other fields as in the template"}
@@ -105,11 +107,14 @@ python3 scripts/ocr-bench/yiddish_newspaper.py check --manifest ocr/bench/yiddis
   --records <records.jsonl> [--images <folder>] [--require-complete]
 ```
 
-It prints lines, blocks, characters, skipped anchors and rejections per cell. It fails on any of these:
+It prints lines, blocks, characters, gaps, skipped anchors and rejections per cell. It fails on any of these:
 
 - an anchor that was passed over;
 - a first line that isn't at its anchor;
+- a line outside its block's column, or a column that doesn't contain the anchor;
+- a gap over a line's height without a `gap_reason`;
 - a box outside the scan;
+- a line that repeats another line;
 - control characters;
 - a review by the transcriber;
 - reserves used out of rank order;

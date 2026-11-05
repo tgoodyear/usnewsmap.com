@@ -397,12 +397,25 @@ def check_line(where: str, line: dict, width: int, height: int, errors: list, wa
     return len(text) - masked
 
 
-def check_blocks(where: str, rec: dict, params: dict, errors: list, warnings: list) -> Counter:
+def valid_column(column, width: int) -> bool:
+    return (
+        isinstance(column, list)
+        and len(column) == 2
+        and all(isinstance(v, int) and not isinstance(v, bool) for v in column)
+        and 0 <= column[0] < column[1] <= width
+    )
+
+
+def check_blocks(where: str, rec: dict, page: dict, params: dict, errors: list, warnings: list) -> Counter:
+    """Validate a record's blocks against the manifest page's geometry and anchors."""
     stats: Counter = Counter()
-    width, height = rec["image"]["width"], rec["image"]["height"]
-    anchors = rec["anchors"]
+    width, height = page["width"], page["height"]
+    anchors = page["anchors"]
     blocks = rec.get("blocks") or []
     skipped = rec.get("skipped_anchors") or []
+    if not isinstance(blocks, list) or not isinstance(skipped, list):
+        errors.append(f"{where}: blocks and skipped_anchors must be lists")
+        return stats
     used: list[int] = []
     for s in skipped:
         if not isinstance(s, dict) or s.get("reason") not in SKIP_REASONS or not isinstance(s.get("anchor"), int):
@@ -421,7 +434,7 @@ def check_blocks(where: str, rec: dict, params: dict, errors: list, warnings: li
         errors.append(f"{where}: anchors must be taken in order from 0; each is either a block or skipped, once")
     elif blocks and len(blocks) == params["blocks_per_page"] and max(used) > block_anchors[-1]:
         errors.append(f"{where}: anchors after the last block are not skipped, just unused")
-    if rec["status"] in ("transcribed", "reviewed") and len(blocks) < params["blocks_per_page"]:
+    if rec.get("status") in ("transcribed", "reviewed") and len(blocks) < params["blocks_per_page"]:
         if not (len(used) == len(anchors) and nonempty(rec.get("short_reason"))):
             errors.append(f"{where}: needs {params['blocks_per_page']} blocks, or every anchor used and a short_reason")
     if len(blocks) > params["blocks_per_page"]:
@@ -432,7 +445,7 @@ def check_blocks(where: str, rec: dict, params: dict, errors: list, warnings: li
         if block.get("region") not in REGIONS:
             errors.append(f"{bw}: region must be one of {REGIONS}")
         lines = block.get("lines") or []
-        if not lines:
+        if not isinstance(lines, list) or not lines:
             errors.append(f"{bw}: no lines")
             continue
         if len(lines) > params["lines_per_block"]:
@@ -440,23 +453,43 @@ def check_blocks(where: str, rec: dict, params: dict, errors: list, warnings: li
         elif len(lines) < params["lines_per_block"] and not nonempty(block.get("short_reason")):
             errors.append(f"{bw}: fewer than {params['lines_per_block']} lines needs a short_reason")
         for l_i, line in enumerate(lines):
+            if not isinstance(line, dict):
+                errors.append(f"{bw} line {l_i}: must be an object with box and text")
+                continue
             stats["characters"] += check_line(f"{bw} line {l_i}", line, width, height, errors, warnings)
             stats["lines"] += 1
-        boxes = [ln.get("box") for ln in lines]
-        if not all(valid_box(bx, width, height) for bx in boxes):
+        column = block.get("column")
+        if not valid_column(column, width):
+            errors.append(f"{bw}: column must be two integers [x0, x1]: the column or region's extent, inside the scan")
+        boxes = [ln.get("box") if isinstance(ln, dict) else None for ln in lines]
+        if not all(valid_box(bx, width, height) for bx in boxes) or not valid_column(column, width):
             continue
         if not 0 <= block["anchor"] < len(anchors):
             continue
         ax, ay = anchors[block["anchor"]]
+        if not column[0] <= ax <= column[1]:
+            errors.append(f"{bw}: column {column} must contain anchor {block['anchor']} ({ax}, {ay})")
+        if any(b[0] < column[0] or b[2] > column[1] for b in boxes):
+            errors.append(f"{bw}: every line must lie within the block's column {column}")
         first = boxes[0]
-        if not (first[0] <= ax <= first[2] and ay <= first[3] and first[1] - ay <= first[3] - first[1]):
+        on_anchor = first[0] <= ax <= first[2] and first[1] <= ay <= first[3]
+        if ay > first[3]:
             errors.append(f"{bw}: the first line must be the line at anchor {block['anchor']} ({ax}, {ay}) or the next below it")
+        # A gap over a line's height (to the first line, or between lines) may hide a skipped line.
+        gaps = [] if on_anchor else [first[1] - ay > first[3] - first[1]]
+        gaps += [b[1] - a[3] > max(a[3] - a[1], b[3] - b[1]) for a, b in zip(boxes, boxes[1:])]
+        if any(gaps):
+            if nonempty(block.get("gap_reason")):
+                stats["gaps"] += 1
+                warnings.append(f"{bw}: gap over a line's height, given as: {block['gap_reason'].strip()}")
+            else:
+                errors.append(f"{bw}: a gap over a line's height after anchor {block['anchor']} or between lines needs a gap_reason")
         if any(b[1] <= a[1] for a, b in zip(boxes, boxes[1:])):
             errors.append(f"{bw}: lines must run top to bottom")
         if any(e[0] <= ax <= e[2] and e[1] <= ay <= e[3] for e in earlier):
             errors.append(f"{bw}: anchor {block['anchor']} falls on an earlier block's line; skip it as already-used")
-        if any(overlap_share(bx, e) > 0.5 for bx in boxes for e in earlier):
-            errors.append(f"{bw}: repeats a line of an earlier block")
+        if any(overlap_share(bx, e) > 0.5 for i, bx in enumerate(boxes) for e in earlier + boxes[:i]):
+            errors.append(f"{bw}: repeats a line")
         earlier += boxes
     stats["blocks"] += len(blocks)
     return stats
@@ -519,7 +552,7 @@ def check_records(manifest: dict, records: list[dict], images: Path | None = Non
                 errors.append(f"{where}: reviewed needs reviewed_by and evidence")
             elif rec["reviewed_by"].strip() == (rec.get("transcribed_by") or "").strip():
                 errors.append(f"{where}: the reviewer must not be the transcriber")
-        cell.update(check_blocks(where, rec, params, errors, warnings))
+        cell.update(check_blocks(where, rec, page, params, errors, warnings))
         if images is not None:
             path = images / f"{doc}.jpg"
             if not path.is_file():
@@ -556,7 +589,7 @@ def cmd_check(args) -> int:
                 errors.append(f"{args.records}:{n}: {e}")
     more, warnings, summary = check_records(manifest, records, Path(args.images) if args.images else None, args.require_complete)
     errors += more
-    cols = ("status:todo", "status:transcribed", "status:reviewed", "status:rejected", "blocks", "lines", "characters", "prefilled")
+    cols = ("status:todo", "status:transcribed", "status:reviewed", "status:rejected", "blocks", "lines", "characters", "gaps", "prefilled")
     print("cell\t" + "\t".join(c.split(":")[-1] for c in cols) + "\tskipped anchors")
     total: Counter = Counter()
     for cell in sorted(summary):
