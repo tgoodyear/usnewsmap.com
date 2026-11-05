@@ -281,6 +281,37 @@ fn policies_are_checked_when_loaded() {
         slow("slow_requests_per_minute = 1").unwrap().slow_for(),
         None
     );
+    // The slow rate can't be faster than the normal one.
+    assert!(slow("slow_requests_per_minute = 2").is_ok());
+    assert!(slow("slow_requests_per_minute = 3").is_err());
+}
+
+#[test]
+fn push_back_rules_are_checked() {
+    let parse = |push_back: &str| {
+        let t = format!(
+            "hosts = [\"a.example\"]\nlabel = \"x\"\nrequests_per_minute = 2\n\
+             [push_back]\nhtml = true\n{push_back}\n"
+        );
+        Policy::parse("x", &t)
+    };
+    let holds = |default: u64, max: u64| {
+        parse(&format!(
+            "default_hold_secs = {default}\nmax_hold_secs = {max}\nstatuses = [429]"
+        ))
+    };
+    assert!(holds(60, 60).is_ok());
+    assert!(holds(0, 60).is_err(), "a push-back that holds nothing");
+    assert!(holds(61, 60).is_err(), "a default hold past the cap");
+    let statuses = |s: &str| {
+        parse(&format!(
+            "default_hold_secs = 1\nmax_hold_secs = 1\nstatuses = {s}"
+        ))
+    };
+    assert!(statuses("[400, 403, 429, 599]").is_ok());
+    assert!(statuses("[200]").is_err());
+    assert!(statuses("[304]").is_err());
+    assert!(statuses("[600]").is_err());
 }
 
 // ---- LoC's behaviour ----
