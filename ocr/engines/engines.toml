@@ -154,6 +154,17 @@ terms = "https://github.com/tesseract-ocr/tessdata_best/blob/main/LICENSE"
 fetched = 2026-10-11
 
 [[engine.model]]
+name = "tessdata/yidj2.traineddata"
+version = "model-tesseract-yidj2-20261105"
+license = "CC-BY-NC-SA-4.0"
+author = "usnewsmap.com, trained on the Yiddish OCR Corpus by Assaf Urieli and the Yiddish Book Center, from tessdata/yid.traineddata by the Tesseract OCR project"
+source = "https://github.com/tgoodyear/usnewsmap.com/releases/tag/model-tesseract-yidj2-20261105"
+credit = "tessdata/yidj2.traineddata — Tesseract yid (Tesseract OCR project, Apache-2.0) trained by usnewsmap.com on the Yiddish OCR Corpus by Assaf Urieli and the Yiddish Book Center (CC BY-NC-SA 4.0, https://creativecommons.org/licenses/by-nc-sa/4.0/)"
+terms = "https://gitlab.com/jochre/corpora/jochre-yiddish-corpus/-/blob/bd69b412947e03cca18fdd5c72826207946d777f/LICENSE.md"
+note = "Study 10 (#1479), sha256 e12d3b57191df9915179b4c779a218775f010670e980a72dc8e938bf5c4d4578. Adapted Material of the corpus (13 §13.7.2); the start model is Apache-2.0. Opt-in: not in tesseract/models.lock or the image, and no route selects it (ocr/models/yidj2/README.md)."
+fetched = 2026-11-05
+
+[[engine.model]]
 name = "tessdata/ell.traineddata"
 license = "Apache-2.0"
 author = "Tesseract OCR project"
@@ -376,6 +387,11 @@ languages = ["yid"]
 id = "heb"
 models = ["tessdata/heb.traineddata"]
 languages = ["yid", "heb"]
+
+[[engine.profile]]
+id = "yidj2"
+models = ["tessdata/yidj2.traineddata"]
+languages = ["yid"]
 
 [[engine.profile]]
 id = "ell"
