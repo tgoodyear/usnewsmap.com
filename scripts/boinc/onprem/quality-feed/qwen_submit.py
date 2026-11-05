@@ -22,6 +22,8 @@ REQUEST_MIN_APP = {1: 0, 2: 115, 3: 117, 4: 117}
 # without --submit-binary they go with the stage binary (#1449).
 GUARDED_VERSIONS = (3, 4)
 YIDDISH = "yid"
+# `qwen stage --bundle-size` above 1 names each bundle unit bundle-NNNNN-<first doc>.
+BUNDLE_UNIT = re.compile(r"bundle-\d{5}-")
 
 
 def jobs(root):
@@ -266,13 +268,14 @@ def assert_processed(root, sample):
 
 def assert_bundle_layout(root, bundle_size):
     """A bundled campaign has a root of its own. A root staged with bundles can't go back to
-    single pages, and bundling a root that already holds single-page units would mix both. In a
-    root with no pages/, any unit directory was staged one page per unit, whatever its marker."""
-    bundled = (root / "pages").is_dir()
-    units = root / "units"
-    if bundle_size == 1 and bundled:
+    single pages, and bundling a root that already holds single-page units would mix both. Any
+    unit directory not named as a bundle was staged one page per unit, whatever its marker and
+    whether or not pages/ exists."""
+    if bundle_size == 1 and (root / "pages").is_dir():
         raise RuntimeError(f"Root {root.name} was staged with bundles; keep its --bundle-size")
-    if bundle_size > 1 and not bundled and units.is_dir() and any(p.is_dir() for p in units.iterdir()):
+    units = root / "units"
+    if bundle_size > 1 and units.is_dir() and any(p.is_dir() and not BUNDLE_UNIT.match(p.name)
+                                                  for p in units.iterdir()):
         raise RuntimeError(f"Root {root.name} holds single-page units; a bundled campaign starts in a new root")
 
 

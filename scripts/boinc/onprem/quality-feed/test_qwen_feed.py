@@ -1951,6 +1951,7 @@ class SourceTest(unittest.TestCase):
                 ([], True, [], "staged with bundles"),
                 ([], True, ["--preflight"], "staged with bundles"),
                 ([DOC], False, [], None), ([], False, ["--bundle-size", "8"], None),
+                ([DOC], True, ["--bundle-size", "8"], "holds single-page units"),
                 ([], True, ["--bundle-size", "8"], None)):
             with self.subTest(units=units, pages=pages, extra=extra), tempfile.TemporaryDirectory() as folder:
                 root = Path(folder)
