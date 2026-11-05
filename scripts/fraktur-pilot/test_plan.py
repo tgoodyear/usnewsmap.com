@@ -11,6 +11,7 @@ import shlex
 import shutil
 import subprocess
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -34,6 +35,9 @@ with open(os.environ["STUB_LOG"], "a") as log:
     log.write(" ".join(args[:1] + [a for a in args if a.startswith("fraktur-pilot-")]) + "\\n")
 if args[0] == "rm":
     sys.exit(0)
+if os.environ.get("STUB_SLEEP"):
+    import time
+    time.sleep(float(os.environ["STUB_SLEEP"]))
 work = Path(args[args.index("--volume") + 1].split(":")[0])
 model = args[args.index("-l") + 1]
 if "sn10000001" in str(work) and model == "deu":
@@ -111,7 +115,10 @@ class PlanTests(unittest.TestCase):
         other_names = {shlex.split(c)[4] for c in other.read_text().splitlines() if c.startswith("job ")}
         self.assertEqual(len(other_names), 6)
         self.assertFalse(names & other_names, "two runs' container names must differ")
-        for flag in ("--network=none", "--read-only", "--cap-drop=all", "--pull=never", IMAGE, "--psm 3 --dpi 300 txt alto"):
+        for flag in (
+            "--network=none", "--read-only", "--cap-drop=all", "--pull=never", IMAGE, "--psm 3 --dpi 300 txt alto",
+            "--memory 1536m --memory-swap 1536m --cpus 1 --pids-limit 64",
+        ):
             self.assertTrue(all(flag in c for c in commands), flag)
         self.assertIn("-l deu_latf", commands[0])
         self.assertFalse((self.root / "work").exists())
@@ -158,12 +165,41 @@ class PlanTests(unittest.TestCase):
         self.assertIn("a run needs a new work root of its own", again.stderr)
         self.assertEqual(log.read_text().splitlines(), calls)
 
+    @unittest.skipUnless(has_bash5() and shutil.which("timeout"), "needs bash 5 and timeout")
+    def test_an_interrupted_run_stops_at_once_and_records_the_job_it_stopped(self):
+        commands_out = self.root / "run.sh"
+        self.assertEqual(self.run_plan("--commands-out", str(commands_out))[0], 0)
+        stubs = self.root / "bin"
+        stubs.mkdir()
+        (stubs / "podman").write_text(STUB_PODMAN)
+        (stubs / "podman").chmod(0o755)
+        log = self.root / "podman.log"
+        env = dict(os.environ, PATH=f"{stubs}{os.pathsep}{os.environ['PATH']}", STUB_LOG=str(log), STUB_SLEEP="60")
+        names = {shlex.split(c)[1]: shlex.split(c)[4] for c in commands_out.read_text().splitlines() if c.startswith("job ")}
+        job = self.root / "work" / "ger" / self.records[0]["doc_id"] / "deu_latf"
+        run = subprocess.Popen(["bash", str(commands_out)], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        deadline = time.monotonic() + 20
+        while not (log.exists() and f"run {names[str(job)]}" in log.read_text()) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        started = time.monotonic()
+        run.terminate()
+        run.communicate(timeout=30)
+        self.assertLess(time.monotonic() - started, 20, "the trap waited for the engine")
+        self.assertEqual(run.returncode, 143)
+        self.assertEqual((job / "exit").read_text(), "interrupted\n")
+        start, end = map(float, (job / "time").read_text().split())
+        self.assertLessEqual(start, end)
+        self.assertEqual([f.name for f in job.iterdir() if f.name.startswith("input")], [])
+        self.assertIn(f"rm {names[str(job)]}", log.read_text().splitlines())
+        self.assertFalse((job.parent / "deu").exists())
+
     def test_refuses_an_image_tag_an_unpinned_model_a_single_variant_or_a_relative_root(self):
         for extra in (
             ("--tesseract-image", "usnm-ocr/tesseract:latest"),
             ("--variants", "deu_latf,deu_fraktur"),
             ("--variants", "deu"),
             ("--work-root", "pilot-run"),
+            ("--memory-mib", "0"),
         ):
             argv = ["--pages", str(self.pages), "--scans-root", str(self.scans), "--work-root", str(self.root)]
             argv += ["--tesseract-image", IMAGE] if extra[0] != "--tesseract-image" else []

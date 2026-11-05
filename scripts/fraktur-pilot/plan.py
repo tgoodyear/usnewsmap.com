@@ -9,8 +9,9 @@ Prints what the run would be (pages, jobs per variant and decade, scan bytes, th
 pinned digests) and, with --commands-out, writes the shell commands an OCR operator would
 run: per page and variant, copy the cached scan into a new work directory and read it with
 the production Tesseract image the way the on-prem worker does (podman with no network, a
-read-only root, no capabilities, `-l <variant> --psm 3 --dpi 300 txt alto`). Each job keeps
-stdout, stderr, the exit status (`copy-failed` when the scan could not be staged) and its
+read-only root, no capabilities, the worker's memory, CPU and pid limits, `-l <variant>
+--psm 3 --dpi 300 txt alto`). Each job keeps stdout, stderr, the exit status (`copy-failed`
+when the scan could not be staged, `interrupted` when the run was stopped during it) and its
 start and end times beside the outputs, so failures and empty outputs stay in the record, and
 the scan's copy is removed after it. timeout stops a job after --timeout seconds and kills it
 30 seconds later; the job's container, named for the page, variant and work directory, is
@@ -39,6 +40,9 @@ MODELS_LOCK = ROOT / "ocr" / "engines" / "tesseract" / "models.lock"
 IMAGE_ID = re.compile(r"^sha256:[0-9a-f]{64}$")
 # The on-prem worker's Tesseract defaults (crates/usnm-ocr-worker/src/engine/tesseract.rs).
 PSM, DPI, TIMEOUT = 3, 300, 600
+# Its engine container limits, Tesseract's entry in 13 §13.6.2 (engine/sandbox.rs Limits):
+# memory with no swap, CPUs and pids.
+MEMORY_MIB, CPUS, PIDS = 1536, 1, 64
 
 
 def models(lock=MODELS_LOCK):
@@ -106,20 +110,38 @@ def jobs(pages, variants, scans_root, work_root):
 KILL_AFTER = 30
 
 # The generated script's prologue. Each job gets a fresh work directory; staging failures,
-# engine failures and timeouts are all recorded in its exit file, and its container is removed
-# even when timeout had to kill the podman client or the run is interrupted.
-JOB = r"""current=
-trap 'if [ -n "$current" ]; then podman rm --force --ignore --time 0 "$current" > /dev/null 2>&1; fi; exit 130' INT TERM
+# engine failures, timeouts and interrupts are all recorded in its exit file, and its container
+# is removed even when timeout had to kill the podman client or the run is interrupted. The
+# engine runs in the background so that a signal interrupts `wait` at once: bash defers a trap
+# until a foreground command ends.
+JOB = r"""work= input= t0= current= pid=
+interrupted() {
+  trap '' INT TERM
+  if [ -n "$pid" ]; then kill -TERM "$pid" 2> /dev/null; fi
+  if [ -n "$current" ]; then podman rm --force --ignore --time 0 "$current" > /dev/null 2>&1; fi
+  if [ -n "$pid" ]; then wait "$pid" 2> /dev/null; fi
+  if [ -n "$work" ]; then
+    echo interrupted > "$work/exit"
+    echo "$t0 $EPOCHREALTIME" > "$work/time"
+    rm -f -- "$work/$input"
+  fi
+  exit "$1"
+}
+trap 'interrupted 130' INT
+trap 'interrupted 143' TERM
 # job <work dir> <scan> <input name> <container name> <podman run arguments...>
 job() {
-  local work=$1 scan=$2 input=$3 name=$4 t0 status
+  local scan=$2 name=$4 status
+  mkdir -p -- "${1%/*}" && mkdir -- "$1" || { echo "cannot create $1" >&2; exit 1; }
+  input=$3 t0=$EPOCHREALTIME work=$1
   shift 4
-  mkdir -p -- "${work%/*}" && mkdir -- "$work" || { echo "cannot create $work" >&2; exit 1; }
-  t0=$EPOCHREALTIME
   if cp -- "$scan" "$work/$input" 2> "$work/stderr"; then
     current=$name
-    timeout --kill-after="$KILL_AFTER" "$TIMEOUT" podman run --name "$name" "$@" > "$work/stdout" 2> "$work/stderr"
+    timeout --kill-after="$KILL_AFTER" "$TIMEOUT" podman run --name "$name" "$@" > "$work/stdout" 2> "$work/stderr" &
+    pid=$!
+    wait "$pid"
     status=$?
+    pid=
     podman rm --force --ignore --time 0 "$name" > /dev/null 2>&1
     current=
   else
@@ -128,6 +150,7 @@ job() {
   echo "$status" > "$work/exit"
   echo "$t0 $EPOCHREALTIME" > "$work/time"
   rm -f -- "$work/$input"
+  work=
 }"""
 
 
@@ -139,10 +162,13 @@ def container_name(job):
     return f"fraktur-pilot-{run}-{page}"
 
 
-def command(job, image, threads):
+def command(job, image, threads, limits):
     podman = [
         "--rm", "--pull=never", "--network=none", "--read-only",
         "--cap-drop=all", "--security-opt=no-new-privileges", "--log-driver=none",
+        "--memory", f"{limits['memory_mib']}m", "--memory-swap", f"{limits['memory_mib']}m",
+        "--cpus", str(limits["cpus"]), "--pids-limit", str(limits["pids"]),
+        "--ulimit", "nofile=1024:1024", "--ulimit", "core=0",
         "--env", f"OMP_THREAD_LIMIT={threads}", "--entrypoint", "tesseract",
         "--userns=keep-id", "--user", "$user",
         "--volume", f"{job['work']}:/work:Z", "--workdir", "/work", image,
@@ -152,7 +178,7 @@ def command(job, image, threads):
     return "job " + " ".join('"$user"' if a == "$user" else shlex.quote(a) for a in head + podman)
 
 
-def script(job_list, image, threads, timeout, pages_path, pages_sha256, work_root):
+def script(job_list, image, threads, limits, timeout, pages_path, pages_sha256, work_root):
     q = shlex.quote
     root = str(work_root)
     lines = [
@@ -170,7 +196,7 @@ def script(job_list, image, threads, timeout, pages_path, pages_sha256, work_roo
         f"podman run --rm --pull=never --network=none --entrypoint tesseract {q(image)} --version "
         f"> {q(root + '/engine-version')} 2>&1",
     ]
-    lines += [command(j, image, threads) for j in job_list]
+    lines += [command(j, image, threads, limits) for j in job_list]
     return "\n".join(lines) + "\n"
 
 
@@ -184,6 +210,9 @@ def main(argv=None):
     parser.add_argument("--work-root", required=True, type=Path, help="where the run would write its outputs")
     parser.add_argument("--threads", type=int, default=1, help="OMP_THREAD_LIMIT per job (default 1)")
     parser.add_argument("--timeout", type=int, default=TIMEOUT, help="seconds per job (default 600, the worker's)")
+    parser.add_argument("--memory-mib", type=int, default=MEMORY_MIB, help="memory per job, no swap (default 1536, the worker's)")
+    parser.add_argument("--cpus", type=int, default=CPUS, help="CPUs per job (default 1, the worker's)")
+    parser.add_argument("--pids", type=int, default=PIDS, help="pid limit per job (default 64, the worker's)")
     parser.add_argument("--verify-scans", action="store_true", help="re-hash each scan under --scans-root")
     parser.add_argument("--commands-out", type=Path, help="write the run's shell commands here")
     parser.add_argument("--jobs-out", type=Path, help="write the jobs as JSONL here")
@@ -191,6 +220,10 @@ def main(argv=None):
     for flag, path in (("--scans-root", args.scans_root), ("--work-root", args.work_root)):
         if not path.is_absolute():
             parser.error(f"{flag} must be an absolute path: podman mounts the work directories by it")
+    limits = {"memory_mib": args.memory_mib, "cpus": args.cpus, "pids": args.pids}
+    for flag, value in [("--threads", args.threads), ("--timeout", args.timeout), *limits.items()]:
+        if value < 1:
+            parser.error(f"{flag} must be at least 1")
     if not IMAGE_ID.match(args.tesseract_image):
         parser.error("--tesseract-image must be an image id, sha256:<64 hex>, as the worker requires")
     variants = [v for v in args.variants.split(",") if v]
@@ -212,6 +245,7 @@ def main(argv=None):
         digests = ", ".join(f"{m} {pinned[m][:12]}" for m in v.split("+"))
         print(f"variant -l {v}: {sum(j['variant'] == v for j in job_list)} jobs ({digests})")
     print(f"image {args.tesseract_image}, psm {PSM}, dpi {DPI}, threads {args.threads}, timeout {args.timeout}s")
+    print(f"limits per job: memory {args.memory_mib} MiB (no swap), cpus {args.cpus}, pids {args.pids}")
     status = 0
     if args.verify_scans:
         bad = verify(pages, args.scans_root)
@@ -224,7 +258,7 @@ def main(argv=None):
         print(f"jobs: {args.jobs_out}")
     if args.commands_out:
         body = script(
-            job_list, args.tesseract_image, args.threads, args.timeout, args.pages, pages_sha256, args.work_root
+            job_list, args.tesseract_image, args.threads, limits, args.timeout, args.pages, pages_sha256, args.work_root
         )
         args.commands_out.write_text(body, encoding="utf-8")
         print(f"commands: {args.commands_out} (not run)")
