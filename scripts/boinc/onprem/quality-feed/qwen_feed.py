@@ -88,7 +88,8 @@ def scan_fingerprint(row):
 
 
 # An index row's doc_id, read without parsing the row. Index rows are flat, and a quote inside
-# a JSON string is escaped, so this matches only the doc_id key.
+# a JSON string is escaped, so this matches only the doc_id key. A doc_id written with an escape
+# doesn't match at all, so its row is parsed in full.
 DOC_ID_FIELD = re.compile(rb'"doc_id"\s*:\s*"([^"\\]*)"')
 
 

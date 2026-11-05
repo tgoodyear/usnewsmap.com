@@ -2333,6 +2333,13 @@ class SourceTest(unittest.TestCase):
             self.assertEqual(chosen, [others[0]["doc_id"]])
             self.assertEqual(sorted(json.loads(budget.read_text())), sorted(reserved[1:] + [replacement]))
 
+    def test_a_refund_reads_a_doc_id_written_with_a_json_escape(self):
+        doc = "sn1_1900-01-02_ed-1_seq-1"
+        line = json.dumps(frozen_page(doc)).replace('"sn1_', '"\\u0073n1_', 1).encode()
+        self.assertIn(b"\\u0073n1_", line)
+        self.assertEqual(driver.truncated_reservations(
+            line + b"\n", {doc}, {driver.scan_fingerprint(frozen_page(doc))}, set()), {doc})
+
     def test_the_budget_goes_ahead_of_a_source_request(self):
         yiddish = [{"doc_id": "sn1_1900-01-02_ed-1_seq-1", "lang": "yid", "damage_rate": .9}]
         other = {"doc_id": DOC, "batch": "xx_test", "batch_version": 1, "bytes": 12, "sha256": "a" * 64,
