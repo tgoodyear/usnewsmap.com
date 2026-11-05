@@ -26,6 +26,12 @@
 //! crop by crop was accepted by the strict rule, which vouches for every
 //! crop, as before.
 //!
+//! With `--qwen-pages`, the directory `qwen compare --pages` writes, a
+//! bundle unit with no canonical result yet (its pair disagreed on some
+//! page, or BOINC gave up on it) joins each page two hosts agreed on, from
+//! that pair's record, as `vlm_crop_state` `page-strict-v1` (#1435). A
+//! canonical result, when there is one, is joined instead.
+//!
 //! [`crop_rows`] is the crop join on its own, so `estimate` runs it
 //! offline on the same inputs.
 use super::{parse_alto, units, validate, ALTO_FILE, JOB_FILE, PAGE_FILE, TEXTS_FILE};
@@ -77,6 +83,11 @@ pub struct Options {
     /// Where `qwen compare --crop-states` keeps each judged pair's crop
     /// states. Without it every canonical crop joins, as the strict rule has it.
     pub qwen_crop_states: Option<PathBuf>,
+    /// Where `qwen compare --pages` keeps each bundle page's pair records.
+    /// With it, a bundle unit with no canonical result joins the readings of
+    /// each page two hosts agreed on (#1435); without it only canonical
+    /// results join.
+    pub qwen_pages: Option<PathBuf>,
     /// The `usnm_surya` staging root and spool (#968): its crop units'
     /// texts join `crops.parquet` as the reader `surya`.
     pub surya_root: Option<PathBuf>,
@@ -131,10 +142,11 @@ pub struct CropRow {
     /// False too for a reading no agreeing pair vouched for.
     pub vlm_reading_present: Option<bool>,
     /// Why the reading joins or not: `strict-v1` (the strict rule accepted
-    /// the whole result), `agree` (an agreeing pair vouched for this crop
-    /// under `crop-consensus-v2`), or the crop's best state when none did
-    /// (`looped`, `no_text`, `unjudged`). None without a canonical reading,
-    /// in older exports, and offline.
+    /// the whole result), `page-strict-v1` (two hosts agreed on this page
+    /// of a bundle with no canonical result, `--qwen-pages`), `agree` (an
+    /// agreeing pair vouched for this crop under `crop-consensus-v2`), or the
+    /// crop's best state when none did (`looped`, `no_text`, `unjudged`).
+    /// None without a reading, in older exports, and offline.
     pub vlm_crop_state: Option<String>,
     pub vlm_reference_chars: Option<usize>,
     pub vlm_reference_words: Option<usize>,
@@ -979,10 +991,14 @@ impl QwenPage {
 
 /// Every submitted `usnm_qwen` unit by doc id (supporting both single-page
 /// and multi-page bundle units), with its readings where the result is in.
+/// With `page_records`, the directory `qwen compare --pages` writes, a
+/// bundle with no canonical result yet gives each page two hosts agreed on
+/// its readings from the agreeing pair's record (#1435).
 fn qwen_pages(
     root: &Path,
     spool: &Path,
     crop_states: Option<&Path>,
+    page_records: Option<&Path>,
 ) -> anyhow::Result<BTreeMap<String, QwenPage>> {
     let mut out = BTreeMap::new();
     let dir = units(root);
@@ -1030,7 +1046,25 @@ fn qwen_pages(
                 },
             );
         } else {
+            let mut agreed = match page_records {
+                Some(dir) if readings.is_none() => {
+                    crate::qwen::ledger::accepted_readings(root, &unit, &job, dir)
+                        .with_context(|| format!("{wu}: page records"))?
+                }
+                _ => BTreeMap::new(),
+            };
             for bp in &job.pages {
+                if let Some(page_readings) = agreed.remove(&bp.doc_id) {
+                    out.insert(
+                        bp.doc_id.clone(),
+                        QwenPage {
+                            crops: bp.crops.clone(),
+                            readings: Some(page_readings),
+                            vouch: Some(crate::qwen::consensus::Vouch::Page),
+                        },
+                    );
+                    continue;
+                }
                 let prefix = format!("{}:", bp.doc_id);
                 let page_readings = readings.as_ref().map(|r| {
                     let mut pr = r.clone();
@@ -1051,6 +1085,7 @@ fn qwen_pages(
                 // A bundle's crop states name its crops `<doc_id>:<crop>`.
                 let page_vouch = vouch.as_ref().map(|v| match v {
                     crate::qwen::consensus::Vouch::Strict => crate::qwen::consensus::Vouch::Strict,
+                    crate::qwen::consensus::Vouch::Page => crate::qwen::consensus::Vouch::Page,
                     crate::qwen::consensus::Vouch::Crops(states) => {
                         crate::qwen::consensus::Vouch::Crops(
                             states
@@ -1220,6 +1255,7 @@ pub fn collect(opts: &Options) -> anyhow::Result<Collected> {
         &opts.qwen_root,
         &opts.qwen_spool,
         opts.qwen_crop_states.as_deref(),
+        opts.qwen_pages.as_deref(),
     )?;
     let surya = match (&opts.surya_root, &opts.surya_spool) {
         (Some(root), Some(spool)) => crate::surya::collect::results(root, spool)?.crops,
@@ -1862,6 +1898,7 @@ pub(super) mod tests {
             qwen_root: tmp.path().join("no-qwen"),
             qwen_spool: tmp.path().join("no-qwen"),
             qwen_crop_states: None,
+            qwen_pages: None,
             surya_root: Some(sroot),
             surya_spool: Some(sspool),
             out_dir: Some(tmp.path().join("out")),
@@ -2081,6 +2118,7 @@ pub(super) mod tests {
             qwen_root: root.join("qwen"),
             qwen_spool: root.join("qwen-spool"),
             qwen_crop_states: None,
+            qwen_pages: None,
             surya_root: None,
             surya_spool: None,
             out_dir: Some(root.join("out")),
@@ -2654,6 +2692,148 @@ pub(super) mod tests {
             .crops
             .iter()
             .all(|r| r.vlm_crop_state.as_deref() == Some("no_text")));
+    }
+
+    /// A two-page `usnm_qwen` bundle staged as `qwen stage --bundle-size 2`
+    /// stages one: the fixture's page then another, each page unit under the
+    /// root's `pages/`, with no canonical result.
+    fn qwen_bundle(opts: &Options, unit: &Path, quality: &Job) -> (PathBuf, qwen::Job) {
+        let mut dirs = Vec::new();
+        for doc in [quality.doc_id.as_str(), "sn00000000_1900-01-01_ed-1_seq-2"] {
+            let page = opts.qwen_root.join("pages").join(doc);
+            let mut job = crate::qwen::stage::local_unit(
+                &unit.join(PAGE_FILE),
+                &unit.join(ALTO_FILE),
+                &page,
+                crate::qwen::stage::tests::engine(),
+                quality.crop_seed,
+                quality.k_crops,
+                600,
+                4,
+            )
+            .unwrap();
+            job.doc_id = doc.into();
+            job.id = job.identity().unwrap();
+            std::fs::write(
+                page.join(crate::qwen::JOB_FILE),
+                serde_json::to_vec(&job).unwrap(),
+            )
+            .unwrap();
+            dirs.push(page);
+        }
+        let bundle = units(&opts.qwen_root).join(format!("bundle-00000-{}", quality.doc_id));
+        let job = crate::qwen::stage::write_bundle(&bundle, &dirs).unwrap();
+        (bundle, job)
+    }
+
+    #[tokio::test]
+    async fn bundle_pages_two_hosts_agreed_on_join_without_a_canonical_result() {
+        use crate::qwen::{ledger::tests::result, validate::compare};
+        let dir = tempfile::tempdir_in(".").unwrap();
+        let (mut opts, unit, quality) = cached_fixture(dir.path()).await;
+        let (bundle, job) = qwen_bundle(&opts, &unit, &quality);
+        let records = dir.path().join("qwen-pages");
+        let results = dir.path().join("results");
+        std::fs::create_dir_all(&results).unwrap();
+        let ours = quality.doc_id.clone();
+        let words = |_: &str, _: &str| "the council reads this crop".to_owned();
+        // Host b loops on the fixture's page; both read the other page alike.
+        let a = result(&results, &job, "a", words);
+        let b = result(&results, &job, "b", |doc, crop| {
+            if doc == ours {
+                "[?] ".repeat(30)
+            } else {
+                words(doc, crop)
+            }
+        });
+        assert!(compare(&a, &b, 0.5, None, Some(&records)).is_err());
+        let fresh = |opts: &Options| {
+            collect(&Options {
+                cache: None,
+                ..opts.clone()
+            })
+            .unwrap()
+        };
+        let key = |opts: &Options| inventory(opts, None).unwrap()["page"].fingerprint.clone();
+
+        // Off by default: only canonical results join, and the key is as before.
+        let off = key(&opts);
+        assert_eq!(collect(&opts).unwrap().summary.with_readings, 0);
+        opts.qwen_pages = Some(records.clone());
+        let disagreed = key(&opts);
+        assert_ne!(disagreed, off);
+        // A page the pair disagreed on does not join.
+        let c = collect(&opts).unwrap();
+        assert_eq!(c.summary.with_readings, 0);
+        assert!(vlm_rows(&c).is_empty());
+
+        // A late third result agrees with a: the record changes the key and the page joins.
+        let late = result(&results, &job, "c", words);
+        compare(&a, &late, 0.5, None, Some(&records)).unwrap();
+        let agreed = key(&opts);
+        assert_ne!(agreed, disagreed);
+        let c = collect(&opts).unwrap();
+        assert_eq!(c.summary.with_readings, 1);
+        let page_crops = job.pages[0].crops.len();
+        assert_eq!(vlm_rows(&c).len(), page_crops);
+        assert!(vlm_rows(&c).iter().all(|r| {
+            r.vlm_text.as_deref() == Some("the council reads this crop")
+                && r.vlm_device.as_deref() == Some("vulkan")
+        }));
+        assert!(c
+            .crops
+            .iter()
+            .all(|r| r.vlm_crop_state.as_deref() == Some("page-strict-v1")));
+        assert_eq!(c.crops, fresh(&opts).crops);
+        assert_eq!(c.pages, fresh(&opts).pages);
+
+        // A record added during collection is caught before publication.
+        let cache =
+            super::super::collect_cache::Cache::new(opts.cache.as_ref().unwrap(), &opts).unwrap();
+        let other = result(&results, &job, "d", words);
+        compare(&a, &other, 0.5, None, Some(&records)).unwrap();
+        assert!(cache.verify_readings().is_err());
+
+        // A membership that no longer matches the bundle keeps no page.
+        let membership = bundle.join(crate::qwen::stage::MEMBERSHIP_FILE);
+        let original = std::fs::read(&membership).unwrap();
+        std::fs::write(&membership, b"{").unwrap();
+        assert_ne!(key(&opts), agreed);
+        assert!(vlm_rows(&collect(&opts).unwrap()).is_empty());
+        std::fs::write(&membership, &original).unwrap();
+
+        // A canonical result, when there is one, is joined instead.
+        let canonical = result(&results, &job, "z", |_, _| "the canonical reading".into());
+        std::fs::create_dir_all(&opts.qwen_spool).unwrap();
+        for (from, name) in canonical.iter().zip(crate::qwen::outputs()) {
+            std::fs::copy(
+                from,
+                opts.qwen_spool
+                    .join(format!("{}__file_{name}", job.workunit())),
+            )
+            .unwrap();
+        }
+        let c = collect(&opts).unwrap();
+        let rows = vlm_rows(&c);
+        assert_eq!(rows.len(), page_crops);
+        assert!(rows
+            .iter()
+            .all(|r| r.vlm_text.as_deref() == Some("the canonical reading")));
+        assert!(c.crops.iter().all(|r| r.vlm_crop_state.is_none()));
+        assert_eq!(c.crops, fresh(&opts).crops);
+    }
+
+    #[tokio::test]
+    async fn page_records_leave_single_page_keys_alone() {
+        let dir = tempfile::tempdir_in(".").unwrap();
+        let (opts, unit, quality) = cached_fixture(dir.path()).await;
+        qwen_canonical(&opts, &unit, &quality, &["the council reads this crop"]);
+        let key = |opts: &Options| inventory(opts, None).unwrap()["page"].fingerprint.clone();
+        let pages = Options {
+            qwen_pages: Some(dir.path().join("qwen-pages")),
+            ..opts.clone()
+        };
+        assert_eq!(key(&pages), key(&opts));
     }
 
     #[tokio::test]

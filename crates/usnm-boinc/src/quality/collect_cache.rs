@@ -1,5 +1,6 @@
 //! Derived row parts only: no scientific inputs or historical parts are removed.
 use super::collect::{CropRow, Options, PageRow, Summary};
+use crate::qwen::{ledger::MAX_MEMBERSHIP, stage::Membership};
 use anyhow::{ensure, Context};
 use sha2::{Digest, Sha256};
 use std::{
@@ -169,6 +170,8 @@ pub(super) struct Cache {
     qwen_dependencies: BTreeMap<PathBuf, Dependency>,
     /// Each Qwen job's crop-state records as listed: `(dir, job id, records)`.
     crop_states: Vec<(PathBuf, String, Vec<PathBuf>)>,
+    /// Each bundle page's pair records as listed: `(dir, job id, doc id, records)`.
+    page_records: Vec<(PathBuf, String, String, Vec<PathBuf>)>,
     surya: Dependency,
     qwen_root: PathBuf,
     surya_root: Option<PathBuf>,
@@ -184,19 +187,32 @@ struct TrackedUnit {
 
 struct Dependency {
     paths: Vec<PathBuf>,
+    /// Hashed ahead of the paths when not empty, so an empty one keeps the digest as it was.
+    salt: Vec<u8>,
     digest: Vec<u8>,
 }
 
 impl Dependency {
-    fn new(mut paths: Vec<PathBuf>) -> anyhow::Result<Self> {
-        paths.sort();
-        paths.dedup();
-        let digest = Self::hash(&paths)?;
-        Ok(Self { paths, digest })
+    fn new(paths: Vec<PathBuf>) -> anyhow::Result<Self> {
+        Self::salted(paths, Vec::new())
     }
 
-    fn hash(paths: &[PathBuf]) -> anyhow::Result<Vec<u8>> {
+    fn salted(mut paths: Vec<PathBuf>, salt: Vec<u8>) -> anyhow::Result<Self> {
+        paths.sort();
+        paths.dedup();
+        let digest = Self::hash(&paths, &salt)?;
+        Ok(Self {
+            paths,
+            salt,
+            digest,
+        })
+    }
+
+    fn hash(paths: &[PathBuf], salt: &[u8]) -> anyhow::Result<Vec<u8>> {
         let mut hash = Sha256::new();
+        if !salt.is_empty() {
+            field(&mut hash, salt);
+        }
         for path in paths {
             file(&mut hash, path)?;
         }
@@ -205,7 +221,7 @@ impl Dependency {
 
     fn verify(&self) -> anyhow::Result<()> {
         ensure!(
-            Self::hash(&self.paths)? == self.digest,
+            Self::hash(&self.paths, &self.salt)? == self.digest,
             "reading dependencies changed during collection"
         );
         Ok(())
@@ -219,6 +235,11 @@ fn hex(bytes: &[u8]) -> String {
 fn field(hash: &mut Sha256, bytes: &[u8]) {
     hash.update((bytes.len() as u64).to_le_bytes());
     hash.update(bytes);
+}
+
+fn field_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
+    out.extend((bytes.len() as u64).to_le_bytes());
+    out.extend(bytes);
 }
 
 fn file(hash: &mut Sha256, path: &Path) -> anyhow::Result<()> {
@@ -311,6 +332,7 @@ impl Cache {
             None => field(&mut version, b"no-qwen-crop-states"),
         }
         let mut crop_states = Vec::new();
+        let mut page_records = Vec::new();
         let mut qwen: BTreeMap<String, Vec<PathBuf>> = BTreeMap::new();
         let mut qwen_dependencies = BTreeMap::new();
         let mut job_bytes = Vec::new();
@@ -319,6 +341,7 @@ impl Cache {
             let bytes = crate::read(path, qwen::MAX_JOB_JSON)?;
             let job: qwen::Job = serde_json::from_slice(&bytes)?;
             let mut paths = vec![path.clone()];
+            let mut salt = Vec::new();
             paths.extend(super::collect::spool_files(
                 &opts.qwen_spool,
                 &job.workunit(),
@@ -330,10 +353,51 @@ impl Cache {
                 paths.extend(records.iter().cloned());
                 crop_states.push((dir.clone(), job.id.clone(), records));
             }
+            if let Some(dir) = opts.qwen_pages.as_ref().filter(|_| !job.pages.is_empty()) {
+                // A bundle with no canonical result joins its agreed pages
+                // from their pair records, traced through the membership to
+                // the page units it was packed from. Only bundles' keys
+                // change, so a root of single pages needn't warm again.
+                field_bytes(&mut salt, b"qwen-pages");
+                field_bytes(&mut salt, dir.as_os_str().as_encoded_bytes());
+                let unit = path.parent().context("Qwen unit directory")?;
+                let membership = unit.join(crate::qwen::stage::MEMBERSHIP_FILE);
+                if let Some(m) = crate::read(&membership, MAX_MEMBERSHIP)
+                    .ok()
+                    .and_then(|b| serde_json::from_slice::<Membership>(&b).ok())
+                {
+                    paths.extend(
+                        m.pages
+                            .iter()
+                            .filter(|m| !m.unit.is_empty() && !m.unit.contains('/'))
+                            .filter(|m| !m.unit.starts_with('.'))
+                            .map(|m| {
+                                opts.qwen_root
+                                    .join("pages")
+                                    .join(&m.unit)
+                                    .join(crate::qwen::JOB_FILE)
+                            }),
+                    );
+                }
+                paths.push(membership);
+                if job.validate().is_ok() {
+                    for page in &job.pages {
+                        let records =
+                            crate::qwen::ledger::record_paths(dir, &job.id, &page.doc_id)?;
+                        paths.extend(records.iter().cloned());
+                        page_records.push((
+                            dir.clone(),
+                            job.id.clone(),
+                            page.doc_id.clone(),
+                            records,
+                        ));
+                    }
+                }
+            }
             for doc in std::iter::once(&job.doc_id).chain(job.pages.iter().map(|p| &p.doc_id)) {
                 qwen.entry(doc.clone()).or_default().push(path.clone());
             }
-            qwen_dependencies.insert(path.clone(), Dependency::new(paths)?);
+            qwen_dependencies.insert(path.clone(), Dependency::salted(paths, salt)?);
             job_bytes.push((path.clone(), bytes));
         }
         let mut surya = Vec::new();
@@ -367,6 +431,7 @@ impl Cache {
             qwen,
             qwen_dependencies,
             crop_states,
+            page_records,
             surya,
             qwen_root: opts.qwen_root.clone(),
             surya_root: opts.surya_root.clone(),
@@ -501,6 +566,12 @@ impl Cache {
             ensure!(
                 &crate::qwen::consensus::record_paths(dir, job)? == records,
                 "crop states changed during collection"
+            );
+        }
+        for (dir, job, doc, records) in &self.page_records {
+            ensure!(
+                &crate::qwen::ledger::record_paths(dir, job, doc)? == records,
+                "page records changed during collection"
             );
         }
         for dep in self.qwen_dependencies.values() {

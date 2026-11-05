@@ -388,22 +388,27 @@ pub enum Vouch {
     /// result: a crop is vouched for when one of them is `agree`. A crop no
     /// agreeing pair judged is absent.
     Crops(BTreeMap<String, CropState>),
+    /// A page of a bundle with no canonical result that two hosts agreed on
+    /// under the strict rule (`qwen compare --pages`, #1435): the agreeing
+    /// pair vouches for every crop of the page.
+    Page,
 }
 
 impl Vouch {
     /// Whether the crop's reading may be used.
     pub fn vouches(&self, crop: &str) -> bool {
         match self {
-            Vouch::Strict => true,
+            Vouch::Strict | Vouch::Page => true,
             Vouch::Crops(states) => states.get(crop) == Some(&CropState::Agree),
         }
     }
 
-    /// What the crop tables say about the crop: `strict-v1`, a crop state, or
-    /// `unjudged`.
+    /// What the crop tables say about the crop: `strict-v1`, `page-strict-v1`,
+    /// a crop state, or `unjudged`.
     pub fn label(&self, crop: &str) -> &'static str {
         match self {
             Vouch::Strict => "strict-v1",
+            Vouch::Page => "page-strict-v1",
             Vouch::Crops(states) => states.get(crop).map_or("unjudged", |s| s.as_str()),
         }
     }
@@ -761,7 +766,7 @@ mod tests {
                 Vouch::Crops(m) => {
                     assert!(m.values().all(|s| *s == CropState::Agree) && m.len() == 2)
                 }
-                Vouch::Strict => panic!("judged crop by crop"),
+                Vouch::Strict | Vouch::Page => panic!("judged crop by crop"),
             }
         }
         // Another result of the job is not.

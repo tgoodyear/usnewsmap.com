@@ -109,6 +109,10 @@ def run(args):
     if args.qwen_campaign and crop_states:
         # Only the crops an agreeing crop-consensus-v2 pair vouched for join (#1434).
         command.extend(["--qwen-crop-states", crop_states])
+    pages = getattr(args, "qwen_pages", None)
+    if args.qwen_campaign and pages:
+        # A bundle with no canonical result joins the pages a pair agreed on (#1435).
+        command.extend(["--qwen-pages", pages])
     if args.incremental:
         command.extend(["--cache", root + "/collected-parts",
                         "--max-dirty-units", str(args.max_dirty_units)])
@@ -177,6 +181,9 @@ def main(argv=None):
     parser.add_argument("--qwen-crop-states", metavar="DIR",
                         help="the server's `qwen compare --crop-states` directory, passed to collectors "
                              "joining Qwen readings so only vouched crops join (needs a collector from #1434 on)")
+    parser.add_argument("--qwen-pages", metavar="DIR",
+                        help="the server's `qwen compare --pages` directory, passed to collectors joining Qwen "
+                             "readings so a bundle with no canonical result joins its agreed pages (#1435)")
     parser.add_argument("--incremental", action="store_true",
                         help="reuse native content-addressed rows; incomplete warming never loads")
     parser.add_argument("--max-dirty-units", type=int, default=8)
@@ -201,6 +208,8 @@ def main(argv=None):
         parser.error("invalid native Qwen campaign")
     if args.qwen_crop_states and not re.fullmatch(r"/[A-Za-z0-9._/-]+", args.qwen_crop_states):
         parser.error("--qwen-crop-states must be an absolute path")
+    if args.qwen_pages and not re.fullmatch(r"/[A-Za-z0-9._/-]+", args.qwen_pages):
+        parser.error("--qwen-pages must be an absolute path")
     with args.lock.open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         if args.native_campaign:
