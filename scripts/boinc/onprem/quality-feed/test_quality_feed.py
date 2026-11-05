@@ -741,11 +741,16 @@ class FollowTest(unittest.TestCase):
                 return Resp(b"{}")
 
             a = types.SimpleNamespace(scan_server="http://s", keep_bytes=85, keep_verify=10)
-            ship = lambda docs: feed.delete_shipped(a, str(camp), str(done), docs, str(deleted), str(kept))
+            ship = lambda docs, ocr=(): feed.delete_shipped(a, str(camp), str(done), docs, str(deleted), str(kept),
+                                                            set(ocr))
             with mock.patch.object(feed.urllib.request, "urlopen", fake), \
                     contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(ship({"q1", "q2", "q3", "q4", "q5"}), 3)
                 self.assertEqual(calls, [("DELETE", f"buffer/b/{q}.jp2") for q in ("q3", "q4", "q5")])
+                self.assertEqual(set(feed.read_kept(str(kept))), {"q1", "q2"})
+
+                # An empty quality-docs list (missing, say) releases nothing.
+                self.assertEqual(ship(set()), 0)
                 self.assertEqual(set(feed.read_kept(str(kept))), {"q1", "q2"})
 
                 # OCR asks for q2 (its worker deletes the scan) and q1 is found gone: both leave
@@ -754,7 +759,7 @@ class FollowTest(unittest.TestCase):
                 gone.add("buffer/b/q1.jp2")
                 with open(done, "a") as f:
                     f.write("q6\tc2\tbuffer/b/q6.jp2\t40\t0.3\n")
-                self.assertEqual(ship({"q1", "q3", "q4", "q5", "q6"}), 0)
+                self.assertEqual(ship({"q1", "q3", "q4", "q5", "q6"}, {"q2"}), 0)
                 self.assertEqual(calls, [("GET", "buffer/b/q1.jp2.json")])
                 self.assertEqual(set(feed.read_kept(str(kept))), {"q6"})
                 self.assertEqual(feed.read_lines(str(deleted)), {"q1", "q2", "q3", "q4", "q5"})

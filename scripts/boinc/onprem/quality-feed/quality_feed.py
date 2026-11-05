@@ -662,7 +662,7 @@ def scan_exists(server, scan):
         raise
 
 
-def delete_shipped(a, camp_dir, done_path, quality_docs, deleted_path, kept_path=None):
+def delete_shipped(a, camp_dir, done_path, quality_docs, deleted_path, kept_path=None, ocr_docs=frozenset()):
     """The buffer scans of the quality pass's pages whose chunks have shipped (the shipper
     removed the chunk from the outbox after submitting it). Only pages the quality pass asked
     for and OCR didn't (the caller leaves OCR's manifests' pages out of `quality_docs`); OCR's
@@ -670,7 +670,8 @@ def delete_shipped(a, camp_dir, done_path, quality_docs, deleted_path, kept_path
     on the scan server for re-OCR, up to that many bytes in all (listed in `kept_path`, without
     which there's no retention), and the
     rest are DELETEd; without, every one is. A kept scan that is gone (an
-    OCR worker read it) or that OCR has since asked for leaves the list without a DELETE, so it
+    OCR worker read it) or that OCR has since asked for (in `ocr_docs`; never inferred from
+    `quality_docs`, which a missing list would empty) leaves the list without a DELETE, so it
     no longer counts against the budget; --keep-verify of the longest-unchecked are looked at a
     round. `deleted_path` lists every page this is done with, deleted or so released, so
     neither is weighed again. Returns how many were deleted."""
@@ -693,10 +694,10 @@ def delete_shipped(a, camp_dir, done_path, quality_docs, deleted_path, kept_path
         size = int(rest[1]) if len(rest) > 1 and rest[1] else 0
         damage = float(rest[2]) if len(rest) > 2 and rest[2] else None
         shipped[doc] = (scan, size, damage, now)
-    released = [doc for doc in kept if doc not in quality_docs]
+    released = [doc for doc in kept if doc in ocr_docs]
     if budget:
         for doc, k in heapq.nsmallest(getattr(a, "keep_verify", 0), kept.items(), key=lambda kv: kv[1][3]):
-            if doc not in quality_docs:
+            if doc in ocr_docs:
                 continue
             try:
                 there = scan_exists(a.scan_server, k[0])
@@ -830,7 +831,8 @@ def cmd_follow(a):
         done = read_lines(done_path) | read_lines(skip_path)
         quality_docs = read_lines(a.quality_docs) if a.quality_docs else set()
         if os.path.exists(done_path):
-            gone = delete_shipped(a, camp_dir, done_path, quality_docs - ocr_docs, deleted_path, kept_path)
+            gone = delete_shipped(a, camp_dir, done_path, quality_docs - ocr_docs, deleted_path, kept_path,
+                                  ocr_docs)
             if gone:
                 log("buffer scans deleted after shipping", pages=gone)
         quarantined = scan_quarantine.quarantined(state) if getattr(a, "quarantine_decode", False) else []
