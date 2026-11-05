@@ -1214,6 +1214,61 @@ throughout. It refuses if the lock file is missing, since the controller
 creates it on its first tick, so a missing one means a wrong `--state-dir`. A killed apply leaves that lease held, like a crashed controller.
 Once the process is confirmed gone, the operator breaks it as above.
 
+The `dispatch` apply deletes hand-off blobs, so it needs `blobs/delete` on
+`boinc-handoff`. The controller's own identity (`boincHandoffRunner`, CT 211's
+Arc machine identity) deliberately lacks it: its node writer role there reads
+and writes but doesn't delete (`infra/modules/ocr-exchange.bicep`). Under that
+identity, the apply stops at its first delete with HTTP 403
+`AuthorizationPermissionMismatch`, and the batch is left resumable. Don't widen
+the controller's role. Run the apply under an operator identity that may
+delete. The narrowest built-in role that does is Storage Blob Data Contributor
+assigned at the container's own scope,
+`<account resource ID>/blobServices/default/containers/boinc-handoff`. Azure
+accepts data-plane role assignments at that scope. A broader role an operator
+already holds also works, such as Storage Blob Data Owner on the account's
+resource group, but don't grant one for this.
+
+The tool takes its token from the first `az` on its `PATH`. It runs:
+
+```sh
+az account get-access-token --resource https://storage.azure.com/ \
+  --query '{token:accessToken,expires:expires_on}' -o json
+```
+
+It reads only the `token` and `expires` keys of that JSON object. `expires` must
+be a whole number of seconds since the epoch, so check that `expires_on` is one:
+`az account get-access-token --resource https://storage.azure.com/ --query
+'type(expires_on)' -o tsv` prints `number` (and no token). If it doesn't,
+upgrade the CLI rather than converting: `expires_on` was added in Azure CLI
+2.54.0, and older versions give only `expiresOn`, a local time string; don't
+project that instead. The tool converts `expires` with `int()`, which fails on a
+date string and stops the step. The tool asks again 10 minutes before expiry,
+and makes no other `az` call. To use an operator identity:
+
+- On CT 211, make a root-owned 0700 directory for the run, such as
+  `/root/usnm-archive`. In it, put a 0700 wrapper `azshim/az` that answers only
+  that one call, from a 0600 token file at a fixed path there, such as
+  `/root/usnm-archive/.maint-token.json`. Fail closed: the wrapper compares its
+  whole argument list with the command above, `--query` and `-o` included, and
+  prints the file only on an exact match. For any other arguments it prints
+  nothing to stdout and exits non-zero. It never calls the real `az`, so the
+  token can't reach any other command.
+- Put the wrapper's directory first on `PATH` for the archive tool's command
+  alone (`PATH=/root/usnm-archive/azshim:$PATH python3 archive_history.py …`).
+  Never change `PATH` in a profile or for the service.
+- On the operator's workstation, mint a short-lived storage-audience token with
+  the same command, including the `--query` projection, so that the file holds
+  the `token`/`expires` object. Pipe it over `ssh` into that file, never
+  printing it.
+- Rewrite the file before the token expires. Write the new token to a 0600
+  temporary file in the same directory, then `mv` it over the old one, so the
+  tool never reads a partial file. Only root can write to that directory, so
+  nothing else can swap the file or plant a link there.
+- Delete the token file and the wrapper after the run, and any copy left on the
+  way (for example on the Proxmox host).
+
+The dry run and the controller's own ticks keep the controller's identity.
+
 The maintainer approves each live run. To archive:
 
 1. Pause the controller on CT 211, and wait for any running tick to end:
@@ -1240,8 +1295,9 @@ The maintainer approves each live run. To archive:
      --archive-dir <archive dir>
    ```
 
-3. Apply it: the same command plus `--apply --confirm-controller-paused`. It
-   prints the batch's receipt, which is also kept in
+3. Apply it under an operator identity that may delete (above): the same
+   command plus `--apply --confirm-controller-paused`. It prints the batch's
+   receipt, which is also kept in
    `<archive dir>/batches/<NNNN>/receipts/dispatch.json`.
 4. Copy that batch's `manifest.json` and `receipts/dispatch.json`, unchanged, to
    `/srv/usnm-boinc/project/archive/batches/<NNNN>/` on the BOINC host, and
