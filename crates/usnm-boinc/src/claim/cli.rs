@@ -115,7 +115,7 @@ pub enum ClaimCommands {
         supersedes_failed_job: String,
         /// The new job's page deadline (`engine.timeout_secs`): 1 to 3600, not the failed
         /// job's.
-        #[arg(long)]
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..=i64::from(super::MAX_TIMEOUT_SECS)))]
         timeout_secs: u32,
         /// The newer claim's message_sha256, as the dry run prints it: record the retry.
         #[arg(long)]

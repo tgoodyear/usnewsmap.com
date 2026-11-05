@@ -130,7 +130,7 @@ pub struct RetryArgs {
     reviewed_reason: String,
     /// The retry's page deadline (`engine.timeout_secs`, 1 to 3600), for a page that ran out of
     /// time (#1159). Default: the failed job's. A resumed retry must give the same value.
-    #[arg(long)]
+    #[arg(long, value_parser = clap::value_parser!(u32).range(1..=i64::from(crate::claim::MAX_TIMEOUT_SECS)))]
     timeout_secs: Option<u32>,
     #[arg(long)]
     handoff_url: String,

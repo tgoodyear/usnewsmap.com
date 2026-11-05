@@ -172,3 +172,62 @@ mod qwen_runtime_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod page_deadline_tests {
+    use super::*;
+
+    #[test]
+    fn a_retry_deadline_outside_1_to_3600_is_refused_as_it_is_parsed() {
+        let retry = [
+            "usnm-boinc",
+            "retry",
+            "--root",
+            "r",
+            "--spool",
+            "s",
+            "--job",
+            "j",
+            "--expected-error-mask",
+            "2",
+            "--app-version-num",
+            "1",
+            "--image",
+            "sha256:image",
+            "--reviewed-reason",
+            "timed out",
+            "--handoff-url",
+            "h",
+            "--curated-url",
+            "c",
+            "--reference-url",
+            "f",
+            "--state-file",
+            "state.json",
+        ];
+        let deadline_retry = [
+            "usnm-boinc",
+            "claim",
+            "deadline-retry",
+            "--handoff-url",
+            "h",
+            "--curated-url",
+            "c",
+            "--supersedes-failed-job",
+            "j",
+        ];
+        for args in [&retry[..], &deadline_retry[..]] {
+            for (value, ok) in [("1", true), ("3600", true), ("0", false), ("3601", false)] {
+                let mut command = args.to_vec();
+                command.extend(["--timeout-secs", value]);
+                match Cli::try_parse_from(command) {
+                    Ok(_) => assert!(ok, "{} took --timeout-secs {value}", args[1]),
+                    Err(error) => {
+                        assert!(!ok, "{} refused --timeout-secs {value}: {error}", args[1]);
+                        assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+                    }
+                }
+            }
+        }
+    }
+}

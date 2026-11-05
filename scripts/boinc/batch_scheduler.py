@@ -1256,14 +1256,21 @@ def deadline_retried(page, roots, deadline_retries):
     may have none yet: its retry was taken but its export hasn't journaled the new job, which the
     next tick exports again. Returns the last one alone, or the roots as they are when they don't
     form that one chain."""
+    def key(queued_at, timeout_secs):
+        return json.dumps([queued_at, timeout_secs], sort_keys=True)
+
+    by_key = {}
+    for record in roots:
+        job = record["job"]
+        by_key.setdefault(key(job["message"].get("queued_at"), job["engine"].get("timeout_secs")),
+                          []).append(record)
     after = {}
     for record in roots:
         entry = deadline_retries.get(record["job"]["id"])
         if not isinstance(entry, dict):
             continue
-        followers = [other for other in roots if other is not record
-                     and other["job"]["message"].get("queued_at") == entry.get("queued_at")
-                     and other["job"]["engine"].get("timeout_secs") == entry.get("timeout_secs")]
+        matching = by_key.get(key(entry.get("queued_at"), entry.get("timeout_secs")), [])
+        followers = [other for other in matching if other is not record]
         if entry.get("page") != page or record["stage"] != "failed" or len(followers) > 1:
             return roots
         if followers:
