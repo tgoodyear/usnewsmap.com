@@ -40,6 +40,6 @@ counts the unverified one.
 Production has no stored list, selection or staged alternate, by the
 read-only listing in the
 [supersession note](2026-11-05-loc-alternate-supersession.md). So the command
-has nothing to account for there, and confirmed avoidable pages remain 0. Recognition cost per page is not
-measured, so avoided cost is reported as unknown, never as zero or as an
-estimate.
+has nothing to account for there, and confirmed avoidable pages remain 0.
+Recognition cost per page is not measured, so avoided cost is reported as
+unknown, never as zero or as an estimate.
