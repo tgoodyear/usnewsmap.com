@@ -11,7 +11,7 @@
 //!
 //! Each row gets the first class that fits, from the most certain to the
 //! least, by the placements, each curated batch's `counts.json` and the page
-//! keys of the curated batches that placements name:
+//! keys of the curated batches that the placements' scans are in:
 //!
 //! - `page`: placed on a `doc_id` that is a page of the curated version of
 //!   the batch it was detected in (that version's parts hold the page key).
@@ -65,14 +65,28 @@ struct ScanKey {
 }
 
 impl ScanKey {
-    fn of(p: &Picture) -> Option<Self> {
+    /// The scan `p` names, moving its strings out rather than copying them
+    /// (a run reads millions of rows). `p` keeps them if it names no full
+    /// scan.
+    fn take(p: &mut Picture) -> Option<Self> {
+        if p.batch.is_none()
+            || p.lccn.is_none()
+            || p.reel.is_none()
+            || p.date.is_none()
+            || p.edition.is_none()
+            || p.frame.is_none()
+        {
+            return None;
+        }
+        let mut lccn = p.lccn.take()?;
+        lccn.make_ascii_lowercase();
         Some(Self {
-            batch: p.batch.clone()?,
-            lccn: p.lccn.as_deref()?.to_ascii_lowercase(),
-            reel: p.reel.clone()?,
+            batch: p.batch.take()?,
+            lccn,
+            reel: p.reel.take()?,
             date: p.date?,
             edition: p.edition?,
-            frame: p.frame.clone()?,
+            frame: p.frame.take()?,
         })
     }
 }
@@ -385,9 +399,9 @@ async fn verified_part(
 }
 
 /// The placements (indices into `doc_ids`) whose `doc_id` is a page of the
-/// curated version of the scan's batch. Reads, without their text, the
-/// curated parts of only the batches placements name at their curated
-/// version.
+/// curated version of the scan's batch. Reads the curated parts (without
+/// their text) of only the batches the placements' scans are in, when the
+/// scan is of the batch's curated version.
 async fn on_curated_pages(
     curated: &dyn ObjectStore,
     batches: &[RunBatch],
@@ -468,8 +482,8 @@ pub async fn join(
         let mut join = KindJoin::default();
         let mut pages: HashSet<u32> = HashSet::new();
         for part in &summary.parts {
-            for row in verified_part(pictures, &dir, part, kind).await? {
-                let scan = ScanKey::of(&row);
+            for mut row in verified_part(pictures, &dir, part, kind).await? {
+                let scan = ScanKey::take(&mut row);
                 let placed = scan
                     .as_ref()
                     .and_then(|s| placements.by_scan.get(s).copied())
@@ -483,7 +497,11 @@ pub async fn join(
                 }
                 join.classes.add(class);
                 report.total.add(class);
-                let batch = row.batch.as_deref().unwrap_or(NO_BATCH);
+                let batch = scan
+                    .as_ref()
+                    .map(|s| s.batch.as_str())
+                    .or(row.batch.as_deref())
+                    .unwrap_or(NO_BATCH);
                 match report.batches.get_mut(batch) {
                     Some(c) => c.add(class),
                     None => {
@@ -761,9 +779,10 @@ mod tests {
         let batches = [alpha, beta, gamma];
 
         let rows = vec![
-            // Placed on a page of `alpha`, twice on one scan and once on another.
+            // Placed on a page of `alpha`, twice on one scan (once with the
+            // LCCN in upper case) and once on another.
             row("photo", "ohi_alpha_ver01", a, d1, "0005"),
-            row("photo", "ohi_alpha_ver01", a, d1, "0005"),
+            row("photo", "ohi_alpha_ver01", "SN11111111", d1, "0005"),
             row("map", "ohi_alpha_ver01", a, d1, "0006"),
             // Same batch and day, not placed.
             row("photo", "ohi_alpha_ver01", a, d2, "0010"),

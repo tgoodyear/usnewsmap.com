@@ -93,9 +93,9 @@ pub(crate) async fn pictures_command(
 /// holds that page; a frame is never made into a `seq`. The rest are classed
 /// by the curated batches' title-days. Checks every part against
 /// provenance.json first and stops if one differs. Reads the state, each
-/// curated batch's counts.json, the curated parts of the batches placements
-/// name, and the picture parts; writes only `--out` and asks LoC nothing.
-/// Reports counts, never rows.
+/// curated batch's counts.json, the curated parts (without their text) of the
+/// batches the placements' scans are in, and the picture parts; writes only
+/// `--out` and asks LoC nothing. Reports counts, never rows.
 #[derive(Args)]
 pub(crate) struct PicturesJoinArgs {
     /// The dataset revision the rows were written at (the full 40-character

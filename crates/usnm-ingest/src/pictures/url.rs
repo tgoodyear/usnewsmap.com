@@ -142,7 +142,8 @@ pub fn rewrite_crop_url(old: &str) -> Option<String> {
     OldCrop::parse(old).map(|c| c.tile_url())
 }
 
-/// The batch directory and scan an IIIF base on tile.loc.gov names:
+/// Parse an IIIF base on tile.loc.gov into the batch directory and the scan
+/// it names:
 /// `{TILE_IIIF}service:ndnp:{awardee}:batch_{batch}:data:{lccn}:{reel…}:{issue}:{frame}`,
 /// the storage path of the JP2 with its slashes made colons, as
 /// `usnm-ocr-worker`'s `iiif_base` builds it and its scan sidecars and prefetch
