@@ -903,12 +903,22 @@ mod cli_tests {
 
 #[derive(Subcommand)]
 enum RoutesCommand {
-    /// Refuse production candidates whose code or models fail the licence gate.
+    /// Refuse production candidates whose code or models fail the licence
+    /// gate, and profiles whose model files changed under the same profile
+    /// id (`profiles.lock`, 13 §13.7.2).
     Check {
         #[arg(long, env = "USNM_OCR_ENGINES")]
         engines: Option<PathBuf>,
         #[arg(long, default_value = "ocr/routing/routes.toml")]
         routes: PathBuf,
+        /// The profile lock; each engine's `models.lock` is read from its
+        /// directory.
+        #[arg(long, default_value = "ocr/engines/profiles.lock")]
+        lock: PathBuf,
+        /// Add entries for new profiles to the lock. A changed digest still
+        /// fails.
+        #[arg(long)]
+        update_lock: bool,
     },
 }
 
@@ -1011,10 +1021,43 @@ async fn main() -> std::process::ExitCode {
     code
 }
 
+/// `routes check`'s profile lock: one model set per profile id (#1481).
+fn check_profile_lock(
+    catalog: &usnm_ocr_route::Catalog,
+    lock: &std::path::Path,
+    update: bool,
+) -> anyhow::Result<()> {
+    use usnm_ocr_route::lock;
+    let dir = lock.parent().unwrap_or(std::path::Path::new(""));
+    let current = lock::profile_digests(catalog, &lock::read_model_locks(dir)?)?;
+    let text = match std::fs::read_to_string(lock) {
+        Ok(text) => text,
+        Err(e) if update && e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", lock.display())),
+    };
+    let context = || format!("checking {}", lock.display());
+    if update {
+        let updated = lock::update(&text, &current).with_context(context)?;
+        if updated != text {
+            std::fs::write(lock, updated).with_context(|| format!("writing {}", lock.display()))?;
+        }
+    } else {
+        lock::verify(&text, &current).with_context(context)?;
+    }
+    println!("{} profiles match {}", current.len(), lock.display());
+    Ok(())
+}
+
 async fn command(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         Command::Routes {
-            command: RoutesCommand::Check { engines, routes },
+            command:
+                RoutesCommand::Check {
+                    engines,
+                    routes,
+                    lock,
+                    update_lock,
+                },
         } => {
             let catalog = match engines {
                 Some(path) => usnm_ocr_route::Catalog::load(&path)?,
@@ -1025,7 +1068,7 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
                     .with_context(|| format!("reading {}", routes.display()))?,
             )?;
             println!("production route licences cleared");
-            Ok(())
+            check_profile_lock(&catalog, &lock, update_lock)
         }
         Command::Run {
             queue_url,

@@ -299,15 +299,19 @@ profiles both pass the same `usnm-ocr-route::Catalog::check_production` gate
 before a page can be read. A contract profile is checked against the model
 list in its `hello`.
 
-Validate the minimal route without an engine, credentials or network access:
+Validate the minimal route without an engine, credentials or network access,
+from the repository root:
 
 ```sh
 usnm-ocr-worker routes check
-usnm-ocr-worker routes check --engines ocr/engines/engines.toml --routes ocr/routing/routes.toml
+usnm-ocr-worker routes check --engines ocr/engines/engines.toml --routes ocr/routing/routes.toml --lock ocr/engines/profiles.lock
+usnm-ocr-worker routes check --update-lock
 ```
 
 This command checks every named candidate, `auto` profile and cascade target.
-It is a licence check, not the later validator for route matching, node
-capabilities and locks. The [catalog schema](../../ocr/engines/README.md)
+It then checks that no profile's model files changed under the same profile id
+(`ocr/engines/profiles.lock`, [one model set per profile id](../../ocr/engines/README.md#one-model-set-per-profile-id));
+`--update-lock` adds new profiles to the lock. It is not the later validator
+for route matching, node capabilities and the engine lock. The [catalog schema](../../ocr/engines/README.md)
 documents the attribution data for the follow-on credits page (#372). The
 catalog holds no attributed or credit-required production profiles yet.

@@ -354,6 +354,12 @@ class OcrCatalog(unittest.TestCase):
                 self.assertTrue(o["rust"])
                 self.assertTrue(o["ocr_worker"])
 
+    def test_profile_lock_and_its_pins_run_rust(self):
+        for path in ["ocr/engines/profiles.lock", "ocr/engines/ndlocr-lite/models.lock"]:
+            with self.subTest(path=path):
+                self.change = lambda path=path: self.touch(path)
+                self.assertTrue(self.outputs()["rust"])
+
     def test_boinc_image_filter_includes_embedded_catalog(self):
         workflow = (ROOT / ".github/workflows/boinc-worker.yml").read_text()
         self.assertIn("      - ocr/engines/engines.toml\n", workflow)

@@ -3868,6 +3868,7 @@ dependencies = [
  "anyhow",
  "serde",
  "toml",
+ "usnm-core",
 ]
 
 [[package]]

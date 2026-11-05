@@ -15,11 +15,12 @@ Data, locks, templates and image definitions for the OCR pipeline: the engine ca
 
 `engines.toml` is the catalog: for each engine and each model, its licence, author, source and credit line, which profiles (models plus languages) exist and whether the engine is cleared for production. Only Tesseract and the pinned CPU NDLOCR-Lite adapter have production profiles; the other entries are inventory. [`engines/README.md`](engines/README.md) has the schema and the licence gate.
 
-| Path           | What                                                                                                                                                      |
-| -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `engines.toml` | The catalog                                                                                                                                               |
-| `tesseract/`   | `Containerfile`; `models.lock` (each model's URL and sha256); `fpshim.c`, preloaded so Tesseract's floating-point traps do not kill OpenJPEG on some JP2s |
-| `ndlocr-lite/` | `Containerfile`; `models.lock` (the pinned NDLOCR-Lite commit and each model's URL and sha256); the licence and notice files                              |
+| Path            | What                                                                                                                                                      |
+| --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `engines.toml`  | The catalog                                                                                                                                               |
+| `tesseract/`    | `Containerfile`; `models.lock` (each model's URL and sha256); `fpshim.c`, preloaded so Tesseract's floating-point traps do not kill OpenJPEG on some JP2s |
+| `ndlocr-lite/`  | `Containerfile`; `models.lock` (the pinned NDLOCR-Lite commit and each model's URL and sha256); the licence and notice files                              |
+| `profiles.lock` | Each pinned profile's model digest, so a profile id always names the same model files; `usnm-ocr-worker routes check` checks it                           |
 
 Read by:
 
@@ -29,7 +30,7 @@ Read by:
 
 ## `routing/`
 
-`routes.toml` lists routes: a match, and the engine and profile candidates for it. Today it has one route that sends every page to `tesseract-5.5` with profile `auto`. `usnm-ocr-worker routes check` validates it against the catalog (its `--routes` default is this file), and a test in `usnm-ocr-route` does too.
+`routes.toml` lists routes: a match, and the engine and profile candidates for it. Today it has one route that sends every page to `tesseract-5.5` with profile `auto`. `usnm-ocr-worker routes check` validates it against the catalog (its `--routes` default is this file), and a test in `usnm-ocr-route` does too. The command also checks `engines/profiles.lock`.
 
 ## `contract/`
 
