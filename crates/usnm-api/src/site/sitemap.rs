@@ -1295,7 +1295,8 @@ mod tests {
         assert!(html.contains("51 matching newspaper pages in total."));
         assert!(html.contains("href=\"https://usnewsmap.com/examples/cross-of-gold\""));
         assert!(html.contains("<h1>Cross of Gold, 1896</h1>"));
-        assert!(html.contains("/search-map.png?example=cross-of-gold"));
+        assert!(html.contains(r#"<img src="/search-preview/"#));
+        assert!(html.contains(r#"/cross-of-gold.png""#));
         assert!(!html.contains("outside-example-dates"));
         assert!(html.contains(r#"<div id="root"></div><div id="search-landing">"#));
         assert!(!html.contains(r#"class="visually-hidden" inert"#));

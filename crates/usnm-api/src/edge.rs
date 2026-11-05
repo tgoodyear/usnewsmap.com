@@ -1,4 +1,5 @@
-//! What Cloudflare may keep of a search (06 §6.5).
+//! What Cloudflare may keep of a search (06 §6.5), and of an example's
+//! revisioned no-JavaScript map (`/search-preview/`).
 //!
 //! Searches stay at the edge for two weeks. Their URLs carry `v`, so a new
 //! index version is a new URL, and `g`, the generation of [`generation`], so
@@ -41,14 +42,19 @@ pub(crate) fn generation(rd: &RefData) -> String {
 /// Set the edge's caching for a 200 from `/v1/aggregate`: only a response
 /// pinned to the served version and generation may be kept.
 pub(crate) fn mark(headers: &mut HeaderMap, pinned: bool, requested: Option<&str>, serving: &str) {
-    let keep = pinned && requested == Some(serving);
+    keep(headers, pinned && requested == Some(serving));
+    if requested.is_some_and(|g| g != serving) {
+        headers.insert(header::CACHE_CONTROL, HeaderValue::from_static(PASS));
+    }
+}
+
+/// Let the edge keep a response for two weeks, or not at all. Only a URL
+/// that names exactly what it returns may be kept, as `v` and `g` do here.
+pub(crate) fn keep(headers: &mut HeaderMap, keep: bool) {
     headers.insert(
         HeaderName::from_static(EDGE_CONTROL),
         HeaderValue::from_static(if keep { KEEP } else { PASS }),
     );
-    if requested.is_some_and(|g| g != serving) {
-        headers.insert(header::CACHE_CONTROL, HeaderValue::from_static(PASS));
-    }
 }
 
 #[cfg(test)]

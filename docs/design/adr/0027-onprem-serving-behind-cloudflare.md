@@ -70,6 +70,7 @@ The container:
   | `robots.txt`, `favicon.svg`, `og-image.png`                                                                | Cloudflare's defaults (1 hour from the origin)                                                                           |
   | `/`, `/datasets`, `/privacy`, `/credits` and the 404 shell                                                 | Not cached. `/` revalidates with its ETag; the `app_route` pages get an ETag in Phase 0                                  |
   | `/v1/aggregate` with `v` and `g`                                                                           | Amended 2026-10-30: cached for 14 days when both match what the API serves, `no-store` otherwise (06 §6.5)               |
+  | `/search-preview/<revision>/<id>.png`                                                                      | Amended 2026-11-04: cached for 14 days when the revision is the render the API serves, `no-store` otherwise (06 §6.5)    |
 
 | Other `/v1/aggregate`, `/v1/hits`, `/v1/meta`, `/v1/status`, `/v1/versions`, `/v1/beacon`, `/healthz`, `/readyz` | Bypass. The aggregate and hits bypass is the last rule in the list |
 

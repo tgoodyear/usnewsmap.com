@@ -95,6 +95,7 @@ pub fn router(dir: PathBuf, state: Arc<AppState>) -> Router {
     // like any other path with no file.
     let sharing = state.clone();
     let static_map = state.clone();
+    let preview = state.clone();
     let robots = state.clone();
     let app_paths = move |req: Request, next: Next| {
         let index = index.clone();
@@ -141,6 +142,10 @@ pub fn router(dir: PathBuf, state: Arc<AppState>) -> Router {
         .route(
             "/search-map.png",
             axum::routing::get(move |uri| social::search_map(uri, static_map.clone())),
+        )
+        .route(
+            "/search-preview/{revision}/{file}",
+            axum::routing::get(move |uri| social::search_preview(uri, preview.clone())),
         )
         .fallback_service(files)
         .layer(middleware::from_fn(app_paths))
@@ -428,14 +433,27 @@ fn site_metadata(body: Vec<u8>, state: &AppState) -> Vec<u8> {
     }
 }
 
-fn search_landing(body: Vec<u8>, preview: &str, example: &crate::prewarm::Example) -> Vec<u8> {
+/// `map` is the example's revisioned map; the old address redirects to it
+/// once the renderer's identity can be read.
+fn search_landing(
+    body: Vec<u8>,
+    preview: &str,
+    example: &crate::prewarm::Example,
+    map: Option<&str>,
+) -> Vec<u8> {
     let body = insert_content(body, preview);
-    let image_query = form_urlencoded::Serializer::new(String::new())
-        .append_pair("example", &example.id)
-        .finish();
+    let src = map.map_or_else(
+        || {
+            let query = form_urlencoded::Serializer::new(String::new())
+                .append_pair("example", &example.id)
+                .finish();
+            format!("/search-map.png?{query}")
+        },
+        str::to_owned,
+    );
     let map = format!(
-        "<figure class=\"static-search-map\"><img src=\"/search-map.png?{}\" width=\"1200\" height=\"630\" alt=\"Map and timeline of newspaper matches for {}\" loading=\"lazy\" decoding=\"async\"><figcaption>The map and timeline for this search. Interactive controls load automatically when available.</figcaption></figure>",
-        escape_html(&image_query),
+        "<figure class=\"static-search-map\"><img src=\"{}\" width=\"1200\" height=\"630\" alt=\"Map and timeline of newspaper matches for {}\" loading=\"lazy\" decoding=\"async\"><figcaption>The map and timeline for this search. Interactive controls load automatically when available.</figcaption></figure>",
+        escape_html(&src),
         escape_html(&example.title),
     );
     match String::from_utf8(body) {
@@ -733,7 +751,10 @@ async fn app_route(req: Request, index: PathBuf, state: Arc<AppState>) -> Respon
                 )
                 .await
                 {
-                    Ok(preview) => body = search_landing(body, &preview.html, example),
+                    Ok(preview) => {
+                        let map = social::search_map_path(&state, example).await;
+                        body = search_landing(body, &preview.html, example, map.as_deref());
+                    }
                     Err(error) => {
                         tracing::warn!("search page preview unavailable");
                         return error.into_response();

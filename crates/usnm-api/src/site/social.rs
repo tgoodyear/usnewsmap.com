@@ -15,6 +15,11 @@ pub(crate) use cache::Service;
 
 const SITE: &str = "https://usnewsmap.com";
 const IMAGE: &str = "/share-image.png";
+/// `/search-preview/<revision>/<example>.png`: a no-JavaScript map whose URL
+/// names its render, so the edge can keep it (06 §6.5).
+pub(super) const PREVIEW: &str = "/search-preview/";
+/// Hex digits of the render key that a preview URL carries.
+const REVISION_LEN: usize = 16;
 const FALLBACK: &[u8] = include_bytes!("../../../../web/public/og-image.png");
 const RESPONSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 const VIEW_KEYS: &[&str] = &[
@@ -421,7 +426,22 @@ pub(super) async fn image(OriginalUri(uri): OriginalUri, state: Arc<AppState>) -
     render_response(render).await
 }
 
-/// Static pages must never substitute an unrelated generic sharing image.
+/// The admitted example a static map may show, with its card.
+fn admitted_example(
+    state: &AppState,
+    id: &str,
+) -> Option<(&'static crate::prewarm::Example, Card)> {
+    let path = format!("/examples/{id}");
+    let example = super::examples::for_path(&path)?;
+    let page: Uri = path.parse().ok()?;
+    if super::noindex(&page, &state.sitemap) {
+        return None;
+    }
+    Some((example, Card::new(&super::examples::path(example), "")?))
+}
+
+/// The old address of an example's map: a redirect to its current
+/// [`PREVIEW`] URL, which is never kept, since that URL changes.
 pub(super) async fn search_map(OriginalUri(uri): OriginalUri, state: Arc<AppState>) -> Response {
     if uri.query().is_some_and(|query| query.len() > 8192) {
         return (StatusCode::BAD_REQUEST, "search map query is too long").into_response();
@@ -434,56 +454,145 @@ pub(super) async fn search_map(OriginalUri(uri): OriginalUri, state: Arc<AppStat
     if query.len() > 2048 {
         return (StatusCode::BAD_REQUEST, "invalid search map query").into_response();
     }
-    let path = if key == "example" {
-        let path = format!("/examples/{query}");
-        if super::examples::for_path(&path).is_none() {
-            return StatusCode::NOT_FOUND.into_response();
-        }
-        path
-    } else if key == "q" {
+    if key == "q" {
         return StatusCode::NOT_FOUND.into_response();
-    } else {
+    } else if key != "example" {
         return (StatusCode::BAD_REQUEST, "search map requires an example").into_response();
-    };
-    let page: Uri = match path.parse() {
-        Ok(page) => page,
-        Err(_) => return StatusCode::BAD_REQUEST.into_response(),
-    };
-    if super::noindex(&page, &state.sitemap) {
-        return StatusCode::NOT_FOUND.into_response();
     }
-    let Some(card) = Card::new(&path, "") else {
-        return StatusCode::BAD_REQUEST.into_response();
+    let Some((example, card)) = admitted_example(&state, query) else {
+        return StatusCode::NOT_FOUND.into_response();
     };
-    let render = tokio::spawn(async move { cached(&state, card, false).await });
-    map_response(render).await
-}
-
-async fn map_response(
-    render: tokio::task::JoinHandle<Result<Vec<u8>, Arc<RenderError>>>,
-) -> Response {
-    match tokio::time::timeout(std::time::Duration::from_secs(45), render).await {
-        Ok(Ok(Ok(body))) => (
+    match preview_key(&state, &card).await {
+        Ok(key) => (
+            StatusCode::TEMPORARY_REDIRECT,
             [
-                (header::CONTENT_TYPE, "image/png"),
-                (header::CACHE_CONTROL, "public, max-age=300"),
+                (header::LOCATION, preview_path(&key, example)),
+                (header::CACHE_CONTROL, "no-store".to_owned()),
             ],
-            body,
         )
             .into_response(),
-        _ => {
-            tracing::warn!("static search map unavailable");
-            (
-                StatusCode::SERVICE_UNAVAILABLE,
-                [
-                    (header::CACHE_CONTROL, "no-store"),
-                    (header::RETRY_AFTER, "10"),
-                ],
-                "Search map is temporarily unavailable",
-            )
-                .into_response()
+        Err(error) => {
+            tracing::warn!(%error, "static search map identity unavailable");
+            map_unavailable()
         }
     }
+}
+
+/// An admitted example's no-JavaScript map at its current revision.
+pub(super) async fn search_map_path(
+    state: &AppState,
+    example: &crate::prewarm::Example,
+) -> Option<String> {
+    let card = Card::new(&super::examples::path(example), "")?;
+    let key = preview_key(state, &card).await.ok()?;
+    Some(preview_path(&key, example))
+}
+
+fn preview_path(key: &str, example: &crate::prewarm::Example) -> String {
+    format!("{PREVIEW}{}/{}.png", revision(key), example.id)
+}
+
+/// Which render a preview URL names: a prefix of its cache key's digest, so
+/// every replica serving one build, index and settings names it alike.
+fn revision(key: &str) -> String {
+    digest(key)[..REVISION_LEN].to_owned()
+}
+
+/// A no-JavaScript map. The edge keeps it only when its revision is the render
+/// served, from before the capture to after it. Another revision, from a page
+/// loaded before a release or from the other color during one, gets the current
+/// map, kept only briefly and only by browsers.
+pub(super) async fn search_preview(
+    OriginalUri(uri): OriginalUri,
+    state: Arc<AppState>,
+) -> Response {
+    // One URL per render: a query or an escaped name would be another edge entry.
+    if uri.query().is_some() {
+        return (
+            StatusCode::BAD_REQUEST,
+            [(header::CACHE_CONTROL, "no-store")],
+            "search preview takes no query",
+        )
+            .into_response();
+    }
+    let Some((requested, id)) = uri
+        .path()
+        .strip_prefix(PREVIEW)
+        .and_then(|rest| rest.strip_suffix(".png"))
+        .and_then(|rest| rest.split_once('/'))
+    else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let well_formed = requested.len() == REVISION_LEN
+        && requested
+            .bytes()
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
+    let admitted = well_formed
+        .then(|| admitted_example(&state, id))
+        .flatten()
+        .filter(|(example, _)| example.id == id);
+    let Some((_, card)) = admitted else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let before = match preview_key(&state, &card).await {
+        Ok(key) => key,
+        Err(error) => {
+            tracing::warn!(%error, "static search map identity unavailable");
+            return map_unavailable();
+        }
+    };
+    let render = {
+        let (state, card) = (state.clone(), card.clone());
+        tokio::spawn(async move { cached(&state, card, false).await })
+    };
+    let Some(body) = map_body(render).await else {
+        return map_unavailable();
+    };
+    let after = preview_key(&state, &card).await.ok();
+    let keep = requested == revision(&before) && after.as_deref() == Some(before.as_str());
+    let mut response = (
+        [
+            (header::CONTENT_TYPE, "image/png"),
+            (
+                header::CACHE_CONTROL,
+                if keep {
+                    "public, max-age=86400"
+                } else {
+                    "public, max-age=300"
+                },
+            ),
+        ],
+        body,
+    )
+        .into_response();
+    crate::edge::keep(response.headers_mut(), keep);
+    response
+}
+
+/// A finished static map render; without one the caller answers
+/// [`map_unavailable`], never another image.
+async fn map_body(
+    render: tokio::task::JoinHandle<Result<Vec<u8>, Arc<RenderError>>>,
+) -> Option<Vec<u8>> {
+    match tokio::time::timeout(std::time::Duration::from_secs(45), render).await {
+        Ok(Ok(Ok(body))) => Some(body),
+        _ => {
+            tracing::warn!("static search map unavailable");
+            None
+        }
+    }
+}
+
+fn map_unavailable() -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        [
+            (header::CACHE_CONTROL, "no-store"),
+            (header::RETRY_AFTER, "10"),
+        ],
+        "Search map is temporarily unavailable",
+    )
+        .into_response()
 }
 
 fn digest(bytes: impl AsRef<[u8]>) -> String {
@@ -563,6 +672,18 @@ static EXAMPLE_CARDS: LazyLock<Vec<(String, Card)>> = LazyLock::new(|| {
         .collect()
 });
 
+/// The cache key of a browser card's render.
+fn render_key(identity: &str, normalized: &str) -> String {
+    format!("previews/{identity}/{}.png", digest(normalized))
+}
+
+async fn preview_key(state: &AppState, card: &Card) -> Result<String, RenderError> {
+    Ok(render_key(
+        &identity(state).await?,
+        &overview_key(&card.image),
+    ))
+}
+
 async fn cached(
     state: &AppState,
     card: Card,
@@ -589,7 +710,7 @@ async fn cached(
     }
     let identity = identity(state).await.map_err(Arc::new)?;
     let normalized = overview_key(&card.image);
-    let key = format!("previews/{identity}/{}.png", digest(&normalized));
+    let key = render_key(&identity, &normalized);
     let admitted_base = card
         .url
         .strip_prefix(SITE)
@@ -726,16 +847,18 @@ mod tests {
             RenderError::Busy,
             RenderError::Failed("capture failed".to_owned()),
         ] {
-            let response = map_response(tokio::spawn(async move { Err(Arc::new(error)) })).await;
-            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-            assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
-            assert_eq!(response.headers()[header::RETRY_AFTER], "10");
-            let body = response.into_body().collect().await.unwrap().to_bytes();
-            assert!(
-                !body.starts_with(b"\x89PNG"),
-                "never show another query's map"
-            );
+            let body = map_body(tokio::spawn(async move { Err(Arc::new(error)) })).await;
+            assert!(body.is_none(), "never show another query's map");
         }
+        let response = map_unavailable();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        assert_eq!(response.headers()[header::RETRY_AFTER], "10");
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert!(
+            !body.starts_with(b"\x89PNG"),
+            "never show another query's map"
+        );
     }
 
     #[tokio::test]
@@ -757,6 +880,98 @@ mod tests {
         ] {
             let response = search_map(OriginalUri(uri.parse().unwrap()), state.clone()).await;
             assert_eq!(response.status(), status, "{uri}");
+        }
+    }
+
+    #[tokio::test]
+    async fn previews_are_kept_at_the_edge_only_at_the_served_revision() {
+        use http_body_util::BodyExt;
+
+        const EDGE: &str = "cloudflare-cdn-cache-control";
+        let state = state().await;
+        let example = crate::prewarm::examples()
+            .iter()
+            .find(|example| example.id == "whigs")
+            .unwrap();
+        let card = Card::new(&super::super::examples::path(example), "").unwrap();
+        let rendered = b"\x89PNG\r\n\x1a\nwhigs".to_vec();
+        let seeded = rendered.clone();
+        state
+            .previews
+            .get(
+                preview_key(&state, &card).await.unwrap(),
+                None,
+                false,
+                async move { Ok(seeded) },
+            )
+            .await
+            .unwrap();
+        let current = search_map_path(&state, example).await.unwrap();
+        let revision = current
+            .strip_prefix(PREVIEW)
+            .and_then(|rest| rest.strip_suffix("/whigs.png"))
+            .unwrap();
+        assert_eq!(revision.len(), REVISION_LEN);
+
+        let old = search_map(
+            OriginalUri("/search-map.png?example=whigs".parse().unwrap()),
+            state.clone(),
+        )
+        .await;
+        assert_eq!(old.status(), StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(old.headers()[header::LOCATION], current.as_str());
+        assert_eq!(old.headers()[header::CACHE_CONTROL], "no-store");
+
+        let other = if revision == "0".repeat(REVISION_LEN) {
+            "1"
+        } else {
+            "0"
+        };
+        for (uri, edge, browser) in [
+            (
+                current.clone(),
+                "public, max-age=1209600",
+                "public, max-age=86400",
+            ),
+            (
+                format!("{PREVIEW}{}/whigs.png", other.repeat(REVISION_LEN)),
+                "no-store",
+                "public, max-age=300",
+            ),
+        ] {
+            let response = search_preview(OriginalUri(uri.parse().unwrap()), state.clone()).await;
+            assert_eq!(response.status(), StatusCode::OK, "{uri}");
+            assert_eq!(response.headers()[header::CONTENT_TYPE], "image/png");
+            assert_eq!(response.headers()[EDGE], edge, "{uri}");
+            assert_eq!(response.headers()[header::CACHE_CONTROL], browser, "{uri}");
+            let body = response.into_body().collect().await.unwrap().to_bytes();
+            assert_eq!(body.as_ref(), rendered.as_slice());
+        }
+
+        for (uri, status) in [
+            (format!("{current}?x=1"), StatusCode::BAD_REQUEST),
+            (format!("{current}?"), StatusCode::BAD_REQUEST),
+            (
+                current.replace("/whigs.png", "/%77higs.png"),
+                StatusCode::NOT_FOUND,
+            ),
+            (current.replace(".png", ".jpg"), StatusCode::NOT_FOUND),
+            (
+                current.replace(revision, &revision.to_uppercase()),
+                StatusCode::NOT_FOUND,
+            ),
+            (
+                current.replace(revision, &revision[1..]),
+                StatusCode::NOT_FOUND,
+            ),
+            (
+                current.replace("/whigs.png", "/unknown.png"),
+                StatusCode::NOT_FOUND,
+            ),
+        ] {
+            let response = search_preview(OriginalUri(uri.parse().unwrap()), state.clone()).await;
+            assert_eq!(response.status(), status, "{uri}");
+            assert!(!response.headers().contains_key(EDGE), "{uri}");
         }
     }
 
