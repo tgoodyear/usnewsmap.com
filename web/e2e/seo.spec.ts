@@ -237,8 +237,11 @@ test("an unknown path shows the not-found page", async ({ page }) => {
   await expect(page.getByRole("heading", { level: 1 })).toContainText("newspapers");
 });
 
-/** robots.txt groups (RFC 9309): consecutive `User-agent` lines share the rules after them. */
-function robotsGroups(body: string): Map<string, string[]> {
+/**
+ * robots.txt groups (RFC 9309): consecutive `User-agent` lines share the rules after them.
+ * Each group keeps only the lines whose key matches `keys`.
+ */
+function robotsGroups(body: string, keys = /^(allow|disallow)$/i): Map<string, string[]> {
   const groups = new Map<string, string[]>();
   let agents: string[] = [];
   let inRules = false;
@@ -253,9 +256,9 @@ function robotsGroups(body: string): Map<string, string[]> {
       inRules = false;
       agents.push(value.toLowerCase());
       groups.set(value.toLowerCase(), []);
-    } else if (/^(allow|disallow)$/i.test(key) && agents.length) {
+    } else if (key.toLowerCase() !== "sitemap" && agents.length) {
       inRules = true;
-      for (const a of agents) groups.get(a)?.push(`${key}: ${value}`);
+      if (keys.test(key)) for (const a of agents) groups.get(a)?.push(`${key}: ${value}`);
     }
   }
   return groups;
@@ -279,6 +282,14 @@ test("robots.txt lets AI assistants' user-initiated fetchers use the API", async
   for (const agent of AI_USER_AGENTS) {
     // Groups don't inherit from `*`, so each needs its own rules.
     expect(groups.get(agent.toLowerCase()), agent).toEqual(["Allow: /"]);
+  }
+});
+
+test("robots.txt states Content Signals for search, AI input and AI training in every group", async ({ request }) => {
+  const groups = robotsGroups(await (await request.get("/robots.txt")).text(), /^content-signal$/i);
+  expect([...groups.keys()].sort()).toEqual(["*", ...AI_USER_AGENTS.map((a) => a.toLowerCase())].sort());
+  for (const [agent, signals] of groups) {
+    expect(signals, agent).toEqual(["Content-Signal: search=yes, ai-input=yes, ai-train=yes"]);
   }
 });
 
