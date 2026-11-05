@@ -253,13 +253,13 @@ impl CuratedDays {
         Ok(out)
     }
 
-    /// The batches with pages of `title` on `day`.
-    fn on(&self, title_day: (u32, u32)) -> impl Iterator<Item = u32> + '_ {
-        self.first
-            .get(&title_day)
-            .copied()
-            .into_iter()
-            .chain(self.more.get(&title_day).into_iter().flatten().copied())
+    /// Whether `batch` has pages of `title` on `day`.
+    fn on(&self, title_day: (u32, u32), batch: u32) -> bool {
+        self.first.get(&title_day) == Some(&batch)
+            || self
+                .more
+                .get(&title_day)
+                .is_some_and(|more| more.contains(&batch))
     }
 
     /// `on_page`: the scan is placed on a page its batch version holds.
@@ -272,7 +272,7 @@ impl CuratedDays {
             None => return Class::NotCurated,
         };
         match self.batches.get(name) {
-            Some(&(i, curated)) if self.on(title_day).any(|b| b == i) => {
+            Some(&(i, curated)) if self.on(title_day, i) => {
                 if curated != version {
                     Class::OtherVersionDay
                 } else if on_page {
@@ -281,7 +281,7 @@ impl CuratedDays {
                     Class::SameBatchDay
                 }
             }
-            _ if self.on(title_day).next().is_some() => Class::OtherBatchDay,
+            _ if self.first.contains_key(&title_day) => Class::OtherBatchDay,
             _ => Class::NotCurated,
         }
     }
@@ -379,8 +379,14 @@ async fn verified_part(
         .get(path)
         .await?
         .with_context(|| format!("`{path}` is missing"))?;
-    if body.len() as u64 != part.bytes || hex(&Sha256::digest(&body)) != part.sha256 {
-        bail!("`{path}` is not the part provenance.json records");
+    let sha256 = hex(&Sha256::digest(&body));
+    if body.len() as u64 != part.bytes || sha256 != part.sha256 {
+        bail!(
+            "`{path}` is not the part provenance.json records: {} bytes with SHA-256 {sha256}, not {} bytes with {}",
+            body.len(),
+            part.bytes,
+            part.sha256
+        );
     }
     let rows = read_part(Bytes::from(body)).with_context(|| format!("reading `{path}`"))?;
     if rows.len() as u64 != part.rows {
@@ -974,6 +980,7 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("is not the part"), "{err}");
+        assert!(err.to_string().contains(&part.sha256), "{err}");
 
         // Rows of another kind, with the hash recorded.
         let bytes = write_part(&[row("map", "ohi_alpha_ver01", "sn11111111", d, "0001")]).unwrap();
