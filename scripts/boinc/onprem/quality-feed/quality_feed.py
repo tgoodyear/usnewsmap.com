@@ -251,11 +251,18 @@ class Texts:
         self.curated = curated
         self._ours_alto = None
 
+    def _loc_files(self, batch, bv):
+        return glob.glob(os.path.join(self.curated, "pages", batch, f"v{bv:02d}", "*", "*.parquet"))
+
+    def has_loc(self, batch, bv):
+        """Whether the curated copy has the batch's LoC text yet (loc's second value)."""
+        return bool(self._loc_files(batch, bv))
+
     def loc(self, batch, bv, docs):
         import pyarrow.parquet as pq
 
         # Every run directory of the batch, oldest first, so the newest run's text wins.
-        files = sorted(glob.glob(os.path.join(self.curated, "pages", batch, f"v{bv:02d}", "*", "*.parquet")))
+        files = sorted(self._loc_files(batch, bv))
         got = {}
         for fp in files:
             for x in pq.read_table(fp, columns=["doc_id", "ocr_source", "text"]).to_pylist():
@@ -671,8 +678,9 @@ def delete_shipped(a, camp_dir, done_path, quality_docs, deleted_path, kept_path
     which there's no retention), and the
     rest are DELETEd; without, every one is. A kept scan that is gone (an
     OCR worker read it) or that OCR has since asked for (in `ocr_docs`; never inferred from
-    `quality_docs`, which a missing list would empty) leaves the list without a DELETE, so it
-    no longer counts against the budget; --keep-verify of the longest-unchecked are looked at a
+    `quality_docs`, which a missing list would empty) leaves the list without a DELETE of
+    ours (one with its sidecar gone gets one first, so its bytes surely are), so it no longer
+    counts against the budget; --keep-verify of the longest-unchecked are looked at a
     round (an unanswered check ends that round's checking). `deleted_path` lists every page this is done with, deleted or so released, so
     neither is weighed again. Returns how many were DELETEd (or already gone); releases
     aren't counted."""
@@ -695,6 +703,18 @@ def delete_shipped(a, camp_dir, done_path, quality_docs, deleted_path, kept_path
         size = int(rest[1]) if len(rest) > 1 and rest[1] else 0
         damage = float(rest[2]) if len(rest) > 2 and rest[2] else None
         shipped[doc] = (scan, size, damage, now)
+    def delete(doc, scan):
+        req = urllib.request.Request(f"{a.scan_server.rstrip('/')}/scans/{scan}", method="DELETE",
+                                     headers={"User-Agent": USER_AGENT})
+        try:
+            with urllib.request.urlopen(req, timeout=30):
+                pass
+        except urllib.error.HTTPError as e:
+            if e.code != 404:
+                log("buffer delete failed", doc_id=doc, status=e.code)
+                return False
+        return True
+
     released = [doc for doc in kept if doc in ocr_docs]
     if budget:
         for doc, k in heapq.nsmallest(getattr(a, "keep_verify", 0), kept.items(), key=lambda kv: kv[1][3]):
@@ -709,10 +729,12 @@ def delete_shipped(a, camp_dir, done_path, quality_docs, deleted_path, kept_path
                 if isinstance(e, urllib.error.HTTPError):
                     continue  # the server answered, so it's this scan: go on to the next
                 break  # no answer (down or unreachable): one timeout a round, not --keep-verify
-            if there:
-                kept[doc] = (*k[:3], now)
-            else:
+            # With its sidecar gone (marked done: OCR's worker read it, or a DELETE of ours
+            # got that far and failed), a DELETE makes sure the bytes are gone too.
+            if not there and delete(doc, k[0]):
                 released.append(doc)
+            else:
+                kept[doc] = (*k[:3], now)
     for doc in released:
         kept.pop(doc, None)
     pool = {**kept, **shipped}
@@ -727,18 +749,6 @@ def delete_shipped(a, camp_dir, done_path, quality_docs, deleted_path, kept_path
             want[doc] = k
             used += k[1]
 
-    def delete(doc):
-        req = urllib.request.Request(f"{a.scan_server.rstrip('/')}/scans/{pool[doc][0]}", method="DELETE",
-                                     headers={"User-Agent": USER_AGENT})
-        try:
-            with urllib.request.urlopen(req, timeout=30):
-                pass
-        except urllib.error.HTTPError as e:
-            if e.code != 404:
-                log("buffer delete failed", doc_id=doc, status=e.code)
-                return False
-        return True
-
     out = list(released)
     # Kept scans that lost their place go first. One that fails to go stays kept and still
     # counts, so this round's newly shipped pages are deleted rather than kept in its place:
@@ -746,7 +756,7 @@ def delete_shipped(a, camp_dir, done_path, quality_docs, deleted_path, kept_path
     # those deletes succeed), and no scan waits on the server outside both lists.
     stuck = {}
     for doc in sorted(d for d in kept if d not in want):
-        if delete(doc):
+        if delete(doc, kept[doc][0]):
             out.append(doc)
         else:
             stuck[doc] = kept[doc]
@@ -756,7 +766,7 @@ def delete_shipped(a, camp_dir, done_path, quality_docs, deleted_path, kept_path
         log("kept scans not deleted; newly shipped ones deleted in their place", pages=len(stuck),
             not_kept=sum(1 for d in want if d not in keep))
     for doc in sorted(d for d in shipped if d not in keep):
-        if delete(doc):
+        if delete(doc, shipped[doc][0]):
             out.append(doc)
     used = sum(k[1] for k in keep.values())
     n = len(out) - len(released)
@@ -843,16 +853,27 @@ def cmd_follow(a):
         quarantined = scan_quarantine.quarantined(state) if getattr(a, "quarantine_decode", False) else []
         blocked_ids = {record["id"] for record in quarantined}
         blocked_docs = {record["source"]["doc_id"] for record in quarantined}
-        rows, excluded = [], 0
+        rows, excluded, has_loc, no_text = [], 0, {}, 0
         for doc, row in index_rows(a.scan_server).items():
             if doc in staged or doc in done or absent.get(doc) == row.get("fetched_at", ""):
                 continue
             if doc in blocked_docs and scan_quarantine.source_id(row) in blocked_ids:
                 excluded += 1
                 continue
+            # A batch the curated copy has no LoC text for yet: process_chunk would leave its
+            # pages for later, so they mustn't count towards a full chunk.
+            batch = (row["batch"], int(row.get("batch_version") or 1))
+            if batch not in has_loc:
+                has_loc[batch] = texts.has_loc(*batch)
+            if not has_loc[batch]:
+                no_text += 1
+                continue
             rows.append(row)
         if excluded:
             log("quarantined scans excluded", campaign=a.campaign, pages=excluded)
+        if no_text:
+            log("waiting for the curated copy's LoC text", campaign=a.campaign, pages=no_text,
+                batches=sum(1 for v in has_loc.values() if not v))
         rows.sort(key=lambda r: (r.get("fetched_at", ""), r["doc_id"]))
         room = max(0, a.max_pending - len(pending_chunks(camp_dir))) * a.chunk_pages
         overdue = time.time() - last_chunk_at(state) >= a.max_wait_secs

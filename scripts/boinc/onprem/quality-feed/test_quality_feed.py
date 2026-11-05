@@ -753,14 +753,15 @@ class FollowTest(unittest.TestCase):
                 self.assertEqual(ship(set()), 0)
                 self.assertEqual(set(feed.read_kept(str(kept))), {"q1", "q2"})
 
-                # OCR asks for q2 (its worker deletes the scan) and q1 is found gone: both leave
-                # the list without a DELETE, which makes room for a newly shipped q6.
+                # OCR asks for q2 (its worker deletes the scan) and q1's sidecar is found gone:
+                # q2 leaves the list without a DELETE, q1 once one makes sure of its bytes,
+                # which makes room for a newly shipped q6.
                 calls.clear()
                 gone.add("buffer/b/q1.jp2")
                 with open(done, "a") as f:
                     f.write("q6\tc2\tbuffer/b/q6.jp2\t40\t0.3\n")
                 self.assertEqual(ship({"q1", "q3", "q4", "q5", "q6"}, {"q2"}), 0)
-                self.assertEqual(calls, [("GET", "buffer/b/q1.jp2.json")])
+                self.assertEqual(calls, [("GET", "buffer/b/q1.jp2.json"), ("DELETE", "buffer/b/q1.jp2")])
                 self.assertEqual(set(feed.read_kept(str(kept))), {"q6"})
                 self.assertEqual(feed.read_lines(str(deleted)), {"q1", "q2", "q3", "q4", "q5"})
 
@@ -826,8 +827,35 @@ class FollowTest(unittest.TestCase):
                 up[0] = True
                 calls.clear()
                 ship()
-            self.assertEqual(calls, ["flaky", "gone", "ok"])
+            self.assertEqual(calls, ["flaky", "gone", "gone", "ok"])  # gone: its check, then its DELETE
             self.assertEqual(set(feed.read_kept(str(kept))), {"down", "flaky", "ok"})
+
+    def test_a_kept_scan_whose_sidecar_is_gone_but_bytes_are_not_stays_until_deleted(self):
+        with tempfile.TemporaryDirectory() as d:
+            camp, done, deleted, kept = Path(d, "camp"), Path(d, "done.txt"), Path(d, "deleted.txt"), Path(d, "kept.tsv")
+            camp.mkdir()
+            done.write_text("")
+            kept.write_text("half\tbuffer/b/half.jp2\t10\t0.9\t1\n")
+            a = types.SimpleNamespace(scan_server="http://s", keep_bytes=100, keep_verify=1)
+            unlink = [500]
+
+            def fake(req, timeout=0):
+                if req.get_method() == "GET":  # the sidecar: renamed by a DELETE whose unlink failed
+                    raise urllib.error.HTTPError(req.full_url, 404, "", {}, None)
+                if unlink[0] != 204:
+                    raise urllib.error.HTTPError(req.full_url, unlink[0], "", {}, None)
+                return io.BytesIO(b"")
+
+            ship = lambda: feed.delete_shipped(a, str(camp), str(done), {"half"}, str(deleted), str(kept))
+            with mock.patch.object(feed.urllib.request, "urlopen", fake), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                ship()
+                self.assertEqual(set(feed.read_kept(str(kept))), {"half"})
+                self.assertEqual(feed.read_lines(str(deleted)), set())
+                unlink[0] = 204
+                ship()
+            self.assertEqual(feed.read_kept(str(kept)), {})
+            self.assertEqual(feed.read_lines(str(deleted)), {"half"})
 
     def test_an_unreadable_kept_line_is_weighed_again_not_fatal(self):
         with tempfile.TemporaryDirectory() as d:
@@ -897,6 +925,32 @@ class FollowChunkTest(unittest.TestCase):
             feed.main(argv)
             self.assertEqual((camp / "c00002/READY").read_text().strip(), "1")
             self.assertEqual(feed.read_lines(state / "done.txt"), set(rows))
+
+    @unittest.skipUnless(importlib.util.find_spec("pyarrow") and importlib.util.find_spec("PIL"),
+                         "PyArrow and Pillow required for the follower")
+    def test_pages_waiting_for_curated_text_do_not_make_a_chunk_full(self):
+        raw = DecodeQuarantineTest.image()
+        pages = [DecodeQuarantineTest.page(seq, raw) for seq in (1, 2, 3)]
+        rows = {p["doc_id"]: {**p, "format": "jpeg", "fetched_at": f"2026-11-03T03:0{p['seq']}:00Z"}
+                for p in pages}
+        rows[pages[0]["doc_id"]]["batch"] = "xx_later"
+        argv = ["follow", "--campaign", "cpu-test", "--curated", str(self.root / "curated"),
+                "--scan-server", "http://scan", "--outbox", str(self.root / "outbox"),
+                "--state", str(self.root / "state"), "--staged-dsn", "test", "--chunk-pages", "3",
+                "--max-pending", "4", "--workers", "1", "--max-wait-secs", "3600", "--once"]
+        texts = DecodeQuarantineTest.texts(self)
+        texts.has_loc.side_effect = lambda batch, bv: batch != "xx_later"
+        with mock.patch.object(feed, "Texts", return_value=texts), \
+                mock.patch.object(feed, "staged_from_db", return_value=set()), \
+                mock.patch.object(feed, "index_rows", return_value=rows), \
+                mock.patch.object(feed, "scan_set", return_value="buffer") as scan_set, \
+                mock.patch.object(feed.urllib.request, "urlopen", side_effect=lambda *a, **k: io.BytesIO(raw)), \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            feed.main(argv)
+        self.assertFalse((self.root / "outbox/cpu-test/c00001").exists())
+        self.assertEqual(scan_set.call_count, 0)
+        self.assertIn("waiting for the curated copy's LoC text", output.getvalue())
+        self.assertIn('"pages": 2', output.getvalue().split("waiting for a full chunk")[1][:200])
 
     def test_a_fresh_state_is_not_overdue(self):
         state = self.root / "state"

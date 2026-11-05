@@ -1387,7 +1387,8 @@ that no campaign has staged (OCR's and the pass's) a unit, in fetch order, in fu
 `--chunk-pages`. It holds back a part chunk until no chunk has been written for
 `--max-wait-secs` (6 hours): it used to chunk whatever had been fetched since its last
 round, a minute or so, and in the 24 hours to 5 November 2026 the median bundle held 16
-pages and ran for seconds.
+pages and ran for seconds. Pages of a batch the curated copy has no LoC text for yet don't
+count towards a full chunk; they wait, logged, until it does.
 
 Once a chunk has shipped, the pass's buffer scans are deleted, except the most damaged
 (LoC's `damage_rate`; unscored pages last), up to `--keep-bytes` in all (1 TB from
@@ -1399,7 +1400,9 @@ place and the newcomer is deleted instead, so the list never passes the budget a
 sits on the server outside it. A kept page OCR later asks for leaves the list without a delete, since OCR's
 worker deletes it after reading it: `ocr_manifest.py build` records every queued page whose
 scan is already on the scan server in `ocr-docs.txt`, not only its manifests' pages. So does
-one found gone, `--keep-verify` (500) of the longest-unchecked being looked up a round; a
+one whose sidecar is found gone, once a DELETE makes sure its bytes are too (one of ours that
+marked it done but couldn't unlink it leaves just the sidecar gone), `--keep-verify` (500) of
+the longest-unchecked being looked up a round; a
 lookup that fails goes to the back, and one the scan server doesn't answer ends that round's.
 Before 5 November 2026 every one was deleted, 150,000 pages, 54,000 of them with a damage
 rate of 0.1 or more. OCR's scans and the keep set are never deleted.
