@@ -22,7 +22,11 @@ index checksum or archive version fails explicitly instead of silently changing
 request membership. An exactly matching decode-quarantined member is instead
 reported as `preparation_quarantined` / `needs_science_review` and is not
 rebound to a changed fingerprint; other request members and ordinary feeding
-can continue. `quarantined_refetch_states` reports its review state even if
+can continue. A member whose JP2 is truncated at source is reported as
+`source_truncated`. That status is terminal, so it is neither waiting nor under review.
+A request whose members are all `source_truncated` ends as `source_truncated_no_work`,
+with nothing to publish or review. A mix with other rejections still needs review.
+`quarantined_refetch_states` reports each such state even if
 another copy of that document has since been prepared; no re-fetch is queued.
 Requests waiting for unavailable archives do not starve
 ordinary feeding. The 500-fresh-pair watermark, 2,000-unresolved ceiling,

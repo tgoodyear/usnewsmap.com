@@ -987,6 +987,25 @@ out other pages. A changed fingerprint remains eligible; network, integrity and 
 decoder errors continue to retry. CPU and Qwen quarantines are recorded as
 `manual_review` and never queue a re-fetch. These changes do not alter BOINC work requests.
 
+Before decoding, every verified `.jp2` gets a cheap completeness check that reads only
+its box, marker-segment and tile-part headers (no pixels). A box or tile-part that
+declares bytes past the end of the file, or a codestream that stops without its EOC
+marker, means the image was cut short. The bag MD5 shows that LoC's copy holds the same
+bytes, so neither a retry nor a re-fetch can fix it. Such a scan is never decoded or
+retried and does not count as a decoder failure. With `--quarantine-decode` (the CPU
+follower and Qwen), it is recorded at once as `source_truncated` for that exact
+fingerprint in the same database. It is then excluded like a quarantine, including by
+the manifest builder's non-English acquisition. A changed fingerprint is eligible
+again. Without that option (`usnm-quality-feed.service`), the page goes to
+`skipped.txt` with a `source_truncated: <reason>` line. Each chunk logs
+`source-truncated scans found`. `run` at start and `follow` whenever the total changes log
+`source-truncated scans in campaign`, giving page counts per `<batch>_verNN`.
+A JP2 that reaches EOC but is malformed in some other way still goes to the decoder
+and the three-failure rule. An existing `manual_review` record is left unchanged.
+This is a safe default that needs no decision: it only stops quality preparation from
+retrying the page. A stricter option, not implemented here, would also reject such
+pages from OCR. That is a separate maintainer decision.
+
 The preparation CT stores this evidence, decoder versions, failure counts/timestamps
 and review state in the campaign's
 `/var/lib/usnm-quality-feed/<campaign>/decode-quarantine.sqlite3`, separate from
@@ -1015,11 +1034,15 @@ boundary, preserving its outbox and state. To roll back, preserve quarantine sta
 READY chunks and queued work. Restore the previous CPU follower unit before an older
 shared feeder, which cannot parse `--quarantine-decode`; it will resume retrying bad
 scans. Keep the new helper and manifest exclusion while quarantines need protection.
+A `scan_quarantine.py` older than the `source_truncated` state rejects such a record
+as invalid. The feeder, Qwen and the manifest builder then stop with an error rather
+than retry, so keep the new helper when rolling back `quality_feed.py`.
 If the old manifest builder must be restored, pause that producer at an idle boundary
 and obtain a reviewed recovery plan. An old Qwen controller ignores quarantine.
 
 Language-budget reservations are still made before preparation; an already-reserved
-failed fingerprint can be retried without spending another page. A changed fingerprint
+failed fingerprint can be retried without spending another page. A reserved page
+found `source_truncated` stays spent. A changed fingerprint
 after quarantine, or a failure before a retry record is persisted or after decoding but
 before writing READY, can still require budget review.
 
