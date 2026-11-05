@@ -12,6 +12,7 @@ They sit between the other two kinds of document:
 
 | Date       | Note                                                                                                            | Topic                | Measured on                                                                                        |
 | ---------- | --------------------------------------------------------------------------------------------------------------- | -------------------- | -------------------------------------------------------------------------------------------------- |
+| 2026-11-05 | [The feeder's restart bound and a stale-slot check](2026-11-05-feeder-restart-bound.md)                         | operations           | CT 230's journals and feeder log, 21 October to 5 November; live `show_shmem`, read-only           |
 | 2026-11-05 | [Binding LoC crop scores to the audited package](2026-11-05-loc-audit-binding.md)                               | ocr, coverage        | Synthetic adapter fixtures; 0 of 1,052 published benchmark samples on the 1,706 audited pages      |
 | 2026-11-04 | [Sample page ids on the Qwen wire](2026-11-04-page-id-wire-inventory.md)                                        | ocr, operations      | Unit tests against the released `check_doc_id`; the `bundle-v1` and `bundle-v2` gold locks         |
 | 2026-11-04 | [Strict Qwen agreement on crops with no words](2026-11-04-qwen-wordless-crops.md)                               | ocr, operations      | One week of on-prem `usnm_qwen` pairs and retained results, joined to canonical results; read-only |

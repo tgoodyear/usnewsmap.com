@@ -253,7 +253,9 @@ in `systemctl --failed` and `journalctl -u usnm-feeder-slot-guard.service`.
 `maintenance` is distinct from a match and does not fail the unit. There is no
 external notification here; monitor failed units and missing timer runs separately.
 An unreachable container, old feeder, stale snapshot or failed verified-TLS query
-is unknown, not success. The image's independent five-minute JSON event is useful
+is unknown, not success. So is `feeder_restart_hold`: the server's supervisor loop
+stopped restarting a feeder that kept stopping
+([The loop's restart bound](boinc/feeder-refresh.md#the-loops-restart-bound)). The image's independent five-minute JSON event is useful
 for diagnosis. See [Allocation drift detection](../contrib-compute/docs/app-release.md#allocation-drift-detection)
 for the scope and limitations, and [Feeder-only refresh](boinc/feeder-refresh.md) for the
 recovery procedure.
