@@ -609,17 +609,13 @@ class BuildInputs(unittest.TestCase):
         self.assertIn("if: always() && needs.changes.outputs.quickwit == 'true'", gate)
         self.assertIn('test "$RESULT" = success', gate)
 
-    def test_selected_image_matrix_keeps_required_aggregate(self):
+    def test_the_image_matrix_and_the_queue_job_follow_their_outputs(self):
+        # test_ci_gates.py checks the image job's matrix and its required gate.
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
-        self.assertIn("images: ${{ steps.f.outputs.images }}", job_text(workflow, "changes"))
-        child = job_text(workflow, "image-tests")
-        self.assertIn("image: ${{ fromJSON(needs.changes.outputs.images) }}", child)
-        self.assertIn("if: needs.changes.outputs.image == 'true'", child)
-        gate = job_text(workflow, "image")
-        self.assertIn("needs: [changes, image-tests]", gate)
-        self.assertIn("if: always() && needs.changes.outputs.image == 'true'", gate)
-        self.assertIn('test "$RESULT" = success', gate)
-        self.assertIn("queue: ${{ steps.f.outputs.queue }}", job_text(workflow, "changes"))
+        changes = job_text(workflow, "changes")
+        self.assertIn("images: ${{ steps.f.outputs.images }}", changes)
+        self.assertIn("if: needs.changes.outputs.image == 'true'", job_text(workflow, "image-tests"))
+        self.assertIn("queue: ${{ steps.f.outputs.queue }}", changes)
         self.assertIn("if: needs.changes.outputs.queue == 'true'", job_text(workflow, "queue"))
 
     def test_parity_fixture_generators_do_not_call_the_excluded_api(self):
