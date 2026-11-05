@@ -1,0 +1,191 @@
+{
+  "deployment": "Catalogued as opt-in profile yidj2, ranked after yid and heb; not in the Tesseract image's models.lock, the BOINC worker or any route. Stock yid stays the default until the newspaper score decides (#1479 step 4).",
+  "evaluation": {
+    "alto_line_cer_percent": {
+      "yid": [
+        13.57,
+        11.41,
+        16.28
+      ],
+      "yidj2": [
+        8.21,
+        6.11,
+        10.75
+      ]
+    },
+    "caveats": [
+      "test pages are unseen pages of the 60 books trained on, so the gain on other books is probably smaller",
+      "run 2, the dictionary comparison and the snapshot comparison were chosen after seeing run 1's result",
+      "no newspaper accuracy: that needs the transcribed set in ocr/bench/yiddish-newspaper"
+    ],
+    "format": "lists are [estimate, lower 95% limit, upper 95% limit]; CER is mean page CER",
+    "median_page_cer_percent": {
+      "yid": 5.71,
+      "yidj2": 1.71
+    },
+    "newspaper_agreement_with_jochre3_percent": {
+      "note": "symmetric edit distance on 100 newspaper crops: agreement, not accuracy",
+      "yid": [
+        69.7,
+        63.4,
+        75.6
+      ],
+      "yidj2": [
+        68.4,
+        61.4,
+        74.8
+      ]
+    },
+    "page_cer_percent": {
+      "jochre3": [
+        1.52,
+        1.17,
+        1.9
+      ],
+      "yid": [
+        8.72,
+        7.14,
+        10.47
+      ],
+      "yidj2": [
+        4.03,
+        2.84,
+        5.52
+      ]
+    },
+    "pages_better": "103 of 104",
+    "paired_difference_points": {
+      "yidj2_minus_jochre3": [
+        2.51,
+        1.31,
+        3.94
+      ],
+      "yidj2_minus_yid": [
+        -4.69,
+        -5.43,
+        -4.04
+      ]
+    },
+    "study": "Study 10 (PR #1428), not preregistered; Study 8's references, scorer (YIVO-simplifies both sides) and page bootstrap",
+    "test_set": "the corpus's 104-page test split: whole pages at PSM 3, and its 4,011 ALTO line crops at PSM 7"
+  },
+  "format": "usnm-model-provenance/1",
+  "issue": 1479,
+  "model": {
+    "bytes": 3323403,
+    "catalog": {
+      "engine": "tesseract-5.5",
+      "model": "tessdata/yidj2.traineddata",
+      "profile": "yidj2"
+    },
+    "checkpoint": "yidj2_1.470_16289_52300.checkpoint",
+    "dictionaries": "word, punctuation and number dawgs rebuilt in visual order by tesstrain (LANG_TYPE=RTL) from the start model's own 20,582 words",
+    "file": "yidj2.traineddata",
+    "iterations": 52300,
+    "kind": "Tesseract 5 LSTM, float, written by lstmtraining --stop_training",
+    "license": "CC-BY-NC-SA-4.0",
+    "license_url": "https://creativecommons.org/licenses/by-nc-sa/4.0/",
+    "name": "yidj2",
+    "sha256": "e12d3b57191df9915179b4c779a218775f010670e980a72dc8e938bf5c4d4578",
+    "training_bcer_percent": 1.47,
+    "unicharset_entries": {
+      "left_to_right": 1,
+      "model": 102,
+      "right_to_left": 34,
+      "start_model": 73,
+      "start_model_ids_kept": true
+    }
+  },
+  "recipe": {
+    "asset": "recipe-study10.tar",
+    "commit": "4ca78f0198b4336d8bf08afe08ec2c6f91a49b3a",
+    "files": {
+      "cut-lines.py": "7f2645bf4f788fa748a8b541e0319d49333032c5ae8fe9b43f66fb98cff77828",
+      "langdata.sha256": "95652955b033dc6b3e924a0a4cfec71ee73f471ab393693401682451d9463d7d",
+      "study10.sh": "094c56e070e8d24b3259fe7243131362725a71bfe80176c76c6dca7dcacc56ee",
+      "tesstrain.Containerfile": "7ac55dd984b9a7019dab2512f3d1e9625425755800413d6d2a5912e7ab524001"
+    },
+    "path": "docs/reports/2026-11-gpu-studies/scripts/yiddish/",
+    "pr": 1428,
+    "steps": "study10.sh --work DIR --step image, setup, lines, langdata, train, then --step snap --run yidj2 --name yidj2 --checkpoint yidj2_1.470_16289_52300.checkpoint"
+  },
+  "release": {
+    "assets": [
+      "LICENSE-Apache-2.0.txt",
+      "NOTICE.md",
+      "SHA256SUMS",
+      "provenance.json",
+      "recipe-study10.tar",
+      "training-split.sha256.txt",
+      "yidj2.traineddata"
+    ],
+    "tag": "model-tesseract-yidj2-20261105",
+    "url": "https://github.com/tgoodyear/usnewsmap.com/releases/tag/model-tesseract-yidj2-20261105"
+  },
+  "reproducibility": {
+    "conversion": "yidj2.traineddata was converted from the run's checkpoint through study10.sh --step snap",
+    "recipe_checked": "study10.sh, run as the recipe, rebuilt the stock-network yidrev model and run 1's 17,900-iteration model byte for byte, selected the same 20,509 lines for run 2 and fetched the same langdata",
+    "training_repeated": "not yet: a repeat of run 2 with that unicharset order is running (#1479)",
+    "unicharset_order": "tesstrain concatenates all-gt in find order over the line folder, and the 29 characters not in stock yid enter the unicharset in first-seen order, so a fresh copy of the same lines gave the same 102 characters in another order and a different network. Putting those characters first in all-gt, in the order of entries 73-101 of yidj2.traineddata's lstm-unicharset, rebuilt Study 10's unicharset and proto model byte for byte (#1479)"
+  },
+  "start_model": {
+    "commit": "e12c65a915945e4c28e237a9b52bc4a8f39a0cec",
+    "license": "Apache-2.0",
+    "license_file": {
+      "asset": "LICENSE-Apache-2.0.txt",
+      "sha256": "a6cba85bc92e0cff7a450b1d873c0eaa2e9fc96bf472df0247a26bec77bf3ff9",
+      "source": "https://github.com/tesseract-ocr/tessdata_best/blob/e12c65a915945e4c28e237a9b52bc4a8f39a0cec/LICENSE"
+    },
+    "name": "yid.traineddata",
+    "pinned_by": "ocr/engines/tesseract/models.lock",
+    "sha256": "086ec92aea9c7016c74b503c3d24906381e7e57cc3f487f12e1784eb2530ba94",
+    "source": "https://github.com/tesseract-ocr/tessdata_best"
+  },
+  "tools": {
+    "langdata_lstm": {
+      "commit": "07930fd9f246622c26eb5de794d9212ceac432d3",
+      "files": "33, listed with sha256 in langdata.sha256",
+      "license": "Apache-2.0",
+      "source": "https://github.com/tesseract-ocr/langdata_lstm"
+    },
+    "tesseract": "5.5.0 (Debian 5.5.0-1+b1), the usnm_ocr Tesseract image built from ocr/engines/tesseract at cf07f950",
+    "tesstrain": {
+      "commit": "405346a3a67d8e4e049341d1da6a4b752e0b8351",
+      "source": "https://github.com/tesseract-ocr/tesstrain"
+    },
+    "trainer_image": "that image plus make, python3, python3-pil, python3-bidi and wget (recipe tesstrain.Containerfile)"
+  },
+  "training": {
+    "duration": "1 h 24 min on one CPU thread at nice 19",
+    "learning_rate": 0.0001,
+    "make": "MODEL_NAME=yidj2 START_MODEL=yid LANG_TYPE=RTL MAX_ITERATIONS=60000",
+    "random_seed": 0,
+    "ratio_train": 0.9,
+    "stopped": "60,000 iterations; the model is the newest best checkpoint (52,300), chosen on training error, not test score"
+  },
+  "training_data": {
+    "attribution": "Assaf Urieli and the Yiddish Book Center",
+    "books": 60,
+    "citation": "Assaf Urieli, Amber Clooney, Michelle Sigiel and Grisha Leyfer, \"Jochre 3 and the Yiddish OCR corpus\", 2025, arXiv:2501.08442",
+    "commit": "bd69b412947e03cca18fdd5c72826207946d777f",
+    "corpus": "The Yiddish OCR Corpus",
+    "held_out": "the 104-page test split; it shares all 60 books with the training split, and no page is in both",
+    "license": "CC-BY-NC-SA-4.0",
+    "lines": {
+      "dropped_bidi_class_l": 512,
+      "eval": 2051,
+      "kept": 20509,
+      "train": 18458
+    },
+    "page_list": {
+      "asset": "training-split.sha256.txt",
+      "columns": "image sha256, ALTO sha256, image path",
+      "sha256": "962f675d253219f67facbcec8d4c43f0197ebb499a6defa34d1654a30d688da9"
+    },
+    "pages": 554,
+    "source": "https://gitlab.com/jochre/corpora/jochre-yiddish-corpus",
+    "split": "training",
+    "terms": "https://gitlab.com/jochre/corpora/jochre-yiddish-corpus/-/blob/bd69b412947e03cca18fdd5c72826207946d777f/LICENSE.md",
+    "text": "each ALTO text line in NFC, logical order, cut with its line image (cut-lines.py)"
+  }
+}

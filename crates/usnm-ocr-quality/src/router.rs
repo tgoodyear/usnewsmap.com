@@ -133,9 +133,29 @@ pub fn canonical_language(language: &str) -> &str {
     }
 }
 
+/// Tesseract profile of `yid` fine-tuned on the Yiddish OCR Corpus (#1479).
+/// Its model is a release asset, not in the Tesseract image
+/// (`ocr/models/yidj2/README.md`).
+pub const YIDDISH_JOCHRE_PROFILE: &str = "yidj2";
+
+/// Opt-in profile choices. The default changes nothing.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RouteOptions {
+    /// Put [`YIDDISH_JOCHRE_PROFILE`] first for Yiddish. Off by default:
+    /// stock `yid` stays first until a transcribed newspaper sample
+    /// shows the fine-tuned model reads newspapers better (#1479).
+    pub yiddish_jochre: bool,
+}
+
 /// Ordered candidate profiles for a language, best first.
 pub fn profile_candidates(language: &str) -> Vec<&'static str> {
+    profile_candidates_with(language, RouteOptions::default())
+}
+
+/// [`profile_candidates`] with opt-in profiles.
+pub fn profile_candidates_with(language: &str, options: RouteOptions) -> Vec<&'static str> {
     match canonical_language(language) {
+        "yid" if options.yiddish_jochre => vec![YIDDISH_JOCHRE_PROFILE, "yid", "heb"],
         "deu" => vec!["frak2021", "deu_latf+deu", "deu"],
         "srp" => vec!["srp+srp_latn", "srp"],
         "hrv" | "bos" => vec!["hrv", "srp_latn"],
@@ -181,8 +201,26 @@ pub fn route_page(
     prior_damage_rate: Option<f64>,
     legibility_ceiling: Option<f64>,
 ) -> RouteDecision {
+    route_page_with(
+        language,
+        page,
+        prior_damage_rate,
+        legibility_ceiling,
+        RouteOptions::default(),
+    )
+}
+
+/// [`route_page`] with opt-in profiles. Only the profile changes; the
+/// thresholds, `ROUTE_ID` and `ROUTE_VERSION` are the same.
+pub fn route_page_with(
+    language: &str,
+    page: &PageFeatures,
+    prior_damage_rate: Option<f64>,
+    legibility_ceiling: Option<f64>,
+    options: RouteOptions,
+) -> RouteDecision {
     let lang = canonical_language(language);
-    let primary_profile = profile_candidates(lang)
+    let primary_profile = profile_candidates_with(lang, options)
         .first()
         .copied()
         .unwrap_or(lang)
@@ -472,5 +510,41 @@ mod tests {
         let d_gre = route_page("gre", &page, Some(0.11), Some(0.88));
         assert_eq!(d_gre.profile, "ell");
         assert_eq!(d_gre.regime, DamageRegime::CleanStandard);
+    }
+
+    #[test]
+    fn yiddish_keeps_stock_yid_unless_the_jochre_profile_is_opted_in() {
+        let page = sample_features(3600, 0.08, 0.19, 195.0, 6800.0, 4, 36.0, 0.82);
+        let opted_in = RouteOptions {
+            yiddish_jochre: true,
+        };
+
+        assert_eq!(profile_candidates("yid"), vec!["yid", "heb"]);
+        let stock = route_page("yid", &page, Some(0.11), Some(0.88));
+        assert_eq!(stock.profile, "yid");
+        assert!(stock
+            .reasons
+            .contains(&"script_profile:yid->yid".to_owned()));
+
+        assert_eq!(
+            profile_candidates_with("yid", opted_in),
+            vec!["yidj2", "yid", "heb"]
+        );
+        let tuned = route_page_with("yid", &page, Some(0.11), Some(0.88), opted_in);
+        assert_eq!(tuned.profile, YIDDISH_JOCHRE_PROFILE);
+        assert!(tuned
+            .reasons
+            .contains(&"script_profile:yid->yidj2".to_owned()));
+        assert_eq!(
+            (tuned.regime, tuned.psm, tuned.route_version),
+            (stock.regime, stock.psm, stock.route_version)
+        );
+
+        for language in ["heb", "eng", "ger"] {
+            assert_eq!(
+                profile_candidates_with(language, opted_in),
+                profile_candidates(language)
+            );
+        }
     }
 }
