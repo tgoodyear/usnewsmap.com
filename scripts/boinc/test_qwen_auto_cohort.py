@@ -239,16 +239,51 @@ class BoincDb {
         shutil.rmtree(twin)
         self.assertEqual(R.bind_inputs(self.project, row, key, self.audit[key]), proof)
 
+    def test_a_bundle_page_with_an_empty_crop_id_is_refused_not_passed_over(self):
+        row = self.bundle(210, ["yid", "spa"])
+        key = row["unit"]["name"].removeprefix("usnm_qwen_")
+        download = self.project / "download" / "210_qwen_json"
+        job = json.loads(download.read_bytes())
+        # Prefixed, the empty id would read "<doc>:", which is not empty.
+        job["pages"][1]["crops"][0]["id"] = ""
+        job["crops"] = [dict(crop, id=page["doc_id"] + ":" + crop["id"]) for page in job["pages"]
+                        for crop in page["crops"]]
+        # The page's own staged job and the membership agree, so only the crop check stops it.
+        staged = self.root / "qwen/qwen-nonenglish-v1/pages/bundled-page-210-1/qwen.json"
+        single = json.loads(staged.read_bytes())
+        single["crops"] = job["pages"][1]["crops"]
+        staged.write_text(json.dumps(single))
+        unit = next((self.root / "qwen/qwen-nonenglish-v1/units").glob("bundle-00210-*"))
+        membership = json.loads((unit / "membership.json").read_bytes())
+        membership["pages"][1]["job_sha256"] = R.sha(staged.read_bytes())
+        (unit / "membership.json").write_text(json.dumps(membership))
+        raw = json.dumps(job).encode()
+        for path in (download, unit / "qwen.json"):
+            path.write_bytes(raw)
+        self.audit[key]["job_sha256"] = R.sha(raw)
+        with self.assertRaisesRegex(ValueError, "Bad crop contract") as caught:
+            R.bind_inputs(self.project, row, key, self.audit[key])
+        self.assertNotIsInstance(caught.exception, R.OutOfCohort)
+
     @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
     def test_a_bundle_with_a_page_outside_the_cohort_is_passed_over_whole(self):
         self.audit.clear()
         self.rows[:] = [self.bundle(100, ["yid", "spa"]), self.bundle(101, ["srp", "yid"])]
         (self.root / "qwen/qwen-nonenglish-v1/audit.json").write_text(json.dumps(self.audit))
         (self.project / "database.json").write_text(json.dumps(self.rows))
-        with patch.object(R, "read_database", return_value=self.database):
+        scans, listing = [], os.scandir
+
+        def scandir(path):
+            scans.append(Path(path).name)
+            return listing(path)
+
+        with patch.object(R, "read_database", return_value=self.database), \
+                patch.object(R.os, "scandir", side_effect=scandir):
             receipt = R.run(self.args)
         self.assertEqual((receipt["status"], receipt["target"], receipt["out_of_cohort_skipped"]),
                          ("refilled-finite-window", [101, 101], [100]))
+        # units/ is listed once to bind both bundles and once more before apply, not once a bundle.
+        self.assertEqual(scans.count("units"), 2)
         self.assertEqual([page["doc_id"] for page in receipt["inputs"][0]["pages"]],
                          ["bundled-page-101-0", "bundled-page-101-1"])
         state = json.loads((self.project / "ops-issue-559/qwen-auto-cohort/state.json").read_bytes())

@@ -214,13 +214,35 @@ def safe_doc(doc):
     return isinstance(doc, str) and re.fullmatch("[a-zA-Z0-9][a-zA-Z0-9_.-]*", doc) is not None
 
 
-def bundle_unit(project, campaign, job_raw, doc):
+class BundleUnits:
+    """Each producer root's units/bundle-<n>-<first doc> directories by first doc, from one scan
+    of its units/ per pass rather than one per bundle looked up. A pass that must see units staged
+    since (the check before apply) takes a new one."""
+
+    def __init__(self):
+        self.roots = {}
+
+    def named(self, units, doc):
+        if units not in self.roots:
+            index = {}
+            try:
+                with os.scandir(units) as entries:
+                    for entry in entries:
+                        match = re.fullmatch("bundle-[0-9]{5,}-(.+)", entry.name)
+                        if match:
+                            index.setdefault(match.group(1), []).append(units / entry.name)
+            except FileNotFoundError:
+                pass
+            self.roots[units] = index
+        return self.roots[units].get(doc, [])
+
+
+def bundle_unit(project, campaign, job_raw, doc, bundles=None):
     """The one bundle unit the producer staged the job in: `qwen stage --bundle-size` names it
     units/bundle-<n>-<first doc>, and a crash may leave a partial one of the same first doc."""
     units = project.parent / "qwen" / campaign / "units"
-    found = [unit for unit in units.glob("bundle-*-" + doc)
-             if re.fullmatch("bundle-[0-9]{5,}-" + re.escape(doc), unit.name)
-             and (unit / "qwen.json").is_file() and (unit / "qwen.json").read_bytes() == job_raw]
+    found = [unit for unit in (BundleUnits() if bundles is None else bundles).named(units, doc)
+             if (unit / "qwen.json").is_file() and (unit / "qwen.json").read_bytes() == job_raw]
     require(len(found) == 1, "Producer bundle unit missing or ambiguous")
     return found[0]
 
@@ -250,7 +272,7 @@ def input_paths(project, row):
     return files
 
 
-def exclusion_key(project, row, job_id, audit, campaign, prompt_version):
+def exclusion_key(project, row, job_id, audit, campaign, prompt_version, bundles=None):
     # Everything a cached out-of-cohort decision rests on, without reading page bytes: the
     # audit record, the WU binding, the job bytes and the identity of every file bind_inputs
     # reads. Any change misses the cache, so the unit is bound again from scratch and
@@ -267,7 +289,7 @@ def exclusion_key(project, row, job_id, audit, campaign, prompt_version):
             docs = [page["doc_id"] for page in parsed["pages"]]
             if not all(map(safe_doc, docs)):
                 return None
-            producer = bundle_paths(project, campaign, bundle_unit(project, campaign, job, doc), docs)
+            producer = bundle_paths(project, campaign, bundle_unit(project, campaign, job, doc, bundles), docs)
         else:
             producer = producer_paths(project, doc, campaign)
         stats = [[str(path), info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns]
@@ -301,7 +323,7 @@ def bind_source(project, doc, campaign, page, language, sample_path):
             "sample_sha256": sha(sample_raw), "source_quality": sample, "provenance": provenance}
 
 
-def bind_bundle(project, wu, job, files, campaign):
+def bind_bundle(project, wu, job, files, campaign, bundles=None):
     """bind_inputs for a multi-page unit (qwen stage --bundle-size): the bundle unit the producer
     submitted, its membership, and each page's own staged job and source evidence, bound to that
     page's slice of the bundled page.jpg."""
@@ -311,13 +333,15 @@ def bind_bundle(project, wu, job, files, campaign):
             and docs[0] == job["doc_id"] and pages[0]["language"] == job["language"],
             "Bad bundle page contract")
     require(all(page["group"] == campaign for page in pages), "Unreviewed prompt/budget/cohort")
+    # Each page's own crop ids, before the bundle prefixes them with its doc id.
+    require(all(1 <= len(page["crops"]) <= 12
+                and all(isinstance(crop["id"], str) and crop["id"] for crop in page["crops"])
+                and len({crop["id"] for crop in page["crops"]}) == len(page["crops"]) for page in pages),
+            "Bad crop contract")
     flat = [dict(crop, id=page["doc_id"] + ":" + crop["id"]) for page in pages for crop in page["crops"]]
     require(1 <= len(job["crops"]) <= 256 and job["crops"] == flat
-            and all(1 <= len(page["crops"]) <= 12
-                    and len({crop["id"] for crop in page["crops"]}) == len(page["crops"]) for page in pages)
-            and all(isinstance(crop["id"], str) and crop["id"] and len(crop["loc_text"].encode("utf-8")) <= 8192
-                    for crop in flat), "Bad crop contract")
-    unit = bundle_unit(project, campaign, files["job"], job["doc_id"])
+            and all(len(crop["loc_text"].encode("utf-8")) <= 8192 for crop in flat), "Bad crop contract")
+    unit = bundle_unit(project, campaign, files["job"], job["doc_id"], bundles)
     require((unit / "page.jpg").read_bytes() == files["page"]
             and (unit / "submitted").read_text().strip() == wu["name"], "Producer input/submission mismatch")
     membership_raw = (unit / "membership.json").read_bytes()
@@ -355,7 +379,7 @@ def bind_bundle(project, wu, job, files, campaign):
             "membership_sha256": sha(membership_raw), "pages": bound, "accuracy_established": False}
 
 
-def bind_inputs(project, row, job_id, audit, campaign=DEFAULT_CAMPAIGN, prompt_version=1):
+def bind_inputs(project, row, job_id, audit, campaign=DEFAULT_CAMPAIGN, prompt_version=1, bundles=None):
     wu = row["unit"]
     require(re.fullmatch("[a-f0-9]{64}", job_id) is not None, "Bad native audit identity")
     require(wu["name"] == "usnm_qwen_" + job_id and int(audit["workunit_id"]) == int(wu["id"])
@@ -375,7 +399,7 @@ def bind_inputs(project, row, job_id, audit, campaign=DEFAULT_CAMPAIGN, prompt_v
             and job["prompt_version"] == prompt_version and job["max_tokens_per_1000px2"] == 4
             and job["group"] == campaign, "Unreviewed prompt/budget/cohort")
     if job.get("pages"):
-        return bind_bundle(project, wu, job, files, campaign)
+        return bind_bundle(project, wu, job, files, campaign, bundles)
     crops = job["crops"]
     require(1 <= len(crops) <= 12 and len({crop["id"] for crop in crops}) == len(crops)
             and all(isinstance(crop["id"], str) and crop["id"] and
@@ -635,18 +659,19 @@ def run(args):
             # Later ticks pass them over without re-reading every page while that key holds.
             known = {key: value for key, value in state.get("out_of_cohort", {}).items()
                      if int(key) in scanned}
+            bundles = BundleUnits()
 
             def admissible(row):
                 # Only a language outside the reviewed cohort is passed over; every other
                 # binding failure still stops the tick.
                 unit = int(row["unit"]["id"])
-                key = exclusion_key(project, row, *by_wu[unit])
+                key = exclusion_key(project, row, *by_wu[unit], bundles)
                 if key is not None and known.get(str(unit)) == key:
                     skipped.append(unit)
                     remembered.append(unit)
                     return False
                 try:
-                    bind_inputs(project, row, *by_wu[unit])
+                    bind_inputs(project, row, *by_wu[unit], bundles)
                 except OutOfCohort:
                     skipped.append(unit)
                     if key is not None:
@@ -679,7 +704,7 @@ def run(args):
                 # The left-behind replicas stay ordinary unsent work for every other eligible class;
                 # nothing is cancelled, reassigned or edited.
                 output |= {"rotated_past_window": window, "left_unsent_replicas": available}
-            proof = [bind_inputs(project, row, *by_wu[int(row["unit"]["id"])])
+            proof = [bind_inputs(project, row, *by_wu[int(row["unit"]["id"])], bundles)
                      for row in selected]
             target = [int(selected[0]["unit"]["id"]), int(selected[-1]["unit"]["id"])]
             command = ["--workunit", str(target[0]), "--workunit-end", str(target[1]), "--fresh-pair",
@@ -706,7 +731,9 @@ def run(args):
             }
             persist(state_path, state)
             if selected:
-                require([bind_inputs(project, row, *by_wu[int(row["unit"]["id"])])
+                # Scanned again, so a bundle staged twice since is seen.
+                bundles = BundleUnits()
+                require([bind_inputs(project, row, *by_wu[int(row["unit"]["id"])], bundles)
                          for row in selected] == proof,
                         "Input/source provenance changed before apply")
                 require(int(time.time()) < args.enabled_until, "Admission deadline passed before publication")
