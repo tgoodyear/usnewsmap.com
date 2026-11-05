@@ -332,7 +332,7 @@ scripts/ocr-survey/gold.py validate --crops OUT/crops.jsonl --manifest OUT/manif
 
 ## CER and WER
 
-`usnm-ocr-survey score` (the `crates/usnm-ocr-survey` crate, [#457](https://github.com/tgoodyear/usnewsmap.com/issues/457)) compares each hypothesis text with the transcription. It replaces `gold.py score`, which stays in the repository as the reference: both take the same flags and write the same files, byte for byte. This is the CER the plan describes in 13 §13.9, minus the part that finds the crop's span in a whole page's text; that part needs the engine runs' word boxes and is not built. The arithmetic is edit distance over the normalized transcription's length, summed over crops (a crop's weight is its length), reported for all crops and per group. WER is the same over whitespace-separated words.
+`usnm-ocr-survey score` (the `crates/usnm-ocr-survey` crate, [#457](https://github.com/tgoodyear/usnewsmap.com/issues/457)) compares each hypothesis text with the transcription. It replaces `gold.py score`, which stays in the repository as the reference: both take the same flags and write the same files, byte for byte. This is the CER the plan describes in 13 §13.9, minus the part that finds the crop's span in a whole page's text. For an engine that writes word boxes, `alto-crop` does that part: it clips the engine's ALTO to the crop's box (see [Word position against ALTO](#word-position-against-alto)). The arithmetic is edit distance over the normalized transcription's length, summed over crops (a crop's weight is its length), reported for all crops and per group. WER is the same over whitespace-separated words.
 
 Characters are Unicode scalar values, as Python's `str` counts them, and whitespace is what Python's `str.isspace` accepts (Rust's `White_Space` plus U+001C to U+001F). The edit distance is Myers' bit-parallel algorithm in Hyyrö's multi-word form, about n·m/64 word operations instead of gold.py's n·m Python steps. On the 600 BLN600 excerpts against Gale's OCR (1,696,781 reference characters), `gold.py score` took 880 s and `usnm-ocr-survey score` 0.66 s, with identical output files.
 
@@ -351,6 +351,57 @@ Hypotheses are the hint texts in `crops.jsonl` (`--hints`), or per-engine files 
 ```sh
 cargo run --release -p usnm-ocr-survey -- score --crops OUT/crops.jsonl --hints --out OUT/scores
 ```
+
+## Word position against ALTO
+
+`usnm-ocr-survey alto-position` and `alto-crop` ([#1438](https://github.com/tgoodyear/usnewsmap.com/issues/1438), `crates/usnm-ocr-survey/src/position.rs`) score an engine by where each word sits on the page, so a misread word and a word read in the wrong place count apart. A text-order score mixes the two: an engine that reads every word right but takes two columns in the other order scores almost as badly as one that misreads them. American Stories' 130% CER on ALTO crop boxes in the October pilot came from article-level ordering.
+
+**LoC is a yardstick, not truth.** Run against LoC's ALTO, these commands measure agreement with LoC's OCR. Where two engines differ, they say which one agrees with LoC, not which one is right; LoC's own errors count against an engine that read the word correctly. Accuracy numbers still come from human transcriptions (`score`, or `alto-crop --text-is-reference`). Agreement with LoC is the measure that scales to the whole corpus.
+
+### Two ALTO files of one page
+
+```sh
+usnm-ocr-survey alto-position --reference LOC.xml --hypothesis ENGINE.xml [--list-unmatched]
+```
+
+Both files must be readings of the same page image with a box for every word; an ALTO with line boxes only is refused. Any ALTO `usnm-alto` reads will do, NDNP's early CCS ALTO included. Boxes are compared as proportions of the page, so LoC's 1/1200 inch and an engine's pixels need no dpi. Words come from the text blocks, normalized as `score` normalizes an engine's text (above), and a line's hyphen (ALTO's `HYP`) stays on the line's last word, so `Clare` with a `HYP` and `Clare-` are the same word.
+
+**Matching.** Two words are candidates when their boxes' intersection over union (IoU) is at least `MIN_IOU`, 0.5. Candidates are taken greedily, the highest IoU first, with ties broken by the reference word's reading-order index and then the hypothesis word's. A pair is kept when neither word is matched yet, so matching is one-to-one, and the result depends only on the two files. Above 0.5 a box can match at most one of a set of boxes that don't overlap each other, so when neither page's word boxes overlap and no pair sits at exactly 0.5, the candidates are already one-to-one and the greedy order changes nothing. A box shifted sideways by more than a third of its width falls below 0.5, and so does a box covering two words of about the same width (two words read as one).
+
+The output is one line of JSON:
+
+| Field                                         | Meaning                                                                                                                                                                                          |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `reference_words`, `hypothesis_words`         | Words on each side                                                                                                                                                                               |
+| `matched`, `correct`, `substitutions`         | Pairs matched by position, and those with the same and with different text                                                                                                                       |
+| `deletions`, `insertions`                     | Reference words with no match, and hypothesis words with no match                                                                                                                                |
+| `wer`                                         | `(substitutions + deletions + insertions) / reference_words`                                                                                                                                     |
+| `matched_chars`                               | Character edits within the matched pairs over the matched reference words' characters (`cer`): how well the engine read the words both found                                                     |
+| `order.kendall_tau`                           | Kendall's tau between the two reading orders of the matched words: 1 in the same order, -1 backwards. Global: two columns read in the other order lower it by the share of word pairs that cross |
+| `order.adjacent_in_order`                     | The share of consecutive matched words, in the reference's order, that the engine also reads in that order. Local: two columns read in the other order break one seam                            |
+| `text_order`                                  | Each page's whole text in its own reading order against the other's, as a text-order score sees it, for comparison                                                                               |
+| `unmatched_reference`, `unmatched_hypothesis` | With `--list-unmatched`: each unmatched word's index, text and box, in the reference's frame (`frame`)                                                                                           |
+
+The text and the order are separate numbers on purpose. On the synthetic test page with two columns read in the other order, every word matches and is correct, `kendall_tau` is -0.14 and `adjacent_in_order` 0.86, and `text_order` has a CER of 0.9.
+
+### A crop against its text
+
+```sh
+usnm-ocr-survey alto-crop --alto PAGE.xml --box X0,Y0,X1,Y1 --text CROP.txt \
+  [--image-width W --image-height H] [--text-is-reference]
+```
+
+Engines that read crops (`usnm_qwen`, and `usnm_surya` while it ran) return text with no word positions, so their unit is the crop. `alto-crop` keeps the word-level ALTO's words whose box centre is in the crop's box, `x0 <= cx < x1` and `y0 <= cy < y1` (the rule of `crops.py` and `usnm_ocr_quality::crops`), and reads them in the ALTO's reading order, line by line as the crop shows them. A hyphen at the end of a kept line joins the next kept line's first word, even when the box cut off the word that followed it on the page: the crop's own text, normalized, joins the same pair. `--box` is in the page image's pixels when `--image-width` and `--image-height` give the image's size (the manifest's `box`), and in the ALTO's own units otherwise.
+
+`text_order` is the CER and WER of the clipped words against the crop's text. By default the clipped ALTO is the reference and both are normalized as engine text. With `--text-is-reference` the text is a transcription, normalized as `score` normalizes one (`[?x]` read as `x`, `[?]` dropped), and the rates are over it. `bag` compares the two as bags of words (lower case runs of letters and digits, as [the text agreement](ocr-text-agreement.md) counts them): `alto_words`, `text_words`, `shared_words`, `cover_alto` and `cover_text` (the shared words over each side's) and `dice`. The bag ignores order, case and punctuation, so a high `text_order` CER beside a high `bag` overlap suggests the words are there in another order. It doesn't measure the ordering's share: a case or punctuation difference alone (ALTO `CAT` against text `cat`) gives the same gap.
+
+### Running it on real pages (not done yet)
+
+Work item 3 of #1438 is still open. The commands above take one page or one crop at a time; running them over a set of pages is a loop over files.
+
+1. **Our ALTO against LoC's.** Our word-level ALTO 3.1, in full-image pixels, is Tesseract's under `curated/ocr-local/alto/` (`<doc_id>.<node>.<stamp>.xml`) and the Japanese job's under `ocr-ja/alto/`. For each, take LoC's ALTO for the same page from its batch archive and run `alto-position --reference LOC.xml --hypothesis OURS.xml`, one JSON line per page, with the page's `doc_id` added.
+2. **The gold set.** For each crop in `manifest.jsonl`, run `alto-crop` on LoC's ALTO for the page (`alto_url`), the crop's `box` and the page image's size, once against each crop engine's text and once against the transcription with `--text-is-reference`. Run on an engine's word-level ALTO of the page instead of LoC's, it scores that engine on the crop.
+3. **Word Parquet.** Run `usnm-ocr-worker loc-alto-words` ([LoC ALTO words in Parquet](loc-alto-words.md)) only on the archives that hold those pages, not the 1.1 TB store.
 
 ## Public ground truth
 

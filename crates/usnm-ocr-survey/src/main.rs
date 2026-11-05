@@ -1,7 +1,7 @@
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
-use usnm_ocr_survey::{bench, bundle, qwen_bench, score};
+use usnm_ocr_survey::{bench, bundle, position, qwen_bench, score};
 
 #[derive(Parser)]
 #[command(
@@ -30,6 +30,42 @@ enum Commands {
         /// Directory for cer-by-crop.csv and cer-summary.csv.
         #[arg(long)]
         out: Option<PathBuf>,
+    },
+    /// Compares two ALTO files of one page image word by word on their boxes (#1438):
+    /// substitutions, insertions, deletions and reading-order agreement, as one line of JSON.
+    AltoPosition {
+        /// The ALTO the other is measured against, such as LoC's.
+        #[arg(long)]
+        reference: PathBuf,
+        /// The engine's ALTO of the same page image.
+        #[arg(long)]
+        hypothesis: PathBuf,
+        /// Also list each side's words with no match (index, text and box).
+        #[arg(long)]
+        list_unmatched: bool,
+    },
+    /// Clips a word-level ALTO to a crop's box and compares the words, in the ALTO's reading
+    /// order, with the crop's text (#1438): text-order CER and WER and the word-bag overlap, as
+    /// one line of JSON.
+    AltoCrop {
+        #[arg(long)]
+        alto: PathBuf,
+        /// X0,Y0,X1,Y1: the crop in pixels of the image (or, without --image-width and
+        /// --image-height, in the ALTO's own units).
+        #[arg(long = "box")]
+        crop_box: String,
+        /// The crop's text, UTF-8.
+        #[arg(long)]
+        text: PathBuf,
+        /// The width of the image the box is in; the ALTO is mapped onto it by proportion.
+        #[arg(long, requires = "image_height")]
+        image_width: Option<f64>,
+        #[arg(long, requires = "image_width")]
+        image_height: Option<f64>,
+        /// The text is the reference, a transcription normalized as `score` normalizes one; by
+        /// default the clipped ALTO is.
+        #[arg(long)]
+        text_is_reference: bool,
     },
     /// Builds the volunteer gold bundle (directory, reproducible tar and its sha256) from
     /// `gold.py public-convert` outputs.
@@ -201,6 +237,67 @@ async fn main() -> anyhow::Result<()> {
                 score::write_csvs(&out, &s).context("writing the CSV files")?;
             }
             print!("{}", score::table(&s.summary));
+        }
+        Commands::AltoPosition {
+            reference,
+            hypothesis,
+            list_unmatched,
+        } => {
+            let read = |p: &PathBuf| {
+                std::fs::read(p)
+                    .with_context(|| format!("reading {}", p.display()))
+                    .and_then(|xml| {
+                        position::load(&xml, None).with_context(|| p.display().to_string())
+                    })
+            };
+            let page = read(&reference)?;
+            let c = position::compare(&page, &read(&hypothesis)?, list_unmatched);
+            let mut out = serde_json::json!({
+                "reference": reference,
+                "hypothesis": hypothesis,
+                "frame": [page.width, page.height],
+            });
+            if let (Some(o), serde_json::Value::Object(c)) =
+                (out.as_object_mut(), serde_json::to_value(&c)?)
+            {
+                o.extend(c);
+            }
+            println!("{}", serde_json::to_string(&out)?);
+        }
+        Commands::AltoCrop {
+            alto,
+            crop_box,
+            text,
+            image_width,
+            image_height,
+            text_is_reference,
+        } => {
+            let rect = position::parse_box(&crop_box)?;
+            let frame = image_width.zip(image_height);
+            if let Some((w, h)) = frame {
+                anyhow::ensure!(
+                    w.is_finite() && h.is_finite() && w > 0.0 && h > 0.0,
+                    "--image-width and --image-height must be positive"
+                );
+            }
+            let xml =
+                std::fs::read(&alto).with_context(|| format!("reading {}", alto.display()))?;
+            let page = position::load(&xml, frame).with_context(|| alto.display().to_string())?;
+            let crop_text = std::fs::read_to_string(&text)
+                .with_context(|| format!("reading {}", text.display()))?;
+            let s = position::crop(&page, &rect, &crop_text, text_is_reference);
+            let mut out = serde_json::json!({
+                "alto": alto,
+                "text": text,
+                "box": [rect.x0, rect.y0, rect.x1, rect.y1],
+                "frame": [page.width, page.height],
+            });
+            if let (Some(o), serde_json::Value::Object(s)) =
+                (out.as_object_mut(), serde_json::to_value(&s)?)
+            {
+                o.extend(s);
+            }
+            println!("{}", serde_json::to_string(&out)?);
         }
         Commands::BundleBuild {
             source,
