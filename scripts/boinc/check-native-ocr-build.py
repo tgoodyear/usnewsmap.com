@@ -8,7 +8,8 @@ release stages and signs it, and print the identity its jobs and the Gold bindin
 The build must read as the container worker does: the manifest's engine_version is the Tesseract
 that ocr/engines/tesseract/Containerfile installs, its models are exactly
 ocr/engines/tesseract/models.lock's, and every file given is the one the manifest lists, by size
-and sha256. The worker and the engine must be x86-64 ELF executables.
+and sha256. The worker, which only --binary gives, and the engine must be x86-64 ELF executables
+or position-independent executables.
 """
 from __future__ import annotations
 
@@ -27,6 +28,7 @@ ENGINE = "usnm_tesseract"
 MODEL_PREFIX = "tessdata_"
 PLATFORM = "x86_64-pc-linux-gnu"
 EM_X86_64 = 0x3E
+ET_EXEC, ET_DYN = 2, 3
 
 
 def locked_models(lock: Path) -> dict[str, str]:
@@ -60,11 +62,16 @@ def entry(path: Path) -> dict:
 def is_x86_64_elf(path: Path) -> bool:
     with path.open("rb") as f:
         head = f.read(20)
-    return len(head) == 20 and head[:6] == b"\x7fELF\x02\x01" and struct.unpack_from("<H", head, 18)[0] == EM_X86_64
+    if len(head) != 20 or head[:6] != b"\x7fELF\x02\x01":
+        return False
+    e_type, e_machine = struct.unpack_from("<HH", head, 16)
+    return e_type in (ET_EXEC, ET_DYN) and e_machine == EM_X86_64
 
 
 def check(binary: Path, extras: dict[str, Path], lock: Path, containerfile: Path) -> tuple[str, str]:
     """Returns the build's (engine.image, engine.base)."""
+    if WORKER in extras:
+        raise ValueError(f"the worker is --binary, not --extra-file {WORKER}")
     if MANIFEST not in extras:
         raise ValueError(f"a native OCR build requires --extra-file {MANIFEST}=PATH")
     raw = extras[MANIFEST].read_bytes()

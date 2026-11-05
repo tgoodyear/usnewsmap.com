@@ -13,7 +13,11 @@ spec = importlib.util.spec_from_file_location("native_ocr_build", Path(__file__)
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 
-ELF = b"\x7fELF\x02\x01\x01" + b"\x00" * 9 + struct.pack("<HH", 2, module.EM_X86_64)
+def elf(e_type):
+    return b"\x7fELF\x02\x01\x01" + b"\x00" * 9 + struct.pack("<HH", e_type, module.EM_X86_64)
+
+
+ELF = elf(module.ET_EXEC)
 
 
 class CheckNativeOcrBuild(unittest.TestCase):
@@ -67,10 +71,27 @@ class CheckNativeOcrBuild(unittest.TestCase):
         self.assertIn("missing: tessdata_eng.traineddata", self.run_check("usnm_native_build.json", "usnm_tesseract")[1])
         (self.build / "usnm_tesseract").write_bytes(ELF + b"other")
         self.assertIn("usnm_tesseract differs from the build manifest", self.run_check()[1])
-        self.files["usnm_tesseract"] = b"not an executable"
+        # Neither a non-ELF file nor a relocatable object or core dump runs.
+        for data in (b"not an executable", elf(1) + b"engine", elf(4) + b"engine"):
+            self.files["usnm_tesseract"] = data
+            (self.build / "usnm_tesseract").write_bytes(data)
+            self.write_manifest()
+            self.assertIn("usnm_tesseract is not an x86-64 ELF executable", self.run_check()[1])
+        self.files["usnm_tesseract"] = elf(module.ET_DYN) + b"engine"
         (self.build / "usnm_tesseract").write_bytes(self.files["usnm_tesseract"])
         self.write_manifest()
-        self.assertIn("usnm_tesseract is not an x86-64 ELF executable", self.run_check()[1])
+        self.assertEqual(self.run_check()[0], 0)
+
+    def test_the_worker_comes_only_from_binary(self):
+        (self.build / "invalid").write_bytes(b"not the worker")
+        argv = ["--binary", str(self.build / "invalid"), "--models-lock", str(self.lock),
+                "--engine-containerfile", str(self.containerfile)]
+        for name in ("usnm_native_build.json", "usnm_tesseract", "tessdata_eng.traineddata", "usnm_ocr"):
+            argv += ["--extra-file", f"{name}={self.build / name}"]
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(module.main(argv), 1)
+        self.assertIn("the worker is --binary, not --extra-file usnm_ocr", err.getvalue())
 
     def test_the_repository_locks_parse(self):
         self.assertRegex(module.locked_engine(module.ROOT / "ocr/engines/tesseract/Containerfile"), r"^[0-9]+\.[0-9]+\.[0-9]+$")
