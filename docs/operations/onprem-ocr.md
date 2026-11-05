@@ -265,6 +265,42 @@ The keep-set scans have been copied to a Cold-tier container, `scans` in the sto
 
    It and its units run at idle I/O class and nice 19, one scan at a time (`--concurrency 1`). The I/O class matters little on ZFS, which issues reads from its own threads; the bound comes from not walking. Each phase has a deadline (`--deadline`, 60–86,400 seconds, default 1,800), enforced as the unit's `RuntimeMaxSec`; a phase that reaches it is stopped and not accepted. Every `--progress` seconds (default 30) it prints the elapsed time, the bytes the worker has read against the sample's size, and the host load. With `--max-load`, a load average above it stops the helper's own unit, never anything else, and the check fails. Run it as a transient unit with its own time limit if the shell may go away, for example `sudo systemd-run --unit=usnm-archive-check-manual --pipe --wait --collect -p RuntimeMaxSec=3600 -p IOSchedulingClass=idle -p Nice=19 bash <reviewed copy>/check-scan-archive.sh …`.
 
+   **Restore drill (#895, maintainer approval each time).** `scripts/ocr-node/restore-drill.sh` restores a small spread sample from the Cold archive and from a ZFS snapshot of the scans, and checks every copy. Run it only with approval for the scratch dataset and the Cold read, and only while `tank` is quiet: no #1483 archive copy writing, so `zfs get written` on its dataset is unchanged over a minute.
+
+   ```sh
+   sudo zfs create -o quota=2G tank/usnm-restore-drill-<date>   # never mounted into a CT
+   sudo chmod 0700 /tank/usnm-restore-drill-<date>
+   sudo systemd-run --unit=usnm-restore-drill --pipe --wait --collect -p RuntimeMaxSec=900 \
+     -p IOSchedulingClass=idle -p Nice=19 bash <reviewed copy>/restore-drill.sh \
+     --dir /tank/usnm-restore-drill-<date> --dataset tank/usnm-restore-drill-<date> \
+     --snapshot <snapshot-name> --count 20 --budget-bytes 100000000
+   sudo zfs destroy tank/usnm-restore-drill-<date>
+   sudo umount /tank/ocr/scans/.zfs/snapshot/<snapshot-name>   # if the automount outlives zfs_expire_snapshot
+   ```
+
+   `<snapshot-name>` is the part after `@` of a recent daily snapshot in `zfs list -t snapshot -o name tank/ocr/scans`, for example `autosnap_2026-11-05_00:00:03_daily`; the drill reads it under `/tank/ocr/scans/.zfs/snapshot/<snapshot-name>`.
+
+   **What the drill does.**
+   - **Sample.** It takes `--count` distinct names (1–99) spread over `archived.tsv`, half a step off `check-scan-archive.sh`'s sample. A scan recorded again after its stamp changed counts once, so the sample never reads the same blob twice.
+   - **Budget.** It HEADs them in order and stops before the first one that would take the GETs past `--budget-bytes` (at most 100,000,000).
+   - **Cold restore.** It GETs the sample one by one, each capped at its HEAD length, then copies the same scans from `.zfs/snapshot/<snapshot-name>`. A scan archived after the snapshot is skipped there, but the drill fails if none of the sample is in the snapshot.
+   - **Checks.** It compares each Cold copy's length, sha256 and md5 with:
+     - the HEAD length;
+     - the sidecar, which must also give the name's format (`jp2` for `.jp2`, `jpeg` for `.jpg`) at `full` resolution, as the archive upload requires;
+     - the blob's `sha256` metadata and Content-MD5;
+     - the tier (`Cold`);
+     - the live scan and the snapshot copy.
+
+     A sidecar records an md5 only for a JP2 (the bag's); a JPEG's has none, so the md5 is checked against the blob's Content-MD5 only, and a JP2 sidecar without one fails.
+
+   - **Safety and output.** It writes only into `--dir`, which must be the empty mountpoint of `--dataset`. It prints timings, a digest of the sample's names and never the names or the token, not even in an error: a missing live scan or sidecar is reported by its index in the sample.
+   - **Token.** It asks the Arc agent on 127.0.0.1, never `localhost`. curl tries `::1` first for `localhost`, and on pve-big himds accepted connections on `[::1]:40342` without answering, which hung the first drill attempt. The token requests time out after 30 s.
+
+   **Result of 5 Nov 2026 ([#895](https://github.com/tgoodyear/usnewsmap.com/issues/895#issuecomment-6667800874)).**
+   - 20 scans (16 JP2, 4 JPEG), 88.3 MB from Cold in 9.3 s (9.5 MB/s, sequential). The same scans from the snapshot took 1.3 s.
+   - Every Cold copy was byte-identical to the live scan and the snapshot copy.
+   - At that rate, the 870.6 GB keep set would take about 25 hours from Cold on one stream.
+
 5. **The first upload (manual, cost-approved only).** `sudo systemctl start usnm-scan-archive` uploads the whole keep set, 1.16 TB when the fetcher is done (about 26 hours at 100 Mbps, UNVERIFIED for this uplink); `journalctl -u usnm-scan-archive` shows progress every 1000 scans and the report at the end. It can be stopped and started: it skips what is there. The unit keeps `/var/lib/usnm-scan-archive/archived.tsv`, one line per scan it has archived (name, size, modification time in nanoseconds, inode, change time); an older three-field line is ignored, so that scan is checked once more; on later runs a listed, unchanged scan is not read and gets no request, so a day with nothing new makes none. Delete that file to make the next run look every scan up again. **Do not automatically enable the timers under the current local-first policy.** Their explicit rollback commands are documented in [local BOINC download hosting](../boinc-file-host.md). The verify unit reads and hashes every local scan and makes one properties request per blob; run it by hand only after cost approval with `sudo systemctl start usnm-scan-archive-verify`. The upload, verify and bounded acceptance helper hold one `flock` on `/run/lock/usnm-scan-archive/lock`, so a verify that starts during an upload waits for it (and the other way round) instead of reporting scans not yet uploaded as missing. A blob with no stored MD5 is never counted as present, in any mode (`conflicts` in an upload or dry run, `mismatched` in verify), and is never written to the state file.
 6. **What a report means.** `bad_local` is a scan whose sidecar is missing or doesn't match its bytes, full resolution or format (not uploaded: investigate before fetching it again). JPEG sidecars use `format="jpeg"` for `.jpg` files; old sidecars without a format default to JPEG. Releases through `ocr-worker-20261016-c66d480` incorrectly rejected valid JPEGs by comparing the sidecar name with the file extension; retry these with a corrected release rather than changing sidecars or re-fetching good bytes. `conflicts` is a blob of that name that differs from the local file (never overwritten: look before doing anything). `errors` are failed requests: run it again. `skipped` (upload runs with the state file) are scans recorded as archived and unchanged; they are not counted in `scanned`. In `--verify`, `mismatched` includes a blob with no stored sha256 metadata or one that differs. Progress logs include failure counters; the final JSON report includes up to 20 problem paths. The command exits non-zero unless all are zero.
 
