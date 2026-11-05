@@ -31,6 +31,7 @@ Quarantines in either mode require operator review.
 """
 import argparse
 import concurrent.futures
+import fcntl
 import glob
 import hashlib
 import heapq
@@ -674,20 +675,25 @@ def scan_exists(server, scan):
 
 
 def delete_shipped(a, camp_dir, done_path, quality_docs, deleted_path, kept_path=None, ocr_docs=frozenset()):
-    """The buffer scans of the quality pass's pages whose chunks have shipped (the shipper
-    removed the chunk from the outbox after submitting it). Only pages the quality pass asked
-    for and OCR didn't (the caller leaves OCR's manifests' pages out of `quality_docs`); OCR's
-    pages and the keep set are never touched. With --keep-bytes, the most damaged of them stay
-    on the scan server for re-OCR, up to that many bytes in all (listed in `kept_path`, without
-    which there's no retention), and the
-    rest are DELETEd; without, every one is. A kept scan that is gone (an
-    OCR worker read it) or that OCR has since asked for (in `ocr_docs`; never inferred from
-    `quality_docs`, which a missing list would empty) leaves the list without a DELETE of
-    ours (one with its sidecar gone gets one first, so its bytes surely are), so it no longer
-    counts against the budget; --keep-verify of the longest-unchecked are looked at a
-    round (an unanswered check ends that round's checking). `deleted_path` lists every page this is done with, deleted or so released, so
-    neither is weighed again. Returns how many were DELETEd (or already gone); releases
-    aren't counted."""
+    """DELETEs the buffer scans of the quality pass's shipped pages (the shipper has removed
+    their chunk from the outbox), bar the most damaged, which stay for re-OCR.
+
+    Only pages in `quality_docs`: the caller leaves OCR's pages out, and OCR's scans and the
+    keep set are never touched.
+
+    Retention needs --keep-bytes and `kept_path` (the kept list); without either, every scan
+    is deleted. With both, the most damaged of the kept and newly shipped scans stay, up to
+    that many bytes in all, and the rest are DELETEd.
+
+    A kept scan leaves the list, no longer counting against the budget, once OCR asks for it
+    (it's in `ocr_docs`, never inferred from `quality_docs`, which a missing list would empty;
+    OCR's worker deletes it after reading it), or once its sidecar is found gone and a DELETE
+    confirms its bytes are too. --keep-verify of the longest-unchecked are looked up a round;
+    one the scan server doesn't answer ends the round's lookups and deletes.
+
+    `deleted_path` gets every page this is done with, deleted or released, so neither is
+    weighed again. Returns how many were DELETEd (or already gone); releases aren't counted.
+    """
     deleted = read_lines(deleted_path)
     # Retention needs kept.tsv to carry it from round to round: with no kept_path, none.
     budget = (getattr(a, "keep_bytes", 0) or 0) if kept_path else 0
@@ -866,8 +872,11 @@ def cmd_follow(a):
         done = read_lines(done_path) | read_lines(skip_path)
         quality_docs = read_lines(a.quality_docs) if a.quality_docs else set()
         if os.path.exists(done_path):
-            gone = delete_shipped(a, camp_dir, done_path, quality_docs - ocr_docs, deleted_path, kept_path,
-                                  ocr_docs)
+            # kept.tsv is every campaign's: one follower at a time reads and rewrites it.
+            with open(kept_path + ".lock", "a") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                gone = delete_shipped(a, camp_dir, done_path, quality_docs - ocr_docs, deleted_path, kept_path,
+                                      ocr_docs)
             if gone:
                 log("buffer scans deleted after shipping", pages=gone)
         quarantined = scan_quarantine.quarantined(state) if getattr(a, "quarantine_decode", False) else []
