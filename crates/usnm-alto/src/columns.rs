@@ -801,6 +801,10 @@ fn groups(rects: &[Rect], ids: &[usize], span: impl Fn(&Rect) -> (f64, f64)) -> 
     let mut end = f64::NEG_INFINITY;
     for i in sorted {
         let (s, e) = span(&rects[i]);
+        // Boxes are half-open, as in `order::split`: one that starts where
+        // the group ends is past it. The edges are the ALTO's own, scaled
+        // alike and taken through min and max, so a touch here is a touch
+        // in the source, not rounding.
         match out.last_mut() {
             Some(g) if s < end => g.push(i),
             _ => out.push(vec![i]),

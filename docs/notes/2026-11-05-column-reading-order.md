@@ -29,7 +29,10 @@ On some German pages our text reads a line of one column, then the same line of 
 
 ## What we measured
 
-Cross is lines with words in more than one column. Switches is how often the segment (masthead, banner, a column) changes from one word to the next in reading order; ideal is one fewer than the segments. Figures from the Python prototype; the Rust port cuts the same number of lines on all 21 pages, and gives the same figures on the two committed fixtures (its tests).
+- **Cross:** lines with words in more than one column.
+- **Switches:** how often the segment (masthead, banner, a column) changes from one word to the next in reading order. Ideal is one fewer than the number of segments.
+
+The figures are from the Python prototype. The Rust port cuts the same number of lines on all 21 pages, and its tests give the same figures on the two committed fixtures.
 
 | Synthetic page (Tesseract 5.5.0)                | Lines cut    | Cross before | Cross after | Switches before | Switches after | Ideal |
 | ----------------------------------------------- | ------------ | ------------ | ----------- | --------------- | -------------- | ----- |

@@ -38,7 +38,7 @@ fn measure(page: &Page, seg: impl Fn(f64, f64, f64) -> Option<&'static str>) -> 
             })
             .collect();
         let cols: Vec<&&str> = segs.iter().filter(|s| s.starts_with("col")).collect();
-        if cols.iter().any(|s| *s != cols[0]) {
+        if cols.windows(2).any(|p| p[0] != p[1]) {
             cross += 1;
         }
         for s in segs {
