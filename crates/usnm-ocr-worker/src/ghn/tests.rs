@@ -57,7 +57,7 @@ fn hosts(s: &StandIn) -> Hosts {
 }
 
 /// The built-in `ghn` policy on the stand-in's hosts, at test speed.
-fn policies() -> Policies {
+fn ghn_policy() -> Policy {
     let mut p: Policy = Policies::builtin()
         .iter()
         .find(|p| p.name == GHN)
@@ -69,7 +69,11 @@ fn policies() -> Policies {
     p.slow_requests_per_minute = Some(6000);
     p.min_gap_secs = 0;
     p.retry_backoff_secs = 0;
-    Policies::new(vec![p]).unwrap()
+    p
+}
+
+fn policies() -> Policies {
+    Policies::new(vec![ghn_policy()]).unwrap()
 }
 
 fn newspapers_doc(h: &Hosts, lccns: &[&str]) -> Value {
@@ -472,6 +476,53 @@ async fn a_challenge_redirect_is_push_back_and_never_followed() {
     assert_eq!(s.hits("/newspapers.json"), 1);
 }
 
+/// The catalogue's documents come through the engine as files, so GHN's byte cap paces
+/// them as it does images, and one that won't parse is never kept.
+#[tokio::test]
+async fn the_catalogues_documents_keep_to_ghns_byte_cap() {
+    let s = StandIn::start().await;
+    let h = hosts(&s);
+    let c = Cat {
+        dir: tempfile::tempdir().unwrap(),
+    };
+    std::fs::write(
+        c.ours(),
+        json!([{"curated": {"lccns": [OURS]}}]).to_string(),
+    )
+    .unwrap();
+    let mut list = newspapers_doc(&h, &[LACK, BARE]);
+    list["description"] = json!("x".repeat(60_000));
+    s.put("/newspapers.json", list.to_string());
+    s.put(
+        &format!("/lccn/{LACK}.json"),
+        title_doc(&h, LACK, &[("1929-05-01", 1)]).to_string(),
+    );
+    s.put(&format!("/lccn/{BARE}.json"), "{\"not\": \"a collection\"}");
+    let mut p = ghn_policy();
+    p.max_bytes_per_sec = Some(30_000);
+    let mut o = c.opts(&h);
+    o.fetch = Some(catalog::Fetch {
+        pacer: c.dir.path().join("ghn-pacer.json"),
+        policies: Policies::new(vec![p]).unwrap(),
+        max_titles: None,
+    });
+    let t = std::time::Instant::now();
+    let sum = catalogue(o).await.unwrap();
+    assert!(
+        t.elapsed() >= Duration::from_millis(1900),
+        "{:?}",
+        t.elapsed()
+    );
+    assert_eq!((sum.collections_fetched, sum.issues_selected), (1, 1));
+    let mut kept: Vec<String> = std::fs::read_dir(c.cache().join("lccn"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    kept.sort();
+    assert_eq!(kept, [format!("{LACK}.json")], "nothing partial or refused");
+    assert!(c.cache().join("newspapers.json").exists());
+}
+
 // ---- the fetch ----
 
 struct Rig {
@@ -638,6 +689,28 @@ async fn a_push_back_on_a_page_ends_the_run_and_slows_ghn_for_the_next() {
     let e = fetch_all(r.opts()).await.unwrap_err().to_string();
     assert!(e.contains("slow"), "{e}");
     assert_eq!(images_asked(&r), 1);
+}
+
+/// A sidecar describes the bytes it was written for: with its image gone it's removed before
+/// the page is asked for again, so a replacement that fails can't look done.
+#[tokio::test]
+async fn a_sidecar_whose_image_is_gone_is_removed_before_the_page_is_asked_again() {
+    let mut r = Rig::new().await;
+    let i = issue(LACK, "1929-05-01", 1);
+    r.issue(&i, &[(1, JPEG)], "unchecked");
+    assert_eq!(fetch_all(r.opts()).await.unwrap().state, "done");
+    let (jpg, json) = r.page(&i, 1);
+    std::fs::remove_file(&jpg).unwrap();
+    let image = format!(
+        "{}batch_x%2Fdata%2F{}%2F0001.jp2/full/full/0/default.jpg",
+        r.h.images,
+        i.stem()
+    );
+    r.s.script(&path_of(&image), Scripted::Status(404));
+    let s = fetch_all(r.opts()).await.unwrap();
+    assert_eq!(s.state, "incomplete");
+    assert_eq!(images_asked(&r), 2);
+    assert!(!json.exists() && !jpg.exists());
 }
 
 #[tokio::test]

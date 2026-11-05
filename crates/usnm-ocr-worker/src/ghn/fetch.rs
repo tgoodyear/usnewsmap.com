@@ -248,6 +248,13 @@ impl GhnJobs {
             if sidecar.exists() && image.exists() {
                 continue;
             }
+            // A sidecar describes the bytes it was written for: none may outlive them, or a
+            // replacement interrupted before its own sidecar would look done.
+            match std::fs::remove_file(&sidecar) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e).context(sidecar.display().to_string()),
+            }
             std::fs::create_dir_all(page_dir(&self.out, &page))?;
             let job = Job {
                 name: page.key.doc_id(),

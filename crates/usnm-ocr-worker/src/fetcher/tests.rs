@@ -376,6 +376,11 @@ fn ghns_policy_keeps_to_robots_txt_and_its_iiif_paths() {
         format!("{site}/search/pages/results/?andtext=x&format=json"),
         format!("{images}/b%2F0001.jp2/full/240,/0/default.jpg"),
         format!("{images}/b%2F0001.jp2/info.json"),
+        // A query can't make a disallowed path look like an allowed one.
+        format!("{site}/lccn/sn89053815/1876-10-15/ed-1/seq-1/ocr.txt?filename=manifest.json"),
+        format!("{site}/lccn/sn89053815/1876-10-15/ed-1/seq-1.pdf?x.json"),
+        format!("{site}/lccn/sn89053815.json?x=1"),
+        format!("{images}/b%2F0001.jp2/full/full/0/default.jpg?size=1"),
     ] {
         assert!(!ok(&refused), "{refused}");
     }
@@ -1691,6 +1696,33 @@ async fn a_redirect_off_the_allowed_paths_is_push_back() {
         .await
         .unwrap_err();
     assert!(e.to_string().contains("a redirect off the paths"), "{e}");
+}
+
+/// Path rules hold on a redirect whatever its query: a query ending like an allowed path
+/// doesn't get a disallowed one asked for, and an allowed path with a query isn't asked.
+#[tokio::test]
+async fn a_redirect_cant_use_a_query_to_pass_the_path_rules() {
+    for (to, said) in [
+        ("/ok/a.xml?f=x.json", "disallows"),
+        ("/ok/b?x", "allows no query"),
+    ] {
+        let r = Rig::new().await;
+        r.s.put("/ok/a.xml", b"<x/>".to_vec());
+        r.s.put("/ok/b", b"body".to_vec());
+        r.s.redirect("/ok/a", to);
+        let engine = engine_with(paths_policy(), r.dir.path());
+        let e = fetch_one(&r, &engine, &unlisted(&r, "a", 100), "/ok/a").await;
+        let Err(Fail::Blocked(m)) = e else {
+            panic!("{to}: {e:?}");
+        };
+        assert!(m.contains(said), "{to}: {m}");
+        assert_eq!(
+            r.s.hits_under("/ok/a.xml") + r.s.hits_under("/ok/b"),
+            0,
+            "{to}"
+        );
+        assert!(!r.out().join("a").exists());
+    }
 }
 
 /// A file no list describes: its size is only a ceiling, its SHA-256 is what came, and a

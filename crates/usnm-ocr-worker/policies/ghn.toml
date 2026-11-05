@@ -8,9 +8,9 @@
 #
 # The site's robots.txt disallows /data/, PDFs, text and XML (checked 5 November 2026; the
 # image server has none). Those rules are kept here for both hosts, and only the newspapers
-# list, title and issue manifests, and full-size page images are asked for. Page HTML and
-# .jp2 links redirect to a Turnstile challenge: a redirect off these paths counts as
-# push-back, never something to pass. Search JSON is never used.
+# list, title and issue manifests, and full-size page images are asked for, never with a
+# query. Page HTML and .jp2 links redirect to a Turnstile challenge: a redirect off these
+# paths counts as push-back, never something to pass. Search JSON is never used.
 attempts = 3
 concurrency = 1
 hosts = ["gahistoricnewspapers.galileo.usg.edu", "iiif-ha.galib.uga.edu"]

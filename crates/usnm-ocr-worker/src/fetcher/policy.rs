@@ -75,12 +75,14 @@ pub struct Policy {
     #[serde(default)]
     pub serving_probe: Option<ServingProbe>,
     /// Paths never asked for, as `robots.txt` writes them: a prefix, `*` for any
-    /// run of characters, and `$` to mark the end. Matched against the path and
-    /// query, on every hop.
+    /// run of characters, and `$` to mark the end. Matched on every hop against
+    /// the path, and the path with its query: either match refuses the URL.
     #[serde(default)]
     pub disallow_paths: Vec<String>,
-    /// When there are any, the only paths asked for, in the same form.
-    /// With either list, a redirect the policy won't follow counts as push-back.
+    /// When there are any, the only paths asked for, in the same form, matched
+    /// against the path alone; a URL with a query is refused, so a query can't
+    /// pass for an allowed ending. With either list, a redirect the policy won't
+    /// follow counts as push-back.
     #[serde(default)]
     pub allow_paths: Vec<String>,
     /// Plain `http://`, for a stand-in server in tests. No file can set it.
@@ -224,18 +226,22 @@ impl Policy {
 
     /// Why this policy won't ask for `url`'s path, if it won't.
     fn refuses_path(&self, url: &reqwest::Url) -> Option<String> {
-        let mut path = url.path().to_owned();
-        if let Some(q) = url.query() {
-            path.push('?');
-            path.push_str(q);
-        }
+        let path = url.path();
+        let with_query = url.query().map(|q| format!("{path}?{q}"));
         let shown = super::plain(url);
-        if let Some(r) = self.disallow_paths.iter().find(|r| path_matches(r, &path)) {
+        let disallowed = |r: &&String| {
+            path_matches(r, path) || with_query.as_ref().is_some_and(|w| path_matches(r, w))
+        };
+        if let Some(r) = self.disallow_paths.iter().find(disallowed) {
             return Some(format!("{shown}: {} disallows {r}", self.label));
         }
-        let allowed =
-            self.allow_paths.is_empty() || self.allow_paths.iter().any(|r| path_matches(r, &path));
-        (!allowed).then(|| format!("{shown}: not a path {} allows", self.label))
+        if self.allow_paths.is_empty() {
+            return None;
+        }
+        if !self.allow_paths.iter().any(|r| path_matches(r, path)) {
+            return Some(format!("{shown}: not a path {} allows", self.label));
+        }
+        with_query.map(|_| format!("{shown}: {} allows no query", self.label))
     }
 }
 

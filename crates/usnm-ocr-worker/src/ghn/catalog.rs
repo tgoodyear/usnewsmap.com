@@ -13,6 +13,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicU64;
 use std::time::Duration;
 
 use anyhow::{bail, ensure, Context};
@@ -23,10 +24,10 @@ use tokio::time::Instant;
 
 use super::iiif::{self, Hosts, IssueRef, TitleIssues};
 use super::{field, sha256_hex, write_atomic};
-use crate::fetcher::{Engine, Fail, Policies};
+use crate::fetcher::{Engine, Fail, Job, Policies, Reservation};
 
 /// The largest IIIF document read: a title's collection is about 170 bytes an issue.
-const MAX_DOC: usize = 32 << 20;
+const MAX_DOC: u64 = 32 << 20;
 
 pub const ISSUES_HEADER: &str = "lccn\tdate\tedition\tmanifest_url\trights";
 
@@ -191,7 +192,8 @@ fn cached(cache: &Path, lccn: &str) -> PathBuf {
     cache.join("lccn").join(format!("{lccn}.json"))
 }
 
-/// `url` through the engine, checked by `parse` before it's kept at `path`.
+/// `url` through the engine as an unlisted file, so the policy's byte cap and retries apply,
+/// and kept at `path` only once `parse` accepts it.
 async fn fetch_doc(
     engine: &Engine,
     url: &str,
@@ -199,29 +201,55 @@ async fn fetch_doc(
     parse: impl Fn(&serde_json::Value) -> anyhow::Result<()>,
     stop: &watch::Receiver<bool>,
 ) -> Result<(), Fail> {
+    let local = |e: std::io::Error| Fail::Transient(format!("{}: {e}", path.display()));
+    let dir = path.parent().expect("a cache file has a directory");
+    std::fs::create_dir_all(dir).map_err(local)?;
+    let name = format!(
+        "{}.new",
+        path.file_name().expect("a file name").to_string_lossy()
+    );
+    let job = Job {
+        name: name.clone(),
+        size: MAX_DOC,
+        sha256: None,
+        dest: dir.join(&name),
+        sources: vec![url.to_owned()],
+    };
     let far = Instant::now() + Duration::from_secs(24 * 3600);
-    let mut resp = engine.open(url, None, stop, far).await?;
-    let mut body = Vec::new();
-    loop {
-        match resp.chunk().await {
-            Ok(Some(c)) => body.extend_from_slice(&c),
-            Ok(None) => break,
-            Err(e) => return Err(Fail::Transient(format!("{url}: {}", e.without_url()))),
-        }
-        if body.len() > MAX_DOC {
-            return Err(Fail::Refused(format!("{url}: over {MAX_DOC} bytes")));
+    let total = AtomicU64::new(0);
+    let room = Reservation::new(&total);
+    let got = engine
+        .fetch(
+            &job,
+            url,
+            &dir.join(format!("{name}.part")),
+            stop,
+            far,
+            &room,
+        )
+        .await;
+    drop(room);
+    got?;
+    let checked = std::fs::read(&job.dest)
+        .map_err(anyhow::Error::from)
+        .and_then(|body| Ok(serde_json::from_slice(&body)?))
+        .and_then(|v| parse(&v));
+    match checked {
+        Ok(()) => std::fs::rename(&job.dest, path).map_err(local),
+        Err(e) => {
+            let _ = std::fs::remove_file(&job.dest);
+            Err(Fail::Refused(format!("{url}: {e:#}")))
         }
     }
-    let v: serde_json::Value = serde_json::from_slice(&body)
-        .map_err(|e| Fail::Refused(format!("{url}: not JSON: {e}")))?;
-    parse(&v).map_err(|e| Fail::Refused(format!("{e:#}")))?;
-    write_atomic(path, &body).map_err(|e| Fail::Transient(format!("{}: {e}", path.display())))
 }
 
 /// A failure that ends the catalogue's asking.
 fn fatal(e: Fail) -> anyhow::Error {
     match e {
-        Fail::Blocked(m) => anyhow::anyhow!("GHN pushed back ({m}); its pacer is at the slow rate"),
+        Fail::Blocked(m) => anyhow::anyhow!(
+            "GHN pushed back or kept failing ({m}); nothing more is asked this run, and a \
+             push-back puts its pacer at the slow rate"
+        ),
         Fail::Slowed(e) => e,
         Fail::Stopped | Fail::Closed | Fail::RangeRefused => anyhow::anyhow!("stopped"),
         Fail::Transient(m) | Fail::Refused(m) | Fail::Checksum(m) => anyhow::anyhow!(m),
