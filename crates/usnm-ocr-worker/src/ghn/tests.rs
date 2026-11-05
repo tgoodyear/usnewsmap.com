@@ -159,6 +159,11 @@ fn a_manifest_is_refused_for_a_foreign_image_or_an_unnumbered_or_repeated_page()
         e.contains("one path segment") && !e.contains("isn't GHN's"),
         "{e}"
     );
+    // A bad escape, or a name a URL parser would resolve away, is the manifest's fault.
+    for bad in ["a%GG.jp2", "a.jp2%2", "a%", "..", "%2E%2E", ""] {
+        let e = why(issue_doc(&h, &i, &[(1, bad)]));
+        assert!(e.contains("one path segment"), "{bad}: {e}");
+    }
     let mut v = issue_doc(&h, &i, &[(1, "a.jp2")]);
     v["sequences"][0]["canvases"][0]["images"][0]["rendering"] = json!([]);
     assert!(refused(v));

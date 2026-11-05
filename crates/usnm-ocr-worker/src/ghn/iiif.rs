@@ -125,6 +125,31 @@ fn id_of(v: &Value) -> Option<&str> {
     v.get("@id").and_then(Value::as_str)
 }
 
+/// Whether an image identifier is one path segment: letters, digits, `.`, `_`, `-` and
+/// `%XX` escapes (GHN writes the identifier's own slashes as `%2F`). It needs a letter or
+/// digit outside the escapes, so it can't be `.`, `..` or `%2E%2E`, which a URL parser
+/// would resolve away.
+fn one_segment(ident: &str) -> bool {
+    let b = ident.as_bytes();
+    let (mut i, mut named) = (0, false);
+    while i < b.len() {
+        if b[i] == b'%' {
+            let hex = b.get(i + 1..i + 3);
+            if !hex.is_some_and(|h| h.iter().all(u8::is_ascii_hexdigit)) {
+                return false;
+            }
+            i += 3;
+            continue;
+        }
+        if !(b[i].is_ascii_alphanumeric() || b"._-".contains(&b[i])) {
+            return false;
+        }
+        named |= b[i].is_ascii_alphanumeric();
+        i += 1;
+    }
+    named
+}
+
 fn check_doc(v: &Value, kind: &str, url: &str) -> anyhow::Result<()> {
     ensure!(
         v.get("@type").and_then(Value::as_str) == Some(kind),
@@ -222,15 +247,10 @@ pub fn issue(v: &Value, want: &IssueRef, hosts: &Hosts) -> anyhow::Result<Vec<Pa
         let ident = service
             .strip_prefix(&hosts.images)
             .with_context(|| format!("{url}: canvas {n}'s image service isn't GHN's: {service}"))?;
-        // One path segment: GHN writes the identifier's own slashes as %2F.
-        let ident_ok = !ident.is_empty()
-            && ident
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b"._-%".contains(&b));
         ensure!(
-            ident_ok,
+            one_segment(ident),
             "{url}: canvas {n}'s image identifier isn't one path segment of letters, digits, \
-             '.', '_', '-' and '%': {service}"
+             '.', '_', '-' and %XX escapes: {service}"
         );
         // The page's number is GHN's own, from its page link, never the canvas's position.
         let seq = image

@@ -5,7 +5,9 @@
 //! a byte-rate cap, and what counts as push-back. Only `https://` URLs on a
 //! host some policy covers are fetched; anything else is refused, redirect
 //! hops included, so a new source needs a policy before its first request.
-//! A policy can also limit the paths it asks for, in `robots.txt`'s terms.
+//! A policy can also limit the paths it asks for, written in `robots.txt`'s pattern syntax
+//! but with simpler precedence: a URL must pass a deny-list and an allow-list each on its
+//! own, where `robots.txt` lets the longest matching rule win.
 //!
 //! [`Policies::builtin`] holds this crate's `policies/*.toml`; a deployment
 //! can point at a directory of its own instead.
@@ -74,15 +76,16 @@ pub struct Policy {
     pub push_back: PushBack,
     #[serde(default)]
     pub serving_probe: Option<ServingProbe>,
-    /// Paths never asked for, as `robots.txt` writes them: a prefix, `*` for any
-    /// run of characters, and `$` to mark the end. Matched on every hop against
-    /// the path, and the path with its query: either match refuses the URL.
+    /// Paths never asked for, in `robots.txt`'s pattern syntax: a prefix, `*` for
+    /// any run of characters, and `$` to mark the end. Matched on every hop against
+    /// the path, and the path with its query: either match refuses the URL, and no
+    /// allow rule overrides it, unlike `robots.txt`'s longest match.
     #[serde(default)]
     pub disallow_paths: Vec<String>,
     /// When there are any, the only paths asked for, in the same form, matched
     /// against the path alone; a URL with a query is refused, so a query can't
-    /// pass for an allowed ending. With either list, a redirect the policy won't
-    /// follow counts as push-back.
+    /// pass for an allowed ending. With either list, any redirect the policy won't
+    /// follow, off its paths or off its hosts, counts as push-back.
     #[serde(default)]
     pub allow_paths: Vec<String>,
     /// Plain `http://`, for a stand-in server in tests. No file can set it.
@@ -245,7 +248,7 @@ impl Policy {
     }
 }
 
-/// A `robots.txt` path rule: a prefix of `path`, where `*` stands for any run of
+/// One path rule in `robots.txt`'s syntax: a prefix of `path`, where `*` stands for any run of
 /// characters and a final `$` means `path` ends there.
 pub(super) fn path_matches(rule: &str, path: &str) -> bool {
     let (rule, anchored) = match rule.strip_suffix('$') {

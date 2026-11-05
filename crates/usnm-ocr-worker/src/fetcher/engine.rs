@@ -559,12 +559,14 @@ impl Engine {
                 Err(m) => Some(m),
             };
             if let Some(m) = refused {
-                // The first URL was checked by `gate`, so this is a redirect. Where a
-                // policy limits its paths, being sent off them (a challenge page, say)
-                // is the host objecting.
+                // The first URL was checked by `gate`, so this is a redirect. A policy
+                // that limits its paths is for a host asked to be gentle with, so any
+                // redirect it won't follow (a challenge page on its paths or a sign-in
+                // elsewhere, say) is taken as the host objecting: the job is refused
+                // either way, and slowing down is the cautious reading.
                 if first.policy.limits_paths() {
                     let hold = Duration::from_secs(rules.default_hold_secs);
-                    let why = "a redirect off the paths it allows";
+                    let why = "a redirect it won't follow";
                     return Err(self.pushed_back(&first, hold, why, m).await);
                 }
                 return Err(Fail::Refused(m));

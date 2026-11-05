@@ -1695,7 +1695,7 @@ async fn a_redirect_off_the_allowed_paths_is_push_back() {
         .check_not_slowed(&format!("{}/ok/b", r.root))
         .await
         .unwrap_err();
-    assert!(e.to_string().contains("a redirect off the paths"), "{e}");
+    assert!(e.to_string().contains("a redirect it won't follow"), "{e}");
 }
 
 /// Path rules hold on a redirect whatever its query: a query ending like an allowed path
