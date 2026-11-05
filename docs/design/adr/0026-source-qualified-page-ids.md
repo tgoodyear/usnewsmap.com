@@ -47,6 +47,7 @@ not current defects, and mixing sources would break them:
    | `unt`       | UNT page id                            | `unt:unt-{metadc}_p{seq}`                          |
    | `lcg`       | Congress.gov page id                   | `lcg:lcg-{series}-{volume}_p{seq}`                 |
    | `sample`    | upstream dataset and its own sample id | `sample:bln600/pub-bln600-063`                     |
+   | `ghn`       | Georgia Historic Newspapers page, in a LoC `doc_id`'s shape | `ghn:sn89053815_1876-10-15_ed-1_seq-1` |
 
    Adding a source means adding a row here and its rule in code.
 
@@ -101,6 +102,10 @@ not current defects, and mixing sources would break them:
   collide with a LoC `doc_id` or with the legacy `benchmark-<sha256>` ids, which stay valid for
   every campaign staged with them. `qwen benchmark-stage --doc-ids sample` uses it; the default
   is still the legacy spelling.
+- Georgia Historic Newspapers pages, fetched through GHN's IIIF images (#1193), are
+  `ghn:<lccn>_<date>_ed-<n>_seq-<n>`. GHN runs Open ONI, so the local id has the LoC `doc_id`
+  shape and the same rule, but it never gives a `PageKey`: a GHN page of a title LoC also holds
+  is a different page until a page-level duplicate check says otherwise.
 - Gold bundle crops and the data catalog are unchanged. The inventory, the collision rules and
   the remaining cutover steps are in the
   [2026-11-04 note](../../notes/2026-11-04-page-id-wire-inventory.md) (#983).

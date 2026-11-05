@@ -1,0 +1,41 @@
+# Georgia Historic Newspapers (Digital Library of Georgia): the site's IIIF manifests and the
+# image server, one budget (#1193).
+#
+# GHN publishes no rate limits for IIIF and none has been tested, so this starts slow: 6
+# requests a minute and 10 s apart, one transfer at a time, at most 2 MB/s, and 2 a minute for
+# 24 hours after a push-back. A full page image is 5-10 MB. Changing these numbers is the
+# maintainer's decision.
+#
+# The site's robots.txt disallows /data/, PDFs, text and XML (checked 5 November 2026; the
+# image server has none). Those rules are kept here for both hosts, and only the newspapers
+# list, title and issue manifests, and full-size page images are asked for. Page HTML and
+# .jp2 links redirect to a Turnstile challenge: a redirect off these paths counts as
+# push-back, never something to pass. Search JSON is never used.
+attempts = 3
+concurrency = 1
+hosts = ["gahistoricnewspapers.galileo.usg.edu", "iiif-ha.galib.uga.edu"]
+label = "GHN"
+max_bytes_per_sec = 2000000
+max_failures_in_a_row = 5
+# Under this for three minutes counts as a stalled transfer.
+min_bytes_per_sec = 10240
+min_gap_secs = 10
+requests_per_minute = 6
+retry_backoff_secs = 60
+# A 503 is load: it holds this run's requests, not the shared budget.
+server_error_hold_secs = 600
+slow_for_secs = 86400
+slow_requests_per_minute = 2
+
+disallow_paths = ["/data/", "/*.pdf$", "/*.txt$", "/*.xml$"]
+allow_paths = [
+  "/newspapers.json$",
+  "/lccn/*.json$",
+  "/iiif/2/newspapers/*/full/full/0/default.jpg$",
+]
+
+[push_back]
+default_hold_secs = 3600
+html = true
+max_hold_secs = 86400
+statuses = [403, 429]

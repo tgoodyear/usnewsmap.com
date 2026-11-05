@@ -55,12 +55,15 @@ pub enum Fail {
 }
 
 /// A file in place.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Got {
     /// Bytes that came over the network for it.
     pub written: u64,
     /// False if a verified copy was already at the destination.
     pub placed: bool,
+    /// The file's size and SHA-256 (lower-case hex), as checked or, unlisted, as computed.
+    pub size: u64,
+    pub sha256: String,
 }
 
 /// What every download in a run shares.
@@ -400,8 +403,13 @@ async fn hash_part(
 
 /// Verified bytes get their final name. The name is linked rather than
 /// renamed over, so a good copy already there is never replaced; one of the
-/// wrong size is known bad and is.
+/// wrong size is known bad and is. An unlisted file has nothing to check a
+/// copy against, so the new bytes replace it.
 pub(super) fn publish(part: &Path, job: &Job) -> std::io::Result<bool> {
+    if job.sha256.is_none() {
+        std::fs::rename(part, &job.dest)?;
+        return Ok(true);
+    }
     match std::fs::hard_link(part, &job.dest) {
         Ok(()) => {
             std::fs::remove_file(part)?;
@@ -539,14 +547,27 @@ impl Engine {
     ) -> Result<reqwest::Response, Fail> {
         let mut at = reqwest::Url::parse(url).map_err(|e| Fail::Refused(format!("{url}: {e}")))?;
         let first = self.gate(&at).await?;
+        let rules = &first.policy.push_back;
         for _ in 0..MAX_HOPS {
             let shown = plain(&at);
-            let here = self.policies.for_url(&at).map_err(Fail::Refused)?;
-            if here.name != first.policy.name {
-                return Err(Fail::Refused(format!(
+            let refused = match self.policies.for_url(&at) {
+                Ok(here) if here.name == first.policy.name => None,
+                Ok(_) => Some(format!(
                     "{shown}: a redirect out of {}'s policy",
                     first.policy.label
-                )));
+                )),
+                Err(m) => Some(m),
+            };
+            if let Some(m) = refused {
+                // The first URL was checked by `gate`, so this is a redirect. Where a
+                // policy limits its paths, being sent off them (a challenge page, say)
+                // is the host objecting.
+                if first.policy.limits_paths() {
+                    let hold = Duration::from_secs(rules.default_hold_secs);
+                    let why = "a redirect off the paths it allows";
+                    return Err(self.pushed_back(&first, hold, why, m).await);
+                }
+                return Err(Fail::Refused(m));
             }
             first.turn(stop, deadline, &shown).await?;
             let mut req = self.http.get(at.clone());
@@ -569,24 +590,17 @@ impl Engine {
                     })?;
                 continue;
             }
-            let rules = &first.policy.push_back;
             let html = rules.html && is_html(&resp);
             if html || rules.statuses.contains(&status.as_u16()) {
                 let d = retry_after(&resp, Duration::from_secs(rules.max_hold_secs))
                     .unwrap_or(Duration::from_secs(rules.default_hold_secs));
-                first.budget.hold(d).await;
                 let why = if html {
                     format!("HTTP {} with an HTML page", status.as_u16())
                 } else {
                     format!("HTTP {}", status.as_u16())
                 };
-                if first.policy.slow_requests_per_minute.is_some() {
-                    first
-                        .budget
-                        .slow_down(&format!("{}: {why}", self.opts.who))
-                        .await;
-                }
-                return Err(Fail::Blocked(format!("{shown}: {why}")));
+                let detail = format!("{shown}: {why}");
+                return Err(self.pushed_back(&first, d, &why, detail).await);
             }
             if status == StatusCode::RANGE_NOT_SATISFIABLE && from.is_some() {
                 return Err(Fail::RangeRefused);
@@ -610,6 +624,19 @@ impl Engine {
             "{}: too many redirects",
             reqwest::Url::parse(url).map_or_else(|_| url.to_owned(), |u| plain(&u))
         )))
+    }
+
+    /// The host objected: hold its budget, set the slow rate where the policy
+    /// has one, and ask it nothing more this run. `why` is recorded in the
+    /// budget, so it names no URL; `detail` does.
+    async fn pushed_back(&self, gate: &Gate, hold: Duration, why: &str, detail: String) -> Fail {
+        gate.budget.hold(hold).await;
+        if gate.policy.slow_requests_per_minute.is_some() {
+            gate.budget
+                .slow_down(&format!("{}: {why}", self.opts.who))
+                .await;
+        }
+        Fail::Blocked(detail)
     }
 
     /// `job` from `url` into `part` and on to its destination, with the
@@ -693,7 +720,8 @@ impl Engine {
             room,
             came,
         } = this;
-        let resume = gate.policy.resume;
+        // Nothing says an unlisted file's part is the start of the same bytes.
+        let resume = gate.policy.resume && job.sha256.is_some();
         let name = &job.name;
         let mut have = if resume {
             tokio::fs::metadata(part).await.map_or(0, |m| m.len())
@@ -713,7 +741,7 @@ impl Engine {
                 return Err(Fail::Stopped);
             }
         }
-        if have < job.size {
+        if have < job.size || job.sha256.is_none() {
             let mut resp = self
                 .open(url, (have > 0).then_some(have), stop, deadline)
                 .await?;
@@ -731,7 +759,13 @@ impl Engine {
                 }
             }
             if let Some(len) = resp.content_length() {
-                if len + have != job.size {
+                if job.sha256.is_none() && len > job.size {
+                    return Err(Fail::Refused(format!(
+                        "{name}: the source offers {len} bytes, over the {} allowed",
+                        job.size
+                    )));
+                }
+                if job.sha256.is_some() && len + have != job.size {
                     return Err(Fail::Transient(format!(
                         "{name}: the source offers {} bytes, the job lists {}",
                         len + have,
@@ -773,10 +807,14 @@ impl Engine {
                 came.fetch_add(chunk.len() as u64, Ordering::Relaxed);
                 if have > job.size {
                     remove(part).await;
-                    return Err(Fail::Transient(format!(
-                        "{name}: longer than the listed {} bytes",
-                        job.size
-                    )));
+                    return Err(if job.sha256.is_some() {
+                        Fail::Transient(format!(
+                            "{name}: longer than the listed {} bytes",
+                            job.size
+                        ))
+                    } else {
+                        Fail::Refused(format!("{name}: over the {} bytes allowed", job.size))
+                    });
                 }
                 hash.update(&chunk);
                 file.write_all(&chunk)
@@ -813,20 +851,29 @@ impl Engine {
                 .map_err(|e| Fail::Transient(format!("{}: {e}", part.display())))?;
         }
         let got = usnm_core::digest::hex(&hash.finalize());
-        if have != job.size || got != job.sha256 {
-            remove(part).await;
-            let detail = if have == job.size {
-                format!("sha256 {got} expected {}", job.sha256)
-            } else {
-                format!("size {have} expected {}", job.size)
-            };
-            return Err(Fail::Checksum(detail));
+        match &job.sha256 {
+            Some(want) if have != job.size || got != *want => {
+                remove(part).await;
+                let detail = if have == job.size {
+                    format!("sha256 {got} expected {want}")
+                } else {
+                    format!("size {have} expected {}", job.size)
+                };
+                return Err(Fail::Checksum(detail));
+            }
+            None if have == 0 => {
+                remove(part).await;
+                return Err(Fail::Transient(format!("{name}: an empty body")));
+            }
+            _ => {}
         }
         let placed = publish(part, job)
             .map_err(|e| Fail::Transient(format!("{}: {e}", job.dest.display())))?;
         Ok(Got {
             written: came.load(Ordering::Relaxed),
             placed,
+            size: have,
+            sha256: got,
         })
     }
 }

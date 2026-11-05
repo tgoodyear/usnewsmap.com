@@ -5,6 +5,7 @@
 //! a byte-rate cap, and what counts as push-back. Only `https://` URLs on a
 //! host some policy covers are fetched; anything else is refused, redirect
 //! hops included, so a new source needs a policy before its first request.
+//! A policy can also limit the paths it asks for, in `robots.txt`'s terms.
 //!
 //! [`Policies::builtin`] holds this crate's `policies/*.toml`; a deployment
 //! can point at a directory of its own instead.
@@ -17,6 +18,8 @@ use serde::Deserialize;
 
 /// The policy holding LoC's budget, which the scan fetcher shares through the same state file.
 pub const LOC: &str = "loc";
+/// Georgia Historic Newspapers' IIIF manifests and images (#1193).
+pub const GHN: &str = "ghn";
 
 fn one() -> u32 {
     1
@@ -71,6 +74,15 @@ pub struct Policy {
     pub push_back: PushBack,
     #[serde(default)]
     pub serving_probe: Option<ServingProbe>,
+    /// Paths never asked for, as `robots.txt` writes them: a prefix, `*` for any
+    /// run of characters, and `$` to mark the end. Matched against the path and
+    /// query, on every hop.
+    #[serde(default)]
+    pub disallow_paths: Vec<String>,
+    /// When there are any, the only paths asked for, in the same form.
+    /// With either list, a redirect the policy won't follow counts as push-back.
+    #[serde(default)]
+    pub allow_paths: Vec<String>,
     /// Plain `http://`, for a stand-in server in tests. No file can set it.
     #[serde(skip)]
     pub allow_plain_http: bool,
@@ -160,6 +172,12 @@ impl Policy {
         {
             bail!("policy {n}: a probe floor of zero would lift the byte cap");
         }
+        for r in self.disallow_paths.iter().chain(&self.allow_paths) {
+            let dollar = r.find('$');
+            if !r.starts_with('/') || dollar.is_some_and(|i| i + 1 != r.len()) {
+                bail!("policy {n}: not a path rule: {r}");
+            }
+        }
         for h in &self.hosts {
             let bare = h.strip_prefix("*.").unwrap_or(h);
             let ok = !bare.is_empty()
@@ -197,6 +215,56 @@ impl Policy {
 
     fn covers(&self, host: &str) -> bool {
         self.hosts.iter().any(|p| pattern_covers(p, host))
+    }
+
+    /// Whether this policy has path rules.
+    pub fn limits_paths(&self) -> bool {
+        !self.disallow_paths.is_empty() || !self.allow_paths.is_empty()
+    }
+
+    /// Why this policy won't ask for `url`'s path, if it won't.
+    fn refuses_path(&self, url: &reqwest::Url) -> Option<String> {
+        let mut path = url.path().to_owned();
+        if let Some(q) = url.query() {
+            path.push('?');
+            path.push_str(q);
+        }
+        let shown = super::plain(url);
+        if let Some(r) = self.disallow_paths.iter().find(|r| path_matches(r, &path)) {
+            return Some(format!("{shown}: {} disallows {r}", self.label));
+        }
+        let allowed =
+            self.allow_paths.is_empty() || self.allow_paths.iter().any(|r| path_matches(r, &path));
+        (!allowed).then(|| format!("{shown}: not a path {} allows", self.label))
+    }
+}
+
+/// A `robots.txt` path rule: a prefix of `path`, where `*` stands for any run of
+/// characters and a final `$` means `path` ends there.
+pub(super) fn path_matches(rule: &str, path: &str) -> bool {
+    let (rule, anchored) = match rule.strip_suffix('$') {
+        Some(r) => (r, true),
+        None => (rule, false),
+    };
+    let mut parts = rule.split('*');
+    let Some(mut rest) = parts.next().and_then(|first| path.strip_prefix(first)) else {
+        return false;
+    };
+    let parts: Vec<&str> = parts.collect();
+    let Some((last, middle)) = parts.split_last() else {
+        return !anchored || rest.is_empty();
+    };
+    // The leftmost match of each piece leaves the most room for the rest.
+    for piece in middle {
+        match rest.find(piece) {
+            Some(i) => rest = &rest[i + piece.len()..],
+            None => return false,
+        }
+    }
+    if anchored {
+        rest.ends_with(last)
+    } else {
+        rest.contains(last)
     }
 }
 
@@ -247,6 +315,7 @@ impl Policies {
                 "huggingface",
                 include_str!("../../policies/huggingface.toml"),
             ),
+            (GHN, include_str!("../../policies/ghn.toml")),
         ]
         .into_iter()
         .map(|(n, t)| Policy::parse(n, t).expect("a built-in policy"))
@@ -292,6 +361,9 @@ impl Policies {
         };
         if url.scheme() != "https" && !p.allow_plain_http {
             return Err(format!("{shown}: not https"));
+        }
+        if let Some(why) = p.refuses_path(url) {
+            return Err(why);
         }
         Ok(p)
     }

@@ -314,6 +314,73 @@ fn push_back_rules_are_checked() {
     assert!(statuses("[600]").is_err());
 }
 
+#[test]
+fn path_rules_read_as_robots_txt_does() {
+    use super::policy::path_matches;
+    assert!(path_matches("/data/", "/data/batches/x"));
+    assert!(!path_matches("/data/", "/lccn/data/"));
+    assert!(path_matches(
+        "/*.pdf$",
+        "/lccn/sn1/1900-01-01/ed-1/seq-1.pdf"
+    ));
+    assert!(!path_matches("/*.pdf$", "/x.pdf?download=1"));
+    assert!(path_matches("/*.xml", "/seq-1/ocr.xml?x"));
+    assert!(path_matches(
+        "/lccn/*.json$",
+        "/lccn/sn1/1900-01-01/ed-1.json"
+    ));
+    assert!(!path_matches("/lccn/*.json$", "/lccn/sn1.json/x"));
+    assert!(path_matches("/a*b*c$", "/a_b_b_c"));
+    assert!(!path_matches("/a*b*c$", "/a_c"));
+
+    let parse = |rules: &str| {
+        let t = format!(
+            "hosts = [\"a.example\"]\nlabel = \"x\"\nrequests_per_minute = 2\n{rules}\n\
+             [push_back]\ndefault_hold_secs = 1\nhtml = true\nmax_hold_secs = 1\nstatuses = []\n"
+        );
+        Policy::parse("x", &t)
+    };
+    assert!(parse(r#"disallow_paths = ["/data/", "/*.pdf$"]"#).is_ok());
+    assert!(parse(r#"disallow_paths = ["data/"]"#).is_err());
+    assert!(parse(r#"allow_paths = ["/a$b"]"#).is_err());
+}
+
+/// GHN's policy: slow, one at a time, and only the IIIF documents and full-size images,
+/// never anything its robots.txt disallows.
+#[test]
+fn ghns_policy_keeps_to_robots_txt_and_its_iiif_paths() {
+    let all = Policies::builtin();
+    let ghn = all.iter().find(|p| p.name == GHN).unwrap();
+    assert_eq!(ghn.concurrency, 1);
+    assert!(ghn.requests_per_minute <= 6 && ghn.min_gap_secs >= 10);
+    assert!(ghn.slow_requests_per_minute.is_some() && ghn.push_back.html);
+    for r in ["/data/", "/*.pdf$", "/*.txt$", "/*.xml$"] {
+        assert!(ghn.disallow_paths.iter().any(|d| d == r), "{r}");
+    }
+    let ok = |u: &str| all.for_url(&reqwest::Url::parse(u).unwrap()).is_ok();
+    let site = "https://gahistoricnewspapers.galileo.usg.edu";
+    let images = "https://iiif-ha.galib.uga.edu/iiif/2/newspapers";
+    assert!(ok(&format!("{site}/newspapers.json")));
+    assert!(ok(&format!("{site}/lccn/sn89053815.json")));
+    assert!(ok(&format!("{site}/lccn/sn89053815/1876-10-15/ed-1.json")));
+    assert!(ok(&format!(
+        "{images}/b%2F0001.jp2/full/full/0/default.jpg"
+    )));
+    for refused in [
+        format!("{site}/data/batches/"),
+        format!("{site}/lccn/sn89053815/1876-10-15/ed-1/seq-1.pdf"),
+        format!("{site}/lccn/sn89053815/1876-10-15/ed-1/seq-1/ocr.xml"),
+        format!("{site}/lccn/sn89053815/1876-10-15/ed-1/seq-1/ocr.txt"),
+        format!("{site}/lccn/sn89053815/1876-10-15/ed-1/seq-1/"),
+        format!("{site}/lccn/sn89053815/1876-10-15/ed-1/seq-1.jp2"),
+        format!("{site}/search/pages/results/?andtext=x&format=json"),
+        format!("{images}/b%2F0001.jp2/full/240,/0/default.jpg"),
+        format!("{images}/b%2F0001.jp2/info.json"),
+    ] {
+        assert!(!ok(&refused), "{refused}");
+    }
+}
+
 // ---- LoC's behaviour ----
 
 /// The file as a deployed pacer has it, slowed, must read as it is, and a run
@@ -743,7 +810,7 @@ async fn a_wrong_sized_file_is_replaced_and_a_good_one_never() {
     let job = Job {
         name: "a".into(),
         size: 10,
-        sha256: String::new(),
+        sha256: Some(String::new()),
         dest: r.out().join("a.tar.bz2"),
         sources: Vec::new(),
     };
@@ -1302,7 +1369,7 @@ async fn failure_records_stay_whole_and_counted() {
             let job = Job {
                 name: format!("n{i}"),
                 size: 0,
-                sha256: String::new(),
+                sha256: Some(String::new()),
                 dest: PathBuf::new(),
                 sources: Vec::new(),
             };
@@ -1518,7 +1585,7 @@ async fn budgets_are_a_seam_any_implementation_can_fill() {
     let job = Job {
         name: "f".into(),
         size: 4,
-        sha256: sha(b"body"),
+        sha256: Some(sha(b"body")),
         dest: r.out().join("f"),
         sources: Vec::new(),
     };
@@ -1538,4 +1605,113 @@ async fn budgets_are_a_seam_any_implementation_can_fill() {
         .unwrap();
     assert!(got.placed);
     assert_eq!(counted.sent.load(Ordering::SeqCst), 1);
+}
+
+// ---- path rules and files with no listed checksum ----
+
+/// An engine with one policy on the stand-in's host, its budget in `dir`.
+fn engine_with(p: Policy, dir: &Path) -> Engine {
+    Engine::new(
+        Policies::new(vec![p]).unwrap(),
+        Box::new(FileBudgets::new(Some(dir.to_owned()))),
+        EngineOptions {
+            who: "test".into(),
+            rate_file: None,
+        },
+    )
+    .unwrap()
+}
+
+async fn fetch_one(r: &Rig, engine: &Engine, job: &Job, path: &str) -> Result<Got, Fail> {
+    std::fs::create_dir_all(r.out()).unwrap();
+    let (_tx, rx) = no_stop();
+    let total = std::sync::atomic::AtomicU64::new(0);
+    let room = Reservation::new(&total);
+    let got = engine
+        .fetch(
+            job,
+            &format!("{}{path}", r.root),
+            &r.out().join(format!("{}.part", job.name)),
+            &rx,
+            Instant::now() + Duration::from_secs(60),
+            &room,
+        )
+        .await;
+    drop(room);
+    got
+}
+
+fn unlisted(r: &Rig, name: &str, ceiling: u64) -> Job {
+    Job {
+        name: name.into(),
+        size: ceiling,
+        sha256: None,
+        dest: r.out().join(name),
+        sources: Vec::new(),
+    }
+}
+
+fn paths_policy() -> Policy {
+    test_policy(
+        "paths",
+        "127.0.0.1",
+        "slow_requests_per_minute = 6000\ndisallow_paths = [\"/ok/*.xml$\"]\n\
+         allow_paths = [\"/ok/\"]\n",
+    )
+}
+
+#[tokio::test]
+async fn a_path_the_policy_wont_ask_for_is_refused_before_any_request() {
+    let r = Rig::new().await;
+    r.s.put("/ok/a.xml", b"<x/>".to_vec());
+    r.s.put("/other/a", b"body".to_vec());
+    let engine = engine_with(paths_policy(), r.dir.path());
+    for path in ["/ok/a.xml", "/other/a"] {
+        let e = fetch_one(&r, &engine, &unlisted(&r, "a", 100), path).await;
+        assert!(matches!(e, Err(Fail::Refused(_))), "{path}: {e:?}");
+    }
+    assert_eq!(r.s.hits_under("/"), 0);
+}
+
+/// GHN sends a page it won't serve to a challenge: being sent off the allowed paths is
+/// the host objecting, so it slows the budget, and the challenge is never asked for.
+#[tokio::test]
+async fn a_redirect_off_the_allowed_paths_is_push_back() {
+    let r = Rig::new().await;
+    r.s.redirect("/ok/a", "/challenge?ray=1");
+    let engine = engine_with(paths_policy(), r.dir.path());
+    let e = fetch_one(&r, &engine, &unlisted(&r, "a", 100), "/ok/a").await;
+    let Err(Fail::Blocked(m)) = e else {
+        panic!("{e:?}");
+    };
+    assert!(m.contains("not a path") && !m.contains("ray"), "{m}");
+    assert_eq!(r.s.hits_under("/challenge"), 0);
+    let e = engine
+        .check_not_slowed(&format!("{}/ok/b", r.root))
+        .await
+        .unwrap_err();
+    assert!(e.to_string().contains("a redirect off the paths"), "{e}");
+}
+
+/// A file no list describes: its size is only a ceiling, its SHA-256 is what came, and a
+/// copy already there is replaced, never trusted.
+#[tokio::test]
+async fn an_unlisted_file_reports_its_checksum_and_keeps_under_its_ceiling() {
+    let r = Rig::new().await;
+    r.s.put("/ok/a", b"body".to_vec());
+    r.s.put("/ok/big", b"too long".to_vec());
+    let engine = engine_with(paths_policy(), r.dir.path());
+    let job = unlisted(&r, "a", 100);
+    std::fs::create_dir_all(r.out()).unwrap();
+    std::fs::write(&job.dest, b"old copy").unwrap();
+    let got = fetch_one(&r, &engine, &job, "/ok/a").await.unwrap();
+    assert!(got.placed);
+    assert_eq!((got.size, got.sha256.as_str()), (4, sha(b"body").as_str()));
+    assert_eq!(std::fs::read(&job.dest).unwrap(), b"body");
+
+    let job = unlisted(&r, "big", 4);
+    let e = fetch_one(&r, &engine, &job, "/ok/big").await;
+    assert!(matches!(e, Err(Fail::Refused(_))), "{e:?}");
+    assert!(!job.dest.exists());
+    assert!(only_parts(&r.out()).is_empty());
 }
