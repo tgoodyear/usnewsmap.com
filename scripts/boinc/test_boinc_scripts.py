@@ -1540,7 +1540,8 @@ class HandoffAndBridgeQualitySteps(unittest.TestCase):
                 calls = self.calls()
                 # Once, with HANDOFF_JOBS or for the retry.
                 self.assertEqual(len([c for c in calls if f"--path dispatch/jobs/{failed}/record.json" in c]), 1)
-                (record,) = [c for c in calls if f"--prefix dispatch/jobs/{failed}/deadline-retry " in c]
+                # The fake logs its arguments joined by spaces: the prefix has none of its own.
+                (record,) = [c for c in calls if f"--prefix dispatch/jobs/{failed}/deadline-retry --to " in c]
                 self.assertTrue(record.startswith("handoff get "), record)
                 (export,) = [c for c in calls if c.startswith("export ")]
                 self.assertIn("--claims ", export)
