@@ -39,6 +39,18 @@ class ScanTests(unittest.TestCase):
             yn.jpeg_size(b"\x89PNG\r\n")
         with self.assertRaises(ValueError):
             yn.jpeg_size(b"\xff\xd8\xff\xd9")
+        with self.assertRaisesRegex(ValueError, "second SOI"):
+            yn.jpeg_size(b"\xff\xd8\xff\xd8" + jpeg(10, 10)[2:])
+
+    def test_scan_facts_streams_in_chunks(self):
+        data = jpeg(2542, 3507) + bytes(5000)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "page.jpg"
+            path.write_bytes(data)
+            self.assertEqual(yn.scan_facts(path, chunk=7), (hashlib.sha256(data).hexdigest(), len(data), 2542, 3507))
+            path.write_bytes(b"\xff\xd8" + bytes(50))
+            with self.assertRaisesRegex(ValueError, "bad JPEG marker"):
+                yn.scan_facts(path, chunk=7)
 
     def test_inventory_lists_only_held_scans_in_the_language(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -148,6 +160,11 @@ class CheckTests(unittest.TestCase):
         records = done(yn.template_records(manifest()))
         records[0]["skipped_anchors"] = []
         self.assertError(records, "anchors must be taken in order")
+
+    def test_anchors_after_the_last_block_stay_unused(self):
+        records = done(yn.template_records(manifest()))
+        records[0]["skipped_anchors"].append({"anchor": 3, "reason": "non-text"})
+        self.assertError(records, "leave later anchors unused")
 
     def test_first_line_must_be_at_the_anchor(self):
         records = done(yn.template_records(manifest()))

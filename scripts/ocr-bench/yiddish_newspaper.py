@@ -55,8 +55,10 @@ def jpeg_size(data: bytes) -> tuple[int, int]:
             break
         marker = data[i]
         i += 1
-        if marker == 0x01 or 0xD0 <= marker <= 0xD8:
+        if marker == 0x01 or 0xD0 <= marker <= 0xD7:
             continue
+        if marker == 0xD8:
+            raise ValueError(f"second SOI marker at byte {i - 1}")
         if marker in (0xD9, 0xDA):
             break
         length = int.from_bytes(data[i : i + 2], "big")
@@ -70,6 +72,30 @@ def jpeg_size(data: bytes) -> tuple[int, int]:
             return width, height
         i += length
     raise ValueError("no JPEG start-of-frame segment")
+
+
+def scan_facts(path: Path, chunk: int = 1 << 20) -> tuple[str, int, int, int]:
+    """sha256, byte count, width and height of a JPEG, read in chunks.
+
+    Only the head up to the frame header is kept in memory.
+    """
+    digest = hashlib.sha256()
+    head = b""
+    size = 0
+    dims = None
+    with path.open("rb") as f:
+        while block := f.read(chunk):
+            digest.update(block)
+            size += len(block)
+            if dims is None:
+                head += block
+                try:
+                    dims = jpeg_size(head)
+                except ValueError:
+                    pass
+    if dims is None:
+        dims = jpeg_size(head)
+    return digest.hexdigest(), size, *dims
 
 
 def parse_doc_id(doc_id: str) -> dict:
@@ -107,15 +133,14 @@ def cmd_inventory(args) -> int:
         meta = parse_doc_id(name)
         if sample.get("decade") not in (None, meta["decade"]):
             print(f"warning: {name}: sample decade {sample['decade']} != page date decade", file=sys.stderr)
-        data = page.read_bytes()
-        width, height = jpeg_size(data)
+        sha256, size, width, height = scan_facts(page)
         rows.append(
             {
                 "doc_id": name,
                 **meta,
                 "damage": sample.get("damage"),
-                "sha256": hashlib.sha256(data).hexdigest(),
-                "bytes": len(data),
+                "sha256": sha256,
+                "bytes": size,
                 "width": width,
                 "height": height,
             }
@@ -433,7 +458,7 @@ def check_blocks(where: str, rec: dict, page: dict, params: dict, errors: list, 
     if sorted(used) != list(range(len(used))) or any(a >= len(anchors) for a in used):
         errors.append(f"{where}: anchors must be taken in order from 0; each is either a block or skipped, once")
     elif blocks and len(blocks) == params["blocks_per_page"] and max(used) > block_anchors[-1]:
-        errors.append(f"{where}: anchors after the last block are not skipped, just unused")
+        errors.append(f"{where}: after the last block, leave later anchors unused; don't list them in skipped_anchors")
     if rec.get("status") in ("transcribed", "reviewed") and len(blocks) < params["blocks_per_page"]:
         if not (len(used) == len(anchors) and nonempty(rec.get("short_reason"))):
             errors.append(f"{where}: needs {params['blocks_per_page']} blocks, or every anchor used and a short_reason")
@@ -558,8 +583,11 @@ def check_records(manifest: dict, records: list[dict], images: Path | None = Non
             if not path.is_file():
                 errors.append(f"{where}: no image {path}")
             else:
-                data = path.read_bytes()
-                if hashlib.sha256(data).hexdigest() != page["sha256"] or list(jpeg_size(data)) != [page["width"], page["height"]]:
+                try:
+                    sha256, _, width, height = scan_facts(path)
+                except ValueError:
+                    sha256 = width = height = None
+                if (sha256, width, height) != (page["sha256"], page["width"], page["height"]):
                     errors.append(f"{where}: {path} is not the drawn scan")
     for c in manifest["cells"]:
         ranked = sorted((p for p in manifest["pages"] if p["cell"] == c["cell"]), key=lambda p: p["rank"])
