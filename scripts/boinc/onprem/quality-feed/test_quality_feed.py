@@ -843,7 +843,7 @@ class FollowChunkTest(unittest.TestCase):
                 mock.patch.object(feed, "scan_set", return_value="buffer") as scan_set, \
                 mock.patch.object(feed.urllib.request, "urlopen", side_effect=lambda *a, **k: io.BytesIO(raw)), \
                 contextlib.redirect_stdout(io.StringIO()) as output:
-            # No chunk yet, so overdue: but a round with a full chunk still holds its remainder.
+            # A fresh state's clock starts now: the full chunk goes and the remainder waits.
             feed.main(argv)
             self.assertEqual((camp / "c00001/READY").read_text().strip(), "2")
             self.assertFalse((camp / "c00002").exists())
@@ -864,6 +864,12 @@ class FollowChunkTest(unittest.TestCase):
             feed.main(argv)
             self.assertEqual((camp / "c00002/READY").read_text().strip(), "1")
             self.assertEqual(feed.read_lines(state / "done.txt"), set(rows))
+
+    def test_a_fresh_state_is_not_overdue(self):
+        state = self.root / "state"
+        state.mkdir()
+        self.assertLess(feed.time.time() - feed.last_chunk_at(str(state)), 60)
+        self.assertEqual(feed.read_lines(state / "chunks.txt"), set())
 
 
 class LoadTest(unittest.TestCase):

@@ -33,6 +33,7 @@ import argparse
 import concurrent.futures
 import glob
 import hashlib
+import heapq
 import io
 import json
 import os
@@ -692,7 +693,7 @@ def delete_shipped(a, camp_dir, done_path, quality_docs, deleted_path, kept_path
         shipped[doc] = (scan, size, damage, now)
     released = [doc for doc in kept if doc not in quality_docs]
     if budget:
-        for doc, k in sorted(kept.items(), key=lambda kv: kv[1][3])[: getattr(a, "keep_verify", 0)]:
+        for doc, k in heapq.nsmallest(getattr(a, "keep_verify", 0), kept.items(), key=lambda kv: kv[1][3]):
             if doc not in quality_docs:
                 continue
             try:
@@ -763,11 +764,12 @@ def delete_shipped(a, camp_dir, done_path, quality_docs, deleted_path, kept_path
 
 
 def last_chunk_at(state):
-    """When the last chunk was written (chunks.txt's mtime); 0 when none has been."""
-    try:
-        return os.path.getmtime(os.path.join(state, "chunks.txt"))
-    except OSError:
-        return 0.0
+    """When the last chunk was written (chunks.txt's mtime). A state with none yet gets an
+    empty chunks.txt, so --max-wait-secs counts from the follower's first round there."""
+    path = os.path.join(state, "chunks.txt")
+    if not os.path.exists(path):
+        open(path, "a").close()
+    return os.path.getmtime(path)
 
 
 def staged_from_db(dsn):
