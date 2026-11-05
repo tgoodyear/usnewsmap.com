@@ -1,3 +1,4 @@
+import argparse
 import contextlib
 import copy
 import importlib.util
@@ -126,7 +127,7 @@ class Policy(unittest.TestCase):
             with self.assertRaises(ValueError):
                 P.read_policy(self.write(bad))
         for bad in ("yid", "yid:0", "yid:v1", "Yid:1"):
-            with self.assertRaises(Exception):
+            with self.assertRaises(argparse.ArgumentTypeError):
                 P.group_arg(bad)
 
 
