@@ -856,7 +856,29 @@ async fn legacy_searches_redirect_and_curated_results_render_without_javascript(
     assert!(body.contains(r#"<div id="root"></div><div id="search-landing">"#));
     assert!(!body.contains(r#"id="site-fallback""#));
     assert!(!body.contains(r#"class="visually-hidden" inert"#));
-    assert!(body.contains(r#"src="/search-map.png?example=cross-of-gold""#));
+    let map = body
+        .split(r#"class="static-search-map"><img src=""#)
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .unwrap();
+    let revision = map
+        .strip_prefix("/search-preview/")
+        .and_then(|rest| rest.strip_suffix("/cross-of-gold.png"))
+        .unwrap_or_else(|| panic!("{map}"));
+    assert!(
+        revision.len() == 16
+            && revision
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+        "{map}"
+    );
+    let (legacy, headers, _) = get_site(&s, "/search-map.png?example=cross-of-gold", None).await;
+    assert_eq!(legacy, StatusCode::TEMPORARY_REDIRECT);
+    assert_eq!(header_str(&headers, header::LOCATION), map);
+    assert_eq!(header_str(&headers, header::CACHE_CONTROL), "no-store");
+    let (queried, headers, _) = get_site(&s, &format!("{map}?x=1"), None).await;
+    assert_eq!(queried, StatusCode::BAD_REQUEST);
+    assert_eq!(header_str(&headers, header::CACHE_CONTROL), "no-store");
     assert!(body.contains("Map and timeline of newspaper matches for Cross of Gold, 1896"));
     assert!(!body.contains("Explore interactive map"));
     assert!(body.contains("Demo data: this server is running on a small synthetic corpus"));

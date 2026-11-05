@@ -4,6 +4,7 @@ import copy
 import importlib.util
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
 import unittest
@@ -71,6 +72,15 @@ class CacheRules(unittest.TestCase):
             "--zone-id", "0" * 32, "--dry-run",
         ], check=True, capture_output=True, text=True)
         self.assertEqual(json.loads(result.stdout), DESIRED)
+
+    def test_final_bypass_exempts_every_static_prefix(self):
+        static, bypass = DESIRED[0], DESIRED[-1]
+        prefixes = re.findall(r'starts_with\(http\.request\.uri\.path, "([^"]+)"\)',
+                              static["expression"])
+        self.assertIn("/search-preview/", prefixes)
+        exempt = bypass["expression"].split(" and not (", 1)[1]
+        for path in prefixes:
+            self.assertIn(f'starts_with(http.request.uri.path, "{path}")', exempt)
 
 
 if __name__ == "__main__":

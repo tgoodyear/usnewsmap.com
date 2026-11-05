@@ -48,12 +48,15 @@ try {
       basemapFailed = true;
     }
   });
-  // A search URL cannot turn this into an arbitrary URL screenshot service.
+  // A search URL cannot turn this into an arbitrary URL screenshot service,
+  // and a page's own map images would ask for the render being made.
   await page.route("**/*", (route) => {
     const url = new URL(route.request().url());
     const local = url.origin === target.origin;
     const basemap = url.protocol === "https:" && url.hostname === "tiles.openfreemap.org";
-    if ((local || basemap) && !["/share-image.png", "/search-map.png"].includes(url.pathname)) {
+    const ownImage =
+      ["/share-image.png", "/search-map.png"].includes(url.pathname) || url.pathname.startsWith("/search-preview/");
+    if ((local || basemap) && !ownImage) {
       return route.continue();
     }
     return route.abort();

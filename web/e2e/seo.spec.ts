@@ -222,7 +222,7 @@ test("JavaScript browsers skip the static view before the bundle loads and show 
     await route.continue();
   });
   const imageRequests: string[] = [];
-  await page.route("**/search-map.png?**", (route) => {
+  await page.route(/\/(search-map\.png\?|search-preview\/)/, (route) => {
     imageRequests.push(route.request().url());
     return route.abort();
   });

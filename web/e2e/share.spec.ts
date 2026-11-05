@@ -88,10 +88,18 @@ test("the no-JavaScript map uses the same rendered search view, never the generi
 }) => {
   test.skip(!process.env.PW_BASE_URL || isMobile, "requires the API serving the built app and Chromium");
   test.setTimeout(60_000);
-  const map = await request.get("/search-map.png?example=cross-of-gold", { timeout: 50_000 });
+  const legacy = await request.get("/search-map.png?example=cross-of-gold", { maxRedirects: 0 });
+  expect(legacy.status()).toBe(307);
+  expect(legacy.headers()["cache-control"]).toBe("no-store");
+  const preview = legacy.headers()["location"] ?? "";
+  expect(preview).toMatch(/^\/search-preview\/[0-9a-f]{16}\/cross-of-gold\.png$/);
+  const html = await (await request.get("/examples/cross-of-gold")).text();
+  expect(html).toContain(`<img src="${preview}"`);
+  const map = await request.get(preview, { timeout: 50_000 });
   expect(map.status()).toBe(200);
   expect(map.headers()["content-type"]).toBe("image/png");
-  expect(map.headers()["cache-control"]).toContain("max-age=300");
+  expect(map.headers()["cache-control"]).toBe("public, max-age=86400");
+  expect(map.headers()["cloudflare-cdn-cache-control"]).toBe("public, max-age=1209600");
   const png = await map.body();
   expect(png.readUInt32BE(16)).toBe(1200);
   expect(png.readUInt32BE(20)).toBe(630);
