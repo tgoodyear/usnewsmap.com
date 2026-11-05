@@ -1412,7 +1412,10 @@ lookup that fails goes to the back, and one the scan server doesn't answer ends 
 lookups and deletes, which the next round picks up where it left off. The follower looks
 after the list every round, before its campaign has shipped anything too, and deletes (or
 keeps) the shipped scans of every campaign it has followed (`<state>/followed.txt`), so the
-chunks a shipper takes after a campaign switch don't leave their scans behind.
+chunks a shipper takes after a campaign switch don't leave their scans behind. Its own
+campaign goes first, so room its lookups free is there for every campaign's newly shipped
+pages, and pages leaving the list are recorded in `<state>/retired.txt`, which every
+campaign reads, so one campaign never takes back a page another let go.
 Before 5 November 2026 every one was deleted, 150,000 pages, 54,000 of them with a damage
 rate of 0.1 or more. OCR's scans and the keep set are never deleted.
 `quality-feed-install.sh --follow` turns both on with the shipper.

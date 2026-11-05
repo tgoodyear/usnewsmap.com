@@ -704,7 +704,7 @@ def scan_exists(server, scan):
 
 
 def delete_shipped(a, camp_dir, done_path, quality_docs, deleted_path, kept_path=None, ocr_docs=frozenset(),
-                   verify=True):
+                   verify=True, retired_path=None):
     """DELETEs the buffer scans of the quality pass's shipped pages (the shipper has removed
     their chunk from the outbox), bar the most damaged, which stay for re-OCR.
 
@@ -723,9 +723,11 @@ def delete_shipped(a, camp_dir, done_path, quality_docs, deleted_path, kept_path
     server doesn't answer ends the round's lookups and deletes.
 
     `deleted_path` gets every page this is done with, deleted or released, so neither is
-    weighed again. Returns how many were DELETEd (or already gone); releases aren't counted.
+    weighed again; with `retired_path`, the kept list's pages go there instead: the list is
+    every campaign's, so the page's own campaign must see one another campaign retired.
+    Returns how many were DELETEd (or already gone); releases aren't counted.
     """
-    deleted = read_lines(deleted_path)
+    deleted = read_lines(deleted_path) | read_lines(retired_path)
     # Retention needs kept.tsv to carry it from round to round: with no kept_path, none.
     budget = (getattr(a, "keep_bytes", 0) or 0) if kept_path else 0
     kept = read_kept(kept_path)
@@ -831,9 +833,12 @@ def delete_shipped(a, camp_dir, done_path, quality_docs, deleted_path, kept_path
             out.append(doc)
     used = sum(k[1] for k in keep.values())
     n = len(out) - len(released)
-    if out:
-        with open(deleted_path, "a") as f:
-            f.write("".join(f"{d}\n" for d in out))
+    # Pages out of the kept list (any campaign's), and this campaign's newly shipped ones.
+    retired = [d for d in out if d not in shipped] if retired_path else []
+    for path, docs in ((retired_path, retired), (deleted_path, [d for d in out if d in shipped or not retired_path])):
+        if docs:
+            with open(path, "a") as f:
+                f.write("".join(f"{d}\n" for d in docs))
     if kept_path and (keep or os.path.exists(kept_path)):
         write_kept(kept_path, keep)
         if shipped or released:
@@ -887,6 +892,8 @@ def cmd_follow(a):
     deleted_path = os.path.join(state, "deleted.txt")
     # One list for every campaign, so a new campaign's budget counts the scans an earlier one kept.
     kept_path = os.path.join(a.state, "kept.tsv")
+    # Kept pages that have left it, whichever campaign's round let them go.
+    retired_path = os.path.join(a.state, "retired.txt")
     # Every campaign followed here: one switched away from still has chunks the shipper took
     # after its last round, whose scans are deleted (or kept) from here.
     followed_path = os.path.join(a.state, "followed.txt")
@@ -920,11 +927,15 @@ def cmd_follow(a):
         with open(kept_path + ".lock", "a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             quality_only = quality_docs - ocr_docs
+            # This campaign's first: it checks the kept list, so space freed there is free
+            # to every campaign's newly shipped pages.
+            gone += delete_shipped(a, camp_dir, done_path, quality_only, deleted_path, kept_path, ocr_docs,
+                                   retired_path=retired_path)
             past = sorted(c for c in read_lines(followed_path) if c != a.campaign and CAMPAIGN_RE.match(c))
             for c in past:
                 gone += delete_shipped(a, os.path.join(a.outbox, c), os.path.join(a.state, c, "done.txt"), quality_only,
-                                       os.path.join(a.state, c, "deleted.txt"), kept_path, ocr_docs, verify=False)
-            gone += delete_shipped(a, camp_dir, done_path, quality_only, deleted_path, kept_path, ocr_docs)
+                                       os.path.join(a.state, c, "deleted.txt"), kept_path, ocr_docs, verify=False,
+                                       retired_path=retired_path)
         if gone:
             log("buffer scans deleted after shipping", pages=gone)
         quarantined = scan_quarantine.quarantined(state) if getattr(a, "quarantine_decode", False) else []
