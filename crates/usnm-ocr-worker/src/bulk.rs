@@ -201,7 +201,7 @@ fn plan(
             jobs.push(Job {
                 name: a.archive_name.clone(),
                 size: a.size,
-                sha256,
+                sha256: Some(sha256),
                 dest: out.join(&a.archive_name),
                 sources,
             });
