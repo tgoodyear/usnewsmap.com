@@ -63,7 +63,7 @@ The last three tables show the larger groups only; `report` prints all of them.
 
 ## Caveats
 
-- Half the units are still open: 802 Serbian v3 units, mostly created on 2 and 3 November, have one return. The settled ratios favour units that settle quickly, so Yiddish v1's 4.69 is a floor.
+- Half the units are still open: 802 Serbian v3 units, mostly created on 2 and 3 November, have one return. The settled ratios favour units that settle quickly, so they can still move either way. Each open dispute a third replica settles lowers Yiddish v1's 4.69, and each that hits the cap raises it. At the rates measured, 13% and 6%, it would rise.
 - GPU-hours are wall time on devices about ten times apart. Median Serbian successes took 27 s on AMD, 79 s on NVIDIA, 236 s on Apple and 317 s on Intel, so Apple's replicas dominate the hours.
 - One unit's job input couldn't be read, so its language is unknown. No result ended with no reply.
 - The 1 November note's 4.3 replicas per valid unit was measured on a mostly Yiddish sample. This window is mostly Serbian, so the overall 2.36 isn't comparable with it; Yiddish v1's 4.69 is.
