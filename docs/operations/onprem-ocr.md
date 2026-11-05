@@ -68,14 +68,15 @@ usnm-ocr-worker column-text --alto /private/stored-alto/ --language deu \
   --ocr-engine tesseract/5.5.0 --out /private/column-text/
 ```
 
-`--alto` is one ALTO file or a directory of `*.xml`; each page's text goes to
-`<stem>.txt` in `--out`, and one JSON line per page reports `changed` and the
-gutters, lines and blocks it cut. Stored ALTO is in pixels; engine ALTO in
-`inch1200` or `mm10` also needs the scans' `--dpi`. Given the language and
-engine the worker used, a page with no such gutter is written as the worker
-wrote it. Words fused across a gutter stay whole, on the side of their centre.
-It reads only local files and changes no ALTO. Like the region tool above, its
-output is not accepted for publication until #926's cohort check.
+`--alto` is one ALTO file or a directory of `*.xml` (any case); each page's
+text goes to `<stem>.txt` in `--out`, and one JSON line per page reports
+`changed` and the gutters, lines and blocks it cut. Stored ALTO is in pixels;
+engine ALTO in `inch1200` or `mm10` also needs the scans' `--dpi`. Given the
+language and engine the worker used, a page with no such gutter is written as
+the worker wrote it. Words fused across a gutter stay whole, on the side of
+their centre. It reads only local files and changes no ALTO. Like the region
+tool above, its output is not accepted for publication until #926's cohort
+check.
 
 ## Rebuilding the dashboard data-flow observer and catalog
 

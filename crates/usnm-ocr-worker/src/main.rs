@@ -720,7 +720,7 @@ enum Command {
     /// JSON line of what the repair changed. Reads only the files given; the ALTO isn't
     /// rewritten and nothing is published.
     ColumnText {
-        /// A stored ALTO file, or a directory of them (`*.xml`).
+        /// A stored ALTO file, or a directory of them (`*.xml`, any case).
         #[arg(long)]
         alto: PathBuf,
         /// The pages' language, ISO 639-3: their script's direction and hyphenation.
@@ -1664,7 +1664,11 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
                 let mut files: Vec<PathBuf> = std::fs::read_dir(&alto)?
                     .map(|e| e.map(|e| e.path()))
                     .collect::<Result<_, _>>()?;
-                files.retain(|p| p.extension().is_some_and(|e| e == "xml"));
+                files.retain(|p| {
+                    p.extension()
+                        .and_then(|e| e.to_str())
+                        .is_some_and(|e| e.eq_ignore_ascii_case("xml"))
+                });
                 files.sort();
                 files
             } else {
