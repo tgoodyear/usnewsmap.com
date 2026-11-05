@@ -3,7 +3,9 @@ name: boinc-qwen
 # image, with usnm-boinc. A manual run on main publishes it to the public package
 # ghcr.io/tgoodyear/usnm-boinc-worker under tags qwen-2b-<commit> / qwen-8b-<commit>, and its summary gives the
 # registry digest and the two values a campaign is staged with. A pull request that changes what
-# it is built from builds it without pushing.
+# it is built from builds it without pushing: both models when the change reaches what sets them
+# apart (its directory, its scripts, this workflow or its action), and only 2b when it reaches
+# just the usnm-boinc build stage the two share (crates, the files they embed elsewhere; #1585).
 #
 # It shares the worker's package, which is already public, so volunteers' Docker or Podman can
 # pull it anonymously; only the digest is used.
@@ -59,6 +61,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       build: ${{ steps.f.outputs.boinc_qwen }}
+      models: ${{ steps.f.outputs.boinc_qwen_models }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -66,7 +69,7 @@ jobs:
           persist-credentials: false
       - id: f
         run: scripts/ci/changes.sh
-  # Pull requests: build and check only, with a read-only token.
+  # Pull requests: build and check only, with a read-only token, the models changes.sh selects.
   check:
     name: qwen worker image (build)
     needs: inputs
@@ -76,7 +79,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        model: [2b, 8b]
+        model: ${{ fromJSON(needs.inputs.outputs.models) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
