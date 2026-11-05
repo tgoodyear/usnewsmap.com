@@ -1214,6 +1214,31 @@ throughout. It refuses if the lock file is missing, since the controller
 creates it on its first tick, so a missing one means a wrong `--state-dir`. A killed apply leaves that lease held, like a crashed controller.
 Once the process is confirmed gone, the operator breaks it as above.
 
+The `dispatch` apply deletes hand-off blobs, so it needs `blobs/delete` on
+`boinc-handoff`. The controller's own identity (`boincHandoffRunner`, CT 211's
+Arc machine identity) deliberately lacks it: its node writer role there reads
+and writes but doesn't delete (`infra/modules/ocr-exchange.bicep`). Under that
+identity, the apply stops at its first delete with HTTP 403
+`AuthorizationPermissionMismatch`, and the batch is left resumable. Don't widen
+the controller's role. Run the apply under an operator identity that may
+delete, such as one with Storage Blob Data Owner on the account's resource
+group.
+
+The tool takes its token from the first `az` on its `PATH`:
+`az account get-access-token --resource https://storage.azure.com/`. It reads
+only the `token` and `expires` keys, and asks again 10 minutes before expiry.
+To use an operator identity:
+
+- Give the archive tool alone, on CT 211, a wrapper `az` earlier on its `PATH`.
+  The wrapper answers that one call from a 0600 file, and passes every other
+  call to the real `az`.
+- On the operator's workstation, mint a short-lived storage-audience token with
+  the same command. Pipe it into that file over `ssh`, never printing it.
+- Rewrite the file before the token expires, replacing it atomically.
+- Delete the file and the wrapper after the run.
+
+The dry run and the controller's own ticks keep the controller's identity.
+
 The maintainer approves each live run. To archive:
 
 1. Pause the controller on CT 211, and wait for any running tick to end:
@@ -1240,8 +1265,9 @@ The maintainer approves each live run. To archive:
      --archive-dir <archive dir>
    ```
 
-3. Apply it: the same command plus `--apply --confirm-controller-paused`. It
-   prints the batch's receipt, which is also kept in
+3. Apply it under an operator identity that may delete (above): the same
+   command plus `--apply --confirm-controller-paused`. It prints the batch's
+   receipt, which is also kept in
    `<archive dir>/batches/<NNNN>/receipts/dispatch.json`.
 4. Copy that batch's `manifest.json` and `receipts/dispatch.json`, unchanged, to
    `/srv/usnm-boinc/project/archive/batches/<NNNN>/` on the BOINC host, and
