@@ -1221,8 +1221,10 @@ and writes but doesn't delete (`infra/modules/ocr-exchange.bicep`). Under that
 identity, the apply stops at its first delete with HTTP 403
 `AuthorizationPermissionMismatch`, and the batch is left resumable. Don't widen
 the controller's role. Run the apply under an operator identity that may
-delete, such as one with Storage Blob Data Owner on the account's resource
-group.
+delete. The narrowest built-in role that does is Storage Blob Data Contributor
+scoped to the `boinc-handoff` container. A broader role an operator already
+holds also works, such as Storage Blob Data Owner on the account's resource
+group, but don't grant one for this.
 
 The tool takes its token from the first `az` on its `PATH`. It runs:
 
@@ -1234,15 +1236,25 @@ az account get-access-token --resource https://storage.azure.com/ \
 It reads only the `token` and `expires` keys of that JSON object, and asks again
 10 minutes before expiry. To use an operator identity:
 
-- Give the archive tool alone, on CT 211, a wrapper `az` earlier on its `PATH`.
-  The wrapper answers that one call from a 0600 file, and passes every other
-  call to the real `az`.
+- On CT 211, make a root-owned 0700 directory for the run, such as
+  `/root/usnm-archive`. In it, put a 0700 wrapper `azshim/az` that answers only
+  that one call, from a 0600 token file at a fixed path there, such as
+  `/root/usnm-archive/.maint-token.json`. Every other call goes to the real `az`
+  by its absolute path (`exec /usr/bin/az "$@"`, or wherever `command -v az`
+  points).
+- Put the wrapper's directory first on `PATH` for the archive tool's command
+  alone (`PATH=/root/usnm-archive/azshim:$PATH python3 archive_history.py …`).
+  Never change `PATH` in a profile or for the service.
 - On the operator's workstation, mint a short-lived storage-audience token with
   the same command, including the `--query` projection, so that the file holds
-  the `token`/`expires` object. Pipe it into that file over `ssh`, never
+  the `token`/`expires` object. Pipe it over `ssh` into that file, never
   printing it.
-- Rewrite the file before the token expires, replacing it atomically.
-- Delete the file and the wrapper after the run.
+- Rewrite the file before the token expires. Write the new token to a 0600
+  temporary file in the same directory, then `mv` it over the old one, so the
+  tool never reads a partial file. Only root can write to that directory, so
+  nothing else can swap the file or plant a link there.
+- Delete the token file and the wrapper after the run, and any copy left on the
+  way (for example on the Proxmox host).
 
 The dry run and the controller's own ticks keep the controller's identity.
 
