@@ -1716,6 +1716,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
          refill_cap=None, other_app_budget=None):
     if config.get("app") == SURYA_APP_NAME:
         require(refill_cap is None, "--refill-cap is for OCR plans")
+        require(other_app_budget is None, "--other-app-budget is for OCR plans")
         return surya_tick(config, state, transport, persist, now, drain=drain,
                           low_watermark=low_watermark, high_watermark=high_watermark,
                           server_status=server_status)
@@ -2160,6 +2161,7 @@ def main(argv=None):
             require(1 <= args.refill_cap <= 100, "invalid --refill-cap")
             require(config.get("app") != SURYA_APP_NAME, "--refill-cap is for OCR plans")
         if args.other_app_budget is not None:
+            require(config.get("app") != SURYA_APP_NAME, "--other-app-budget is for OCR plans")
             # As the tick checks it, so a dry run catches it: below a cap set explicitly.
             cap = (args.max_global_pending if args.max_global_pending is not None
                    else config.get("max_global_pending"))

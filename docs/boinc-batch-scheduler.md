@@ -135,6 +135,7 @@ change) counts other apps' unassimilated workunits toward
 `--max-global-pending` only up to `B`, which must be below the cap, so other
 apps can't take more than `B` of it: the cohort keeps `cap - B`, less retained
 collection backlog. The cap must be set explicitly (flag or configuration).
+The flag is for OCR plans; a Surya plan refuses it.
 All work of every app, counted in full, may not pass the
 feeder's 4,096 shared-memory slots (`shmem_work_items`); at that bound the
 reason is `global_hard_cap`, which no cap setting lifts. Which work is other

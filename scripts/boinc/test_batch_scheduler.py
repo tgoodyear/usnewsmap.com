@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -3165,6 +3166,24 @@ class SuryaPlanTests(unittest.TestCase):
             for file in directory.iterdir():
                 file.unlink()
             directory.rmdir()
+
+    def test_other_app_budget_is_for_ocr_plans(self):
+        # Surya's tick doesn't use the global cap, so a budget there would be silently ignored.
+        with self.assertRaisesRegex(ValueError, "OCR plans"):
+            self.tick(0, max_global_pending=2000, other_app_budget=500)
+        directory = Path(__file__).parent.resolve() / (".surya-config-" + uuid.uuid4().hex)
+        directory.mkdir()
+        try:
+            path = directory / "config.json"
+            path.write_text(json.dumps(self.config))
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                self.assertEqual(batch.main(["--config", str(path), "--state-dir", str(directory),
+                                             "--max-global-pending", "2000",
+                                             "--other-app-budget", "500"]), 1)
+            self.assertIn("OCR plans", err.getvalue())
+        finally:
+            shutil.rmtree(directory)
 
     def test_config_validation(self):
         loaded = self.load(self.config)
