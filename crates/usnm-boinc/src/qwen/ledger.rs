@@ -121,11 +121,12 @@ pub fn record_paths(pages: &Path, job_id: &str, doc_id: &str) -> anyhow::Result<
     };
     let mut files = Vec::new();
     for entry in entries {
-        let entry = entry?;
+        // As before bundles, an entry that can't be read is skipped, not fatal.
+        let Ok(entry) = entry else { continue };
         let path = entry.path();
         // `record_page` writes regular files with UTF-8 names, staging them
         // through temporary files in the same directory.
-        if entry.file_type()?.is_file()
+        if entry.file_type().is_ok_and(|t| t.is_file())
             && path.file_name().is_some_and(|n| n.to_str().is_some())
             && path.extension().is_some_and(|x| x == "json")
         {
@@ -139,10 +140,10 @@ pub fn record_paths(pages: &Path, job_id: &str, doc_id: &str) -> anyhow::Result<
 /// The readings two hosts agreed on for each `accepted` page of the bundle
 /// unit, by doc id, as that page's own readings: each crop id's
 /// `<doc_id>:` prefix is taken off (#1435). They are the first agreeing
-/// record's (by file name), from the side whose result name sorts first,
-/// which must have run to the end and name its device, so the same records
-/// always give the same readings. Agreeing is not being right: nothing here
-/// establishes accuracy.
+/// record's (by file name), from the side whose result name sorts first
+/// (the two names must differ), which must have run to the end and name its
+/// device, so the same records always give the same readings. Agreeing is
+/// not being right: nothing here establishes accuracy.
 pub fn accepted_readings(
     root: &Path,
     unit: &Path,
@@ -176,6 +177,12 @@ pub fn accepted_readings(
             path.display()
         );
         let [a, b] = record.results;
+        anyhow::ensure!(
+            a.result != b.result,
+            "{}: both sides name result {:?}",
+            path.display(),
+            a.result
+        );
         let side = if b.result < a.result { b } else { a };
         let mut ids: Vec<&str> = side.readings.iter().map(|r| r.id.as_str()).collect();
         ids.sort_unstable();
@@ -471,6 +478,16 @@ pub(crate) mod tests {
         let err =
             accepted_readings(&root, &units(&root).join("bundle-00001"), &job, &pages).unwrap_err();
         assert!(format!("{err:#}").contains("names no device"), "{err:#}");
+        // Nor are two sides that name one result, whichever reads.
+        record["results"][1]["device"] = record["results"][0]["device"].clone();
+        record["results"][1]["result"] = record["results"][0]["result"].clone();
+        std::fs::write(&record_path, serde_json::to_vec(&record).unwrap()).unwrap();
+        let err =
+            accepted_readings(&root, &units(&root).join("bundle-00001"), &job, &pages).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("both sides name result"),
+            "{err:#}"
+        );
         let stray = record_path.with_file_name("stray.json");
         std::fs::create_dir(&stray).unwrap();
         assert_eq!(
