@@ -596,6 +596,7 @@ mod tests {
             "gpu_shortage",
             "controller_tick",
             "collection",
+            "feeder_allocation",
         ]
         .map(|code| {
             let mut check = serde_json::json!({
@@ -607,6 +608,10 @@ mod tests {
             } else if code == "gpu_shortage" {
                 check["state"] = "unknown".into();
                 check["reason"] = "gpu_memory_packing".into();
+            } else if code == "feeder_allocation" {
+                check["state"] = "pending".into();
+                check["reason"] = "registry_changed".into();
+                check["app_ids"] = serde_json::json!([3, 7]);
             }
             check
         });
@@ -623,6 +628,7 @@ mod tests {
         assert!(html.contains("2 modeled candidates / 2 resource-eligible own slots"));
         assert!(html.contains("not guaranteed scheduler dispatch"));
         assert!(html.contains("gpu_memory_packing"));
+        assert!(html.contains("registry_changed: app IDs 3, 7"));
         std::fs::remove_dir_all(dir).unwrap();
     }
 

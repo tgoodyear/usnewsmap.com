@@ -245,8 +245,11 @@ systemctl start usnm-feeder-slot-guard.service
 The oneshot runs the image's read-only check as `boincadm` in the running server
 container. `drift` exits 1 and `unknown` exits 2, so both fail the unit and appear
 in `systemctl --failed` and `journalctl -u usnm-feeder-slot-guard.service`.
-`maintenance` is distinct from a match and does not fail the unit. There is no
-external notification here; monitor failed units and missing timer runs separately.
+`maintenance` is distinct from a match and does not fail the unit. The unit sends
+no external notification; monitor failed units and missing timer runs separately,
+or enable the feed monitor's opt-in
+[`feeder_allocation` check](boinc/boundaries-and-monitoring.md#live-feed-health-1441),
+which runs the same command and alerts through the BOINC feed alerts.
 An unreachable container, old feeder, stale snapshot or failed verified-TLS query
 is unknown, not success. The image's independent five-minute JSON event is useful
 for diagnosis. See [Allocation drift detection](../contrib-compute/docs/app-release.md#allocation-drift-detection)
