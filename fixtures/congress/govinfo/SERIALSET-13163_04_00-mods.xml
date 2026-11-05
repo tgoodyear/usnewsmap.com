@@ -1,0 +1,227 @@
+<mods xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:mods="http://www.loc.gov/mods/v3" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://www.loc.gov/mods/v3" version="3.3" xsi:schemaLocation="http://www.loc.gov/mods/v3 http://www.loc.gov/standards/mods/v3/mods-3-3.xsd" ID="P0b002ee1bc783557">
+    <name type="corporate">
+         <namePart>United States Government Publishing Office</namePart>
+         <role>
+              <roleTerm authority="marcrelator" type="text">publisher</roleTerm>
+              <roleTerm authority="marcrelator" type="code">pbl</roleTerm>
+        </role>
+         <role>
+              <roleTerm authority="marcrelator" type="text">distributor</roleTerm>
+              <roleTerm authority="marcrelator" type="code">dst</roleTerm>
+        </role>
+    </name>
+    <name type="corporate">
+         <namePart>United States</namePart>
+         <namePart>Congress</namePart>
+         <namePart>House of Representatives</namePart>
+         <role>
+              <roleTerm authority="marcrelator" type="text">author</roleTerm>
+              <roleTerm authority="marcrelator" type="code">aut</roleTerm>
+        </role>
+         <description>Government Organization</description>
+    </name>
+    <typeOfResource>text</typeOfResource>
+    <genre authority="marcgt">government publication</genre>
+    <language>
+         <languageTerm type="code" authority="iso639-2b">eng</languageTerm>
+    </language>
+    <extension>
+         <collectionCode>SERIALSET</collectionCode>
+         <category>Proceedings of Congress and General Congressional Publications</category>
+         <branch>legislative</branch>
+         <dateIngested>2023-03-02</dateIngested>
+    </extension>
+    <originInfo>
+         <publisher>U.S. Government Printing Office</publisher>
+         <dateIssued encoding="w3cdtf">1976-10-01</dateIssued>
+         <issuance>continuing</issuance>
+         <frequency authority="marcfrequency">Irregular</frequency>
+    </originInfo>
+    <physicalDescription>
+         <note type="source content type">converted</note>
+         <digitalOrigin>reformatted digital</digitalOrigin>
+         <extent>1480 p.</extent>
+    </physicalDescription>
+    <classification authority="sudocs">Y 1.1/7:</classification>
+    <classification authority="sudocs">Y 1.1/3:</classification>
+    <classification authority="sudocs">Y 1.1/2:13163-4</classification>
+    <identifier type="uri">https://www.govinfo.gov/app/details/SERIALSET-13163_04_00</identifier>
+    <identifier type="local">P0b002ee1bc783557</identifier>
+    <identifier type="issn">1931-2822</identifier>
+    <identifier type="lccn">92643101</identifier>
+    <identifier type="ILS system id">000568079</identifier>
+    <identifier type="OCLC">(OCoLC)3888071</identifier>
+    <recordInfo>
+         <recordContentSource authority="marcorg">DGPO</recordContentSource>
+         <recordCreationDate encoding="w3cdtf">2023-03-02</recordCreationDate>
+         <recordChangeDate encoding="w3cdtf">2024-10-08</recordChangeDate>
+         <recordIdentifier source="DGPO">SERIALSET-13163_04_00</recordIdentifier>
+         <recordOrigin>machine generated</recordOrigin>
+         <languageOfCataloging>
+              <languageTerm type="code" authority="iso639-2b">eng</languageTerm>
+        </languageOfCataloging>
+    </recordInfo>
+    <accessCondition type="GPO scope determination">fdlp</accessCondition>
+    <extension>
+         <docClass>HDOC</docClass>
+         <accessId>SERIALSET-13163_04_00</accessId>
+         <docId>13163_04_00</docId>
+         <bagId>13163_04_00</bagId>
+         <isGLP>false</isGLP>
+         <serialSetNumber>13163-4</serialSetNumber>
+         <dateIssued>1976-10-01</dateIssued>
+         <congress years="1975-1976">94</congress>
+         <session>2</session>
+         <sessionYear>1976</sessionYear>
+         <chamber>HOUSE</chamber>
+         <volume>19-4</volume>
+         <bibliographicTitle>Examinations of Rivers and Harbors. III.</bibliographicTitle>
+         <untTitle>Examinations of Rivers and Harbors. II.</untTitle>
+         <serialTitle>U.S. Congressional Serial Set No. 13163-4 - House Documents, Vol. 19-4</serialTitle>
+         <ACCode>SERIALSET</ACCode>
+         <numDocs>6</numDocs>
+         <notes source="Numerical Lists and Schedule of Volumes of the Reports and Documents of the ... Congress, ... Session">Nos. 511, 519-520, 532-533: Examinations of rivers and harbors. III.</notes>
+         <partnership>This content was digitized by the Law Library of Congress and is made publicly available through a partnership between the U.S. Government Publishing Office and the Law Library of Congress.</partnership>
+         <foldouts number="11">true</foldouts>
+         <unused>false</unused>
+         <deliveryObservation>Complete</deliveryObservation>
+         <indexContent>Examinations [pt. 4]</indexContent>
+         <browseCongress>094;1975-1976;13096-1 to 13167</browseCongress>
+         <browseSerial>13163_04_00;Serial No. 13163-4 - House Documents, Vol. 19-4;Examinations of Rivers and Harbors. II.</browseSerial>
+    </extension>
+    <location>
+         <url displayLabel="Content Detail" access="object in context">https://www.govinfo.gov/app/details/SERIALSET-13163_04_00</url>
+         <url displayLabel="PDF rendition" access="raw object">https://www.govinfo.gov/content/pkg/SERIALSET-13163_04_00/pdf/SERIALSET-13163_04_00.pdf</url>
+    </location>
+    <titleInfo>
+         <title>U.S. Congressional Serial Set No. 13163-4 - House Documents, Vol. 19-4</title>
+    </titleInfo>
+    <name type="corporate">
+         <namePart>United States</namePart>
+         <namePart>Government Printing Office.</namePart>
+    </name>
+    <originInfo>
+         <place>
+              <placeTerm authority="marccountry" type="code">dcu</placeTerm>
+        </place>
+         <place>
+              <placeTerm type="text">Washington</placeTerm>
+        </place>
+         <publisher>U.S. G.P.O.</publisher>
+         <dateIssued>1976-10-01</dateIssued>
+         <dateCreated encoding="marc" point="start">1817</dateCreated>
+         <dateCreated encoding="marc" point="end">9999</dateCreated>
+         <issuance>continuing</issuance>
+         <frequency>Irregular</frequency>
+    </originInfo>
+    <physicalDescription>
+         <form authority="marcform">print</form>
+         <extent>v. ; 24 cm.</extent>
+    </physicalDescription>
+    <classification authority="sudocs">Y 1.1/7:</classification>
+    <classification authority="sudocs">Y 1.1/3:</classification>
+    <classification authority="sudocs">Y 1.1/2:13163-4</classification>
+    <identifier type="sudoc-item-number">0996-A</identifier>
+    <identifier type="sudoc-item-number">0996-C (House doc., Senate doc.)</identifier>
+    <identifier type="sudoc-item-number">1008-E (House rept., Senate rept.)</identifier>
+    <identifier type="sudoc-item-number">1004-E</identifier>
+    <identifier type="sudoc-item-number">1008-F</identifier>
+    <identifier type="issn">1931-2822</identifier>
+    <identifier type="issn-l">1931-2822</identifier>
+    <identifier invalid="yes" type="lccn">sn 87042262</identifier>
+    <identifier type="lccn">92643101</identifier>
+    <typeOfResource>text</typeOfResource>
+    <language>
+         <languageTerm authority="iso639-2b" type="code">eng</languageTerm>
+    </language>
+    <note type="date/sequential designation">Began with: No. 1, with the 15th Congress, 1st session, 1817.</note>
+    <note>Prior to the 97th Congress, the serial set had no official name; it was popularly known as the Congressional serial set.</note>
+    <note>The set has also been known variously as: Congressional serial set, Serial number set, Congressional edition, Congressional set, Congressional series, Congressional series of United States public documents, Congressional document series, Sheep set, Sheep bound set (owing to its distinctive sheepskin binding), and Serial set.</note>
+    <note>Description based on: Serial no. 13891, published in 1990.</note>
+    <note>Latest issue consulted: Serial no. 14683, published in 2003.</note>
+    <note>Documents in the Serial set also distributed individually to depository libraries in paper and microfiche.</note>
+    <note>Nos. 511, 519-520, 532-533: Examinations of rivers and harbors. III.</note>
+    <note type="numbering">Numbering began with 15th Congress, as the publications of the earlier congresses were not assembled in book form.</note>
+    <note type="numbering">Some no. published out of sequence.</note>
+    <note>Microfiche version issued with title: CIS U.S. serial set, covering 1789-1969; as part of: CIS microfiche library, 1970-</note>
+    <note>Includes a complete cumulation of: United States. Congress. House. Report; House document (United States. Congress. House); United States. Congress. Senate. Report; Senate document (United States. Congress. Senate); and: Treaty doc.</note>
+    <subject authority="lcsh">
+         <name type="corporate">
+              <namePart>United States.</namePart>
+              <namePart>Congress</namePart>
+        </name>
+         <genre>Periodicals</genre>
+    </subject>
+    <subject authority="lcsh">
+         <geographic>United States</geographic>
+         <topic>Politics and government</topic>
+         <genre>Periodicals</genre>
+    </subject>
+    <relatedItem displayLabel="Online version:" type="otherFormat">
+         <titleInfo>
+              <title>United States congressional serial set</title>
+        </titleInfo>
+         <identifier type="local">(OCoLC)564624650</identifier>
+    </relatedItem>
+    <relatedItem displayLabel="Microfiche version:" type="otherFormat">
+         <titleInfo>
+              <title>[Serial set]</title>
+        </titleInfo>
+         <name>
+              <namePart>United States. Congress.</namePart>
+        </name>
+         <identifier type="local">(OCoLC)4978913</identifier>
+    </relatedItem>
+    <titleInfo type="alternative">
+         <title>U.S. Congressional Serial Set, No. 13163-4, House Documents, Vol. 19-4</title>
+    </titleInfo>
+    <titleInfo type="alternative">
+         <title>Congressional serial set</title>
+    </titleInfo>
+    <titleInfo type="alternative">
+         <title>Serial number set</title>
+    </titleInfo>
+    <titleInfo type="alternative">
+         <title>Congressional edition</title>
+    </titleInfo>
+    <titleInfo type="alternative">
+         <title>Congressional set</title>
+    </titleInfo>
+    <titleInfo type="alternative">
+         <title>Congressional series</title>
+    </titleInfo>
+    <titleInfo type="alternative">
+         <title>Congressional series of United States public documents</title>
+    </titleInfo>
+    <titleInfo type="alternative">
+         <title>Congressional document series</title>
+    </titleInfo>
+    <titleInfo type="alternative">
+         <title>Sheep set</title>
+    </titleInfo>
+    <titleInfo type="alternative">
+         <title>Sheep bound set</title>
+    </titleInfo>
+    <titleInfo type="alternative">
+         <title>Serial set</title>
+    </titleInfo>
+    <titleInfo type="alternative">
+         <title>U.S. Congressional serial set</title>
+    </titleInfo>
+    <extension>
+         <searchTitle>
+              <title>U.S. Congressional Serial Set, No. 13163-4, House Documents, Vol. 19-4</title>
+              <title>Congressional serial set</title>
+              <title>Serial number set</title>
+              <title>Congressional edition</title>
+              <title>Congressional set</title>
+              <title>Congressional series</title>
+              <title>Congressional series of United States public documents</title>
+              <title>Congressional document series</title>
+              <title>Sheep set</title>
+              <title>Sheep bound set</title>
+              <title>Serial set</title>
+              <title>U.S. Congressional serial set</title>
+        </searchTitle>
+    </extension>
+</mods>
