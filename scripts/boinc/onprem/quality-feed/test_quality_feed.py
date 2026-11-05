@@ -796,6 +796,19 @@ class FollowTest(unittest.TestCase):
                 self.assertEqual(set(feed.read_kept(str(kept))), {"new"})
                 self.assertEqual(feed.read_lines(str(deleted)), {"old"})
 
+    def test_an_unreadable_kept_line_is_weighed_again_not_fatal(self):
+        with tempfile.TemporaryDirectory() as d:
+            camp, done, deleted, kept = Path(d, "camp"), Path(d, "done.txt"), Path(d, "deleted.txt"), Path(d, "kept.tsv")
+            camp.mkdir()
+            done.write_text("x\tc1\tbuffer/b/x.jp2\t80\t0.5\n")
+            kept.write_text("x\tbuffer/b/x.jp2\t8")  # cut off mid-write
+            a = types.SimpleNamespace(scan_server="http://s", keep_bytes=100, keep_verify=0)
+            with mock.patch.object(feed.urllib.request, "urlopen") as urlopen, \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(feed.delete_shipped(a, str(camp), str(done), {"x"}, str(deleted), str(kept)), 0)
+            urlopen.assert_not_called()
+            self.assertEqual(feed.read_kept(str(kept))["x"][:3], ("buffer/b/x.jp2", 80, 0.5))
+
 
 class FollowChunkTest(unittest.TestCase):
     """follow writes full chunks, and a part one only once --max-wait-secs has passed."""

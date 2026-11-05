@@ -631,8 +631,13 @@ def read_kept(path):
     if path and os.path.exists(path):
         with open(path) as f:
             for line in f:
-                doc, scan, size, damage, checked = line.rstrip("\n").split("\t")
-                out[doc] = (scan, int(size), float(damage) if damage else None, float(checked))
+                try:
+                    doc, scan, size, damage, checked = line.rstrip("\n").split("\t")
+                    out[doc] = (scan, int(size), float(damage) if damage else None, float(checked))
+                except ValueError:
+                    # Left out, the page is still in done.txt and not deleted, so the next
+                    # round weighs it again as newly shipped.
+                    log("kept.tsv line unreadable; skipped", line=line[:200])
     return out
 
 

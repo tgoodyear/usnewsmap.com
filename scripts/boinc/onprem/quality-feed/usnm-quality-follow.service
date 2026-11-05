@@ -16,13 +16,15 @@ Type=simple
 EnvironmentFile=/etc/usnm/quality-feed.env
 EnvironmentFile=/etc/usnm/quality-follow.env
 Environment=LC_ALL=C.UTF-8
+# No retention unless quality-follow.env sets it (an EnvironmentFile overrides Environment=).
+Environment=KEEP_BYTES=0
 ExecStart=/bin/sh -c 'exec /opt/usnm-quality-feed/venv/bin/python /opt/usnm-quality-feed/quality_feed.py follow \
   --campaign "$CAMPAIGN" --curated /srv/curated --scan-server "$SCAN_SERVER" \
   --outbox /var/lib/usnm-quality-feed/outbox --state /var/lib/usnm-quality-feed \
   --staged /var/lib/usnm-quality-feed/work/staged-docs.txt --staged-dsn "$(cat /etc/usnm/quality-db/dsn)" \
   --quality-docs /var/lib/usnm-ocr-manifest/quality-docs.txt --ocr-docs /var/lib/usnm-ocr-manifest/ocr-docs.txt \
   --chunk-pages "$CHUNK_PAGES" --max-pending "$MAX_PENDING" --workers "$WORKERS" --every-secs 600 \
-  --keep-bytes "$${KEEP_BYTES:-0}" --quarantine-decode'
+  --keep-bytes "$KEEP_BYTES" --quarantine-decode'
 Restart=on-failure
 RestartSec=300
 Nice=10
