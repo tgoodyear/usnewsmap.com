@@ -44,6 +44,8 @@ pub(crate) mod social;
 
 /// Headers on every response (the site's and the API's). `connect-src`
 /// allows the same-origin API, the OpenFreeMap basemap and public BOINC counts.
+/// `script-src` adds one hash: `index.html`'s inline script that marks
+/// scripting as running, so blocked scripts leave the static fallback shown.
 ///
 /// HSTS starts at five minutes, for the host that sends it alone (no
 /// `includeSubDomains`) and without `preload`: a browser keeps it for
@@ -51,7 +53,9 @@ pub(crate) mod social;
 pub const SECURITY_HEADERS: [(&str, &str); 5] = [
     (
         "content-security-policy",
-        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
+        "default-src 'self'; \
+         script-src 'self' 'sha256-ZnYJX5ypMaaAhxxWhSEjbMkhO2A9yPmbzEQH3LFaITA='; \
+         style-src 'self' 'unsafe-inline'; \
          img-src 'self' data: blob: https:; font-src 'self' https://tiles.openfreemap.org; \
          connect-src 'self' https://tiles.openfreemap.org https://boinc.usnewsmap.com; \
          worker-src 'self' blob:; child-src blob:; object-src 'none'; base-uri 'self'; \
@@ -968,6 +972,38 @@ mod tests {
             "connect-src 'self' https://tiles.openfreemap.org https://boinc.usnewsmap.com"
         );
         assert!(!csp.contains("blob.core.windows.net"));
+    }
+
+    #[test]
+    fn script_src_allows_exactly_the_index_inline_scripts() {
+        use base64::Engine;
+        let csp = SECURITY_HEADERS
+            .iter()
+            .find(|(name, _)| *name == "content-security-policy")
+            .unwrap()
+            .1;
+        let script_src = csp
+            .split(';')
+            .map(str::trim)
+            .find(|directive| directive.starts_with("script-src "))
+            .unwrap();
+        let index = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../web/index.html"),
+        )
+        .unwrap();
+        let hashes: Vec<String> = index
+            .split("<script>")
+            .skip(1)
+            .map(|rest| {
+                let body = &rest[..rest.find("</script>").unwrap()];
+                let digest = base64::engine::general_purpose::STANDARD
+                    .encode(Sha256::digest(body.as_bytes()));
+                format!("'sha256-{digest}'")
+            })
+            .collect();
+        assert_eq!(hashes.len(), 1, "{index}");
+        let expected = format!("script-src 'self' {}", hashes.join(" "));
+        assert_eq!(script_src, expected);
     }
 
     #[test]
