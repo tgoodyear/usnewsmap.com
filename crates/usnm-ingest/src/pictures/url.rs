@@ -152,29 +152,37 @@ pub fn scan_of_iiif_base(base: &str) -> Option<(String, Scan)> {
     let id = base
         .strip_prefix(TILE_IIIF)?
         .strip_prefix("service:ndnp:")?;
-    let segments: Vec<&str> = id.split(':').collect();
-    let [awardee, batch, "data", rest @ .., frame] = segments.as_slice() else {
+    // Awardee, batch, `data`, LCCN, one or two reel segments, issue, frame.
+    let mut segments = [""; 8];
+    let mut n = 0;
+    for segment in id.split(':') {
+        *segments.get_mut(n)? = segment;
+        n += 1;
+    }
+    let [awardee, batch, "data", rest @ .., frame] = &segments[..n] else {
         return None;
     };
     let batch = batch.strip_prefix("batch_")?;
     if !is_segment(awardee) || !is_batch(batch) {
         return None;
     }
-    let file = format!("{frame}.jp2");
-    let mut path = rest.to_vec();
-    path.push(&file);
-    Some((batch.to_owned(), scan_of(&path, true)?))
+    Some((batch.to_owned(), scan_at(rest, frame, true)?))
 }
 
 /// `[lccn, reel…, issue, frame.jp2]` at the end of `segments` (all of it with
 /// `anchored`, for an image id that starts at the LCCN).
 fn scan_of(segments: &[&str], anchored: bool) -> Option<Scan> {
     let (file, rest) = segments.split_last()?;
-    let frame = file.strip_suffix(".jp2")?;
+    scan_at(rest, file.strip_suffix(".jp2")?, anchored)
+}
+
+/// [`scan_of`], with the JP2's `frame` (its name without `.jp2`) apart from
+/// the `[lccn, reel…, issue]` at the end of `segments`.
+fn scan_at(segments: &[&str], frame: &str, anchored: bool) -> Option<Scan> {
     if !FRAME_DIGITS.contains(&frame.len()) || !frame.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
-    let (issue, rest) = rest.split_last()?;
+    let (issue, rest) = segments.split_last()?;
     let (date, edition) = issue_of(issue)?;
     // The reel is one directory, or two (`no/reel`): the LCCN is the one
     // before it.
@@ -619,6 +627,9 @@ mod tests {
             format!("{TILE_IIIF}{}", ok.replace("1850072701", "1850072700")),
             format!("{TILE_IIIF}{}", ok.replace("sn85026051", "xx")),
             format!("{TILE_IIIF}{}", ok.replace(":00296027029", "")),
+            // A reel of three directories, or more.
+            format!("{TILE_IIIF}{}", ok.replace(":00296027029", ":a:b:c")),
+            format!("{TILE_IIIF}{}", ok.replace(":00296027029", ":a:b:c:d:e")),
             String::new(),
         ] {
             assert_eq!(scan_of_iiif_base(&bad), None, "{bad}");

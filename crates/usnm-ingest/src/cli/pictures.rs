@@ -127,24 +127,30 @@ pub(crate) async fn pictures_join_command(
         placements,
         out,
     } = args;
-    if out.exists() {
-        anyhow::bail!("`{}` already exists", out.display());
+    let file = join::create_report(out)?;
+    let written = async {
+        let curated = usnm_store::open(&cli.stores.curated)?;
+        let pictures = match pictures {
+            Some(location) => usnm_store::open(location)?,
+            None => curated.clone(),
+        };
+        let placements = Placements::read(placements)?;
+        let report = join::report(
+            &state,
+            curated.as_ref(),
+            pictures.as_ref(),
+            revision,
+            &placements,
+        )
+        .await?;
+        join::write_report(file, out, &report)
     }
-    let curated = usnm_store::open(&cli.stores.curated)?;
-    let pictures = match pictures {
-        Some(location) => usnm_store::open(location)?,
-        None => curated.clone(),
-    };
-    let placements = Placements::read(placements)?;
-    let report = join::report(
-        &state,
-        curated.as_ref(),
-        pictures.as_ref(),
-        revision,
-        &placements,
-    )
-    .await?;
-    join::write_report(out, &report)?;
+    .await;
+    if written.is_err() {
+        // Only this run made the file; leave no empty or partial report.
+        let _ = std::fs::remove_file(out);
+    }
+    written?;
     tracing::info!(out = %out.display(), "pictures-join report written");
     Ok(None)
 }

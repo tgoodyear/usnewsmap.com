@@ -29,7 +29,8 @@
 //! day's editions apart.
 
 use std::collections::hash_map::Entry;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::fs::{File, OpenOptions};
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 
@@ -221,7 +222,7 @@ struct CuratedDays {
     /// others, for the few title-days that more than one batch has. A full
     /// corpus has a few million title-days.
     first: HashMap<(u32, u32), u32>,
-    more: HashMap<(u32, u32), Vec<u32>>,
+    more: HashMap<(u32, u32), BTreeSet<u32>>,
 }
 
 impl CuratedDays {
@@ -242,10 +243,7 @@ impl CuratedDays {
                             e.insert(i);
                         }
                         Entry::Occupied(e) if *e.get() != i => {
-                            let more = out.more.entry((title, day)).or_default();
-                            if !more.contains(&i) {
-                                more.push(i);
-                            }
+                            out.more.entry((title, day)).or_default().insert(i);
                         }
                         Entry::Occupied(_) => {}
                     }
@@ -541,18 +539,26 @@ pub async fn join(
     Ok(report)
 }
 
-/// Write `report` as JSON to `path`, which must not exist yet. The report
-/// goes to a file because the logs are JSON on stdout.
-pub fn write_report(path: &Path, report: &JoinReport) -> anyhow::Result<()> {
-    let mut file = std::fs::OpenOptions::new()
+/// Create the report file at `path`, which must not exist yet. The report
+/// goes to a file because the logs are JSON on stdout; it is created before
+/// the join runs, so an existing file stops the command at once.
+pub fn create_report(path: &Path) -> anyhow::Result<File> {
+    OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(path)
-        .with_context(|| format!("creating `{}`", path.display()))?;
-    serde_json::to_writer_pretty(&mut file, report)?;
-    file.write_all(b"\n")?;
-    file.sync_all()
-        .with_context(|| format!("writing `{}`", path.display()))
+        .with_context(|| format!("creating `{}`", path.display()))
+}
+
+/// Write `report` as JSON to `file`, which [`create_report`] made at `path`.
+pub fn write_report(mut file: File, path: &Path, report: &JoinReport) -> anyhow::Result<()> {
+    let mut write = || -> anyhow::Result<()> {
+        serde_json::to_writer_pretty(&mut file, report)?;
+        file.write_all(b"\n")?;
+        file.sync_all()?;
+        Ok(())
+    };
+    write().with_context(|| format!("writing `{}`", path.display()))
 }
 
 /// [`join`] against every curated batch in `state`.
@@ -885,10 +891,10 @@ mod tests {
 
         // The report is written once, to a new file.
         let out = dir.path().join("join.json");
-        write_report(&out, &r).unwrap();
+        write_report(create_report(&out).unwrap(), &out, &r).unwrap();
         let read: JoinReport = serde_json::from_slice(&std::fs::read(&out).unwrap()).unwrap();
         assert_eq!(read, r);
-        assert!(write_report(&out, &r).is_err());
+        assert!(create_report(&out).is_err());
 
         // Without placements, the placed rows are only on their batch's day.
         let none = Placements::read(&[]).unwrap();
