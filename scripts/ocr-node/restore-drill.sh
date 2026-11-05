@@ -136,13 +136,15 @@ echo "== cold restore: $N scans, $got bytes in $(secs "$g0" "$g1")s ($(awk -v b=
 s0=$(now) insnap=0
 for i in "${!SEL[@]}"; do
   if [ -f "$SNAPDIR/${SEL[$i]}" ]; then
-    cp -- "$SNAPDIR/${SEL[$i]}" "$DIR/snap/$i"
+    cp -- "$SNAPDIR/${SEL[$i]}" "$DIR/snap/$i" 2> /dev/null || die "snapshot copy $i failed"
     insnap=$((insnap + 1))
   fi
 done
 echo "== snapshot restore ($SNAP): $insnap of $N scans in $(secs "$s0" "$(now)")s"
 
 # Every restored copy against the sidecar, the blob's properties and the live scan.
+# Local files are read only when present, and from stdin, so no error names a scan.
+field() { jq -r "$2" < "$1" 2> /dev/null || true; }
 v0=$(now) bad=0 nomd5=0
 for i in "${!SEL[@]}"; do
   live="$SCANS/${SEL[$i]}" side="$SCANS/${SEL[$i]}.json" cold="$DIR/cold/$i" fails=() note=""
@@ -151,22 +153,34 @@ for i in "${!SEL[@]}"; do
   r_len=$(stat -c %s "$cold")
   b_md5=$(hdr "$DIR/head/$i" content-md5 | base64 -d | od -An -tx1 | tr -d ' \n')
   [ "$r_len" = "${SIZES[$i]}" ] || fails+=(length)
-  [ "$r_len" = "$(jq -r .bytes "$side")" ] || fails+=(sidecar-bytes)
-  [ "$r_sha" = "$(jq -r .sha256 "$side")" ] || fails+=(sidecar-sha256)
-  # Only a JP2's sidecar records the bag's md5 (prefetch::matches_sidecar).
-  s_md5=$(jq -r '.md5 // empty' "$side")
-  if [ -n "$s_md5" ]; then
-    [ "$r_md5" = "$s_md5" ] || fails+=(sidecar-md5)
-  elif [ "$(jq -r '.format // "jpeg"' "$side")" = jp2 ]; then
-    fails+=(sidecar-md5-missing)
+  if [ -f "$side" ]; then
+    # What the archive upload accepts: the extension's format at full resolution,
+    # with the bag's md5 recorded for a JP2 only (prefetch::matches_sidecar).
+    case ${SEL[$i]##*.} in jp2) want=jp2 ;; *) want=jpeg ;; esac
+    [ "$(field "$side" '.format // "jpeg"')" = "$want" ] || fails+=(sidecar-format)
+    [ "$(field "$side" .resolution)" = full ] || fails+=(sidecar-resolution)
+    [ "$r_len" = "$(field "$side" .bytes)" ] || fails+=(sidecar-bytes)
+    [ "$r_sha" = "$(field "$side" .sha256)" ] || fails+=(sidecar-sha256)
+    s_md5=$(field "$side" '.md5 // empty')
+    if [ -n "$s_md5" ]; then
+      [ "$r_md5" = "$s_md5" ] || fails+=(sidecar-md5)
+    elif [ "$want" = jp2 ]; then
+      fails+=(sidecar-md5-missing)
+    else
+      nomd5=$((nomd5 + 1))
+    fi
   else
-    nomd5=$((nomd5 + 1))
+    fails+=(sidecar-missing)
   fi
   [ "$r_sha" = "$(hdr "$DIR/head/$i" x-ms-meta-sha256)" ] || fails+=(blob-sha256)
   [ "$r_md5" = "$b_md5" ] || fails+=(blob-md5)
   [ "$(hdr "$DIR/head/$i" x-ms-access-tier)" = Cold ] || fails+=(tier)
-  [ "$r_sha" = "$(sha256sum < "$live" | cut -d' ' -f1)" ] || fails+=(live-sha256)
-  cmp -s "$cold" "$live" || fails+=(live-bytes)
+  if [ -f "$live" ]; then
+    [ "$r_sha" = "$(sha256sum < "$live" | cut -d' ' -f1)" ] || fails+=(live-sha256)
+    cmp -s "$cold" "$live" || fails+=(live-bytes)
+  else
+    fails+=(live-missing)
+  fi
   if [ -f "$DIR/snap/$i" ]; then
     cmp -s "$cold" "$DIR/snap/$i" || fails+=(snapshot-bytes)
   else

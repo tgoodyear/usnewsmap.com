@@ -286,13 +286,13 @@ The keep-set scans have been copied to a Cold-tier container, `scans` in the sto
    - **Cold restore.** It GETs the sample one by one, each capped at its HEAD length, then copies the same scans from `.zfs/snapshot/<snapshot-name>`. A scan archived after the snapshot is skipped there, but the drill fails if none of the sample is in the snapshot.
    - **Checks.** It compares each Cold copy's length, sha256 and md5 with:
      - the HEAD length;
-     - the sidecar;
+     - the sidecar, which must also give the name's format (`jp2` for `.jp2`, `jpeg` for `.jpg`) at `full` resolution, as the archive upload requires;
      - the blob's `sha256` metadata and Content-MD5;
      - the tier (`Cold`);
      - the live scan and the snapshot copy.
 
      A sidecar records an md5 only for a JP2 (the bag's); a JPEG's has none, so the md5 is checked against the blob's Content-MD5 only, and a JP2 sidecar without one fails.
-   - **Safety and output.** It writes only into `--dir`, which must be the empty mountpoint of `--dataset`. It prints timings, a digest of the sample's names and never the names or the token.
+   - **Safety and output.** It writes only into `--dir`, which must be the empty mountpoint of `--dataset`. It prints timings, a digest of the sample's names and never the names or the token, not even in an error: a missing live scan or sidecar is reported by its index in the sample.
    - **Token.** It asks the Arc agent on 127.0.0.1, never `localhost`. curl tries `::1` first for `localhost`, and on pve-big himds accepted connections on `[::1]:40342` without answering, which hung the first drill attempt. The token requests time out after 30 s.
 
    **Result of 5 Nov 2026 ([#895](https://github.com/tgoodyear/usnewsmap.com/issues/895#issuecomment-6667800874)).**

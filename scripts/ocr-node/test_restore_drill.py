@@ -81,11 +81,12 @@ class RestoreDrillTest(unittest.TestCase):
             (root / d).mkdir(parents=True)
         self.scans = root / "tank/ocr/scans"
         self.snapshot = self.scans / ".zfs/snapshot/snap"
+        self.cold = root / "cold"
         self.manifest = root / "var/lib/usnm-scan-archive/archived.tsv"
         self.manifest.touch()
         key = root / "var/opt/azcmagent/tokens/0a1b-2c3d.key"
         key.write_text("arc-secret")
-        self.archive = Archive(self.scans, key)
+        self.archive = Archive(self.cold, key)
         threading.Thread(target=self.archive.serve_forever, daemon=True).start()
         self.addCleanup(self.archive.server_close)
         self.addCleanup(self.archive.shutdown)
@@ -105,14 +106,14 @@ class RestoreDrillTest(unittest.TestCase):
         path.chmod(0o755)
 
     def scan(self, page, ext="jp2", md5=True, size=3000):
-        """A scan with its sidecar, in the keep set, the snapshot and the manifest."""
+        """A scan with its sidecar, live, in the snapshot, in Cold and in the manifest."""
         name = f"{EDITION}/{page}.{ext}"
         data = hashlib.sha256(name.encode()).digest() * (size // 32)
-        side = dict(bytes=len(data), sha256=hashlib.sha256(data).hexdigest(),
+        side = dict(resolution="full", bytes=len(data), sha256=hashlib.sha256(data).hexdigest(),
                     format="jp2" if ext == "jp2" else "jpeg")
         if md5:
             side["md5"] = hashlib.md5(data).hexdigest()
-        for base in (self.scans, self.snapshot):
+        for base in (self.scans, self.snapshot, self.cold):
             (base / name).parent.mkdir(parents=True, exist_ok=True)
             (base / name).write_bytes(data)
         (self.scans / f"{name}.json").write_text(json.dumps(side))
@@ -148,6 +149,21 @@ class RestoreDrillTest(unittest.TestCase):
         r = self.run_drill(count=2)
         self.assertEqual(r.returncode, 1)
         self.assertIn("check 1: FAILED sidecar-md5-missing", r.stdout)
+
+    def test_a_mislabelled_or_missing_local_copy_fails_without_naming_it(self):
+        self.scan(1)
+        side = self.scans / f"{self.scan(2, md5=False)}.json"
+        record = json.loads(side.read_text())
+        del record["format"]  # read as a JPEG, so its missing md5 would otherwise pass
+        side.write_text(json.dumps(dict(record, resolution="scaled:2000")))
+        gone = self.scan(3)
+        (self.scans / gone).unlink()
+        (self.scans / f"{gone}.json").unlink()
+        r = self.run_drill(count=3)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("check 1: FAILED sidecar-format sidecar-resolution sidecar-md5-missing\n", r.stdout)
+        self.assertIn("check 2: FAILED sidecar-missing live-missing\n", r.stdout)
+        self.assertNotIn("keep/", r.stdout + r.stderr)
 
     def test_cold_bytes_that_differ_fail(self):
         self.scan(1)
