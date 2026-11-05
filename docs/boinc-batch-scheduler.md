@@ -553,14 +553,18 @@ When a scope is due, the tick runs two bridge steps before it collects:
    prints the hosts it skipped. Such a unit would never leave the server: the scheduler
    logs "App version for assigned WU not found" on every request and the unit holds a place
    under the cap until its deadline. A host can run a version when, from what its last request
-   left in the `host` row, all of these hold:
+   left in the `host` row, all of these hold. Only the versions the scheduler loads count: the
+   latest of each platform and plan class, or, when the app sets a `min_version`, every version
+   from it on.
    - its OS and CPU vendor give the version's platform. A host neither identifies is judged
      on the rest.
    - its client is within the version's `min_core_version` and `max_core_version`.
    - the version's plan class is in `plan_class_spec.xml` and its `<docker/>` and client
-     version bounds hold. `<docker/>` needs a container runtime in the host's `misc`.
-   - the job's `engine_base` is bound for the platform in `gold-engine-platforms.json`, as the
-     scheduler's gold hook requires.
+     version bounds hold. `<docker/>` needs a container runtime in the host's `misc`, and a
+     client config that doesn't set `dont_use_docker` (or, on Windows, `dont_use_wsl`).
+   - as the scheduler's gold hook requires, the version packages the job's engine (its
+     `Dockerfile` is `FROM` the job's image, or its native build manifest is named for it),
+     and the job's `engine_base` is bound for the platform in `gold-engine-platforms.json`.
 
    `usnm_gold` is container-only, so hosts without Docker or Podman, such as hosts 5 and 13,
    get no unit. A host that installs one is picked up on its next scheduler request. Units

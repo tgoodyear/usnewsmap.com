@@ -38,11 +38,11 @@ impl Controller {
             &bin.join("mysql"),
             r#"#!/bin/sh
 case "$*" in
-  *"FROM app_version"*) printf '%b' "${GOLD_VERSIONS:-x86_64-pc-linux-gnu\tdocker\t0\t0\n}";;
+  *"FROM app_version"*) printf '%b' "${GOLD_VERSIONS:-x86_64-pc-linux-gnu\tdocker\t104\t0\t0\t0\t<file_ref><file_name>Dockerfile_fixture</file_name><open_name>Dockerfile</open_name></file_ref>\n}";;
   *"FROM host WHERE id>0"*)
     if [ -n "${HOST_ROWS:-}" ]; then printf '%s' "$HOST_ROWS"; else
       printf '%b' "${HOST_IDS:-1\n2\n3\n4\n}" | while read -r id; do
-        printf '%s\tLinux Debian GNU/Linux\tGenuineIntel\t8.2.13\t1\n' "$id"
+        printf '%s\tLinux Debian GNU/Linux\tGenuineIntel\t8.2.13\t1\t0\t0\n' "$id"
       done
     fi;;
   *"usnm_spot_"*) printf '%s\n' "${SPOT_HOST:-2}";;
@@ -66,6 +66,11 @@ exit "${CREATE_STATUS:-0}"
         write(
             &project.join("config.xml"),
             "<boinc><config><enable_assignment>1</enable_assignment></config></boinc>",
+        );
+        // The registered usnm_gold version's Dockerfile, which the gold hook reads.
+        write(
+            &project.join("download/Dockerfile_fixture"),
+            format!("FROM ghcr.io/tgoodyear/usnm-boinc-worker@{IMAGE}\n"),
         );
         write(
             &project.join("plan_class_spec.xml"),
@@ -273,11 +278,12 @@ async fn planning_is_read_only_and_onboarding_is_capped_retry_stable_and_does_no
 async fn onboarding_skips_hosts_no_gold_version_can_run_on() {
     let c = Controller::new().await;
     // Hosts 5 and 13 of #1418 report no container runtime, so the container-only usnm_gold
-    // has no version for them; host 3 does.
-    let rows = "1\tLinux Debian GNU/Linux\tGenuineIntel\t8.2.13\t1\n\
-                5\tMicrosoft Windows 11\tAuthenticAMD\t8.2.11\t0\n\
-                13\tLinux Ubuntu\tAuthenticAMD\t8.2.9\t0\n\
-                14\tLinux Debian GNU/Linux\tGenuineIntel\t8.2.13\t1\n";
+    // has no version for them; host 15's client config refuses Docker; host 14 can run it.
+    let rows = "1\tLinux Debian GNU/Linux\tGenuineIntel\t8.2.13\t1\t0\t0\n\
+                5\tMicrosoft Windows 11\tAuthenticAMD\t8.2.11\t0\t0\t0\n\
+                13\tLinux Ubuntu\tAuthenticAMD\t8.2.9\t0\t0\t0\n\
+                14\tLinux Debian GNU/Linux\tGenuineIntel\t8.2.13\t1\t0\t0\n\
+                15\tLinux Debian GNU/Linux\tGenuineIntel\t8.2.13\t1\t1\t0\n";
     let onboard = |execute: bool| {
         let mut command = c.command("onboard");
         command.env("HOST_ROWS", rows);
@@ -291,7 +297,7 @@ async fn onboarding_skips_hosts_no_gold_version_can_run_on() {
     assert_eq!(String::from_utf8(out.stdout).unwrap().trim(), "[14]");
     assert!(String::from_utf8(out.stderr)
         .unwrap()
-        .contains("skipping 2 host(s) no usnm_gold version can run on: 5, 13"));
+        .contains("skipping 3 host(s) no usnm_gold version can run on: 5, 13, 15"));
     success(&onboard(true));
     success(&onboard(true));
     assert_eq!(c.calls().lines().count(), 1);
@@ -314,6 +320,37 @@ async fn onboarding_skips_hosts_no_gold_version_can_run_on() {
         success(&out);
         assert_eq!(String::from_utf8(out.stdout).unwrap().trim(), expected);
     }
+
+    // Nor does the hook send a version that packages another worker build, and the scheduler
+    // sends only the latest version of a platform and plan class, so an older version with
+    // this campaign's build doesn't help.
+    write(
+        &c.project.join("download/Dockerfile_other"),
+        format!(
+            "FROM ghcr.io/tgoodyear/usnm-boinc-worker@sha256:{}\n",
+            "d".repeat(64)
+        ),
+    );
+    let reference = |file: &str| {
+        format!(
+            "<file_ref><file_name>{file}</file_name><open_name>Dockerfile</open_name></file_ref>"
+        )
+    };
+    let out = c
+        .command("onboard")
+        .env(
+            "GOLD_VERSIONS",
+            format!(
+                "x86_64-pc-linux-gnu\tdocker\t104\t0\t0\t0\t{}\n\
+                 x86_64-pc-linux-gnu\tdocker\t105\t0\t0\t0\t{}\n",
+                reference("Dockerfile_fixture"),
+                reference("Dockerfile_other")
+            ),
+        )
+        .output()
+        .unwrap();
+    success(&out);
+    assert_eq!(String::from_utf8(out.stdout).unwrap().trim(), "[]");
 }
 
 #[tokio::test]

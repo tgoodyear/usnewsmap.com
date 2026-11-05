@@ -4,11 +4,14 @@
 //! the server: the scheduler logs "App version for assigned WU not found" on every request, and
 //! the unit counts against the global safety cap. So onboarding skips such hosts.
 //!
-//! The scheduler (`get_app_version`, BOINC 22bbebe) sends a version only for a platform the
-//! client reports, within the version's client bounds, and whose plan class `app_plan` passes.
-//! The gold hook (`scripts/boinc/patch-server-gold-routing.py`) then needs the job's base to be
-//! the reviewed binding for the version's platform. The host row keeps what the client last
-//! reported: `os_name`, `p_vendor`, and in `misc` the client version and any container runtime
+//! The scheduler (BOINC 22bbebe) loads only the latest version of each platform and plan class,
+//! unless the app sets a `min_version` (`sched_shmem.cpp`), and `get_app_version` sends one of
+//! those only for a platform the client reports, within the version's client bounds, and whose
+//! plan class `app_plan` passes.
+//! The gold hook (`scripts/boinc/gold-engine-routing.h`) then needs the version to package the
+//! job's engine and the job's base to be the reviewed binding for the version's platform. The
+//! host row keeps what the client last reported: `os_name`, `p_vendor`, and in `misc` the
+//! client version, any container runtime and the client config's Docker and WSL refusals
 //! (`host_info_json`). Platforms aren't stored, so they're inferred from the OS and CPU vendor,
 //! and a host neither identifies is judged without them. Of a plan class, only what the row
 //! shows is checked: `<docker/>` and the client version bounds.
@@ -31,6 +34,7 @@ pub(super) struct PlanClass {
     pub docker: bool,
     pub min_core_client_version: u32,
     pub max_core_client_version: u32,
+    pub min_boinc_wsl_distro_version: u32,
 }
 
 /// A host as its last scheduler request left it.
@@ -41,8 +45,26 @@ pub(super) struct Host {
     pub p_vendor: String,
     /// `major * 10000 + minor * 100 + release`, as the scheduler compares it.
     pub client: Option<u32>,
-    /// Docker or Podman, in an allowed WSL distro on Windows.
-    pub container: bool,
+    /// `misc.docker`: Docker or Podman, in an allowed WSL distro on Windows.
+    pub docker: bool,
+    /// `misc.config`: the client config's `dont_use_docker` and `dont_use_wsl`.
+    pub dont_use_docker: bool,
+    pub dont_use_wsl: bool,
+}
+
+impl Host {
+    /// `plan_class_spec.cpp`'s `<docker/>` check. Where a class asks for a BOINC WSL distro
+    /// version, Windows is judged on its client config alone: the row doesn't keep that version.
+    fn passes_docker(&self, class: &PlanClass) -> bool {
+        if self.dont_use_docker {
+            false
+        } else if self.os_name.contains("Windows") {
+            !self.dont_use_wsl && (class.min_boinc_wsl_distro_version > 0 || self.docker)
+        } else {
+            self.docker
+                && (!self.os_name.contains("Darwin") || self.client.is_some_and(|v| v >= 80206))
+        }
+    }
 }
 
 /// What an app's versions need, and the platforms the job's base is bound for.
@@ -91,7 +113,7 @@ impl Requirements {
                 && client_within(host.client, v.min_core_version, v.max_core_version)
                 && (v.plan_class.is_empty()
                     || self.plan_classes.get(&v.plan_class).is_some_and(|c| {
-                        (!c.docker || host.container)
+                        (!c.docker || host.passes_docker(c))
                             && client_within(
                                 host.client,
                                 c.min_core_client_version,
@@ -114,14 +136,19 @@ fn client_version(text: &str) -> Option<u32> {
     }
 }
 
-/// Rows of `id, os_name, p_vendor, client_version, container` from `mysql --batch`, which
-/// escapes tabs and newlines inside values.
+/// Rows of `id, os_name, p_vendor, client_version, docker, dont_use_docker, dont_use_wsl` from
+/// `mysql --batch`, which escapes tabs and newlines inside values.
 fn parse_hosts(text: &str) -> anyhow::Result<Vec<Host>> {
+    let flag = |field: &str| match field {
+        "1" => Ok(true),
+        "0" => Ok(false),
+        _ => anyhow::bail!("invalid host container field"),
+    };
     let mut hosts = Vec::new();
     let mut seen = BTreeSet::new();
     for line in text.lines() {
         let f: Vec<&str> = line.split('\t').collect();
-        ensure!(f.len() == 5, "invalid host inventory row");
+        ensure!(f.len() == 7, "invalid host inventory row");
         let id: u64 = f[0].parse().context("invalid host inventory")?;
         ensure!(id > 0 && seen.insert(id), "invalid host inventory");
         hosts.push(Host {
@@ -129,48 +156,171 @@ fn parse_hosts(text: &str) -> anyhow::Result<Vec<Host>> {
             os_name: f[1].into(),
             p_vendor: f[2].into(),
             client: client_version(f[3]),
-            container: match f[4] {
-                "1" => true,
-                "0" => false,
-                _ => anyhow::bail!("invalid host container field"),
-            },
+            docker: flag(f[4])?,
+            dont_use_docker: flag(f[5])?,
+            dont_use_wsl: flag(f[6])?,
         });
     }
     ensure!(hosts.len() <= 100000, "host inventory exceeds safety bound");
     Ok(hosts)
 }
 
-fn parse_versions(text: &str) -> anyhow::Result<Vec<Version>> {
+/// A value as `mysql --batch` wrote it.
+fn unescape(field: &str) -> String {
+    let mut out = String::with_capacity(field.len());
+    let mut chars = field.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('n') => out.push('\n'),
+            Some('t') => out.push('\t'),
+            Some('0') => out.push('\0'),
+            Some('\\') => out.push('\\'),
+            Some(other) => out.extend(['\\', other]),
+            None => out.push('\\'),
+        }
+    }
+    out
+}
+
+/// A live app version as `requirements` reads it.
+#[derive(Debug, PartialEq, Eq)]
+struct VersionRow {
+    version: Version,
+    version_num: u32,
+    /// The app's `min_version`.
+    app_min_version: u32,
+    xml_doc: String,
+}
+
+/// Rows of `platform, plan_class, version_num, min_core_version, max_core_version,
+/// app.min_version, xml_doc`.
+fn parse_versions(text: &str) -> anyhow::Result<Vec<VersionRow>> {
     let name = |s: &str| {
         s.bytes()
             .all(|b| b.is_ascii_alphanumeric() || b"_-.".contains(&b))
     };
+    let number = |s: &str| s.parse::<u32>().context("invalid app version row");
+    // The scheduler reads a client bound under 10000 as a release without its minor version.
+    let core = |s: &str| number(s).map(|v| if v < 10000 { v * 100 } else { v });
     let mut versions = Vec::new();
     for line in text.lines() {
         let f: Vec<&str> = line.split('\t').collect();
         ensure!(
-            f.len() == 4 && !f[0].is_empty() && name(f[0]) && name(f[1]),
+            f.len() == 7 && !f[0].is_empty() && name(f[0]) && name(f[1]),
             "invalid app version row"
         );
-        versions.push(Version {
-            platform: f[0].into(),
-            plan_class: f[1].into(),
-            min_core_version: f[2].parse().context("invalid app version row")?,
-            max_core_version: f[3].parse().context("invalid app version row")?,
+        versions.push(VersionRow {
+            version: Version {
+                platform: f[0].into(),
+                plan_class: f[1].into(),
+                min_core_version: core(f[3])?,
+                max_core_version: core(f[4])?,
+            },
+            version_num: number(f[2])?,
+            app_min_version: number(f[5])?,
+            xml_doc: unescape(f[6]),
         });
     }
     ensure!(versions.len() <= 1000, "app versions exceed safety bound");
     Ok(versions)
 }
 
+/// The versions the scheduler loads (`sched_shmem.cpp`): the latest of each platform and plan
+/// class, or every version from the app's `min_version` on when it has one.
+fn loaded(rows: Vec<VersionRow>) -> Vec<VersionRow> {
+    let key = |r: &VersionRow| (r.version.platform.clone(), r.version.plan_class.clone());
+    let mut latest = BTreeMap::new();
+    for r in &rows {
+        let num = latest.entry(key(r)).or_insert(r.version_num);
+        *num = (*num).max(r.version_num);
+    }
+    rows.into_iter()
+        .filter(|r| match r.app_min_version {
+            0 => latest[&key(r)] == r.version_num,
+            min => r.version_num >= min,
+        })
+        .collect()
+}
+
+/// The one `<name>` value in `xml`, as the gold hook's `tag` reads it.
+fn tag<'a>(xml: &'a str, name: &str) -> Option<&'a str> {
+    let (open, close) = (format!("<{name}>"), format!("</{name}>"));
+    let mut values = xml.match_indices(&open).filter_map(|(i, _)| {
+        let after = &xml[i + open.len()..];
+        let end = after.find('<').unwrap_or(after.len());
+        after[end..]
+            .starts_with(&close)
+            .then(|| after[..end].trim())
+    });
+    let value = values.next()?;
+    values.next().is_none().then_some(value)
+}
+
+/// Whether a version packages the job's engine, as the gold hook requires: a native build's
+/// manifest is named for the image's digest, and a container version's Dockerfile, read from
+/// the download directory, is `FROM` the image.
+fn packages_engine(
+    xml_doc: &str,
+    native: bool,
+    image: &str,
+    read: impl Fn(&str) -> Option<Vec<u8>>,
+) -> bool {
+    let open_name = if native {
+        "usnm_native_build.json"
+    } else {
+        "Dockerfile"
+    };
+    let mut file = None;
+    let mut rest = xml_doc;
+    while let Some(start) = rest.find("<file_ref>") {
+        let body = &rest[start + "<file_ref>".len()..];
+        let Some(end) = body.find("</file_ref>") else {
+            break;
+        };
+        let reference = &body[..end];
+        rest = &body[end + "</file_ref>".len()..];
+        if !reference.contains("<open_name>") {
+            continue;
+        }
+        match tag(reference, "open_name") {
+            Some(name) if name != open_name => continue,
+            Some(_) if file.is_none() => match tag(reference, "file_name") {
+                Some(name) => file = Some(name),
+                None => return false,
+            },
+            _ => return false,
+        }
+    }
+    let Some(file) = file else {
+        return false;
+    };
+    if native {
+        let digest = image.split_once(':').map_or(image, |(_, d)| d);
+        return file == format!("usnm_native_build_{digest}.json");
+    }
+    let expected = format!("FROM ghcr.io/tgoodyear/usnm-boinc-worker@{image}");
+    !file.is_empty()
+        && file
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"_.-".contains(&b))
+        && read(file).is_some_and(|payload| {
+            payload == expected.as_bytes() || payload == format!("{expected}\n").as_bytes()
+        })
+}
+
 /// The plan classes of a `plan_class_spec.xml`. The scheduler uses the first of a name.
 fn parse_plan_classes(xml: &str) -> anyhow::Result<BTreeMap<String, PlanClass>> {
     use quick_xml::{events::Event, Reader};
-    const FIELDS: [&str; 4] = [
+    const FIELDS: [&str; 5] = [
         "name",
         "docker",
         "min_core_client_version",
         "max_core_client_version",
+        "min_boinc_wsl_distro_version",
     ];
     let mut reader = Reader::from_str(xml);
     let mut path: Vec<String> = Vec::new();
@@ -218,6 +368,9 @@ fn parse_plan_classes(xml: &str) -> anyhow::Result<BTreeMap<String, PlanClass>> 
                         "docker" => class.docker = number(&text)? != 0,
                         "min_core_client_version" => class.min_core_client_version = number(&text)?,
                         "max_core_client_version" => class.max_core_client_version = number(&text)?,
+                        "min_boinc_wsl_distro_version" => {
+                            class.min_boinc_wsl_distro_version = number(&text)?
+                        }
                         _ => {}
                     }
                 }
@@ -251,38 +404,54 @@ fn bound_platforms(json: &[u8], image: &str, base: &str) -> anyhow::Result<BTree
 }
 
 /// Every host BOINC knows, in id order, with what its last request reported. The text fields
-/// are cut to what `platforms` reads, so 100000 hosts fit `query`'s output limit.
+/// are cut to what `platforms` and `passes_docker` read, so 100000 hosts fit `query`'s output
+/// limit.
 pub(super) async fn inventory(c: &Config) -> anyhow::Result<Vec<Host>> {
     parse_hosts(
         &query(
             c,
             "SELECT id, LEFT(os_name, 20), LEFT(p_vendor, 12), \
              IF(JSON_VALID(misc), LEFT(JSON_UNQUOTE(JSON_EXTRACT(misc, '$.client_version')), 8), ''), \
-             IF(JSON_VALID(misc), JSON_CONTAINS_PATH(misc, 'one', '$.docker'), 0) \
+             IF(JSON_VALID(misc), JSON_CONTAINS_PATH(misc, 'one', '$.docker'), 0), \
+             IF(JSON_VALID(misc), COALESCE(JSON_CONTAINS(misc, 'true', '$.config.dont_use_docker'), 0), 0), \
+             IF(JSON_VALID(misc), COALESCE(JSON_CONTAINS(misc, 'true', '$.config.dont_use_wsl'), 0), 0) \
              FROM host WHERE id>0 ORDER BY id LIMIT 100001",
         )
         .await?,
     )
 }
 
-/// What a host needs to be sent one of `app`'s live versions for this campaign's job.
+/// What a host needs to be sent one of `app`'s live versions for this campaign's job. Versions
+/// the scheduler doesn't load, or that the gold hook refuses because they don't package the
+/// job's engine, are left out.
 pub(super) async fn requirements(c: &Config, app: &str) -> anyhow::Result<Requirements> {
     ensure!(
         crate::gold::submit::is_gold_app(app),
         "{app} is not a gold app"
     );
-    let versions = parse_versions(
+    let native = app == crate::gold::submit::NATIVE_APP;
+    let download = c.project.join("download");
+    let versions: Vec<Version> = loaded(parse_versions(
         &query(
             c,
             &format!(
-                "SELECT p.name, av.plan_class, av.min_core_version, av.max_core_version \
+                "SELECT p.name, av.plan_class, av.version_num, av.min_core_version, \
+                 av.max_core_version, a.min_version, av.xml_doc \
                  FROM app_version av JOIN app a ON a.id=av.appid JOIN platform p ON p.id=av.platformid \
                  WHERE a.name='{app}' AND a.deprecated=0 AND av.deprecated=0 AND p.deprecated=0 \
                  ORDER BY av.id LIMIT 1001"
             ),
         )
         .await?,
-    )?;
+    )?)
+    .into_iter()
+    .filter(|r| {
+        packages_engine(&r.xml_doc, native, &c.engine.image, |name| {
+            crate::read(&download.join(name), 1 << 20).ok()
+        })
+    })
+    .map(|r| r.version)
+    .collect();
     let plan_classes = if versions.iter().any(|v| !v.plan_class.is_empty()) {
         let path = c.project.join("plan_class_spec.xml");
         let bytes =
@@ -310,13 +479,15 @@ pub(super) async fn requirements(c: &Config, app: &str) -> anyhow::Result<Requir
 mod tests {
     use super::*;
 
-    fn host(id: u64, os: &str, vendor: &str, client: &str, container: bool) -> Host {
+    fn host(id: u64, os: &str, vendor: &str, client: &str, docker: bool) -> Host {
         Host {
             id,
             os_name: os.into(),
             p_vendor: vendor.into(),
             client: client_version(client),
-            container,
+            docker,
+            dont_use_docker: false,
+            dont_use_wsl: false,
         }
     }
 
@@ -344,6 +515,7 @@ mod tests {
         <name>mt</name>
         <docker>0</docker>
         <max_core_client_version>80299</max_core_client_version>
+        <min_boinc_wsl_distro_version>2</min_boinc_wsl_distro_version>
     </plan_class>
 </plan_classes>
 "#;
@@ -397,6 +569,137 @@ mod tests {
         // A host whose platform isn't known is judged on the plan class alone.
         assert!(gold.can_run(&host(7, "Linux Debian", "ARM", "8.2.13", true)));
         assert!(!gold.can_run(&host(7, "Linux Debian", "ARM", "8.2.13", false)));
+    }
+
+    #[test]
+    fn the_client_config_can_refuse_docker() {
+        let gold = container_gold(None);
+        let linux = host(9, "Linux Debian", "GenuineIntel", "8.2.13", true);
+        assert!(gold.can_run(&linux));
+        // misc.docker stays when the client config says dont_use_docker.
+        let refused = Host {
+            dont_use_docker: true,
+            ..linux.clone()
+        };
+        assert!(!gold.can_run(&refused));
+        // dont_use_wsl matters only on Windows.
+        let no_wsl = Host {
+            dont_use_wsl: true,
+            ..linux
+        };
+        assert!(gold.can_run(&no_wsl));
+        let class = |wsl: u32| PlanClass {
+            docker: true,
+            min_boinc_wsl_distro_version: wsl,
+            ..Default::default()
+        };
+        let windows = host(5, "Microsoft Windows 11", "AuthenticAMD", "8.2.11", true);
+        assert!(windows.passes_docker(&class(0)));
+        assert!(!Host {
+            dont_use_wsl: true,
+            ..windows.clone()
+        }
+        .passes_docker(&class(0)));
+        // The BOINC WSL distro's version isn't in the row, so only the config is judged.
+        let without = Host {
+            docker: false,
+            ..windows
+        };
+        assert!(!without.passes_docker(&class(0)));
+        assert!(without.passes_docker(&class(1)));
+        // Docker on a Mac needs an 8.2.6 client.
+        assert!(!host(1, "Darwin", "Apple", "8.2.5", true).passes_docker(&class(0)));
+        assert!(host(1, "Darwin", "Apple", "8.2.6", true).passes_docker(&class(0)));
+    }
+
+    #[test]
+    fn a_version_must_package_the_jobs_engine() {
+        let image = format!("sha256:{}", "a".repeat(64));
+        let reference = |file: &str, open: &str| {
+            format!("<file_ref>\n  <file_name>{file}</file_name>\n  <open_name>{open}</open_name>\n</file_ref>\n")
+        };
+        let dockerfile = |payload: String| {
+            move |name: &str| (name == "Dockerfile_x").then(|| payload.clone().into_bytes())
+        };
+        let from = format!("FROM ghcr.io/tgoodyear/usnm-boinc-worker@{image}");
+        let doc = format!(
+            "<file_info><name>Dockerfile_x</name></file_info>{}{}",
+            reference("job_x.toml", "job.toml"),
+            reference("Dockerfile_x", "Dockerfile")
+        );
+        assert!(packages_engine(
+            &doc,
+            false,
+            &image,
+            dockerfile(from.clone())
+        ));
+        assert!(packages_engine(
+            &doc,
+            false,
+            &image,
+            dockerfile(format!("{from}\n"))
+        ));
+        let other = "FROM ghcr.io/tgoodyear/usnm-boinc-worker@sha256:bbbb".to_string();
+        assert!(!packages_engine(&doc, false, &image, dockerfile(other)));
+        assert!(!packages_engine(&doc, false, &image, |_| None));
+        // Two Dockerfiles, a repeated open name or an unsafe file name.
+        let two = format!("{doc}{}", reference("Dockerfile_x", "Dockerfile"));
+        assert!(!packages_engine(
+            &two,
+            false,
+            &image,
+            dockerfile(from.clone())
+        ));
+        let repeated =
+            "<file_ref><file_name>Dockerfile_x</file_name><open_name>Dockerfile</open_name>\
+                        <open_name>Dockerfile</open_name></file_ref>";
+        assert!(!packages_engine(
+            repeated,
+            false,
+            &image,
+            dockerfile(from.clone())
+        ));
+        let unsafe_name = reference("../Dockerfile_x", "Dockerfile");
+        assert!(!packages_engine(&unsafe_name, false, &image, |_| Some(
+            from.clone().into_bytes()
+        )));
+
+        // A native build is its manifest's digest, which the physical name carries.
+        let native = |digest: &str| {
+            format!(
+                "{}{}",
+                reference("usnm_gold_native_1.0_x86_64-pc-linux-gnu", "usnm_ocr"),
+                reference(
+                    &format!("usnm_native_build_{digest}.json"),
+                    "usnm_native_build.json"
+                )
+            )
+        };
+        assert!(packages_engine(
+            &native(&"a".repeat(64)),
+            true,
+            &image,
+            |_| None
+        ));
+        assert!(!packages_engine(
+            &native(&"b".repeat(64)),
+            true,
+            &image,
+            |_| None
+        ));
+        // A container version is no native build, and the reverse.
+        assert!(!packages_engine(
+            &doc,
+            true,
+            &image,
+            dockerfile(from.clone())
+        ));
+        assert!(!packages_engine(
+            &native(&"a".repeat(64)),
+            false,
+            &image,
+            dockerfile(from)
+        ));
     }
 
     #[test]
@@ -461,7 +764,7 @@ mod tests {
             PlanClass {
                 docker: true,
                 min_core_client_version: 80211,
-                max_core_client_version: 0
+                ..Default::default()
             }
         );
         assert_eq!(
@@ -469,7 +772,8 @@ mod tests {
             PlanClass {
                 docker: false,
                 min_core_client_version: 0,
-                max_core_client_version: 80299
+                max_core_client_version: 80299,
+                min_boinc_wsl_distro_version: 2,
             }
         );
         let repo = include_str!("../../../../contrib-compute/boinc/plan_class_spec.xml");
@@ -487,21 +791,27 @@ mod tests {
     #[test]
     fn inventory_and_version_rows_fail_closed() {
         let hosts = parse_hosts(
-            "5\tMicrosoft Windows 11\tAuthenticAMD\t8.2.11\t0\n9\tLinux Debian\tGenuineIntel\t8.2.13\t1\n4\tDarwin\tApple\t\t0\n",
+            "5\tMicrosoft Windows 11\tAuthenticAMD\t8.2.11\t0\t0\t1\n\
+             9\tLinux Debian\tGenuineIntel\t8.2.13\t1\t1\t0\n\
+             4\tDarwin\tApple\t\t0\t0\t0\n",
         )
         .unwrap();
         assert_eq!(
             hosts[0],
-            host(5, "Microsoft Windows 11", "AuthenticAMD", "8.2.11", false)
+            Host {
+                dont_use_wsl: true,
+                ..host(5, "Microsoft Windows 11", "AuthenticAMD", "8.2.11", false)
+            }
         );
         assert_eq!(hosts[1].client, Some(80213));
-        assert!(hosts[1].container);
+        assert!(hosts[1].docker && hosts[1].dont_use_docker && !hosts[1].dont_use_wsl);
         assert_eq!(hosts[2].client, None);
         for bad in [
-            "0\tLinux\tGenuineIntel\t8.2.13\t1",
-            "1\tLinux\tGenuineIntel\t8.2.13",
-            "1\tLinux\tGenuineIntel\t8.2.13\tNULL",
-            "1\tLinux\tGenuineIntel\t8.2.13\t1\n1\tLinux\tGenuineIntel\t8.2.13\t1",
+            "0\tLinux\tGenuineIntel\t8.2.13\t1\t0\t0",
+            "1\tLinux\tGenuineIntel\t8.2.13\t1\t0",
+            "1\tLinux\tGenuineIntel\t8.2.13\tNULL\t0\t0",
+            "1\tLinux\tGenuineIntel\t8.2.13\t1\t0\ttrue",
+            "1\tLinux\tGenuineIntel\t8.2.13\t1\t0\t0\n1\tLinux\tGenuineIntel\t8.2.13\t1\t0\t0",
         ] {
             assert!(parse_hosts(bad).is_err(), "{bad}");
         }
@@ -513,23 +823,67 @@ mod tests {
         ] {
             assert_eq!(client_version(text), version, "{text}");
         }
+        // mysql --batch writes a newline, tab or backslash in a value escaped.
         assert_eq!(
-            parse_versions("x86_64-pc-linux-gnu\tdocker\t0\t0\nx86_64-pc-linux-gnu\t\t80211\t0\n")
-                .unwrap(),
-            vec![version("x86_64-pc-linux-gnu", "docker"), {
-                let mut v = version("x86_64-pc-linux-gnu", "");
-                v.min_core_version = 80211;
-                v
-            }]
+            parse_versions(
+                "x86_64-pc-linux-gnu\tdocker\t104\t0\t0\t0\t<a>\\n\\t\\\\n\\x\\</a>\n\
+                 x86_64-pc-linux-gnu\t\t100\t80211\t802\t0\t\n"
+            )
+            .unwrap(),
+            vec![
+                VersionRow {
+                    version: version("x86_64-pc-linux-gnu", "docker"),
+                    version_num: 104,
+                    app_min_version: 0,
+                    xml_doc: "<a>\n\t\\n\\x\\</a>".into(),
+                },
+                VersionRow {
+                    version: Version {
+                        min_core_version: 80211,
+                        // As the scheduler reads a bound under 10000.
+                        max_core_version: 80200,
+                        ..version("x86_64-pc-linux-gnu", "")
+                    },
+                    version_num: 100,
+                    app_min_version: 0,
+                    xml_doc: String::new(),
+                }
+            ]
         );
         for bad in [
-            "\tdocker\t0\t0",
-            "x86_64-pc-linux-gnu\tdocker\t0",
-            "x86_64-pc-linux-gnu\tdo cker\t0\t0",
-            "p\tdocker\t-1\t0",
+            "\tdocker\t1\t0\t0\t0\t",
+            "x86_64-pc-linux-gnu\tdocker\t1\t0\t0\t0",
+            "x86_64-pc-linux-gnu\tdo cker\t1\t0\t0\t0\t",
+            "p\tdocker\t1\t-1\t0\t0\t",
+            "p\tdocker\tNULL\t0\t0\t0\t",
         ] {
             assert!(parse_versions(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn the_scheduler_loads_only_the_latest_version_of_a_platform_and_plan_class() {
+        let row = |platform: &str, plan_class: &str, num: u32, min: u32| VersionRow {
+            version: version(platform, plan_class),
+            version_num: num,
+            app_min_version: min,
+            xml_doc: format!("{num}"),
+        };
+        let docs = |rows: Vec<VersionRow>| -> Vec<String> {
+            loaded(rows).into_iter().map(|r| r.xml_doc).collect()
+        };
+        // usnm_gold on 5 November 2026: 1.0 to 1.4 on x86-64 Linux, 1.3 and 1.4 on Apple silicon.
+        let live = |min: u32| {
+            let mut rows: Vec<_> = (100..=104)
+                .map(|n| row("x86_64-pc-linux-gnu", "docker", n, min))
+                .collect();
+            rows.extend([103, 104].map(|n| row("arm64-apple-darwin", "docker", n, min)));
+            rows.push(row("x86_64-pc-linux-gnu", "", 101, min));
+            rows
+        };
+        assert_eq!(docs(live(0)), ["104", "104", "101"]);
+        // With a min_version, every version from it on.
+        assert_eq!(docs(live(103)), ["103", "104", "103", "104"]);
     }
 
     #[test]
