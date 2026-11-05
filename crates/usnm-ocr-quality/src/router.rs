@@ -220,7 +220,7 @@ pub fn route_page_with(
     options: RouteOptions,
 ) -> RouteDecision {
     let lang = canonical_language(language);
-    let primary_profile = profile_candidates_with(lang, options)
+    let primary_profile = profile_candidates_with(language, options)
         .first()
         .copied()
         .unwrap_or(lang)

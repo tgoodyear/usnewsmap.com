@@ -32,9 +32,23 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 MODEL_DIR = ROOT / "ocr/models/yidj2"
 SUMS = "SHA256SUMS"
-RECIPE_TAR = "recipe-study10.tar"
 RECIPE_PREFIX = "recipe-study10"
 EXECUTABLE = {"study10.sh", "cut-lines.py"}
+# provenance.json keys that build and verify read; each names a file or a list of files.
+NAME_FIELDS = [
+    ("model", "file"),
+    ("start_model", "license_file", "asset"),
+    ("training_data", "page_list", "asset"),
+    ("recipe", "asset"),
+]
+OTHER_FIELDS = [
+    ("model", "sha256"),
+    ("model", "bytes"),
+    ("start_model", "license_file", "sha256"),
+    ("training_data", "page_list", "sha256"),
+    ("recipe", "files"),
+    ("release", "assets"),
+]
 
 
 class PackageError(Exception):
@@ -53,13 +67,41 @@ def file_sha256(path):
     return h.hexdigest()
 
 
+def field(doc, keys):
+    for key in keys:
+        if not isinstance(doc, dict) or key not in doc:
+            raise PackageError(f"provenance.json missing key: {'.'.join(keys)}")
+        doc = doc[key]
+    return doc
+
+
+def plain_name(name, where):
+    """Asset and recipe names become paths and tar members, so each must be a bare file name."""
+    if not isinstance(name, str) or name in {"", ".", ".."} or any(c in name for c in "/\\\0"):
+        raise PackageError(f"provenance.json {where}: {name!r} is not a plain file name")
+
+
 def load_provenance(model_dir):
     path = model_dir / "provenance.json"
     text = path.read_text(encoding="utf-8")
-    doc = json.loads(text)
+    try:
+        doc = json.loads(text)
+    except ValueError as e:
+        raise PackageError(f"{path}: {e}") from None
     canonical = json.dumps(doc, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
     if text != canonical:
         raise PackageError(f"{path} is not canonical JSON (indent 2, sorted keys, final newline)")
+    for keys in OTHER_FIELDS:
+        field(doc, keys)
+    for keys in NAME_FIELDS:
+        plain_name(field(doc, keys), ".".join(keys))
+    files, assets = doc["recipe"]["files"], doc["release"]["assets"]
+    if not isinstance(files, dict) or not isinstance(assets, list):
+        raise PackageError("provenance.json: recipe.files must be an object and release.assets a list")
+    for name in files:
+        plain_name(name, "recipe.files")
+    for name in assets:
+        plain_name(name, "release.assets")
     return doc
 
 
@@ -154,7 +196,7 @@ def verify(directory, model_dir=MODEL_DIR):
         got = file_sha256(directory / name)
         if got != digest:
             raise PackageError(f"{name}: sha256 {got}, want {digest}")
-    if want[prov["model"]["file"]] != prov["model"]["sha256"]:
+    if want.get(prov["model"]["file"]) != prov["model"]["sha256"]:
         raise PackageError("SHA256SUMS and provenance.json disagree on the model")
     return want
 
@@ -178,7 +220,7 @@ def main(argv=None):
                          update_sums=args.update_sums)
         else:
             sums = verify(args.dir)
-    except (PackageError, OSError, KeyError) as e:
+    except (PackageError, OSError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
     print(format_sums(sums), end="")

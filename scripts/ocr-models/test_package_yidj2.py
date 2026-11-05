@@ -9,6 +9,8 @@ import unittest
 from pathlib import Path
 
 _spec = importlib.util.spec_from_file_location("package_yidj2", Path(__file__).with_name("package_yidj2.py"))
+if _spec is None or _spec.loader is None:
+    raise ImportError("can't load package_yidj2.py next to this test")
 pkg = importlib.util.module_from_spec(_spec)
 sys.modules["package_yidj2"] = pkg
 _spec.loader.exec_module(pkg)
@@ -101,6 +103,19 @@ class SyntheticBuild(unittest.TestCase):
         (out / "m.traineddata").write_bytes(b"other")
         with self.assertRaisesRegex(pkg.PackageError, "m.traineddata: sha256"):
             pkg.verify(out, model_dir=self.model_dir)
+
+    def test_provenance_needs_its_keys_and_plain_names(self):
+        prov = json.loads((self.model_dir / "provenance.json").read_text())
+        del prov["release"]["assets"]
+        self.write_provenance(prov)
+        with self.assertRaisesRegex(pkg.PackageError, "missing key: release.assets"):
+            self.build("out")
+        prov["release"]["assets"] = []
+        prov["recipe"]["files"]["../study10.sh"] = prov["recipe"]["files"].pop("study10.sh")
+        self.write_provenance(prov)
+        with self.assertRaisesRegex(pkg.PackageError, "recipe.files: '../study10.sh' is not a plain file name"):
+            self.build("out")
+        self.assertFalse((self.root / "out").exists())
 
     def test_provenance_must_be_canonical(self):
         path = self.model_dir / "provenance.json"
