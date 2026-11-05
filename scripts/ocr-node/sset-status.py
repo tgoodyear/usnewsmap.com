@@ -59,7 +59,9 @@ def status(unit: str, done: str, out_path: str) -> dict:
     if since is None:
         # Not started since boot (the done marker keeps it from starting):
         # keep the totals the last status had rather than zeros.
-        return {**previous(out_path), **out, "started": previous(out_path).get("started")}
+        # A status from before these counts existed still gets them.
+        counts = {"rejected": 0, "package_only": 0}
+        return {**counts, **previous(out_path), **out, "started": previous(out_path).get("started")}
     lines = subprocess.run(
         ["journalctl", "-u", unit, "-o", "cat", "--no-pager", "--since", f"@{int(since.timestamp())}"],
         capture_output=True,
