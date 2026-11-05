@@ -158,18 +158,22 @@ class OnpremAcceptance(unittest.TestCase):
                     os.killpg(process.pid, signal.SIGTERM)
                 process.communicate(timeout=5)
 
-    def test_busy_bridge_lock_refuses_before_reading_or_forwarding_request(self):
+    def test_busy_bridge_lock_exits_75_before_reading_or_forwarding_request(self):
+        # 75 tells acceptance.py that nothing ran; any other lock failure stays fatal.
         argv = ["onprem_acceptance.py", "--expected-image", self.args.expected_image]
-        with patch.object(adapter.sys, "argv", argv), \
-                patch("builtins.open", mock_open()), \
-                patch.object(adapter.fcntl, "flock", side_effect=BlockingIOError), \
-                patch.object(adapter, "execute") as execute, \
-                patch.object(adapter.sys, "stdin") as stdin, \
-                patch.object(adapter.sys, "stderr", new_callable=io.StringIO) as stderr:
-            self.assertEqual(adapter.main(), 1)
-        execute.assert_not_called()
-        stdin.read.assert_not_called()
-        self.assertIn("reconcile", stderr.getvalue())
+        for error, code, message in ((BlockingIOError, 75, "nothing ran"),
+                                     (PermissionError, 1, "reconcile")):
+            with self.subTest(error=error.__name__), \
+                    patch.object(adapter.sys, "argv", argv), \
+                    patch("builtins.open", mock_open()), \
+                    patch.object(adapter.fcntl, "flock", side_effect=error), \
+                    patch.object(adapter, "execute") as execute, \
+                    patch.object(adapter.sys, "stdin") as stdin, \
+                    patch.object(adapter.sys, "stderr", new_callable=io.StringIO) as stderr:
+                self.assertEqual(adapter.main(), code)
+            execute.assert_not_called()
+            stdin.read.assert_not_called()
+            self.assertIn(message, stderr.getvalue())
 
     def test_failed_transport_never_prints_child_output(self):
         argv = ["onprem_acceptance.py", "--expected-image", self.args.expected_image]
