@@ -1224,16 +1224,23 @@ the controller's role. Run the apply under an operator identity that may
 delete, such as one with Storage Blob Data Owner on the account's resource
 group.
 
-The tool takes its token from the first `az` on its `PATH`:
-`az account get-access-token --resource https://storage.azure.com/`. It reads
-only the `token` and `expires` keys, and asks again 10 minutes before expiry.
-To use an operator identity:
+The tool takes its token from the first `az` on its `PATH`. It runs:
+
+```sh
+az account get-access-token --resource https://storage.azure.com/ \
+  --query '{token:accessToken,expires:expires_on}' -o json
+```
+
+It reads only the `token` and `expires` keys of that JSON object, and asks again
+10 minutes before expiry. To use an operator identity:
 
 - Give the archive tool alone, on CT 211, a wrapper `az` earlier on its `PATH`.
   The wrapper answers that one call from a 0600 file, and passes every other
   call to the real `az`.
 - On the operator's workstation, mint a short-lived storage-audience token with
-  the same command. Pipe it into that file over `ssh`, never printing it.
+  the same command, including the `--query` projection, so that the file holds
+  the `token`/`expires` object. Pipe it into that file over `ssh`, never
+  printing it.
 - Rewrite the file before the token expires, replacing it atomically.
 - Delete the file and the wrapper after the run.
 
