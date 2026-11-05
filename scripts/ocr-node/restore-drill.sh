@@ -23,7 +23,8 @@ while [ $# -gt 0 ]; do
 done
 [[ $DIR =~ ^/[A-Za-z0-9._/-]+$ ]] || die "--dir must be a plain absolute path"
 [[ $DATASET =~ ^[A-Za-z0-9_.-]+(/[A-Za-z0-9_.:-]+)+$ ]] || die "--dataset must name a child dataset, such as tank/usnm-restore-drill-20261105"
-[[ $SNAP =~ ^[A-Za-z0-9_.:-]+$ ]] || die "--snapshot must name a snapshot of the scans dataset"
+[[ $SNAP =~ ^[A-Za-z0-9_.:-]+$ ]] ||
+  die "--snapshot must be the name after @ of a scans snapshot, such as autosnap_2026-11-05_00:00:03_daily"
 [[ $COUNT =~ ^[1-9][0-9]?$ ]] || die "--count must be 1 to 99 scans"
 [[ $BUDGET =~ ^[1-9][0-9]{0,8}$ ]] && [ "$BUDGET" -le 100000000 ] ||
   die "--budget-bytes must be 1 to 100000000"
@@ -41,8 +42,9 @@ KEYS=$ROOT/var/opt/azcmagent/tokens
 # connection there without ever answering it.
 TOKEN_URL=${USNM_OCR_TEST_TOKEN_URL:-http://127.0.0.1:40342/metadata/identity/oauth2/token?api-version=2019-11-01&resource=https%3A%2F%2Fstorage.azure.com%2F}
 TOKEN_TIMEOUT=${USNM_OCR_TEST_TOKEN_TIMEOUT:-30}
-[[ $TOKEN_URL =~ ^http://127[.]0[.]0[.]1:[0-9]{1,5}/ ]] ||
-  die "the token endpoint must be http://127.0.0.1:<port>/, never localhost"
+[[ $TOKEN_URL =~ ^http://127[.]0[.]0[.]1:([1-9][0-9]{0,4})/ ]] && [ "${BASH_REMATCH[1]}" -le 65535 ] ||
+  die "the token endpoint must be http://127.0.0.1:<port 1-65535>/, never localhost"
+[[ $TOKEN_TIMEOUT =~ ^[1-9][0-9]{0,2}$ ]] || die "the token timeout must be 1 to 999 seconds"
 [ -r "$ENVFILE" ] || die "missing /etc/usnm/scan-archive.env"
 [ -r "$MANIFEST" ] || die "missing the upload's archived.tsv"
 setting() {
@@ -76,9 +78,13 @@ for name in "${CAND[@]}"; do
 done
 
 # The token stays in this shell: headers reach curl on stdin, never argv.
-realm=$(curl -s --max-time "$TOKEN_TIMEOUT" -o /dev/null -D - -H Metadata:true "$TOKEN_URL" |
-  tr -d '\r' | sed -n 's/^[Ww][Ww][Ww]-[Aa]uthenticate: Basic realm=//p') ||
+# The first Basic challenge; its realm may be quoted and may come with other parameters.
+challenge=$(curl -s --max-time "$TOKEN_TIMEOUT" -o /dev/null -D - -H Metadata:true "$TOKEN_URL" |
+  tr -d '\r' | awk 'tolower($0) ~ /^www-authenticate:[ \t]*basic[ \t]/ && !n++ { sub(/^[^:]*:[ \t]*/, ""); print }') ||
   die "token challenge failed"
+re='[[:space:],]realm=("([^"]*)"|([^",[:space:]]*))'
+[[ $challenge =~ $re ]] || die "unexpected token challenge"
+realm=${BASH_REMATCH[2]:-${BASH_REMATCH[3]}}
 [[ $realm == "$KEYS"/* && ${realm#"$KEYS"/} =~ ^[A-Za-z0-9-]+[.]key$ ]] || die "unexpected token challenge"
 [ -f "$realm" ] && [ "$(stat -c %s "$realm")" -le 4096 ] || die "unexpected token key file"
 t0=$(now)

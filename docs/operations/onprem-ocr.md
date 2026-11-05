@@ -273,15 +273,17 @@ The keep-set scans have been copied to a Cold-tier container, `scans` in the sto
    sudo systemd-run --unit=usnm-restore-drill --pipe --wait --collect -p RuntimeMaxSec=900 \
      -p IOSchedulingClass=idle -p Nice=19 bash <reviewed copy>/restore-drill.sh \
      --dir /tank/usnm-restore-drill-<date> --dataset tank/usnm-restore-drill-<date> \
-     --snapshot <tank/ocr/scans daily snapshot> --count 20 --budget-bytes 100000000
+     --snapshot <snapshot-name> --count 20 --budget-bytes 100000000
    sudo zfs destroy tank/usnm-restore-drill-<date>
-   sudo umount /tank/ocr/scans/.zfs/snapshot/<snapshot>   # if the automount outlives zfs_expire_snapshot
+   sudo umount /tank/ocr/scans/.zfs/snapshot/<snapshot-name>   # if the automount outlives zfs_expire_snapshot
    ```
+
+   `<snapshot-name>` is the part after `@` of a recent daily snapshot in `zfs list -t snapshot -o name tank/ocr/scans`, for example `autosnap_2026-11-05_00:00:03_daily`; the drill reads it under `/tank/ocr/scans/.zfs/snapshot/<snapshot-name>`.
 
    **What the drill does.**
    - **Sample.** It takes `--count` names (1–99) spread over `archived.tsv`, half a step off `check-scan-archive.sh`'s sample.
    - **Budget.** It HEADs them in order and stops before the first one that would take the GETs past `--budget-bytes` (at most 100,000,000).
-   - **Cold restore.** It GETs the sample one by one, each capped at its HEAD length, then copies the same scans from `.zfs/snapshot/<snapshot>`. A scan archived after the snapshot is skipped there.
+   - **Cold restore.** It GETs the sample one by one, each capped at its HEAD length, then copies the same scans from `.zfs/snapshot/<snapshot-name>`. A scan archived after the snapshot is skipped there.
    - **Checks.** It compares each Cold copy's length, sha256 and md5 with:
      - the HEAD length;
      - the sidecar;

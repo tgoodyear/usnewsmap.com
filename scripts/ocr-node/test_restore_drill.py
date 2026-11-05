@@ -24,6 +24,7 @@ class Archive(http.server.ThreadingHTTPServer):
     def __init__(self, scans, key):
         self.scans, self.key = scans, key
         self.requests, self.corrupt = [], set()
+        self.challenges = [f"Basic realm={key}"]
         super().__init__(("127.0.0.1", 0), Handler)
 
 
@@ -67,7 +68,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.server.requests.append(("GET", "/token"))
         if self.headers.get("Authorization") == "Basic " + self.server.key.read_text():
             return self.reply(200, body=json.dumps({"access_token": TOKEN}).encode())
-        self.reply(401, [("WWW-Authenticate", f"Basic realm={self.server.key}")])
+        self.reply(401, [("WWW-Authenticate", c) for c in self.server.challenges])
 
 
 class RestoreDrillTest(unittest.TestCase):
@@ -168,10 +169,24 @@ class RestoreDrillTest(unittest.TestCase):
     def test_the_token_endpoint_must_be_ipv4_loopback(self):
         self.scan(1)
         port = self.archive.server_address[1]
-        r = self.run_drill(count=1, USNM_OCR_TEST_TOKEN_URL=f"http://localhost:{port}/token")
+        for url in (f"http://localhost:{port}/token", "http://127.0.0.1:99999/token"):
+            with self.subTest(url=url):
+                r = self.run_drill(count=1, USNM_OCR_TEST_TOKEN_URL=url)
+                self.assertEqual(r.returncode, 1)
+                self.assertIn("must be http://127.0.0.1:<port 1-65535>/, never localhost", r.stderr)
+        r = self.run_drill(count=1, USNM_OCR_TEST_TOKEN_TIMEOUT="0")
         self.assertEqual(r.returncode, 1)
-        self.assertIn("must be http://127.0.0.1:<port>/, never localhost", r.stderr)
+        self.assertIn("the token timeout must be 1 to 999 seconds", r.stderr)
         self.assertEqual(self.archive.requests, [])
+
+    def test_reads_a_quoted_realm_from_the_first_basic_challenge(self):
+        self.scan(1)
+        key = self.archive.key
+        self.archive.challenges = ['Bearer realm="elsewhere"', f'basic charset="UTF-8", realm="{key}"',
+                                   f"Basic realm={key.with_name('other.key')}"]
+        r = self.run_drill(count=1)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("1 of 1 match", r.stdout)
 
     def test_an_unanswered_token_request_times_out(self):
         self.scan(1)
