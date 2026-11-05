@@ -5,10 +5,13 @@
         [--done /var/lib/usnm-sset/done] [--push-url http://<dashboard>/api/sset/<name>]
 
 Reads the unit's journal since it last started and writes a status file:
-volumes to fetch, written (curated or empty), incomplete, the rates per
-hour and an estimate of the time left. Volumes range from one document to
-hundreds, so the estimate goes by documents: the volumes left times the
-average documents a volume has, at the documents-per-hour rate so far.
+volumes to fetch, written (curated or empty), incomplete, sitemap entries
+refused as package ids ("rejected": the fetch can't finish while there are
+any), volumes listed only as a whole-volume package ("package_only"), the
+rates per hour and an estimate of the time left. Volumes range from one
+document to hundreds, so the estimate goes by documents: the volumes left
+times the average documents a volume has, at the documents-per-hour rate so
+far.
 Sets "finished" when the --done marker exists. With --push-url it also
 PUTs the status to the OCR dashboard (usnm-ocrdash), which takes it from this
 node's address only. Prints it too. usnm-sset-status.timer runs it every 10 minutes.
@@ -56,14 +59,16 @@ def status(unit: str, done: str, out_path: str) -> dict:
     if since is None:
         # Not started since boot (the done marker keeps it from starting):
         # keep the totals the last status had rather than zeros.
-        return {**previous(out_path), **out, "started": previous(out_path).get("started")}
+        # A status from before these counts existed still gets them.
+        counts = {"rejected": 0, "package_only": 0}
+        return {**counts, **previous(out_path), **out, "started": previous(out_path).get("started")}
     lines = subprocess.run(
         ["journalctl", "-u", unit, "-o", "cat", "--no-pager", "--since", f"@{int(since.timestamp())}"],
         capture_output=True,
         text=True,
         check=True,
     ).stdout.splitlines()
-    to_fetch = curated = empty = incomplete = pages = 0
+    to_fetch = curated = empty = incomplete = pages = rejected = package_only = 0
     listed_volumes = listed_documents = documents_done = 0
     current = None
     current_documents = 0
@@ -80,6 +85,8 @@ def status(unit: str, done: str, out_path: str) -> dict:
             to_fetch = int(fields.get("to_fetch", 0))
             listed_volumes = int(fields.get("volumes", 0))
             listed_documents = int(fields.get("documents", 0))
+            rejected = int(fields.get("rejected", 0))
+            package_only = int(fields.get("package_only", 0))
         elif message == "fetching a Serial Set volume":
             current = fields.get("volume")
             current_documents = int(fields.get("documents", 0))
@@ -108,6 +115,8 @@ def status(unit: str, done: str, out_path: str) -> dict:
             "curated": curated,
             "empty": empty,
             "incomplete": incomplete,
+            "rejected": rejected,
+            "package_only": package_only,
             "pages": pages,
             "current_volume": current,
             "documents_read": documents_done,

@@ -91,8 +91,22 @@ const INDEX_PATH: &str = "/sitemap/SERIALSET_sitemap_index.xml";
 
 const PREFIX: &str = "SERIALSET-";
 
+/// How many ids a warning names; its count is always whole, and the
+/// report lists them all.
+const BAD_ID_SAMPLE: usize = 20;
+
+/// The longest document suffix accepted (`009-0042-0000` is 13 bytes).
+const MAX_DOCUMENT: usize = 32;
+
 /// A Serial Set package id: a volume (`SERIALSET-00033_00_00`) or a
 /// document in it (`SERIALSET-00033_00_00-009-0042-0000`).
+///
+/// A volume is `{serial}_{part}_{part}`: five digits, then two parts of two
+/// lowercase letters or digits each. Most parts are digits, but GovInfo
+/// also lists volumes such as `04905_0g_00`, `08858_2b_00` and
+/// `11328_01_0a`, which are fetched like any other. A document suffix is
+/// letters, digits and `-`, at most [`MAX_DOCUMENT`] bytes. Anything else
+/// (including any `/`, `.` or uppercase volume part) is refused.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct PackageId {
     pub id: String,
@@ -117,13 +131,20 @@ impl PackageId {
             None => (rest, None),
         };
         let parts: Vec<&str> = volume.split('_').collect();
-        let digits = |s: &str, n: usize| s.len() == n && s.bytes().all(|b| b.is_ascii_digit());
-        if parts.len() != 3 || !digits(parts[0], 5) || !digits(parts[1], 2) || !digits(parts[2], 2)
-        {
+        let serial_digits = |s: &str| s.len() == 5 && s.bytes().all(|b| b.is_ascii_digit());
+        // Lowercase only, so no two volumes differ by case alone.
+        let part = |s: &str| {
+            s.len() == 2
+                && s.bytes()
+                    .all(|b| b.is_ascii_digit() || b.is_ascii_lowercase())
+        };
+        if parts.len() != 3 || !serial_digits(parts[0]) || !part(parts[1]) || !part(parts[2]) {
             return None;
         }
         if document.is_some_and(|d| {
-            d.is_empty() || !d.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            d.is_empty()
+                || d.len() > MAX_DOCUMENT
+                || !d.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
         }) {
             return None;
         }
@@ -750,8 +771,12 @@ pub struct Plan {
     pub volumes: Vec<Volume>,
     /// Whole-volume packages, not fetched (their documents are).
     pub volume_packages: usize,
-    /// Ids that aren't Serial Set packages, or can't be object paths.
+    /// Ids that aren't Serial Set packages, or can't be object paths:
+    /// refused, and the fetch isn't finished while there are any.
     pub bad_ids: Vec<String>,
+    /// Volumes listed only as a whole-volume package, with no document
+    /// package: nothing of theirs is fetched.
+    pub package_only: Vec<String>,
 }
 
 /// The package id a sitemap entry names (`…/app/details/{id}`).
@@ -776,7 +801,7 @@ pub fn plan(entries: Vec<Entry>) -> Plan {
             continue;
         };
         if pkg.document.is_none() {
-            volumes_seen.insert(pkg.id);
+            volumes_seen.insert(pkg.volume);
             continue;
         }
         let listed = Listed {
@@ -792,6 +817,10 @@ pub fn plan(entries: Vec<Entry>) -> Plan {
         }
     }
     p.volume_packages = volumes_seen.len();
+    p.package_only = volumes_seen
+        .into_iter()
+        .filter(|v| !docs.contains_key(v))
+        .collect();
     p.volumes = docs
         .into_iter()
         .map(|(volume, d)| {
@@ -852,7 +881,12 @@ pub struct Report {
     pub listed: usize,
     /// Whole-volume packages, not fetched.
     pub volume_packages: usize,
+    /// Sitemap entries refused as Serial Set package ids ([`PackageId`]):
+    /// a run with any isn't [`finished`](Report::finished).
     pub bad_ids: Vec<String>,
+    /// Volumes listed only as a whole-volume package, with no document
+    /// package, so not fetched (reported; they don't stop the marker).
+    pub package_only: Vec<String>,
     /// Volumes with documents, and their documents (after `--years` and
     /// `--serials`).
     pub volumes: usize,
@@ -1141,8 +1175,22 @@ pub async fn run(
     }
     report.volume_packages = p.volume_packages;
     report.bad_ids = p.bad_ids.clone();
+    report.package_only = p.package_only.clone();
     if !p.bad_ids.is_empty() {
-        tracing::warn!(ids = ?p.bad_ids, "sitemap entries that aren't Serial Set packages; left out");
+        // A sample only: thousands of ids would overrun a journal line,
+        // and the count must survive (the status file reads it).
+        let sample: Vec<&String> = p.bad_ids.iter().take(BAD_ID_SAMPLE).collect();
+        tracing::warn!(
+            rejected = p.bad_ids.len(), sample = ?sample,
+            "sitemap entries refused as Serial Set package ids; not fetched, and the fetch can't finish"
+        );
+    }
+    if !p.package_only.is_empty() {
+        let sample: Vec<&String> = p.package_only.iter().take(BAD_ID_SAMPLE).collect();
+        tracing::warn!(
+            package_only = p.package_only.len(), sample = ?sample,
+            "Serial Set volumes listed only as a whole-volume package; not fetched"
+        );
     }
     if !opts.serials.is_empty() {
         let unknown: Vec<&u32> = opts
@@ -1201,6 +1249,8 @@ pub async fn run(
         volumes = report.volumes,
         documents = report.documents,
         volume_packages = report.volume_packages,
+        rejected = report.bad_ids.len(),
+        package_only = report.package_only.len(),
         finished = finished.len(),
         empty = empties.len(),
         changed = report.changed,
@@ -1314,12 +1364,14 @@ pub async fn locked<T>(
 
 impl Report {
     /// Whether the whole fetch is done: no volume left (by a deadline,
-    /// `--max-volumes` or a lost lock) and none incomplete (a 404 or an
-    /// unreadable document, which a later run fetches again). Every volume
-    /// is then written, or left out for good (an empty attempt). Only
-    /// meaningful for a run over every volume (no `--years` or `--serials`).
+    /// `--max-volumes` or a lost lock), none incomplete (a 404 or an
+    /// unreadable document, which a later run fetches again) and no
+    /// sitemap entry refused as a package id (whose volume would otherwise
+    /// be missing unseen). Every volume is then written, or left out for
+    /// good (an empty attempt). Only meaningful for a run over every
+    /// volume (no `--years` or `--serials`).
     pub fn finished(&self) -> bool {
-        self.left == 0 && self.incomplete.is_empty()
+        self.left == 0 && self.incomplete.is_empty() && self.bad_ids.is_empty()
     }
 }
 
@@ -1367,6 +1419,8 @@ mod tests {
         sitemaps_only: bool,
         /// A `lastmod` to give one package in the 1820 sitemap.
         touched: Option<(&'static str, &'static str)>,
+        /// One more package id for the 1820 sitemap to list.
+        extra: Option<&'static str>,
     }
 
     impl Recorded {
@@ -1389,7 +1443,7 @@ mod tests {
                 let Ok(body) = std::fs::read(dir().join(name)) else {
                     return Ok(None);
                 };
-                return Ok(Some(match self.touched {
+                let body = match self.touched {
                     Some((id, lastmod)) if name.contains("1820") => {
                         let s = String::from_utf8(body).unwrap();
                         let at = s.find(id).unwrap();
@@ -1397,6 +1451,18 @@ mod tests {
                         let close = open + s[open..].find('<').unwrap();
                         format!("{}{lastmod}{}", &s[..open], &s[close..]).into_bytes()
                     }
+                    _ => body,
+                };
+                return Ok(Some(match self.extra {
+                    Some(id) if name.contains("1820") => String::from_utf8(body)
+                        .unwrap()
+                        .replace(
+                            "</urlset>",
+                            &format!(
+                                "<url><loc>https://www.govinfo.gov/app/details/{id}</loc></url></urlset>"
+                            ),
+                        )
+                        .into_bytes(),
                     _ => body,
                 }));
             }
@@ -1451,6 +1517,16 @@ mod tests {
         // The one malformed id GovInfo lists still names its volume.
         let odd = PackageId::parse("SERIALSET-01622_00_00-001-300-0000").unwrap();
         assert_eq!((odd.serial, odd.sequence()), (1622, Some(1)));
+        // Volumes with letters in their parts, as GovInfo lists them.
+        for (id, volume, serial) in [
+            ("SERIALSET-04905_0g_00-048-3846-0000", "04905_0g_00", 4905),
+            ("SERIALSET-08858_2b_00-001-0000-0000", "08858_2b_00", 8858),
+            ("SERIALSET-11328_01_0a-001-0000-0000", "11328_01_0a", 11328),
+            ("SERIALSET-03367_0a_00", "03367_0a_00", 3367),
+        ] {
+            let p = PackageId::parse(id).unwrap_or_else(|| panic!("{id}"));
+            assert_eq!((p.volume.as_str(), p.serial), (volume, serial), "{id}");
+        }
         for bad in [
             "CRPT-118hrpt100",
             "SERIALSET-33_00_00",
@@ -1458,6 +1534,13 @@ mod tests {
             "SERIALSET-00033_00_00-",
             "SERIALSET-00033_00_00-0/9",
             "../SERIALSET-00033_00_00",
+            "SERIALSET-00033_..00_00",
+            "SERIALSET-00033_0A_00",
+            "SERIALSET-0003a_00_00",
+            "SERIALSET-00033_0a0_00",
+            "SERIALSET-00033_0a_00_00",
+            "SERIALSET-00033_0._00",
+            "SERIALSET-00033_00_00-001-0000-0000-0000-0000-0000-0000",
         ] {
             assert!(PackageId::parse(bad).is_none(), "{bad}");
         }
@@ -1500,6 +1583,27 @@ mod tests {
         assert_eq!(
             p.volumes[1].lastmod().as_deref(),
             Some("2024-11-06T03:15:00.159Z")
+        );
+        let odd = |id: &str| Entry {
+            loc: format!("https://www.govinfo.gov/app/details/{id}"),
+            lastmod: None,
+        };
+        let p = plan(vec![
+            odd("SERIALSET-04905_0g_00-048-3846-0000"),
+            odd("SERIALSET-04905_0g_00"),
+            odd("SERIALSET-13163_04_00"),
+            odd("SERIALSET-00033_00_00-0..1"),
+            odd("SERIALSET-00033_0A_00-001-0000-0000"),
+        ]);
+        assert_eq!(p.volumes.len(), 1);
+        assert_eq!(p.volumes[0].volume, "04905_0g_00");
+        assert_eq!(p.package_only, ["13163_04_00"]);
+        assert_eq!(
+            p.bad_ids,
+            [
+                "SERIALSET-00033_00_00-0..1",
+                "SERIALSET-00033_0A_00-001-0000-0000"
+            ]
         );
         // Not a sitemap: refused, so a maintenance page isn't an empty year.
         assert!(parse_urlset(b"<html><body>down</body></html>").is_err());
@@ -1856,6 +1960,18 @@ mod tests {
                 .unwrap();
             assert!(r.finished(), "{r:?}");
         }
+        // A sitemap entry refused as a package id: not finished, though
+        // every volume that parsed was written.
+        let refused = Recorded {
+            extra: Some("SERIALSET-00033_00_00-0..1"),
+            ..Recorded::default()
+        };
+        let r = run(&refused, &text, &curated, None, &opts, &lost)
+            .await
+            .unwrap();
+        assert_eq!((r.left, r.incomplete.len()), (0, 0));
+        assert_eq!(r.bad_ids, ["SERIALSET-00033_00_00-0..1"]);
+        assert!(!r.finished());
         let done = dir.path().join("done");
         write_done(&done, &r_with(1)).unwrap();
         let v: serde_json::Value = serde_json::from_slice(&std::fs::read(&done).unwrap()).unwrap();
