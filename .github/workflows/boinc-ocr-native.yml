@@ -24,6 +24,7 @@ on:
       - "ocr/engines/ndlocr-lite/models.lock"
       - "ocr/routing/routes.toml"
       - "scripts/boinc/acceptance_server.py"
+      - "contrib-compute/boinc/plan_class_spec.xml"
       - "!**/*.md"
 
 permissions:

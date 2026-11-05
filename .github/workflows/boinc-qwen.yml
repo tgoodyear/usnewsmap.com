@@ -37,6 +37,7 @@ on:
       - "ocr/engines/ndlocr-lite/models.lock"
       - "ocr/engines/tesseract/models.lock"
       - "ocr/routing/routes.toml"
+      - "contrib-compute/boinc/plan_class_spec.xml"
       - "!**/*.md"
 
 permissions:
