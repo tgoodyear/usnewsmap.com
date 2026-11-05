@@ -121,8 +121,11 @@ def cherokee_text(pdf: str) -> str:
     text = subprocess.run(["pdftotext", "-enc", "UTF-8", pdf, "-"], check=True, stdout=subprocess.PIPE,
                           encoding="utf-8").stdout
     lines = [line.strip() for line in text.replace("\f", "\n").split("\n")]
+    first = next((i for i, line in enumerate(lines) if CHAPTER.match(line)), None)
+    if "ᏗᎪᏪᎵ" not in lines or first is None:
+        raise SystemExit(f"{pdf}: no contents page (ᏗᎪᏪᎵ) or chapter heading (ᎠᏯᏙᎸᎢ 1); "
+                         "not the 2015 Cherokee New Testament PDF?")
     contents = lines.index("ᏗᎪᏪᎵ")
-    first = next(i for i, line in enumerate(lines) if CHAPTER.match(line))
     titles = {line for line in lines[contents + 1:first] if CHEROKEE.search(line)}
     return "\n".join(line for line in lines[first:] if line not in titles and not CHAPTER.match(line))
 
@@ -136,7 +139,7 @@ def cherokee(tmp: str, pdfs: list[str]) -> None:
         words = [w for w in damage_v2.text_words(cherokee_text(pdf))[1] if damage_v2.script(w) == "cherokee"]
         editions.append(collections.Counter(words))
         with open(pdf, "rb") as f:
-            digest = hashlib.sha256(f.read()).hexdigest()
+            digest = hashlib.file_digest(f, "sha256").hexdigest()
         print(f"{os.path.basename(pdf)}: sha256 {digest}, {len(words):,} words, {len(editions[-1]):,} different")
     # A word a line break or a verse number in the margin cuts leaves two pieces. Editions break their lines
     # in different places, so with both, a word counts as often as it does in the one it is fewest in.
@@ -161,7 +164,10 @@ def ocr_texts(path: str):
         with tarfile.open(path) as t:
             for m in t:
                 if m.isfile() and m.name.endswith(".txt"):
-                    yield t.extractfile(m).read().decode("utf-8", "replace")
+                    f = t.extractfile(m)
+                    if f is None:
+                        raise SystemExit(f"{path}: can't read {m.name}")
+                    yield f.read().decode("utf-8", "replace")
     else:
         with open(path, encoding="utf-8", errors="replace") as f:
             yield f.read()
@@ -172,7 +178,12 @@ def cherokee_check(paths: list[str]) -> None:
     letters it has where the list has another, from words one letter from one list word only; and the
     near-misses of the top 20 it has most (the damage the audit counts)."""
     damage_v2 = ja_ocr()
-    m = damage_v2.Models().get("chr")
+    try:
+        m = damage_v2.Models().get("chr")
+    except FileNotFoundError:
+        m = None
+    if m is None:
+        raise SystemExit("no Cherokee model: build wordlists/chr.txt first (build-wordlists.py chr)")
     counts: collections.Counter = collections.Counter()
     pages = 0
     for path in paths:
