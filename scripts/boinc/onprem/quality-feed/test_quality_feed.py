@@ -936,6 +936,13 @@ class SourceTruncatedTest(unittest.TestCase):
             with self.assertRaises(SystemExit) as failed, contextlib.redirect_stdout(io.StringIO()):
                 feed.main(["jp2-check", "--scan", str(paths[0]), "--scan", absent])
             self.assertIn(f"can't read {absent}: FileNotFoundError", str(failed.exception.code))
+            # With --verify-sidecar, whichever of the scan and its sidecar it can't read.
+            Path(f"{absent}.json").write_text("{}")
+            for scan, unread in ((paths[0], f"{paths[0]}.json"), (absent, absent)):
+                with self.assertRaises(SystemExit) as failed, contextlib.redirect_stdout(io.StringIO()):
+                    feed.main(["jp2-check", "--verify-sidecar", "--scan", str(scan)])
+                self.assertEqual(f"jp2-check: can't read {unread}: FileNotFoundError",
+                                 str(failed.exception.code).split(": [Errno")[0])
 
     def test_a_truncated_jp2_is_recorded_once_and_is_never_fetched_or_decoded_again(self):
         good_raw, bad_raw = jp2(codestream(2)), jp2(codestream(2)[:-2])

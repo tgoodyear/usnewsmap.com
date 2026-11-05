@@ -1215,11 +1215,13 @@ def sidecar_mismatch(raw, side):
 
 def cmd_jp2_check(a):
     for path in a.scan:
+        name, side = path, None
         try:
-            side = None
             if a.verify_sidecar:
-                with open(f"{path}.json", "rb") as f:
+                name = f"{path}.json"
+                with open(name, "rb") as f:
                     side = f.read()
+                name = path
             with open(path, "rb") as f:
                 if os.fstat(f.fileno()).st_size == 0:
                     line = jp2_check_line(b"", side)
@@ -1228,7 +1230,7 @@ def cmd_jp2_check(a):
                     with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as raw:
                         line = jp2_check_line(raw, side)
         except OSError as e:
-            sys.exit(f"jp2-check: can't read {path}: {type(e).__name__}: {e}")
+            sys.exit(f"jp2-check: can't read {name}: {type(e).__name__}: {e}")
         print(line)
 
 
