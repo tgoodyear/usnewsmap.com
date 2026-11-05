@@ -258,18 +258,23 @@ def row_of(q, dmg):
     }
 
 
-def record_ocr_docs(state, docs):
-    """Adds to ocr-docs.txt (every page OCR asked for, one doc_id a line) the ones it doesn't
-    have yet. Returns how many."""
+def read_ocr_docs(state):
+    """ocr-docs.txt's doc_ids: every page OCR asked for."""
     path = os.path.join(state, "ocr-docs.txt")
-    have = set()
-    if os.path.exists(path):
-        with open(path) as f:
-            have = {line.strip() for line in f if line.strip()}
+    if not os.path.exists(path):
+        return set()
+    with open(path) as f:
+        return {line.strip() for line in f if line.strip()}
+
+
+def record_ocr_docs(state, docs, have):
+    """Adds to ocr-docs.txt the ones of `docs` not in `have` (read_ocr_docs's set, updated in
+    place). Returns how many."""
     new = [d for d in dict.fromkeys(docs) if d not in have]
     if new:
-        with open(path, "a") as f:
+        with open(os.path.join(state, "ocr-docs.txt"), "a") as f:
             f.write("".join(f"{d}\n" for d in new))
+        have.update(new)
     return len(new)
 
 
@@ -288,8 +293,9 @@ def cmd_build(a):
     # A queued page whose scan the fetcher already wrote (the quality pass's, say) gets no
     # manifest row, but it's OCR's all the same: the quality feeder must not evict it.
     claimed = [q["doc_id"] for q in outstanding if (q["batch"], q["doc_id"]) in index]
+    have = read_ocr_docs(a.state)
     if not a.what_if:
-        n = record_ocr_docs(a.state, claimed)
+        n = record_ocr_docs(a.state, claimed, have)
         if n:
             log("queued pages already on the scan server claimed for OCR", pages=n)
     if os.path.exists(last_path):
@@ -356,7 +362,7 @@ def cmd_build(a):
                    "pairs": [[r["batch"], r["doc_id"]] for r in rows]}, f)
     os.replace(last_path + ".tmp", last_path)
     # Every page OCR asked for: the quality feeder never deletes these scans.
-    record_ocr_docs(a.state, [r["doc_id"] for r in rows])
+    record_ocr_docs(a.state, [r["doc_id"] for r in rows], have)
     stamp = now.isoformat()
     for r in rows:
         t = tries.get(r["doc_id"])

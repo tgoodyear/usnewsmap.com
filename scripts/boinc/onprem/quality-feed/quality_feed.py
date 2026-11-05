@@ -662,7 +662,7 @@ def delete_shipped(a, camp_dir, done_path, quality_docs, deleted_path, kept_path
     for and OCR didn't (the caller leaves OCR's manifests' pages out of `quality_docs`); OCR's
     pages and the keep set are never touched. With --keep-bytes, the most damaged of them stay
     on the scan server for re-OCR, up to that many bytes in all (listed in `kept_path`), and the
-    rest, least damaged first, are DELETEd; without, every one is. A kept scan that is gone (an
+    rest are DELETEd; without, every one is. A kept scan that is gone (an
     OCR worker read it) or that OCR has since asked for leaves the list without a DELETE, so it
     no longer counts against the budget; --keep-verify of the longest-unchecked are looked at a
     round. Returns how many were deleted."""
