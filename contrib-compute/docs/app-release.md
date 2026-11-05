@@ -594,15 +594,21 @@ Example **operator-local, secret-free** config for an existing dedicated client
 ```
 
 `server_command` is an argv transport accepting one JSON request on stdin and
-returning one JSON receipt. Use the included server adapter **on the project
+returning one JSON receipt. Exit status 75 (`EX_TEMPFAIL`) means the transport ran
+nothing: `acceptance.py` sends the same request again after `--poll-interval`, until
+the run's deadline (or, for the final release, the cleanup deadline), and counts
+these retries as `server_busy_retries` in the evidence. Any other failure ends the
+run. Use the included server adapter **on the project
 host**, as project owner, never on the signing host. It uses the existing TLS
 MySQL connector and project configuration; no DB credentials leave the server.
 
 For the current on-prem server, `scripts/boinc/onprem_acceptance.py` is a
 root-local transport for that same adapter. Install it **and its adjacent reviewed
 `acceptance_server.py`** in an operator-owned directory on the BOINC host. It
-shares `/run/usnm-boinc-step.lock` with the bridge runner and fails immediately
-while another step holds the lock. It checks the running `usnm-boinc-server`
+shares `/run/usnm-boinc-step.lock` with the bridge runner and never waits for it:
+while another step holds the lock it exits 75 before reading the request, so a
+production step, which can hold the lock for minutes, delays a run rather than
+failing it. It checks the running `usnm-boinc-server`
 container against an explicitly reviewed **local image ID**, then runs the adapter
 inside that existing container as project owner UID/GID 1000. It neither creates
 nor restarts a container, installs a daemon, enables assignment, stages fixtures,

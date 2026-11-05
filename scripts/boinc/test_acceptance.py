@@ -210,7 +210,7 @@ class Evidence(Workspace):
 
 
 class Lifecycle(Workspace):
-    def simulate(self, fail=None, ephemeral=False, statuses=None):
+    def simulate(self, fail=None, ephemeral=False, statuses=None, busy=None):
         config = copy.deepcopy(CONFIG)
         if ephemeral:
             auth = self.root / 'authenticator'
@@ -227,6 +227,9 @@ class Lifecycle(Workspace):
             if argv == ['server']:
                 request = json.loads(payload)
                 action = request['action']
+                if (busy or {}).get(action):
+                    busy[action] -= 1
+                    raise A.TransportBusy('busy')
                 if fail == action:
                     raise A.AcceptanceError('injected ' + action)
                 if action == 'reserve':
@@ -353,6 +356,30 @@ class Lifecycle(Workspace):
         self.assertFalse(any(argv[0].endswith('boinc-test-client.sh') for argv, _ in calls))
         self.assertFalse(runner.auth_path.exists())
 
+    def test_busy_server_transport_is_sent_again_for_every_action(self):
+        busy = {'reserve': 2, 'dispatch': 1, 'status': 3, 'release': 1}
+        runner, calls = self.simulate(busy=dict(busy))
+        self.assertTrue(runner.report['accepted'])
+        self.assertTrue(runner.report['cleanup_complete'])
+        self.assertEqual(runner.report['server_busy_retries'], sum(busy.values()))
+        actions = [json.loads(payload)['action'] for argv, payload in calls if argv == ['server']]
+        self.assertEqual(actions, ['reserve'] * 3 + ['dispatch'] * 2 + ['status'] * 5 + ['release'] * 2)
+        reserves = {payload for argv, payload in calls
+                    if argv == ['server'] and json.loads(payload)['action'] == 'reserve'}
+        self.assertEqual(len(reserves), 1)
+
+    def test_server_transport_busy_past_deadlines_fails_without_clean_release(self):
+        runner = self.runner()
+        runner.args.cleanup_timeout = .05
+        runner.deadline = time.monotonic() + .05
+        with patch.object(runner, 'call', side_effect=A.TransportBusy('busy')) as call:
+            with self.assertRaisesRegex(A.AcceptanceError, 'deadline'):
+                runner.execute()
+            self.assertFalse(runner.finish())
+        self.assertGreater(call.call_count, 2)
+        self.assertFalse(runner.report['accepted'])
+        self.assertEqual(runner.report['cleanup_errors'], ['fixture reservation release unconfirmed'])
+
     def test_uncertain_reservation_is_released_and_no_client_is_created(self):
         runner, calls = self.simulate('reserve', ephemeral=True)
         self.assertFalse(runner.report['accepted'])
@@ -380,6 +407,10 @@ class Lifecycle(Workspace):
         self.assertLess(time.monotonic() - before, 2)
         with self.assertRaises(A.AcceptanceError) as error:
             A.run([sys.executable, '-c', 'import sys; print("secret", file=sys.stderr); sys.exit(9)'], 1)
+        self.assertNotIn('secret', str(error.exception))
+        self.assertNotIsInstance(error.exception, A.TransportBusy)
+        with self.assertRaises(A.TransportBusy) as error:
+            A.run([sys.executable, '-c', 'import sys; print("secret", file=sys.stderr); sys.exit(75)'], 1)
         self.assertNotIn('secret', str(error.exception))
 
     def test_real_az_subprocess_is_mocked_and_scoped(self):
