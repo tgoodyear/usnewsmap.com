@@ -248,6 +248,25 @@ impl Searcher {
         let ticks = fields.get(11)?.parse::<u64>().ok()? + fields.get(12)?.parse::<u64>().ok()?;
         Some(ticks * 1000 / self.ticks_per_sec?)
     }
+
+    /// Kills the searcher and waits for it, so it doesn't linger.
+    async fn stop(mut self) {
+        let _ = self.child.kill().await;
+    }
+}
+
+/// A `file://` URI for `path`, which is used as it is, so it must need no
+/// escaping.
+fn file_uri(path: &Path) -> String {
+    let path = path.to_str().unwrap_or_default();
+    assert!(
+        path.starts_with('/')
+            && path
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"/-_.~".contains(&b)),
+        "{path:?}: the measurement directory (USNM_MEASURE_DIR, or TMPDIR) must be an absolute path of letters, digits and / - _ . ~"
+    );
+    format!("file://{path}")
 }
 
 /// The clock ticks a second in which Linux's `/proc` counts CPU time
@@ -382,9 +401,15 @@ fn median(v: &[f64]) -> String {
     format!("{m:.0}")
 }
 
-/// `port` and the gRPC port after it, checked free, so that a clash fails
-/// here with a clear message rather than in Quickwit's startup.
-fn free_pair(port: u16) -> u16 {
+/// The `n`th pair of ports from `base` (`base + 2n` and the gRPC port after
+/// it), checked free, so that a clash fails here with a clear message
+/// rather than in Quickwit's startup.
+fn free_pair(base: u16, n: usize) -> u16 {
+    let port = u16::try_from(2 * n)
+        .ok()
+        .and_then(|offset| base.checked_add(offset))
+        .filter(|p| p.checked_add(1).is_some())
+        .unwrap_or_else(|| panic!("USNM_MEASURE_PORT {base}: pair {n} is past port 65535"));
     for p in [port, port + 1] {
         if let Err(e) = std::net::TcpListener::bind(("127.0.0.1", p)) {
             panic!("port {p} is taken ({e}): set USNM_MEASURE_PORT to another base");
@@ -435,8 +460,8 @@ async fn measure_split_latency() {
         .join("qw");
     std::fs::create_dir_all(&qw).unwrap();
     let store = Store {
-        meta: format!("file://{}/meta", qw.display()),
-        root: format!("file://{}/indexes", qw.display()),
+        meta: file_uri(&qw.join("meta")),
+        root: file_uri(&qw.join("indexes")),
     };
     let mut indexes = Vec::new();
     for (i, &target) in targets.iter().enumerate() {
@@ -465,7 +490,7 @@ async fn measure_split_latency() {
             }
             Err(_) => {
                 let work = qw.join(format!("writer-{target}"));
-                let port = free_pair(base_port + 2 * i as u16);
+                let port = free_pair(base_port, i);
                 let layout = build(bin, &store, &work, port, &id, target, corpus).await;
                 let layout = serde_json::to_value(layout).unwrap();
                 let record = serde_json::json!({ "corpus": corpus_settings, "layout": layout });
@@ -487,7 +512,7 @@ async fn measure_split_latency() {
     }
 
     let ids: Vec<String> = targets.iter().map(|t| format!("pages-split-{t}")).collect();
-    let port = free_pair(base_port + 2 * targets.len() as u16);
+    let port = free_pair(base_port, targets.len());
     let searcher = Searcher::start(bin, &store, &qw, port, &ids).await;
     let backend = Timed {
         inner: QuickwitBackend::new(&searcher.url, Duration::from_secs(120)).unwrap(),
@@ -562,5 +587,5 @@ async fn measure_split_latency() {
             mean(&s.cpu),
         );
     }
-    drop(searcher);
+    searcher.stop().await;
 }

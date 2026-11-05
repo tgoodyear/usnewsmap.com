@@ -125,6 +125,10 @@ pub fn corpus(c: &Corpus, mut f: impl FnMut(Value)) {
         "title_pages {:?}: need 0 < fewest < most",
         c.title_pages
     );
+    assert!(
+        c.planted.iter().all(|(_, every)| *every > 0),
+        "planted: every must be at least 1"
+    );
     let mut rng = Rng(SEED);
     let words = Words::new(&mut rng);
     let total: u32 = WEIGHTS.iter().map(|(_, w)| w).sum();
