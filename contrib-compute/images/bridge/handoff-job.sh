@@ -107,18 +107,31 @@ if [ "${HANDOFF_STEP:-}" = collect ] && [ -n "${JOB_IDS:-}" ]; then
   [ "$parallel" -eq 1 ] || [ "$(printf '%s\n' "${batch_ids[@]}" | sort -u | wc -l)" -eq "${#batch_ids[@]}" ] ||
     fail "JOB_IDS names each job once when COLLECT_PARALLEL is above 1"
   failed=0 running=()
+  # reap: waits for any running collect to end (bash 3.2 has no wait -n) and counts its failure.
+  reap() {
+    local i
+    while :; do
+      for i in "${!running[@]}"; do
+        ! kill -0 "${running[i]}" 2> /dev/null || continue
+        wait "${running[i]}" || failed=$((failed + 1))
+        unset 'running[i]'
+        running=(${running[@]+"${running[@]}"})
+        return
+      done
+      sleep 0.1
+    done
+  }
   for id in "${batch_ids[@]}"; do
-    if [ "${#running[@]}" -ge "$parallel" ]; then
-      wait "${running[0]}" || failed=$((failed + 1))
-      running=("${running[@]:1}")
-    fi
+    [ "${#running[@]}" -lt "$parallel" ] || reap
     log "collect $id"
-    (JOB_ID=$id JOB_IDS="" bash "${BASH_SOURCE[0]}" || { log "collect failed for $id"; exit 1; }) &
-    running+=("$!")
+    if [ "$parallel" -eq 1 ]; then
+      JOB_ID=$id JOB_IDS="" bash "${BASH_SOURCE[0]}" || { log "collect failed for $id"; failed=$((failed + 1)); }
+    else
+      (JOB_ID=$id JOB_IDS="" bash "${BASH_SOURCE[0]}" || { log "collect failed for $id"; exit 1; }) &
+      running+=("$!")
+    fi
   done
-  for pid in "${running[@]}"; do
-    wait "$pid" || failed=$((failed + 1))
-  done
+  while [ "${#running[@]}" -gt 0 ]; do reap; done
   [ "$failed" -eq 0 ] || fail "collect failed for $failed of ${#batch_ids[@]} jobs"
   exit 0
 fi

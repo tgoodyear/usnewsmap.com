@@ -92,36 +92,38 @@ pub fn from_env() -> Arc<Credential> {
 }
 
 /// The ambient credential for another resource (e.g. [`COSMOS_RESOURCE`]).
-/// With `USNM_TOKEN_CACHE` set to a directory, its tokens are shared through
-/// it ([`FileCache`]).
+/// With `USNM_TOKEN_CACHE` set to a directory, a managed or Arc identity's
+/// tokens are shared through it ([`FileCache`]).
 pub fn from_env_for(resource: &'static str) -> Arc<Credential> {
     let var = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
-    let (identity, source): (String, Box<dyn TokenSource>) = match (
+    let (source, identity): (Box<dyn TokenSource>, Option<String>) = match (
         var("IDENTITY_ENDPOINT"),
         var("IDENTITY_HEADER"),
         var("IMDS_ENDPOINT"),
     ) {
         (Some(endpoint), Some(header), _) => {
             let client_id = var("AZURE_CLIENT_ID");
+            let identity = format!("managed {endpoint} {}", client_id.as_deref().unwrap_or(""));
             (
-                format!("managed {endpoint} {}", client_id.as_deref().unwrap_or("")),
                 Box::new(ManagedIdentity::new(endpoint, header, client_id).with_resource(resource)),
+                Some(identity),
             )
         }
         // The Arc agent sets both endpoints and no header.
         (Some(endpoint), None, Some(_)) => (
-            format!("arc {endpoint}"),
-            Box::new(ArcIdentity::new(endpoint).with_resource(resource)),
+            Box::new(ArcIdentity::new(endpoint.clone()).with_resource(resource)),
+            Some(format!("arc {endpoint}")),
         ),
-        _ => ("az".to_owned(), Box::new(AzureCli { resource })),
+        // Never shared: the CLI's account can change under it (az login, AZURE_CONFIG_DIR).
+        _ => (Box::new(AzureCli { resource }), None),
     };
-    let source: Box<dyn TokenSource> = match var("USNM_TOKEN_CACHE") {
-        Some(dir) => Box::new(FileCache::new(
+    let source: Box<dyn TokenSource> = match (var("USNM_TOKEN_CACHE"), identity) {
+        (Some(dir), Some(identity)) => Box::new(FileCache::new(
             dir,
             &format!("{identity} {resource}"),
             source,
         )),
-        None => source,
+        _ => source,
     };
     Arc::new(Credential {
         source,
@@ -136,8 +138,8 @@ const CACHE_LOCK_WAIT: Duration = Duration::from_secs(45);
 /// The largest token file read: a token is a few kilobytes.
 const CACHE_FILE_MAX_BYTES: u64 = 64 * 1024;
 
-/// A [`TokenSource`]'s tokens shared between processes through a private
-/// directory (`USNM_TOKEN_CACHE`). The BOINC hand-off job runs several
+/// A managed or Arc identity's tokens shared between processes through a
+/// private directory (`USNM_TOKEN_CACHE`). The BOINC hand-off job runs several
 /// `usnm-boinc` processes for each job it collects, and each fetched its own
 /// tokens: with four collects at once the Arc agent answered HTTP 429 (#1447).
 /// One process fetches at a time, under an exclusive `flock`, and writes the
