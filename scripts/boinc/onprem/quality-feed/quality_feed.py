@@ -673,7 +673,7 @@ def delete_shipped(a, camp_dir, done_path, quality_docs, deleted_path, kept_path
     OCR worker read it) or that OCR has since asked for (in `ocr_docs`; never inferred from
     `quality_docs`, which a missing list would empty) leaves the list without a DELETE, so it
     no longer counts against the budget; --keep-verify of the longest-unchecked are looked at a
-    round. `deleted_path` lists every page this is done with, deleted or so released, so
+    round (an unanswered check ends that round's checking). `deleted_path` lists every page this is done with, deleted or so released, so
     neither is weighed again. Returns how many were DELETEd (or already gone); releases
     aren't counted."""
     deleted = read_lines(deleted_path)
@@ -702,11 +702,13 @@ def delete_shipped(a, camp_dir, done_path, quality_docs, deleted_path, kept_path
                 continue
             try:
                 there = scan_exists(a.scan_server, k[0])
-            except (urllib.error.URLError, OSError) as e:  # HTTPError (a 5xx) is a URLError
+            except (urllib.error.URLError, OSError) as e:
                 # Counted as checked, so a scan whose check keeps failing doesn't hold up the rest.
                 kept[doc] = (*k[:3], now)
                 log("kept scan check failed; next round", doc_id=doc, error=str(e)[:200])
-                break
+                if isinstance(e, urllib.error.HTTPError):
+                    continue  # the server answered, so it's this scan: go on to the next
+                break  # no answer (down or unreachable): one timeout a round, not --keep-verify
             if there:
                 kept[doc] = (*k[:3], now)
             else:

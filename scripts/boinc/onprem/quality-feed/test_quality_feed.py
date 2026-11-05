@@ -798,27 +798,36 @@ class FollowTest(unittest.TestCase):
                 self.assertEqual(calls[-2:], [("DELETE", "buffer/b/old.jp2"), ("DELETE", "buffer/b/new.jp2")])
                 self.assertEqual(feed.read_lines(str(deleted)), {"new"})
 
-    def test_a_kept_scan_whose_check_keeps_failing_does_not_hold_up_the_rest(self):
+    def test_a_failed_kept_scan_check_goes_to_the_back_and_only_no_answer_ends_the_round(self):
         with tempfile.TemporaryDirectory() as d:
             camp, done, deleted, kept = Path(d, "camp"), Path(d, "done.txt"), Path(d, "deleted.txt"), Path(d, "kept.tsv")
             camp.mkdir()
             done.write_text("")
-            kept.write_text("bad\tbuffer/b/bad.jp2\t10\t0.9\t1\ngone\tbuffer/b/gone.jp2\t10\t0.8\t2\n")
-            a = types.SimpleNamespace(scan_server="http://s", keep_bytes=100, keep_verify=1)
-            calls = []
+            kept.write_text("".join(f"{doc}\tbuffer/b/{doc}.jp2\t10\t0.5\t{n}\n"
+                                    for n, doc in enumerate(["down", "flaky", "gone", "ok"], 1)))
+            a = types.SimpleNamespace(scan_server="http://s", keep_bytes=100, keep_verify=3)
+            calls, up = [], [False]
 
             def fake(req, timeout=0):
-                calls.append(req.full_url)
-                code = 503 if "bad" in req.full_url else 404
-                raise urllib.error.HTTPError(req.full_url, code, "", {}, None)
+                doc = req.full_url.split("/")[-1].split(".")[0]
+                calls.append(doc)
+                if not up[0]:
+                    raise urllib.error.URLError("connection refused")
+                if doc in ("flaky", "gone"):
+                    raise urllib.error.HTTPError(req.full_url, 503 if doc == "flaky" else 404, "", {}, None)
+                return io.BytesIO(b"{}")
 
-            ship = lambda: feed.delete_shipped(a, str(camp), str(done), {"bad", "gone"}, str(deleted), str(kept))
+            ship = lambda: feed.delete_shipped(a, str(camp), str(done), {"down", "flaky", "gone", "ok"},
+                                               str(deleted), str(kept))
             with mock.patch.object(feed.urllib.request, "urlopen", fake), \
                     contextlib.redirect_stdout(io.StringIO()):
                 ship()
+                self.assertEqual(calls, ["down"])
+                up[0] = True
+                calls.clear()
                 ship()
-            self.assertEqual(calls, ["http://s/scans/buffer/b/bad.jp2.json", "http://s/scans/buffer/b/gone.jp2.json"])
-            self.assertEqual(set(feed.read_kept(str(kept))), {"bad"})
+            self.assertEqual(calls, ["flaky", "gone", "ok"])
+            self.assertEqual(set(feed.read_kept(str(kept))), {"down", "flaky", "ok"})
 
     def test_an_unreadable_kept_line_is_weighed_again_not_fatal(self):
         with tempfile.TemporaryDirectory() as d:
