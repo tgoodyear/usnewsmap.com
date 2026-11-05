@@ -121,9 +121,11 @@ pub fn record_paths(pages: &Path, job_id: &str, doc_id: &str) -> anyhow::Result<
     };
     let mut files = Vec::new();
     for entry in entries {
-        let path = entry?.path();
-        // `record_page` stages through temporary files in the same directory.
-        if path.extension().is_some_and(|x| x == "json") {
+        let entry = entry?;
+        let path = entry.path();
+        // `record_page` writes regular files, staging them through
+        // temporary files in the same directory.
+        if entry.file_type()?.is_file() && path.extension().is_some_and(|x| x == "json") {
             files.push(path);
         }
     }
@@ -148,10 +150,11 @@ pub fn accepted_readings(
         if page.status != "accepted" {
             continue;
         }
-        let path = pages
-            .join(&job.id)
-            .join(&page.doc_id)
-            .join(&page.records[0]);
+        let first = page
+            .records
+            .first()
+            .with_context(|| format!("{}: accepted with no record", page.doc_id))?;
+        let path = pages.join(&job.id).join(&page.doc_id).join(first);
         let record: serde_json::Value = serde_json::from_slice(&read(&path, MAX_RECORD)?)
             .with_context(|| format!("{}", path.display()))?;
         anyhow::ensure!(
@@ -161,14 +164,19 @@ pub fn accepted_readings(
         );
         let side = record["results"]
             .as_array()
+            .filter(|sides| sides.len() == 2)
             .and_then(|sides| {
                 sides
                     .iter()
-                    .filter_map(|s| s["result"].as_str().map(|name| (name, s)))
-                    .min_by_key(|(name, _)| *name)
+                    .map(|s| s["result"].as_str().map(|name| (name, s)))
+                    .collect::<Option<Vec<_>>>()
             })
+            .and_then(|sides| sides.into_iter().min_by_key(|(name, _)| *name))
             .map(|(_, s)| s)
-            .with_context(|| format!("{}: no named side", path.display()))?;
+            .with_context(|| format!("{}: not two named sides", path.display()))?;
+        let device = side["device"]
+            .as_str()
+            .with_context(|| format!("{}: the agreeing side has no device", path.display()))?;
         anyhow::ensure!(
             side["outcome"] == serde_json::to_value(Outcome::Ok)?,
             "{}: the agreeing side did not run to the end",
@@ -188,7 +196,7 @@ pub fn accepted_readings(
         let readings = Readings {
             v: VERSION,
             job_id: job.id.clone(),
-            device: side["device"].as_str().unwrap_or_default().to_owned(),
+            device: device.to_owned(),
             diag: BTreeMap::new(),
             model: side["model"].as_str().map(str::to_owned),
             outcome: Outcome::Ok,
@@ -416,6 +424,22 @@ pub(crate) mod tests {
         let kept =
             accepted_readings(&root, &units(&root).join("bundle-00001"), &job, &pages).unwrap();
         assert!(kept[DOCS[0]].readings.iter().all(|r| r.text == "first"));
+        // A side with no device is refused, and a directory is not a record.
+        record["results"][1]
+            .as_object_mut()
+            .unwrap()
+            .remove("device");
+        std::fs::write(&record_path, serde_json::to_vec(&record).unwrap()).unwrap();
+        let err =
+            accepted_readings(&root, &units(&root).join("bundle-00001"), &job, &pages).unwrap_err();
+        assert!(err.to_string().contains("no device"), "{err:#}");
+        let stray = record_path.with_file_name("stray.json");
+        std::fs::create_dir(&stray).unwrap();
+        assert_eq!(
+            record_paths(&pages, &job.id, DOCS[0]).unwrap(),
+            std::slice::from_ref(&record_path)
+        );
+        std::fs::remove_dir(&stray).unwrap();
         std::fs::write(&record_path, &original).unwrap();
         assert_eq!(
             ledger[1].page_job_id.as_deref(),

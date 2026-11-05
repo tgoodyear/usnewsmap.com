@@ -362,6 +362,9 @@ impl Cache {
                 field_bytes(&mut salt, dir.as_os_str().as_encoded_bytes());
                 let unit = path.parent().context("Qwen unit directory")?;
                 let membership = unit.join(crate::qwen::stage::MEMBERSHIP_FILE);
+                // Every member job the membership names is in the key, valid
+                // or not: whether the ledger accepts the membership depends on
+                // those files (`check_sources`), so mending one must re-key.
                 if let Some(m) = crate::read(&membership, MAX_MEMBERSHIP)
                     .ok()
                     .and_then(|b| serde_json::from_slice::<Membership>(&b).ok())
