@@ -129,6 +129,131 @@ class BoincDb {
             "assignments": 0,
         }
 
+    def bundle(self, number, languages, campaign="qwen-nonenglish-v1"):
+        """A unit as `qwen stage --bundle-size` stages it: each page's own unit under pages/<doc>,
+        the bundle under units/bundle-<n>-<first doc> with its pages end to end in page.jpg."""
+        root = self.root / "qwen" / campaign
+        pages, blob, members = [], b"", []
+        for i, language in enumerate(languages):
+            doc = f"bundled-page-{number}-{i}"
+            page = b"immutable JPEG fixture bytes-" + doc.encode()
+            crops = [{"id": "c01", "loc_text": "א" * 4096, "rect": [0, 0, 8, 8], "stratum": "body"},
+                     {"id": "c02", "loc_text": "line", "rect": [0, 8, 8, 16], "stratum": "body"}]
+            single = {"doc_id": doc, "id": f"{number:032x}{i:032x}", "v": 1, "prompt_version": 1,
+                      "max_tokens_per_1000px2": 4, "group": campaign, "language": language,
+                      "engine": dict(R.ENGINE, models=R.MODELS),
+                      "input": {"bytes": len(page), "sha256": R.sha(page), "source": "page.jpg"}, "crops": crops}
+            raw = json.dumps(single).encode()
+            staged = root / "pages" / doc
+            staged.mkdir(parents=True)
+            (staged / "qwen.json").write_bytes(raw)
+            (staged / "page.jpg").write_bytes(page)
+            (staged / "sample.json").write_text(json.dumps({"doc_id": doc, "lang": language, "damage_rate": 0.5}))
+            quality = self.root / "quality" / campaign / "pages" / doc
+            quality.mkdir(parents=True)
+            (quality / "quality.json").write_text(json.dumps(
+                {"doc_id": doc, "language": language, "inputs": {
+                    "page": {"bytes": len(page), "sha256": R.sha(page)}, "alto": {"sha256": "c" * 64}}}))
+            texts = self.root / "quality" / campaign / "texts"
+            texts.mkdir(parents=True, exist_ok=True)
+            (texts / (doc + ".loc-provenance.json")).write_text(json.dumps({
+                "doc_id": doc, "archive": "ordinary-source.tar.bz2", "member": doc + "/ocr.xml",
+                "archive_bytes": 1000000, "sha256": "c" * 64}))
+            pages.append({"crops": crops, "doc_id": doc, "group": campaign, "language": language,
+                          "input": {"bytes": len(page), "offset": len(blob), "sha256": R.sha(page),
+                                    "source": "page.jpg"}})
+            members.append({"doc_id": doc, "unit": doc, "job_id": single["id"], "job_sha256": R.sha(raw),
+                            "page_sha256": R.sha(page), "offset": len(blob), "bytes": len(page)})
+            blob += page
+        job_id = f"{number:064x}"
+        job = {"doc_id": pages[0]["doc_id"], "id": job_id, "v": 1, "prompt_version": 1,
+               "max_tokens_per_1000px2": 4, "group": campaign, "language": languages[0],
+               "engine": dict(R.ENGINE, models=R.MODELS),
+               "input": {"bytes": len(blob), "sha256": R.sha(blob), "source": "bundle:page.jpg"},
+               "crops": [dict(crop, id=page["doc_id"] + ":" + crop["id"]) for page in pages for crop in page["crops"]],
+               "pages": pages}
+        raw = json.dumps(job).encode()
+        unit = root / "units" / f"bundle-{number:05}-{job['doc_id']}"
+        unit.mkdir(parents=True)
+        (unit / "membership.json").write_text(json.dumps(
+            {"v": 1, "job_id": job_id, "page_sha256": R.sha(blob), "pages": members}))
+        for name, value in (("qwen.json", raw), ("page.jpg", blob), ("submitted", ("usnm_qwen_" + job_id).encode())):
+            (unit / name).write_bytes(value)
+        download = self.project / "download"
+        download.mkdir(exist_ok=True)
+        job_name, page_name = str(number) + "_qwen_json", str(number) + "_page_jpg"
+        (download / job_name).write_bytes(raw)
+        (download / page_name).write_bytes(blob)
+        self.audit[job_id] = {"workunit_id": number, "job_sha256": R.sha(raw),
+                              "batch": 8, "min_quorum": 2, "target_nresults": 2}
+        row = copy.deepcopy(self.rows[0])
+        row["unit"].update(id=number, name="usnm_qwen_" + job_id, xml_doc="".join(
+            "<file_info><name>" + name + "</name><url>https://example.test/usnmocr_download/" + name
+            + "</url></file_info>" for name in (job_name, page_name)))
+        row["results"] = [dict(result, id=number * 2 + i) for i, result in enumerate(row["results"])]
+        return row
+
+    def test_a_bundle_binds_every_page_to_its_slice_and_source_evidence(self):
+        row = self.bundle(200, ["yid", "srp", "yid"])
+        key = row["unit"]["name"].removeprefix("usnm_qwen_")
+        # A crashed staging run's partial bundle of the same first page is no second binding.
+        unit = next((self.root / "qwen/qwen-nonenglish-v1/units").glob("bundle-*"))
+        (unit.parent / ("bundle-00201-" + unit.name.split("-", 2)[2])).mkdir()
+        proof = R.bind_inputs(self.project, row, key, self.audit[key])
+        self.assertEqual((proof["doc_id"], proof["crops"], proof["accuracy_established"]),
+                         ("bundled-page-200-0", 6, False))
+        self.assertEqual([page["doc_id"] for page in proof["pages"]],
+                         ["bundled-page-200-0", "bundled-page-200-1", "bundled-page-200-2"])
+        self.assertEqual(proof["pages"][1]["page_sha256"], R.sha(b"immutable JPEG fixture bytes-bundled-page-200-1"))
+        self.assertEqual(proof["pages"][2]["source_quality"]["damage_rate"], 0.5)
+        self.assertIsNotNone(R.exclusion_key(self.project, row, key, self.audit[key], "qwen-nonenglish-v1", 1))
+        pages = self.root / "qwen/qwen-nonenglish-v1/pages"
+        provenance = self.root / "quality/qwen-nonenglish-v1/texts/bundled-page-200-2.loc-provenance.json"
+        membership = unit / "membership.json"
+
+        def swap_slices(path):
+            record = json.loads(path.read_bytes())
+            record["pages"][0]["offset"], record["pages"][1]["offset"] = (
+                record["pages"][1]["offset"], record["pages"][0]["offset"])
+            path.write_text(json.dumps(record))
+
+        for path, damage, message in (
+            (provenance, lambda path: path.write_text(json.dumps(json.loads(path.read_bytes()) | {"sha256": "d" * 64})),
+             "archive-provenance"),
+            (pages / "bundled-page-200-1/qwen.json", lambda path: path.write_bytes(path.read_bytes() + b"\n"),
+             "differs from its staged job"),
+            (membership, swap_slices, "membership mismatch"),
+            (unit / "submitted", lambda path: path.write_text("usnm_qwen_other"), "submission mismatch"),
+        ):
+            original = path.read_bytes()
+            damage(path)
+            with self.assertRaisesRegex(ValueError, message) as caught:
+                R.bind_inputs(self.project, row, key, self.audit[key])
+            self.assertNotIsInstance(caught.exception, R.OutOfCohort)
+            path.write_bytes(original)
+        # Two complete bundles of one job leave no single producer unit to bind.
+        twin = unit.parent / ("bundle-00202-" + unit.name.split("-", 2)[2])
+        shutil.copytree(unit, twin)
+        with self.assertRaisesRegex(ValueError, "ambiguous"):
+            R.bind_inputs(self.project, row, key, self.audit[key])
+        shutil.rmtree(twin)
+        self.assertEqual(R.bind_inputs(self.project, row, key, self.audit[key]), proof)
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_a_bundle_with_a_page_outside_the_cohort_is_passed_over_whole(self):
+        self.audit.clear()
+        self.rows[:] = [self.bundle(100, ["yid", "spa"]), self.bundle(101, ["srp", "yid"])]
+        (self.root / "qwen/qwen-nonenglish-v1/audit.json").write_text(json.dumps(self.audit))
+        (self.project / "database.json").write_text(json.dumps(self.rows))
+        with patch.object(R, "read_database", return_value=self.database):
+            receipt = R.run(self.args)
+        self.assertEqual((receipt["status"], receipt["target"], receipt["out_of_cohort_skipped"]),
+                         ("refilled-finite-window", [101, 101], [100]))
+        self.assertEqual([page["doc_id"] for page in receipt["inputs"][0]["pages"]],
+                         ["bundled-page-101-0", "bundled-page-101-1"])
+        state = json.loads((self.project / "ops-issue-559/qwen-auto-cohort/state.json").read_bytes())
+        self.assertEqual((state["admitted"], list(state["out_of_cohort"])), ([101], ["100"]))
+
     def test_selects_oldest_contiguous_pristine_prefix_without_crossing_reservation(self):
         rows = [self.input(i) for i in range(100, 115)]
         self.assertEqual(len(R.choose(rows, 100, None, 500)), 10)
