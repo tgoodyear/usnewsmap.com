@@ -45,6 +45,7 @@ impl Service {
     /// Read a published image without admitting a new render.
     pub(super) async fn lookup(&self, key: &str, persistent: Persistent) -> Option<Vec<u8>> {
         if let Some(image) = self.images.get(key).await {
+            persist(&image, persistent).await;
             return Some(image.body.clone());
         }
         let (store, path) = persistent?;
@@ -97,35 +98,39 @@ impl Service {
                 }))
             })
             .await?;
-        if let Some((store, path)) = persistent {
-            if !image.stored.load(Ordering::Acquire) {
-                match tokio::time::timeout(STORE_TIMEOUT, async {
-                    if store
+        persist(&image, persistent).await;
+        Ok(image.body.clone())
+    }
+}
+
+async fn persist(image: &Image, persistent: Persistent) {
+    if let Some((store, path)) = persistent {
+        if !image.stored.load(Ordering::Acquire) {
+            match tokio::time::timeout(STORE_TIMEOUT, async {
+                if store
+                    .put_new(&path, image.body.clone(), "image/png")
+                    .await?
+                    || read(store.as_ref(), &path).await.is_some()
+                    || store
                         .put_new(&path, image.body.clone(), "image/png")
                         .await?
-                        || read(store.as_ref(), &path).await.is_some()
-                        || store
-                            .put_new(&path, image.body.clone(), "image/png")
-                            .await?
-                    {
-                        image.stored.store(true, Ordering::Release);
-                    } else {
-                        tracing::warn!("search preview persistence conflict remains unresolved");
-                    }
-                    Ok::<_, usnm_store::StoreError>(())
-                })
-                .await
                 {
-                    Ok(Ok(())) => {}
-                    // Store errors can contain the query-derived filename.
-                    Ok(Err(_)) => {
-                        tracing::warn!("search preview persistence failed");
-                    }
-                    Err(_) => tracing::warn!("search preview persistence timed out"),
+                    image.stored.store(true, Ordering::Release);
+                } else {
+                    tracing::warn!("search preview persistence conflict remains unresolved");
                 }
+                Ok::<_, usnm_store::StoreError>(())
+            })
+            .await
+            {
+                Ok(Ok(())) => {}
+                // Store errors can contain the query-derived filename.
+                Ok(Err(_)) => {
+                    tracing::warn!("search preview persistence failed");
+                }
+                Err(_) => tracing::warn!("search preview persistence timed out"),
             }
         }
-        Ok(image.body.clone())
     }
 }
 
@@ -246,6 +251,33 @@ mod tests {
             body
         );
         assert_eq!(store.get(path).await.unwrap().unwrap(), body);
+    }
+
+    #[tokio::test]
+    async fn cache_only_lookups_retry_failed_publication_without_rendering() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("store");
+        tokio::fs::write(&root, b"temporarily unavailable")
+            .await
+            .unwrap();
+        let store: Arc<dyn ObjectStore> = Arc::new(usnm_store::LocalStore::new(&root));
+        let path = "search-preview/0123456789abcdef/custom.png";
+        let persistent = || Some((store.clone(), path.to_owned()));
+        let service = Service::default();
+        let body = image();
+        service
+            .get(path.to_owned(), persistent(), false, async {
+                Ok(body.clone())
+            })
+            .await
+            .unwrap();
+        tokio::fs::remove_file(&root).await.unwrap();
+        tokio::fs::create_dir(&root).await.unwrap();
+        assert_eq!(service.lookup(path, persistent()).await.unwrap(), body);
+        assert_eq!(store.get(path).await.unwrap().unwrap(), body);
+        let restarted = Service::default();
+        assert_eq!(restarted.lookup(path, persistent()).await.unwrap(), body);
+        assert!(restarted.lookup("missing.png", None).await.is_none());
     }
 
     #[tokio::test]
