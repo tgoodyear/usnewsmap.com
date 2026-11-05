@@ -256,6 +256,47 @@ class SampleTests(unittest.TestCase):
         problems = rewrite(lines[0] + "".join(lines[:1] + lines[2:]))
         self.assertTrue(any("appears twice" in p for p in problems), problems)
 
+    def test_check_requires_every_allocated_page(self):
+        out, records, summary = self.run_sampler(self.fixture.write())
+        dropped = next(r for r in records if r["sample"] == "ger" and r["decade"] == 1870)
+        kept = [r for r in records if r is not dropped]
+        (out / sample.PAGES).write_text("".join(json.dumps(r, sort_keys=True) + "\n" for r in kept))
+        ger = summary["samples"]["ger"]
+        ger["decades"]["1870"]["selected"] -= 1
+        next(st for st in ger["strata"] if (st["decade"], st["lccn"]) == (1870, dropped["lccn"]))["selected"] -= 1
+        ger["selected"] -= 1
+        ger["shortfall"] += 1
+        summary["pages"] -= 1
+        (out / sample.SUMMARY).write_text(sample.canonical(summary))
+        sums = {line.split("  ")[1]: line for line in (out / sample.SUMS).read_text().splitlines()}
+        for name in (sample.PAGES, sample.SUMMARY):
+            sums[name] = f"{sample.sha256_file(out / name)}  {name}"
+        (out / sample.SUMS).write_text("".join(sums[n] + "\n" for n in sorted(sums)))
+        problems = sample.check(out, self.root / "spec.json")
+        self.assertIn("summary.json: ger 1870s: allocation or selected count does not add up", problems)
+        self.assertIn(f"summary.json: ger 1870s {dropped['lccn']}: selected count does not add up", problems)
+
+    def test_a_scan_shared_across_samples_stays_with_the_page_with_the_lower_key(self):
+        def key(r):
+            return sample.selection_key(SPEC["seed"], r["doc_id"])
+
+        sides = {s["doc_id"]: s for s in self.fixture.sides}
+        dan = [r for r in self.fixture.rows if r["lang"] == "dan" and r["date"] < "1900"]
+        ger = [r for r in self.fixture.rows if r["date"].startswith("187") and r["doc_id"] not in self.fixture.twins]
+        for lower in ("ger", "dan"):
+            d, g = next((d, g) for d in dan for g in ger if (key(g) < key(d)) == (lower == "ger"))
+            keep, lose = (g, d) if lower == "ger" else (d, g)
+            shared = sides[keep["doc_id"]]["sha256"]
+            changed = [dict(s, sha256=shared) if s["doc_id"] == lose["doc_id"] else s for s in self.fixture.sides]
+            _, records, summary = self.run_sampler(self.fixture.write(sides=changed), out=lower)
+            dups = {
+                name: sum(summary["samples"][name]["excluded"].get("duplicate_image", {}).values())
+                for name in ("dan", "ger")
+            }
+            # The fixture's German twin pair already accounts for one German duplicate.
+            self.assertEqual(dups, {"dan": 1, "ger": 1} if lower == "ger" else {"dan": 0, "ger": 2}, lower)
+            self.assertNotIn(lose["doc_id"], {r["doc_id"] for r in records})
+
     @unittest.skipUnless(importlib.util.find_spec("pyarrow"), "needs pyarrow (CI installs it)")
     def test_reads_the_prefetch_manifest_parquet(self):
         import datetime

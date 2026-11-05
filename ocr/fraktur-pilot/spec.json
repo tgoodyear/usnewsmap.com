@@ -41,7 +41,7 @@
         1910
       ],
       "lang": "dan",
-      "rationale": "The German question's period, ending in 1919, from the first decade with damaged Danish pages in the frame (the 1860s). The question for Danish, Finnish and Lithuanian is whether blackletter is used on our pages and how much a Fraktur model helps, not a precise prevalence: if a reader finds no blackletter on 100 pages, the frame's share is below about 3% at 95% (the rule of three), and a share near one half is measured to about 10 points either way. 100 pages per language keeps the three languages together at under a third of the German sample's reading. This is a screening size, not a representative minimum, and estimates hold only for the damaged, cached frame.",
+      "rationale": "The German question's period, ending in 1919, from the first decade with damaged Danish pages in the frame (the 1860s). The question for Danish, Finnish and Lithuanian is whether blackletter is used on our pages and how much a Fraktur model helps, not a precise prevalence. 100 pages per language keeps the three languages together at under a third of the German sample's reading. Were the 100 pages a simple random sample of the frame, a reader finding no blackletter would put the frame's share below about 3% at 95% (the rule of three), and a share near one half would be measured to about 10 points either way. They are not: equal decade and title shares give the pages unequal design weights, which widen both bounds, and an estimate for the frame must use the weights that summary.json records. This is a screening size, not a representative minimum, and estimates hold only for the damaged, cached frame.",
       "size": 100
     },
     "fin": {
@@ -50,7 +50,7 @@
         1910
       ],
       "lang": "fin",
-      "rationale": "The German question's period, ending in 1919; damaged Finnish pages start in the 1900s. Most Finnish pages are from the 1920s and later, which this sample leaves out: they are outside the question's period, and a sample of them would be a separate declared draw. The size follows the Danish rationale: 100 pages bound a nil finding below about 3% at 95%; a screening size, not a representative minimum.",
+      "rationale": "The German question's period, ending in 1919; damaged Finnish pages start in the 1900s. Most Finnish pages are from the 1920s and later, which this sample leaves out: they are outside the question's period, and a sample of them would be a separate declared draw. The size follows the Danish rationale: a screening size, not a representative minimum, whose unequal design weights make its bounds wider than those of a simple random sample of 100 pages.",
       "size": 100
     },
     "ger": {
@@ -64,7 +64,7 @@
         1910
       ],
       "lang": "ger",
-      "rationale": "The issue's bounded task: about 1,000 German pages spanning each decade from 1850 to 1919. Equal decade allocation gives each decade the same precision (with 143 pages, about 8 points either way at 95% for a share near one half, before design effects), so a change of typeface over time can be seen. Equal title allocation within a decade spreads the pages over as many titles as possible, because a paper's printer chose its typeface, not each page.",
+      "rationale": "The issue's bounded task: about 1,000 German pages spanning each decade from 1850 to 1919. Equal decade allocation gives each decade the same number of pages, so a change of typeface over time can be seen: 143 pages would measure a share near one half to about 8 points either way at 95% as a simple random sample, and the equal title shares' unequal design weights widen that. Equal title allocation within a decade spreads the pages over as many titles as possible, because a paper's printer chose its typeface, not each page.",
       "size": 1000
     },
     "lit": {
@@ -72,7 +72,7 @@
         1910
       ],
       "lang": "lit",
-      "rationale": "The German question's period, ending in 1919; damaged Lithuanian pages start in the 1910s. The two 1940s Dirva pages (sn83035604) named on the issue are outside this era and are not a substitute for it. The size follows the Danish rationale: 100 pages bound a nil finding below about 3% at 95%; a screening size, not a representative minimum.",
+      "rationale": "The German question's period, ending in 1919; damaged Lithuanian pages start in the 1910s. The two 1940s Dirva pages (sn83035604) named on the issue are outside this era and are not a substitute for it. The size follows the Danish rationale: a screening size, not a representative minimum, whose unequal design weights make its bounds wider than those of a simple random sample of 100 pages.",
       "size": 100
     }
   },

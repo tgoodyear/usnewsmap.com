@@ -244,11 +244,13 @@ def draw(spec, rows, sidecars, audit, listing):
             excluded[name][reason][decade] += 1
             continue
         eligible[name].append((selection_key(seed, row["doc_id"]), decade, row, scan))
-    # A scan shared by two pages counts once: the page with the lower key keeps it.
+    # A scan shared by two pages counts once, in any samples: the page with the lower key keeps it.
     first = {}
     for name in spec["samples"]:
-        for key, decade, row, scan in sorted(eligible[name], key=lambda e: e[0]):
-            first.setdefault(scan["scan_sha256"], key)
+        for key, decade, row, scan in eligible[name]:
+            sha = scan["scan_sha256"]
+            if sha not in first or key < first[sha]:
+                first[sha] = key
     records, samples = [], {}
     for name, s in spec["samples"].items():
         strata = defaultdict(list)
@@ -401,14 +403,22 @@ def check(out, spec_path):
         declared = by_name[name]
         if s["size"] != declared["size"] or [int(d) for d in s["decades"]] != declared["decades"]:
             problems.append(f"{SUMMARY}: {name}'s size or decades differ from the spec")
+            continue
         caps = {int(d): v["eligible"] for d, v in s["decades"].items()}
         alloc = allocate(declared["size"], declared["decades"], caps)
         for d, v in s["decades"].items():
-            if v["allocated"] != alloc[int(d)] or v["selected"] != counts[(name, int(d))]:
+            n = counts[(name, int(d))]
+            if v["allocated"] != alloc[int(d)] or v["selected"] != n or n != alloc[int(d)]:
                 problems.append(f"{SUMMARY}: {name} {d}s: allocation or selected count does not add up")
-        for st in s["strata"]:
-            if st["selected"] != strata[(name, st["decade"], st["lccn"])] or st["selected"] > st["eligible"]:
-                problems.append(f"{SUMMARY}: {name} {st['decade']}s {st['lccn']}: selected count does not add up")
+        for d in declared["decades"]:
+            listed = {st["lccn"]: st for st in s["strata"] if st["decade"] == d}
+            titles = sorted(listed, key=lambda t: (title_key(spec["seed"], t), t))
+            title_alloc = allocate(alloc[d], titles, {t: listed[t]["eligible"] for t in titles})
+            if sum(st["eligible"] for st in listed.values()) != caps[d]:
+                problems.append(f"{SUMMARY}: {name} {d}s: the strata's eligible pages do not add up")
+            for t, st in listed.items():
+                if not st["selected"] == strata[(name, d, t)] == title_alloc[t]:
+                    problems.append(f"{SUMMARY}: {name} {d}s {t}: selected count does not add up")
         if s["selected"] != sum(counts[(name, d)] for d in declared["decades"]) or s["shortfall"] != s["size"] - s["selected"]:
             problems.append(f"{SUMMARY}: {name}'s selected total does not add up")
     if summary["pages"] != len(lines):

@@ -2,19 +2,23 @@
 """Dry run of the paired deu_latf/deu Fraktur pilot (#325) on a frozen manifest. Runs nothing.
 
     plan.py --pages ocr/fraktur-pilot/pages.jsonl --sample ger \\
-        --tesseract-image sha256:<image id> --scans-root /tank/ocr/scans --work-root <dir> \\
+        --tesseract-image sha256:<image id> --scans-root /tank/ocr/scans --work-root <new dir> \\
         [--variants deu_latf,deu] [--verify-scans] [--commands-out run.sh] [--jobs-out jobs.jsonl]
 
 Prints what the run would be (pages, jobs per variant and decade, scan bytes, the models'
 pinned digests) and, with --commands-out, writes the shell commands an OCR operator would
-run: per page and variant, copy the cached scan into its own work directory and read it with
+run: per page and variant, copy the cached scan into a new work directory and read it with
 the production Tesseract image the way the on-prem worker does (podman with no network, a
-read-only root, no capabilities, `-l <variant> --psm 3 --dpi 300 txt alto`), keeping stdout,
-stderr, the exit status and the start and end times beside the outputs, so failures and
-empty outputs stay in the record, and removing the scan's copy after the job. The script
-needs bash 5 (for EPOCHREALTIME) and timeout. Each page's variants are adjacent, so a partial
-run stays paired. --jobs-out writes the same jobs as JSONL. --verify-scans re-reads each scan
-under --scans-root and checks its size and sha256 against the manifest.
+read-only root, no capabilities, `-l <variant> --psm 3 --dpi 300 txt alto`). Each job keeps
+stdout, stderr, the exit status (`copy-failed` when the scan could not be staged) and its
+start and end times beside the outputs, so failures and empty outputs stay in the record, and
+the scan's copy is removed after it. timeout stops a job after --timeout seconds and kills it
+30 seconds later; the job's named container is then removed, and on an interrupt too. The
+script refuses a work root that exists, so one run's outputs are never mixed with another's,
+and needs bash 5 (for EPOCHREALTIME) and timeout. Each page's variants are adjacent, so a
+partial run stays paired. --jobs-out writes the same jobs as JSONL. --verify-scans re-reads
+each scan under --scans-root and checks its size and sha256 against the manifest. Both roots
+must be absolute paths.
 
 It enqueues nothing, starts no container and makes no network request. Running the commands
 is the operator's step, after the compute is authorized.
@@ -97,28 +101,55 @@ def jobs(pages, variants, scans_root, work_root):
             }
 
 
-def command(job, image, threads, timeout):
-    q = shlex.quote
-    work = job["work"]
+# Kill an engine that ignores SIGTERM this long after the timeout.
+KILL_AFTER = 30
+
+# The generated script's prologue. Each job gets a fresh work directory; staging failures,
+# engine failures and timeouts are all recorded in its exit file, and its container is removed
+# even when timeout had to kill the podman client or the run is interrupted.
+JOB = r"""current=
+trap 'if [ -n "$current" ]; then podman rm --force --ignore --time 0 "$current" > /dev/null 2>&1; fi; exit 130' INT TERM
+# job <work dir> <scan> <input name> <container name> <podman run arguments...>
+job() {
+  local work=$1 scan=$2 input=$3 name=$4 t0 status
+  shift 4
+  mkdir -p -- "${work%/*}" && mkdir -- "$work" || { echo "cannot create $work" >&2; exit 1; }
+  t0=$EPOCHREALTIME
+  if cp -- "$scan" "$work/$input" 2> "$work/stderr"; then
+    current=$name
+    timeout --kill-after="$KILL_AFTER" "$TIMEOUT" podman run --name "$name" "$@" > "$work/stdout" 2> "$work/stderr"
+    status=$?
+    podman rm --force --ignore --time 0 "$name" > /dev/null 2>&1
+    current=
+  else
+    status=copy-failed
+  fi
+  echo "$status" > "$work/exit"
+  echo "$t0 $EPOCHREALTIME" > "$work/time"
+  rm -f -- "$work/$input"
+}"""
+
+
+def container_name(job):
+    return "fraktur-pilot-" + re.sub(r"[^A-Za-z0-9_.-]", "_", f"{job['sample']}-{job['doc_id']}-{job['variant']}")
+
+
+def command(job, image, threads):
     podman = [
-        "podman", "run", "--rm", "--pull=never", "--network=none", "--read-only",
+        "--rm", "--pull=never", "--network=none", "--read-only",
         "--cap-drop=all", "--security-opt=no-new-privileges", "--log-driver=none",
         "--env", f"OMP_THREAD_LIMIT={threads}", "--entrypoint", "tesseract",
-        "--userns=keep-id", "--user", "$(id -u):$(id -g)",
-        "--volume", f"{work}:/work:Z", "--workdir", "/work", image,
+        "--userns=keep-id", "--user", "$user",
+        "--volume", f"{job['work']}:/work:Z", "--workdir", "/work", image,
         job["input"], "page", "-l", job["variant"], "--psm", str(PSM), "--dpi", str(DPI), "txt", "alto",
     ]
-    run = " ".join(a if a.startswith("$(") else q(a) for a in podman)
-    return (
-        f"mkdir -p {q(work)} && cp {q(job['scan'])} {q(work + '/' + job['input'])} && "
-        f"{{ t0=$EPOCHREALTIME; timeout {timeout} {run} > {q(work + '/stdout')} 2> {q(work + '/stderr')}; "
-        f"echo $? > {q(work + '/exit')}; echo \"$t0 $EPOCHREALTIME\" > {q(work + '/time')}; "
-        f"rm -f {q(work + '/' + job['input'])}; }}"
-    )
+    head = [job["work"], job["scan"], job["input"], container_name(job)]
+    return "job " + " ".join('"$user"' if a == "$user" else shlex.quote(a) for a in head + podman)
 
 
 def script(job_list, image, threads, timeout, pages_path, pages_sha256, work_root):
     q = shlex.quote
+    root = str(work_root)
     lines = [
         "#!/usr/bin/env bash",
         "# Written by scripts/fraktur-pilot/plan.py, a dry run: nothing here has run. The Fraktur",
@@ -127,10 +158,14 @@ def script(job_list, image, threads, timeout, pages_path, pages_sha256, work_roo
         f"# Pages: {pages_path} (sha256 {pages_sha256}); image {image}.",
         "set -u",
         '[ -n "${EPOCHREALTIME:-}" ] || { echo "run this with bash 5 or later (EPOCHREALTIME)" >&2; exit 1; }',
-        f"mkdir -p {q(str(work_root))} && podman run --rm --pull=never --network=none --entrypoint tesseract "
-        f"{q(image)} --version > {q(str(work_root) + '/engine-version')} 2>&1",
+        f"TIMEOUT={timeout} KILL_AFTER={KILL_AFTER} user=$(id -u):$(id -g)",
+        JOB,
+        f"if [ -e {q(root)} ]; then echo {q(root + ' exists: write the run to a fresh work root')} >&2; exit 1; fi",
+        f"mkdir -p -- {q(root)} || exit 1",
+        f"podman run --rm --pull=never --network=none --entrypoint tesseract {q(image)} --version "
+        f"> {q(root + '/engine-version')} 2>&1",
     ]
-    lines += [command(j, image, threads, timeout) for j in job_list]
+    lines += [command(j, image, threads) for j in job_list]
     return "\n".join(lines) + "\n"
 
 
@@ -148,6 +183,9 @@ def main(argv=None):
     parser.add_argument("--commands-out", type=Path, help="write the run's shell commands here")
     parser.add_argument("--jobs-out", type=Path, help="write the jobs as JSONL here")
     args = parser.parse_args(argv)
+    for flag, path in (("--scans-root", args.scans_root), ("--work-root", args.work_root)):
+        if not path.is_absolute():
+            parser.error(f"{flag} must be an absolute path: podman mounts the work directories by it")
     if not IMAGE_ID.match(args.tesseract_image):
         parser.error("--tesseract-image must be an image id, sha256:<64 hex>, as the worker requires")
     variants = [v for v in args.variants.split(",") if v]
