@@ -120,9 +120,9 @@ case "$KIND" in
       [ -d "$BUILD_DIR" ] || die "--build-dir must be a directory"
       BUILD_DIR=$(python3 -c 'import pathlib,sys; print(pathlib.Path(sys.argv[1]).resolve())' "$BUILD_DIR")
       BINARY=$BUILD_DIR/usnm_ocr
-      shopt -s nullglob
+      shopt -s nullglob dotglob
       build_files=("$BUILD_DIR"/*)
-      shopt -u nullglob
+      shopt -u nullglob dotglob
       [ "${#build_files[@]}" -gt 0 ] || die "--build-dir is empty: it must hold usnm_ocr, usnm_native_build.json and the files the manifest lists"
       for build_file in "${build_files[@]}"; do
         [ -f "$build_file" ] && [ ! -L "$build_file" ] || die "--build-dir must hold only regular files: ${build_file##*/}"

@@ -42,7 +42,10 @@ def locked_models(lock: Path) -> dict[str, str]:
             raise ValueError(f"model outside tessdata in {lock}: {fields[0]}")
         if not re.fullmatch(r"[0-9a-f]{64}", fields[2]):
             raise ValueError(f"not a sha256 in {lock}: {fields[0]} {fields[2]}")
-        models[MODEL_PREFIX + fields[0].removeprefix("tessdata/")] = fields[2]
+        name = MODEL_PREFIX + fields[0].removeprefix("tessdata/")
+        if name in models:
+            raise ValueError(f"model locked twice in {lock}: {fields[0]}")
+        models[name] = fields[2]
     if not models:
         raise ValueError(f"no models in {lock}")
     return models
@@ -135,8 +138,8 @@ def main(argv: list[str] | None = None) -> int:
     extras = {}
     for spec in a.extra_file:
         logical, sep, path = spec.partition("=")
-        if not sep or logical in extras:
-            ap.error(f"--extra-file must be LOGICAL=PATH, each logical name once: {spec}")
+        if not sep or not logical or not path or logical in extras:
+            ap.error(f"--extra-file must be LOGICAL=PATH, both non-empty, each logical name once: {spec}")
         extras[logical] = Path(path)
     try:
         image, base = check(a.binary, extras, a.models_lock, a.engine_containerfile)

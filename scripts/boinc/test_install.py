@@ -505,6 +505,9 @@ class InstallTest(unittest.TestCase):
         worker, build, _ = self.native_ocr_build()
         empty = self.root / "empty"
         empty.mkdir()
+        hidden = self.root / "hidden"
+        (hidden / ".cache").mkdir(parents=True)
+        (hidden / "usnm_ocr").write_bytes(b"worker")
         base = ["--env", "prod", "--version", "1.0", "--signing-host", "signhost"]
         for args, expected_err in (
             (["--app", "usnm_quality", "--kind", "native", "--build-dir", str(build)],
@@ -527,6 +530,8 @@ class InstallTest(unittest.TestCase):
              "--build-dir must hold only regular files: "),
             (["--app", "usnm_gold_native", "--kind", "native", "--build-dir", str(empty)],
              "--build-dir is empty: it must hold usnm_ocr, usnm_native_build.json"),
+            (["--app", "usnm_gold_native", "--kind", "native", "--build-dir", str(hidden)],
+             "--build-dir must hold only regular files: .cache"),
         ):
             with self.subTest(args=args):
                 res = subprocess.run(["bash", str(release), *base, *args], capture_output=True, text=True)

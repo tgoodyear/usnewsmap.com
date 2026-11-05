@@ -115,6 +115,20 @@ class CheckNativeOcrBuild(unittest.TestCase):
             with self.subTest(digest=digest), self.assertRaisesRegex(ValueError, "not a sha256"):
                 module.locked_models(lock)
 
+    def test_refuses_a_lock_that_locks_a_model_twice(self):
+        lock = self.root / "twice.lock"
+        lock.write_text("".join(f"tessdata/eng.traineddata https://example.invalid/eng {c * 64}\n" for c in "ab"))
+        with self.assertRaisesRegex(ValueError, "model locked twice"):
+            module.locked_models(lock)
+
+    def test_an_extra_file_needs_a_name_and_a_path(self):
+        for spec in ("usnm_tesseract", "=" + str(self.build / "usnm_tesseract"), "usnm_tesseract="):
+            argv = ["--binary", str(self.build / "usnm_ocr"), "--extra-file", spec]
+            err = io.StringIO()
+            with self.subTest(spec=spec), contextlib.redirect_stderr(err), self.assertRaises(SystemExit):
+                module.main(argv)
+            self.assertIn("--extra-file must be LOGICAL=PATH, both non-empty", err.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()
