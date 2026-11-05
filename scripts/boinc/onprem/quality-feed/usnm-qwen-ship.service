@@ -7,8 +7,9 @@ ConditionPathExists=/etc/usnm/qwen-feed.env
 [Service]
 Type=oneshot
 Environment=QWEN_MAX_READY=1000
-# QWEN_SHIP_ARGS: --prompt-version, --qwen-root, --qwen-yiddish-root (word-split on purpose), and
-# --qwen-submit-binary usnm-boinc once the server image takes versions 3 and 4 (#1449).
+# QWEN_SHIP_ARGS: --prompt-version, --qwen-root, --qwen-yiddish-root (word-split on purpose),
+# --qwen-submit-binary usnm-boinc once the server image takes versions 3 and 4 (#1449), and
+# --qwen-bundle-size N with a new --qwen-root (#1435).
 EnvironmentFile=/etc/usnm/qwen-feed.env
 ExecStart=/opt/usnm-quality-feed/qwen-throughput/quality-ship.sh --campaign ${CAMPAIGN} --engine-image ${ENGINE_IMAGE} \
   --server-host ${SERVER_HOST} --max-chunks 1 --step-window-minutes 15 --min-free-gb 50 \

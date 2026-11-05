@@ -188,6 +188,32 @@ elif "python3" in args and "-" in args:
                 self.assertEqual(publish[publish.index("--submit-binary") + 1] if expected else None, expected)
                 self.assertEqual(publish.count("--submit-binary"), 1 if expected else 0)
 
+    def test_a_bundle_size_reaches_both_native_calls_for_the_main_root_only(self):
+        # #1435: unset, neither call names a bundle size, so qwen_submit.py stages one page a unit.
+        for extra, langs, expected in (([], "srp\n", None), (["--qwen-bundle-size", "8"], "srp\n", "8"),
+                                       (["--qwen-bundle-size", "32"], "srp\nspa\n", "32"),
+                                       (["--qwen-bundle-size", "8"], "yid\n", None)):
+            with self.subTest(extra=extra, langs=langs):
+                (self.root / "calls.jsonl").unlink(missing_ok=True)
+                result = self.run_ship([*self.GUARDED, *extra], langs=langs)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                native = self.native_calls()
+                self.assertEqual(len(native), 2)
+                for call in native:
+                    self.assertEqual(call.count("--bundle-size"), 1 if expected else 0)
+                    if expected:
+                        self.assertEqual(call[call.index("--bundle-size") + 1], expected)
+                        self.assertEqual(call[call.index("--campaign") + 1], "guard-v3")
+
+    def test_a_bundle_size_is_native_only_and_bounded(self):
+        for extra, native in ((["--qwen-bundle-size", "8"], False), (["--qwen-bundle-size", "1"], True),
+                              (["--qwen-bundle-size", "33"], True), (["--qwen-bundle-size", "08"], True)):
+            with self.subTest(extra=extra, native=native):
+                result = self.run_ship(extra, native=native)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn("--qwen-bundle-size", result.stderr)
+                self.assertFalse((self.root / "calls.jsonl").exists())
+
     def test_stage_and_submit_do_not_wait_for_the_step_window(self):
         # The stage has its own lock on the host, and only native publication reads the clock.
         self.stub("date", "#!/bin/bash\nexit 9\n")
