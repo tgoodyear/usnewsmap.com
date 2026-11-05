@@ -253,9 +253,11 @@ def assert_processed(root, sample):
         if (page / "too_large").exists() and any((page / f).exists() for f in ("rejected-qwen.json", "qwen.json")):
             continue
         if bundled is None:
+            # Only submitted units' jobs are read, not every staged one.
             bundled = set()
-            for path, job in jobs(root / "units"):
-                if job.get("pages") and (path.parent / "submitted").exists():
+            for marker in sorted((root / "units").glob("*/submitted")):
+                path = marker.parent / "qwen.json"
+                if path.exists() and (job := json.loads(path.read_text())).get("pages"):
                     bundled.update(documents(job))
         if doc in bundled:
             continue
@@ -953,8 +955,10 @@ def main():
     if (not a.campaign or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,40}", a.campaign)
             or a.engine_plan is None or a.models is None or not 1 <= a.max_pages <= 500
             or a.max_ready < 2 or not 1 <= a.max_unresolved <= 10000
-            or a.reserve_mib < 64 or a.min_free_gb < 1 or not 1 <= a.bundle_size <= 32):
+            or a.reserve_mib < 64 or a.min_free_gb < 1):
         ap.error("need --campaign, --engine-plan, --models and positive bounded limits")
+    if not 1 <= a.bundle_size <= 32:
+        ap.error("--bundle-size takes 1 to 32 pages a unit")
     root = a.share / "qwen" / a.campaign
     quality = a.share / "quality" / a.campaign
     if a.transaction:

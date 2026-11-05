@@ -433,8 +433,15 @@ pub async fn run_selected(opts: &Options, members: Option<&Path>) -> anyhow::Res
 /// Writes a staged page's `qwen.json`, or, when that would pass
 /// `MAX_JOB_JSON`, keeps it as `rejected-qwen.json` and marks the page
 /// `too_large`: as for an oversized crop text, the evidence is the page's
-/// disposition for the feed. Returns whether the job was written.
+/// disposition for the feed. Returns whether the job was written. Staging
+/// calls it only for a unit with no job or marker yet, and it refuses any
+/// other rather than leave a job beside the marker or replace one.
 fn publish(unit: &Path, job: &Job) -> anyhow::Result<bool> {
+    ensure!(
+        ![JOB_FILE, TOO_LARGE].iter().any(|f| unit.join(f).exists()),
+        "{}: already staged",
+        unit.display()
+    );
     let json = serde_json::to_vec_pretty(job)?;
     if json.len() > MAX_JOB_JSON {
         atomic(&unit.join("rejected-qwen.json"), &json)?;
@@ -1231,6 +1238,18 @@ pub(crate) mod tests {
         assert!(evidence.len() > MAX_JOB_JSON);
         assert_eq!(serde_json::from_slice::<Job>(&evidence).unwrap(), job);
         assert!(unit.join(TOO_LARGE).exists() && !unit.join(JOB_FILE).exists());
+        // A unit already staged is refused, never written over.
+        assert!(publish(&unit, &job).is_err());
+        assert_eq!(
+            std::fs::read(unit.join("rejected-qwen.json")).unwrap(),
+            evidence
+        );
+        let staged = tmp.path().join("staged");
+        std::fs::create_dir(&staged).unwrap();
+        std::fs::write(staged.join(JOB_FILE), b"{}").unwrap();
+        assert!(publish(&staged, &job).is_err());
+        assert_eq!(std::fs::read(staged.join(JOB_FILE)).unwrap(), b"{}");
+        assert!(!staged.join(TOO_LARGE).exists());
     }
 
     #[tokio::test]

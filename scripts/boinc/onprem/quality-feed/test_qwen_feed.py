@@ -1879,6 +1879,9 @@ class SourceTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "retain READY"):
                 submit.assert_processed(root, sample)
             (bundle / "submitted").touch()
+            # Only submitted units' jobs are read.
+            (root / "units" / "bundle-00002-other").mkdir()
+            (root / "units" / "bundle-00002-other" / "qwen.json").write_text("partly written")
             submit.assert_processed(root, sample)
             # A page no bundle holds needs its own terminal disposition.
             (bundle / "qwen.json").write_text(json.dumps({"id": "b" * 64, "doc_id": DOC, "pages": [{"doc_id": DOC}]}))
@@ -1932,12 +1935,14 @@ class SourceTest(unittest.TestCase):
                 "--cpu-timeout-secs", "7200", "--bundle-size", "1", "--prompt-version", "1"])
             stage = self.legacy_stage(root, "--bundle-size", "8")
             self.assertEqual(stage[stage.index("--bundle-size") + 1], "8")
-        for extra in (["--bundle-size", "0"], ["--bundle-size", "33"],
-                      ["--bundle-size", "2", "--transaction", "a" * 64]):
+        for extra, error in ((["--bundle-size", "0"], "--bundle-size takes 1 to 32"),
+                             (["--bundle-size", "33"], "--bundle-size takes 1 to 32"),
+                             (["--bundle-size", "2", "--transaction", "a" * 64], "one page per unit")):
             with self.subTest(extra=extra), tempfile.TemporaryDirectory() as folder, \
-                    contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as caught:
+                    contextlib.redirect_stderr(io.StringIO()) as stderr, self.assertRaises(SystemExit) as caught:
                 self.legacy_stage(Path(folder), *extra)
             self.assertEqual(caught.exception.code, 2)
+            self.assertIn(error, stderr.getvalue())
 
     def test_a_bundled_campaign_has_a_root_of_its_own(self):
         for units, pages, extra, error in (
