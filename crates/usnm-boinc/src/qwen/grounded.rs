@@ -166,7 +166,8 @@ pub struct Options<'a> {
     pub legibility: Option<&'a Path>,
     pub good_cer: f64,
     pub bad_cer: f64,
-    /// The rule's floor, to measure another one; the rule in force has 0.5.
+    /// The rule's floor, to measure another one; the rule's own is
+    /// [`Params::IN_RULE`]'s.
     pub floor: f64,
     pub seed: u64,
     pub out: &'a Path,
