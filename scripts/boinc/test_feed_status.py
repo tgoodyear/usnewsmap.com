@@ -191,6 +191,32 @@ class DurationTest(unittest.TestCase):
         self.assertIn("| project Check = tostring(Check.code)", retained)
         self.assertNotIn("controller_tick", retained)
 
+    def test_feeder_allocation_is_opt_in_and_drift_fires_after_two_guard_runs(self):
+        self.assertNotIn("feeder_allocation", self.tick(0))
+        self.state = {}
+        self.facts["feeder_allocation"] = {"status": "match", "reason": "allocation_matches_registry", "app_ids": []}
+        self.assertEqual(self.tick(0)["feeder_allocation"]["state"], "healthy")
+        self.facts["feeder_allocation"] = {"status": "drift", "reason": "registry_changed", "app_ids": [3]}
+        for at in range(60, 660, 60):
+            checks = self.tick(at)
+        self.assertEqual((checks["feeder_allocation"]["state"], checks["feeder_allocation"]["duration_s"]),
+                         ("pending", F.FEEDER_DRIFT_HOLD_S - 60))
+        checks = self.tick(660)
+        self.assertEqual(checks["feeder_allocation"]["state"], "firing")
+        self.assertEqual(checks["feeder_allocation"]["app_ids"], [3])
+        self.assertEqual(checks["collection"]["state"], "healthy")
+        self.assertEqual(len([s for s in F.metrics(self.document).splitlines()
+                              if s.startswith("boinc_feed_check{") and s.endswith("} 1")]), 8)
+        # Different drift is a new condition, not a continuation.
+        self.facts["feeder_allocation"]["app_ids"] = [3, 7]
+        self.assertEqual(self.tick(720)["feeder_allocation"]["state"], "pending")
+        for at, status, reason in ((780, "maintenance", "stop_maintenance"), (840, "unknown", "guard_unavailable")):
+            self.facts["feeder_allocation"] = {"status": status, "reason": reason, "app_ids": []}
+            checks = self.tick(at)
+            self.assertEqual((checks["feeder_allocation"]["state"], checks["feeder_allocation"]["reason"]),
+                             ("unknown", reason))
+            self.assertEqual(checks["collection"]["state"], "firing")
+
     def test_corrupt_duration_state_resets_instead_of_trusting_old_health(self):
         self.state = {"schema_version": 1, "time": "broken", "conditions": []}
         self.assertEqual(self.tick(0)["collection"]["state"], "firing")
