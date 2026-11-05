@@ -135,6 +135,22 @@ async fn corpus_search_matches_rest_and_preserves_citations_and_pagination() {
         pages["items"][0]["doc_id"],
         next["result"]["structuredContent"]["untrusted_data"]["items"][0]["doc_id"]
     );
+    // The guidance's place route: a top newspaper's place_id passed as `place`.
+    let place = data["top_newspapers"][0]["place_id"].as_str().unwrap();
+    let (_, _, by_place) = send(
+        &state,
+        "usnewsmap.com",
+        call("search_pages", json!({"q":"gold","place":place,"limit":1})),
+    )
+    .await;
+    assert_eq!(by_place["result"]["isError"], false, "{by_place}");
+    assert_eq!(
+        by_place["result"]["structuredContent"]["untrusted_data"]["items"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
     let (_, _, meta) = send(&state, "usnewsmap.com", call("get_corpus_info", json!({}))).await;
     assert_eq!(
         meta["result"]["structuredContent"]["untrusted_data"]["index_version"],

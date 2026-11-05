@@ -431,6 +431,6 @@ fn summarize(data: Value) -> Option<Value> {
         "baseline": data["baseline"], "coarsened": data["coarsened"],
         "newspapers_omitted": total_papers.saturating_sub(newspapers.len() as u64),
         "top_newspapers": newspapers,
-        "guidance": "Use search_pages with a newspaper lccn, place_id or one state for source snippets. Earliest/latest matches reflect this digitized corpus, not first/last historical use.",
+        "guidance": "For source snippets, call search_pages with q and one of: lccn (a top_newspapers lccn), place (a top_newspapers place_id) or one state. Earliest/latest matches reflect this digitized corpus, not first/last historical use.",
     }))
 }
