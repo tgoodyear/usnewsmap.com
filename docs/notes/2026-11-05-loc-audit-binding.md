@@ -32,14 +32,14 @@ checked against its release's `SHA256SUMS`. The audited inventory is
 SHA-256 `f9caf44ce4a509e96f843fdba9e52c9dd7266a54468751d5cb8adf8eceef9ab8`, with
 1,706 pages and 1,706 distinct page IDs.
 
-| Benchmark manifest | Samples | NDNP pages | In the audited package |
-| ------------------ | ------: | ---------: | ---------------------: |
-| `ocr-bench-v1.0.0` |   1,000 |        300 |                      0 |
-| `ocr-bench-v1.1.0` |      52 |          0 |                      0 |
+| Benchmark manifest | Samples (source pages) | NDNP samples (distinct NDNP pages) | In the audited package |
+| ------------------ | ---------------------: | ---------------------------------: | ---------------------: |
+| `ocr-bench-v1.0.0` |             1,000 (38) |                           300 (18) |                      0 |
+| `ocr-bench-v1.1.0` |                52 (18) |                              0 (0) |                      0 |
 
-All 1,052 samples are human-verified, but none is on an audited page. So no
-paired score of the audited package's OCR is possible from current data. That
-is the human-reference common set [#810](https://github.com/tgoodyear/usnewsmap.com/issues/810)
+All 1,052 samples are human-verified, but none of their pages is an audited
+page. So no paired score of the audited package's OCR is possible from current
+data. That is the human-reference common set [#810](https://github.com/tgoodyear/usnewsmap.com/issues/810)
 must supply. The adapter only makes such a score traceable to the package once
 it exists. Rights stay as the audit's `rights-and-history.json` records them:
 there is no separate OCR, ALTO or layout licence.
