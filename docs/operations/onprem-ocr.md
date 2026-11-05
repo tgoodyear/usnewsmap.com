@@ -56,6 +56,26 @@ phrase adjacency and snippet/source attribution on the named originals and
 the broader multi-title German cohort (#926); do not treat agreement with another
 OCR system as human-reference accuracy.
 
+### Column repair without regions
+
+`usnm-ocr-worker column-text` finds narrow gutters that Tesseract read lines
+across from the ALTO's geometry alone, cuts those lines at the gutter and
+writes the text the worker would store, read column by column
+([note](../notes/2026-11-05-column-reading-order.md)):
+
+```sh
+usnm-ocr-worker column-text --alto /private/stored-alto/ --language deu \
+  --ocr-engine tesseract/5.5.0 --out /private/column-text/
+```
+
+`--alto` is one ALTO file or a directory of `*.xml`; each page's text goes to
+`<stem>.txt` in `--out`, and one JSON line per page reports `changed` and the
+gutters, lines and blocks it cut. Given the language and engine the worker
+used, a page with no such gutter is written as the worker wrote it. Words
+fused across a gutter stay whole, on the side of their
+centre. It reads only local files and changes no ALTO; like the region tool
+above, its output is not accepted for publication until #926's cohort check.
+
 ## Rebuilding the dashboard data-flow observer and catalog
 
 The read-only observer/catalog scripts and their five systemd units are installed

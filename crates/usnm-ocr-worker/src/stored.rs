@@ -218,6 +218,29 @@ pub fn store_from(
     Stored { alto, text, page }
 }
 
+/// A stored page's text with the column repair (#925,
+/// [`usnm_alto::split_columns`]): the text [`store_from`] derives, but with
+/// lines the engine read across a narrow gutter cut at it and the page read
+/// column by column, and what the repair changed, `None` where it found
+/// nothing (the text is then exactly the stored one). The page and its ALTO
+/// are not changed. Offline only: the worker doesn't store this text.
+pub fn column_text(
+    page: &Page,
+    ocr_engine: &str,
+    language: &str,
+) -> (String, Option<usnm_alto::Repair>) {
+    let repaired = usnm_alto::split_columns(page, usnm_alto::default_dir(language, None));
+    let (page, repair) = match &repaired {
+        Some((p, r)) => (p, Some(*r)),
+        None => (page, None),
+    };
+    let text = normalize_ocr_for(
+        &usnm_alto::text(page),
+        Hyphenation::for_page(ocr_engine, language),
+    );
+    (text, repair)
+}
+
 /// The stored ALTO's `processingStepSettings`, in 13 §13.8.2's order:
 /// the full tag first, then what it abbreviates and the page's run.
 fn settings(
@@ -371,6 +394,39 @@ mod tests {
                     .alto
                     .contains("<softwareVersion>5.5.1</softwareVersion>"));
                 assert!(new.alto.contains(&format!("ocr_engine={TAG}")));
+            }
+        }
+    }
+
+    /// The column-repaired text of a stored page: the stored text where the
+    /// repair finds nothing, and on the 1894 page, whose Tesseract lines run
+    /// across its columns, the same words read by column.
+    #[test]
+    fn column_text_repairs_only_pages_read_across_columns() {
+        let now: DateTime<Utc> = "2026-10-20T14:04:31Z".parse().unwrap();
+        let source = Source {
+            url: URL,
+            sha256: SHA,
+            md5: None,
+            run_id: None,
+            damage_before: None,
+        };
+        let words = |t: &str| {
+            let mut w: Vec<String> = t.split_whitespace().map(str::to_owned).collect();
+            w.sort();
+            w
+        };
+        for (name, xml, _) in fixtures() {
+            let stored = from_engine_alto(&xml, TAG, "eng", 300, &source, "0.1.0", now).unwrap();
+            let (text, repair) = column_text(&page_of(&stored.alto), TAG, "eng");
+            if name.starts_with("testdata/tesseract-agave") {
+                let repair = repair.unwrap();
+                assert!(repair.lines_split > 0, "{name}");
+                assert_ne!(text, stored.text, "{name}");
+                assert_eq!(words(&text), words(&stored.text), "{name}");
+            } else {
+                assert_eq!(repair, None, "{name}");
+                assert_eq!(text, stored.text, "{name}");
             }
         }
     }
