@@ -266,11 +266,13 @@ def assert_processed(root, sample):
 
 def assert_bundle_layout(root, bundle_size):
     """A bundled campaign has a root of its own. A root staged with bundles can't go back to
-    single pages, and bundling a root that already holds single-page units would mix both."""
+    single pages, and bundling a root that already holds single-page units would mix both. In a
+    root with no pages/, any unit directory was staged one page per unit, whatever its marker."""
     bundled = (root / "pages").is_dir()
+    units = root / "units"
     if bundle_size == 1 and bundled:
         raise RuntimeError(f"Root {root.name} was staged with bundles; keep its --bundle-size")
-    if bundle_size > 1 and not bundled and any((root / "units").glob("*/qwen.json")):
+    if bundle_size > 1 and not bundled and units.is_dir() and any(p.is_dir() for p in units.iterdir()):
         raise RuntimeError(f"Root {root.name} holds single-page units; a bundled campaign starts in a new root")
 
 

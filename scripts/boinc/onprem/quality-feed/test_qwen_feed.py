@@ -1959,6 +1959,14 @@ class SourceTest(unittest.TestCase):
                         self.legacy_stage(root, *extra, units=units, pages=pages)
                 else:
                     self.legacy_stage(root, *extra, units=units, pages=pages)
+        # A single-page unit with only a marker, and no job, counts too.
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            unit = root / "qwen" / "qwen-test" / "units" / DOC
+            unit.mkdir(parents=True)
+            (unit / "too_large").touch()
+            with self.assertRaisesRegex(RuntimeError, "holds single-page units"):
+                self.legacy_stage(root, "--bundle-size", "8")
 
     def test_isolated_staging_artifact_never_replaces_submit_binary(self):
         with tempfile.TemporaryDirectory() as folder:

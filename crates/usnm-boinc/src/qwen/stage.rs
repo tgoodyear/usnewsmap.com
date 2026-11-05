@@ -435,10 +435,14 @@ pub async fn run_selected(opts: &Options, members: Option<&Path>) -> anyhow::Res
 /// `too_large`: as for an oversized crop text, the evidence is the page's
 /// disposition for the feed. Returns whether the job was written. Staging
 /// calls it only for a unit with no job or marker yet, and it refuses any
-/// other rather than leave a job beside the marker or replace one.
+/// other rather than leave a job beside the marker or replace one. A
+/// `rejected-qwen.json` with no marker is a run stopped between the two
+/// writes, and is written again with its marker.
 fn publish(unit: &Path, job: &Job) -> anyhow::Result<bool> {
     ensure!(
-        ![JOB_FILE, TOO_LARGE].iter().any(|f| unit.join(f).exists()),
+        ![JOB_FILE, "no_crops", TOO_LARGE]
+            .iter()
+            .any(|f| unit.join(f).exists()),
         "{}: already staged",
         unit.display()
     );
@@ -1250,6 +1254,10 @@ pub(crate) mod tests {
         assert!(publish(&staged, &job).is_err());
         assert_eq!(std::fs::read(staged.join(JOB_FILE)).unwrap(), b"{}");
         assert!(!staged.join(TOO_LARGE).exists());
+        // A run stopped between the evidence and its marker is finished.
+        std::fs::remove_file(unit.join(TOO_LARGE)).unwrap();
+        assert!(!publish(&unit, &job).unwrap());
+        assert!(unit.join(TOO_LARGE).exists() && !unit.join(JOB_FILE).exists());
     }
 
     #[tokio::test]
