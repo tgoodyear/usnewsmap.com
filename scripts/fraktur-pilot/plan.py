@@ -13,9 +13,10 @@ read-only root, no capabilities, `-l <variant> --psm 3 --dpi 300 txt alto`). Eac
 stdout, stderr, the exit status (`copy-failed` when the scan could not be staged) and its
 start and end times beside the outputs, so failures and empty outputs stay in the record, and
 the scan's copy is removed after it. timeout stops a job after --timeout seconds and kills it
-30 seconds later; the job's named container is then removed, and on an interrupt too. The
-script refuses a work root that exists, so one run's outputs are never mixed with another's,
-and needs bash 5 (for EPOCHREALTIME) and timeout. Each page's variants are adjacent, so a
+30 seconds later; the job's container, named for the page, variant and work directory, is
+then removed, and on an interrupt too. The script claims its work root with mkdir and stops
+if it exists, so one run's outputs and containers are never mixed with another's, and needs
+bash 5 (for EPOCHREALTIME) and timeout. Each page's variants are adjacent, so a
 partial run stays paired. --jobs-out writes the same jobs as JSONL. --verify-scans re-reads
 each scan under --scans-root and checks its size and sha256 against the manifest. Both roots
 must be absolute paths.
@@ -131,7 +132,11 @@ job() {
 
 
 def container_name(job):
-    return "fraktur-pilot-" + re.sub(r"[^A-Za-z0-9_.-]", "_", f"{job['sample']}-{job['doc_id']}-{job['variant']}")
+    # The work directory's digest makes the name unique to this run: each run claims its own
+    # work root, so cleanup by name can never remove another run's container.
+    run = hashlib.sha256(job["work"].encode()).hexdigest()[:12]
+    page = re.sub(r"[^A-Za-z0-9_.-]", "_", f"{job['sample']}-{job['doc_id']}-{job['variant']}")
+    return f"fraktur-pilot-{run}-{page}"
 
 
 def command(job, image, threads):
@@ -160,8 +165,8 @@ def script(job_list, image, threads, timeout, pages_path, pages_sha256, work_roo
         '[ -n "${EPOCHREALTIME:-}" ] || { echo "run this with bash 5 or later (EPOCHREALTIME)" >&2; exit 1; }',
         f"TIMEOUT={timeout} KILL_AFTER={KILL_AFTER} user=$(id -u):$(id -g)",
         JOB,
-        f"if [ -e {q(root)} ]; then echo {q(root + ' exists: write the run to a fresh work root')} >&2; exit 1; fi",
-        f"mkdir -p -- {q(root)} || exit 1",
+        f"mkdir -p -- {q(str(Path(root).parent))} || exit 1",
+        f"mkdir -- {q(root)} || {{ echo {q(root + ': a run needs a new work root of its own')} >&2; exit 1; }}",
         f"podman run --rm --pull=never --network=none --entrypoint tesseract {q(image)} --version "
         f"> {q(root + '/engine-version')} 2>&1",
     ]

@@ -104,7 +104,13 @@ class PlanTests(unittest.TestCase):
         script = commands_out.read_text()
         commands = [line for line in script.splitlines() if line.startswith("job ")]
         self.assertEqual(len(commands), 6)
-        self.assertEqual(len({shlex.split(c)[4] for c in commands}), 6)
+        names = {shlex.split(c)[4] for c in commands}
+        self.assertEqual(len(names), 6)
+        other = self.root / "run-other.sh"
+        self.run_plan("--commands-out", str(other), "--work-root", str(self.root / "other-work"))
+        other_names = {shlex.split(c)[4] for c in other.read_text().splitlines() if c.startswith("job ")}
+        self.assertEqual(len(other_names), 6)
+        self.assertFalse(names & other_names, "two runs' container names must differ")
         for flag in ("--network=none", "--read-only", "--cap-drop=all", "--pull=never", IMAGE, "--psm 3 --dpi 300 txt alto"):
             self.assertTrue(all(flag in c for c in commands), flag)
         self.assertIn("-l deu_latf", commands[0])
@@ -127,10 +133,11 @@ class PlanTests(unittest.TestCase):
         work = self.root / "work"
         self.assertEqual((work / "engine-version").read_text(), "tesseract stub\n")
         calls = log.read_text().splitlines()
+        names = {shlex.split(c)[1]: shlex.split(c)[4] for c in commands_out.read_text().splitlines() if c.startswith("job ")}
         for i, r in enumerate(self.records[:3]):
             for model in ("deu_latf", "deu"):
                 job = work / "ger" / r["doc_id"] / model
-                name = f"fraktur-pilot-ger-{r['doc_id']}-{model}"
+                name = names[str(job)]
                 exit_status = {0: "copy-failed", 1: "3" if model == "deu" else "0"}.get(i, "0")
                 self.assertEqual((job / "exit").read_text(), exit_status + "\n", job)
                 self.assertEqual((job / "page.txt").exists(), exit_status == "0", job)
@@ -148,7 +155,7 @@ class PlanTests(unittest.TestCase):
         self.assertFalse((work / "dan").exists())
         again = subprocess.run(["bash", str(commands_out)], env=env, capture_output=True, text=True)
         self.assertEqual(again.returncode, 1)
-        self.assertIn("exists: write the run to a fresh work root", again.stderr)
+        self.assertIn("a run needs a new work root of its own", again.stderr)
         self.assertEqual(log.read_text().splitlines(), calls)
 
     def test_refuses_an_image_tag_an_unpinned_model_a_single_variant_or_a_relative_root(self):
