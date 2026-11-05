@@ -1222,9 +1222,11 @@ identity, the apply stops at its first delete with HTTP 403
 `AuthorizationPermissionMismatch`, and the batch is left resumable. Don't widen
 the controller's role. Run the apply under an operator identity that may
 delete. The narrowest built-in role that does is Storage Blob Data Contributor
-scoped to the `boinc-handoff` container. A broader role an operator already
-holds also works, such as Storage Blob Data Owner on the account's resource
-group, but don't grant one for this.
+assigned at the container's own scope,
+`<account resource ID>/blobServices/default/containers/boinc-handoff`. Azure
+accepts data-plane role assignments at that scope. A broader role an operator
+already holds also works, such as Storage Blob Data Owner on the account's
+resource group, but don't grant one for this.
 
 The tool takes its token from the first `az` on its `PATH`. It runs:
 
@@ -1233,8 +1235,11 @@ az account get-access-token --resource https://storage.azure.com/ \
   --query '{token:accessToken,expires:expires_on}' -o json
 ```
 
-It reads only the `token` and `expires` keys of that JSON object, and asks again
-10 minutes before expiry. To use an operator identity:
+It reads only the `token` and `expires` keys of that JSON object. `expires` must
+be an integer number of seconds since the epoch, which is what `expires_on`
+gives; the tool converts it with `int()`. Don't project `expiresOn`, a local
+time string. The tool asks again 10 minutes before expiry. To use an operator
+identity:
 
 - On CT 211, make a root-owned 0700 directory for the run, such as
   `/root/usnm-archive`. In it, put a 0700 wrapper `azshim/az` that answers only
