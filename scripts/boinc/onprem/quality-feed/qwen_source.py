@@ -187,7 +187,11 @@ def inspect(args, record):
         status = value["status"]
         if status == "pending":
             key = tuple(requested[doc].get(field) for field in fields)
-            if key in quarantined:
+            if quarantined.get(key) == "source_truncated":
+                # Terminal: the same bytes as LoC's, cut short; nothing to review or retry.
+                status = "source_truncated"
+                quarantine_states[quarantined[key]] += 1
+            elif key in quarantined:
                 status = "preparation_quarantined"
                 quarantine_states[quarantined[key]] += 1
                 waiting.append(doc)

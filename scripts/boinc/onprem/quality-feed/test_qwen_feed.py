@@ -1664,6 +1664,32 @@ class SourceRequestTest(unittest.TestCase):
                 self.assertEqual(result["state"], "needs_science_review" if done else "preparing_and_publishing")
                 self.assertEqual(result["quarantined_refetch_states"], {"manual_review": 1} if done else {})
 
+    def test_source_truncated_member_is_terminal_not_waiting_or_under_review(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "requests").mkdir()
+            args = types.SimpleNamespace(state=root, prep_ct=215, server_ct=230, campaign="test",
+                                         server_host="server", archive_host="archive")
+            other = DOC.replace("seq-3", "seq-4")
+            spec, page = source.specification("sn1", 10, "test"), frozen_page()
+            pages = [page, frozen_page(other)]
+            record = {"request_id": source.digest(spec), "spec": spec, "pages": pages,
+                      "pages_sha256": source.digest(pages)}
+            native = {"pages": {DOC: {"status": "pending"}, other: {"status": "published"}},
+                      "published_workunits": 1, "agreed_workunits": 1, "unsent_replicas": 0,
+                      "running_replicas": 0, "returned_replicas": 0, "invalid_replicas": 0,
+                      "error_workunits": 0, "history_unavailable_workunits": 0, "source_conflict_pages": 0}
+            prepared = {"done.txt": {}, "skipped.txt": {},
+                        "quarantine": [{"source": page, "refetch_state": "source_truncated"}]}
+            with mock.patch("qwen_feed.remote", side_effect=[
+                    json.dumps(native).encode(), b'{"available_archives":["xx_test_ver01.tar.bz2"]}']), \
+                    mock.patch("qwen_feed.command", return_value=json.dumps(prepared).encode()):
+                result = source.inspect(args, record)
+        self.assertEqual(result["source_dispositions"], {"source_truncated": 1, "published": 1})
+        self.assertEqual(result["state"], "native_consensus_complete")
+        self.assertEqual(result["waiting_source_pages"], 0)
+        self.assertEqual(result["quarantined_refetch_states"], {"source_truncated": 1})
+
 
 class ArchiveTest(unittest.TestCase):
     def test_existing_forced_stdin_command_returns_additive_inventory_on_empty_input(self):
