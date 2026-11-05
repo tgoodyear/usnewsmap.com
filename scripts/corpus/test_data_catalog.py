@@ -1,6 +1,8 @@
 """Offline catalog contract, replay, provenance, CLI and HTTP tests (stdlib only)."""
 
+import contextlib
 import copy
+import io
 import json
 from pathlib import Path
 import re
@@ -9,6 +11,7 @@ import sqlite3
 import subprocess
 import sys
 import threading
+import time
 import unittest
 from unittest import mock
 import urllib.error
@@ -197,6 +200,128 @@ class CatalogTests(unittest.TestCase):
         with mock.patch.object(c, "now", return_value="2026-11-01T19:55:00.000000Z"):
             result = c.refresh_live(self.db, path, evidence, self.work / "catalog.json")
         self.assertEqual(result["inserted"], 0)
+
+    def many_artifacts(self, n=200):
+        """Enough rows for a statement long enough to reach SQLite's progress handler, so a deadline."""
+        self.ingest(*(event("e" + str(i), page_id=f"loc:sn123_1900-01-01_ed-1_seq-{i}") for i in range(n)))
+
+    def committed_batches(self):
+        with contextlib.closing(sqlite3.connect(self.db)) as conn:
+            return [row[0] for row in conn.execute("SELECT batch_id FROM batches ORDER BY batch_id")]
+
+    def test_refresh_has_its_own_deadline_not_the_query_one(self):
+        # The hourly run starts on a cold cache, where the snapshot outlasted QUERY_SECONDS (#1436).
+        self.many_artifacts()
+        path = self.throughput(ocr_import_pages=[1, 2, 3])
+        with mock.patch.object(c, "QUERY_SECONDS", -1):
+            with self.assertRaisesRegex(c.CatalogError, "deadline exceeded"):
+                c.snapshot(self.db)
+            catalog = self.refresh(path)
+            self.refresh(self.boinc_history(), "2026-11-01T18:56:00.000000Z")
+        self.assertEqual(catalog["artifacts"]["locations"], 200)
+        self.assertTrue(self.boinc_results())
+        with mock.patch.object(c, "REFRESH_SECONDS", -1):
+            with self.assertRaisesRegex(c.CatalogError, "deadline exceeded"):
+                self.refresh(path, "2026-11-01T19:55:00.000000Z")
+
+    def test_the_refresh_deadline_bounds_its_ingest_transaction(self):
+        self.many_artifacts()
+        before = self.committed_batches()
+        with contextlib.closing(sqlite3.connect(self.db)) as conn, conn:
+            # Recording the batch becomes one long statement, as on a cold cache.
+            conn.execute("""CREATE TRIGGER slow AFTER INSERT ON batches BEGIN SELECT count(*) FROM
+                (SELECT 1 FROM events a, events b, events c, events d LIMIT 100000000); END""")
+        with mock.patch.object(c, "REFRESH_SECONDS", 0.5):
+            with self.assertRaises(sqlite3.OperationalError) as caught:
+                self.refresh(self.throughput(ocr_import_pages=[1, 2, 3]))
+        self.assertEqual(c.failure_cause(caught.exception), "SQLITE_INTERRUPT")
+        self.assertEqual(self.committed_batches(), before)
+
+    def test_the_refresh_deadline_bounds_its_lock_waits_together(self):
+        path = self.throughput(ocr_import_pages=[1, 2, 3])
+        # A catalog's first refresh creates it, and one on a legacy catalog migrates it first.
+        for case in ("current", "legacy", "new"):
+            with self.subTest(case):
+                self.db.unlink(missing_ok=True)
+                shutil.rmtree(self.work / "evidence", ignore_errors=True)
+                if case != "new":
+                    self.refresh(path)
+                if case == "legacy":
+                    with contextlib.closing(sqlite3.connect(self.db)) as conn:
+                        conn.execute("PRAGMA user_version=0")
+                before = self.committed_batches() if case != "new" else []
+                with contextlib.closing(sqlite3.connect(self.db)) as reader, \
+                        contextlib.closing(sqlite3.connect(self.db, check_same_thread=False)) as writer:
+                    # The commit waits for this reader, and BEGIN IMMEDIATE for this writer, for 2 s.
+                    reader.execute("BEGIN")
+                    reader.execute("SELECT count(*) FROM sqlite_master").fetchone()
+                    writer.execute("BEGIN IMMEDIATE")
+                    release = threading.Timer(2, writer.rollback)
+                    release.start()
+                    started = time.monotonic()
+                    try:
+                        with mock.patch.object(c, "REFRESH_SECONDS", 3):
+                            with self.assertRaises(sqlite3.OperationalError) as caught:
+                                self.refresh(path, "2026-11-01T19:55:00.000000Z")
+                        elapsed = time.monotonic() - started
+                    finally:
+                        release.join()
+                # About 3 s in all, not 2 s for the writer and another 3 s for the reader; a second
+                # either way of slack.
+                self.assertLess(elapsed, 4)
+                self.assertEqual(c.failure_cause(caught.exception), "SQLITE_BUSY")
+                if case == "new":
+                    with contextlib.closing(sqlite3.connect(self.db)) as conn:
+                        self.assertIsNone(conn.execute("SELECT 1 FROM sqlite_master").fetchone())
+                else:
+                    self.assertEqual(self.committed_batches(), before)
+                    with contextlib.closing(sqlite3.connect(self.db)) as conn:
+                        self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0],
+                                         0 if case == "legacy" else c.INDEXED_KEY_SCOPE_VERSION)
+
+    def test_the_refresh_deadline_bounds_its_stage_lookup_after_connect(self):
+        path = self.throughput(ocr_import_pages=[1, 2, 3])
+        self.refresh(path)
+        locker = sqlite3.connect(self.db)
+        self.addCleanup(locker.close)
+        real = c.connect
+
+        def slow_connect(*args, **kwargs):
+            # Connecting took 2 s of the deadline, as a wait for a writer would, and then another
+            # writer locks the catalog before the stage lookup.
+            conn = real(*args, **kwargs)
+            time.sleep(2)
+            locker.execute("BEGIN EXCLUSIVE")
+            return conn
+
+        started = time.monotonic()
+        with mock.patch.object(c, "REFRESH_SECONDS", 3), mock.patch.object(c, "connect", slow_connect):
+            with self.assertRaises(sqlite3.OperationalError) as caught:
+                self.refresh(path, "2026-11-01T19:55:00.000000Z")
+        # About 3 s in all, not 2 s and then another 3 s; a second either way of slack.
+        self.assertLess(time.monotonic() - started, 4)
+        self.assertEqual(c.failure_cause(caught.exception), "SQLITE_BUSY")
+
+    def test_a_failed_refresh_names_its_cause_but_no_path(self):
+        path = self.throughput(ocr_import_pages=[1, 2, 3])
+        self.refresh(path)
+        args = ["--db", str(self.db), "refresh-live", "--throughput", str(path),
+                "--evidence-dir", str(self.work / "evidence"), "--out", str(self.work / "catalog.json")]
+        locker = sqlite3.connect(self.db)
+        self.addCleanup(locker.close)
+        locker.execute("BEGIN EXCLUSIVE")
+        stderr = io.StringIO()
+        with mock.patch.object(c, "REFRESH_SECONDS", 0.2), contextlib.redirect_stderr(stderr):
+            self.assertEqual(c.main(args), 2)
+        self.assertEqual(json.loads(stderr.getvalue()),
+                         {"error": "local catalog I/O or query failure", "cause": "SQLITE_BUSY"})
+        locker.rollback()
+        args[args.index(str(path))] = str(self.work / "absent.json")
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            self.assertEqual(c.main(args), 2)
+        self.assertEqual(json.loads(stderr.getvalue())["cause"], "ENOENT")
+        self.assertNotIn(str(self.work), stderr.getvalue())
 
     def test_refresh_rejects_bad_histories(self):
         good = self.throughput(ocr_import_pages=[1, 2, 3])
@@ -855,10 +980,10 @@ class CatalogTests(unittest.TestCase):
             c.bounded_query(self.db, lambda conn: conn.execute("DELETE FROM latest"))
         original = c.QUERY_SECONDS
         try:
-            c.QUERY_SECONDS = -1
+            c.QUERY_SECONDS = 0.5  # An expired deadline fails before the query starts.
             with self.assertRaises(sqlite3.OperationalError):
                 c.bounded_query(self.db, lambda conn: conn.execute("""WITH RECURSIVE
-                  n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<100000)
+                  n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<100000000)
                   SELECT sum(x) FROM n""").fetchone()[0])
         finally:
             c.QUERY_SECONDS = original

@@ -3,6 +3,7 @@
 
 import argparse
 import datetime as dt
+import errno
 import hashlib
 import http.server
 import json
@@ -26,6 +27,9 @@ MAX_RESULT = 1024 * 1024
 MAX_LIMIT = 100
 MAX_AGGREGATES = 24  # Eight built-in stages also fit dashboard coverage's 32-entry cap.
 QUERY_SECONDS = 2
+# refresh-live's SQLite budget for the whole run. The hourly run starts on a cold page cache,
+# where its snapshot misses QUERY_SECONDS; the unit's TimeoutStartSec still bounds the process.
+REFRESH_SECONDS = 60
 TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:/@+-]{0,255}\Z")
 SHA = re.compile(r"[0-9a-f]{64}\Z")
 STAGES = ("queued", "allocated", "outcome", "accepted", "imported", "indexed")
@@ -598,9 +602,10 @@ CREATE INDEX by_stage ON latest(kind,stage,state);
 """
 
 
-def migrate_indexed_keys(conn):
+def migrate_indexed_keys(conn, deadline):
     """One-time writable upgrade: collapse legacy run-scoped indexed keys to page-scoped keys."""
     with conn:
+        wait_until(conn, deadline)
         conn.execute("BEGIN IMMEDIATE")
         found = conn.execute(
             "SELECT key, source, page_id, observed_at, event_id FROM latest "
@@ -625,24 +630,50 @@ def migrate_indexed_keys(conn):
                  winner["run_id"], winner["stage"], winner["state"]),
             )
         conn.execute(f"PRAGMA user_version={INDEXED_KEY_SCOPE_VERSION}")
+        wait_until(conn, deadline)  # for the commit's wait on readers
 
 
-def connect(path, writable=False):
+def remaining(deadline):
+    """Seconds left before `deadline` (time.monotonic()). Once it has passed, fail rather than try."""
+    left = deadline - time.monotonic()
+    require(left > 0, "catalog deadline exceeded")
+    return left
+
+
+def interrupt_after(conn, deadline):
+    """A statement still running at `deadline` fails with SQLITE_INTERRUPT."""
+    conn.set_progress_handler(lambda: int(time.monotonic() > deadline), 1000)
+
+
+def wait_until(conn, deadline):
+    """SQLite's busy timeout applies afresh to each lock wait, so before each one that a deadline
+    bounds, set it to what is left."""
+    conn.execute(f"PRAGMA busy_timeout={math.ceil(remaining(deadline) * 1000)}")
+
+
+def connect(path, writable=False, deadline=None):
+    """`deadline` (time.monotonic()) bounds the lock wait and schema checks; QUERY_SECONDS by default.
+    It bounds only this function's own work: the returned connection has no progress handler, so a
+    caller whose later statements share the deadline installs it again with interrupt_after."""
     path = Path(path)
     require(not path.is_symlink(), "catalog cannot be a symlink")
     require(writable or path.is_file(), "catalog not found; ingest evidence first")
+    if deadline is None:
+        deadline = time.monotonic() + QUERY_SECONDS
     conn = sqlite3.connect(path.resolve().as_uri() + ("?mode=rwc" if writable else "?mode=ro"),
-                           uri=True, timeout=2)
+                           uri=True, timeout=remaining(deadline))
     conn.row_factory = sqlite3.Row
-    deadline = time.monotonic() + QUERY_SECONDS
-    conn.set_progress_handler(lambda: int(time.monotonic() > deadline), 1000)
+    interrupt_after(conn, deadline)
     try:
         if writable:
             # The schema transaction also makes first creation recoverable.
             if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='meta'").fetchone():
                 require(not conn.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone(),
                         "not a catalog; choose a new database path")
-                conn.executescript("BEGIN IMMEDIATE;\n" + DDL + "\nCOMMIT;")
+                wait_until(conn, deadline)
+                conn.executescript("BEGIN IMMEDIATE;\n" + DDL)
+                wait_until(conn, deadline)
+                conn.commit()
         versions = conn.execute("SELECT version FROM meta LIMIT 2").fetchall()
         require(len(versions) == 1 and versions[0][0] == 1,
                 "unsupported catalog schema (rebuild from evidence)")
@@ -654,7 +685,7 @@ def connect(path, writable=False):
             conn.execute("PRAGMA journal_mode=DELETE")
             conn.execute("PRAGMA synchronous=FULL")
             if user_version != INDEXED_KEY_SCOPE_VERSION:
-                migrate_indexed_keys(conn)
+                migrate_indexed_keys(conn, deadline)
         else:
             require(conn.execute("PRAGMA journal_mode").fetchone()[0] == "delete",
                     "catalog must use DELETE journaling; reopen with init to migrate")
@@ -668,8 +699,9 @@ def connect(path, writable=False):
         raise
 
 
-def ingest(db, batch):
-    """Validate the entire bounded batch before one durable transaction."""
+def ingest(db, batch, deadline=None):
+    """Validate the entire bounded batch before one durable transaction. A `deadline` also bounds
+    that transaction, its lock waits and its commit; without one only each lock wait is bounded."""
     with Path(batch).open("rb") as stream:
         file_stat = os.fstat(stream.fileno())
         require(stat.S_ISREG(file_stat.st_mode) and file_stat.st_size <= MAX_BATCH,
@@ -688,8 +720,11 @@ def ingest(db, batch):
         require(event["batch_id"] == batch_id, "mixed batch_id")
         parsed.append(projected)
     batch_hash = hashlib.sha256(raw).hexdigest()
-    conn = connect(db, writable=True)
+    conn = connect(db, writable=True, deadline=deadline)
     try:
+        if deadline is not None:
+            interrupt_after(conn, deadline)  # connect clears it.
+            wait_until(conn, deadline)
         with conn:
             conn.execute("BEGIN IMMEDIATE")
             previous = conn.execute("SELECT sha256 FROM batches WHERE batch_id=?", (batch_id,)).fetchone()
@@ -731,6 +766,8 @@ def ingest(db, batch):
                               data.get("engine_id"), data.get("status") or data.get("decision"),
                               data.get("run_id"), data.get("stage"), data.get("state")))
             conn.execute("INSERT INTO batches VALUES(?,?,?)", (batch_id, batch_hash, len(parsed)))
+            if deadline is not None:
+                wait_until(conn, deadline)  # The commit waits for readers to let go.
         return {"batch_id": batch_id, "inserted": inserted, "replayed": False}
     finally:
         conn.close()
@@ -1142,11 +1179,15 @@ def ingest_search_provenance(db, input_path, evidence_out, batch_id, source, pag
     return ingest(db, write_atomic_evidence(evidence_out, db, [canonical(event) + "\n"]))
 
 
-def bounded_query(db, action):
-    conn = connect(db)
-    deadline = time.monotonic() + QUERY_SECONDS
-    conn.set_progress_handler(lambda: int(time.monotonic() > deadline), 1000)
+def bounded_query(db, action, deadline=None):
+    """Without a `deadline`, connect and the query transaction each get QUERY_SECONDS, as they
+    always have; with one, they share it."""
+    conn = connect(db, deadline=deadline)
+    if deadline is None:
+        deadline = time.monotonic() + QUERY_SECONDS
     try:
+        interrupt_after(conn, deadline)
+        wait_until(conn, deadline)
         conn.execute("BEGIN")  # Consistent multi-query snapshot, including source freshness.
         result = action(conn)
         require(len(canonical(result).encode()) <= MAX_RESULT, "response exceeds 1 MiB; narrow query")
@@ -1581,7 +1622,7 @@ def stage_age(rows):
     return min((at for _, at in rows), default=None), bool(rows)
 
 
-def snapshot(db):
+def snapshot(db, deadline=None):
     def read(conn):
         def count(sql, args=()):
             return conn.execute(sql, args).fetchone()[0]
@@ -1655,7 +1696,7 @@ def snapshot(db):
                     "verified": count("SELECT count(*) FROM latest WHERE kind='artifact' AND state='verified'"),
                     "missing": count("SELECT count(*) FROM latest WHERE kind='artifact' AND state='missing'")},
                 "issues": issues}
-    return bounded_query(db, read)
+    return bounded_query(db, read, deadline)
 
 
 def utc_text(epoch):
@@ -1719,11 +1760,14 @@ def live_stage(stored, spec, at):
                                      "coverage": stage_id + " (hourly evidence)"}
 
 
-def live_event_id(db, stage_id, observed, payload, batch_id):
+def live_event_id(db, stage_id, observed, payload, batch_id, deadline=None):
     """An unchanged stage reuses its id, so it replays. A changed one sorts after the id it
     replaces, so a correction to the same evidence hour wins over the earlier count."""
-    conn = connect(db, writable=True)
+    conn = connect(db, writable=True, deadline=deadline)
     try:
+        if deadline is not None:
+            interrupt_after(conn, deadline)
+            wait_until(conn, deadline)
         current = conn.execute("SELECT event_id,observed_at,data FROM latest WHERE key=?",
                                (digest([LIVE_SOURCE, "stage", [stage_id]]),)).fetchone()
     finally:
@@ -1752,13 +1796,17 @@ def live_boinc_results(stored, at):
     return found
 
 
-def live_boinc_result_ids(db, found, batch_id):
+def live_boinc_result_ids(db, found, batch_id, deadline=None):
     """The event ids of `found`, chosen as live_event_id chooses a stage's, read in one
     connection."""
     if not found:
         return []
-    conn = connect(db, writable=True)
+    conn = connect(db, writable=True, deadline=deadline)
     try:
+        if deadline is not None:
+            interrupt_after(conn, deadline)
+            wait_until(conn, deadline)
+        conn.execute("BEGIN")  # One read lock, so one wait, for all the lookups.
         ids = []
         for observed, payload in found:
             current = conn.execute("SELECT event_id,observed_at,data FROM latest WHERE key=?", (digest(
@@ -1774,7 +1822,8 @@ def live_boinc_result_ids(db, found, batch_id):
 
 def refresh_live(db, throughput, evidence_dir, out):
     """One bounded refresh: the dashboard's kept counts -> one immutable batch -> snapshot.
-    Besides the catalog it reads one local file: no Postgres or cloud access."""
+    Besides the catalog it reads one local file: no Postgres or cloud access. Its SQLite work
+    shares one REFRESH_SECONDS deadline rather than QUERY_SECONDS each."""
     at = now()
     with Path(throughput).open("rb") as stream:
         require(stat.S_ISREG(os.fstat(stream.fileno()).st_mode), "throughput input must be a regular file")
@@ -1785,6 +1834,7 @@ def refresh_live(db, throughput, evidence_dir, out):
             isinstance(stored.get("sources"), dict) and isinstance(stored.get("series"), dict),
             "unsupported throughput history")
     batch_id = "live-" + re.sub(r"[-:]", "", at)[:15] + "Z"
+    deadline = time.monotonic() + REFRESH_SECONDS
     events = []
     for spec in LIVE_STAGES:
         found = live_stage(stored, spec, at)
@@ -1792,13 +1842,13 @@ def refresh_live(db, throughput, evidence_dir, out):
             continue
         observed, payload = found
         event = {"schema_version": 1, "batch_id": batch_id,
-                 "event_id": live_event_id(db, payload["stage_id"], observed, payload, batch_id),
+                 "event_id": live_event_id(db, payload["stage_id"], observed, payload, batch_id, deadline),
                  "kind": "stage", "source": LIVE_SOURCE, "observed_at": observed,
                  "page_id": None, "payload": payload}
         validate_event(event)
         events.append(canonical(event) + "\n")
     results = live_boinc_results(stored, at)
-    for (observed, payload), event_id in zip(results, live_boinc_result_ids(db, results, batch_id)):
+    for (observed, payload), event_id in zip(results, live_boinc_result_ids(db, results, batch_id, deadline)):
         event = {"schema_version": 1, "batch_id": batch_id, "event_id": event_id,
                  "kind": "boinc_results", "source": LIVE_SOURCE, "observed_at": observed,
                  "page_id": None, "payload": payload}
@@ -1806,8 +1856,8 @@ def refresh_live(db, throughput, evidence_dir, out):
         events.append(canonical(event) + "\n")
     require(events, "no throughput source has reported")
     path = Path(evidence_dir) / (batch_id + ".jsonl")
-    result = ingest(db, write_atomic_evidence(path, db, events))
-    atomic_snapshot(out, snapshot(db), db)
+    result = ingest(db, write_atomic_evidence(path, db, events), deadline)
+    atomic_snapshot(out, snapshot(db, deadline), db)
     return result
 
 
@@ -1995,7 +2045,8 @@ Counts are observed metadata, NOT corpus totals or allocation readiness.
 Limits: 16 MiB/10000 events per batch, 64 KiB/line, identifiers 256 chars,
 references 512 chars (relative object keys ONLY, no URI/credentials), run strings
 8192 chars, 100 rows/page, 1 MiB/response or snapshot, SQLite query deadline 2s,
-busy timeout 2s, HTTP socket timeout 3s, 2048-char URI, 10 query parameters.
+busy timeout 2s (refresh-live: 60s for the whole run), HTTP socket timeout 3s,
+2048-char URI, 10 query parameters.
 HTTP is optional read-only numeric loopback, single-request bounded backlog; no SQL.
 Catalog uses DELETE rollback journaling so read-only connections do not create WAL/SHM.
 Migrate older local WAL catalogs by stopping readers and running --db DB init once.
@@ -2149,9 +2200,19 @@ def main(argv=None):
         return 0
     except (CatalogError, OSError, sqlite3.Error) as exc:
         # Do not echo raw source values, SQL, request strings or credential-bearing paths.
-        message = str(exc) if isinstance(exc, CatalogError) else "local catalog I/O or query failure"
-        print(canonical({"error": message}), file=sys.stderr)
+        if isinstance(exc, CatalogError):
+            failure = {"error": str(exc)}
+        else:
+            failure = {"error": "local catalog I/O or query failure", "cause": failure_cause(exc)}
+        print(canonical(failure), file=sys.stderr)
         return 2
+
+
+def failure_cause(exc):
+    """A fixed code such as SQLITE_INTERRUPT or ENOENT, never the message, which can hold paths or SQL."""
+    if isinstance(exc, OSError) and exc.errno in errno.errorcode:
+        return errno.errorcode[exc.errno]
+    return getattr(exc, "sqlite_errorname", None) or type(exc).__name__
 
 
 if __name__ == "__main__":
