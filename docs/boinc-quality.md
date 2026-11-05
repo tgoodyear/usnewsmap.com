@@ -1042,9 +1042,15 @@ and obtain a reviewed recovery plan. An old Qwen controller ignores quarantine.
 
 Language-budget reservations are still made before preparation; an already-reserved
 failed fingerprint can be retried without spending another page. A reserved page
-found `source_truncated` stays spent. A changed fingerprint
-after quarantine, or a failure before a retry record is persisted or after decoding but
-before writing READY, can still require budget review.
+found `source_truncated` is refunded (#1457): at the start of each tick the feed takes it
+out of `<name>-budget.json` (logged as `<name>_budget_refund`), and the tick can select
+another page in its place. It is refunded only if every scan of it that the feed can use
+has that quarantine record, and it is not in `done.txt` or `skipped.txt`. A page whose
+scan LoC has replaced stays spent, because it can still be prepared. A changed
+fingerprint after quarantine, or a failure before a retry record is persisted or
+after decoding but before writing READY, can still require budget review. The refund reads
+the quarantine with the existing `quarantined()` helper, so it needs no new
+`scan_quarantine.py`.
 
 Matching size, SHA256 and (for batch JP2s) the advertised bag MD5 proves the retained
 bytes match those recorded checksums, **not** that the bytes are decodable or whether

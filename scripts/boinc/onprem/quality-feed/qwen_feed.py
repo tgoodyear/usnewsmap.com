@@ -82,6 +82,32 @@ def budget_spent(path):
     return json.loads(path.read_text()) if path.exists() else []
 
 
+def refund_truncated(path, spent, index, finished, truncated):
+    """Take out of a budget's reservation the pages whose scans are cut short at source (#1457),
+    given the quarantine's (id, doc_id) for each, and return what is left and how many were
+    refunded. Such a page is never prepared or retried, so it frees its place for another. Only
+    a page whose every available scan is the quarantined one is refunded: a page done or
+    skipped, or with another scan to prepare, stays spent."""
+    from qwen_source import source_id
+    candidates = {doc for _, doc in truncated if doc in spent and doc not in finished}
+    if not candidates:
+        return spent, 0
+    ids = {identity for identity, _ in truncated}
+    needles = [doc.encode() for doc in candidates]
+    rows = {}
+    for line in index.splitlines():
+        if any(needle in line for needle in needles) and (row := json.loads(line))["doc_id"] in candidates:
+            rows.setdefault(row["doc_id"], []).append(row)
+    refunded = {doc for doc, scans in rows.items() if all(source_id(row) in ids for row in scans)}
+    if not refunded:
+        return spent, 0
+    left = [doc for doc in spent if doc not in refunded]
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(left))
+    tmp.replace(path)
+    return left, len(refunded)
+
+
 def budgets(a):
     """(language, name, budget) for each language the feed prepares only under a budget."""
     return [(language, name, budget) for language, name, budget in (
@@ -552,8 +578,22 @@ def _tick(a):
     filters = tuple(arg for language, _, _ in budgeted for arg in ("--exclude-language", language))
     pages = []
     retryable = None
+    truncated = None
     for language, name, budget in budgeted:
-        spent = budget_spent(a.state / f"{name}-budget.json")
+        budget_path = a.state / f"{name}-budget.json"
+        spent = budget_spent(budget_path)
+        if spent:
+            if truncated is None:
+                # Scans cut short at source: terminal, so a reserved one is refunded (#1457).
+                truncated = json.loads(command(python + ["-c", (
+                    "from pathlib import Path; import json, sys; "
+                    "sys.path.insert(0, '/opt/usnm-quality-feed'); from scan_quarantine import quarantined; "
+                    f"print(json.dumps(sorted([r['id'], r['source']['doc_id']] for r in quarantined("
+                    f"Path('/var/lib/usnm-quality-feed/{a.campaign}')) if r['refetch_state'] == 'source_truncated')))"
+                )]))
+            spent, refunded = refund_truncated(budget_path, spent, index, set(json.loads(done)), truncated)
+            if refunded:
+                phase(name + "_budget_refund", refunded=refunded, spent=len(spent), budget=budget)
         own = index
         if language == GERMAN and a.german_pages is not None:
             own = listed_pages(index, a.german_pages)

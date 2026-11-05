@@ -2196,9 +2196,11 @@ class SourceTest(unittest.TestCase):
             submit.main()
         transaction.assert_not_called()
 
-    def budget_tick(self, root, budget, yiddish, others, german_budget=None, german_pages=None, retryable=()):
+    def budget_tick(self, root, budget, yiddish, others, german_budget=None, german_pages=None, retryable=(),
+                    quarantine=None, finished=()):
         """One feed tick with a stub corpus; returns the filters each select used and the
-        pages it sent to `run`. A filter's refused languages are one string when one is refused."""
+        pages it sent to `run`. A filter's refused languages are one string when one is refused.
+        With `quarantine`, the campaign's quarantine is real and kept from selection there."""
         args = types.SimpleNamespace(
             state=root, outbox=root, campaign="test", prep_ct=215, server_ct=230, server_host="server",
             archive_host="archive", scan_server="http://scan", archives="/archives", alto_export="/cache",
@@ -2218,9 +2220,12 @@ class SourceTest(unittest.TestCase):
                 filters.append((wanted, refused[0] if len(refused) == 1 else tuple(refused) or None,
                                 int(argv[argv.index("--count") + 1])))
                 indexed = {json.loads(line)["doc_id"] for line in index.splitlines()}
+                blocked = {r["id"] for r in quality.scan_quarantine.quarantined(quarantine / "test")
+                           } if quarantine else set()
                 pool = [p for p in yiddish + others
                         if (wanted is None or p["lang"] == wanted) and p["lang"] not in refused
-                        and p["doc_id"] in indexed]
+                        and p["doc_id"] in indexed
+                        and quality.scan_quarantine.source_id(frozen_page(p["doc_id"])) not in blocked]
                 selected = "".join(json.dumps(p) + "\n" for p in pool[:filters[-1][2]]).encode()
             if "cat" in argv:
                 return selected
@@ -2228,6 +2233,12 @@ class SourceTest(unittest.TestCase):
                 prepared.extend(json.loads(line) for line in data.splitlines())
             if "-c" in argv and "retryable_ids" in argv[-1]:
                 return json.dumps(list(retryable)).encode()
+            if "-c" in argv and "done.txt" in argv[-1]:
+                return json.dumps(list(finished)).encode()
+            if "-c" in argv and "import quarantined;" in argv[-1] and quarantine:
+                code = argv[-1].replace("/opt/usnm-quality-feed", str(HERE)).replace(
+                    "/var/lib/usnm-quality-feed", str(quarantine))
+                return subprocess.run([sys.executable, "-c", code], check=True, capture_output=True).stdout
             return b"[]" if "-c" in argv else b""
 
         def remote(host, argv, data=None):
@@ -2283,6 +2294,34 @@ class SourceTest(unittest.TestCase):
             self.assertEqual(filters, [(None, "yid", 100)])
             self.assertEqual(chosen, [other["doc_id"]])
             self.assertEqual(json.loads((root / "yiddish-budget.json").read_text()), [DOC])
+
+    def test_a_budgeted_page_found_truncated_at_source_frees_its_place_for_another(self):
+        yiddish = [{"doc_id": f"sn1_1900-01-02_ed-1_seq-{n}", "lang": "yid", "damage_rate": .9}
+                   for n in range(1, 6)]
+        truncated, replacement, rescanned, done = (yiddish[n]["doc_id"] for n in (0, 1, 3, 4))
+        others = [{"doc_id": "sn2_1900-01-02_ed-1_seq-1", "lang": "srp", "damage_rate": .8}]
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            quarantine = root / "quarantine"
+            # All three reserved pages were found cut short at source: one in a scan LoC has
+            # since replaced, and one that was done before.
+            for doc, sha in ((truncated, "a" * 64), (rescanned, "b" * 64), (done, "a" * 64)):
+                page = {**frozen_page(doc), "sha256": sha, "lang": "yid",
+                        "scan": f"keep/xx_test/sn1/1900-01-02/1/{doc.rsplit('-', 1)[1]}.jp2"}
+                quality.scan_quarantine.record_source_truncated(quarantine / "test", page, "ends early")
+            budget = root / "yiddish-budget.json"
+            budget.write_text(json.dumps([truncated, rescanned, done]))
+            filters, chosen = self.budget_tick(root, 3, yiddish, others, quarantine=quarantine,
+                                               finished=[done])
+            self.assertEqual(filters, [("yid", None, 1)])
+            self.assertEqual(chosen, [replacement])
+            self.assertEqual(sorted(json.loads(budget.read_text())), sorted([rescanned, done, replacement]))
+            # The budget is full again, so the next tick takes no Yiddish.
+            filters, chosen = self.budget_tick(root, 3, yiddish, others, quarantine=quarantine,
+                                               finished=[done])
+            self.assertEqual(filters, [(None, "yid", 100)])
+            self.assertEqual(chosen, [others[0]["doc_id"]])
+            self.assertEqual(sorted(json.loads(budget.read_text())), sorted([rescanned, done, replacement]))
 
     def test_the_budget_goes_ahead_of_a_source_request(self):
         yiddish = [{"doc_id": "sn1_1900-01-02_ed-1_seq-1", "lang": "yid", "damage_rate": .9}]
