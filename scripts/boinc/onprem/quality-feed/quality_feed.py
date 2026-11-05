@@ -35,9 +35,9 @@ Decoder quarantines in run and follow require operator review.
 
 jp2-check prints one line a --scan, in order: `ok`, or `truncated`, a tab and the reason for a
 JP2 cut short at its source (the check above). push-boinc-scan.sh --skip-truncated uses it to
-keep such scans from BOINC OCR (#1457). With --verify-sidecar, a scan whose bytes aren't what
-its sidecar (<scan>.json) records (size, sha256 and the bag's md5, which a JP2's has) is
-`unverified`, a tab and why, and not judged: a copy damaged here says nothing about LoC's file.
+keep such scans from BOINC OCR (#1457). With --verify-sidecar, a scan its sidecar (<scan>.json)
+doesn't record as a JP2 with this size, sha256 and bag md5 is `unverified`, a tab and why, and
+not judged: a copy damaged here says nothing about LoC's file.
 A file it can't read fails it, naming the file on stderr.
 """
 import argparse
@@ -1196,19 +1196,21 @@ def wait_for_room(camp_dir, max_pending, every_secs, busy, poll_secs=15, min_sec
 
 
 def sidecar_mismatch(raw, side):
-    """Why `raw` isn't the scan its fetcher's sidecar records, or None: the size, the sha256
-    and, if it has one, the bag's md5, which a JP2's sidecar must have (the fetcher's
-    matches_sidecar)."""
+    """Why `raw` isn't the JP2 its fetcher's sidecar records, or None: a JP2 with this size,
+    sha256 and bag md5 (the fetcher's matches_sidecar, for a JP2)."""
     if not isinstance(side, dict):
         return "its sidecar isn't a JSON object"
+    if side.get("format") != "jp2":
+        return "its sidecar doesn't record a JP2"
     md5 = side.get("md5")
-    if side.get("format") == "jp2" and md5 is None:
+    if md5 is None:
         return "its sidecar has no md5"
     if side.get("bytes") != len(raw):
         return f"it is {len(raw)} bytes; its sidecar says {side.get('bytes')}"
     if side.get("sha256") != hashlib.sha256(raw).hexdigest():
         return "its sha256 isn't its sidecar's"
-    if md5 is not None and md5 != hashlib.md5(raw).hexdigest():
+    # An integrity check, not security: allowed where FIPS mode disables md5 for security.
+    if md5 != hashlib.md5(raw, usedforsecurity=False).hexdigest():
         return "its md5 isn't its sidecar's"
     return None
 

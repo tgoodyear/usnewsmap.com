@@ -944,8 +944,8 @@ its box, marker-segment and tile-part headers (`quality_feed.py jp2-check`; no p
 network). A scan that is cut short isn't pushed. The script names it as
 `truncated <page> <reason>` and exits 3, as for a missing page.
 
-Only a scan that matches its sidecar is checked: the size, sha256 and bag md5 the fetcher
-recorded. A copy damaged on the scan server says nothing about LoC's file. The script pushes
+Only a scan that matches its sidecar is checked: a JP2, with the size, sha256 and bag md5 the
+fetcher recorded. A copy damaged on the scan server says nothing about LoC's file. The script pushes
 it as before, with a warning, and export's own check against the sidecar stops it.
 
 The controller keeps the reason on the page's claim. It then runs the hand-off

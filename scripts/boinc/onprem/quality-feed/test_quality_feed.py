@@ -913,7 +913,7 @@ class SourceTruncatedTest(unittest.TestCase):
                     "bytes": len(fetched), "sha256": hashlib.sha256(fetched).hexdigest(), "format": "jp2",
                     "md5": hashlib.md5(fetched).hexdigest(), **extra}))
             sidecar(whole, whole.read_bytes())
-            damaged = [Path(d) / f"damaged-{n}.jp2" for n in range(5)]
+            damaged = [Path(d) / f"damaged-{n}.jp2" for n in range(7)]
             longer = whole.read_bytes() + b"more"
             for path in damaged:
                 path.write_bytes(whole.read_bytes())
@@ -922,6 +922,11 @@ class SourceTruncatedTest(unittest.TestCase):
             sidecar(damaged[2], whole.read_bytes(), md5="0" * 32)
             sidecar(damaged[3], whole.read_bytes(), md5=None)
             Path(f"{damaged[4]}.json").write_text("not json")
+            sidecar(damaged[5], whole.read_bytes(), format="jpeg")
+            fetched = whole.read_bytes()
+            Path(f"{damaged[6]}.json").write_text(json.dumps({  # as recorded before formats
+                "bytes": len(fetched), "sha256": hashlib.sha256(fetched).hexdigest(),
+                "md5": hashlib.md5(fetched).hexdigest()}))
             out = io.StringIO()
             with contextlib.redirect_stdout(out):
                 feed.main(["jp2-check", "--verify-sidecar", "--scan", str(whole),
@@ -930,7 +935,8 @@ class SourceTruncatedTest(unittest.TestCase):
                 f"truncated\t{cut['reason']}",
                 f"unverified\tit is {len(longer) - 4} bytes; its sidecar says {len(longer)}",
                 "unverified\tits sha256 isn't its sidecar's", "unverified\tits md5 isn't its sidecar's",
-                "unverified\tits sidecar has no md5", "unverified\tits sidecar doesn't parse"])
+                "unverified\tits sidecar has no md5", "unverified\tits sidecar doesn't parse",
+                *["unverified\tits sidecar doesn't record a JP2"] * 2])
             # A file it can't read fails it, naming the file.
             absent = str(Path(d) / "absent.jp2")
             with self.assertRaises(SystemExit) as failed, contextlib.redirect_stdout(io.StringIO()):
