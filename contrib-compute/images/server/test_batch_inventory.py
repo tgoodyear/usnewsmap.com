@@ -121,6 +121,34 @@ class InventoryTests(unittest.TestCase):
             self.payload()
         self.assertFalse([name for name in calls if name.startswith("usnm_quality_")])
 
+    def run_main(self, stdout):
+        out = self.root / "inventory.json"
+        argv = ["batch-inventory.py", "--root", str(self.root), "--results", str(self.results),
+                "--mysql-defaults-file", "my.cnf", "--database", "boinc", "--nonce", "b" * 32,
+                "--out", str(out)]
+        done = subprocess.CompletedProcess(args=[], returncode=0, stdout=stdout)
+        with patch.object(inventory.subprocess, "run", return_value=done), patch("sys.argv", argv):
+            inventory.main()
+        return json.loads(out.read_text())
+
+    def test_per_app_counts_tell_other_apps_work_from_ocrs(self):
+        # #1474: the controller budgets other apps' share of the global cap by these counts.
+        # The total is their sum, from the same read, so the two can't disagree; work of no known
+        # app counts only in the total.
+        payload = self.run_main(f"2\napp\t\t1\napp\tusnm_ocr\t3\napp\tusnm_qwen\t2\nusnm_{self.job}\t0\n")
+        self.assertEqual(payload["pending_workunits_by_app"], {"usnm_ocr": 3, "usnm_qwen": 2})
+        self.assertEqual((payload["pending_workunits"], payload["active_hosts"], payload["pending_jobs"]),
+                         (6, 2, [self.job]))
+        self.assertEqual(self.run_main("2\n")["pending_workunits"], 0)
+        for bad in ("app\tusnm_qwen\t-1", "app\tusnm qwen\t2", "app\tusnm_qwen\t2\napp\tusnm_qwen\t3",
+                    "app\t\t1\napp\t\t2"):
+            with self.assertRaisesRegex(ValueError, "invalid database inventory"):
+                self.run_main(f"2\n{bad}\n")
+        with self.assertRaisesRegex(ValueError, "invalid database inventory"):
+            self.run_main("5\t2\n")
+        with self.assertRaisesRegex(ValueError, "per-app"):
+            inventory.inventory(self.root, self.results, [3, 2], "b" * 32, pending_by_app={"usnm_qwen": -1})
+
     def test_query_and_bridge_integration_are_read_only(self):
         bridge = Path(__file__).with_name("bridge-job.sh").read_text()
         self.assertIn('if [ "$step" = batch-inventory ]; then', bridge)
@@ -187,17 +215,20 @@ class InventorySQLTests(unittest.TestCase):
              f"--port={os.environ['USNM_WORK_VOLUME_MYSQL_PORT']}", "--user=root",
              "--database=mysql", "--batch", "--raw", "--skip-column-names"],
             input="""
-CREATE TEMPORARY TABLE workunit (assimilate_state INTEGER NOT NULL, name VARCHAR(254));
+CREATE TEMPORARY TABLE workunit (assimilate_state INTEGER NOT NULL, name VARCHAR(254), appid INTEGER NOT NULL);
 CREATE TEMPORARY TABLE host (rpc_time DOUBLE NOT NULL);
-INSERT INTO workunit VALUES (0,'other-app'),(1,'usnm_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'),
- (2,'done'),(2,'usnm_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'),(9,'unknown'),
- (0,'usnm_ocrb_cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc'),(0,'usnm_ocrb_short');
+CREATE TEMPORARY TABLE app (id INTEGER NOT NULL PRIMARY KEY, name VARCHAR(254) NOT NULL);
+INSERT INTO app VALUES (1,'usnm_ocr'),(2,'usnm_qwen'),(3,'usnm_idle');
+INSERT INTO workunit VALUES (0,'other-app',2),(1,'usnm_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',1),
+ (2,'done',2),(2,'usnm_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',1),(9,'unknown',2),
+ (0,'usnm_ocrb_cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',1),(0,'usnm_ocrb_short',1),(0,'orphan',7);
 INSERT INTO host VALUES (0),(UNIX_TIMESTAMP()-90000),(UNIX_TIMESTAMP()),(UNIX_TIMESTAMP()-1);
 """ + inventory.QUERY + ";",
             text=True, capture_output=True, check=True,
         )
         self.assertEqual(result.stdout.strip(),
-                         "5\t2\nusnm_" + "a" * 64 + "\t1\nusnm_" + "b" * 64 + "\t2\nusnm_ocrb_" + "c" * 64 + "\t0")
+                         "2\napp\t\t1\napp\tusnm_ocr\t3\napp\tusnm_qwen\t2\nusnm_" + "a" * 64 + "\t1\nusnm_"
+                         + "b" * 64 + "\t2\nusnm_ocrb_" + "c" * 64 + "\t0")
 
 
 if __name__ == "__main__":

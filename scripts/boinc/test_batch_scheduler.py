@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -49,6 +50,9 @@ class Fake:
         self.actions = []
         self.hosts = 2
         self.other = 0
+        # Whose the `other` workunits are, by the server's per-app count; None: an older server
+        # image that doesn't report one.
+        self.other_app = "usnm_qwen"
         self.assimilated = set()
         self.extra_pending = set()
         self.extra_existing = set()
@@ -61,13 +65,17 @@ class Fake:
         pending = [job_id for job_id, job in self.jobs.items()
                    if job["stage"] == "submitted" and not job["spool"] and job_id not in self.assimilated]
         pending = sorted(set(pending) | self.extra_pending)
-        return {"schema_version": 1, "nonce": "a" * 32, "created_at": NOW,
-                "active_hosts": self.hosts,
-                "pending_workunits": self.other + len(pending), "pending_jobs": pending,
-                "existing_jobs": sorted(set(pending) | self.extra_existing |
-                                        {job_id for job_id, job in self.jobs.items()
-                                         if job["stage"] == "submitted"}),
-                "jobs": copy.deepcopy(self.jobs)}
+        snapshot = {"schema_version": 1, "nonce": "a" * 32, "created_at": NOW,
+                    "active_hosts": self.hosts,
+                    "pending_workunits": self.other + len(pending), "pending_jobs": pending,
+                    "existing_jobs": sorted(set(pending) | self.extra_existing |
+                                            {job_id for job_id, job in self.jobs.items()
+                                             if job["stage"] == "submitted"}),
+                    "jobs": copy.deepcopy(self.jobs)}
+        if self.other_app:
+            by_app = snapshot["pending_workunits_by_app"] = {"usnm_ocr": len(pending)}
+            by_app[self.other_app] = by_app.get(self.other_app, 0) + self.other
+        return snapshot
 
     def records(self):
         return copy.deepcopy(self.rows)
@@ -907,12 +915,12 @@ class GoldOnboardingTests(unittest.TestCase):
         self.state = {}
         self.fake = GoldFake()
 
-    def tick(self, at=0, drain=False):
+    def tick(self, at=0, drain=False, **kwargs):
         self.fake.now = NOW + at
         # Per-app counts, as live: gold units then weigh on the global cap, not the OCR cohort.
         return batch.tick(self.config, self.state, self.fake, lambda: None, NOW + at, drain=drain,
                           server_status=status_xml(qwen_unsent=0, quality_unsent=0,
-                                                   quality_in_progress=0, train_unsent=0))
+                                                   quality_in_progress=0, train_unsent=0), **kwargs)
 
     def ran(self):
         return [variables for _, _, variables in self.fake.steps]
@@ -1012,6 +1020,16 @@ class GoldOnboardingTests(unittest.TestCase):
         self.assertEqual(self.fake.steps[0][1], "gold-onboard")
         self.assertEqual(self.fake.steps[0][2]["GOLD_MAX_HOSTS"], 10)
         self.assertEqual(event["max_global_pending"], 1000)
+
+    def test_under_an_other_app_budget_gold_units_count_in_full_in_their_tick(self):
+        # #1474: other apps' 1,000 workunits fill the cap, but count only up to 995. Gold units
+        # get the five left, and the refill in the same tick counts them in full: no OCR room.
+        self.fake.other = 1000
+        event = self.tick(other_app_budget=995)
+        self.assertEqual(self.fake.steps[0][2]["GOLD_MAX_HOSTS"], 5)
+        self.assertEqual((event["global_pending"], event["global_pending_counted"]), (1005, 1000))
+        self.assertEqual(event["backpressure_reason"], "global_safety_cap")
+        self.assertEqual(len(self.fake.jobs), 0)
 
     def other_plan(self, number, stage):
         row = record(f"sn87654321/1900-01-01/ed-1/seq-{number}", 1000 + number, stage)
@@ -2713,10 +2731,22 @@ class CohortWatermarksAndStarvationTests(unittest.TestCase):
                 self.assertEqual(batch.main([
                     "--config", str(cfg_path), "--state-dir", str(directory),
                     "--low-watermark", "1", "--high-watermark", "4", "--max-global-pending", "800",
+                    "--other-app-budget", "500",
                 ]), 0)
             plan = json.loads(out.getvalue())
-            self.assertEqual((plan["low_watermark"], plan["high_watermark"], plan["max_global_pending"]),
-                             (1, 4, 800))
+            self.assertEqual((plan["low_watermark"], plan["high_watermark"], plan["max_global_pending"],
+                              plan["other_app_budget"]), (1, 4, 800, 500))
+            # A dry run already refuses a budget that leaves the cohort none of the cap, or one
+            # without a cap set.
+            uncapped = directory / "uncapped.json"
+            uncapped.write_text(json.dumps({k: v for k, v in cfg.items() if k != "max_global_pending"}))
+            for flags in (["--max-global-pending", "800", "--other-app-budget", "800"],
+                          ["--other-app-budget", "500"]):
+                err = io.StringIO()
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+                    self.assertEqual(batch.main([
+                        "--config", str(uncapped), "--state-dir", str(directory), *flags]), 1)
+                self.assertEqual(json.loads(err.getvalue())["error"], "invalid other_app_budget")
 
             with patch.object(batch.Transport, "lock", return_value=contextlib.nullcontext()), \
                     patch.object(batch, "tick", return_value={"event": "boinc_batch_tick"}) as mock_tick, \
@@ -2724,9 +2754,10 @@ class CohortWatermarksAndStarvationTests(unittest.TestCase):
                 self.assertEqual(batch.main([
                     "--config", str(cfg_path), "--state-dir", str(directory), "--apply",
                     "--low-watermark", "1", "--high-watermark", "4", "--max-global-pending", "800",
-                    "--server-status-file", str(status_path),
+                    "--other-app-budget", "500", "--server-status-file", str(status_path),
                 ]), 0)
             self.assertEqual(mock_tick.call_args.kwargs["max_global_pending"], 800)
+            self.assertEqual(mock_tick.call_args.kwargs["other_app_budget"], 500)
             transport_arg = mock_tick.call_args.args[2]
             with contextlib.redirect_stderr(io.StringIO()):  # its timings report the status phase
                 self.assertEqual(transport_arg.server_status()["apps"]["usnm_qwen"]["unsent"], 456)
@@ -2819,6 +2850,78 @@ class CohortWatermarksAndStarvationTests(unittest.TestCase):
         self.assertEqual(event["global_pending_results"], 456)
         self.assertEqual(event["selected"], 2)
         self.assertEqual(len(self.fake.jobs), 2)
+
+    def test_other_app_budget_keeps_a_stalled_backlog_from_starving_ocr(self):
+        # #1474: 2,000 Qwen workunits whose unsent partner replicas no eligible host can take
+        # fill a cap of 2,000 while usnm_ocr is empty and its hosts ask for work.
+        self.fake.other = 2000
+        xml = status_xml(ocr_unsent=0, ocr_in_progress=0, qwen_unsent=1865,
+                         quality_unsent=0, quality_in_progress=0, train_unsent=0)
+        caps = {"low_watermark": 1, "high_watermark": 4, "max_global_pending": 2000, "server_status": xml}
+        blocked = self.tick(**caps)
+        self.assertEqual(blocked["alerts"][0]["blocked_by"], "global_safety_cap")
+        self.assertEqual(self.fake.jobs, {})
+        # Counted only up to a budget of 1,500, the backlog leaves the cohort 500 of the cap.
+        event = self.tick(**caps, other_app_budget=1500)
+        self.assertIsNone(event["backpressure_reason"])
+        self.assertEqual((event["global_pending"], event["global_pending_counted"]), (2000, 1500))
+        self.assertEqual((event["other_app_budget"], event["global_hard_cap"]), (1500, 4096))
+        self.assertIsNone(event["alerts"][0]["blocked_by"])
+        self.assertEqual(event["alerts"][0]["refilled"], 2)
+        self.assertEqual(len(self.fake.jobs), 2)
+        # A budget as large as the cap would leave the cohort nothing, and one needs a cap set
+        # explicitly, as a dry run checks it.
+        with self.assertRaisesRegex(ValueError, "other_app_budget"):
+            self.tick(**caps, other_app_budget=2000)
+        with self.assertRaisesRegex(ValueError, "other_app_budget"):
+            self.tick(server_status=xml, other_app_budget=500)
+
+    def test_under_a_budget_the_feeder_bound_still_holds(self):
+        # Every app's work, counted in full, never passes the feeder's 4,096 slots.
+        self.fake.other = batch.FEEDER_SHMEM_SLOTS - 1
+        xml = status_xml(ocr_unsent=0, ocr_in_progress=0, qwen_unsent=self.fake.other,
+                         quality_unsent=0, quality_in_progress=0, train_unsent=0)
+        caps = {"low_watermark": 1, "high_watermark": 4, "other_app_budget": 1000, "server_status": xml}
+        first = self.tick(**caps, max_global_pending=3000)
+        self.assertEqual(first["global_pending_counted"], 1000)
+        self.assertEqual(len(self.fake.jobs), 1)
+        for cap in (3000, batch.MAX_GLOBAL_PENDING):  # a larger safety cap doesn't lift it
+            at_bound = self.tick(**caps, max_global_pending=cap)
+            self.assertEqual(at_bound["global_pending"], batch.FEEDER_SHMEM_SLOTS)
+            self.assertEqual(at_bound["backpressure_reason"], "global_hard_cap")
+            self.assertEqual(at_bound["alerts"][0]["blocked_by"], "global_hard_cap")
+            self.assertEqual(len(self.fake.jobs), 1)
+
+    def test_under_a_budget_the_budgeted_share_and_ocr_work_still_fill_the_cap(self):
+        self.fake.other = 1800
+        xml = status_xml(ocr_unsent=0, ocr_in_progress=0, qwen_unsent=1800,
+                         quality_unsent=0, quality_in_progress=0, train_unsent=0)
+        caps = {"low_watermark": 1, "high_watermark": 4, "other_app_budget": 1500, "server_status": xml}
+        self.tick(**caps, max_global_pending=1501)
+        self.assertEqual(len(self.fake.jobs), 1)
+        at_cap = self.tick(**caps, max_global_pending=1501)
+        self.assertEqual(at_cap["global_pending_counted"], 1501)
+        self.assertEqual(at_cap["backpressure_reason"], "global_safety_cap")
+        self.assertEqual(len(self.fake.jobs), 1)
+
+    def test_a_budget_discounts_only_work_the_server_counts_as_other_apps(self):
+        # Returned OCR workunits the inventory doesn't list by name, which per-app status
+        # doesn't show either, are the cohort's own work and count in full.
+        self.fake.other, self.fake.other_app = 1000, "usnm_ocr"
+        xml = status_xml(ocr_unsent=0, ocr_in_progress=0, qwen_unsent=0,
+                         quality_unsent=0, quality_in_progress=0, train_unsent=0)
+        caps = {"low_watermark": 1, "high_watermark": 4, "max_global_pending": 1000,
+                "other_app_budget": 0, "server_status": xml}
+        event = self.tick(**caps)
+        self.assertEqual((event["other_app_pending"], event["other_app_workunits"]), (1000, 0))
+        self.assertEqual(event["global_pending_counted"], 1000)
+        self.assertEqual(event["backpressure_reason"], "global_safety_cap")
+        # A server image without per-app counts: nothing is discounted.
+        self.fake.other_app = None
+        event = self.tick(**caps)
+        self.assertIsNone(event["other_app_workunits"])
+        self.assertEqual(event["global_pending_counted"], 1000)
+        self.assertEqual(self.fake.jobs, {})
 
     def test_non_ocr_cohort_app_selectors_are_rejected(self):
         # Regression for comment 4308954020 and Round-4 selector validation:
@@ -3063,6 +3166,24 @@ class SuryaPlanTests(unittest.TestCase):
             for file in directory.iterdir():
                 file.unlink()
             directory.rmdir()
+
+    def test_other_app_budget_is_for_ocr_plans(self):
+        # Surya's tick doesn't use the global cap, so a budget there would be silently ignored.
+        with self.assertRaisesRegex(ValueError, "OCR plans"):
+            self.tick(0, max_global_pending=2000, other_app_budget=500)
+        directory = Path(__file__).parent.resolve() / (".surya-config-" + uuid.uuid4().hex)
+        directory.mkdir()
+        try:
+            path = directory / "config.json"
+            path.write_text(json.dumps(self.config))
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                self.assertEqual(batch.main(["--config", str(path), "--state-dir", str(directory),
+                                             "--max-global-pending", "2000",
+                                             "--other-app-budget", "500"]), 1)
+            self.assertIn("OCR plans", err.getvalue())
+        finally:
+            shutil.rmtree(directory)
 
     def test_config_validation(self):
         loaded = self.load(self.config)

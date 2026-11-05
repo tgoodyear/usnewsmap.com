@@ -159,9 +159,17 @@ class ControllerTests(unittest.TestCase):
         self.assertIn("225 runnable", limits["usnm_ocr.now"])
         self.assertIn("1939 pending", limits["ocr_claim.now"])
         self.assertIn("held back", limits["ocr_claim.now"])
+        self.assertEqual(limits["ocr_claim"], "300 pending pages; 2000 across all apps")
         limits = collector.collect_controller(window(), [(at, "", tick(at))])
         self.assertNotIn("usnm_ocr.now", limits)
         self.assertNotIn("ocr_claim.now", limits)
+        # Under an other-app budget (#1474) the cap counts only part of what is pending.
+        event |= {"global_pending": 2300, "global_pending_counted": 1800, "other_app_budget": 1500,
+                  "global_hard_cap": 4096}
+        limits = collector.collect_controller(window(), [(at, "", json.dumps(event))])
+        self.assertEqual(limits["ocr_claim"], "300 pending pages; 2000 across all apps with other apps "
+                                              "counted up to 1500, and 4096 counted in full")
+        self.assertIn("2300 pending across all apps (1800 counted)", limits["ocr_claim.now"])
 
     def test_pending_pages_are_the_hours_last_reading_and_unknown_without_one(self):
         w = window()

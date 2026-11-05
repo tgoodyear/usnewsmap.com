@@ -120,9 +120,52 @@ outputs in `/root/.config/usnewsmap/prod/.env`, the configuration in
 
 The service passes `--server-status-url
 https://boinc.usnewsmap.com/server_status.php?xml=1` and
-`--max-global-pending 1000`. Without per-app status, conservative inventory
+`--max-global-pending`, set to 3000 in the
+`usnm-boinc-priority-controller.service.d/batch.conf` drop-in since 3 November
+(2000 before; raised to relieve [#1474](https://github.com/tgoodyear/usnewsmap.com/issues/1474)).
+Without per-app status, conservative inventory
 accounting treats every application's pending work as OCR and can prevent
-priority claims while unrelated GPU queues are full. Keep `max_pending: 40`,
+priority claims while unrelated GPU queues are full.
+
+Raising the cap only moves the problem: `usnm_qwen` workunits whose partner
+replica no eligible host can take stay unassimilated and fill any cap, so
+`usnm_ocr` stops with `blocked_by: "global_safety_cap"` while its hosts ask for
+work (#1474). `--other-app-budget B` (a flag, so the configuration hash doesn't
+change) counts other apps' unassimilated workunits toward
+`--max-global-pending` only up to `B`, which must be below the cap, so other
+apps can't take more than `B` of it: the cohort keeps `cap - B`, less retained
+collection backlog. The cap must be set explicitly (flag or configuration).
+The flag is for OCR plans; a Surya plan refuses it.
+All work of every app, counted in full, may not pass the
+feeder's 4,096 shared-memory slots (`shmem_work_items`); at that bound the
+reason is `global_hard_cap`, which no cap setting lifts. Which work is other
+apps' comes from the inventory's per-app count of unassimilated workunits
+(`pending_workunits_by_app`), not from the residual after OCR's named
+workunits, so OCR work the inventory doesn't list by name still counts in
+full. Only server images built with this change report the count. Without it
+nothing is discounted, and the tick reports `other_app_workunits: null`.
+
+Neither the commit CT 211 is pinned to nor the running server image has this.
+To use it, in either order (the flag is inert without the count):
+
+1. Roll the on-prem server image to one built from a commit that includes it
+   ([Reviewed resumable release pipeline](boinc-onprem.md#reviewed-resumable-release-pipeline-551)),
+   so `batch-inventory` reports `pending_workunits_by_app`.
+2. Move the controller checkout past it
+   ([Moving the controller checkout](#moving-the-controller-checkout-1412)).
+3. Add the flag to the drop-in's `ExecStart`, for example
+   `--max-global-pending 3000 --other-app-budget 2500`, which leaves
+   `usnm_ocr` 500 workunits (the 300 high watermark in #1474 and a margin).
+   The budget is the operator's choice.
+4. Run the same command without `--apply` (the plan event shows
+   `other_app_budget`, and a budget the cap doesn't allow fails here), then
+   `systemctl daemon-reload` and one tick by hand. Check
+   `other_app_workunits` (not `null`), `global_pending_counted`,
+   `global_hard_cap` and `backpressure_reason` before the timer runs it.
+
+Removing the flag restores the old accounting.
+
+Keep `max_pending: 40`,
 `pages_per_host: 2`, and `batch_size: 10`: OCR admission is bounded by
 `min(40, active_hosts * 2)` independently of the global safety cap. Status fetch
 or parsing failures stop the tick rather than admitting unmeasured work.
@@ -494,7 +537,9 @@ When a scope is due, the tick runs two bridge steps before it collects:
    pages not yet exported). A pass issues at most what the cap leaves
    (shared across scopes), is skipped when nothing is left (`gold-promote` still runs, with the
    configured `max_hosts`), and the units it
-   may have issued count as in flight for the tick's OCR refill. A failed unit
+   may have issued count as in flight for the tick's OCR refill. Gold units are
+   `usnm_gold` work: under `--other-app-budget` they count in full in the tick
+   that issues them and as other apps' work, within the budget, after it. A failed unit
    gets a fresh attempt. A unit that ran and scored over the threshold is a verdict and
    isn't reissued.
 2. `gold-promote` (`usnm-boinc host-trust promote`): collects those units with
@@ -633,8 +678,10 @@ pages rather than overwriting them, including for historical cohorts.
    still owns the two jobs**, whose launcher rejects running executions and
    verifies each execution's settings.
 2. Run `batch-inventory`, or wait for it. It reads the bridge journal, complete
-   assimilator outputs (or terminal markers), and two aggregate SQL counts with
-   verified database TLS. It writes only `scheduler/inventory.json` in the
+   assimilator outputs (or terminal markers), and, with verified database TLS,
+   the recently active hosts and each app's unassimilated workunits. Their
+   sum is `pending_workunits`, from the same read, so a submission between
+   two counts can't make other apps' share exceed the total. It writes only `scheduler/inventory.json` in the
    hand-off container. A per-tick nonce rejects stale or concurrent snapshots.
    Hand-off journals are downloaded as metadata only, using one Azure CLI batch
    process rather than one CLI invocation per historical job. Each refresh
@@ -656,7 +703,15 @@ pages rather than overwriting them, including for historical cohorts.
    `<unsent>` and `<in_progress>` counts so `usnm_ocr` admission checks
    `usnm_ocr`'s own runnable queued/in-progress work against its cohort low/high
    watermarks rather than letting unrelated GPU/other-app queues starve
-   CPU/native hosts. Global and cohort headroom (`cohort_pending`,
+   CPU/native hosts. With `--other-app-budget B` (below an explicitly set
+   `max_global_pending`), other apps' unassimilated workunits, by the
+   inventory's per-app count, count toward the cap only up to
+   `B`, so a backlog no host can take, such as stranded
+   `usnm_qwen` partner replicas, can't fill the cap and starve the cohort
+   (#1474). Under a budget every app's work, counted in full, may not pass
+   the feeder's 4,096 shared-memory slots (`FEEDER_SHMEM_SLOTS`). The
+   bound is in workunits, the cap's unit, while the feeder holds results, so
+   it limits the scale rather than matching slots exactly. Global and cohort headroom (`cohort_pending`,
    `other_app_pending`, `global_pending`) are reconciled in SQL workunit units,
    while result-replica counts (`cohort_pending_results`,
    `other_app_pending_results`, `global_pending_results`) are retained separately
@@ -669,8 +724,10 @@ pages rather than overwriting them, including for historical cohorts.
    when `high_watermark` is not explicitly configured), then holds above
    `low_watermark` (`backpressure_reason: "cohort_hysteresis"`) until the runnable
    queue drains back to `low_watermark`. When the global backlog reaches
-   `max_global_pending`, refilling halts with `backpressure_reason:
-"global_safety_cap"` (distinct from `"cohort_high_watermark"`,
+   `max_global_pending` (counting other apps' work up to the budget, if any),
+   refilling halts with `backpressure_reason:
+"global_safety_cap"`; under a budget, all work at 4,096 halts it with
+   `"global_hard_cap"` (both distinct from `"cohort_high_watermark"`,
    `"cohort_hysteresis"`, `"collection_backlog"`, `"no_active_hosts"`, and
    `"draining"`). Assimilated jobs with missing or partial outputs still count
    toward `collection_backlog`; a stalled collector cannot create unbounded
@@ -679,7 +736,8 @@ pages rather than overwriting them, including for historical cohorts.
 5. Persist selected pages **before** pushing or exporting. Push and export at
    most `batch_size` cached pages, then submit at most `batch_size`
    reservations (or fewer with [`--refill-cap`](#refill-cap-1447)). Submissions, including recovered reservations, respect both the
-   cohort high watermark and `max_global_pending`. Export transfers only the selected
+   cohort high watermark and `max_global_pending` (and, under a budget, the
+   4,096 bound). Export transfers only the selected
    scans and sidecars, their existing journal entries and the single manifest
    snapshot; collection transfers only one journal, its optional `accepted/`
    publication recovery snapshot and result and trust files. Accepted bytes
@@ -695,7 +753,12 @@ pages rather than overwriting them, including for historical cohorts.
 6. Emit a structured `boinc_batch_tick` JSON event: selected and published
    counts, new publications, cumulative pages/hour, host and queue counts
    (`cohort_pending`, `other_app_pending`, `global_pending`, `low_watermark`,
-   `high_watermark`, `max_global_pending`, `refilling`, `app_queues`), oldest
+   `high_watermark`, `max_global_pending`, `refilling`, `app_queues`), with
+   `global_pending_counted` (what the cap counts: `global_pending` unless a
+   budget leaves part of other apps' work out), `other_app_workunits` (other
+   apps' share by the inventory's per-app count, `null` from server images
+   without it), `other_app_budget` and
+   `global_hard_cap` (4,096 under a budget, otherwise `null`), oldest
    pending age, collection backlog, `backpressure` and `backpressure_reason`,
    plus `starvation_alert` and structured `alerts` (`cohort_starvation` when
    active hosts face `0` unsent or `<= low_watermark` runnable `usnm_ocr` work,
