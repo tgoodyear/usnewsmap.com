@@ -362,9 +362,13 @@ impl Cache {
                 field_bytes(&mut salt, dir.as_os_str().as_encoded_bytes());
                 let unit = path.parent().context("Qwen unit directory")?;
                 let membership = unit.join(crate::qwen::stage::MEMBERSHIP_FILE);
-                // Every member job the membership names is in the key, valid
-                // or not: whether the ledger accepts the membership depends on
-                // those files (`check_sources`), so mending one must re-key.
+                // When the membership parses, the job of every member it names
+                // under a plain unit name is in the key, valid or not: whether
+                // the ledger accepts the membership depends on those files
+                // (`check_sources`), so mending one must re-key. A membership
+                // that doesn't parse, or a name that would leave `pages/`, is
+                // refused by the ledger whatever the files hold, and the
+                // membership's own bytes are in the key below.
                 if let Some(m) = crate::read(&membership, MAX_MEMBERSHIP)
                     .ok()
                     .and_then(|b| serde_json::from_slice::<Membership>(&b).ok())

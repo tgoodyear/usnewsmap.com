@@ -166,8 +166,26 @@ pub fn accepted_readings(
             "{}: not an agreeing record",
             path.display()
         );
+        // The ledger counted it as this page's; it must still be.
+        anyhow::ensure!(
+            record.v == 1
+                && record.job_id == job.id
+                && record.doc_id == page.doc_id
+                && !record.accuracy_established,
+            "{}: not a record of this job's page",
+            path.display()
+        );
         let [a, b] = record.results;
         let side = if b.result < a.result { b } else { a };
+        let mut ids: Vec<&str> = side.readings.iter().map(|r| r.id.as_str()).collect();
+        ids.sort_unstable();
+        let mut want = expected(job, &page.doc_id);
+        want.sort_unstable();
+        anyhow::ensure!(
+            !want.is_empty() && ids == want,
+            "{}: the agreeing side does not read the page's crops once each",
+            path.display()
+        );
         anyhow::ensure!(
             side.outcome == Outcome::Ok,
             "{}: the agreeing side did not run to the end",
@@ -206,6 +224,10 @@ pub fn accepted_readings(
 /// What `accepted_readings` reads of a pair record (`validate::record_page`).
 #[derive(serde::Deserialize)]
 struct PageRecord {
+    v: u32,
+    job_id: String,
+    doc_id: String,
+    accuracy_established: bool,
     status: String,
     results: [RecordSide; 2],
 }
