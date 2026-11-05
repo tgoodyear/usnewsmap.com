@@ -205,6 +205,8 @@ German pages from the 1850s to the 1910s are 57,580 of the sampled pages, so abo
 4. **Ship it like our Japanese OCR and American Stories.** Our text is indexed beside LoC's, one document per page, with a badge saying which OCR a match came from.
 5. **Include Danish, Finnish and Lithuanian pages** in the sample, since blackletter type was also used to print those languages (to confirm on our pages).
 
+The pilot's sample is frozen in [`ocr/fraktur-pilot/`](../../../ocr/fraktur-pilot/README.md) (#325): 1,000 damaged German pages, 143 or 142 for each decade from the 1850s to the 1910s, spread over 85 titles, with separate declared samples of 100 Danish (1860s to 1910s), 100 Finnish (1900s and 1910s) and 100 Lithuanian (1910s) pages. It reads the scans already cached on the scan host instead of fetching LoC's images. The paired `deu_latf`/`deu` run is a dry run until its compute is authorized.
+
 American Stories won't help here, because its OCR is English-only.
 
 ## Spanish
@@ -498,7 +500,7 @@ The selections use the **first-listed catalog language**, matching the report's 
 2. **A quality comparison with CHNC** on the same *Colorado Times* 1945 pages.
 3. **A Japanese reader's review** of the reference crops and a sample of our OCR.
 4. **Resolved — Japanese index count:** all 109 excluded IDs are [identified](https://github.com/tgoodyear/usnewsmap.com/releases/download/data-report-data-20261023-48fbb2a/report-data.tar.gz): 107 short and 2 empty OCR results fail the historical index eligibility rule. The [complete input reconstruction](data/issue-324/README.md) reproduces 10,414 selected and 10,305 eligible pages; no index-filter defect or rebuild is indicated.
-5. **Typefaces of the damaged German pages:** how many are Fraktur, and how much a Fraktur model recovers.
+5. **Typefaces of the damaged German pages:** how many are Fraktur, and how much a Fraktur model recovers. The sample is frozen ([`ocr/fraktur-pilot/`](../../../ocr/fraktur-pilot/README.md), #325); the paired run, a reader's typeface labels and the hand-checked pages are still to do.
 6. **Hand-check the mixed-language detections.** The title attribution is resolved above; the detector's page-language assignments have not been manually verified, particularly the 55-word *St. Paul Tidende* page.
 
 Former question 7 (American Stories' 1925 coverage) is answered in the English section: the historical join was reproduced, upstream omissions were separated from identifier collisions, and the grouped counts were retained. The confirmed collision defect and the physical reconciliation are a separate follow-up, #573.

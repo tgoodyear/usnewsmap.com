@@ -1,0 +1,1410 @@
+{
+  "format": "usnm-fraktur-pilot-summary/1",
+  "inputs": {
+    "audit_pages": {
+      "name": "audit-10pct-pages.csv.gz",
+      "pages": 2359875,
+      "sha256": "ca9890d21db07108f90454e1b16887a18ee4b962d54329ce7cdb409f8e373514"
+    },
+    "manifest": {
+      "name": "manifest.parquet",
+      "rows": 1922826,
+      "sha256": "ddc1fb2520cbea24ca9633e19da32fcce25f8ec010e473e77195f83462fc5140"
+    },
+    "scan_listing": {
+      "files": 113270,
+      "name": "keep-listing-rooted.tsv",
+      "sha256": "a006273ba0f91e597a8f0be690f06ce89e20eb0255502ae1c9e06415684f59e7"
+    },
+    "sidecars": {
+      "lines": 417834,
+      "name": "index-full.jsonl",
+      "pages": 417820,
+      "repeated_pages": 14,
+      "sha256": "e287669f8ccb5b225e9e2ec762a1e3138bfc3d49f62874cb9564ac06dffa420b",
+      "unparsed_lines": 0
+    }
+  },
+  "issue": 325,
+  "pages": 1300,
+  "samples": {
+    "dan": {
+      "audit_rule_disagreements": 0,
+      "decades": {
+        "1860": {
+          "allocated": 13,
+          "audit_10pct": 0,
+          "eligible": 13,
+          "formats": {
+            "jp2": 13
+          },
+          "selected": 13,
+          "titles_eligible": 1,
+          "titles_selected": 1
+        },
+        "1870": {
+          "allocated": 18,
+          "audit_10pct": 2,
+          "eligible": 44,
+          "formats": {
+            "jp2": 18
+          },
+          "selected": 18,
+          "titles_eligible": 1,
+          "titles_selected": 1
+        },
+        "1880": {
+          "allocated": 18,
+          "audit_10pct": 2,
+          "eligible": 897,
+          "formats": {
+            "jp2": 18
+          },
+          "selected": 18,
+          "titles_eligible": 2,
+          "titles_selected": 2
+        },
+        "1890": {
+          "allocated": 17,
+          "audit_10pct": 1,
+          "eligible": 1260,
+          "formats": {
+            "jp2": 17
+          },
+          "selected": 17,
+          "titles_eligible": 3,
+          "titles_selected": 3
+        },
+        "1900": {
+          "allocated": 17,
+          "audit_10pct": 0,
+          "eligible": 911,
+          "formats": {
+            "jp2": 17
+          },
+          "selected": 17,
+          "titles_eligible": 3,
+          "titles_selected": 3
+        },
+        "1910": {
+          "allocated": 17,
+          "audit_10pct": 3,
+          "eligible": 2066,
+          "formats": {
+            "jp2": 17
+          },
+          "selected": 17,
+          "titles_eligible": 3,
+          "titles_selected": 3
+        }
+      },
+      "eligible": 5191,
+      "excluded": {
+        "mixed_language": {
+          "1880": 22,
+          "1890": 32,
+          "1900": 3,
+          "1910": 40
+        },
+        "outside_era": {
+          "1920": 351
+        }
+      },
+      "frame_pages": 5639,
+      "lang": "dan",
+      "selected": 100,
+      "shortfall": 0,
+      "size": 100,
+      "strata": [
+        {
+          "decade": 1860,
+          "eligible": 13,
+          "lccn": "sn84037526",
+          "selected": 13
+        },
+        {
+          "decade": 1870,
+          "eligible": 44,
+          "lccn": "sn84037526",
+          "selected": 18
+        },
+        {
+          "decade": 1880,
+          "eligible": 851,
+          "lccn": "2019270503",
+          "selected": 9
+        },
+        {
+          "decade": 1880,
+          "eligible": 46,
+          "lccn": "sn84037526",
+          "selected": 9
+        },
+        {
+          "decade": 1890,
+          "eligible": 1086,
+          "lccn": "2019270503",
+          "selected": 6
+        },
+        {
+          "decade": 1890,
+          "eligible": 121,
+          "lccn": "sn86086559",
+          "selected": 6
+        },
+        {
+          "decade": 1890,
+          "eligible": 53,
+          "lccn": "sn84037526",
+          "selected": 5
+        },
+        {
+          "decade": 1900,
+          "eligible": 1,
+          "lccn": "sn90059649",
+          "selected": 1
+        },
+        {
+          "decade": 1900,
+          "eligible": 895,
+          "lccn": "sn86086559",
+          "selected": 8
+        },
+        {
+          "decade": 1900,
+          "eligible": 15,
+          "lccn": "sn84037526",
+          "selected": 8
+        },
+        {
+          "decade": 1910,
+          "eligible": 7,
+          "lccn": "sn90059649",
+          "selected": 6
+        },
+        {
+          "decade": 1910,
+          "eligible": 1945,
+          "lccn": "sn86086559",
+          "selected": 6
+        },
+        {
+          "decade": 1910,
+          "eligible": 114,
+          "lccn": "sn84037526",
+          "selected": 5
+        }
+      ]
+    },
+    "fin": {
+      "audit_rule_disagreements": 0,
+      "decades": {
+        "1900": {
+          "allocated": 10,
+          "audit_10pct": 3,
+          "eligible": 10,
+          "formats": {
+            "jp2": 10
+          },
+          "selected": 10,
+          "titles_eligible": 2,
+          "titles_selected": 2
+        },
+        "1910": {
+          "allocated": 90,
+          "audit_10pct": 6,
+          "eligible": 818,
+          "formats": {
+            "jp2": 90
+          },
+          "selected": 90,
+          "titles_eligible": 3,
+          "titles_selected": 3
+        }
+      },
+      "eligible": 828,
+      "excluded": {
+        "outside_era": {
+          "1920": 1823,
+          "1930": 283,
+          "1940": 217,
+          "1950": 398,
+          "1960": 145
+        }
+      },
+      "frame_pages": 3694,
+      "lang": "fin",
+      "selected": 100,
+      "shortfall": 0,
+      "size": 100,
+      "strata": [
+        {
+          "decade": 1900,
+          "eligible": 8,
+          "lccn": "sn93060356",
+          "selected": 8
+        },
+        {
+          "decade": 1900,
+          "eligible": 2,
+          "lccn": "sn83025242",
+          "selected": 2
+        },
+        {
+          "decade": 1910,
+          "eligible": 235,
+          "lccn": "2011260133",
+          "selected": 30
+        },
+        {
+          "decade": 1910,
+          "eligible": 192,
+          "lccn": "sn93060356",
+          "selected": 30
+        },
+        {
+          "decade": 1910,
+          "eligible": 391,
+          "lccn": "sn83025242",
+          "selected": 30
+        }
+      ]
+    },
+    "ger": {
+      "audit_rule_disagreements": 0,
+      "decades": {
+        "1850": {
+          "allocated": 143,
+          "audit_10pct": 10,
+          "eligible": 1771,
+          "formats": {
+            "jp2": 110,
+            "jpeg": 33
+          },
+          "selected": 143,
+          "titles_eligible": 8,
+          "titles_selected": 8
+        },
+        "1860": {
+          "allocated": 143,
+          "audit_10pct": 18,
+          "eligible": 6254,
+          "formats": {
+            "jp2": 113,
+            "jpeg": 30
+          },
+          "selected": 143,
+          "titles_eligible": 18,
+          "titles_selected": 18
+        },
+        "1870": {
+          "allocated": 143,
+          "audit_10pct": 16,
+          "eligible": 4533,
+          "formats": {
+            "jp2": 118,
+            "jpeg": 25
+          },
+          "selected": 143,
+          "titles_eligible": 22,
+          "titles_selected": 22
+        },
+        "1880": {
+          "allocated": 143,
+          "audit_10pct": 16,
+          "eligible": 3180,
+          "formats": {
+            "jp2": 125,
+            "jpeg": 18
+          },
+          "selected": 143,
+          "titles_eligible": 18,
+          "titles_selected": 18
+        },
+        "1890": {
+          "allocated": 143,
+          "audit_10pct": 22,
+          "eligible": 4802,
+          "formats": {
+            "jp2": 100,
+            "jpeg": 43
+          },
+          "selected": 143,
+          "titles_eligible": 25,
+          "titles_selected": 25
+        },
+        "1900": {
+          "allocated": 143,
+          "audit_10pct": 11,
+          "eligible": 8406,
+          "formats": {
+            "jp2": 102,
+            "jpeg": 41
+          },
+          "selected": 143,
+          "titles_eligible": 33,
+          "titles_selected": 33
+        },
+        "1910": {
+          "allocated": 142,
+          "audit_10pct": 18,
+          "eligible": 15372,
+          "formats": {
+            "jp2": 114,
+            "jpeg": 28
+          },
+          "selected": 142,
+          "titles_eligible": 36,
+          "titles_selected": 36
+        }
+      },
+      "eligible": 44318,
+      "excluded": {
+        "mixed_language": {
+          "1860": 113,
+          "1870": 8,
+          "1880": 11,
+          "1890": 21,
+          "1900": 222,
+          "1910": 358
+        },
+        "no_sidecar": {
+          "1910": 1
+        },
+        "outside_era": {
+          "1830": 66,
+          "1840": 177,
+          "1920": 139,
+          "1930": 8,
+          "1940": 49,
+          "1950": 25
+        },
+        "sidecar_mismatch": {
+          "1910": 3
+        }
+      },
+      "frame_pages": 45519,
+      "lang": "ger",
+      "selected": 1000,
+      "shortfall": 0,
+      "size": 1000,
+      "strata": [
+        {
+          "decade": 1850,
+          "eligible": 230,
+          "lccn": "sn83045081",
+          "selected": 33
+        },
+        {
+          "decade": 1850,
+          "eligible": 1463,
+          "lccn": "sn86071815",
+          "selected": 32
+        },
+        {
+          "decade": 1850,
+          "eligible": 9,
+          "lccn": "sn88078466",
+          "selected": 9
+        },
+        {
+          "decade": 1850,
+          "eligible": 28,
+          "lccn": "sn86071314",
+          "selected": 28
+        },
+        {
+          "decade": 1850,
+          "eligible": 5,
+          "lccn": "sn87052123",
+          "selected": 5
+        },
+        {
+          "decade": 1850,
+          "eligible": 3,
+          "lccn": "sn90059395",
+          "selected": 3
+        },
+        {
+          "decade": 1850,
+          "eligible": 32,
+          "lccn": "sn85025148",
+          "selected": 32
+        },
+        {
+          "decade": 1850,
+          "eligible": 1,
+          "lccn": "sn84024825",
+          "selected": 1
+        },
+        {
+          "decade": 1860,
+          "eligible": 374,
+          "lccn": "sn83045081",
+          "selected": 11
+        },
+        {
+          "decade": 1860,
+          "eligible": 2781,
+          "lccn": "sn86071815",
+          "selected": 11
+        },
+        {
+          "decade": 1860,
+          "eligible": 1,
+          "lccn": "sn85025947",
+          "selected": 1
+        },
+        {
+          "decade": 1860,
+          "eligible": 147,
+          "lccn": "sn84026860",
+          "selected": 11
+        },
+        {
+          "decade": 1860,
+          "eligible": 14,
+          "lccn": "sn87060184",
+          "selected": 11
+        },
+        {
+          "decade": 1860,
+          "eligible": 105,
+          "lccn": "sn95068537",
+          "selected": 11
+        },
+        {
+          "decade": 1860,
+          "eligible": 1,
+          "lccn": "sn84026721",
+          "selected": 1
+        },
+        {
+          "decade": 1860,
+          "eligible": 1701,
+          "lccn": "sn86053575",
+          "selected": 11
+        },
+        {
+          "decade": 1860,
+          "eligible": 54,
+          "lccn": "sn84031595",
+          "selected": 10
+        },
+        {
+          "decade": 1860,
+          "eligible": 5,
+          "lccn": "sn96091060",
+          "selected": 5
+        },
+        {
+          "decade": 1860,
+          "eligible": 8,
+          "lccn": "sn82014761",
+          "selected": 8
+        },
+        {
+          "decade": 1860,
+          "eligible": 293,
+          "lccn": "sn85025148",
+          "selected": 10
+        },
+        {
+          "decade": 1860,
+          "eligible": 14,
+          "lccn": "sn83045582",
+          "selected": 10
+        },
+        {
+          "decade": 1860,
+          "eligible": 160,
+          "lccn": "sn88080711",
+          "selected": 10
+        },
+        {
+          "decade": 1860,
+          "eligible": 379,
+          "lccn": "sn86054053",
+          "selected": 10
+        },
+        {
+          "decade": 1860,
+          "eligible": 1,
+          "lccn": "sn91068333",
+          "selected": 1
+        },
+        {
+          "decade": 1860,
+          "eligible": 215,
+          "lccn": "sn87058145",
+          "selected": 10
+        },
+        {
+          "decade": 1860,
+          "eligible": 1,
+          "lccn": "sn83045255",
+          "selected": 1
+        },
+        {
+          "decade": 1870,
+          "eligible": 1,
+          "lccn": "sn91069200",
+          "selected": 1
+        },
+        {
+          "decade": 1870,
+          "eligible": 2,
+          "lccn": "sn82014333",
+          "selected": 2
+        },
+        {
+          "decade": 1870,
+          "eligible": 774,
+          "lccn": "sn83045081",
+          "selected": 8
+        },
+        {
+          "decade": 1870,
+          "eligible": 16,
+          "lccn": "sn85034180",
+          "selected": 8
+        },
+        {
+          "decade": 1870,
+          "eligible": 163,
+          "lccn": "sn83045227",
+          "selected": 8
+        },
+        {
+          "decade": 1870,
+          "eligible": 966,
+          "lccn": "sn84027101",
+          "selected": 8
+        },
+        {
+          "decade": 1870,
+          "eligible": 211,
+          "lccn": "sn84026860",
+          "selected": 8
+        },
+        {
+          "decade": 1870,
+          "eligible": 14,
+          "lccn": "sn87060184",
+          "selected": 8
+        },
+        {
+          "decade": 1870,
+          "eligible": 62,
+          "lccn": "sn86053936",
+          "selected": 8
+        },
+        {
+          "decade": 1870,
+          "eligible": 218,
+          "lccn": "sn84026721",
+          "selected": 8
+        },
+        {
+          "decade": 1870,
+          "eligible": 30,
+          "lccn": "sn83045350",
+          "selected": 8
+        },
+        {
+          "decade": 1870,
+          "eligible": 14,
+          "lccn": "sn93060116",
+          "selected": 8
+        },
+        {
+          "decade": 1870,
+          "eligible": 3,
+          "lccn": "sn87067037",
+          "selected": 3
+        },
+        {
+          "decade": 1870,
+          "eligible": 15,
+          "lccn": "sn84031595",
+          "selected": 8
+        },
+        {
+          "decade": 1870,
+          "eligible": 16,
+          "lccn": "sn84026744",
+          "selected": 8
+        },
+        {
+          "decade": 1870,
+          "eligible": 144,
+          "lccn": "sn83045582",
+          "selected": 7
+        },
+        {
+          "decade": 1870,
+          "eligible": 5,
+          "lccn": "sn91069201",
+          "selected": 5
+        },
+        {
+          "decade": 1870,
+          "eligible": 1837,
+          "lccn": "sn85026936",
+          "selected": 7
+        },
+        {
+          "decade": 1870,
+          "eligible": 2,
+          "lccn": "sn90053038",
+          "selected": 2
+        },
+        {
+          "decade": 1870,
+          "eligible": 6,
+          "lccn": "sn86054053",
+          "selected": 6
+        },
+        {
+          "decade": 1870,
+          "eligible": 18,
+          "lccn": "sn83008556",
+          "selected": 7
+        },
+        {
+          "decade": 1870,
+          "eligible": 16,
+          "lccn": "sn83045255",
+          "selected": 7
+        },
+        {
+          "decade": 1880,
+          "eligible": 1,
+          "lccn": "2017270200",
+          "selected": 1
+        },
+        {
+          "decade": 1880,
+          "eligible": 1,
+          "lccn": "sn82014726",
+          "selected": 1
+        },
+        {
+          "decade": 1880,
+          "eligible": 390,
+          "lccn": "sn83045081",
+          "selected": 12
+        },
+        {
+          "decade": 1880,
+          "eligible": 1723,
+          "lccn": "sn83045227",
+          "selected": 12
+        },
+        {
+          "decade": 1880,
+          "eligible": 291,
+          "lccn": "sn84027101",
+          "selected": 12
+        },
+        {
+          "decade": 1880,
+          "eligible": 11,
+          "lccn": "sn84026835",
+          "selected": 11
+        },
+        {
+          "decade": 1880,
+          "eligible": 60,
+          "lccn": "sn86053936",
+          "selected": 12
+        },
+        {
+          "decade": 1880,
+          "eligible": 3,
+          "lccn": "sn87076872",
+          "selected": 3
+        },
+        {
+          "decade": 1880,
+          "eligible": 19,
+          "lccn": "sn83045350",
+          "selected": 12
+        },
+        {
+          "decade": 1880,
+          "eligible": 145,
+          "lccn": "sn93060116",
+          "selected": 12
+        },
+        {
+          "decade": 1880,
+          "eligible": 1,
+          "lccn": "sn83045285",
+          "selected": 1
+        },
+        {
+          "decade": 1880,
+          "eligible": 34,
+          "lccn": "sn84026744",
+          "selected": 12
+        },
+        {
+          "decade": 1880,
+          "eligible": 208,
+          "lccn": "sn83045582",
+          "selected": 12
+        },
+        {
+          "decade": 1880,
+          "eligible": 47,
+          "lccn": "sn91070604",
+          "selected": 12
+        },
+        {
+          "decade": 1880,
+          "eligible": 239,
+          "lccn": "sn86064439",
+          "selected": 11
+        },
+        {
+          "decade": 1880,
+          "eligible": 1,
+          "lccn": "sn85026936",
+          "selected": 1
+        },
+        {
+          "decade": 1880,
+          "eligible": 5,
+          "lccn": "sn90053038",
+          "selected": 5
+        },
+        {
+          "decade": 1880,
+          "eligible": 1,
+          "lccn": "sn83045255",
+          "selected": 1
+        },
+        {
+          "decade": 1890,
+          "eligible": 17,
+          "lccn": "sn86063815",
+          "selected": 8
+        },
+        {
+          "decade": 1890,
+          "eligible": 69,
+          "lccn": "2017270200",
+          "selected": 7
+        },
+        {
+          "decade": 1890,
+          "eligible": 10,
+          "lccn": "sn87067031",
+          "selected": 7
+        },
+        {
+          "decade": 1890,
+          "eligible": 27,
+          "lccn": "sn82014726",
+          "selected": 7
+        },
+        {
+          "decade": 1890,
+          "eligible": 825,
+          "lccn": "sn83045081",
+          "selected": 7
+        },
+        {
+          "decade": 1890,
+          "eligible": 23,
+          "lccn": "sn87082470",
+          "selected": 7
+        },
+        {
+          "decade": 1890,
+          "eligible": 78,
+          "lccn": "2019270501",
+          "selected": 7
+        },
+        {
+          "decade": 1890,
+          "eligible": 5,
+          "lccn": "sn85025948",
+          "selected": 5
+        },
+        {
+          "decade": 1890,
+          "eligible": 667,
+          "lccn": "sn83045227",
+          "selected": 7
+        },
+        {
+          "decade": 1890,
+          "eligible": 774,
+          "lccn": "sn84027101",
+          "selected": 7
+        },
+        {
+          "decade": 1890,
+          "eligible": 99,
+          "lccn": "2019270500",
+          "selected": 7
+        },
+        {
+          "decade": 1890,
+          "eligible": 10,
+          "lccn": "sn86053936",
+          "selected": 7
+        },
+        {
+          "decade": 1890,
+          "eligible": 28,
+          "lccn": "sn98069093",
+          "selected": 7
+        },
+        {
+          "decade": 1890,
+          "eligible": 14,
+          "lccn": "sn83045350",
+          "selected": 7
+        },
+        {
+          "decade": 1890,
+          "eligible": 3,
+          "lccn": "sn89064940",
+          "selected": 3
+        },
+        {
+          "decade": 1890,
+          "eligible": 138,
+          "lccn": "sn93060116",
+          "selected": 7
+        },
+        {
+          "decade": 1890,
+          "eligible": 1,
+          "lccn": "sn88084068",
+          "selected": 1
+        },
+        {
+          "decade": 1890,
+          "eligible": 3,
+          "lccn": "sn91070604",
+          "selected": 3
+        },
+        {
+          "decade": 1890,
+          "eligible": 3,
+          "lccn": "sn89066801",
+          "selected": 3
+        },
+        {
+          "decade": 1890,
+          "eligible": 6,
+          "lccn": "sn83045812",
+          "selected": 6
+        },
+        {
+          "decade": 1890,
+          "eligible": 1,
+          "lccn": "sn84045439",
+          "selected": 1
+        },
+        {
+          "decade": 1890,
+          "eligible": 1165,
+          "lccn": "sn86064439",
+          "selected": 7
+        },
+        {
+          "decade": 1890,
+          "eligible": 8,
+          "lccn": "sn83045004",
+          "selected": 7
+        },
+        {
+          "decade": 1890,
+          "eligible": 1,
+          "lccn": "sn83045003",
+          "selected": 1
+        },
+        {
+          "decade": 1890,
+          "eligible": 827,
+          "lccn": "sn98069094",
+          "selected": 7
+        },
+        {
+          "decade": 1900,
+          "eligible": 2,
+          "lccn": "sn99068116",
+          "selected": 2
+        },
+        {
+          "decade": 1900,
+          "eligible": 21,
+          "lccn": "sn86063815",
+          "selected": 5
+        },
+        {
+          "decade": 1900,
+          "eligible": 1,
+          "lccn": "2017270200",
+          "selected": 1
+        },
+        {
+          "decade": 1900,
+          "eligible": 1533,
+          "lccn": "sn87067031",
+          "selected": 5
+        },
+        {
+          "decade": 1900,
+          "eligible": 267,
+          "lccn": "2017270201",
+          "selected": 5
+        },
+        {
+          "decade": 1900,
+          "eligible": 89,
+          "lccn": "sn2017270202",
+          "selected": 5
+        },
+        {
+          "decade": 1900,
+          "eligible": 32,
+          "lccn": "sn82014726",
+          "selected": 5
+        },
+        {
+          "decade": 1900,
+          "eligible": 1825,
+          "lccn": "sn83045081",
+          "selected": 5
+        },
+        {
+          "decade": 1900,
+          "eligible": 108,
+          "lccn": "2019270501",
+          "selected": 5
+        },
+        {
+          "decade": 1900,
+          "eligible": 644,
+          "lccn": "sn83045227",
+          "selected": 5
+        },
+        {
+          "decade": 1900,
+          "eligible": 998,
+          "lccn": "sn84027101",
+          "selected": 5
+        },
+        {
+          "decade": 1900,
+          "eligible": 22,
+          "lccn": "sn86053936",
+          "selected": 5
+        },
+        {
+          "decade": 1900,
+          "eligible": 38,
+          "lccn": "sn87076872",
+          "selected": 5
+        },
+        {
+          "decade": 1900,
+          "eligible": 3,
+          "lccn": "sn98069093",
+          "selected": 3
+        },
+        {
+          "decade": 1900,
+          "eligible": 17,
+          "lccn": "sn86086186",
+          "selected": 5
+        },
+        {
+          "decade": 1900,
+          "eligible": 20,
+          "lccn": "sn86086067",
+          "selected": 5
+        },
+        {
+          "decade": 1900,
+          "eligible": 11,
+          "lccn": "sn98069095",
+          "selected": 5
+        },
+        {
+          "decade": 1900,
+          "eligible": 18,
+          "lccn": "sn83045350",
+          "selected": 5
+        },
+        {
+          "decade": 1900,
+          "eligible": 31,
+          "lccn": "sn98069092",
+          "selected": 5
+        },
+        {
+          "decade": 1900,
+          "eligible": 42,
+          "lccn": "sn93060116",
+          "selected": 5
+        },
+        {
+          "decade": 1900,
+          "eligible": 16,
+          "lccn": "sn98069091",
+          "selected": 5
+        },
+        {
+          "decade": 1900,
+          "eligible": 1,
+          "lccn": "sn88084068",
+          "selected": 1
+        },
+        {
+          "decade": 1900,
+          "eligible": 393,
+          "lccn": "sn99062854",
+          "selected": 5
+        },
+        {
+          "decade": 1900,
+          "eligible": 158,
+          "lccn": "2019270502",
+          "selected": 5
+        },
+        {
+          "decade": 1900,
+          "eligible": 8,
+          "lccn": "sn83045285",
+          "selected": 5
+        },
+        {
+          "decade": 1900,
+          "eligible": 1001,
+          "lccn": "sn89066801",
+          "selected": 5
+        },
+        {
+          "decade": 1900,
+          "eligible": 2,
+          "lccn": "sn87082455",
+          "selected": 2
+        },
+        {
+          "decade": 1900,
+          "eligible": 5,
+          "lccn": "sn83045812",
+          "selected": 5
+        },
+        {
+          "decade": 1900,
+          "eligible": 80,
+          "lccn": "sn84045439",
+          "selected": 5
+        },
+        {
+          "decade": 1900,
+          "eligible": 17,
+          "lccn": "sn83016118",
+          "selected": 4
+        },
+        {
+          "decade": 1900,
+          "eligible": 912,
+          "lccn": "sn86064439",
+          "selected": 4
+        },
+        {
+          "decade": 1900,
+          "eligible": 2,
+          "lccn": "sn89074935",
+          "selected": 2
+        },
+        {
+          "decade": 1900,
+          "eligible": 89,
+          "lccn": "sn83045241",
+          "selected": 4
+        },
+        {
+          "decade": 1910,
+          "eligible": 2,
+          "lccn": "sn85032994",
+          "selected": 2
+        },
+        {
+          "decade": 1910,
+          "eligible": 1,
+          "lccn": "sn86092515",
+          "selected": 1
+        },
+        {
+          "decade": 1910,
+          "eligible": 4,
+          "lccn": "sn86063815",
+          "selected": 4
+        },
+        {
+          "decade": 1910,
+          "eligible": 1268,
+          "lccn": "sn87067031",
+          "selected": 5
+        },
+        {
+          "decade": 1910,
+          "eligible": 404,
+          "lccn": "2017270201",
+          "selected": 5
+        },
+        {
+          "decade": 1910,
+          "eligible": 844,
+          "lccn": "sn2017270202",
+          "selected": 5
+        },
+        {
+          "decade": 1910,
+          "eligible": 10,
+          "lccn": "sn82014726",
+          "selected": 5
+        },
+        {
+          "decade": 1910,
+          "eligible": 3807,
+          "lccn": "sn83045081",
+          "selected": 5
+        },
+        {
+          "decade": 1910,
+          "eligible": 442,
+          "lccn": "sn83045227",
+          "selected": 5
+        },
+        {
+          "decade": 1910,
+          "eligible": 2145,
+          "lccn": "sn84027101",
+          "selected": 5
+        },
+        {
+          "decade": 1910,
+          "eligible": 25,
+          "lccn": "sn86053936",
+          "selected": 5
+        },
+        {
+          "decade": 1910,
+          "eligible": 12,
+          "lccn": "sn86063041",
+          "selected": 5
+        },
+        {
+          "decade": 1910,
+          "eligible": 19,
+          "lccn": "sn87076872",
+          "selected": 5
+        },
+        {
+          "decade": 1910,
+          "eligible": 161,
+          "lccn": "sn96076572",
+          "selected": 5
+        },
+        {
+          "decade": 1910,
+          "eligible": 122,
+          "lccn": "sn86086186",
+          "selected": 5
+        },
+        {
+          "decade": 1910,
+          "eligible": 4,
+          "lccn": "sn86086067",
+          "selected": 4
+        },
+        {
+          "decade": 1910,
+          "eligible": 33,
+          "lccn": "sn87082456",
+          "selected": 5
+        },
+        {
+          "decade": 1910,
+          "eligible": 462,
+          "lccn": "sn83045652",
+          "selected": 4
+        },
+        {
+          "decade": 1910,
+          "eligible": 5,
+          "lccn": "sn83045350",
+          "selected": 4
+        },
+        {
+          "decade": 1910,
+          "eligible": 4,
+          "lccn": "sn85025556",
+          "selected": 4
+        },
+        {
+          "decade": 1910,
+          "eligible": 36,
+          "lccn": "sn93060116",
+          "selected": 4
+        },
+        {
+          "decade": 1910,
+          "eligible": 35,
+          "lccn": "sn98069091",
+          "selected": 4
+        },
+        {
+          "decade": 1910,
+          "eligible": 1,
+          "lccn": "sn88084068",
+          "selected": 1
+        },
+        {
+          "decade": 1910,
+          "eligible": 32,
+          "lccn": "sn99062854",
+          "selected": 4
+        },
+        {
+          "decade": 1910,
+          "eligible": 702,
+          "lccn": "2019270502",
+          "selected": 4
+        },
+        {
+          "decade": 1910,
+          "eligible": 1281,
+          "lccn": "sn83045474",
+          "selected": 4
+        },
+        {
+          "decade": 1910,
+          "eligible": 4,
+          "lccn": "sn88053071",
+          "selected": 4
+        },
+        {
+          "decade": 1910,
+          "eligible": 798,
+          "lccn": "sn89066801",
+          "selected": 4
+        },
+        {
+          "decade": 1910,
+          "eligible": 1,
+          "lccn": "sn87082455",
+          "selected": 1
+        },
+        {
+          "decade": 1910,
+          "eligible": 771,
+          "lccn": "sn83045868",
+          "selected": 4
+        },
+        {
+          "decade": 1910,
+          "eligible": 230,
+          "lccn": "sn84045439",
+          "selected": 4
+        },
+        {
+          "decade": 1910,
+          "eligible": 3,
+          "lccn": "sn83016118",
+          "selected": 3
+        },
+        {
+          "decade": 1910,
+          "eligible": 640,
+          "lccn": "sn86064439",
+          "selected": 4
+        },
+        {
+          "decade": 1910,
+          "eligible": 612,
+          "lccn": "sn84027107",
+          "selected": 4
+        },
+        {
+          "decade": 1910,
+          "eligible": 451,
+          "lccn": "sn89074935",
+          "selected": 4
+        },
+        {
+          "decade": 1910,
+          "eligible": 1,
+          "lccn": "sn83035337",
+          "selected": 1
+        }
+      ]
+    },
+    "lit": {
+      "audit_rule_disagreements": 0,
+      "decades": {
+        "1910": {
+          "allocated": 100,
+          "audit_10pct": 11,
+          "eligible": 942,
+          "formats": {
+            "jp2": 100
+          },
+          "selected": 100,
+          "titles_eligible": 3,
+          "titles_selected": 3
+        }
+      },
+      "eligible": 942,
+      "excluded": {
+        "mixed_language": {
+          "1910": 5
+        },
+        "outside_era": {
+          "1920": 511,
+          "1940": 78,
+          "1950": 24
+        }
+      },
+      "frame_pages": 1560,
+      "lang": "lit",
+      "selected": 100,
+      "shortfall": 0,
+      "size": 100,
+      "strata": [
+        {
+          "decade": 1910,
+          "eligible": 694,
+          "lccn": "sn83045087",
+          "selected": 34
+        },
+        {
+          "decade": 1910,
+          "eligible": 193,
+          "lccn": "sn00062053",
+          "selected": 33
+        },
+        {
+          "decade": 1910,
+          "eligible": 55,
+          "lccn": "sn83045284",
+          "selected": 33
+        }
+      ]
+    }
+  },
+  "seed": "issue-325-v1",
+  "spec": "spec.json",
+  "spec_sha256": "69922b721300672fc23d0052ae64c34e84be4252a9abdcecf03295246ab9228d"
+}
