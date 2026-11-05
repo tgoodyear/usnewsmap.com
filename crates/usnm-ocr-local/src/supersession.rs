@@ -341,7 +341,7 @@ pub async fn account(
             Standing::Settled
         } else if let Err(err) = verify(curated, &e).await {
             tracing::warn!(
-                doc_id = e.doc_id,
+                doc_id = %e.doc_id,
                 error = %format!("{err:#}"),
                 "listed alternate selection does not verify"
             );
