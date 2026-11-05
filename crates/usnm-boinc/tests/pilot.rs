@@ -2850,6 +2850,48 @@ mod queue_feed {
     }
 
     #[tokio::test]
+    async fn a_claimed_page_whose_jp2_loc_holds_cut_short_is_dead_lettered_by_doc_id() {
+        // #1457: never exported, so there is no job to name; the dead letter says why.
+        let f = fed(true).await;
+        let claims = f.fx.tmp.path().join("claims");
+        pull(&f, &claims, Duration::from_secs(3600)).await;
+        publish_claim(&f, &claims).await;
+        let root = f.fx.tmp.path();
+        let step = || {
+            claim::cli::run(claim::cli::ClaimCommands::DeadLetter {
+                handoff_url: root.join("handoff").to_str().unwrap().into(),
+                queue_url: root.join("queue").to_str().unwrap().into(),
+                jobs: vec![],
+                source_truncated: vec![DOC.into()],
+                supersedes_failed_job: None,
+                curated_url: None,
+                confirm_message_sha256: None,
+            })
+        };
+        step().await.unwrap();
+        let q = f.fx.stores.queue.as_ref();
+        assert_eq!(q.approximate_count(BULK).await.unwrap(), 0);
+        let letters = q.peek(usnm_store::queue::DEADLETTER, 32).await.unwrap();
+        assert_eq!(letters.len(), 1);
+        let letter = usnm_ocr_contract::message::decode_dead_letter(&letters[0]).unwrap();
+        assert_eq!(
+            letter.cause,
+            Some(usnm_ocr_contract::message::Cause::Permanent)
+        );
+        assert_eq!(letter.error, claim::SOURCE_TRUNCATED);
+        assert_eq!(letter.message.as_ref(), Some(&f.message));
+        // The controller retries a step that failed: nothing more goes.
+        step().await.unwrap();
+        assert_eq!(
+            q.peek(usnm_store::queue::DEADLETTER, 32)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
     async fn a_newer_claim_of_the_page_is_not_dead_lettered() {
         // The failed job's message differs from the claim's (the page was claimed again).
         let f = fed(true).await;

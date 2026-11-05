@@ -1189,6 +1189,128 @@ async fn fetches_jp2s_through_the_batch_keeps_old_jpegs_and_falls_back_to_the_ap
     assert_eq!(there(&out, &rows[1], ImageSize::Full).await, None);
 }
 
+/// A JP2 whose 'jp2c' box declares 256 bytes and holds 4 (#1457).
+const CUT_SHORT_JP2: &[u8] = b"\x00\x00\x00\x0cjP  \r\n\x87\n\x00\x00\x01\x00jp2c\xff\x4f\xff\x51";
+
+#[tokio::test]
+async fn a_jp2_cut_short_at_loc_is_listed_not_written_and_never_asked_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = StandIn::start().await;
+    s.add_issue(
+        BATCH,
+        "sn1",
+        "0001A",
+        "1890050301",
+        &[
+            Page {
+                seq: 1,
+                frame: "0011",
+                jp2: CUT_SHORT_JP2,
+            },
+            Page {
+                seq: 2,
+                frame: "0012",
+                jp2: b"jp2 two",
+            },
+        ],
+    );
+    let rows: Vec<ManifestRow> = (1..=2).map(|q| batch_row("sn1", "1890-05-03", q)).collect();
+    let out = dir.path().join("scans");
+    let opts = Options {
+        manifest: write_manifest(dir.path(), rows.clone()),
+        out: out.clone(),
+        concurrency: 1,
+        // One failure would stop it, if a cut-short JP2 were a failure.
+        max_failures_in_a_row: 1,
+        stop_min_titles: 1,
+        ..Options::default()
+    };
+    let cache = dir.path().join("batches");
+    let (_tx, rx) = watch::channel(false);
+    let st = run(opts.clone(), batch_loc(&s, &cache), rx.clone())
+        .await
+        .unwrap();
+    assert_eq!(st.state, "done");
+    assert_eq!(
+        (
+            st.finished,
+            st.fetched,
+            st.source_truncated,
+            st.failed_permanent,
+            st.bytes_fetched
+        ),
+        (2, 1, 1, 0, 7)
+    );
+    let reason = "the 'jp2c' box declares 244 bytes past the end of the file";
+    // Not on disk and not in the index, so no worker or export reads it.
+    let cut = scan_path(&out, &rows[0], ImageSize::Full, ScanFormat::Jp2);
+    assert!(!cut.exists() && !sidecar_path(&cut).exists());
+    let index =
+        read_index(&std::fs::read_to_string(out.join("index-full.jsonl")).unwrap()).unwrap();
+    assert_eq!(
+        index.iter().map(|i| i.doc_id.as_str()).collect::<Vec<_>>(),
+        [rows[1].doc_id.as_str()]
+    );
+    let listed: Vec<SourceTruncatedLine> =
+        std::fs::read_to_string(out.join("source-truncated.jsonl"))
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+    assert_eq!(listed.len(), 1);
+    let l = &listed[0];
+    assert_eq!(
+        (
+            l.doc_id.as_str(),
+            l.batch.as_str(),
+            l.batch_version,
+            l.reason.as_str()
+        ),
+        (rows[0].doc_id.as_str(), "xx_test", 1, reason)
+    );
+    assert_eq!(
+        (l.md5.as_deref(), l.sha256.as_str(), l.bytes),
+        (
+            Some(batch::md5_hex(CUT_SHORT_JP2).as_str()),
+            sha256(CUT_SHORT_JP2).as_str(),
+            24
+        )
+    );
+    assert_eq!(
+        l.loc_url,
+        format!("{}{BATCH}data/sn1/0001A/1890050301/0011.jp2", s.root)
+    );
+    let failures: Vec<Failure> = std::fs::read_to_string(out.join("failures-full.jsonl"))
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(
+        failures
+            .iter()
+            .map(|f| (f.doc_id.as_str(), f.kind.as_str(), f.error.as_str()))
+            .collect::<Vec<_>>(),
+        [(rows[0].doc_id.as_str(), "source_truncated", reason)]
+    );
+    assert_eq!(s.hits(".jp2"), 2);
+
+    // Again, in a new process: counted again, and LoC isn't asked.
+    let before = s.hits("");
+    let st = run(opts, batch_loc(&s, &cache), rx).await.unwrap();
+    assert_eq!(
+        (st.already_there, st.source_truncated, st.fetched),
+        (1, 1, 0)
+    );
+    assert_eq!(s.hits(""), before);
+    assert_eq!(
+        std::fs::read_to_string(out.join("source-truncated.jsonl"))
+            .unwrap()
+            .lines()
+            .count(),
+        1
+    );
+}
+
 #[tokio::test]
 async fn a_storage_item_error_cools_off_that_route_only() {
     let dir = tempfile::tempdir().unwrap();

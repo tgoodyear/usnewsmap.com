@@ -82,10 +82,14 @@ pub enum ClaimCommands {
         /// and why it failed); repeat for more.
         #[arg(
             long = "job",
-            required_unless_present = "supersedes_failed_job",
-            conflicts_with = "supersedes_failed_job"
+            required_unless_present_any = ["supersedes_failed_job", "source_truncated"],
+            conflicts_with_all = ["supersedes_failed_job", "source_truncated"]
         )]
         jobs: Vec<String>,
+        /// A claimed page whose JP2 LoC holds cut short (a doc id, #1457): never exported, so
+        /// it has no job. Its dead letter says so. Repeat for more.
+        #[arg(long = "source-truncated", conflicts_with = "supersedes_failed_job")]
+        source_truncated: Vec<String>,
         /// Operator only (#1417): a dead-lettered job whose page was claimed again with a newer
         /// message. That newer claim is dead-lettered, naming this job, and its message deleted.
         /// A dry run unless --confirm-message-sha256 is given.
@@ -266,6 +270,7 @@ pub async fn run(command: ClaimCommands) -> anyhow::Result<()> {
             handoff_url,
             queue_url,
             jobs,
+            source_truncated,
             supersedes_failed_job,
             curated_url,
             confirm_message_sha256,
@@ -309,6 +314,24 @@ pub async fn run(command: ClaimCommands) -> anyhow::Result<()> {
                 return Ok(());
             }
             let mut lost = 0;
+            for doc_id in source_truncated {
+                anyhow::ensure!(
+                    usnm_core::ids::PageKey::from_doc_id(&doc_id).is_ok(),
+                    "invalid doc id"
+                );
+                let done = x::dead_letter(
+                    handoff.as_ref(),
+                    queue.as_ref(),
+                    &doc_id,
+                    x::SOURCE_TRUNCATED,
+                    None,
+                )
+                .await?;
+                if done == x::DeadLettered::LeaseLost {
+                    lost += 1;
+                }
+                println!("{doc_id} {}", done.word());
+            }
             for job in jobs {
                 let record = failed_record(handoff.as_ref(), &job).await?;
                 let doc_id = record.job.message.key()?.doc_id();
@@ -332,14 +355,7 @@ pub async fn run(command: ClaimCommands) -> anyhow::Result<()> {
                 if done == x::DeadLettered::LeaseLost {
                     lost += 1;
                 }
-                println!(
-                    "{doc_id} {}",
-                    match done {
-                        x::DeadLettered::Done => "dead_lettered",
-                        x::DeadLettered::Already => "already ended",
-                        x::DeadLettered::LeaseLost => "lease_lost",
-                    }
-                );
+                println!("{doc_id} {}", done.word());
             }
             anyhow::ensure!(
                 lost == 0,

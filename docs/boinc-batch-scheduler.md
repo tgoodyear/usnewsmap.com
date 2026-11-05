@@ -893,6 +893,8 @@ keep set and then its buffer set, where a queued OCR request's scan is (#1055). 
 buffer scan is copied up under its keep name, so the export reads it like any other,
 and evicting it from the buffer later doesn't affect the hand-off. A page with no
 cached scan, despite the list, is given back with the `release` step and dropped.
+With `--skip-truncated-scans`, a page whose JP2 is cut short at LoC is
+[dead-lettered instead](#a-page-whose-jp2-loc-holds-cut-short-1457).
 Export runs once per batch with `HANDOFF_CLAIMS=1`.
 
 With claims, `export` builds each job from the page's claim, not from the
@@ -925,6 +927,45 @@ receipt, and marks the claim `ended: dead_lettered`. The controller records the 
 state and passes over its journal after that; the journal stays in `dispatch/`. `ocr-sync`
 drains the dead letter into the ledger. The flag needs the on-prem host's Message Sender role
 on `ocr-deadletter`.
+
+### A page whose JP2 LoC holds cut short (#1457)
+
+Some of LoC's JP2s are cut short at the source: a box or tile-part runs past the end of
+the file, or the codestream stops before its EOC marker. The bytes match LoC's own
+checksums, so fetching the scan again won't help, and OCR can't: a failed decode wastes a
+volunteer's work, and a partial one could replace LoC's complete text with part of a page.
+The scan fetcher no longer files such a scan, and both OCR workers fail one unread
+([boinc-quality.md](boinc-quality.md#undecodable-source-scans)). Scans cached before then
+still reach the push.
+
+With `--skip-truncated-scans`, the controller pushes with
+`push-boinc-scan.sh --skip-truncated`. Before pushing a claimed `.jp2`, the script checks
+its box, marker-segment and tile-part headers (`quality_feed.py jp2-check`; no pixels, no
+network). A scan that is cut short isn't pushed. The script names it as
+`truncated <page> <reason>` and exits 3, as for a missing page.
+
+The controller keeps the reason on the page's claim. It then runs the hand-off
+`dead-letter` step with `SOURCE_TRUNCATED_DOCS`
+(`usnm-boinc claim dead-letter --source-truncated <doc_id>`). That step puts a v2
+`permanent` dead letter on `ocr-deadletter`, with the error
+`source_truncated: LoC's JP2 is cut short at its source; not OCRed (#1457)`, and deletes
+the message. The page is never exported or claimed again, and it keeps LoC's text.
+
+The controller then drops the claim and lists the page in its state's `source_truncated`
+(`jq .source_truncated <state dir>/state.json`): doc id, batch, scan, reason and time.
+That list is the one to report to LoC. If the step fails, the next tick retries it before
+anything else, without pushing the page again. A page pushed before the check was on is
+not checked when export re-pushes it to another destination.
+
+The flag is off by default, so the live service's push command is unchanged. It needs:
+
+- a hand-off image whose `dead-letter` step takes `SOURCE_TRUNCATED_DOCS`;
+- on the BOINC host, an `onprem-step.sh` that lets the controller set it;
+- the on-prem host's Message Sender role on `ocr-deadletter`, which `--dead-letter-failed` also needs;
+- `python3` and the checkout's `scripts/boinc/onprem/quality-feed/` beside the push script.
+
+Without the flag, such a page is exported as before. The BOINC worker then fails it
+unread, and like any page that fails for good it needs `--dead-letter-failed`.
 
 ### A retried page claimed after its dead letter
 
@@ -1063,6 +1104,7 @@ revision before recording a retry:
 | `collect` published the page                               | Deleted, by `collect` itself (`usnm-boinc claim finish`)                                                                                                                                                                                    |
 | `collect`'s delete failed, or the lease ended first        | Visible again. A claim finds the page answered and deletes the message; a node would read the page again, and the newest row per page wins                                                                                                  |
 | The job failed, or was never collected                     | Visible again when the lease ends, for a node or a later claim. The controller still stops on a terminal failure for an operator, as before                                                                                                 |
+| Its JP2 is cut short at LoC (`--skip-truncated-scans`)     | Dead-lettered and deleted before export, by the `dead-letter` step (`SOURCE_TRUNCATED_DOCS`, #1457)                                                                                                                                         |
 | The same message again after its lease (job still pending) | Kept as the same claim: the summary carries the message's hash, the controller recognizes it and keeps its scan, selection and job, and the new delivery is hidden for a fresh lease. A different message for a claimed page stops the feed |
 | A second delivery of a page within one pull                | Deleted; the first claim covers the page and keeps its pop receipt                                                                                                                                                                          |
 

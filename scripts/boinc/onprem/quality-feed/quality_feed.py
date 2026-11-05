@@ -11,6 +11,7 @@ Our own ALTO, where ocr-local has it, goes beside the texts as <doc_id>.ours.xml
       [--order damage|fetched]
   quality_feed.py run --campaign NAME --pages FILE --curated DIR --scan-server URL
       --outbox DIR --state DIR [--chunk-pages 500] [--max-pending 5] [--workers 4]
+  quality_feed.py jp2-check --scan FILE [--scan FILE ...]
 
 select picks pages from the scan server's index (/index/full.jsonl) that no campaign has
 staged (--staged: one doc_id a line), worst damage first (damage_rate from the curated
@@ -31,6 +32,10 @@ is recorded as source_truncated for its exact fingerprint, otherwise in skipped.
 --quarantine-decode, three known decoder failures of the same verified scan fingerprint
 are recorded separately and excluded until its bytes change.
 Decoder quarantines in run and follow require operator review.
+
+jp2-check prints one line a --scan, in order: `ok`, or `truncated`, a tab and the reason for a
+JP2 cut short at its source (the check above). push-boinc-scan.sh --skip-truncated uses it to
+keep such scans from BOINC OCR (#1457). A file it can't read fails it.
 """
 import argparse
 import concurrent.futures
@@ -1186,6 +1191,13 @@ def wait_for_room(camp_dir, max_pending, every_secs, busy, poll_secs=15, min_sec
         time.sleep(poll_secs)
 
 
+def cmd_jp2_check(a):
+    for path in a.scan:
+        with open(path, "rb") as f:
+            reason = jp2_truncation(f.read())
+        print("ok" if reason is None else f"truncated\t{reason}")
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -1242,8 +1254,12 @@ def main(argv=None):
     w.add_argument("--once", action="store_true")
     w.add_argument("--quarantine-decode", action="store_true",
                    help="quarantine repeated verified decoder failures for operator review")
+    j = sub.add_parser("jp2-check", help="say which scans are JP2s cut short at their source")
+    j.add_argument("--scan", action="append", required=True)
     a = ap.parse_args(argv)
-    if a.cmd == "select":
+    if a.cmd == "jp2-check":
+        cmd_jp2_check(a)
+    elif a.cmd == "select":
         cmd_select(a)
     else:
         if not 1 <= a.chunk_pages <= 500:

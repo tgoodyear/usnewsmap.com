@@ -9,6 +9,7 @@
 #     [--scan ...] [--manifest /tank/ocr/manifests/<version>/manifest.parquet]
 #     [--scans-root /tank/ocr/scans] [--manifests-root /tank/ocr/manifests] [--what-if]
 #   push-boinc-scan.sh --account <exchange account> --keep-page <batch>/<lccn>/<date>/<edition>/<seq> ...
+#     [--skip-truncated]
 #
 # --keep-page names a page by where the fetcher files it (keep/<that path>.jp2 or .jpg), for
 # pages that came off the work queues, whose scan format nobody has said. The fetcher's buffer
@@ -19,6 +20,11 @@
 # path>.<ext>` for it on stdout, prints `missing <page>` for
 # one with no cached scan, and then exits 3 if any was missing, so the caller can hand that
 # message back to the queue. It may be given with --scan.
+#
+# --skip-truncated (#1457) checks each --keep-page JP2's headers first
+# (scripts/boinc/onprem/quality-feed/quality_feed.py jp2-check; Python 3, no network): one cut
+# short at its source, which LoC holds as it is, is not pushed, and is named as `truncated <page>
+# <reason>` instead, with exit 3 as for a missing page, so the caller can keep it from OCR.
 #
 # --to-onprem (#1116) sends the --keep-page scans to the BOINC host instead of the container: a
 # tar of copies, named keep/<that path>.<ext> with their sidecars, piped to the controller's step
@@ -35,7 +41,7 @@
 set -euo pipefail
 usage() { awk 'NR == 1 { next } !/^#/ { exit } { sub(/^# ?/, ""); print }' "$0" >&2; exit 2; }
 ACCOUNT="" MANIFEST="" SCANS_ROOT=/tank/ocr/scans MANIFESTS_ROOT=/tank/ocr/manifests WHAT_IF=false
-SCANS=() KEEP_PAGES=() TO_ONPREM=false ONPREM_ENV=prod STEP_CMD=()
+SCANS=() KEEP_PAGES=() TO_ONPREM=false ONPREM_ENV=prod STEP_CMD=() SKIP_TRUNCATED=false
 while [ $# -gt 0 ]; do
   case $1 in
     --account) [ $# -ge 2 ] || usage; ACCOUNT=$2; shift 2 ;;
@@ -48,6 +54,7 @@ while [ $# -gt 0 ]; do
     --to-onprem) TO_ONPREM=true; shift ;;
     --onprem-step-arg) [ $# -ge 2 ] || usage; STEP_CMD+=("$2"); shift 2 ;;
     --onprem-env) [ $# -ge 2 ] || usage; ONPREM_ENV=$2; shift 2 ;;
+    --skip-truncated) SKIP_TRUNCATED=true; shift ;;
     -h | --help) usage ;;
     *) echo "error: unknown argument: $1" >&2; usage ;;
   esac
@@ -59,7 +66,7 @@ CONTAINER=boinc-handoff
 # Blob names are /-separated segments of [A-Za-z0-9._-], starting with a letter or digit
 # (usnm_store::validate_path), so the hand-off job can copy them.
 segments='^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)*$'
-uploads=() missing=() staged=()
+uploads=() missing=() staged=() found_pages=() truncated=()
 if $TO_ONPREM; then
   [ ${#STEP_CMD[@]} -gt 0 ] || die "--to-onprem needs the step command (--onprem-step-arg ...)"
   [ ${#SCANS[@]} -eq 0 ] || die "--to-onprem takes --keep-page pages only"
@@ -76,13 +83,38 @@ for p in ${KEEP_PAGES[@]+"${KEEP_PAGES[@]}"}; do
       if [ -f "$f" ] && [ ! -L "$f" ] && [ -f "$f.json" ]; then found=$f name=keep/$p.$ext; break 2; fi
     done
   done
-  if [ -n "$found" ] && $TO_ONPREM; then
+  if [ -n "$found" ]; then found_pages+=("$p" "$found" "$name"); else missing+=("$p"); fi
+done
+# One line a JP2, in order: `ok`, or `truncated` and a tab and why.
+checks=()
+if $SKIP_TRUNCATED; then
+  jp2s=()
+  for ((i = 1; i < ${#found_pages[@]}; i += 3)); do
+    [[ ${found_pages[i]} == *.jp2 ]] && jp2s+=(--scan "${found_pages[i]}")
+  done
+  if [ ${#jp2s[@]} -gt 0 ]; then
+    feed="$(cd "$(dirname "${BASH_SOURCE[0]}")/../boinc/onprem/quality-feed" && pwd)/quality_feed.py"
+    out=$(python3 "$feed" jp2-check "${jp2s[@]}") || die "can't check the JP2s' headers"
+    while IFS= read -r line; do checks+=("$line"); done <<< "$out"
+    [ ${#checks[@]} -eq $((${#jp2s[@]} / 2)) ] || die "the JP2 check did not answer for every scan"
+  fi
+fi
+j=0
+for ((i = 0; i < ${#found_pages[@]}; i += 3)); do
+  p=${found_pages[i]} found=${found_pages[i + 1]} name=${found_pages[i + 2]}
+  if $SKIP_TRUNCATED && [[ $found == *.jp2 ]]; then
+    check=${checks[j]} j=$((j + 1))
+    [[ $check == ok || $check == truncated$'\t'* ]] || die "the JP2 check said: $check"
+    if [[ $check == truncated$'\t'* ]]; then
+      truncated+=("$p ${check#truncated$'\t'}")
+      continue
+    fi
+  fi
+  if $TO_ONPREM; then
     staged+=("$found" "$name")
-  elif [ -n "$found" ]; then
+  else
     uploads+=("$found" "scans/$name" "$found.json" "scans/$name.json")
     echo "pushed $name"
-  else
-    missing+=("$p")
   fi
 done
 if $TO_ONPREM; then
@@ -106,7 +138,8 @@ if $TO_ONPREM; then
     for ((i = 1; i < ${#staged[@]}; i += 2)); do echo "pushed ${staged[i]}"; done
   fi
   for p in ${missing[@]+"${missing[@]}"}; do echo "missing $p"; done
-  [ ${#missing[@]} -eq 0 ] || exit 3
+  for t in ${truncated[@]+"${truncated[@]}"}; do echo "truncated $t"; done
+  [ ${#missing[@]} -eq 0 ] && [ ${#truncated[@]} -eq 0 ] || exit 3
   exit 0
 fi
 for s in ${SCANS[@]+"${SCANS[@]}"}; do
@@ -144,4 +177,5 @@ for ((i = 0; i < ${#uploads[@]}; i += 2)); do
   echo "uploaded $CONTAINER/$blob" >&2
 done
 for p in ${missing[@]+"${missing[@]}"}; do echo "missing $p"; done
-[ ${#missing[@]} -eq 0 ] || exit 3
+for t in ${truncated[@]+"${truncated[@]}"}; do echo "truncated $t"; done
+[ ${#missing[@]} -eq 0 ] && [ ${#truncated[@]} -eq 0 ] || exit 3

@@ -43,3 +43,6 @@ pub mod qwen;
 
 /// Engine-level production routing shared by jobs and workers.
 pub mod routing;
+
+/// Whether a JP2 is cut short at its source (#1457), from its headers.
+pub mod jp2;

@@ -1,3 +1,4 @@
+import json
 import os
 import subprocess
 import tempfile
@@ -5,6 +6,9 @@ import unittest
 from pathlib import Path
 
 SCRIPT = Path(__file__).with_name("push-boinc-scan.sh")
+# The JP2s the quality feed's truncation check and its Rust port are tested on (#1457).
+JP2_VECTORS = {v["name"]: v for v in json.loads(
+    (Path(__file__).parents[2] / "fixtures" / "jp2-truncation-vectors.json").read_text())}
 
 
 class PushKeepPage(unittest.TestCase):
@@ -116,6 +120,50 @@ class PushKeepPage(unittest.TestCase):
         r = self.run_push("nbu_gage/sn1/1890-05-03/1/7", extra=["--to-onprem", "--onprem-step-arg", str(step)])
         self.assertEqual(r.returncode, 1)
         self.assertNotIn("pushed", r.stdout)
+
+    def test_skip_truncated_names_a_jp2_cut_short_at_loc_and_pushes_the_rest(self):
+        complete = JP2_VECTORS["encoded 16x16 tiles: complete"]
+        cut = JP2_VECTORS["encoded 16x16 tiles: jp2c box to end of file, last 9 bytes cut"]
+        self.scan("nbu_gage/sn1/1890-05-03/1/7", "jp2", data=bytes.fromhex(complete["hex"]))
+        self.scan("nbu_gage/sn1/1890-05-03/1/8", "jp2", cache_set="buffer", data=bytes.fromhex(cut["hex"]))
+        self.scan("nbu_gage/sn1/1890-05-03/1/9", "jpg", data=b"not a JP2, not checked")
+        pages = ["nbu_gage/sn1/1890-05-03/1/7", "nbu_gage/sn1/1890-05-03/1/8", "nbu_gage/sn1/1890-05-03/1/9",
+                 "nbu_gage/sn1/1890-05-03/1/10"]
+        r = self.run_push(*pages, extra=["--skip-truncated"])
+        self.assertEqual(r.returncode, 3, r.stderr)
+        self.assertEqual(r.stdout.splitlines(), [
+            "pushed keep/nbu_gage/sn1/1890-05-03/1/7.jp2", "pushed keep/nbu_gage/sn1/1890-05-03/1/9.jpg",
+            "missing nbu_gage/sn1/1890-05-03/1/10",
+            f"truncated nbu_gage/sn1/1890-05-03/1/8 {cut['reason']}"])
+        uploads = [line for line in self.log.read_text().splitlines() if " upload " in line]
+        self.assertEqual(len(uploads), 4)
+        self.assertNotIn("/8.jp2", "".join(uploads))
+        # Without the flag the cut-short scan goes up as before.
+        self.log.unlink()
+        r = self.run_push("nbu_gage/sn1/1890-05-03/1/8")
+        self.assertEqual((r.returncode, r.stdout.splitlines()), (0, ["pushed keep/nbu_gage/sn1/1890-05-03/1/8.jp2"]))
+
+    def test_skip_truncated_keeps_a_cut_short_jp2_out_of_the_onprem_tar(self):
+        self.scan("nbu_gage/sn1/1890-05-03/1/7", "jp2", data=bytes.fromhex(JP2_VECTORS["complete: one tile"]["hex"]))
+        cut = JP2_VECTORS["cut short: no EOC"]
+        self.scan("nbu_gage/sn1/1890-05-03/1/8", "jp2", data=bytes.fromhex(cut["hex"]))
+        step, got = self.tmp / "step", self.tmp / "got.tar"
+        step.write_text(f"#!/usr/bin/env bash\ncat > {got}\n")
+        step.chmod(0o755)
+        r = self.run_push("nbu_gage/sn1/1890-05-03/1/7", "nbu_gage/sn1/1890-05-03/1/8",
+                          extra=["--skip-truncated", "--to-onprem", "--onprem-step-arg", str(step)])
+        self.assertEqual(r.returncode, 3, r.stderr)
+        self.assertEqual(r.stdout.splitlines(), [
+            "pushed keep/nbu_gage/sn1/1890-05-03/1/7.jp2", f"truncated nbu_gage/sn1/1890-05-03/1/8 {cut['reason']}"])
+        import tarfile
+        with tarfile.open(got) as tar:
+            self.assertEqual({m.name for m in tar if m.isreg()},
+                             {"keep/nbu_gage/sn1/1890-05-03/1/7.jp2", "keep/nbu_gage/sn1/1890-05-03/1/7.jp2.json"})
+
+    def test_skip_truncated_with_nothing_cut_short_pushes_everything(self):
+        self.scan("nbu_gage/sn1/1890-05-03/1/7", "jp2", data=bytes.fromhex(JP2_VECTORS["complete: one tile"]["hex"]))
+        r = self.run_push("nbu_gage/sn1/1890-05-03/1/7", extra=["--skip-truncated"])
+        self.assertEqual((r.returncode, r.stdout.splitlines()), (0, ["pushed keep/nbu_gage/sn1/1890-05-03/1/7.jp2"]))
 
     def test_refuses_a_path_that_is_not_a_page(self):
         for bad in ("../x/y/1890-05-03/1/7", "nbu_gage/sn1/1890-05-03/1", "NBU/sn1/1890-05-03/1/7"):

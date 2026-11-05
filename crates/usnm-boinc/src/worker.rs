@@ -47,6 +47,7 @@ pub async fn run(work: &Path) -> anyhow::Result<()> {
         image.len() as u64 == job.scan.bytes && boinc::sha256(&image) == job.scan.sha256,
         "input scan checksum mismatch"
     );
+    check_complete(&image)?;
     check_models(&job.engine)?;
     let engine = tesseract(&job.engine).await?;
     check_route(&engine, &job)?;
@@ -66,6 +67,15 @@ pub async fn run(work: &Path) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+/// A JP2 cut short at LoC (#1457) isn't read: Tesseract would fail on it or
+/// read part of the page, and the page keeps LoC's text.
+pub(crate) fn check_complete(image: &[u8]) -> anyhow::Result<()> {
+    match usnm_ocr_contract::jp2::truncation(image) {
+        Some(reason) => anyhow::bail!("source_truncated: LoC's JP2 is cut short: {reason}"),
+        None => Ok(()),
+    }
 }
 
 /// The image's Tesseract, set up for `spec` (one thread, the page deadline).

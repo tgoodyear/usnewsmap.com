@@ -700,6 +700,106 @@ def jp2(stream, lbox=None):
     return header + struct.pack(">I4s", 8 + len(stream) if lbox is None else lbox, b"jp2c") + stream
 
 
+JP2_VECTORS = HERE.parents[3] / "fixtures" / "jp2-truncation-vectors.json"
+
+
+def synthetic_jp2_vectors():
+    """The cases the Rust port (usnm_ocr_contract::jp2) must judge as jp2_truncation does: each
+    builder case below, plus odd box types (Python's repr quoting) and headers declaring more than
+    a u64 holds or memory could."""
+    four, whole = codestream(4), jp2(codestream(4))
+    boundary = len(codestream(2)) - 2
+    xl = whole[:-len(four) - 8] + struct.pack(">I4sQ", 1, b"jp2c", 16 + len(four)) + four
+    head = whole[:len(whole) - len(four) - 8]
+
+    def odd_box(kind):
+        return head + struct.pack(">I4s", 9, kind)
+
+    def main_header(*segments):
+        return jp2(b"\xff\x4f" + b"".join(segments) + four[four.index(b"\xff\x90"):], lbox=0)
+
+    no_tile_count = struct.pack(">HHH8IHBBB", 0xFF51, 41, 0, 32, 32, 0, 0, 32, 32, 32, 0, 1, 7, 1, 1)
+    two_by_two = struct.pack(">HHH8IHBBB", 0xFF51, 41, 0, 65, 33, 0, 0, 64, 32, 0, 0, 1, 7, 1, 1)
+    one_pixel_tiles = struct.pack(">HHH8IHBBB", 0xFF51, 41, 0, 2**32 - 1, 2**32 - 1, 0, 0, 1, 1, 0, 0, 1, 7, 1, 1)
+    cases = [
+        ("complete: one tile", jp2(codestream())),
+        ("complete: four tiles", whole),
+        ("complete: last tile-part runs to EOC", jp2(codestream(2, last_runs_to_eoc=True))),
+        ("complete: jp2c box to end of file", jp2(four, lbox=0)),
+        ("complete: XL jp2c box", xl),
+        ("complete: bare codestream", four),
+        ("left to the decoder: JPEG", b"\xff\xd8\xff\xe0" + b"\x00" * 40),
+        ("left to the decoder: bad SOT length",
+         jp2(four.replace(b"\xff\x90\x00\x0a", b"\xff\x90\x00\x0b", 1))),
+        ("left to the decoder: not a codestream", jp2(b"\x00" * 40)),
+        ("left to the decoder: box shorter than its header", head + struct.pack(">I4s", 5, b"jp2c")),
+        ("left to the decoder: XL box shorter than its header", head + struct.pack(">I4sQ", 1, b"jp2c", 15)),
+        ("left to the decoder: main-header segment shorter than its length field",
+         main_header(struct.pack(">HH", 0xFF52, 1))),
+        ("left to the decoder: main-header byte that isn't a marker", main_header(b"\x12\x34\x00\x04")),
+        ("left to the decoder: tile-part shorter than its header",
+         jp2(four.replace(b"\x00\x00\x00\x22\x00", b"\x00\x00\x00\x0d\x00", 1))),
+        ("left to the decoder: tile-part followed by neither SOT nor EOC",
+         jp2(codestream(1)[:-2] + b"\xff\x52\x00\x00")),
+        ("cut short: no EOC", jp2(four[:-2])),
+        ("cut short: box past the file", whole[:-10]),
+        ("cut short: inside a tile-part", jp2(four[:-10], lbox=0)),
+        ("cut short: at a tile-part boundary", jp2(four[:boundary], lbox=0)),
+        ("cut short: inside a tile-part header", jp2(four[:boundary + 6], lbox=0)),
+        ("cut short: last tile-part with no EOC", jp2(codestream(2, last_runs_to_eoc=True)[:-2], lbox=0)),
+        ("cut short: inside the main header", jp2(four[:20], lbox=0)),
+        ("cut short: only SOC", jp2(four[:2])),
+        ("cut short: no SOC", jp2(four[:1])),
+        ("cut short: header boxes only", head),
+        ("cut short: inside a header box", whole[:60]),
+        ("cut short: inside a box header", head + b"\x00\x00\x00"),
+        ("cut short: inside an XL box header", head + struct.pack(">I4s", 1, b"jp2c") + b"\x00\x00"),
+        ("cut short: bare codestream", four[:-2]),
+        ("cut short: tile count unknown", main_header(no_tile_count)[:-2]),
+        ("cut short: two by two tiles", main_header(two_by_two)[:-2]),
+        ("cut short: (2^32 - 1)^2 one-pixel tiles", main_header(one_pixel_tiles)[:-2]),
+        ("cut short: XL box declaring 2^64 - 1 bytes", head + struct.pack(">I4sQ", 1, b"jp2c", 2**64 - 1)),
+        ("cut short: tile-part declaring 2^32 - 1 bytes",
+         jp2(four.replace(b"\x00\x00\x00\x22\x00", b"\xff\xff\xff\xff\x00", 1), lbox=0)),
+        ("cut short: box type with a quote", odd_box(b"a'bc")),
+        ("cut short: box type with both quotes", odd_box(b"a'b\"")),
+        ("cut short: box type with escapes", odd_box(b"\x00\t\\\xe9")),
+        ("cut short: box type with Latin-1 controls", odd_box(b"\x7f\xa0\xad\xff")),
+        ("cut short: box type with line ends", odd_box(b"\r\n\x1f ")),
+    ]
+    return [{"name": name, "hex": raw.hex(), "reason": feed.jp2_truncation(raw)} for name, raw in cases]
+
+
+def encoded_jp2_vectors():
+    """JP2s that Pillow's OpenJPEG writes, whole, with a 'jp2c' box that runs to the end of the file
+    (as LoC's truncated scans have), and cut short; None without Pillow's JPEG 2000 codec."""
+    try:
+        from PIL import Image, features
+    except ImportError:
+        return None
+    if not features.check_codec("jpg_2000"):
+        return None
+    image = Image.linear_gradient("L").resize((40, 24)).point(lambda v: (v * 7) % 256)
+    vectors = []
+    for label, options in (("one tile", {}), ("16x16 tiles", {"tile_size": (16, 16)}),
+                           ("two layers, RLCP", {"quality_mode": "rates", "quality_layers": [40, 10],
+                                                 "progression": "RLCP"})):
+        output = io.BytesIO()
+        image.save(output, "JPEG2000", **options)
+        raw = output.getvalue()
+        start, _ = feed.jp2_codestream(raw)
+        to_end = raw[:start - 8] + struct.pack(">I", 0) + raw[start - 4:]
+        named = [(f"encoded {label}: complete", raw), (f"encoded {label}: jp2c box to end of file", to_end)]
+        for cut in (2, 9, (len(raw) - start) // 2):
+            named += [(f"encoded {label}: last {cut} bytes cut", raw[:-cut]),
+                      (f"encoded {label}: jp2c box to end of file, last {cut} bytes cut", to_end[:-cut])]
+        for name, value in named:
+            reason = feed.jp2_truncation(value)
+            assert (reason is None) == name.endswith((": complete", "end of file")), (name, reason)
+            vectors.append({"name": name, "hex": value.hex(), "reason": reason})
+    return vectors
+
+
 class SourceTruncatedTest(unittest.TestCase):
     """A JP2 cut short at LoC's source (#1457): flagged from its headers, never retried; no Pillow."""
 
@@ -774,6 +874,24 @@ class SourceTruncatedTest(unittest.TestCase):
                 ("bare codestream", four[:-2], "the codestream ends without an EOC marker after 4 of 4 tiles")):
             with self.subTest(name):
                 self.assertIn(reason, feed.jp2_truncation(raw) or "")
+
+    def test_the_shared_vectors_are_the_builders_and_jp2_truncation_still_judges_them(self):
+        """fixtures/jp2-truncation-vectors.json, which usnm_ocr_contract::jp2's test reads (#1457).
+        UPDATE_JP2_VECTORS=1 rewrites it (with Pillow's JPEG 2000 codec, its encoded cases too)."""
+        recorded = json.loads(JP2_VECTORS.read_text()) if JP2_VECTORS.exists() else []
+        synthetic = synthetic_jp2_vectors()
+        encoded = [vector for vector in recorded if vector["name"].startswith("encoded ")]
+        if os.environ.get("UPDATE_JP2_VECTORS") == "1":
+            encoded = encoded_jp2_vectors() or encoded
+            recorded = synthetic + encoded
+            JP2_VECTORS.write_text(json.dumps(recorded, indent=1) + "\n")
+        self.assertEqual(recorded[:len(synthetic)], synthetic,
+                         "stale: rerun with UPDATE_JP2_VECTORS=1")
+        self.assertEqual(recorded[len(synthetic):], encoded)
+        self.assertTrue(any(v["reason"] is None for v in encoded) and any(v["reason"] for v in encoded))
+        for vector in recorded:
+            with self.subTest(vector["name"]):
+                self.assertEqual(feed.jp2_truncation(bytes.fromhex(vector["hex"])), vector["reason"])
 
     def test_a_truncated_jp2_is_recorded_once_and_is_never_fetched_or_decoded_again(self):
         good_raw, bad_raw = jp2(codestream(2)), jp2(codestream(2)[:-2])

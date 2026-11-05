@@ -471,6 +471,23 @@ pub enum DeadLettered {
     LeaseLost,
 }
 
+impl DeadLettered {
+    /// As `claim dead-letter` prints it.
+    pub fn word(self) -> &'static str {
+        match self {
+            DeadLettered::Done => "dead_lettered",
+            DeadLettered::Already => "already ended",
+            DeadLettered::LeaseLost => "lease_lost",
+        }
+    }
+}
+
+/// The dead letter's `error` for a claimed page whose JP2 LoC holds cut short (#1457): the
+/// bytes match LoC's checksums, so neither OCR nor fetching it again can help. The page keeps
+/// LoC's text.
+pub const SOURCE_TRUNCATED: &str =
+    "source_truncated: LoC's JP2 is cut short at its source; not OCRed (#1457)";
+
 /// A page whose BOINC workunit failed for good (#1154): put its message on `ocr-deadletter`
 /// as a v2 `permanent` dead letter, then delete it with the claim's pop receipt, so the page
 /// is not taken again. A release would not do: the copy is the same job, with the same

@@ -125,6 +125,63 @@ async fn main() -> anyhow::Result<()> {
 }
 
 #[cfg(test)]
+mod claim_cli_tests {
+    use super::*;
+    use usnm_boinc::claim::cli::ClaimCommands;
+
+    #[test]
+    fn a_source_truncated_dead_letter_names_doc_ids_and_no_job() {
+        // #1457: pages whose JP2 LoC holds cut short were never exported.
+        let base = [
+            "usnm-boinc",
+            "claim",
+            "dead-letter",
+            "--handoff-url",
+            "h",
+            "--queue-url",
+            "q",
+        ];
+        let cli = Cli::try_parse_from(
+            [
+                &base[..],
+                &["--source-truncated", "a", "--source-truncated", "b"],
+            ]
+            .concat(),
+        )
+        .unwrap();
+        let Commands::Claim(ClaimCommands::DeadLetter {
+            jobs,
+            source_truncated,
+            ..
+        }) = cli.command
+        else {
+            panic!("expected claim dead-letter");
+        };
+        assert_eq!(
+            (jobs.len(), source_truncated),
+            (0, vec!["a".into(), "b".into()])
+        );
+        for extra in [
+            &["--source-truncated", "a", "--job", "j"][..],
+            &[
+                "--source-truncated",
+                "a",
+                "--supersedes-failed-job",
+                "j",
+                "--curated-url",
+                "c",
+            ],
+            &[],
+        ] {
+            assert!(
+                Cli::try_parse_from([&base[..], extra].concat()).is_err(),
+                "{extra:?}"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
 mod qwen_runtime_tests {
     use super::*;
     use usnm_boinc::qwen::cli::QwenCommands;

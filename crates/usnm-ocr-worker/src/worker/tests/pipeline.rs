@@ -371,6 +371,35 @@ async fn a_failed_jpeg_fallback_or_another_exit_takes_the_retry_path() {
     assert!(out.list("alto").await.unwrap().is_empty());
 }
 
+#[tokio::test]
+async fn a_jp2_cut_short_at_loc_is_dead_lettered_unread() {
+    use std::sync::atomic::Ordering::SeqCst;
+    let dir = tempfile::tempdir().unwrap();
+    let (w, queue, out, scans) = worker_with_scans(dir.path());
+    queue
+        .send(BULK, &msg("sn83045462/1890-05-03/ed-1/seq-94", "deu"))
+        .await
+        .unwrap();
+    let m = queue.receive(BULK, Duration::ZERO).await.unwrap().unwrap();
+    w.handle(m, Instant::now()).await;
+    // Not read (the fake engine can't parse it), and no JPEG asked for.
+    assert_eq!(scans.jpeg_requests.load(SeqCst), 0);
+    assert!(out.list("alto").await.unwrap().is_empty());
+    assert_eq!(queue.approximate_count(BULK).await.unwrap(), 0);
+    let d = queue
+        .receive(DEADLETTER, Duration::from_secs(600))
+        .await
+        .unwrap()
+        .unwrap();
+    let parsed = message::decode_dead_letter(&d.text).unwrap();
+    assert_eq!(parsed.cause, Some(Cause::Permanent));
+    assert_eq!(
+        parsed.error,
+        "source_truncated: LoC's JP2 is cut short: the 'jp2c' box declares 244 bytes past the end of the file"
+    );
+    assert_eq!(w.tracker.status().since_start.dead_lettered, 1);
+}
+
 #[test]
 fn status_136_is_told_apart() {
     use std::os::unix::process::ExitStatusExt;

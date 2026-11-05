@@ -845,6 +845,16 @@ impl Worker {
             record_image_fetch(&self.metrics, t, &scan, false);
             let scan = scan?;
             self.tracker.scanned(token, scan.from_cache);
+            // LoC's JP2 is cut short (#1457): the engine would fail on it or
+            // read part of the page, LoC's IIIF JPEG is made from the same
+            // file, and no fetch repairs it. The page keeps LoC's text.
+            if scan.format == ScanFormat::Jp2 {
+                if let Some(reason) = usnm_ocr_contract::jp2::truncation(&scan.bytes) {
+                    return Err(Failure::Permanent(format!(
+                        "source_truncated: LoC's JP2 is cut short: {reason}"
+                    )));
+                }
+            }
             self.tracker.stage(token, "ocr");
             if scan.from_cache {
                 tracing::debug!(doc_id = %key.doc_id(), format = scan.format.name(), "scan read from the cache");
