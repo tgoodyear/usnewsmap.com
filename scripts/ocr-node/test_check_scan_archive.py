@@ -229,6 +229,18 @@ cat "$STUB_REPORT"
         self.assertIn("host load 31.20 is above --max-load 24", result.stderr)
         self.assertNotIn("acceptance passed", result.stdout)
 
+    def test_scans_root_with_bind_separators_is_refused(self):
+        for root in ("/srv/scan archive", "/srv/scan:archive"):
+            with self.subTest(root=root):
+                (self.root / "etc/usnm/scan-archive.env").write_text(
+                    f"USNM_ARCHIVE_URL=https://example\nUSNM_ARCHIVE_SCANS='{root}'\n")
+                self.scans = self.root / root.lstrip("/")
+                self.scan(f"{EDITION}/1.jp2")
+                result = self.run_check("--verify-only")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("must be a plain absolute path", result.stderr)
+                self.assertFalse(self.calls.exists())
+
     def test_bad_options_fail_before_any_command(self):
         for args in (("--limit", "0"), ("--limit", "-1"), ("--limit", "1001"),
                      ("--limit", "01"), ("--limit", "abc"), ("--deadline", "59"),

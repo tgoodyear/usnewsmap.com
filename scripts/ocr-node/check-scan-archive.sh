@@ -51,6 +51,8 @@ SCANS=$(sed -n 's/^USNM_ARCHIVE_SCANS=//p' "$ENVFILE" | tail -n 1)
 # Like systemd, take the value inside one pair of matching quotes.
 if [[ $SCANS =~ ^\"(.*)\"$ || $SCANS =~ ^\'(.*)\'$ ]]; then SCANS=${BASH_REMATCH[1]}; fi
 SCANS=$ROOT${SCANS:-/tank/ocr/scans}
+# systemd splits bind mount specifications at spaces and colons.
+[[ $SCANS =~ ^/[A-Za-z0-9._/-]+$ ]] || die "the scans root must be a plain absolute path: $SCANS"
 [ -d "$SCANS/keep" ] || die "no keep set under $SCANS"
 systemd-tmpfiles --create "$ROOT/etc/tmpfiles.d/usnm-scan-archive.conf"
 exec 9<>"$ROOT/run/lock/usnm-scan-archive/lock"
