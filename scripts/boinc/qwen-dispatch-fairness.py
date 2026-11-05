@@ -180,7 +180,9 @@ def analyse(snap):
         # Hosts holding no replica of a blocked unit: they could take it if their class allowed.
         "free of blocked": collections.Counter(h for key in blocked for h in hosts if h not in taken[key[1]]),
         "recent": collections.Counter(h for h, _, _ in snap["recent"]),
-        "past head": collections.Counter(h for h, wu, prio in snap["recent"] if head and (-prio, wu) > units[head - 1]),
+        # A unit still unsent keeps its place in feeder order, whatever the priority of the replica sent.
+        "past head": collections.Counter(h for h, wu, prio in snap["recent"]
+                                         if head and (first[wu][0] if wu in first else (-prio, wu)) > units[head - 1]),
     }
     cache = snap.get("cache")
     if cache:

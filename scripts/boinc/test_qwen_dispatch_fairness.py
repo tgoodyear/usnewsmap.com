@@ -40,7 +40,7 @@ def snapshot():
         "unsent": [[1006, 106, 10, 8], [1001, 101, 0, 8], [1002, 102, 0, 8], [1003, 103, 0, 8], [1004, 104, 0, 8],
                    [1005, 105, 0, 8], [1015, 105, 0, 8], [1016, 106, 0, 8], [1007, 107, 0, 2]],
         "taken": [[106, 5], [106, 10], [101, 5], [102, 5], [103, 5], [104, 5], [104, 9]],
-        "recent": [[5, 101, 0], [5, 106, 10], [10, 104, 0], [9, 99, 0]],
+        "recent": [[5, 101, 0], [5, 106, 10], [10, 104, 0], [10, 106, 0], [9, 99, 0]],
         "cache": {"slots": 5, "empty": 1, "reserved": 1, "apps": {}, "results": [[1001, 51], [1003, 302], [1006, 5]]},
     }
 
@@ -57,7 +57,7 @@ class Report(unittest.TestCase):
     def test_blocked_head_takers_and_cache(self):
         a = F.analyse(snapshot())
         # 106: AMD and NVIDIA hold it and Intel is closed; 101-103: AMD holds them and NVIDIA's bounds exclude them;
-        # 107: every class takes only batch 8.
+        # 107: every class takes only batch 8. A low-priority send of 106 doesn't pass the head 106 leads.
         self.assertEqual((a["units"], a["replicas"], a["blocked"], a["head"]), (7, 9, 5, 4))
         self.assertEqual(a["can take"], {5: 1, 10: 2})
         self.assertEqual(a["only taker"], {10: 1})
@@ -77,7 +77,7 @@ class Report(unittest.TestCase):
         text = out.getvalue()
         self.assertIn("| 9 | intel_vulkan_8b | 2026-11-04 | 5 | 2 | 1 | 0 | 1 | 0 | 1 | 0 |", text)
         self.assertIn("| 9 | intel_vulkan_8b | closed, batch 8 | 0 | 0 | 5 | 1 | 0 |", text)
-        self.assertIn("| 10 | nvidia_vulkan_8b | units ≥ 104, batch ≥ 8 | 2 | 1 | 4 | 1 | 1 |", text)
+        self.assertIn("| 10 | nvidia_vulkan_8b | units ≥ 104, batch ≥ 8 | 2 | 1 | 4 | 2 | 1 |", text)
         self.assertIn("| 5 | amd_vulkan_8b | any unit, batch 8 | 1 | 0 | 1 | 2 | 0 |", text)
         self.assertIn("9 unsent replicas on 7 units.", text)
         self.assertIn("5 units no listed host can take now; the first 4 units in feeder order", text)
