@@ -10,6 +10,10 @@
 //! when the search covers American Stories' text, a count of the pages only
 //! that text matches (05 §5.5.4).
 //!
+//! When the cube is over budget, [`coarser`] picks the buckets to retry with
+//! from the places with hits that pass found, which don't depend on the
+//! buckets: a search takes at most one more pass, at the unit it answers by.
+//!
 //! [`days`] plans `/v1/days`: matching pages per day for a few places.
 
 use std::collections::HashMap;
@@ -53,9 +57,12 @@ pub struct Aggregate {
 pub enum Planned {
     Complete(Box<Aggregate>),
     /// The cube's upper bound exceeds the budget, so no cube query was issued;
-    /// the caller should retry with coarser buckets or reject the request.
+    /// the caller should retry with the buckets [`coarser`] picks or reject
+    /// the request.
     TooManyCells {
         upper_bound: usize,
+        /// Places with hits, the same whatever the buckets.
+        places: usize,
     },
 }
 
@@ -88,9 +95,11 @@ pub async fn aggregate(
             american_stories_only: indexes.counts_american_stories_only().then_some(0),
         })));
     }
-    let upper_bound = summary.places.len().saturating_mul(spec.len());
-    if upper_bound > max_cells.min(MAX_SHARDED_BUCKETS) {
-        return Ok(Planned::TooManyCells { upper_bound });
+    if let Some(upper_bound) = over_budget(summary.places.len(), spec, max_cells) {
+        return Ok(Planned::TooManyCells {
+            upper_bound,
+            places: summary.places.len(),
+        });
     }
     let n = shard_count(summary.places.len(), spec.len());
     let cube = async {
@@ -145,6 +154,42 @@ pub async fn aggregate(
         last,
         american_stories_only,
     })))
+}
+
+/// The cube's upper bound, places with hits × buckets, when it exceeds the
+/// caller's budget or what one request can compute.
+fn over_budget(places: usize, spec: &BucketSpec, max_cells: usize) -> Option<usize> {
+    let upper_bound = places.saturating_mul(spec.len());
+    (upper_bound > max_cells.min(MAX_SHARDED_BUCKETS)).then_some(upper_bound)
+}
+
+/// The buckets to retry with after [`Planned::TooManyCells`] on `spec`: the
+/// first coarser unit (week, month, then year) whose cube fits for the same
+/// `places`, or, when even years don't, their upper bound. The summary's
+/// query doesn't depend on the buckets, so a pass by any unit finds the same
+/// places with hits; a unit they put over budget is skipped, where asking
+/// would cost a full pass for the same refusal.
+pub fn coarser(spec: &BucketSpec, places: usize, max_cells: usize) -> Result<BucketSpec, usize> {
+    let mut upper_bound = places.saturating_mul(spec.len());
+    let mut unit = spec.unit;
+    while let Some(next) = coarser_unit(unit) {
+        unit = next;
+        let coarse = BucketSpec::new(unit, spec.from, spec.to);
+        match over_budget(places, &coarse, max_cells) {
+            Some(bound) => upper_bound = bound,
+            None => return Ok(coarse),
+        }
+    }
+    Err(upper_bound)
+}
+
+fn coarser_unit(unit: BucketUnit) -> Option<BucketUnit> {
+    match unit {
+        BucketUnit::Day => Some(BucketUnit::Week),
+        BucketUnit::Week => Some(BucketUnit::Month),
+        BucketUnit::Month => Some(BucketUnit::Year),
+        BucketUnit::Year => None,
+    }
 }
 
 /// The first hit in `sort` order: the earliest or latest matching page. It
@@ -371,7 +416,10 @@ mod tests {
         }
         let upper_bound = summary.places.len().saturating_mul(spec.len());
         if upper_bound > max_cells.min(MAX_SHARDED_BUCKETS) {
-            return Ok(Planned::TooManyCells { upper_bound });
+            return Ok(Planned::TooManyCells {
+                upper_bound,
+                places: summary.places.len(),
+            });
         }
         let n = shard_count(summary.places.len(), spec.len());
         let mut cells = Vec::new();
@@ -403,7 +451,10 @@ mod tests {
     /// Everything the response is built from, with the cells in order.
     fn answer(p: Planned) -> serde_json::Value {
         match p {
-            Planned::TooManyCells { upper_bound } => json!({ "too_many": upper_bound }),
+            Planned::TooManyCells {
+                upper_bound,
+                places,
+            } => json!({ "too_many": upper_bound, "places": places }),
             Planned::Complete(a) => {
                 let mut cells = a.cells;
                 cells.sort_by(|x, y| (&x.place_id, x.bucket).cmp(&(&y.place_id, y.bucket)));
@@ -496,6 +547,12 @@ mod tests {
         fn calls(&self) -> Vec<&'static str> {
             let mut c = self.calls.lock().unwrap().clone();
             c.sort_unstable();
+            c
+        }
+        /// [`Self::calls`], forgetting them.
+        fn take(&self) -> Vec<&'static str> {
+            let c = self.calls();
+            self.calls.lock().unwrap().clear();
             c
         }
     }
@@ -602,6 +659,126 @@ mod tests {
             .unwrap();
         assert!(!b.calls().contains(&"combined"));
         assert!(b.calls().contains(&"summary"));
+    }
+
+    /// The API's loop (`routes/aggregate.rs`): plan by `spec` and, while the
+    /// cube is over budget, by the buckets `next` picks from the refused
+    /// bucketing, its upper bound and its places, or give up with a bound.
+    /// The answer, and the units planned by.
+    async fn coarsening(
+        b: &Counting,
+        idx: &IndexSet,
+        q: &Node,
+        f: &Filters,
+        mut spec: BucketSpec,
+        max_cells: usize,
+        next: fn(&BucketSpec, usize, usize, usize) -> Result<BucketSpec, usize>,
+    ) -> (serde_json::Value, Vec<BucketUnit>) {
+        let mut units = Vec::new();
+        loop {
+            units.push(spec.unit);
+            match aggregate(b, idx, q, f, &spec, max_cells).await.unwrap() {
+                Planned::TooManyCells {
+                    upper_bound,
+                    places,
+                } => match next(&spec, upper_bound, places, max_cells) {
+                    Ok(coarse) => spec = coarse,
+                    Err(bound) => return (json!({ "too_broad": bound }), units),
+                },
+                done => return (json!({ "unit": spec.unit, "answer": answer(done) }), units),
+            }
+        }
+    }
+
+    /// The loop's step before [`coarser`]: the next unit, whatever the places.
+    fn next_unit(
+        spec: &BucketSpec,
+        upper_bound: usize,
+        _: usize,
+        _: usize,
+    ) -> Result<BucketSpec, usize> {
+        coarser_unit(spec.unit)
+            .map(|unit| BucketSpec::new(unit, spec.from, spec.to))
+            .ok_or(upper_bound)
+    }
+
+    fn skipping(
+        spec: &BucketSpec,
+        _: usize,
+        places: usize,
+        max_cells: usize,
+    ) -> Result<BucketSpec, usize> {
+        coarser(spec, places, max_cells)
+    }
+
+    /// Coarsening by the places found plans by the first unit and the one
+    /// it answers by, and answers as unit by unit did: at each unit's bound
+    /// and one cell under it, for common, rare and absent words, over the
+    /// whole range, part of it and one day, with the combined request refused
+    /// or not. Only the skipped units' passes go.
+    #[tokio::test]
+    async fn coarsening_skips_only_passes_that_would_be_refused() {
+        let set = &IndexSet::new(vec!["i".into()]);
+        let units = [
+            BucketUnit::Day,
+            BucketUnit::Week,
+            BucketUnit::Month,
+            BucketUnit::Year,
+        ];
+        let (mut skipped, mut answered, mut too_broad) = (0, 0, 0);
+        for refuse in [false, true] {
+            let old = Counting::new(varied(), refuse);
+            let new = Counting::new(varied(), refuse);
+            for q in ["gold", "rare", "zyzzyva"] {
+                let q = usnm_core::query::parse(q).unwrap();
+                for (from, to) in [(0, 80_000), (45_000, 47_000), (50_000, 50_000)] {
+                    let f = filters(from, to);
+                    let years = BucketSpec::new(BucketUnit::Year, f.from, f.to);
+                    let places = old.inner.summary(set, &q, &f, &years).await;
+                    let places = places.unwrap().places.len();
+                    let mut budgets = vec![0, 700_000];
+                    for unit in units {
+                        let bound = places * BucketSpec::new(unit, f.from, f.to).len();
+                        budgets.extend([bound, bound.saturating_sub(1)]);
+                    }
+                    budgets.sort_unstable();
+                    budgets.dedup();
+                    for unit in units {
+                        let spec = BucketSpec::new(unit, f.from, f.to);
+                        for &max_cells in &budgets {
+                            let at = format!("{q} {from} {to} {unit:?} {max_cells} {refuse}");
+                            let (want, asked) =
+                                coarsening(&old, set, &q, &f, spec, max_cells, next_unit).await;
+                            let (got, planned) =
+                                coarsening(&new, set, &q, &f, spec, max_cells, skipping).await;
+                            assert_eq!(got, want, "{at}");
+                            let mut expected = vec![unit];
+                            if want.get("answer").is_some() && asked.len() > 1 {
+                                expected.extend(asked.last());
+                            }
+                            assert_eq!(planned, expected, "{at}");
+                            // The same calls, but the summaries of the units skipped.
+                            let mut gone = old.take();
+                            for call in new.take() {
+                                let i = gone.iter().position(|c| *c == call);
+                                gone.remove(i.unwrap_or_else(|| panic!("{at}: {call}")));
+                            }
+                            assert!(
+                                gone.iter().all(|c| ["summary", "combined"].contains(c)),
+                                "{at}: {gone:?}"
+                            );
+                            skipped += asked.len() - planned.len();
+                            answered += usize::from(asked.len() > 1 && planned.len() > 1);
+                            too_broad += usize::from(want.get("too_broad").is_some());
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            skipped > 100 && answered > 50 && too_broad > 50,
+            "{skipped} {answered} {too_broad}"
+        );
     }
 
     /// With American Stories' text searched, the aggregate also counts the

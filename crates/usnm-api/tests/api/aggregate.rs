@@ -444,3 +444,144 @@ async fn one_request_or_several_answer_the_same() {
     }
     assert!(coarsened && refused);
 }
+
+/// The fixtures, counting the passes over the index the searches make: the
+/// summary, alone or with the cube.
+struct Passes {
+    inner: MemoryBackend,
+    passes: std::sync::atomic::AtomicUsize,
+}
+
+impl Passes {
+    fn saw(&self) {
+        self.passes
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+#[async_trait::async_trait]
+impl SearchBackend for Passes {
+    fn capabilities(&self) -> Capabilities {
+        self.inner.capabilities()
+    }
+    async fn summary(
+        &self,
+        indexes: &IndexSet,
+        query: &Node,
+        filters: &Filters,
+        spec: &BucketSpec,
+    ) -> Result<Summary, SearchError> {
+        self.saw();
+        self.inner.summary(indexes, query, filters, spec).await
+    }
+    async fn summary_with_cube(
+        &self,
+        indexes: &IndexSet,
+        query: &Node,
+        filters: &Filters,
+        spec: &BucketSpec,
+    ) -> Result<Option<(Summary, Vec<CubeCell>)>, SearchError> {
+        self.saw();
+        self.inner
+            .summary_with_cube(indexes, query, filters, spec)
+            .await
+    }
+    async fn cube(
+        &self,
+        indexes: &IndexSet,
+        query: &Node,
+        filters: &Filters,
+        spec: &BucketSpec,
+        shards: &[u8],
+    ) -> Result<Vec<CubeCell>, SearchError> {
+        self.inner.cube(indexes, query, filters, spec, shards).await
+    }
+    async fn hits(
+        &self,
+        indexes: &IndexSet,
+        query: &Node,
+        filters: &Filters,
+        page: &HitsQuery,
+    ) -> Result<HitsPage, SearchError> {
+        self.inner.hits(indexes, query, filters, page).await
+    }
+    async fn health(&self) -> Result<(), SearchError> {
+        Ok(())
+    }
+}
+
+/// A search by day whose cube is over budget is planned again only by the
+/// unit it answers by, and answers as a search by that unit does, with
+/// `coarsened` set: at each unit's bound and one cell under it, over one year
+/// and the whole range, and with no match. One too broad even by year is
+/// refused after its first pass.
+#[tokio::test]
+async fn coarsening_plans_only_by_the_unit_it_answers_by() {
+    let units = ["day", "week", "month", "year"];
+    let by_unit = state_with_cells(700_000).await;
+    let mut skipped = 0;
+    for range in ["&from=1896-01-01&to=1896-12-31", ""] {
+        for q in ["gold", "zyzzyva"] {
+            let uri = |unit: &str| format!("/v1/aggregate?q={q}{range}&bucket={unit}");
+            let mut want = Vec::new();
+            for unit in units {
+                let (status, _, body) = get(&by_unit, &uri(unit)).await;
+                assert_eq!(status, StatusCode::OK, "{}: {body}", uri(unit));
+                assert_eq!(body["coarsened"], false, "{}", uri(unit));
+                want.push(body);
+            }
+            let places = want[0]["total"]["places"].as_u64().unwrap() as usize;
+            let bounds: Vec<usize> = want
+                .iter()
+                .map(|w| places * w["bucket"]["count"].as_u64().unwrap() as usize)
+                .collect();
+            let mut budgets = vec![700_000];
+            for &bound in &bounds {
+                budgets.extend([bound, bound.saturating_sub(1)]);
+            }
+            budgets.sort_unstable();
+            budgets.dedup();
+            for max_cells in budgets {
+                let at = format!("{} at {max_cells}", uri("day"));
+                let backend = std::sync::Arc::new(Passes {
+                    inner: fixture_backend(),
+                    passes: Default::default(),
+                });
+                let mut cfg = config();
+                cfg.max_cells = max_cells;
+                let s = std::sync::Arc::new(usnm_api::AppState::new(
+                    cfg,
+                    backend.clone(),
+                    refdata().await,
+                ));
+                let (status, _, mut body) = get(&s, &uri("day")).await;
+                let passes = backend.passes.load(std::sync::atomic::Ordering::Relaxed);
+                let Some(i) = bounds.iter().position(|&b| b <= max_cells) else {
+                    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{at}: {body}");
+                    let detail = format!(
+                        "this search would produce about {} map cells even by year",
+                        bounds[3]
+                    );
+                    assert_eq!(body["detail"], detail, "{at}");
+                    assert_eq!(passes, 1, "{at}");
+                    skipped += 3;
+                    continue;
+                };
+                assert_eq!(status, StatusCode::OK, "{at}: {body}");
+                let mut want = want[i].clone();
+                let canonical = want["query"]["canonical"].as_str().unwrap();
+                let canonical = canonical.replace(&format!("bucket={}", units[i]), "bucket=day");
+                want["query"]["canonical"] = canonical.into();
+                want["coarsened"] = (i > 0).into();
+                for b in [&mut body, &mut want] {
+                    b.as_object_mut().unwrap().remove("timing_ms");
+                }
+                assert_eq!(body, want, "{at}");
+                // The first unit, and the one it answers by.
+                assert_eq!(passes, 1 + usize::from(i > 0), "{at}");
+                skipped += i.saturating_sub(1);
+            }
+        }
+    }
+    assert!(skipped >= 16, "{skipped}");
+}
