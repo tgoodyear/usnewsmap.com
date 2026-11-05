@@ -178,6 +178,9 @@ class SchedulerTests(unittest.TestCase):
         failed["job"]["engine"]["image"] = "sha256:" + "b" * 64
         with self.assertRaisesRegex(ValueError, "different allocation/image"):
             batch.owned_records(self.config, [failed, retried], retries)
+        # Without a retry, a page's second root is reported first, as before #1417.
+        with self.assertRaisesRegex(ValueError, "multiple jobs"):
+            batch.owned_records(self.config, [failed, retried], None)
 
     def test_reviewed_retry_lineage_is_owned_but_never_automatically_submitted(self):
         page = self.config["pages"][0]["page"]

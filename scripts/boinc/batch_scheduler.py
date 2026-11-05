@@ -1257,13 +1257,14 @@ def deadline_retried(page, roots, deadline_retries):
     next tick exports again. Returns the last one alone, or the roots as they are when they don't
     form that one chain."""
     def key(queued_at, timeout_secs):
-        return json.dumps([queued_at, timeout_secs], sort_keys=True)
+        return (queued_at, timeout_secs) if isinstance(queued_at, str) and type(timeout_secs) is int else None
 
     by_key = {}
     for record in roots:
         job = record["job"]
-        by_key.setdefault(key(job["message"].get("queued_at"), job["engine"].get("timeout_secs")),
-                          []).append(record)
+        found = key(job["message"].get("queued_at"), job["engine"].get("timeout_secs"))
+        if found is not None:
+            by_key.setdefault(found, []).append(record)
     after = {}
     for record in roots:
         entry = deadline_retries.get(record["job"]["id"])
@@ -1309,12 +1310,14 @@ def owned_records(config, records, deadline_retries=None):
     owned = {}
     for page, history in by_page.items():
         roots = [record for record in history if not record.get("retry")]
-        for record in roots:
-            require(record["job"]["engine"]["image"] == config["image"],
-                    "plan already exists with a different allocation/image; operator migration required")
+        chain = roots
         if len(roots) > 1 and deadline_retries:
             roots = deadline_retried(page, roots, deadline_retries)
         require(len(roots) == 1, "multiple jobs for one allocated page; reconcile before feeding")
+        # A deadline retry's dead-lettered roots are the plan's too.
+        for record in chain:
+            require(record["job"]["engine"]["image"] == config["image"],
+                    "plan already exists with a different allocation/image; operator migration required")
         current = roots[0]
         remaining = [record for record in history if record.get("retry")]
         while remaining:
@@ -1469,7 +1472,8 @@ class QueueFeed:
                 and timeout != job["engine"].get("timeout_secs")
                 and isinstance(found.get("queued_at"), str)
                 and found["queued_at"] != job["message"].get("queued_at"),
-                f"invalid deadline retry record for job {job['id'][:12]}")
+                f"invalid deadline retry record for job {job['id']} (page {page}, doc {claim['doc_id']}, "
+                f"message {claim['message']})")
         self.claims[page] = {**self.claims[page], "message": claim["message"], "supersedes": job["id"]}
         self.state.setdefault("deadline_retries", {})[job["id"]] = {
             "page": page, "message": claim["message"], "queued_at": found["queued_at"],
