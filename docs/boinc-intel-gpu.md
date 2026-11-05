@@ -163,7 +163,8 @@ renders a different `config.xml` therefore needs the timer disabled before `SERV
 changes. After the restart, take the new hash from the running server
 (`podman exec usnm-boinc-server sha256sum /project/usnmocr/config.xml`), and check the diff
 against the previous config. Then set `CONFIG_SHA256`, run a dry invocation, and enable the
-timer again. #1449's image is such an image: it drops eight retired daemons. Don't predict the
+timer again. #1449's image is such an image: it drops eight retired daemons and sets
+`maintenance_delay` (#1462), so one re-pin covers both. Don't predict the
 hash from the repository, because the rendered file carries the host's secrets and paths. An
 app-version image prepared on the old `SERVER_IMAGE` renders the old file when it publishes,
 so prepare it again on the new one.

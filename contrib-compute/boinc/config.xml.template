@@ -42,6 +42,11 @@
         <one_result_per_host_per_wu/>
         <min_sendwork_interval>2</min_sendwork_interval>
         <next_rpc_delay>3600</next_rpc_delay>
+        <!-- The request_delay of every "project is down" reply: no feeder or one not yet
+             ready, stop_sched, no database. BOINC's default is 3600. A client waits the later
+             of this and its own backoff, so the first four such replies in a row each mean
+             about 20 minutes (docs/boinc/feeder-refresh.md, Client retry behaviour; #1462). -->
+        <maintenance_delay>1200</maintenance_delay>
         <max_wus_in_progress>32</max_wus_in_progress>
         <daily_result_quota>50000</daily_result_quota>
         <max_wus_to_send>64</max_wus_to_send>

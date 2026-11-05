@@ -22,8 +22,13 @@ The `db_purge` daemon runs continuously with `--min_age_days 30`, archiving and
 removing eligible workunit and result database records after 30 days. Do not add
 a bare `--max`: it requires a numeric argument, and a limit makes the daemon exit
 once it has purged that many workunits. With no eligible work, it sleeps rather
-than exits. Changes to `config.xml.template` require an image rollout; the
-entrypoint renders the project's configuration at container startup.
+than exits. `maintenance_delay` is 1200 seconds, so a client told the project is down (no feeder
+or one not yet ready, `stop_sched`, no database) asks again after about 20 minutes, not BOINC's
+default hour ([client retry behaviour](../../docs/boinc/feeder-refresh.md#client-retry-behaviour)).
+Changes to `config.xml.template` require an image rollout; the
+entrypoint renders the project's configuration at container startup. They also change the
+`config.xml` SHA-256 the Qwen auto-cohort controller pins, so disable its timer before the
+restart and re-pin it after ([boinc-intel-gpu.md](../../docs/boinc-intel-gpu.md)).
 
 ### Why the BOINC commit is master, not the 1.6.2 tag
 

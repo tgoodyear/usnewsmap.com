@@ -15,7 +15,8 @@ In short:
 - One `SIGHUP` to the verified feeder PID, one `bin/start --cron`, and at most one retry after a
   transient cause is fixed, with the supervisor loop held once a start fails. No loops, no
   `SIGKILL`, no whole-server restart.
-- While no feeder is ready, every new scheduler request is told to come back in an hour.
+- While no feeder is ready, every new scheduler request is told to come back after
+  `maintenance_delay`: 20 minutes, or an hour on a server image that doesn't set it.
 - Verify with readbacks: the new process, `show_shmem`'s apps and weights against the database, the
   guard, slot shares, bounded replicas in the cache and a natural assignment to an eligible host.
 
@@ -26,7 +27,7 @@ container on CT 230 and the project at `/project/usnmocr`.
 
 ## Why `reread_db` is not enough
 
-With `--allapps` ([`config.xml.template` L91](../../contrib-compute/boinc/config.xml.template#L91)),
+With `--allapps` ([`config.xml.template` L96](../../contrib-compute/boinc/config.xml.template#L96)),
 the feeder builds two tables once, at startup, from the apps it has just read: `app_indices` maps
 each of the `shmem_work_items` cache slots to an _index_ into the shared-memory app array, and
 `enum_sizes` gives each index its share of `feeder_query_size` ([feeder.cpp
@@ -53,7 +54,7 @@ The guarded feeder from #1464 records the app IDs and weights it allocated from 
 ## Who owns the feeder
 
 - The stock `bin/start` starts the feeder from the `<daemons>` list in `config.xml`
-  ([`config.xml.template` L89-L103](../../contrib-compute/boinc/config.xml.template#L89-L103)). It
+  ([`config.xml.template` L94-L108](../../contrib-compute/boinc/config.xml.template#L94-L108)). It
   double-forks, takes an exclusive `lockf` lock on `pid_<host>/feeder.lock`, writes
   `pid_<host>/feeder.pid` and `exec`s the command, so the feeder itself holds the lock ([start
   L168-L186][start-168-186], [L309-L325][start-309-325], [L446-L465][start-446-465]). A second start
@@ -114,7 +115,7 @@ A refresh is warranted only when all of these hold:
    feeder will allocate from.
 4. The maintainer has approved the window, including the
    [supervisor hold](#hold-the-supervisor-loop) if a start fails. While the feeder is down,
-   scheduler requests are told to come back in an hour
+   scheduler requests are told to come back in 20 minutes, or an hour on an older image
    ([below](#what-the-scheduler-does-during-the-restart)).
 
 This procedure covers only a feeder from the guarded image. A feeder started before that image was
@@ -218,13 +219,17 @@ new process that attaches to the segment by key ([sched_main.cpp L525-L531][sche
    L1008-L1012][sched-send-1008-1012]). The database, not the cache, prevents a double send.
 3. **No segment.** A new request cannot attach. It gets `Server error: feeder not running`, with
    `<project_is_down/>` and a `request_delay` of `maintenance_delay` ([sched_main.cpp
-   L156-L169][sched-main-156-169], [L284-L304][sched-main-284-304]). `maintenance_delay` defaults to
-   3600 seconds and `config.xml.template` does not set it ([sched_config.cpp L93][sched-config-93]),
-   so that client waits an hour before asking again.
+   L156-L169][sched-main-156-169], [L284-L304][sched-main-284-304]). `config.xml.template` sets
+   it to 1200 seconds
+   ([L45-L49](../../contrib-compute/boinc/config.xml.template#L45-L49)), so that client waits
+   20 minutes before asking again ([Client retry behaviour](#client-retry-behaviour)). A server
+   image built before that runs with BOINC's default of 3600 seconds ([sched_config.cpp
+   L93][sched-config-93]), an hour; `grep maintenance_delay /project/usnmocr/config.xml` in the
+   server container finds nothing on such an image.
 4. **New segment, not yet ready.** The new feeder creates the segment with `ready` false
    ([feeder.cpp L860-L867][feeder-860-867]) and sets it after its first fill pass
    ([L569-L576][feeder-569-576]). A request that attaches in between waits up to 10 seconds for
-   `ready`, then gets the same one-hour reply ([sched_main.cpp L316-L331][sched-main-316-331]).
+   `ready`, then gets the same reply ([sched_main.cpp L316-L331][sched-main-316-331]).
 5. **Semaphore.** The new feeder destroys and re-creates the semaphore at startup ([feeder.cpp
    L849-L852][feeder-849-852]). Requests look it up by key on every lock and unlock and ignore
    errors ([lib/synch.cpp L41-L105][synch-41-105], [sched_send.cpp L780-L786][sched-send-780-786]),
@@ -235,8 +240,35 @@ new process that attaches to the segment by key ([sched_main.cpp L525-L531][sche
 `stop_sched` would not help: it returns the same `maintenance_delay` ([sched_main.cpp
 L517-L523][sched-main-517-523]) and only widens the window. What keeps the gap short is starting the
 new feeder as soon as the old one exits, instead of waiting up to five minutes for the supervisor
-loop. Lowering `maintenance_delay` is a configuration change that also changes the `config.xml`
-SHA-256 the Qwen auto-cohort controller pins, so it is outside this procedure.
+loop. `maintenance_delay` itself is not part of this procedure. It changes only with a server image,
+because a new value changes the rendered `config.xml` and so the SHA-256 the Qwen auto-cohort
+controller pins ([boinc-intel-gpu.md](../boinc-intel-gpu.md)).
+
+### Client retry behaviour
+
+A BOINC client that gets a project-down reply sets its next scheduler request to now +
+`request_delay` ([cs_scheduler.cpp L720-L724][cs-scheduler-720-724]). It then counts the reply as a
+failed request and backs off ([scheduler_op.cpp L515-L517][scheduler-op-515-517]) by min(60 s ×
+2ⁿ, 4 h) × U(0.5, 1), where n is the number of failed requests to the project in a row, capped at
+10 ([scheduler_op.cpp L162-L203][scheduler-op-162-203], [client_state.cpp
+L397-L403][client-state-397-403]). `set_min_rpc_time` keeps the later of the two times
+([project.cpp L888-L890][project-888-890]), so the client waits max(`maintenance_delay`, backoff):
+
+| Failures in a row | Backoff                 | Wait at 1200 s | Wait at 3600 s (older image) |
+| ----------------- | ----------------------- | -------------- | ---------------------------- |
+| 1 to 4            | 1–2 min, up to 8–16 min | 20 min         | 60 min                       |
+| 5                 | 16–32 min               | 20–32 min      | 60 min                       |
+| 6                 | 32–64 min               | 32–64 min      | 60–64 min                    |
+| 7                 | 64–128 min              | 64–128 min     | 64–128 min                   |
+| 8 to 10           | 2–4 h                   | 2–4 h          | 2–4 h                        |
+
+The eleventh failure in a row is the exception to that rule. It clears the time the reply just set,
+schedules a fresh fetch of the project's master page and starts n again at 1, so that client waits
+only 1–2 minutes, `maintenance_delay` or not ([scheduler_op.cpp L179-L187][scheduler-op-179-187]). A
+successful request sets n back to 0 ([cs_scheduler.cpp L1198-L1199][cs-scheduler-1198-1199]), so a
+client that asked during a short gap comes back once, 20 minutes later. If the server can't be
+reached over HTTP at all, there is no reply and no `request_delay`, and only the backoff applies
+([scheduler_op.cpp L507-L509][scheduler-op-507-509], [L212-L213][scheduler-op-212-213]).
 
 ## Procedure
 
@@ -433,7 +465,8 @@ newpid=$(cat "$evidence/feeder-after.txt")
 
 Allow at least two purge rotations before judging the cache (`--purge_stale 5` is five minutes:
 [feeder.cpp L779-L780][feeder-779-780], [L484-L491][feeder-484-491]), and at least
-`maintenance_delay`, an hour, for clients that hit the window to come back.
+`maintenance_delay` (20 minutes, or an hour on an older image) for clients that hit the window to
+come back.
 
 1. **Slot shares.** Count the cached results per app:
 
@@ -475,8 +508,8 @@ the feeder log has a `[CRITICAL]` line, the `read ... apps` count is not the num
 or the new PID disappears or changes before the guard reports `match`. Every error below ends the
 feeder, except perhaps the census one. One that gets past creating the segment removes it on the
 way out ([feeder.cpp L869][feeder-869]), so no ready segment is left, every request gets the
-one-hour reply, and the supervisor loop tries `bin/start --cron` again every five minutes until it
-is held.
+project-down reply ([Client retry behaviour](#client-retry-behaviour)), and the supervisor loop
+tries `bin/start --cron` again every five minutes until it is held.
 
 | Feeder log                                                 | Source                                                                                                       | Kind                                                                                                                                                                    |
 | ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -700,3 +733,12 @@ and review.
 [feeder-860-865]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/feeder.cpp#L860-L865
 [feeder-436-454]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/feeder.cpp#L436-L454
 [sched-shmem-173-235]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/sched_shmem.cpp#L173-L235
+[cs-scheduler-720-724]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/client/cs_scheduler.cpp#L720-L724
+[cs-scheduler-1198-1199]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/client/cs_scheduler.cpp#L1198-L1199
+[scheduler-op-515-517]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/client/scheduler_op.cpp#L515-L517
+[scheduler-op-162-203]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/client/scheduler_op.cpp#L162-L203
+[scheduler-op-179-187]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/client/scheduler_op.cpp#L179-L187
+[scheduler-op-507-509]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/client/scheduler_op.cpp#L507-L509
+[scheduler-op-212-213]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/client/scheduler_op.cpp#L212-L213
+[client-state-397-403]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/client/client_state.cpp#L397-L403
+[project-888-890]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/client/project.cpp#L888-L890

@@ -211,8 +211,10 @@ state before and after.
   do, and so do Surya's two. They come from `config.xml`, rendered at container start (`render_config` in
   `contrib-compute/images/server/lib.sh`), and changing the live copy would change the
   `config.xml` SHA-256 the Qwen auto-cohort controller pins. #1449 drops all eight from
-  `render_config`. They leave the status page when the server runs an image built from it. That
-  restart changes the pin (`CONFIG_SHA256` in `/etc/usnm-boinc/qwen-cohort-auto.env`), so
+  `render_config`. They leave the status page when the server runs an image built from it. The
+  same image also sets `maintenance_delay` to 1200 seconds ([Client retry
+  behaviour](feeder-refresh.md#client-retry-behaviour), #1462). That
+  restart changes the pin (`CONFIG_SHA256` in `/etc/usnm-boinc/qwen-cohort-auto.env`) once for both, so
   disable `usnm-qwen-cohort-auto.timer` before it, and update the pin after it
   ([boinc-intel-gpu.md](../boinc-intel-gpu.md)).
 
