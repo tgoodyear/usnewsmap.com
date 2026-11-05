@@ -31,6 +31,10 @@ pub enum QwenCommands {
         max_crops: usize,
         #[arg(long, default_value_t = 1800)]
         timeout_secs: u32,
+        /// `sample` names each crop by its dataset sample id; a campaign keeps the spelling
+        /// it was staged with.
+        #[arg(long, value_enum, default_value_t = crate::qwen::benchmark::DocIds::Legacy)]
+        doc_ids: crate::qwen::benchmark::DocIds,
     },
     /// Score canonical benchmark outputs; missing hypotheses count as deletions.
     BenchmarkCollect {
@@ -241,6 +245,7 @@ pub async fn run(command: QwenCommands) -> anyhow::Result<()> {
             engine,
             max_crops,
             timeout_secs,
+            doc_ids,
         } => {
             let engine = serde_json::from_slice(&std::fs::read(engine)?)?;
             let staged = x::benchmark::stage(&x::benchmark::Options {
@@ -249,6 +254,7 @@ pub async fn run(command: QwenCommands) -> anyhow::Result<()> {
                 engine,
                 max_crops,
                 timeout_secs,
+                doc_ids,
             })?;
             eprintln!("{staged} benchmark units staged");
         }

@@ -14,6 +14,7 @@
 //!   [`replay`] measures any rule against the retained results.
 //! - [`summary`] reads those copies back into one table.
 //! - [`ledger`] lists each bundle page with its own pair verdicts.
+//! - [`doc_id`] maps a unit's `doc_id` to the page it names and back.
 use anyhow::ensure;
 use std::path::{Path, PathBuf};
 use usnm_ocr_contract::qwen::Model;
@@ -22,6 +23,7 @@ pub mod benchmark;
 pub mod candidates;
 pub mod cli;
 pub mod consensus;
+pub mod doc_id;
 pub mod grounded;
 pub mod ledger;
 pub mod replay;
