@@ -202,6 +202,7 @@ live version: since 2 November 2026 the live `usnm_qwen` versions are GPU only (
 | `usnm_qwen`    | `native`    | `nvidia_vulkan_8b`      | `x86_64-pc-linux-gnu`                                                                                             | NVIDIA detection/assignment through BOINC CUDA; execution through the same pinned Vulkan runtime as Intel, >= 7,000 MB GPU RAM and 7,000 MiB free Vulkan memory, 2 host CPUs, 8B `Q4_K_M`                                                                               |
 | `usnm_qwen`    | `native`    | `nvidia_vulkan_6gb_8b`  | `x86_64-pc-linux-gnu`                                                                                             | Closed qualification profile: >= 5,500 MB GPU RAM and 5,120 MiB free Vulkan memory, 24 GPU layers, CPU vision projector, 2 host CPUs; same locked 8B `Q4_K_M`, no CPU-only or smaller-model fallback                                                                    |
 | `usnm_qwen`    | `native`    | `amd_vulkan_8b`         | `x86_64-pc-linux-gnu`, `windows_x86_64`                                                                           | AMD/ATI OpenCL detection/assignment, pinned native Vulkan execution, >= 7,000 MB GPU RAM and 7,000 MiB free, 2 host CPUs, 8B `Q4_K_M`; [automatic eligible-host admission](boinc-amd-gpu.md) after signed publication/promotion, initial hardware use unverified (#885) |
+| `usnm_qwen`    | `native`    | `nvidia_vulkan_2b`      | `x86_64-pc-linux-gnu`                                                                                             | Closed profile for NVIDIA cards too small for 8B (#1234): >= 4,500 MB GPU RAM and 4,096 MiB free Vulkan memory (estimates), BOINC >= 8.2.9, same pinned Vulkan runtime, 2B `Q8_0` and projector fully on the GPU, 2 host CPUs                                           |
 | `usnm_qwen`    | `native`    | `nvidia_cuda_2b`        | `x86_64-pc-linux-gnu`, `windows_x86_64`                                                                           | `<gpu_type>nvidia</gpu_type><cuda/>`, CUDA 12+, compute capability >= 5.0, >= 3,000 MB GPU RAM, 2 host CPUs, 2B `Q8_0`                                                                                                                                                  |
 | `usnm_qwen`    | `native`    | `mt`                    | `x86_64-pc-linux-gnu`, `aarch64-unknown-linux-gnu`, `arm64-apple-darwin`, `x86_64-apple-darwin`, `windows_x86_64` | Multi-thread CPU (`min_ncpus` 4, `max_threads` 8), 2B `Q8_0` fallback                                                                                                                                                                                                   |
 | `usnm_qwen`    | `container` | `docker_mt_2b`          | `x86_64-pc-linux-gnu`                                                                                             | `ocr/boinc/qwen/job-cpu.toml`: 2B only, `--cpus` from the thread count (4–8), 6 GiB, no swap                                                                                                                                                                            |
@@ -276,6 +277,15 @@ not automatic closure: the operator must schedule `--plan-class nvidia_vulkan_6g
 --stop --apply` at the deadline. Shared refills and server restarts preserve this
 independent window, and its stop leaves the other classes untouched. Do not enable
 general admission or change quorum/result state to force a successful qualification.
+
+The **2B Linux NVIDIA profile** (`nvidia_vulkan_2b`, #1234) is the native route for such
+cards that remains after Surya's retirement. It also starts closed, permits BOINC >= 8.2.9,
+and has its own one-workunit window (`--plan-class nvidia_vulkan_2b --workunit ID`, then
+`--stop`) for batch-2 work from `usnm-boinc qwen submit --target native-2b`. The app puts the
+2B model and projector fully on the GPU and refuses less than 4,096 MiB of free Vulkan
+memory; neither that floor nor the scheduler's 4,500 MB is measured yet. It has no signed
+version until a maintainer releases one
+([app release](../contrib-compute/docs/app-release.md#linux-nvidia-2b-nvidia_vulkan_2b)).
 
 The server patch disables app-ID-only version memoization when plan classes have
 workunit restrictions. Otherwise an earlier incompatible/paused batch can cache

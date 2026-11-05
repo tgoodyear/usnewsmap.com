@@ -16,6 +16,9 @@ on:
       - scripts/boinc/test_amd_device_map.py
       - scripts/boinc/patch_amd_vulkan_identity.py
       - scripts/boinc/build_amd_vulkan_runtime.ps1
+      - scripts/boinc/qwen_vulkan_bundle.py
+      - scripts/boinc/test_qwen_vulkan_bundle.py
+      - contrib-compute/infra/boinc/releases/prod-onprem-usnm_qwen-nvidia_vulkan_6gb_8b.json
       - "!**/*.md"
 
 permissions:
@@ -148,6 +151,34 @@ jobs:
           AMD_PINNED_LLAMA_ARCHIVES="$PWD/.amd-pinned-archives" \
             AMD_PINNED_VULKAN_SOURCE="$PWD/.amd-pinned-archives/ggml-vulkan.cpp" \
             python3 -m unittest scripts.boinc.test_amd_device_map
+      # #1234: the Linux NVIDIA 2B release's inputs, rebuilt from this commit's binary and the
+      # llama.lock-pinned runtime. Its runtime must be byte for byte the one already reviewed and
+      # signed for nvidia_vulkan_6gb_8b. Nothing here signs or publishes (contrib-compute/docs/app-release.md).
+      - name: Assemble native Qwen nvidia_vulkan_2b release inputs (Linux x86-64)
+        if: matrix.boinc_platform == 'x86_64-pc-linux-gnu'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 -m unittest scripts.boinc.test_qwen_vulkan_bundle
+          mkdir .qwen-pinned-archive
+          trap 'rm -rf .qwen-pinned-archive' EXIT
+          gh release download b8799 --repo ggml-org/llama.cpp \
+            --pattern '*bin-ubuntu-vulkan-x64.tar.gz' --dir .qwen-pinned-archive
+          python3 scripts/boinc/qwen_vulkan_bundle.py build \
+            --archive .qwen-pinned-archive/llama-b8799-bin-ubuntu-vulkan-x64.tar.gz \
+            --binary boinc-native-x86_64-pc-linux-gnu/usnm_qwen_x86_64-pc-linux-gnu \
+            --source-commit "$(git rev-parse HEAD)" --plan-class nvidia_vulkan_2b \
+            --out boinc-native-qwen-nvidia_vulkan_2b
+          python3 scripts/boinc/qwen_vulkan_bundle.py verify --bundle boinc-native-qwen-nvidia_vulkan_2b \
+            --same-runtime-as contrib-compute/infra/boinc/releases/prod-onprem-usnm_qwen-nvidia_vulkan_6gb_8b.json
+          cat boinc-native-qwen-nvidia_vulkan_2b/SHA256SUMS
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: matrix.boinc_platform == 'x86_64-pc-linux-gnu'
+        with:
+          name: boinc-native-qwen-nvidia_vulkan_2b
+          path: ${{ github.workspace }}/boinc-native-qwen-nvidia_vulkan_2b/
+          if-no-files-found: error
       - name: Build AMD PCI identity helper (Windows x64)
         if: matrix.boinc_platform == 'windows_x86_64'
         shell: pwsh

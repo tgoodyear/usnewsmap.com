@@ -38,7 +38,7 @@ For a native Linux x86_64 release, add `"kind": "native"`, `"binary": "worker"`,
 `"binary_sha256": "<64 lowercase hex>"`, and `"binary_source": "<40 hex source commit>"`.
 Supported native identities are `usnm_quality` with empty `plan_class`, or `usnm_qwen`
 with `mt`, `nvidia_cuda_2b`, `nvidia_cuda_8b`, `intel_vulkan_8b`,
-`nvidia_vulkan_8b`, `nvidia_vulkan_6gb_8b`, or `amd_vulkan_8b`. Supply an already built binary; additional
+`nvidia_vulkan_8b`, `nvidia_vulkan_6gb_8b`, `nvidia_vulkan_2b`, or `amd_vulkan_8b`. Supply an already built binary; additional
 platforms are not claimed. A native release reviews the
 binary checksum/source instead of dispatching a container worker workflow. Native
 auxiliary payloads use `"extra_files": {"llama-server": {"path": "llama-server",

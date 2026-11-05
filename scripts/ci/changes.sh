@@ -255,8 +255,9 @@ boinc_surya='^(ocr/boinc/surya/|rust-toolchain\.toml$|\.dockerignore$)'
 boinc_ndlocr='^(ocr/engines/ndlocr-lite/|ocr/boinc/ndlocr-lite/|scripts/boinc/smoke-ndlocr(-worker)?\.py$|ocr/ja-ocr/(testdata/|alto\.py$|jaocr\.py$|undigitized\.py$)|rust-toolchain\.toml$|\.dockerignore$)'
 # The native apps (boinc-quality-native.yml) build usnm-quality-app and
 # usnm-qwen-app and test those and the two crates they share with the engines;
-# usnm-ocr-contract's tests read the v1 contract files.
-boinc_native='^(ocr/contract/|ocr/boinc/qwen/amd-device-map\.cpp$|scripts/boinc/(test_amd_device_map\.py|patch_amd_vulkan_identity\.py|build_amd_vulkan_runtime\.ps1)$|rust-toolchain\.toml$)'
+# usnm-ocr-contract's tests read the v1 contract files. The Linux NVIDIA 2B release inputs
+# are assembled by qwen_vulkan_bundle.py and checked against the 6 GB release's runtime (#1234).
+boinc_native='^(ocr/contract/|ocr/boinc/qwen/amd-device-map\.cpp$|scripts/boinc/(test_amd_device_map\.py|patch_amd_vulkan_identity\.py|build_amd_vulkan_runtime\.ps1|(test_)?qwen_vulkan_bundle\.py)$|contrib-compute/infra/boinc/releases/prod-onprem-usnm_qwen-nvidia_vulkan_6gb_8b\.json$|rust-toolchain\.toml$)'
 # The native OCR app (boinc-ocr-native.yml) builds usnm-ocr-app and the static Tesseract, and
 # fetches the locked models for its smoke test.
 boinc_ocr_native='^(ocr/boinc/native/|scripts/boinc/smoke-native-ocr\.sh$|ocr/engines/tesseract/models\.lock$|rust-toolchain\.toml$|\.dockerignore$)'

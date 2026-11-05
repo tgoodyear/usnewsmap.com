@@ -214,8 +214,9 @@ it as it is; a window that includes `nvidia_vulkan_8b` (its own, or `shared_8b`)
 with that window's bounds, and the operator stop above closes it. `--stop --keep-general` is
 that stop without closing general admission: it bounds-closes the same classes
 (`intel_vulkan_8b`, `nvidia_vulkan_8b` and the CUDA classes, plus `docker_nvidia_cuda_8b`
-with `--plan-class shared_8b`). Neither stop touches the independent `amd_vulkan_8b` or
-`nvidia_vulkan_6gb_8b` windows; close those with their own `--plan-class` and `--stop`.
+with `--plan-class shared_8b`). Neither stop touches the independent `amd_vulkan_8b`,
+`nvidia_vulkan_6gb_8b` or `nvidia_vulkan_2b` windows; close those with their own
+`--plan-class` and `--stop`.
 `intel_vulkan_8b`, like `shared_8b`, takes a range of up to ten workunits (`--workunit-end`).
 With both, the automatic refill keeps an Intel-only window beside NVIDIA's general admission
 ([Intel GPU](../../docs/boinc-intel-gpu.md#persistent-finite-nvidiaintel-refill)).
@@ -256,8 +257,39 @@ libraries alongside the AMD PCI helper.
 Other plans must omit it and retain their existing fresh create-on-dispatch flow;
 generic unsent replicas cannot be resumed through targeted assignments.
 
-These native-only classes admit stable BOINC 8.2.11+ and do not require a
-container runtime. The ordinary OCR `docker` class also admits stable 8.2.11 when
+### Linux NVIDIA 2B (`nvidia_vulkan_2b`)
+
+`nvidia_vulkan_2b` (Linux x86-64 only, #1234) runs the 2B `Q8_0` model and projector fully
+on NVIDIA cards too small for the 8B classes, such as a 6 GB GTX 1660 SUPER. BOINC detects
+and assigns the card through CUDA; the app runs the same pinned `ubuntu-vulkan-x64`
+llama.cpp runtime as `nvidia_vulkan_8b`, and refuses to start with less than 4,096 MiB of
+free Vulkan memory. The scheduler wants >= 4,500 MB of GPU RAM and, as for
+`nvidia_vulkan_6gb_8b`, BOINC 8.2.9. Both memory numbers are estimates from the model files
+(2,174 MiB) plus context, not measurements; measure the peak on the first unit. The class
+ships closed. Its own window admits one batch-2 workunit staged with
+`usnm-boinc qwen submit --target native-2b`: `--plan-class nvidia_vulkan_2b --workunit ID`
+(preview, then `--apply`), and `--plan-class nvidia_vulkan_2b --stop --apply` closes only it.
+
+Every `boinc-quality-native.yml` run uploads the release inputs as the
+`boinc-native-qwen-nvidia_vulkan_2b` artifact. `scripts/boinc/qwen_vulkan_bundle.py`
+builds them from that commit's musl `usnm_qwen` and the `llama.lock`-pinned archive (links
+copied as files, the two locks added); its `release.json` holds the on-prem manifest's
+`release` and `worker` entries. CI checks that the runtime is byte for byte the one already
+signed for `nvidia_vulkan_6gb_8b`. Download the artifact of the merged commit, then verify it
+and hand its files to the release script (on-prem flags as in step 4):
+
+```sh
+python3 scripts/boinc/qwen_vulkan_bundle.py verify --bundle "$PWD/target/qwen-2b" \
+  --same-runtime-as contrib-compute/infra/boinc/releases/prod-onprem-usnm_qwen-nvidia_vulkan_6gb_8b.json
+mapfile -t inputs < <(python3 scripts/boinc/qwen_vulkan_bundle.py args --bundle "$PWD/target/qwen-2b")
+scripts/boinc/boinc-app-release.sh --env prod --app usnm_qwen --version VERSION --kind native \
+  --plan-class nvidia_vulkan_2b --platform x86_64-pc-linux-gnu "${inputs[@]}" --signing-host HOST ... --what-if
+```
+
+The server must first run a build with this class in its `plan_class_spec.xml`.
+
+These native-only classes admit stable BOINC 8.2.11+ (the 6 GB and 2B profiles 8.2.9) and
+do not require a container runtime. The ordinary OCR `docker` class also admits stable 8.2.11 when
 its platform runtime is available; do not require a development Mac client for it.
 Native CUDA classes require a CUDA 12.4-capable NVIDIA driver (the pinned runtime
 includes CUDA libraries; no toolkit, WSL or Podman), 3 GB and 7 GB of detected GPU
@@ -416,8 +448,9 @@ fake migration.
      `apps/usnm_qwen/<version>/<platform>__<plan_class>` for plan classes `apple_gpu_8b`
      (`arm64-apple-darwin`), `nvidia_cuda_8b` and `nvidia_cuda_2b` (`x86_64-pc-linux-gnu`,
      `aarch64-unknown-linux-gnu`, `windows_x86_64`), `intel_vulkan_8b` and
-     `amd_vulkan_8b` (`x86_64-pc-linux-gnu`, `windows_x86_64`), `nvidia_vulkan_8b`
-     and `nvidia_vulkan_6gb_8b` (`x86_64-pc-linux-gnu`), and `mt` (all five platforms). Model files
+     `amd_vulkan_8b` (`x86_64-pc-linux-gnu`, `windows_x86_64`), `nvidia_vulkan_8b`,
+     `nvidia_vulkan_6gb_8b` and `nvidia_vulkan_2b` (`x86_64-pc-linux-gnu`), and `mt` (all five
+     platforms). Model files
      are staged separately as `<sticky/><no_delete/>` inputs in `download/` using the
      plan-class-specific model input templates (`usnm_qwen_8b_in` for 8B classes and
      `usnm_qwen_2b_in` for 2B/`mt` classes).

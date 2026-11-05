@@ -82,20 +82,22 @@ class OnpremTests(unittest.TestCase):
                      source_commit="a" * 40)
         extras = {name: dict(entry) for name in
                   ("llama-server", "llama.lock", "weights.lock", "libggml.so", "libggml-base.so", "libggml-vulkan.so")}
-        config = {key: value for key, value in self.config.items() if key not in ("onprem_host", "onprem_ct")}
-        config.update(kind="native", app="usnm_qwen", plan_class="nvidia_vulkan_6gb_8b",
-                      binary=str(binary), binary_sha256=entry["sha256"], binary_source=entry["source_commit"],
-                      extra_files=extras)
-        self.config_path.write_text(json.dumps(config))
-        loaded, _ = onprem.load_onprem(self.config_path, self.args)
-        self.assertEqual(loaded["plan_class"], "nvidia_vulkan_6gb_8b")
-        for missing in extras:
-            with self.subTest(missing=missing), self.assertRaisesRegex(pipeline.PipelineError, "required reviewed extra-file"):
-                onprem.verify_binary(dict(config, extra_files={key: value for key, value in extras.items() if key != missing}))
-        config["platform"] = "windows_x86_64"
-        self.config_path.write_text(json.dumps(config))
-        with self.assertRaisesRegex(pipeline.PipelineError, "unsupported native"):
-            onprem.load_onprem(self.config_path, self.args)
+        for plan_class in ("nvidia_vulkan_6gb_8b", "nvidia_vulkan_2b"):
+            with self.subTest(plan_class=plan_class):
+                config = {key: value for key, value in self.config.items() if key not in ("onprem_host", "onprem_ct")}
+                config.update(kind="native", app="usnm_qwen", plan_class=plan_class,
+                              binary=str(binary), binary_sha256=entry["sha256"], binary_source=entry["source_commit"],
+                              extra_files=extras)
+                self.config_path.write_text(json.dumps(config))
+                loaded, _ = onprem.load_onprem(self.config_path, self.args)
+                self.assertEqual(loaded["plan_class"], plan_class)
+                for missing in extras:
+                    with self.subTest(missing=missing), self.assertRaisesRegex(pipeline.PipelineError, "required reviewed extra-file"):
+                        onprem.verify_binary(dict(config, extra_files={key: value for key, value in extras.items() if key != missing}))
+                config["platform"] = "windows_x86_64"
+                self.config_path.write_text(json.dumps(config))
+                with self.assertRaisesRegex(pipeline.PipelineError, "unsupported native"):
+                    onprem.load_onprem(self.config_path, self.args)
 
     def test_real_signer_manifest_gate_overrides_azure_and_rejects_other_release(self):
         text = (pipeline.ROOT / "scripts/boinc/boinc-app-release.sh").read_text()

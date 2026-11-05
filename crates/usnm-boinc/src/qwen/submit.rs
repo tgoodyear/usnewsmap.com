@@ -47,7 +47,7 @@ impl Target {
     /// Qwen target exclusively to compatible app-version plan classes:
     /// - `12` (`Container`): `docker_mt_2b` (2B CPU)
     /// - `18` (`Container8b`): `docker_nvidia_cuda_8b` (8B GPU)
-    /// - `2` (`Native2b`): native 2B/CPU plan classes (`mt`, `nvidia_cuda_2b`)
+    /// - `2` (`Native2b`): native 2B/CPU plan classes (`mt`, `nvidia_cuda_2b`, `nvidia_vulkan_2b`)
     /// - `8` (`Native8b`): native 8B GPU plan classes (`apple_gpu_8b`, `nvidia_cuda_8b`,
     ///   `intel_vulkan_8b`, `nvidia_vulkan_8b`, `amd_vulkan_8b`)
     pub fn batch(self) -> i32 {

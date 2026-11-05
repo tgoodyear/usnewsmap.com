@@ -1043,16 +1043,12 @@ mod tests {
             std::fs::write(slot.join(name), FAKE_MMPROJ).unwrap();
         }
 
-        // Even with 16000 MB free GPU memory, nvidia_cuda_2b selects the 2B model.
-        let (chosen_2b, _, _) = resolve_model(
-            &slot,
-            &job.engine.models,
-            Some(16000),
-            true,
-            Some("nvidia_cuda_2b"),
-        )
-        .unwrap();
-        assert_eq!(chosen_2b.name, "qwen3-vl-2b-q8");
+        // Even with 16000 MB free GPU memory, the 2B classes select the 2B model.
+        for plan in ["nvidia_cuda_2b", gpu::NVIDIA_2B_PLAN] {
+            let (chosen_2b, _, _) =
+                resolve_model(&slot, &job.engine.models, Some(16000), true, Some(plan)).unwrap();
+            assert_eq!(chosen_2b.name, "qwen3-vl-2b-q8");
+        }
 
         // mt also selects the 2B model even if free_mb is Some(16000).
         let (chosen_mt, _, _) =
