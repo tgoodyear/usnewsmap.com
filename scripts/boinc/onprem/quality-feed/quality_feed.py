@@ -707,7 +707,15 @@ def delete_shipped(a, camp_dir, done_path, quality_docs, deleted_path, kept_path
         size = int(rest[1]) if len(rest) > 1 and rest[1] else 0
         damage = float(rest[2]) if len(rest) > 2 and rest[2] else None
         shipped[doc] = (scan, size, damage, now)
+    # Set once the scan server doesn't answer: the round's other requests wait for the next
+    # round, which finds every page this one couldn't finish where it was.
+    unreachable = []
+
     def delete(doc, scan):
+        """Whether the scan is gone. A failure is logged, never raised, so the round's
+        bookkeeping is still written."""
+        if unreachable:
+            return False
         req = urllib.request.Request(f"{a.scan_server.rstrip('/')}/scans/{scan}", method="DELETE",
                                      headers={"User-Agent": USER_AGENT})
         try:
@@ -717,6 +725,10 @@ def delete_shipped(a, camp_dir, done_path, quality_docs, deleted_path, kept_path
             if e.code != 404:
                 log("buffer delete failed", doc_id=doc, status=e.code)
                 return False
+        except (urllib.error.URLError, OSError) as e:
+            log("buffer delete failed; the rest wait for the next round", doc_id=doc, error=str(e)[:200])
+            unreachable.append(doc)
+            return False
         return True
 
     released = [doc for doc in kept if doc in ocr_docs]
@@ -725,20 +737,23 @@ def delete_shipped(a, camp_dir, done_path, quality_docs, deleted_path, kept_path
             if doc in ocr_docs:
                 continue
             try:
-                # With its sidecar gone (marked done: OCR's worker read it, or a DELETE of ours
-                # got that far and failed), a DELETE makes sure the bytes are gone too.
-                gone = not scan_exists(a.scan_server, k[0]) and delete(doc, k[0])
+                there = scan_exists(a.scan_server, k[0])
             except (urllib.error.URLError, OSError) as e:
                 # Counted as checked, so a scan whose check keeps failing doesn't hold up the rest.
                 kept[doc] = (*k[:3], now)
                 log("kept scan check failed; next round", doc_id=doc, error=str(e)[:200])
                 if isinstance(e, urllib.error.HTTPError):
                     continue  # the server answered, so it's this scan: go on to the next
+                unreachable.append(doc)
                 break  # no answer (down or unreachable): one timeout a round, not --keep-verify
-            if gone:
+            # With its sidecar gone (marked done: OCR's worker read it, or a DELETE of ours
+            # got that far and failed), a DELETE makes sure the bytes are gone too.
+            if not there and delete(doc, k[0]):
                 released.append(doc)
             else:
                 kept[doc] = (*k[:3], now)
+            if unreachable:
+                break
     for doc in released:
         kept.pop(doc, None)
     pool = {**kept, **shipped}
@@ -827,7 +842,8 @@ def cmd_follow(a):
     done_path = os.path.join(state, "done.txt")
     skip_path = os.path.join(state, "skipped.txt")
     deleted_path = os.path.join(state, "deleted.txt")
-    kept_path = os.path.join(state, "kept.tsv")
+    # One list for every campaign, so a new campaign's budget counts the scans an earlier one kept.
+    kept_path = os.path.join(a.state, "kept.tsv")
     texts = Texts(a.curated)
     absent_path = os.path.join(state, "absent.txt")
     while True:

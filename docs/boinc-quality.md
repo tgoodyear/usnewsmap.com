@@ -1394,7 +1394,8 @@ Once a chunk has shipped, the pass's buffer scans are deleted, except the most d
 (LoC's `damage_rate`; unscored pages last), up to `--keep-bytes` in all (1 TB from
 `quality-feed-install.sh`, about 210,000 pages at 4.7 MB a scan, half the fetcher's 2 TB
 buffer cap so OCR's own scans keep flowing). They stay on the scan server for re-OCR and are
-listed in `<state>/kept.tsv`. A newly shipped page more damaged than the least damaged kept
+listed in `<state>/kept.tsv`, one list for every campaign, so a new campaign's budget counts
+what an earlier one kept. A newly shipped page more damaged than the least damaged kept
 one takes its place, and that one is deleted; if that delete fails, the kept page holds its
 place and the newcomer is deleted instead, so the list never passes the budget and no scan
 sits on the server outside it. A kept page OCR later asks for leaves the list without a delete, since OCR's
@@ -1403,7 +1404,8 @@ scan is already on the scan server in `ocr-docs.txt`, not only its manifests' pa
 one whose sidecar is found gone, once a DELETE makes sure its bytes are too (one of ours that
 marked it done but couldn't unlink it leaves just the sidecar gone), `--keep-verify` (500) of
 the longest-unchecked being looked up a round; a
-lookup that fails goes to the back, and one the scan server doesn't answer ends that round's.
+lookup that fails goes to the back, and one the scan server doesn't answer ends that round's
+lookups and deletes, which the next round picks up where it left off.
 Before 5 November 2026 every one was deleted, 150,000 pages, 54,000 of them with a damage
 rate of 0.1 or more. OCR's scans and the keep set are never deleted.
 `quality-feed-install.sh --follow` turns both on with the shipper.

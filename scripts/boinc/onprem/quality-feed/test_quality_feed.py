@@ -862,6 +862,35 @@ class FollowTest(unittest.TestCase):
             self.assertEqual(feed.read_kept(str(kept)), {})
             self.assertEqual(feed.read_lines(str(deleted)), {"half"})
 
+    def test_a_scan_server_that_stops_answering_mid_round_loses_nothing(self):
+        with tempfile.TemporaryDirectory() as d:
+            camp, done, deleted, kept = Path(d, "camp"), Path(d, "done.txt"), Path(d, "deleted.txt"), Path(d, "kept.tsv")
+            camp.mkdir()
+            done.write_text("new\tc2\tbuffer/b/new.jp2\t80\t0.9\n")
+            kept.write_text("old\tbuffer/b/old.jp2\t80\t0.2\t1\n")
+            a = types.SimpleNamespace(scan_server="http://s", keep_bytes=80, keep_verify=1)
+            calls, down = [], [True]
+
+            def fake(req, timeout=0):
+                calls.append((req.get_method(), req.full_url.removeprefix("http://s/scans/")))
+                if down[0] and req.get_method() == "DELETE":
+                    raise urllib.error.URLError(ConnectionResetError("reset by peer"))
+                return io.BytesIO(b"{}")
+
+            ship = lambda: feed.delete_shipped(a, str(camp), str(done), {"new"}, str(deleted), str(kept))
+            with mock.patch.object(feed.urllib.request, "urlopen", fake), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(ship(), 0)
+                # old's eviction got no answer: new's DELETE isn't tried, and old's check is kept.
+                self.assertEqual(calls, [("GET", "buffer/b/old.jp2.json"), ("DELETE", "buffer/b/old.jp2")])
+                self.assertEqual(set(feed.read_kept(str(kept))), {"old"})
+                self.assertGreater(feed.read_kept(str(kept))["old"][3], 1)
+                self.assertEqual(feed.read_lines(str(deleted)), set())
+                down[0] = False
+                self.assertEqual(ship(), 1)
+            self.assertEqual(set(feed.read_kept(str(kept))), {"new"})
+            self.assertEqual(feed.read_lines(str(deleted)), {"old"})
+
     def test_an_unreadable_kept_line_is_weighed_again_not_fatal(self):
         with tempfile.TemporaryDirectory() as d:
             camp, done, deleted, kept = Path(d, "camp"), Path(d, "done.txt"), Path(d, "deleted.txt"), Path(d, "kept.tsv")
