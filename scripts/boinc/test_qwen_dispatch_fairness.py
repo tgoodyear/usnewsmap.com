@@ -29,13 +29,16 @@ slot          app      WU ID  result ID      batch     kwds   priority in shmem 
 
 
 def snapshot():
-    # Units 101-105 in feeder order after 106, which a calibration priority raises to the head.
+    # Units 101-105 and 107 in feeder order after 106, which a calibration priority raises to the head.
+    # 106 has a second, lower-priority replica; 107 is not batch 8. A zero bound is no limit.
     return {
         "snapshot": 1793880000, "since": 1793145600, "recent_hours": 24,
-        "bounds": {"amd_vulkan_8b": None, "intel_vulkan_8b": [2, 1], "nvidia_vulkan_8b": [104, 106]},
+        "bounds": {"amd_vulkan_8b": {"wu": [0, 0], "batch": [8, 8]}, "intel_vulkan_8b": {"wu": [2, 1], "batch": [8, 8]},
+                   "nvidia_vulkan_8b": {"wu": [104, 0], "batch": [8, 0]}},
         "hosts": {"5": "amd_vulkan_8b", "9": "intel_vulkan_8b", "10": "nvidia_vulkan_8b"},
         "daily": [[9, 20761, 5, 2, 1, 0, 1, 0, 1, 0], [5, 20761, 7, 3, 0, 1, 0, 2, 0, 1]],
-        "unsent": [[1006, 106, 10], [1001, 101, 0], [1002, 102, 0], [1003, 103, 0], [1004, 104, 0], [1005, 105, 0], [1015, 105, 0]],
+        "unsent": [[1006, 106, 10, 8], [1001, 101, 0, 8], [1002, 102, 0, 8], [1003, 103, 0, 8], [1004, 104, 0, 8],
+                   [1005, 105, 0, 8], [1015, 105, 0, 8], [1016, 106, 0, 8], [1007, 107, 0, 2]],
         "taken": [[106, 5], [106, 10], [101, 5], [102, 5], [103, 5], [104, 5], [104, 9]],
         "recent": [[5, 101, 0], [5, 106, 10], [10, 104, 0], [9, 99, 0]],
         "cache": {"slots": 5, "empty": 1, "reserved": 1, "apps": {}, "results": [[1001, 51], [1003, 302], [1006, 5]]},
@@ -53,11 +56,12 @@ class Shmem(unittest.TestCase):
 class Report(unittest.TestCase):
     def test_blocked_head_takers_and_cache(self):
         a = F.analyse(snapshot())
-        # 106: AMD and NVIDIA hold it and Intel is closed; 101-103: AMD holds them and NVIDIA's bounds exclude them.
-        self.assertEqual((a["units"], a["replicas"], a["blocked"], a["head"]), (6, 7, 4, 4))
+        # 106: AMD and NVIDIA hold it and Intel is closed; 101-103: AMD holds them and NVIDIA's bounds exclude them;
+        # 107: every class takes only batch 8.
+        self.assertEqual((a["units"], a["replicas"], a["blocked"], a["head"]), (7, 9, 5, 4))
         self.assertEqual(a["can take"], {5: 1, 10: 2})
         self.assertEqual(a["only taker"], {10: 1})
-        self.assertEqual(a["free of blocked"], {9: 4, 10: 3})
+        self.assertEqual(a["free of blocked"], {9: 5, 10: 4, 5: 1})
         self.assertEqual(a["past head"], {10: 1})
         self.assertEqual(a["cache"], {"qwen slots": 3, "empty": 1, "reserved": 1, "slots": 5, "unsent cached": 3,
                                       "blocked cached": 3, "oldest": 302})
@@ -72,10 +76,11 @@ class Report(unittest.TestCase):
             F.main(["report", "--snapshot", str(d / "snapshot.json")])
         text = out.getvalue()
         self.assertIn("| 9 | intel_vulkan_8b | 2026-11-04 | 5 | 2 | 1 | 0 | 1 | 0 | 1 | 0 |", text)
-        self.assertIn("| 9 | intel_vulkan_8b | closed | 0 | 0 | 4 | 1 | 0 |", text)
-        self.assertIn("| 10 | nvidia_vulkan_8b | 104–106 | 2 | 1 | 3 | 1 | 1 |", text)
-        self.assertIn("| 5 | amd_vulkan_8b | unbounded | 1 | 0 | 0 | 2 | 0 |", text)
-        self.assertIn("4 units no listed host can take now; the first 4 units in feeder order", text)
+        self.assertIn("| 9 | intel_vulkan_8b | closed, batch 8 | 0 | 0 | 5 | 1 | 0 |", text)
+        self.assertIn("| 10 | nvidia_vulkan_8b | units ≥ 104, batch ≥ 8 | 2 | 1 | 4 | 1 | 1 |", text)
+        self.assertIn("| 5 | amd_vulkan_8b | any unit, batch 8 | 1 | 0 | 1 | 2 | 0 |", text)
+        self.assertIn("9 unsent replicas on 7 units.", text)
+        self.assertIn("5 units no listed host can take now; the first 4 units in feeder order", text)
 
 
 class FakeCursor:
@@ -91,7 +96,7 @@ class FakeCursor:
         elif "av.plan_class" in sql:
             self.rows = [(9, "intel_vulkan_8b", 5), (9, "nvidia_vulkan_8b", 3)][:self.sizes.get("hosts", 2)]
         elif "server_state=2 ORDER BY" in sql:
-            self.rows = [(1001, 101, 0)] * self.sizes.get("unsent", 1)
+            self.rows = [(1001, 101, 0, 8)] * self.sizes.get("unsent", 1)
         else:
             self.rows = []
 
@@ -110,7 +115,8 @@ class Collect(unittest.TestCase):
         (self.dir / "config.xml").write_text(
             "<boinc><config><db_host>h</db_host><db_user>u</db_user><db_passwd>p</db_passwd><db_name>n</db_name></config></boinc>")
         (self.dir / "spec.xml").write_text(
-            "<plan_classes><plan_class><name>intel_vulkan_8b</name><min_wu_id>2</min_wu_id><max_wu_id>1</max_wu_id></plan_class>"
+            "<plan_classes><plan_class><name>intel_vulkan_8b</name><min_wu_id>2</min_wu_id><max_wu_id>1</max_wu_id>"
+            "<min_batch>8</min_batch><max_batch>8</max_batch></plan_class>"
             "<plan_class><name>amd_vulkan_8b</name></plan_class></plan_classes>")
         self.log, self.closed = [], []
 
@@ -145,8 +151,8 @@ class Collect(unittest.TestCase):
         self.assertFalse([s for s in sql if s.split()[0].upper() in ("INSERT", "UPDATE", "DELETE", "REPLACE")])
         # The host's latest send names its class.
         self.assertEqual(snap["hosts"], {"9": "intel_vulkan_8b"})
-        self.assertEqual(snap["bounds"], {"intel_vulkan_8b": [2, 1]})
-        self.assertEqual(snap["unsent"], [[1001, 101, 0]])
+        self.assertEqual(snap["bounds"], {"intel_vulkan_8b": {"wu": [2, 1], "batch": [8, 8]}})
+        self.assertEqual(snap["unsent"], [[1001, 101, 0, 8]])
 
     def test_refuses_at_the_limit_and_still_rolls_back(self):
         with self.assertRaises(SystemExit):

@@ -4,7 +4,7 @@
 
 ## The question
 
-#786 runs one Intel host as a second 8B Qwen backend. A [cohort controller](../boinc-intel-gpu.md#persistent-finite-nvidiaintel-refill) opens Intel's plan class to a small window of fresh units at a time, while the AMD and Apple classes and the generally admitted NVIDIA class take any unsent replica. The issue's acceptance asks for evidence under ordinary work that dispatch moves past a prefix of units no host can take, and that a warm feeder cache doesn't hide work. This note measures both and asks why the Intel host has had no Qwen work since the evening of 4 November.
+#786 runs one Intel host as a second 8B Qwen backend. A [cohort controller](../boinc-intel-gpu.md#persistent-finite-nvidiaintel-refill) opens Intel's plan class to a small window of fresh units at a time, while the AMD and Apple classes and the generally admitted NVIDIA class take any unsent native 8B (batch 8) replica. The issue's acceptance asks for evidence under ordinary work that dispatch moves past a prefix of units no host can take, and that a warm feeder cache doesn't hide work. This note measures both and asks why the Intel host has had no Qwen work since the evening of 4 November.
 
 ## What we found
 
@@ -20,16 +20,16 @@
 
 ## Method
 
-`scripts/boinc/qwen-dispatch-fairness.py collect` runs in the BOINC server container. In one `READ ONLY` transaction of `LIMIT`-bounded `SELECT`s it reads each host's Qwen results by send day, the unsent Qwen replicas in the feeder's default order (result priority, then workunit id), the hosts holding a replica of each of those units, and the last 24 hours of sends. It reads each plan class's workunit bounds from `plan_class_spec.xml` and parses `bin/show_shmem` for the feeder cache. `report` prints the tables below. A host **can take** a unit when its plan class's bounds include the unit and it holds no replica of it; one result per host per unit is the project's rule. A unit is **blocked** when no host that sent Qwen work in the period can take it. The **blocked head** is the run of blocked units at the front of the feeder's order. The controller counts come from `usnm-qwen-cohort-auto.service`'s journal, and the request counts from the scheduler log.
+`scripts/boinc/qwen-dispatch-fairness.py collect` runs in the BOINC server container. In one `READ ONLY` transaction of `LIMIT`-bounded `SELECT`s it reads each host's Qwen results by send day, the unsent Qwen replicas in the feeder's default order (result priority, then workunit id), the hosts holding a replica of each of those units, and the last 24 hours of sends. It reads each plan class's workunit bounds from `plan_class_spec.xml` and parses `bin/show_shmem` for the feeder cache. `report` prints the tables below. A host **can take** a unit when its plan class's workunit and batch bounds include the unit and it holds no replica of it; one result per host per unit is the project's rule. A unit is **blocked** when no host that sent Qwen work in the period can take it. The **blocked head** is the run of blocked units at the front of the feeder's order. The controller counts come from `usnm-qwen-cohort-auto.service`'s journal, and the request counts from the scheduler log.
 
 ## Results
 
-| Device | Plan class       | Bounds    | Can take | Only taker | Could take a blocked unit | Sent, last 24 h | Sent past the blocked head |
-| ------ | ---------------- | --------- | -------: | ---------: | ------------------------: | --------------: | -------------------------: |
-| Apple  | apple_gpu_8b     | unbounded |     1134 |         21 |                         0 |             240 |                        240 |
-| AMD    | amd_vulkan_8b    | unbounded |        0 |          0 |                         0 |             138 |                        138 |
-| Intel  | intel_vulkan_8b  | closed    |        0 |          0 |                       102 |              58 |                         58 |
-| NVIDIA | nvidia_vulkan_8b | unbounded |     1515 |        402 |                         0 |               0 |                          0 |
+| Device | Plan class       | Bounds            | Can take | Only taker | Could take a blocked unit | Sent, last 24 h | Sent past the blocked head |
+| ------ | ---------------- | ----------------- | -------: | ---------: | ------------------------: | --------------: | -------------------------: |
+| Apple  | apple_gpu_8b     | any unit, batch 8 |     1134 |         21 |                         0 |             240 |                        240 |
+| AMD    | amd_vulkan_8b    | any unit, batch 8 |        0 |          0 |                         0 |             138 |                        138 |
+| Intel  | intel_vulkan_8b  | closed, batch 8   |        0 |          0 |                       102 |              58 |                         58 |
+| NVIDIA | nvidia_vulkan_8b | any unit, batch 8 |     1515 |        402 |                         0 |               0 |                          0 |
 
 Could take a blocked unit: holds no replica of it, but its plan class's bounds exclude it.
 

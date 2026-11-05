@@ -40,12 +40,13 @@ def utc(text):
 
 
 def plan_bounds(payload):
-    """{plan class: [min_wu_id, max_wu_id], or None when unbounded}."""
-    bounds = {}
-    for node in ET.fromstring(payload).findall("plan_class"):
-        lo, hi = node.findtext("min_wu_id"), node.findtext("max_wu_id")
-        bounds[node.findtext("name")] = None if lo is None and hi is None else [int(lo or 0), int(hi or 2**63 - 1)]
-    return bounds
+    """{plan class: {"wu": [min_wu_id, max_wu_id], "batch": [min_batch, max_batch]}}. As in
+    BOINC's `plan_class_spec.cpp`, 0 or a missing tag is no limit."""
+    return {
+        node.findtext("name"): {key: [int(node.findtext(f"min_{tag}") or 0), int(node.findtext(f"max_{tag}") or 0)]
+                                for key, tag in (("wu", "wu_id"), ("batch", "batch"))}
+        for node in ET.fromstring(payload).findall("plan_class")
+    }
 
 
 def parse_shmem(text, app=APP):
@@ -118,8 +119,8 @@ def collect(args):
             (appid, since), args.limit, "daily")
         # The feeder's default order (`feeder.cpp`): result priority, then workunit id.
         unsent = rows(
-            f"SELECT r.id, r.workunitid, r.priority FROM result r WHERE r.appid=%s AND r.server_state={UNSENT} "
-            "ORDER BY r.priority DESC, r.workunitid, r.id",
+            "SELECT r.id, r.workunitid, r.priority, w.batch FROM result r JOIN workunit w ON w.id=r.workunitid "
+            f"WHERE r.appid=%s AND r.server_state={UNSENT} ORDER BY r.priority DESC, r.workunitid, r.id",
             (appid,), args.limit, "unsent")
         taken = rows(
             "SELECT DISTINCT x.workunitid, x.hostid FROM result x JOIN result r ON r.workunitid=x.workunitid "
@@ -146,8 +147,13 @@ def collect(args):
     print()
 
 
-def can_take(bounds, wu):
-    return bounds is None or (bounds != "absent" and bounds[0] <= wu <= bounds[1])
+def within(value, limits):
+    lo, hi = limits
+    return (not lo or value >= lo) and (not hi or value <= hi)
+
+
+def can_take(bounds, wu, batch):
+    return bounds != "absent" and within(wu, bounds["wu"]) and within(batch, bounds["batch"])
 
 
 def analyse(snap):
@@ -156,8 +162,13 @@ def analyse(snap):
     taken = collections.defaultdict(set)
     for wu, host in snap["taken"]:
         taken[wu].add(host)
-    units = list(dict.fromkeys((-prio, wu) for _, wu, prio in snap["unsent"]))
-    takers = {key: [h for h, c in hosts.items() if h not in taken[key[1]] and can_take(bounds[c], key[1])] for key in units}
+    # A unit's place in feeder order is that of its first unsent replica.
+    first = {}
+    for _, wu, prio, batch in snap["unsent"]:
+        first.setdefault(wu, ((-prio, wu), batch))
+    units = [key for key, _ in first.values()]
+    takers = {key: [h for h, c in hosts.items() if h not in taken[key[1]] and can_take(bounds[c], key[1], first[key[1]][1])]
+              for key in units}
     blocked = [key for key in units if not takers[key]]
     head = 0
     while head < len(units) and not takers[units[head]]:
@@ -173,13 +184,13 @@ def analyse(snap):
     }
     cache = snap.get("cache")
     if cache:
-        unsent_ids = {rid for rid, _, _ in snap["unsent"]}
+        unsent_ids = {rid for rid, *_ in snap["unsent"]}
         blocked_units = {wu for _, wu in blocked}
         cached = {rid for rid, _ in cache["results"]}
         a["cache"] = {
             "qwen slots": len(cached), "empty": cache["empty"], "reserved": cache["reserved"], "slots": cache["slots"],
             "unsent cached": len(cached & unsent_ids),
-            "blocked cached": sum(1 for rid, wu, _ in snap["unsent"] if rid in cached and wu in blocked_units),
+            "blocked cached": sum(1 for rid, wu, *_ in snap["unsent"] if rid in cached and wu in blocked_units),
             "oldest": max((age for _, age in cache["results"]), default=None),
         }
     return a
@@ -195,12 +206,17 @@ def stamp(seconds):
     return dt.datetime.fromtimestamp(seconds, dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ")
 
 
+def span(name, limits):
+    lo, hi = limits
+    if lo and hi:
+        return "closed" if lo > hi else f"{name} {lo}" if lo == hi else f"{name} {lo}–{hi}"
+    return f"{name} ≥ {lo}" if lo else f"{name} ≤ {hi}" if hi else None
+
+
 def bounds_text(bounds):
-    if bounds is None:
-        return "unbounded"
     if bounds == "absent":
         return "not in policy"
-    return "closed" if bounds[0] > bounds[1] else f"{bounds[0]}–{bounds[1]}"
+    return ", ".join(filter(None, (span("units", bounds["wu"]) or "any unit", span("batch", bounds["batch"]))))
 
 
 def report(args):
@@ -219,7 +235,7 @@ def report(args):
     a = analyse(snap)
     n = snap["recent_hours"]
     print(f"{a['replicas']} unsent replicas on {a['units']} units. A host can take a unit when its plan class's "
-          f"workunit bounds include it and it holds no replica of it. {a['blocked']} units no listed host can take now; "
+          f"workunit and batch bounds include it and it holds no replica of it. {a['blocked']} units no listed host can take now; "
           f"the first {a['head']} units in feeder order are among them.\n")
     print(table(
         ("Host", "Plan class", "Bounds", "Can take", "Only taker", "Could take a blocked unit", f"Sent, last {n} h",
