@@ -158,6 +158,15 @@ class RestoreDrillTest(unittest.TestCase):
                       "live-sha256 live-bytes snapshot-bytes", r.stdout)
         self.assertIn("1 restored scans did not match", r.stderr)
 
+    def test_a_snapshot_with_none_of_the_sample_fails(self):
+        for page in (1, 2):
+            (self.snapshot / self.scan(page)).unlink()
+        r = self.run_drill(count=2)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("check 1: ok (2976 bytes, not in the snapshot)", r.stdout)
+        self.assertIn("none of the sample is in snapshot snap, so no snapshot copy was checked", r.stderr)
+        self.assertNotIn("restore drill passed", r.stdout)
+
     def test_the_budget_stops_before_the_first_scan_past_it(self):
         for page in (1, 2, 3):
             self.scan(page, size=1000)

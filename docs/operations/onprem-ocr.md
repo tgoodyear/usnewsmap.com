@@ -283,7 +283,7 @@ The keep-set scans have been copied to a Cold-tier container, `scans` in the sto
    **What the drill does.**
    - **Sample.** It takes `--count` names (1–99) spread over `archived.tsv`, half a step off `check-scan-archive.sh`'s sample.
    - **Budget.** It HEADs them in order and stops before the first one that would take the GETs past `--budget-bytes` (at most 100,000,000).
-   - **Cold restore.** It GETs the sample one by one, each capped at its HEAD length, then copies the same scans from `.zfs/snapshot/<snapshot-name>`. A scan archived after the snapshot is skipped there.
+   - **Cold restore.** It GETs the sample one by one, each capped at its HEAD length, then copies the same scans from `.zfs/snapshot/<snapshot-name>`. A scan archived after the snapshot is skipped there, but the drill fails if none of the sample is in the snapshot.
    - **Checks.** It compares each Cold copy's length, sha256 and md5 with:
      - the HEAD length;
      - the sidecar;

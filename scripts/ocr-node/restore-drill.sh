@@ -180,4 +180,6 @@ done
 echo "== verify: $((N - bad)) of $N match (snapshot copies: $insnap; JPEGs without a sidecar md5: $nomd5) in $(secs "$v0" "$(now)")s"
 du -sh --apparent-size "$DIR" | cut -f1 | sed 's/^/== scratch used: /'
 [ "$bad" -eq 0 ] || die "$bad restored scans did not match"
+[ "$insnap" -gt 0 ] ||
+  die "none of the sample is in snapshot $SNAP, so no snapshot copy was checked; use a newer snapshot"
 echo "restore drill passed: $N scans (sample $DIGEST)"
