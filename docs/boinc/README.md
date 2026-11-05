@@ -34,6 +34,7 @@ baselines and adapted models with `usnm_qwen`.
 - [Boundaries and monitoring](boundaries-and-monitoring.md): the public dataset-page counts, workbook query validation and the pilot's boundaries.
 - [The worker image](worker-image.md): building and publishing the worker image, and the local synthetic demonstration.
 - [The server and the apps](server-and-apps.md): connecting a stock BOINC project, installing app versions and plan classes, and moving the project share.
+- [Feeder-only refresh](feeder-refresh.md): when and how to restart only the feeder so its `--allapps` slot allocation matches the app registry, with the readbacks, retry limit and rollback (#1462).
 - [The bridge steps](bridge-steps.md): starting a bridge step, registering the apps, two October 2026 campaign records, and running the server and maintainer on different hosts.
 - [The scan-cache hand-off](scan-cache-handoff.md): getting one page from the scan cache to the BOINC server, with the infrastructure, the runbook, the scan fetcher's identity and the quality wave's page JPEG cache.
 - [Allocation, recovery and acceptance](allocation-and-recovery.md): how a cohort is allocated, how to recover failed work, and the live acceptance exercise.

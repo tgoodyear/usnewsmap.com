@@ -117,8 +117,10 @@ The guard does not change the app table, trigger `reread_db`, touch queues, wide
 admission or restart anything. For drift, coordinate a **single feeder-only**
 refresh under the existing supervisor and verify the resulting snapshot, actual
 shared-memory visibility and eligible host assignment. Do not repeatedly restart
-on `unknown` or a failed database check. The safe automated refresh boundary and
-rollout acceptance are tracked in [#1462](https://github.com/tgoodyear/usnewsmap.com/issues/1462).
+on `unknown` or a failed database check. [Feeder-only refresh](../../docs/boinc/feeder-refresh.md)
+defines when a refresh is warranted, its preconditions, the operator procedure and readbacks,
+the retry limit, rollback and what must stay manual; rollout acceptance is tracked in
+[#1462](https://github.com/tgoodyear/usnewsmap.com/issues/1462).
 
 Release verification remains separate from these configuration tests: confirm
 the rendered runtime query size, feeder restart/cache visibility and actual

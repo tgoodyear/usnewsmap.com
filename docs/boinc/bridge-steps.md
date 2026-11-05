@@ -67,7 +67,7 @@ to repeat. At the pinned BOINC commit (22bbebe), `tools/xadd` looks up each
 `<platform>` and `<app>` by name. It inserts the ones that are missing, updates a changed
 `user_friendly_name` or `min_version`, prints "already in DB" for the rest, and never
 deletes or deprecates anything. Adding an active app changes the feeder's startup slot
-allocation: coordinate a feeder-only refresh and verify visibility as described in
+allocation: coordinate a [feeder-only refresh](feeder-refresh.md) and verify visibility as described in
 [Feeder visibility](../../contrib-compute/docs/app-release.md#feeder-visibility);
 neither `xadd` nor `reread_db` rebuilds that map. An identical repeat that changes no
 active app does not require a restart. The step needs a bridge image with this step in it
