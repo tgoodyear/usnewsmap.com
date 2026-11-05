@@ -423,6 +423,8 @@ fn candidates(occs: &[&[(f64, f64)]], k: usize, min_gap: f64) -> Vec<(f64, f64)>
     let (mut cov, mut x) = (0i64, lo);
     for &(pos, d) in &ev {
         if pos > x && cov <= k as i64 && lo < x && pos < hi {
+            // `x` is the previous event's position, copied, so a range that
+            // goes on from the last one starts exactly at its end.
             match out.last_mut() {
                 Some(last) if last.1 == x => last.1 = pos,
                 _ => out.push((x, pos)),
@@ -515,24 +517,45 @@ fn confirm(info: &[Info], mine: &[&Info], c: f64, d: f64, h: f64) -> Option<Gutt
     })
 }
 
-/// Gutters that overlap in x and y as one: the union of their lines, at the
-/// better one's place.
+/// Gutters that overlap in x and y, directly or through others, as one: the
+/// union of their lines, at the best one's place.
 fn merge(mut found: Vec<Gutter>) -> Vec<Gutter> {
+    fn root(parent: &mut [usize], mut i: usize) -> usize {
+        while parent[i] != i {
+            parent[i] = parent[parent[i]];
+            i = parent[i];
+        }
+        i
+    }
     found.sort_by(|a, b| a.lo.total_cmp(&b.lo));
+    let n = found.len();
+    let mut parent: Vec<usize> = (0..n).collect();
+    for i in 0..n {
+        for j in i + 1..n {
+            let (a, b) = (&found[i], &found[j]);
+            if a.lo < b.hi && a.hi > b.lo && a.y0 < b.y1 && a.y1 > b.y0 {
+                let (ri, rj) = (root(&mut parent, i), root(&mut parent, j));
+                parent[ri.max(rj)] = ri.min(rj);
+            }
+        }
+    }
     let mut out: Vec<Gutter> = Vec::new();
-    for g in found {
-        match out
-            .iter_mut()
-            .find(|o| g.lo < o.hi && g.hi > o.lo && g.y0 < o.y1 && g.y1 > o.y0)
-        {
-            Some(o) => {
+    let mut at: BTreeMap<usize, usize> = BTreeMap::new();
+    for (i, g) in found.into_iter().enumerate() {
+        let r = root(&mut parent, i);
+        match at.get(&r) {
+            Some(&k) => {
+                let o = &mut out[k];
                 o.y0 = o.y0.min(g.y0);
                 o.y1 = o.y1.max(g.y1);
                 if g.score > o.score {
                     (o.lo, o.hi, o.score) = (g.lo, g.hi, g.score);
                 }
             }
-            None => out.push(g),
+            None => {
+                at.insert(r, out.len());
+                out.push(g);
+            }
         }
     }
     out
@@ -821,6 +844,11 @@ mod tests {
                 }
                 widths.push(w);
             }
+            assert!(
+                widths.len() >= 2,
+                "a {} px column holds one word",
+                self.col_w
+            );
             let gap = (self.col_w - widths.iter().sum::<f64>()) / (widths.len() - 1) as f64;
             let y0 = self.top + row as f64 * PITCH;
             let mut x = self.x0(col);
@@ -1064,5 +1092,26 @@ mod tests {
             ..p
         };
         assert_eq!(split_columns(&lines, Dir::Ltr), None);
+    }
+
+    /// Gutters that overlap only through another are one gutter, at the
+    /// best one's place, over all their lines.
+    #[test]
+    fn a_chain_of_overlapping_gutters_is_one() {
+        let g = |lo: f64, score: i64, y0: f64, y1: f64| Gutter {
+            score,
+            lo,
+            hi: lo + 6.0,
+            y0,
+            y1,
+        };
+        let merged = merge(vec![
+            g(108.0, 3, 0.0, 50.0),
+            g(100.0, 5, 40.0, 90.0),
+            g(104.0, 4, 20.0, 60.0),
+        ]);
+        assert_eq!(merged.len(), 1, "{merged:?}");
+        let m = &merged[0];
+        assert_eq!((m.lo, m.score, m.y0, m.y1), (100.0, 5, 0.0, 90.0));
     }
 }

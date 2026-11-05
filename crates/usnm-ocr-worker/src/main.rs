@@ -1661,9 +1661,9 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
             out,
         } => {
             let files = if alto.is_dir() {
-                let mut files: Vec<PathBuf> = std::fs::read_dir(&alto)?
-                    .map(|e| e.map(|e| e.path()))
-                    .collect::<Result<_, _>>()?;
+                let mut files: Vec<PathBuf> = std::fs::read_dir(&alto)
+                    .and_then(|d| d.map(|e| e.map(|e| e.path())).collect())
+                    .with_context(|| format!("listing {}", alto.display()))?;
                 files.retain(|p| {
                     p.extension()
                         .and_then(|e| e.to_str())
@@ -1674,7 +1674,7 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
             } else {
                 vec![alto]
             };
-            std::fs::create_dir_all(&out)?;
+            std::fs::create_dir_all(&out).with_context(|| format!("creating {}", out.display()))?;
             let opts = usnm_alto::ParseOptions {
                 dpi,
                 ..usnm_alto::ParseOptions::default()
@@ -1684,12 +1684,15 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
                     .file_stem()
                     .and_then(|s| s.to_str())
                     .context("an ALTO file has no name")?;
-                let page = usnm_alto::parse(&std::fs::read(&file)?, &opts)
-                    .with_context(|| format!("{}", file.display()))?;
+                let bytes =
+                    std::fs::read(&file).with_context(|| format!("reading {}", file.display()))?;
+                let page = usnm_alto::parse(&bytes, &opts)
+                    .with_context(|| format!("parsing {}", file.display()))?;
                 let (text, repair) =
                     usnm_ocr_worker::stored::column_text(&page, &ocr_engine, &language);
                 let txt = out.join(format!("{stem}.txt"));
-                std::fs::write(&txt, &text)?;
+                std::fs::write(&txt, &text)
+                    .with_context(|| format!("writing {}", txt.display()))?;
                 let repair = repair.unwrap_or_default();
                 println!(
                     "{}",
