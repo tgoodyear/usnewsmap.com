@@ -790,6 +790,13 @@ pub async fn export(
                 old.plan == opts.plan,
                 "job belongs to another allocation plan"
             );
+            if let Some((failed, timeout_secs)) = retry {
+                ensure!(
+                    old.job.message.queued_at == job.message.queued_at,
+                    "the deadline retry of job {failed} with a {timeout_secs} s deadline builds job {}, which the plan journaled for an earlier message",
+                    job.id
+                );
+            }
             old
         } else {
             atomic(&job_dir.join("page"), &scan)?;

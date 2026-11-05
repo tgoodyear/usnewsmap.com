@@ -930,7 +930,8 @@ pub struct DeadlineRetried {
 /// letter. Then it writes a [`DeadlineRetry`] for the claim's message, once; it changes nothing
 /// else, neither the queue nor the claim. With no `confirm` it changes nothing (a dry run);
 /// `confirm` must be the claim's `message_sha256`. A rerun finds the same record and changes
-/// nothing; one with another deadline is refused.
+/// nothing; one with another deadline is refused. So is a deadline that would build one of the
+/// page's earlier jobs again, whose journal the hand-off container holds.
 pub async fn deadline_retry(
     handoff: &dyn ObjectStore,
     failed: &crate::Record,
@@ -1008,6 +1009,20 @@ pub async fn deadline_retry(
         permanent_dead_letter(ledger, &doc_id),
     )
     .await?;
+    // A job's identity holds its deadline but not its message's `queued_at`: a deadline one of
+    // the page's earlier jobs ran with (600 → 3600 → 600) would build that job again, which
+    // `export` keeps, not one for this message.
+    let mut retried = failed.job.clone();
+    retried.message = message.clone();
+    retried.batch_version = claim.ledger.batch_version;
+    retried.engine.timeout_secs = timeout_secs;
+    let again = retried.identity()?;
+    ensure!(
+        !handoff
+            .exists(&format!("dispatch/jobs/{again}/record.json"))
+            .await?,
+        "a {timeout_secs} s page deadline builds job {again} for {doc_id}, which the plan journaled for an earlier message; choose another deadline"
+    );
     if confirm.is_none() {
         return Ok(report);
     }

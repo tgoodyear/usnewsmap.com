@@ -1250,8 +1250,10 @@ def units_of(config, records):
 def deadline_retried(page, roots, deadline_retries):
     """A page's root journals when each after the first is an operator's deadline retry of the
     one before (#1417): the failed job names the newer message's queued_at and deadline in the
-    controller's state (QueueFeed.deadline_retry), and exactly one journal has them. Returns the
-    last one alone, or the roots as they are when they don't form that one chain."""
+    controller's state (QueueFeed.deadline_retry), and exactly one journal has them. The last one
+    may have none yet: its retry was taken but its export hasn't journaled the new job, which the
+    next tick exports again. Returns the last one alone, or the roots as they are when they don't
+    form that one chain."""
     after = {}
     for record in roots:
         entry = deadline_retries.get(record["job"]["id"])
@@ -1260,9 +1262,10 @@ def deadline_retried(page, roots, deadline_retries):
         followers = [other for other in roots if other is not record
                      and other["job"]["message"].get("queued_at") == entry.get("queued_at")
                      and other["job"]["engine"].get("timeout_secs") == entry.get("timeout_secs")]
-        if entry.get("page") != page or record["stage"] != "failed" or len(followers) != 1:
+        if entry.get("page") != page or record["stage"] != "failed" or len(followers) > 1:
             return roots
-        after[record["job"]["id"]] = followers[0]
+        if followers:
+            after[record["job"]["id"]] = followers[0]
     starts = [record for record in roots
               if not any(record is follower for follower in after.values())]
     if len(starts) != 1:
@@ -1408,6 +1411,7 @@ class QueueFeed:
     def record(self, fresh, need, owned=None):
         require(isinstance(fresh, list) and len(fresh) <= need, "claimed more pages than asked")
         conflict = False
+        errors = []
         for item in fresh:
             page, claim = self.checked(item)
             if page in self.claims:
@@ -1416,13 +1420,21 @@ class QueueFeed:
                 # A different message for the page is two attempts at once: stop, once the
                 # others are kept. Their messages are hidden for the lease. Unless an operator
                 # retries the dead-lettered page with another deadline (#1417).
-                if claim["message"] is not None and claim["message"] != self.claims[page].get("message") \
-                        and self.deadline_retry(page, claim, owned):
-                    continue
+                if claim["message"] is not None and claim["message"] != self.claims[page].get("message"):
+                    try:
+                        if self.deadline_retry(page, claim, owned):
+                            continue
+                    except (RuntimeError, ValueError, OSError) as error:
+                        # Its record couldn't be read or isn't valid: stop too, once the others
+                        # are kept.
+                        errors.append(error)
+                        continue
                 conflict = conflict or claim["message"] is None or claim["message"] != self.claims[page].get("message")
                 continue
             self.claims[page] = claim
         self.persist()
+        if errors:
+            raise_transport_errors(errors)
         require(not conflict, "claimed a page already in this plan with a different message")
 
     def deadline_retry(self, page, claim, owned):

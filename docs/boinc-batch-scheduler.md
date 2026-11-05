@@ -1007,8 +1007,10 @@ usnm-boinc-step --env prod --target handoff --step deadline-retry \
 (`usnm-boinc claim deadline-retry --supersedes-failed-job <id> --timeout-secs <s> --curated-url
 <curated> [--confirm-message-sha256 <sha256>]`.) The step makes the superseding dead letter's
 checks. It also checks that the deadline is 1 to 3600 s and isn't the failed job's own, and that
-no superseding dead letter has been started for the message. Then it writes one record,
-`dispatch/jobs/<failed job>/deadline-retry/<message sha256>.json`, holding:
+no superseding dead letter has been started for the message. A job's identity holds its deadline
+but not its message's `queued_at`, so the step also refuses a deadline that would build one of the
+page's earlier jobs again (600 s, then 3600 s, then 600 s): choose another. Then it writes one
+record, `dispatch/jobs/<failed job>/deadline-retry/<message sha256>.json`, holding:
 
 - the failed job;
 - the page's doc id;
@@ -1025,6 +1027,8 @@ conflict only, and only for a page whose job the controller dead-lettered, the t
 record for that job and message:
 
 - With no record, the tick stops as before.
+- If the record can't be read or isn't valid, the tick keeps the pull's other claims first, then
+  stops.
 - With the record, the claim takes the old one's place, naming the job it `supersedes`. The
   controller records the retry in its state (`deadline_retries`: the page, message, `queued_at`
   and deadline) and logs a `boinc_batch_deadline_retry` event.
@@ -1033,11 +1037,12 @@ The next export pushes the page's scan again, because the host's staged copy is 
 days. It names the failed job in `HANDOFF_DEADLINE_RETRIES`. `usnm-boinc export --deadline-retry
 <failed job>` checks the record again against the failed journal and the claim, then builds the
 page's job with the recorded deadline. That is a new job id and workunit beside the failed one,
-which stays as it was. After that the controller takes the new job as the page's: its state
-names the job's `queued_at` and deadline, so it never picks one of two jobs any other way. The
-new job is submitted, collected and finished like any other. If it fails for good too,
-`--dead-letter-failed` dead-letters it as usual. A later attempt of the page is then settled or
-retried again, naming the new job.
+which stays as it was. An export that would build an earlier job of the page instead is refused.
+If the export fails, the next tick exports the page again. After that the controller takes the
+new job as the page's: its state names the job's `queued_at` and deadline, so it never picks one
+of two jobs any other way. The new job is submitted, collected and finished like any other. If it
+fails for good too, `--dead-letter-failed` dead-letters it as usual. A later attempt of the page
+is then settled or retried again, naming the new job.
 
 Without a record, nothing in a tick changes. Roll out the hand-off image (its `deadline-retry`
 step and export's `--deadline-retry`), the host's `onprem-step.sh` and the controller from one

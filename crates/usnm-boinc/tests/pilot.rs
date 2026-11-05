@@ -3574,6 +3574,61 @@ mod queue_feed {
     }
 
     #[tokio::test]
+    async fn a_deadline_an_earlier_job_of_the_page_ran_with_is_not_retried() {
+        // 1800 → 600 → 1800: a job's identity holds its deadline but not its message's
+        // queued_at, so an earlier job's deadline would build that job again.
+        let (mut f, failed, newer) = superseded(true, Duration::from_secs(3600)).await;
+        usnm_boinc::save(&f.fx.options.root, &failed).unwrap();
+        let ledger = ledger::load(f.fx.stores.curated.as_ref()).await.unwrap();
+        let sha = usnm_ocr_contract::boinc::sha256(newer.encode().as_bytes());
+        let id = failed.job.id.clone();
+        let earlier = |timeout_secs| {
+            let mut earlier = failed.clone();
+            earlier.job.engine.timeout_secs = timeout_secs;
+            earlier.job.id = earlier.job.identity().unwrap();
+            earlier
+        };
+        let ran = earlier(1800);
+        f.handoff
+            .put(
+                &format!("dispatch/jobs/{}/record.json", ran.job.id),
+                serde_json::to_vec(&ran).unwrap(),
+                "application/json",
+            )
+            .await
+            .unwrap();
+        for confirm in [None, Some(sha.as_str())] {
+            let e = claim::deadline_retry(f.handoff.as_ref(), &failed, &ledger, 1800, confirm)
+                .await
+                .unwrap_err();
+            assert!(e.to_string().contains("for an earlier message"), "{e}");
+        }
+        assert!(f
+            .handoff
+            .get(&claim::deadline_retry_path(&id, &sha))
+            .await
+            .unwrap()
+            .is_none());
+        // Another deadline is recorded. An export that would still build an earlier job (one
+        // the hand-off container didn't hold) is refused too, and leaves that job as it was.
+        claim::deadline_retry(f.handoff.as_ref(), &failed, &ledger, 3600, Some(&sha))
+            .await
+            .unwrap();
+        stage_deadline_retry(&f, &id, &sha).await;
+        let stale = earlier(3600);
+        usnm_boinc::save(&f.fx.options.root, &stale).unwrap();
+        f.fx.options.claims = Some(f.fx.tmp.path().join("claims2"));
+        f.fx.options.deadline_retries = vec![id.clone()];
+        let e = try_export(&f).await.unwrap_err();
+        assert!(e.to_string().contains("for an earlier message"), "{e}");
+        assert_eq!(
+            serde_json::to_value(usnm_boinc::load(&f.fx.options.root, &stale.job.id).unwrap())
+                .unwrap(),
+            serde_json::to_value(&stale).unwrap()
+        );
+    }
+
+    #[tokio::test]
     async fn a_page_is_not_retried_with_another_deadline_unless_its_job_was_dead_lettered() {
         let (f, failed, newer) = superseded(false, Duration::from_secs(3600)).await;
         let ledger = ledger::load(f.fx.stores.curated.as_ref()).await.unwrap();
