@@ -13,6 +13,7 @@ on:
       - ocr/boinc/qwen/llama.lock
       - ocr/boinc/qwen/weights.lock
       - ocr/boinc/qwen/amd-device-map.cpp
+      - ocr/boinc/qwen/disk-policy.json
       - scripts/boinc/test_amd_device_map.py
       - scripts/boinc/patch_amd_vulkan_identity.py
       - scripts/boinc/build_amd_vulkan_runtime.ps1
