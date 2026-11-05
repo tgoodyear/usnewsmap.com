@@ -239,18 +239,6 @@ def feeder_allocation_guard():
         link.unlink(missing_ok=True)
 
 
-def insert_row(table, **values):
-    """One row, zero for every NOT NULL column BOINC's schema leaves without a default."""
-    names = fixture.sql(
-        "SELECT column_name FROM information_schema.columns WHERE table_schema='full_fixture' "
-        f"AND table_name='{table}' AND is_nullable='NO' AND column_default IS NULL "
-        "AND extra NOT LIKE '%auto_increment%'").split()
-    row = {**dict.fromkeys(names, 0), **values}
-    literals = ",".join(f"'{v}'" if isinstance(v, str) else repr(v) for v in row.values())
-    return int(fixture.sql(f"INSERT INTO full_fixture.{table} ({','.join(row)}) VALUES ({literals}); "
-                           "SELECT LAST_INSERT_ID()"))
-
-
 def qwen_tiebreak():
     """#1477: settle disputed Qwen units on the real database, under a competing
     row lock, then let the real transitioner finish them."""
@@ -260,15 +248,17 @@ def qwen_tiebreak():
     for case, language, third in (("settle", "yid", 2), ("locked", "yid", 2), ("running", "yid", 4),
                                   ("other", "eng", 2)):
         name = f"usnm_qwen_tiebreak-{case}"
-        wu = insert_row("workunit", create_time=now - 60, appid=app, name=name, batch=8, min_quorum=2,
-                        target_nresults=3, max_error_results=3, max_total_results=4, max_success_results=4,
-                        delay_bound=86400, transition_time=now + 86400, rsc_fpops_est=1e12,
-                        rsc_fpops_bound=1e13, size_class=-1)
+        wu = fixture.insert_row(fixture.sql, "full_fixture", "workunit", create_time=now - 60, appid=app,
+                                name=name, batch=8, min_quorum=2, target_nresults=3, max_error_results=3,
+                                max_total_results=4, max_success_results=4, delay_bound=86400,
+                                transition_time=now + 86400, rsc_fpops_est=1e12, rsc_fpops_bound=1e13,
+                                size_class=-1)
         # The first pair disagreed; the third replica is unsent, or running.
         for i, (state, outcome, validate) in enumerate(((5, 1, 4), (5, 1, 4), (third, 0, 0))):
-            insert_row("result", create_time=now - 60, workunitid=wu, appid=app, batch=8, name=f"{name}_{i}",
-                       server_state=state, outcome=outcome, validate_state=validate,
-                       report_deadline=now + 86400, elapsed_time=300.0, random=i, size_class=-1)
+            fixture.insert_row(fixture.sql, "full_fixture", "result", create_time=now - 60, workunitid=wu,
+                               appid=app, batch=8, name=f"{name}_{i}", server_state=state, outcome=outcome,
+                               validate_state=validate, report_deadline=now + 86400, elapsed_time=300.0,
+                               random=i, size_class=-1)
         job = ROOT / f"qwen/campaign/units/tiebreak-{case}"
         job.mkdir(parents=True)
         (job / "qwen.json").write_text(json.dumps(

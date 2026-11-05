@@ -103,6 +103,15 @@ The observer checks `VERSION()` is 8.4 and `@@require_secure_transport` is 1 bef
 each application phase. The normal `caching_sha2_password` runtime account also
 checks connector compatibility with MySQL's default authentication plugin.
 
+The matrix phase then loads BOINC's `schema.sql` and `constraints.sql` and runs
+`qwen-tiebreak-policy.py settle --apply` (#1477) on three synthetic disputed
+`usnm_qwen` units. One unit's workunit row is locked by another session. Another
+unit's unsent tie-breaker has been through the scheduler's exact `mark_as_sent`
+`UPDATE` in an open transaction, which commits while the tool waits for the row.
+The check requires one unit settled, one skipped as locked and one skipped with
+its replica running. A second run must settle the locked unit. The scheduler's
+`mark_as_sent` must then match no row for a cancelled replica.
+
 Both database and client containers are network-disabled (clients share the
 DB's loopback namespace), with no published ports, host files or Docker socket
 mounts. The server runs as fixture-only root without capabilities or privilege

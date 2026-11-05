@@ -29,6 +29,19 @@ def sql(query):
                "--batch", "--skip-column-names", "-e", query).stdout.strip()
 
 
+def insert_row(query, schema, table, **values):
+    """Insert one row with `query`, zero for every NOT NULL column BOINC's schema
+    leaves without a default; returns the row's id."""
+    names = query(
+        "SELECT column_name FROM information_schema.columns WHERE "
+        f"table_schema='{schema}' AND table_name='{table}' AND is_nullable='NO' "
+        "AND column_default IS NULL AND extra NOT LIKE '%auto_increment%'").split()
+    row = {**dict.fromkeys(names, 0), **values}
+    literals = ",".join(f"'{v}'" if isinstance(v, str) else repr(v) for v in row.values())
+    return int(query(f"INSERT INTO {schema}.{table} ({','.join(row)}) VALUES ({literals}); "
+                     "SELECT LAST_INSERT_ID()"))
+
+
 def start(tls, extra_args=()):
     args = ["mariadbd", "--no-defaults", "--user=root", "--datadir=/fixture/data",
             "--socket=/fixture/db.sock", "--pid-file=/fixture/db.pid",
