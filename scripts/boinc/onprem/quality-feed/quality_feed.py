@@ -667,14 +667,16 @@ def delete_shipped(a, camp_dir, done_path, quality_docs, deleted_path, kept_path
     removed the chunk from the outbox after submitting it). Only pages the quality pass asked
     for and OCR didn't (the caller leaves OCR's manifests' pages out of `quality_docs`); OCR's
     pages and the keep set are never touched. With --keep-bytes, the most damaged of them stay
-    on the scan server for re-OCR, up to that many bytes in all (listed in `kept_path`), and the
+    on the scan server for re-OCR, up to that many bytes in all (listed in `kept_path`, without
+    which there's no retention), and the
     rest are DELETEd; without, every one is. A kept scan that is gone (an
     OCR worker read it) or that OCR has since asked for leaves the list without a DELETE, so it
     no longer counts against the budget; --keep-verify of the longest-unchecked are looked at a
     round. `deleted_path` lists every page this is done with, deleted or so released, so
     neither is weighed again. Returns how many were deleted."""
     deleted = read_lines(deleted_path)
-    budget = getattr(a, "keep_bytes", 0) or 0
+    # Retention needs kept.tsv to carry it from round to round: with no kept_path, none.
+    budget = (getattr(a, "keep_bytes", 0) or 0) if kept_path else 0
     kept = read_kept(kept_path)
     now = time.time()
     with open(done_path) as f:
@@ -734,7 +736,8 @@ def delete_shipped(a, camp_dir, done_path, quality_docs, deleted_path, kept_path
     out = list(released)
     # Kept scans that lost their place go first. One that fails to go stays kept and still
     # counts, so the pages that would have taken its place wait, neither kept nor deleted,
-    # for a later round: the kept list never holds more than the budget.
+    # for a later round: the kept list's bytes never grow past the budget, and a budget cut
+    # below them is reached as those deletes succeed.
     stuck = {}
     for doc in sorted(d for d in kept if d not in want):
         if delete(doc):

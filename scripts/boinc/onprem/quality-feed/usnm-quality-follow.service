@@ -12,8 +12,7 @@ RequiresMountsFor=/srv/curated /var/lib/usnm-quality-feed/outbox
 
 [Service]
 Type=simple
-# No retention unless quality-follow.env sets KEEP_BYTES (an EnvironmentFile overrides
-# Environment= wherever it stands; first here for the reader).
+# No retention unless quality-follow.env, below, sets KEEP_BYTES.
 Environment=KEEP_BYTES=0
 # The feeder's limits from quality-feed.env, then this mode's campaign, server and budget.
 EnvironmentFile=/etc/usnm/quality-feed.env
