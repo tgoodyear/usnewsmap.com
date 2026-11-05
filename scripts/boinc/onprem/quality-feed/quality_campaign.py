@@ -3,6 +3,7 @@
 
   quality_campaign.py --campaign NAME --seed TEXT --out-dir DIR --ocr-state DIR
       (--dsn-file FILE | --input FILE)
+      [--worst-above 0.25] [--moderate-above 0.1] [--min-occurrences 50]
       [--index FILE] [--campaign-exclusions [--exclude-list FILE ...]]
       [--tier-width 0.05] [--cell-pages 400] [--manifest-pages 2000]
 
@@ -12,17 +13,25 @@ Two lists come out, each its own campaign, so their results stay apart in
 quality.unit_pages.campaign (and in its group, which the shipper sets to the campaign):
 
   <campaign>           Every page worth re-OCRing, as the damage ranking report defines it:
-                       damage rate over 0.25 from at least 50 word occurrences (head + near),
-                       no output of our OCR. Worst first.
-  <campaign>-moderate  An OCR-then-compare sample of the band from over 0.10 to 0.25, with
-                       the same evidence and OCR conditions.
+                       damage rate over --worst-above from at least --min-occurrences word
+                       occurrences (head + near), no output of our OCR. Worst first.
+  <campaign>-moderate  An OCR-then-compare sample of the band over --moderate-above up to
+                       --worst-above, with the same evidence and OCR conditions.
+
+The defaults are the report's thresholds: over 0.25, over 0.10, and 50 occurrences.
 
 Both are lists of pages to OCR. A usnm_quality unit compares the texts a page already has and
 reads nothing itself, so neither list shows any gain until its pages have quality.ocr_outputs
 rows to compare with LoC's damage score.
 
-The band tests run in SQL, with the report's expressions: damage_rate is a real, so the
-page Postgres stores as 0.1 is above the literal 0.1 there and would not be in Python.
+The filters. The export cuts at --moderate-above and --min-occurrences in SQL, with the
+report's expressions, so it reads no more than it needs; every row is then tested again as it
+is read, from the database or a file. damage_rate is a real, and Postgres compares a real with
+a numeric in double precision, so the page it stores as 0.1 is above 0.1. Here the rate is
+rounded to single precision before the test, so a file gives the bands the database does.
+A rebuild from a file can narrow the export's cut but not widen it: rows the export left out
+can't come back. The export records its cut in input.json beside input.csv, and --input
+needs that record.
 
 Order of the worst pages. Pages fall in tiers --tier-width wide, from the top. A tier goes
 out whole before the next starts. Inside a tier, batches come worst mean damage first, and
@@ -43,6 +52,15 @@ so a result can be carried back to the band. The list is in hash order, so any p
 is mixed. The hash is the sampler's (crates/usnm-boinc assess::sample):
 SHA-256 of the seed, the stream and the doc id. The same input and seed give the same bytes.
 
+The sample's size is --cell-pages a cell. The default, 400, is a paired test's size in one
+cell: a mean drop of 0.02 in damage rate (LoC's text against ours, page by page) at 80% power
+and two-sided 5% takes ((1.96 + 0.84) x 0.138 / 0.02)^2, about 374 pages, where 0.138 is the
+SD of that difference over 353 paired English pages from 58 titles (#1416). 0.02 is the
+smallest gain taken as worth acting on. Pages of one title are alike, so a cell with few
+titles resolves less than that. The whole sample is about cells x --cell-pages pages, 52,927
+in 157 cells at the default on 1 November 2026, so the band as a whole resolves a far smaller
+gain.
+
 Exclusions: only pages our OCR has done or is about to do. That is a row in
 quality.ocr_outputs (live, where page_summary's ocr_runs can be six hours old), or in
 --ocr-state, the state directory of ocr_manifest.py build: a page still outstanding by its
@@ -59,25 +77,29 @@ Files, under --out-dir/<campaign>/:
 
   plan.jsonl    every page in order: quality_feed.py select's fields (bytes, scan and sha256
                 null until the scan is on the scan server), plus rank, band, decade, decision,
-                page_lang (the report's language), and tier or stratum_pages and weight.
+                occurrences, page_lang (the report's language), and tier or stratum_pages and
+                weight.
   pages.jsonl   the pages --index has a scan for, in order: what quality_feed.py run reads.
                 Like select without --scan-server, scan assumes the keep set.
   manifests/m00001.parquet ...  the other pages, usnm-prefetch-manifest/1, cut at issue
                 boundaries. As in ocr_manifest.py build-quality, rows say `eng`, so the fetcher
                 files the scans in its buffer set; plan.jsonl has the page's language.
 
-summary.json holds the counts by band, language and decade, and is printed too. --dsn-file
-keeps the export it read as input.csv in --out-dir; --input replays such a file.
+summary.json holds the filters, and the counts by band, language and decade, and is printed
+too. --dsn-file keeps the export it read as input.csv in --out-dir, with its cut in
+input.json; --input replays such a file.
 """
 import argparse
 import collections
 import csv
+import decimal
 import glob
 import hashlib
 import heapq
 import json
 import os
 import shlex
+import struct
 import subprocess
 import sys
 
@@ -88,18 +110,21 @@ import ocr_manifest  # noqa: E402
 import quality_feed  # noqa: E402
 
 COLUMNS = ["doc_id", "batch", "batch_version", "lccn", "date", "decade", "lang", "decision",
-           "damage_rate", "band", "in_campaign", "has_ocr_output"]
+           "damage_rate", "occurrences", "in_campaign", "has_ocr_output"]
+Filters = collections.namedtuple("Filters", "worst_above moderate_above min_occurrences")
+# The damage ranking report's (#1401): bad over 0.25, moderate over 0.10, 50 occurrences.
+DEFAULT_FILTERS = Filters(decimal.Decimal("0.25"), decimal.Decimal("0.1"), 50)
 EXPORT_SQL = """
 BEGIN TRANSACTION READ ONLY;
 COPY (
   SELECT s.doc_id, s.batch, s.batch_version, s.lccn, s.date, s.decade,
          coalesce(s.lang, 'none') AS lang, coalesce(s.decision, 'detected') AS decision, s.damage_rate,
-         CASE WHEN s.damage_rate > 0.25 THEN 'worst' ELSE 'moderate' END AS band,
+         d.head + d.near AS occurrences,
          EXISTS (SELECT FROM quality.unit_pages u WHERE u.doc_id = s.doc_id)
            OR EXISTS (SELECT FROM quality.staging g WHERE g.doc_id = s.doc_id) AS in_campaign,
          EXISTS (SELECT FROM quality.ocr_outputs o WHERE o.doc_id = s.doc_id) AS has_ocr_output
   FROM quality.page_summary s JOIN quality.damage d USING (doc_id)
-  WHERE s.damage_rate > 0.1 AND d.head + d.near >= 50 AND s.ocr_runs = 0
+  WHERE s.damage_rate > {moderate_above} AND d.head + d.near >= {min_occurrences} AND s.ocr_runs = 0
 ) TO STDOUT WITH CSV HEADER;
 COMMIT;
 """
@@ -125,7 +150,19 @@ def dsn_env(dsn):
     return env
 
 
-def export(dsn_file, path):
+def literal(value):
+    """A threshold as plain decimal text: 0.10 and 1E-1 are both 0.1."""
+    return format(value.normalize(), "f")
+
+
+def export_sql(filters):
+    """The export, cut at the moderate band's floor. The thresholds go in as numeric
+    literals, as in the report, so the comparison with the real damage_rate is the report's."""
+    return EXPORT_SQL.format(moderate_above=literal(filters.moderate_above),
+                             min_occurrences=int(filters.min_occurrences))
+
+
+def export(dsn_file, path, sql):
     """The query's result to `path`. The read-only transaction is the SQL's; the session
     default is set too, so a mistake in the SQL can't write whichever role the DSN names."""
     with open(dsn_file) as f:
@@ -135,7 +172,7 @@ def export(dsn_file, path):
     tmp = path + ".tmp"
     try:
         with open(tmp, "wb") as out:
-            p = subprocess.run(["psql", "-X", "-q", "-v", "ON_ERROR_STOP=1"], input=EXPORT_SQL.encode(),
+            p = subprocess.run(["psql", "-X", "-q", "-v", "ON_ERROR_STOP=1"], input=sql.encode(),
                                stdout=out, stderr=subprocess.PIPE, env=env, timeout=EXPORT_TIMEOUT)
     except subprocess.TimeoutExpired:
         os.unlink(tmp)
@@ -146,18 +183,71 @@ def export(dsn_file, path):
     os.replace(tmp, path)
 
 
-def read_rows(path):
-    """Rows as dicts of the export's columns, with their types."""
+def record_path(path):
+    """input.json for input.csv: the cut the export made."""
+    return os.path.splitext(path)[0] + ".json"
+
+
+def cut_of(filters):
+    """The filters that decide which rows an export holds; --worst-above only splits them."""
+    return {"min_occurrences": int(filters.min_occurrences), "moderate_above": literal(filters.moderate_above)}
+
+
+def write_record(path, digest, filters):
+    write_atomic(record_path(path), (json.dumps({"columns": COLUMNS, "cut": cut_of(filters), "sha256": digest},
+                                                indent=1, sort_keys=True) + "\n").encode())
+
+
+def check_record(path, digest, filters):
+    """The cut a file to rebuild from was made with, from its input.json. Refuses a file the
+    record doesn't describe, and filters wider than the cut."""
+    rec = record_path(path)
+    try:
+        with open(rec) as f:
+            got = json.load(f)
+        cut = got["cut"]
+        floor, least = decimal.Decimal(cut["moderate_above"]), int(cut["min_occurrences"])
+    except FileNotFoundError:
+        sys.exit(f"--input: no {rec} beside it, so the cut it was made with is unknown")
+    except (ValueError, KeyError, TypeError, decimal.InvalidOperation):
+        sys.exit(f"{rec}: not an export record")
+    if got.get("sha256") != digest or got.get("columns") != COLUMNS:
+        sys.exit(f"{rec} describes another file")
+    if filters.moderate_above < floor or filters.min_occurrences < least:
+        sys.exit(f"--input holds only damage over {literal(floor)} from {least} or more occurrences; "
+                 "a rebuild from it can't widen that")
+    return {"min_occurrences": least, "moderate_above": literal(floor)}
+
+
+def as_real(rate):
+    """The rate as Postgres holds it (a real), widened to double precision as Postgres does to
+    compare it with a numeric: the page stored as 0.1 is over 0.1."""
+    return struct.unpack("<f", struct.pack("<f", rate))[0]
+
+
+def band_of(rate, occurrences, filters):
+    """worst, moderate, or None for a row outside the filters, as the export's SQL decides."""
+    if occurrences < filters.min_occurrences:
+        return None
+    rate = as_real(rate)
+    if rate > float(filters.worst_above):
+        return "worst"
+    return "moderate" if rate > float(filters.moderate_above) else None
+
+
+def read_rows(path, filters):
+    """Rows as dicts of the export's columns, with their types and band."""
     with open(path, newline="") as f:
         r = csv.reader(f)
         head = next(r, None)
         if head != COLUMNS:
             sys.exit(f"{path}: expected the columns {','.join(COLUMNS)}")
-        for doc, batch, bv, lccn, date, decade, lang, decision, rate, band, in_campaign, has_ocr in r:
+        for doc, batch, bv, lccn, date, decade, lang, decision, rate, occurrences, in_campaign, has_ocr in r:
+            rate, occurrences = float(rate), int(occurrences)
             yield {"doc_id": doc, "batch": batch, "batch_version": int(bv), "lccn": lccn, "date": date,
                    "decade": int(decade), "page_lang": lang, "decision": decision,
-                   "damage_rate": float(rate), "band": band, "in_campaign": in_campaign == "t",
-                   "has_ocr_output": has_ocr == "t"}
+                   "damage_rate": rate, "occurrences": occurrences, "band": band_of(rate, occurrences, filters),
+                   "in_campaign": in_campaign == "t", "has_ocr_output": has_ocr == "t"}
 
 
 def read_index(path):
@@ -257,11 +347,11 @@ def allocate(sizes, cell_pages, seed):
     return take
 
 
-def draw(path, eligible, take, seed):
+def draw(path, filters, eligible, take, seed):
     """The sample, from a second read of the input: each stratum's lowest hashes, in hash
     order overall. Holds no more rows than the sample has."""
     heaps = collections.defaultdict(list)
-    for r in read_rows(path):
+    for r in read_rows(path, filters):
         key = (r["page_lang"], r["decade"], r["lccn"])
         n = take.get(key)
         if n is None or not eligible(r):
@@ -344,7 +434,8 @@ def write_campaign(out_dir, name, rows, extras, scans, manifest_pages):
     os.makedirs(man_dir, exist_ok=True)
     write_lines(os.path.join(camp, "plan.jsonl"),
                 ({**feed_row(r, scans), "band": r["band"], "decade": r["decade"], "decision": r["decision"],
-                  "page_lang": r["page_lang"], "rank": i, **{k: r[k] for k in extras}}
+                  "occurrences": r["occurrences"], "page_lang": r["page_lang"], "rank": i,
+                  **{k: r[k] for k in extras}}
                  for i, r in enumerate(rows, 1)))
     write_lines(os.path.join(camp, "pages.jsonl"), (feed_row(r, scans) for r in rows if scan_key(r) in scans))
     slices = manifest_slices([r for r in rows if scan_key(r) not in scans], manifest_pages)
@@ -374,6 +465,28 @@ def input_digest(path):
     return h.hexdigest()
 
 
+BIN_WIDTH = decimal.Decimal("0.05")
+
+
+def damage_bins(filters):
+    """The summary's bin edges across the moderate band, BIN_WIDTH apart from its floor."""
+    edges = [filters.moderate_above]
+    while edges[-1] + BIN_WIDTH < filters.worst_above:
+        edges.append(edges[-1] + BIN_WIDTH)
+    return edges + [filters.worst_above]
+
+
+def bin_of(rate, edges):
+    """The bin a moderate rate falls in, in decimal so that a rate of 0.15 opens 0.15-0.20."""
+    return min(int((decimal.Decimal(repr(rate)) - edges[0]) / BIN_WIDTH), len(edges) - 2)
+
+
+def two_places(value):
+    """A bin edge as 0.10, or with more places where it has them."""
+    q = value.quantize(decimal.Decimal("0.01"))
+    return format(q if q == value else value.normalize(), "f")
+
+
 def build(a):
     names = (a.campaign, f"{a.campaign}-moderate")
     if not all(quality_feed.CAMPAIGN_RE.match(n) for n in names):
@@ -386,10 +499,17 @@ def build(a):
         # An old manifest left beside a new plan could fetch a page the plan no longer has.
         sys.exit("--out-dir already holds this campaign; give it a new directory")
     os.makedirs(a.out_dir, exist_ok=True)
+    filters = Filters(a.worst_above, a.moderate_above, a.min_occurrences)
     source = a.input
     if a.dsn_file:
         source = os.path.join(a.out_dir, "input.csv")
-        export(a.dsn_file, source)
+        export(a.dsn_file, source, export_sql(filters))
+        digest = input_digest(source)
+        write_record(source, digest, filters)
+        cut = cut_of(filters)
+    else:
+        digest = input_digest(source)
+        cut = check_record(source, digest, filters)
     if not os.path.isdir(a.ocr_state):
         sys.exit(f"--ocr-state {a.ocr_state}: no such directory")
     for path in a.exclude_list:
@@ -417,13 +537,17 @@ def build(a):
     population = {"worst": collections.Counter(), "moderate": collections.Counter()}
     excluded = {"worst": collections.Counter(), "moderate": collections.Counter()}
     bad_ids = 0
+    outside = 0
     worst = []
     sizes = collections.Counter()
     rows_read = 0
     pop_decade = {"worst": collections.Counter(), "moderate": collections.Counter()}
     in_a_campaign = collections.Counter()
-    for r in read_rows(source):
+    for r in read_rows(source, filters):
         rows_read += 1
+        if r["band"] is None:
+            outside += 1
+            continue
         population[r["band"]][r["page_lang"]] += 1
         pop_decade[r["band"]][r["decade"]] += 1
         in_a_campaign[r["band"]] += r["in_campaign"]
@@ -439,7 +563,7 @@ def build(a):
             sizes[(r["page_lang"], r["decade"], r["lccn"])] += 1
 
     take = allocate(sizes, a.cell_pages, a.seed)
-    moderate = weigh(draw(source, eligible, take, a.seed), sizes, take, a.cell_pages)
+    moderate = weigh(draw(source, filters, eligible, take, a.seed), sizes, take, a.cell_pages)
     worst = order_worst(worst, a.tier_width)
     for r in worst:
         r["tier"] = tier_of(r["damage_rate"], a.tier_width)
@@ -456,7 +580,8 @@ def build(a):
     for r in moderate:
         drawn[(r["page_lang"], r["decade"])] += 1
     tiers = collections.Counter(r["tier"] for r in worst)
-    bins = collections.Counter(min(int((r["damage_rate"] - 0.1) / 0.05), 2) for r in moderate)
+    edges = damage_bins(filters)
+    bins = collections.Counter(bin_of(r["damage_rate"], edges) for r in moderate)
 
     def popular(band):
         lang, decade = population[band], pop_decade[band]
@@ -470,16 +595,18 @@ def build(a):
         "campaign_exclusions": a.campaign_exclusions,
         "campaigns": {"moderate": names[1], "worst": names[0]},
         "exclude_lists": {path: {"docs": len(lists[path]), "sha256": input_digest(path)} for path in sorted(lists)},
-        "input": {"rows": rows_read, "sha256": input_digest(source)},
+        "filters": {**cut_of(filters), "worst_above": literal(filters.worst_above)},
+        "input": {"cut": cut, "rows": rows_read, "sha256": digest},
         "ocr_state": {"docs": len(ocr_held), "sha256": hashlib.sha256("\n".join(sorted(ocr_held)).encode()).hexdigest()},
         "moderate": {
             **tally(moderate), **wrote["moderate"],
-            "by_damage_bin": {("0.10-0.15", "0.15-0.20", "0.20-0.25")[k]: bins[k] for k in sorted(bins)},
+            "by_damage_bin": {f"{two_places(edges[k])}-{two_places(edges[k + 1])}": bins[k] for k in sorted(bins)},
             "cell_pages": a.cell_pages, "cells": len(cells),
             "cells_at_cell_pages": sum(1 for c in cells if drawn[c] >= a.cell_pages),
             "most_pages_from_a_title_in_a_cell": per_title,
             "weights_sum": round(sum(r["weight"] for r in moderate), 3),
         },
+        "outside_filters": outside,
         "population": {band: popular(band) for band in ("moderate", "worst")},
         "seed": a.seed,
         "worst": {
@@ -501,17 +628,36 @@ def parser():
     ap.add_argument("--out-dir", required=True, help="a scratch directory; never an outbox")
     src = ap.add_mutually_exclusive_group(required=True)
     src.add_argument("--dsn-file", help="usnm_quality's libpq DSN: read with a read-only transaction")
-    src.add_argument("--input", help="an input.csv from an earlier run, to rebuild from")
+    src.add_argument("--input", help="an input.csv from an earlier run, with its input.json beside it, to rebuild from")
     ap.add_argument("--ocr-state", required=True, help="ocr_manifest.py build's --state directory")
     ap.add_argument("--campaign-exclusions", action="store_true",
                     help="also leave out pages in a quality campaign, and pages in --exclude-list files")
     ap.add_argument("--exclude-list", action="append", default=[],
                     help="doc ids to leave out, with --campaign-exclusions; may be repeated")
     ap.add_argument("--index", help="the scan server's index/full.jsonl, or a copy")
+    ap.add_argument("--worst-above", type=threshold, default=DEFAULT_FILTERS.worst_above,
+                    help="the worst list: damage rate over this (default %(default)s)")
+    ap.add_argument("--moderate-above", type=threshold, default=DEFAULT_FILTERS.moderate_above,
+                    help="the moderate band: damage rate over this, up to --worst-above (default %(default)s)")
+    ap.add_argument("--min-occurrences", type=int, default=DEFAULT_FILTERS.min_occurrences,
+                    help="both bands: at least this many word occurrences, head + near (default %(default)s)")
     ap.add_argument("--tier-width", type=float, default=0.05)
-    ap.add_argument("--cell-pages", type=int, default=400, help="moderate pages per language and decade")
+    ap.add_argument("--cell-pages", type=int, default=400,
+                    help="the moderate sample's size: pages per language and decade (default %(default)s, "
+                         "a 0.02 mean gain at 80%% power and 5%% in one cell; see the header)")
     ap.add_argument("--manifest-pages", type=int, default=2000)
     return ap
+
+
+def threshold(text):
+    """A damage-rate threshold, kept exact as a decimal."""
+    try:
+        value = decimal.Decimal(text)
+    except decimal.InvalidOperation:
+        raise argparse.ArgumentTypeError(f"not a number: {text!r}") from None
+    if not value.is_finite():
+        raise argparse.ArgumentTypeError(f"not a finite number: {text!r}")
+    return value
 
 
 def main(argv=None):
@@ -519,6 +665,8 @@ def main(argv=None):
     a = ap.parse_args(argv)
     if not 0 < a.tier_width <= 1 or a.cell_pages < 1 or a.manifest_pages < 1:
         ap.error("--tier-width over 0 to 1, --cell-pages and --manifest-pages positive")
+    if not 0 <= a.moderate_above < a.worst_above <= 1 or a.min_occurrences < 0:
+        ap.error("0 <= --moderate-above < --worst-above <= 1, and --min-occurrences 0 or more")
     if not a.seed:
         ap.error("--seed must not be empty")
     if a.exclude_list and not a.campaign_exclusions:

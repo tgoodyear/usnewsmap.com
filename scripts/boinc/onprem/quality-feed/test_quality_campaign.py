@@ -23,11 +23,11 @@ SELECT_KEYS = {"batch", "batch_version", "bytes", "damage_rate", "date", "doc_id
                "lang", "lccn", "scan", "seq", "sha256"}
 
 
-def row(lccn, day, seq, rate, band=None, batch="ak_a", lang="eng", in_campaign="f", ed=1, year=1900, version=1,
+def row(lccn, day, seq, rate, occurrences=60, batch="ak_a", lang="eng", in_campaign="f", ed=1, year=1900, version=1,
         has_ocr="f"):
     date = f"{year}-01-{day:02d}"
     return [f"{lccn}_{date}_ed-{ed}_seq-{seq}", batch, version, lccn, date, year // 10 * 10, lang, "detected",
-            rate, band or ("worst" if rate > 0.25 else "moderate"), in_campaign, has_ocr]
+            rate, occurrences, in_campaign, has_ocr]
 
 
 def fixture():
@@ -41,11 +41,19 @@ def fixture():
     return rows
 
 
-def write_csv(path, rows):
+def write_csv(path, rows, moderate_above="0.1", min_occurrences=50):
+    """An export, with the record of its cut beside it, as --dsn-file leaves them."""
     with open(path, "w", newline="") as f:
         w = csv.writer(f, lineterminator="\n")
         w.writerow(qc.COLUMNS)
         w.writerows(rows)
+    write_record(path, moderate_above, min_occurrences)
+
+
+def write_record(path, moderate_above="0.1", min_occurrences=50):
+    Path(qc.record_path(str(path))).write_text(json.dumps({
+        "columns": qc.COLUMNS, "cut": {"min_occurrences": min_occurrences, "moderate_above": moderate_above},
+        "sha256": hashlib.sha256(Path(path).read_bytes()).hexdigest()}))
 
 
 def run(args, seed="s"):
@@ -74,9 +82,9 @@ class Built(unittest.TestCase):
         self.state = self.d / "ocr-state"
         self.state.mkdir()
 
-    def build(self, rows, *extra, name="out", seed="s", cell="20"):
+    def build(self, rows, *extra, name="out", seed="s", cell="20", cut=("0.1", 50)):
         src = self.d / f"{name}.csv"
-        write_csv(src, rows)
+        write_csv(src, rows, *cut)
         return run(self.args(src, name) + ["--cell-pages", cell, *extra], seed=seed)
 
     def args(self, src, name="out"):
@@ -279,8 +287,103 @@ class ExclusionTest(Built):
             self.build(fixture(), "--campaign-exclusions", "--exclude-list", str(self.d / "none.txt"))
 
     def test_a_bad_doc_id_is_counted_not_dropped_silently(self):
-        s = self.build([["Bad Id", "ak_a", 1, "sn1", "1900-01-01", 1900, "eng", "detected", 0.5, "worst", "f", "f"]])
+        s = self.build([["Bad Id", "ak_a", 1, "sn1", "1900-01-01", 1900, "eng", "detected", 0.5, 60, "f", "f"]])
         self.assertEqual((s["bad_doc_ids"], s["worst"]["pages"]), (1, 0))
+
+
+class FilterTest(Built):
+    # Rows a file can hold below the export's cut, so that the filters here are what decides.
+    EDGES = [("0.1", 60), ("0.25", 60), ("0.25000001", 60), ("0.2500001", 60), ("0.05", 60), ("0.5", 49),
+             ("0.5", 50), ("0.0999999", 60)]
+
+    def edges(self, *flags, name="out"):
+        rows = [row("sn1", 1, seq, rate, occurrences=n) for seq, (rate, n) in enumerate(self.EDGES, 1)]
+        s = self.build(rows, *flags, name=name, cut=("0", 0))
+        seqs = {}
+        for campaign in ("w", "w-moderate"):
+            seqs[campaign] = sorted(int(p["seq"]) for p in lines(self.d / name / campaign / "plan.jsonl"))
+        return s, seqs
+
+    def test_the_defaults_are_the_reports_bands_compared_as_postgres_does(self):
+        s, seqs = self.edges()
+        # A real 0.1 is over 0.1 in double precision; 0.25000001 is the real 0.25, not over 0.25.
+        self.assertEqual(seqs, {"w": [4, 7], "w-moderate": [1, 2, 3]})
+        self.assertEqual(s["outside_filters"], 3)
+        self.assertEqual(s["filters"], {"min_occurrences": 50, "moderate_above": "0.1", "worst_above": "0.25"})
+        self.assertEqual(s["moderate"]["by_damage_bin"], {"0.10-0.15": 1, "0.20-0.25": 2})
+        self.assertEqual(lines(self.d / "out/w/plan.jsonl")[0]["occurrences"], 50)
+
+    def test_the_flags_move_the_bands(self):
+        s, seqs = self.edges("--worst-above", "0.3", "--moderate-above", "0.2", "--min-occurrences", "49")
+        self.assertEqual(seqs, {"w": [6, 7], "w-moderate": [2, 3, 4]})
+        self.assertEqual(s["filters"], {"min_occurrences": 49, "moderate_above": "0.2", "worst_above": "0.3"})
+        self.assertEqual(s["moderate"]["by_damage_bin"], {"0.25-0.30": 3})
+
+    def test_a_rebuild_can_narrow_the_exports_cut_but_not_widen_it(self):
+        for flags in (["--moderate-above", "0.05"], ["--min-occurrences", "49"]):
+            with self.assertRaises(SystemExit) as e:
+                self.build(fixture(), *flags, name="wide")
+            self.assertIn("can't widen", str(e.exception))
+        s = self.build(fixture(), "--moderate-above", "0.15", "--min-occurrences", "60", name="narrow")
+        self.assertEqual(s["input"]["cut"], {"min_occurrences": 50, "moderate_above": "0.1"})
+        # The fixture's moderate rates are 0.11 + (i % 14) / 100; the real 0.15 is over 0.15.
+        self.assertEqual(s["outside_filters"], sum(1 for i in range(300) if i % 14 < 4))
+        self.assertEqual(s["population"]["moderate"]["pages"], 300 - s["outside_filters"])
+        self.assertTrue(all(p["damage_rate"] >= 0.15 for p in lines(self.d / "narrow/w-moderate/plan.jsonl")))
+        self.assertEqual(self.build(fixture(), "--moderate-above", "0.10", name="same")["outside_filters"], 0)
+
+    def test_a_file_needs_the_record_that_describes_it(self):
+        src = self.d / "in.csv"
+        record = Path(qc.record_path(str(src)))
+        for damage, message in ((record.unlink, "beside it"),
+                                (lambda: record.write_text("{}"), "not an export record"),
+                                (lambda: src.write_text(src.read_text() + "\n"), "another file")):
+            write_csv(src, fixture())
+            damage()
+            with self.assertRaises(SystemExit) as e:
+                run(self.args(src, "o"))
+            self.assertIn(message, str(e.exception))
+        self.assertFalse((self.d / "o" / "w").exists())
+
+    def test_bad_thresholds_are_refused(self):
+        write_csv(self.d / "in.csv", fixture())
+        for flags in (["--moderate-above", "0.25"], ["--worst-above", "1.5"], ["--moderate-above", "-0.1"],
+                      ["--worst-above", "nan"], ["--worst-above", "abc"], ["--min-occurrences", "-1"]):
+            with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+                run(self.args(self.d / "in.csv", "o") + flags)
+        self.assertFalse((self.d / "o").exists())
+
+    def test_the_export_takes_the_flags_and_its_record_holds_a_rebuild_to_them(self):
+        dsn = self.d / "dsn"
+        dsn.write_text("host=db\n")
+        seen = {}
+
+        def psql(cmd, input, stdout, stderr, env, timeout):
+            seen["sql"] = " ".join(input.decode().split())
+            text = io.StringIO()
+            w = csv.writer(text, lineterminator="\n")
+            w.writerow(qc.COLUMNS)
+            w.writerows(r for r in fixture() if r[8] > 0.15)
+            stdout.write(text.getvalue().encode())
+            return mock.Mock(returncode=0)
+
+        flags = ["--moderate-above", "0.15", "--min-occurrences", "60", "--cell-pages", "20"]
+        common = ["--campaign", "w", "--ocr-state", str(self.state)]
+        with mock.patch.object(qc.subprocess, "run", psql):
+            s = run(common + ["--dsn-file", str(dsn), "--out-dir", str(self.d / "db"), *flags])
+        self.assertIn("WHERE s.damage_rate > 0.15 AND d.head + d.near >= 60 AND", seen["sql"])
+        record = json.loads((self.d / "db/input.json").read_text())
+        self.assertEqual(record, {"columns": qc.COLUMNS, "cut": {"min_occurrences": 60, "moderate_above": "0.15"},
+                                  "sha256": hashlib.sha256((self.d / "db/input.csv").read_bytes()).hexdigest()})
+        self.assertEqual(s["input"]["cut"], record["cut"])
+        again = run(common + ["--input", str(self.d / "db/input.csv"), "--out-dir", str(self.d / "again"), *flags])
+        self.assertEqual(again["input"], s["input"])
+        for campaign in ("w", "w-moderate"):
+            self.assertEqual((self.d / "db" / campaign / "plan.jsonl").read_bytes(),
+                             (self.d / "again" / campaign / "plan.jsonl").read_bytes())
+        with self.assertRaises(SystemExit) as e:
+            run(common + ["--input", str(self.d / "db/input.csv"), "--out-dir", str(self.d / "wide")])
+        self.assertIn("can't widen", str(e.exception))
 
 
 class FormatTest(Built):
@@ -316,7 +419,7 @@ class FormatTest(Built):
     def test_manifest_rows_are_the_quality_pass_rows(self):
         src = self.d / "in.csv"
         write_csv(src, [row("sn1", 3, 4, 0.5, lang="ger", batch="rp_b", version=2, ed=2)])
-        r = next(qc.read_rows(str(src)))
+        r = next(qc.read_rows(str(src), qc.DEFAULT_FILTERS))
         got = qc.manifest_row(r)
         self.assertEqual(got["lang"], "eng")  # the buffer set
         self.assertEqual((got["batch"], got["batch_version"], got["edition"], got["seq"]), ("rp_b", 2, 2, 4))
@@ -347,16 +450,63 @@ class FormatTest(Built):
         self.assertEqual(json.loads((self.d / "out/summary.json").read_text()), s)
 
 
+class ConsumerTest(Built):
+    """pages.jsonl through quality_feed.py run, the program that reads it, with its scans and texts faked."""
+
+    def test_the_feed_writes_both_lists_in_their_order(self):
+        rows = ([row("sn1", 1, i, 0.3 + i / 100, lang="ger" if i % 2 else "eng") for i in range(1, 6)]
+                + [row("sn2", 1, i, 0.2, year=1890) for i in range(1, 6)])
+        index = self.d / "index.jsonl"
+        index.write_text("".join(json.dumps({"doc_id": r[0], "batch": r[1], "batch_version": r[2], "bytes": 3,
+                                             "sha256": f"{i:02x}"}) + "\n" for i, r in enumerate(rows) if i % 5))
+        self.build(rows, "--index", str(index), cell="3")
+        (self.d / "curated/pages").mkdir(parents=True)
+        texts = mock.Mock()
+        texts.loc.side_effect = lambda batch, version, docs: ({doc: "LoC text" for doc in docs}, True)
+        texts.american_stories.return_value = {}
+        texts.ours.return_value = {}
+
+        def prepare(server, texts, p, loc_text, as_text, ours):
+            return p["doc_id"].encode(), b"<alto/>", {"page": None, "readers": []}, None
+
+        for campaign in ("w", "w-moderate"):
+            plan = [p for p in lines(self.d / "out" / campaign / "plan.jsonl") if p["scan"]]
+            self.assertTrue(plan)
+            with mock.patch.object(qc.quality_feed, "Texts", return_value=texts), \
+                    mock.patch.object(qc.quality_feed, "prepare_page", prepare), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                qc.quality_feed.main(["run", "--campaign", campaign, "--pages",
+                                      str(self.d / "out" / campaign / "pages.jsonl"), "--curated",
+                                      str(self.d / "curated"), "--scan-server", "http://scan.example", "--outbox",
+                                      str(self.d / "outbox"), "--state", str(self.d / "state"), "--chunk-pages", "2",
+                                      "--workers", "1", "--once"])
+            chunks = sorted((self.d / "outbox" / campaign).glob("c*"))
+            self.assertEqual(len(chunks), (len(plan) + 1) // 2)
+            sampled = [json.loads(x) for c in chunks for x in (c / "sample.jsonl").read_text().splitlines()]
+            self.assertEqual([x["doc_id"] for x in sampled], [p["doc_id"] for p in plan])
+            self.assertEqual([x["lang"] for x in sampled], [p["lang"] for p in plan])
+            done = [x.split("\t") for x in (self.d / "state" / campaign / "done.txt").read_text().splitlines()]
+            self.assertEqual([(d[0], d[2]) for d in done], [(p["doc_id"], p["scan"]) for p in plan])
+            first = plan[0]["doc_id"]
+            source = json.loads((chunks[0] / f"texts/{first}.image-provenance.json").read_text())["source"]
+            self.assertEqual(source, {k: plan[0][k] for k in ("doc_id", "batch", "batch_version", "bytes", "sha256")})
+
+
 class ExportTest(Built):
     def test_the_definition_is_the_reports(self):
-        sql = " ".join(qc.EXPORT_SQL.split())
+        sql = " ".join(qc.export_sql(qc.DEFAULT_FILTERS).split())
         self.assertIn("WHERE s.damage_rate > 0.1 AND d.head + d.near >= 50 AND s.ocr_runs = 0", sql)
-        self.assertIn("CASE WHEN s.damage_rate > 0.25 THEN 'worst' ELSE 'moderate' END", sql)
+        self.assertIn("d.head + d.near AS occurrences", sql)
         self.assertIn("JOIN quality.damage d USING (doc_id)", sql)
         self.assertIn("quality.ocr_outputs", sql)
 
+    def test_the_cut_takes_the_flags_as_plain_numbers(self):
+        filters = qc.Filters(qc.threshold("0.3"), qc.threshold("15E-2"), 70)
+        sql = " ".join(qc.export_sql(filters).split())
+        self.assertIn("WHERE s.damage_rate > 0.15 AND d.head + d.near >= 70 AND", sql)
+
     def test_the_export_can_only_read(self):
-        sql = qc.EXPORT_SQL.upper()
+        sql = qc.export_sql(qc.DEFAULT_FILTERS).upper()
         self.assertTrue(sql.strip().startswith("BEGIN TRANSACTION READ ONLY;"))
         self.assertIsNone(re.search(r"\b(INSERT|UPDATE|DELETE|CREATE|TEMP|DROP|TRUNCATE|CALL)\b", sql))
 
@@ -369,7 +519,7 @@ class ExportTest(Built):
             raise qc.subprocess.TimeoutExpired(cmd, 1)
 
         with mock.patch.object(qc.subprocess, "run", slow), self.assertRaises(SystemExit) as e:
-            qc.export(str(dsn), str(target))
+            qc.export(str(dsn), str(target), qc.export_sql(qc.DEFAULT_FILTERS))
         self.assertNotIn("hunter2", str(e.exception))
         self.assertEqual(list(self.d.glob("input.csv*")), [])
 
@@ -390,16 +540,17 @@ class ExportTest(Built):
             return mock.Mock(returncode=0)
 
         target = self.d / "input.csv"
+        sql = qc.export_sql(qc.DEFAULT_FILTERS)
         with mock.patch.object(qc.subprocess, "run", psql):
-            qc.export(str(dsn), str(target))
+            qc.export(str(dsn), str(target), sql)
         self.assertEqual(seen["env"]["PGOPTIONS"], "-c default_transaction_read_only=on")
-        self.assertEqual(seen["sql"].decode(), qc.EXPORT_SQL)
+        self.assertEqual(seen["sql"].decode(), sql)
         self.assertEqual((seen["env"]["PGHOST"], seen["env"]["PGSSLKEY"]), ("db", "/k"))
         self.assertFalse([arg for arg in seen["cmd"] if "sslkey" in arg or "host=" in arg])
         self.assertTrue(target.exists())
         with mock.patch.object(qc.subprocess, "run", lambda *a, **k: mock.Mock(returncode=1, stderr=b"boom")):
             with self.assertRaises(SystemExit) as e:
-                qc.export(str(dsn), str(target))
+                qc.export(str(dsn), str(target), sql)
         self.assertNotIn("sslkey", str(e.exception))
 
 
@@ -445,8 +596,10 @@ class ArgsTest(Built):
 
     def test_other_columns_are_refused(self):
         (self.d / "in.csv").write_text("doc_id,batch\n")
-        with self.assertRaises(SystemExit):
+        write_record(self.d / "in.csv")
+        with self.assertRaises(SystemExit) as e:
             run(self.args(self.d / "in.csv", "o"))
+        self.assertIn("expected the columns", str(e.exception))
 
 
 @unittest.skipUnless(importlib.util.find_spec("pyarrow"), "needs pyarrow")
