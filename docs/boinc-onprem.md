@@ -111,7 +111,12 @@ durable #548 receipt must prove canonical acceptance **and cleanup**, and is che
 on subsequent resumes. Fake tests are not live #548/#551 closure evidence.
 
 Exit 3 means a workflow/review checkpoint is pending; rerun the identical command
-after it completes. Interrupted/failed phases persist an ambiguous intent and require
+after it completes. Exit 3 also means another step held the production step lock when
+a build, installation or verification was due to start. Nothing ran, so rerun the
+identical command later. Publication waits up to five minutes for that lock
+(`USNM_BOINC_STEP_LOCK_WAIT_SECS=300`), because the verification before it has just
+released the lock and queued steps take it first. If the lock is still held,
+publication fails like any other phase. Interrupted/failed phases persist an ambiguous intent and require
 operator reconciliation followed by `--approve-retry PHASE`. Completed phases never
 repeat automatically. A crash after `server.env` replacement can be reconciled by the
 runtime retry, which restarts and reads back the already-reviewed pin. There is no
