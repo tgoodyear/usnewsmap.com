@@ -44,7 +44,8 @@
 #                         changes nothing, or with its sha256 confirmed dead-letters and deletes it
 #                         (docs/boinc-batch-scheduler.md#a-retried-page-claimed-after-its-dead-letter)
 #   HANDOFF_STEP=collect  JOB_ID [HOST_ID=<the canonical result's host id>], or JOB_IDS=<id>[,<id>...]
-#                         (up to 100, one execution for a tick's results, #932)
+#                         (up to 100, one execution for a tick's results, #932) and
+#                         [COLLECT_PARALLEL=<1 to 8, default 1>] jobs collected at once (#1447)
 #                         copies the dispatch root, spool/<id>/ and gold/trust.json down, runs
 #                         usnm-boinc collect --trust into ocr-out (a terminal BOINC failure:
 #                         collect without a host or trust list, which marks the job failed) and
@@ -81,17 +82,42 @@ if [ -z "${USNM_LEDGER_CACHE:-}" ]; then
   USNM_LEDGER_CACHE=$(mktemp -d)
   export USNM_LEDGER_CACHE
 fi
+# Each usnm-boinc process fetched its own access tokens, and a collect runs several, so collects
+# at once drew HTTP 429 from the Arc agent's identity endpoint (#1447). The processes share them
+# through this directory instead (USNM_TOKEN_CACHE, crates/usnm-store/src/credential.rs): mktemp
+# makes it this user's only, this execution's runs of the script below inherit it, and the run
+# that made it removes it.
+token_cache=""
+if [ -z "${USNM_TOKEN_CACHE:-}" ]; then
+  token_cache=$(mktemp -d)
+  export USNM_TOKEN_CACHE=$token_cache
+  trap 'rm -rf "$token_cache"' EXIT
+fi
 # collect for a tick's jobs in one execution (#932): JOB_IDS. Each job runs this script's
 # single-job collect again, with its own work directory; a failed one doesn't stop the rest,
-# and the run fails at the end so the controller sees it.
+# and the run fails at the end so the controller sees it. COLLECT_PARALLEL=<1 to 8, default 1>
+# runs that many at once (#1447): each has its own work directory and dispatch root and writes
+# back only its own job's entries, and they share the ledger and token caches above.
 if [ "${HANDOFF_STEP:-}" = collect ] && [ -n "${JOB_IDS:-}" ]; then
   [ -z "${JOB_ID:-}" ] && [ -z "${HOST_ID:-}" ] || fail "set JOB_ID (and HOST_ID), or JOB_IDS, not both"
   [[ $JOB_IDS =~ ^[0-9a-f]{64}(,[0-9a-f]{64}){0,99}$ ]] || fail "JOB_IDS is 1 to 100 comma-separated job ids"
+  parallel=${COLLECT_PARALLEL:-1}
+  [[ $parallel =~ ^[1-8]$ ]] || fail "COLLECT_PARALLEL is 1 to 8 jobs collected at once"
   IFS=, read -r -a batch_ids <<< "$JOB_IDS"
-  failed=0
+  [ "$parallel" -eq 1 ] || [ "$(printf '%s\n' "${batch_ids[@]}" | sort -u | wc -l)" -eq "${#batch_ids[@]}" ] ||
+    fail "JOB_IDS names each job once when COLLECT_PARALLEL is above 1"
+  failed=0 running=()
   for id in "${batch_ids[@]}"; do
+    if [ "${#running[@]}" -ge "$parallel" ]; then
+      wait "${running[0]}" || failed=$((failed + 1))
+      running=("${running[@]:1}")
+    fi
     log "collect $id"
-    JOB_ID=$id JOB_IDS="" bash "${BASH_SOURCE[0]}" || { log "collect failed for $id"; failed=$((failed + 1)); }
+    (JOB_ID=$id JOB_IDS="" bash "${BASH_SOURCE[0]}" || { log "collect failed for $id"; exit 1; }) &
+    running+=("$!")
+  done
+  for pid in "${running[@]}"; do
+    wait "$pid" || failed=$((failed + 1))
   done
   [ "$failed" -eq 0 ] || fail "collect failed for $failed of ${#batch_ids[@]} jobs"
   exit 0
@@ -135,7 +161,7 @@ if [ "${HANDOFF_STEP:-}" = export ] && [ -n "${HANDOFF_BATCHES:-}" ]; then
   exit 0
 fi
 work=$(mktemp -d)
-trap 'rm -rf "$work"' EXIT
+trap 'rm -rf "$work" ${token_cache:+"$token_cache"}' EXIT
 root="$work/dispatch"
 # put_back DIR...: writes each journal directory (relative to the root) back, retrying.
 put_back() {
