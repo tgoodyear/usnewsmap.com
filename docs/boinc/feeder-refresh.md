@@ -182,8 +182,8 @@ at `-d 2`, which drops BOINC's normal-level lines such as `Starting` and
 `Found trigger file reread_db`. Its log does show each start as one
 `Executing command: feeder ...` line from `bin/start`, and each scan of the tables, at a start or a
 reread, as five `have apps for` lines ([start L463][start-463],
-[sched_shmem.cpp L247-L251][sched-shmem-247-251]); `have apps for` lines after the last
-`Executing command` line are a reread. Cached results whose app differs from the slot's app in the
+[sched_shmem.cpp L247-L251][sched-shmem-247-251]). The first five `have apps for` lines after
+the last `Executing command` line are that start's own scan; any later group of five is a reread. Cached results whose app differs from the slot's app in the
 current registry's interleave confirm the second case; the
 [proposed helper](#proposed-a-dry-run---plan-refresh-mode-not-implemented) would compute that. On
 5 November 2026 that comparison found none on CT 230
