@@ -837,11 +837,13 @@ class FollowTest(unittest.TestCase):
             done.write_text("")
             kept.write_text("half\tbuffer/b/half.jp2\t10\t0.9\t1\n")
             a = types.SimpleNamespace(scan_server="http://s", keep_bytes=100, keep_verify=1)
-            unlink = [500]
+            unlink = [None]
 
             def fake(req, timeout=0):
                 if req.get_method() == "GET":  # the sidecar: renamed by a DELETE whose unlink failed
                     raise urllib.error.HTTPError(req.full_url, 404, "", {}, None)
+                if unlink[0] == "reset":
+                    raise urllib.error.URLError(ConnectionResetError("reset by peer"))
                 if unlink[0] != 204:
                     raise urllib.error.HTTPError(req.full_url, unlink[0], "", {}, None)
                 return io.BytesIO(b"")
@@ -849,9 +851,12 @@ class FollowTest(unittest.TestCase):
             ship = lambda: feed.delete_shipped(a, str(camp), str(done), {"half"}, str(deleted), str(kept))
             with mock.patch.object(feed.urllib.request, "urlopen", fake), \
                     contextlib.redirect_stdout(io.StringIO()):
-                ship()
-                self.assertEqual(set(feed.read_kept(str(kept))), {"half"})
-                self.assertEqual(feed.read_lines(str(deleted)), set())
+                for fails in (500, "reset"):
+                    unlink[0] = fails
+                    ship()
+                    self.assertEqual(set(feed.read_kept(str(kept))), {"half"})
+                    self.assertGreater(feed.read_kept(str(kept))["half"][3], 1)  # checked: to the back
+                    self.assertEqual(feed.read_lines(str(deleted)), set())
                 unlink[0] = 204
                 ship()
             self.assertEqual(feed.read_kept(str(kept)), {})

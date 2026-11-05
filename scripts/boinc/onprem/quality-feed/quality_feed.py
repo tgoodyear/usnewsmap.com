@@ -721,7 +721,9 @@ def delete_shipped(a, camp_dir, done_path, quality_docs, deleted_path, kept_path
             if doc in ocr_docs:
                 continue
             try:
-                there = scan_exists(a.scan_server, k[0])
+                # With its sidecar gone (marked done: OCR's worker read it, or a DELETE of ours
+                # got that far and failed), a DELETE makes sure the bytes are gone too.
+                gone = not scan_exists(a.scan_server, k[0]) and delete(doc, k[0])
             except (urllib.error.URLError, OSError) as e:
                 # Counted as checked, so a scan whose check keeps failing doesn't hold up the rest.
                 kept[doc] = (*k[:3], now)
@@ -729,9 +731,7 @@ def delete_shipped(a, camp_dir, done_path, quality_docs, deleted_path, kept_path
                 if isinstance(e, urllib.error.HTTPError):
                     continue  # the server answered, so it's this scan: go on to the next
                 break  # no answer (down or unreachable): one timeout a round, not --keep-verify
-            # With its sidecar gone (marked done: OCR's worker read it, or a DELETE of ours
-            # got that far and failed), a DELETE makes sure the bytes are gone too.
-            if not there and delete(doc, k[0]):
+            if gone:
                 released.append(doc)
             else:
                 kept[doc] = (*k[:3], now)
