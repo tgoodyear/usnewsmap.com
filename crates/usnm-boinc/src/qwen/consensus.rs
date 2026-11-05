@@ -520,6 +520,23 @@ mod tests {
     }
 
     #[test]
+    fn a_reading_far_off_does_not_agree() {
+        // The floor check's shape (#1434): a good reading against one with
+        // about 40% of its characters wrong, which a floor of 0.5 let through.
+        let far = "Tlio slnp snilcl fur Eugloud ou Tncsdny mcruiug.";
+        let score = similarity(LINE_A, far);
+        assert!((0.5..0.7).contains(&score), "{score}");
+        let side = |text| Side {
+            text,
+            looped: false,
+        };
+        assert_eq!(
+            crop_state(side(LINE_A), side(far), P),
+            (CropState::Disagree, Some(score))
+        );
+    }
+
+    #[test]
     fn a_looped_crop_counts_for_neither_side() {
         let (long_a, long_b) = (LINE_A.repeat(2), LINE_B.repeat(2));
         let a = [

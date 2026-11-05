@@ -1,6 +1,6 @@
 # The crop rule's floor against human transcriptions
 
-**Status:** measured; the floor went from 0.5 to 0.7 on this evidence (#1434) · **Date:** 4 November 2026 · **Measured on:** Study 3's 612 human-transcribed crops (223 pages, five languages, six sources) from the November 2026 GPU studies (PR #1428), with Xiaomi-OCR-0 readings from five builds and Qwen 8B's readings; and a replay of all retained `usnm_qwen` 8B results on 4 November · **Code:** `crates/usnm-boinc/src/qwen/{grounded,consensus,replay}.rs` · **Issues:** #1434, #1420
+**Status:** measured; the rule's floor went from 0.5 to 0.7 on this evidence (#1434, PR #1491), and the rule is still off · **Date:** 4 November 2026 · **Measured on:** Study 3's 612 human-transcribed crops (223 pages, five languages, six sources) from the November 2026 GPU studies (PR #1428), with Xiaomi-OCR-0 readings from five builds and Qwen 8B's readings; and a replay of all retained `usnm_qwen` 8B results on 4 November · **Code:** `crates/usnm-boinc/src/qwen/{grounded,consensus,replay}.rs` · **Issues:** #1434, #1420
 
 ## The question
 
@@ -20,9 +20,9 @@
 
 **Yiddish is not in this set.** It's the language where the rule changes the most, and the floor hasn't been checked against a transcription there.
 
-## The floor in force: 0.7
+## The rule's floor: 0.7
 
-The floor was raised to 0.7 on 4 November. At 0.7 no crop with one good and one far-off reading agrees, every crop whose readings both match still agrees, and fewer true Yiddish replica crop pairs fall under the floor than under the strict rule's Dice.
+The floor was raised to 0.7 in PR #1491. The rule is still off until the wrapper's `validator-rule` file names it. At 0.7 no crop with one good and one far-off reading agrees, every crop whose readings both match still agrees, and fewer true Yiddish replica crop pairs fall under the floor than under the strict rule's Dice.
 
 | Pair                     | Similarity < 0.7 | Both good: agree | One bad: agree | Only the rule passes (a reading > 25% CER) | Shuffled: agree |
 | ------------------------ | ---------------: | ---------------: | -------------: | -----------------------------------------: | --------------: |
@@ -95,7 +95,7 @@ At 0.7 the rule passes no crop where one reading is far off, keeps every good pa
 | One crop replaced              | 2,984 |             0 |           0 |           0 |
 | Every crop unread              | 3,138 |            15 |           3 |           3 |
 
-A third replica confirms 98.1% of the crops a rescued pair vouched for at 0.5 (4,128 of 4,210), against 96.1% (414 of 431) for strict pairs. At 0.7 the figures are 95.7% (2,678 of 2,799) and 92.0% (344 of 374); the two runs count different pairs as rescued.
+A third replica confirms 98.1% of the crops a rescued pair vouched for at 0.5 (4,128 of 4,210), against 96.1% (414 of 431) for strict pairs. At 0.7 they are 95.7% (2,678 of 2,799) and 92.0% (344 of 374). The check takes the pairs the rule accepts at the floor and counts a third reading as confirming when its similarity to either reading reaches the floor, so figures at different floors don't compare. At either floor, a third replica confirms rescued pairs' crops more often than strict pairs'.
 
 ## What the collector does now
 
