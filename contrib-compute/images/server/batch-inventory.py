@@ -14,13 +14,14 @@ ID = re.compile(r"[0-9a-f]{64}")
 STAGES = {"prepared", "reserved", "submitting", "submitted", "published", "failed"}
 MAX_JOBS = 10000
 MAX_FILES = 100000
+# Unassimilated workunits are counted once, per app, so the total and each app's share are one
+# read: a submission between two counts can't make other apps' work look larger than all of it
+# (#1474). Workunits of no known app have an empty name and count only in the total.
 QUERY = """
-SELECT
- (SELECT COUNT(*) FROM workunit WHERE assimilate_state != 2),
- (SELECT COUNT(*) FROM host WHERE rpc_time > UNIX_TIMESTAMP() - 86400);
-SELECT 'app', app.name, COUNT(*) FROM workunit JOIN app ON app.id = workunit.appid
+SELECT COUNT(*) FROM host WHERE rpc_time > UNIX_TIMESTAMP() - 86400;
+SELECT 'app', COALESCE(app.name, ''), COUNT(*) FROM workunit LEFT JOIN app ON app.id = workunit.appid
  WHERE workunit.assimilate_state != 2
- GROUP BY app.id, app.name
+ GROUP BY app.name
  ORDER BY app.name;
 SELECT name, assimilate_state FROM workunit
  WHERE name REGEXP '^usnm_(ocrb_)?[0-9a-f]{64}$'
@@ -36,7 +37,7 @@ BUNDLE_SPOOL_FILE = re.compile(
     r"usnm_ocrb_([0-9a-f]{64})(__file_(results\.json|texts|layouts)|_error|_no_output_files)")
 BUNDLE_PREFIX = "ocrb_"
 APP_NAME = r"[A-Za-z0-9_.-]{1,254}"
-APP_ROW = re.compile(rf"app\t({APP_NAME})\t([0-9]+)")
+APP_ROW = re.compile(rf"app\t({APP_NAME})?\t([0-9]+)")
 MAX_APPS = 100
 
 
@@ -190,11 +191,10 @@ def main():
          "--execute", QUERY],
         check=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=60,
     ).stdout.strip().splitlines()
-    counts = output[0].split("\t") if output else []
+    hosts = output[0] if output else ""
     apps = [APP_ROW.fullmatch(value) for value in output[1:] if value.startswith("app\t")]
     names = [value for value in output[1:] if not value.startswith("app\t")]
-    if len(counts) != 2 or any(not value.isdecimal() for value in counts) or \
-            not all(apps) or len({app[1] for app in apps}) != len(apps) or \
+    if not hosts.isdecimal() or not all(apps) or len({app[1] for app in apps}) != len(apps) or \
             any(not re.fullmatch(r"usnm_(ocrb_)?[0-9a-f]{64}\t-?[0-9]+", value) for value in names):
         raise ValueError("invalid database inventory")
     rows = [value.split("\t") for value in names]
@@ -202,12 +202,13 @@ def main():
              if not name.startswith("usnm_" + BUNDLE_PREFIX)]
     bundles = [(name.removeprefix("usnm_" + BUNDLE_PREFIX), int(state)) for name, state in rows
                if name.startswith("usnm_" + BUNDLE_PREFIX)]
-    payload = inventory(args.root, args.results, [int(value) for value in counts], args.nonce,
+    counts = [sum(int(app[2]) for app in apps), int(hosts)]
+    payload = inventory(args.root, args.results, counts, args.nonce,
                         [name for name, state in pages if state != 2],
                         [name for name, _ in pages],
                         [name for name, state in bundles if state != 2],
                         [name for name, _ in bundles],
-                        pending_by_app={app[1]: int(app[2]) for app in apps})
+                        pending_by_app={app[1]: int(app[2]) for app in apps if app[1]})
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(payload, sort_keys=True) + "\n")
 

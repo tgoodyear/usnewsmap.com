@@ -677,8 +677,10 @@ pages rather than overwriting them, including for historical cohorts.
    still owns the two jobs**, whose launcher rejects running executions and
    verifies each execution's settings.
 2. Run `batch-inventory`, or wait for it. It reads the bridge journal, complete
-   assimilator outputs (or terminal markers), and two aggregate SQL counts
-   and each app's unassimilated workunits with verified database TLS. It writes only `scheduler/inventory.json` in the
+   assimilator outputs (or terminal markers), and, with verified database TLS,
+   the recently active hosts and each app's unassimilated workunits. Their
+   sum is `pending_workunits`, from the same read, so a submission between
+   two counts can't make other apps' share exceed the total. It writes only `scheduler/inventory.json` in the
    hand-off container. A per-tick nonce rejects stale or concurrent snapshots.
    Hand-off journals are downloaded as metadata only, using one Azure CLI batch
    process rather than one CLI invocation per historical job. Each refresh
