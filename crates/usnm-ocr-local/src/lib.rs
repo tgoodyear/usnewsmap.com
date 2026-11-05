@@ -38,6 +38,9 @@
 //! - `ocr-local/deadletter/<day>/<run>.jsonl`: drained dead letters,
 //!   re-encoded from their checked fields.
 //! - `ocr-local/report/<stamp>.json`: `ocr-sync --report` ([`report`]).
+//! - `ocr-local/alternate-supersession/<sha256>.json`: lists of verified
+//!   third-party selections the seeder may skip once one is pinned
+//!   ([`supersession`]).
 //! - `ocr-local/revoked/<stamp>.json`: rows the release leaves out, by node,
 //!   engine, import run or time ([`replace::Revocation`]), written by hand.
 //!
@@ -62,6 +65,7 @@ pub mod report;
 pub mod requests;
 pub mod rule;
 pub mod seed;
+pub mod supersession;
 pub mod sync;
 
 mod metrics;

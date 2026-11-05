@@ -14,6 +14,7 @@ use usnm_store::ObjectStore;
 
 use super::ledger::{self, Outcome, Queued, DEAD_LETTERED, IMPORTED, NOT_SENT};
 use super::seed::{self, Options, SeedReport};
+use super::supersession;
 use super::sync;
 use crate::ocr_damage::{self, PageRow, VersionBatch, VersionList};
 
@@ -993,4 +994,242 @@ async fn a_page_whose_american_stories_text_is_undamaged_is_skipped() {
         .collect();
     assert!(!queued.contains(&doc(ENG, 7, 1)));
     assert!(queued.contains(&doc(ENG, 7, 3)));
+}
+
+/// Stage a synthetic, rights-cleared reading of `doc_id` and select it with
+/// a synthetic paired comparison: the entry a supersession list would hold.
+async fn select_alternate(fx: &Fx, doc_id: &str, batch: &str) -> supersession::Entry {
+    use crate::alternate::{self, digest, tests::Fixture};
+    use crate::alternate_decisions::{self as decisions, Action, Decision, Subject};
+    let mut f = Fixture::page(doc_id, "synthetic selected reading");
+    f.clear_synthetic_rights();
+    let staged = alternate::stage(
+        &fx.state,
+        "stage",
+        fx.curated.as_ref(),
+        &f.binding,
+        &f.inputs(),
+    )
+    .await
+    .unwrap();
+    let subject = Subject {
+        doc_id: doc_id.into(),
+        source_image_sha256: f.binding.source_image_sha256.clone(),
+        baseline_sha256: f.binding.baseline_sha256.clone(),
+    };
+    let comparison = serde_json::to_vec(&serde_json::json!({
+        "subject": subject, "candidate": staged.candidate,
+        "reference_sha256": digest(b"synthetic human reference"),
+        "reference_status": "human-verified", "reviewed_by": "synthetic-fixture-only",
+        "compatibility_accepted": true,
+        "legacy_ws_v1": {"reference_chars": 100, "baseline_edits": 20, "candidate_edits": 10},
+        "raw_v1": {"reference_chars": 110, "baseline_edits": 25, "candidate_edits": 12}
+    }))
+    .unwrap();
+    let decision = Decision {
+        subject: subject.clone(),
+        previous: None,
+        action: Action::Select {
+            candidate: staged.candidate.clone(),
+            comparison_sha256: digest(&comparison),
+        },
+        reason: "Synthetic reviewed comparison, not production acceptance".into(),
+        evidence: "https://example.invalid/synthetic-review".into(),
+    };
+    let record = decisions::decide(
+        &fx.state,
+        "decide",
+        fx.curated.as_ref(),
+        &decision,
+        Some(&comparison),
+    )
+    .await
+    .unwrap();
+    supersession::Entry {
+        doc_id: doc_id.into(),
+        batch: batch.into(),
+        batch_version: 1,
+        source_image_sha256: subject.source_image_sha256,
+        baseline_sha256: subject.baseline_sha256,
+        candidate: staged.candidate,
+        selection: record.id,
+    }
+}
+
+fn supersession_list(entries: Vec<supersession::Entry>) -> Vec<u8> {
+    serde_json::to_vec(&supersession::List {
+        format: supersession::FORMAT.into(),
+        reason: "Synthetic fixture, not a production eligibility change".into(),
+        evidence: "https://example.invalid/synthetic-review".into(),
+        entries,
+    })
+    .unwrap()
+}
+
+#[tokio::test]
+async fn a_pinned_verified_selection_leaves_out_only_its_new_page_until_revoked() {
+    use crate::alternate_decisions::{self as decisions, Action, Decision};
+    let fx = fixture().await;
+    let page = doc(GER, 3, 1);
+    let entry = select_alternate(&fx, &page, "aa_ger").await;
+    // Listed for a version the fixture doesn't publish: queued as usual.
+    let mut other = select_alternate(&fx, &doc(GER, 5, 1), "zz_dup").await;
+    other.batch_version = 2;
+    let sha = supersession::publish(
+        fx.curated.as_ref(),
+        &supersession_list(vec![entry.clone(), other]),
+    )
+    .await
+    .unwrap();
+
+    // Off by default: a selection alone changes nothing.
+    let r = fx
+        .seed(&Options {
+            dry_run: true,
+            ..plan(100)
+        })
+        .await
+        .unwrap();
+    assert_eq!((r.queued, r.supersession.as_ref()), (11, None));
+
+    let pinned = Options {
+        supersession: Some(sha.clone()),
+        ..plan(100)
+    };
+    let r = fx.seed(&pinned).await.unwrap();
+    let s = r.supersession.as_ref().unwrap();
+    assert_eq!((s.list.as_str(), s.entries), (sha.as_str(), 2));
+    assert_eq!((s.superseded, s.unverified, s.other_copy), (1, 0, 1));
+    assert_eq!(r.skipped.get("superseded_alternate"), Some(&1));
+    assert_eq!(r.queued, 10);
+    let queued: Vec<String> = fx
+        .drain()
+        .await
+        .iter()
+        .map(|m| m.key().unwrap().doc_id())
+        .collect();
+    assert!(!queued.contains(&page) && queued.contains(&doc(GER, 5, 1)));
+
+    // Evidence that no longer revalidates never suppresses work.
+    let evidence = fx
+        .curated
+        .list(&format!("{}/alternate-decisions/{page}", super::ROOT))
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|p| p.contains("/evidence/"))
+        .unwrap();
+    let good = fx.curated.get(&evidence).await.unwrap().unwrap();
+    fx.curated
+        .put(&evidence, b"{}".to_vec(), "application/json")
+        .await
+        .unwrap();
+    let r = fx
+        .seed(&Options {
+            dry_run: true,
+            ..pinned.clone()
+        })
+        .await
+        .unwrap();
+    assert_eq!(r.units[0].pages, std::slice::from_ref(&page));
+    assert_eq!(r.supersession.as_ref().unwrap().unverified, 1);
+    fx.curated
+        .put(&evidence, good, "application/json")
+        .await
+        .unwrap();
+
+    // Revoked: the unit was never marked finished, so the page goes out.
+    decisions::decide(
+        &fx.state,
+        "decide",
+        fx.curated.as_ref(),
+        &Decision {
+            subject: entry.subject(),
+            previous: Some(entry.selection.clone()),
+            action: Action::Revoke {
+                candidate: entry.candidate.clone(),
+            },
+            reason: "Synthetic revocation".into(),
+            evidence: "https://example.invalid/synthetic-review".into(),
+        },
+        None,
+    )
+    .await
+    .unwrap();
+    let r = fx.seed(&pinned).await.unwrap();
+    assert_eq!((r.queued, r.supersession.unwrap().unverified), (1, 1));
+    let msgs = fx.drain().await;
+    assert_eq!(msgs[0].key().unwrap().doc_id(), page);
+}
+
+#[tokio::test]
+async fn the_fetched_source_leaves_out_a_verified_page() {
+    let fx = fixture().await;
+    manifest(&fx).await;
+    let all: Vec<(&str, String)> = [(3, 1), (3, 2), (3, 3), (4, 1), (4, 2), (4, 3)]
+        .iter()
+        .map(|&(d, s)| ("aa_ger", doc(GER, d, s)))
+        .collect();
+    fetched_list(&fx, "20261012T000000Z", &all).await;
+    let entry = select_alternate(&fx, &doc(GER, 3, 1), "aa_ger").await;
+    let sha = supersession::publish(fx.curated.as_ref(), &supersession_list(vec![entry]))
+        .await
+        .unwrap();
+    let r = fx
+        .seed(&Options {
+            supersession: Some(sha),
+            ..fetched_plan()
+        })
+        .await
+        .unwrap();
+    assert_eq!(r.skipped.get("superseded_alternate"), Some(&1));
+    let pages: Vec<String> = fx
+        .drain()
+        .await
+        .iter()
+        .map(|m| m.key().unwrap().doc_id())
+        .collect();
+    assert_eq!(pages, [doc(GER, 3, 2), doc(GER, 3, 3), doc(GER, 4, 1)]);
+}
+
+#[tokio::test]
+async fn a_pinned_supersession_list_must_exist_match_its_hash_and_verify() {
+    let fx = fixture().await;
+    let entry = select_alternate(&fx, &doc(GER, 3, 1), "aa_ger").await;
+    for bad in [
+        vec![supersession::Entry {
+            selection: "0".repeat(64),
+            ..entry.clone()
+        }],
+        vec![entry.clone(), entry.clone()],
+    ] {
+        assert!(
+            supersession::publish(fx.curated.as_ref(), &supersession_list(bad))
+                .await
+                .is_err()
+        );
+    }
+    let pinned = |sha: String| Options {
+        supersession: Some(sha),
+        dry_run: true,
+        ..plan(100)
+    };
+    let err = fx.seed(&pinned("0".repeat(64))).await.unwrap_err();
+    assert!(
+        format!("{err:#}").contains("no supersession list"),
+        "{err:#}"
+    );
+    // Bytes that don't hash to the pinned name.
+    let renamed = "1".repeat(64);
+    fx.curated
+        .put_new(
+            &supersession::path(&renamed),
+            supersession_list(vec![entry]),
+            "application/json",
+        )
+        .await
+        .unwrap();
+    let err = fx.seed(&pinned(renamed)).await.unwrap_err();
+    assert!(format!("{err:#}").contains("checksum mismatch"), "{err:#}");
+    assert_eq!(fx.queue.approximate_count(BULK).await.unwrap(), 0);
 }
