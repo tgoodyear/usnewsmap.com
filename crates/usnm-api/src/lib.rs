@@ -26,6 +26,7 @@ pub mod config;
 pub(crate) mod edge;
 pub mod error;
 pub mod flights;
+mod mcp;
 pub mod ocr_requests;
 pub mod openapi;
 pub mod prewarm;
@@ -378,6 +379,8 @@ pub fn app(state: Arc<AppState>) -> Router {
     if let Some(dir) = site {
         router = router.fallback_service(site::router(dir, state.clone()));
     }
+    // MCP has its own POST/preflight policy; the REST/site CORS policy stays GET-only.
+    router = router.layer(cors).merge(mcp::router(state.clone()));
     // Inside the header layers, so redirects carry the security headers too.
     router = router.layer(middleware::from_fn_with_state(
         site_host,
@@ -390,7 +393,6 @@ pub fn app(state: Arc<AppState>) -> Router {
         ));
     }
     router
-        .layer(cors)
         .layer(CompressionLayer::new().compress_when(
             DefaultPredicate::new().and(NotForContentType::new("application/vnd.pmtiles")),
         ))

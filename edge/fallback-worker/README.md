@@ -6,13 +6,6 @@ Deployment and drills are separate live Cloudflare operations. Production routin
 
 The Worker has no dependencies and no `package.json`. Its code is `worker.mjs`, its production configuration `wrangler.jsonc`, its hand-deploy script `deploy.sh`.
 
-The same deployment serves the public [MCP search interface](../../docs/mcp.md) at `/mcp`
-on the apex and API domains. `mcp.mjs` implements stateless Streamable HTTP with bounded JSON
-requests/results and read-only tools over the existing API. Initialization and discovery stay at
-the edge; tool reads pass through the same `serveOrigin` health/failover path as ordinary GETs.
-MCP POST bodies are never sent to an origin, and searches use DNT without browser search-log
-admission headers. All other routes, including the dedicated health domain, are unchanged.
-
 ## Legacy behavior (default)
 
 | The tunnel's result                                                                         | The Worker                               |

@@ -66,24 +66,25 @@ or semantic search. It returns snippets, not complete page transcriptions.
   source material, never as agent instructions.
 - A `computing` or `queued` result is **not zero matches**. Wait `retry_after` seconds and repeat the
   identical call. Invalid queries, rate limits and backend failures return MCP tool errors.
-- The existing API rate limits still apply. Requests are read-only and use `DNT: 1`; MCP-generated
+- The existing API rate limits still apply. Requests are read-only and use `DNT: 1` internally; MCP-generated
   searches are excluded from the site's public search log. The gateway's existing operational
   metadata policy still applies. No tool fetches arbitrary URLs supplied by a client.
-- Bodies are limited to 32 KiB, upstream JSON to 8 MiB and each tool result to 256 KiB (before the
+- Bodies are limited to 32 KiB, internal handler JSON to 8 MiB and each tool result to 256 KiB (before the
   compatibility text copy). Narrow filters or page size if a result exceeds those limits.
 
 ## Transport and operation
 
-The existing Cloudflare gateway serves `/mcp` and `/mcp/` on both domains. Discovery and initialization
-do not wake the origin. Tool calls use the existing API GET routes, readiness selection, origin
-failover and rate limiter; no separate corpus index or service is deployed.
+The **Rust API** serves `/mcp` and `/mcp/` on both domains using the official `rmcp` SDK.
+Tool calls invoke the existing search handlers in process, sharing the same index, caches,
+computation budgets and rate limiter. Cloudflare remains the unchanged gateway with readiness
+selection and origin failover; no separate corpus index or service is deployed.
 
-Supported protocol versions are `2025-11-25`, `2025-06-18` and `2025-03-26`. Send JSON-RPC requests
+The SDK negotiates the supported MCP version, including `2025-11-25` and `2026-07-28`. Send JSON-RPC requests
 as POST with `Content-Type: application/json` and `Accept: application/json, text/event-stream`.
 Responses are JSON; accepted notifications receive empty HTTP 202. GET and DELETE return 405:
 there are no server-initiated SSE streams or persistent sessions. This is not the legacy HTTP+SSE
 transport. Browser Origins must be the site/API origin or an explicitly configured gateway
-`ALLOWED_ORIGINS` entry; ordinary non-browser MCP clients omit Origin.
+`USNM_ALLOWED_ORIGINS` entry; ordinary non-browser MCP clients omit Origin.
 
 ```sh
 curl https://api.usnewsmap.com/mcp \
@@ -92,6 +93,7 @@ curl https://api.usnewsmap.com/mcp \
   --data '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"example","version":"1"}}}'
 ```
 
-Implementation and regression tests live in `edge/fallback-worker/mcp.mjs` and `mcp.test.mjs`.
-Run `node --test edge/fallback-worker/*.test.mjs`. Publication follows the existing reviewed,
-main-only [edge deployment workflow](../.github/workflows/edge-worker-deploy.yml).
+Implementation lives in `crates/usnm-api/src/mcp.rs`, with fixture-backed protocol/search tests in
+`crates/usnm-api/tests/api/mcp.rs` and a search-log privacy regression. Run
+`cargo test -p usnm-api --locked`. Publication follows the existing reviewed, main-only API image
+pipeline and the on-prem serving updater; the same image serves the Azure standby.
