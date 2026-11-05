@@ -67,11 +67,13 @@ SNAPDIR=$SCANS/.zfs/snapshot/$SNAP
 now() { date +%s.%N; }
 secs() { awk -v a="$1" -v b="$2" 'BEGIN { printf "%.2f", b - a }'; }
 
-# Spread over the manifest, offset half a step from check-scan-archive.sh's sample.
-TOTAL=$(awk 'END { print NR }' "$MANIFEST")
+# Spread over the manifest's distinct names, offset half a step from
+# check-scan-archive.sh's sample. The manifest is append-only, and a scan
+# whose stamp changed is recorded again; each name counts once, where it first appears.
+TOTAL=$(awk -F'\t' '!seen[$1]++ { t++ } END { print t + 0 }' "$MANIFEST")
 mapfile -t CAND < <(awk -F'\t' -v n="$COUNT" -v t="$TOTAL" '
   BEGIN { for (i = 0; i < n; i++) pick[int((i + 0.5) * t / n) + 1] = 1 }
-  NR in pick { print $1 }' "$MANIFEST")
+  !seen[$1]++ && ((++k) in pick) { print $1 }' "$MANIFEST")
 [ "${#CAND[@]}" -gt 0 ] || die "the manifest is empty"
 for name in "${CAND[@]}"; do
   [[ $name =~ ^keep(/[A-Za-z0-9_][A-Za-z0-9._-]*)+[.](jp2|jpg)$ ]] || die "unexpected name in the manifest"
@@ -115,7 +117,7 @@ done
 N=${#SEL[@]}
 [ "$N" -gt 0 ] || die "no scan fits the budget"
 DIGEST=$(printf '%s\n' "${SEL[@]}" | sha256sum | cut -c1-16)
-echo "== sample: $N of $COUNT spread over $TOTAL manifest lines; $spent bytes to read from Cold; names sha256 $DIGEST"
+echo "== sample: $N of $COUNT spread over $TOTAL distinct manifest names; $spent bytes to read from Cold; names sha256 $DIGEST"
 
 # Cold restore: sequential GETs, each capped at its HEAD length.
 g0=$(now) got=0

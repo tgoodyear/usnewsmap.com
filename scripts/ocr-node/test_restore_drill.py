@@ -167,6 +167,15 @@ class RestoreDrillTest(unittest.TestCase):
         self.assertIn("none of the sample is in snapshot snap, so no snapshot copy was checked", r.stderr)
         self.assertNotIn("restore drill passed", r.stdout)
 
+    def test_a_scan_recorded_twice_is_sampled_once(self):
+        names = [self.scan(page) for page in (1, 2, 3, 4)]
+        with self.manifest.open("a") as f:  # a changed stamp appends the same name again
+            f.writelines(f"{name}\t2976\t1\t0\t1\n" for name in names)
+        r = self.run_drill()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("== sample: 4 of 4 spread over 4 distinct manifest names", r.stdout)
+        self.assertEqual(sorted(self.gets()), sorted(f"/scans/{name}" for name in names))
+
     def test_the_budget_stops_before_the_first_scan_past_it(self):
         for page in (1, 2, 3):
             self.scan(page, size=1000)
