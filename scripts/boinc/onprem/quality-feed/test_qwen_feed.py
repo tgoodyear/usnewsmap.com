@@ -2197,10 +2197,11 @@ class SourceTest(unittest.TestCase):
         transaction.assert_not_called()
 
     def budget_tick(self, root, budget, yiddish, others, german_budget=None, german_pages=None, retryable=(),
-                    quarantine=None, finished=()):
+                    quarantine=None, finished=(), older=(), newer=()):
         """One feed tick with a stub corpus; returns the filters each select used and the
         pages it sent to `run`. A filter's refused languages are one string when one is refused.
-        With `quarantine`, the campaign's quarantine is real and kept from selection there."""
+        With `quarantine`, the campaign's quarantine is real and kept from selection there.
+        `older` and `newer` are more index rows, before and after each page's own."""
         args = types.SimpleNamespace(
             state=root, outbox=root, campaign="test", prep_ct=215, server_ct=230, server_host="server",
             archive_host="archive", scan_server="http://scan", archives="/archives", alto_export="/cache",
@@ -2235,10 +2236,10 @@ class SourceTest(unittest.TestCase):
                 return json.dumps(list(retryable)).encode()
             if "-c" in argv and "done.txt" in argv[-1]:
                 return json.dumps(list(finished)).encode()
-            if "-c" in argv and "import quarantined;" in argv[-1] and quarantine:
-                code = argv[-1].replace("/opt/usnm-quality-feed", str(HERE)).replace(
-                    "/var/lib/usnm-quality-feed", str(quarantine))
-                return subprocess.run([sys.executable, "-c", code], check=True, capture_output=True).stdout
+            if "-c" in argv and "import quarantined;" in argv[argv.index("-c") + 1] and quarantine:
+                code = argv[argv.index("-c") + 1].replace("/opt/usnm-quality-feed", str(HERE))
+                state = argv[-1].replace("/var/lib/usnm-quality-feed", str(quarantine))
+                return subprocess.run([sys.executable, "-c", code, state], check=True, capture_output=True).stdout
             return b"[]" if "-c" in argv else b""
 
         def remote(host, argv, data=None):
@@ -2248,13 +2249,15 @@ class SourceTest(unittest.TestCase):
             if "lvs" in argv:
                 return json.dumps({"report": [{"lv": [{"lv_size": 10**12, "data_percent": 0}]}]}).encode()
             if data == b"":
-                return json.dumps({"available_archives": ["xx_test_ver01.tar.bz2"]}).encode()
+                return json.dumps({"available_archives": sorted(
+                    {"xx_test_ver01.tar.bz2"} | {f"{row['batch']}_ver{row['batch_version']:02d}.tar.bz2"
+                                                 for row in [*older, *newer]})}).encode()
             return json.dumps({"cached": [json.loads(line)["doc_id"] for line in data.splitlines()],
                                "missing": [], "pending": []}).encode()
 
         rows = [{"doc_id": doc, "batch": "xx_test", "batch_version": 1, "bytes": 12, "sha256": "a" * 64}
                 for doc in [DOC] + [p["doc_id"] for p in yiddish + others if p["doc_id"] != DOC]]
-        listing = b"".join(json.dumps(row).encode() + b"\n" for row in rows)
+        listing = b"".join(json.dumps(row).encode() + b"\n" for row in [*older, *rows, *newer])
         with mock.patch.object(driver, "remote", side_effect=remote), \
                 mock.patch.object(driver, "command", side_effect=command), \
                 mock.patch.object(driver.shutil, "disk_usage", return_value=types.SimpleNamespace(free=10**12)), \
@@ -2298,30 +2301,35 @@ class SourceTest(unittest.TestCase):
     def test_a_budgeted_page_found_truncated_at_source_frees_its_place_for_another(self):
         yiddish = [{"doc_id": f"sn1_1900-01-02_ed-1_seq-{n}", "lang": "yid", "damage_rate": .9}
                    for n in range(1, 6)]
-        truncated, replacement, rescanned, done = (yiddish[n]["doc_id"] for n in (0, 1, 3, 4))
+        truncated, replacement, replaced, rescanned, done = (page["doc_id"] for page in yiddish)
         others = [{"doc_id": "sn2_1900-01-02_ed-1_seq-1", "lang": "srp", "damage_rate": .8}]
+        # The cut short page's current scan is the quarantined one, after an older batch's;
+        # another page has a newer scan to prepare after its quarantined one.
+        older = [{**frozen_page(truncated), "batch": "xx_old", "sha256": "c" * 64}]
+        newer = [{**frozen_page(replaced), "batch_version": 2, "sha256": "c" * 64}]
+        reserved = [truncated, replaced, rescanned, done]
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             quarantine = root / "quarantine"
-            # All three reserved pages were found cut short at source: one in a scan LoC has
-            # since replaced, and one that was done before.
-            for doc, sha in ((truncated, "a" * 64), (rescanned, "b" * 64), (done, "a" * 64)):
-                page = {**frozen_page(doc), "sha256": sha, "lang": "yid",
+            # Every reserved page was found cut short at source in some scan: one in a scan LoC
+            # has since replaced, and one that was done before.
+            for doc, sha in ((truncated, "a"), (replaced, "a"), (rescanned, "b"), (done, "a")):
+                page = {**frozen_page(doc), "sha256": sha * 64, "lang": "yid",
                         "scan": f"keep/xx_test/sn1/1900-01-02/1/{doc.rsplit('-', 1)[1]}.jp2"}
                 quality.scan_quarantine.record_source_truncated(quarantine / "test", page, "ends early")
             budget = root / "yiddish-budget.json"
-            budget.write_text(json.dumps([truncated, rescanned, done]))
-            filters, chosen = self.budget_tick(root, 3, yiddish, others, quarantine=quarantine,
-                                               finished=[done])
+            budget.write_text(json.dumps(reserved))
+            filters, chosen = self.budget_tick(root, 4, yiddish, others, quarantine=quarantine,
+                                               finished=[done], older=older, newer=newer)
             self.assertEqual(filters, [("yid", None, 1)])
             self.assertEqual(chosen, [replacement])
-            self.assertEqual(sorted(json.loads(budget.read_text())), sorted([rescanned, done, replacement]))
+            self.assertEqual(sorted(json.loads(budget.read_text())), sorted(reserved[1:] + [replacement]))
             # The budget is full again, so the next tick takes no Yiddish.
-            filters, chosen = self.budget_tick(root, 3, yiddish, others, quarantine=quarantine,
-                                               finished=[done])
+            filters, chosen = self.budget_tick(root, 4, yiddish, others, quarantine=quarantine,
+                                               finished=[done], older=older, newer=newer)
             self.assertEqual(filters, [(None, "yid", 100)])
             self.assertEqual(chosen, [others[0]["doc_id"]])
-            self.assertEqual(sorted(json.loads(budget.read_text())), sorted([rescanned, done, replacement]))
+            self.assertEqual(sorted(json.loads(budget.read_text())), sorted(reserved[1:] + [replacement]))
 
     def test_the_budget_goes_ahead_of_a_source_request(self):
         yiddish = [{"doc_id": "sn1_1900-01-02_ed-1_seq-1", "lang": "yid", "damage_rate": .9}]
