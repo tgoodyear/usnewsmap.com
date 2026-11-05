@@ -434,8 +434,9 @@ pub async fn run_selected(opts: &Options, members: Option<&Path>) -> anyhow::Res
 /// `MAX_JOB_JSON`, keeps it as `rejected-qwen.json` and marks the page
 /// `too_large`: as for an oversized crop text, the evidence is the page's
 /// disposition for the feed. Returns whether the job was written. Staging
-/// calls it only for a unit with no job or marker yet, and it refuses a
-/// unit with either. The one file it writes over is a `rejected-qwen.json`
+/// calls it only for a unit with no `qwen.json`, `no_crops` or `too_large`
+/// yet, and it refuses a unit with any of them (`submitted` comes only after
+/// a `qwen.json`). The one file it writes over is a `rejected-qwen.json`
 /// with no marker beside it, left by a run stopped between the two writes:
 /// it writes the evidence again, then the marker.
 fn publish(unit: &Path, job: &Job) -> anyhow::Result<bool> {

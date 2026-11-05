@@ -23,7 +23,7 @@ REQUEST_MIN_APP = {1: 0, 2: 115, 3: 117, 4: 117}
 GUARDED_VERSIONS = (3, 4)
 YIDDISH = "yid"
 # `qwen stage --bundle-size` above 1 names each bundle unit bundle-NNNNN-<first doc>.
-BUNDLE_UNIT = re.compile(r"bundle-\d{5}-")
+BUNDLE_UNIT = re.compile(r"bundle-\d{5}-.+")
 
 
 def jobs(root):
@@ -262,7 +262,7 @@ def assert_processed(root, sample):
             for marker in sorted(markers):
                 path = marker.parent / "qwen.json"
                 if not path.exists():
-                    continue
+                    raise RuntimeError(f"Submitted unit {path.parent.name} has no qwen.json")
                 try:
                     job = json.loads(path.read_text())
                 except ValueError as error:
@@ -283,7 +283,7 @@ def assert_bundle_layout(root, bundle_size):
     if bundle_size == 1 and (root / "pages").is_dir():
         raise RuntimeError(f"Root {root.name} was staged with bundles; keep its --bundle-size")
     units = root / "units"
-    if bundle_size > 1 and units.is_dir() and any(p.is_dir() and not BUNDLE_UNIT.match(p.name)
+    if bundle_size > 1 and units.is_dir() and any(p.is_dir() and not BUNDLE_UNIT.fullmatch(p.name)
                                                   for p in units.iterdir()):
         raise RuntimeError(f"Root {root.name} holds single-page units; a bundled campaign starts in a new root")
 

@@ -1895,6 +1895,12 @@ class SourceTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "bundle-00002-other has an unreadable qwen.json"):
                 submit.assert_processed(root, sample)
             (root / "units" / "bundle-00002-other" / "submitted").unlink()
+            # So does a submitted marker with no job beside it.
+            (root / "units" / "bundle-00003-other").mkdir()
+            (root / "units" / "bundle-00003-other" / "submitted").touch()
+            with self.assertRaisesRegex(RuntimeError, "bundle-00003-other has no qwen.json"):
+                submit.assert_processed(root, sample)
+            (root / "units" / "bundle-00003-other" / "submitted").unlink()
             # A page no bundle holds needs its own terminal disposition.
             (bundle / "qwen.json").write_text(json.dumps({"id": "b" * 64, "doc_id": DOC, "pages": [{"doc_id": DOC}]}))
             with self.assertRaisesRegex(RuntimeError, other):
@@ -1980,6 +1986,16 @@ class SourceTest(unittest.TestCase):
             (unit / "too_large").touch()
             with self.assertRaisesRegex(RuntimeError, "holds single-page units"):
                 self.legacy_stage(root, "--bundle-size", "8")
+        # A bundle's name runs on past its number.
+        for name, error in (("bundle-00001-", "holds single-page units"), ("bundle-00001-" + DOC, None)):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                (root / "qwen" / "qwen-test" / "units" / name).mkdir(parents=True)
+                if error:
+                    with self.assertRaisesRegex(RuntimeError, error):
+                        self.legacy_stage(root, "--bundle-size", "8", pages=True)
+                else:
+                    self.legacy_stage(root, "--bundle-size", "8", pages=True)
 
     def test_isolated_staging_artifact_never_replaces_submit_binary(self):
         with tempfile.TemporaryDirectory() as folder:
