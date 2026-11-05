@@ -568,9 +568,9 @@ pub fn create_report(path: &Path) -> anyhow::Result<File> {
 }
 
 /// Write `report` as JSON to `file`, which [`create_report`] made at `path`.
-pub fn write_report(mut file: File, path: &Path, report: &JoinReport) -> anyhow::Result<()> {
+pub fn write_report(file: &mut File, path: &Path, report: &JoinReport) -> anyhow::Result<()> {
     let mut write = || -> anyhow::Result<()> {
-        serde_json::to_writer_pretty(&mut file, report)?;
+        serde_json::to_writer_pretty(&mut *file, report)?;
         file.write_all(b"\n")?;
         file.sync_all()?;
         Ok(())
@@ -908,7 +908,7 @@ mod tests {
 
         // The report is written once, to a new file.
         let out = dir.path().join("join.json");
-        write_report(create_report(&out).unwrap(), &out, &r).unwrap();
+        write_report(&mut create_report(&out).unwrap(), &out, &r).unwrap();
         let read: JoinReport = serde_json::from_slice(&std::fs::read(&out).unwrap()).unwrap();
         assert_eq!(read, r);
         assert!(create_report(&out).is_err());

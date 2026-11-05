@@ -127,7 +127,7 @@ pub(crate) async fn pictures_join_command(
         placements,
         out,
     } = args;
-    let file = join::create_report(out)?;
+    let mut file = join::create_report(out)?;
     let written = async {
         let curated = usnm_store::open(&cli.stores.curated)?;
         let pictures = match pictures {
@@ -143,9 +143,10 @@ pub(crate) async fn pictures_join_command(
             &placements,
         )
         .await?;
-        join::write_report(file, out, &report)
+        join::write_report(&mut file, out, &report)
     }
     .await;
+    drop(file);
     if written.is_err() {
         // Only this run made the file; leave no empty or partial report.
         let _ = std::fs::remove_file(out);
