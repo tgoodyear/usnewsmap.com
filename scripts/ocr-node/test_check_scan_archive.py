@@ -188,16 +188,24 @@ cat "$STUB_REPORT"
 
     def test_unsafe_or_missing_sampled_files_fail_before_any_unit(self):
         self.scan("keep/b/s/d/1/nosidecar.jp2", sidecar=False)
-        for name in ("../etc/passwd.jp2", "keep/../x.jp2", "keep/./x/1.jp2",
+        outside = self.root / "outside"
+        self.scans, keep_scans = outside, self.scans
+        self.scan("s/d/1/1.jp2")
+        self.scans = keep_scans
+        (self.scans / "keep/linked").symlink_to(outside)
+        (self.scans / EDITION / "5.jp2").symlink_to(outside / "s/d/1/1.jp2")
+        (self.scans / EDITION / "5.jp2.json").write_text("{}")
+        for name in ("keep/linked/s/d/1/1.jp2", f"{EDITION}/5.jp2","../etc/passwd.jp2", "keep/../x.jp2", "keep/./x/1.jp2",
                      "keep/a b/1.jp2", "keep/x/1.jp2:/etc/x", "keep/%n/1.jp2",
                      "buffer/b/s/d/1/1.jp2", f"{EDITION}/1.pct50.jpg",
                      f"{EDITION}/3.jp2.json", "keep/.hidden/1.jp2", "",
                      f"{EDITION}/9.jp2", "keep/b/s/d/1/nosidecar.jp2"):
             with self.subTest(name=name):
+                self.calls.unlink(missing_ok=True)
                 result = self.run_check("--verify-only", "--sample-from",
                                         str(self.manifest([name])))
                 self.assertNotEqual(result.returncode, 0, result.stdout)
-                self.assertRegex(result.stderr, "not a keep-set scan name|missing here")
+                self.assertRegex(result.stderr, "not a keep-set scan name|missing here|through a symlink")
                 self.assertFalse(self.calls.exists())
 
     def test_progress_reports_reads_and_load(self):

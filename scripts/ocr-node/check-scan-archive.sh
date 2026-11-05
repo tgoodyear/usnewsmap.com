@@ -113,8 +113,16 @@ for name in "${NAMES[@]}"; do
   # could change the bind mount syntax or leave the keep set.
   [[ $name =~ ^keep(/[A-Za-z0-9_][A-Za-z0-9._-]*)+[.](jp2|jpg)$ && ${name##*/} != *.pct* ]] ||
     die "not a keep-set scan name: $name"
+  # No symlink at any level below the scans root: a linked directory would
+  # expose files outside the keep set under keep-set names.
   for f in "$name" "$name.json"; do
-    [ -f "$SCANS/$f" ] && [ ! -L "$SCANS/$f" ] || die "sampled file is missing here: $f"
+    path=$SCANS
+    IFS=/ read -ra parts <<< "$f"
+    for part in "${parts[@]}"; do
+      path+=/$part
+      [ ! -L "$path" ] || die "sampled path goes through a symlink: $f"
+    done
+    [ -f "$path" ] || die "sampled file is missing here: $f"
   done
   BINDS+=(-p "BindReadOnlyPaths=$SCANS/$name:$SAMPLE/$name $SCANS/$name.json:$SAMPLE/$name.json")
 done
