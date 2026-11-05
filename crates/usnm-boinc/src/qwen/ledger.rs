@@ -137,8 +137,9 @@ pub fn record_paths(pages: &Path, job_id: &str, doc_id: &str) -> anyhow::Result<
 /// unit, by doc id, as that page's own readings: each crop id's
 /// `<doc_id>:` prefix is taken off (#1435). They are the first agreeing
 /// record's (by file name), from the side whose result name sorts first,
-/// so the same records always give the same readings. Agreeing is not
-/// being right: nothing here establishes accuracy.
+/// which must have run to the end and name its device, so the same records
+/// always give the same readings. Agreeing is not being right: nothing here
+/// establishes accuracy.
 pub fn accepted_readings(
     root: &Path,
     unit: &Path,
@@ -167,6 +168,11 @@ pub fn accepted_readings(
         anyhow::ensure!(
             side.outcome == Outcome::Ok,
             "{}: the agreeing side did not run to the end",
+            path.display()
+        );
+        anyhow::ensure!(
+            !side.device.trim().is_empty(),
+            "{}: the agreeing side names no device",
             path.display()
         );
         let prefix = format!("{}:", page.doc_id);
@@ -404,15 +410,14 @@ pub(crate) mod tests {
             );
         }
         // From the side whose result name sorts first, in whatever order the record lists them.
-        let record_path = pages
+        let entries: Vec<PathBuf> = pages
             .join(&job.id)
             .join(DOCS[0])
             .read_dir()
             .unwrap()
-            .next()
-            .unwrap()
-            .unwrap()
-            .path();
+            .map(|e| e.unwrap().path())
+            .collect();
+        let [record_path] = <[PathBuf; 1]>::try_from(entries).unwrap();
         let original = std::fs::read(&record_path).unwrap();
         let mut record: serde_json::Value = serde_json::from_slice(&original).unwrap();
         let sides = record["results"].as_array_mut().unwrap();
@@ -426,7 +431,7 @@ pub(crate) mod tests {
         let kept =
             accepted_readings(&root, &units(&root).join("bundle-00001"), &job, &pages).unwrap();
         assert!(kept[DOCS[0]].readings.iter().all(|r| r.text == "first"));
-        // A side with no device is refused, and a directory is not a record.
+        // A side with no device, or a blank one, is refused, and a directory is not a record.
         record["results"][1]
             .as_object_mut()
             .unwrap()
@@ -438,6 +443,11 @@ pub(crate) mod tests {
             format!("{err:#}").contains("missing field `device`"),
             "{err:#}"
         );
+        record["results"][1]["device"] = " ".into();
+        std::fs::write(&record_path, serde_json::to_vec(&record).unwrap()).unwrap();
+        let err =
+            accepted_readings(&root, &units(&root).join("bundle-00001"), &job, &pages).unwrap_err();
+        assert!(format!("{err:#}").contains("names no device"), "{err:#}");
         let stray = record_path.with_file_name("stray.json");
         std::fs::create_dir(&stray).unwrap();
         assert_eq!(
