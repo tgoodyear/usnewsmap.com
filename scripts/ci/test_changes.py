@@ -488,13 +488,18 @@ class BuildInputs(unittest.TestCase):
         self.assertEqual(suites, [s for s in ("parity", "pipeline")
                                   if f"quickwit_{s}" in on])
         self.assertEqual("quickwit" in on, bool(suites))
-        self.images = json.loads(re.search(r"^images=(.*)$", output, re.M)[1])
+        def output_list(name: str) -> list:
+            found = re.search(rf"^{name}=(.*)$", output, re.M)
+            self.assertIsNotNone(found, f"changes.sh wrote no {name}")
+            return json.loads(found[1])
+
+        self.images = output_list("images")
         self.assertEqual("image" in on, bool(self.images))
         if event != "pull_request" and self.images:
             # What main builds is what `publish` pushes: every image.
             self.assertEqual(self.images, ALL_IMAGES)
-        self.qwen_models = json.loads(re.search(r"^boinc_qwen_models=(.*)$", output, re.M)[1])
-        self.surya_variants = json.loads(re.search(r"^boinc_surya_variants=(.*)$", output, re.M)[1])
+        self.qwen_models = output_list("boinc_qwen_models")
+        self.surya_variants = output_list("boinc_surya_variants")
         for flag, built, every in [("boinc_qwen", self.qwen_models, QWEN_MODELS),
                                    ("boinc_surya", self.surya_variants, SURYA_VARIANTS)]:
             self.assertEqual(flag in on, bool(built))
