@@ -73,13 +73,14 @@ class OcrClaimTest(unittest.TestCase):
                                       days=14, max_pages=10, curated_copy=d, what_if=False)
             rows = {"queued": [q(on, "user", 1), q(off, "user", 2)], "outcomes": []}
             with mock.patch.object(m, "staged_pairs", return_value={("b", on): {"doc_id": on, "batch": "b"}}), \
-                    mock.patch.object(m, "Lake"), \
+                    mock.patch.object(m, "Lake") as lake, \
                     mock.patch.object(m, "cached_rows", side_effect=lambda lake, state, kind, *a: rows[kind]), \
                     contextlib.redirect_stdout(io.StringIO()) as out:
                 m.cmd_build(a)
                 m.cmd_build(a)
             self.assertEqual(Path(d, "ocr-docs.txt").read_text().split(), [off, on])
             self.assertIn("still being fetched", out.getvalue())
+            lake.assert_not_called()  # the claims came from the rows already kept
 
 
 def ranked(doc, batch, lccn, decade, rank):

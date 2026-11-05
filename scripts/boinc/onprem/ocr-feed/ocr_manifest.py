@@ -113,14 +113,14 @@ class Lake:
 
 def cached_rows(lake, state, kind, days, columns):
     """Every row of ocr-local/<kind>/<day>/*.parquet for the last `days` days, each file
-    read from the lake once and kept under <state>/<kind>/."""
+    read from the lake once and kept under <state>/<kind>/. With no lake, only what's kept."""
     import pyarrow.parquet as pq
 
     keep = os.path.join(state, kind)
     os.makedirs(keep, exist_ok=True)
     today = dt.datetime.now(dt.timezone.utc).date()
     rows = []
-    for back in range(days):
+    for back in range(days if lake else 0):
         day = (today - dt.timedelta(days=back)).isoformat()
         for name in lake.list(f"ocr-local/{kind}/{day}/"):
             if not name.endswith(".parquet"):
@@ -285,7 +285,22 @@ def cmd_build(a):
         sys.exit("--reasons: comma-separated reasons, such as user,bulk")
     last_path = os.path.join(a.state, "last.json")
     index = staged_pairs(a.scan_server)
-    lake = Lake(a.curated_url)
+    busy = None
+    if os.path.exists(last_path):
+        with open(last_path) as f:
+            last = json.load(f)
+        pairs = [tuple(p) for p in last.get("pairs", [])]
+        on = sum(1 for p in pairs if p in index)
+        if not pairs and last.get("docs"):  # written before pairs were kept
+            docs = {d for _, d in index}
+            pairs = last["docs"]
+            on = sum(1 for d in pairs if d in docs)
+        age = dt.datetime.now(dt.timezone.utc) - dt.datetime.fromisoformat(last["at"])
+        if on < 0.9 * len(pairs) and age < dt.timedelta(days=1):
+            busy = {"manifest": last["name"], "on_server": on, "pages": len(pairs)}
+    # While the last manifest is still being fetched no manifest is written, so the lake is
+    # left alone and the claims below come from the rows already kept.
+    lake = None if busy else Lake(a.curated_url)
     queued = cached_rows(lake, a.state, "queued", a.days,
                          ["doc_id", "batch", "batch_version", "reason", "language", "queued_at"])
     outcomes = cached_rows(lake, a.state, "outcomes", a.days, ["doc_id", "outcome", "cause", "at"])
@@ -298,20 +313,9 @@ def cmd_build(a):
         n = record_ocr_docs(a.state, claimed, have)
         if n:
             log("queued pages already on the scan server claimed for OCR", pages=n)
-    if os.path.exists(last_path):
-        with open(last_path) as f:
-            last = json.load(f)
-        pairs = [tuple(p) for p in last.get("pairs", [])]
-        on = sum(1 for p in pairs if p in index)
-        if not pairs and last.get("docs"):  # written before pairs were kept
-            docs = {d for _, d in index}
-            pairs = last["docs"]
-            on = sum(1 for d in pairs if d in docs)
-        age = dt.datetime.now(dt.timezone.utc) - dt.datetime.fromisoformat(last["at"])
-        if on < 0.9 * len(pairs) and age < dt.timedelta(days=1):
-            log("the last manifest is still being fetched; nothing new", manifest=last["name"],
-                on_server=on, pages=len(pairs))
-            return
+    if busy:
+        log("the last manifest is still being fetched; nothing new", **busy)
+        return
     # Pages already put in MAX_TRIES manifests that still have no scan wait a week, so a
     # page LoC can't serve doesn't hold the front of every manifest.
     tries_path = os.path.join(a.state, "tries.json")

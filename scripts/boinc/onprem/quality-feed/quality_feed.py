@@ -670,7 +670,8 @@ def delete_shipped(a, camp_dir, done_path, quality_docs, deleted_path, kept_path
     rest are DELETEd; without, every one is. A kept scan that is gone (an
     OCR worker read it) or that OCR has since asked for leaves the list without a DELETE, so it
     no longer counts against the budget; --keep-verify of the longest-unchecked are looked at a
-    round. Returns how many were deleted."""
+    round. `deleted_path` lists every page this is done with, deleted or so released, so
+    neither is weighed again. Returns how many were deleted."""
     deleted = read_lines(deleted_path)
     budget = getattr(a, "keep_bytes", 0) or 0
     kept = read_kept(kept_path)

@@ -12,12 +12,13 @@ RequiresMountsFor=/srv/curated /var/lib/usnm-quality-feed/outbox
 
 [Service]
 Type=simple
-# The feeder's limits from quality-feed.env, then this mode's campaign and server.
+# No retention unless quality-follow.env sets KEEP_BYTES (an EnvironmentFile overrides
+# Environment= wherever it stands; first here for the reader).
+Environment=KEEP_BYTES=0
+# The feeder's limits from quality-feed.env, then this mode's campaign, server and budget.
 EnvironmentFile=/etc/usnm/quality-feed.env
 EnvironmentFile=/etc/usnm/quality-follow.env
 Environment=LC_ALL=C.UTF-8
-# No retention unless quality-follow.env sets it (an EnvironmentFile overrides Environment=).
-Environment=KEEP_BYTES=0
 ExecStart=/bin/sh -c 'exec /opt/usnm-quality-feed/venv/bin/python /opt/usnm-quality-feed/quality_feed.py follow \
   --campaign "$CAMPAIGN" --curated /srv/curated --scan-server "$SCAN_SERVER" \
   --outbox /var/lib/usnm-quality-feed/outbox --state /var/lib/usnm-quality-feed \
