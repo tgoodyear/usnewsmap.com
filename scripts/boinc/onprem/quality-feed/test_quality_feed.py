@@ -783,7 +783,6 @@ class FollowChunkTest(unittest.TestCase):
         pages = [DecodeQuarantineTest.page(seq, raw) for seq in (1, 2, 3)]
         rows = {p["doc_id"]: {**p, "format": "jpeg", "fetched_at": f"2026-11-03T03:0{p['seq']}:00Z"}
                 for p in pages}
-        index = {}
         argv = ["follow", "--campaign", "cpu-test", "--curated", str(self.root / "curated"),
                 "--scan-server", "http://scan", "--outbox", str(self.root / "outbox"),
                 "--state", str(self.root / "state"), "--staged-dsn", "test", "--chunk-pages", "2",
@@ -795,21 +794,13 @@ class FollowChunkTest(unittest.TestCase):
         (self.root / "curated/audit/damage/v2").mkdir(parents=True)
         pq.write_table(pa.table({"doc_id": [pages[0]["doc_id"]], "lang": ["rus"], "damage_rate": [0.8]}),
                        self.root / "curated/audit/damage/v2/xx_test_ver01.parquet")
-        last = [feed.time.time()]
         with mock.patch.object(feed, "Texts", return_value=DecodeQuarantineTest.texts(self)), \
                 mock.patch.object(feed, "staged_from_db", return_value=set()), \
-                mock.patch.object(feed, "index_rows", side_effect=lambda *a, **k: dict(index)), \
+                mock.patch.object(feed, "index_rows", return_value=rows), \
                 mock.patch.object(feed, "scan_set", return_value="buffer") as scan_set, \
-                mock.patch.object(feed, "last_chunk_at", side_effect=lambda state: last[0]), \
                 mock.patch.object(feed.urllib.request, "urlopen", side_effect=lambda *a, **k: io.BytesIO(raw)), \
                 contextlib.redirect_stdout(io.StringIO()) as output:
-            index[pages[0]["doc_id"]] = rows[pages[0]["doc_id"]]
-            feed.main(argv)
-            self.assertEqual(scan_set.call_count, 0)
-            self.assertFalse(camp.exists() and any(camp.iterdir()))
-            self.assertIn("waiting for a full chunk", output.getvalue())
-
-            index.update(rows)
+            # No chunk yet, so overdue: but a round with a full chunk still holds its remainder.
             feed.main(argv)
             self.assertEqual((camp / "c00001/READY").read_text().strip(), "2")
             self.assertFalse((camp / "c00002").exists())
@@ -818,7 +809,15 @@ class FollowChunkTest(unittest.TestCase):
             self.assertEqual(done[0][1:], ["c00001", pages[0]["scan"], str(len(raw)), "0.8"])
             self.assertEqual(done[1][4], "")  # unscored
 
-            last[0] = feed.time.time() - 3600
+            # A chunk was just written: the last page waits, without looking at the scan server.
+            checked = scan_set.call_count
+            feed.main(argv)
+            self.assertEqual(scan_set.call_count, checked)
+            self.assertFalse((camp / "c00002").exists())
+            self.assertIn("waiting for a full chunk", output.getvalue())
+
+            old = feed.time.time() - 3600
+            os.utime(state / "chunks.txt", (old, old))
             feed.main(argv)
             self.assertEqual((camp / "c00002/READY").read_text().strip(), "1")
             self.assertEqual(feed.read_lines(state / "done.txt"), set(rows))

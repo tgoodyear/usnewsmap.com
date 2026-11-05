@@ -836,11 +836,12 @@ def cmd_follow(a):
             else:
                 with open(absent_path, "a") as f:
                     f.write(f"{r['doc_id']}\t{r.get('fetched_at', '')}\n")
-        if not overdue and len(todo) % a.chunk_pages:
-            # The newest pages wait for the next round, which has more.
-            log("waiting for a full chunk", campaign=a.campaign, pages=len(todo) % a.chunk_pages,
-                chunk_pages=a.chunk_pages)
-            todo = todo[: len(todo) - len(todo) % a.chunk_pages]
+        partial = len(todo) % a.chunk_pages
+        if partial and (not overdue or (len(todo) > partial and a.max_wait_secs > 0)):
+            # The newest pages wait for the next round, which has more; a round that writes a
+            # full chunk restarts --max-wait-secs, so its remainder isn't overdue either.
+            log("waiting for a full chunk", campaign=a.campaign, pages=partial, chunk_pages=a.chunk_pages)
+            todo = todo[: len(todo) - partial]
         if todo:
             damage = {}
             for (batch, bv) in sorted({(r["batch"], int(r.get("batch_version") or 1)) for r, _ in todo}):
