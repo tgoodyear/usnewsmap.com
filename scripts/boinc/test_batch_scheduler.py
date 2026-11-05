@@ -2672,7 +2672,7 @@ class QueueTransportTests(unittest.TestCase):
                 # As the fetcher records it: only a scan that matches is judged.
                 Path(f"{scan}.json").write_text(json.dumps({
                     "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest(),
-                    **({"format": "jp2", "md5": hashlib.md5(data).hexdigest()} if ext == "jp2" else {})}))
+                    **({"format": "jp2", "md5": hashlib.md5(data, usedforsecurity=False).hexdigest()} if ext == "jp2" else {})}))
             (manifests / "v1").mkdir(parents=True)
             (manifests / "v1/manifest.parquet").write_bytes(b"manifest")
             bin_dir = directory / "bin"

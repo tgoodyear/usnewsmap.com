@@ -1195,6 +1195,15 @@ def wait_for_room(camp_dir, max_pending, every_secs, busy, poll_secs=15, min_sec
         time.sleep(poll_secs)
 
 
+def bag_md5(raw):
+    """The md5 a bag records for `raw`. It is an integrity check, not security, so it is allowed
+    where FIPS mode disables md5 for security; Python before 3.9 has no such keyword."""
+    try:
+        return hashlib.md5(raw, usedforsecurity=False).hexdigest()
+    except TypeError:
+        return hashlib.md5(raw).hexdigest()
+
+
 def sidecar_mismatch(raw, side):
     """Why `raw` isn't the JP2 its fetcher's sidecar records, or None: a JP2 with this size,
     sha256 and bag md5 (the fetcher's matches_sidecar, for a JP2)."""
@@ -1209,8 +1218,7 @@ def sidecar_mismatch(raw, side):
         return f"it is {len(raw)} bytes; its sidecar says {side.get('bytes')}"
     if side.get("sha256") != hashlib.sha256(raw).hexdigest():
         return "its sha256 isn't its sidecar's"
-    # An integrity check, not security: allowed where FIPS mode disables md5 for security.
-    if md5 != hashlib.md5(raw, usedforsecurity=False).hexdigest():
+    if md5 != bag_md5(raw):
         return "its md5 isn't its sidecar's"
     return None
 

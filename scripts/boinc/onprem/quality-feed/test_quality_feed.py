@@ -911,7 +911,7 @@ class SourceTruncatedTest(unittest.TestCase):
             def sidecar(path, fetched, **extra):
                 Path(f"{path}.json").write_text(json.dumps({
                     "bytes": len(fetched), "sha256": hashlib.sha256(fetched).hexdigest(), "format": "jp2",
-                    "md5": hashlib.md5(fetched).hexdigest(), **extra}))
+                    "md5": hashlib.md5(fetched, usedforsecurity=False).hexdigest(), **extra}))
             sidecar(whole, whole.read_bytes())
             damaged = [Path(d) / f"damaged-{n}.jp2" for n in range(7)]
             longer = whole.read_bytes() + b"more"
@@ -926,7 +926,7 @@ class SourceTruncatedTest(unittest.TestCase):
             fetched = whole.read_bytes()
             Path(f"{damaged[6]}.json").write_text(json.dumps({  # as recorded before formats
                 "bytes": len(fetched), "sha256": hashlib.sha256(fetched).hexdigest(),
-                "md5": hashlib.md5(fetched).hexdigest()}))
+                "md5": hashlib.md5(fetched, usedforsecurity=False).hexdigest()}))
             out = io.StringIO()
             with contextlib.redirect_stdout(out):
                 feed.main(["jp2-check", "--verify-sidecar", "--scan", str(whole),
@@ -949,6 +949,15 @@ class SourceTruncatedTest(unittest.TestCase):
                     feed.main(["jp2-check", "--verify-sidecar", "--scan", str(scan)])
                 self.assertEqual(f"jp2-check: can't read {unread}: FileNotFoundError",
                                  str(failed.exception.code).split(": [Errno")[0])
+
+    def test_bag_md5_works_where_md5_takes_no_usedforsecurity(self):
+        plain = hashlib.md5
+        def md5(data, **kwargs):
+            if kwargs:
+                raise TypeError("'usedforsecurity' is an invalid keyword argument")
+            return plain(data)
+        with mock.patch.object(feed.hashlib, "md5", md5):
+            self.assertEqual(feed.bag_md5(b"jp2"), plain(b"jp2", usedforsecurity=False).hexdigest())
 
     def test_a_truncated_jp2_is_recorded_once_and_is_never_fetched_or_decoded_again(self):
         good_raw, bad_raw = jp2(codestream(2)), jp2(codestream(2)[:-2])

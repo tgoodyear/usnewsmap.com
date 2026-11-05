@@ -35,7 +35,7 @@ class PushKeepPage(unittest.TestCase):
         fetched = data if fetched is None else fetched
         side = {"bytes": len(fetched), "sha256": hashlib.sha256(fetched).hexdigest(), "format": "jpeg"}
         if ext == "jp2":
-            side.update(format="jp2", md5=hashlib.md5(fetched).hexdigest())
+            side.update(format="jp2", md5=hashlib.md5(fetched, usedforsecurity=False).hexdigest())
         Path(f"{path}.json").write_text(json.dumps(side))
 
     def run_push(self, *pages, extra=()):
