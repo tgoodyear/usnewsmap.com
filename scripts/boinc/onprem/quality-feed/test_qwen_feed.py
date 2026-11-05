@@ -1883,6 +1883,11 @@ class SourceTest(unittest.TestCase):
             (root / "units" / "bundle-00002-other").mkdir()
             (root / "units" / "bundle-00002-other" / "qwen.json").write_text("partly written")
             submit.assert_processed(root, sample)
+            # A submitted job that doesn't parse names its unit.
+            (root / "units" / "bundle-00002-other" / "submitted").touch()
+            with self.assertRaisesRegex(RuntimeError, "bundle-00002-other has an unreadable qwen.json"):
+                submit.assert_processed(root, sample)
+            (root / "units" / "bundle-00002-other" / "submitted").unlink()
             # A page no bundle holds needs its own terminal disposition.
             (bundle / "qwen.json").write_text(json.dumps({"id": "b" * 64, "doc_id": DOC, "pages": [{"doc_id": DOC}]}))
             with self.assertRaisesRegex(RuntimeError, other):

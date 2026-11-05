@@ -259,7 +259,14 @@ def assert_processed(root, sample):
             bundled = set()
             for marker in sorted((root / "units").glob("*/submitted")):
                 path = marker.parent / "qwen.json"
-                if path.exists() and (job := json.loads(path.read_text())).get("pages"):
+                if not path.exists():
+                    continue
+                try:
+                    job = json.loads(path.read_text())
+                except ValueError as error:
+                    raise RuntimeError(
+                        f"Submitted unit {path.parent.name} has an unreadable qwen.json: {error}") from error
+                if job.get("pages"):
                     bundled.update(documents(job))
         if doc in bundled:
             continue
