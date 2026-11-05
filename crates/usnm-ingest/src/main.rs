@@ -75,6 +75,7 @@ enum Command {
     SearchlogCopy(searchlog_copy::SearchlogCopyArgs),
     OcrLocalCopy(ocr_local_copy::OcrLocalCopyArgs),
     Pictures(pictures::PicturesArgs),
+    PicturesJoin(pictures::PicturesJoinArgs),
     ReleaseFinish(release::ReleaseFinishArgs),
     Run(run::RunArgs),
 }
@@ -168,6 +169,7 @@ impl Command {
             Command::SearchlogCopy { .. } => "searchlog-copy",
             Command::OcrLocalCopy { .. } => "ocr-local-copy",
             Command::Pictures { .. } => "pictures",
+            Command::PicturesJoin { .. } => "pictures-join",
             Command::Run { .. } => "run",
         }
     }
@@ -210,7 +212,8 @@ fn first_step(command: &Command) -> Option<Step> {
         | Command::CongressDamage { .. }
         | Command::SearchlogCopy { .. }
         | Command::OcrLocalCopy { .. }
-        | Command::Pictures { .. } => None,
+        | Command::Pictures { .. }
+        | Command::PicturesJoin { .. } => None,
     }
 }
 
@@ -311,6 +314,7 @@ async fn command(
         Command::SearchlogCopy(args) => searchlog_copy::searchlog_copy_command(args).await,
         Command::OcrLocalCopy(args) => ocr_local_copy::ocr_local_copy_command(args).await,
         Command::Pictures(args) => pictures::pictures_command(cli, args).await,
+        Command::PicturesJoin(args) => pictures::pictures_join_command(cli, state, args).await,
         Command::Duplicates => batches::duplicates_command(cli, state).await,
         Command::Prune(args) => prune::prune_command(cli, state, args).await,
         Command::Curate(args) => curate::curate_command(cli, state, start, args).await,

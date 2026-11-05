@@ -1,10 +1,13 @@
-//! `pictures`: Newspaper Navigator's picture boxes into the curated store (#1102, 04 §4.11).
+//! `pictures`: Newspaper Navigator's picture boxes into the curated store, and
+//! `pictures-join`: how they meet the curated pages (#1102, 04 §4.11).
 use std::path::PathBuf;
 
 use clap::Args;
+use usnm_ingest::pictures::join::{self, Placements};
 use usnm_ingest::pictures::source::{Source, HUB};
 use usnm_ingest::pictures::{self, Options};
 use usnm_ingest::release::Published;
+use usnm_ingest::state::State;
 
 use crate::Cli;
 
@@ -80,6 +83,61 @@ pub(crate) async fn pictures_command(
     Ok(None)
 }
 
+/// Report how the picture boxes `pictures` wrote meet the curated pages
+/// (#1102, 04 §4.11), as JSON on stdout: the rows of the revision's newest
+/// finished attempt by class (`page`, `same_batch_day`, `other_version_day`,
+/// `other_batch_day`, `not_curated`, `unplaced`), in total, by kind and by
+/// batch, with the distinct pages placed. A row is put on a page only through
+/// a scan named in a `--placements` file; a frame is never made into a `seq`.
+/// The rest are classed by the curated batches' title-days. Checks every part
+/// against provenance.json first and stops if one differs. Reads the state,
+/// each curated batch's counts.json and the parts; writes nothing and asks LoC
+/// nothing. Prints counts, never rows.
+#[derive(Args)]
+pub(crate) struct PicturesJoinArgs {
+    /// The dataset revision the rows were written at (the full 40-character
+    /// commit SHA, in lower case).
+    #[arg(long, value_parser = pictures::parse_revision)]
+    revision: String,
+    /// The store `pictures` wrote to, when not the curated store: a Blob
+    /// container URL or a directory.
+    #[arg(long)]
+    pictures: Option<String>,
+    /// A JSON Lines file whose lines name a page's `doc_id` and the
+    /// `iiif_base` of the scan it was fetched from, such as a scan fetcher's
+    /// `index-{tag}.jsonl`. Other fields are ignored. Repeat for more files.
+    #[arg(long)]
+    placements: Vec<PathBuf>,
+}
+
+pub(crate) async fn pictures_join_command(
+    cli: &Cli,
+    state: State,
+    args: &PicturesJoinArgs,
+) -> anyhow::Result<Option<Published>> {
+    let PicturesJoinArgs {
+        revision,
+        pictures,
+        placements,
+    } = args;
+    let curated = usnm_store::open(&cli.stores.curated)?;
+    let pictures = match pictures {
+        Some(location) => usnm_store::open(location)?,
+        None => curated.clone(),
+    };
+    let placements = Placements::read(placements)?;
+    let report = join::report(
+        &state,
+        curated.as_ref(),
+        pictures.as_ref(),
+        revision,
+        &placements,
+    )
+    .await?;
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    Ok(None)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -147,5 +205,69 @@ mod tests {
         assert!(parse(&["--revision", REVISION, "--max-unplaced-pct", "x"]).is_err());
         // A directory and a Hub are two sources.
         assert!(parse(&["--revision", REVISION, "--from-dir", "d", "--hub-url", "u"]).is_err());
+    }
+
+    fn parse_join(extra: &[&str]) -> Result<Cli, clap::Error> {
+        let mut args = vec![
+            "usnm-ingest",
+            "--curated",
+            "c",
+            "--reference",
+            "r",
+            "pictures-join",
+        ];
+        args.extend_from_slice(extra);
+        Cli::try_parse_from(args)
+    }
+
+    #[test]
+    fn pictures_join_takes_named_arguments_and_a_pinned_revision() {
+        let Command::PicturesJoin(PicturesJoinArgs {
+            revision,
+            pictures,
+            placements,
+        }) = parse_join(&["--revision", REVISION]).unwrap().command
+        else {
+            panic!("not pictures-join");
+        };
+        assert_eq!(revision, REVISION);
+        assert_eq!(pictures, None);
+        assert!(placements.is_empty());
+
+        assert!(parse_join(&[]).is_err());
+        assert!(parse_join(&["--revision", "main"]).is_err());
+        assert!(parse_join(&[REVISION]).is_err(), "named arguments only");
+        assert!(
+            parse_join(&["--revision", REVISION, "a.jsonl"]).is_err(),
+            "named arguments only"
+        );
+
+        let Command::PicturesJoin(PicturesJoinArgs {
+            pictures,
+            placements,
+            ..
+        }) = parse_join(&[
+            "--revision",
+            REVISION,
+            "--pictures",
+            "/var/lib/usnm-pictures/curated",
+            "--placements",
+            "index-full.jsonl",
+            "--placements",
+            "index-pct50.jsonl",
+        ])
+        .unwrap()
+        .command
+        else {
+            panic!("not pictures-join");
+        };
+        assert_eq!(pictures.as_deref(), Some("/var/lib/usnm-pictures/curated"));
+        assert_eq!(
+            placements,
+            [
+                PathBuf::from("index-full.jsonl"),
+                PathBuf::from("index-pct50.jsonl")
+            ]
+        );
     }
 }

@@ -18,9 +18,11 @@
 //!
 //! A row is keyed by the scan it was detected on, not by `page_key`: the
 //! dataset's `page_seq_num` is the JP2's frame number on its reel, not the
-//! page's place in its issue ([`url`]). The frame-to-`seq` join needs LoC's
-//! file list for each issue and is a later step.
+//! page's place in its issue ([`url`]). [`join`] puts a row on a page only
+//! through a scan whose page is known, and classes the others by the curated
+//! batches' title-days.
 
+pub mod join;
 pub mod read;
 pub mod source;
 pub mod url;
