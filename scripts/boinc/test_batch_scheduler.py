@@ -1244,6 +1244,38 @@ class QueueModeTests(unittest.TestCase):
         batch.tick(self.config, self.state, self.fake, lambda: None, NOW, dead_letter_failed=True)
         self.assertEqual(len([a for a in self.fake.actions if a[0] == "dead-letter"]), 1)
 
+    def test_refill_cap_shortens_the_refill_but_not_collection(self):
+        # #1447: a smaller batch_size leaves results held, and a held result stops the refill.
+        for batch_size, refill_cap, held, collects in ((1, None, 1, 1), (2, 1, 0, 2)):
+            with self.subTest(batch_size=batch_size, refill_cap=refill_cap):
+                # Two pages out, a page a tick; then both results come in.
+                self.state, self.fake = {}, QueueFake([message(number) for number in range(1, 8)])
+                self.config["batch_size"] = 1
+                for _ in range(2):
+                    batch.tick(self.config, self.state, self.fake, lambda: None, NOW)
+                self.config["batch_size"] = batch_size
+                for job in self.fake.jobs.values():
+                    job["spool"] = "/project/usnmocr/results/batch1"
+                self.fake.actions.clear()
+                event = batch.tick(self.config, self.state, self.fake, lambda: None, NOW,
+                                   refill_cap=refill_cap)
+                self.assertEqual(event["collection_backlog"], held)
+                self.assertEqual(event["refill_cap"], 1)
+                actions = [action[0] for action in self.fake.actions]
+                self.assertEqual(actions.count("collect"), collects)
+                if held:
+                    self.assertEqual(event["backpressure_reason"], "collection_backlog")
+                    self.assertNotIn("claim", actions)
+                else:
+                    # One page claimed, exported and submitted, not batch_size.
+                    self.assertEqual(self.fake.actions[collects:],
+                                     [("claim", 1), ("export", "test_batch", [message(3)["page"]]),
+                                      ("submit", self.fake.rows[-1]["job"]["id"])])
+        # Never more than batch_size.
+        self.state, self.fake = {}, QueueFake([message(number) for number in range(1, 8)])
+        event = batch.tick(self.config, self.state, self.fake, lambda: None, NOW, refill_cap=50)
+        self.assertEqual((self.fake.actions[0], event["refill_cap"]), (("claim", 2), 2))
+
     def test_claims_only_what_it_can_start_then_pushes_exports_and_submits(self):
         first = self.tick()
         self.assertEqual(self.fake.actions[0], ("claim", 2))
@@ -2340,6 +2372,39 @@ class QueueTransportTests(unittest.TestCase):
                 self.assertEqual(batch.main(["--config", f.name, "--state-dir", state,
                                              "--onprem-handoff", "collect", "--onprem-handoff", "claim"]), 0)
             self.assertEqual(json.loads(out.getvalue())["onprem_handoff"], ["claim", "collect"])
+
+    def test_main_refill_cap_is_checked_shown_and_reaches_the_tick(self):
+        with tempfile.NamedTemporaryFile("w", suffix=".json") as f, \
+                tempfile.TemporaryDirectory() as state:
+            json.dump(config(), f); f.flush()
+            for flags, shown in (([], 2), (["--refill-cap", "1"], 1), (["--refill-cap", "9"], 2)):
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    self.assertEqual(batch.main(["--config", f.name, "--state-dir", state, *flags]), 0)
+                self.assertEqual(json.loads(out.getvalue())["refill_cap"], shown)
+            for bad in ("0", "101"):
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err):
+                    self.assertEqual(batch.main(["--config", f.name, "--state-dir", state,
+                                                 "--refill-cap", bad]), 1)
+                self.assertIn("--refill-cap", err.getvalue())
+            seen = {}
+            fake = Fake()
+            fake.lock = contextlib.nullcontext
+            with patch.object(batch, "Transport", return_value=fake), \
+                    patch.object(batch, "tick", side_effect=lambda *a, **k: seen.update(k) or {}), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(batch.main(["--config", f.name, "--state-dir", state, "--apply",
+                                             "--refill-cap", "1"]), 0)
+            self.assertEqual(seen["refill_cap"], 1)
+        with tempfile.NamedTemporaryFile("w", suffix=".json") as f, \
+                tempfile.TemporaryDirectory() as state:
+            json.dump(surya_config(), f); f.flush()
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                self.assertEqual(batch.main(["--config", f.name, "--state-dir", state,
+                                             "--refill-cap", "1"]), 1)
+            self.assertIn("OCR plans", err.getvalue())
 
     def test_step_command_must_be_literal(self):
         for bad in ([], "ssh host", ["ssh", "host; rm -rf /"], ["ssh", "$(id)"]):

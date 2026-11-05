@@ -128,7 +128,8 @@ priority claims while unrelated GPU queues are full. Keep `max_pending: 40`,
 or parsing failures stop the tick rather than admitting unmeasured work.
 Use these existing runtime flags rather than changing an initialized
 configuration's immutable hash; never delete or reset controller state to
-change admission settings.
+change admission settings. To shorten a tick, use [`--refill-cap`](#refill-cap-1447),
+not a smaller `batch_size`.
 
 The systemd service `usnm-boinc-priority-controller.service` runs one tick with
 `--apply` and sets `Environment=USNM_SETTINGS_HOME=/root/.config/usnewsmap`.
@@ -317,6 +318,23 @@ These flags batch the server-side steps; each page is still its own BOINC workun
 also put several pages of one queue into one workunit with `pages_per_unit` and
 `bundle_app_version` (#1059, [boinc-ocr-bundles.md](boinc-ocr-bundles.md)). Unlike the flags,
 those are configuration, so turning them on makes a new plan.
+
+### Refill cap (#1447)
+
+`--refill-cap N` (1 to 100) has a tick claim, export and submit at most N pages, never more
+than `batch_size`; without it, a tick refills up to `batch_size`. Collection still takes up to
+`batch_size`. The refill is what makes a tick long: in November 2026 a full refill took 11 to
+13 minutes on the 5-minute timer, `submit` about 3.5 seconds a job against `collect`'s 2.5.
+Lowering `batch_size` instead would shrink collection too, and the results it leaves behind are
+held, which stops the refill (`backpressure_reason: "collection_backlog"`). `batch_size` is
+also configuration, so changing it makes a new plan; the flag changes no hash.
+
+Refilling lasts until the high watermark, so a smaller refill fills the queue over more
+ticks. The tick event and the plan printed without `--apply` show the cap in use as
+`refill_cap`. To set it, stop the timer, wait for a running tick to end, add the flag to the
+service's `ExecStart` in its drop-in, then `systemctl daemon-reload`, run one tick by hand
+and start the timer. It needs a checkout with this flag
+([Moving the controller checkout](#moving-the-controller-checkout-1412)).
 
 ### On-prem claim, collect and export (#967)
 
@@ -660,7 +678,7 @@ pages rather than overwriting them, including for historical cohorts.
    reconciliation.
 5. Persist selected pages **before** pushing or exporting. Push and export at
    most `batch_size` cached pages, then submit at most `batch_size`
-   reservations. Submissions, including recovered reservations, respect both the
+   reservations (or fewer with [`--refill-cap`](#refill-cap-1447)). Submissions, including recovered reservations, respect both the
    cohort high watermark and `max_global_pending`. Export transfers only the selected
    scans and sidecars, their existing journal entries and the single manifest
    snapshot; collection transfers only one journal, its optional `accepted/`
@@ -794,7 +812,8 @@ could not be written comes back when its hide runs out.
 
 ### The rest of the tick
 
-The tick claims only what it can start: `min(batch_size, target - pending)` less
+The tick claims only what it can start: `min(batch_size, target - pending)` (or the
+[refill cap](#refill-cap-1447) in place of `batch_size`) less
 the pages already claimed and not yet started, so backpressure holds back claims
 and the messages stay visible to the node. Every claim is saved to the
 controller's state before its scan is pushed. The controller then pushes each
