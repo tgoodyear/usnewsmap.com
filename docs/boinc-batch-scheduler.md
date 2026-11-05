@@ -1072,7 +1072,138 @@ the stale `scheduler/controller.lock` blob lease once the former owner is
 confirmed stopped. Do not delete journals, reset state, or break a live lease. A
 missing reply is not evidence that `create_work` failed. The inventory fails
 closed above 10,000 journals or existing native workunit IDs, or above 100,000
-spool entries. Archive only drained, operator-verified history before resuming.
+spool entries. Archive only drained, operator-verified history before resuming,
+with [the archive tool](#archive-drained-history-1483).
+
+### Archive drained history (#1483)
+
+`scripts/boinc/archive_history.py` moves the oldest fully published pages'
+history out of every store that counts towards those caps, one batch at a time,
+into a retained archive. It deletes nothing that it hasn't first copied and
+checked. Every step is a read-only dry run unless `--apply` is given. The dry
+run takes no lease or lock and writes nothing, beyond the token cache `az` keeps
+as it does for every tick. The tool has three steps, each
+run on the host that holds its stores, in this order for every batch:
+
+| Step       | Host                                      | Stores                                                                                                                                                                              |
+| ---------- | ----------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `dispatch` | the controller host (CT 211)              | the controller state's `claims`, `selected`, `held_since` and `dead_lettered` entries, then the hand-off blobs `dispatch/jobs/<id>/`, `dispatch/quarantine/<id>/` and `spool/<id>/` |
+| `bridge`   | the BOINC host (CT 230)                   | the bridge journals `$HANDOFF_DIR/jobs/<id>/` and their spool outputs under the project's `results/`                                                                                |
+| `db`       | where a mysql client reaches the database | the batch's finished `workunit` rows and their `result` rows                                                                                                                        |
+
+A page qualifies only when all of its journals form one retry chain that ends
+`published`, the last write of that journal is at least `--min-age-hours` (24)
+old, and the controller state agrees. A page of the current plan must be
+claimed for the batch its journal names. A page of an older plan must not be
+claimed, selected or in a fixed plan's page list. Pages are taken oldest
+published first, `--pages` (1,000) at a time. A fixed page list is never
+archived, because its pages would be selected and exported again. Pages that
+are prepared, reserved, submitting, submitted or failed (including
+dead-lettered) stay.
+
+The controller state goes before the blobs. A journal whose claim is gone fails
+the tick closed in `owned_records`, but a claim whose journal is gone would be
+exported again. Each blob is copied, its sha256 is kept in `handoff-sha256/`,
+and only then is the blob deleted, and only while it's still the version
+copied. A resumed step checks every copy against that sha256, so a blob without
+a Content-MD5 is checked too. The dry run and the apply both check that the same pages need
+work before and after the batch. The apply refuses if they don't. The bridge
+and database steps can lag behind safely: a tick reads only the journals of
+pages it owns. `claims/<doc_id>.json` and the `ocr-out` ledger are kept, so a
+redelivered queue message is still answered. The tool lowers the state's
+`published` count by the pages it archives, so `newly_published` stays right.
+`pages_per_hour` drops, because it counts what is left.
+
+Each step writes its plan (`manifest.json`, `bridge-plan.json`, `db-plan.json`)
+before it changes anything, and a receipt in `receipts/` when it's done. The
+receipt holds the counts and hashes from before and after, and a digest of the
+archived files. A step that stops half way, from a crash, a failed request or a
+changed blob, resumes when it's run again with the same arguments. It finishes
+the planned batch and doesn't plan another one. A blob or file that changed
+since the plan stops the step: reconcile it by hand. The `dispatch` apply holds
+the controller's lock file and its `scheduler/controller.lock` blob lease
+throughout. It refuses if the lock file is missing, since the controller
+creates it on its first tick, so a missing one means a wrong `--state-dir`. A killed apply leaves that lease held, like a crashed controller.
+Once the process is confirmed gone, the operator breaks it as above.
+
+The maintainer approves each live run. To archive:
+
+1. Pause the controller on CT 211, and wait for any running tick to end:
+
+   ```sh
+   systemctl stop usnm-boinc-priority-controller.timer
+   systemctl is-active usnm-boinc-priority-controller.service   # until inactive or failed
+   ```
+
+2. Copy `archive_history.py` and the controller's own `batch_scheduler.py` into
+   one working directory, such as `/root/usnm-archive`. The tool imports the
+   scheduler beside it, and the state names that scheduler's config digest.
+   Dry-run the `dispatch` step there. Read `journals`, `pages.eligible`,
+   `pages.skipped`, `batch` (pages, jobs, blobs, bytes), `after_batch` and
+   `outstanding_pages.unchanged`. The `--archive-dir` needs room for the
+   batch's bytes, and the apply checks this. Each job's blobs hold its page,
+   so a page takes about 7 MB and 1,000 pages about 7 GB. CT 211's root
+   filesystem is too small for that: give the archive a dataset of its own.
+
+   ```sh
+   python3 /root/usnm-archive/archive_history.py dispatch \
+     --config /etc/usnm/boinc-priority-controller.json \
+     --state-dir /var/lib/usnm-priority-controller \
+     --archive-dir <archive dir>
+   ```
+
+3. Apply it: the same command plus `--apply --confirm-controller-paused`. It
+   prints the batch's receipt, which is also kept in
+   `<archive dir>/batches/<NNNN>/receipts/dispatch.json`.
+4. Copy that batch's `manifest.json` and `receipts/dispatch.json`, unchanged, to
+   `/srv/usnm-boinc/project/archive/batches/<NNNN>/` on the BOINC host, and
+   `archive_history.py` from the same checkout to `/srv/usnm-boinc/project/archive/`.
+   Use the same `<NNNN>`: the step refuses a receipt for another batch, and a
+   `bridge-plan.json` made from another manifest. Then dry-run and apply the
+   `bridge` step there as root. The apply holds the bridge step locks
+   (`/run/usnm-boinc-step.lock`, `/run/usnm-boinc-handoff.lock` and
+   `$HANDOFF_DIR/.lock`), so other bridge steps fail while it runs.
+
+   ```sh
+   python3 /srv/usnm-boinc/project/archive/archive_history.py bridge \
+     --batch-dir /srv/usnm-boinc/project/archive/batches/<NNNN> \
+     --handoff-dir /srv/usnm-boinc/project/handoff \
+     --results /srv/usnm-boinc/project/usnmocr/results
+   # then the same with --apply --confirm-controller-paused
+   ```
+
+   A spool output of an OCR bundle is archived only once none of the bundle's
+   pages is left on the server. The step refuses a `--handoff-dir` or
+   `--results` that is itself a symlink: name the directory it points to.
+
+5. Dry-run and apply the `db` step in `usnm-boinc-server`, where the batch is
+   `/project/archive/batches/<NNNN>`. Give it a 0600 mysql defaults file for a
+   user that can delete from `workunit` and `result`, and remove the file
+   afterwards. The bridge receipt must name the batch's manifest. The step
+   works in chunks of 500 workunits, each in one transaction in one client
+   session. It locks the chunk's rows (`SELECT ... FOR UPDATE`), checks them
+   again and exports them to `db/chunk-<NNNN>-attempt-<N>/`, and only then
+   deletes them. It deletes only workunits that are assimilated (2) with their
+   input files deleted (2), and whose every result is over (5) with its output
+   files deleted (2). It leaves the others for BOINC's `db_purge` and counts
+   them as `deferred`. Those still count towards the 10,000 existing-workunit
+   cap. A stop before a chunk's `COMMIT` rolls it back, and the resumed step
+   exports the rows again beside the first attempt. A stop after it leaves the
+   export, which the resumed step counts as deleted.
+
+   ```sh
+   podman exec usnm-boinc-server python3 /project/archive/archive_history.py db \
+     --batch-dir /project/archive/batches/<NNNN> \
+     --mysql-defaults-file <defaults file> --database <DB_NAME from the server's settings>
+   # then the same with --apply --confirm-controller-paused
+   ```
+
+6. Repeat from step 2 until the journals are well under the cap. Then resume
+   with `systemctl start usnm-boinc-priority-controller.timer`, and watch one
+   tick end without `dispatch inventory limit/consistency failure`.
+
+The archive is the only copy of the moved history. Keep it, and back it up
+with the controller state.
 
 ### Production acceptance remains separate
 
