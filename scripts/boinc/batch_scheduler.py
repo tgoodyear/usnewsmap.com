@@ -29,6 +29,9 @@ STAGES = {"prepared", "reserved", "submitting", "submitted", "published", "faile
 MAX_JOBS = 10000
 MAX_GLOBAL_PENDING = 100000
 DEFAULT_MAX_GLOBAL_PENDING = 1000
+# The feeder's shared-memory work slots (shmem_work_items in contrib-compute/boinc/config.xml.template).
+# With --other-app-budget, every app's unassimilated work, counted in full, stays under it (#1474).
+FEEDER_SHMEM_SLOTS = 4096
 MAX_STATUS_BYTES = 1024 * 1024
 MAX_FAILURE_OUTPUT_CHARS = 16384
 OCR_APP_NAME = "usnm_ocr"
@@ -1379,7 +1382,8 @@ def _select_cohort_entry(mapping, keys, *, allow_single_default=False):
 
 
 def resolve_watermarks(config, snapshot, status=None, *,
-                       low_watermark=None, high_watermark=None, max_global_pending=None):
+                       low_watermark=None, high_watermark=None, max_global_pending=None,
+                       other_app_budget=None):
     cohorts = config.get("cohorts") or {}
     app = normalize_cohort_apps(config.get("app", OCR_APP_NAME))
     platform = normalize_cohort_platform(config.get("platform", "all"))
@@ -1414,7 +1418,8 @@ def resolve_watermarks(config, snapshot, status=None, *,
     explicit_global = (max_global_pending if max_global_pending is not None
                        else config.get("max_global_pending"))
     cohort_mode = (status is not None or explicit_high is not None or explicit_low is not None or
-                   explicit_global is not None or "cohorts" in config or "cohort" in config)
+                   explicit_global is not None or other_app_budget is not None or
+                   "cohorts" in config or "cohort" in config)
 
     if explicit_high is not None:
         require(type(explicit_high) is int and 1 <= explicit_high <= MAX_JOBS,
@@ -1451,6 +1456,11 @@ def resolve_watermarks(config, snapshot, status=None, *,
         global_cap = max(DEFAULT_MAX_GLOBAL_PENDING, high_target, config["max_pending"])
     else:
         global_cap = high_target
+    if other_app_budget is not None:
+        # A budget as large as the cap would leave the cohort no share of it.
+        require(type(other_app_budget) is int and
+                0 <= other_app_budget < min(global_cap, FEEDER_SHMEM_SLOTS),
+                "other_app_budget must be below max_global_pending and the feeder's slots")
 
     return {
         "app": app,
@@ -1461,8 +1471,46 @@ def resolve_watermarks(config, snapshot, status=None, *,
         "low_watermark": low_target,
         "high_watermark": high_target,
         "max_global_pending": global_cap,
+        "other_app_budget": other_app_budget,
+        "global_hard_cap": None if other_app_budget is None else FEEDER_SHMEM_SLOTS,
         "cohort_mode": cohort_mode,
     }
+
+
+def ocr_share(in_flight, ocr_workunits, status, ocr_app):
+    """The in-flight workunits that are the cohort app's own. Without its per-app status, all
+    of them: unattributed work is treated as the cohort's."""
+    if status is None or ocr_app not in status["apps"]:
+        return in_flight
+    return min(in_flight, max(ocr_workunits, status["apps"][ocr_app]["runnable"]))
+
+
+def counted_pending(info, pending, other):
+    """The part of `pending` (unassimilated workunits of every app plus retained backlog, `other`
+    of them other apps') that max_global_pending counts. With other_app_budget, other apps'
+    work counts only up to the budget, so a backlog no host can take can't fill the cap and
+    starve the cohort (#1474); without it, all of it counts."""
+    budget = info["other_app_budget"]
+    return pending if budget is None else pending - max(0, other - budget)
+
+
+def global_room(info, pending, other):
+    """Room under the global caps, negative past one: max_global_pending for the counted part
+    and, with a budget, the feeder's slots for all of it, every app's work counted in full."""
+    room = info["max_global_pending"] - counted_pending(info, pending, other)
+    if info["global_hard_cap"] is not None:
+        room = min(room, info["global_hard_cap"] - pending)
+    return room
+
+
+def global_cap_reason(info, pending, other):
+    """Which global cap `pending` has reached, if any. The hard one first: raising
+    max_global_pending doesn't lift it."""
+    if info["global_hard_cap"] is not None and pending >= info["global_hard_cap"]:
+        return "global_hard_cap"
+    if counted_pending(info, pending, other) >= info["max_global_pending"]:
+        return "global_safety_cap"
+    return None
 
 
 def _extract_status(snapshot, transport, server_status=None, *, drain=False):
@@ -1659,7 +1707,7 @@ def held_results(state, held_jobs, now):
 
 def tick(config, state, transport, persist, now=None, *, drain=False, dead_letter_failed=False,
          low_watermark=None, high_watermark=None, max_global_pending=None, server_status=None,
-         refill_cap=None):
+         refill_cap=None, other_app_budget=None):
     if config.get("app") == SURYA_APP_NAME:
         require(refill_cap is None, "--refill-cap is for OCR plans")
         return surya_tick(config, state, transport, persist, now, drain=drain,
@@ -1744,25 +1792,28 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
     persist()
     # Before collection: a host admitted now has its held results published by this tick's
     # collect, which otherwise stops at the first result it must hold.
-    gold_runs = []
+    gold_runs, gold_reserved = [], 0
     if not drain and config.get("gold_onboarding"):
-        # The same cap and the same retained backlog the refill below counts, from the same
+        # The same caps and the same retained backlog the refill below counts, from the same
         # status. Without status there is no room for gold units (promotion still runs); the
         # status read after collection fails the tick as it always has.
         try:
             gold_status = _extract_status(snapshot, transport, server_status=server_status)
-            cap = resolve_watermarks(config, snapshot, gold_status, low_watermark=low_watermark,
-                                     high_watermark=high_watermark,
-                                     max_global_pending=max_global_pending)["max_global_pending"]
+            caps = resolve_watermarks(config, snapshot, gold_status, low_watermark=low_watermark,
+                                      high_watermark=high_watermark,
+                                      max_global_pending=max_global_pending,
+                                      other_app_budget=other_app_budget)
             uncollected, missing = retained_backlog(config, records, owned, selected, pending_jobs)
-            room = cap - (max(snapshot["pending_workunits"], ocr_workunit_counts(snapshot, pending_jobs)[0])
-                          + uncollected + len(missing))
+            ocr_units = ocr_workunit_counts(snapshot, pending_jobs)[0]
+            in_flight = max(snapshot["pending_workunits"], ocr_units)
+            room = global_room(caps, in_flight + uncollected + len(missing),
+                               in_flight - ocr_share(in_flight, ocr_units, gold_status, caps["app"]))
         except (ValueError, KeyError, TypeError, OSError, RuntimeError):
             room = 0
-        gold_runs, reserved = gold_onboarding(config, state, transport, persist, now,
-                                              held=bool(held_jobs), room=room)
+        gold_runs, gold_reserved = gold_onboarding(config, state, transport, persist, now,
+                                                   held=bool(held_jobs), room=room)
         # The gold units just issued are in flight too, for this tick's refill.
-        snapshot = {**snapshot, "pending_workunits": snapshot["pending_workunits"] + reserved}
+        snapshot = {**snapshot, "pending_workunits": snapshot["pending_workunits"] + gold_reserved}
     to_collect = []
     for page, record in owned.items():
         job_id = record["job"]["id"]
@@ -1790,7 +1841,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
     cohort_info = resolve_watermarks(
         config, snapshot, status,
         low_watermark=low_watermark, high_watermark=high_watermark,
-        max_global_pending=max_global_pending,
+        max_global_pending=max_global_pending, other_app_budget=other_app_budget,
     )
     ocr_app = cohort_info["app"]
     active_hosts = cohort_info["active_hosts"]
@@ -1814,7 +1865,6 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         other_status_results = sum(
             item["runnable"] for name, item in status["apps"].items() if name != ocr_app
         )
-        ocr_in_flight = min(global_in_flight, max(ocr_workunits, ocr_status_results))
     else:
         ocr_unsent = global_in_flight
         ocr_in_progress = 0
@@ -1823,12 +1873,16 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
             item["runnable"] for name, item in (status["apps"].items() if status is not None else ())
             if name != ocr_app
         )
-        ocr_in_flight = global_in_flight
+    ocr_in_flight = ocr_share(global_in_flight, ocr_workunits, status, ocr_app)
 
     other_pending = max(0, global_in_flight - ocr_in_flight)
+    # Other apps' work the budget covers. This tick's gold units count in full: they were
+    # issued from room under the counted cap.
+    budgeted_other = max(0, other_pending - gold_reserved)
     ocr_in_flight += bundled_pages
     cohort_pending = ocr_in_flight + uncollected_not_pending + len(missing)
     global_pending = global_in_flight + uncollected_not_pending + len(missing)
+    global_pending_counted = counted_pending(cohort_info, global_pending, budgeted_other)
     cohort_pending_results = (max(ocr_workunits, ocr_status_results) + bundled_pages
                               + uncollected_not_pending + len(missing))
     other_app_pending_results = other_status_results
@@ -1850,7 +1904,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         refilling = bool(state.get("refilling", False))
 
     cohort_free = max(0, high_target - pending) if refilling else 0
-    global_free = max(0, global_cap - global_pending)
+    global_free = max(0, global_room(cohort_info, global_pending, budgeted_other))
     free = min(cohort_free, global_free)
     submitted = 0
     if target and not held and not drain:
@@ -1883,7 +1937,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
                       record["job"]["id"] not in pending_jobs | candidates for record in records)
         backlog += sum(page not in owned for page in selected)
         cohort_submit_room = max(0, target - ocr_in_flight - backlog)
-        global_submit_room = max(0, global_cap - global_in_flight - backlog)
+        global_submit_room = max(0, global_room(cohort_info, global_in_flight + backlog, budgeted_other))
         submit_limit = min(refill, cohort_submit_room, global_submit_room)
         to_submit = []
         for record in owned.values():
@@ -1916,6 +1970,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
     else:
         state["refilling"] = refilling
 
+    global_block = global_cap_reason(cohort_info, global_pending, budgeted_other)
     if drain:
         backpressure = True
         backpressure_reason = "draining"
@@ -1925,18 +1980,18 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
     elif target == 0:
         backpressure = True
         backpressure_reason = "no_active_hosts"
-    elif cohort_mode and global_pending >= global_cap:
+    elif cohort_mode and global_block:
         backpressure = True
-        backpressure_reason = "global_safety_cap"
+        backpressure_reason = global_block
     elif pending >= target:
         backpressure = True
         backpressure_reason = "cohort_high_watermark"
     elif not refilling:
         backpressure = True
         backpressure_reason = "cohort_hysteresis"
-    elif global_pending >= global_cap:
+    elif global_block:
         backpressure = True
-        backpressure_reason = "global_safety_cap"
+        backpressure_reason = global_block
     else:
         backpressure = False
         backpressure_reason = None
@@ -2009,10 +2064,13 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         "cohort_pending": cohort_pending,
         "other_app_pending": other_pending,
         "global_pending": global_pending,
+        "global_pending_counted": global_pending_counted,
         "cohort_pending_results": cohort_pending_results,
         "other_app_pending_results": other_app_pending_results,
         "global_pending_results": global_pending_results,
         "max_global_pending": global_cap,
+        "other_app_budget": cohort_info["other_app_budget"],
+        "global_hard_cap": cohort_info["global_hard_cap"],
         "cohort": {
             "name": cohort_info["cohort"],
             "app": ocr_app,
@@ -2049,6 +2107,10 @@ def main(argv=None):
     parser.add_argument("--refill-cap", type=int, default=None,
                         help="claim, export and submit at most this many pages a tick (1-100; never more than "
                              "batch_size, the default); collection still takes up to batch_size (#1447)")
+    parser.add_argument("--other-app-budget", type=int, default=None,
+                        help="count at most this many of other apps' unassimilated workunits toward "
+                             "--max-global-pending (below it), and hold all apps' work under the feeder's "
+                             f"{FEEDER_SHMEM_SLOTS} slots (#1474); needs per-app status to take effect")
     parser.add_argument("--server-status-url", default=None,
                         help="optional https server_status.php?xml=1 URL for per-app queue counts")
     parser.add_argument("--server-status-file", type=Path, default=None,
@@ -2088,6 +2150,11 @@ def main(argv=None):
         if args.refill_cap is not None:
             require(1 <= args.refill_cap <= 100, "invalid --refill-cap")
             require(config.get("app") != SURYA_APP_NAME, "--refill-cap is for OCR plans")
+        if args.other_app_budget is not None:
+            # Checked again against the cap the tick resolves; this catches it in a dry run.
+            cap = (args.max_global_pending if args.max_global_pending is not None
+                   else config.get("max_global_pending", FEEDER_SHMEM_SLOTS))
+            require(0 <= args.other_app_budget < min(cap, FEEDER_SHMEM_SLOTS), "invalid other_app_budget")
         if args.server_status_url is not None:
             _validate_status_url(args.server_status_url)
         surya = config.get("app") == SURYA_APP_NAME
@@ -2130,6 +2197,8 @@ def main(argv=None):
                     args.max_global_pending if args.max_global_pending is not None
                     else config["max_global_pending"]
                 )
+            if args.other_app_budget is not None:
+                plan_event["other_app_budget"] = args.other_app_budget
             print(json.dumps(plan_event))
             return 0
         args.state_dir = args.state_dir.resolve()
@@ -2163,6 +2232,8 @@ def main(argv=None):
                 tick_kwargs["max_global_pending"] = args.max_global_pending
             if args.refill_cap is not None:
                 tick_kwargs["refill_cap"] = args.refill_cap
+            if args.other_app_budget is not None:
+                tick_kwargs["other_app_budget"] = args.other_app_budget
             with transport.lock():
                 event = tick(config, state, transport, lambda: save(path, state), **tick_kwargs)
             # Again after the lease is released, so the line counts the release too.

@@ -240,7 +240,10 @@ def limits_now(event):
     pending = event.get("global_pending")
     if type(pending) is int:
         held = ", held back" if event.get("backpressure") is True else ""
-        now["ocr_claim.now"] = f"{pending} pending across all apps at the last passing tick{held}"
+        counted = event.get("global_pending_counted")
+        # Under an other-app budget (#1474) the cap counts less than is pending.
+        counted = f" ({counted} counted)" if type(counted) is int and counted != pending else ""
+        now["ocr_claim.now"] = f"{pending} pending across all apps{counted} at the last passing tick{held}"
     return now
 
 
@@ -283,10 +286,13 @@ def collect_controller(window, entries):
                 # At BOINC, held for collection, or selected with no job yet.
                 if type(event.get("cohort_pending")) is int:
                     window.gauge("ocr_pending_pages", at, number(event["cohort_pending"]))
+                cap = f"{int(number(event.get('max_global_pending')))} across all apps"
+                budget, hard = event.get("other_app_budget"), event.get("global_hard_cap")
+                if type(budget) is int and type(hard) is int:
+                    cap += f" with other apps counted up to {budget}, and {hard} counted in full"
                 limits = {"usnm_ocr": f"{int(number(event.get('high_watermark')))} runnable workunits "
                                       "(controller high watermark)",
-                          "ocr_claim": f"{int(number(event.get('high_watermark')))} pending pages; "
-                                       f"{int(number(event.get('max_global_pending')))} across all apps",
+                          "ocr_claim": f"{int(number(event.get('high_watermark')))} pending pages; {cap}",
                           **limits_now(event)}
     limits["controller"] = "one tick at a time, on a 5 minute timer"
     return limits
