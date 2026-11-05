@@ -85,7 +85,7 @@ The same spec and inputs give the same bytes. To check the committed files witho
 scripts/fraktur-pilot/sample.py --check --spec ocr/fraktur-pilot/spec.json --out ocr/fraktur-pilot
 ```
 
-The rationale texts in `spec.json` were corrected after the draw: they had given the rule-of-three and ±10-point bounds of a simple random sample as this design's. No design field changed (the seed, frame, sizes, eras, allocation and exclusions), and the corrected spec draws the same `pages.jsonl`; only `summary.json`'s `spec_sha256` and `SHA256SUMS` changed. The spec as declared before the draw is in the commit that added it.
+The rationale texts in `spec.json` were corrected after the draw: they had given the rule-of-three and ±10-point bounds of a simple random sample as this design's. No design field changed (the seed, frame, sizes, eras, allocation and exclusions), and the corrected spec draws the same `pages.jsonl`; only `summary.json`'s `spec_sha256` and `SHA256SUMS` changed. The spec as declared before the draw (sha256 `69922b721300672fc23d0052ae64c34e84be4252a9abdcecf03295246ab9228d`) is the first commit of #1563.
 
 After the draw, the on-disk sidecars of all 1,300 selected pages were read on the scan host and matched their records, and 20 scans picked at random were hashed and matched their `scan_sha256`.
 
