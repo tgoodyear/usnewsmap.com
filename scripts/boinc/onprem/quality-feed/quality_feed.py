@@ -716,11 +716,13 @@ def delete_shipped(a, camp_dir, done_path, quality_docs, deleted_path, kept_path
     that many bytes in all, and the rest are DELETEd.
 
     A kept scan leaves the list, no longer counting against the budget, once OCR asks for it
-    (it's in `ocr_docs`, never inferred from `quality_docs`, which a missing list would empty;
-    OCR's worker deletes it after reading it), or once its sidecar is found gone and a DELETE
-    confirms its bytes are too. --keep-verify of the longest-unchecked are looked up a round
-    (with `verify`; the follower asks once a round, whatever its campaigns); one the scan
-    server doesn't answer ends the round's lookups and deletes.
+    (it's in `ocr_docs`, never inferred from `quality_docs`, which a missing list would empty)
+    and its sidecar is there, since OCR's worker reads a scan only by its sidecar and deletes
+    it after; or once its sidecar is found gone and a DELETE confirms its bytes are too. One
+    OCR asked for stays listed and counted, but is never evicted, until one of those is
+    found. With `verify` (the follower asks once a round, whatever its campaigns), each of
+    those is looked up, and --keep-verify of the other longest-unchecked; one the scan server
+    doesn't answer ends the round's lookups and deletes.
 
     `deleted_path` gets every page this is done with, deleted or released, so neither is
     weighed again; with `retired_path`, the kept list's pages go there instead: the list is
@@ -775,8 +777,24 @@ def delete_shipped(a, camp_dir, done_path, quality_docs, deleted_path, kept_path
             return False
         return True
 
-    released = [doc for doc in kept if doc in ocr_docs]
-    if budget and verify:
+    released = []
+    claimed = {doc: k for doc, k in kept.items() if doc in ocr_docs}
+    for doc, k in sorted(claimed.items()) if verify else ():
+        try:
+            there = scan_exists(a.scan_server, k[0])
+        except (urllib.error.URLError, OSError) as e:
+            log("claimed kept scan check failed; next round", doc_id=doc, error=str(e)[:200])
+            if isinstance(e, urllib.error.HTTPError):
+                continue
+            unreachable = True
+            break
+        # Without its sidecar OCR won't read it, so a DELETE makes sure its bytes are gone (one
+        # of ours that failed halfway leaves just the sidecar gone).
+        if there or delete(doc, k[0]):
+            released.append(doc)
+        if unreachable:
+            break
+    if budget and verify and not unreachable:
         for doc, k in heapq.nsmallest(getattr(a, "keep_verify", 0), kept.items(), key=lambda kv: kv[1][3]):
             if doc in ocr_docs:
                 continue
@@ -800,8 +818,9 @@ def delete_shipped(a, camp_dir, done_path, quality_docs, deleted_path, kept_path
                 break
     for doc in released:
         kept.pop(doc, None)
-    pool = {**kept, **shipped}
-    want, used = {}, 0
+        claimed.pop(doc, None)
+    pool = {d: k for d, k in {**kept, **shipped}.items() if d not in claimed}
+    want, used = {}, sum(k[1] for k in claimed.values())
     if budget:
         # Most damaged first (unscored last); the first that doesn't fit ends the list.
         for doc, k in sorted(pool.items(), key=lambda kv: (-(kv[1][2] if kv[1][2] is not None else -1.0), kv[0])):
@@ -818,13 +837,14 @@ def delete_shipped(a, camp_dir, done_path, quality_docs, deleted_path, kept_path
     # the kept list's bytes never grow past the budget (a budget cut below them is reached as
     # those deletes succeed), and no scan waits on the server outside both lists.
     stuck = {}
-    for doc in sorted(d for d in kept if d not in want):
+    for doc in sorted(d for d in kept if d not in want and d not in claimed):
         if delete(doc, kept[doc][0]):
             out.append(doc)
         else:
             stuck[doc] = kept[doc]
     keep = {d: k for d, k in want.items() if d in kept or not stuck}
     keep.update(stuck)
+    keep.update(claimed)
     if stuck:
         log("kept scans not deleted; newly shipped ones deleted in their place", pages=len(stuck),
             not_kept=sum(1 for d in want if d not in keep))

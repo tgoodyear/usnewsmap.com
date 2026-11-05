@@ -757,15 +757,16 @@ class FollowTest(unittest.TestCase):
                 self.assertEqual(ship(set()), 0)
                 self.assertEqual(set(feed.read_kept(str(kept))), {"q1", "q2"})
 
-                # OCR asks for q2 (its worker deletes the scan) and q1's sidecar is found gone:
-                # q2 leaves the list without a DELETE, q1 once one makes sure of its bytes,
-                # which makes room for a newly shipped q6.
+                # OCR asks for q2 (its worker reads it by its sidecar and deletes it) and q1's
+                # sidecar is found gone: q2 leaves the list without a DELETE, q1 once one makes
+                # sure of its bytes, which makes room for a newly shipped q6.
                 calls.clear()
                 gone.add("buffer/b/q1.jp2")
                 with open(done, "a") as f:
                     f.write("q6\tc2\tbuffer/b/q6.jp2\t40\t0.3\n")
                 self.assertEqual(ship({"q1", "q3", "q4", "q5", "q6"}, {"q2"}), 0)
-                self.assertEqual(calls, [("GET", "buffer/b/q1.jp2.json"), ("DELETE", "buffer/b/q1.jp2")])
+                self.assertEqual(calls, [("GET", "buffer/b/q2.jp2.json"), ("GET", "buffer/b/q1.jp2.json"),
+                                         ("DELETE", "buffer/b/q1.jp2")])
                 self.assertEqual(set(feed.read_kept(str(kept))), {"q6"})
                 self.assertEqual(feed.read_lines(str(deleted)), {"q1", "q2", "q3", "q4", "q5"})
 
@@ -775,6 +776,40 @@ class FollowTest(unittest.TestCase):
                 self.assertEqual(ship({"q6"}), 1)
                 self.assertEqual(calls, [("DELETE", "buffer/b/q6.jp2")])
                 self.assertEqual(feed.read_kept(str(kept)), {})
+
+    def test_a_half_deleted_kept_scan_ocr_asks_for_stays_listed_until_its_bytes_are_gone(self):
+        with tempfile.TemporaryDirectory() as d:
+            camp, done, deleted, kept = Path(d, "camp"), Path(d, "done.txt"), Path(d, "deleted.txt"), Path(d, "kept.tsv")
+            camp.mkdir()
+            done.write_text("new\tc1\tbuffer/b/new.jp2\t40\t0.9\n")
+            # An eviction of ours marked half's sidecar done but couldn't unlink it, so OCR's
+            # worker won't read it: asking for it doesn't make its bytes go.
+            kept.write_text("half\tbuffer/b/half.jp2\t40\t0.1\t0\n")
+            a = types.SimpleNamespace(scan_server="http://s", keep_bytes=60, keep_verify=10)
+            calls, status = [], {"buffer/b/half.jp2.json": 404, "buffer/b/half.jp2": 500}
+
+            def fake(req, timeout=0):
+                path = req.full_url.removeprefix("http://s/scans/")
+                calls.append((req.get_method(), path))
+                if status.get(path):
+                    raise urllib.error.HTTPError(req.full_url, status[path], "error", {}, None)
+                return io.BytesIO(b"{}")
+
+            ship = lambda: feed.delete_shipped(a, str(camp), str(done), {"new"}, str(deleted), str(kept), {"half"})
+            with mock.patch.object(feed.urllib.request, "urlopen", fake), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                # half stays listed and counted, and isn't evicted: new doesn't fit beside it.
+                self.assertEqual(ship(), 1)
+                self.assertEqual(calls, [("GET", "buffer/b/half.jp2.json"), ("DELETE", "buffer/b/half.jp2"),
+                                         ("DELETE", "buffer/b/new.jp2")])
+                self.assertEqual(set(feed.read_kept(str(kept))), {"half"})
+
+                calls.clear()
+                status["buffer/b/half.jp2"] = 0
+                self.assertEqual(ship(), 0)
+                self.assertEqual(calls, [("GET", "buffer/b/half.jp2.json"), ("DELETE", "buffer/b/half.jp2")])
+                self.assertEqual(feed.read_kept(str(kept)), {})
+                self.assertEqual(feed.read_lines(str(deleted)), {"new", "half"})
 
     def test_a_kept_scan_that_fails_to_go_holds_its_place_and_its_replacement_is_deleted(self):
         with tempfile.TemporaryDirectory() as d:

@@ -1402,12 +1402,14 @@ listed in `<state>/kept.tsv`, one list for every campaign, so a new campaign's b
 what an earlier one kept. A newly shipped page more damaged than the least damaged kept
 one takes its place, and that one is deleted; if that delete fails, the kept page holds its
 place and the newcomer is deleted instead, so the list never passes the budget and no scan
-sits on the server outside it. A kept page OCR later asks for leaves the list without a delete, since OCR's
-worker deletes it after reading it: `ocr_manifest.py build` records every queued page whose
+sits on the server outside it. A kept page OCR later asks for leaves the list without a
+delete once its sidecar is found there, since OCR's worker reads a scan only by its sidecar
+and deletes it after reading it: `ocr_manifest.py build` records every queued page whose
 scan is already on the scan server in `ocr-docs.txt`, not only its manifests' pages. So does
 one whose sidecar is found gone, once a DELETE makes sure its bytes are too (one of ours that
-marked it done but couldn't unlink it leaves just the sidecar gone), `--keep-verify` (500) of
-the longest-unchecked being looked up a round; a
+marked it done but couldn't unlink it leaves just the sidecar gone); one OCR asked for stays
+listed and counted, though never evicted, until then. Every page OCR asked for is looked up
+each round, and `--keep-verify` (500) of the other longest-unchecked; a
 lookup that fails goes to the back, and one the scan server doesn't answer ends that round's
 lookups and deletes, which the next round picks up where it left off. The follower looks
 after the list every round, before its campaign has shipped anything too, and deletes (or
