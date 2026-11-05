@@ -1862,6 +1862,99 @@ class SourceTest(unittest.TestCase):
                 for name in files:
                     (unit / name).unlink()
 
+    def test_a_bundled_page_is_processed_once_its_bundle_is_submitted(self):
+        other = "sn1_1900-01-02_ed-1_seq-4"
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            sample = root / "sample.jsonl"
+            sample.write_text("".join(json.dumps({"doc_id": d}) + "\n" for d in (DOC, other)))
+            for doc in (DOC, other):
+                (root / "pages" / doc).mkdir(parents=True)
+                (root / "pages" / doc / "qwen.json").write_text(json.dumps({"id": doc, "doc_id": doc}))
+            bundle = root / "units" / ("bundle-00001-" + DOC)
+            bundle.mkdir(parents=True)
+            (bundle / "qwen.json").write_text(json.dumps(
+                {"id": "b" * 64, "doc_id": DOC, "pages": [{"doc_id": DOC}, {"doc_id": other}]}))
+            # Staged and bundled, not yet submitted.
+            with self.assertRaisesRegex(RuntimeError, "retain READY"):
+                submit.assert_processed(root, sample)
+            (bundle / "submitted").touch()
+            submit.assert_processed(root, sample)
+            # A page no bundle holds needs its own terminal disposition.
+            (bundle / "qwen.json").write_text(json.dumps({"id": "b" * 64, "doc_id": DOC, "pages": [{"doc_id": DOC}]}))
+            with self.assertRaisesRegex(RuntimeError, other):
+                submit.assert_processed(root, sample)
+            page = root / "pages" / other
+            # Too large for any bundle (beside its own qwen.json), or no crops.
+            for name in ("too_large", "no_crops"):
+                (page / name).touch()
+                submit.assert_processed(root, sample)
+                (page / name).unlink()
+            (page / "qwen.json").unlink()
+            (page / "too_large").touch()
+            with self.assertRaisesRegex(RuntimeError, other):
+                submit.assert_processed(root, sample)
+            (page / "rejected-qwen.json").touch()
+            submit.assert_processed(root, sample)
+
+    def legacy_stage(self, root, *extra, units=(), pages=False):
+        """The stage command the legacy path runs for a root with these single-page units."""
+        plan = root / "plan.json"
+        plan.write_text(json.dumps({"engine": {"image": "image", "llama": "llama", "weights": "weights"}}))
+        qwen_root = root / "qwen" / "qwen-test"
+        for doc in units:
+            (qwen_root / "units" / doc).mkdir(parents=True, exist_ok=True)
+            (qwen_root / "units" / doc / "qwen.json").write_text(json.dumps({"id": doc, "doc_id": doc}))
+        if pages:
+            (qwen_root / "pages").mkdir(parents=True, exist_ok=True)
+        argv = ["qwen_submit.py", "--share", str(root), "--project", str(root),
+                "--campaign", "qwen-test", "--engine-plan", str(plan), "--models", str(root), *extra]
+        with mock.patch.object(submit, "__file__", str(root / "qwen_submit.py")), \
+                mock.patch.object(sys, "argv", argv), \
+                mock.patch.object(submit, "inventory", return_value={
+                    "ready": 0, "fresh_pairs": 0, "unresolved_native": 0,
+                    "free_bytes": 100 * 1024**3, "app_versions": [], "min_version": 0}), \
+                mock.patch.object(submit, "assert_root_request_version"), \
+                mock.patch.object(submit.subprocess, "run") as run, \
+                mock.patch.object(submit, "assert_submitted"), \
+                mock.patch.object(submit, "audit", return_value={}), \
+                contextlib.redirect_stdout(io.StringIO()):
+            submit.main()
+        return run.call_args_list[0].args[0] if run.call_args_list else None
+
+    def test_bundle_size_defaults_to_one_page_per_unit(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            self.assertEqual(self.legacy_stage(root), [
+                "usnm-boinc", "qwen", "stage", "--quality-root", str(root / "quality/qwen-test"),
+                "--root", str(root / "qwen/qwen-test"), "--engine-image", "image", "--engine-llama", "llama",
+                "--engine-weights", "weights", "--max-pages", "100", "--gpu-timeout-secs", "14400",
+                "--cpu-timeout-secs", "7200", "--bundle-size", "1", "--prompt-version", "1"])
+            stage = self.legacy_stage(root, "--bundle-size", "8")
+            self.assertEqual(stage[stage.index("--bundle-size") + 1], "8")
+        for extra in (["--bundle-size", "0"], ["--bundle-size", "33"],
+                      ["--bundle-size", "2", "--transaction", "a" * 64]):
+            with self.subTest(extra=extra), tempfile.TemporaryDirectory() as folder, \
+                    contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as caught:
+                self.legacy_stage(Path(folder), *extra)
+            self.assertEqual(caught.exception.code, 2)
+
+    def test_a_bundled_campaign_has_a_root_of_its_own(self):
+        for units, pages, extra, error in (
+                ([DOC], False, ["--bundle-size", "8"], "holds single-page units"),
+                ([DOC], False, ["--bundle-size", "8", "--preflight"], "holds single-page units"),
+                ([], True, [], "staged with bundles"),
+                ([], True, ["--preflight"], "staged with bundles"),
+                ([DOC], False, [], None), ([], False, ["--bundle-size", "8"], None),
+                ([], True, ["--bundle-size", "8"], None)):
+            with self.subTest(units=units, pages=pages, extra=extra), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                if error:
+                    with self.assertRaisesRegex(RuntimeError, error):
+                        self.legacy_stage(root, *extra, units=units, pages=pages)
+                else:
+                    self.legacy_stage(root, *extra, units=units, pages=pages)
+
     def test_isolated_staging_artifact_never_replaces_submit_binary(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

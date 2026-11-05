@@ -233,6 +233,7 @@ echo json_encode($rows);
 
 
 def assert_processed(root, sample):
+    bundled = None
     for line in sample.read_text().splitlines():
         doc = json.loads(line)["doc_id"]
         if not re.fullmatch(r"[a-z0-9]+_\d{4}-\d{2}-\d{2}_ed-\d+_seq-\d+", doc):
@@ -244,7 +245,31 @@ def assert_processed(root, sample):
             continue
         if (unit / "too_large").exists() and (unit / "rejected-qwen.json").exists():
             continue
+        # A bundled root (--bundle-size above 1) stages each page under pages/ and submits it
+        # in a bundle under units/. A page too large for any bundle keeps its own qwen.json.
+        page = root / "pages" / doc
+        if (page / "no_crops").exists():
+            continue
+        if (page / "too_large").exists() and any((page / f).exists() for f in ("rejected-qwen.json", "qwen.json")):
+            continue
+        if bundled is None:
+            bundled = set()
+            for path, job in jobs(root / "units"):
+                if job.get("pages") and (path.parent / "submitted").exists():
+                    bundled.update(documents(job))
+        if doc in bundled:
+            continue
         raise RuntimeError(f"Chunk still has an unprocessed native source: {doc}; retain READY")
+
+
+def assert_bundle_layout(root, bundle_size):
+    """A bundled campaign has a root of its own. A root staged with bundles can't go back to
+    single pages, and bundling a root that already holds single-page units would mix both."""
+    bundled = (root / "pages").is_dir()
+    if bundle_size == 1 and bundled:
+        raise RuntimeError(f"Root {root.name} was staged with bundles; keep its --bundle-size")
+    if bundle_size > 1 and not bundled and any((root / "units").glob("*/qwen.json")):
+        raise RuntimeError(f"Root {root.name} holds single-page units; a bundled campaign starts in a new root")
 
 
 def unreadable_versions(state, prompt_version):
@@ -890,6 +915,9 @@ def main():
                     help="submit every request version with this binary (the image's usnm-boinc once it is "
                          "from #1437 on); without it, versions 3 and 4 submit with --stage-binary")
     ap.add_argument("--max-pages", type=int, default=100)
+    ap.add_argument("--bundle-size", type=int, default=1,
+                    help="Pages per native unit, 1 to 32 (#1435). Above 1 the root keeps bundling for good, "
+                         "so a bundled campaign starts in a new root; never with --transaction")
     ap.add_argument("--prompt-version", type=int, choices=(1, 2, 3, 4), default=1,
                     help="Request version to stage; every dispatchable app version must read it")
     ap.add_argument("--max-ready", type=int, default=1000,
@@ -925,13 +953,15 @@ def main():
     if (not a.campaign or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,40}", a.campaign)
             or a.engine_plan is None or a.models is None or not 1 <= a.max_pages <= 500
             or a.max_ready < 2 or not 1 <= a.max_unresolved <= 10000
-            or a.reserve_mib < 64 or a.min_free_gb < 1):
+            or a.reserve_mib < 64 or a.min_free_gb < 1 or not 1 <= a.bundle_size <= 32):
         ap.error("need --campaign, --engine-plan, --models and positive bounded limits")
     root = a.share / "qwen" / a.campaign
     quality = a.share / "quality" / a.campaign
     if a.transaction:
         if a.preflight:
             ap.error("transaction publication is not a read-only preflight")
+        if a.bundle_size != 1:
+            ap.error("subset transactions stage one page per unit")
         if a.submit_binary:
             ap.error("transactions submit with --stage-binary")
         if a.max_ready > 1000 or a.max_unresolved > 2000 or a.min_free_gb < 50:
@@ -941,6 +971,7 @@ def main():
         except subprocess.CalledProcessError as error:
             raise SystemExit(error.returncode) from error
         return
+    assert_bundle_layout(root, a.bundle_size)
     admission(a, state, root)
     if a.preflight:
         return
@@ -957,7 +988,7 @@ def main():
     stage = [a.stage_binary, "qwen", "stage", "--quality-root", str(quality), "--root", str(root),
              "--engine-image", engine["image"], "--engine-llama", engine["llama"],
              "--engine-weights", engine["weights"], "--max-pages", str(a.max_pages),
-             "--gpu-timeout-secs", "14400", "--cpu-timeout-secs", "7200", "--bundle-size", "1",
+             "--gpu-timeout-secs", "14400", "--cpu-timeout-secs", "7200", "--bundle-size", str(a.bundle_size),
              "--prompt-version", str(a.prompt_version)]
     subprocess.run(stage, check=True)
     submit_binary = a.submit_binary or (a.stage_binary if a.prompt_version in GUARDED_VERSIONS else "usnm-boinc")

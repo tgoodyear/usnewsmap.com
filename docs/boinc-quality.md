@@ -599,7 +599,7 @@ Prod's bridge steps run on the on-prem host since 21 October 2026. Run each `scr
 
    Crop source text has a separate, unchanged 8192-byte UTF-8 limit. If any selected crop exceeds it, staging retains the complete candidate as `rejected-qwen.json`, the original `loc.xml`, `quality.json`, `page.jpg` and available `sample.json`, then writes the existing `too_large` terminal marker. Its reason names every oversized crop, box, byte count, text hash and source hashes. No `qwen.json` is published, no text is truncated, and other pages continue within `--max-pages`. Repeats preserve that evidence; feed inventory remembers rejected documents without counting them as submitted work. Other schema errors still fail closed.
 
-   For an isolated reviewed staging-binary rollout, `qwen_submit.py` uses a sibling `usnm-boinc-stage` executable when installed, otherwise the existing `usnm-boinc`; `--stage-binary` can select an explicit executable. By default, requests at version 1 submit with the existing `usnm-boinc`, and requests at versions 3 and 4 with the staging binary, because a server image built before #1437 has a `qwen submit` that refuses them. `--submit-binary` names one submit executable for every version (`--qwen-submit-binary` on `quality-ship.sh`, set in `QWEN_SHIP_ARGS`). After the image is rebuilt, the operator switches by configuration alone (see [One submit binary and one collector](#one-submit-binary-and-one-collector-1449)). Transactions (`--transaction`) always submit with the staging binary and refuse `--submit-binary`. Install only an approved hash-bound artifact at an idle boundary under the normal project lock. Shared shipper helpers, service units and timers need no changes.
+   For an isolated reviewed staging-binary rollout, `qwen_submit.py` uses a sibling `usnm-boinc-stage` executable when installed, otherwise the existing `usnm-boinc`; `--stage-binary` can select an explicit executable. By default, requests at version 1 submit with the existing `usnm-boinc`, and requests at versions 3 and 4 with the staging binary, because a server image built before #1437 has a `qwen submit` that refuses them. `--submit-binary` names one submit executable for every version (`--qwen-submit-binary` on `quality-ship.sh`, set in `QWEN_SHIP_ARGS`). After the image is rebuilt, the operator switches by configuration alone (see [One submit binary and one collector](#one-submit-binary-and-one-collector-1449)). Transactions (`--transaction`) always submit with the staging binary and refuse `--submit-binary`. `--bundle-size` (1 to 32, default 1) sets the pages a native unit holds (see [Bundled native units](#bundled-native-units-1435)). Install only an approved hash-bound artifact at an idle boundary under the normal project lock. Shared shipper helpers, service units and timers need no changes.
 
 4. **Submit both apps' workunits (`bridge-job.sh`, `BRIDGE_STEP=quality-submit` and `BRIDGE_STEP=qwen-submit`).** Hands the staged units to `create_work` with two results per workunit (`QUALITY_MAX` default 500, `QWEN_MAX` default 20) and invalidates `$PROJ/html/cache/f2/server_status.php_job_status` so `https://boinc.usnewsmap.com/server_status.php` reflects the new queue immediately (live uncached counts are also always available at `https://boinc.usnewsmap.com/server_status.php?counts=1`):
 
@@ -1307,6 +1307,29 @@ QWEN_FEED_ARGS="--yiddish-budget 40"
 `--german-budget N` does the same for German (`deu`) while it is being calibrated, recorded in `german-budget.json`. German pages come as a chunk of their own after any Yiddish budget, and the normal order leaves German out. A German chunk goes to `--qwen-root` at `--prompt-version`. `--german-pages FILE` (doc_ids, one a line) limits the German budget to a frozen sample, worst damage first. The November calibration used 50 of Study 1's pilot pages from #1428, which already have `frak2021` and `deu_latf` readings. `--exclude-language` on `quality_feed.py select` may repeat.
 
 A new root needs the refill and the collector told about it: add the root to `CAMPAIGN_ARGS` in the refill's env, and to `NATIVE_QWEN_ARGS` once its quality root exists. The version 1 root stays out of the refill, so its backlog goes only to the classes open to it.
+
+### Bundled native units (#1435)
+
+By default each native unit is one page, so `llama-server` starts and loads the model once a page. `--qwen-bundle-size N` (2 to 32) in `QWEN_SHIP_ARGS` has `qwen_submit.py --bundle-size N` stage up to N pages a unit in `--qwen-root` (`qwen stage --bundle-size`). The crop and size limits under `qwen stage` above still close a bundle early: at 12 crops a page that's about 10 pages, so `--qwen-bundle-size 10` is the useful setting. Without the flag nothing changes: neither native call names a bundle size, and `qwen_submit.py` stages one page a unit, as before. `--transaction` refuses any size but 1.
+
+Who gains, from the per-task numbers in #1435. A bundle pays the model load, and the gap before the next task, once rather than once a page:
+
+- **RX 9070 XT**: a task takes 32 s, of which 3.5 s is the load and 25 s is reading, and the GPU sits about 10 s idle between tasks. A bundle saves up to 13.5 s of every 42 s a page, about a third.
+- **NVIDIA**: 22 s loading against 80 s reading. A bundle saves up to 22 s of every 102 s, about a fifth.
+- **Apple and Intel**: loading is under 1% of a unit, so they gain little. They read bundles all the same.
+
+The loop guard saves more: repeated loop text is 57% of generated tokens on every vendor. Bundling comes after it.
+
+Turning it on:
+
+1. **A new root.** `qwen_submit.py` refuses to bundle a root that already holds single-page units, and refuses `--bundle-size 1` for a root staged with bundles (`qwen stage` refuses that too). Name a new `--qwen-root` with the flag. Chunks of only Yiddish keep single pages in `--qwen-yiddish-root`, which already holds single-page units and where only 12% of strict pairs agree.
+2. **The collector.** A bundle is canonical only when every page agrees, so an inconclusive bundle's agreed pages reach the rows only through `quality collect --qwen-pages`. Set `QWEN_PAGES_ARGS` in the collector's env (`usnm-qwen-results.service`) and add the root to `NATIVE_QWEN_ARGS`.
+3. **The refill.** Add the root to `CAMPAIGN_ARGS` in the refill's env once `qwen-auto-cohort.py` binds bundles.
+4. **The apps.** `usnm-qwen-app` has read bundles since #887, so no new app version or signing is expected. Before the whole feed moves, check that one bundle completes on each plan class.
+
+Admission stays conservative: the watermarks reserve one fresh pair per page, while a bundle is one pair for up to 10 pages. `--qwen-max-ready` still counts replicas, so the same 1,000 holds more pages.
+
+What is still open: the quorum. A bundle still needs every page to agree to be canonical, so an inconclusive bundle goes out to a third and fourth replica for its disagreeing pages. Whether crop-consensus or a page-level verdict decides the unit, with its credit and retry, is a maintainer decision.
 
 ### One submit binary and one collector (#1449)
 
