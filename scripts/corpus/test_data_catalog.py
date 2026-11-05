@@ -279,6 +279,29 @@ class CatalogTests(unittest.TestCase):
                         self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0],
                                          0 if case == "legacy" else c.INDEXED_KEY_SCOPE_VERSION)
 
+    def test_the_refresh_deadline_bounds_its_stage_lookup_after_connect(self):
+        path = self.throughput(ocr_import_pages=[1, 2, 3])
+        self.refresh(path)
+        locker = sqlite3.connect(self.db)
+        self.addCleanup(locker.close)
+        real = c.connect
+
+        def slow_connect(*args, **kwargs):
+            # Connecting took 2 s of the deadline, as a wait for a writer would, and then another
+            # writer locks the catalog before the stage lookup.
+            conn = real(*args, **kwargs)
+            time.sleep(2)
+            locker.execute("BEGIN EXCLUSIVE")
+            return conn
+
+        started = time.monotonic()
+        with mock.patch.object(c, "REFRESH_SECONDS", 3), mock.patch.object(c, "connect", slow_connect):
+            with self.assertRaises(sqlite3.OperationalError) as caught:
+                self.refresh(path, "2026-11-01T19:55:00.000000Z")
+        # About 3 s in all, not 2 s and then another 3 s; a second either way of slack.
+        self.assertLess(time.monotonic() - started, 4)
+        self.assertEqual(c.failure_cause(caught.exception), "SQLITE_BUSY")
+
     def test_a_failed_refresh_names_its_cause_but_no_path(self):
         path = self.throughput(ocr_import_pages=[1, 2, 3])
         self.refresh(path)

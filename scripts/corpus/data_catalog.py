@@ -1765,6 +1765,9 @@ def live_event_id(db, stage_id, observed, payload, batch_id, deadline=None):
     replaces, so a correction to the same evidence hour wins over the earlier count."""
     conn = connect(db, writable=True, deadline=deadline)
     try:
+        if deadline is not None:
+            interrupt_after(conn, deadline)
+            wait_until(conn, deadline)
         current = conn.execute("SELECT event_id,observed_at,data FROM latest WHERE key=?",
                                (digest([LIVE_SOURCE, "stage", [stage_id]]),)).fetchone()
     finally:
