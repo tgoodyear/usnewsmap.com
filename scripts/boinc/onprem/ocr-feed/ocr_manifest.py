@@ -258,6 +258,21 @@ def row_of(q, dmg):
     }
 
 
+def record_ocr_docs(state, docs):
+    """Adds to ocr-docs.txt (every page OCR asked for, one doc_id a line) the ones it doesn't
+    have yet. Returns how many."""
+    path = os.path.join(state, "ocr-docs.txt")
+    have = set()
+    if os.path.exists(path):
+        with open(path) as f:
+            have = {line.strip() for line in f if line.strip()}
+    new = [d for d in dict.fromkeys(docs) if d not in have]
+    if new:
+        with open(path, "a") as f:
+            f.write("".join(f"{d}\n" for d in new))
+    return len(new)
+
+
 def cmd_build(a):
     os.makedirs(a.state, exist_ok=True)
     reasons = [r for r in a.reasons.split(",") if r]
@@ -265,6 +280,18 @@ def cmd_build(a):
         sys.exit("--reasons: comma-separated reasons, such as user,bulk")
     last_path = os.path.join(a.state, "last.json")
     index = staged_pairs(a.scan_server)
+    lake = Lake(a.curated_url)
+    queued = cached_rows(lake, a.state, "queued", a.days,
+                         ["doc_id", "batch", "batch_version", "reason", "language", "queued_at"])
+    outcomes = cached_rows(lake, a.state, "outcomes", a.days, ["doc_id", "outcome", "cause", "at"])
+    outstanding = list(pending(queued, outcomes, reasons))
+    # A queued page whose scan the fetcher already wrote (the quality pass's, say) gets no
+    # manifest row, but it's OCR's all the same: the quality feeder must not evict it.
+    claimed = [q["doc_id"] for q in outstanding if (q["batch"], q["doc_id"]) in index]
+    if not a.what_if:
+        n = record_ocr_docs(a.state, claimed)
+        if n:
+            log("queued pages already on the scan server claimed for OCR", pages=n)
     if os.path.exists(last_path):
         with open(last_path) as f:
             last = json.load(f)
@@ -279,10 +306,6 @@ def cmd_build(a):
             log("the last manifest is still being fetched; nothing new", manifest=last["name"],
                 on_server=on, pages=len(pairs))
             return
-    lake = Lake(a.curated_url)
-    queued = cached_rows(lake, a.state, "queued", a.days,
-                         ["doc_id", "batch", "batch_version", "reason", "language", "queued_at"])
-    outcomes = cached_rows(lake, a.state, "outcomes", a.days, ["doc_id", "outcome", "cause", "at"])
     # Pages already put in MAX_TRIES manifests that still have no scan wait a week, so a
     # page LoC can't serve doesn't hold the front of every manifest.
     tries_path = os.path.join(a.state, "tries.json")
@@ -292,7 +315,7 @@ def cmd_build(a):
             tries = json.load(f)
     now = dt.datetime.now(dt.timezone.utc)
     todo, checked, deferred = [], 0, 0
-    for q in pending(queued, outcomes, reasons):
+    for q in outstanding:
         if len(todo) >= a.max_pages:
             break
         t = tries.get(q["doc_id"])
@@ -333,8 +356,7 @@ def cmd_build(a):
                    "pairs": [[r["batch"], r["doc_id"]] for r in rows]}, f)
     os.replace(last_path + ".tmp", last_path)
     # Every page OCR asked for: the quality feeder never deletes these scans.
-    with open(os.path.join(a.state, "ocr-docs.txt"), "a") as f:
-        f.write("".join(f"{r['doc_id']}\n" for r in rows))
+    record_ocr_docs(a.state, [r["doc_id"] for r in rows])
     stamp = now.isoformat()
     for r in rows:
         t = tries.get(r["doc_id"])
@@ -480,8 +502,9 @@ def cmd_build_quality(a):
     behind OCR's. Taking whole issues lets the fetcher ask for each issue's METS, and each
     batch's manifest, once for all their pages, about one request a page. --batches limits
     the pass to those batches (LoC's bucket's public ones, say). Every row's lang is `eng`,
-    so the fetcher files the scan in its buffer set, which the quality feeder empties once
-    the page's unit has shipped; the page's own language stays in usnm_quality. Pages
+    so the fetcher files the scan in its buffer set, which the quality feeder deletes once
+    the page's unit has shipped, bar the most damaged it keeps for re-OCR (--keep-bytes);
+    the page's own language stays in usnm_quality. Pages
     already in the scan server's index are left out even if their scan is gone: the
     fetcher's `.done` markers keep it from fetching a consumed buffer page again, so
     queueing one would only stall the pass."""

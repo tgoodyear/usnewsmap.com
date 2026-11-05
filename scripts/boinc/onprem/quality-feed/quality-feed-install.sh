@@ -165,7 +165,8 @@ if [ "$follow" = true ]; then
   # The piggyback and the image pass: the follow feeder and the pass's manifests, with the
   # shipper; the one-list feeder stays off.
   in_ct systemctl disable --now usnm-quality-feed.service 2> /dev/null || true
-  in_ct systemctl enable --now usnm-quality-follow.service
+  in_ct systemctl enable usnm-quality-follow.service
+  in_ct systemctl restart usnm-quality-follow.service  # a running one takes the new code and settings
   in_ct systemctl enable --now usnm-quality-build.timer
   systemctl enable --now usnm-quality-ship.timer
 elif [ "$enable" = true ]; then

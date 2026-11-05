@@ -62,6 +62,26 @@ class PendingTest(unittest.TestCase):
         self.assertEqual((r["lang"], r["decision"], r["damage_rate"]), ("eng", "detected", 0.0))
 
 
+class OcrClaimTest(unittest.TestCase):
+    def test_queued_pages_already_on_the_scan_server_are_claimed_even_while_a_manifest_is_fetched(self):
+        on, off = "sn1_1900-01-01_ed-1_seq-1", "sn1_1900-01-01_ed-1_seq-2"
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "last.json").write_text(json.dumps({
+                "name": "queue-ocr-x", "at": dt.datetime.now(UTC).isoformat(), "pairs": [["b", off]]}))
+            Path(d, "ocr-docs.txt").write_text(f"{off}\n")
+            a = types.SimpleNamespace(state=d, reasons="user,bulk", scan_server="http://s", curated_url="http://c",
+                                      days=14, max_pages=10, curated_copy=d, what_if=False)
+            rows = {"queued": [q(on, "user", 1), q(off, "user", 2)], "outcomes": []}
+            with mock.patch.object(m, "staged_pairs", return_value={("b", on): {"doc_id": on, "batch": "b"}}), \
+                    mock.patch.object(m, "Lake"), \
+                    mock.patch.object(m, "cached_rows", side_effect=lambda lake, state, kind, *a: rows[kind]), \
+                    contextlib.redirect_stdout(io.StringIO()) as out:
+                m.cmd_build(a)
+                m.cmd_build(a)
+            self.assertEqual(Path(d, "ocr-docs.txt").read_text().split(), [off, on])
+            self.assertIn("still being fetched", out.getvalue())
+
+
 def ranked(doc, batch, lccn, decade, rank):
     return [doc, batch, "1", "detected", "0.5", lccn, decade, str(rank)]
 

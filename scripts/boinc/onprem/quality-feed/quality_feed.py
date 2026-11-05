@@ -701,7 +701,7 @@ def delete_shipped(a, camp_dir, done_path, quality_docs, deleted_path, kept_path
     for doc in released:
         kept.pop(doc, None)
     pool = {**kept, **shipped}
-    keep, used = {}, 0
+    want, used = {}, 0
     if budget:
         # Most damaged first (unscored last); the first that doesn't fit ends the list.
         for doc, k in sorted(pool.items(), key=lambda kv: (-(kv[1][2] if kv[1][2] is not None else -1.0), kv[0])):
@@ -709,30 +709,46 @@ def delete_shipped(a, camp_dir, done_path, quality_docs, deleted_path, kept_path
                 continue
             if used + k[1] > budget:
                 break
-            keep[doc] = k
+            want[doc] = k
             used += k[1]
-    out, failed = list(released), {}
-    for doc, (scan, *_) in sorted(pool.items()):
-        if doc in keep:
-            continue
-        req = urllib.request.Request(f"{a.scan_server.rstrip('/')}/scans/{scan}", method="DELETE",
+
+    def delete(doc):
+        req = urllib.request.Request(f"{a.scan_server.rstrip('/')}/scans/{pool[doc][0]}", method="DELETE",
                                      headers={"User-Agent": USER_AGENT})
         try:
-            with urllib.request.urlopen(req, timeout=60):
+            with urllib.request.urlopen(req, timeout=30):
                 pass
         except urllib.error.HTTPError as e:
             if e.code != 404:
                 log("buffer delete failed", doc_id=doc, status=e.code)
-                if doc in kept:
-                    failed[doc] = kept[doc]
-                continue
-        out.append(doc)
+                return False
+        return True
+
+    out = list(released)
+    # Kept scans that lost their place go first. One that fails to go stays kept and still
+    # counts, so the pages that would have taken its place wait, neither kept nor deleted,
+    # for a later round: the kept list never holds more than the budget.
+    stuck = {}
+    for doc in sorted(d for d in kept if d not in want):
+        if delete(doc):
+            out.append(doc)
+        else:
+            stuck[doc] = kept[doc]
+    keep = {d: k for d, k in want.items() if d in kept or not stuck}
+    keep.update(stuck)
+    if stuck:
+        log("kept scans not deleted; their replacements wait", pages=len(stuck),
+            waiting=sum(1 for d in want if d not in keep))
+    for doc in sorted(d for d in shipped if d not in want):
+        if delete(doc):
+            out.append(doc)
+    used = sum(k[1] for k in keep.values())
     n = len(out) - len(released)
     if out:
         with open(deleted_path, "a") as f:
             f.write("".join(f"{d}\n" for d in out))
-    if kept_path and (keep or failed or os.path.exists(kept_path)):
-        write_kept(kept_path, {**keep, **failed})
+    if kept_path and (keep or os.path.exists(kept_path)):
+        write_kept(kept_path, keep)
         if shipped or released:
             floor = min((k[2] for k in keep.values() if k[2] is not None), default=None)
             log("buffer scans kept for re-OCR", pages=len(keep), bytes=used, budget=budget,

@@ -766,6 +766,36 @@ class FollowTest(unittest.TestCase):
                 self.assertEqual(calls, [("DELETE", "buffer/b/q6.jp2")])
                 self.assertEqual(feed.read_kept(str(kept)), {})
 
+    def test_a_kept_scan_that_fails_to_go_holds_its_place_and_its_replacement_waits(self):
+        with tempfile.TemporaryDirectory() as d:
+            camp, done, deleted, kept = Path(d, "camp"), Path(d, "done.txt"), Path(d, "deleted.txt"), Path(d, "kept.tsv")
+            camp.mkdir()
+            done.write_text("old\tc1\tbuffer/b/old.jp2\t80\t0.2\n")
+            a = types.SimpleNamespace(scan_server="http://s", keep_bytes=80, keep_verify=0)
+            fail = {"buffer/b/old.jp2"}
+            calls = []
+
+            def fake(req, timeout=0):
+                path = req.full_url.removeprefix("http://s/scans/")
+                calls.append((req.get_method(), path))
+                if path in fail:
+                    raise urllib.error.HTTPError(req.full_url, 503, "Unavailable", {}, None)
+                return io.BytesIO(b"")
+
+            ship = lambda: feed.delete_shipped(a, str(camp), str(done), {"old", "new"}, str(deleted), str(kept))
+            with mock.patch.object(feed.urllib.request, "urlopen", fake), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(ship(), 0)
+                with open(done, "a") as f:
+                    f.write("new\tc2\tbuffer/b/new.jp2\t80\t0.9\n")
+                self.assertEqual(ship(), 0)  # old's DELETE fails: new neither kept nor deleted
+                self.assertEqual(set(feed.read_kept(str(kept))), {"old"})
+                self.assertNotIn(("DELETE", "buffer/b/new.jp2"), calls)
+                fail.clear()
+                self.assertEqual(ship(), 1)
+                self.assertEqual(set(feed.read_kept(str(kept))), {"new"})
+                self.assertEqual(feed.read_lines(str(deleted)), {"old"})
+
 
 class FollowChunkTest(unittest.TestCase):
     """follow writes full chunks, and a part one only once --max-wait-secs has passed."""

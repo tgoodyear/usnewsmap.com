@@ -1393,8 +1393,11 @@ Once a chunk has shipped, the pass's buffer scans are deleted, except the most d
 `quality-feed-install.sh`, about 210,000 pages at 4.7 MB a scan, half the fetcher's 2 TB
 buffer cap so OCR's own scans keep flowing). They stay on the scan server for re-OCR and are
 listed in `<state>/kept.tsv`. A newly shipped page more damaged than the least damaged kept
-one takes its place, and that one is deleted. A kept page OCR's manifests later ask for
-leaves the list without a delete, since OCR's worker deletes it after reading it; so does
+one takes its place, and that one is deleted; if that delete fails, the kept page holds its
+place and the newcomer waits a round, neither kept nor deleted, so the list never passes
+the budget. A kept page OCR later asks for leaves the list without a delete, since OCR's
+worker deletes it after reading it: `ocr_manifest.py build` records every queued page whose
+scan is already on the scan server in `ocr-docs.txt`, not only its manifests' pages. So does
 one found gone, `--keep-verify` (500) of the longest-unchecked being looked up a round.
 Before 5 November 2026 every one was deleted, 150,000 pages, 54,000 of them with a damage
 rate of 0.1 or more. OCR's scans and the keep set are never deleted.
