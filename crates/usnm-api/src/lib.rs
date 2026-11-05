@@ -11,10 +11,12 @@ use axum::extract::{ConnectInfo, Request, State};
 use axum::http::{header, HeaderValue, Method};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post, MethodRouter};
+use axum::routing::{get, post, MethodRouter, Route};
 use axum::Router;
 use moka::future::Cache;
 use tokio::sync::{Mutex, OwnedMutexGuard, Semaphore};
+use tower::layer::layer_fn;
+use tower::{service_fn, Layer, ServiceExt};
 use tower_http::compression::predicate::{DefaultPredicate, NotForContentType, Predicate};
 use tower_http::compression::CompressionLayer;
 use tower_http::cors::{AllowOrigin, CorsLayer};
@@ -379,8 +381,7 @@ pub fn app(state: Arc<AppState>) -> Router {
     if let Some(dir) = site {
         router = router.fallback_service(site::router(dir, state.clone()));
     }
-    // MCP has its own POST/preflight policy; the REST/site CORS policy stays GET-only.
-    router = router.layer(cors).merge(mcp::router(state.clone()));
+    router = router.merge(mcp::router(state.clone()));
     // Inside the header layers, so redirects carry the security headers too.
     router = router.layer(middleware::from_fn_with_state(
         site_host,
@@ -392,7 +393,23 @@ pub fn app(state: Arc<AppState>) -> Router {
             HeaderValue::from_static(value),
         ));
     }
+    // The REST/site CORS policy (GET-only) sits outside the redirect and header
+    // layers so redirects carry it too. MCP has its own POST/preflight policy.
+    let cors_except_mcp = layer_fn(move |plain: Route| {
+        let with_cors = cors.layer(plain.clone());
+        service_fn(move |req: Request| {
+            let (plain, with_cors) = (plain.clone(), with_cors.clone());
+            async move {
+                if mcp::is_mcp_path(req.uri().path()) {
+                    plain.oneshot(req).await
+                } else {
+                    with_cors.oneshot(req).await
+                }
+            }
+        })
+    });
     router
+        .layer(cors_except_mcp)
         .layer(CompressionLayer::new().compress_when(
             DefaultPredicate::new().and(NotForContentType::new("application/vnd.pmtiles")),
         ))

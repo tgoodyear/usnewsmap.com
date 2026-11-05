@@ -48,6 +48,11 @@ struct CorpusServer {
 #[derive(Clone, Default)]
 struct ResponseVersion(Arc<OnceLock<ServedVersion>>);
 
+/// The paths [`router`] serves.
+pub(crate) fn is_mcp_path(path: &str) -> bool {
+    matches!(path, "/mcp" | "/mcp/")
+}
+
 pub(crate) fn router(state: Arc<AppState>) -> Router {
     let server = CorpusServer {
         tools: Arc::new(tools(&state.config)),

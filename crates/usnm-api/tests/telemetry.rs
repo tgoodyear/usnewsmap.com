@@ -498,6 +498,31 @@ async fn mcp_requests_keep_route_and_served_version_metadata() {
     assert_eq!(state.snapshot.load().refdata.version(), "fixture-v2");
 
     drop(guard);
+    // rmcp's serve task holds the request span until it ends, just after the
+    // response, so flush until all four request spans have been exported.
+    let request_data = || {
+        envelopes(
+            &seen
+                .uploads()
+                .iter()
+                .map(|u| u.json.clone())
+                .collect::<Vec<_>>(),
+        )
+        .into_iter()
+        .filter(|e| e["data"]["baseType"] == "RequestData")
+        .map(|e| e["data"]["baseData"].clone())
+        .collect::<Vec<_>>()
+    };
+    for _ in 0..100 {
+        let tracer = tracer.clone();
+        tokio::task::spawn_blocking(move || tracer.force_flush().unwrap())
+            .await
+            .unwrap();
+        if request_data().len() >= 4 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
     tokio::task::spawn_blocking(move || {
         tracer.shutdown().unwrap();
         meter_provider.shutdown().unwrap();
@@ -505,24 +530,15 @@ async fn mcp_requests_keep_route_and_served_version_metadata() {
     .await
     .unwrap();
     let mut requests = Vec::new();
-    for envelope in envelopes(
-        &seen
-            .uploads()
-            .iter()
-            .map(|u| u.json.clone())
-            .collect::<Vec<_>>(),
-    ) {
-        if envelope["data"]["baseType"] == "RequestData" {
-            let data = &envelope["data"]["baseData"];
-            assert_eq!(
-                data["properties"]["usnm.index_version"], "fixture-v1",
-                "{data}"
-            );
-            requests.push((
-                data["name"].as_str().unwrap().to_owned(),
-                data["responseCode"].as_str().unwrap().to_owned(),
-            ));
-        }
+    for data in request_data() {
+        assert_eq!(
+            data["properties"]["usnm.index_version"], "fixture-v1",
+            "{data}"
+        );
+        requests.push((
+            data["name"].as_str().unwrap().to_owned(),
+            data["responseCode"].as_str().unwrap().to_owned(),
+        ));
     }
     requests.sort();
     assert_eq!(

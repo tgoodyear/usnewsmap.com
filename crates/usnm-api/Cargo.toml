@@ -29,6 +29,7 @@ serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync", "process"] }
+tower.workspace = true
 tower-http.workspace = true
 tracing.workspace = true
 zstd.workspace = true
@@ -41,7 +42,6 @@ flate2.workspace = true
 http-body-util.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["sync", "rt-multi-thread", "test-util"] }
-tower.workspace = true
 tracing-subscriber.workspace = true
 
 [lints]
