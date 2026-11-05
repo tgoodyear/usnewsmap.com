@@ -35,7 +35,7 @@ Decoder quarantines in run and follow require operator review.
 
 jp2-check prints one line a --scan, in order: `ok`, or `truncated`, a tab and the reason for a
 JP2 cut short at its source (the check above). push-boinc-scan.sh --skip-truncated uses it to
-keep such scans from BOINC OCR (#1457). A file it can't read fails it.
+keep such scans from BOINC OCR (#1457). A file it can't read fails it, naming the file on stderr.
 """
 import argparse
 import concurrent.futures
@@ -1194,13 +1194,16 @@ def wait_for_room(camp_dir, max_pending, every_secs, busy, poll_secs=15, min_sec
 
 def cmd_jp2_check(a):
     for path in a.scan:
-        with open(path, "rb") as f:
-            if os.fstat(f.fileno()).st_size == 0:
-                reason = jp2_truncation(b"")
-            else:
-                # Mapped, so only the headers the check reads come off the disk.
-                with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as raw:
-                    reason = jp2_truncation(raw)
+        try:
+            with open(path, "rb") as f:
+                if os.fstat(f.fileno()).st_size == 0:
+                    reason = jp2_truncation(b"")
+                else:
+                    # Mapped, so only the headers the check reads come off the disk.
+                    with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as raw:
+                        reason = jp2_truncation(raw)
+        except OSError as e:
+            sys.exit(f"jp2-check: can't read {path}: {type(e).__name__}: {e}")
         print("ok" if reason is None else f"truncated\t{reason}")
 
 

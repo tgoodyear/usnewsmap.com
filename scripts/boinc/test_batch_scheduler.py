@@ -2226,6 +2226,9 @@ class TimingsTests(unittest.TestCase):
         with patch.object(transport, "step") as step:
             transport.dead_letter_truncated(["sn1_1900-01-01_ed-1_seq-2"])
         step.assert_called_once_with("handoff", "dead-letter", SOURCE_TRUNCATED_DOCS="sn1_1900-01-01_ed-1_seq-2")
+        # Timed apart from dead letters for failed jobs.
+        self.assertIn("dead-letter-truncated", transport.timings.phases)
+        self.assertNotIn("dead-letter", transport.timings.phases)
 
     def test_phases_add_up_and_report_as_they_end(self):
         ticker, lines = Ticker(), []

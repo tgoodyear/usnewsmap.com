@@ -1143,7 +1143,7 @@ class Transport:
         saying why from its job's journal (#1159)."""
         self.step("handoff", "dead-letter", JOB_IDS=",".join(job_ids))
 
-    @timed("dead-letter")
+    @timed("dead-letter-truncated")
     def dead_letter_truncated(self, doc_ids):
         """Claimed pages whose scan LoC holds cut short (#1457) go to ocr-deadletter unexported."""
         self.step("handoff", "dead-letter", SOURCE_TRUNCATED_DOCS=",".join(doc_ids))

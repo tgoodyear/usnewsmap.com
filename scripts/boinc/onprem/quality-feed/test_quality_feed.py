@@ -903,8 +903,13 @@ class SourceTruncatedTest(unittest.TestCase):
             out = io.StringIO()
             with contextlib.redirect_stdout(out):
                 feed.main(["jp2-check", *(arg for path in paths for arg in ("--scan", str(path)))])
-        self.assertEqual(out.getvalue().splitlines(),
-                         ["ok" if v["reason"] is None else f"truncated\t{v['reason']}" for v in vectors])
+            self.assertEqual(out.getvalue().splitlines(),
+                             ["ok" if v["reason"] is None else f"truncated\t{v['reason']}" for v in vectors])
+            # A file it can't read fails it, naming the file.
+            absent = str(Path(d) / "absent.jp2")
+            with self.assertRaises(SystemExit) as failed, contextlib.redirect_stdout(io.StringIO()):
+                feed.main(["jp2-check", "--scan", str(paths[0]), "--scan", absent])
+            self.assertIn(f"can't read {absent}: FileNotFoundError", str(failed.exception.code))
 
     def test_a_truncated_jp2_is_recorded_once_and_is_never_fetched_or_decoded_again(self):
         good_raw, bad_raw = jp2(codestream(2)), jp2(codestream(2)[:-2])
