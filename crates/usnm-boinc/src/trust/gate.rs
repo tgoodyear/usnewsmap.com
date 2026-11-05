@@ -174,6 +174,11 @@ impl Trust {
 
     /// Why `job`'s exact `(language, profile, psm, dpi)` scope is held from publication (#835),
     /// if it is: its result is kept and never published, whatever host returned it.
+    ///
+    /// [`Trust::load`] already refuses an invalid list, so `collect --trust` fails before it gets
+    /// here. The check below only guards a list built in code: an invalid one holds nothing, and
+    /// [`Trust::refuse_job`] then refuses every job with the validation error, so none is
+    /// published.
     pub fn scope_hold(&self, job: &usnm_ocr_contract::boinc::Job) -> Option<String> {
         if !immutable_image(&job.engine.image)
             || !job.engine.kind.is_tesseract()

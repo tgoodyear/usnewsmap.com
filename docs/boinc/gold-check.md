@@ -309,14 +309,15 @@ usnm-boinc collect --root ROOT --spool SPOOL --job JOB_ID \
   --trust <share>/gold/trust.json --host-id HOST_ID
 ```
 
-With `--trust`, a result from an untrusted host, or with no `--host-id`, is held
-back: `collect` copies its spool files and a `reason.json` to
-`<root>/quarantine/<job>/`, publishes nothing, leaves the job's stage as it was
-and exits non-zero. Once the host passes a gold unit, rebuild `trust.json` and
-run `collect` again. Without `--trust`, `collect` publishes as before;
-production collection must use the existing hand-off `collect` step: it always
-requires trust, refusing a missing list, and a canonical host for anything but a
-held scope's result (below), which collect refuses without one. `spool-out` already queries
+With `--trust`, a result outside a held scope (below) is held back when its host
+is untrusted or no `--host-id` is given: `collect` copies its spool files and a
+`reason.json` to `<root>/quarantine/<job>/`, publishes nothing, leaves the job's
+stage as it was and exits non-zero. Once the host passes a gold unit, rebuild
+`trust.json` and run `collect` again. Without `--trust`, `collect` publishes as
+before. Production collection must use the existing hand-off `collect` step,
+which always passes the trust list and refuses to run without one. It passes the
+canonical host when the server recorded one; without it, `collect` refuses the
+result unless its scope is held. `spool-out` already queries
 `workunit.canonical_resultid -> result.hostid`; the hand-off rejects an operator
 override conflicting with that host. Only terminal failure markers bypass trust
 to mark failure, never to publish. The host ID written by the Gold worker is a
@@ -338,8 +339,8 @@ answers `Held` and leaves the page's queue message hidden until its lease runs
 out. The controller counts such a job as settled and reports it as `scope_held`
 ([batch scheduler](../boinc-batch-scheduler.md#the-claim)). On a held scope,
 `max_cer` is the limit a calibration must meet: `gold trust` refuses to merge a
-policy for that scope with a higher `max_cer`, and host admission refuses the
-scope. The hold can't be on the primary (top-level) scope. To lift it, merge the
+policy for that scope with a higher `max_cer`, held or not (raising the limit is
+a reviewed edit of the list), and host admission refuses the scope. The hold can't be on the primary (top-level) scope. To lift it, merge the
 calibrated policy, then collect the kept jobs again (hand-off `collect` with
 `JOB_IDS`: the jobs whose `dispatch/jobs/<id>/record.json` has `held`).
 A published result clears `held`. An older `usnm-boinc` refuses a list with a

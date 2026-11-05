@@ -28,7 +28,9 @@ pub struct Admission {
 impl Trust {
     /// Merges `incoming` calibrated scope(s) into `self` without clobbering unrelated scopes.
     /// Re-promoting an existing `(language, profile)` scope replaces only that scope. A held
-    /// scope (#835) is lifted only by a policy whose `max_cer` is at or below the hold's.
+    /// scope (#835) is replaced only by a policy whose `max_cer` is at or below the hold's,
+    /// held or not: a merge can lift a hold or tighten its limit, never raise it. Raising the
+    /// limit is a reviewed edit of the list itself.
     pub fn merge(&self, incoming: &Self) -> anyhow::Result<Self> {
         let existing_policies = self.effective_policies()?;
         let incoming_policies = incoming.effective_policies()?;
@@ -45,7 +47,7 @@ impl Trust {
             let key = (policy.scope.language.clone(), policy.scope.profile.clone());
             if let Some(held) = by_scope.get(&key).filter(|p| p.hold.is_some()) {
                 anyhow::ensure!(
-                    policy.hold.is_some() || policy.max_cer <= held.max_cer,
+                    policy.max_cer <= held.max_cer,
                     "scope {}/{} is held until calibrated with max_cer <= {}; this policy's max_cer {} is above it",
                     key.0,
                     key.1,

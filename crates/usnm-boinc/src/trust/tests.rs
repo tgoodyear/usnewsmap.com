@@ -1250,6 +1250,16 @@ fn a_held_scope_is_kept_whatever_the_host_and_other_scopes_are_unaffected() {
     assert!(held.refuse_job(&english, Some(1)).is_none());
     assert!(held.refuse_job(&english, Some(3)).is_some());
     assert_eq!(held.trusted_hosts_for_job(&english), BTreeSet::from([1, 8]));
+    // An invalid list built in code holds nothing, but refuses every job, so none is published.
+    let mut invalid = held.clone();
+    invalid.policies[0]
+        .hosts
+        .insert(ADMIT_IMAGE.into(), BTreeSet::from([1]));
+    assert!(invalid.scope_hold(&german).is_none());
+    assert!(invalid
+        .refuse_job(&german, Some(1))
+        .unwrap()
+        .starts_with("invalid calibrated trust policy"));
 }
 
 #[test]
@@ -1271,6 +1281,15 @@ fn a_hold_is_lifted_only_by_a_calibration_within_its_limit() {
             .to_string()
             .contains("held until calibrated with max_cer <= 0.179"));
     }
+    // Still held, its limit can be tightened by a merge, but not raised.
+    assert!(held
+        .merge(&held_list(0.2))
+        .unwrap_err()
+        .to_string()
+        .contains("held until calibrated with max_cer <= 0.179"));
+    let tightened = held.merge(&held_list(0.1)).unwrap();
+    let deu = tightened.policy_for("deu", "frak2021").unwrap();
+    assert_eq!((deu.hold.as_deref(), deu.max_cer), (Some(HOLD), 0.1));
     for max_cer in [0.179, 0.05] {
         let lifted = held.merge(&calibrated(max_cer)).unwrap();
         let deu = lifted.policy_for("deu", "frak2021").unwrap();
