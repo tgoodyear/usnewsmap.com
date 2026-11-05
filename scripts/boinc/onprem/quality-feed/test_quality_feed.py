@@ -905,6 +905,32 @@ class SourceTruncatedTest(unittest.TestCase):
                 feed.main(["jp2-check", *(arg for path in paths for arg in ("--scan", str(path)))])
             self.assertEqual(out.getvalue().splitlines(),
                              ["ok" if v["reason"] is None else f"truncated\t{v['reason']}" for v in vectors])
+            # With --verify-sidecar, only a scan that is what its sidecar records is judged.
+            cut = next(v for v in vectors if v["reason"])
+            whole = paths[vectors.index(cut)]
+            def sidecar(path, fetched, **extra):
+                Path(f"{path}.json").write_text(json.dumps({
+                    "bytes": len(fetched), "sha256": hashlib.sha256(fetched).hexdigest(), "format": "jp2",
+                    "md5": hashlib.md5(fetched).hexdigest(), **extra}))
+            sidecar(whole, whole.read_bytes())
+            damaged = [Path(d) / f"damaged-{n}.jp2" for n in range(5)]
+            longer = whole.read_bytes() + b"more"
+            for path in damaged:
+                path.write_bytes(whole.read_bytes())
+            sidecar(damaged[0], longer)
+            sidecar(damaged[1], whole.read_bytes(), sha256="0" * 64)
+            sidecar(damaged[2], whole.read_bytes(), md5="0" * 32)
+            sidecar(damaged[3], whole.read_bytes(), md5=None)
+            Path(f"{damaged[4]}.json").write_text("not json")
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                feed.main(["jp2-check", "--verify-sidecar", "--scan", str(whole),
+                           *(arg for path in damaged for arg in ("--scan", str(path)))])
+            self.assertEqual(out.getvalue().splitlines(), [
+                f"truncated\t{cut['reason']}",
+                f"unverified\tit is {len(longer) - 4} bytes; its sidecar says {len(longer)}",
+                "unverified\tits sha256 isn't its sidecar's", "unverified\tits md5 isn't its sidecar's",
+                "unverified\tits sidecar has no md5", "unverified\tits sidecar doesn't parse"])
             # A file it can't read fails it, naming the file.
             absent = str(Path(d) / "absent.jp2")
             with self.assertRaises(SystemExit) as failed, contextlib.redirect_stdout(io.StringIO()):

@@ -944,9 +944,15 @@ its box, marker-segment and tile-part headers (`quality_feed.py jp2-check`; no p
 network). A scan that is cut short isn't pushed. The script names it as
 `truncated <page> <reason>` and exits 3, as for a missing page.
 
+Only a scan that matches its sidecar is checked: the size, sha256 and bag md5 the fetcher
+recorded. A copy damaged on the scan server says nothing about LoC's file. The script pushes
+it as before, with a warning, and export's own check against the sidecar stops it.
+
 The controller keeps the reason on the page's claim. It then runs the hand-off
-`dead-letter` step with `SOURCE_TRUNCATED_DOCS`
-(`usnm-boinc claim dead-letter --source-truncated <doc_id>`). That step puts a v2
+`dead-letter` step with `SOURCE_TRUNCATED_DOCS`, each entry `<doc_id>:<message sha256>`
+(`usnm-boinc claim dead-letter --source-truncated <doc_id>:<message sha256>`). The sha256 is
+`claim pull`'s for the message claimed. The step refuses a page whose claim is now another
+message, so a late retry can't take a newer claim off its queue. Otherwise it puts a v2
 `permanent` dead letter on `ocr-deadletter`, with the error
 `source_truncated: LoC's JP2 is cut short at its source; not OCRed (#1457)`, and deletes
 the message. The page is never exported or claimed again, and it keeps LoC's text.
@@ -954,7 +960,8 @@ the message. The page is never exported or claimed again, and it keeps LoC's tex
 The controller then drops the claim and lists the page in its state's `source_truncated`
 (`jq .source_truncated <state dir>/state.json`): doc id, batch, scan, reason and time.
 That list is the one to report to LoC. If the step fails, the next tick retries it before
-anything else, without pushing the page again. A page pushed before the check was on is
+anything else, without pushing the page again. It retries even while draining or out of room,
+so the claim is settled before its lease runs out. A page pushed before the check was on is
 not checked when export re-pushes it to another destination.
 
 The flag is off by default, so the live service's push command is unchanged. It needs:

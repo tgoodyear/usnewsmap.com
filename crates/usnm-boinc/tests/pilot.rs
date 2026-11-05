@@ -2854,22 +2854,34 @@ mod queue_feed {
         // #1457: never exported, so there is no job to name; the dead letter says why.
         let f = fed(true).await;
         let claims = f.fx.tmp.path().join("claims");
-        pull(&f, &claims, Duration::from_secs(3600)).await;
+        let report = pull(&f, &claims, Duration::from_secs(3600)).await;
         publish_claim(&f, &claims).await;
+        let sha = usnm_ocr_contract::boinc::sha256(report.claims[0].text.as_bytes());
         let root = f.fx.tmp.path();
-        let step = || {
+        let step = |entry: String| {
             claim::cli::run(claim::cli::ClaimCommands::DeadLetter {
                 handoff_url: root.join("handoff").to_str().unwrap().into(),
                 queue_url: root.join("queue").to_str().unwrap().into(),
                 jobs: vec![],
-                source_truncated: vec![DOC.into()],
+                source_truncated: vec![entry],
                 supersedes_failed_job: None,
                 curated_url: None,
                 confirm_message_sha256: None,
             })
         };
-        step().await.unwrap();
         let q = f.fx.stores.queue.as_ref();
+        // Not the message claimed (the page was claimed again since), or no message named:
+        // nothing goes.
+        for entry in [format!("{DOC}:{}", "0".repeat(64)), DOC.into()] {
+            assert!(step(entry).await.is_err());
+        }
+        assert!(q
+            .peek(usnm_store::queue::DEADLETTER, 32)
+            .await
+            .unwrap()
+            .is_empty());
+        assert_eq!(q.approximate_count(BULK).await.unwrap(), 1);
+        step(format!("{DOC}:{sha}")).await.unwrap();
         assert_eq!(q.approximate_count(BULK).await.unwrap(), 0);
         let letters = q.peek(usnm_store::queue::DEADLETTER, 32).await.unwrap();
         assert_eq!(letters.len(), 1);
@@ -2881,7 +2893,7 @@ mod queue_feed {
         assert_eq!(letter.error, claim::SOURCE_TRUNCATED);
         assert_eq!(letter.message.as_ref(), Some(&f.message));
         // The controller retries a step that failed: nothing more goes.
-        step().await.unwrap();
+        step(format!("{DOC}:{sha}")).await.unwrap();
         assert_eq!(
             q.peek(usnm_store::queue::DEADLETTER, 32)
                 .await

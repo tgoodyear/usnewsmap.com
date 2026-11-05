@@ -24,7 +24,9 @@
 # --skip-truncated (#1457) checks each --keep-page JP2's headers first
 # (scripts/boinc/onprem/quality-feed/quality_feed.py jp2-check; Python 3, no network): one cut
 # short at its source, which LoC holds as it is, is not pushed, and is named as `truncated <page>
-# <reason>` instead, with exit 3 as for a missing page, so the caller can keep it from OCR.
+# <reason>` instead, with exit 3 as for a missing page, so the caller can keep it from OCR. Only
+# a JP2 that is what its sidecar records (size, sha256, the bag's md5) is judged: a copy damaged
+# here is pushed as before, with a warning, and export's own check against the sidecar stops it.
 #
 # --to-onprem (#1116) sends the --keep-page scans to the BOINC host instead of the container: a
 # tar of copies, named keep/<that path>.<ext> with their sidecars, piped to the controller's step
@@ -94,7 +96,7 @@ if $SKIP_TRUNCATED; then
   done
   if [ ${#jp2s[@]} -gt 0 ]; then
     feed="$(cd "$(dirname "${BASH_SOURCE[0]}")/../boinc/onprem/quality-feed" && pwd)/quality_feed.py"
-    out=$(python3 "$feed" jp2-check "${jp2s[@]}") || die "can't check the JP2s' headers"
+    out=$(python3 "$feed" jp2-check --verify-sidecar "${jp2s[@]}") || die "can't check the JP2s' headers"
     while IFS= read -r line; do checks+=("$line"); done <<< "$out"
     [ ${#checks[@]} -eq $((${#jp2s[@]} / 2)) ] || die "the JP2 check did not answer for every scan"
   fi
@@ -104,8 +106,11 @@ for ((i = 0; i < ${#found_pages[@]}; i += 3)); do
   p=${found_pages[i]} found=${found_pages[i + 1]} name=${found_pages[i + 2]}
   if $SKIP_TRUNCATED && [[ $found == *.jp2 ]]; then
     check=${checks[j]} j=$((j + 1))
-    [[ $check == ok || $check == truncated$'\t'* ]] || die "the JP2 check said: $check"
-    if [[ $check == truncated$'\t'* ]]; then
+    [[ $check == ok || $check == truncated$'\t'* || $check == unverified$'\t'* ]] ||
+      die "the JP2 check said: $check"
+    if [[ $check == unverified$'\t'* ]]; then
+      echo "warning: $name doesn't match its sidecar (${check#unverified$'\t'}); not checked" >&2
+    elif [[ $check == truncated$'\t'* ]]; then
       truncated+=("$p ${check#truncated$'\t'}")
       continue
     fi

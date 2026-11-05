@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import subprocess
@@ -25,11 +26,17 @@ class PushKeepPage(unittest.TestCase):
         self.root = self.tmp / "scans"
         self.env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "STUB_LOG": str(self.log)}
 
-    def scan(self, page, ext, cache_set="keep", data=b"scan"):
+    def scan(self, page, ext, cache_set="keep", data=b"scan", fetched=None):
+        """A cached scan holding `data`, its sidecar recording `fetched` (the same by default),
+        as the fetcher writes it: a JP2's with the bag's md5."""
         path = self.root / cache_set / f"{page}.{ext}"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
-        Path(f"{path}.json").write_text("{}")
+        fetched = data if fetched is None else fetched
+        side = {"bytes": len(fetched), "sha256": hashlib.sha256(fetched).hexdigest(), "format": "jpeg"}
+        if ext == "jp2":
+            side.update(format="jp2", md5=hashlib.md5(fetched).hexdigest())
+        Path(f"{path}.json").write_text(json.dumps(side))
 
     def run_push(self, *pages, extra=()):
         argv = [str(SCRIPT), "--account", "usnmex", "--scans-root", str(self.root)]
@@ -159,6 +166,16 @@ class PushKeepPage(unittest.TestCase):
         with tarfile.open(got) as tar:
             self.assertEqual({m.name for m in tar if m.isreg()},
                              {"keep/nbu_gage/sn1/1890-05-03/1/7.jp2", "keep/nbu_gage/sn1/1890-05-03/1/7.jp2.json"})
+
+    def test_skip_truncated_judges_only_a_jp2_that_is_what_its_sidecar_records(self):
+        # A copy cut short here, of a complete file LoC holds, is no verdict on LoC's: it goes
+        # up as before, and export's check against the sidecar stops it.
+        complete = bytes.fromhex(JP2_VECTORS["complete: one tile"]["hex"])
+        self.scan("nbu_gage/sn1/1890-05-03/1/7", "jp2", data=complete[:-9], fetched=complete)
+        r = self.run_push("nbu_gage/sn1/1890-05-03/1/7", extra=["--skip-truncated"])
+        self.assertEqual((r.returncode, r.stdout.splitlines()), (0, ["pushed keep/nbu_gage/sn1/1890-05-03/1/7.jp2"]))
+        self.assertIn(f"keep/nbu_gage/sn1/1890-05-03/1/7.jp2 doesn't match its sidecar (it is {len(complete) - 9} "
+                      f"bytes; its sidecar says {len(complete)}); not checked", r.stderr)
 
     def test_skip_truncated_with_nothing_cut_short_pushes_everything(self):
         self.scan("nbu_gage/sn1/1890-05-03/1/7", "jp2", data=bytes.fromhex(JP2_VECTORS["complete: one tile"]["hex"]))

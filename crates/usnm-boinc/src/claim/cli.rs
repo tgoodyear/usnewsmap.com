@@ -86,9 +86,14 @@ pub enum ClaimCommands {
             conflicts_with_all = ["supersedes_failed_job", "source_truncated"]
         )]
         jobs: Vec<String>,
-        /// A claimed page whose JP2 LoC holds cut short (a doc id, #1457): never exported, so
-        /// it has no job. Its dead letter says so. Repeat for more.
-        #[arg(long = "source-truncated", conflicts_with = "supersedes_failed_job")]
+        /// A claimed page whose JP2 LoC holds cut short (#1457), as `<doc id>:<message sha256>`,
+        /// the sha256 being `claim pull`'s for the message claimed: never exported, so it has
+        /// no job. Its dead letter says so. Repeat for more.
+        #[arg(
+            long = "source-truncated",
+            value_name = "DOC_ID:MESSAGE_SHA256",
+            conflicts_with = "supersedes_failed_job"
+        )]
         source_truncated: Vec<String>,
         /// Operator only (#1417): a dead-lettered job whose page was claimed again with a newer
         /// message. That newer claim is dead-lettered, naming this job, and its message deleted.
@@ -313,18 +318,27 @@ pub async fn run(command: ClaimCommands) -> anyhow::Result<()> {
                 }
                 return Ok(());
             }
+            // All checked before any dead letter goes.
+            let source_truncated = source_truncated
+                .iter()
+                .map(|entry| {
+                    entry
+                        .split_once(':')
+                        .filter(|(doc_id, sha)| {
+                            usnm_core::ids::PageKey::from_doc_id(doc_id).is_ok()
+                                && sha.len() == 64
+                                && sha.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+                        })
+                        .context("--source-truncated is <doc id>:<message sha256>")
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?;
             let mut lost = 0;
-            for doc_id in source_truncated {
-                anyhow::ensure!(
-                    usnm_core::ids::PageKey::from_doc_id(&doc_id).is_ok(),
-                    "invalid doc id"
-                );
-                let done = x::dead_letter(
+            for (doc_id, message_sha256) in source_truncated {
+                let done = x::dead_letter_source_truncated(
                     handoff.as_ref(),
                     queue.as_ref(),
-                    &doc_id,
-                    x::SOURCE_TRUNCATED,
-                    None,
+                    doc_id,
+                    message_sha256,
                 )
                 .await?;
                 if done == x::DeadLettered::LeaseLost {

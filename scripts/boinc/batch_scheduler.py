@@ -1144,9 +1144,11 @@ class Transport:
         self.step("handoff", "dead-letter", JOB_IDS=",".join(job_ids))
 
     @timed("dead-letter-truncated")
-    def dead_letter_truncated(self, doc_ids):
-        """Claimed pages whose scan LoC holds cut short (#1457) go to ocr-deadletter unexported."""
-        self.step("handoff", "dead-letter", SOURCE_TRUNCATED_DOCS=",".join(doc_ids))
+    def dead_letter_truncated(self, claims):
+        """Claimed pages whose scan LoC holds cut short (#1457) go to ocr-deadletter unexported:
+        `claims` are (doc id, sha256 of the message claimed), so a newer claim isn't taken."""
+        self.step("handoff", "dead-letter",
+                  SOURCE_TRUNCATED_DOCS=",".join(f"{doc_id}:{message}" for doc_id, message in claims))
 
     @timed("submit")
     def submit(self, job_id):
@@ -1421,7 +1423,6 @@ class QueueFeed:
         dead-lettered page (deadline_retry)."""
         now = time.time() if now is None else now
         self.retry_releases()
-        self.retry_truncated(now)
         started = set(selected)
         waiting = [claim for page, claim in self.claims.items() if page not in started]
         need = max(0, count - len(waiting))
@@ -1531,12 +1532,16 @@ class QueueFeed:
     def retry_truncated(self, now):
         """Dead-letter the claimed pages whose JP2 LoC holds cut short (#1457): released, the
         page would be claimed again, and LoC's copy is no better to fetch again. Each claim is
-        kept until its dead letter went, then listed in the state's `source_truncated`."""
+        kept until its dead letter went, then listed in the state's `source_truncated`. Every
+        tick tries, draining or not, so a failed step doesn't leave the lease to run out."""
         pages = sorted(page for page, claim in self.claims.items() if "source_truncated" in claim)
         if not pages:
             return
+        require(all(isinstance(self.claims[page]["message"], str) and ID.fullmatch(self.claims[page]["message"])
+                    for page in pages), "a source-truncated claim has no message sha256 to settle it by")
         for i in range(0, len(pages), 100):  # the step takes 100 doc ids at most
-            self.transport.dead_letter_truncated([self.claims[page]["doc_id"] for page in pages[i:i + 100]])
+            self.transport.dead_letter_truncated(
+                [(self.claims[page]["doc_id"], self.claims[page]["message"]) for page in pages[i:i + 100]])
         listed = self.state.setdefault("source_truncated", {})
         for page in pages:
             claim = self.claims.pop(page)
@@ -1976,6 +1981,8 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         persist()
 
     settle_failed(owned)
+    if feed:
+        feed.retry_truncated(now)
     held_results(state, held_jobs, now)
     persist()
     # Before collection: a host admitted now has its held results published by this tick's

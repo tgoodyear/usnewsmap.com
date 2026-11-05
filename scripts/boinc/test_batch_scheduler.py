@@ -1315,8 +1315,8 @@ class QueueFake(Fake):
     def dead_letter(self, doc_ids):
         self.actions.append(("dead-letter", sorted(doc_ids)))
 
-    def dead_letter_truncated(self, doc_ids):
-        self.actions.append(("dead-letter-truncated", sorted(doc_ids)))
+    def dead_letter_truncated(self, claims):
+        self.actions.append(("dead-letter-truncated", sorted(claims)))
 
     def export(self, pages, job_ids=()):
         by_batch = {}
@@ -1495,7 +1495,9 @@ class QueueModeTests(unittest.TestCase):
         base = "keep/test_batch/sn12345678/1900-01-01/1/1"
         self.fake.truncated = {base: "the codestream ends without an EOC marker after 4 of 4 tiles"}
         self.tick()
-        self.assertIn(("dead-letter-truncated", ["sn12345678_1900-01-01_ed-1_seq-1"]), self.fake.actions)
+        # Named with the message claimed, so a newer claim of the page isn't taken.
+        self.assertIn(("dead-letter-truncated", [("sn12345678_1900-01-01_ed-1_seq-1", f"{1:064x}")]),
+                      self.fake.actions)
         self.assertEqual(self.fake.released, [])
         self.assertNotIn("sn12345678/1900-01-01/ed-1/seq-1", self.state["claims"])
         self.assertEqual(self.state["source_truncated"], {"sn12345678/1900-01-01/ed-1/seq-1": {
@@ -1515,7 +1517,7 @@ class QueueModeTests(unittest.TestCase):
         base = "keep/test_batch/sn12345678/1900-01-01/1/1"
         self.fake.truncated = {base: "the codestream ends inside its main header"}
         original = self.fake.dead_letter_truncated
-        self.fake.dead_letter_truncated = lambda ids: (_ for _ in ()).throw(RuntimeError("dead letter failed"))
+        self.fake.dead_letter_truncated = lambda claims: (_ for _ in ()).throw(RuntimeError("dead letter failed"))
         with self.assertRaisesRegex(RuntimeError, "dead letter failed"):
             self.tick()
         claim = self.state["claims"]["sn12345678/1900-01-01/ed-1/seq-1"]
@@ -1524,9 +1526,39 @@ class QueueModeTests(unittest.TestCase):
         self.fake.dead_letter_truncated = original
         pushes = len(self.fake.pushes)
         self.tick()
-        self.assertEqual(self.fake.actions.count(("dead-letter-truncated", ["sn12345678_1900-01-01_ed-1_seq-1"])), 1)
+        self.assertEqual(self.fake.actions.count(
+            ("dead-letter-truncated", [("sn12345678_1900-01-01_ed-1_seq-1", f"{1:064x}")])), 1)
         self.assertNotIn(base, [b for push in self.fake.pushes[pushes:] for b in push])
         self.assertIn("sn12345678/1900-01-01/ed-1/seq-1", self.state["source_truncated"])
+
+    def test_a_failed_truncated_dead_letter_is_retried_by_a_tick_that_claims_nothing(self):
+        # Retried before any refill, so a draining tick, or one with no room, still settles it
+        # before the claim's lease runs out.
+        base = "keep/test_batch/sn12345678/1900-01-01/1/1"
+        page = "sn12345678/1900-01-01/ed-1/seq-1"
+        self.fake.truncated = {base: "the codestream ends inside its main header"}
+        original = self.fake.dead_letter_truncated
+        self.fake.dead_letter_truncated = lambda claims: (_ for _ in ()).throw(RuntimeError("dead letter failed"))
+        with self.assertRaisesRegex(RuntimeError, "dead letter failed"):
+            self.tick()
+        self.fake.dead_letter_truncated = original
+        claimed = len(self.fake.claimed)
+        batch.tick(self.config, self.state, self.fake, lambda: self.saved.append(copy.deepcopy(self.state)),
+                   NOW, drain=True)
+        self.assertEqual(len(self.fake.claimed), claimed)
+        self.assertIn(("dead-letter-truncated", [("sn12345678_1900-01-01_ed-1_seq-1", f"{1:064x}")]),
+                      self.fake.actions)
+        self.assertNotIn(page, self.state["claims"])
+        self.assertIn(page, self.state["source_truncated"])
+
+    def test_a_truncated_claim_without_its_message_is_not_settled_blind(self):
+        base = "keep/test_batch/sn12345678/1900-01-01/1/1"
+        self.fake.truncated = {base: "the codestream ends inside its main header"}
+        self.fake.waiting[0].pop("message_sha256")
+        with self.assertRaisesRegex(ValueError, "no message sha256"):
+            self.tick()
+        self.assertFalse([a for a in self.fake.actions if a[0] == "dead-letter-truncated"])
+        self.assertIn("sn12345678/1900-01-01/ed-1/seq-1", self.state["claims"])
 
     def test_restart_resumes_claimed_pages_without_claiming_again(self):
         # A crash between claiming and pushing: the claims are in the state, not yet pushed.
@@ -2224,8 +2256,9 @@ class TimingsTests(unittest.TestCase):
         self.assertNotIn("--skip-truncated", transport.push_args(skip_truncated=False))
         # The dead letter names the pages.
         with patch.object(transport, "step") as step:
-            transport.dead_letter_truncated(["sn1_1900-01-01_ed-1_seq-2"])
-        step.assert_called_once_with("handoff", "dead-letter", SOURCE_TRUNCATED_DOCS="sn1_1900-01-01_ed-1_seq-2")
+            transport.dead_letter_truncated([("sn1_1900-01-01_ed-1_seq-2", "d" * 64), ("sn1_1900-01-01_ed-1_seq-3", "e" * 64)])
+        step.assert_called_once_with("handoff", "dead-letter", SOURCE_TRUNCATED_DOCS=(
+            "sn1_1900-01-01_ed-1_seq-2:" + "d" * 64 + ",sn1_1900-01-01_ed-1_seq-3:" + "e" * 64))
         # Timed apart from dead letters for failed jobs.
         self.assertIn("dead-letter-truncated", transport.timings.phases)
         self.assertNotIn("dead-letter", transport.timings.phases)
@@ -2636,7 +2669,10 @@ class QueueTransportTests(unittest.TestCase):
                 scan = scans / "keep/test_batch/sn12345678/1900-01-01/1" / f"{number}.{ext}"
                 scan.parent.mkdir(parents=True, exist_ok=True)
                 scan.write_bytes(data)
-                Path(f"{scan}.json").write_text("{}")
+                # As the fetcher records it: only a scan that matches is judged.
+                Path(f"{scan}.json").write_text(json.dumps({
+                    "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest(),
+                    **({"format": "jp2", "md5": hashlib.md5(data).hexdigest()} if ext == "jp2" else {})}))
             (manifests / "v1").mkdir(parents=True)
             (manifests / "v1/manifest.parquet").write_bytes(b"manifest")
             bin_dir = directory / "bin"

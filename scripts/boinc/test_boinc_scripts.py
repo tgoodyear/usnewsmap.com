@@ -1481,18 +1481,21 @@ class HandoffAndBridgeQualitySteps(unittest.TestCase):
     def test_handoff_dead_letter_of_pages_whose_jp2_loc_holds_cut_short(self):
         # #1457: claimed pages never exported, so named by doc id, not by job.
         queue = "https://usnmst.queue.core.windows.net"
-        r = self.handoff("dead-letter", QUEUE_URL=queue,
-                         SOURCE_TRUNCATED_DOCS="sn83045462_1890-05-03_ed-1_seq-1,sn83045462_1890-05-03_ed-1_seq-2")
+        # Each with the sha256 of the message claimed, so a newer claim isn't taken.
+        first, second = "sn83045462_1890-05-03_ed-1_seq-1:" + "d" * 64, "sn83045462_1890-05-03_ed-1_seq-2:" + "e" * 64
+        r = self.handoff("dead-letter", QUEUE_URL=queue, SOURCE_TRUNCATED_DOCS=f"{first},{second}")
         self.assertEqual(r.returncode, 0, r.stderr)
         (call,) = self.calls()
         self.assertIn("claim dead-letter --handoff-url https://usnmst.blob.core.windows.net/boinc-handoff", call)
-        self.assertIn("--source-truncated sn83045462_1890-05-03_ed-1_seq-1 "
-                      "--source-truncated sn83045462_1890-05-03_ed-1_seq-2", call)
+        self.assertIn(f"--source-truncated {first} --source-truncated {second}", call)
         self.assertNotIn("--job ", call)
-        for bad in (dict(SOURCE_TRUNCATED_DOCS="a b"), dict(SOURCE_TRUNCATED_DOCS=",".join(["a"] * 101)),
-                    dict(SOURCE_TRUNCATED_DOCS="a", JOB_IDS="b" * 64),
-                    dict(SOURCE_TRUNCATED_DOCS="a", SUPERSEDES_FAILED_JOB="b" * 64),
-                    dict(SOURCE_TRUNCATED_DOCS="a", CONFIRM_MESSAGE_SHA256="c" * 64)):
+        one = "a:" + "d" * 64
+        for bad in (dict(SOURCE_TRUNCATED_DOCS="a"), dict(SOURCE_TRUNCATED_DOCS="a:" + "D" * 64),
+                    dict(SOURCE_TRUNCATED_DOCS="a:" + "d" * 63), dict(SOURCE_TRUNCATED_DOCS=f"{one} {one}"),
+                    dict(SOURCE_TRUNCATED_DOCS=",".join([one] * 101)),
+                    dict(SOURCE_TRUNCATED_DOCS=one, JOB_IDS="b" * 64),
+                    dict(SOURCE_TRUNCATED_DOCS=one, SUPERSEDES_FAILED_JOB="b" * 64),
+                    dict(SOURCE_TRUNCATED_DOCS=one, CONFIRM_MESSAGE_SHA256="c" * 64)):
             with self.subTest(bad=bad):
                 self.assertNotEqual(self.handoff("dead-letter", QUEUE_URL=queue, **bad).returncode, 0)
 

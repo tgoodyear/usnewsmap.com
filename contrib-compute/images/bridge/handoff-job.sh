@@ -43,9 +43,10 @@
 #   HANDOFF_STEP=dead-letter JOB_IDS=<id>[,<id>...]
 #                         puts claimed pages whose BOINC workunit failed for good on
 #                         ocr-deadletter and deletes their messages (#1154)
-#   HANDOFF_STEP=dead-letter SOURCE_TRUNCATED_DOCS=<doc_id>[,<doc_id>...]
+#   HANDOFF_STEP=dead-letter SOURCE_TRUNCATED_DOCS=<doc_id>:<message sha256>[,...]
 #                         the same, unexported, for claimed pages whose JP2 LoC holds cut short
-#                         (push-boinc-scan.sh --skip-truncated, #1457)
+#                         (push-boinc-scan.sh --skip-truncated, #1457); each still the message
+#                         claimed, by claim pull's sha256 of it
 #   HANDOFF_STEP=dead-letter SUPERSEDES_FAILED_JOB=<id> [CONFIRM_MESSAGE_SHA256=<sha256>]
 #                         an operator's only (#1417): the page of that dead-lettered job was
 #                         claimed again with a newer message; prints that message's sha256 and
@@ -383,8 +384,8 @@ case "${HANDOFF_STEP:-}" in
       # Claimed pages whose JP2 LoC holds cut short (#1457): never exported, so no job to name.
       [ -z "${JOB_IDS:-}" ] || fail "SOURCE_TRUNCATED_DOCS names pages that have no job; don't give JOB_IDS too"
       [ -z "${CONFIRM_MESSAGE_SHA256:-}" ] || fail "CONFIRM_MESSAGE_SHA256 goes with SUPERSEDES_FAILED_JOB"
-      [[ $SOURCE_TRUNCATED_DOCS =~ ^[A-Za-z0-9_-]+(,[A-Za-z0-9_-]+){0,99}$ ]] ||
-        fail "SOURCE_TRUNCATED_DOCS is 1 to 100 comma-separated doc ids"
+      [[ $SOURCE_TRUNCATED_DOCS =~ ^[A-Za-z0-9_-]+:[0-9a-f]{64}(,[A-Za-z0-9_-]+:[0-9a-f]{64}){0,99}$ ]] ||
+        fail "SOURCE_TRUNCATED_DOCS is 1 to 100 comma-separated <doc id>:<message sha256>"
       IFS=, read -r -a docs <<< "$SOURCE_TRUNCATED_DOCS"
       doc_args=()
       for d in "${docs[@]}"; do doc_args+=(--source-truncated "$d"); done
