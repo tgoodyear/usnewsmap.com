@@ -136,14 +136,14 @@ fn client_version(text: &str) -> Option<u32> {
 /// Rows of `id, os_name, p_vendor, client_version, docker, dont_use_docker, dont_use_wsl` from
 /// `mysql --batch`, which escapes tabs and newlines inside values.
 fn parse_hosts(text: &str) -> anyhow::Result<Vec<Host>> {
-    let flag = |field: &str| match field {
+    let flag = |name: &str, field: &str| match field {
         "1" => Ok(true),
         "0" => Ok(false),
-        _ => anyhow::bail!("invalid host container field"),
+        _ => anyhow::bail!("invalid host {name} field"),
     };
-    let reported = |field: &str| match field {
+    let reported = |name: &str, field: &str| match field {
         "" => Ok(None),
-        _ => flag(field).map(Some),
+        _ => flag(name, field).map(Some),
     };
     let mut hosts = Vec::new();
     let mut seen = BTreeSet::new();
@@ -157,9 +157,9 @@ fn parse_hosts(text: &str) -> anyhow::Result<Vec<Host>> {
             os_name: f[1].into(),
             p_vendor: f[2].into(),
             client: client_version(f[3]),
-            docker: reported(f[4])?,
-            dont_use_docker: flag(f[5])?,
-            dont_use_wsl: flag(f[6])?,
+            docker: reported("docker", f[4])?,
+            dont_use_docker: flag("dont_use_docker", f[5])?,
+            dont_use_wsl: flag("dont_use_wsl", f[6])?,
         });
     }
     ensure!(hosts.len() <= 100000, "host inventory exceeds safety bound");
@@ -814,6 +814,14 @@ mod tests {
             "1\tLinux\tGenuineIntel\t8.2.13\t1\t0\t0\n1\tLinux\tGenuineIntel\t8.2.13\t1\t0\t0",
         ] {
             assert!(parse_hosts(bad).is_err(), "{bad}");
+        }
+        for (bad, column) in [
+            ("1\tLinux\tGenuineIntel\t8.2.13\tNULL\t0\t0", "docker"),
+            ("1\tLinux\tGenuineIntel\t8.2.13\t1\t\t0", "dont_use_docker"),
+            ("1\tLinux\tGenuineIntel\t8.2.13\t1\t0\ttrue", "dont_use_wsl"),
+        ] {
+            let err = parse_hosts(bad).unwrap_err().to_string();
+            assert_eq!(err, format!("invalid host {column} field"));
         }
         for (text, version) in [
             ("8.2.13", Some(80213)),
