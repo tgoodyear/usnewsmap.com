@@ -64,21 +64,25 @@ class PendingTest(unittest.TestCase):
 
 class OcrClaimTest(unittest.TestCase):
     def test_queued_pages_already_on_the_scan_server_are_claimed_even_while_a_manifest_is_fetched(self):
-        on, off = "sn1_1900-01-01_ed-1_seq-1", "sn1_1900-01-01_ed-1_seq-2"
+        on, off, ended = "sn1_1900-01-01_ed-1_seq-1", "sn1_1900-01-01_ed-1_seq-2", "sn1_1900-01-01_ed-1_seq-3"
         with tempfile.TemporaryDirectory() as d:
             Path(d, "last.json").write_text(json.dumps({
                 "name": "queue-ocr-x", "at": dt.datetime.now(UTC).isoformat(), "pairs": [["b", off]]}))
             Path(d, "ocr-docs.txt").write_text(f"{off}\n")
             a = types.SimpleNamespace(state=d, reasons="user,bulk", scan_server="http://s", curated_url="http://c",
                                       days=14, max_pages=10, curated_copy=d, what_if=False)
-            rows = {"queued": [q(on, "user", 1), q(off, "user", 2)], "outcomes": []}
+            # ended's scan is on the server too, but OCR has finished with it: not claimed.
+            rows = {"queued": [q(on, "user", 1), q(off, "user", 2), q(ended, "user", 3)],
+                    "outcomes": [{"doc_id": ended, "outcome": "not_sent", "cause": None,
+                                  "at": dt.datetime(2026, 10, 24, 4, tzinfo=UTC)}]}
             refreshed = []
 
             def cached(lake, state, kind, *a):
                 refreshed.append((kind, lake is not None))
                 return rows[kind]
 
-            with mock.patch.object(m, "staged_pairs", return_value={("b", on): {"doc_id": on, "batch": "b"}}), \
+            index = {("b", d): {"doc_id": d, "batch": "b"} for d in (on, ended)}
+            with mock.patch.object(m, "staged_pairs", return_value=index), \
                     mock.patch.object(m, "Lake"), \
                     mock.patch.object(m, "cached_rows", side_effect=cached), \
                     contextlib.redirect_stdout(io.StringIO()) as out:
@@ -86,8 +90,8 @@ class OcrClaimTest(unittest.TestCase):
                 m.cmd_build(a)
             self.assertEqual(Path(d, "ocr-docs.txt").read_text().split(), [off, on])
             self.assertIn("still being fetched", out.getvalue())
-            # Newly queued pages are claimed from the lake; outcomes wait for a manifest run.
-            self.assertEqual(refreshed, [("queued", True), ("outcomes", False)] * 2)
+            # Claims see what was queued, and what OCR finished, since the manifest went out.
+            self.assertEqual(refreshed, [("queued", True), ("outcomes", True)] * 2)
 
 
 def ranked(doc, batch, lccn, decade, rank):
