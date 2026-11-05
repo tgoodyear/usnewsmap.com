@@ -5,8 +5,8 @@ from pathlib import Path
 import re
 import shlex
 
-from bootstrap_pipeline import Pipeline, PipelineError, atomic, fingerprint, load
-from onprem_artifacts import validate
+from bootstrap_pipeline import Blocked, CommandFailed, Pipeline, PipelineError, atomic, fingerprint, load
+from onprem_artifacts import BUSY, validate
 
 
 def load_onprem(path, args):
@@ -104,8 +104,15 @@ class OnpremPipeline(Pipeline):
 
     def remote(self, work, action, value):
         program = self.remote_directory + "/source/scripts/boinc/onprem_artifacts.py"
-        return json.loads(self.ct("python3 " + shlex.quote(program) + " --operation " +
-                                  shlex.quote(action) + " --payload " + shlex.quote(json.dumps(value))))
+        try:
+            return json.loads(self.ct("python3 " + shlex.quote(program) + " --operation " +
+                                      shlex.quote(action) + " --payload " + shlex.quote(json.dumps(value))))
+        except CommandFailed as exc:
+            if exc.returncode != BUSY:
+                raise
+            # Nothing ran, so this is a wait, not an ambiguous failure: rerunning resumes the phase.
+            raise Blocked("another step holds the production step lock; " + action +
+                          " did not start, rerun to resume") from exc
 
     def preflight(self):
         manifest_path = self.settings
@@ -289,7 +296,8 @@ class OnpremPipeline(Pipeline):
             value = self.candidate(work)
             self.remote(work, "verify", value)
             if phase == "publish":
-                self.ct("usnm-boinc-step --env " + self.config["env"] +
+                # The verify above just released the lock, and queued steps take it first.
+                self.ct("USNM_BOINC_STEP_LOCK_WAIT_SECS=300 usnm-boinc-step --env " + self.config["env"] +
                         " --target publish --step publish --image " + value["images"]["appver"] + " --wait-mins 30")
             else:
                 self.acceptance(work)

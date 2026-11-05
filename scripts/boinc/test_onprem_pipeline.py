@@ -2,6 +2,7 @@
 import argparse
 import fcntl
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -10,7 +11,7 @@ import subprocess
 import sys
 import time
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, mock_open, patch
 import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -284,6 +285,35 @@ with open({str(lock_path)!r}, 'a') as lock:
             self.assertTrue(resumed.execute()["complete"])
         self.assertEqual([call.args[0] for call in phase.call_args_list], list(pipeline.PHASES[4:]))
 
+    def test_busy_step_lock_blocks_phase_and_rerun_resumes_without_retry_approval(self):
+        self.p.run.side_effect = pipeline.CommandFailed("ssh", 1)
+        with self.assertRaises(pipeline.CommandFailed):
+            self.p.remote(self.directory, "verify", manifest())
+        self.p.state.update(done=list(pipeline.PHASES[:4]))
+        self.p.save()
+        self.p.run.side_effect = [pipeline.CommandFailed("ssh", 75), '{"installed": "bridge"}']
+        with patch.object(pipeline, "PHASES", pipeline.PHASES[:5]), patch.object(self.p, "preflight"), \
+                patch.object(self.p, "receipt"), patch.object(self.p, "workspace", return_value=self.directory), \
+                patch.object(self.p, "assert_reviewed"), patch.object(self.p, "candidate", return_value=manifest()):
+            with self.assertRaisesRegex(pipeline.Blocked, "install did not start"):
+                self.p.execute()
+            self.assertEqual((self.p.state["active"], self.p.state["status"]), ("runtime", "blocked"))
+            self.assertTrue(self.p.execute()["complete"])
+        self.assertEqual(self.p.state["done"], list(pipeline.PHASES[:5]))
+        self.assertEqual(self.p.run.call_count, 3)
+
+    def test_busy_step_lock_exits_75_before_the_operation_starts(self):
+        argv = ["onprem_artifacts.py", "--operation", "install", "--payload", "{}"]
+        with patch.object(artifacts.sys, "argv", argv), patch("builtins.open", mock_open()), \
+                patch.object(artifacts, "supervise") as supervise, \
+                patch.object(artifacts.sys, "stderr", new_callable=io.StringIO):
+            with patch.object(artifacts.fcntl, "flock", side_effect=BlockingIOError):
+                self.assertEqual(artifacts.main(), 75)
+            with patch.object(artifacts.fcntl, "flock", side_effect=PermissionError):
+                with self.assertRaises(PermissionError):
+                    artifacts.main()
+        supervise.assert_not_called()
+
     def test_manifest_rejects_azure_tags_missing_worker_and_changed_provenance(self):
         for edit in (lambda v: v["images"].update(bridge="registry.azurecr.io/image@sha256:" + "a" * 64),
                      lambda v: v["images"].update(server="localhost/server:latest"),
@@ -488,6 +518,8 @@ if '--dry-run' not in sys.argv:
         def ct(command):
             if "--target publish" in command:
                 self.assertIn("review-app", calls)
+                # The verify just released the lock; publication queues for it instead of failing.
+                self.assertIn("USNM_BOINC_STEP_LOCK_WAIT_SECS=300 usnm-boinc-step", command)
                 self.assertIn("--image sha256:" + "e" * 64, command)
                 calls.append("publish")
             return ""
