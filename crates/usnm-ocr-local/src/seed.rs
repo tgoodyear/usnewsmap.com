@@ -253,11 +253,7 @@ impl Options {
             bail!("unsafe seed manifest version {:?}", self.manifest);
         }
         if let Some(sha) = &self.supersession {
-            if sha.len() != 64
-                || !sha
-                    .bytes()
-                    .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
-            {
+            if !crate::alternate_decisions::hash_ok(sha) {
                 bail!("the seed supersession list must be a lowercase SHA-256");
             }
         }

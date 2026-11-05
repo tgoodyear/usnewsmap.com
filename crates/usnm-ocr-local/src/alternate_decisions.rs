@@ -156,7 +156,7 @@ fn rollback_of(pending: &Record, decision: &Decision) -> bool {
         }
 }
 
-fn hash_ok(hash: &str) -> bool {
+pub(crate) fn hash_ok(hash: &str) -> bool {
     hash.len() == 64
         && hash
             .bytes()

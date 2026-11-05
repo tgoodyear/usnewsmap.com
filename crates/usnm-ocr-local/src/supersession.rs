@@ -17,13 +17,14 @@
 use std::collections::{BTreeSet, HashMap};
 
 use anyhow::{ensure, Context};
+use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use usnm_core::ids::PageKey;
 use usnm_ocr_contract::message::is_base_batch_name;
 use usnm_store::ObjectStore;
 
-use crate::alternate::{digest, put_exact, read_retained};
-use crate::alternate_decisions::{self, Action, Subject};
+use crate::alternate::{digest, put_exact};
+use crate::alternate_decisions::{self, hash_ok, Action, Subject};
 use crate::ROOT;
 
 pub const FORMAT: &str = "usnm-ocr-alternate-supersession/1";
@@ -64,13 +65,6 @@ pub struct List {
     pub reason: String,
     pub evidence: String,
     pub entries: Vec<Entry>,
-}
-
-fn hash_ok(hash: &str) -> bool {
-    hash.len() == 64
-        && hash
-            .bytes()
-            .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
 }
 
 /// Where a list is stored, by the SHA-256 of its exact bytes.
@@ -137,14 +131,18 @@ pub fn parse(bytes: &[u8]) -> anyhow::Result<List> {
 pub async fn load(curated: &dyn ObjectStore, sha256: &str) -> anyhow::Result<List> {
     ensure!(hash_ok(sha256), "supersession list: invalid SHA-256");
     let path = path(sha256);
-    let dir = format!("{ROOT}/alternate-supersession");
-    let object = curated
-        .list_info(&dir)
+    let mut chunks = curated
+        .get_stream(&path)
         .await?
-        .into_iter()
-        .find(|o| o.path == path)
         .with_context(|| format!("no supersession list at {path}"))?;
-    let bytes = read_retained(curated, &object, MAX_BYTES as u64).await?;
+    let mut bytes = Vec::new();
+    while let Some(chunk) = chunks.next().await {
+        bytes.extend_from_slice(&chunk?);
+        ensure!(
+            bytes.len() <= MAX_BYTES,
+            "supersession list {path}: over {MAX_BYTES} bytes"
+        );
+    }
     ensure!(
         digest(&bytes) == sha256,
         "supersession list {path}: checksum mismatch"
