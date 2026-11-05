@@ -890,7 +890,7 @@ jobs:
           python3 -m unittest -v scripts/boinc/onprem/quality-feed/test_quality_campaign.py
           shellcheck -x -S warning scripts/ocr-node/reboot-if-needed.sh scripts/ocr-node/push-boinc-scan.sh \
             scripts/ocr-node/check-scan-archive.sh scripts/ocr-node/grant-archive-uploader.sh \
-            scripts/ocr-node/install-archive-host.sh
+            scripts/ocr-node/install-archive-host.sh scripts/ocr-node/restore-drill.sh
       - name: The BOINC scripts pass shellcheck
         if: needs.changes.outputs.infra == 'true'
         run: |
