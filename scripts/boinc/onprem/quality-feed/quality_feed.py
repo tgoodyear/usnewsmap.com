@@ -736,9 +736,9 @@ def delete_shipped(a, camp_dir, done_path, quality_docs, deleted_path, kept_path
 
     out = list(released)
     # Kept scans that lost their place go first. One that fails to go stays kept and still
-    # counts, so the pages that would have taken its place wait, neither kept nor deleted,
-    # for a later round: the kept list's bytes never grow past the budget, and a budget cut
-    # below them is reached as those deletes succeed.
+    # counts, so this round's newly shipped pages are deleted rather than kept in its place:
+    # the kept list's bytes never grow past the budget (a budget cut below them is reached as
+    # those deletes succeed), and no scan waits on the server outside both lists.
     stuck = {}
     for doc in sorted(d for d in kept if d not in want):
         if delete(doc):
@@ -748,9 +748,9 @@ def delete_shipped(a, camp_dir, done_path, quality_docs, deleted_path, kept_path
     keep = {d: k for d, k in want.items() if d in kept or not stuck}
     keep.update(stuck)
     if stuck:
-        log("kept scans not deleted; their replacements wait", pages=len(stuck),
-            waiting=sum(1 for d in want if d not in keep))
-    for doc in sorted(d for d in shipped if d not in want):
+        log("kept scans not deleted; newly shipped ones deleted in their place", pages=len(stuck),
+            not_kept=sum(1 for d in want if d not in keep))
+    for doc in sorted(d for d in shipped if d not in keep):
         if delete(doc):
             out.append(doc)
     used = sum(k[1] for k in keep.values())

@@ -771,7 +771,7 @@ class FollowTest(unittest.TestCase):
                 self.assertEqual(calls, [("DELETE", "buffer/b/q6.jp2")])
                 self.assertEqual(feed.read_kept(str(kept)), {})
 
-    def test_a_kept_scan_that_fails_to_go_holds_its_place_and_its_replacement_waits(self):
+    def test_a_kept_scan_that_fails_to_go_holds_its_place_and_its_replacement_is_deleted(self):
         with tempfile.TemporaryDirectory() as d:
             camp, done, deleted, kept = Path(d, "camp"), Path(d, "done.txt"), Path(d, "deleted.txt"), Path(d, "kept.tsv")
             camp.mkdir()
@@ -793,13 +793,10 @@ class FollowTest(unittest.TestCase):
                 self.assertEqual(ship(), 0)
                 with open(done, "a") as f:
                     f.write("new\tc2\tbuffer/b/new.jp2\t80\t0.9\n")
-                self.assertEqual(ship(), 0)  # old's DELETE fails: new neither kept nor deleted
+                self.assertEqual(ship(), 1)  # old's DELETE fails: it stays, and new goes instead
                 self.assertEqual(set(feed.read_kept(str(kept))), {"old"})
-                self.assertNotIn(("DELETE", "buffer/b/new.jp2"), calls)
-                fail.clear()
-                self.assertEqual(ship(), 1)
-                self.assertEqual(set(feed.read_kept(str(kept))), {"new"})
-                self.assertEqual(feed.read_lines(str(deleted)), {"old"})
+                self.assertEqual(calls[-2:], [("DELETE", "buffer/b/old.jp2"), ("DELETE", "buffer/b/new.jp2")])
+                self.assertEqual(feed.read_lines(str(deleted)), {"new"})
 
     def test_an_unreadable_kept_line_is_weighed_again_not_fatal(self):
         with tempfile.TemporaryDirectory() as d:
