@@ -386,6 +386,27 @@ class OnpremStep(unittest.TestCase):
         self.assertNotEqual(done.returncode, 0)
         self.assertIn("takes only", done.stderr)
 
+    def test_handoff_superseding_dead_letter_is_the_operators_only(self):
+        # #1417: root on the host may settle a page claimed again after its dead letter; the
+        # controller's key may not.
+        self.write_handoff_env()
+        done = self.run_step("--env", "prod", "--target", "handoff", "--step", "dead-letter",
+                             "--var", "SUPERSEDES_FAILED_JOB=" + "a" * 64,
+                             "--var", "CONFIRM_MESSAGE_SHA256=" + "b" * 64, "--wait-mins", "10", "--what-if")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn("HANDOFF_STEP=dead-letter", done.stdout)
+        for var in ("SUPERSEDES_FAILED_JOB=" + "a" * 64, "CONFIRM_MESSAGE_SHA256=" + "b" * 64):
+            with self.subTest(var=var):
+                done = self.run_step(ssh="usnm-boinc-step --env prod --target handoff --step dead-letter "
+                                         f"--var {var} --what-if")
+                self.assertNotEqual(done.returncode, 0)
+                self.assertIn("takes only JOB_IDS", done.stderr)
+        # Only dead-letter takes them.
+        done = self.run_step("--env", "prod", "--target", "handoff", "--step", "release",
+                             "--var", "SUPERSEDES_FAILED_JOB=" + "a" * 64, "--what-if")
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("takes only", done.stderr)
+
     def test_handoff_env_must_hold_exactly_the_jobs_settings(self):
         for changes, message in (
             ({"QUEUE_URL": None}, "doesn't set QUEUE_URL"),

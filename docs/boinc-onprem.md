@@ -376,7 +376,9 @@ the on-prem group needs a role there before step 5.
 ## Hand-off steps on-prem
 
 `claim`, `release` and `collect` can run on the host instead of the Azure hand-off job (#967
-phase 3). `usnm-boinc-step --target handoff --step claim|release|collect` runs the bridge
+phase 3). `dead-letter` runs here too, and as root on the host it also takes an operator's
+`SUPERSEDES_FAILED_JOB` and `CONFIRM_MESSAGE_SHA256`
+([boinc-batch-scheduler.md](boinc-batch-scheduler.md#a-retried-page-claimed-after-its-dead-letter)). `usnm-boinc-step --target handoff --step claim|release|collect` runs the bridge
 image's `handoff-job.sh`, the Azure job's own command, from `SERVER_IMAGE`, the image the other
 bridge steps use. It runs as the host's own Arc machine identity, which ADR-0008's Cosmos
 amendment gives the hand-off job's grants. The container mounts only the Arc agent's challenge
