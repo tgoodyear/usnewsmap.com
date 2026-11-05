@@ -245,4 +245,23 @@
         <max_batch>2</max_batch>
         <avg_ncpus>2</avg_ncpus>
     </plan_class>
+    <plan_class>
+        <name>nvidia_vulkan_2b</name>
+        <!-- Separate, closed native 2B class for 6 GB NVIDIA GPUs (#1234): Linux x86-64 only,
+             the reviewed ubuntu-vulkan runtime, batch-2 workunits. CUDA detects/assigns the
+             device; execution uses bundled Vulkan with full offload. The app requires the one
+             reviewed 2B model and 4096 MiB free, and refuses rather than reading on the CPU. -->
+        <min_wu_id>2</min_wu_id>
+        <max_wu_id>1</max_wu_id>
+        <gpu_type>nvidia</gpu_type>
+        <cuda/>
+        <!-- The native app on this Vulkan runtime ran on BOINC 8.2.9 in #1234 (#1386). -->
+        <min_core_client_version>80209</min_core_client_version>
+        <min_gpu_ram_mb>4500</min_gpu_ram_mb>
+        <gpu_ram_used_mb>4096</gpu_ram_used_mb>
+        <ngpus>1</ngpus>
+        <min_batch>2</min_batch>
+        <max_batch>2</max_batch>
+        <avg_ncpus>2</avg_ncpus>
+    </plan_class>
 </plan_classes>

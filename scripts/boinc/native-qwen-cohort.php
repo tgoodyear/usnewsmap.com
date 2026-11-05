@@ -1,8 +1,10 @@
 <?php
 // Operator-only dispatch window; never changes account preferences or scientific rows.
 // shared_8b opens Intel/NVIDIA Vulkan classes over the same audited, bounded workunit range.
-const NATIVE_QWEN_CLASSES = ["nvidia_cuda_2b", "nvidia_cuda_8b", "intel_vulkan_8b", "nvidia_vulkan_8b", "nvidia_vulkan_6gb_8b", "amd_vulkan_8b"];
-const INDEPENDENT_QWEN_CLASSES = ["amd_vulkan_8b", "nvidia_vulkan_6gb_8b"];
+const NATIVE_QWEN_CLASSES = ["nvidia_cuda_2b", "nvidia_cuda_8b", "intel_vulkan_8b", "nvidia_vulkan_8b", "nvidia_vulkan_6gb_8b", "nvidia_vulkan_2b", "amd_vulkan_8b"];
+const INDEPENDENT_QWEN_CLASSES = ["amd_vulkan_8b", "nvidia_vulkan_6gb_8b", "nvidia_vulkan_2b"];
+// Native classes that run the 2B model on batch-2 workunits; the rest run 8B on batch 8.
+const NATIVE_QWEN_2B_CLASSES = ["nvidia_cuda_2b", "nvidia_vulkan_2b"];
 const SHARED_QWEN_CLASSES = ["intel_vulkan_8b", "nvidia_vulkan_8b"];
 const TIEBREAKER_QWEN_CLASSES = ["intel_vulkan_8b", "nvidia_vulkan_8b", "shared_8b"];
 // A contiguous range of up to ten workunits: the shared window, or Intel's alone, which the
@@ -216,7 +218,7 @@ function native_qwen_cohort_validate($workunit, $results, $plan_class, $ordinary
     if ($ordinary_canary && $plan_class !== "amd_vulkan_8b") {
         throw new RuntimeException("Ordinary canary is for amd_vulkan_8b only");
     }
-    $model = $plan_class === "nvidia_cuda_2b" ? "2b" : "8b";
+    $model = in_array($plan_class, NATIVE_QWEN_2B_CLASSES, true) ? "2b" : "8b";
     $batch = $model === "2b" ? 2 : 8;
     $disk = $model === "2b" ? 12884901888 : 19327352832;
     if (intval($workunit->batch) !== $batch || intval($workunit->rsc_disk_bound) !== $disk

@@ -874,8 +874,11 @@ class BuildInputs(unittest.TestCase):
 
     def test_the_native_apps_run_for_the_files_they_embed_or_their_tests_read(self):
         for path in ["ocr/boinc/qwen/llama.lock", "ocr/boinc/qwen/weights.lock", "ocr/contract/v1/schema.json",
-                     "ocr/boinc/qwen/amd-device-map.cpp", "scripts/boinc/test_amd_device_map.py",
-                     "scripts/boinc/patch_amd_vulkan_identity.py", "scripts/boinc/build_amd_vulkan_runtime.ps1"]:
+                     "ocr/boinc/qwen/amd-device-map.cpp", "ocr/boinc/qwen/disk-policy.json",
+                     "scripts/boinc/test_amd_device_map.py",
+                     "scripts/boinc/patch_amd_vulkan_identity.py", "scripts/boinc/build_amd_vulkan_runtime.ps1",
+                     "scripts/boinc/qwen_vulkan_bundle.py", "scripts/boinc/test_qwen_vulkan_bundle.py",
+                     "contrib-compute/infra/boinc/releases/prod-onprem-usnm_qwen-nvidia_vulkan_6gb_8b.json"]:
             with self.subTest(path=path):
                 self.assertIn("boinc_native", self.select(path))
         # What only the images embed is not theirs.
