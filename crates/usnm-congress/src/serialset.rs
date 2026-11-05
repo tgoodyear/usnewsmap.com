@@ -7,7 +7,11 @@
 //!    package ids with a `lastmod`. A volume package (`SERIALSET-00033_00_00`)
 //!    is the whole bound volume and duplicates its documents, so only the
 //!    document packages (`SERIALSET-00033_00_00-009-0042-0000`) are fetched,
-//!    grouped by their volume, the unit a curated attempt holds. Every
+//!    grouped by their volume, the unit a curated attempt holds. A volume
+//!    listed only as its volume package, with no document package
+//!    (`SERIALSET-13163_04_00`, a 1.26 GB PDF of 1,480 pages), is fetched as
+//!    one document, the package, with its pages `SERIALSET-13163_04_00_p{seq}`
+//!    dated and described by the package's MODS. Every
 //!    yearly sitemap is read, even with `--years`, since a volume's packages
 //!    can be listed in more than one: `--years` picks the volumes with a
 //!    package in those years, and each is still made of its packages in
@@ -674,6 +678,8 @@ fn raw_dir(p: &Listed) -> String {
 }
 
 /// The curated rows of one document's pages, or `None` when it has no date.
+/// A volume package fetched whole (no document part) is one document: its
+/// pages are `{package}_p{seq}`, first in the volume's order.
 pub fn document_rows(
     id: &PackageId,
     m: &Mods,
@@ -731,7 +737,8 @@ pub fn document_rows(
     Some(rows)
 }
 
-/// A document package a sitemap lists.
+/// A document package a sitemap lists, or the volume package of a volume
+/// listed with no document package.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Listed {
     pub id: PackageId,
@@ -748,6 +755,12 @@ pub struct Volume {
 }
 
 impl Volume {
+    /// Whether it is listed only as a whole-volume package, fetched as its
+    /// one document.
+    pub fn package_only(&self) -> bool {
+        self.documents.iter().any(|d| d.id.document.is_none())
+    }
+
     /// The newest `lastmod` of its documents.
     pub fn lastmod(&self) -> Option<String> {
         self.documents
@@ -782,13 +795,14 @@ impl Volume {
 pub struct Plan {
     /// By serial number, then volume; documents by id.
     pub volumes: Vec<Volume>,
-    /// Whole-volume packages, not fetched (their documents are).
+    /// Whole-volume packages listed. Only those of the volumes in
+    /// `package_only` are fetched; the others' documents are.
     pub volume_packages: usize,
     /// Ids that aren't Serial Set packages, or can't be object paths:
     /// refused, and the fetch isn't finished while there are any.
     pub bad_ids: Vec<String>,
     /// Volumes listed only as a whole-volume package, with no document
-    /// package: nothing of theirs is fetched.
+    /// package: each is in `volumes` with the package as its one document.
     pub package_only: Vec<String>,
 }
 
@@ -802,38 +816,45 @@ fn entry_id(e: &Entry) -> &str {
 }
 
 /// Group the sitemaps' packages by volume. A package listed twice keeps its
-/// later `lastmod`.
+/// later `lastmod`. A volume with no document package is made of its volume
+/// package.
 pub fn plan(entries: Vec<Entry>) -> Plan {
     let mut p = Plan::default();
     let mut docs: BTreeMap<String, BTreeMap<String, Listed>> = BTreeMap::new();
-    let mut volumes_seen = BTreeSet::new();
+    let mut packages: BTreeMap<String, Listed> = BTreeMap::new();
     for e in entries {
         let id = entry_id(&e);
         let Some(pkg) = PackageId::parse(id) else {
             p.bad_ids.push(id.to_owned());
             continue;
         };
-        if pkg.document.is_none() {
-            volumes_seen.insert(pkg.volume);
-            continue;
-        }
         let listed = Listed {
             id: pkg,
             lastmod: e.lastmod,
         };
-        let slot = docs.entry(listed.id.volume.clone()).or_default();
-        match slot.get(&listed.id.id) {
+        let (slot, key) = match listed.id.document {
+            Some(_) => (
+                docs.entry(listed.id.volume.clone()).or_default(),
+                listed.id.id.clone(),
+            ),
+            None => (&mut packages, listed.id.volume.clone()),
+        };
+        match slot.get(&key) {
             Some(old) if old.lastmod >= listed.lastmod => {}
             _ => {
-                slot.insert(listed.id.id.clone(), listed);
+                slot.insert(key, listed);
             }
         }
     }
-    p.volume_packages = volumes_seen.len();
-    p.package_only = volumes_seen
-        .into_iter()
-        .filter(|v| !docs.contains_key(v))
-        .collect();
+    p.volume_packages = packages.len();
+    for (volume, package) in packages {
+        if !docs.contains_key(&volume) {
+            p.package_only.push(volume.clone());
+            docs.entry(volume)
+                .or_default()
+                .insert(package.id.id.clone(), package);
+        }
+    }
     p.volumes = docs
         .into_iter()
         .map(|(volume, d)| {
@@ -892,13 +913,18 @@ pub struct Report {
     pub sitemaps: usize,
     /// Packages they list.
     pub listed: usize,
-    /// Whole-volume packages, not fetched.
+    /// Whole-volume packages listed; only those of volumes with no document
+    /// package are fetched.
     pub volume_packages: usize,
     /// Sitemap entries refused as Serial Set package ids ([`PackageId`]):
     /// a run with any isn't [`finished`](Report::finished).
     pub bad_ids: Vec<String>,
     /// Volumes listed only as a whole-volume package, with no document
-    /// package, so not fetched (reported; they don't stop the marker).
+    /// package, and left out for good: the package has no PDF (its MODS
+    /// names none and GovInfo has none) or no date, so an empty attempt
+    /// holds it. Those left out by this run and by earlier ones (an empty
+    /// attempt of the same package); they don't stop the marker. One with
+    /// a PDF is fetched as its one document and isn't listed here.
     pub package_only: Vec<String>,
     /// Volumes with documents, and their documents (after `--years` and
     /// `--serials`).
@@ -921,8 +947,9 @@ pub struct Report {
     /// a redirect to its error page, or an answer that isn't a PDF), with
     /// which: their volumes are left for the next run.
     pub missing: Vec<String>,
-    /// Documents whose MODS or PDF couldn't be read, with why: their volumes
-    /// are left for the next run.
+    /// Documents whose MODS or PDF couldn't be read, or whose PDF the
+    /// scratch disk has no room for ([`fetch::NoSpace`]), with why: their
+    /// volumes are left for the next run.
     pub unreadable: Vec<String>,
     /// Volumes not written because a document of theirs is in `missing` or
     /// `unreadable`, with how many: fetched again by the next run.
@@ -1016,7 +1043,7 @@ enum Got {
     /// so asked again.
     Missing(&'static str),
     /// Not read this time (MODS that isn't MODS, a PDF pdftotext can't
-    /// read): asked again.
+    /// read, or one the scratch disk has no room for): asked again.
     Unreadable(String),
 }
 
@@ -1085,10 +1112,14 @@ async fn fetch_document(
             Got::NoPdf
         }
     };
-    let Some(bytes) = fetch
-        .download(&pdf_url(&opts.base, id), file.path())
-        .await?
-    else {
+    let got = match fetch.download(&pdf_url(&opts.base, id), file.path()).await {
+        Ok(got) => got,
+        // Too big for the scratch disk now: the volume is left for a run
+        // with more room, and the others go on.
+        Err(e) if e.is::<fetch::NoSpace>() => return Ok(Got::Unreadable(format!("pdf: {e:#}"))),
+        Err(e) => return Err(e),
+    };
+    let Some(bytes) = got else {
         return Ok(no_pdf());
     };
     // An error page served as a 200, or anything else that isn't a PDF, is
@@ -1215,7 +1246,6 @@ pub async fn run(
     }
     report.volume_packages = p.volume_packages;
     report.bad_ids = p.bad_ids.clone();
-    report.package_only = p.package_only.clone();
     if !p.bad_ids.is_empty() {
         // A sample only: thousands of ids would overrun a journal line,
         // and the count must survive (the status file reads it).
@@ -1227,9 +1257,9 @@ pub async fn run(
     }
     if !p.package_only.is_empty() {
         let sample: Vec<&String> = p.package_only.iter().take(BAD_ID_SAMPLE).collect();
-        tracing::warn!(
-            package_only = p.package_only.len(), sample = ?sample,
-            "Serial Set volumes listed only as a whole-volume package; not fetched"
+        tracing::info!(
+            whole_volumes = p.package_only.len(), sample = ?sample,
+            "Serial Set volumes listed only as a whole-volume package; each fetched as one document"
         );
     }
     if !opts.serials.is_empty() {
@@ -1263,17 +1293,24 @@ pub async fn run(
         .collect();
     let mut todo: Vec<&Volume> = Vec::new();
     for v in &p.volumes {
-        let recorded = match (finished.get(&v.volume), empties.get(&v.volume)) {
-            (Some(f), e) if e.is_none_or(|e| e.attempt < f.attempt) => {
-                Some(curated::read_counts(curated, f).await?.0.source_packages)
-            }
-            (_, Some(e)) => Some(e.source_packages.clone()),
-            (_, None) => None,
+        let (recorded, empty) = match (finished.get(&v.volume), empties.get(&v.volume)) {
+            (Some(f), e) if e.is_none_or(|e| e.attempt < f.attempt) => (
+                Some(curated::read_counts(curated, f).await?.0.source_packages),
+                false,
+            ),
+            (_, Some(e)) => (Some(e.source_packages.clone()), true),
+            (_, None) => (None, false),
         };
         match recorded {
             None => todo.push(v),
             Some(_) if opts.refetch => todo.push(v),
-            Some(Some(packages)) if packages == v.fingerprint() => report.already += 1,
+            Some(Some(packages)) if packages == v.fingerprint() => {
+                report.already += 1;
+                // Left out for good by an earlier run: still reported.
+                if empty && v.package_only() {
+                    report.package_only.push(v.volume.clone());
+                }
+            }
             // Packages added, dropped or with another `lastmod`, earlier
             // or later; or an attempt from before the packages were
             // recorded, which can't tell: fetched again.
@@ -1290,6 +1327,7 @@ pub async fn run(
         documents = report.documents,
         volume_packages = report.volume_packages,
         rejected = report.bad_ids.len(),
+        whole_volumes = p.volumes.iter().filter(|v| v.package_only()).count(),
         package_only = report.package_only.len(),
         finished = finished.len(),
         empty = empties.len(),
@@ -1343,10 +1381,13 @@ pub async fn run(
                 )
                 .await?;
                 tracing::warn!(
-                    volume = %v.volume, attempt = empty.attempt,
+                    volume = %v.volume, attempt = empty.attempt, package_only = v.package_only(),
                     "every document of the volume is left out; an empty attempt written"
                 );
                 report.empty_volumes.push(v.volume.clone());
+                if v.package_only() {
+                    report.package_only.push(v.volume.clone());
+                }
             }
             Ok(Read { rows, .. }) => {
                 let counts = curated::write_attempt_from(
@@ -1408,8 +1449,9 @@ impl Report {
     /// unreadable document, which a later run fetches again) and no
     /// sitemap entry refused as a package id (whose volume would otherwise
     /// be missing unseen). Every volume is then written, or left out for
-    /// good (an empty attempt). Only meaningful for a run over every
-    /// volume (no `--years` or `--serials`).
+    /// good (an empty attempt), a package-only volume with no PDF too.
+    /// Only meaningful for a run over every volume (no `--years` or
+    /// `--serials`).
     pub fn finished(&self) -> bool {
         self.left == 0 && self.incomplete.is_empty() && self.bad_ids.is_empty()
     }
@@ -1635,8 +1677,27 @@ mod tests {
             odd("SERIALSET-00033_00_00-0..1"),
             odd("SERIALSET-00033_0A_00-001-0000-0000"),
         ]);
-        assert_eq!(p.volumes.len(), 1);
-        assert_eq!(p.volumes[0].volume, "04905_0g_00");
+        assert_eq!(p.volume_packages, 2);
+        // A volume listed only as its volume package is that one document.
+        let vols: Vec<(&str, Vec<&str>, bool)> = p
+            .volumes
+            .iter()
+            .map(|v| {
+                let ids = v.documents.iter().map(|d| d.id.id.as_str()).collect();
+                (v.volume.as_str(), ids, v.package_only())
+            })
+            .collect();
+        assert_eq!(
+            vols,
+            [
+                (
+                    "04905_0g_00",
+                    vec!["SERIALSET-04905_0g_00-048-3846-0000"],
+                    false
+                ),
+                ("13163_04_00", vec!["SERIALSET-13163_04_00"], true),
+            ]
+        );
         assert_eq!(p.package_only, ["13163_04_00"]);
         assert_eq!(
             p.bad_ids,
@@ -2512,6 +2573,170 @@ mod tests {
         let r = run(&gi, &text, &curated, None, &opts, &lost).await.unwrap();
         assert_eq!((r.already, r.changed), (1, 0));
         assert_eq!(gi.inner.asked("/content/pkg/"), 0);
+    }
+
+    /// The one volume GovInfo lists only as its volume package (#1532).
+    const WHOLE: &str = "SERIALSET-13163_04_00";
+
+    /// A volume listed only as its volume package is fetched as one
+    /// document, the package: pages `{package}_p{seq}`, dated and described
+    /// by the package's recorded MODS, with page ids of their own; the next
+    /// run skips it. With no PDF it is left out for good (an empty attempt),
+    /// reported as package-only by that run and the next, and the fetch is
+    /// still finished.
+    #[tokio::test]
+    async fn a_package_only_volume_is_fetched_as_one_document() {
+        let dir = tempfile::tempdir().unwrap();
+        let lost = AtomicBool::new(false);
+        let text = RecordedText::default();
+        let opts = Options {
+            serials: vec![13163],
+            ..options(dir.path())
+        };
+        let listed = || Recorded {
+            extra: Some(WHOLE),
+            ..Recorded::default()
+        };
+        let m = parse_mods(&recorded(&format!("{WHOLE}-mods.xml"))).unwrap();
+        assert!(m.pdf_rendition);
+        assert_eq!(m.extent.as_deref(), Some("1480 p."));
+
+        let curated = usnm_store::LocalStore::new(dir.path().join("curated"));
+        let raw = usnm_store::LocalStore::new(dir.path().join("raw"));
+        let gi = listed();
+        let r = run(&gi, &text, &curated, Some(&raw), &opts, &lost)
+            .await
+            .unwrap();
+        assert_eq!((r.volumes, r.documents), (1, 1));
+        assert_eq!(r.written, [("13163_04_00".to_owned(), 1, 2)]);
+        assert!(r.package_only.is_empty() && r.incomplete.is_empty() && r.missing.is_empty());
+        assert!(r.finished(), "{r:?}");
+        assert_eq!(gi.asked(&format!("/metadata/pkg/{WHOLE}/mods.xml")), 1);
+        assert_eq!(
+            gi.asked(&format!("/content/pkg/{WHOLE}/pdf/{WHOLE}.pdf")),
+            1
+        );
+
+        let f = curated::finished(&curated).await.unwrap();
+        let (counts, _) = curated::read_counts(&curated, &f[0]).await.unwrap();
+        assert_eq!(counts.text_status["ok"], 2);
+        let rows = curated::read_checked(&curated, &counts.parts[0])
+            .await
+            .unwrap();
+        let by_id: BTreeMap<&str, &CuratedPage> =
+            rows.iter().map(|r| (r.doc_id.as_str(), r)).collect();
+        let ids: Vec<&str> = by_id.keys().copied().collect();
+        assert_eq!(
+            ids,
+            ["SERIALSET-13163_04_00_p1", "SERIALSET-13163_04_00_p2"]
+        );
+        let p2 = by_id[format!("{WHOLE}_p2").as_str()];
+        assert_eq!(p2.date, NaiveDate::from_ymd_opt(1976, 10, 1).unwrap());
+        assert_eq!(
+            (
+                p2.date_precision.as_str(),
+                p2.chamber.as_deref(),
+                p2.doc_class.as_deref(),
+                p2.serial.as_deref(),
+                p2.congress,
+                p2.session.as_deref(),
+                p2.package_id.as_deref(),
+                p2.unit_id.as_str(),
+                p2.seq,
+            ),
+            (
+                "day",
+                Some("house"),
+                Some("HDOC"),
+                Some("13163-4"),
+                Some(94),
+                Some("2"),
+                Some(WHOLE),
+                "13163_04_00",
+                2
+            )
+        );
+        assert_eq!(p2.unit_ordinal, ordinal(13163, None));
+        assert_eq!(
+            p2.link.as_deref(),
+            Some(
+                "https://www.govinfo.gov/content/pkg/SERIALSET-13163_04_00/pdf/\
+                 SERIALSET-13163_04_00.pdf#page=2"
+            )
+        );
+        assert!(p2.text.as_deref().unwrap().contains("rivers and harbors"));
+        assert_eq!(
+            p2.to_page().page_id().unwrap().to_string(),
+            "serialset:SERIALSET-13163_04_00_p2"
+        );
+
+        // Finished: skipped by the next run, and not package-only.
+        let again = listed();
+        let r = run(&again, &text, &curated, Some(&raw), &opts, &lost)
+            .await
+            .unwrap();
+        assert_eq!((r.already, r.written.len()), (1, 0));
+        assert!(r.package_only.is_empty() && r.finished(), "{r:?}");
+        assert_eq!(again.asked("/content/pkg/"), 0);
+
+        // No PDF named and none served: an empty attempt, package-only,
+        // and finished; the next run skips it and still reports it.
+        let curated = usnm_store::LocalStore::new(dir.path().join("curated-none"));
+        let none = || Flaky {
+            inner: listed(),
+            no_pdf: vec![WHOLE],
+            ..Flaky::default()
+        };
+        let r = run(&none(), &text, &curated, None, &opts, &lost)
+            .await
+            .unwrap();
+        assert_eq!(r.no_pdf, [WHOLE]);
+        assert_eq!(r.empty_volumes, ["13163_04_00"]);
+        assert_eq!(r.package_only, ["13163_04_00"]);
+        assert!(r.finished(), "{r:?}");
+        let gi = none();
+        let r = run(&gi, &text, &curated, None, &opts, &lost).await.unwrap();
+        assert_eq!((r.already, r.changed), (1, 0));
+        assert_eq!(r.package_only, ["13163_04_00"]);
+        assert!(r.empty_volumes.is_empty() && r.finished(), "{r:?}");
+        assert_eq!(gi.inner.asked("/metadata/pkg/"), 0);
+    }
+
+    /// A PDF the scratch disk has no room for (with what must stay free)
+    /// is not read: the document is unreadable and its volume left for a
+    /// run with more room, the others going on.
+    #[tokio::test]
+    async fn a_pdf_with_no_room_leaves_its_volume() {
+        let dir = tempfile::tempdir().unwrap();
+        let lost = AtomicBool::new(false);
+        let text = RecordedText::default();
+        let gi = http(Duration::from_millis(10))
+            .unwrap()
+            .with_reserve(u64::MAX / 2);
+        let base = serve(Arc::new(Recorded {
+            extra: Some(WHOLE),
+            ..Recorded::default()
+        }))
+        .await;
+        let scratch = dir.path().join("scratch");
+        std::fs::create_dir_all(&scratch).unwrap();
+        let opts = Options {
+            base,
+            serials: vec![13163],
+            ..options(&scratch)
+        };
+        let curated = usnm_store::LocalStore::new(dir.path().join("curated"));
+        let r = run(&gi, &text, &curated, None, &opts, &lost).await.unwrap();
+        assert_eq!(r.unreadable.len(), 1, "{:?}", r.unreadable);
+        assert!(
+            r.unreadable[0].starts_with(&format!("{WHOLE}: pdf: no room in")),
+            "{:?}",
+            r.unreadable
+        );
+        assert_eq!(r.incomplete, ["13163_04_00: 1 of 1"]);
+        assert!(!r.finished());
+        assert_eq!(text.0.load(Ordering::SeqCst), 0);
+        assert_eq!(std::fs::read_dir(&scratch).unwrap().count(), 0);
     }
 
     /// The recorded responses, with one package of the 1820 sitemap listed

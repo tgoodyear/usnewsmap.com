@@ -41,12 +41,18 @@ pub trait Fetch: Send + Sync {
 /// their timeout, with a growing wait (`Retry-After` when given).
 ///
 /// Each try of [`Fetch::get`] may take [`GET_TIMEOUT`], each try of
-/// [`Fetch::download`] [`DOWNLOAD_TIMEOUT`] ([`Http::with_timeouts`]). With a
-/// cutoff ([`Http::with_cutoff`]: the run's deadline and [`REQUEST_GRACE`]),
-/// no try starts with less than [`MIN_TRY`] left before it, a try's timeout
-/// is cut to what is left, and the request fails rather than wait to retry
-/// past it, so a request started near the deadline can't hold the replica
-/// past the job's hard timeout.
+/// [`Fetch::download`] [`DOWNLOAD_TIMEOUT`] ([`Http::with_timeouts`]), or
+/// longer for a body whose `Content-Length` needs more at
+/// [`MIN_DOWNLOAD_RATE`] ([`Http::with_min_download_rate`]). With a cutoff
+/// ([`Http::with_cutoff`]: the run's deadline and [`REQUEST_GRACE`]), no try
+/// starts with less than [`MIN_TRY`] left before it, a try's timeout is cut
+/// to what is left, and the request fails rather than wait to retry past it,
+/// so a request started near the deadline can't hold the replica past the
+/// job's hard timeout.
+///
+/// A download whose `Content-Length` would leave less than
+/// [`DOWNLOAD_RESERVE`] free on its file's disk ([`Http::with_reserve`]) is
+/// refused with [`NoSpace`] before its body is read, and not retried.
 ///
 /// Redirects are followed. With an error page ([`Http::with_error_page`]),
 /// a request redirected there is taken as a 404 and its body isn't read.
@@ -56,6 +62,10 @@ pub struct Http {
     retries: u32,
     get_timeout: Duration,
     download_timeout: Duration,
+    /// Bytes a second: the slowest download a try waits for.
+    min_download_rate: u64,
+    /// Bytes a download leaves free on its file's disk.
+    reserve: u64,
     cutoff: Option<tokio::time::Instant>,
     /// Who the server is, in the logs (`UNT`, `GovInfo`).
     server: &'static str,
@@ -67,9 +77,59 @@ pub struct Http {
 /// How long one try of a page (a sitemap, MODS, the Globe's OCR) may take.
 pub const GET_TIMEOUT: Duration = Duration::from_secs(120);
 
-/// How long one try of a download may take: 30 minutes covers a 500 MB PDF
-/// at under 300 KB/s.
+/// How long one try of a download may take at least: 30 minutes covers a
+/// 500 MB PDF at under 300 KB/s.
 pub const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(1800);
+
+/// The slowest download, in bytes a second, a try waits for: a body whose
+/// `Content-Length` needs longer than the download timeout at this rate
+/// gets that long instead, so a Serial Set volume PDF of 1.26 GB has about
+/// 80 minutes.
+pub const MIN_DOWNLOAD_RATE: u64 = 256 * 1024;
+
+/// What a download leaves free on its file's disk: one that would leave
+/// less isn't started ([`NoSpace`]).
+pub const DOWNLOAD_RESERVE: u64 = 512 * 1024 * 1024;
+
+/// A download refused because its body, by its `Content-Length`, would
+/// leave less than the reserve free on its file's disk. Not retried: the
+/// caller decides what to do without the file.
+#[derive(Debug)]
+pub struct NoSpace {
+    pub dir: std::path::PathBuf,
+    pub needed: u64,
+    pub reserve: u64,
+    pub free: u64,
+}
+
+impl std::fmt::Display for NoSpace {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "no room in {}: {} bytes to download and {} to keep free, {} free",
+            self.dir.display(),
+            self.needed,
+            self.reserve,
+            self.free
+        )
+    }
+}
+
+impl std::error::Error for NoSpace {}
+
+/// Free bytes for unprivileged users on the file system holding `path`.
+// statvfs field types differ by platform (u64 on Linux, u32 on macOS).
+#[allow(clippy::useless_conversion)]
+fn disk_free(path: &Path) -> Option<u64> {
+    let s = rustix::fs::statvfs(path).ok()?;
+    Some(u64::from(s.f_bavail).saturating_mul(u64::from(s.f_frsize)))
+}
+
+/// How long a download of `len` bytes may take: `timeout`, or the time it
+/// takes at `rate` bytes a second when that is longer.
+pub fn download_timeout(timeout: Duration, len: u64, rate: u64) -> Duration {
+    timeout.max(Duration::from_secs(len / rate.max(1)))
+}
 
 /// How long after the run's deadline a request may still run. The jobs stop
 /// between documents at 22 hours and are killed at 24, so every request has
@@ -101,6 +161,20 @@ enum Try<T> {
     NotFound,
     /// Try again, after at least this long when the server said.
     Again(Option<Duration>),
+    /// Ran past this long: tried again.
+    TimedOut(Duration),
+}
+
+/// When a try starts and how long it may take.
+#[derive(Debug, Clone, Copy)]
+struct Window {
+    start: tokio::time::Instant,
+    /// What the request allows a try, before the cutoff.
+    timeout: Duration,
+    /// `timeout` cut to the cutoff ([`try_budget`]).
+    budget: Duration,
+    /// A download's slowest rate, bytes a second ([`download_timeout`]).
+    rate: Option<u64>,
 }
 
 impl Http {
@@ -115,6 +189,8 @@ impl Http {
             retries: 6,
             get_timeout: GET_TIMEOUT,
             download_timeout: DOWNLOAD_TIMEOUT,
+            min_download_rate: MIN_DOWNLOAD_RATE,
+            reserve: DOWNLOAD_RESERVE,
             cutoff: None,
             server,
             error_page: None,
@@ -147,6 +223,19 @@ impl Http {
         self
     }
 
+    /// The slowest download, in bytes a second, a try waits for (see
+    /// [`MIN_DOWNLOAD_RATE`]).
+    pub fn with_min_download_rate(mut self, rate: u64) -> Self {
+        self.min_download_rate = rate;
+        self
+    }
+
+    /// What a download leaves free on its file's disk (see [`DOWNLOAD_RESERVE`]).
+    pub fn with_reserve(mut self, bytes: u64) -> Self {
+        self.reserve = bytes;
+        self
+    }
+
     /// The time every request has ended by (see [`Http`]).
     pub fn with_cutoff(mut self, cutoff: Option<tokio::time::Instant>) -> Self {
         self.cutoff = cutoff;
@@ -155,11 +244,14 @@ impl Http {
 
     /// One request, paced from the end of the last and retried; `body`
     /// reads a successful response (and may fail, which is retried). Each
-    /// try, its body included, may take `timeout` (see [`try_budget`]).
+    /// try, its body included, may take `timeout` (see [`try_budget`]); with
+    /// a `rate` (a download), a body whose `Content-Length` needs longer at
+    /// that rate gets that long ([`download_timeout`]).
     async fn request<T, F, Fut>(
         &self,
         url: &str,
         timeout: Duration,
+        rate: Option<u64>,
         mut body: F,
     ) -> anyhow::Result<Option<T>>
     where
@@ -180,48 +272,75 @@ impl Http {
                 );
             };
             tokio::time::sleep_until(start).await;
-            let tried = tokio::time::timeout(budget, self.try_once(url, attempt, &mut body)).await;
+            let window = Window {
+                start,
+                timeout,
+                budget,
+                rate,
+            };
+            let tried = self.try_once(url, attempt, window, &mut body).await;
             *last = Some(tokio::time::Instant::now());
             let retry_after = match tried {
-                Ok(Ok(Try::Done(b))) => return Ok(Some(b)),
-                Ok(Ok(Try::NotFound)) => return Ok(None),
-                Ok(Ok(Try::Again(after))) => after,
-                Ok(Err(e)) => return Err(e),
-                Err(_) => {
+                Ok(Try::Done(b)) => return Ok(Some(b)),
+                Ok(Try::NotFound) => return Ok(None),
+                Ok(Try::Again(after)) => after,
+                Ok(Try::TimedOut(budget)) => {
                     tracing::warn!(url, server = self.server, timeout = ?budget, attempt, "the request ran past its timeout");
                     None
                 }
+                Err(e) => return Err(e),
             };
             wait = retry_wait(self.delay, attempt, retry_after);
         }
         bail!("`{url}` failed {} times", self.retries + 1)
     }
 
-    /// One try: sent, and its body read when it succeeds.
+    /// One try: sent, and its body read when it succeeds, within its window.
     async fn try_once<T, F, Fut>(
         &self,
         url: &str,
         attempt: u32,
+        window: Window,
         body: &mut F,
     ) -> anyhow::Result<Try<T>>
     where
         F: FnMut(reqwest::Response) -> Fut + Send,
         Fut: std::future::Future<Output = anyhow::Result<T>> + Send,
     {
-        match self.client.get(url).send().await {
+        let sent =
+            tokio::time::timeout_at(window.start + window.budget, self.client.get(url).send())
+                .await;
+        let Ok(sent) = sent else {
+            return Ok(Try::TimedOut(window.budget));
+        };
+        match sent {
             Ok(r) if r.status().is_success() && self.is_error_page(url, &r) => {
                 tracing::debug!(url, server = self.server, error_page = %r.url(), "redirected to the error page: taken as a 404");
                 Ok(Try::NotFound)
             }
-            // The body can fail after the headers (a dropped connection): a
-            // try like a failed send.
-            Ok(r) if r.status().is_success() => match body(r).await {
-                Ok(b) => Ok(Try::Done(b)),
-                Err(e) => {
-                    tracing::warn!(url, server = self.server, error = %format!("{e:#}"), attempt, "reading the response failed");
-                    Ok(Try::Again(None))
+            Ok(r) if r.status().is_success() => {
+                let budget = match (window.rate, r.content_length()) {
+                    (Some(rate), Some(len)) => try_budget(
+                        window.start,
+                        self.cutoff,
+                        download_timeout(window.timeout, len, rate),
+                    )
+                    .unwrap_or(window.budget),
+                    _ => window.budget,
+                };
+                match tokio::time::timeout_at(window.start + budget, body(r)).await {
+                    Ok(Ok(b)) => Ok(Try::Done(b)),
+                    // Retrying wouldn't make room.
+                    Ok(Err(e)) if e.is::<NoSpace>() => Err(e),
+                    // The body can fail after the headers (a dropped
+                    // connection): a try like a failed send.
+                    Ok(Err(e)) => {
+                        tracing::warn!(url, server = self.server, error = %format!("{e:#}"), attempt, "reading the response failed");
+                        Ok(Try::Again(None))
+                    }
+                    Err(_) => Ok(Try::TimedOut(budget)),
                 }
-            },
+            }
             Ok(r) if r.status() == reqwest::StatusCode::NOT_FOUND => Ok(Try::NotFound),
             Ok(r)
                 if r.status() == reqwest::StatusCode::TOO_MANY_REQUESTS
@@ -255,32 +374,50 @@ impl Http {
 #[async_trait::async_trait]
 impl Fetch for Http {
     async fn get(&self, url: &str) -> anyhow::Result<Option<Vec<u8>>> {
-        self.request(url, self.get_timeout, |r| async move {
+        self.request(url, self.get_timeout, None, |r| async move {
             Ok(r.bytes().await?.to_vec())
         })
         .await
     }
 
     async fn download(&self, url: &str, dest: &Path) -> anyhow::Result<Option<u64>> {
+        let reserve = self.reserve;
         let got = self
-            .request(url, self.download_timeout, |mut r| async move {
-                // Each try starts the file again.
-                let mut f = tokio::fs::File::create(dest)
-                    .await
-                    .with_context(|| dest.display().to_string())?;
-                // Read before the body: it counts down as the body is read.
-                let expected = r.content_length();
-                let mut n = 0u64;
-                while let Some(chunk) = r.chunk().await? {
-                    f.write_all(&chunk).await?;
-                    n += chunk.len() as u64;
-                }
-                f.flush().await?;
-                if let Some(len) = expected {
-                    anyhow::ensure!(n == len, "got {n} bytes of {len}");
-                }
-                Ok(n)
-            })
+            .request(
+                url,
+                self.download_timeout,
+                Some(self.min_download_rate),
+                |mut r| async move {
+                    // Each try starts the file again.
+                    let mut f = tokio::fs::File::create(dest)
+                        .await
+                        .with_context(|| dest.display().to_string())?;
+                    // Read before the body: it counts down as the body is read.
+                    let expected = r.content_length();
+                    let dir = dest.parent().unwrap_or(Path::new("."));
+                    if let (Some(needed), Some(free)) = (expected, disk_free(dir)) {
+                        if free < needed.saturating_add(reserve) {
+                            return Err(NoSpace {
+                                dir: dir.to_owned(),
+                                needed,
+                                reserve,
+                                free,
+                            }
+                            .into());
+                        }
+                    }
+                    let mut n = 0u64;
+                    while let Some(chunk) = r.chunk().await? {
+                        f.write_all(&chunk).await?;
+                        n += chunk.len() as u64;
+                    }
+                    f.flush().await?;
+                    if let Some(len) = expected {
+                        anyhow::ensure!(n == len, "got {n} bytes of {len}");
+                    }
+                    Ok(n)
+                },
+            )
             .await?;
         if got.is_none() {
             tokio::fs::write(dest, b"").await?;
@@ -559,6 +696,56 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(n, None);
+        assert!(std::fs::read(&dest).unwrap().is_empty());
+    }
+
+    /// A download whose `Content-Length` needs longer than the download
+    /// timeout at the slowest rate is given that long; one that would leave
+    /// less than the reserve free is refused before its body, not retried.
+    #[tokio::test]
+    async fn a_long_download_gets_its_time_and_needs_room() {
+        use axum::http::header;
+        use futures::StreamExt;
+        let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let h = hits.clone();
+        // 1,000 bytes in ten chunks 100 ms apart: about a second.
+        let app = axum::Router::new().fallback(move || {
+            let h = h.clone();
+            async move {
+                h.fetch_add(1, Ordering::SeqCst);
+                let chunks = futures::stream::iter(0..10).then(|_| async {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    Ok::<_, std::io::Error>(bytes::Bytes::from(vec![b'x'; 100]))
+                });
+                axum::response::Response::builder()
+                    .header(header::CONTENT_LENGTH, 1000)
+                    .body(axum::body::Body::from_stream(chunks))
+                    .unwrap()
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let url = format!("http://{addr}/volume.pdf");
+        // 300 ms a try, but 1,000 bytes at 250 a second need 4 s.
+        let http = Http::new(Duration::from_millis(10), "usnm-test", "test")
+            .unwrap()
+            .with_timeouts(GET_TIMEOUT, Duration::from_millis(300))
+            .with_min_download_rate(250);
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("volume.pdf");
+        assert_eq!(http.download(&url, &dest).await.unwrap(), Some(1000));
+        assert_eq!(hits.load(Ordering::SeqCst), 1, "not timed out and retried");
+        // GovInfo's 1.26 GB volume PDF at the default rate.
+        assert!(
+            download_timeout(DOWNLOAD_TIMEOUT, 1_256_235_468, MIN_DOWNLOAD_RATE)
+                > Duration::from_secs(79 * 60)
+        );
+
+        let http = http.with_reserve(u64::MAX / 2);
+        let err = http.download(&url, &dest).await.unwrap_err();
+        assert!(err.is::<NoSpace>(), "{err:#}");
+        assert_eq!(hits.load(Ordering::SeqCst), 2, "asked once, not retried");
         assert!(std::fs::read(&dest).unwrap().is_empty());
     }
 

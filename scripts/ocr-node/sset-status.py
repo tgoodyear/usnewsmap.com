@@ -7,8 +7,10 @@
 Reads the unit's journal since it last started and writes a status file:
 volumes to fetch, written (curated or empty), incomplete, sitemap entries
 refused as package ids ("rejected": the fetch can't finish while there are
-any), volumes listed only as a whole-volume package ("package_only"), the
-rates per hour and an estimate of the time left. Volumes range from one
+any), volumes listed only as a whole-volume package and left out for good,
+having no PDF ("package_only": those earlier runs left out, from the
+"Serial Set volumes" line, and those this one does; one with a PDF is
+fetched as one document and isn't counted), the rates per hour and an estimate of the time left. Volumes range from one
 document to hundreds, so the estimate goes by documents: the volumes left
 times the average documents a volume has, at the documents-per-hour rate so
 far.
@@ -97,6 +99,8 @@ def status(unit: str, done: str, out_path: str) -> dict:
         elif message.startswith("every document of the volume is left out"):
             empty += 1
             documents_done += current_documents
+            if fields.get("package_only") is True:
+                package_only += 1
         elif message.startswith("documents of the volume weren't read"):
             incomplete += 1
             documents_done += current_documents

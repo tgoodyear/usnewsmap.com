@@ -66,6 +66,29 @@ class StatusJournalTests(unittest.TestCase):
                                        str(Path(directory) / "status.json"))
         self.assertEqual((out["rejected"], out["package_only"], out["finished"]), (3, 1, False))
 
+    def test_package_only_volumes_left_out_by_this_run_are_counted_too(self):
+        events = [
+            {"fields": {"message": "Serial Set volumes", "volumes": 3, "documents": 5, "to_fetch": 2,
+                        "rejected": 0, "package_only": 1}},
+            {"fields": {"message": "fetching a Serial Set volume", "volume": "13163_04_00", "documents": 1}},
+            {"fields": {"message": "every document of the volume is left out; an empty attempt written",
+                        "volume": "13163_04_00", "package_only": True}},
+            {"fields": {"message": "fetching a Serial Set volume", "volume": "01088_00_00", "documents": 4}},
+            {"fields": {"message": "every document of the volume is left out; an empty attempt written",
+                        "volume": "01088_00_00", "package_only": False}},
+        ]
+        journal = "".join(json.dumps(e) + "\n" for e in events)
+
+        def run(argv, **_):
+            stdout = {"show": "ExecMainStartTimestamp=@1700000000\n", "is-active": "active\n"}.get(argv[1], journal)
+            return type("Done", (), {"stdout": stdout})()
+
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(status_module.subprocess, "run", side_effect=run):
+            out = status_module.status("usnm-sset.service", str(Path(directory) / "done"),
+                                       str(Path(directory) / "status.json"))
+        self.assertEqual((out["empty"], out["package_only"], out["documents_read"]), (2, 2, 5))
+
     def test_a_unit_not_started_since_boot_still_has_the_counts(self):
         def run(argv, **_):
             stdout = {"show": "ExecMainStartTimestamp=\n", "is-active": "inactive\n"}[argv[1]]
