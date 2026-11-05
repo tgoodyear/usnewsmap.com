@@ -406,8 +406,12 @@ def check_line(where: str, line: dict, width: int, height: int, errors: list, wa
         errors.append(f"{where}: text has control characters {', '.join(bad)}; store logical order only, one line")
     if not any(is_hebrew_letter(c) for c in text):
         warnings.append(f"{where}: no Hebrew-script letter; confirm the line is part of the Yiddish block")
+    spans = line.get("illegible_spans") or []
+    if not isinstance(spans, list):
+        errors.append(f"{where}: illegible_spans must be a list")
+        return len(text)
     previous_end = masked = 0
-    for k, span in enumerate(line.get("illegible_spans") or []):
+    for k, span in enumerate(spans):
         ok = (
             isinstance(span, dict)
             and all(isinstance(span.get(f), int) and not isinstance(span.get(f), bool) for f in ("start", "end"))
@@ -529,7 +533,7 @@ def check_records(manifest: dict, records: list[dict], images: Path | None = Non
     by_doc: dict[str, dict] = {}
     for n, rec in enumerate(records, 1):
         doc = rec.get("doc_id") if isinstance(rec, dict) else None
-        if doc not in pages:
+        if not isinstance(doc, str) or doc not in pages:
             errors.append(f"record {n}: {doc!r} is not a drawn page")
         elif doc in by_doc:
             errors.append(f"record {n}: {doc} appears twice")
@@ -575,7 +579,7 @@ def check_records(manifest: dict, records: list[dict], images: Path | None = Non
         if status == "reviewed":
             if not nonempty(rec.get("reviewed_by")) or not nonempty(rec.get("evidence")):
                 errors.append(f"{where}: reviewed needs reviewed_by and evidence")
-            elif rec["reviewed_by"].strip() == (rec.get("transcribed_by") or "").strip():
+            elif nonempty(rec.get("transcribed_by")) and rec["reviewed_by"].strip() == rec["transcribed_by"].strip():
                 errors.append(f"{where}: the reviewer must not be the transcriber")
         cell.update(check_blocks(where, rec, page, params, errors, warnings))
         if images is not None:

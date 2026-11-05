@@ -223,6 +223,7 @@ class CheckTests(unittest.TestCase):
             ("text", "דער\nטאָג", "control characters"),
             ("text", "   ", "text is empty"),
             ("illegible_spans", [{"start": 3, "end": 40, "reason": "torn"}], "illegible span 0"),
+            ("illegible_spans", 1, "illegible_spans must be a list"),
         ]
         for field, value, text in cases:
             with self.subTest(field=field, value=value):
@@ -234,6 +235,10 @@ class CheckTests(unittest.TestCase):
         records = done(yn.template_records(manifest()))
         records[0]["reviewed_by"] = "reader-a"
         self.assertError(records, "reviewer must not be the transcriber")
+        records[0]["transcribed_by"] = 17
+        self.assertError(records, "transcribed_by is required")
+        records[0]["doc_id"] = ["sn1_1910-01-02_ed-1_seq-1"]
+        self.assertError(records, "is not a drawn page")
 
     def test_prefill_is_allowed_with_a_bias_warning(self):
         records = done(yn.template_records(manifest()))
