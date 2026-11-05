@@ -9,7 +9,7 @@
 
 The pages come from [Chronicling America](https://www.loc.gov/collections/chronicling-america/), the Library of Congress and National Endowment for the Humanities collection of digitized newspapers, 1736–1963. This is a rebuild of the original US News Map (2015–2016, Georgia Tech Research Institute and eHistory.org at the University of Georgia), whose code is preserved at [`tgoodyear/usnewsmap`](https://github.com/tgoodyear/usnewsmap).
 
-**For AI agents:** connect to `https://api.usnewsmap.com/mcp` or `https://usnewsmap.com/mcp`
+**For AI agents:** connect to `https://usnewsmap.com/mcp` (alias: `https://api.usnewsmap.com/mcp`)
 using Streamable HTTP. Search the corpus, inspect historical page snippets and follow source
 citations without an API key. See the [MCP guide](docs/mcp.md) for tools and client setup.
 

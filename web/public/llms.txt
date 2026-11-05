@@ -13,7 +13,7 @@ The newspaper pages come from Chronicling America (Library of Congress, with the
 
 ## MCP for AI agents
 
-Connect using Streamable HTTP to https://api.usnewsmap.com/mcp or https://usnewsmap.com/mcp.
+Connect using Streamable HTTP to https://usnewsmap.com/mcp (alias: https://api.usnewsmap.com/mcp).
 The Rust API exposes the same public, read-only tools at both URLs; no API key or session is needed.
 
 - `get_corpus_info`: current coverage, languages, index version, query limits and capabilities.
