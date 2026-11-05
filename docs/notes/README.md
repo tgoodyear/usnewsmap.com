@@ -12,6 +12,7 @@ They sit between the other two kinds of document:
 
 | Date       | Note                                                                                                            | Topic                | Measured on                                                                                        |
 | ---------- | --------------------------------------------------------------------------------------------------------------- | -------------------- | -------------------------------------------------------------------------------------------------- |
+| 2026-11-05 | [What the split count costs an uncached search](2026-11-05-split-count-latency.md)                              | indexing, operations | `pages-v20261026-1` via the public API, uncached; synthetic 120,000-page indexes on the dev host   |
 | 2026-11-05 | [The feeder's restart bound and a stale-slot check](2026-11-05-feeder-restart-bound.md)                         | operations           | CT 230's journals and feeder log, 21 October to 5 November; live `show_shmem`, read-only           |
 | 2026-11-05 | [Binding LoC crop scores to the audited package](2026-11-05-loc-audit-binding.md)                               | ocr, coverage        | Synthetic adapter fixtures; 0 of 1,052 published benchmark samples on the 1,706 audited pages      |
 | 2026-11-05 | [What bounds the quality feed's supply](2026-11-05-quality-supply.md)                                           | ocr, operations      | CT 211's scan index, 1 to 5 November; the follower's journal and `usnm_quality`, read-only         |
