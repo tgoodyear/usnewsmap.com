@@ -72,15 +72,22 @@ class OcrClaimTest(unittest.TestCase):
             a = types.SimpleNamespace(state=d, reasons="user,bulk", scan_server="http://s", curated_url="http://c",
                                       days=14, max_pages=10, curated_copy=d, what_if=False)
             rows = {"queued": [q(on, "user", 1), q(off, "user", 2)], "outcomes": []}
+            refreshed = []
+
+            def cached(lake, state, kind, *a):
+                refreshed.append((kind, lake is not None))
+                return rows[kind]
+
             with mock.patch.object(m, "staged_pairs", return_value={("b", on): {"doc_id": on, "batch": "b"}}), \
-                    mock.patch.object(m, "Lake") as lake, \
-                    mock.patch.object(m, "cached_rows", side_effect=lambda lake, state, kind, *a: rows[kind]), \
+                    mock.patch.object(m, "Lake"), \
+                    mock.patch.object(m, "cached_rows", side_effect=cached), \
                     contextlib.redirect_stdout(io.StringIO()) as out:
                 m.cmd_build(a)
                 m.cmd_build(a)
             self.assertEqual(Path(d, "ocr-docs.txt").read_text().split(), [off, on])
             self.assertIn("still being fetched", out.getvalue())
-            lake.assert_not_called()  # the claims came from the rows already kept
+            # Newly queued pages are claimed from the lake; outcomes wait for a manifest run.
+            self.assertEqual(refreshed, [("queued", True), ("outcomes", False)] * 2)
 
 
 def ranked(doc, batch, lccn, decade, rank):

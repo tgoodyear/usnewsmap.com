@@ -957,6 +957,17 @@ class FollowChunkTest(unittest.TestCase):
         self.assertIn("waiting for the curated copy's LoC text", output.getvalue())
         self.assertIn('"pages": 2', output.getvalue().split("waiting for a full chunk")[1][:200])
 
+    def test_a_batch_without_curated_text_is_looked_for_again_and_one_with_is_remembered(self):
+        texts = feed.Texts(str(self.root / "curated"))
+        self.assertFalse(texts.has_loc("xx_later", 1))
+        run = self.root / "curated/pages/xx_later/v01/run1"
+        run.mkdir(parents=True)
+        (run / "part-0.parquet").write_bytes(b"")
+        with mock.patch.object(feed.glob, "glob", wraps=feed.glob.glob) as looked:
+            self.assertTrue(texts.has_loc("xx_later", 1))
+            self.assertTrue(texts.has_loc("xx_later", 1))
+        self.assertEqual(looked.call_count, 1)
+
     def test_a_fresh_state_is_not_overdue(self):
         state = self.root / "state"
         state.mkdir()

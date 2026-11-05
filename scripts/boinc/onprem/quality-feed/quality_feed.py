@@ -250,13 +250,17 @@ class Texts:
     def __init__(self, curated):
         self.curated = curated
         self._ours_alto = None
+        self._has_loc = set()
 
     def _loc_files(self, batch, bv):
         return glob.glob(os.path.join(self.curated, "pages", batch, f"v{bv:02d}", "*", "*.parquet"))
 
     def has_loc(self, batch, bv):
-        """Whether the curated copy has the batch's LoC text yet (loc's second value)."""
-        return bool(self._loc_files(batch, bv))
+        """Whether the curated copy has the batch's LoC text yet (loc's second value). Once it
+        has, it keeps it, so only a batch without is looked for again."""
+        if (batch, bv) not in self._has_loc and self._loc_files(batch, bv):
+            self._has_loc.add((batch, bv))
+        return (batch, bv) in self._has_loc
 
     def loc(self, batch, bv, docs):
         import pyarrow.parquet as pq

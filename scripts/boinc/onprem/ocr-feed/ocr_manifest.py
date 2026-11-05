@@ -299,12 +299,14 @@ def cmd_build(a):
         age = dt.datetime.now(dt.timezone.utc) - dt.datetime.fromisoformat(last["at"])
         if on < 0.9 * len(pairs) and age < dt.timedelta(days=1):
             busy = {"manifest": last["name"], "on_server": on, "pages": len(pairs)}
-    # While the last manifest is still being fetched no manifest is written, so the lake is
-    # left alone and the claims below come from the rows already kept.
-    lake = None if busy else Lake(a.curated_url)
+    # The claims below need every queued page, so queued is refreshed from the lake even while
+    # the last manifest is still being fetched; then no manifest is written, so outcomes (which
+    # only narrow what's claimed) are the ones already kept.
+    lake = Lake(a.curated_url)
     queued = cached_rows(lake, a.state, "queued", a.days,
                          ["doc_id", "batch", "batch_version", "reason", "language", "queued_at"])
-    outcomes = cached_rows(lake, a.state, "outcomes", a.days, ["doc_id", "outcome", "cause", "at"])
+    outcomes = cached_rows(None if busy else lake, a.state, "outcomes", a.days,
+                           ["doc_id", "outcome", "cause", "at"])
     outstanding = list(pending(queued, outcomes, reasons))
     # A queued page whose scan the fetcher already wrote (the quality pass's, say) gets no
     # manifest row, but it's OCR's all the same: the quality feeder must not evict it.
