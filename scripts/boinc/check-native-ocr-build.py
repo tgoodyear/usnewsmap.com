@@ -40,6 +40,8 @@ def locked_models(lock: Path) -> dict[str, str]:
             continue
         if not fields[0].startswith("tessdata/"):
             raise ValueError(f"model outside tessdata in {lock}: {fields[0]}")
+        if not re.fullmatch(r"[0-9a-f]{64}", fields[2]):
+            raise ValueError(f"not a sha256 in {lock}: {fields[0]} {fields[2]}")
         models[MODEL_PREFIX + fields[0].removeprefix("tessdata/")] = fields[2]
     if not models:
         raise ValueError(f"no models in {lock}")

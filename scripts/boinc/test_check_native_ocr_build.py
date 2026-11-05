@@ -108,6 +108,13 @@ class CheckNativeOcrBuild(unittest.TestCase):
         self.assertRegex(module.locked_engine(module.ROOT / "ocr/engines/tesseract/Containerfile"), r"^[0-9]+\.[0-9]+\.[0-9]+$")
         self.assertIn("tessdata_eng.traineddata", module.locked_models(module.ROOT / "ocr/engines/tesseract/models.lock"))
 
+    def test_refuses_a_lock_digest_that_is_not_a_sha256(self):
+        lock = self.root / "bad.lock"
+        for digest in ("abc", "A" * 64, "g" * 64, "a" * 65):
+            lock.write_text(f"tessdata/eng.traineddata https://example.invalid/eng {digest}\n")
+            with self.subTest(digest=digest), self.assertRaisesRegex(ValueError, "not a sha256"):
+                module.locked_models(lock)
+
 
 if __name__ == "__main__":
     unittest.main()

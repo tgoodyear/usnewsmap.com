@@ -503,6 +503,8 @@ class InstallTest(unittest.TestCase):
         import subprocess
         release = Path(__file__).resolve().parents[2] / "scripts/boinc/boinc-app-release.sh"
         worker, build, _ = self.native_ocr_build()
+        empty = self.root / "empty"
+        empty.mkdir()
         base = ["--env", "prod", "--version", "1.0", "--signing-host", "signhost"]
         for args, expected_err in (
             (["--app", "usnm_quality", "--kind", "native", "--build-dir", str(build)],
@@ -523,6 +525,8 @@ class InstallTest(unittest.TestCase):
              "a native OCR build requires --extra-file usnm_native_build.json=PATH"),
             (["--app", "usnm_gold_native", "--kind", "native", "--build-dir", str(build.parent)],
              "--build-dir must hold only regular files: "),
+            (["--app", "usnm_gold_native", "--kind", "native", "--build-dir", str(empty)],
+             "--build-dir is empty: it must hold usnm_ocr, usnm_native_build.json"),
         ):
             with self.subTest(args=args):
                 res = subprocess.run(["bash", str(release), *base, *args], capture_output=True, text=True)
