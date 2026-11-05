@@ -210,6 +210,9 @@ def inspect(args, record):
         state = "needs_science_review"
     elif unfinished_sources:
         state = "preparing_and_publishing"
+    elif not native["published_workunits"] and counts["source_truncated"] == len(pages):
+        # Every member is cut short in LoC's own copy: nothing to publish, review or retry.
+        state = "source_truncated_no_work"
     elif not native["published_workunits"]:
         state = "needs_science_review"
     elif unresolved_jobs and native["unsent_replicas"] and not native["running_replicas"]:
