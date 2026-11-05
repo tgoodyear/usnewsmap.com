@@ -106,8 +106,9 @@ pub struct PlacementSummary {
     /// Lines whose `doc_id` is of another title, date or edition than the
     /// scan's issue directory.
     pub inconsistent: u64,
-    /// Scan and page pairs left out because the scan was given more than
-    /// one page or the page more than one scan.
+    /// Distinct scan and page pairs (not lines: a pair on many lines counts
+    /// once) left out because the scan was given more than one page or the
+    /// page more than one scan.
     pub conflicting: u64,
 }
 
