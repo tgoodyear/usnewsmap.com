@@ -54,6 +54,18 @@ def locked_engine(containerfile: Path) -> str:
     return found.pop()
 
 
+def well_formed(manifest) -> bool:
+    """Whether the worker reads this as a build manifest (crates/usnm-boinc/src/native.rs,
+    Manifest and BuildFile): exactly their fields, with integers that are JSON integers."""
+    def integer(x, bits):
+        return type(x) is int and 0 <= x < 2 ** bits
+    return (isinstance(manifest, dict) and set(manifest) == {"engine_version", "files", "platform", "v"}
+            and integer(manifest["v"], 32) and isinstance(manifest["engine_version"], str)
+            and isinstance(manifest["platform"], str) and isinstance(manifest["files"], dict)
+            and all(isinstance(f, dict) and set(f) == {"bytes", "sha256"} and integer(f["bytes"], 64)
+                    and isinstance(f["sha256"], str) for f in manifest["files"].values()))
+
+
 def entry(path: Path) -> dict:
     data = path.read_bytes()
     return {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
@@ -77,13 +89,11 @@ def check(binary: Path, extras: dict[str, Path], lock: Path, containerfile: Path
     raw = extras[MANIFEST].read_bytes()
     try:
         manifest = json.loads(raw)
-        files = manifest["files"]
-        version = manifest["engine_version"]
-        valid = manifest["v"] == 1 and manifest["platform"] == PLATFORM and isinstance(files, dict)
-    except (ValueError, KeyError, TypeError):
-        valid = False
-    if not valid:
+    except ValueError:
+        manifest = None
+    if not well_formed(manifest) or manifest["v"] != 1 or manifest["platform"] != PLATFORM:
         raise ValueError(f"{MANIFEST} is not a build manifest for {PLATFORM}")
+    files, version = manifest["files"], manifest["engine_version"]
     engine = locked_engine(containerfile)
     if version != engine:
         raise ValueError(f"the build's Tesseract is {version}, the container worker's is {engine}")
@@ -91,7 +101,7 @@ def check(binary: Path, extras: dict[str, Path], lock: Path, containerfile: Path
     if set(files) != {WORKER, ENGINE, *models}:
         raise ValueError(f"{MANIFEST} doesn't list the worker, the engine and exactly the locked models")
     for name, sha256 in models.items():
-        if not isinstance(files[name], dict) or files[name].get("sha256") != sha256:
+        if files[name]["sha256"] != sha256:
             raise ValueError(f"the build's {name} isn't the locked model")
     given = {WORKER: binary, **{k: v for k, v in extras.items() if k != MANIFEST}}
     if set(given) != set(files):

@@ -67,6 +67,17 @@ class CheckNativeOcrBuild(unittest.TestCase):
         self.lock.write_text(self.lock.read_text() + "tessdata/deu.traineddata https://example.org/deu " + "1" * 64 + "\n")
         self.assertIn("exactly the locked models", self.run_check()[1])
 
+    def test_refuses_a_manifest_the_worker_would_not_read(self):
+        # The worker reads v as a u32 and bytes as a u64, and refuses unknown fields.
+        size = len(self.files["usnm_ocr"])
+        digest = hashlib.sha256(self.files["usnm_ocr"]).hexdigest()
+        for changes in ({"v": True}, {"v": 1.0}, {"extra": 1},
+                        {"files": {**json.loads((self.build / "usnm_native_build.json").read_text())["files"],
+                                   "usnm_ocr": {"bytes": float(size), "sha256": digest}}}):
+            with self.subTest(changes=changes):
+                self.write_manifest(**changes)
+                self.assertIn("is not a build manifest for x86_64-pc-linux-gnu", self.run_check()[1])
+
     def test_refuses_files_that_are_not_the_manifests(self):
         self.assertIn("missing: tessdata_eng.traineddata", self.run_check("usnm_native_build.json", "usnm_tesseract")[1])
         (self.build / "usnm_tesseract").write_bytes(ELF + b"other")

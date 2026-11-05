@@ -278,8 +278,8 @@ class CheckAppver(unittest.TestCase):
                 with self.assertRaisesRegex(ca.Refused, "missing required bundle files: libggml-vulkan.so"):
                     ca.check(directory, sigs, self.key, str(self.crypt), kind="native")
 
-    def stage_native_ocr(self, app):
-        """A native OCR build staged by install.py and signed: (version dir, sigs dir)."""
+    def stage_native_ocr(self, app, **changes):
+        """A native OCR build staged by install.py: (version dir, sigs dir)."""
         build = self.root / "ocr-build"
         build.mkdir(exist_ok=True)
         files = {"usnm_ocr": b"worker", "usnm_tesseract": b"engine", "tessdata_eng.traineddata": b"model"}
@@ -287,7 +287,7 @@ class CheckAppver(unittest.TestCase):
             (build / name).write_bytes(data)
         manifest = {"engine_version": "5.5.0", "platform": "x86_64-pc-linux-gnu", "v": 1, "files": {
             name: {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()} for name, data in files.items()}}
-        (build / "usnm_native_build.json").write_text(ca.json.dumps(manifest))
+        (build / "usnm_native_build.json").write_text(ca.json.dumps({**manifest, **changes}))
         project = self.root / f"{app}-project"
         project.mkdir()
         (project / "config.xml").write_text("<boinc/>")
@@ -338,6 +338,20 @@ class CheckAppver(unittest.TestCase):
         ca.ET.ElementTree(spec).write(directory / "version.xml", encoding="unicode")
         with self.assertRaisesRegex(ca.Refused, "extra files must not have <copy_file/>"):
             check()
+
+    def test_native_ocr_refuses_a_manifest_the_worker_would_not_read(self):
+        # The worker reads v as a u32 and refuses unknown fields.
+        base = self.root
+        for n, changes in enumerate(({"v": True}, {"v": 1.0}, {"extra": 1})):
+            with self.subTest(changes=changes):
+                self.root = base / f"case-{n}"
+                self.root.mkdir()
+                directory, sigs = self.stage_native_ocr("usnm_ocr_native", **changes)
+                self.sign_all(directory, sigs)
+                with self.assertRaisesRegex(ca.Refused, "is not a build manifest for x86_64-pc-linux-gnu"):
+                    ca.check(directory, sigs, self.key, str(self.crypt), kind="native",
+                             app="usnm_ocr_native", platform="x86_64-pc-linux-gnu")
+        self.root = base
 
 
 if __name__ == "__main__":

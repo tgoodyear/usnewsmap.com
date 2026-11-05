@@ -78,6 +78,18 @@ def _file_entry(path: Path) -> dict:
     return {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
 
 
+def _native_ocr_manifest_well_formed(manifest) -> bool:
+    """Whether the worker reads this as a build manifest (crates/usnm-boinc/src/native.rs,
+    Manifest and BuildFile): exactly their fields, with integers that are JSON integers."""
+    def integer(x, bits):
+        return type(x) is int and 0 <= x < 2 ** bits
+    return (isinstance(manifest, dict) and set(manifest) == {"engine_version", "files", "platform", "v"}
+            and integer(manifest["v"], 32) and isinstance(manifest["engine_version"], str)
+            and isinstance(manifest["platform"], str) and isinstance(manifest["files"], dict)
+            and all(isinstance(f, dict) and set(f) == {"bytes", "sha256"} and integer(f["bytes"], 64)
+                    and isinstance(f["sha256"], str) for f in manifest["files"].values()))
+
+
 def _check_native_ocr(version_dir: Path, spec: ET.Element, app: str, platform: str | None) -> None:
     """A native OCR version holds exactly its build: the files its manifest lists, each named
     for its content (scripts/boinc/install.py, native_ocr_physical). The manifest's name carries
@@ -104,12 +116,11 @@ def _check_native_ocr(version_dir: Path, spec: ET.Element, app: str, platform: s
         raise Refused(f"{NATIVE_OCR_MANIFEST} is not named for its digest")
     try:
         manifest = json.loads(raw)
-        listed = manifest["files"]
-        valid = manifest["v"] == 1 and manifest["platform"] == platform and isinstance(listed, dict)
-    except (ValueError, KeyError, TypeError):
-        valid = False
-    if not valid:
+    except ValueError:
+        manifest = None
+    if not _native_ocr_manifest_well_formed(manifest) or manifest["v"] != 1 or manifest["platform"] != platform:
         raise Refused(f"{NATIVE_OCR_MANIFEST} is not a build manifest for {platform}")
+    listed = manifest["files"]
     if (
         "usnm_ocr" not in listed
         or NATIVE_OCR_ENGINE not in listed

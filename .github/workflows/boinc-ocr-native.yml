@@ -90,6 +90,8 @@ jobs:
             cp "$name" "build/tessdata_${name#tessdata/}"
           done
       - name: Make the build manifest
+        # bash -eo pipefail, so tee doesn't hide a failure.
+        shell: bash
         run: |
           cp target/x86_64-unknown-linux-musl/release/usnm_ocr build/usnm_ocr
           build/usnm_ocr manifest --worker build/usnm_ocr --tesseract "$PWD/build/usnm_tesseract" \
@@ -100,6 +102,7 @@ jobs:
       # is the container worker's engine and models, stage it, and check the staged version. The
       # signatures need the private key, so a stand-in verifier accepts any.
       - name: Check and stage the build as a release would
+        shell: bash
         run: |
           extras=()
           for f in build/*; do [ "${f##*/}" = usnm_ocr ] || extras+=(--extra-file "${f##*/}=$f"); done
