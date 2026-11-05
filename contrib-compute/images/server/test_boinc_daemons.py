@@ -145,6 +145,17 @@ class RestartBound(unittest.TestCase):
         self.assertEqual(runs, ["start", "start", "start", "start", "hold"])
         self.assertEqual(self.hold.read_text(), "held_at=4000 restarts=3 window_s=3600\n")
 
+    def test_never_writes_through_a_planted_link_and_holds_without_a_marker(self):
+        target = self.hold.parent.parent / "outside"
+        self.hold.symlink_to(target)
+        runs, log = self.cycles([0, 300, 600, 900],
+                                after='rm "$hold"; T=1200; if held; then echo "$T hold"; else echo "$T start"; fi')
+        self.assertEqual(runs, ["start", "start", "start", "hold", "hold"])
+        self.assertFalse(target.exists())
+        self.assertFalse(self.hold.is_symlink())
+        self.assertIn("could not write", log)
+        self.assertIn("holding the project until the container restarts", log.split("could not write")[-1])
+
     def test_running_feeder_or_stopped_project_does_not_count(self):
         self.feeder()
         runs, log = self.cycles(range(0, 3600, 300))

@@ -63,16 +63,19 @@ The guarded feeder from #1464 records the app IDs and weights it allocated from 
   ([`supervisord.conf` L15-L21](../../contrib-compute/images/server/supervisord.conf#L15-L21))
   runs `boinc-daemons.sh`, which runs `bin/start` once and then `bin/start --cron` every 300
   seconds as `boincadm`, unless `stop_maintenance` or its own restart hold is present
-  ([`boinc-daemons.sh` L113-L122](../../contrib-compute/images/server/boinc-daemons.sh#L113-L122)).
+  ([`boinc-daemons.sh` L132-L141](../../contrib-compute/images/server/boinc-daemons.sh#L132-L141)).
   That loop is the feeder's supervisor: a feeder that exits is started again within five minutes,
   as BOINC expects from cron ([feeder.cpp L269-L277][feeder-269-277], [start L14-L17][start-14-17]).
   It restarts a stopped feeder at most three times an hour, then holds the project
   ([The loop's restart bound](#the-loops-restart-bound)). This procedure adds no loop to it, and
   holds it once a start fails ([Hold the supervisor loop](#hold-the-supervisor-loop)).
-- `pid_<host>` is on the container's own disk and linked into the project
-  ([`boinc-daemons.sh` L18-L43](../../contrib-compute/images/server/boinc-daemons.sh#L18-L43)). The
+- `pid_<host>` is on the container's own disk, `${USNM_PID_ROOT:-/var/lib/usnm-boinc}/pid_<host>`,
+  and linked into the project
+  ([`boinc-daemons.sh` L19-L44](../../contrib-compute/images/server/boinc-daemons.sh#L19-L44)). The
   guard's snapshot, `usnm-feeder-slots.json`, and the loop's hold marker,
-  `usnm-feeder-restart-hold`, are in the same directory.
+  `usnm-feeder-restart-hold`, are always in that local directory, even where the wrapper keeps an
+  older `pid_<host>` directory in the project instead of the link. The commands below use the local
+  path.
 - The stock stop is `SIGHUP`. The handler only sets a flag; the feeder exits at its next
   `check_stop_daemons`, which runs every second while it sleeps and after every pass. On that exit,
   `cleanup_shmem` clears `ready` and removes the segment ([sched_util_basic.cpp
@@ -97,10 +100,14 @@ Before each `bin/start --cron`, `boinc-daemons.sh` checks the feeder: `pid_<host
 name a live process called `feeder` that is not a zombie. If it doesn't, and `stop_daemons` is
 absent (a project stopped with `bin/stop` is not restarted anyway), the run counts as a restart and
 the wrapper logs `the feeder is not running; restart k of N in Ws` to the server unit's journal.
-If `N` restarts already fall within the last `W` seconds, it skips the run instead, writes
-`pid_<host>/usnm-feeder-restart-hold` (`held_at=<epoch> restarts=<n> window_s=<W>`) and logs
-`holding the project until ... is removed`
-([`boinc-daemons.sh` L53-L111](../../contrib-compute/images/server/boinc-daemons.sh#L53-L111)).
+If `N` restarts already fall within the last `W` seconds, it skips the run instead, creates the
+marker `usnm-feeder-restart-hold` in the local `pid_<host>` directory
+(`held_at=<epoch> restarts=<n> window_s=<W>`) and logs `holding the project until ... is removed`
+([`boinc-daemons.sh` L54-L130](../../contrib-compute/images/server/boinc-daemons.sh#L54-L130)).
+The wrapper runs as root in a directory `boincadm` can write, so it only ever creates a new file
+there. If anything already occupies the path, such as a link, or the write fails, it logs
+`could not write` and stays held without a marker until the container restarts; the guard then
+reports `unknown` for the stopped feeder. Remove whatever occupies the path before that restart.
 Only the feeder is counted. The first `bin/start` and a run that finds the feeder running don't
 count, and the count starts again after each hold.
 
@@ -109,10 +116,11 @@ no periodic task, but stops nothing that is running, and a restart of the wrappe
 The guard reports `unknown` with reason `feeder_restart_hold` without querying anything, so the host
 unit fails: a held project is an incident. The loop never creates `stop_maintenance` itself. The
 marker is on the container's own disk, so a container start clears it. Otherwise only an operator
-removes it, once the cause is found and fixed, as `boincadm` in `/project/usnmocr`:
+removes it, once the cause is found and fixed, as `boincadm` in the server container:
 
 ```sh
-rm "pid_$host/usnm-feeder-restart-hold"
+host=$(python3 -c 'import socket; print(socket.gethostname().split(".")[0])')
+rm "${USNM_PID_ROOT:-/var/lib/usnm-boinc}/pid_$host/usnm-feeder-restart-hold"
 ```
 
 The next run, within five minutes, starts the feeder with a fresh count.
@@ -215,9 +223,9 @@ Project state:
 - None of these exists in the project directory: `stop_maintenance` (pauses the supervisor loop),
   `stop_sched` (scheduler maintenance), `stop_daemons` (stops every daemon, and `bin/start`
   removes it, which would undo someone else's stop: [start L209-L221][start-209-221],
-  [L467-L470][start-467-470]) or `reread_db` (a pending reread). Nor is there a
-  `pid_<host>/usnm-feeder-restart-hold`: the loop has [held itself](#the-loops-restart-bound), and
-  why comes first.
+  [L467-L470][start-467-470]) or `reread_db` (a pending reread). Nor is there a restart hold
+  marker (`$restart_hold` in step 1): the loop has [held itself](#the-loops-restart-bound), and why
+  comes first.
 - Exactly one feeder: `pgrep -u boincadm -x feeder` prints one PID, the PID in
   `pid_<host>/feeder.pid`. Its command line is `feeder -d 2 --allapps --purge_stale 5`, and the
   guard's snapshot names the same PID and start ticks.
@@ -342,11 +350,12 @@ In that shell (create `/project/ops` as root first if `boincadm` cannot write to
 ```sh
 cd /project/usnmocr
 host=$(python3 -c 'import socket; print(socket.gethostname().split(".")[0])')
+restart_hold="${USNM_PID_ROOT:-/var/lib/usnm-boinc}/pid_$host/usnm-feeder-restart-hold"
 evidence=/project/ops/feeder-refresh-$(date -u +%Y%m%dT%H%M%SZ)
 mkdir "$evidence"
 python3 /usr/local/lib/usnm-boinc/feeder-slot-guard.py --project /project/usnmocr | tee "$evidence/guard-before.json"
 bin/status --verbose | tee "$evidence/status-before.txt"
-ls -ld stop_maintenance stop_sched stop_daemons reread_db .usnm-publish.lock "pid_$host/usnm-feeder-restart-hold" 2>&1 | tee "$evidence/markers-before.txt"
+ls -ld stop_maintenance stop_sched stop_daemons reread_db .usnm-publish.lock "$restart_hold" 2>&1 | tee "$evidence/markers-before.txt"
 bin/show_shmem > "$evidence/shmem-before.txt"
 ipcs -m | tee "$evidence/ipcs-before.txt"
 cp "pid_$host/usnm-feeder-slots.json" "$evidence/snapshot-before.json"
@@ -588,7 +597,7 @@ echo "hold $(date -u +%FT%TZ)" | tee -a "$evidence/hold-time.txt"
 
 `boinc-daemons.sh` checks the marker before each `bin/start --cron` and skips the run while it
 exists, and a container start waits for it
-([`boinc-daemons.sh` L38-L50](../../contrib-compute/images/server/boinc-daemons.sh#L38-L50)). It
+([`boinc-daemons.sh` L46-L52](../../contrib-compute/images/server/boinc-daemons.sh#L46-L52)). It
 stops nothing that is running. While it is in place, the loop starts no daemon and runs no periodic
 task, and the guard reports `maintenance`, which doesn't fail the host unit. The hold is part of
 the approved window. Record the loop's own attempts made before the hold: every
@@ -597,7 +606,7 @@ didn't make, which match the wrapper's `restart k of N` lines in
 `journalctl -u usnm-boinc-server.service` on CT 230. There are few, because the loop runs every five
 minutes and the hold follows the failure at once. If the loop has already held itself
 ([The loop's restart bound](#the-loops-restart-bound)), add `stop_maintenance` all the same and copy
-`pid_$host/usnm-feeder-restart-hold` into the evidence directory.
+`$restart_hold` into the evidence directory.
 
 Release the hold only once a feeder passes step 4 after the hold: run step 4 up to the guard
 check, then release it and run the guard check, which reports `maintenance` while the hold is in
@@ -605,7 +614,7 @@ place:
 
 ```sh
 rm stop_maintenance
-rm -f "pid_$host/usnm-feeder-restart-hold"
+rm -f "$restart_hold"
 echo "release $(date -u +%FT%TZ)" | tee -a "$evidence/hold-time.txt"
 ```
 

@@ -14,6 +14,7 @@ proc=/proc
 restart_limit=3
 restart_window=3600
 restarts=""
+hold_unwritten=""
 
 # bin/start opens pid_<host>/start.lock.<host>, marks it inheritable so every daemon it starts
 # keeps it open, and unlinks it on the way out. On the Azure Files project share a file that is
@@ -78,10 +79,24 @@ feeder_running() {
 }
 
 # The hold marker is on the container's own disk: a container start clears it, and only an
-# operator removes it otherwise.
+# operator removes it otherwise. A hold whose marker couldn't be written lasts until the container
+# restarts.
 on_hold() {
+  if [ -n "$hold_unwritten" ]; then
+    echo "usnm-boinc: could not write $hold; holding the project until the container restarts" >&2
+    return 0
+  fi
   [ -e "$hold" ] || return 1
   echo "usnm-boinc: $hold is present; not starting the project" >&2
+}
+
+# Root writes the marker in a directory boincadm can write, so it creates a new file and never
+# opens anything already at that path, such as a link to another file.
+write_hold() {
+  HOLD="$hold" TEXT="$1" python3 -c 'import os
+fd = os.open(os.environ["HOLD"], os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+os.write(fd, (os.environ["TEXT"] + "\n").encode())
+os.close(fd)'
 }
 
 # Succeeds when this run of bin/start --cron must not happen. A disabled project (bin/stop
@@ -100,9 +115,13 @@ held() {
     fi
   done
   if [ "$count" -ge "$restart_limit" ]; then
-    printf 'held_at=%s restarts=%s window_s=%s\n' "$now" "$count" "$restart_window" > "$hold"
-    echo "usnm-boinc: the feeder is not running after $count restarts in ${restart_window}s; holding the project until $hold is removed" >&2
     restarts=""
+    if ! write_hold "held_at=$now restarts=$count window_s=$restart_window"; then
+      hold_unwritten=1
+      echo "usnm-boinc: the feeder is not running after $count restarts in ${restart_window}s; could not write $hold, so holding the project until the container restarts" >&2
+      return 0
+    fi
+    echo "usnm-boinc: the feeder is not running after $count restarts in ${restart_window}s; holding the project until $hold is removed" >&2
     return 0
   fi
   restarts="$kept $now"
