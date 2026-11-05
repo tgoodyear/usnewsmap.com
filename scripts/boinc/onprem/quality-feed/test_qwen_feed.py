@@ -2237,9 +2237,11 @@ class SourceTest(unittest.TestCase):
             if "-c" in argv and "done.txt" in argv[-1]:
                 return json.dumps(list(finished)).encode()
             if "-c" in argv and "import quarantined;" in argv[argv.index("-c") + 1] and quarantine:
-                code = argv[argv.index("-c") + 1].replace("/opt/usnm-quality-feed", str(HERE))
-                state = argv[-1].replace("/var/lib/usnm-quality-feed", str(quarantine))
-                return subprocess.run([sys.executable, "-c", code, state], check=True, capture_output=True).stdout
+                code, *paths = argv[argv.index("-c") + 1:]
+                paths = [path.replace("/opt/usnm-quality-feed", str(HERE)).replace(
+                    "/var/lib/usnm-quality-feed", str(quarantine)) for path in paths]
+                return subprocess.run([sys.executable, "-c", code, *paths], check=True,
+                                      capture_output=True).stdout
             return b"[]" if "-c" in argv else b""
 
         def remote(host, argv, data=None):

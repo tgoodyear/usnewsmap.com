@@ -87,6 +87,11 @@ def scan_fingerprint(row):
     return (row["doc_id"], row["batch"], int(row.get("batch_version") or 1), row["bytes"], row["sha256"])
 
 
+# An index row's doc_id, read without parsing the row. Index rows are flat, and a quote inside
+# a JSON string is escaped, so this matches only the doc_id key.
+DOC_ID_FIELD = re.compile(rb'"doc_id"\s*:\s*"([^"\\]*)"')
+
+
 def truncated_reservations(index, reserved, truncated, finished):
     """The reserved pages whose scans are cut short at source (#1457), given the fingerprints
     the quarantine records as source_truncated. select never takes such a page again, so it
@@ -96,13 +101,14 @@ def truncated_reservations(index, reserved, truncated, finished):
     candidates = {fingerprint[0] for fingerprint in truncated} & (reserved - finished)
     if not candidates:
         return set()
-    needles = [doc.encode() for doc in candidates]
+    wanted = {doc.encode() for doc in candidates}
     current = {}
     for line in index.splitlines():
-        if any(needle in line for needle in needles):
-            row = json.loads(line)
-            if row["doc_id"] in candidates and row.get("resolution", "full") == "full":
-                current[row["doc_id"]] = scan_fingerprint(row)
+        if (found := DOC_ID_FIELD.search(line)) and found[1] not in wanted:
+            continue
+        row = json.loads(line)
+        if row["doc_id"] in candidates and row.get("resolution", "full") == "full":
+            current[row["doc_id"]] = scan_fingerprint(row)
     return {doc for doc, scan in current.items() if scan in truncated}
 
 
@@ -538,6 +544,7 @@ def _tick(a):
     if count < 1:
         return
     work = "/var/lib/usnm-quality-feed/work/" + a.campaign
+    quarantine_state = "/var/lib/usnm-quality-feed/" + a.campaign
     command(ct + ["mkdir", "-p", work])
     done = command(python + ["-c", (
         "from pathlib import Path; import json; "
@@ -564,7 +571,7 @@ def _tick(a):
                          "--out", work + "/selected.jsonl", "--non-english", "--order", "damage",
                          "--damage-dsn-file", "/etc/usnm/quality-db/dsn",
                          "--scan-server", a.scan_server,
-                         "--quarantine-state", "/var/lib/usnm-quality-feed/" + a.campaign, *filters])
+                         "--quarantine-state", quarantine_state, *filters])
         selected = command(ct + ["cat", work + "/selected.jsonl"])
         return selected, [json.loads(line) for line in selected.splitlines() if line]
 
@@ -583,10 +590,10 @@ def _tick(a):
     if any(reservations.values()):
         truncated = {scan_fingerprint(source) for source in json.loads(command(python + ["-c", (
             "from pathlib import Path; import json, sys; "
-            "sys.path.insert(0, '/opt/usnm-quality-feed'); from scan_quarantine import quarantined; "
-            "print(json.dumps([r['source'] for r in quarantined(Path(sys.argv[1])) "
+            "sys.path.insert(0, sys.argv[1]); from scan_quarantine import quarantined; "
+            "print(json.dumps([r['source'] for r in quarantined(Path(sys.argv[2])) "
             "if r['refetch_state'] == 'source_truncated']))"
-        ), "/var/lib/usnm-quality-feed/" + a.campaign]))}
+        ), helper, quarantine_state]))}
         # done holds both done.txt and skipped.txt.
         refunds = truncated_reservations(index, {doc for spent in reservations.values() for doc in spent},
                                          truncated, set(json.loads(done)))
