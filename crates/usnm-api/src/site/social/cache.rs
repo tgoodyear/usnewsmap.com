@@ -1,21 +1,29 @@
+use std::collections::HashMap;
 use std::future::Future;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use futures::StreamExt;
+use futures::{stream, StreamExt};
 use usnm_store::ObjectStore;
 
-use super::RenderError;
+use super::{digest, RenderError};
 
 pub(super) const LIFETIME: Duration = Duration::from_secs(24 * 3600);
 const STORE_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_PNG_BYTES: usize = 8 * 1024 * 1024;
+const PREVIEW_QUOTA_BYTES: u64 = 5_000_000_000;
+const ACCESS_INTERVAL: Duration = Duration::from_secs(60 * 60);
+const EVICTION_LOCK: &str = "search-preview-quota-lock/eviction.lock";
+const EVICTION_LOCK_STALE: Duration = Duration::from_secs(10 * 60);
+const DELETE_CONCURRENCY: usize = 32;
 type Persistent = Option<(Arc<dyn ObjectStore>, String)>;
 
 pub(crate) struct Service {
     images: moka::future::Cache<String, Arc<Image>>,
     renders: Arc<tokio::sync::Semaphore>,
+    quota_lock: Arc<tokio::sync::Mutex<()>>,
+    last_quota_check: Arc<AtomicU64>,
     pub(super) frontend: tokio::sync::OnceCell<String>,
 }
 
@@ -23,6 +31,7 @@ struct Image {
     body: Vec<u8>,
     stored: AtomicBool,
     persistence: tokio::sync::Mutex<()>,
+    last_access: std::sync::atomic::AtomicU64,
 }
 
 impl Default for Service {
@@ -33,6 +42,8 @@ impl Default for Service {
                 .time_to_live(LIFETIME)
                 .build(),
             renders: Arc::new(tokio::sync::Semaphore::new(2)),
+            quota_lock: Arc::new(tokio::sync::Mutex::new(())),
+            last_quota_check: Arc::new(AtomicU64::new(0)),
             frontend: tokio::sync::OnceCell::new(),
         }
     }
@@ -54,7 +65,16 @@ impl Service {
     /// Read a published image without admitting a new render.
     pub(super) async fn lookup(&self, key: &str, persistent: Persistent) -> Option<Vec<u8>> {
         if let Some(image) = self.images.get(key).await {
-            retry_persistence(image.clone(), persistent);
+            if image.stored.load(Ordering::Acquire) {
+                self.schedule_quota_check(&persistent);
+            }
+            retry_persistence(
+                image.clone(),
+                persistent.clone(),
+                self.quota_lock.clone(),
+                self.last_quota_check.clone(),
+            );
+            touch_recent(image.clone(), persistent);
             return Some(image.body.clone());
         }
         let (store, path) = persistent?;
@@ -66,9 +86,14 @@ impl Service {
                     body: body.clone(),
                     stored: AtomicBool::new(true),
                     persistence: tokio::sync::Mutex::new(()),
+                    last_access: std::sync::atomic::AtomicU64::new(0),
                 }),
             )
             .await;
+        if let Some(image) = self.images.get(key).await {
+            self.schedule_quota_check(&Some((store.clone(), path.clone())));
+            touch_recent(image, Some((store, path.to_owned())));
+        }
         Some(body)
     }
 
@@ -81,7 +106,16 @@ impl Service {
     ) -> Result<Vec<u8>, Arc<RenderError>> {
         if !background {
             if let Some(image) = self.images.get(&key).await {
-                retry_persistence(image.clone(), persistent);
+                if image.stored.load(Ordering::Acquire) {
+                    self.schedule_quota_check(&persistent);
+                }
+                retry_persistence(
+                    image.clone(),
+                    persistent.clone(),
+                    self.quota_lock.clone(),
+                    self.last_quota_check.clone(),
+                );
+                touch_recent(image.clone(), persistent);
                 return Ok(image.body.clone());
             }
         }
@@ -94,6 +128,7 @@ impl Service {
                             body,
                             stored: AtomicBool::new(true),
                             persistence: tokio::sync::Mutex::new(()),
+                            last_access: std::sync::atomic::AtomicU64::new(0),
                         }));
                     }
                 }
@@ -113,52 +148,400 @@ impl Service {
                     body,
                     stored: AtomicBool::new(false),
                     persistence: tokio::sync::Mutex::new(()),
+                    last_access: std::sync::atomic::AtomicU64::new(0),
                 }))
             })
             .await?;
-        persist(&image, persistent).await;
+        persist(
+            &image,
+            persistent.clone(),
+            self.quota_lock.clone(),
+            self.last_quota_check.clone(),
+        )
+        .await;
+        if image.stored.load(Ordering::Acquire) {
+            self.schedule_quota_check(&persistent);
+        }
+        touch_recent(image.clone(), persistent);
         Ok(image.body.clone())
+    }
+
+    fn schedule_quota_check(&self, persistent: &Persistent) {
+        let Some((store, _)) = persistent else {
+            return;
+        };
+        schedule_quota_scan(
+            store.clone(),
+            self.quota_lock.clone(),
+            self.last_quota_check.clone(),
+            false,
+        );
     }
 }
 
-fn retry_persistence(image: Arc<Image>, persistent: Persistent) {
+fn schedule_quota_scan(
+    store: Arc<dyn ObjectStore>,
+    quota_lock: Arc<tokio::sync::Mutex<()>>,
+    last_check: Arc<AtomicU64>,
+    force: bool,
+) {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+        .max(1);
+    if !force {
+        let last = last_check.load(Ordering::Acquire);
+        if last != 0 && now.saturating_sub(last) < 60 * 60 {
+            return;
+        }
+        if last_check
+            .compare_exchange(last, now, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return;
+        }
+    } else {
+        last_check.store(now, Ordering::Release);
+    }
+    tokio::spawn(async move {
+        enforce_quota(store, quota_lock, PREVIEW_QUOTA_BYTES).await;
+    });
+}
+
+fn retry_persistence(
+    image: Arc<Image>,
+    persistent: Persistent,
+    quota_lock: Arc<tokio::sync::Mutex<()>>,
+    last_quota_check: Arc<AtomicU64>,
+) {
     if persistent.is_some() && !image.stored.load(Ordering::Acquire) {
         // A ready PNG must not wait on storage and lose the sharing deadline.
         // `persist` coalesces writes and bounds the detached retry.
-        tokio::spawn(async move { persist(&image, persistent).await });
+        tokio::spawn(async move {
+            persist(
+                &image,
+                persistent.clone(),
+                quota_lock.clone(),
+                last_quota_check.clone(),
+            )
+            .await;
+            if image.stored.load(Ordering::Acquire) {
+                if let Some((store, _)) = &persistent {
+                    schedule_quota_scan(store.clone(), quota_lock, last_quota_check, false);
+                }
+            }
+            touch_recent(image, persistent);
+        });
     }
 }
 
-async fn persist(image: &Image, persistent: Persistent) {
+fn touch_recent(image: Arc<Image>, persistent: Persistent) {
+    let Some((store, path)) = persistent else {
+        return;
+    };
+    if !image.stored.load(Ordering::Acquire) {
+        return;
+    }
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+        .max(1);
+    let last = image.last_access.load(Ordering::Acquire);
+    if last != 0 && now.saturating_sub(last) < ACCESS_INTERVAL.as_secs() {
+        return;
+    }
+    if image
+        .last_access
+        .compare_exchange(last, now, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+    tokio::spawn(async move {
+        let marker = access_path(&path);
+        match tokio::time::timeout(
+            STORE_TIMEOUT,
+            store.put(&marker, Vec::new(), "application/octet-stream"),
+        )
+        .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(_)) | Err(_) => {
+                image.last_access.store(0, Ordering::Release);
+                tracing::warn!("search preview access timestamp update failed");
+            }
+        }
+    });
+}
+
+fn access_path(path: &str) -> String {
+    format!("search-preview-lru/{}.access", digest(path))
+}
+
+async fn persist(
+    image: &Image,
+    persistent: Persistent,
+    quota_lock: Arc<tokio::sync::Mutex<()>>,
+    last_quota_check: Arc<AtomicU64>,
+) {
     let Ok(_turn) = image.persistence.try_lock() else {
         return;
     };
     if let Some((store, path)) = persistent {
         if !image.stored.load(Ordering::Acquire) {
-            match tokio::time::timeout(STORE_TIMEOUT, async {
-                if store
-                    .put_new(&path, image.body.clone(), "image/png")
-                    .await?
-                    || read(store.as_ref(), &path).await.is_some()
-                    || store
-                        .put_new(&path, image.body.clone(), "image/png")
-                        .await?
-                {
-                    image.stored.store(true, Ordering::Release);
-                } else {
-                    tracing::warn!("search preview persistence conflict remains unresolved");
-                }
-                Ok::<_, usnm_store::StoreError>(())
-            })
+            match tokio::time::timeout(
+                STORE_TIMEOUT,
+                store.put_new(&path, image.body.clone(), "image/png"),
+            )
             .await
             {
-                Ok(Ok(())) => {}
+                Ok(Ok(true)) => {
+                    image.stored.store(true, Ordering::Release);
+                    schedule_quota_scan(
+                        store.clone(),
+                        quota_lock.clone(),
+                        last_quota_check.clone(),
+                        true,
+                    );
+                }
+                Ok(Ok(false)) if read(store.as_ref(), &path).await.is_some() => {
+                    image.stored.store(true, Ordering::Release);
+                }
+                Ok(Ok(false)) => {
+                    match tokio::time::timeout(
+                        STORE_TIMEOUT,
+                        store.put_new(&path, image.body.clone(), "image/png"),
+                    )
+                    .await
+                    {
+                        Ok(Ok(true)) => {
+                            image.stored.store(true, Ordering::Release);
+                            schedule_quota_scan(
+                                store.clone(),
+                                quota_lock.clone(),
+                                last_quota_check.clone(),
+                                true,
+                            );
+                        }
+                        Ok(Ok(false)) => {
+                            tracing::warn!(
+                                "search preview persistence conflict remains unresolved"
+                            );
+                        }
+                        Ok(Err(_)) => {
+                            tracing::warn!("search preview persistence retry failed");
+                        }
+                        Err(_) => tracing::warn!("search preview persistence retry timed out"),
+                    }
+                }
                 // Store errors can contain the query-derived filename.
                 Ok(Err(_)) => {
                     tracing::warn!("search preview persistence failed");
                 }
                 Err(_) => tracing::warn!("search preview persistence timed out"),
             }
+        }
+    }
+}
+
+async fn enforce_quota(
+    store: Arc<dyn ObjectStore>,
+    local_lock: Arc<tokio::sync::Mutex<()>>,
+    quota: u64,
+) {
+    let _local = local_lock.lock().await;
+    let lock = loop {
+        match acquire_eviction_lock(store.as_ref()).await {
+            Ok(Some(lock)) => break lock,
+            Ok(None) => tokio::time::sleep(Duration::from_secs(5)).await,
+            Err(_) => {
+                tracing::warn!("search preview quota lock failed");
+                return;
+            }
+        }
+    };
+    let result = tokio::time::timeout(
+        Duration::from_secs(9 * 60),
+        evict_lru(store.as_ref(), quota),
+    )
+    .await;
+    match result {
+        Ok(Ok(evicted)) if evicted > 0 => {
+            tracing::info!(
+                bytes = evicted,
+                "evicted least-recently-used search previews"
+            )
+        }
+        Ok(Ok(_)) => {}
+        Ok(Err(_)) => tracing::warn!("search preview quota scan failed"),
+        Err(_) => tracing::warn!("search preview quota scan timed out"),
+    }
+    if store
+        .delete_if_match(EVICTION_LOCK, &lock.etag)
+        .await
+        .is_err()
+    {
+        tracing::warn!("search preview quota lock release failed");
+    }
+}
+
+async fn acquire_eviction_lock(
+    store: &dyn ObjectStore,
+) -> Result<Option<usnm_store::ObjectInfo>, usnm_store::StoreError> {
+    static TOKEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    for _ in 0..3 {
+        let token = format!(
+            "{}-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos(),
+            TOKEN.fetch_add(1, Ordering::Relaxed),
+        );
+        if store
+            .put_new(EVICTION_LOCK, token.into_bytes(), "text/plain")
+            .await?
+        {
+            let lock = store
+                .list_info("search-preview-quota-lock")
+                .await?
+                .into_iter()
+                .find(|object| object.path == EVICTION_LOCK);
+            return Ok(lock);
+        }
+        let Some(lock) = store
+            .list_info("search-preview-quota-lock")
+            .await?
+            .into_iter()
+            .find(|object| object.path == EVICTION_LOCK)
+        else {
+            continue;
+        };
+        let last_modified = lock.modified.or(lock.created);
+        if last_modified.is_some_and(|time| {
+            SystemTime::now().duration_since(time).unwrap_or_default() > EVICTION_LOCK_STALE
+        }) {
+            store.delete_if_match(EVICTION_LOCK, &lock.etag).await?;
+            continue;
+        }
+        return Ok(None);
+    }
+    Ok(None)
+}
+
+async fn evict_lru(store: &dyn ObjectStore, quota: u64) -> Result<u64, usnm_store::StoreError> {
+    let mut images = store
+        .list_info("search-preview")
+        .await?
+        .into_iter()
+        .filter(|object| {
+            object.path.starts_with("search-preview/") && object.path.ends_with(".png")
+        })
+        .collect::<Vec<_>>();
+    let markers = store.list_info("search-preview-lru").await?;
+    let by_path = markers
+        .into_iter()
+        .map(|object| (object.path.clone(), object))
+        .collect::<HashMap<_, _>>();
+    let active_markers = images
+        .iter()
+        .map(|image| access_path(&image.path))
+        .collect::<std::collections::HashSet<_>>();
+    let mut used = images
+        .iter()
+        .fold(0_u64, |total, image| total.saturating_add(image.size));
+    if used <= quota {
+        cleanup_orphan_markers(store, &by_path, &active_markers).await;
+        return Ok(0);
+    }
+    images.sort_by_key(|image| {
+        by_path
+            .get(&access_path(&image.path))
+            .and_then(|marker| marker.modified.or(marker.created))
+            .or(image.modified)
+            .or(image.created)
+            .unwrap_or(UNIX_EPOCH)
+    });
+    let candidates = images
+        .into_iter()
+        .map(|image| {
+            let marker = by_path.get(&access_path(&image.path)).cloned();
+            (image, marker)
+        })
+        .collect::<Vec<_>>();
+    let mut evicted = 0_u64;
+    let mut candidates = candidates.into_iter();
+    while used > quota {
+        let excess = used - quota;
+        let mut batch = Vec::new();
+        let mut selected_bytes = 0_u64;
+        while batch.len() < DELETE_CONCURRENCY && selected_bytes < excess {
+            let Some(candidate) = candidates.next() else {
+                break;
+            };
+            selected_bytes = selected_bytes.saturating_add(candidate.0.size);
+            batch.push(candidate);
+        }
+        if batch.is_empty() {
+            break;
+        }
+        let results = stream::iter(batch.iter().cloned())
+            .map(|(image, marker)| async move {
+                let deleted = store.delete_if_match(&image.path, &image.etag).await?;
+                if deleted {
+                    if let Some(marker) = marker {
+                        if store
+                            .delete_if_match(&marker.path, &marker.etag)
+                            .await
+                            .is_err()
+                        {
+                            tracing::warn!("search preview access marker eviction failed");
+                        }
+                    }
+                    Ok::<_, usnm_store::StoreError>((deleted, image.size))
+                } else {
+                    Ok((false, 0))
+                }
+            })
+            .buffer_unordered(DELETE_CONCURRENCY)
+            .collect::<Vec<_>>()
+            .await;
+        for result in results {
+            match result {
+                Ok((true, size)) => {
+                    used = used.saturating_sub(size);
+                    evicted = evicted.saturating_add(size);
+                }
+                Ok((false, _)) => {}
+                Err(_) => tracing::warn!("search preview eviction delete failed"),
+            }
+        }
+    }
+    cleanup_orphan_markers(store, &by_path, &active_markers).await;
+    if used > quota {
+        tracing::warn!(bytes = used, "search preview byte quota remains exceeded");
+    }
+    Ok(evicted)
+}
+
+async fn cleanup_orphan_markers(
+    store: &dyn ObjectStore,
+    markers: &HashMap<String, usnm_store::ObjectInfo>,
+    active: &std::collections::HashSet<String>,
+) {
+    for marker in markers
+        .values()
+        .filter(|marker| marker.path.ends_with(".access") && !active.contains(&marker.path))
+    {
+        if store
+            .delete_if_match(&marker.path, &marker.etag)
+            .await
+            .is_err()
+        {
+            tracing::warn!("orphaned search preview access marker cleanup failed");
         }
     }
 }
@@ -328,6 +711,84 @@ mod tests {
         assert!(restarted.lookup("missing.png", None).await.is_none());
     }
 
+    #[tokio::test]
+    async fn quota_evicts_oldest_preview_first_and_preserves_other_response_objects() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = usnm_store::LocalStore::new(dir.path());
+        let old = "search-preview/old-rev/old-search.png";
+        let recent = "search-preview/new-rev/new-search.png";
+        let response = "previews/shared/search-response.json";
+        let body = image();
+        store.put(old, body.clone(), "image/png").await.unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        store.put(recent, body.clone(), "image/png").await.unwrap();
+        store
+            .put(response, b"preserve".to_vec(), "application/json")
+            .await
+            .unwrap();
+        let old_access = access_path(old);
+        let recent_access = access_path(recent);
+        store
+            .put(&old_access, Vec::new(), "application/octet-stream")
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        store
+            .put(&recent_access, Vec::new(), "application/octet-stream")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            evict_lru(&store, body.len() as u64).await.unwrap(),
+            body.len() as u64
+        );
+        assert!(store.get(old).await.unwrap().is_none());
+        assert_eq!(store.get(recent).await.unwrap().unwrap(), body);
+        assert_eq!(store.get(response).await.unwrap().unwrap(), b"preserve");
+        assert!(store.get(&old_access).await.unwrap().is_none());
+        assert!(store.get(&recent_access).await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn persistent_reads_record_hashed_access_markers() {
+        let dir = tempfile::tempdir().unwrap();
+        let store: Arc<dyn ObjectStore> = Arc::new(usnm_store::LocalStore::new(dir.path()));
+        let path = "search-preview/0123456789abcdef/quiet-words.png";
+        let body = image();
+        store.put(path, body.clone(), "image/png").await.unwrap();
+        let service = Service::default();
+
+        assert_eq!(
+            service
+                .lookup(path, Some((store.clone(), path.to_owned())))
+                .await
+                .unwrap(),
+            body
+        );
+        let marker = access_path(path);
+        tokio::time::timeout(STORE_TIMEOUT, async {
+            while store.get(&marker).await.unwrap().is_none() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(!marker.contains("quiet-words"));
+    }
+
+    #[tokio::test]
+    async fn shared_quota_eviction_lock_serializes_processes() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = usnm_store::LocalStore::new(dir.path());
+        let first = acquire_eviction_lock(&store).await.unwrap().unwrap();
+        assert!(acquire_eviction_lock(&store).await.unwrap().is_none());
+        assert!(store
+            .delete_if_match(EVICTION_LOCK, &first.etag)
+            .await
+            .unwrap());
+        assert!(acquire_eviction_lock(&store).await.unwrap().is_some());
+    }
+
     #[derive(Debug)]
     struct SlowStore {
         inner: usnm_store::LocalStore,
@@ -347,9 +808,11 @@ mod tests {
             body: Vec<u8>,
             content_type: &str,
         ) -> Result<bool, usnm_store::StoreError> {
-            self.writes.fetch_add(1, Ordering::SeqCst);
-            self.started.notify_one();
-            self.release.notified().await;
+            if path.ends_with(".png") {
+                self.writes.fetch_add(1, Ordering::SeqCst);
+                self.started.notify_one();
+                self.release.notified().await;
+            }
             self.inner.put_new(path, body, content_type).await
         }
         async fn put(
