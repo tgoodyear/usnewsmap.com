@@ -156,6 +156,26 @@ test("curated searches expose top-city results and homepage links without JavaSc
   }
 });
 
+test("sitemap searches remain readable when an extension blocks scripts", async ({ page }) => {
+  test.skip(!withApi, "the API renders the search landing page");
+  // As uBlock Origin's "Disable JavaScript": `@media (scripting)` stays enabled.
+  await page.route("**/*", async (route) => {
+    const request = route.request();
+    if (request.resourceType() === "script") return route.abort();
+    if (!request.isNavigationRequest()) return route.continue();
+    const response = await route.fetch();
+    await route.fulfill({
+      response,
+      headers: { ...response.headers(), "content-security-policy": "script-src http: https:" },
+    });
+  });
+  await page.goto("/examples/cross-of-gold");
+  const landing = page.locator("#search-landing");
+  await expect(landing).toBeVisible();
+  await expect(landing.getByRole("heading", { level: 1 })).toHaveText("Cross of Gold, 1896");
+  await expect(landing.getByRole("region", { name: "Sample results" }).locator("ol > li")).toHaveCount(10);
+});
+
 test("sitemap searches remain readable with JavaScript enabled and API access blocked", async ({ page }) => {
   test.skip(!withApi, "the API renders the search landing page");
   const apiRequests: string[] = [];
