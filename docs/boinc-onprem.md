@@ -256,7 +256,9 @@ or enable the feed monitor's opt-in
 [`feeder_allocation` check](boinc/boundaries-and-monitoring.md#live-feed-health-1441),
 which runs the same command and alerts through the BOINC feed alerts.
 An unreachable container, old feeder, stale snapshot or failed verified-TLS query
-is unknown, not success. The image's independent five-minute JSON event is useful
+is unknown, not success. So is `feeder_restart_hold`: the server's supervisor loop
+stopped restarting a feeder that kept stopping
+([The loop's restart bound](boinc/feeder-refresh.md#the-loops-restart-bound)). The image's independent five-minute JSON event is useful
 for diagnosis. See [Allocation drift detection](../contrib-compute/docs/app-release.md#allocation-drift-detection)
 for the scope and limitations, and [Feeder-only refresh](boinc/feeder-refresh.md) for the
 recovery procedure.
