@@ -315,8 +315,8 @@ back: `collect` copies its spool files and a `reason.json` to
 and exits non-zero. Once the host passes a gold unit, rebuild `trust.json` and
 run `collect` again. Without `--trust`, `collect` publishes as before;
 production collection must use the existing hand-off `collect` step: it always
-requires trust and a canonical host for successful work, refusing a missing list
-or host. `spool-out` already queries
+requires trust, refusing a missing list, and a canonical host for anything but a
+held scope's result (below), which collect refuses without one. `spool-out` already queries
 `workunit.canonical_resultid -> result.hostid`; the hand-off rejects an operator
 override conflicting with that host. Only terminal failure markers bypass trust
 to mark failure, never to publish. The host ID written by the Gold worker is a
@@ -326,10 +326,14 @@ not an identity check.
 
 A scoped policy can be **held** (#835): a `hold` field gives the reason, and
 that scope lists no hosts. `collect --trust` keeps a result of the held
-`(language, profile, psm, dpi)` scope the same way, whatever host returned it:
-its spool files and `reason.json` go to `<root>/quarantine/<job>/` and nothing
-is published. It then marks the job's record `held`, prints `kept, not
-published: ...` and exits 0, so the feed doesn't stop at it. `claim finish`
+`(language, profile, psm, dpi)` scope the same way, whatever host returned it
+or with none: nothing is published, and its three files and `reason.json` go to
+`<root>/quarantine/<job>/`. First it checks the result as publication would
+(complete, within the size limits, the job's own by digest, valid ALTO); one
+that fails is an ordinary collect error and nothing is kept. It then marks the job's record `held`, prints `kept, not
+published: ...` and exits 0, so the feed doesn't stop at it. The hand-off step writes the kept files back
+to `dispatch/quarantine/<job>/` before the journal, so a journal marked `held`
+never lands without them. `claim finish`
 answers `Held` and leaves the page's queue message hidden until its lease runs
 out. The controller counts such a job as settled and reports it as `scope_held`
 ([batch scheduler](../boinc-batch-scheduler.md#the-claim)). On a held scope,

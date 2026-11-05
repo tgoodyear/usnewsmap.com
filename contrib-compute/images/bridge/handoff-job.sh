@@ -383,12 +383,19 @@ case "${HANDOFF_STEP:-}" in
         [ "$host" = unknown ] || [ "$host" = "$HOST_ID" ] || fail "HOST_ID $HOST_ID is not the server's $host"
         host=$HOST_ID
       fi
-      [ "$host" != unknown ] || fail "the server recorded no host id; read it from the ops pages and pass HOST_ID"
       [ -f "$work/trust.json" ] || fail "no gold/trust.json in the hand-off container (run spool-out after gold-trust)"
+      # With no host id, collect still keeps a held scope's result (#835), which needs none, and
+      # refuses any other.
+      host_args=()
+      [ "$host" = unknown ] || host_args=(--host-id "$host")
       usnm-boinc collect --root "$root" --spool "$work/spool" --job "$JOB_ID" \
-        --curated-url "$CURATED_URL" --out-url "$OUT_URL" --trust "$work/trust.json" --host-id "$host" || rc=$?
+        --curated-url "$CURATED_URL" --out-url "$OUT_URL" --trust "$work/trust.json" ${host_args[@]+"${host_args[@]}"} || rc=$?
+      [ "$rc" -eq 0 ] || [ "$host" != unknown ] ||
+        log "the server recorded no host id; read it from the ops pages and pass HOST_ID"
     fi
-    put_back "jobs/$JOB_ID" "quarantine/$JOB_ID"
+    # The kept result goes up before the journal: a journal marked held (#835) is settled and
+    # not collected again, so it must not land without what it kept.
+    put_back "quarantine/$JOB_ID" "jobs/$JOB_ID"
     if [ "$rc" -eq 0 ] && [ -n "${QUEUE_URL:-}" ]; then
       # A job from the work queues is done: take its message off. NotQueueFed, NoClaim and
       # Already are all fine; an error only leaves the message to come back.

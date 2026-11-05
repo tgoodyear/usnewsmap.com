@@ -1713,6 +1713,22 @@ async fn a_held_scope_keeps_german_results_until_a_calibration_lifts_it() {
     };
     let reason =
         "scope deu/frak2021 is held from publication: German pages stay out of publishing until calibrated";
+    // Marked held, a job isn't collected again: an incomplete result, or one that isn't the
+    // job's own, fails as publication would, and leaves nothing kept or marked.
+    let layout = spool.join(format!("{}__file_layout.xml", record.job.workunit()));
+    let text = spool.join(format!("{}__file_text.txt", record.job.workunit()));
+    let good_text = std::fs::read(&text).unwrap();
+    std::fs::rename(&layout, layout.with_extension("aside")).unwrap();
+    assert!(run(held.clone(), Some(42)).await.is_err());
+    std::fs::rename(layout.with_extension("aside"), &layout).unwrap();
+    std::fs::write(&text, [good_text.as_slice(), b" tampered"].concat()).unwrap();
+    assert!(run(held.clone(), Some(42)).await.is_err());
+    std::fs::write(&text, &good_text).unwrap();
+    assert!(usnm_boinc::load(&fx.options.root, &id)
+        .unwrap()
+        .held
+        .is_none());
+    assert!(!quarantine_dir(&fx.options.root, &id).exists());
     for host in [Some(42), Some(77), None] {
         assert_eq!(
             run(held.clone(), host).await.unwrap(),
@@ -1726,6 +1742,7 @@ async fn a_held_scope_keeps_german_results_until_a_calibration_lifts_it() {
     for kept in ["result.json", "text.txt", "layout.xml"] {
         assert!(q.join(kept).is_file(), "{kept}");
     }
+    assert_eq!(std::fs::read(q.join("text.txt")).unwrap(), good_text);
     let why: serde_json::Value =
         serde_json::from_slice(&std::fs::read(q.join("reason.json")).unwrap()).unwrap();
     assert_eq!(why["reason"], reason);

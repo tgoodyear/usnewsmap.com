@@ -1,6 +1,6 @@
 use super::{PolicyView, Scope, Trust};
 use crate::{atomic, load, save, Lock, Stage};
-use anyhow::bail;
+use anyhow::{bail, Context};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use usnm_store::ObjectStore;
@@ -239,9 +239,29 @@ pub async fn collect(
         || spool.join(format!("{wu}_no_output_files")).exists();
     if record.stage != Stage::Published && !terminal {
         if let Some(reason) = trust.scope_hold(&record.job) {
-            keep(root, spool, id, &record.job, host_id, &reason)?;
             let _lock = Lock::take(root)?;
             let mut record = load(root, id)?;
+            // Marked held, the job is settled and not collected again: so the result must be
+            // the complete one publication would check, and is kept before the mark is saved.
+            let file = |logical: &str| spool.join(format!("{wu}__file_{logical}"));
+            let checked = crate::checked_result(
+                root,
+                &record,
+                &file("result.json"),
+                &file("text.txt"),
+                &file("layout.xml"),
+            )
+            .context("a held scope's result is kept only when it is complete and the job's own")?;
+            let q = quarantine_dir(root, id);
+            std::fs::create_dir_all(&q)?;
+            for (logical, bytes) in [
+                ("result.json", &checked.result_bytes),
+                ("text.txt", &checked.text),
+                ("layout.xml", &checked.alto),
+            ] {
+                atomic(&q.join(logical), bytes)?;
+            }
+            write_reason(&q, id, &record.job, host_id, &reason)?;
             if record.held.as_deref() != Some(reason.as_str()) {
                 record.held = Some(reason.clone());
                 save(root, &record)?;
@@ -249,7 +269,15 @@ pub async fn collect(
             return Ok(Collected::Held(reason));
         }
         if let Some(reason) = trust.refuse_job(&record.job, host_id) {
-            keep(root, spool, id, &record.job, host_id, &reason)?;
+            let q = quarantine_dir(root, id);
+            std::fs::create_dir_all(&q)?;
+            for logical in ["result.json", "text.txt", "layout.xml"] {
+                let f = spool.join(format!("{wu}__file_{logical}"));
+                if f.is_file() {
+                    std::fs::copy(&f, q.join(logical))?;
+                }
+            }
+            write_reason(&q, id, &record.job, host_id, &reason)?;
             bail!("held back, not published: {reason}");
         }
     }
@@ -257,24 +285,14 @@ pub async fn collect(
     Ok(Collected::Published)
 }
 
-/// Copies a held-back result's spool files and the reason to `<root>/quarantine/<job>/`.
-fn keep(
-    root: &Path,
-    spool: &Path,
+/// Writes why a result was held back, beside its files in `<root>/quarantine/<job>/`.
+fn write_reason(
+    q: &Path,
     id: &str,
     job: &usnm_ocr_contract::boinc::Job,
     host_id: Option<u64>,
     reason: &str,
 ) -> anyhow::Result<()> {
-    let wu = job.workunit();
-    let q = quarantine_dir(root, id);
-    std::fs::create_dir_all(&q)?;
-    for logical in ["result.json", "text.txt", "layout.xml"] {
-        let f = spool.join(format!("{wu}__file_{logical}"));
-        if f.is_file() {
-            std::fs::copy(&f, q.join(logical))?;
-        }
-    }
     atomic(
         &q.join("reason.json"),
         &serde_json::to_vec_pretty(&serde_json::json!({
@@ -283,7 +301,7 @@ fn keep(
             "host_id": host_id,
             "job": id,
             "reason": reason,
-            "workunit": wu,
+            "workunit": job.workunit(),
         }))?,
     )
 }
