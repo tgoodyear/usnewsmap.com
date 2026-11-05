@@ -42,6 +42,25 @@ impl Service {
         self.renders.available_permits() == 2
     }
 
+    /// Read a published image without admitting a new render.
+    pub(super) async fn lookup(&self, key: &str, persistent: Persistent) -> Option<Vec<u8>> {
+        if let Some(image) = self.images.get(key).await {
+            return Some(image.body.clone());
+        }
+        let (store, path) = persistent?;
+        let body = read(store.as_ref(), &path).await?;
+        self.images
+            .insert(
+                key.to_owned(),
+                Arc::new(Image {
+                    body: body.clone(),
+                    stored: AtomicBool::new(true),
+                }),
+            )
+            .await;
+        Some(body)
+    }
+
     pub(super) async fn get(
         &self,
         key: String,
@@ -49,11 +68,6 @@ impl Service {
         background: bool,
         render: impl Future<Output = Result<Vec<u8>, RenderError>>,
     ) -> Result<Vec<u8>, Arc<RenderError>> {
-        if !background {
-            if let Some(image) = self.images.get(&key).await {
-                return Ok(image.body.clone());
-            }
-        }
         let image = self
             .images
             .try_get_with(key, async {
@@ -96,17 +110,18 @@ impl Service {
                     {
                         image.stored.store(true, Ordering::Release);
                     } else {
-                        tracing::warn!("example preview persistence conflict remains unresolved");
+                        tracing::warn!("search preview persistence conflict remains unresolved");
                     }
                     Ok::<_, usnm_store::StoreError>(())
                 })
                 .await
                 {
                     Ok(Ok(())) => {}
-                    Ok(Err(error)) => {
-                        tracing::warn!(%error, "example preview persistence failed");
+                    // Store errors can contain the query-derived filename.
+                    Ok(Err(_)) => {
+                        tracing::warn!("search preview persistence failed");
                     }
-                    Err(_) => tracing::warn!("example preview persistence timed out"),
+                    Err(_) => tracing::warn!("search preview persistence timed out"),
                 }
             }
         }
@@ -136,15 +151,15 @@ async fn remove_invalid(store: &dyn ObjectStore, path: &str) {
                     .is_some_and(|body| !valid(&body))
             };
             if invalid && !store.delete_if_match(path, &object.etag).await? {
-                tracing::warn!("invalid example preview changed before removal");
+                tracing::warn!("invalid search preview changed before removal");
             }
         }
         Ok::<_, usnm_store::StoreError>(())
     };
     match tokio::time::timeout(STORE_TIMEOUT, repair).await {
         Ok(Ok(())) => {}
-        Ok(Err(error)) => tracing::warn!(%error, "invalid example preview removal failed"),
-        Err(_) => tracing::warn!("invalid example preview removal timed out"),
+        Ok(Err(_)) => tracing::warn!("invalid search preview removal failed"),
+        Err(_) => tracing::warn!("invalid search preview removal timed out"),
     }
 }
 
@@ -169,23 +184,23 @@ async fn read(store: &dyn ObjectStore, path: &str) -> Option<Vec<u8>> {
             if valid(&body) {
                 Some(body)
             } else {
-                tracing::warn!("persisted example preview is invalid; ignoring it");
+                tracing::warn!("persisted search preview is invalid; ignoring it");
                 remove_invalid(store, path).await;
                 None
             }
         }
         Ok(Ok(None)) => None,
-        Ok(Err(error @ usnm_store::StoreError::TooLarge(_))) => {
-            tracing::warn!(%error, "persisted example preview is oversized");
+        Ok(Err(usnm_store::StoreError::TooLarge(_))) => {
+            tracing::warn!("persisted search preview is oversized");
             remove_invalid(store, path).await;
             None
         }
-        Ok(Err(error)) => {
-            tracing::warn!(%error, "example preview read failed");
+        Ok(Err(_)) => {
+            tracing::warn!("search preview read failed");
             None
         }
         Err(_) => {
-            tracing::warn!("example preview read timed out");
+            tracing::warn!("search preview read timed out");
             None
         }
     }
@@ -223,7 +238,7 @@ mod tests {
         tokio::fs::create_dir(&root).await.unwrap();
         assert_eq!(
             service
-                .get(path.to_owned(), persistent(), true, async {
+                .get(path.to_owned(), persistent(), false, async {
                     panic!("cached image must be reused")
                 })
                 .await
