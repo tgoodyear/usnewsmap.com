@@ -1203,7 +1203,7 @@ class Wiring(unittest.TestCase):
             "dashboard": (re.compile(r"usnm-ocr-dash|usnm_ocr_dash"), set()),
             "site": (re.compile(r"usnm-api/src/site\b|\bsite\.rs\b|join\([^)]*[\"']site[\"']"
                                 r"|/ *[\"']site[\"']"), set()),
-            "web": (re.compile(r"(?<![\w.-])web/(?!public/|src/examples\.json)"
+            "web": (re.compile(r"(?<![\w.-])web/(?!public\b|src/examples\.json)"
                                r"|join\([^)]*[\"']web[\"']|/ *[\"']web[\"']"), {
                 # The image job's smoke test, the end-to-end job's API, and a benchmark run by hand.
                 "scripts/ci/check-api-image.sh", "scripts/ci/start-api-fixtures.sh",
