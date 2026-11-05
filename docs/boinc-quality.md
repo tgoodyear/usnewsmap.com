@@ -649,7 +649,8 @@ no LoC request:
    (home-infra `scripts/lab/batch-ct-quality.sh --mounts`). It writes chunks of 500 pages
    (`--chunk-pages`, at most 500: a bundle's page limit) to its outbox and waits while
    `MAX_PENDING` (8) are unshipped; the shipper stages each chunk as one 500-page bundle
-   (`--bundle-size 500`), a few minutes of work for a host at 0.06–0.4 s a page. After a round that made chunks or
+   (`--bundle-size 500`), or two when its scans pass the bundle's 1 GiB `MAX_BUNDLE_SCAN`
+   (about 13% of chunks), a few minutes of work for a host at 0.06–0.4 s a page. After a round that made chunks or
    found the outbox full it checks every 15 seconds for room, so the outbox refills as the
    shipper takes chunks; only a round with nothing to feed sleeps the full `--every-secs`.
 2. **Shipper, pve-laptop itself** (`quality-ship.sh`, `usnm-quality-ship.timer`, 3 minutes

@@ -798,6 +798,28 @@ class FollowTest(unittest.TestCase):
                 self.assertEqual(calls[-2:], [("DELETE", "buffer/b/old.jp2"), ("DELETE", "buffer/b/new.jp2")])
                 self.assertEqual(feed.read_lines(str(deleted)), {"new"})
 
+    def test_a_kept_scan_whose_check_keeps_failing_does_not_hold_up_the_rest(self):
+        with tempfile.TemporaryDirectory() as d:
+            camp, done, deleted, kept = Path(d, "camp"), Path(d, "done.txt"), Path(d, "deleted.txt"), Path(d, "kept.tsv")
+            camp.mkdir()
+            done.write_text("")
+            kept.write_text("bad\tbuffer/b/bad.jp2\t10\t0.9\t1\ngone\tbuffer/b/gone.jp2\t10\t0.8\t2\n")
+            a = types.SimpleNamespace(scan_server="http://s", keep_bytes=100, keep_verify=1)
+            calls = []
+
+            def fake(req, timeout=0):
+                calls.append(req.full_url)
+                code = 503 if "bad" in req.full_url else 404
+                raise urllib.error.HTTPError(req.full_url, code, "", {}, None)
+
+            ship = lambda: feed.delete_shipped(a, str(camp), str(done), {"bad", "gone"}, str(deleted), str(kept))
+            with mock.patch.object(feed.urllib.request, "urlopen", fake), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                ship()
+                ship()
+            self.assertEqual(calls, ["http://s/scans/buffer/b/bad.jp2.json", "http://s/scans/buffer/b/gone.jp2.json"])
+            self.assertEqual(set(feed.read_kept(str(kept))), {"bad"})
+
     def test_an_unreadable_kept_line_is_weighed_again_not_fatal(self):
         with tempfile.TemporaryDirectory() as d:
             camp, done, deleted, kept = Path(d, "camp"), Path(d, "done.txt"), Path(d, "deleted.txt"), Path(d, "kept.tsv")

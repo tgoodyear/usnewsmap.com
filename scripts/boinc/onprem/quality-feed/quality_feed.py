@@ -674,7 +674,8 @@ def delete_shipped(a, camp_dir, done_path, quality_docs, deleted_path, kept_path
     `quality_docs`, which a missing list would empty) leaves the list without a DELETE, so it
     no longer counts against the budget; --keep-verify of the longest-unchecked are looked at a
     round. `deleted_path` lists every page this is done with, deleted or so released, so
-    neither is weighed again. Returns how many were deleted."""
+    neither is weighed again. Returns how many were DELETEd (or already gone); releases
+    aren't counted."""
     deleted = read_lines(deleted_path)
     # Retention needs kept.tsv to carry it from round to round: with no kept_path, none.
     budget = (getattr(a, "keep_bytes", 0) or 0) if kept_path else 0
@@ -701,7 +702,9 @@ def delete_shipped(a, camp_dir, done_path, quality_docs, deleted_path, kept_path
                 continue
             try:
                 there = scan_exists(a.scan_server, k[0])
-            except (urllib.error.URLError, OSError) as e:
+            except (urllib.error.URLError, OSError) as e:  # HTTPError (a 5xx) is a URLError
+                # Counted as checked, so a scan whose check keeps failing doesn't hold up the rest.
+                kept[doc] = (*k[:3], now)
                 log("kept scan check failed; next round", doc_id=doc, error=str(e)[:200])
                 break
             if there:
