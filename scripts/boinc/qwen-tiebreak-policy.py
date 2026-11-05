@@ -57,6 +57,8 @@ UNKNOWN_VARIABLE = 1193
 DUE_MARGIN = 300
 DEFAULT_POLICY = "/project/usnmocr/qwen/tiebreak-policy.json"
 LANGUAGE = re.compile(r"[a-z]{3}(\+[a-z]{3})*")
+# What a job id may be before it names a file in the download tree.
+JOB_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]*")
 
 
 def utc(text):
@@ -189,7 +191,7 @@ def read_window(db, args, fanout):
     for u in units:
         job_id = u["name"].removeprefix("usnm_qwen_")
         if job_id not in jobs:
-            job = read_job(download_path(args.download, f"{job_id}_qwen_json", fanout))
+            job = read_job(download_path(args.download, f"{job_id}_qwen_json", fanout)) if JOB_ID.fullmatch(job_id) else None
             jobs[job_id] = job_facts(job) if isinstance(job, dict) else {"language": None, "prompt_version": None}
         u.update(jobs[job_id])
     return now, units, results

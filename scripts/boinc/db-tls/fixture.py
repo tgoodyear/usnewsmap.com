@@ -32,6 +32,8 @@ def sql(query):
 def literal(value):
     if value is None:
         return "NULL"
+    if isinstance(value, bool):
+        return str(int(value))
     if isinstance(value, str):
         return "'" + value.replace("\\", "\\\\").replace("'", "''") + "'"
     return repr(value)

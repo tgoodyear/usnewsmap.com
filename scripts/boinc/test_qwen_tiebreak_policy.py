@@ -259,6 +259,13 @@ class Settle(unittest.TestCase):
         self.assertLess(sql.index("START TRANSACTION READ ONLY"), min(i for i, s in enumerate(sql) if "FROM workunit" in s))
         self.assertEqual(sql[-1], "ROLLBACK")
 
+    def test_a_unit_name_never_becomes_a_path_outside_the_download_tree(self):
+        self.db.units[1]["name"] = "usnm_qwen_../../outside"
+        with mock.patch.object(P, "read_job", wraps=P.read_job) as read:
+            report = self.run_main("plan", "--stop-tiebreakers", "yid:1", "--list-units")
+        self.assertEqual(report["settle"], [2])
+        self.assertEqual([c for c in read.call_args_list if ".." in str(c.args[0])], [])
+
     def test_plan_bounds_statements_on_mariadb_too(self):
         self.db.mariadb = True
         self.assertEqual(self.run_main("plan", "--stop-tiebreakers", "yid:1", "--list-units")["settle"], [1, 2])
