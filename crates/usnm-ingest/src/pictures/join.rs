@@ -44,7 +44,7 @@ use usnm_core::time::day_number;
 use usnm_store::ObjectStore;
 
 use super::url::scan_of_iiif_base;
-use super::{attempt_dir, finished, read_part, PartRef, Picture, PREFIX, SCHEMA_VERSION};
+use super::{attempt_dir, finished, read_scans, PartRef, ScanFields, PREFIX, SCHEMA_VERSION};
 use crate::dedup::load_counts;
 use crate::source::hex;
 use crate::state::{RunBatch, State};
@@ -66,28 +66,20 @@ struct ScanKey {
 }
 
 impl ScanKey {
-    /// The scan `p` names, moving its strings out rather than copying them
-    /// (a run reads millions of rows). `p` keeps them if it names no full
-    /// scan.
-    fn take(p: &mut Picture) -> Option<Self> {
-        if p.batch.is_none()
-            || p.lccn.is_none()
-            || p.reel.is_none()
-            || p.date.is_none()
-            || p.edition.is_none()
-            || p.frame.is_none()
-        {
+    /// The scan a row names, if it names all of one.
+    fn of(f: &ScanFields<'_>) -> Option<Self> {
+        let (Some(batch), Some(lccn), Some(reel), Some(date), Some(edition), Some(frame)) =
+            (f.batch, f.lccn, f.reel, f.date, f.edition, f.frame)
+        else {
             return None;
-        }
-        let mut lccn = p.lccn.take()?;
-        lccn.make_ascii_lowercase();
+        };
         Some(Self {
-            batch: p.batch.take()?,
-            lccn,
-            reel: p.reel.take()?,
-            date: p.date?,
-            edition: p.edition?,
-            frame: p.frame.take()?,
+            batch: batch.to_owned(),
+            lccn: lccn.to_ascii_lowercase(),
+            reel: reel.to_owned(),
+            date,
+            edition,
+            frame: frame.to_owned(),
         })
     }
 }
@@ -168,8 +160,20 @@ impl Placements {
     /// of the scan it was fetched from, as a scan fetcher's
     /// `index-{tag}.jsonl` and sidecars do. The same pair on many lines (one
     /// scan fetched at two resolutions) counts once.
+    ///
+    /// One pass holds each scan and page once, with the first page or scan
+    /// it was given; only a scan's later pages are kept apart, and those are
+    /// all conflicts.
     pub fn read(files: &[PathBuf]) -> anyhow::Result<Self> {
-        let mut pairs: HashSet<(ScanKey, String)> = HashSet::new();
+        let mut scans: HashMap<ScanKey, u32> = HashMap::new();
+        let mut docs: HashMap<String, u32> = HashMap::new();
+        // By scan: its first page, and whether it was given another.
+        let mut first_doc: Vec<u32> = Vec::new();
+        let mut scan_twice: Vec<bool> = Vec::new();
+        // By page: whether it was given a second scan.
+        let mut doc_twice: Vec<bool> = Vec::new();
+        // (scan, page) pairs past the scan's first page.
+        let mut later: HashSet<(u32, u32)> = HashSet::new();
         let mut summary = PlacementSummary::default();
         for path in files {
             let file = std::fs::File::open(path)
@@ -185,27 +189,55 @@ impl Placements {
                     Placed::Unreadable => summary.unreadable += 1,
                     Placed::Inconsistent => summary.inconsistent += 1,
                     Placed::Scan(scan, doc_id) => {
-                        pairs.insert((scan, doc_id));
+                        let next = u32::try_from(scans.len()).context("too many placements")?;
+                        let s = *scans.entry(scan).or_insert(next);
+                        let new_scan = s == next;
+                        let next = u32::try_from(docs.len()).context("too many placements")?;
+                        let d = *docs.entry(doc_id).or_insert(next);
+                        let new_doc = d == next;
+                        if new_scan {
+                            first_doc.push(d);
+                            scan_twice.push(false);
+                        }
+                        if new_doc {
+                            doc_twice.push(false);
+                        }
+                        let fresh = new_scan
+                            || (first_doc[s as usize] != d && {
+                                scan_twice[s as usize] = true;
+                                later.insert((s, d))
+                            });
+                        // A page seen before, in a pair not seen before, had
+                        // another scan.
+                        if fresh && !new_doc {
+                            doc_twice[d as usize] = true;
+                        }
                     }
                 }
             }
         }
-        let mut scans: HashMap<&ScanKey, u32> = HashMap::new();
-        let mut docs: HashMap<&str, u32> = HashMap::new();
-        for (scan, doc_id) in &pairs {
-            *scans.entry(scan).or_default() += 1;
-            *docs.entry(doc_id).or_default() += 1;
+        let mut doc_ids: Vec<Option<String>> = vec![None; docs.len()];
+        for (doc_id, d) in docs {
+            doc_ids[d as usize] = Some(doc_id);
         }
+        summary.conflicting = later.len() as u64;
         let mut out = Self::default();
-        for (scan, doc_id) in &pairs {
-            if scans[scan] > 1 || docs[doc_id.as_str()] > 1 {
+        scans.retain(|_, s| {
+            let d = first_doc[*s as usize] as usize;
+            // A page with one scan is taken by that scan alone.
+            let doc_id = (!scan_twice[*s as usize] && !doc_twice[d])
+                .then(|| doc_ids[d].take())
+                .flatten();
+            let Some(doc_id) = doc_id else {
                 summary.conflicting += 1;
-                continue;
-            }
-            let i = u32::try_from(out.doc_ids.len()).context("too many placements")?;
-            out.by_scan.insert(scan.clone(), i);
-            out.doc_ids.push(doc_id.clone());
-        }
+                return false;
+            };
+            // Fewer than `docs`, whose indices fit.
+            *s = out.doc_ids.len() as u32;
+            out.doc_ids.push(doc_id);
+            true
+        });
+        out.by_scan = scans;
         summary.placed = out.doc_ids.len() as u64;
         out.summary = summary;
         Ok(out)
@@ -367,14 +399,16 @@ pub struct JoinReport {
     pub batches: BTreeMap<String, Classes>,
 }
 
-/// A part's rows, once its size, SHA-256, rows and kind are what the
-/// provenance records.
+/// Give `on_row` each row's scan fields from a part, once the part's size and
+/// SHA-256 are what the provenance records. Reads only those columns. A part
+/// whose rows or kind are not what the provenance records stops the report.
 async fn verified_part(
     store: &dyn ObjectStore,
     dir: &str,
     part: &PartRef,
     kind: &str,
-) -> anyhow::Result<Vec<Picture>> {
+    mut on_row: impl FnMut(ScanFields<'_>),
+) -> anyhow::Result<()> {
     let path = &part.path;
     let inside = path
         .strip_prefix(dir)
@@ -399,24 +433,33 @@ async fn verified_part(
             part.sha256
         );
     }
-    let rows = read_part(Bytes::from(body)).with_context(|| format!("reading `{path}`"))?;
-    if rows.len() as u64 != part.rows {
+    let mut other_kind = false;
+    let rows = read_scans(Bytes::from(body), |f| {
+        if f.kind == kind {
+            on_row(f);
+        } else {
+            other_kind = true;
+        }
+        Ok(())
+    })
+    .with_context(|| format!("reading `{path}`"))?;
+    if rows != part.rows {
         bail!(
-            "`{path}` has {} rows; provenance.json records {}",
-            rows.len(),
+            "`{path}` has {rows} rows; provenance.json records {}",
             part.rows
         );
     }
-    if rows.iter().any(|r| r.kind != kind) {
+    if other_kind {
         bail!("`{path}` has rows of another kind than `{kind}`");
     }
-    Ok(rows)
+    Ok(())
 }
 
 /// The placements (indices into `doc_ids`) whose `doc_id` is a page of the
 /// curated version of the scan's batch. Reads the curated parts (without
 /// their text) of only the batches the placements' scans are in, when the
-/// scan is of the batch's curated version.
+/// scan is of the batch's curated version, and stops reading a batch's parts
+/// once all its pages are found.
 async fn on_curated_pages(
     curated: &dyn ObjectStore,
     batches: &[RunBatch],
@@ -438,14 +481,17 @@ async fn on_curated_pages(
         }
     }
     let mut found = HashSet::new();
-    for (b, pages) in wanted {
+    for (b, mut pages) in wanted {
         for path in &batches[b as usize].curated.parts {
+            if pages.is_empty() {
+                break;
+            }
             let bytes = curated
                 .get(path)
                 .await?
                 .with_context(|| format!("curated part `{path}` is missing"))?;
             crate::curated::read_part(bytes.into(), false, |row| {
-                if let Some(&i) = pages.get(&row.key) {
+                if let Some(i) = pages.remove(&row.key) {
                     found.insert(i);
                 }
                 Ok(())
@@ -497,8 +543,8 @@ pub async fn join(
         let mut join = KindJoin::default();
         let mut pages: HashSet<u32> = HashSet::new();
         for part in &summary.parts {
-            for mut row in verified_part(pictures, &dir, part, kind).await? {
-                let scan = ScanKey::take(&mut row);
+            verified_part(pictures, &dir, part, kind, |row| {
+                let scan = ScanKey::of(&row);
                 let placed = scan
                     .as_ref()
                     .and_then(|s| placements.by_scan.get(s).copied())
@@ -512,11 +558,7 @@ pub async fn join(
                 }
                 join.classes.add(class);
                 report.total.add(class);
-                let batch = scan
-                    .as_ref()
-                    .map(|s| s.batch.as_str())
-                    .or(row.batch.as_deref())
-                    .unwrap_or(NO_BATCH);
+                let batch = row.batch.unwrap_or(NO_BATCH);
                 match report.batches.get_mut(batch) {
                     Some(c) => c.add(class),
                     None => {
@@ -525,7 +567,8 @@ pub async fn join(
                         report.batches.insert(batch.to_owned(), c);
                     }
                 }
-            }
+            })
+            .await?;
         }
         if join.classes.rows != summary.rows {
             bail!(
@@ -603,7 +646,7 @@ pub async fn report(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pictures::{write_part, KindSummary, Provenance, Quality, PROVENANCE};
+    use crate::pictures::{write_part, KindSummary, Picture, Provenance, Quality, PROVENANCE};
     use crate::state::Curated;
     use crate::worker::Counts;
     use usnm_store::LocalStore;
@@ -949,6 +992,10 @@ mod tests {
                     "0006",
                     &doc(6).replace("seq-6", "seq-06"),
                 ),
+                // Conflicting pairs again count once.
+                line("ohi_alpha_ver01", a, d, "0001", &doc(1)),
+                line("ohi_alpha_ver01", a, d, "0001", &doc(2)),
+                line("ohi_alpha_ver01", a, d, "0004", &doc(3)),
             ]],
         );
         assert_eq!((places.summary.placed, places.summary.conflicting), (1, 6));
