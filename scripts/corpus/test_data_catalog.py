@@ -55,9 +55,12 @@ def event(event_id="e1", kind="artifact", when=T0, **kwargs):
         payload = {"stage_id": "boinc-ready", "label": "BOINC ready", "count": 19850,
                    "state": "observed", "detail": "Public tasks; underlying cache age unknown.",
                    "coverage": "BOINC task totals"}
+    elif kind == "boinc_results":
+        payload = {"app": "usnm_ocr", "status": "valid", "count": 1200, "window_hours": 336,
+                   "reported_hours": 72}
     value = {"schema_version": 1, "batch_id": "b1", "event_id": event_id, "kind": kind,
              "source": "inventory", "observed_at": when,
-             "page_id": None if kind == "stage" else PAGE, "payload": payload}
+             "page_id": None if kind in ("stage", "boinc_results") else PAGE, "payload": payload}
     value.update(kwargs)
     return value
 
@@ -215,6 +218,81 @@ class CatalogTests(unittest.TestCase):
     def test_refresh_requires_some_known_hour(self):
         with self.assertRaises(c.CatalogError):
             self.refresh(self.throughput())
+
+    def boinc_history(self):
+        path = self.work / "throughput.json"
+        shutil.copyfile(ROOT / "scripts/corpus/fixtures/data_catalog/throughput-boinc.json", path)
+        return path
+
+    def boinc_results(self):
+        items = c.query(self.db, "boinc_results", {}, 100)["items"]
+        return {(item["data"]["app"], item["data"]["status"]):
+                (item["data"]["count"], item["data"]["reported_hours"], item["observed_at"])
+                for item in items}
+
+    def test_refresh_counts_boinc_results_by_app_and_status(self):
+        catalog = self.refresh(self.boinc_history())
+        end, before = "2026-11-01T18:00:00.000000000Z", "2026-11-01T17:00:00.000000000Z"
+        # Only complete hours count, so ocr_valid's 18:00 hour doesn't. Neither does an app the
+        # collector doesn't count, nor one with no known hour.
+        self.assertEqual(self.boinc_results(), {
+            ("usnm_ocr", "valid"): (316, 3, end), ("usnm_ocr", "inconclusive"): (4, 3, end),
+            ("usnm_ocr", "invalid"): (1, 3, end), ("usnm_ocr", "waiting"): (16, 3, end),
+            ("usnm_ocr", "error"): (3, 3, end), ("usnm_quality", "valid"): (16, 2, end),
+            ("usnm_quality", "inconclusive"): (0, 2, end), ("usnm_quality", "invalid"): (1, 2, end),
+            ("usnm_quality", "waiting"): (2, 1, before), ("usnm_quality", "error"): (0, 2, end)})
+        item = c.query(self.db, "boinc_results", {"status": "waiting"})["items"][0]
+        self.assertEqual((item["source"], item["data"]["window_hours"]), ("throughput-live", 336))
+        # The dashboard's parser rejects unknown snapshot fields, so the counts stay out of it.
+        self.assertEqual(set(catalog), {"schema_version", "observed_at", "generated_at", "producer",
+                                        "coverage", "stages", "runs", "artifacts", "issues"})
+        self.assertEqual(next(stage["count"] for stage in catalog["stages"]
+                              if stage["id"] == "live_validated"), 158)
+
+    def test_an_unchanged_boinc_count_adds_no_event_and_a_recount_wins(self):
+        path = self.boinc_history()
+        self.refresh(path)
+        with mock.patch.object(c, "now", return_value="2026-11-01T19:05:00.000000Z"):
+            result = c.refresh_live(self.db, path, self.work / "evidence", self.work / "catalog.json")
+        self.assertEqual(result["inserted"], 0)
+        # The collector recounts recent hours: waiting results validate later.
+        history = json.loads(path.read_text())
+        history["series"]["ocr_waiting"]["values"][2] = 0.0
+        history["series"]["ocr_valid"]["values"][2] = 113.0
+        path.write_text(json.dumps(history))
+        self.refresh(path, "2026-11-01T19:15:00.000000Z")
+        counts = self.boinc_results()
+        self.assertEqual((counts[("usnm_ocr", "waiting")][0], counts[("usnm_ocr", "valid")][0]), (4, 328))
+        self.assertEqual(counts[("usnm_quality", "valid")][0], 16)
+
+    def test_boinc_result_counts_are_validated(self):
+        good = event("r1", "boinc_results")
+        c.validate_event(good)
+        for change in ({"page_id": PAGE}, {"payload": dict(good["payload"], status="success")},
+                       {"payload": dict(good["payload"], count=-1)},
+                       {"payload": dict(good["payload"], count=1.5)},
+                       {"payload": dict(good["payload"], app="usnm ocr")},
+                       {"payload": dict(good["payload"], reported_hours=337)},
+                       {"payload": dict(good["payload"], window_hours=0, reported_hours=0)},
+                       {"payload": dict(good["payload"], pages=10)}):
+            with self.assertRaises(c.CatalogError, msg=change):
+                c.validate_event(dict(good, **change))
+
+    def test_boinc_result_counts_are_capped(self):
+        def count(index, number=1):
+            return event(f"r{index}-{number}", "boinc_results",
+                         payload={"app": f"app_{index}", "status": "valid", "count": number,
+                                  "window_hours": 1, "reported_hours": 1})
+        self.ingest(*(count(index) for index in range(c.MAX_BOINC_RESULTS)))
+        with self.assertRaises(c.CatalogError):
+            self.ingest(count(c.MAX_BOINC_RESULTS))
+        self.ingest(count(0, 2))  # A recount of a known one still lands.
+        self.assertEqual(len(c.query(self.db, "boinc_results", {}, 100)["items"]), c.MAX_BOINC_RESULTS)
+
+    def test_query_command_lists_boinc_results(self):
+        self.ingest(event("r1", "boinc_results"))
+        result = self.cli("query", "boinc_results", "--status", "valid")
+        self.assertEqual([item["data"]["count"] for item in result["items"]], [1200])
 
     def test_refresh_command(self):
         path = self.throughput(ocr_import_pages=[1, 2, 3])

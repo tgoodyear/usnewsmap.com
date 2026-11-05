@@ -90,6 +90,13 @@ LIVE_STAGES = (
      "Pages of finished units loaded into the quality database, from the loaders' logs. "
      "Scores, not OCR acceptance."),
 )
+# The BOINC apps the throughput collector counts results for, by its series prefix, and the
+# statuses it sorts a returned result into (VALIDATE_NAMES in throughput-collect.py).
+LIVE_BOINC_APPS = {"ocr": "usnm_ocr", "quality": "usnm_quality", "qwen": "usnm_qwen"}
+BOINC_STATUSES = ("valid", "inconclusive", "invalid", "waiting", "error")
+BOINC_APP = re.compile(r"[a-z][a-z0-9_]{0,63}")
+MAX_BOINC_RESULTS = 64
+MAX_BOINC_WINDOW_HOURS = 8784  # A leap year.
 
 # RunRecord v1 in crates/usnm-ocr-contract/src/runs.rs, not an engine-run replacement.
 RUN_STR = set("""run_id doc_id node worker_version ocr_engine engine_id family
@@ -427,6 +434,8 @@ def validate_event(event):
         token(event[key])
     if event["kind"] == "stage":
         require(event["page_id"] is None, "aggregate stage page_id must be null")
+    elif event["kind"] == "boinc_results":
+        require(event["page_id"] is None, "BOINC result count page_id must be null")
     else:
         token(event["page_id"])
         require(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}:.+", event["page_id"]),
@@ -449,6 +458,17 @@ def validate_event(event):
         require(p["state"] != "unknown" or p["count"] is None,
                 "unknown aggregate must not claim a count")
         identity, invariant, data = [p["stage_id"]], "", dict(p)
+    elif kind == "boinc_results":
+        obj(p, ("app", "status", "count", "window_hours", "reported_hours"))
+        require(isinstance(p["app"], str) and BOINC_APP.fullmatch(p["app"]), "invalid BOINC app name")
+        require(p["status"] in BOINC_STATUSES, "invalid BOINC result status")
+        require(type(p["count"]) is int and 0 <= p["count"] <= 1000000000000,
+                "invalid BOINC result count")
+        require(type(p["window_hours"]) is int and 1 <= p["window_hours"] <= MAX_BOINC_WINDOW_HOURS,
+                "invalid BOINC result window")
+        require(type(p["reported_hours"]) is int and 1 <= p["reported_hours"] <= p["window_hours"],
+                "BOINC result reported hours must be within the window")
+        identity, invariant, data = [p["app"], p["status"]], "", dict(p)
     elif kind == "artifact":
         require(isinstance(p, dict), "artifact payload must be an object")
         obj({k: v for k, v in p.items() if k not in ("fetched_at", "bytes", "condition", "observed_sha256")},
@@ -690,6 +710,9 @@ def ingest(db, batch):
                 if event["kind"] == "stage" and not current:
                     require(conn.execute("SELECT count(*) FROM latest WHERE kind='stage'").fetchone()[0] < MAX_AGGREGATES,
                             "aggregate stage limit is 24")
+                if event["kind"] == "boinc_results" and not current:
+                    require(conn.execute("SELECT count(*) FROM latest WHERE kind='boinc_results'").fetchone()[0]
+                            < MAX_BOINC_RESULTS, "BOINC result count limit is 64")
                 conn.execute("INSERT INTO events VALUES(?,?,?,?,?)",
                              (event["source"], event["event_id"], event["event_hash"],
                               batch_id, line_number))
@@ -1153,7 +1176,8 @@ def rows(conn, kind, filters, limit=50, after=""):
 
 
 def query(db, kind, filters, limit=50, after=""):
-    require(kind in ("run", "execution", "artifact", "page_state", "stage"), "unsupported query kind")
+    require(kind in ("run", "execution", "artifact", "page_state", "stage", "boinc_results"),
+            "unsupported query kind")
     return bounded_query(db, lambda conn: rows(conn, kind, filters, limit, after))
 
 
@@ -1656,11 +1680,9 @@ def throughput_values(stored, name, first, last):
     return known
 
 
-def live_stage(stored, spec, at):
-    """One stage from the dashboard's hourly history, or None with no known hour to report: the
-    stage then keeps its last evidence and age. The evidence time is the end of the newest known
-    hour, never the time of this run."""
-    stage_id, label, source, names, form, detail = spec
+def live_window(stored, source, at):
+    """(first, last) complete hours of the window ending at `source`'s newest report, or None if it
+    hasn't reported."""
     state = stored["sources"].get(source)
     if state is None or state.get("observed_at") is None:
         return None
@@ -1668,7 +1690,18 @@ def live_stage(stored, spec, at):
     require(timestamp_ns(reported) <= timestamp_ns(at) + 60 * 10**9, "future throughput observation")
     # Collectors report complete hours, so the newest is the one before the report's.
     last = timestamp_ns(reported) // 10**9 // HOUR * HOUR - HOUR
-    first = last - (LIVE_WINDOW_HOURS - 1) * HOUR
+    return last - (LIVE_WINDOW_HOURS - 1) * HOUR, last
+
+
+def live_stage(stored, spec, at):
+    """One stage from the dashboard's hourly history, or None with no known hour to report: the
+    stage then keeps its last evidence and age. The evidence time is the end of the newest known
+    hour, never the time of this run."""
+    stage_id, label, source, names, form, detail = spec
+    window = live_window(stored, source, at)
+    if window is None:
+        return None
+    first, last = window
     series = [throughput_values(stored, name, first, last) for name in names]
     # Every series must cover an hour, so one that stopped can't pass as the whole stage.
     known = set.intersection(*(set(values) for values in series))
@@ -1700,6 +1733,45 @@ def live_event_id(db, stage_id, observed, payload, batch_id):
     return batch_id + "-" + digest([observed, payload])
 
 
+def live_boinc_results(stored, at):
+    """[(observed_at, payload)]: BOINC results the collector counted in the window, by app and
+    status. Each status is its own series, so each count has its own known hours and time, the
+    end of its newest known hour. Apps the collector doesn't count are not reported."""
+    window = live_window(stored, "boinc", at)
+    if window is None:
+        return []
+    first, last = window
+    found = []
+    for lane, app in LIVE_BOINC_APPS.items():
+        for status in BOINC_STATUSES:
+            known = throughput_values(stored, lane + "_" + status, first, last)
+            if known:
+                found.append((utc_text(max(known) + HOUR),
+                              {"app": app, "status": status, "count": round(sum(known.values())),
+                               "window_hours": LIVE_WINDOW_HOURS, "reported_hours": len(known)}))
+    return found
+
+
+def live_boinc_result_ids(db, found, batch_id):
+    """The event ids of `found`, chosen as live_event_id chooses a stage's, read in one
+    connection."""
+    if not found:
+        return []
+    conn = connect(db, writable=True)
+    try:
+        ids = []
+        for observed, payload in found:
+            current = conn.execute("SELECT event_id,observed_at,data FROM latest WHERE key=?", (digest(
+                [LIVE_SOURCE, "boinc_results", [payload["app"], payload["status"]]]),)).fetchone()
+            if current and current["observed_at"] == timestamp(observed) and load_json(current["data"]) == payload:
+                ids.append(current["event_id"])
+            else:
+                ids.append(batch_id + "-" + digest([observed, payload]))
+        return ids
+    finally:
+        conn.close()
+
+
 def refresh_live(db, throughput, evidence_dir, out):
     """One bounded refresh: the dashboard's kept counts -> one immutable batch -> snapshot.
     Besides the catalog it reads one local file: no Postgres or cloud access."""
@@ -1722,6 +1794,13 @@ def refresh_live(db, throughput, evidence_dir, out):
         event = {"schema_version": 1, "batch_id": batch_id,
                  "event_id": live_event_id(db, payload["stage_id"], observed, payload, batch_id),
                  "kind": "stage", "source": LIVE_SOURCE, "observed_at": observed,
+                 "page_id": None, "payload": payload}
+        validate_event(event)
+        events.append(canonical(event) + "\n")
+    results = live_boinc_results(stored, at)
+    for (observed, payload), event_id in zip(results, live_boinc_result_ids(db, results, batch_id)):
+        event = {"schema_version": 1, "batch_id": batch_id, "event_id": event_id,
+                 "kind": "boinc_results", "source": LIVE_SOURCE, "observed_at": observed,
                  "page_id": None, "payload": payload}
         validate_event(event)
         events.append(canonical(event) + "\n")
@@ -1881,6 +1960,12 @@ count <= 10^12; unknown requires null count, observed requires an integer.
 Aggregate stage_id must not shadow runs/artifacts or independent per-page stage names.
 Snapshot appends aggregate stages with source/time provenance in detail; duplicate
 stage_ids from independent sources receive @<source-hash> suffixes, never summed.
+kind=boinc_results has page_id:null and payload exactly:
+{"app":"usnm_ocr","status":"valid","count":1200,"window_hours":336,"reported_hours":72}.
+status: valid|inconclusive|invalid|waiting|error. count is BOINC result replicas the
+server received in the reported hours of the window, not pages or workunits. One row per
+source, app and status, at most 64. They are not in the snapshot; list them with
+query boinc_results.
 These statuses remain independent, per source and optional run_id; ok/selected NEVER
 implies accepted/imported/indexed. Event time, then lexicographic event_id breaks ties.
 Artifact hash/reference and run config/input are immutable within their identities.
@@ -1890,11 +1975,13 @@ Adapters provided: actual worker metadata capture JSON, RunRecord JSON projectio
 bounded local cached-scan index/stat, committed ocr-sync ImportRecord JSON
 (ingest-import), authoritative release selection/rejection/revocation decisions
 (ingest-release), public /v1/hits search provenance receipts (ingest-search),
-page provenance reconciliation (trace / query trace / GET /trace) and explicit
-artifact/page-state/stage evidence.
+page provenance reconciliation (trace / query trace / GET /trace), the dashboard's
+hourly throughput history (refresh-live: aggregate stages and BOINC result counts by
+app and status) and explicit artifact/page-state/stage evidence.
 NOT provided: Parquet/Blob inventory or queue/outcomes Parquet, ocr-local/pages import
-ledger, BOINC allocation journal, or live Quickwit index pointer mutation. Export those
-authoritative sources independently; do not label a local catalog ingest as page import.
+ledger, BOINC allocation journal, per-result BOINC run records, or live Quickwit index
+pointer mutation. Export those authoritative sources independently; do not label a
+local catalog ingest as page import.
 Missing adapters/sources produce unknown coverage (no fabricated BOINC-ready counts).
 Mere worker ok/selected or imported status NEVER implies accepted or published search
 inclusion. Release decisions keep accepted, rejected, revoked and unchanged_baseline
@@ -1985,7 +2072,8 @@ def main(argv=None):
     p.add_argument("--max-receipt-age-seconds", type=int, required=True)
     subs.add_parser("init", help="create an empty local catalog; snapshot coverage remains unknown")
     p = subs.add_parser("query", help="bounded page detail or filtered metadata (keyset pagination)")
-    p.add_argument("kind", choices=("page", "trace", "run", "execution", "artifact", "page_state", "stage", "missing"))
+    p.add_argument("kind", choices=("page", "trace", "run", "execution", "artifact", "page_state", "stage",
+                                    "boinc_results", "missing"))
     for name in ("page-id", "source", "engine", "status", "run-id"):
         p.add_argument("--" + name)
     p.add_argument("--limit", type=int, default=50)
