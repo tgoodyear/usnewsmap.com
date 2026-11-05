@@ -133,7 +133,14 @@ pub fn rights_list(text: &str) -> anyhow::Result<HashMap<(String, NaiveDate), St
         };
         let date = NaiveDate::parse_from_str(date, "%Y-%m-%d")
             .with_context(|| format!("rights line {}: {date}", i + 1))?;
-        out.insert((lccn.to_owned(), date), uri.trim().to_owned());
+        let uri = uri.trim();
+        if let Some(was) = out.insert((lccn.to_owned(), date), uri.to_owned()) {
+            ensure!(
+                was == uri,
+                "rights line {}: {lccn} {date} is already listed as {was}",
+                i + 1
+            );
+        }
     }
     Ok(out)
 }
@@ -271,6 +278,13 @@ pub async fn run(opts: Options, stop: watch::Receiver<bool>) -> anyhow::Result<S
     );
     std::fs::create_dir_all(opts.cache.join("lccn"))?;
     std::fs::create_dir_all(&opts.out)?;
+    // One catalogue asking GHN at a time on this cache: the `.new` and `.part` names are fixed.
+    let _lock = match &opts.fetch {
+        Some(_) => Some(crate::bulk::hold_lock(
+            &opts.cache.join(".ghn-catalog.lock"),
+        )?),
+        None => None,
+    };
     let hosts = &opts.hosts;
     let engine = match &opts.fetch {
         Some(f) => {

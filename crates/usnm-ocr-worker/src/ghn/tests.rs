@@ -375,6 +375,39 @@ async fn with_rights_only_noc_us_issues_are_selected() {
     assert!(c.read("issues.tsv").lines().nth(1).unwrap().ends_with(noc));
 }
 
+/// A rights list that says two things about one issue is refused, never read as its last line.
+#[test]
+fn a_rights_list_contradicting_itself_is_refused() {
+    let noc = "http://rightsstatements.org/vocab/NoC-US/1.0/";
+    let inc = "http://rightsstatements.org/vocab/InC/1.0/";
+    let same = format!("{LACK}\t1929-05-01\t{noc}\n{LACK}\t1929-05-01\t{noc}\n");
+    assert_eq!(catalog::rights_list(&same).unwrap().len(), 1);
+    let both = format!("{LACK}\t1929-05-01\t{noc}\n{LACK}\t1929-05-01\t{inc}\n");
+    let e = catalog::rights_list(&both).unwrap_err().to_string();
+    assert!(e.contains("line 2") && e.contains(noc), "{e}");
+}
+
+/// Two catalogues asking GHN with one cache would share its `.new` names, so the second
+/// stops before asking anything.
+#[tokio::test]
+async fn one_catalogue_at_a_time_asks_ghn_with_a_cache() {
+    let s = StandIn::start().await;
+    let h = hosts(&s);
+    let c = Cat::new(&h);
+    let held = crate::bulk::hold_lock(&c.cache().join(".ghn-catalog.lock")).unwrap();
+    let mut o = c.opts(&h);
+    o.fetch = Some(catalog::Fetch {
+        pacer: c.dir.path().join("ghn-pacer.json"),
+        policies: policies(),
+        max_titles: None,
+    });
+    let e = catalogue(o).await.unwrap_err().to_string();
+    assert!(e.contains("another run holds"), "{e}");
+    assert_eq!(s.hits_under("/"), 0);
+    catalogue(c.opts(&h)).await.unwrap();
+    drop(held);
+}
+
 #[tokio::test]
 async fn without_a_cache_or_leave_to_ask_the_catalogue_asks_nothing() {
     let h = Hosts::ghn();

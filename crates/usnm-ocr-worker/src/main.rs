@@ -594,7 +594,7 @@ enum Command {
         /// At most this many issues started this run.
         #[arg(long)]
         limit: Option<usize>,
-        /// Stop starting files after this many hours.
+        /// Stop starting files after this many hours; more than 23 is taken as 23.
         #[arg(long, env = "USNM_GHN_MAX_HOURS", default_value_t = 20.0)]
         max_hours: f64,
         /// Keep at least this many GB free on the output's filesystem.
