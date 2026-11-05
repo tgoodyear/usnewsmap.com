@@ -1215,8 +1215,10 @@ class Wiring(unittest.TestCase):
                 # An `include` adds a combination the selected list leaves out.
                 self.assertNotIn("include:", check.split("    steps:", 1)[0])
                 publish = job_text(text, "publish").split("    steps:", 1)[0]
-                values = re.findall(rf"(?m)^ +(?:- )?{key}: (.+)$", publish)
-                self.assertEqual([v.strip() for value in values for v in value.strip("[]").split(",")], every)
+                # `model: [2b, 8b]`, or one `- variant: cuda` line per include entry.
+                lines = re.findall(rf"(?m)^ +(?:- )?{key}: (.+)$", publish)
+                built = [item.strip() for line in lines for item in line.strip("[]").split(",")]
+                self.assertEqual(built, every)
         # The Surya check tags each variant as publish does.
         text = self.workflow("boinc-surya.yml")
         prefixes = dict(re.findall(r"- variant: (\w+)\n +tag_prefix: ([\w-]+)", job_text(text, "publish")))

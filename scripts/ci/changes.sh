@@ -537,13 +537,14 @@ fi >> "$out"
 # SELECTED. A pull request builds FIRST alone unless PART (what sets SECOND apart) changed or was
 # forced by the workflow; anything else builds both.
 variants() {
-  if [ "$2" = false ]; then
-    echo "$1=[]"
-  elif [ "${GITHUB_EVENT_NAME:-}" = pull_request ] && ! matches_built "${!3}" &&
-    [[ " $forced " != *" $3 "* ]]; then
-    printf '%s=["%s"]\n' "$1" "$4"
+  local output=$1 selected=$2 part=$3 first=$4 second=$5
+  if [ "$selected" = false ]; then
+    echo "$output=[]"
+  elif [ "${GITHUB_EVENT_NAME:-}" = pull_request ] && ! matches_built "${!part}" &&
+    [[ " $forced " != *" $part "* ]]; then
+    printf '%s=["%s"]\n' "$output" "$first"
   else
-    printf '%s=["%s","%s"]\n' "$1" "$4" "$5"
+    printf '%s=["%s","%s"]\n' "$output" "$first" "$second"
   fi
 }
 variants boinc_qwen_models "$selected_qwen" boinc_qwen_8b 2b 8b >> "$out"
