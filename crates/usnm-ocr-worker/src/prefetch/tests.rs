@@ -1311,6 +1311,38 @@ async fn a_jp2_cut_short_at_loc_is_listed_not_written_and_never_asked_again() {
     );
 }
 
+#[test]
+fn unreadable_source_truncated_lines_are_skipped_and_named() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("source-truncated.jsonl");
+    let doc = "sn1_1890-05-03_ed-1_seq-11";
+    let line = SourceTruncatedLine {
+        doc_id: doc.into(),
+        batch: "xx_test".into(),
+        batch_version: 1,
+        loc_url: "https://example.invalid/0011.jp2".into(),
+        md5: None,
+        sha256: sha256(CUT_SHORT_JP2),
+        bytes: 24,
+        reason: "cut short".into(),
+        at: "2026-11-05T00:00:00Z".into(),
+    };
+    // A blank line, a line that isn't JSON, and one cut off mid-write.
+    let text = format!(
+        "{}\n\nnot json\n{{\"doc_id\":\"sn1_1890-05-03_ed-1_seq-1",
+        serde_json::to_string(&line).unwrap()
+    );
+    std::fs::write(&path, text).unwrap();
+    let (keys, unreadable) = read_truncated(&path).unwrap();
+    assert_eq!(
+        keys.into_iter().collect::<Vec<_>>(),
+        [(doc.to_owned(), "xx_test".to_owned(), 1)]
+    );
+    assert_eq!(unreadable, [3, 4]);
+    let (keys, unreadable) = read_truncated(&dir.path().join("absent.jsonl")).unwrap();
+    assert!(keys.is_empty() && unreadable.is_empty());
+}
+
 #[tokio::test]
 async fn a_storage_item_error_cools_off_that_route_only() {
     let dir = tempfile::tempdir().unwrap();

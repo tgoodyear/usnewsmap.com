@@ -1049,18 +1049,31 @@ pub struct SourceTruncatedLine {
     pub at: String,
 }
 
-/// The pages `source-truncated.jsonl` lists; unreadable lines are skipped.
-fn read_truncated(path: &Path) -> anyhow::Result<std::collections::HashSet<TruncatedKey>> {
+/// The pages `source-truncated.jsonl` lists, and the numbers of its lines that
+/// can't be read, such as one cut off by a crash mid-write. Such a line's page
+/// is fetched, judged and listed again.
+fn read_truncated(
+    path: &Path,
+) -> anyhow::Result<(std::collections::HashSet<TruncatedKey>, Vec<usize>)> {
     let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
     };
-    Ok(text
-        .lines()
-        .filter_map(|l| serde_json::from_str::<SourceTruncatedLine>(l).ok())
-        .map(|l| (l.doc_id, l.batch, l.batch_version))
-        .collect())
+    let mut keys = std::collections::HashSet::new();
+    let mut unreadable = Vec::new();
+    for (n, l) in text.lines().enumerate() {
+        if l.trim().is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<SourceTruncatedLine>(l) {
+            Ok(l) => {
+                keys.insert((l.doc_id, l.batch, l.batch_version));
+            }
+            Err(_) => unreadable.push(n + 1),
+        }
+    }
+    Ok((keys, unreadable))
 }
 
 /// Fetch the manifest's scans until done, stopped by `stop`, or too many
@@ -1160,7 +1173,15 @@ pub async fn run(
     }
     let no_loc = no_loc_for(&opts.manifest, &opts.no_loc_prefixes);
     let truncated_path = opts.out.join("source-truncated.jsonl");
-    let truncated = read_truncated(&truncated_path)?;
+    let (truncated, unreadable) = read_truncated(&truncated_path)?;
+    if let Some(first) = unreadable.first() {
+        tracing::warn!(
+            path = %truncated_path.display(),
+            lines = unreadable.len(),
+            first_line = first,
+            "unreadable source-truncated lines skipped; their pages are fetched and judged again"
+        );
+    }
     let run = Arc::new(Run {
         loc,
         counts: Counts::default(),
