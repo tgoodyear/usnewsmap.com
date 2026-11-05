@@ -142,15 +142,48 @@ pub fn rewrite_crop_url(old: &str) -> Option<String> {
     OldCrop::parse(old).map(|c| c.tile_url())
 }
 
+/// Parse an IIIF base on tile.loc.gov into the batch directory and the scan
+/// it names:
+/// `{TILE_IIIF}service:ndnp:{awardee}:batch_{batch}:data:{lccn}:{reel…}:{issue}:{frame}`,
+/// the storage path of the JP2 with its slashes made colons, as
+/// `usnm-ocr-worker`'s `iiif_base` builds it and its scan sidecars and prefetch
+/// indexes record it. `None` for any other shape, or an awardee that isn't
+/// the batch name's first `_` token.
+pub fn scan_of_iiif_base(base: &str) -> Option<(String, Scan)> {
+    let id = base
+        .strip_prefix(TILE_IIIF)?
+        .strip_prefix("service:ndnp:")?;
+    // Awardee, batch, `data`, LCCN, one or two reel segments, issue, frame.
+    let mut segments = [""; 8];
+    let mut n = 0;
+    for segment in id.split(':') {
+        *segments.get_mut(n)? = segment;
+        n += 1;
+    }
+    let [awardee, batch, "data", rest @ .., frame] = &segments[..n] else {
+        return None;
+    };
+    let batch = batch.strip_prefix("batch_")?;
+    if !is_segment(awardee) || !is_batch(batch) || batch.split('_').next() != Some(*awardee) {
+        return None;
+    }
+    Some((batch.to_owned(), scan_at(rest, frame, true)?))
+}
+
 /// `[lccn, reel…, issue, frame.jp2]` at the end of `segments` (all of it with
 /// `anchored`, for an image id that starts at the LCCN).
 fn scan_of(segments: &[&str], anchored: bool) -> Option<Scan> {
     let (file, rest) = segments.split_last()?;
-    let frame = file.strip_suffix(".jp2")?;
+    scan_at(rest, file.strip_suffix(".jp2")?, anchored)
+}
+
+/// [`scan_of`], with the JP2's `frame` (its name without `.jp2`) apart from
+/// the `[lccn, reel…, issue]` at the end of `segments`.
+fn scan_at(segments: &[&str], frame: &str, anchored: bool) -> Option<Scan> {
     if !FRAME_DIGITS.contains(&frame.len()) || !frame.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
-    let (issue, rest) = rest.split_last()?;
+    let (issue, rest) = segments.split_last()?;
     let (date, edition) = issue_of(issue)?;
     // The reel is one directory, or two (`no/reel`): the LCCN is the one
     // before it.
@@ -546,5 +579,63 @@ mod tests {
         .unwrap();
         assert!(!crop.is_of(Some("ohi_ingstad_ver01"), Some(&other)));
         assert!(!crop.is_of(Some("ohi_other_ver01"), Some(&same)));
+    }
+
+    #[test]
+    fn reads_the_scan_from_an_iiif_base() {
+        // The id a crop's tile URL has is the scan's IIIF base.
+        let crop = OldCrop::parse(OLD).unwrap();
+        let base = NEW.split_once("/pct:").unwrap().0;
+        assert_eq!(
+            scan_of_iiif_base(base),
+            Some(("ohi_ingstad_ver01".to_owned(), crop.scan))
+        );
+
+        // A two-directory reel, a five-digit frame, upper case.
+        let (batch, s) = scan_of_iiif_base(&format!(
+            "{TILE_IIIF}service:ndnp:wa:batch_wa_bittern_ver01:data:SN84022793:no:reel:1873100902:10368"
+        ))
+        .unwrap();
+        assert_eq!(batch, "wa_bittern_ver01");
+        assert_eq!(
+            (s.lccn_key().as_str(), s.reel.as_str(), s.frame.as_str()),
+            ("sn84022793", "no/reel", "10368")
+        );
+        assert_eq!(
+            (s.date, s.edition),
+            (NaiveDate::from_ymd_opt(1873, 10, 9).unwrap(), 2)
+        );
+
+        let ok =
+            "service:ndnp:ohi:batch_ohi_ingstad_ver01:data:sn85026051:00296027029:1850072701:0037";
+        assert!(scan_of_iiif_base(&format!("{TILE_IIIF}{ok}")).is_some());
+        for bad in [
+            // Another root, another service, a trailing slash or region.
+            format!("https://example.test/iiif/{ok}"),
+            format!("{TILE_IIIF}{}", ok.replace("ndnp", "ndn")),
+            format!("{TILE_IIIF}{ok}/"),
+            format!("{TILE_IIIF}{ok}/full/pct:100/0/default.jpg"),
+            // Another awardee than the batch's.
+            format!("{TILE_IIIF}{}", ok.replace("ndnp:ohi:", "ndnp:wa:")),
+            // No `batch_`, not `data`, a batch with no awardee token.
+            format!("{TILE_IIIF}{}", ok.replace("batch_", "")),
+            format!("{TILE_IIIF}{}", ok.replace(":data:", ":dta:")),
+            format!(
+                "{TILE_IIIF}{}",
+                ok.replace("batch_ohi_ingstad_ver01", "batch_ohio")
+            ),
+            // No frame, a short frame, a bad issue, not an LCCN, no reel.
+            format!("{TILE_IIIF}{}", ok.replace(":0037", "")),
+            format!("{TILE_IIIF}{}", ok.replace(":0037", ":037")),
+            format!("{TILE_IIIF}{}", ok.replace("1850072701", "1850072700")),
+            format!("{TILE_IIIF}{}", ok.replace("sn85026051", "xx")),
+            format!("{TILE_IIIF}{}", ok.replace(":00296027029", "")),
+            // A reel of three directories, or more.
+            format!("{TILE_IIIF}{}", ok.replace(":00296027029", ":a:b:c")),
+            format!("{TILE_IIIF}{}", ok.replace(":00296027029", ":a:b:c:d:e")),
+            String::new(),
+        ] {
+            assert_eq!(scan_of_iiif_base(&bad), None, "{bad}");
+        }
     }
 }
