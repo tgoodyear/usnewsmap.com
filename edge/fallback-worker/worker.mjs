@@ -1,3 +1,5 @@
+import { mcp } from "./mcp.mjs";
+
 // The fallback Worker (ADR-0027 decision 10, #1098). During Phase 3 it sits on the
 // usnewsmap.com, www and api routes in front of the Cloudflare Tunnel. Every request goes
 // to the tunnel. Only when the tunnel cannot answer does it try the same request once at
@@ -56,32 +58,12 @@ export default {
     if (env.HEALTHCHECK_HOSTNAME && new URL(request.url).hostname === env.HEALTHCHECK_HOSTNAME) {
       return healthcheck(request, env);
     }
-    if (env.HEALTH_FAILOVER === "true" && !errorLayer(env)) return healthFailover(request, env);
-    // Cloned before the first fetch, which uses the body up: a POST (the page-view beacon)
-    // has to reach Azure whole when the tunnel fails.
-    const replay = request.clone();
-    let tunnel;
-    try {
-      tunnel = await fetch(toTunnel(request, env));
-    } catch (error) {
-      if (aborted(error, request)) throw error;
-      if (errorLayer(env)) return degraded(replay, env);
-      return fallBack(replay, env, null, error);
+    const url = new URL(request.url);
+    if (["usnewsmap.com", "api.usnewsmap.com"].includes(url.hostname) &&
+        ["/mcp", "/mcp/"].includes(url.pathname)) {
+      return mcp(request, env, (apiRequest) => serveOrigin(apiRequest, env));
     }
-    if (!RETRY_STATUSES.has(tunnel.status)) {
-      return errorLayer(env) ? rememberShell(replay, tunnel) : tunnel;
-    }
-    if (errorLayer(env)) {
-      let cleanupFailed = false;
-      try {
-        await tunnel.body?.cancel();
-      } catch {
-        cleanupFailed = true;
-      }
-      const answer = await degraded(replay, env);
-      return cleanupFailed ? notified(answer, "X-USNM-Error-Layer-Cleanup", "cancel-failed") : answer;
-    }
-    return fallBack(replay, env, tunnel, null);
+    return serveOrigin(request, env);
   },
   scheduled(event, env, ctx) {
     if (env.HEALTH_FAILOVER !== "true" || env.HEALTH_HEARTBEAT !== "true" || errorLayer(env)) return;
@@ -89,6 +71,35 @@ export default {
     ctx.waitUntil(heartbeat(env));
   },
 };
+
+async function serveOrigin(request, env) {
+  if (env.HEALTH_FAILOVER === "true" && !errorLayer(env)) return healthFailover(request, env);
+  // Cloned before the first fetch, which uses the body up: a POST (the page-view beacon)
+  // has to reach Azure whole when the tunnel fails.
+  const replay = request.clone();
+  let tunnel;
+  try {
+    tunnel = await fetch(toTunnel(request, env));
+  } catch (error) {
+    if (aborted(error, request)) throw error;
+    if (errorLayer(env)) return degraded(replay, env);
+    return fallBack(replay, env, null, error);
+  }
+  if (!RETRY_STATUSES.has(tunnel.status)) {
+    return errorLayer(env) ? rememberShell(replay, tunnel) : tunnel;
+  }
+  if (errorLayer(env)) {
+    let cleanupFailed = false;
+    try {
+      await tunnel.body?.cancel();
+    } catch {
+      cleanupFailed = true;
+    }
+    const answer = await degraded(replay, env);
+    return cleanupFailed ? notified(answer, "X-USNM-Error-Layer-Cleanup", "cancel-failed") : answer;
+  }
+  return fallBack(replay, env, tunnel, null);
+}
 
 const PRIMARY_HEALTH_MS = 3000;
 // How long one Cloudflare location trusts a ready primary before probing again.

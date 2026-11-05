@@ -21,12 +21,14 @@ for (const path of process.env.PATH.split(delimiter)) {
 assert.ok(resolved, "Run with npx --package=wrangler@4.154.0 --call 'node edge/fallback-worker/native-integration.mjs'");
 const { Miniflare, convertV4MiniflareOptions, Response: NativeResponse } = await import(pathToFileURL(resolved));
 const { MockAgent, fetch: mockFetch } = createRequire(resolved)("undici");
+const modules = ["worker.mjs", "mcp.mjs"].map((name) => ({
+  type: "ESModule", path: fileURLToPath(new URL(name, import.meta.url)),
+}));
 const mock = new MockAgent();
 mock.disableNetConnect();
 const origin = mock.get("https://usnewsmap.com");
 const options = convertV4MiniflareOptions({
-  modules: true,
-  scriptPath: fileURLToPath(new URL("./worker.mjs", import.meta.url)),
+  modules,
   compatibilityDate: "2025-10-01",
   bindings: { ERROR_LAYER: "true", ADD_DNT: "true", ALLOWED_ORIGINS: "https://usnewsmap.com" },
   outboundService: async (request) => {
@@ -79,8 +81,25 @@ try {
   assert.equal(api.headers.get("content-type"), "application/problem+json");
   assert.equal(api.headers.get("access-control-allow-origin"), "https://usnewsmap.com");
   assert.doesNotMatch(await api.text(), /private-marker/);
+  for (const host of ["usnewsmap.com", "api.usnewsmap.com"]) {
+    const headers = { "content-type": "application/json", accept: "application/json, text/event-stream" };
+    const init = await instance.dispatchFetch(`https://${host}/mcp`, {
+      method: "POST", headers,
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {
+        protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "native-test", version: "1" },
+      } }),
+    });
+    assert.equal((await init.json()).result.serverInfo.name, "usnewsmap");
+    mock.get(`https://${host}`).intercept({ path: "/v1/meta", method: "GET" }).reply(200,
+      JSON.stringify({ index_version: "fixture-v1" }), { headers: { "content-type": "application/json" } });
+    const metadata = await instance.dispatchFetch(`https://${host}/mcp`, {
+      method: "POST", headers,
+      body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "get_corpus_info" } }),
+    });
+    assert.equal((await metadata.json()).result.structuredContent.index_version, "fixture-v1");
+  }
   mock.assertNoPendingInterceptors();
-  console.log("Native Cache API/HTMLRewriter GET/banner/503/cache-policy/validator/CORS integration passed");
+  console.log("Native Cache API/HTMLRewriter/CORS and both MCP endpoints passed");
 } finally {
   await instance.dispose();
   await mock.close();
@@ -109,8 +128,7 @@ const server = createServer((request, answer) => {
 await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
 const local = `http://127.0.0.1:${server.address().port}`;
 const healthOptions = convertV4MiniflareOptions({
-  modules: true,
-  scriptPath: fileURLToPath(new URL("./worker.mjs", import.meta.url)),
+  modules,
   compatibilityDate: "2025-10-01",
   bindings: { HEALTH_FAILOVER: "true", AZURE_FALLBACK_ORIGIN: "", ALLOWED_ORIGINS: "https://usnewsmap.com" },
   port: 0,
@@ -158,8 +176,7 @@ try {
 
 const customCalls = [];
 const customOptions = convertV4MiniflareOptions({
-  modules: true,
-  scriptPath: fileURLToPath(new URL("./worker.mjs", import.meta.url)),
+  modules,
   compatibilityDate: "2025-10-01",
   bindings: {
     HEALTH_FAILOVER: "true", HEALTH_HOSTNAME: "usnewsmap.com",
