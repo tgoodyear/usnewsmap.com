@@ -556,8 +556,8 @@ When a scope is due, the tick runs two bridge steps before it collects:
    left in the `host` row, all of these hold. Only the versions the scheduler loads count: the
    latest of each platform and plan class, or, when the app sets a `min_version`, every version
    from it on.
-   - its OS and CPU vendor give the version's platform. A host neither identifies is judged
-     on the rest. A host whose row has no `misc` is judged without its client version and
+   - its OS and CPU vendor give the version's platform. A host whose OS and CPU vendor give
+     no platform is judged on the rest. A host whose row has no `misc` is judged without its client version and
      Docker.
    - its client is within the version's `min_core_version` and `max_core_version`.
    - the version's plan class is in `plan_class_spec.xml` and its `<docker/>` and client

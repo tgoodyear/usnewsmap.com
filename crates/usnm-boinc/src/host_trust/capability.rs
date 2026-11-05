@@ -13,9 +13,9 @@
 //! host row keeps what the client last reported: `os_name`, `p_vendor`, and in `misc` the
 //! client version, any container runtime and the client config's Docker and WSL refusals
 //! (`host_info_json`). Platforms aren't stored, so they're inferred from the OS and CPU vendor,
-//! and a host neither identifies is judged without them; a host with no `misc` is judged
-//! without what it holds. Of a plan class, only what the row shows is checked: `<docker/>` and
-//! the client version bounds.
+//! and a host whose OS and CPU vendor give none is judged without them. A host with no `misc`
+//! is judged without what it holds. Of a plan class, only what the row shows is checked:
+//! `<docker/>` and the client version bounds.
 use super::{query, Config};
 use anyhow::{ensure, Context};
 use std::collections::{BTreeMap, BTreeSet};
@@ -409,7 +409,7 @@ pub(super) async fn inventory(c: &Config) -> anyhow::Result<Vec<Host>> {
             c,
             "SELECT id, LEFT(os_name, 20), LEFT(p_vendor, 12), \
              IF(JSON_VALID(misc), LEFT(JSON_UNQUOTE(JSON_EXTRACT(misc, '$.client_version')), 8), ''), \
-             IF(JSON_VALID(misc), JSON_CONTAINS_PATH(misc, 'one', '$.docker'), ''), \
+             IF(JSON_VALID(misc), COALESCE(JSON_TYPE(JSON_EXTRACT(misc, '$.docker')) = 'OBJECT', 0), ''), \
              IF(JSON_VALID(misc), COALESCE(JSON_CONTAINS(misc, 'true', '$.config.dont_use_docker'), 0), 0), \
              IF(JSON_VALID(misc), COALESCE(JSON_CONTAINS(misc, 'true', '$.config.dont_use_wsl'), 0), 0) \
              FROM host WHERE id>0 ORDER BY id LIMIT 100001",
