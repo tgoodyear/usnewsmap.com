@@ -147,7 +147,8 @@ pub fn rewrite_crop_url(old: &str) -> Option<String> {
 /// `{TILE_IIIF}service:ndnp:{awardee}:batch_{batch}:data:{lccn}:{reel…}:{issue}:{frame}`,
 /// the storage path of the JP2 with its slashes made colons, as
 /// `usnm-ocr-worker`'s `iiif_base` builds it and its scan sidecars and prefetch
-/// indexes record it. `None` for any other shape.
+/// indexes record it. `None` for any other shape, or an awardee that isn't
+/// the batch name's first `_` token.
 pub fn scan_of_iiif_base(base: &str) -> Option<(String, Scan)> {
     let id = base
         .strip_prefix(TILE_IIIF)?
@@ -163,7 +164,7 @@ pub fn scan_of_iiif_base(base: &str) -> Option<(String, Scan)> {
         return None;
     };
     let batch = batch.strip_prefix("batch_")?;
-    if !is_segment(awardee) || !is_batch(batch) {
+    if !is_segment(awardee) || !is_batch(batch) || batch.split('_').next() != Some(*awardee) {
         return None;
     }
     Some((batch.to_owned(), scan_at(rest, frame, true)?))
@@ -614,6 +615,8 @@ mod tests {
             format!("{TILE_IIIF}{}", ok.replace("ndnp", "ndn")),
             format!("{TILE_IIIF}{ok}/"),
             format!("{TILE_IIIF}{ok}/full/pct:100/0/default.jpg"),
+            // Another awardee than the batch's.
+            format!("{TILE_IIIF}{}", ok.replace("ndnp:ohi:", "ndnp:wa:")),
             // No `batch_`, not `data`, a batch with no awardee token.
             format!("{TILE_IIIF}{}", ok.replace("batch_", "")),
             format!("{TILE_IIIF}{}", ok.replace(":data:", ":dta:")),

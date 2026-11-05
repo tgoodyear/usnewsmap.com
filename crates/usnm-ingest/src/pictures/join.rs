@@ -233,8 +233,15 @@ impl CuratedDays {
             let i = u32::try_from(i).context("too many batches")?;
             out.batches.insert(b.batch.clone(), (i, b.curated.version));
             for (lccn, days) in load_counts(curated, b).await? {
-                let next = u32::try_from(out.titles.len()).context("too many titles")?;
-                let title = *out.titles.entry(lccn.to_ascii_lowercase()).or_insert(next);
+                let lccn = lccn.to_ascii_lowercase();
+                let title = match out.titles.get(&lccn) {
+                    Some(&title) => title,
+                    None => {
+                        let title = u32::try_from(out.titles.len()).context("too many titles")?;
+                        out.titles.insert(lccn, title);
+                        title
+                    }
+                };
                 for (day, pages) in days {
                     if pages == 0 {
                         continue;
@@ -369,11 +376,14 @@ async fn verified_part(
     kind: &str,
 ) -> anyhow::Result<Vec<Picture>> {
     let path = &part.path;
-    if path
+    let inside = path
         .strip_prefix(dir)
         .and_then(|p| p.strip_prefix('/'))
-        .is_none()
-    {
+        .is_some_and(|rest| {
+            rest.split('/')
+                .all(|c| !c.is_empty() && c != "." && c != "..")
+        });
+    if !inside {
         bail!("`{path}` is outside the attempt `{dir}`");
     }
     let body = store
@@ -1012,15 +1022,23 @@ mod tests {
             "{err}"
         );
 
-        // A part outside the attempt.
+        // A part outside the attempt, or only under it by its spelling.
         let kind = p.kinds.get_mut("photo").unwrap();
         kind.rows = 1;
-        kind.parts[0].path = "elsewhere/photo-0000.parquet".into();
-        put_provenance(&store, &p).await;
-        let err = join(&store, REVISION, &store, &[], &none)
-            .await
-            .unwrap_err();
-        assert!(err.to_string().contains("outside the attempt"), "{err}");
+        let dir = attempt_dir(REVISION, p.attempt);
+        for outside in [
+            "elsewhere/photo-0000.parquet".to_owned(),
+            format!("{dir}/../2/photo-0000.parquet"),
+            format!("{dir}/./photo-0000.parquet"),
+            format!("{dir}//photo-0000.parquet"),
+        ] {
+            p.kinds.get_mut("photo").unwrap().parts[0].path = outside;
+            put_provenance(&store, &p).await;
+            let err = join(&store, REVISION, &store, &[], &none)
+                .await
+                .unwrap_err();
+            assert!(err.to_string().contains("outside the attempt"), "{err}");
+        }
     }
 
     #[test]
