@@ -107,7 +107,12 @@ fn expected<'a>(job: &'a Job, doc_id: &str) -> Vec<&'a str> {
 /// The pair records of one bundle page, by file name: every file
 /// `qwen compare --pages` publishes there, whether or not it is counted.
 pub fn record_paths(pages: &Path, job_id: &str, doc_id: &str) -> anyhow::Result<Vec<PathBuf>> {
-    usnm_ocr_contract::quality::check_doc_id(job_id)?;
+    // Both name directories: a job id is its sha256, and `record_page`
+    // checks the doc id the same way before writing.
+    anyhow::ensure!(
+        usnm_ocr_contract::boinc::is_sha256(job_id),
+        "invalid qwen job id {job_id:?}"
+    );
     usnm_ocr_contract::quality::check_doc_id(doc_id)?;
     let entries = match std::fs::read_dir(pages.join(job_id).join(doc_id)) {
         Ok(entries) => entries,
@@ -129,9 +134,9 @@ pub fn record_paths(pages: &Path, job_id: &str, doc_id: &str) -> anyhow::Result<
 /// The readings two hosts agreed on for each `accepted` page of the bundle
 /// unit, by doc id, as that page's own readings: each crop id's
 /// `<doc_id>:` prefix is taken off (#1435). They are the first agreeing
-/// record's (by file name) first side's, the sides being in result-name
-/// order, so the same records always give the same readings. Agreeing is
-/// not being right: nothing here establishes accuracy.
+/// record's (by file name), from the side whose result name sorts first,
+/// so the same records always give the same readings. Agreeing is not
+/// being right: nothing here establishes accuracy.
 pub fn accepted_readings(
     root: &Path,
     unit: &Path,
@@ -149,7 +154,21 @@ pub fn accepted_readings(
             .join(&page.records[0]);
         let record: serde_json::Value = serde_json::from_slice(&read(&path, MAX_RECORD)?)
             .with_context(|| format!("{}", path.display()))?;
-        let side = &record["results"][0];
+        anyhow::ensure!(
+            record["status"] == PAGE_AGREED,
+            "{}: not an agreeing record",
+            path.display()
+        );
+        let side = record["results"]
+            .as_array()
+            .and_then(|sides| {
+                sides
+                    .iter()
+                    .filter_map(|s| s["result"].as_str().map(|name| (name, s)))
+                    .min_by_key(|(name, _)| *name)
+            })
+            .map(|(_, s)| s)
+            .with_context(|| format!("{}: no named side", path.display()))?;
         anyhow::ensure!(
             side["outcome"] == serde_json::to_value(Outcome::Ok)?,
             "{}: the agreeing side did not run to the end",
@@ -374,6 +393,30 @@ pub(crate) mod tests {
                 [("c01", words(doc, "c01")), ("c02", words(doc, "c02"))]
             );
         }
+        // From the side whose result name sorts first, in whatever order the record lists them.
+        let record_path = pages
+            .join(&job.id)
+            .join(DOCS[0])
+            .read_dir()
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let original = std::fs::read(&record_path).unwrap();
+        let mut record: serde_json::Value = serde_json::from_slice(&original).unwrap();
+        let sides = record["results"].as_array_mut().unwrap();
+        for (side, text) in sides.iter_mut().zip(["first", "second"]) {
+            for r in side["readings"].as_array_mut().unwrap() {
+                r["text"] = text.into();
+            }
+        }
+        sides.reverse();
+        std::fs::write(&record_path, serde_json::to_vec(&record).unwrap()).unwrap();
+        let kept =
+            accepted_readings(&root, &units(&root).join("bundle-00001"), &job, &pages).unwrap();
+        assert!(kept[DOCS[0]].readings.iter().all(|r| r.text == "first"));
+        std::fs::write(&record_path, &original).unwrap();
         assert_eq!(
             ledger[1].page_job_id.as_deref(),
             Some(membership.pages[1].job_id.as_str())
