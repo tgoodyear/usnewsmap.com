@@ -156,7 +156,7 @@ python3 -m unittest scripts/boinc/test_bootstrap_pipeline.py scripts/boinc/test_
 The dedicated `boinc-bootstrap-pipeline` workflow runs only these offline tests
 and syntax checks. It has read-only repository permission and no Azure/signing
 credentials or publication jobs. The acceptance runner's tests run with the other
-script tests in `ci.yml`'s infra job (`scripts/ci/run-unit-tests.py`).
+script tests in `ci.yml`'s `script-tests` matrix (`scripts/ci/run-unit-tests.py`).
 
 A real end-to-end run needs reviewed operator inputs, an approved
 reachable/unlocked signing service, explicit resource authorization, the pin PR
