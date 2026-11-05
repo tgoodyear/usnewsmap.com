@@ -35,6 +35,9 @@ pub fn render(v: &View) -> String {
         time(now),
         v.refresh_secs
     );
+    if let Some(w) = &v.warming {
+        o.push_str(&warming_panel(w));
+    }
     o.push_str(&ecosystem_panel(v));
     o.push_str(&throughput::panel(&v.throughput));
     o.push_str(&crate::diagrams::section(v));
@@ -57,6 +60,24 @@ pub fn render(v: &View) -> String {
         "</div></details></section></div><script>{SCRIPT}</script></body></html>"
     );
     o
+}
+
+/// A panel, so the page's refresh drops it once the read is over.
+fn warming_panel(w: &crate::fetch::Warming) -> String {
+    let read = match w.manifests {
+        Some(n) => format!(
+            "{} of {} queued manifests read",
+            int(w.manifests_read as u64),
+            int(n as u64)
+        ),
+        None => "the queued manifests not yet read".to_owned(),
+    };
+    format!(
+        "<section class=\"wide\" id=\"warming\"><h2>Reading the fetcher's files</h2>\
+         <p class=\"stale\">From the start, since {} (a restart, or a new plan or index): {read}. \
+         The fetch and queue counts are partial until it is done.</p></section>",
+        time(w.since)
+    )
 }
 
 #[cfg(test)]

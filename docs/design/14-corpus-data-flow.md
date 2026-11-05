@@ -211,9 +211,12 @@ public port.
 counters. `usnm-data-flow-observer.timer` (in `scripts/ocr-node/`) runs it every
 five minutes and writes `/var/lib/usnm-data-flow/pipeline.json`; the dashboard
 reads that file and serves `/api/pipeline.json`. Nothing else refreshes the file,
-so a host installed without the timer shows a stale panel. A fresh aggregate
-refresh does not refresh old page observations. The timer does not ingest page
-records or allocate work.
+so a host installed without the timer shows a stale panel. While the dashboard
+is still reading the fetcher's files after a start (its view's `warming`, #1436),
+the observer leaves the scan stages unknown with a `local-ocr-warming` issue and
+the run succeeds; after 30 minutes the same view is `local-ocr-unavailable` and
+the run fails. A fresh aggregate refresh does not refresh old page
+observations. The timer does not ingest page records or allocate work.
 
 The existing Cold-tier scan archive is a separate recovery copy, not the public
 BOINC input mirror. Its documented complete verification at

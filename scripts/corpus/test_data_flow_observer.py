@@ -57,6 +57,27 @@ class Observer(unittest.TestCase):
             with self.assertRaises(ValueError):
                 observer.local_stages(payload, NOW)
 
+    def test_a_starting_dashboard_is_reported_not_counted_and_only_while_recent(self):
+        payload = self.local()
+        payload["fetch"]["queue_error"] = "Reading the queue's manifests after a start"
+        payload["warming"] = {"since": ago(minutes=7), "manifests": 1983, "manifests_read": 40}
+        with patch.object(observer, "fetch", side_effect=[json.dumps(payload).encode(), XML]):
+            events, failures = observer.collect("http://local/", "https://project/", NOW)
+        self.assertEqual(len(events), 4)
+        self.assertEqual([item["code"] for item in failures], ["local-ocr-warming"])
+        scan = next(item for item in observer.snapshot(events, failures, NOW)["stages"]
+                    if item["id"] == "scan_cached")
+        self.assertEqual((scan["state"], scan["count"]), ("unknown", None))
+        for since in [ago(minutes=31), "not a time", observer.utc(NOW + timedelta(minutes=5))]:
+            payload["warming"]["since"] = since
+            with self.subTest(since=since), patch.object(
+                    observer, "fetch", side_effect=[json.dumps(payload).encode(), XML]):
+                _, failures = observer.collect("http://local/", "https://project/", NOW)
+                self.assertEqual([item["code"] for item in failures], ["local-ocr-unavailable"])
+        # Ready again: `warming` is null and the counts are read.
+        payload = {**self.local(), "warming": None}
+        self.assertEqual(len(observer.local_stages(payload, NOW)), 5)
+
     def status(self):
         return {"generated_at": "2026-10-16T19:58:00Z", "stale": False, "error": None,
                 "published": {"index_version": "pages-v20261022-1",
@@ -461,7 +482,7 @@ class Observer(unittest.TestCase):
         value = self.joined(generated_at=observer.utc(NOW + timedelta(seconds=30)))
         self.assertEqual(self.frozen(value), [])
 
-    def run_main(self, *args, catalog=None):
+    def run_main(self, *args, catalog=None, failures=()):
         """Run main() against a catalog snapshot, with the two network sources stubbed out."""
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory) / "pipeline.json"
@@ -471,7 +492,7 @@ class Observer(unittest.TestCase):
                 source.write_text(json.dumps(catalog))
                 argv += ["--catalog-snapshot", str(source)]
             output = io.StringIO()
-            with patch.object(observer, "collect", return_value=([], [])), \
+            with patch.object(observer, "collect", return_value=([], list(failures))), \
                     patch("sys.argv", argv), contextlib.redirect_stdout(output):
                 status = observer.main()
             return status, json.loads(target.read_text()), json.loads(output.getvalue())
@@ -489,6 +510,15 @@ class Observer(unittest.TestCase):
         _, value, _ = self.run_main("--catalog-max-age-days", "365", catalog=catalog)
         (issue,) = self.frozen(value)
         self.assertIn("limit is 365 days,", issue["detail"])
+
+    def test_main_does_not_fail_on_a_starting_dashboard_alone(self):
+        warming = {"code": "local-ocr-warming", "detail": "starting"}
+        unavailable = {"code": "boinc-public-status-unavailable", "detail": "down"}
+        status, value, event = self.run_main(failures=[warming])
+        self.assertEqual((status, event["failed_sources"], event["warming_sources"]), (0, 0, 1))
+        self.assertIn("local-ocr-warming", [issue["code"] for issue in value["issues"]])
+        status, _, event = self.run_main(failures=[warming, unavailable])
+        self.assertEqual((status, event["failed_sources"], event["warming_sources"]), (1, 1, 1))
 
     def test_main_future_catalog_is_unavailable_not_frozen(self):
         catalog = {**observer.snapshot([], [], NOW), "generated_at": "2999-01-01T00:00:00Z"}
