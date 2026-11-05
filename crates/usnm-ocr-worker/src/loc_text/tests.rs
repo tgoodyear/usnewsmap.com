@@ -456,15 +456,15 @@ async fn a_rerun_skips_pages_done_and_kept_items() {
 }
 
 #[tokio::test]
-async fn a_run_needs_a_number_of_hours() {
+async fn a_run_needs_a_positive_number_of_hours() {
     let r = Rig::new().await;
     r.issue("1902-03-27", 1);
     r.queue(&[key("1902-03-27", 1)]);
-    for hours in [f64::NAN, f64::INFINITY] {
+    for hours in [f64::NAN, f64::INFINITY, -1.0, 0.0] {
         let mut o = r.run_opts();
         o.max_hours = hours;
         let e = run(o, no_stop()).await.unwrap_err().to_string();
-        assert!(e.contains("isn't a number of hours"), "{e}");
+        assert!(e.contains("isn't a positive number of hours"), "{e}");
     }
     assert_eq!(r.s.hits_under("/"), 0);
 }

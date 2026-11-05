@@ -657,10 +657,13 @@ async fn write_status(out: &Path, s: &RunStatus) -> anyhow::Result<()> {
 
 /// Fetches the queued pages that have no record yet.
 pub async fn run(opts: RunOptions, stop: watch::Receiver<bool>) -> anyhow::Result<RunStatus> {
-    if !opts.max_hours.is_finite() {
-        bail!("max hours: {} isn't a number of hours", opts.max_hours);
+    if !(opts.max_hours.is_finite() && opts.max_hours > 0.0) {
+        bail!(
+            "max hours: {} isn't a positive number of hours",
+            opts.max_hours
+        );
     }
-    let hours = opts.max_hours.clamp(0.0, MAX_HOURS);
+    let hours = opts.max_hours.min(MAX_HOURS);
     tokio::fs::create_dir_all(&opts.out).await?;
     let _lock = hold_lock(&opts.out.join(LOCK))?;
     let queue_path = opts.out.join(QUEUE);
