@@ -15,13 +15,14 @@ use crate::Cli;
 
 /// Copy batches from an Open ONI site, by default Penn State's Pennsylvania
 /// Newspaper Archive (docs/design/04 §4.12), into a raw store: each batch's
-/// BagIt bag (by default its page images, JP2, and its XML: ALTO and METS),
-/// every file checked against the bag's MD5, and each page's OCR text as a
-/// retained archive. Writes the batches' list for `enqueue --list`; with
-/// USNM_RAW_URL at the same store, `curate` reads the archives from there.
-/// Batches LoC lists (any version) are left out, and so are issues from
-/// --issued-before on. Stops at the first batch that fails; running it
-/// again resumes, and a batch fetched before is only listed.
+/// BagIt payload checked against MD5, ALTO, and page OCR text as a retained
+/// archive. With `--scans-root`, verified JP2s go to the on-prem scan archive
+/// and a source-specific catalog, not into a duplicate copy in the raw store.
+/// Writes the batches' list for `enqueue --list`; with USNM_RAW_URL at the
+/// same store, `curate` reads the archives from there. Batches LoC lists (any
+/// version) are left out, and so are issues from --issued-before on. Stops
+/// at the first batch that fails; running it again resumes, and a batch
+/// fetched before is only listed.
 #[derive(Args)]
 pub(crate) struct OniFetchArgs {
     /// The site's batches, as its /batches/ page names them
@@ -32,6 +33,10 @@ pub(crate) struct OniFetchArgs {
     /// (default: USNM_RAW_URL).
     #[arg(long, env = "USNM_RAW_URL")]
     to: String,
+    /// Optional pve-big scan archive root. JP2s go under keep/psu_* and are
+    /// cataloged separately from the LoC-only OCR scan index.
+    #[arg(long)]
+    scans_root: Option<PathBuf>,
     /// Where to write the batch list (JSON) for `enqueue --list`.
     #[arg(long)]
     list_out: PathBuf,
@@ -73,6 +78,7 @@ pub(crate) async fn oni_fetch_command(
         site: args.site.trim_end_matches('/').to_owned(),
         exts: args.exts.clone(),
         issued_before: args.issued_before,
+        scans_root: args.scans_root.clone(),
     };
     let tmp = cli.stores.work_dir.join("oni");
     let mut list = Vec::new();
