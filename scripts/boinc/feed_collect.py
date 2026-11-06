@@ -140,6 +140,47 @@ def natural(value, maximum=2**53):
     return value
 
 
+def validate_cohort(record, now):
+    """Shape of the server's cohort record; a bad one is a bad server source, as for any field."""
+    if not isinstance(record, dict):
+        raise ValueError("invalid cohort record")
+    if "error" in record:
+        if set(record) != {"error"} or record["error"] != "cohort_unavailable":
+            raise ValueError("invalid cohort record")
+        return
+    if (set(record) != {"result", "timer_active", "last_completed_at", "last_failure_at", "failure_streak",
+                        "failing_since", "report", "report_at"}
+            or record["result"] not in ("running", "ok", "failed") or type(record["timer_active"]) is not bool):
+        raise ValueError("invalid cohort record")
+    natural(record["failure_streak"])
+    if (record["failing_since"] is None) != (record["failure_streak"] == 0):
+        raise ValueError("invalid cohort failure streak")
+    for key in ("last_completed_at", "report_at", "failing_since"):
+        if record[key] is not None and natural(record[key]) > now:
+            raise ValueError("future cohort evidence")
+    if natural(record["last_failure_at"]) > now:
+        raise ValueError("future cohort evidence")
+    report = record["report"]
+    if report is None:
+        return
+    if (not isinstance(report, dict) or set(report) != {*COHORT_REPORT_FIELDS, "admissible_backlog"}
+            or record["report_at"] is None):
+        raise ValueError("invalid cohort report")
+    if not isinstance(report["status"], str) or not NAME.fullmatch(report["status"]):
+        raise ValueError("invalid cohort status")
+    for key in ("admitted_unique", "limit"):
+        natural(report[key])
+    for key in ("fresh_pairs_in_scan", "currently_eligible_unsent_replicas", "per_host_buffer_limit",
+                "admissible_backlog"):
+        if report[key] is not None:
+            natural(report[key])
+    inflight = report["native_gpu_inflight"]
+    if inflight is not None and (not isinstance(inflight, dict) or len(inflight) > 8):
+        raise ValueError("invalid cohort inflight")
+    for value in (inflight or {}).values():
+        natural(value)
+
+
 def fresh(document, now, kind):
     if not isinstance(document, dict):
         raise ValueError("source must be an object")
@@ -209,6 +250,12 @@ def fresh(document, now, kind):
             if (version["app"] not in APP_NAMES or not isinstance(version["platform"], str)
                     or version["plan_class"] and version["plan_class"] not in document["plans"]):
                 raise ValueError("invalid dispatchable version")
+        if "cohort" in document:
+            # An unusable cohort record makes only the Qwen check unknown, never the server source.
+            try:
+                validate_cohort(document["cohort"], now)
+            except (ValueError, KeyError, TypeError):
+                document["cohort"] = {"error": "cohort_unavailable"}
         if "feeder_allocation" in document:
             guard = document["feeder_allocation"]
             if (not isinstance(guard, dict) or set(guard) != {"status", "reason", "app_ids"}
@@ -393,7 +440,8 @@ def feeder_allocation(guard, project, container=None, container_project="/projec
         return dict(GUARD_UNAVAILABLE)
 
 
-def server(project, env_file, container=None, container_project="/project/usnmocr", feeder_guard=None):
+def server(project, env_file, container=None, container_project="/project/usnmocr", feeder_guard=None,
+           cohort_unit=None, cohort_timer=None):
     # PHP validates config in its own namespace; only inventory crosses the container boundary.
     before = read_file(project / "plan_class_spec.xml")
     command = ["php", "-r", PHP]
@@ -424,7 +472,101 @@ def server(project, env_file, container=None, container_project="/project/usnmoc
     data |= {"plans": plans, "enabled_until": window(env_file)}
     if feeder_guard:
         data["feeder_allocation"] = feeder_allocation(feeder_guard, project, container, container_project)
+    if cohort_unit:
+        data["cohort"] = cohort(cohort_unit, cohort_timer or cohort_unit.rsplit(".", 1)[0] + ".timer")
     return data
+
+
+COHORT_REPORT_FIELDS = ("status", "admitted_unique", "limit", "fresh_pairs_in_scan",
+                        "currently_eligible_unsent_replicas", "native_gpu_inflight", "per_host_buffer_limit")
+COHORT_BACKLOG_WINDOW_S = 30 * 60
+SYSTEMD_FINISHED = ("39f53479d3a045ac8e11786248231fbf", "7ad2d189f7e94e70a38c781354912448")
+
+
+def cohort(unit, timer):
+    """The native Qwen cohort controller (#1441): its last runs and its last report.
+
+    The oneshot unit runs every minute and prints one JSON report a run (indented, so one
+    journal line per output line, grouped here by invocation); a run that found the step
+    lock busy exits 75 and prints none. Read-only: the journal, systemctl show and nothing
+    else. Errors go in the record, so the server source still reports."""
+    try:
+        if not all(re.fullmatch(r"[a-zA-Z0-9@_.-]+\.(service|timer)", name) for name in (unit, timer)):
+            raise ValueError("invalid unit")
+        raw = run(["journalctl", "--no-pager", "--quiet", "--all", "-u", unit, "-o", "json",
+                   "--since=-45min", "-n", "20000"])
+        # outcomes: invocation -> (time, failed), from systemd's own terminal messages for the unit.
+        runs, outcomes = {}, {}
+        for line in raw.splitlines():
+            entry = json.loads(line)
+            if not isinstance(entry, dict):
+                continue
+            at = int(entry["__REALTIME_TIMESTAMP"]) // 1000000
+            invocation = entry.get("_SYSTEMD_INVOCATION_ID") or entry.get("INVOCATION_ID")
+            message_id = entry.get("MESSAGE_ID")
+            field = SYSTEMD_FAILURE_FIELDS.get(message_id) if isinstance(message_id, str) else None
+            if (field or message_id in SYSTEMD_FINISHED) and entry.get("UNIT") == unit:
+                key = invocation or "at-%d" % at
+                failed = bool(field) or outcomes.get(key, (0, False))[1]
+                outcomes[key] = (max(at, outcomes.get(key, (0, False))[0]), failed)
+                continue
+            message = entry.get("MESSAGE")
+            if (not invocation or not isinstance(message, str) or entry.get("_TRANSPORT") != "stdout"
+                    or entry.get("SYSLOG_IDENTIFIER") in ("systemd", "podman")):
+                continue
+            runs.setdefault(invocation, []).append((at, message))
+        report, report_at, admissible = None, None, None
+        now = time.time()
+        for lines in runs.values():
+            text = [message for _, message in lines]
+            if "{" not in text:
+                continue
+            try:
+                document = json.loads("\n".join(text[text.index("{"):]))
+            except ValueError:
+                continue
+            if not isinstance(document, dict):
+                continue
+            # A report without the admitted count and budget (a reconciled publication)
+            # is not a full report; the next run's is.
+            if (type(document.get("admitted_unique")) is int and type(document.get("limit")) is int
+                    and (report_at is None or lines[-1][0] >= report_at)):
+                report, report_at = document, lines[-1][0]
+            # Each run scans one page of the audited candidates (the page moves on), so the
+            # backlog is the most admissible fresh units any run saw in the last half hour:
+            # fresh pairs less those passed over as out of cohort.
+            fresh_pairs = document.get("fresh_pairs_in_scan")
+            if type(fresh_pairs) is int and now - lines[-1][0] <= COHORT_BACKLOG_WINDOW_S:
+                skipped = document.get("out_of_cohort_skipped") or []
+                count = max(0, fresh_pairs - (len(skipped) if isinstance(skipped, list) else fresh_pairs))
+                admissible = max(admissible or 0, count)
+        if report is not None:
+            report = {key: report.get(key) for key in COHORT_REPORT_FIELDS} | {"admissible_backlog": admissible}
+        status = dict(item.split("=", 1) for item in run([
+            "systemctl", "show", unit, "-p", "LoadState", "-p", "SubState", "-p", "Result",
+        ]).decode().splitlines() if "=" in item)
+        timer_state = dict(item.split("=", 1) for item in run(
+            ["systemctl", "show", timer, "-p", "ActiveState"]).decode().splitlines() if "=" in item)
+        if status.get("LoadState") != "loaded":
+            raise ValueError("cohort controller not loaded")
+        running = status.get("SubState") in ("start", "running")
+        # Distinct finished runs, oldest first: the failures since the last success are the streak.
+        finished = sorted(outcomes.values())
+        streak = []
+        for at, failed in reversed(finished):
+            if not failed:
+                break
+            streak.append(at)
+        record = {"result": "running" if running else "ok" if status.get("Result") == "success" else "failed",
+                  "timer_active": timer_state.get("ActiveState") == "active",
+                  "last_completed_at": max((at for at, failed in finished if not failed), default=None),
+                  "last_failure_at": max((at for at, failed in finished if failed), default=0),
+                  "failure_streak": len(streak), "failing_since": min(streak, default=None),
+                  "report": report, "report_at": report_at}
+        validate_cohort(record, int(time.time()))
+        return record
+    except Exception:
+        return {"error": "cohort_unavailable"}
 
 
 def client_resource_usage(node, default_cpu):
@@ -1108,6 +1250,11 @@ def collect(config):
     guarded = config.get("feeder_allocation", False)
     if type(guarded) is not bool:
         raise ValueError("feeder_allocation must be true or false")
+    # Opt-in (#1441): judge usnm_qwen by the native cohort controller's admissions,
+    # from the server source's cohort record, instead of by workunit creation.
+    admission = config.get("qwen_admission", False)
+    if type(admission) is not bool:
+        raise ValueError("qwen_admission must be true or false")
     locations = {"server": config["server"], "controller": config["controller"]}
     # The backlog source is optional until it is deployed: unknown, never healthy.
     if config.get("backlog") is not None:
@@ -1115,7 +1262,7 @@ def collect(config):
     allowed = own_clients(config)
     clients = list(allowed)
     locations.update({name: location for name, (location, _) in allowed.items()})
-    facts, documents = {"sources": {}, "errors": []}, {}
+    facts, documents = {"sources": {}, "errors": [], "qwen_admission": admission}, {}
     if "backlog" not in locations:
         facts["sources"]["backlog"] = {"observed_at": None, "state": "unknown", "reason": "not_configured"}
         facts["errors"].append("backlog")
@@ -1208,6 +1355,8 @@ def collect(config):
     if "server" in documents:
         facts.update(enabled_until=documents["server"]["enabled_until"],
                      last_workunits=documents["server"]["last_workunits"])
+        if "cohort" in documents["server"]:
+            facts["cohort"] = documents["server"]["cohort"]
     if guarded:
         reason = "not_reported" if "server" in documents else "server_unavailable"
         facts["feeder_allocation"] = documents.get("server", {}).get(
@@ -1232,6 +1381,8 @@ def main(argv=None):
     p.add_argument("--container-project", default="/project/usnmocr")
     p.add_argument("--feeder-guard", help="The image's feeder-slot-guard.py, run read-only (as boincadm in "
                    "--container) and reported as feeder_allocation")
+    p.add_argument("--cohort-unit", help="The native Qwen cohort controller's oneshot unit, read-only "
+                   "(journal and systemctl show), reported as cohort for usnm_qwen_no_work")
     p = sub.add_parser("client")
     p.add_argument("--data-dir", type=Path, required=True)
     p.add_argument("--port", type=int, default=31416)
@@ -1250,7 +1401,7 @@ def main(argv=None):
     try:
         if args.source == "server":
             result.update(server(args.project, args.window_env, args.container, args.container_project,
-                                 args.feeder_guard))
+                                 args.feeder_guard, args.cohort_unit))
         elif args.source == "client":
             result.update(client(args.data_dir, args.port, args.output.with_name(args.output.stem + ".session.json")))
         elif args.source == "controller":

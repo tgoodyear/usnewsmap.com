@@ -247,6 +247,51 @@ before. With it, a server source run without `--feeder-guard` makes the check
 unknown (`not_reported`), as does an unavailable server source
 (`server_unavailable`).
 
+**Qwen admissions (opt-in, #1441).** Qwen work comes from the native cohort
+controller (`usnm-qwen-cohort-auto.service`, every minute), which admits audited
+units that already exist, so a new workunit is the wrong signal for
+`usnm_qwen_no_work`. With `--cohort-unit usnm-qwen-cohort-auto.service`, the
+server source also reads that unit's journal and `systemctl show`, read-only,
+and reports `cohort`:
+
+- whether a run is in progress, and whether the timer is active;
+- the last successful run, the last failed run, and the failed runs since the
+  last success (`failure_streak`, from systemd's outcome for each finished run);
+- the last full report: status, admitted count and budget, fresh pairs, unsent
+  replicas in the current window, in-flight native GPU tasks per host and the
+  per-host buffer limit. A report without the admitted count and budget (a
+  reconciled publication) is skipped, and so is a run that found the step lock
+  busy, which exits 75 and reports nothing;
+- `admissible_backlog`: each run scans one page of the audited candidates, so
+  this is the most fresh pairs, less those passed over as out of cohort, that
+  any run reported in the last 30 minutes.
+
+The collector validates the record it builds. Reading the cohort can't fail the
+server source: an error or a record that doesn't validate is
+`{"error": "cohort_unavailable"}`.
+
+With `"qwen_admission": true` in the evaluator's config, `usnm_qwen_no_work`
+comes from that record instead of from workunit creation, with the run's status
+or the failure as `reason`:
+
+- **firing at once:** the timer is not active (`cohort_timer_inactive`); three
+  runs in a row failed (`cohort_run_failed`); no run succeeded for 15 minutes,
+  including while a run hangs (`cohort_stalled`); or no run reported for 30
+  minutes, for instance because the step lock stays busy (`cohort_no_report`);
+- **firing after an hour without another admission:** the window is open
+  (`ENABLED_UNTIL` ahead, budget left, not closed) with admissible backlog, every host the controller serves is below its
+  in-flight buffer (it refills within the smallest headroom), and nothing is left
+  unsent in the current window. Each admission (the admitted count) restarts the hour;
+- **healthy** otherwise, including no backlog, full buffers, a window still
+  being worked, or a closed window or spent budget (the refill window check
+  covers the deadline);
+- **unknown** without a cohort record, when the server source is unavailable,
+  or when a run that scanned left out a measurement (`cohort_report_incomplete`).
+
+Without the config key the check is the workunit check, as before. To turn it on,
+add `--cohort-unit` to the server source, confirm its `server.json` has a
+`cohort` object, then set the key. The journal read adds well under a second.
+
 `feed-health.prom` exports the same checks as one-hot
 `boinc_feed_check{check,state}` gauges (`healthy`, `pending`, `firing`, `unknown`),
 their continuous durations, and `boinc_feed_observed_at_seconds`. There is no

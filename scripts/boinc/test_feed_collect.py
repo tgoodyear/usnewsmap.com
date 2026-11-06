@@ -1555,3 +1555,114 @@ with socket.create_connection({listener.getsockname()!r}, timeout=2) as connecti
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CohortTests(unittest.TestCase):
+    """The server source's record of the native Qwen cohort controller (#1441)."""
+    UNIT = "usnm-qwen-cohort-auto.service"
+
+    def journal(self, runs, finished=(), failed=()):
+        """finished and failed: (invocation, time) pairs, or times (one invocation each)."""
+        entries = []
+        for invocation, at, report in runs:
+            entries.append({"__REALTIME_TIMESTAMP": str(at * 1000000), "_SYSTEMD_INVOCATION_ID": invocation,
+                            "_TRANSPORT": "journal", "SYSLOG_IDENTIFIER": "podman", "MESSAGE": "container exec"})
+            for line in json.dumps(report, indent=2).splitlines():
+                entries.append({"__REALTIME_TIMESTAMP": str(at * 1000000), "_SYSTEMD_INVOCATION_ID": invocation,
+                                "_TRANSPORT": "stdout", "SYSLOG_IDENTIFIER": "flock", "MESSAGE": line})
+        def pair(item):
+            return item if isinstance(item, tuple) else ("run-%d" % item, item)
+        for invocation, at in map(pair, finished):
+            for message_id in ("7ad2d189f7e94e70a38c781354912448", "39f53479d3a045ac8e11786248231fbf"):
+                entries.append({"__REALTIME_TIMESTAMP": str(at * 1000000), "MESSAGE_ID": message_id,
+                                "UNIT": self.UNIT, "INVOCATION_ID": invocation})
+        for invocation, at in map(pair, failed):
+            entries.append({"__REALTIME_TIMESTAMP": str(at * 1000000), "MESSAGE_ID": "d9b373ed55a64feb8242e02dbe79a49c",
+                            "UNIT": self.UNIT, "UNIT_RESULT": "exit-code", "INVOCATION_ID": invocation})
+            entries.append({"__REALTIME_TIMESTAMP": str(at * 1000000), "MESSAGE_ID": "be02cf6855d2428ba40df7e9d022f03d",
+                            "UNIT": self.UNIT, "JOB_RESULT": "failed", "INVOCATION_ID": invocation})
+        entries.sort(key=lambda entry: int(entry["__REALTIME_TIMESTAMP"]))
+        return "\n".join(json.dumps(entry) for entry in entries).encode()
+
+    def observe(self, journal, unit="SubState=dead\nResult=success\nLoadState=loaded", timer="ActiveState=active"):
+        with patch.object(C, "run", side_effect=[journal, unit.encode(), timer.encode()]) as run, \
+                patch.object(C.time, "time", return_value=NOW):
+            record = C.cohort(self.UNIT, "usnm-qwen-cohort-auto.timer")
+        self.assertIn("--all", run.call_args_list[0].args[0])
+        return record
+
+    def report(self, fresh=0, skipped=(), status="no-fresh-verified-pairs"):
+        return {"at": NOW, "status": status, "admitted_unique": 592, "limit": 700, "fresh_pairs_in_scan": fresh,
+                "currently_eligible_unsent_replicas": 0, "native_gpu_inflight": {"9": 0},
+                "per_host_buffer_limit": 10, "out_of_cohort_skipped": list(skipped), "open_peer_readers": [[1]]}
+
+    def test_reports_are_reassembled_per_run_and_the_backlog_spans_half_an_hour(self):
+        record = self.observe(self.journal([("a", NOW - 1700, self.report(5, [1, 2])),
+                                            ("b", NOW - 2000, self.report(9)),
+                                            ("c", NOW - 60, self.report(0))], finished=[NOW - 59]))
+        self.assertEqual(record["report"]["admissible_backlog"], 3)  # 5 fresh less 2 out of cohort; b is too old
+        self.assertEqual(record["report"]["fresh_pairs_in_scan"], 0)  # the latest run
+        self.assertEqual((record["result"], record["report_at"], record["last_completed_at"]),
+                         ("ok", NOW - 60, NOW - 59))
+        self.assertNotIn("open_peer_readers", record["report"])
+        C.validate_cohort(record, NOW)
+
+    def test_failures_running_runs_and_no_report(self):
+        record = self.observe(self.journal([], failed=[NOW - 30]), unit="SubState=dead\nResult=exit-code\nLoadState=loaded",
+                              timer="ActiveState=inactive")
+        self.assertEqual((record["result"], record["timer_active"], record["last_failure_at"], record["report"],
+                          record["failure_streak"], record["failing_since"]),
+                         ("failed", False, NOW - 30, None, 1, NOW - 30))
+        # Each finished run counts once (systemd logs two messages per outcome); the streak is the
+        # failures since the last success, and survives a run in progress.
+        record = self.observe(self.journal([], finished=[NOW - 300], failed=[NOW - 180, NOW - 120, NOW - 60]),
+                              unit="SubState=start\nResult=success\nLoadState=loaded")
+        self.assertEqual((record["result"], record["failure_streak"], record["failing_since"],
+                          record["last_completed_at"]), ("running", 3, NOW - 180, NOW - 300))
+        record = self.observe(self.journal([], finished=[NOW - 30], failed=[NOW - 180, NOW - 120]))
+        self.assertEqual((record["failure_streak"], record["failing_since"]), (0, None))
+        self.assertEqual(self.observe(b"", unit="SubState=start\nResult=success\nLoadState=loaded")["result"], "running")
+        self.assertEqual(self.observe(b"", unit="LoadState=not-found"), {"error": "cohort_unavailable"})
+        self.assertEqual(self.observe(b"not json"), {"error": "cohort_unavailable"})
+
+    def test_a_reconciled_report_is_skipped_and_a_bad_record_never_costs_the_server_source(self):
+        reconciled = {"status": "reconciled-exact-published-intent", "window": [1, 2], "admitted_unique": 600,
+                      "apply": True}
+        record = self.observe(self.journal([("a", NOW - 120, self.report(2)), ("b", NOW - 60, reconciled)],
+                                           finished=[NOW - 59]))
+        self.assertEqual((record["report"]["status"], record["report_at"]), ("no-fresh-verified-pairs", NOW - 120))
+        docs = CollectionTests.documents(CollectionTests())
+        docs["/server"]["cohort"] = dict(record, result="sideways")
+        C.fresh(docs["/server"], NOW, "server")
+        self.assertEqual(docs["/server"]["cohort"], {"error": "cohort_unavailable"})
+
+    def test_validation_rejects_malformed_records(self):
+        good = self.observe(self.journal([("a", NOW - 60, self.report(1))], finished=[NOW - 59]))
+        for change in ({"result": "maybe"}, {"timer_active": 1}, {"report_at": NOW + 5}, {"extra": 1},
+                       {"report": dict(good["report"], status="bad status!")},
+                       {"report": dict(good["report"], admitted_unique=-1)},
+                       {"report": dict(good["report"], native_gpu_inflight=[1])},
+                       {"report": dict(good["report"], surprise=1)},
+                       {"failure_streak": 2}, {"failing_since": NOW - 5}):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                C.validate_cohort(dict(good, **change), NOW)
+        with self.assertRaises(ValueError):
+            C.validate_cohort({"error": "other"}, NOW)
+        C.validate_cohort({"error": "cohort_unavailable"}, NOW)
+
+    def test_the_cohort_record_reaches_the_evaluator_only_with_the_opt_in(self):
+        docs = CollectionTests.documents(CollectionTests())
+        docs["/server"]["cohort"] = self.observe(self.journal([("a", NOW - 60, self.report(0))], finished=[NOW - 59]))
+        config = {name: "/" + name for name in ("server", "controller", "backlog")}
+        config["clients"] = ["/own"]
+        for opt_in in (False, True):
+            with self.subTest(opt_in=opt_in), patch.object(C.time, "time", return_value=NOW), \
+                    patch.object(C, "read_source", side_effect=lambda path: docs[path]):
+                facts = C.collect(dict(config, qwen_admission=opt_in))
+                document, _ = F.evaluate(facts, {}, NOW, 1000, "boot", "cfg")
+            checked = next(c for c in document["checks"] if c["code"] == "usnm_qwen_no_work")
+            self.assertEqual(facts["qwen_admission"], opt_in)
+            if opt_in:
+                self.assertEqual((checked["state"], checked["backlog"]), ("healthy", 0))
+        with self.assertRaisesRegex(ValueError, "qwen_admission"):
+            C.collect(dict(config, qwen_admission="yes"))
