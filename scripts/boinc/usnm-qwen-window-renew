@@ -15,17 +15,23 @@
 # Any other change stops renewal until the new settings are reviewed and
 # pinned again; the window then lapses at its deadline. MAX_ADMISSIONS still
 # caps the total.
+#
+# The check and the rewrite use one snapshot, taken under the BOINC step lock
+# the cohort controller also takes. The snapshot replaces the file only if
+# the file still matches it just before the swap, so an edit made meanwhile
+# is not renewed.
 set -eu
 f=/etc/usnm-boinc/qwen-cohort-auto.env
 pin=/etc/usnm-boinc/qwen-window-renew.sha256
+lock=/run/usnm-boinc-step.lock
 
 settings_hash() {
-  grep -v '^ENABLED_UNTIL=' "$f" | sha256sum | cut -d' ' -f1
+  grep -v '^ENABLED_UNTIL=' "$1" | sha256sum | cut -d' ' -f1
 }
 
 case "${1:-}" in
   --print-pin)
-    settings_hash
+    settings_hash "$f"
     exit 0
     ;;
   "") ;;
@@ -39,11 +45,26 @@ esac
   echo "no reviewed pin at $pin; not renewing" >&2
   exit 1
 }
-if [ "$(settings_hash)" != "$(tr -d '[:space:]' < "$pin")" ]; then
+exec 9> "$lock"
+flock --wait 900 9 || {
+  echo "the BOINC step lock stayed busy; not renewing" >&2
+  exit 1
+}
+pre=$(mktemp "$f.renew-pre.XXXXXX")
+new=$(mktemp "$f.renew-new.XXXXXX")
+trap 'rm -f "$pre" "$new"' EXIT
+cp -p "$f" "$pre"
+if [ "$(settings_hash "$pre")" != "$(tr -d '[:space:]' < "$pin")" ]; then
   echo "settings differ from the reviewed pin; not renewing" >&2
   exit 1
 fi
 n=$(($(date +%s) + 86000))
-cp -p "$f" "$f.pre-autorenew"
-sed -i "s/^ENABLED_UNTIL=.*/ENABLED_UNTIL=$n/" "$f"
+cp -p "$pre" "$new"
+sed -i "s/^ENABLED_UNTIL=.*/ENABLED_UNTIL=$n/" "$new"
+if ! cmp -s "$f" "$pre"; then
+  echo "the settings changed during renewal; not renewing" >&2
+  exit 1
+fi
+mv "$pre" "$f.pre-autorenew"
+mv "$new" "$f"
 echo "Qwen refill window renewed until $(date -d @"$n")"
