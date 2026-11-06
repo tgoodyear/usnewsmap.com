@@ -326,5 +326,6 @@ pub fn issue_id(key: &PageKey) -> String {
 
 /// The item JSON URL of `key`'s issue under `api_root` (`https://www.loc.gov`).
 pub fn item_url(api_root: &str, key: &PageKey) -> String {
-    format!("{api_root}/item/{}/?fo=json", issue_id(key))
+    let root = api_root.trim_end_matches('/');
+    format!("{root}/item/{}/?fo=json", issue_id(key))
 }

@@ -546,20 +546,22 @@ impl Engine {
     ) -> Result<bytes::Bytes, Fail> {
         let gate = self.gate_for(url).await?;
         gate.cap.refresh();
+        // Over `max` is the same answer every time, so it's refused, not retried.
         if resp.content_length().is_some_and(|n| n > max as u64) {
-            return Err(Fail::Transient(format!("{url}: response over {max} bytes")));
+            return Err(Fail::Refused(format!("{url}: response over {max} bytes")));
         }
         let mut body = Vec::new();
         loop {
-            let chunk = resp
-                .chunk()
-                .await
-                .map_err(|e| Fail::Transient(format!("{url}: {}", e.without_url())))?;
+            let mut wait = stop.clone();
+            let chunk = tokio::select! {
+                c = resp.chunk() => c.map_err(|e| Fail::Transient(format!("{url}: {}", e.without_url())))?,
+                () = async { let _ = wait.wait_for(|s| *s).await; } => return Err(Fail::Stopped),
+            };
             let Some(chunk) = chunk else {
                 return Ok(bytes::Bytes::from(body));
             };
             if body.len() + chunk.len() > max {
-                return Err(Fail::Transient(format!("{url}: response over {max} bytes")));
+                return Err(Fail::Refused(format!("{url}: response over {max} bytes")));
             }
             body.extend_from_slice(&chunk);
             let mut wait = stop.clone();

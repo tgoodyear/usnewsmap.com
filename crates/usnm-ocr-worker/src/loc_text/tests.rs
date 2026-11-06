@@ -462,6 +462,38 @@ async fn a_rerun_skips_pages_done_and_kept_items() {
 }
 
 #[tokio::test]
+async fn a_kept_item_is_reused_only_for_the_url_it_came_from() {
+    let r = Rig::new().await;
+    r.issue("1902-03-27", 2);
+    r.queue(&[key("1902-03-27", 1), key("1902-03-27", 2)]);
+    let mut o = r.run_opts();
+    o.limit = Some(1);
+    run(o, no_stop()).await.unwrap();
+    // The same root with a trailing slash is the same item URL, so the kept item is reused.
+    let mut o = r.run_opts();
+    o.api_root = format!("{}/", r.s.root);
+    o.limit = Some(2);
+    let s = run(o, no_stop()).await.unwrap();
+    assert_eq!((s.state.as_str(), s.items_fetched), ("done", 0));
+    assert_eq!(r.s.hits(&Rig::item_path("1902-03-27")), 1);
+
+    // A kept item from another URL is asked for again, and the record names the URL asked.
+    std::fs::remove_file(record_path(&r.out(), &key("1902-03-27", 2).doc_id())).unwrap();
+    let kept = std::fs::read_dir(r.out().join("items"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .find(|p| p.extension().is_some_and(|x| x == "url"))
+        .unwrap();
+    std::fs::write(&kept, "https://loc.gov/item/elsewhere/?fo=json").unwrap();
+    let s = run(r.run_opts(), no_stop()).await.unwrap();
+    assert_eq!((s.state.as_str(), s.items_fetched), ("done", 1));
+    assert_eq!(r.s.hits(&Rig::item_path("1902-03-27")), 2);
+    let want = item_url(&r.s.root, &key("1902-03-27", 2));
+    assert_eq!(r.record(&key("1902-03-27", 2)).item_url, want);
+    assert_eq!(std::fs::read_to_string(&kept).unwrap(), want);
+}
+
+#[tokio::test]
 async fn a_run_needs_a_positive_number_of_hours() {
     let r = Rig::new().await;
     r.issue("1902-03-27", 1);

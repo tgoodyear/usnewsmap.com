@@ -247,7 +247,8 @@ async fn recorded(out: &Path) -> anyhow::Result<HashSet<String>> {
 }
 
 /// Writes `body` to a temporary file of this writer's own beside `path`, then renames it over
-/// `path`, so a reader sees all of one write or none of it.
+/// `path`. On Linux, where this runs, a rename replaces the file atomically within a
+/// filesystem, so a reader sees all of one write or none of it; other platforms may not.
 async fn write_atomic(path: &Path, body: &[u8]) -> std::io::Result<()> {
     static WRITES: AtomicU64 = AtomicU64::new(0);
     if let Some(dir) = path.parent() {
@@ -564,11 +565,17 @@ async fn item_json(
     stop: &watch::Receiver<bool>,
     deadline: Instant,
 ) -> Result<(serde_json::Value, String), Step> {
-    if let Ok(b) = tokio::fs::read(path).await {
-        if let Ok(v) = serde_json::from_slice(&b) {
-            return Ok((v, sha256_hex(&b)));
+    // The URL a kept item JSON came from is kept beside it, and the item is reused only for
+    // that URL, so a page's record never names a URL its item wasn't fetched from.
+    let url_path = path.with_extension("url");
+    let kept_url = tokio::fs::read_to_string(&url_path).await.ok();
+    if kept_url.as_deref() == Some(url) {
+        if let Ok(b) = tokio::fs::read(path).await {
+            if let Ok(v) = serde_json::from_slice(&b) {
+                return Ok((v, sha256_hex(&b)));
+            }
+            tracing::warn!(path = %path.display(), "a kept item JSON doesn't parse; asking again");
         }
-        tracing::warn!(path = %path.display(), "a kept item JSON doesn't parse; asking again");
     }
     status.items_fetched += 1;
     let body = get(engine, url, MAX_ITEM_BYTES, stop, deadline)
@@ -582,12 +589,13 @@ async fn item_json(
     {
         return Err(Step::Failed(format!("{url}: the item JSON lists no pages")));
     }
-    write_atomic(path, &body).await.map_err(|e| {
-        Step::End(
-            "incomplete",
-            Some(anyhow::anyhow!("{}: {e}", path.display())),
-        )
-    })?;
+    // The item first, then its URL: an item without its URL is asked for again.
+    let _ = tokio::fs::remove_file(&url_path).await;
+    for (p, b) in [(path, &body[..]), (url_path.as_path(), url.as_bytes())] {
+        write_atomic(p, b)
+            .await
+            .map_err(|e| Step::End("incomplete", Some(anyhow::anyhow!("{}: {e}", p.display()))))?;
+    }
     Ok((v, sha256_hex(&body)))
 }
 

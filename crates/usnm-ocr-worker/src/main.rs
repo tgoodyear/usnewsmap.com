@@ -1645,10 +1645,12 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
         } => {
             // LoC's budget is needed only for a fetch: not on a dry run, nor for a manifest
             // that's there.
-            let fetch_manifest = if fetch_manifest
+            let missing = fetch_manifest
                 && !dry_run
-                && matches!(tokio::fs::try_exists(&bag_manifest).await, Ok(false))
-            {
+                && !tokio::fs::try_exists(&bag_manifest)
+                    .await
+                    .with_context(|| bag_manifest.display().to_string())?;
+            let fetch_manifest = if missing {
                 Some((batches_root, loc.access()?))
             } else {
                 None
