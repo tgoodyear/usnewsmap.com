@@ -14,11 +14,18 @@ use super::{
 };
 use crate::read;
 use anyhow::Context;
-use std::path::{Path, PathBuf};
-use usnm_ocr_contract::qwen::{Job, MAX_JOB_JSON};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
+use usnm_ocr_contract::qwen::{Job, Outcome, Reading, Readings, MAX_JOB_JSON, VERSION};
 
-const MAX_MEMBERSHIP: usize = 256 * 1024;
+pub(crate) const MAX_MEMBERSHIP: usize = 256 * 1024;
 const MAX_RECORD: usize = 4 * 1024 * 1024;
+
+/// The status of a page with an agreeing pair record, the one
+/// `accepted_readings` joins.
+const ACCEPTED: &str = "accepted";
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct PageStatus {
@@ -50,41 +57,199 @@ pub fn run(root: &Path, pages: &Path) -> anyhow::Result<Vec<PageStatus>> {
     for unit in unit_dirs {
         let job: Job = serde_json::from_slice(&read(&unit.join(JOB_FILE), MAX_JOB_JSON)?)
             .with_context(|| format!("{}", unit.display()))?;
-        if job.pages.is_empty() {
-            continue;
-        }
-        let membership = read(&unit.join(MEMBERSHIP_FILE), MAX_MEMBERSHIP)
-            .ok()
-            .and_then(|b| serde_json::from_slice::<Membership>(&b).ok())
-            .filter(|m| m.check(&job).is_ok() && m.check_sources(&root.join("pages")).is_ok());
-        for (i, bp) in job.pages.iter().enumerate() {
-            let member = membership.as_ref().map(|m| &m.pages[i]);
-            let (status, records) = match member {
-                None => ("membership_invalid", Vec::new()),
-                Some(_) => {
-                    let prefix = format!("{}:", bp.doc_id);
-                    let expected: Vec<&str> = job
-                        .crops
-                        .iter()
-                        .map(|c| c.id.as_str())
-                        .filter(|id| id.starts_with(&prefix))
-                        .collect();
-                    page_records(pages, &job.id, &bp.doc_id, &expected)?
-                }
-            };
-            out.push(PageStatus {
-                workunit: job.workunit(),
-                job_id: job.id.clone(),
-                doc_id: bp.doc_id.clone(),
-                page_job_id: member.map(|m| m.job_id.clone()),
-                page_job_sha256: member.map(|m| m.job_sha256.clone()),
-                status,
-                records,
-                accuracy_established: false,
-            });
-        }
+        out.extend(unit_pages(root, &unit, &job, pages)?);
     }
     Ok(out)
+}
+
+/// The pages of the bundle unit staged at `unit` under `root`, whose job is
+/// `job`, in page order; none for a single-page unit.
+pub fn unit_pages(
+    root: &Path,
+    unit: &Path,
+    job: &Job,
+    pages: &Path,
+) -> anyhow::Result<Vec<PageStatus>> {
+    if job.pages.is_empty() {
+        return Ok(Vec::new());
+    }
+    let membership = read(&unit.join(MEMBERSHIP_FILE), MAX_MEMBERSHIP)
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Membership>(&b).ok())
+        .filter(|m| m.check(job).is_ok() && m.check_sources(&root.join("pages")).is_ok());
+    let mut out = Vec::new();
+    for (i, bp) in job.pages.iter().enumerate() {
+        let member = membership.as_ref().map(|m| &m.pages[i]);
+        let (status, records) = match member {
+            None => ("membership_invalid", Vec::new()),
+            Some(_) => page_records(pages, &job.id, &bp.doc_id, &expected(job, &bp.doc_id))?,
+        };
+        out.push(PageStatus {
+            workunit: job.workunit(),
+            job_id: job.id.clone(),
+            doc_id: bp.doc_id.clone(),
+            page_job_id: member.map(|m| m.job_id.clone()),
+            page_job_sha256: member.map(|m| m.job_sha256.clone()),
+            status,
+            records,
+            accuracy_established: false,
+        });
+    }
+    Ok(out)
+}
+
+/// The bundle's crop ids on the page `doc_id`, `<doc_id>:<crop>`.
+fn expected<'a>(job: &'a Job, doc_id: &str) -> Vec<&'a str> {
+    let prefix = format!("{doc_id}:");
+    job.crops
+        .iter()
+        .map(|c| c.id.as_str())
+        .filter(|id| id.starts_with(&prefix))
+        .collect()
+}
+
+/// The pair records of one bundle page, by file name: every file
+/// `qwen compare --pages` publishes there, whether or not it is counted.
+pub fn record_paths(pages: &Path, job_id: &str, doc_id: &str) -> anyhow::Result<Vec<PathBuf>> {
+    // Both name directories: a job id is its sha256, and `record_page`
+    // checks the doc id the same way before writing.
+    anyhow::ensure!(
+        usnm_ocr_contract::boinc::is_sha256(job_id),
+        "invalid qwen job id {job_id:?}"
+    );
+    usnm_ocr_contract::quality::check_doc_id(doc_id)?;
+    let entries = match std::fs::read_dir(pages.join(job_id).join(doc_id)) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e).context("reading page records"),
+    };
+    let mut files = Vec::new();
+    for entry in entries {
+        // As before bundles, an entry that can't be read is skipped, not fatal.
+        let Ok(entry) = entry else { continue };
+        let path = entry.path();
+        // `record_page` writes regular files with UTF-8 names, staging them
+        // through temporary files in the same directory.
+        if entry.file_type().is_ok_and(|t| t.is_file())
+            && path.file_name().is_some_and(|n| n.to_str().is_some())
+            && path.extension().is_some_and(|x| x == "json")
+        {
+            files.push(path);
+        }
+    }
+    files.sort();
+    Ok(files)
+}
+
+/// The readings two hosts agreed on for each `accepted` page of the bundle
+/// unit, by doc id, as that page's own readings: each crop id's
+/// `<doc_id>:` prefix is taken off (#1435). They are the first agreeing
+/// record's (by file name), from the side whose result name sorts first
+/// (the two names must differ), which must have run to the end and name its
+/// device, so the same records always give the same readings. Agreeing is
+/// not being right: nothing here establishes accuracy.
+pub fn accepted_readings(
+    root: &Path,
+    unit: &Path,
+    job: &Job,
+    pages: &Path,
+) -> anyhow::Result<BTreeMap<String, Readings>> {
+    let mut out = BTreeMap::new();
+    for page in unit_pages(root, unit, job, pages)? {
+        if page.status != ACCEPTED {
+            continue;
+        }
+        let first = page
+            .records
+            .first()
+            .with_context(|| format!("{}: accepted with no record", page.doc_id))?;
+        let path = pages.join(&job.id).join(&page.doc_id).join(first);
+        let record: PageRecord = serde_json::from_slice(&read(&path, MAX_RECORD)?)
+            .with_context(|| format!("{}", path.display()))?;
+        anyhow::ensure!(
+            record.status == PAGE_AGREED,
+            "{}: not an agreeing record",
+            path.display()
+        );
+        // The ledger counted it as this page's; it must still be.
+        anyhow::ensure!(
+            record.v == 1
+                && record.job_id == job.id
+                && record.doc_id == page.doc_id
+                && !record.accuracy_established,
+            "{}: not a record of this job's page",
+            path.display()
+        );
+        let [a, b] = record.results;
+        anyhow::ensure!(
+            a.result != b.result,
+            "{}: both sides name result {:?}",
+            path.display(),
+            a.result
+        );
+        let side = if b.result < a.result { b } else { a };
+        let mut ids: Vec<&str> = side.readings.iter().map(|r| r.id.as_str()).collect();
+        ids.sort_unstable();
+        let mut want = expected(job, &page.doc_id);
+        want.sort_unstable();
+        anyhow::ensure!(
+            !want.is_empty() && ids == want,
+            "{}: the agreeing side does not read the page's crops once each",
+            path.display()
+        );
+        anyhow::ensure!(
+            side.outcome == Outcome::Ok,
+            "{}: the agreeing side did not run to the end",
+            path.display()
+        );
+        anyhow::ensure!(
+            !side.device.trim().is_empty(),
+            "{}: the agreeing side names no device",
+            path.display()
+        );
+        let prefix = format!("{}:", page.doc_id);
+        let readings = side
+            .readings
+            .into_iter()
+            .map(|r| {
+                let id = r.id.strip_prefix(&prefix).map(str::to_owned);
+                id.map(|id| Reading { id, ..r })
+            })
+            .collect::<Option<Vec<_>>>()
+            .with_context(|| format!("{}: a reading of another page", path.display()))?;
+        let readings = Readings {
+            v: VERSION,
+            job_id: job.id.clone(),
+            device: side.device,
+            diag: BTreeMap::new(),
+            model: side.model,
+            outcome: Outcome::Ok,
+            prompt_version: job.prompt_version,
+            readings,
+        };
+        out.insert(page.doc_id, readings);
+    }
+    Ok(out)
+}
+
+/// What `accepted_readings` reads of a pair record (`validate::record_page`).
+#[derive(serde::Deserialize)]
+struct PageRecord {
+    v: u32,
+    job_id: String,
+    doc_id: String,
+    accuracy_established: bool,
+    status: String,
+    results: [RecordSide; 2],
+}
+
+#[derive(serde::Deserialize)]
+struct RecordSide {
+    result: String,
+    device: String,
+    model: Option<String>,
+    outcome: Outcome,
+    readings: Vec<Reading>,
 }
 
 /// The page's status from its pair records. A record that does not name
@@ -105,45 +270,34 @@ fn page_records(
             ids.len() == xs.len() && ids == want
         })
     };
-    let dir = pages.join(job_id).join(doc_id);
     let mut agreed = Vec::new();
     let mut disagreed = Vec::new();
-    if dir.exists() {
-        let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)?
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .filter(|p| p.extension().is_some_and(|x| x == "json"))
-            .collect();
-        files.sort();
-        for f in files {
-            let Ok(r) = read(&f, MAX_RECORD)
-                .and_then(|b| Ok(serde_json::from_slice::<serde_json::Value>(&b)?))
-            else {
-                continue;
-            };
-            let own = r["v"] == 1
-                && r["job_id"] == job_id
-                && r["doc_id"] == doc_id
-                && r["accuracy_established"] == false
-                && !want.is_empty()
-                && exact(&r["crops"])
-                && r["results"].as_array().is_some_and(|sides| {
-                    sides.len() == 2 && sides.iter().all(|s| exact(&s["readings"]))
-                });
-            let name = f
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or_default()
-                .to_owned();
-            match r["status"].as_str() {
-                Some(PAGE_AGREED) if own => agreed.push(name),
-                Some(PAGE_DISAGREED) if own => disagreed.push(name),
-                _ => {}
-            }
+    for f in record_paths(pages, job_id, doc_id)? {
+        let Ok(r) =
+            read(&f, MAX_RECORD).and_then(|b| Ok(serde_json::from_slice::<serde_json::Value>(&b)?))
+        else {
+            continue;
+        };
+        let own = r["v"] == 1
+            && r["job_id"] == job_id
+            && r["doc_id"] == doc_id
+            && r["accuracy_established"] == false
+            && !want.is_empty()
+            && exact(&r["crops"])
+            && r["results"].as_array().is_some_and(|sides| {
+                sides.len() == 2 && sides.iter().all(|s| exact(&s["readings"]))
+            });
+        let Some(name) = f.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        match r["status"].as_str() {
+            Some(PAGE_AGREED) if own => agreed.push(name.to_owned()),
+            Some(PAGE_DISAGREED) if own => disagreed.push(name.to_owned()),
+            _ => {}
         }
     }
     let status = if !agreed.is_empty() {
-        "accepted"
+        ACCEPTED
     } else if !disagreed.is_empty() {
         "disagreed"
     } else {
@@ -154,13 +308,12 @@ fn page_records(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::qwen::{stage, validate, DIAG_FILE, READINGS_FILE, RESULT_FILE};
-    use std::collections::BTreeMap;
     use usnm_ocr_contract::{
         boinc::sha256,
-        qwen::{Outcome, Reading, Readings, ResultManifest, PROMPT_VERSION, VERSION},
+        qwen::{ResultManifest, PROMPT_VERSION},
     };
 
     const DOCS: [&str; 3] = [
@@ -171,7 +324,7 @@ mod tests {
 
     /// One host's three output files for the bundle `job`, reading crop
     /// `<doc>:<crop>` as `text(doc, crop)`.
-    fn result(
+    pub(crate) fn result(
         dir: &Path,
         job: &Job,
         tag: &str,
@@ -273,6 +426,92 @@ mod tests {
         let status: Vec<&str> = ledger.iter().map(|p| p.status).collect();
         assert_eq!(status, ["accepted", "disagreed", "accepted"]);
         assert!(ledger.iter().all(|p| !p.accuracy_established));
+        // The accepted pages' readings, as their own pages' crops.
+        let kept =
+            accepted_readings(&root, &units(&root).join("bundle-00001"), &job, &pages).unwrap();
+        assert_eq!(kept.keys().collect::<Vec<_>>(), [DOCS[0], DOCS[2]]);
+        for (doc, r) in &kept {
+            assert_eq!(r.job_id, job.id);
+            assert_eq!(r.outcome, Outcome::Ok);
+            let got: Vec<(&str, String)> = r
+                .readings
+                .iter()
+                .map(|x| (x.id.as_str(), x.text.clone()))
+                .collect();
+            assert_eq!(
+                got,
+                [("c01", words(doc, "c01")), ("c02", words(doc, "c02"))]
+            );
+        }
+        // From the side whose result name sorts first, in whatever order the record lists them.
+        let entries: Vec<PathBuf> = pages
+            .join(&job.id)
+            .join(DOCS[0])
+            .read_dir()
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .collect();
+        let [record_path] = <[PathBuf; 1]>::try_from(entries).unwrap();
+        let original = std::fs::read(&record_path).unwrap();
+        let mut record: serde_json::Value = serde_json::from_slice(&original).unwrap();
+        let sides = record["results"].as_array_mut().unwrap();
+        for (side, text) in sides.iter_mut().zip(["first", "second"]) {
+            for r in side["readings"].as_array_mut().unwrap() {
+                r["text"] = text.into();
+            }
+        }
+        sides.reverse();
+        std::fs::write(&record_path, serde_json::to_vec(&record).unwrap()).unwrap();
+        let kept =
+            accepted_readings(&root, &units(&root).join("bundle-00001"), &job, &pages).unwrap();
+        assert!(kept[DOCS[0]].readings.iter().all(|r| r.text == "first"));
+        // A side with no device, or a blank one, is refused, and a directory is not a record.
+        record["results"][1]
+            .as_object_mut()
+            .unwrap()
+            .remove("device");
+        std::fs::write(&record_path, serde_json::to_vec(&record).unwrap()).unwrap();
+        let err =
+            accepted_readings(&root, &units(&root).join("bundle-00001"), &job, &pages).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("missing field `device`"),
+            "{err:#}"
+        );
+        record["results"][1]["device"] = " ".into();
+        std::fs::write(&record_path, serde_json::to_vec(&record).unwrap()).unwrap();
+        let err =
+            accepted_readings(&root, &units(&root).join("bundle-00001"), &job, &pages).unwrap_err();
+        assert!(format!("{err:#}").contains("names no device"), "{err:#}");
+        // Nor are two sides that name one result, whichever reads.
+        record["results"][1]["device"] = record["results"][0]["device"].clone();
+        record["results"][1]["result"] = record["results"][0]["result"].clone();
+        std::fs::write(&record_path, serde_json::to_vec(&record).unwrap()).unwrap();
+        let err =
+            accepted_readings(&root, &units(&root).join("bundle-00001"), &job, &pages).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("both sides name result"),
+            "{err:#}"
+        );
+        let stray = record_path.with_file_name("stray.json");
+        std::fs::create_dir(&stray).unwrap();
+        assert_eq!(
+            record_paths(&pages, &job.id, DOCS[0]).unwrap(),
+            std::slice::from_ref(&record_path)
+        );
+        std::fs::remove_dir(&stray).unwrap();
+        // Nor is a file whose name isn't UTF-8 (Linux allows one; APFS doesn't).
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            let odd = record_path.with_file_name(std::ffi::OsStr::from_bytes(b"\xff.json"));
+            std::fs::write(&odd, &original).unwrap();
+            assert_eq!(
+                record_paths(&pages, &job.id, DOCS[0]).unwrap(),
+                std::slice::from_ref(&record_path)
+            );
+            std::fs::remove_file(&odd).unwrap();
+        }
+        std::fs::write(&record_path, &original).unwrap();
         assert_eq!(
             ledger[1].page_job_id.as_deref(),
             Some(membership.pages[1].job_id.as_str())

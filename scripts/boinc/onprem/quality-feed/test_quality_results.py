@@ -219,6 +219,18 @@ class ResultsTest(unittest.TestCase):
             self.assertIn("--qwen-crop-states /project/usnmocr/qwen/crop-states",
                           run.call_args_list[0].args[0][-1])
 
+    def test_qwen_pages_reach_collectors_that_join_readings_only(self):
+        args = self.args()
+        args.qwen_pages = "/project/usnmocr/qwen/pages"
+        with mock.patch.object(results.subprocess, "run") as run:
+            results.run(args)
+            self.assertNotIn("--qwen-pages", shlex.split(run.call_args_list[0].args[0][-1]))
+        args.campaign = args.qwen_campaign = "qwen-nonenglish-v1"
+        with mock.patch.object(results.subprocess, "run") as run:
+            results.run(args)
+            argv = shlex.split(run.call_args_list[0].args[0][-1])
+            self.assertEqual(argv[argv.index("--qwen-pages") + 1], "/project/usnmocr/qwen/pages")
+
 
 class NativeCampaignsTest(unittest.TestCase):
     ENGINE = "sha256:" + "a" * 64
