@@ -535,6 +535,41 @@ impl Engine {
         gate.not_slowed().await
     }
 
+    /// Read an `open` answer for `url` whole, at most `max` bytes, at no more than its
+    /// policy's byte cap (`max_bytes_per_sec`, or a lower rate file), as `fetch` does.
+    pub async fn read_capped(
+        &self,
+        url: &str,
+        mut resp: reqwest::Response,
+        max: usize,
+        stop: &watch::Receiver<bool>,
+    ) -> Result<bytes::Bytes, Fail> {
+        let gate = self.gate_for(url).await?;
+        gate.cap.refresh();
+        if resp.content_length().is_some_and(|n| n > max as u64) {
+            return Err(Fail::Transient(format!("{url}: response over {max} bytes")));
+        }
+        let mut body = Vec::new();
+        loop {
+            let chunk = resp
+                .chunk()
+                .await
+                .map_err(|e| Fail::Transient(format!("{url}: {}", e.without_url())))?;
+            let Some(chunk) = chunk else {
+                return Ok(bytes::Bytes::from(body));
+            };
+            if body.len() + chunk.len() > max {
+                return Err(Fail::Transient(format!("{url}: response over {max} bytes")));
+            }
+            body.extend_from_slice(&chunk);
+            let mut wait = stop.clone();
+            tokio::select! {
+                () = gate.cap.take(chunk.len() as u64) => {}
+                () = async { let _ = wait.wait_for(|s| *s).await; } => return Err(Fail::Stopped),
+            }
+        }
+    }
+
     /// GET `url`, following redirects by hand, each hop paced and refused if
     /// it leaves the policy `url` started in. `from` asks for the file from
     /// that byte on.

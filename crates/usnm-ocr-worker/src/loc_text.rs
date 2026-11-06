@@ -46,7 +46,7 @@ use usnm_core::time::day_number;
 use crate::batch::{self, BagIndex};
 use crate::bulk::hold_lock;
 use crate::fetcher::{plain, Engine, EngineOptions, Fail, FileBudgets, Policies, LOC};
-use crate::loc::{issue_id, item_url, page_texts, read_limited, MAX_BAG_BYTES, MAX_ITEM_BYTES};
+use crate::loc::{issue_id, item_url, page_texts, MAX_BAG_BYTES, MAX_ITEM_BYTES};
 
 /// What the records give as the text's source.
 pub const OCR_SOURCE: &str = "loc-api-fulltext";
@@ -323,9 +323,7 @@ async fn get(
     deadline: Instant,
 ) -> Result<bytes::Bytes, Fail> {
     let resp = engine.open(url, None, stop, deadline).await?;
-    read_limited(resp, max)
-        .await
-        .map_err(|e| Fail::Transient(format!("{url}: {e}")))
+    engine.read_capped(url, resp, max, stop).await
 }
 
 /// The page's ALTO path and text from a text service answer:
@@ -692,11 +690,14 @@ pub async fn run(opts: RunOptions, stop: watch::Receiver<bool>) -> anyhow::Resul
         !done
     });
     let (engine, policies) = engine(&opts.loc, &opts.out)?;
-    on_loc(&policies, &opts.api_root).map_err(anyhow::Error::msg)?;
-    if !keys.is_empty() {
+    // The first request is the first issue's item JSON, so that is the URL checked: the API
+    // root itself is never asked for. Each request is still checked by the engine.
+    if let Some(first) = keys.first() {
+        let first = item_url(&opts.api_root, first);
+        on_loc(&policies, &first).map_err(anyhow::Error::msg)?;
         // After a push-back the budget is at the slow rate for every process for a day; this
         // waits for it to lift (or an operator's reset) rather than add to it.
-        if let Err(e) = engine.check_not_slowed(&opts.api_root).await {
+        if let Err(e) = engine.check_not_slowed(&first).await {
             s.state = "slowed".into();
             s.error = Some(format!("{e:#}"));
             write_status(&opts.out, &s).await?;

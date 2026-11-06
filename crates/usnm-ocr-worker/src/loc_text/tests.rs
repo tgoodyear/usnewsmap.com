@@ -20,10 +20,16 @@ fn sha(b: &[u8]) -> String {
 }
 
 fn policy(name: &str, host: &str) -> Policy {
+    policy_with(name, host, "")
+}
+
+/// `policy` with more top-level keys.
+fn policy_with(name: &str, host: &str, extra: &str) -> Policy {
     let mut p = Policy::parse(
         name,
         &format!(
             r#"
+{extra}
 hosts = ["{host}"]
 label = "{name}"
 requests_per_minute = 60000
@@ -601,6 +607,48 @@ async fn a_gap_is_never_under_locs_crawl_delay() {
         let p = policies.iter().find(|p| p.name == LOC).unwrap();
         assert_eq!(p.min_gap_secs, want, "{gap:?}");
     }
+}
+
+#[tokio::test]
+async fn a_policy_that_refuses_the_api_root_alone_still_runs() {
+    // The run never asks for the API root, so a policy whose paths leave it out doesn't stop
+    // it; the item JSON and text it does ask for are checked as before.
+    let r = Rig::new().await;
+    r.issue("1902-03-27", 2);
+    r.queue(&[key("1902-03-27", 1), key("1902-03-27", 2)]);
+    let mut opts = r.run_opts();
+    opts.loc = r.access(vec![policy_with(
+        LOC,
+        "127.0.0.1",
+        r#"disallow_paths = ["/$"]"#,
+    )]);
+    let s = run(opts, no_stop()).await.unwrap();
+    assert_eq!((s.state.as_str(), s.fetched), ("done", 2), "{:?}", s.failed);
+}
+
+#[tokio::test]
+async fn answers_are_read_under_the_policys_byte_cap() {
+    let r = Rig::new().await;
+    let item = r.issue("1902-03-27", 2);
+    r.queue(&[key("1902-03-27", 1), key("1902-03-27", 2)]);
+    let bytes = item.len() + 2 * Rig::text_body("1902-03-27", 1).len();
+    let rate = 400u64;
+    let mut opts = r.run_opts();
+    opts.loc = r.access(vec![policy_with(
+        LOC,
+        "127.0.0.1",
+        &format!("max_bytes_per_sec = {rate}"),
+    )]);
+    let t = Instant::now();
+    let s = run(opts, no_stop()).await.unwrap();
+    assert_eq!((s.state.as_str(), s.fetched), ("done", 2), "{:?}", s.failed);
+    // Up to a second of unused rate carries over, so the floor is a second short.
+    let floor = Duration::from_secs_f64(bytes as f64 / rate as f64 - 1.0);
+    assert!(
+        t.elapsed() >= floor,
+        "{:?} for {bytes} bytes at {rate}/s",
+        t.elapsed()
+    );
 }
 
 #[test]
