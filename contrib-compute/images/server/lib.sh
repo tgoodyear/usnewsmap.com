@@ -151,7 +151,7 @@ render_config() {
   local daemons
   daemons='<daemon><cmd>sample_trivial_validator --app usnm_ocr</cmd><output>sample_trivial_validator_usnm_ocr.log</output><pid_file>sample_trivial_validator_usnm_ocr.pid</pid_file></daemon>
         <daemon><cmd>batch_collect_assimilator --app usnm_ocr</cmd><output>batch_collect_assimilator_usnm_ocr.log</output><pid_file>batch_collect_assimilator_usnm_ocr.pid</pid_file></daemon>'
-  # The gold check (#462), NDL OCR, QUALITY and Qwen validate with usnm-boinc, which only the bridge image carries.
+  # The gold check (#462, and its native app usnm_gold_native, #1418), NDL OCR, QUALITY and Qwen validate with usnm-boinc, which only the bridge image carries.
   # A server run from that image adds their daemons and links the validator scripts into bin/.
   # The retired usnm_assess, usnm_surya, usnm_iris and usnm_qwen_train have none (#1449): see
   # "Retiring an app" in docs/boinc/server-and-apps.md. Links an older image made stay in bin/.
@@ -161,6 +161,8 @@ render_config() {
     daemons="$daemons
         <daemon><cmd>script_validator --app usnm_gold --init_script usnm_gold_check</cmd><output>script_validator_usnm_gold.log</output><pid_file>script_validator_usnm_gold.pid</pid_file></daemon>
         <daemon><cmd>batch_collect_assimilator --app usnm_gold</cmd><output>batch_collect_assimilator_usnm_gold.log</output><pid_file>batch_collect_assimilator_usnm_gold.pid</pid_file></daemon>
+        <daemon><cmd>script_validator --app usnm_gold_native --init_script usnm_gold_check</cmd><output>script_validator_usnm_gold_native.log</output><pid_file>script_validator_usnm_gold_native.pid</pid_file></daemon>
+        <daemon><cmd>batch_collect_assimilator --app usnm_gold_native</cmd><output>batch_collect_assimilator_usnm_gold_native.log</output><pid_file>batch_collect_assimilator_usnm_gold_native.pid</pid_file></daemon>
         <daemon><cmd>script_validator --app usnm_ndlocr --init_script usnm_ndlocr_check --compare_script usnm_ndlocr_compare</cmd><output>script_validator_usnm_ndlocr.log</output><pid_file>script_validator_usnm_ndlocr.pid</pid_file></daemon>
         <daemon><cmd>batch_collect_assimilator --app usnm_ndlocr</cmd><output>batch_collect_assimilator_usnm_ndlocr.log</output><pid_file>batch_collect_assimilator_usnm_ndlocr.pid</pid_file></daemon>
         <daemon><cmd>script_validator --app usnm_quality --init_script usnm_quality_check --compare_script usnm_quality_compare</cmd><output>script_validator_usnm_quality.log</output><pid_file>script_validator_usnm_quality.pid</pid_file></daemon>
