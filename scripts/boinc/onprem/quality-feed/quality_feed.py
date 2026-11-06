@@ -827,7 +827,7 @@ def scan_exists(server, scan):
 
 
 def delete_shipped(a, camp_dir, done_path, quality_docs, deleted_path, kept_path=None, ocr_active=frozenset(),
-                   verify=True, retired_path=None):
+                   verify=True, retired_path=None, outage=None):
     """DELETEs the buffer scans of the quality pass's shipped pages (the shipper has removed
     their chunk from the outbox), bar the most damaged, which stay for re-OCR.
 
@@ -845,7 +845,8 @@ def delete_shipped(a, camp_dir, done_path, quality_docs, deleted_path, kept_path
     reads it by its sidecar and then deletes it, best effort. Its check time is reset, so it is
     among the first looked up once OCR is done with it. With `verify` (the follower asks once
     a round, whatever its campaigns), --keep-verify of the longest-unchecked are looked up; one
-    the scan server doesn't answer ends the round's lookups and deletes.
+    the scan server doesn't answer ends the round's lookups and deletes: `outage`, a dict the
+    round's calls share, carries that to its other campaigns, which send nothing.
 
     `deleted_path` gets every page this is done with, deleted or released, so neither is
     weighed again; with `retired_path`, the kept list's pages go there instead: the list is
@@ -875,15 +876,14 @@ def delete_shipped(a, camp_dir, done_path, quality_docs, deleted_path, kept_path
         shipped[doc] = (scan, size, damage, now)
     if not verify and not shipped:
         return 0  # nothing of this campaign's, and the kept list is another call's
-    # Set once the scan server doesn't answer: the round's other requests wait for the next
-    # round, which finds every page this one couldn't finish where it was.
-    unreachable = False
+    # "down" is set once the scan server doesn't answer: the round's other requests wait for
+    # the next round, which finds every page this one couldn't finish where it was.
+    outage = {} if outage is None else outage
 
     def delete(doc, scan):
         """Whether the scan is gone. A failure is logged, never raised, so the round's
         bookkeeping is still written."""
-        nonlocal unreachable
-        if unreachable:
+        if outage.get("down"):
             return False
         req = urllib.request.Request(f"{a.scan_server.rstrip('/')}/scans/{scan}", method="DELETE",
                                      headers={"User-Agent": USER_AGENT})
@@ -896,7 +896,7 @@ def delete_shipped(a, camp_dir, done_path, quality_docs, deleted_path, kept_path
                 return False
         except (urllib.error.URLError, OSError) as e:
             log("buffer delete failed; the rest wait for the next round", doc_id=doc, error=str(e)[:200])
-            unreachable = True
+            outage["down"] = True
             return False
         return True
 
@@ -905,7 +905,7 @@ def delete_shipped(a, camp_dir, done_path, quality_docs, deleted_path, kept_path
     claimed = {doc: (*k[:3], 0) for doc, k in kept.items() if doc in ocr_active}
     kept.update(claimed)
     released = []
-    if budget and verify:
+    if budget and verify and not outage.get("down"):
         unclaimed = ((doc, k) for doc, k in kept.items() if doc not in claimed)
         for doc, k in heapq.nsmallest(getattr(a, "keep_verify", 0), unclaimed, key=lambda kv: kv[1][3]):
             try:
@@ -916,7 +916,7 @@ def delete_shipped(a, camp_dir, done_path, quality_docs, deleted_path, kept_path
                 log("kept scan check failed; next round", doc_id=doc, error=str(e)[:200])
                 if isinstance(e, urllib.error.HTTPError):
                     continue  # the server answered, so it's this scan: go on to the next
-                unreachable = True
+                outage["down"] = True
                 break  # no answer (down or unreachable): one timeout a round, not --keep-verify
             # With its sidecar gone (marked done: OCR's worker read it, or a DELETE of ours
             # got that far and failed), a DELETE makes sure the bytes are gone too.
@@ -924,7 +924,7 @@ def delete_shipped(a, camp_dir, done_path, quality_docs, deleted_path, kept_path
                 released.append(doc)
             else:
                 kept[doc] = (*k[:3], now)
-            if unreachable:
+            if outage.get("down"):
                 break
     for doc in released:
         kept.pop(doc, None)
@@ -1065,14 +1065,16 @@ def cmd_follow(a):
             # ocr-active.txt can name a page ocr-docs.txt, read a moment before, didn't yet.
             quality_only = quality_docs - ocr_docs - ocr_active
             # This campaign's first: it checks the kept list, so space freed there is free
-            # to every campaign's newly shipped pages.
+            # to every campaign's newly shipped pages. Once the scan server doesn't answer, the
+            # rest send nothing (one timeout a round, held under the lock), but still keep pages.
+            outage = {}
             gone += delete_shipped(a, camp_dir, done_path, quality_only, deleted_path, kept_path, ocr_active,
-                                   retired_path=retired_path)
+                                   retired_path=retired_path, outage=outage)
             past = sorted(c for c in read_lines(followed_path) if c != a.campaign and CAMPAIGN_RE.match(c))
             for c in past:
                 gone += delete_shipped(a, os.path.join(a.outbox, c), os.path.join(a.state, c, "done.txt"), quality_only,
                                        os.path.join(a.state, c, "deleted.txt"), kept_path, ocr_active, verify=False,
-                                       retired_path=retired_path)
+                                       retired_path=retired_path, outage=outage)
         if gone:
             log("buffer scans deleted after shipping", pages=gone)
         quarantined = scan_quarantine.quarantined(state) if getattr(a, "quarantine_decode", False) else []
