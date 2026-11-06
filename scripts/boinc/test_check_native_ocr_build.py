@@ -78,6 +78,17 @@ class CheckNativeOcrBuild(unittest.TestCase):
                 self.write_manifest(**changes)
                 self.assertIn("is not a build manifest for x86_64-pc-linux-gnu", self.run_check()[1])
 
+    def test_refuses_a_manifest_that_names_a_field_twice(self):
+        path = self.build / "usnm_native_build.json"
+        text = path.read_text()
+        for duplicated in (text.replace('"v": 1', '"v": 0, "v": 1', 1),
+                           text.replace('"bytes":', '"bytes": 0, "bytes":', 1)):
+            with self.subTest(manifest=duplicated[:60]):
+                path.write_text(duplicated)
+                code, out = self.run_check()
+                self.assertNotEqual(code, 0)
+                self.assertIn("is not a build manifest for x86_64-pc-linux-gnu", out)
+
     def test_refuses_files_that_are_not_the_manifests(self):
         self.assertIn("missing: tessdata_eng.traineddata", self.run_check("usnm_native_build.json", "usnm_tesseract")[1])
         (self.build / "usnm_tesseract").write_bytes(ELF + b"other")

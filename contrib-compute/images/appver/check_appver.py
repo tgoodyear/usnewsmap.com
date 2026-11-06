@@ -82,6 +82,16 @@ def _file_entry(path: Path) -> dict:
     return {"bytes": size, "sha256": digest.hexdigest()}
 
 
+
+def _no_duplicate_fields(pairs):
+    """object_pairs_hook: refuse an object that names a field twice, as the worker's decoder does."""
+    fields = {}
+    for key, value in pairs:
+        if key in fields:
+            raise ValueError(f"duplicate field {key!r}")
+        fields[key] = value
+    return fields
+
 def _native_ocr_manifest_well_formed(manifest) -> bool:
     """Whether the worker reads this as a build manifest (crates/usnm-boinc/src/native.rs,
     Manifest and BuildFile): exactly their fields, with integers that are JSON integers."""
@@ -126,7 +136,7 @@ def _check_native_ocr(version_dir: Path, spec: ET.Element, app: str, platform: s
     if extras[NATIVE_OCR_MANIFEST] != f"usnm_native_build_{hashlib.sha256(raw).hexdigest()}.json":
         raise Refused(f"{NATIVE_OCR_MANIFEST} is not named for its digest")
     try:
-        manifest = json.loads(raw)
+        manifest = json.loads(raw, object_pairs_hook=_no_duplicate_fields)
     except ValueError:
         manifest = None
     if not _native_ocr_manifest_well_formed(manifest) or manifest["v"] != 1 or manifest["platform"] != platform:

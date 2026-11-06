@@ -313,6 +313,25 @@ class CheckAppver(unittest.TestCase):
                 spec = ca.ET.parse(directory / "version.xml").getroot()
                 self.assertEqual(ca._infer_app_and_platform(Path("staged"), spec), (app, "x86_64-pc-linux-gnu"))
 
+    def test_native_ocr_refuses_a_manifest_that_names_a_field_twice(self):
+        # The worker's decoder refuses a field named twice, so this does too, even when the
+        # manifest is named for its digest.
+        directory, sigs = self.stage_native_ocr("usnm_ocr_native")
+        version = directory / "version.xml"
+        spec = ca.ET.parse(version).getroot()
+        old = next(f.findtext("physical_name") for f in spec.findall("file")
+                   if f.findtext("logical_name") == "usnm_native_build.json")
+        duplicated = (directory / old).read_text().replace('"v": 1', '"v": 0, "v": 1', 1).encode()
+        self.assertIn(b'"v": 0, "v": 1', duplicated)
+        (directory / old).unlink()
+        new = f"usnm_native_build_{hashlib.sha256(duplicated).hexdigest()}.json"
+        (directory / new).write_bytes(duplicated)
+        version.write_text(version.read_text().replace(old, new))
+        self.sign_all(directory, sigs)
+        with self.assertRaisesRegex(ca.Refused, "usnm_native_build.json is not a build manifest"):
+            ca.check(directory, sigs, self.key, str(self.crypt), kind="native",
+                     app="usnm_ocr_native", platform="x86_64-pc-linux-gnu")
+
     def test_native_ocr_refuses_files_that_are_not_the_build(self):
         directory, sigs = self.stage_native_ocr("usnm_gold_native")
         spec = ca.ET.parse(directory / "version.xml").getroot()
