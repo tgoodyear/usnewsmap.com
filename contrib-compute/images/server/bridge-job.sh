@@ -766,9 +766,11 @@ case "$step" in
     # BOINC's tools/xadd looks up each <platform> and <app> of project.xml by name: it inserts
     # the ones the database lacks, updates a changed user_friendly_name or min_version, and
     # leaves the rest; it never deletes. So a rerun changes nothing (BOINC 22bbebe, tools/xadd).
+    # xadd gives a new app weight 1, so register-apps.php then sets the weight project.xml
+    # declares on the apps xadd added, and leaves registered apps' weights alone.
     cp "$TEMPLATES/project.xml" "$PROJ/project.xml"
     cd "$PROJ"
-    exec bin/xadd ;;
+    exec php "$TEMPLATES/register-apps.php" ;;
   submit-remote)
     # The page comes from the hand-off container, which the scan fetcher filled; never from
     # LoC. Submission then runs as for submit, which checks the page again.
