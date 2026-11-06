@@ -1210,6 +1210,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn bulk_xml_fetch_materializes_scans_from_empty_stores() {
+        let dir = tempfile::tempdir().unwrap();
+        let to = dir.path().join("store");
+        let to = to.to_str().unwrap();
+        let store = usnm_store::open(to).unwrap();
+        let site = site();
+        let tmp = dir.path().join("tmp");
+        let scans_root = dir.path().join("scans");
+        let mut options = opts();
+        options.exts = vec!["xml".into()];
+        options.scans_root = Some(scans_root.clone());
+
+        let (_, fetched) = fetch_batch(
+            &site,
+            store.as_ref(),
+            to,
+            &options,
+            "batch_pst_test_ver01",
+            &tmp,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(fetched.issues, 1);
+        assert_eq!(fetched.issues_later, 1);
+        for (page, expected) in [(1, b"page one image".as_slice()), (2, b"page two image")] {
+            let image = scans_root.join(format!(
+                "keep/psu_pst_test_ver01/sn84035968/1861-10-08/1/{page}.jp2"
+            ));
+            assert_eq!(std::fs::read(image).unwrap(), expected);
+        }
+        assert!(!store
+            .exists("psu_pst_test_ver01/bag/data/sn84035968/000002003/1861100801/1024.jp2")
+            .await
+            .unwrap());
+        assert!(store
+            .exists("psu_pst_test_ver01/bag/data/sn84035968/000002003/1861100801/1024.xml")
+            .await
+            .unwrap());
+        assert!(site
+            .asked
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|url| url.ends_with("/1861100801/1024.jp2")));
+        assert_eq!(
+            std::fs::read_to_string(scans_root.join("catalog/psu_pst_test_ver01.jsonl"))
+                .unwrap()
+                .lines()
+                .count(),
+            2
+        );
+    }
+
+    #[tokio::test]
     async fn catalogs_verified_images_in_the_pve_scan_tree() {
         use std::os::unix::fs::PermissionsExt as _;
 
