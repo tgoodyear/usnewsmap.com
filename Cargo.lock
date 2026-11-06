@@ -3766,6 +3766,7 @@ dependencies = [
  "md-5",
  "opentelemetry",
  "parquet",
+ "quick-xml",
  "reqwest",
  "rskafka",
  "rustix",

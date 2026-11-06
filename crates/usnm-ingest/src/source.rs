@@ -13,7 +13,7 @@ use std::time::Duration;
 use anyhow::{bail, Context};
 use chrono::Utc;
 use futures::StreamExt;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::state::{Batch, BatchStatus, State};
@@ -29,15 +29,15 @@ pub const USER_AGENT: &str = concat!(
 /// every batch's bulk OCR archive (about 3,000 batches, 2.5 TB of `tar.bz2`).
 pub const LOC_DATASETS: &str = "https://www.loc.gov/collections/chronicling-america/?fo=json&c=1";
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ListedBatch {
     /// LoC's listing calls this `batch`.
     #[serde(alias = "batch")]
     pub name: String,
     pub url: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sha256: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ocr_source: Option<String>,
     /// Titles with pages in the batch (LoC's listing has them).
     #[serde(default)]

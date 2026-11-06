@@ -14,6 +14,7 @@ The legacy crawler targeted `chroniclingamerica.loc.gov` JSON endpoints (`/batch
 | _American Stories_ (Dell et al., Harvard; Hugging Face)                                      | Article-level segmentation of ~20M scans, 438M articles, 1774–1963                                                      | Parquet download                                                                     | **Phase 3** option for article-level results and reprint detection (F-33/F-34).                                           |
 | _Newspaper Navigator_ (Lee et al.; `biglam/newspaper-navigator` on Hugging Face, CC0)        | Boxes of photographs, illustrations, maps, comics and cartoons on 16.4M pages, with scores and caption words            | Parquet download at a pinned revision                                                | **Picture layer** (§4.11, #1102). Keyed by the scan: `page_seq_num` is the reel frame, not the `seq`.                     |
 | _Mirrors_ (e.g. the `biglam/chronicling-america-bulk-ocr` bucket on Hugging Face)            | Same bulk OCR                                                                                                           | S3-style bulk                                                                        | Optional **backfill accelerator** to reduce load on LoC. Check provenance and checksums against LoC manifests before use. |
+| **Penn State's Pennsylvania Newspaper Archive** (`panewsarchive.psu.edu`, Open ONI)          | Batches LoC's bulk listing doesn't have: page images (JP2), ALTO and page text                                          | BagIt bags and per-page `ocr.txt`, one request at a time                             | §4.12 (#1592). One batch at a time, by hand; no bulk pull yet.                                                            |
 
 ### 4.1.1 Spike S-1 findings (September 2026)
 
@@ -159,7 +160,7 @@ qw-index/                              (Hot; Quickwit splits + file-backed metas
 | `text` | large_string (nullable) | Normalized OCR text (§4.5); null unless `text_status = ok` |
 | `text_chars`, `word_count` | int32 | QA and baselines |
 | `text_sha256` | fixed_binary(32) | Change detection |
-| `resource_url` | string | Canonical loc.gov page URL |
+| `resource_url` | string | Canonical page URL: loc.gov's, or Penn State's for its batches (§4.12) |
 | `ingested_at` | timestamp | |
 
 Curated rows hold only **immutable page facts**. Title-derived attributes (`place_id`, `state`, `language`) are **not stored here**. The `index` and `stats` jobs join them from the versioned titles snapshot, so a corrected title record never leaves stale copies in the system of record.
@@ -387,3 +388,25 @@ A row whose `page_url` does not have this shape is kept, with the identity left 
 **Limits, from #1102.** The detector is a 2020 Faster R-CNN (R50-FPN) whose reported average precision on the Beyond Words validation set is 63.4% overall and 30.9% for illustrations, so illustrations are missed or mislabeled often. It covers the 16.4 million pages Chronicling America held in 2020, not the 23 million searched now, so later pages have no boxes. The caption words are LoC's OCR and carry its errors.
 
 **Verified baseline.** The [local Beyond Words evaluator](../operations/pictures.md#verified-beyond-words-baseline) hashes the pinned canonical metadata and all retained picture parts, preserves the published train/validation split, excludes physical training overlap and post-1 December 2019 pages, and scores only the five verified classes. It reports fixed-threshold class-aware and geometry-only annotation agreement, not AP or engine accuracy. Missing retained predictions leave coverage unknown. No images are fetched, and no frame is treated as a page sequence number. Engine illustration/text-loss scoring and the picture layer's join, indexing and UI remain separate acceptance gates.
+
+## 4.12 Penn State's Pennsylvania Newspaper Archive (#1592)
+
+Penn State, an NDNP awardee (`pst_` batches at LoC), serves its own Open ONI site, the Pennsylvania Newspaper Archive (`panewsarchive.psu.edu`): 266 batches, about 1.24M pages. A survey for #1592 found about 857k of those pages missing from our corpus, about 295k of them from before 1931. They are on the site only, so `oni-fetch` brings them in as batches `curate` reads.
+
+**What the site serves.** Each batch is a public BagIt bag at `/data/batches/{batch}/`, with `bagit.txt`, `bag-info.txt`, `manifest-md5.txt` (every payload file's MD5) and `tagmanifest-md5.txt`. Under `data/`, `BATCH.xml` lists the issues, and each issue folder `{lccn}/{reel}/{yyyymmddEE}/` holds the issue's METS and, for each page, a JP2 (the page image, about 4 MB), the ALTO (about 1 MB), a PDF and a TIFF. Page files are named by reel frame (`1024.jp2`), so the issue's METS gives each page's sequence number (`extent/start`, as Open ONI reads it). Each page's text is at `/lccn/{page key}/ocr.txt`, the site's text of the ALTO. The site has a IIIF image server too, which `oni-fetch` doesn't use.
+
+**Fetch** (`usnm-ingest oni-fetch`, `crates/usnm-ingest/src/oni.rs`). For each batch it is given (`--batches batch_pst_bonaDea_ver03`), making one request at a time, `--gap-ms` apart (1 s by default), with a User-Agent that names #1592, it:
+
+- copies the bag into a raw store (`--to`, default `USNM_RAW_URL`) under `{name}/bag/`, checking every file against the bag's MD5 before storing it: the tag files, `BATCH.xml`, each issue's METS and the files `--ext` names (default `jp2,xml`: the page images, the ALTO and the reels' METS);
+- stores each page's `ocr.txt` at `{name}/ocr/{page key}/ocr.txt` and writes the texts into a `tar.zst` in the page-key layout (`{page key}/ocr.txt`), recorded as the batch's retained archive: `{name}/{name}-{sha256 prefix}.tar.zst` and `{name}/manifest.json`, as curation retains LoC's archives (`crate::raw`);
+- writes a batch list for `enqueue --list` (`--list-out`): each batch's name, its archive's location and sha256, and its titles.
+
+`{name}` is `psu_` and the site's name in lower case without `batch_`: `psu_pst_bonadea_ver03`. A batch LoC's listing has (`--loc-list`), in any version, is left out by name. Issues from `--issued-before` on (default 1931-01-01) are left out, their files too. A page whose METS lists no OCR file, or whose `ocr.txt` the site doesn't have, is counted and left out of the archive. A run stops at the first failure. Stored files are kept, so running it again resumes, and a batch with a manifest is only listed again.
+
+**Curation.** `enqueue --list {list}`, then `curate` with `USNM_RAW_URL` at the same store: the worker finds the retained archive by the batch's name and sha256 and reads it as it reads LoC's (§4.4), downloading nothing. Pages carry `ocr_source = ndnp-original`: the site's text is the NDNP OCR its bags ship.
+
+**Links.** A page from a `psu_` batch links to its page on Penn State's site (`https://panewsarchive.psu.edu/lccn/{page key}/`), in the API's `links.viewer`, the city pages' sample results and the curated `resource_url`. The link has no highlight, since Open ONI highlights only the OCR's exact words. The search indexes store each page's `batch`, so this needs no reindex.
+
+**Duplicates.** A page that both LoC and the site have is curated twice, and the release keeps one copy (§4.7). Between two copies with text, LoC's `pst_` batch sorts before `psu_` and wins.
+
+**Not yet.** A bulk pull of the pre-1931 pages (about 1.5 TB of JP2 and ALTO, and about 10 days at one request a second) waits for word with Penn State and for a decision on where to keep the images. Issues from 1931 on wait for a rights decision.

@@ -46,6 +46,37 @@ async fn hits_are_sorted_marked_linked_and_paginated() {
     assert!(items.iter().all(|i| i["doc_id"] != second_first));
 }
 
+/// A page from Penn State's site (a `psu_` batch, 04 §4.12) links to its
+/// page there, without highlights; the other hits link to LoC's as before.
+#[tokio::test]
+async fn hits_from_penn_state_link_to_its_site() {
+    let base = "/v1/hits?q=gold&place=P00001&limit=5";
+    let (_, _, before) = get(&state_with(None).await, base).await;
+    let ours = before["items"][0]["doc_id"].as_str().unwrap().to_owned();
+    let mut backend = usnm_search::memory::MemoryBackend::new();
+    for id in ["pages-base-fixture", "pages-delta-fixture-1"] {
+        let mut docs = load_docs(id);
+        for d in docs.iter_mut().filter(|d| d.doc_id == ours) {
+            d.batch = "psu_pst_fixture".into();
+        }
+        backend.add_index(id, docs);
+    }
+    let s = Arc::new(AppState::new(config(), Arc::new(backend), refdata().await));
+
+    let (status, _, after) = get(&s, base).await;
+    assert_eq!(status, StatusCode::OK, "{after}");
+    let key = usnm_core::ids::PageKey::from_doc_id(&ours).unwrap();
+    assert_eq!(after["items"][0]["doc_id"], ours.as_str());
+    assert_eq!(
+        after["items"][0]["links"]["viewer"],
+        format!("https://panewsarchive.psu.edu/lccn/{key}/")
+    );
+    assert!(after["items"][1]["links"]["viewer"]
+        .as_str()
+        .unwrap()
+        .ends_with("&q=gold"));
+}
+
 /// A page whose main-index document holds our OCR's Latin text (#203,
 /// the snapshot's `ja_latin.json`) is marked as our OCR in hits, and its
 /// viewer link has no highlight; the other hits are LoC's as before.

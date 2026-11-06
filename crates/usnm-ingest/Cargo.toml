@@ -40,6 +40,8 @@ futures.workspace = true
 md-5.workspace = true
 opentelemetry.workspace = true
 parquet.workspace = true
+# Penn State's Open ONI bags (`oni-fetch`, #1592): BATCH.xml and issue METS.
+quick-xml.workspace = true
 reqwest = { workspace = true, features = ["stream", "http2"] }
 rskafka.workspace = true
 rustix.workspace = true
