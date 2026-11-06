@@ -4,7 +4,7 @@ subtitle: "Damage and agreement signals for LoC's OCR of 23.76 million pages, by
 date: "October 2026"
 ---
 
-The data is `usnm_quality`'s stored summary `quality.page_summary` as it stood on 31 October 2026, read-only. The queries are in [`queries/`](queries/), their results in [`data/`](data/), and [`summarize.py`](summarize.py) makes every table below from those results.
+The data is `usnm_quality`'s stored summary `quality.page_summary` as it stood on 31 October 2026, read-only. The queries are in [`queries/`](queries/) and [`summarize.py`](summarize.py) makes every table below from their results. The results are in the release [`data-report-2026-10-ocr-damage-ranking-20261106-1ab6d45`](https://github.com/tgoodyear/usnewsmap.com/releases/tag/data-report-2026-10-ocr-damage-ranking-20261106-1ab6d45), not in the repository; file names below such as `data/cube.csv` are paths in it ([Reproducing this](#reproducing-this)).
 
 # Summary
 
@@ -24,7 +24,7 @@ The summary holds 23,755,747 pages from 4,691 titles, and 23,541,352 of them (99
 
 **Serbian, Russian, Czech, Danish, Polish and Yiddish have the highest bad shares** among languages with 10,000 or more scored pages. The metric probably overstates inflected languages, so compare each language with itself over time, not with English.
 
-**German Fraktur pilot.** [`data/german-fraktur-pilot-candidates.csv`](data/german-fraktur-pilot-candidates.csv) lists 5,000 pages from 95 titles, 1830s to 1910s: 3,750 badly damaged and 1,250 from the upper moderate band (0.15 to 0.25), where our paired runs have 243 German pages. No page's typeface has been checked.
+**German Fraktur pilot.** `data/german-fraktur-pilot-candidates.csv` lists 5,000 pages from 95 titles, 1830s to 1910s: 3,750 badly damaged and 1,250 from the upper moderate band (0.15 to 0.25), where our paired runs have 243 German pages. No page's typeface has been checked.
 
 # What each signal means
 
@@ -40,7 +40,7 @@ No signal below is ground truth. The corpus has no transcription to measure accu
 | LoC word confidence | `loc_wc_mean`                                     | Mean confidence LoC's OCR engine gave its words                                                                                                                                                                                  | 36.9%                | Not comparable between engines (below)                                                                                                                                                 |
 | Hat estimate        | `loc_est_cer`                                     | LoC's error rate solved from three or more readers' disagreement                                                                                                                                                                 | 4,316 pages (0.02%)  | Pages chosen worst first, so never a corpus estimate. Readers can share errors                                                                                                         |
 
-**Word confidence isn't used for ranking here.** Mean confidence runs from 0.549 (Image Converter) to 0.908 (iArchives OCR Framework) by the software LoC's ALTO names ([`word-confidence.csv`](data/word-confidence.csv)), so a difference between titles may be a difference between engines. `rank.sql` averages it with the damage score. This report doesn't.
+**Word confidence isn't used for ranking here.** Mean confidence runs from 0.549 (Image Converter) to 0.908 (iArchives OCR Framework) by the software LoC's ALTO names (`data/word-confidence.csv`), so a difference between titles may be a difference between engines. `rank.sql` averages it with the damage score. This report doesn't.
 
 **Bands.** Fine, moderate and badly damaged are the repository's thresholds, `DAMAGED` 0.1 and `BADLY_DAMAGED` 0.25 in `crates/usnm-core`. A rate rests on `head + near` occurrences. Below 50 we call it weak evidence: at a rate of 0.25 and 50 occurrences the sampling error alone is about 0.06. That covers 248,879 scored pages (1.1%), and 73,546 of the badly damaged ones.
 
@@ -60,7 +60,7 @@ No signal below is ground truth. The corpus has no transcription to measure accu
 
 On German pages the agreement signal says nothing: 217 pages of 613,070 have half their text placed, median Dice is 0.160, and the share placed doesn't change across bands. American Stories' OCR is English-only, which may be why. Median matched share is over 0.5 for English, Spanish, Polish, French, Italian and Lithuanian, so agreement can be read for those where a pair exists. It is 0.023 for Norwegian, 0.105 for Danish and 0.206 for Finnish. Yiddish and Serbian have no pairs.
 
-On the 4,311 pages with both a hat estimate and a damage score, the Spearman rank correlation between them is 0.509. Median hat estimate is 0.194 on fine pages, 0.217 on moderate and 0.355 on bad ([`hat-check.csv`](data/hat-check.csv)). The pages were staged worst first, so this shows direction only.
+On the 4,311 pages with both a hat estimate and a damage score, the Spearman rank correlation between them is 0.509. Median hat estimate is 0.194 on fine pages, 0.217 on moderate and 0.355 on bad (`data/hat-check.csv`). The pages were staged worst first, so this shows direction only.
 
 **Coverage and exclusions.**
 
@@ -128,7 +128,7 @@ xychart-beta
     bar [51.3, 38.5, 20.3, 16.9, 15.8, 10.2, 8.0, 6.6, 4.5, 4.3, 3.2]
 ```
 
-Quantiles for every language are in [`language-quantiles.csv`](data/language-quantiles.csv), and medians per language and decade in [`language-decade-median.csv`](data/language-decade-median.csv).
+Quantiles for every language are in `data/language-quantiles.csv`, and medians per language and decade in `data/language-decade-median.csv`.
 
 Agreement by language:
 
@@ -228,7 +228,7 @@ The candidates column is defined under [Pages worth re-OCRing](#pages-worth-re-o
 | All others | 12,168            | 0.7%  | 1,952            | 0                  | 446                | 59,722             |
 | All        | 1,823,814         | 100%  | 1,212,846        | 19,019             | 73,546             | 6,637,057          |
 
-"Of which with AS" counts candidates that have any American Stories pair. "Moderate, unproven" is the moderate band with the same evidence and OCR conditions. Worst-page lists for 20 languages are in [`worst-pages.csv`](data/worst-pages.csv).
+"Of which with AS" counts candidates that have any American Stories pair. "Moderate, unproven" is the moderate band with the same evidence and OCR conditions. Worst-page lists for 20 languages are in `data/worst-pages.csv`.
 
 **What re-OCR did on pages already read.** Query [`10`](queries/10-reocr-outcomes.sql) pairs each page's LoC damage with our output's damage on the same page and metric. These are the only paired numbers in the database in any quantity: 24,128 outputs, nearly all German `frak2021` or English `eng`.
 
@@ -260,7 +260,7 @@ xychart-beta
     line [0.041, 0.065, 0.114, 0.155, 0.194, 0.130, 0.161, 0.183, 0.179]
 ```
 
-**The jump at 0.25.** The German gain goes from 0.015 to 0.117 between neighbouring bins with 24 and 10,358 pages. The bins hold different pages. Most German runs took only pages over 0.25, so 18,468 pages sit there, while 4,730 of the 4,748 pages at or under 0.25 are from one title, the _Luxemburger Gazette_ (`sn84027101`), whose median damage is 0.055. Its typeface may also differ from the other titles'. So the gain for German pages from 0.15 to 0.25, some 120,000 pages, is not measured. Picking pages for their high LoC score also inflates the measured gain a little, as some of a high score is noise. Per-decade figures are in [`reocr-german-decades.csv`](data/reocr-german-decades.csv): 0.263 to 0.313 down to 0.104 to 0.192, 1850s to 1910s.
+**The jump at 0.25.** The German gain goes from 0.015 to 0.117 between neighbouring bins with 24 and 10,358 pages. The bins hold different pages. Most German runs took only pages over 0.25, so 18,468 pages sit there, while 4,730 of the 4,748 pages at or under 0.25 are from one title, the _Luxemburger Gazette_ (`sn84027101`), whose median damage is 0.055. Its typeface may also differ from the other titles'. So the gain for German pages from 0.15 to 0.25, some 120,000 pages, is not measured. Picking pages for their high LoC score also inflates the measured gain a little, as some of a high score is noise. Per-decade figures are in `data/reocr-german-decades.csv`: 0.263 to 0.313 down to 0.104 to 0.192, 1850s to 1910s.
 
 **Other languages have almost no paired evidence.** Our OCR has read 4 French and 1 Polish page. The [engine survey](../2026-10-ocr-engine-survey/report.md) ran 5 to 15 pages a group: Tesseract lowered median damage for Serbian (0.217 to 0.126) and Czech (0.500 to 0.288), and raised it for Polish (0.123 to 0.155), Russian (0.217 to 0.290) and clean English controls (0.038 to 0.060). So the counts for those languages say where LoC's text scores badly, not that any engine we have would improve it.
 
@@ -378,7 +378,7 @@ Each language's largest titles:
 | Serbian   | 22,089     | 1               | _Amerikanski Srbobran_ 22,089                                                                                                           |
 | Danish    | 5,409      | 4               | _Danskeren_ 3,354; _Stjernen_ 1,982; _St. Croix Avis_ 65                                                                                |
 
-Every title is in [`title-summary.csv`](data/title-summary.csv), and every title and decade in [`title-decades.csv`](data/title-decades.csv).
+Every title is in `data/title-summary.csv`, and every title and decade in `data/title-decades.csv`.
 
 ## Title and decade
 
@@ -419,7 +419,7 @@ A batch is one delivery of scanned pages and OCR from one digitising partner. To
 | `txdn_honda`    | 12,405 | 88.4%     | 0.395       | 2      | 1910s-1920s |
 | `tu_archie`     | 4,062  | 88.3%     | 0.425       | 1      | 1850s-1860s |
 
-The ten batches with the most bad pages hold 111,873 of 1,916,180 (5.8%), and the top 100 hold 573,174 (29.9%). All batches are in [`batches.csv`](data/batches.csv). A batch-level pattern suggests the cause may be that batch's scans or its OCR run, which this data can't separate.
+The ten batches with the most bad pages hold 111,873 of 1,916,180 (5.8%), and the top 100 hold 573,174 (29.9%). All batches are in `data/batches.csv`. A batch-level pattern suggests the cause may be that batch's scans or its OCR run, which this data can't separate.
 
 # Page language against title language
 
@@ -441,7 +441,7 @@ Chronicling America catalogs languages per title, and the damage audit detects e
 | Swedish                | 19,615     | 46.0%            | 13.7%   | 0.0%         | 40.3%        |
 | Lithuanian             | 12,092     | 99.5%            | 0.0%    | 0.0%         | 0.5%         |
 
-Percentages are of the pages in titles listing that language first. All counts are in [`language-mismatch.csv`](data/language-mismatch.csv).
+Percentages are of the pages in titles listing that language first. All counts are in `data/language-mismatch.csv`.
 
 For 45 titles with 1,000 or more pages (418,339 pages), the first catalog language holds under half the pages. The largest:
 
@@ -492,7 +492,7 @@ Damaged pages don't seem to be slipping into English much. In titles listing Ger
 
 # German Fraktur pilot list
 
-[`data/german-fraktur-pilot-candidates.csv`](data/german-fraktur-pilot-candidates.csv) holds 5,000 pages, ordered by `rank`. It is meant as the manifest for [#325](https://github.com/tgoodyear/usnewsmap.com/issues/325) and could be cut to its size: the first 1,000 ranks hold 750 bad and 250 moderate pages from all 95 titles and every decade. #325's scope is the 1850s to the 1910s, so filter `decade` to match it exactly. This report inspected no scans and starts no run.
+`data/german-fraktur-pilot-candidates.csv` holds 5,000 pages, ordered by `rank`. It was drafted as the manifest for #325, but #325's sample has since been frozen separately in [`ocr/fraktur-pilot/`](../../../ocr/fraktur-pilot/) (#1563): 1,000 damaged German pages from the 1850s to the 1910s, a seeded stratified draw from scans already cached. This list ranks candidates for a bulk `frak2021` re-read, and the first 1,000 ranks hold 750 bad and 250 moderate pages from all 95 titles and every decade. This report inspected no scans and starts no run.
 
 **Selection** ([`13-german-pilot.sql`](queries/13-german-pilot.sql)). Pages are German by detection and printed before 1920, because German damage drops in the 1920s. The funnel:
 
@@ -570,4 +570,11 @@ The list spans 4,572 issues. The ten largest titles hold 2,209 pages (44.2%), an
 
 `run-queries.sh --dsn-file <file> --out-dir data` runs the queries one at a time with any role that can read schema `quality`. `data/titles.csv` is `GET /v1/titles?v=pages-v20261026-1` reduced to five columns. `python3 summarize.py --data-dir data --tables tables.md` writes the derived CSVs and the tables. The queries take about 10 minutes in all, and `02-cube.sql` is the source of the language, title, decade and candidate counts.
 
-`data/` is checked in for review. Following [the reports' data rule](../README.md#data), it moves to the `report-data` release when that set is next published.
+The results are in the release [`data-report-2026-10-ocr-damage-ranking-20261106-1ab6d45`](https://github.com/tgoodyear/usnewsmap.com/releases/tag/data-report-2026-10-ocr-damage-ranking-20261106-1ab6d45):
+
+| Asset | SHA-256 |
+| --- | --- |
+| `report-2026-10-ocr-damage-ranking.tar.gz` | `8752cdaeba5bea839a45ef2ddee0f036ec38f9b2f47ba8c4cedd23af77071d92` |
+| `report-2026-10-ocr-damage-ranking.members.txt` | `fa4b21f528b81c833c3a006b899075ea41bd0d80f1f36ec014698cf812cffb00` |
+
+`scripts/ops/data-assets.sh --fetch --set report-2026-10-ocr-damage-ranking`, run from the repository root, checks the tarball against `ops/data-assets.json` and puts the CSVs back in `data/`.
