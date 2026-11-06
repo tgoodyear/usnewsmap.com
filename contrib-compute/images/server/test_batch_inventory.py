@@ -187,6 +187,29 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual({payload["jobs"][p]["spool"] for p in pages}, {str(self.spool)})
         self.assertIsNone(payload["jobs"][self.job]["spool"])
 
+    def test_existing_workunits_have_their_own_cap_above_the_journal_cap(self):
+        # Finished workunits stay in the database for delete_delay_hours, so more than MAX_JOBS
+        # of them is normal (#1483); the cap that applies is the existing-workunit one.
+        existing = [f"{n:064x}" for n in range(1, inventory.MAX_JOBS + 2)]
+        payload = inventory.inventory(self.root, self.results, [3, 2], "b" * 32, (), existing)
+        self.assertEqual(len(payload["existing_jobs"]), inventory.MAX_JOBS + 1)
+        self.assertEqual(payload["existing_jobs_limit"], inventory.DEFAULT_MAX_EXISTING_WORKUNITS)
+        with self.assertRaisesRegex(ValueError, "existing workunit inventory"):
+            inventory.inventory(self.root, self.results, [3, 2], "b" * 32, (), existing,
+                                existing_limit=inventory.MAX_JOBS)
+        for limit in (0, inventory.MAX_EXISTING_WORKUNITS_CEILING + 1, "50000"):
+            with self.assertRaisesRegex(ValueError, "existing workunit limit"):
+                inventory.inventory(self.root, self.results, [3, 2], "b" * 32,
+                                    existing_limit=limit)
+
+    def test_the_existing_workunit_cap_is_read_from_the_environment(self):
+        self.assertEqual(inventory.max_existing_workunits({}), inventory.DEFAULT_MAX_EXISTING_WORKUNITS)
+        self.assertEqual(inventory.max_existing_workunits({"USNM_MAX_EXISTING_WORKUNITS": "75000"}), 75000)
+        for value in ("0", "-1", "1e5", "abc", str(inventory.MAX_EXISTING_WORKUNITS_CEILING + 1)):
+            with self.assertRaises(ValueError):
+                inventory.max_existing_workunits({"USNM_MAX_EXISTING_WORKUNITS": value})
+        self.assertIn("LIMIT {limit}", inventory.QUERY)
+
     def test_a_page_requeued_from_its_bundle_leaves_it(self):
         bundle, pages = "c" * 64, ["d" * 64, "e" * 64]
         self.bundle(bundle, pages)

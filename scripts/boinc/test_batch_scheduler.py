@@ -140,6 +140,30 @@ class SchedulerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "branching"):
             batch.owned_records(self.config, [parent, child, branch])
 
+    def test_the_bridge_reported_existing_workunit_cap_applies(self):
+        # Finished workunits stay in the database for delete_delay_hours, so the bridge reports
+        # its own existing-workunit cap (#1483); the controller checks and warns against it.
+        self.tick()
+        extra = {format(n, "064x") for n in range(0x100, 0x108)}
+        over = copy.deepcopy(self.fake)
+        over.extra_existing = extra
+        with patch.object(batch, "MAX_JOBS", 6), self.assertRaisesRegex(ValueError, "existing workunit"):
+            batch.tick(self.config, copy.deepcopy(self.state), over, lambda: None, NOW)
+        reported = copy.deepcopy(self.fake)
+        reported.extra_existing = extra
+        inventory = reported.inventory
+        reported.inventory = lambda: {**inventory(), "existing_jobs_limit": 12}
+        stderr = io.StringIO()
+        with patch.object(batch, "MAX_JOBS", 6), contextlib.redirect_stderr(stderr):
+            batch.tick(self.config, copy.deepcopy(self.state), reported, lambda: None, NOW)
+        caps = {json.loads(line)["cap"]: json.loads(line)["limit"] for line in stderr.getvalue().splitlines()}
+        self.assertEqual(caps.get("existing_workunits"), 12)
+        for limit in (0, batch.MAX_EXISTING_WORKUNITS_CEILING + 1, "12"):
+            bad = copy.deepcopy(self.fake)
+            bad.inventory = (lambda value: lambda: {**inventory(), "existing_jobs_limit": value})(limit)
+            with self.assertRaisesRegex(ValueError, "existing workunit limit"):
+                batch.tick(self.config, copy.deepcopy(self.state), bad, lambda: None, NOW)
+
     def test_caps_past_eighty_percent_warn_without_changing_the_tick(self):
         self.tick()
         quiet, warned = copy.deepcopy(self.fake), copy.deepcopy(self.fake)
