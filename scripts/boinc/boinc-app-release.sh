@@ -572,6 +572,7 @@ git archive --format=tar HEAD scripts/boinc/install.py scripts/boinc/check-mac-w
 git show "HEAD:contrib-compute/images/appver/Containerfile" > "$ctx/Containerfile"
 git show "HEAD:contrib-compute/images/appver/publish-appver.sh" > "$ctx/publish-appver.sh"
 git show "HEAD:contrib-compute/images/appver/check_appver.py" > "$ctx/check_appver.py"
+git show "HEAD:contrib-compute/images/server/register-apps.php" > "$ctx/register-apps.php"
 mv "$work/sigs" "$ctx/sigs"
 mkdir "$ctx/wrapper-candidate"
 appver_wrapper=/usr/local/lib/usnm-boinc/docker_wrapper

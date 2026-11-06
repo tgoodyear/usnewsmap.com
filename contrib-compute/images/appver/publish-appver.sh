@@ -130,7 +130,9 @@ case "${APPVER_REUSE_PROJECT:-0}" in
   0)
     fetch_secrets
     render_config
-    (cd "$PROJ" && cp "$src/project.xml" project.xml && bin/xadd)
+    # xadd, then the declared weight of each app it added: xadd alone leaves a new app at
+    # weight 1 (register-apps.php, docs/boinc/bridge-steps.md).
+    (cd "$PROJ" && cp "$src/project.xml" project.xml && php /usr/local/lib/usnm-boinc/register-apps.php)
     ;;
   1)
     # Scoped replay uses the live project's existing credentials/configuration and app rows.

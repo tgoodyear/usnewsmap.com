@@ -65,6 +65,10 @@ class DaemonConfig(unittest.TestCase):
             if weight > 0:
                 with self.subTest(app=name):
                     self.assertGreaterEqual(budgets[name], 2 * cache_size)
+        # A zero weight gives an app one cache slot and no query budget, so the feeder never
+        # caches its work. Only an app whose units are all assigned to a host may have it:
+        # the scheduler sends assigned work from the database (BOINC 22bbebe, sched_assign.cpp).
+        self.assertEqual(sorted(name for name, weight in weights.items() if weight == 0), ["usnm_gold_native"])
         # 30 October: 1788-1798 unsent replicas exceeded the former 666-slot Qwen share.
         qwen_ready_results = 1800
         self.assertGreaterEqual(budgets["usnm_qwen"], 4 * qwen_ready_results)
@@ -138,7 +142,7 @@ class DaemonConfig(unittest.TestCase):
                         ET.parse(work / "secrets/config.xml").findall("./daemons/daemon/cmd")]
             daemons = sorted((cmd[0], cmd[cmd.index("--app") + 1]) for cmd in commands if "--app" in cmd)
             links = sorted(path.name for path in (work / "share/usnmocr/bin").iterdir())
-        live = ("usnm_gold", "usnm_ndlocr", "usnm_quality", "usnm_qwen")
+        live = ("usnm_gold", "usnm_gold_native", "usnm_ndlocr", "usnm_quality", "usnm_qwen")
         self.assertEqual(daemons, sorted([("sample_trivial_validator", "usnm_ocr"),
                                           ("batch_collect_assimilator", "usnm_ocr"),
                                           *(("script_validator", app) for app in live),

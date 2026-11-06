@@ -88,7 +88,8 @@ SQL
   render_config
   cp "$TEMPLATES/project.xml" "$PROJ/project.xml"
   cp "$TEMPLATES/plan_class_spec.xml" "$PROJ/plan_class_spec.xml"
-  (cd "$PROJ" && bin/xadd)
+  # xadd, then the declared weight of each app it added (register-apps.php).
+  (cd "$PROJ" && php "$TEMPLATES/register-apps.php")
   mkdir -p "$SHARE_DIR/handoff"
   chown -R boincadm:boincadm "$PROJ" "$SHARE_DIR/handoff" 2>/dev/null || log "chown on the share failed (UNVERIFIED semantics, design.md 2.3)"
   rm -f "$SECRETS/db-admin" "$mycnf"
