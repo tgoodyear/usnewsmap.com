@@ -896,6 +896,29 @@ def restore_plan(manifest, batch, state, wanted):
     return pages, done, blobs
 
 
+def restored_copy(container, batch, blob, there):
+    """Whether the blob in the container is the archived copy: its size, and its Content-MD5 when
+    the archive has one, else its bytes against the sha256 taken when it was archived."""
+    if there is None or there["size"] != blob["size"]:
+        return False
+    if blob.get("md5"):
+        return there["md5"] == blob["md5"]
+    data, etag = container.get(blob["name"])
+    digest = (batch / "handoff-sha256" / (blob["name"] + ".sha256")).read_text().strip()
+    return etag == there["etag"] and sha256_bytes(data) == digest
+
+
+def restore_room(scheduler, state, pages, blobs, live):
+    """The claims and journals after the restore, and whether both stay within the controller's
+    caps: a restore past them would stop the next tick."""
+    claims = len(state.get("claims", {})) + len(pages)
+    journals = sum(1 for name in live if RECORD_BLOB.fullmatch(name)) + sum(
+        1 for items in blobs.values() for blob in items
+        if RECORD_BLOB.fullmatch(blob["name"]) and blob["name"] not in live)
+    return {"claims_after": claims, "journals_after": journals,
+            "fits": claims <= scheduler.MAX_JOBS and journals <= scheduler.MAX_JOBS}
+
+
 def restore_held(args):
     scheduler = load_scheduler()
     config = scheduler.load_config(args.config)
@@ -922,7 +945,8 @@ def restore_held(args):
     pages, done, blobs = restore_plan(manifest, batch, state, args.page)
     summary = {"batch": batch.name, "pages": len(pages), "already_restored": len(done),
                "blobs": sum(len(items) for items in blobs.values()),
-               "bytes": sum(blob["size"] for items in blobs.values() for blob in items)}
+               "bytes": sum(blob["size"] for items in blobs.values() for blob in items),
+               **restore_room(scheduler, state, pages, blobs, list_job_blobs(container))}
     if not args.apply:
         emit({"event": "boinc_archive_restore_held", "schema_version": SCHEMA_VERSION, "apply": False,
               "controller": {**units, "lease": lease}, **summary})
@@ -934,6 +958,10 @@ def restore_held(args):
         state = read_json(state_path)
         pages, done, blobs = restore_plan(manifest, batch, state, args.page)
         live = list_job_blobs(container)
+        room = restore_room(scheduler, state, pages, blobs, live)
+        require(room["fits"], f"restoring would leave {room['claims_after']} claims and {room['journals_after']} "
+                              f"journals, past the controller's cap of {scheduler.MAX_JOBS}: restore fewer pages "
+                              "with --page, or archive drained history first")
 
         def restore_job(items):
             written = 0
@@ -944,7 +972,7 @@ def restore_held(args):
                     written += container.upload(blob["name"], (batch / "handoff" / blob["name"]).read_bytes(),
                                                 blob.get("md5"))
                 else:
-                    require(there["size"] == blob["size"] and (not blob.get("md5") or there["md5"] == blob["md5"]),
+                    require(restored_copy(container, batch, blob, there),
                             f"{blob['name']} is in the container but isn't the archived copy; stop and reconcile")
             return written
 
@@ -952,9 +980,7 @@ def restore_held(args):
         live = list_job_blobs(container)
         for items in blobs.values():
             for blob in items:
-                there = live.get(blob["name"])
-                require(there is not None and there["size"] == blob["size"]
-                        and (not blob.get("md5") or there["md5"] == blob["md5"]),
+                require(restored_copy(container, batch, blob, live.get(blob["name"])),
                         f"{blob['name']} did not come back as archived; nothing in the state changed")
         # Then the state: the claim comes back with its journal already there (a claim without
         # one would be exported again), and the archived_held entry goes.

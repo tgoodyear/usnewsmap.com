@@ -558,6 +558,33 @@ class HeldTests(DispatchFixture):
         code, result, _ = run(self.restore_argv("--apply", "--confirm-controller-paused"))
         self.assertEqual((code, result["restored"]), (0, 0))
 
+    def test_restore_checks_bytes_without_an_md5_and_keeps_within_the_caps(self):
+        self.container.md5 = False
+        self.assertEqual(self.apply("--include-held")[0], 0)
+        # A same-size blob with other bytes where an archived one goes stops the restore.
+        name = f"spool/{job_id(9)}/usnm_{job_id(9)}__file_text.txt"
+        archived = (self.archive_dir / "batches/0001/handoff" / name).read_bytes()
+        self.container.put(name, bytes(len(archived)), time.time())
+        before = self.state_now()
+        code, _, errors = run(self.restore_argv("--apply", "--confirm-controller-paused", "--page", page_key(9)))
+        self.assertEqual(code, 1)
+        self.assertIn("isn't the archived copy", errors[-1]["error"])
+        self.assertEqual(before, self.state_now())
+        del self.container.blobs[name]
+        # Past the claims cap: refused before anything is written.
+        with mock.patch.object(archive, "load_scheduler", lambda: scheduler), \
+                mock.patch.object(scheduler, "MAX_JOBS", len(before["claims"]) + 1):
+            code, summary, _ = run(self.restore_argv())
+            self.assertFalse(summary["fits"])
+            uploads = list(self.container.uploads)
+            code, _, errors = run(self.restore_argv("--apply", "--confirm-controller-paused"))
+            self.assertEqual(code, 1)
+            self.assertIn("past the controller's cap", errors[-1]["error"])
+            self.assertEqual(self.container.uploads, uploads)
+            # One page fits.
+            code, result, _ = run(self.restore_argv("--apply", "--confirm-controller-paused", "--page", page_key(9)))
+            self.assertEqual((code, result["restored"]), (0, 1), result)
+
     def test_restore_refuses_a_page_claimed_again_or_a_changed_copy(self):
         self.assertEqual(self.apply("--include-held")[0], 0)
         state = self.state_now()
