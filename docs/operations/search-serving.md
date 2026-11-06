@@ -236,14 +236,20 @@ Each wake starts the API, which starts the searcher. The API stays about 5 minut
 
 ### Rollout
 
+The removal takes two provisions, so the subnet path is in place and checked before any endpoint goes (#1425). DNS inside the VNet keeps pointing at the endpoints until the second one.
+
 1. Check that on-prem serves and no index is being published or promoted. Bring a local checkout to `origin/main`.
-2. `scripts/azure/provision.sh --env prod --what-if --api-tag live --allow-rename=privatelink.blob.core.windows.net --allow-rename=privatelink.documents.azure.com`, and compare it with the summary in the pull request. Stop on anything new. Without the two flags the rename guard fails it, as it should.
-3. Provision: `scripts/azure/provision.sh --env prod --api-tag live --allow-rename=privatelink.blob.core.windows.net --allow-rename=privatelink.documents.azure.com`. The policy step writes the exempt list first. The stack then adds the service endpoints and firewall rules, and deletes the endpoints and zones last, as unmanaged resources.
-4. Run the cold drill below. Do nothing else until it passes.
+2. **Stage 1, additive.** With `USNM_DATA_PRIVATE_ENDPOINTS=true` and `USNM_DATA_SUBNET_ACCESS=true` committed, run `scripts/azure/provision.sh --env prod --what-if --api-tag live`. It may add the snet-cae rules, the Cosmos service endpoint and the index account's public access, and list the index in the policy; it must delete no endpoint, zone or link. Stop on anything new. Then provision with the same flags, without `--what-if`.
+3. Check the rules with `az`, that on-prem's lake and Cosmos traffic carries on, and that a request to the index account from outside gets 403.
+4. **Stage 2, the deletes.** Commit `USNM_DATA_PRIVATE_ENDPOINTS=false` (`USNM_DATA_SUBNET_ACCESS` then has no effect). Run `scripts/azure/provision.sh --env prod --what-if --api-tag live --allow-rename=privatelink.blob.core.windows.net --allow-rename=privatelink.documents.azure.com`. It must show only the three endpoints, their NICs and zone groups, and the two zones with their links and records. Without the two flags the rename guard fails it, as it should. Then provision with the same flags, without `--what-if`.
+5. Run the cold drill below. Do nothing else until it passes.
 
 ### Rollback
 
-Set `USNM_DATA_PRIVATE_ENDPOINTS` back to `true` in `infra/env/prod.json`, commit it, and provision with `--api-tag live`. Provision refuses uncommitted settings; `--allow-dirty` is for an emergency that can't wait for a pull request. The stack recreates the endpoints and zones and removes the subnet rules, which takes minutes and leaves on-prem untouched. If the drill fails while on-prem is down, the spare can't serve until this finishes, so don't start the rollout during an on-prem incident.
+- **After stage 1:** set `USNM_DATA_SUBNET_ACCESS` to `false`, commit it, and provision with `--api-tag live`. The index account closes again, and the Cosmos filter and service endpoint go.
+- **After stage 2:** set `USNM_DATA_PRIVATE_ENDPOINTS` back to `true` in `infra/env/prod.json`, commit it, and provision with `--api-tag live`. With `USNM_DATA_SUBNET_ACCESS` still `true` the subnet rules stay while the stack recreates the endpoints and zones, so the spare keeps a path throughout. That takes minutes and leaves on-prem untouched.
+
+Provision refuses uncommitted settings; `--allow-dirty` is for an emergency that can't wait for a pull request. Don't start the rollout during an on-prem incident.
 
 ### Cold drill
 
