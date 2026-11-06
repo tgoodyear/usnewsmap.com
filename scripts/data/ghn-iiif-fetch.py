@@ -5,8 +5,12 @@ doesn't have, from UGA's IIIF image server (#1590).
 GHN publishes IIIF Presentation JSON, which its robots.txt allows:
 /lccn/<lccn>.json lists a title's issues and /lccn/<lccn>/<date>/ed-<n>.json an
 issue's pages, each with an image service on iiif-ha.galib.uga.edu (which has no
-robots.txt). Nothing else on GHN is requested: its page and OCR views are behind
-a Cloudflare challenge, and robots.txt disallows /data/ and .pdf, .txt and .xml.
+robots.txt). Some listed issues have no manifest (a 404; seen where an issue
+lacks pages). For those, the issue's HTML page, /lccn/<lccn>/<date>/ed-<n>/
+(also allowed), is read for its page links and image services, and each image's
+size is taken from the image service's info.json. Nothing else on GHN is
+requested: robots.txt disallows /data/ and .pdf, .txt and .xml, and a
+Cloudflare challenge is never answered; one stops the run.
 
 A page whose image is in a LoC batch (batch_dlc_*) is LoC's own scan, which we
 have from Chronicling America. Every other page is downloaded at full size
@@ -18,8 +22,8 @@ User-Agent. Redirects aren't followed. 429 and 5xx responses and dropped
 connections are retried with backoff, never sooner than Retry-After asks (a
 wait over 15 minutes stops the run instead); anything else, or a response that
 isn't JSON or the expected image, stops the run. Run again, it resumes: title
-and issue JSON are cached in OUT/manifests, and images already downloaded are
-checked again and kept if valid.
+and issue JSON, issue pages and info.json are cached in OUT/manifests, and
+images already downloaded are checked again and kept if valid.
 
 Writes OUT/images/<lccn>/<date>/ed-<n>/seq-<n>.jpg, OUT/inventory.jsonl (one
 line per page, LoC's included) and OUT/summary.json.
@@ -30,6 +34,7 @@ With no --lccn it fetches both Cherokee Phoenix titles, sn83020866 and sn8302087
 import argparse
 import email.utils
 import hashlib
+import html
 import http.client
 import json
 import math
@@ -52,6 +57,8 @@ MAX_WAIT = 900
 LCCN_RE = re.compile(r"^[a-z]{1,3}\d{8,10}$")
 ISSUE_RE = re.compile(r"^/lccn/([a-z]{1,3}\d{8,10})/(\d{4}-\d\d-\d\d)/ed-(\d+)\.json$")
 PAGE_RE = re.compile(r"^/lccn/([a-z]{1,3}\d{8,10})/(\d{4}-\d\d-\d\d)/ed-(\d+)/seq-(\d+)/?$")
+# A page thumbnail on an issue's HTML page: <a href="PAGE"><div><img src="SERVICE/full/240,/0/default.jpg"
+THUMB_RE = re.compile(r'<a href="([^"]+)">\s*<div>\s*<img src="([^"]+?)/full/[^"/]+/0/default\.jpg"')
 
 
 def retry_after(value, now=None):
@@ -136,36 +143,78 @@ def issue_urls(collection):
     return urls
 
 
+def page_record(page_url, service, width, height, listing):
+    s = urllib.parse.urlparse(service)
+    if s.scheme != "https" or s.netloc not in IIIF_HOSTS:
+        raise ValueError(f"unexpected image service {service}")
+    m = PAGE_RE.match(urllib.parse.urlparse(page_url).path)
+    if not m:
+        raise ValueError(f"no page URL for {service} (got {page_url!r})")
+    lccn, date, ed, seq = m.groups()
+    batch = re.search(r"/(batch_[^/]+)/", urllib.parse.unquote(s.path))
+    batch = batch[1] if batch else ""
+    return {
+        "id": f"{lccn}/{date}/ed-{ed}/seq-{seq}",
+        "lccn": lccn,
+        "date": date,
+        "edition": int(ed),
+        "seq": int(seq),
+        "batch": batch,
+        "source": "loc" if batch.startswith("batch_dlc_") else "ghn",
+        "width": width,
+        "height": height,
+        "image_service": service,
+        "listing": listing,
+    }
+
+
 def pages(manifest):
     out = []
     for sequence in manifest.get("sequences", []):
         for canvas in sequence.get("canvases", []):
             for image in canvas.get("images", []):
                 res = image["resource"]
-                service = res["service"]["@id"]
-                s = urllib.parse.urlparse(service)
-                if s.scheme != "https" or s.netloc not in IIIF_HOSTS:
-                    raise ValueError(f"unexpected image service {service}")
                 page_url = next((r["@id"] for r in image.get("rendering", []) if r.get("format") == "text/html"), "")
-                m = PAGE_RE.match(urllib.parse.urlparse(page_url).path)
-                if not m:
-                    raise ValueError(f"{manifest.get('@id')}: no page URL for {service}")
-                lccn, date, ed, seq = m.groups()
-                batch = re.search(r"/(batch_[^/]+)/", urllib.parse.unquote(s.path))
-                batch = batch[1] if batch else ""
-                out.append({
-                    "id": f"{lccn}/{date}/ed-{ed}/seq-{seq}",
-                    "lccn": lccn,
-                    "date": date,
-                    "edition": int(ed),
-                    "seq": int(seq),
-                    "batch": batch,
-                    "source": "loc" if batch.startswith("batch_dlc_") else "ghn",
-                    "width": res["width"],
-                    "height": res["height"],
-                    "image_service": service,
-                })
+                out.append(page_record(page_url, res["service"]["@id"], res["width"], res["height"], "manifest"))
     return out
+
+
+def html_pages(client, url, path):
+    """Pages listed on an issue's HTML page; image sizes come from IIIF info.json."""
+    body = path.read_bytes() if path.exists() else None
+    if body is None:
+        ctype, body = client.get(url)
+        if "html" not in ctype:
+            raise RuntimeError(f"{url}: got {ctype or 'no content type'}, not HTML; stopping")
+    issue = urllib.parse.urlparse(url).path
+    listed = {}
+    for href, service in THUMB_RE.findall(body.decode("utf-8", "replace")):
+        href, service = html.unescape(href), html.unescape(service)
+        if href.startswith(issue):
+            listed.setdefault(href, service)
+    if not listed:
+        raise RuntimeError(f"{url}: lists no pages (a challenge page?); stopping")
+    out = [page_record(href, service, None, None, "html") for href, service in listed.items()]
+    if not path.exists():
+        write_atomic(path, body)
+    for page in out:
+        info = cached_json(client, page["image_service"] + "/info.json", path.with_suffix("") / f"seq-{page['seq']}.info.json")
+        page.update(width=int(info["width"]), height=int(info["height"]))
+    return out
+
+
+def issue_pages(client, url, out):
+    manifest = out / "manifests" / urllib.parse.urlparse(url).path.removeprefix("/lccn/")
+    listing = manifest.with_suffix(".html")
+    if not listing.exists():
+        try:
+            return pages(cached_json(client, url, manifest))
+        except urllib.error.HTTPError as e:
+            if e.code != 404:
+                raise
+            e.close()
+            print(f"no manifest (404), reading the issue page: {url}", flush=True)
+    return html_pages(client, url.removesuffix(".json") + "/", listing)
 
 
 def jpeg_size(data):
@@ -255,6 +304,7 @@ def summarize(inventory, client, inventory_only):
         "pages": len(inventory),
         "titles": titles,
         "batches": sorted({p["batch"] for p in inventory}),
+        "issues_without_manifest": sorted({p["id"].rsplit("/", 1)[0] for p in inventory if p["listing"] == "html"}),
         "images": len(files),
         "image_bytes": sum(p["bytes"] for p in files),
         "inventory_only": inventory_only,
@@ -284,8 +334,7 @@ def main(argv=None):
         urls = issue_urls(collection)
         print(f"{lccn}: {len(urls)} issues", flush=True)
         for url in urls:
-            rel = urllib.parse.urlparse(url).path.removeprefix("/lccn/")
-            inventory.extend(pages(cached_json(client, url, out / "manifests" / rel)))
+            inventory.extend(issue_pages(client, url, out))
 
     todo = [p for p in inventory if p["source"] == "ghn"]
     print(f"{len(inventory)} pages, {len(todo)} not in a LoC batch", flush=True)

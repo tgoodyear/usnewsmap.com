@@ -50,7 +50,28 @@ class FakeClient:
 
     def get(self, url):
         self.urls.append(url)
-        return self.responses.pop(0)
+        r = self.responses.pop(0)
+        if isinstance(r, Exception):
+            raise r
+        return r
+
+
+ISSUE = "https://gahistoricnewspapers.galileo.usg.edu/lccn/sn83020874/1831-03-05/ed-1"
+CIA = "https://iiif-ha.galib.uga.edu/iiif/2/newspapers/batch_gua_cia_ver03%2Fdata%2Fcia_1831-03-05_1%2F000{}.jp2"
+# Trimmed from GHN's page for an issue it has no manifest for: pages 1-2 are missing.
+ISSUE_HTML = f"""<a class="btn btn-default" href="/lccn/sn83020874/1831-03-12/ed-1/"><strong>Next Issue</strong></a>
+<div class="col-md-3"><div class="highlite">
+  <a href="/lccn/sn83020874/1831-03-05/ed-1/seq-3/">
+    <div>
+      <img src="{CIA.format(3)}/full/240,/0/default.jpg" alt=""/>
+    </div><div>March 05, 1831, Image 3</div></a></div></div>
+<div class="col-md-3"><div class="highlite">
+  <a href="/lccn/sn83020874/1831-03-05/ed-1/seq-4/">
+    <div>
+      <img src="{CIA.format(4)}/full/240,/0/default.jpg" alt=""/>
+    </div><div>March 05, 1831, Image 4</div></a></div></div>
+<script>$('img[src="{CIA.format(3)}/full/240,/0/default.jpg"]').attr('width', "240");</script>
+""".encode()
 
 
 class ManifestTests(unittest.TestCase):
@@ -77,6 +98,30 @@ class ManifestTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 fetch.cached_json(client, "https://gahistoricnewspapers.galileo.usg.edu/lccn/sn83020866.json", path)
             self.assertFalse(path.exists())
+
+    def test_an_issue_without_a_manifest_is_read_from_its_issue_page(self):
+        info = lambda w, h: ("application/ld+json", f'{{"width": {w}, "height": {h}}}'.encode())
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d)
+            client = FakeClient([http_error(404), ("text/html; charset=utf-8", ISSUE_HTML),
+                                 info(4213, 6508), info(4210, 6500)])
+            got = fetch.issue_pages(client, ISSUE + ".json", out)
+            self.assertEqual(client.urls, [ISSUE + ".json", ISSUE + "/", CIA.format(3) + "/info.json", CIA.format(4) + "/info.json"])
+            self.assertEqual([(p["id"], p["width"], p["height"]) for p in got], [
+                ("sn83020874/1831-03-05/ed-1/seq-3", 4213, 6508), ("sn83020874/1831-03-05/ed-1/seq-4", 4210, 6500)])
+            self.assertEqual({(p["batch"], p["source"], p["listing"]) for p in got}, {("batch_gua_cia_ver03", "ghn", "html")})
+
+            client = FakeClient([])
+            self.assertEqual(fetch.issue_pages(client, ISSUE + ".json", out), got)
+            self.assertEqual(client.urls, [])
+
+    def test_an_issue_page_listing_no_pages_stops_the_run_and_is_not_cached(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d)
+            client = FakeClient([http_error(404), ("text/html; charset=utf-8", b"<html>Just a moment...</html>")])
+            with self.assertRaises(RuntimeError):
+                fetch.issue_pages(client, ISSUE + ".json", out)
+            self.assertEqual(list(out.rglob("*.*")), [])
 
 
 class ImageTests(unittest.TestCase):
