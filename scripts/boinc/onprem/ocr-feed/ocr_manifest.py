@@ -279,6 +279,16 @@ def record_ocr_docs(state, docs, have):
     return len(new)
 
 
+def write_ocr_active(state, docs):
+    """ocr-active.txt: of every page OCR asked for, the ones it still wants (no outcome has
+    ended them). Rewritten whole each run, unlike ocr-docs.txt's history: the quality
+    feeder holds a kept scan in it, counted and never evicted, until OCR is done with it."""
+    path = os.path.join(state, "ocr-active.txt")
+    with open(path + ".tmp", "w") as f:
+        f.write("".join(f"{d}\n" for d in sorted(docs)))
+    os.replace(path + ".tmp", path)
+
+
 def cmd_build(a):
     os.makedirs(a.state, exist_ok=True)
     reasons = [r for r in a.reasons.split(",") if r]
@@ -315,6 +325,7 @@ def cmd_build(a):
         n = record_ocr_docs(a.state, claimed, have)
         if n:
             log("queued pages already on the scan server claimed for OCR", pages=n)
+        write_ocr_active(a.state, {q["doc_id"] for q in outstanding} & have)
     if busy:
         log("the last manifest is still being fetched; nothing new", **busy)
         return

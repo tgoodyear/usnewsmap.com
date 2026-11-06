@@ -1490,12 +1490,13 @@ place and the newcomer is deleted instead, so the list never passes the budget a
 sits on the server outside it. A kept page leaves the list only once its sidecar is found
 gone and a DELETE makes sure its bytes are too (OCR's worker deletes a scan it read, best
 effort, and one of ours that marked it done but couldn't unlink it leaves just the sidecar
-gone). One OCR asks for (`ocr_manifest.py build` records every queued page whose scan is
-already on the scan server in `ocr-docs.txt`, not only its manifests' pages) stays listed
-and counted, and is neither evicted nor looked up while OCR wants it; its check time is
-reset, so it is among the first looked up after, and stays a kept page like any other if
-OCR's delete failed. `--keep-verify` (500) of the longest-unchecked are looked up a round; a
-lookup that fails goes to the back, and one the scan server doesn't answer ends that round's
+gone). One OCR still wants stays listed and counted, and is neither evicted nor looked up
+while it does: `ocr_manifest.py build` records every page OCR asked for in `ocr-docs.txt`
+(every queued page whose scan is already on the scan server, not only its manifests' pages)
+and rewrites `ocr-active.txt` each run with those no outcome has ended yet, which the
+follower reads (`--ocr-active`). Its check time is reset, so it is among the first looked
+up once OCR is done with it, and it stays a kept page like any other if OCR's delete failed.
+`--keep-verify` (500) of the longest-unchecked are looked up a round; a lookup that fails goes to the back, and one the scan server doesn't answer ends that round's
 lookups and deletes, which the next round picks up where it left off. The follower looks
 after the list every round, before its campaign has shipped anything too, and deletes (or
 keeps) the shipped scans of every campaign it has followed (`<state>/followed.txt`), so the

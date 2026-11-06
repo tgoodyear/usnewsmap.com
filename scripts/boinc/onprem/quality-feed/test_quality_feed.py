@@ -1212,6 +1212,8 @@ class FollowTest(unittest.TestCase):
                                                      "q3\tc00001\tbuffer/b/q3.jp2\t40\t0.1\n")
             (root / "state/kept.tsv").write_text("k1\tbuffer/b/k1.jp2\t40\t0.9\t0\n")
             (root / "quality-docs.txt").write_text("k1\nq1\nq2\nq3\n")
+            (root / "ocr-docs.txt").write_text("")
+            (root / "ocr-active.txt").write_text("")
             calls = []
 
             def fake(req, timeout=0):
@@ -1223,7 +1225,8 @@ class FollowTest(unittest.TestCase):
 
             argv = ["follow", "--campaign", "new", "--curated", str(root / "curated"), "--scan-server", "http://scan",
                     "--outbox", str(root / "outbox"), "--state", str(root / "state"), "--staged-dsn", "test",
-                    "--quality-docs", str(root / "quality-docs.txt"), "--keep-bytes", "60", "--once"]
+                    "--quality-docs", str(root / "quality-docs.txt"), "--ocr-docs", str(root / "ocr-docs.txt"),
+                    "--ocr-active", str(root / "ocr-active.txt"), "--keep-bytes", "60", "--once"]
             with mock.patch.object(feed, "staged_from_db", return_value=set()), \
                     mock.patch.object(feed, "index_rows", return_value={}), \
                     mock.patch.object(feed.urllib.request, "urlopen", fake), \
@@ -1239,6 +1242,18 @@ class FollowTest(unittest.TestCase):
                 self.assertEqual(feed.read_lines(root / "state/followed.txt"), {"old", "new"})
 
                 calls.clear()
+                feed.main(argv)
+                self.assertEqual(calls, [("GET", "buffer/b/q1.jp2.json")])
+                self.assertEqual(set(feed.read_kept(str(root / "state/kept.tsv"))), {"q1"})
+
+                # While OCR wants q1 it isn't looked up; once OCR's outcome ends it, it is,
+                # though ocr-docs.txt still lists it.
+                (root / "ocr-docs.txt").write_text("q1\n")
+                (root / "ocr-active.txt").write_text("q1\n")
+                calls.clear()
+                feed.main(argv)
+                self.assertEqual(calls, [])
+                (root / "ocr-active.txt").write_text("")
                 feed.main(argv)
                 self.assertEqual(calls, [("GET", "buffer/b/q1.jp2.json")])
                 self.assertEqual(set(feed.read_kept(str(root / "state/kept.tsv"))), {"q1"})

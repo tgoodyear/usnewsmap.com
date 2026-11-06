@@ -826,7 +826,7 @@ def scan_exists(server, scan):
         raise
 
 
-def delete_shipped(a, camp_dir, done_path, quality_docs, deleted_path, kept_path=None, ocr_docs=frozenset(),
+def delete_shipped(a, camp_dir, done_path, quality_docs, deleted_path, kept_path=None, ocr_active=frozenset(),
                    verify=True, retired_path=None):
     """DELETEs the buffer scans of the quality pass's shipped pages (the shipper has removed
     their chunk from the outbox), bar the most damaged, which stay for re-OCR.
@@ -839,9 +839,9 @@ def delete_shipped(a, camp_dir, done_path, quality_docs, deleted_path, kept_path
     that many bytes in all, and the rest are DELETEd.
 
     A kept scan leaves the list, no longer counting against the budget, only once its sidecar
-    is found gone and a DELETE confirms its bytes are too. One OCR asks for (it's in
-    `ocr_docs`, never inferred from `quality_docs`, which a missing list would empty) stays
-    listed and counted, and is neither evicted nor looked up while OCR wants it: OCR's worker
+    is found gone and a DELETE confirms its bytes are too. One OCR still wants (it's in
+    `ocr_active`: asked for, with no outcome yet that ends it) stays listed and counted, and
+    is neither evicted nor looked up while it's there: OCR's worker
     reads it by its sidecar and then deletes it, best effort. Its check time is reset, so it is
     among the first looked up once OCR is done with it. With `verify` (the follower asks once
     a round, whatever its campaigns), --keep-verify of the longest-unchecked are looked up; one
@@ -902,7 +902,7 @@ def delete_shipped(a, camp_dir, done_path, quality_docs, deleted_path, kept_path
 
     # OCR's worker deletes a scan it read best effort, so one OCR wants is handed back only
     # once a lookup after finds its bytes gone; until then it counts.
-    claimed = {doc: (*k[:3], 0) for doc, k in kept.items() if doc in ocr_docs}
+    claimed = {doc: (*k[:3], 0) for doc, k in kept.items() if doc in ocr_active}
     kept.update(claimed)
     released = []
     if budget and verify:
@@ -1049,6 +1049,7 @@ def cmd_follow(a):
                     d, _, at = line.rstrip("\n").partition("\t")
                     absent[d] = at
         ocr_docs = read_lines(a.ocr_docs) if a.ocr_docs else set()
+        ocr_active = read_lines(a.ocr_active) if getattr(a, "ocr_active", None) else set()
         done = read_lines(done_path) | read_lines(skip_path)
         quality_docs = read_lines(a.quality_docs) if a.quality_docs else set()
         # kept.tsv is every campaign's: one follower at a time reads and rewrites it. It's
@@ -1059,12 +1060,12 @@ def cmd_follow(a):
             quality_only = quality_docs - ocr_docs
             # This campaign's first: it checks the kept list, so space freed there is free
             # to every campaign's newly shipped pages.
-            gone += delete_shipped(a, camp_dir, done_path, quality_only, deleted_path, kept_path, ocr_docs,
+            gone += delete_shipped(a, camp_dir, done_path, quality_only, deleted_path, kept_path, ocr_active,
                                    retired_path=retired_path)
             past = sorted(c for c in read_lines(followed_path) if c != a.campaign and CAMPAIGN_RE.match(c))
             for c in past:
                 gone += delete_shipped(a, os.path.join(a.outbox, c), os.path.join(a.state, c, "done.txt"), quality_only,
-                                       os.path.join(a.state, c, "deleted.txt"), kept_path, ocr_docs, verify=False,
+                                       os.path.join(a.state, c, "deleted.txt"), kept_path, ocr_active, verify=False,
                                        retired_path=retired_path)
         if gone:
             log("buffer scans deleted after shipping", pages=gone)
@@ -1202,6 +1203,8 @@ def main(argv=None):
     w.add_argument("--staged", help="doc_ids older campaigns staged, one a line")
     w.add_argument("--staged-dsn", help="usnm_quality: pages with a unit or a staging record are left out")
     w.add_argument("--ocr-docs", help="doc_ids OCR's manifests asked for (ocr_manifest.py): never deleted")
+    w.add_argument("--ocr-active", help="doc_ids OCR still wants (ocr_manifest.py's ocr-active.txt): "
+                                        "kept scans among them stay counted and aren't evicted")
     w.add_argument("--quality-docs", help="doc_ids the quality pass fetched (ocr_manifest.py build-quality)")
     w.add_argument("--chunk-pages", type=int, default=500)
     w.add_argument("--max-pending", type=int, default=5)

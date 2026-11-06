@@ -23,6 +23,7 @@ ExecStart=/bin/sh -c 'exec /opt/usnm-quality-feed/venv/bin/python /opt/usnm-qual
   --outbox /var/lib/usnm-quality-feed/outbox --state /var/lib/usnm-quality-feed \
   --staged /var/lib/usnm-quality-feed/work/staged-docs.txt --staged-dsn "$(cat /etc/usnm/quality-db/dsn)" \
   --quality-docs /var/lib/usnm-ocr-manifest/quality-docs.txt --ocr-docs /var/lib/usnm-ocr-manifest/ocr-docs.txt \
+  --ocr-active /var/lib/usnm-ocr-manifest/ocr-active.txt \
   --chunk-pages "$CHUNK_PAGES" --max-pending "$MAX_PENDING" --workers "$WORKERS" --every-secs 600 \
   --keep-bytes "$KEEP_BYTES" --quarantine-decode'
 Restart=on-failure

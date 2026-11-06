@@ -68,10 +68,11 @@ class OcrClaimTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             Path(d, "last.json").write_text(json.dumps({
                 "name": "queue-ocr-x", "at": dt.datetime.now(UTC).isoformat(), "pairs": [["b", off]]}))
-            Path(d, "ocr-docs.txt").write_text(f"{off}\n")
+            Path(d, "ocr-docs.txt").write_text(f"{off}\n{ended}\n")
             a = types.SimpleNamespace(state=d, reasons="user,bulk", scan_server="http://s", curated_url="http://c",
                                       days=14, max_pages=10, curated_copy=d, what_if=False)
-            # ended's scan is on the server too, but OCR has finished with it: not claimed.
+            # ended's scan is on the server too, but OCR has finished with it: not claimed, and
+            # no longer active though OCR once asked for it.
             rows = {"queued": [q(on, "user", 1), q(off, "user", 2), q(ended, "user", 3)],
                     "outcomes": [{"doc_id": ended, "outcome": "not_sent", "cause": None,
                                   "at": dt.datetime(2026, 10, 24, 4, tzinfo=UTC)}]}
@@ -88,7 +89,8 @@ class OcrClaimTest(unittest.TestCase):
                     contextlib.redirect_stdout(io.StringIO()) as out:
                 m.cmd_build(a)
                 m.cmd_build(a)
-            self.assertEqual(Path(d, "ocr-docs.txt").read_text().split(), [off, on])
+            self.assertEqual(Path(d, "ocr-docs.txt").read_text().split(), [off, ended, on])
+            self.assertEqual(Path(d, "ocr-active.txt").read_text().split(), sorted([off, on]))
             self.assertIn("still being fetched", out.getvalue())
             # Claims see what was queued, and what OCR finished, since the manifest went out.
             self.assertEqual(refreshed, [("queued", True), ("outcomes", True)] * 2)
