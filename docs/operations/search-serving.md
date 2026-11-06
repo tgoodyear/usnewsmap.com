@@ -291,7 +291,19 @@ The spare moves to a Container Apps environment without a VNet, so its load bala
 
 Then confirm that `ContainerAppConsoleLogs` shows no storage or Cosmos 403 from either new app. Time a second wake as well.
 
-**Stage 2, the cutover and the deletes,** comes in its own pull request. It moves the Worker's Azure origin (`scripts/ci/deploy-edge-worker.sh`), CI's app variables, the alerts and the workbooks to the new apps. Then it removes `cae-usnm-prod`, `ca-usnm-prod`, `usnm-qw-search-ca-prod`, `vnet-usnm-prod` and the load balancer group.
+**Cutover.** A pull request points the production Worker at the new API (`scripts/ci/deploy-edge-worker.sh` reads `usnm-api-spare-ca-prod`'s default name), and `edge-worker-deploy` deploys it after CI on `main`. Check `https://healthcheck.usnewsmap.com/` still answers `onprem`. Then set the `prod` GitHub Environment's `USNM_API_APP` to `usnm-api-spare-ca-prod`, so `spare-roll`, CI's roll and IndexNow find the new app.
+
+**Stage 2, the deletes.** With `USNM_CAE_VNET=false` committed, run `scripts/azure/provision.sh --env prod --what-if --api-tag live --allow-rename=cae-usnm-prod --allow-rename=vnet-usnm-prod`. The `containerEnv` and `api` modules now carry the new environment and apps under the same names, so those show no change.
+
+- It may delete `cae-usnm-prod` and its diagnostic setting, and `ca-usnm-prod` and `usnm-qw-search-ca-prod` with their system identities' role assignments.
+- It may delete `vnet-usnm-prod` and its diagnostic setting.
+- It may remove the snet-cae rules from the lake, the index account, Cosmos, the exchange account and the scan archive.
+- Azure removes the `ME_` group with its load balancer and IP when the environment goes.
+- No storage account, Cosmos account, registry, workspace or Key Vault may be on the list. Then provision with the same flags, without `--what-if`.
+
+**After stage 2:** run the cold check above again. Confirm `az network lb list` and `az network public-ip list` show nothing for `rg-usnm-prod` and its `ME_` group. The origin certificate's weekly renewal (`origin-tls`) uploads to `usnm-core-spare-cae-prod` from then on.
+
+**Rollback after stage 2:** set `USNM_CAE_VNET` back to `true` and provision. That recreates the VNet and a VNet-integrated environment, with new apps under the old names. Then point the Worker back. It is a rebuild, so prefer fixing forward.
 
 **Rollback after stage 1:** set the three settings back and commit them. The rename guard protects environments, so both the what-if and the provision name the one being removed: `scripts/azure/provision.sh --env prod --what-if --api-tag live --allow-rename=usnm-core-spare-cae-prod`, then the same without `--what-if`. The new environment and apps go, and the accounts close to their subnet and IP rules again. The hand-off job comes back with its image setting, but it has nothing to do while claim, collect and export run on-prem.
 
