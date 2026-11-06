@@ -13,3 +13,6 @@ scripts/pictures/newspaper-navigator-baseline.lock.json text eol=lf
 ocr/fraktur-pilot/*.json text eol=lf
 ocr/fraktur-pilot/*.jsonl text eol=lf
 ocr/fraktur-pilot/SHA256SUMS text eol=lf
+# The reviewed German trust hold (#835): a test checks it byte for byte (include_bytes!) and its
+# sha256 is the one to verify after installing it on the BOINC server.
+docs/notes/2026-11-05-german-trust-hold.json text eol=lf

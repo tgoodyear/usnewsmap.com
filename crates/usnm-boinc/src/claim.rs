@@ -367,6 +367,9 @@ pub enum Ended {
     Deleted,
     /// The lease had run out and the message was read again by someone else.
     LeaseLost,
+    /// The result was kept, not published: its trust scope is held (#835). The message stays
+    /// hidden until its lease runs out.
+    Held,
 }
 
 async fn load(handoff: &dyn ObjectStore, doc_id: &str) -> anyhow::Result<Option<Claim>> {
@@ -391,7 +394,7 @@ async fn save(handoff: &dyn ObjectStore, doc_id: &str, claim: &Claim) -> anyhow:
 /// After `collect` has published a queue-fed job's page, delete its message.
 /// The claim is read back and must be this job's message; a failed delete
 /// leaves the message to come back, and the ledger's import makes a repeat
-/// harmless.
+/// harmless. A job kept by a held scope ([`Ended::Held`]) leaves its message alone.
 pub async fn finish(
     handoff: &dyn ObjectStore,
     queue: &dyn Queue,
@@ -399,6 +402,9 @@ pub async fn finish(
 ) -> anyhow::Result<Ended> {
     if record.ledger.is_none() {
         return Ok(Ended::NotQueueFed);
+    }
+    if record.held.is_some() && record.stage != crate::Stage::Published {
+        return Ok(Ended::Held);
     }
     ensure!(
         record.stage == crate::Stage::Published,

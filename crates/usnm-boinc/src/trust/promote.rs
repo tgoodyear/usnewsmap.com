@@ -27,7 +27,10 @@ pub struct Admission {
 
 impl Trust {
     /// Merges `incoming` calibrated scope(s) into `self` without clobbering unrelated scopes.
-    /// Re-promoting an existing `(language, profile)` scope replaces only that scope.
+    /// Re-promoting an existing `(language, profile)` scope replaces only that scope. A held
+    /// scope (#835) is replaced only by a policy whose `max_cer` is at or below the hold's,
+    /// held or not: a merge can lift a hold or tighten its limit, never raise it. Raising the
+    /// limit is a reviewed edit of the list itself.
     pub fn merge(&self, incoming: &Self) -> anyhow::Result<Self> {
         let existing_policies = self.effective_policies()?;
         let incoming_policies = incoming.effective_policies()?;
@@ -41,10 +44,18 @@ impl Trust {
             );
         }
         for policy in incoming_policies {
-            by_scope.insert(
-                (policy.scope.language.clone(), policy.scope.profile.clone()),
-                policy,
-            );
+            let key = (policy.scope.language.clone(), policy.scope.profile.clone());
+            if let Some(held) = by_scope.get(&key).filter(|p| p.hold.is_some()) {
+                anyhow::ensure!(
+                    policy.max_cer <= held.max_cer,
+                    "scope {}/{} is held until calibrated with max_cer <= {}; this policy's max_cer {} is above it",
+                    key.0,
+                    key.1,
+                    held.max_cer,
+                    policy.max_cer
+                );
+            }
+            by_scope.insert(key, policy);
         }
         let primary = by_scope
             .get(&primary_key)
@@ -64,7 +75,34 @@ impl Trust {
             v: TRUST_VERSION,
         };
         merged.validate()?;
+        merged.within_holds_of(self)?;
         Ok(merged)
+    }
+
+    /// Refuses `self` if any scope `base` holds is above that hold's `max_cer` in `self`. A
+    /// single [`Trust::merge`] checks this itself; `promote_to` checks the final list against
+    /// each list it read too, so a chain of merges can't drop a hold and then raise its limit.
+    fn within_holds_of(&self, base: &Self) -> anyhow::Result<()> {
+        let policies = self.effective_policies()?;
+        for held in base
+            .effective_policies()?
+            .iter()
+            .filter(|p| p.hold.is_some())
+        {
+            let (language, profile) = (&held.scope.language, &held.scope.profile);
+            if let Some(policy) = policies
+                .iter()
+                .find(|p| &p.scope.language == language && &p.scope.profile == profile)
+            {
+                anyhow::ensure!(
+                    policy.max_cer <= held.max_cer,
+                    "scope {language}/{profile} is held until calibrated with max_cer <= {}; this policy's max_cer {} is above it",
+                    held.max_cer,
+                    policy.max_cer
+                );
+            }
+        }
+        Ok(())
     }
 
     /// Atomically writes `self` to `out`, holding a destination-directory lock across the entire
@@ -93,13 +131,17 @@ impl Trust {
             Some(path) => Self::load_for_promotion(path)?,
             None => None,
         };
-        let merged = match (existing_out, existing_merge) {
+        let merged = match (&existing_out, &existing_merge) {
             (Some(out_policy), Some(merge_policy)) => {
-                out_policy.merge(&merge_policy)?.merge(self)?
+                out_policy.merge(merge_policy)?.merge(self)?
             }
             (Some(base), None) | (None, Some(base)) => base.merge(self)?,
             (None, None) => self.clone(),
         };
+        // `out`'s holds bind the result even if `merge_from` replaced one of them first.
+        for base in existing_out.iter().chain(existing_merge.iter()) {
+            merged.within_holds_of(base)?;
+        }
         let encoded = serde_json::to_vec_pretty(&merged)?;
         anyhow::ensure!(
             encoded.len() <= max_bytes,
@@ -153,6 +195,12 @@ impl Trust {
         let view = trust
             .policy_view(&scope.language, &scope.profile)
             .context("no calibrated policy for this scope")?;
+        anyhow::ensure!(
+            view.hold.is_none(),
+            "scope {}/{} is held from publication until calibrated; not admitting",
+            scope.language,
+            scope.profile
+        );
         anyhow::ensure!(
             view.scope == scope
                 && view.manifest_sha256 == manifest_sha256

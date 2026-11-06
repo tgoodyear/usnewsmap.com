@@ -1456,6 +1456,39 @@ class HandoffAndBridgeQualitySteps(unittest.TestCase):
         self.assertFalse([c for c in self.calls()
                           if c.startswith(("collect ", "claim finish", "handoff put "))])
 
+    def test_handoff_collect_of_a_held_scope_needs_no_host_and_keeps_the_result_before_the_journal(self):
+        # #835: a held scope's result is kept whatever the host, so an unknown host id doesn't
+        # stop it; the journal, marked held and so settled, goes up only after what it kept.
+        job = "a" * 64
+        body = (
+            self.COPY_STUB + "\n"
+            'if [ "$1 $2" = "handoff get-spool" ]; then\n'
+            '  for ((i = 1; i <= $#; i++)); do [ "${!i}" = --trust-out ] && j=$((i + 1)) && : > "${!j}"; done\n'
+            "  echo unknown\n"
+            "fi\n"
+            'if [ "$1" = collect ]; then\n'
+            '  for ((i = 1; i <= $#; i++)); do [ "${!i}" = --root ] && j=$((i + 1)) && r=${!j}; done\n'
+            f'  mkdir -p "$r/quarantine/{job}"\n'
+            "fi\n"
+        )
+        self.stub(body)
+        r = self.handoff("collect", JOB_ID=job, QUEUE_URL="https://usnmst.queue.core.windows.net")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        calls = self.calls()
+        (collect,) = [c for c in calls if c.startswith("collect ")]
+        self.assertIn("--trust ", collect)
+        self.assertNotIn("--host-id", collect)
+        puts = [c.split("--prefix ")[1].split()[0] for c in calls if c.startswith("handoff put")]
+        self.assertEqual(puts, [f"dispatch/quarantine/{job}", f"dispatch/jobs/{job}"])
+        self.assertTrue(calls[-1].startswith("claim finish"), calls)
+        # Any other scope is refused with no host id, as before, and says how to give one.
+        os.remove(self.log)
+        self.stub(body + '[ "$1" = collect ] && exit 1')
+        r = self.handoff("collect", JOB_ID=job, QUEUE_URL="https://usnmst.queue.core.windows.net")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("pass HOST_ID", r.stderr)
+        self.assertFalse([c for c in self.calls() if c.startswith("claim finish")])
+
     def test_handoff_release(self):
         r = self.handoff(
             "release",

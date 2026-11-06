@@ -285,6 +285,11 @@ pub struct Record {
     /// never goes into another bundle.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unbundled: Option<String>,
+    /// Why the result was kept but not published: its trust scope is held (#835). The feed
+    /// treats such a job as settled; collecting it again once the hold is lifted publishes it
+    /// and clears this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -817,6 +822,7 @@ pub async fn export(
                 ledger: ledger_row,
                 bundle: None,
                 unbundled: None,
+                held: None,
             };
             save(&opts.root, &record)?;
             record
@@ -872,21 +878,23 @@ pub(crate) fn normalized_text(job: &Job, text: &[u8]) -> anyhow::Result<String> 
     ))
 }
 
-/// Publish a validated result using fixed names. No source scans are deleted.
-pub async fn import(
+/// A job's result as [`import`] checks it before publishing: the record still awaits one, and
+/// the result (the accepted snapshot once publication has begun, else the given files) is
+/// complete, within its size limits, the job's own and valid ALTO.
+pub(crate) struct Checked {
+    pub result_bytes: Vec<u8>,
+    pub result: ResultManifest,
+    pub text: Vec<u8>,
+    pub alto: Vec<u8>,
+}
+
+pub(crate) fn checked_result(
     root: &Path,
-    id: &str,
+    record: &Record,
     manifest: &Path,
     text_path: &Path,
     alto_path: &Path,
-    curated: &dyn ObjectStore,
-    out: &dyn ObjectStore,
-) -> anyhow::Result<()> {
-    let _lock = Lock::take(root)?;
-    let mut record = load(root, id)?;
-    if record.stage == Stage::Published {
-        return Ok(());
-    }
+) -> anyhow::Result<Checked> {
     ensure!(
         matches!(
             record.stage,
@@ -894,7 +902,7 @@ pub async fn import(
         ),
         "job is not reserved/submitted"
     );
-    let accepted = dir(root, id)?.join("accepted");
+    let accepted = dir(root, &record.job.id)?.join("accepted");
     let (manifest, text_path, alto_path) = if accepted.join("result.json").exists() {
         (
             accepted.join("result.json"),
@@ -914,6 +922,36 @@ pub async fn import(
     let alto = read(&alto_path, boinc::MAX_ALTO)?;
     result.matches(&record.job, &text, &alto)?;
     checks::check_alto(&alto).map_err(|r| anyhow::anyhow!("{}", r.code()))?;
+    Ok(Checked {
+        result_bytes,
+        result,
+        text,
+        alto,
+    })
+}
+
+/// Publish a validated result using fixed names. No source scans are deleted.
+pub async fn import(
+    root: &Path,
+    id: &str,
+    manifest: &Path,
+    text_path: &Path,
+    alto_path: &Path,
+    curated: &dyn ObjectStore,
+    out: &dyn ObjectStore,
+) -> anyhow::Result<()> {
+    let _lock = Lock::take(root)?;
+    let mut record = load(root, id)?;
+    if record.stage == Stage::Published {
+        return Ok(());
+    }
+    let Checked {
+        result_bytes,
+        result,
+        text,
+        alto,
+    } = checked_result(root, &record, manifest, text_path, alto_path)?;
+    let accepted = dir(root, id)?.join("accepted");
     let key = record.job.message.key()?;
     let raw_text = text.clone();
     let text = normalized_text(&record.job, &text)?;
@@ -946,6 +984,7 @@ pub async fn import(
         .is_some_and(|o| o.outcome == ledger::IMPORTED && o.source == part_name)
     {
         record.stage = Stage::Published;
+        record.held = None;
         save(root, &record)?;
         return Ok(());
     }
@@ -957,6 +996,7 @@ pub async fn import(
         // node imported the page first. That answer stands; this one is not published.
         record.stage = Stage::Published;
         record.error = Some("superseded: another producer imported this page".into());
+        record.held = None;
         save(root, &record)?;
         return Ok(());
     }
@@ -986,6 +1026,7 @@ pub async fn import(
     record.stage = Stage::Published;
     record.error = None;
     record.terminal = None;
+    record.held = None;
     save(root, &record)?;
     Ok(())
 }

@@ -1815,12 +1815,24 @@ def gold_onboarding(config, state, transport, persist, now, *, held, room):
     return runs, reserved
 
 
+def kept_by_policy(record):
+    """Collected and kept, not published, because the trust list holds the job's scope (#835):
+    nothing is wrong with it, and collecting it again changes nothing until the hold is lifted."""
+    return record["stage"] not in ("published", "failed") and bool(record.get("held"))
+
+
+def settled(record):
+    """Nothing more for the controller to do with this job: published, failed for good, or kept
+    by a held trust scope."""
+    return record["stage"] in ("published", "failed") or kept_by_policy(record)
+
+
 def retained_backlog(config, records, owned, selected, pending_jobs):
     """Work the global cap counts beyond BOINC's pending workunits: journals of any plan that
-    are neither finished nor pending on BOINC (uncollected results, recovered reservations),
+    are neither settled nor pending on BOINC (uncollected results, recovered reservations),
     and selected pages with no journal yet."""
     uncollected = sum(
-        record["stage"] not in ("published", "failed") and record["job"]["id"] not in pending_jobs
+        not settled(record) and record["job"]["id"] not in pending_jobs
         for record in records
     )
     missing = [page for page in config["pages"] if page["page"] in selected and page["page"] not in owned]
@@ -1906,7 +1918,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
     for page in owned:
         selected.setdefault(page, now)
     held_jobs = {record["job"]["id"] for record in owned.values()
-                 if record["stage"] not in ("published", "failed")
+                 if not settled(record)
                  and server.get(record["job"]["id"], {}).get("spool")}
 
     def settle_failed(owned):
@@ -1963,6 +1975,8 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
                 "uncertain BOINC submission; reconcile explicitly, never automatically resubmit")
         if record["stage"] == "failed":
             continue  # dead-lettered: settle_failed passed it
+        if kept_by_policy(record):
+            continue  # its scope is held (#835): collected again only by hand, once lifted
         if record["stage"] != "published" and remote and remote["spool"] and len(to_collect) < config["batch_size"]:
             spool = remote["spool"]
             require(re.fullmatch(r"/[A-Za-z0-9_./-]+/results/[A-Za-z0-9_./-]+", spool)
@@ -2034,7 +2048,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
 
     uncertain = any(job["stage"] == "submitting" for job in server.values())
     require(not uncertain, "uncertain server submission blocks fresh allocation")
-    held = sum(record["stage"] not in ("published", "failed") and
+    held = sum(not settled(record) and
                bool(server.get(record["job"]["id"], {}).get("spool")) for record in owned.values())
 
     if high_target == 0:
@@ -2087,7 +2101,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
                       if not record.get("retry") and record["stage"] == "reserved"
                       and record["job"]["id"] not in existing_jobs
                       and server.get(record["job"]["id"], {}).get("stage") in (None, "reserved")}
-        backlog = sum(record["stage"] not in ("published", "failed") and
+        backlog = sum(not settled(record) and
                       record["job"]["id"] not in pending_jobs | candidates for record in records)
         backlog += sum(page not in owned for page in selected)
         cohort_submit_room = max(0, target - ocr_in_flight - backlog)
@@ -2114,7 +2128,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         submitted += len(to_submit)
 
     post_uncollected_not_pending = sum(
-        record["stage"] not in ("published", "failed") and record["job"]["id"] not in pending_jobs
+        not settled(record) and record["job"]["id"] not in pending_jobs
         for record in records
     )
     post_missing = sum(page not in owned for page in selected)
@@ -2187,8 +2201,9 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
                 alerts.append({"code": "gold_onboarding_failed", "scope": run["scope"], "step": step,
                                "error": outcome})
     held_count, oldest_held = held_results(state, {
-        record["job"]["id"] for record in owned.values() if record["stage"] not in ("published", "failed")
+        record["job"]["id"] for record in owned.values() if not settled(record)
         and server.get(record["job"]["id"], {}).get("spool")}, now)
+    scope_held = sum(kept_by_policy(record) for record in owned.values())
 
     published = sum(record["stage"] == "published" for record in owned.values())
     previous = state.get("published", 0)
@@ -2203,12 +2218,12 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         "collection_backlog": held,
         "collection_held": held_count,
         "oldest_held_seconds": oldest_held,
+        "scope_held": scope_held,
         "gold_onboarding": gold_runs,
         "newly_published": max(0, published - previous),
         "pages_per_hour": round(published * 3600 / max(1, now - started), 3),
         "oldest_pending_seconds": int(max((now - at for page, at in selected.items()
-                                          if page not in owned
-                                          or owned[page]["stage"] not in ("published", "failed")),
+                                          if page not in owned or not settled(owned[page])),
                                          default=0)),
         "backpressure": backpressure,
         "backpressure_reason": backpressure_reason,
