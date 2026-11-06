@@ -95,6 +95,25 @@ class OcrClaimTest(unittest.TestCase):
             # Claims see what was queued, and what OCR finished, since the manifest went out.
             self.assertEqual(refreshed, [("queued", True), ("outcomes", True)] * 2)
 
+    def test_a_new_manifest_s_pages_are_active_claims_at_once(self):
+        doc = "sn1_1900-01-01_ed-1_seq-4"
+        with tempfile.TemporaryDirectory() as d:
+            a = types.SimpleNamespace(state=d, reasons="user", scan_server="http://s", curated_url="http://c",
+                                      days=14, max_pages=10, curated_copy=d, what_if=False)
+            resp = mock.MagicMock(status=201)
+            resp.__enter__.return_value = resp
+            with mock.patch.object(m, "staged_pairs", return_value={}), \
+                    mock.patch.object(m, "Lake"), \
+                    mock.patch.object(m, "cached_rows",
+                                      side_effect=lambda lake, state, kind, *x: [q(doc, "user", 1)] if kind == "queued" else []), \
+                    mock.patch.object(m, "damage_of", return_value={}), \
+                    mock.patch.object(m, "manifest_bytes", return_value=b"x"), \
+                    mock.patch.object(m.urllib.request, "urlopen", return_value=resp), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                m.cmd_build(a)
+            self.assertEqual(Path(d, "ocr-docs.txt").read_text().split(), [doc])
+            self.assertEqual(Path(d, "ocr-active.txt").read_text().split(), [doc])
+
 
 def ranked(doc, batch, lccn, decade, rank):
     return [doc, batch, "1", "detected", "0.5", lccn, decade, str(rank)]

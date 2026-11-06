@@ -1049,7 +1049,10 @@ def cmd_follow(a):
                     d, _, at = line.rstrip("\n").partition("\t")
                     absent[d] = at
         ocr_docs = read_lines(a.ocr_docs) if a.ocr_docs else set()
-        ocr_active = read_lines(a.ocr_active) if getattr(a, "ocr_active", None) else set()
+        # Every page OCR asked for stands in for the ones it still wants until ocr_manifest.py
+        # has written them: an empty list is OCR wanting none, but a missing one says nothing.
+        active_path = getattr(a, "ocr_active", None)
+        ocr_active = read_lines(active_path) if active_path and os.path.exists(active_path) else ocr_docs
         done = read_lines(done_path) | read_lines(skip_path)
         quality_docs = read_lines(a.quality_docs) if a.quality_docs else set()
         # kept.tsv is every campaign's: one follower at a time reads and rewrites it. It's
@@ -1057,7 +1060,8 @@ def cmd_follow(a):
         gone = 0
         with open(kept_path + ".lock", "a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
-            quality_only = quality_docs - ocr_docs
+            # ocr-active.txt can name a page ocr-docs.txt, read a moment before, didn't yet.
+            quality_only = quality_docs - ocr_docs - ocr_active
             # This campaign's first: it checks the kept list, so space freed there is free
             # to every campaign's newly shipped pages.
             gone += delete_shipped(a, camp_dir, done_path, quality_only, deleted_path, kept_path, ocr_active,

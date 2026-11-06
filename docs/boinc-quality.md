@@ -1494,7 +1494,8 @@ gone). One OCR still wants stays listed and counted, and is neither evicted nor 
 while it does: `ocr_manifest.py build` records every page OCR asked for in `ocr-docs.txt`
 (every queued page whose scan is already on the scan server, not only its manifests' pages)
 and rewrites `ocr-active.txt` each run with those no outcome has ended yet, which the
-follower reads (`--ocr-active`). Its check time is reset, so it is among the first looked
+follower reads (`--ocr-active`; until that file exists, every page in `ocr-docs.txt`), and
+a newly shipped page in either is OCR's, neither kept nor deleted. Its check time is reset, so it is among the first looked
 up once OCR is done with it, and it stays a kept page like any other if OCR's delete failed.
 `--keep-verify` (500) of the longest-unchecked are looked up a round; a lookup that fails goes to the back, and one the scan server doesn't answer ends that round's
 lookups and deletes, which the next round picks up where it left off. The follower looks

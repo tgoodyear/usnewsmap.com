@@ -1246,14 +1246,27 @@ class FollowTest(unittest.TestCase):
                 self.assertEqual(calls, [("GET", "buffer/b/q1.jp2.json")])
                 self.assertEqual(set(feed.read_kept(str(root / "state/kept.tsv"))), {"q1"})
 
-                # While OCR wants q1 it isn't looked up; once OCR's outcome ends it, it is,
-                # though ocr-docs.txt still lists it.
+                # While OCR wants q1 it isn't looked up: by ocr-active.txt, or by ocr-docs.txt
+                # until there is one. Once OCR's outcome ends it, it is, though ocr-docs.txt
+                # still lists it.
                 (root / "ocr-docs.txt").write_text("q1\n")
-                (root / "ocr-active.txt").write_text("q1\n")
+                (root / "ocr-active.txt").unlink()
                 calls.clear()
                 feed.main(argv)
                 self.assertEqual(calls, [])
+                (root / "ocr-active.txt").write_text("q1\n")
+                feed.main(argv)
+                self.assertEqual(calls, [])
                 (root / "ocr-active.txt").write_text("")
+                feed.main(argv)
+                self.assertEqual(calls, [("GET", "buffer/b/q1.jp2.json")])
+                self.assertEqual(set(feed.read_kept(str(root / "state/kept.tsv"))), {"q1"})
+
+                # q2 ships once OCR wants it, though ocr-docs.txt doesn't say so yet: it's OCR's
+                # scan, neither kept nor deleted.
+                (root / "outbox/old/c00002").rmdir()
+                (root / "ocr-active.txt").write_text("q2\n")
+                calls.clear()
                 feed.main(argv)
                 self.assertEqual(calls, [("GET", "buffer/b/q1.jp2.json")])
                 self.assertEqual(set(feed.read_kept(str(root / "state/kept.tsv"))), {"q1"})

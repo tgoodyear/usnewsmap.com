@@ -380,6 +380,7 @@ def cmd_build(a):
     os.replace(last_path + ".tmp", last_path)
     # Every page OCR asked for: the quality feeder never deletes these scans.
     record_ocr_docs(a.state, [r["doc_id"] for r in rows], have)
+    write_ocr_active(a.state, {q["doc_id"] for q in outstanding} & have)
     stamp = now.isoformat()
     for r in rows:
         t = tries.get(r["doc_id"])
