@@ -17,8 +17,8 @@
 #
 # A new manifest is deployed once it has a build provenance attestation
 # signed by this repository's ci.yml on main. CI attests the API image as
-# the publish job's last step, after the Azure app has rolled onto it, so an
-# attested image is one prod runs. The attestation is read from the
+# the publish job's last step, after every check passed; a push no longer
+# rolls the Azure spare onto it (#308). The attestation is read from the
 # repository's public API without a token, and `gh attestation verify
 # --bundle` checks it (gh is never signed in); its source commit names the
 # commit, whose own tag must point at the same manifest. Until the

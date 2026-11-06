@@ -1,0 +1,74 @@
+name: spare-roll
+
+# Rolls prod's Azure API, the cold spare (ADR-0029), onto an image CI has
+# already published. A push to main no longer rolls it, because each roll
+# cold-started the spare (#308). Run this after an index publish to the spare
+# and before a cold drill (docs/operations/search-serving.md, "The Azure cold
+# spare"):
+#
+#   gh workflow run spare-roll --ref main                 # the image on-prem follows
+#   gh workflow run spare-roll --ref main -f tag=<commit> # a published commit's image
+#
+# The roll checks the app's /readyz, so it wakes the spare once.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "The commit tag of a published usnewsmap-api image. Empty means the commit the registry's main tag points at"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  roll:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: prod
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    # The same group as CI's publish, so a roll never overlaps one.
+    concurrency:
+      group: deploy-prod
+      cancel-in-progress: false
+    env:
+      ACR: ${{ vars.USNM_ACR_LOGIN_SERVER }}
+      APP: ${{ vars.USNM_API_APP }}
+      RG: ${{ vars.USNM_RESOURCE_GROUP }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ vars.USNM_CI_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Find the image
+        id: image
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          test -n "$ACR" && test -n "$APP" && test -n "$RG" ||
+            { echo "::error::prod has no registry or API app"; exit 1; }
+          registry=${ACR%%.*}
+          if [ -z "$TAG" ]; then
+            digest=$(az acr repository show --name "$registry" --image usnewsmap-api:main --query digest -o tsv)
+            # The commit tag (40 hex digits) that names the same manifest.
+            TAG=$(az acr manifest list-metadata --registry "$registry" --name usnewsmap-api \
+              --query "[?digest=='$digest'].tags[]" -o tsv | grep -E '^[0-9a-f]{40}$' | head -n 1 || true)
+            test -n "$TAG" || { echo "::error::no commit tag names usnewsmap-api:main ($digest)"; exit 1; }
+          fi
+          [[ $TAG =~ ^[0-9a-f]{40}$ ]] || { echo "::error::tag must be a 40-digit commit, not $TAG"; exit 1; }
+          az acr repository show --name "$registry" --image "usnewsmap-api:$TAG" -o none ||
+            { echo "::error::usnewsmap-api:$TAG is not in the registry"; exit 1; }
+          echo "image=$ACR/usnewsmap-api:$TAG" >> "$GITHUB_OUTPUT"
+          echo "Rolling the spare onto usnewsmap-api:$TAG" >> "$GITHUB_STEP_SUMMARY"
+      - name: Roll the spare
+        env:
+          IMAGE: ${{ steps.image.outputs.image }}
+        run: scripts/ci/roll-api.sh

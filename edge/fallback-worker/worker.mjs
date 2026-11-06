@@ -217,10 +217,14 @@ const ORIGIN_MS = 30000;
 const AZURE_PROBE_MS = 5000;
 const AZURE_WAIT_MS = 180000;
 const POLL_MS = 3000;
+// Before Azure is chosen, the primary must fail a second readiness probe (#308). A blip,
+// a Caddy reload or one slow answer then costs a visitor a second probe, not a cold
+// start of the Azure spare. After a failed preflight probe the second one waits this long.
+const CONFIRM_PAUSE_MS = 1000;
 // Workers Free allows 50 subrequests, and cache operations count:
 // 1 cache match + 1 primary probe + 1 cache put + 1 primary delivery +
-// 1 cache delete + 44 Azure probes + 1 Azure delivery <= 50.
-const MAX_AZURE_PROBES = 44;
+// 1 cache delete + 1 confirming primary probe + 43 Azure probes + 1 Azure delivery <= 50.
+const MAX_AZURE_PROBES = 43;
 
 function checkAbort(signal) {
   if (signal?.aborted) throw signal.reason ?? new DOMException("Aborted", "AbortError");
@@ -322,8 +326,17 @@ async function azureReady(env, signal) {
   return false;
 }
 
+// A second readiness probe of the primary, after `pauseMs`. Azure is selected only when this
+// one fails too: the primary is down, not slow once.
+async function confirmedDown(origin, signal, pauseMs) {
+  if (pauseMs > 0) await pause(pauseMs, signal);
+  return !await ready(origin, PRIMARY_HEALTH_MS, signal, true);
+}
+
 async function heartbeat(env) {
-  const primary = await ready(`https://${env.HEALTH_HOSTNAME}`, PRIMARY_HEALTH_MS, undefined, true);
+  const origin = `https://${env.HEALTH_HOSTNAME}`;
+  const primary = await ready(origin, PRIMARY_HEALTH_MS, undefined, true) ||
+    !await confirmedDown(origin, undefined, CONFIRM_PAUSE_MS);
   const azure = !primary && await azureReady(env);
   if (env.LOG_OUTCOMES === "true") {
     console.log({
@@ -345,7 +358,9 @@ async function healthcheck(request, env) {
   }
   checkAbort(request.signal);
   const valid = HEALTH_HOSTNAMES.has(env.HEALTH_HOSTNAME);
-  const primary = valid && await ready(`https://${env.HEALTH_HOSTNAME}`, PRIMARY_HEALTH_MS, request.signal, true);
+  const primaryOrigin = `https://${env.HEALTH_HOSTNAME}`;
+  const primary = valid && (await ready(primaryOrigin, PRIMARY_HEALTH_MS, request.signal, true) ||
+    !await confirmedDown(primaryOrigin, request.signal, CONFIRM_PAUSE_MS));
   const azure = !primary && valid && await azureReady(env, request.signal);
   const origin = primary ? "onprem" : azure ? "azure" : "unavailable";
   const available = primary || azure;
@@ -424,7 +439,11 @@ async function healthFailover(request, env) {
   }
   const healthOrigin = env.HEALTH_HOSTNAME ? `https://${env.HEALTH_HOSTNAME}` : new URL(request.url).origin;
   let reason = "primary-unhealthy";
-  if (await primaryReady(healthOrigin, request.signal)) {
+  // A failed preflight probe is asked once more before Azure is woken. A ready second
+  // answer isn't remembered: the next request probes again.
+  const primary = await primaryReady(healthOrigin, request.signal) ||
+    !await confirmedDown(healthOrigin, request.signal, CONFIRM_PAUSE_MS);
+  if (primary) {
     let answer;
     try {
       answer = await deliver(request, env, null);
@@ -434,12 +453,17 @@ async function healthFailover(request, env) {
       reason = ["OriginDeadlineError", "TimeoutError"].includes(error?.name) ? "primary-timeout" : "primary-network";
       await forgetHealthy(healthOrigin);
       if (!safe) return unavailable(request, env, reason);
+      // A slow search or a dropped connection from a primary that still answers ready is
+      // not an outage: answer 503 with Retry-After rather than cold-start Azure (#308).
+      if (!await confirmedDown(healthOrigin, request.signal, 0)) return unavailable(request, env, reason);
     }
     if (answer) {
       if (answer.status < 500 || answer.status > 599) return selected(answer, env, "onprem", "primary-ready");
       reason = "primary-5xx";
       await forgetHealthy(healthOrigin);
       if (!safe) return selected(answer, env, "onprem", reason);
+      // The primary's own 5xx passes through while its readiness still answers ready.
+      if (!await confirmedDown(healthOrigin, request.signal, 0)) return selected(answer, env, "onprem", reason);
       void answer.body?.cancel().catch(() => {});
     }
   }

@@ -118,7 +118,7 @@ test("a remembered ready answer lasts 10 seconds, then the primary is probed aga
   const [{ expires }] = store.values();
   const before = await run(t, get(), [response(200, "two")], ENV, false, expires - 1);
   assert.equal(before.calls.length, 1);
-  const after = await run(t, get(), [response(503, "not ready"), response(), response(200, "azure")],
+  const after = await run(t, get(), [response(503, "not ready"), response(503), response(), response(200, "azure")],
     ENV, false, expires);
   assert.equal(after.calls[0].url, `${SITE}/readyz`);
   assert.equal(after.answer.headers.get("x-usnm-origin"), "azure");
@@ -126,17 +126,17 @@ test("a remembered ready answer lasts 10 seconds, then the primary is probed aga
 
 test("an unready primary isn't remembered and a failed delivery forgets a ready one", async (t) => {
   const store = memoryCache(t);
-  const unready = await run(t, get(), [response(503, "not ready"), response(), response(200, "azure")]);
+  const unready = await run(t, get(), [response(503, "not ready"), response(503), response(), response(200, "azure")]);
   assert.equal(unready.answer.headers.get("x-usnm-origin"), "azure");
   assert.equal(store.size, 0);
   await run(t, get(), [response(), response(200, "fine")]);
   assert.equal(store.size, 1);
-  const failed = await run(t, get(), [network(), response(), response(200, "azure")]);
+  const failed = await run(t, get(), [network(), response(503), response(), response(200, "azure")]);
   assert.equal(failed.answer.headers.get("x-usnm-origin"), "azure");
   assert.equal(store.size, 0);
   await run(t, get(), [response(), response(200, "fine")]);
   assert.equal(store.size, 1);
-  const erred = await run(t, get(), [response(502, "bad"), response(), response(200, "azure")]);
+  const erred = await run(t, get(), [response(502, "bad"), response(503), response(), response(200, "azure")]);
   assert.equal(erred.answer.headers.get("x-usnm-origin"), "azure");
   assert.equal(store.size, 0);
 });
@@ -153,24 +153,25 @@ test("a broken cache falls back to probing every request", async (t) => {
 test("Azure-labelled ready cannot masquerade as primary readiness for requests, health domain or cron", async (t) => {
   const labelled = () => new Response("ready", { headers: { "X-USNM-Origin": "azure" } });
   const env = { ...ENV, HEALTH_HOSTNAME: "usnewsmap.com", HEALTHCHECK_HOSTNAME: "healthcheck.usnewsmap.com" };
-  const routed = await run(t, get(), [labelled(), labelled(), response(200, "azure")], env);
-  assert.equal(routed.calls.length, 3);
-  assert.equal(routed.calls[1].url, `${AZURE}/readyz`);
-  assert.equal(routed.calls[2].url, `${AZURE}/v1/hits?q=private`);
+  const routed = await run(t, get(), [labelled(), labelled(), labelled(), response(200, "azure")], env);
+  assert.equal(routed.calls.length, 4);
+  assert.equal(routed.calls[1].url, `${SITE}/readyz`);
+  assert.equal(routed.calls[2].url, `${AZURE}/readyz`);
+  assert.equal(routed.calls[3].url, `${AZURE}/v1/hits?q=private`);
   assert.equal(routed.answer.headers.get("x-usnm-origin"), "azure");
   assert.equal(routed.answer.headers.get("x-usnm-failover-reason"), "primary-unhealthy");
   const health = await run(t, new Request("https://healthcheck.usnewsmap.com/"),
-    [labelled(), response()], env);
+    [labelled(), labelled(), response()], env);
   assert.deepEqual(await health.answer.json(), { available: true, origin: "azure", primary_ready: false });
   const records = [];
   const log = console.log;
   console.log = (record) => records.push(record);
   try {
-    const cron = await run(t, null, [labelled(), response()], {
+    const cron = await run(t, null, [labelled(), labelled(), response()], {
       ...env, HEALTH_HEARTBEAT: "true", LOG_OUTCOMES: "true",
     }, true);
-    assert.equal(cron.calls.length, 2);
-    assert.equal(cron.calls[1].url, `${AZURE}/readyz`);
+    assert.equal(cron.calls.length, 3);
+    assert.equal(cron.calls[2].url, `${AZURE}/readyz`);
     assert.deepEqual(records, [{ origin: "azure", reason: "primary-unhealthy", status: 200, trigger: "heartbeat" }]);
   } finally {
     console.log = log;
@@ -182,13 +183,15 @@ test("Azure-labelled ready cannot masquerade as primary readiness for requests, 
   }
 });
 
-test("API/searcher/tunnel unready, redirects, wrong body and network select Azure before user delivery", async (t) => {
+test("API/searcher/tunnel unready, redirects, wrong body and network twice select Azure before user delivery", async (t) => {
   for (const first of [response(503), response(530), response(302), response(200, "ready\n"), response(200, "not ready"), network()]) {
-    const { answer, calls } = await run(t, get(), [first, response(), response(200, "azure")]);
-    assert.equal(calls.length, 3);
-    assert.equal(calls[1].url, `${AZURE}/readyz`);
-    assert.deepEqual(calls[1].headers, calls[0].headers);
-    assert.equal(calls[2].url, `${AZURE}/v1/hits?q=private`);
+    const { answer, calls } = await run(t, get(), [first, response(530), response(), response(200, "azure")]);
+    assert.equal(calls.length, 4);
+    assert.equal(calls[1].url, `${SITE}/readyz`);
+    assert.equal(calls[1].at - calls[0].at, 1000);
+    assert.equal(calls[2].url, `${AZURE}/readyz`);
+    assert.deepEqual(calls[2].headers, calls[0].headers);
+    assert.equal(calls[3].url, `${AZURE}/v1/hits?q=private`);
     assert.equal(answer.headers.get("x-usnm-origin"), "azure");
     assert.equal(answer.headers.get("x-usnm-failover-reason"), "primary-unhealthy");
   }
@@ -198,19 +201,22 @@ test("stalled primary headers and readiness body abort at 3s then select Azure",
   for (const first of [stall, ({ signal }) => new Response(new ReadableStream({
     start(c) { signal.addEventListener("abort", () => c.error(signal.reason), { once: true }); },
   }))]) {
-    const { answer, calls } = await run(t, get(), [first, response(), response(200, "azure")]);
-    assert.equal(calls[1].at, 3000);
+    const { answer, calls } = await run(t, get(), [first, stall, response(), response(200, "azure")]);
+    assert.equal(calls[1].at, 4000);
+    assert.equal(calls[2].at, 7000);
     assert.equal(calls[0].signal.aborted, true);
     assert.equal(answer.headers.get("x-usnm-origin"), "azure");
   }
 });
 
-test("GET/HEAD 5xx/network/timeouts fail over; 4xx and redirects remain onprem", async (t) => {
+test("GET/HEAD 5xx/network/timeouts fail over once readiness fails too; 4xx and redirects remain onprem", async (t) => {
   for (const method of ["GET", "HEAD"]) {
     for (const failed of [response(503), response(524), network(), stall, Object.assign(network(), { name: "TimeoutError" })]) {
-      const { answer, calls } = await run(t, get("/", { method }), [response(), failed, response(), response(200, "azure")]);
-      assert.equal(calls.length, 4);
-      assert.equal(calls[3].method, method);
+      const { answer, calls } = await run(t, get("/", { method }),
+        [response(), failed, response(503), response(), response(200, "azure")]);
+      assert.equal(calls.length, 5);
+      assert.equal(calls[2].url, `${SITE}/readyz`);
+      assert.equal(calls[4].method, method);
       assert.equal(answer.headers.get("x-usnm-origin"), "azure");
     }
   }
@@ -243,22 +249,22 @@ test("Azure cold polling holds original POST until exact readiness and preserves
     headers: { origin: SITE, "sec-fetch-site": "same-origin", "content-type": "text/plain" },
   });
   const { answer, calls } = await run(t, request, [
-    response(503), response(503), stall, response(), response(200, "azure"),
+    response(503), response(503), response(503), stall, response(), response(200, "azure"),
   ]);
-  assert.equal(calls.length, 5);
-  assert.equal(calls[2].signal.aborted, true);
-  for (const probe of calls.slice(0, 4)) {
+  assert.equal(calls.length, 6);
+  assert.equal(calls[3].signal.aborted, true);
+  for (const probe of calls.slice(0, 5)) {
     assert.equal(new URL(probe.url).pathname, "/readyz");
     assert.equal(new URL(probe.url).search, "");
     assert.equal(probe.body, null);
     assert.equal(probe.method, "GET");
   }
-  assert.equal(calls[2].at - calls[1].at, 3000);
-  assert.equal(calls[3].at - calls[2].at, 8000);
-  assert.equal(calls[4].body, "original");
-  assert.equal(calls[4].headers.origin, SITE);
-  assert.equal(calls[4].headers["sec-fetch-site"], "same-origin");
-  assert.equal(calls[4].redirect, "manual");
+  assert.equal(calls[3].at - calls[2].at, 3000);
+  assert.equal(calls[4].at - calls[3].at, 8000);
+  assert.equal(calls[5].body, "original");
+  assert.equal(calls[5].headers.origin, SITE);
+  assert.equal(calls[5].headers["sec-fetch-site"], "same-origin");
+  assert.equal(calls[5].redirect, "manual");
   assert.equal(answer.headers.get("x-usnm-origin"), "azure");
 });
 
@@ -275,8 +281,9 @@ test("the worst path stays inside the 50 subrequest quota, counting cache operat
     if (original === undefined) delete globalThis.caches;
     else globalThis.caches = original;
   });
-  const cold = Array.from({ length: 43 }, () => () => response(503));
-  const { answer, calls } = await run(t, get(), [response(), network(), ...cold, response(), response(200, "azure")]);
+  const cold = Array.from({ length: 42 }, () => () => response(503));
+  const { answer, calls } = await run(t, get(),
+    [response(), network(), response(503), ...cold, response(), response(200, "azure")]);
   assert.equal(answer.headers.get("x-usnm-origin"), "azure");
   assert.equal(operations, 3);
   assert.ok(calls.length + operations <= 50, `${calls.length + operations} subrequests`);
@@ -285,9 +292,10 @@ test("the worst path stays inside the 50 subrequest quota, counting cache operat
 test("both unready stay inside the subrequest quota, bounded wait, explicit no-store 503/CORS/Retry-After", async (t) => {
   for (const cold of [() => response(503), stall]) {
     const { answer, calls, elapsed } = await run(t, get("/", { headers: { origin: SITE } }),
-      [response(503), ...Array.from({ length: 44 }, () => cold)]);
+      [response(503), response(503), ...Array.from({ length: 43 }, () => cold)]);
     assert.ok(calls.length <= 45);
-    assert.ok(elapsed <= 180000);
+    // The confirming probe's 1 s pause comes before Azure's full 180 s.
+    assert.ok(elapsed <= 181000);
     assert.equal(answer.status, 503);
     assert.equal(answer.headers.get("retry-after"), "10");
     assert.equal(answer.headers.get("cache-control"), "no-store");
@@ -300,8 +308,8 @@ test("both unready stay inside the subrequest quota, bounded wait, explicit no-s
 
 test("invalid Azure config never probes/sends outside allowed origin", async (t) => {
   for (const origin of ["", "https://evil.test", `${AZURE}/path`, `${AZURE}:8443`, `${AZURE}.evil.test`, `https://user@${new URL(AZURE).host}`]) {
-    const { answer, calls } = await run(t, get(), [response(503)], { ...ENV, AZURE_FALLBACK_ORIGIN: origin });
-    assert.equal(calls.length, 1);
+    const { answer, calls } = await run(t, get(), [response(503), response(503)], { ...ENV, AZURE_FALLBACK_ORIGIN: origin });
+    assert.equal(calls.length, 2);
     assert.equal(answer.headers.get("x-usnm-failover-reason"), "azure-config-invalid");
   }
 });
@@ -314,7 +322,7 @@ test("incoming api/www/dev hostname drives its own preflight; HEAD outage has no
     assert.equal(calls[1].url, `https://${hostname}/assets/file?q=original`);
     assert.equal(answer.headers.get("x-usnm-origin"), "onprem");
   }
-  const { answer } = await run(t, get("/", { method: "HEAD" }), [response(503)],
+  const { answer } = await run(t, get("/", { method: "HEAD" }), [response(503), response(503)],
     { ...ENV, AZURE_FALLBACK_ORIGIN: "" });
   assert.equal(answer.status, 503);
   assert.equal(answer.body, null);
@@ -336,7 +344,7 @@ test("failover drill probes its configured hostname for requests and cron", asyn
   assert.equal(routed.calls[0].url, "https://failover-drill.usnewsmap.com/readyz");
   const heartbeat = await run(t, null, [response()], env, true);
   assert.equal(heartbeat.calls[0].url, routed.calls[0].url);
-  const unhealthy = await run(t, get(), [response(301), response(), response(200, "azure")], env);
+  const unhealthy = await run(t, get(), [response(301), response(301), response(), response(200, "azure")], env);
   assert.equal(unhealthy.answer.headers.get("x-usnm-origin"), "azure");
   for (const hostname of ["www.usnewsmap.com", "failover-drill.usnewsmap.com.evil.test", "usnewsmap.com/path", ""]) {
     const invalid = await run(t, get(), [], { ...env, HEALTH_HOSTNAME: hostname });
@@ -348,8 +356,8 @@ test("failover drill probes its configured hostname for requests and cron", asyn
 test("native health metrics visibly retain origin/reason without inventing per-origin aggregates", async (t) => {
   for (const [script, origin] of [
     [[response(), response(200, "primary")], "onprem"],
-    [[response(503), response(), response(200, "azure")], "azure"],
-    [[response(503)], "unavailable"],
+    [[response(503), response(503), response(), response(200, "azure")], "azure"],
+    [[response(503), response(503)], "unavailable"],
   ]) {
     const { answer, metrics } = await run(t, get(), script, {
       ...ENV, METRICS_MODE: "native", AZURE_FALLBACK_ORIGIN: origin === "unavailable" ? "" : AZURE,
@@ -371,8 +379,8 @@ test("native health metrics visibly retain origin/reason without inventing per-o
         assert.deepEqual(records, []);
         for (const [script, origin, reason, status] of [
           [[response(), response(200, "primary")], "onprem", "primary-ready", 200],
-          [[response(503), response(), response(200, "azure")], "azure", "primary-unhealthy", 200],
-          [[response(503)], "unavailable", "azure-config-invalid", 503],
+          [[response(503), response(503), response(), response(200, "azure")], "azure", "primary-unhealthy", 200],
+          [[response(503), response(503)], "unavailable", "azure-config-invalid", 503],
         ]) {
           await run(t, get("/v1/hits?q=private"), script, {
             ...ENV, LOG_OUTCOMES: "true", AZURE_FALLBACK_ORIGIN: origin === "unavailable" ? "" : AZURE,
@@ -408,13 +416,14 @@ test("native health metrics visibly retain origin/reason without inventing per-o
     test("custom health domain wakes cold Azure only after primary failure and reports unavailable honestly", async (t) => {
       const env = { ...ENV, HEALTH_HOSTNAME: "usnewsmap.com", HEALTHCHECK_HOSTNAME: "healthcheck.usnewsmap.com" };
       const azure = await run(t, new Request("https://healthcheck.usnewsmap.com/"),
-        [response(503), response(503), response()], env);
-      assert.equal(azure.calls.length, 3);
+        [response(503), response(503), response(503), response()], env);
+      assert.equal(azure.calls.length, 4);
       assert.ok(azure.calls.every((call) => new URL(call.url).pathname === "/readyz"));
-      assert.equal(azure.calls[1].url, `${AZURE}/readyz`);
+      assert.equal(azure.calls[1].url, `${SITE}/readyz`);
+      assert.equal(azure.calls[2].url, `${AZURE}/readyz`);
       assert.deepEqual(await azure.answer.json(), { available: true, origin: "azure", primary_ready: false });
       const unavailable = await run(t, new Request("https://healthcheck.usnewsmap.com/readyz", { method: "HEAD" }),
-        [response(503)], { ...env, AZURE_FALLBACK_ORIGIN: "" });
+        [response(503), response(503)], { ...env, AZURE_FALLBACK_ORIGIN: "" });
       assert.equal(unavailable.answer.status, 503);
       assert.equal(unavailable.answer.body, null);
       assert.equal(unavailable.answer.headers.get("retry-after"), "10");
@@ -444,10 +453,10 @@ test("client aborts before preflight, during probe, original delivery or Azure w
     const stop = () => { controller.abort(); throw controller.signal.reason; };
     if (stage === "before") controller.abort();
     const script = stage === "probe" ? [stop] : stage === "delivery" ? [response(), stop] :
-      [response(503), () => { setTimeout(() => controller.abort(), 1000); return response(503); }];
+      [response(503), response(503), () => { setTimeout(() => controller.abort(), 1000); return response(503); }];
     const { error, calls } = await run(t, get("/", { signal: controller.signal }), script);
     assert.equal(error.name, "AbortError");
-    assert.equal(calls.length, stage === "before" ? 0 : stage === "probe" ? 1 : 2);
+    assert.equal(calls.length, stage === "before" ? 0 : stage === "probe" ? 1 : stage === "delivery" ? 2 : 3);
   }
   const abortError = new DOMException("Aborted", "AbortError");
   const { error, calls } = await run(t, get(), [response(), abortError]);
@@ -458,8 +467,8 @@ test("client aborts before preflight, during probe, original delivery or Azure w
 test("Azure delivery errors do not replay and denied origins get no CORS", async (t) => {
   for (const failed of [network(), stall]) {
     const { answer, calls } = await run(t, get("/", { headers: { origin: "https://evil.test" } }),
-      [response(503), response(), failed]);
-    assert.equal(calls.length, 3);
+      [response(503), response(503), response(), failed]);
+    assert.equal(calls.length, 4);
     assert.equal(answer.status, 503);
     assert.equal(answer.headers.get("access-control-allow-origin"), null);
     assert.equal(answer.headers.get("x-usnm-origin"), "unavailable");
@@ -476,8 +485,8 @@ test("finished cron health outcomes are fixed-only and logging is explicitly opt
     assert.deepEqual(records, []);
     for (const [script, origin, reason, status] of [
       [[response()], "onprem", "primary-ready", 200],
-      [[response(503), response(503), response()], "azure", "primary-unhealthy", 200],
-      [[response(503)], "unavailable", "azure-unready", 503],
+      [[response(503), response(503), response(503), response()], "azure", "primary-unhealthy", 200],
+      [[response(503), response(503)], "unavailable", "azure-unready", 503],
     ]) {
       await run(t, null, script, {
         ...env, LOG_OUTCOMES: "true", AZURE_FALLBACK_ORIGIN: origin === "unavailable" ? "" : AZURE,
@@ -495,9 +504,10 @@ test("cron primary heartbeat wakes Azure only on failure, with opt-in and exact 
   const healthy = await run(t, null, [response()], env, true);
   assert.equal(healthy.calls.length, 1);
   assert.equal(healthy.calls[0].url, "https://dev.usnewsmap.com/readyz");
-  const cold = await run(t, null, [stall, response(503), response()], env, true);
-  assert.equal(cold.calls.length, 3);
-  assert.equal(cold.calls[1].url, `${AZURE}/readyz`);
+  const cold = await run(t, null, [stall, response(503), response(503), response()], env, true);
+  assert.equal(cold.calls.length, 4);
+  assert.equal(cold.calls[1].url, "https://dev.usnewsmap.com/readyz");
+  assert.equal(cold.calls[2].url, `${AZURE}/readyz`);
   assert.equal(cold.metrics.length, 0);
   for (const disabled of [
     { ...env, HEALTH_FAILOVER: "false" }, { ...env, HEALTH_HEARTBEAT: "false" },
@@ -506,4 +516,54 @@ test("cron primary heartbeat wakes Azure only on failure, with opt-in and exact 
     const { calls } = await run(t, null, [], disabled, true);
     assert.equal(calls.length, 0);
   }
+});
+
+// #308: each Azure wake is a cold start of the spare. Azure is chosen only when the primary
+// fails a second readiness probe; a primary that answers ready on the second probe keeps the
+// request, and its own 5xx or a slow answer is not an outage.
+test("a primary that is ready on the second probe keeps the request and Azure is never probed", async (t) => {
+  for (const first of [response(503), response(530), network(), stall]) {
+    const { answer, calls } = await run(t, get(), [first, response(), response(200, "primary")]);
+    assert.equal(calls.length, 3);
+    assert.equal(calls[1].url, `${SITE}/readyz`);
+    assert.equal(calls[2].url, `${SITE}/v1/hits?q=private`);
+    assert.ok(calls.every((call) => !call.url.startsWith(AZURE)));
+    assert.equal(answer.headers.get("x-usnm-origin"), "onprem");
+    assert.equal(await answer.text(), "primary");
+  }
+});
+
+test("a GET's 5xx from a primary that still answers ready passes through without waking Azure", async (t) => {
+  for (const status of [500, 502, 503, 504, 524]) {
+    const { answer, calls } = await run(t, get(), [response(), response(status, "busy"), response()]);
+    assert.equal(calls.length, 3);
+    assert.equal(calls[2].url, `${SITE}/readyz`);
+    assert.equal(answer.status, status);
+    assert.equal(await answer.text(), "busy");
+    assert.equal(answer.headers.get("x-usnm-origin"), "onprem");
+    assert.equal(answer.headers.get("x-usnm-failover-reason"), "primary-5xx");
+  }
+});
+
+test("a GET's timeout or network failure from a primary that still answers ready is a 503, not Azure", async (t) => {
+  for (const [failed, reason] of [[stall, "primary-timeout"], [network(), "primary-network"],
+    [Object.assign(network(), { name: "TimeoutError" }), "primary-timeout"]]) {
+    const { answer, calls } = await run(t, get(), [response(), failed, response()]);
+    assert.equal(calls.length, 3);
+    assert.ok(calls.every((call) => !call.url.startsWith(AZURE)));
+    assert.equal(answer.status, 503);
+    assert.equal(answer.headers.get("retry-after"), "10");
+    assert.equal(answer.headers.get("x-usnm-origin"), "unavailable");
+    assert.equal(answer.headers.get("x-usnm-failover-reason"), reason);
+  }
+});
+
+test("heartbeat and health domain wake Azure only after two failed primary probes", async (t) => {
+  const env = { ...ENV, HEALTH_HEARTBEAT: "true", HEALTH_HOSTNAME: "usnewsmap.com", HEALTHCHECK_HOSTNAME: "healthcheck.usnewsmap.com" };
+  const cron = await run(t, null, [response(503), response()], env, true);
+  assert.equal(cron.calls.length, 2);
+  assert.ok(cron.calls.every((call) => call.url === `${SITE}/readyz`));
+  const health = await run(t, new Request("https://healthcheck.usnewsmap.com/"), [stall, response()], env);
+  assert.equal(health.calls.length, 2);
+  assert.deepEqual(await health.answer.json(), { available: true, origin: "onprem", primary_ready: true });
 });

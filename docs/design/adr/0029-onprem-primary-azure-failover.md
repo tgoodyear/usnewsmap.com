@@ -2,6 +2,7 @@
 
 - **Status:** Accepted by maintainer, 31 October 2026 UTC; rollout and measurements must be evidenced separately.
 - **Amends:** [ADR-0027](0027-onprem-serving-behind-cloudflare.md), especially decisions 6, 10 and 13 and Phases 3 to 5; [ADR-0028](0028-cloudflare-with-azure-origin.md) remains the pre-cutover routing record.
+- **Amended:** November 2026, fewer spare wakes (#308), below.
 - **Authorization:** The maintainer authorized production downtime and routing changes and requires all public serving requests to use on-prem when healthy and Azure when on-prem fails. Related work: [#955](https://github.com/tgoodyear/usnewsmap.com/issues/955), [#1098](https://github.com/tgoodyear/usnewsmap.com/issues/1098), [#245](https://github.com/tgoodyear/usnewsmap.com/issues/245).
 
 ## Context
@@ -260,3 +261,10 @@ On-prem power, ISP, storage and the single searcher remain failure domains,
 but Azure answers new serving requests when the home side fails. Shared Azure
 state remains a dependency for both origins until a separately accepted
 replication/fencing design replaces it.
+
+## Amendment, November 2026: fewer spare wakes (#308)
+
+Each wake cold-starts the standby and bills about 15 minutes of both apps. The maintainer approved two changes on 6 November 2026, when wakes cost about $60 a month:
+
+- **Main merges don't roll the standby.** CI still publishes and attests every image, and on-prem deploys it. The standby rolls on an index publish or before a drill, through the `spare-roll` workflow ([runbook](../../operations/search-serving.md#rolling-the-spare)). It can run an older image than on-prem until then.
+- **The Worker selects Azure only when on-prem is down.** A failed readiness probe is confirmed by a second one 1 second later. A GET's 5xx, timeout or dropped connection goes to Azure only when on-prem's readiness then fails too; otherwise on-prem's 5xx passes through, or the Worker answers 503 with `Retry-After`. The first request of a real outage waits at most about 4 seconds more, and Azure's 180-second readiness budget is unchanged.

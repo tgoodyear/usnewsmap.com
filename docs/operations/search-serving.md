@@ -104,7 +104,7 @@ The `usnm.searcher` property is emitted only by API images that carry it; older 
 2. Set `split_footer_cache_capacity` in `infra/quickwit/searcher.yaml` to that total plus about 25% for the deltas the next weekly releases add, rounded up. Quickwit reads `256MB` as 256,000,000 bytes, the unit `FooterMb` uses.
 3. Check it fits the sidecar's 4 GiB next to the fast field cache (1 GB), the aggregation memory limit (768 MB) and the partial request and predicate caches (32 MB each). If it doesn't, the fast field cache is the one to shrink first; then the container's memory (`infra/modules/containerapp.bicep`).
 
-The change goes live when it merges (CI applies `searcher.yaml` to the running app). Confirm with `searcher-caches` a day later: after the warm-up, footer misses and evictions stay near 0 (each replica start misses about once per split), and the footer cache's MB held is about the footer total.
+The change reaches the Azure spare at its next roll (`spare-roll`, which applies `searcher.yaml` to the running app), not on merge. Confirm with `searcher-caches` a day later: after the warm-up, footer misses and evictions stay near 0 (each replica start misses about once per split), and the footer cache's MB held is about the footer total.
 
 ## Searcher threads
 
@@ -231,6 +231,26 @@ Each wake starts the API, which starts the searcher. The API stays about 5 minut
 - The Worker, when the primary doesn't answer `/readyz` with `ready` within 3 s: the minute heartbeat, `healthcheck.usnewsmap.com`, or a visitor's request after a 5xx or a failed probe. Each polls Azure's `/readyz` until it's ready, and those polls keep the app up.
 - `usnm-fallback-drill`, which has the same Azure origin. Its `dev.usnewsmap.com/*` route is removed between drills, because with the dev connector stopped any request there wakes production's spare. The Worker itself stays deployed.
 - Anything that reaches the app's default hostname directly.
+- A roll of the API (`scripts/ci/roll-api.sh`), which ends with a `/readyz` check, and each start's warm-up of about 5 minutes after it.
+
+The Worker selects Azure only once the primary fails a second readiness probe, 1 second after the first, and a GET's 5xx, timeout or dropped connection reaches Azure only when the primary's readiness then fails too (#308). Otherwise the primary's 5xx passes through, or the Worker answers 503 with `Retry-After`. A real outage costs the first request at most about 4 seconds more before the Azure polling starts; the polling keeps its 180 s budget.
+
+### Rolling the spare
+
+Main merges don't roll the spare (#308). From 1 to 6 November 2026, 20 merges each made a new revision, and each cold-started the spare for a roll check and a start's warm-up: about half of its wakes. Pushes to `main` still publish the images to the registry and attest the API image, and on-prem serving deploys an attested image (`scripts/onprem/serving/update-api.sh`), so on-prem follows `main` as before. The spare runs the image of its last roll until the next one.
+
+Roll it onto the image on-prem follows:
+
+- after an index publish to the spare, once the new version is promoted;
+- before a cold drill, then let it return to zero replicas before the drill's first step;
+- when a change must reach the spare, such as a fix that a failover would need, or a `searcher.yaml` change.
+
+```sh
+gh workflow run spare-roll --ref main                  # the commit usnewsmap-api:main names
+gh workflow run spare-roll --ref main -f tag=<commit>  # any published commit's image
+```
+
+It runs `scripts/ci/roll-api.sh`, as CI's publish did, in the same `deploy-prod` concurrency group. `gh workflow run ci --ref main -f roll_api=true` also rolls, after a full CI run; `scripts/azure/bootstrap.sh` uses that. A provision keeps the running tag with `--api-tag live`, as before.
 
 `/readyz` isn't recorded in Application Insights, and a request abandoned before a replica is up isn't either, so a wake can show no request. `ContainerAppSystemLogs` shows wakes as `KEDAScaleTargetActivated`, `triggered by s0-upstream_rq_total`.
 
@@ -264,7 +284,7 @@ edge/fallback-worker/deploy.sh --account-id <id> --azure-origin https://<default
 
 Leave out `--health-heartbeat`: the drill Worker needs no cron. Then stop the dev connector, so the Worker's primary fails.
 
-1. Confirm both apps have no replicas: `az containerapp replica list` for the API's and the searcher's latest revisions. Wait until they do.
+1. Roll the spare onto the image on-prem serves ([Rolling the spare](#rolling-the-spare)) if it runs an older one. Then confirm both apps have no replicas: `az containerapp replica list` for the API's and the searcher's latest revisions. Wait until they do, and time a wake of a revision that has started once already: the first start of a new revision pulls its image cold (207 s on 6 November 2026, against about 70 s before).
 2. Poll `https://dev.usnewsmap.com/readyz`. It must answer 200 with `X-USNM-Origin: azure` inside the Worker's 180 s budget. Record the time; the last drills took about 70 s.
 3. Through the same hostname, each with `X-USNM-Origin: azure`:
    - a real search on `/v1/aggregate` and `/v1/hits`, which proves the index account;

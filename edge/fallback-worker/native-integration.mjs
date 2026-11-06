@@ -130,7 +130,8 @@ try {
     assert.equal(answer.headers.get("x-usnm-origin"), "unavailable");
     assert.equal(answer.headers.get("x-usnm-failover-reason"), "azure-config-invalid");
     assert.equal(answer.headers.get("retry-after"), "10");
-    assert.ok(Date.now() - start >= 2900 && Date.now() - start < 6000, "real health deadline must be 3s");
+    // Two stalled probes, each cut at 3 s, with the confirming probe's 1 s pause between.
+    assert.ok(Date.now() - start >= 6900 && Date.now() - start < 10000, "real health deadline must be 3s per probe");
     await answer.text();
     for (let n = 0; n < 20 && !closed; n++) await delay(25);
     assert.equal(closed, true, `workerd must abort the ${mode} health socket`);
@@ -148,7 +149,7 @@ try {
   assert.equal(await answer.text(), "streamed primary");
   assert.equal(calls.at(-1).headers.origin, "https://usnewsmap.com");
   assert.equal(calls.at(-1).headers["sec-fetch-site"], "same-origin");
-  assert.equal(calls.length, 4);
+  assert.equal(calls.length, 6);
   console.log("Native health headers/body 3s deadlines cancel real TCP sockets; streamed primary/header isolation passed");
 } finally {
   await healthInstance.dispose();

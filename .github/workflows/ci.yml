@@ -17,6 +17,10 @@ on:
         type: choice
         options: [full, ocr-worker]
         default: full
+      roll_api:
+        description: "Also roll each deployed environment's Azure API onto this commit. A push to main never does: prod's Azure API is the cold spare, and each roll cold-starts it (#308)"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -1219,14 +1223,22 @@ jobs:
             ${{ env.ACR }}/usnewsmap-ja-ocr:${{ github.sha }}
       # The API app exists once the environment pulls from its registry
       # (bootstrap's second provision); until then only the images publish.
+      # Only a dispatched run with roll_api rolls it (bootstrap, or by hand).
+      # Prod's Azure API is the cold spare (ADR-0029): a roll on every merge
+      # cold-started it each time, about $60 a month (#308). The spare moves
+      # on an index publish or a drill (.github/workflows/spare-roll.yml),
+      # and on-prem follows main through the attestation below.
       - name: Roll the API onto this commit's image
-        if: steps.head.outputs.current == 'true' && env.APP != ''
+        if: >-
+          steps.head.outputs.current == 'true' && env.APP != ''
+          && github.event_name == 'workflow_dispatch' && inputs.roll_api
         env:
           IMAGE: ${{ env.ACR }}/usnewsmap-api:${{ github.sha }}
         run: scripts/ci/roll-api.sh
       # A build provenance attestation for the API image, for an origin that
       # checks it before it runs the image (#955), as hosts check the OCR
-      # worker release's. Its subject is the
+      # worker release's. On-prem serving deploys an image once it is
+      # attested (scripts/onprem/serving/update-api.sh). Its subject is the
       # digest the push returned, the one `usnewsmap-api:<sha>` names.
       - name: Attest the API image
         if: steps.head.outputs.current == 'true'
@@ -1271,9 +1283,14 @@ jobs:
       - name: Defer notification if Azure authentication fails
         if: env.APP != '' && steps.azure_login.outcome != 'success'
         run: echo "::warning::Azure authentication failed; IndexNow notification will be retried hourly"
+      # Only after a roll: reading the Azure app's sitemap wakes the cold
+      # spare. Otherwise the public sitemap is compared, as the hourly
+      # indexnow workflow does.
       - name: Find the deployed Azure sitemap
         id: deployed_sitemap
-        if: env.APP != '' && steps.azure_login.outcome == 'success'
+        if: >-
+          env.APP != '' && steps.azure_login.outcome == 'success'
+          && github.event_name == 'workflow_dispatch' && inputs.roll_api
         continue-on-error: true
         env:
           APP: ${{ vars.USNM_API_APP }}
@@ -1293,7 +1310,9 @@ jobs:
       # state only after all batches succeed, so failures are retried later.
       - name: Submit the sitemap to IndexNow
         id: indexnow
-        if: env.APP != '' && steps.deployed_sitemap.outcome == 'success'
+        if: >-
+          env.APP != '' && steps.azure_login.outcome == 'success'
+          && (steps.deployed_sitemap.outcome == 'success' || steps.deployed_sitemap.outcome == 'skipped')
         continue-on-error: true
         env:
           INDEXNOW_STATE_FILE: ${{ runner.temp }}/indexnow/sitemap.sha256
