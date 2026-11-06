@@ -161,6 +161,11 @@
       "type": "boolean",
       "description": "Private endpoints for the data lake, the index account and Cosmos. Default true. False: service endpoints and firewall rules for snet-cae instead (ADR-0008, amendment of November 2026)."
     },
+    "USNM_DATA_SUBNET_ACCESS": {
+      "x-usnm-visibility": "public",
+      "type": "boolean",
+      "description": "Service endpoints and firewall rules for snet-cae on the data lake, the index account and Cosmos while their private endpoints stay. Default false. The first stage of removing the endpoints without a gap (#1425); no effect when USNM_DATA_PRIVATE_ENDPOINTS is false."
+    },
     "USNM_DNS_ZONE": {
       "x-usnm-visibility": "public",
       "type": "string"

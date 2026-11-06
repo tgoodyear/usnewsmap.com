@@ -408,6 +408,38 @@ class OnpremStep(unittest.TestCase):
         self.assertNotEqual(done.returncode, 0)
         self.assertIn("takes only", done.stderr)
 
+    def test_handoff_deadline_retry_is_the_operators_only(self):
+        # #1417: root on the host may retry a dead-lettered page with another deadline; the
+        # controller's key may not, though it may export what that recorded.
+        self.write_handoff_env()
+        done = self.run_step("--env", "prod", "--target", "handoff", "--step", "deadline-retry",
+                             "--var", "SUPERSEDES_FAILED_JOB=" + "a" * 64, "--var", "TIMEOUT_SECS=3600",
+                             "--var", "CONFIRM_MESSAGE_SHA256=" + "b" * 64, "--wait-mins", "10", "--what-if")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn("HANDOFF_STEP=deadline-retry", done.stdout)
+        done = self.run_step(ssh="usnm-boinc-step --env prod --target handoff --step deadline-retry "
+                                 "--var SUPERSEDES_FAILED_JOB=" + "a" * 64 + " --var TIMEOUT_SECS=3600 --what-if")
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("isn't allowed over ssh", done.stderr)
+        for var in ("JOB_IDS=" + "a" * 64, "HANDOFF_DEADLINE_RETRIES=" + "a" * 64):
+            with self.subTest(var=var):
+                done = self.run_step("--env", "prod", "--target", "handoff", "--step", "deadline-retry",
+                                     "--var", var, "--what-if")
+                self.assertNotEqual(done.returncode, 0)
+                self.assertIn("takes only", done.stderr)
+        done = self.run_step(ssh="usnm-boinc-step --env prod --target handoff --step export "
+                                 "--var HANDOFF_PAGES=sn1/1890-05-03/ed-1/seq-7 --var HANDOFF_BATCH=nbu_gage "
+                                 "--var HANDOFF_PLAN=queue-feed-1 --var HANDOFF_MANIFEST=pages-v1/manifest.parquet "
+                                 "--var ENGINE_IMAGE=sha256:" + "c" * 64 + " --var HANDOFF_CLAIMS=1 "
+                                 "--var HANDOFF_DEADLINE_RETRIES=" + "d" * 64 + " --what-if")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        for var in ("TIMEOUT_SECS=3600", "SUPERSEDES_FAILED_JOB=" + "a" * 64):
+            with self.subTest(var=var):
+                done = self.run_step(ssh="usnm-boinc-step --env prod --target handoff --step export "
+                                         f"--var {var} --what-if")
+                self.assertNotEqual(done.returncode, 0)
+                self.assertIn("takes only", done.stderr)
+
     def test_handoff_env_must_hold_exactly_the_jobs_settings(self):
         for changes, message in (
             ({"QUEUE_URL": None}, "doesn't set QUEUE_URL"),

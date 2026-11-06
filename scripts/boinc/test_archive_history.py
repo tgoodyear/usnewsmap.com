@@ -316,6 +316,26 @@ class DispatchTests(unittest.TestCase):
         self.assertIsNone(summary["batch"])
         self.assertEqual(archive.batch_dirs(self.archive_dir), [batch])
 
+    def test_a_deadline_retried_page_is_outstanding_until_its_own_job_is_exported(self):
+        # #1417: page 8's job failed for good and was dead-lettered; an operator retried its
+        # newer message with another deadline, which the next export builds.
+        loaded = scheduler.load_config(self.config_path)
+        failed = journal(8, page_key(8), "failed")
+        failed["job"]["message"]["queued_at"] = "2026-10-25T15:52:00Z"
+        failed["job"]["engine"]["timeout_secs"] = 600
+        plain = {"claims": {page_key(8): claim(8)}, "dead_lettered": {job_id(8): 1}}
+        self.assertEqual(archive.outstanding(scheduler, loaded, plain, [failed]), set())
+        state = {**plain, "claims": {page_key(8): {**claim(8), "message": "e" * 64, "supersedes": job_id(8)}}}
+        self.assertEqual(archive.outstanding(scheduler, loaded, state, [failed]), {page_key(8)})
+        retried = journal(80, page_key(8), "reserved")
+        retried["job"]["message"]["queued_at"] = "2026-10-27T09:00:00Z"
+        retried["job"]["engine"]["timeout_secs"] = 3600
+        state["deadline_retries"] = {job_id(8): {"page": page_key(8), "message": "e" * 64,
+                                                 "queued_at": "2026-10-27T09:00:00Z", "timeout_secs": 3600}}
+        self.assertEqual(archive.outstanding(scheduler, loaded, state, [failed, retried]), set())
+        retried["stage"] = "prepared"
+        self.assertEqual(archive.outstanding(scheduler, loaded, state, [retried, failed]), {page_key(8)})
+
     def test_a_batch_stopped_half_way_resumes_where_it_stopped(self):
         originals = self.container.snapshot()[0]
         self.container.fail_deletes_after = 4

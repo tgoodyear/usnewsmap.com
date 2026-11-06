@@ -19,6 +19,7 @@ FROM ${BASE}
 ARG SNAPSHOT
 RUN printf 'Types: deb deb-src\nURIs: http://snapshot.debian.org/archive/debian/%s\nSuites: trixie\nComponents: main\nSigned-By: /usr/share/keyrings/debian-archive-keyring.gpg\n' \
       "$SNAPSHOT" > /etc/apt/sources.list.d/debian.sources \
+ && printf 'Acquire::Retries "5";\nAcquire::http::Timeout "60";\n' > /etc/apt/apt.conf.d/80-retries \
  && apt-get -o Acquire::Check-Valid-Until=false update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --allow-downgrades --no-install-recommends \
       libssl3t64/trixie openssl/trixie \

@@ -102,8 +102,8 @@ Implementation lives in `crates/usnm-api/src/mcp.rs`, with fixture-backed protoc
 `crates/usnm-api/tests/api/mcp.rs` and a search-log privacy regression. Run
 `cargo test -p usnm-api --locked`. Publication follows the existing reviewed, main-only API image
 pipeline and the on-prem serving updater; the same image serves the Azure standby.
-MCP relies on the API's limiter. The recorded emergency edge rule
-(`scripts/onprem/serving/flood-rule.json`, including both MCP paths) isn't installed: the Free zone's
-only rate-limit slot holds the leaked-credential rule. Edge flood control is tracked in
-[#1541](https://github.com/tgoodyear/usnewsmap.com/issues/1541); see also the
+Besides the API's limiter, the fallback Worker limits `/mcp` and `/mcp/` at the edge with the search
+paths (#1541): above 80 requests in 10 seconds from one address (IPv6 by /64) in one Cloudflare
+location it answers the API's own 429 with `Retry-After: 10`, before the tunnel. Every request counts,
+including POST tool calls; the Worker doesn't read their bodies. See the
 [flood runbook](design/09-operations-security-cost.md#931-on-prem-serving).

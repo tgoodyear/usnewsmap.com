@@ -14,6 +14,23 @@ ID = re.compile(r"[0-9a-f]{64}")
 STAGES = {"prepared", "reserved", "submitting", "submitted", "published", "failed"}
 MAX_JOBS = 10000
 MAX_FILES = 100000
+# Workunits stay in the database for BOINC's delete_delay_hours (168) after they finish, so the
+# existing-workunit count runs well ahead of the journals and needs its own, larger cap (#1483).
+# USNM_MAX_EXISTING_WORKUNITS in bridge.env overrides it, within 1..MAX_EXISTING_WORKUNITS_CEILING.
+DEFAULT_MAX_EXISTING_WORKUNITS = 50000
+MAX_EXISTING_WORKUNITS_CEILING = 200000
+
+
+def max_existing_workunits(environ=None):
+    environ = os.environ if environ is None else environ
+    value = environ.get("USNM_MAX_EXISTING_WORKUNITS", "").strip()
+    if not value:
+        return DEFAULT_MAX_EXISTING_WORKUNITS
+    if not value.isdecimal() or not 1 <= int(value) <= MAX_EXISTING_WORKUNITS_CEILING:
+        raise ValueError("invalid USNM_MAX_EXISTING_WORKUNITS")
+    return int(value)
+
+
 # Unassimilated workunits are counted once, per app, so the total and each app's share are one
 # read: a submission between two counts can't make other apps' work look larger than all of it
 # (#1474). Workunits of no known app have an empty name and count only in the total.
@@ -26,8 +43,13 @@ SELECT 'app', COALESCE(app.name, ''), COUNT(*) FROM workunit LEFT JOIN app ON ap
 SELECT name, assimilate_state FROM workunit
  WHERE name REGEXP '^usnm_(ocrb_)?[0-9a-f]{64}$'
  ORDER BY name
- LIMIT 10001
+ LIMIT {limit}
 """
+
+
+def query(limit=DEFAULT_MAX_EXISTING_WORKUNITS):
+    """QUERY reading one existing workunit past `limit`, so an oversized inventory is seen."""
+    return QUERY.replace("{limit}", str(limit + 1))
 
 
 SPOOL_FILE = re.compile(
@@ -76,7 +98,8 @@ def _ids(values, message):
 
 
 def inventory(root, results, counts, nonce, pending_ids=(), existing_ids=None,
-              pending_bundles=(), existing_bundles=None, pending_by_app=None):
+              pending_bundles=(), existing_bundles=None, pending_by_app=None,
+              existing_limit=DEFAULT_MAX_EXISTING_WORKUNITS):
     """pending_ids/existing_ids are single-page workunits' job ids; pending_bundles and
     existing_bundles are OCR bundle workunits' bundle ids (#1059), reported as their pages,
     which the server's journals name (record["bundle"]). pending_by_app is each app's
@@ -99,7 +122,9 @@ def inventory(root, results, counts, nonce, pending_ids=(), existing_ids=None,
     _ids(existing_bundles, "invalid/oversized existing bundle inventory")
     if not set(pending_bundles) <= set(existing_bundles):
         raise ValueError("invalid/oversized existing bundle inventory")
-    if len(existing_ids) > MAX_JOBS or len(set(existing_ids)) != len(existing_ids) or \
+    if type(existing_limit) is not int or not 1 <= existing_limit <= MAX_EXISTING_WORKUNITS_CEILING:
+        raise ValueError("invalid existing workunit limit")
+    if len(existing_ids) > existing_limit or len(set(existing_ids)) != len(existing_ids) or \
             any(not ID.fullmatch(job_id) for job_id in existing_ids) or \
             not set(pending_ids) <= set(existing_ids):
         raise ValueError("invalid/oversized existing workunit inventory")
@@ -127,9 +152,10 @@ def inventory(root, results, counts, nonce, pending_ids=(), existing_ids=None,
     # single-page unit's.
     pending = list(pending_ids) + [j for b in pending_bundles for j in sorted(members.get(b, ()))]
     existing = list(existing_ids) + [j for b in existing_bundles for j in sorted(members.get(b, ()))]
-    if len(set(pending)) != len(pending) or len(set(existing)) != len(existing) or \
-            len(existing) > MAX_JOBS:
+    if len(set(pending)) != len(pending) or len(set(existing)) != len(existing):
         raise ValueError("a page is in more than one workunit")
+    if len(existing) > existing_limit or len(existing_ids) + len(existing_bundles) > existing_limit:
+        raise ValueError("invalid/oversized existing workunit inventory")
     seen = {}
     locations = {}
     candidates, spool_entries = spool_candidates(results, jobs, members)
@@ -162,6 +188,12 @@ def inventory(root, results, counts, nonce, pending_ids=(), existing_ids=None,
         # Pending OCR workunits, single-page and bundles: pending_jobs counts pages (#1059).
         "pending_ocr_workunits": len(pending_ids) + sum(bool(members.get(b)) for b in pending_bundles),
         "existing_jobs": existing,
+        # Workunit rows, single-page and bundles, before bundles become pages. Bundles whose
+        # journals are gone add no pages but still count towards the cap, so the controller warns
+        # on the larger of this and existing_jobs (#1483).
+        "existing_workunits": len(existing_ids) + len(existing_bundles),
+        # Towards the existing-workunit cap, so the controller checks and warns against it (#1483).
+        "existing_jobs_limit": existing_limit,
         "active_hosts": counts[1],
         "jobs": jobs,
         # Towards MAX_FILES, so the controller can warn before the limit stops it (#1483).
@@ -184,11 +216,12 @@ def main():
     args = parser.parse_args()
     if not re.fullmatch(r"[A-Za-z0-9_]+", args.database):
         parser.error("invalid database name")
+    existing_limit = max_existing_workunits()
     output = subprocess.run(
         ["mysql", f"--defaults-extra-file={args.mysql_defaults_file}", "--ssl",
          "--ssl-verify-server-cert", "--ssl-ca=/usr/local/share/usnm/mysql-ca.pem",
          "--batch", "--raw", "--skip-column-names", f"--database={args.database}",
-         "--execute", QUERY],
+         "--execute", query(existing_limit)],
         check=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=60,
     ).stdout.strip().splitlines()
     hosts = output[0] if output else ""
@@ -198,6 +231,11 @@ def main():
             any(not re.fullmatch(r"usnm_(ocrb_)?[0-9a-f]{64}\t-?[0-9]+", value) for value in names):
         raise ValueError("invalid database inventory")
     rows = [value.split("\t") for value in names]
+    # The query reads one row past the cap. Check the rows before bundles become their pages:
+    # bundles whose journals are gone add no pages, so a full LIMIT of them would otherwise pass
+    # with later workunits cut off.
+    if len(rows) > existing_limit:
+        raise ValueError("invalid/oversized existing workunit inventory")
     pages = [(name.removeprefix("usnm_"), int(state)) for name, state in rows
              if not name.startswith("usnm_" + BUNDLE_PREFIX)]
     bundles = [(name.removeprefix("usnm_" + BUNDLE_PREFIX), int(state)) for name, state in rows
@@ -208,7 +246,8 @@ def main():
                         [name for name, _ in pages],
                         [name for name, state in bundles if state != 2],
                         [name for name, _ in bundles],
-                        pending_by_app={app[1]: int(app[2]) for app in apps if app[1]})
+                        pending_by_app={app[1]: int(app[2]) for app in apps if app[1]},
+                        existing_limit=existing_limit)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(payload, sort_keys=True) + "\n")
 

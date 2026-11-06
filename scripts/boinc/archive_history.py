@@ -404,19 +404,23 @@ def lineage(history):
 
 def claimed_pages(state):
     """The page list a queue-fed tick restores from its claims (QueueFeed.restore)."""
-    return [{"page": page, "batch": claim["batch"]}
+    return [{"page": page, "batch": claim["batch"],
+             **({"supersedes": claim["supersedes"]} if claim.get("supersedes") else {})}
             for page, claim in sorted(state.get("claims", {}).items()) if claim.get("scan")]
 
 
 def outstanding(scheduler, config, state, records):
     """The pages a tick would export or submit: allocated pages without a journal of their own,
-    or whose journal is only prepared. A queue-fed tick allocates its claimed pages, a fixed
-    plan its configured ones. owned_records' refusals are raised as they are."""
+    or whose journal is only prepared, or still the dead-lettered one a deadline retry
+    supersedes (#1417). A queue-fed tick allocates its claimed pages, a fixed plan its
+    configured ones. owned_records' refusals are raised as they are."""
     if config.get("source") == "queue":
         config = {**config, "pages": claimed_pages(state)}
-    owned = scheduler.owned_records(config, records)
+    owned = scheduler.owned_records(config, records, state.get("deadline_retries"))
     return {page["page"] for page in config["pages"]
-            if page["page"] not in owned or owned[page["page"]]["stage"] == "prepared"}
+            if page["page"] not in owned or owned[page["page"]]["stage"] == "prepared"
+            or (owned[page["page"]]["stage"] == "failed"
+                and page.get("supersedes") == owned[page["page"]]["job"]["id"])}
 
 
 def modified_at(blob):
