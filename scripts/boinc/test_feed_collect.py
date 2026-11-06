@@ -745,13 +745,16 @@ class CollectionTests(unittest.TestCase):
                             idle_gpu={vendor: 0 for vendor in own["idle_gpu"]})
         config = {name: "/" + name for name in ("server", "controller", "backlog")}
         config["clients"] = ["/own"]
-        with patch.object(C.time, "time", return_value=NOW), \
-                patch.object(C, "read_source", side_effect=lambda path: docs[path]):
-            facts = C.collect(config)
-        document, _ = F.evaluate(facts, {}, NOW, 1000, "boot", "cfg")
-        checks = {c["code"]: c for c in document["checks"]}
-        for code in ("cpu_shortage", "gpu_shortage"):
-            self.assertEqual((checks[code]["state"], checks[code]["idle_slots"]), ("healthy", 0))
+        for fallback in (False, True):
+            prefs = docs["/server"]["host_preferences"][str(own["host_id"])]
+            prefs["fallback"] = fallback
+            with self.subTest(fallback=fallback), patch.object(C.time, "time", return_value=NOW), \
+                    patch.object(C, "read_source", side_effect=lambda path: docs[path]):
+                facts = C.collect(config)
+                document, _ = F.evaluate(facts, {}, NOW, 1000, "boot", "cfg")
+                checks = {c["code"]: c for c in document["checks"]}
+                for code in ("cpu_shortage", "gpu_shortage"):
+                    self.assertEqual((checks[code]["state"], checks[code]["idle_slots"]), ("healthy", 0))
 
     def test_client_bindings_must_match_the_reported_host(self):
         docs = self.documents()
@@ -1328,27 +1331,42 @@ with socket.create_connection({listener.getsockname()!r}, timeout=2) as connecti
             self.assertEqual((observed["available_cpu"], observed["idle_gpu"]["intel_gpu"], observed["memory_bytes"]),
                              (.5, .25, 300))
 
-    def test_started_task_uses_its_record_unless_app_config_changed_after_it_arrived(self):
+    def test_started_task_uses_its_record_only_while_app_config_predates_the_client(self):
         with client_rpc_fixture() as (root, port, answers, _):
             base = answers["get_state"]
-            config = root / "projects" / "boinc.usnewsmap.com" / "app_config.xml"
-            config.parent.mkdir(parents=True)
-            config.write_text("<app_config/>")
-            os.utime(config, (1000, 1000))
-            for received, expected in (("2000", 1), ("500", None), ("", None), ("nan", None)):
-                fields = ("<active_task><active_task_state>1</active_task_state></active_task>"
-                          + (f"<received_time>{received}</received_time>" if received else ""))
-                answers["get_state"] = base.replace("</client_state>", queued_task("", fields) + "</client_state>")
-                with self.subTest(received=received):
+            running = queued_task("", "<active_task><active_task_state>1</active_task_state></active_task>")
+            projects = root / "projects"
+            config = projects / "boinc.usnewsmap.com" / "app_config.xml"
+            for setup, started, expected in (
+                    ("none", "2000", 1),            # no projects directory at all
+                    ("empty", "2000", 1),           # no app_config anywhere
+                    ("older", "2000", 1),           # loaded at client start, unchanged since
+                    ("newer", "2000", None),        # changed after the client started: may be reread later
+                    ("older", "", None),            # no client start time
+                    ("older", "nan", None),
+                    ("unreadable", "2000", None)):  # listing fails: never skip a project silently
+                shutil.rmtree(projects, ignore_errors=True)
+                if setup != "none":
+                    projects.mkdir()
+                    (projects / "job_log.txt").write_text("")
+                if setup in ("older", "newer"):
+                    config.parent.mkdir()
+                    config.write_text("<app_config/>")
+                    os.utime(config, (1000, 1000) if setup == "older" else (3000, 3000))
+                stats = f"<time_stats><client_start_time>{started}</client_start_time></time_stats>" if started else ""
+                answers["get_state"] = base.replace("</client_state>", stats + running + "</client_state>")
+                with self.subTest(setup=setup, started=started), \
+                        patch.object(C.Path, "iterdir", side_effect=PermissionError) if setup == "unreadable" \
+                        else contextlib.nullcontext():
                     if expected is None:
                         with self.assertRaisesRegex(C.SupplyUnknown, "active_task_resource_usage_unavailable"):
                             C.client(root, port)
                     else:
                         self.assertEqual(C.client(root, port)["available_cpu"], expected)
-            fields = ("<active_task><active_task_state>1</active_task_state></active_task>"
-                      "<received_time>2000</received_time>")
-            answers["get_state"] = base.replace("</client_state>", queued_task("", fields).replace(
-                "</result>", "<active_task/></result>") + "</client_state>")
+            shutil.rmtree(projects)
+            answers["get_state"] = base.replace("</client_state>", "<time_stats><client_start_time>2000"
+                                                "</client_start_time></time_stats>" + running.replace(
+                                                    "</result>", "<active_task/></result>") + "</client_state>")
             with self.assertRaisesRegex(C.SupplyUnknown, "active_task_resource_usage_unavailable"):
                 C.client(root, port)
 

@@ -116,10 +116,13 @@ client copies a new usage only to tasks that haven't started, after it rereads
 ([client_state.cpp](https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/client/client_state.cpp#L2462)),
 and GUI RPC shows only a rounded display string for running tasks. The client
 source counts a started task at its current workunit or app version record,
-like an unstarted one, unless an `app_config.xml` under the client's
-`projects/` is newer than the task's `received_time`, or the record can't be
-read. Then the source is `active_task_resource_usage_unavailable` and both stock
-checks are unknown until the task ends. A scheduler-side change comes from a
+like an unstarted one, while every `app_config.xml` under the client's
+`projects/` is older than the client's start (`client_start_time`): the client
+loaded them at startup, so any reread since gave the same values. A config
+changed after the client started, a missing start time, or a `projects/`
+directory that can't be listed makes the source
+`active_task_resource_usage_unavailable`, and both stock checks unknown, until
+the client restarts or the task ends. A scheduler-side change comes from a
 plan class change; while the client's cached version still differs from the
 live plan class, the profile mismatch check above makes the stock checks
 unknown. A task that started before the client took the new version keeps the
@@ -291,7 +294,9 @@ chunks, and is otherwise unknown.
 On the evaluator host, each pushing source's address goes in the dashboard's
 `USNM_OCRDASH_FEED_PUSH` (`<name>=<address>`, comma-separated), and each own
 client goes in `feed-monitor.json` as
-`{"location": "[state-dir]/feed-sources/client-<host id>.json", "host_id": <host id>}`.
+`{"location": "[state-dir]/feed-sources/client-<inventory-name>.json", "host_id": <BOINC host id>}`.
+The file takes the push endpoint's source name; `host_id` only binds it to the
+host the client reports.
 
 For the **server instance only**, Podman needs writable metadata and lock paths
 even for a read-only `exec`. Keep `ProtectSystem=strict` and the other template

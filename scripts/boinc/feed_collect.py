@@ -450,18 +450,29 @@ def client_resource_usage(node, default_cpu):
         raise SupplyUnknown("task_resource_usage_unavailable") from None
 
 
-def reservation_current(data_dir, result):
-    """A started task keeps the reservation it started with. Its current record is
-    that reservation unless an app_config.xml changed after the task arrived (the
-    client re-reads it at runtime). Any app_config newer than the task, or one that
-    can't be read, leaves the reservation unproven."""
+def reservation_current(data_dir, client_start):
+    """A started task keeps the reservation it started with. The client loads every
+    app_config.xml at startup, so when none has changed since the client started,
+    every reread since gave the same values, and the task's reservation is its current
+    record. A config changed later, an unreadable projects directory or config, or a
+    missing start time leaves the reservation unproven."""
     try:
-        received = float(result.findtext("received_time", "nan"))
-        if not math.isfinite(received) or received <= 0:
+        start = float(client_start)
+        if not math.isfinite(start) or start <= 0:
             return False
-        return all(path.stat().st_mtime < received
-                   for path in Path(data_dir).glob("projects/*/app_config.xml"))
-    except (OSError, ValueError):
+        # Explicit listing, so permission errors reach the handler (Path.glob hides them).
+        for project in (Path(data_dir) / "projects").iterdir():
+            if not project.is_dir():
+                continue
+            try:
+                if (project / "app_config.xml").stat().st_mtime >= start:
+                    return False
+            except FileNotFoundError:
+                continue
+        return True
+    except FileNotFoundError:
+        return not (Path(data_dir) / "projects").exists()
+    except (OSError, TypeError, ValueError):
         return False
 
 
@@ -493,6 +504,7 @@ def client(data_dir, port):
     paused = (flag(project, "suspended_via_gui") or flag(project, "dont_request_more_work")
               or reasons["task_suspend_reason"] != 0)
     gpu_paused = paused or reasons["gpu_suspend_reason"] != 0
+    client_start = state.findtext(".//time_stats/client_start_time")
     ncpus = int(state.findtext(".//host_info/p_ncpus", "0"))
     percent = float(prefs.findtext(".//max_ncpus_pct", "100")) or 100
     cpus = max(1, math.floor(ncpus * min(percent, 100) / 100)) if ncpus else 0
@@ -526,7 +538,7 @@ def client(data_dir, port):
             raise ValueError("suspended queued task")
         active = result.findall("active_task")
         if active and (len(active) != 1 or active[0].findtext("active_task_state") != "0") and not (
-                len(active) == 1 and reservation_current(data_dir, result)):
+                len(active) == 1 and reservation_current(data_dir, client_start)):
             # Running jobs retain old reservations after app_config/scheduler
             # updates; get_state exposes only a rounded display string for them.
             raise SupplyUnknown("active_task_resource_usage_unavailable")
@@ -833,14 +845,15 @@ def supply(database, hosts, resource, resource_usage=None):
     prepared, host_limits, host_costs = [], {}, {}
     for host in hosts:
         prefs = database["host_preferences"][str(host["host_id"])]
+        # No idle slot (a paused client, or a full one) can't make a shortage, whatever its preferences.
+        if resource == "gpu" and not any(host["idle_gpu"].values()):
+            continue
+        if resource == "cpu" and host["idle_cpu"] == 0:
+            continue
         if prefs.get("fallback"):
             raise ValueError("non-preferred fallback needs all-application inventory")
         app = "usnm_ocr" if resource == "cpu" else "usnm_qwen"
         if app not in prefs["apps"] or resource == "cpu" and "CPU" in prefs["blocked"]:
-            continue
-        if resource == "gpu" and not any(host["idle_gpu"].values()):
-            continue
-        if resource == "cpu" and host["idle_cpu"] == 0:
             continue
         devices = {gpu for gpu, count in host["idle_gpu"].items()
                    if count > 0 and gpu not in prefs["blocked"]} if resource == "gpu" else {"cpu"}
