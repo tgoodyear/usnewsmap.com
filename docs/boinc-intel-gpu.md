@@ -160,6 +160,15 @@ Run a dry invocation under the same normal mutex before enabling the timer.
 Verify the real ordinary timer's immutable input receipt and actual signed
 assignments/returns afterwards; a policy change alone is not throughput.
 
+**Daily window renewal (stopgap).** Until automated renewal lands (#1441),
+`usnm-qwen-window-renew.timer` runs `/usr/local/sbin/usnm-qwen-window-renew`
+(`scripts/boinc/usnm-qwen-window-renew` and its two units) at 4:31 PM Eastern.
+It moves `ENABLED_UNTIL` one day ahead, keeping the previous file as
+`qwen-cohort-auto.env.pre-autorenew`, and renews only while `APP_VERSION_NUM=117`
+and `REQUEST_VERSION=3` are unchanged; `MAX_ADMISSIONS` still caps the total.
+When those settings change it exits with an error and the window lapses at its
+deadline. The feed monitor's `qwen_refill_window` check fires six hours before.
+
 `CONFIG_SHA256` is the SHA-256 of the live `/project/usnmocr/config.xml`. `render_config`
 rewrites that file at every container start, and so do the submit, reconcile and
 `register-apps` bridge steps (`bridge-job.sh`), with the `SERVER_IMAGE` in `/etc/usnm-boinc/server.env`. A tick that

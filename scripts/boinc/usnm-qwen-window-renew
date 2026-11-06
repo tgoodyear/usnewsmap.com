@@ -1,0 +1,20 @@
+#!/bin/sh
+# Renews the native Qwen refill window for one day (one enablement allows at
+# most 24 hours). Stopgap until feed alerts (#1441) and automated renewal land;
+# installed at /usr/local/sbin/usnm-qwen-window-renew on the BOINC server and
+# run daily by usnm-qwen-window-renew.timer.
+#
+# Renews only while the reviewed settings are unchanged (APP_VERSION_NUM=117,
+# REQUEST_VERSION=3); MAX_ADMISSIONS still caps the total. When the settings
+# change it exits non-zero and the window lapses at its deadline, which the
+# feed monitor's qwen_refill_window check reports six hours ahead.
+set -eu
+f=/etc/usnm-boinc/qwen-cohort-auto.env
+if ! grep -qx APP_VERSION_NUM=117 "$f" || ! grep -qx REQUEST_VERSION=3 "$f"; then
+  echo "settings changed; not renewing" >&2
+  exit 1
+fi
+n=$(( $(date +%s) + 86000 ))
+cp -p "$f" "$f.pre-autorenew"
+sed -i "s/^ENABLED_UNTIL=.*/ENABLED_UNTIL=$n/" "$f"
+echo "Qwen refill window renewed until $(date -d @$n)"

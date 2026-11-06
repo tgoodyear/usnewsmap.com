@@ -1,0 +1,6 @@
+[Unit]
+Description=Renew the Qwen refill window for one day
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/usnm-qwen-window-renew
