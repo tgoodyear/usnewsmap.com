@@ -4,14 +4,15 @@
 # docs, READMEs and tests alike. Refer to a private host by its name, by a
 # constant or environment variable, or best a constant that holds the name;
 # tests use the RFC 5737 documentation ranges, or build a private address
-# from its parts at run time. There's no list of exceptions.
+# from its parts at run time. A standalone package pin in pip-freeze.txt is
+# treated as a version, not an address.
 #
 #   no-private-addresses.sh [--repo DIR]
 #
 # --repo: the git checkout to scan (default: the one this script is in).
 # Binary files are skipped. Exits 1 listing every match.
 set -euo pipefail
-usage() { sed -n '9s/^# \{0,1\}//p' "$0" >&2; exit 2; }
+usage() { echo "usage: no-private-addresses.sh [--repo DIR]" >&2; exit 2; }
 
 REPO=""
 while [ $# -gt 0 ]; do
@@ -35,6 +36,12 @@ pattern="(^|[^0-9.])($quad)([^0-9.]|\\.([^0-9]|$)|$)"
 rc=0
 found=$(git -C "$REPO" grep -I -n -E "$pattern") || rc=$?
 [ "$rc" -le 1 ] || { echo "error: git grep failed ($rc) in $REPO; nothing was scanned" >&2; exit 2; }
+if [ -n "$found" ]; then
+  # Do not suppress URLs, comments, or any other text on a matching line.
+  rc=0
+  found=$(printf '%s\n' "$found" | grep -Ev '(^|/)pip-freeze\.txt:[0-9]+:[A-Za-z0-9][A-Za-z0-9._-]*==[0-9]+(\.[0-9]+){3}$') || rc=$?
+  [ "$rc" -le 1 ] || { echo "error: could not filter package pins ($rc)" >&2; exit 2; }
+fi
 if [ -n "$found" ]; then
   echo "Private (RFC 1918) addresses in tracked files. Use a host name, a constant or an environment variable instead:"
   echo "$found"

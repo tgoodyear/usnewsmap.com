@@ -1,0 +1,136 @@
+Report data: source attribution and redistribution
+==================================================
+
+This notice accompanies the report-data archives. The cumulative report-data
+release has a file-by-file SHA-256 inventory, report-data-manifest.json in
+this directory, which covers the October archive. A report with its own set
+in ops/data-assets.json (report-YYYY-MM-topic) is released separately, with
+its member list and SHA256SUMS as release assets. The GPU studies' data is in
+data-report-2026-11-gpu-studies-20261106-0183479. The copy of this notice in
+that release has the earlier wording; its source terms are the same. The
+October release and the Study 8 supplement are unchanged.
+
+There is no single licence for the archive. The source terms below apply to
+the material they cover, not automatically to every file or to every output
+of a model trained on a source. Several files mix sources. Identify rows by
+their crop or page IDs, the sample lists, and the relevant report and protocol
+before applying a source's terms. OCR readings can contain newspaper text;
+they are not just scores. Each redistribution must retain the applicable
+attribution and meet the source's conditions. The maintainer considers this
+research-data release noncommercial; other users must assess their own use.
+
+Source credits and terms
+------------------------
+
+* Overproof dataset 3 / Chronicling America, as curated for HIPE-OCRepair:
+  credit Overproof (Evershed and Fitch) and Impresso / HIPE-OCRepair.
+  The structured copy and annotations are CC BY-NC-SA 4.0:
+  https://github.com/hipe-eval/HIPE-OCRepair-2026-data/blob/main/documentation/README-overproof.md
+  https://creativecommons.org/licenses/by-nc-sa/4.0/
+  The data card describes the underlying newspaper material as public domain.
+  The original Overproof dataset and the structured HIPE copy are not the
+  same licence claim. Our benchmark uses the latter; retain the NC-SA notice
+  where its covered material or adaptations are shared.
+
+* Reichsanzeiger-GT v1.0.0: credit Thomas Schmidt, Jan Kamlah, Stefan Weil,
+  Renat Shigapov and Mannheim University Library. Follow CC BY 4.0 for the
+  exact Zenodo record used by the benchmark, conservatively relative to the
+  current project's CC0 metadata.
+  https://doi.org/10.5281/zenodo.10144428
+  https://creativecommons.org/licenses/by/4.0/
+
+* NZZ black-letter ground truth: credit Phillip Ströbel and Simon Clematide,
+  University of Zurich. Follow CC BY-NC 4.0 from the source archive's licence,
+  rather than the less restrictive Zenodo metadata.
+  https://doi.org/10.5281/zenodo.3333627
+  https://creativecommons.org/licenses/by-nc/4.0/
+
+* GT4HistOCR dta19: credit Uwe Springmann, Christian Reul, Stefanie Dipper,
+  Johannes Baiter and the Deutsches Textarchiv. The source README says
+  CC BY-SA 4.0 while the Zenodo metadata says CC BY 4.0; use CC BY-SA 4.0
+  conservatively. The readings in Study 5 are generated from these lines.
+  https://doi.org/10.5281/zenodo.1344132
+  https://zenodo.org/records/1344132/files/README?download=1
+  https://creativecommons.org/licenses/by-sa/4.0/
+
+* NewsEye / READ Austrian, French, Finnish and Swedish newspapers: credit
+  Guenter Muehlberger, Guenter Hackl, NewsEye and READ, and respectively the
+  Austrian National Library, Bibliotheque nationale de France, and National
+  Library of Finland. The source datasets are CC BY 4.0.
+  https://doi.org/10.5281/zenodo.3387369
+  https://doi.org/10.5281/zenodo.4293602
+  https://doi.org/10.5281/zenodo.4599472
+  https://doi.org/10.5281/zenodo.4599624
+  https://creativecommons.org/licenses/by/4.0/
+
+* American Stories dataset: credit Melissa Dell and the American Stories
+  authors. The dataset is CC BY 4.0; this is not a blanket licence for other
+  source images or for the model used to generate a reading.
+  https://huggingface.co/datasets/dell-research-harvard/AmericanStories
+  https://arxiv.org/abs/2308.12477
+  https://creativecommons.org/licenses/by/4.0/
+
+* Library of Congress / Chronicling America and Japanese-American internment
+  camp newspapers: credit the Library of Congress and the identified source
+  newspaper or item. Some sampled pages are later than 1925. LOC's statements
+  are not a warranty that every item is unrestricted; users must assess
+  item-level rights and obtain any required permissions.
+  https://www.loc.gov/collections/chronicling-america/about-this-collection/rights-and-access/
+  https://www.loc.gov/collections/japanese-american-internment-camp-newspapers/about-this-collection/rights-and-access/
+
+* BLN600: credit Callum Booth, Alan Thomas and Robert Gaizauskas.
+  The source is CC BY-NC-ND 4.0.
+  https://doi.org/10.15131/shef.data.25439023.v2
+  https://creativecommons.org/licenses/by-nc-nd/4.0/
+  The candidate contains BLN600 scores and crop IDs, not BLN600 images,
+  transcriptions or OCR readings. Do not infer permission to redistribute
+  derived BLN600 images or readings from the presence of those metrics.
+
+The maintainer also selected CC BY-NC-SA 4.0 for the Jochre Yiddish corpus
+(Assaf Urieli and the Yiddish Book Center) and CC BY-NC 4.0 for Chronicling
+Germany. Neither corpus's reference text or images are in this candidate;
+the separately published Study 8 supplement is aggregate-only.
+https://gitlab.com/jochre/corpora/jochre-yiddish-corpus
+https://gitlab.uni-bonn.de/digital-history/Chronicling-Germany-Dataset
+
+Where to find the sources
+-------------------------
+
+Paths below are relative to the repository root. They describe the archives'
+contents, not all possible future files under those directories.
+
+* docs/data/: storage inventory and LOC metadata, not benchmark reference
+  datasets.
+* docs/reports/2026-10-boinc-quality-pilot/data/calibration/: Overproof,
+  Reichsanzeiger and BLN600 score files; the qwen sample35 JSONL files contain
+  readings on Overproof / LOC crops. BLN600 files contain IDs and metrics.
+* docs/reports/2026-10-boinc-quality-pilot/data/campaigns/: LOC-derived
+  samples, with OCR and VLM text in crop tables, including Parquet copies.
+* docs/reports/2026-10-iris-model-reuse/: per-crop model readings on mixed
+  Overproof and Reichsanzeiger inputs, plus timings and telemetry. Crop IDs
+  distinguish the sources.
+* docs/reports/2026-10-jp2-vs-jpeg-ocr/ and 2026-10-ocr-engine-survey/:
+  LOC-page samples, scores and diagnostics. The full source OCR and images
+  stayed on the study nodes.
+* docs/reports/2026-10-language-analysis/: LOC and American Stories-derived
+  metadata and aggregates. data/issue-329/flags.jsonl.gz contains words and
+  short contexts from OCR; labels.json also contains words.
+* docs/reports/2026-10-surya-volunteer/: scores on Overproof and
+  Reichsanzeiger benchmark subsets, not the reference texts.
+* docs/reports/2026-11-gpu-studies/data/: ja/ contains reader outputs on LOC
+  Japanese newspaper crops. s1/ uses Reichsanzeiger, NZZ and LOC pilot pages;
+  s2/ uses Reichsanzeiger, Overproof, NZZ and NewsEye Finnish validation;
+  s3/ and s6/ use the mixed benchmark and LOC page samples; s4/ uses LOC
+  pilot pages; s5/ includes Reichsanzeiger, Overproof, NZZ, NewsEye and
+  GT4HistOCR readings and BLN600 metrics; s7/ uses Austrian, NewsEye French,
+  Finnish and Swedish, and LOC crops; s9/ uses the mixed benchmark, LOC pages
+  and Japanese samples. The files include reader outputs as well as scores.
+  Crop IDs and the protocol's source-disjoint sample descriptions distinguish
+  the sources.
+
+The archive does not include every upstream image or reference needed to rerun
+the studies. The GPU studies' frozen ID lists are in
+data-report-2026-11-gpu-studies-20261106-0183479; consult the reports and
+benchmark source manifests to obtain the inputs separately under their own
+terms. Retained outputs and logs also have the reproducibility limitations
+recorded in the GPU study report.
