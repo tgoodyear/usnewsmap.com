@@ -492,12 +492,51 @@ class InstallTest(unittest.TestCase):
                     "--env", "prod", "--app", "usnm_quality", "--version", "1.0",
                     "--kind", "container", "--binary", str(binary), "--signing-host", "signhost",
                 ],
-                "--binary and --extra-file are only valid with --kind native",
+                "--binary, --extra-file and --build-dir are only valid with --kind native",
             ),
         ):
             res = subprocess.run(["bash", str(release), *args], capture_output=True, text=True)
             self.assertNotEqual(res.returncode, 0)
             self.assertIn(expected_err, res.stderr)
+
+    def test_app_release_script_takes_a_checked_native_ocr_build(self):
+        import subprocess
+        release = Path(__file__).resolve().parents[2] / "scripts/boinc/boinc-app-release.sh"
+        worker, build, _ = self.native_ocr_build()
+        empty = self.root / "empty"
+        empty.mkdir()
+        hidden = self.root / "hidden"
+        (hidden / ".cache").mkdir(parents=True)
+        (hidden / "usnm_ocr").write_bytes(b"worker")
+        base = ["--env", "prod", "--version", "1.0", "--signing-host", "signhost"]
+        for args, expected_err in (
+            (["--app", "usnm_quality", "--kind", "native", "--build-dir", str(build)],
+             "--build-dir is only for usnm_ocr_native and usnm_gold_native"),
+            (["--app", "usnm_gold_native", "--build-dir", str(build)],
+             "--binary, --extra-file and --build-dir are only valid with --kind native"),
+            (["--app", "usnm_gold_native", "--kind", "native", "--build-dir", str(build), "--binary", str(worker)],
+             "--build-dir replaces --binary and --extra-file"),
+            (["--app", "usnm_ocr_native", "--kind", "native", "--build-dir", str(build), "--plan-class", "mt"],
+             "--app and --plan-class for --kind native must be"),
+            (["--app", "usnm_gold_native", "--kind", "native", "--build-dir", str(build), "--platform", "windows_x86_64"],
+             "native usnm_gold_native is built only for x86_64-pc-linux-gnu"),
+            # The fixture's engine and models aren't the container worker's.
+            (["--app", "usnm_ocr_native", "--kind", "native", "--build-dir", str(build)],
+             "the native OCR build isn't the container worker's engine and models"),
+            (["--app", "usnm_gold_native", "--kind", "native", "--binary", str(worker),
+              "--extra-file", f"usnm_tesseract={build / 'usnm_tesseract'}"],
+             "a native OCR build requires --extra-file usnm_native_build.json=PATH"),
+            (["--app", "usnm_gold_native", "--kind", "native", "--build-dir", str(build.parent)],
+             "--build-dir must hold only regular files: "),
+            (["--app", "usnm_gold_native", "--kind", "native", "--build-dir", str(empty)],
+             "--build-dir is empty: it must hold usnm_ocr, usnm_native_build.json"),
+            (["--app", "usnm_gold_native", "--kind", "native", "--build-dir", str(hidden)],
+             "--build-dir must hold only regular files: .cache"),
+        ):
+            with self.subTest(args=args):
+                res = subprocess.run(["bash", str(release), *base, *args], capture_output=True, text=True)
+                self.assertNotEqual(res.returncode, 0)
+                self.assertIn(expected_err, res.stderr)
 
 
 if __name__ == "__main__":

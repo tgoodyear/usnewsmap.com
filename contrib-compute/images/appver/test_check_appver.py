@@ -278,5 +278,109 @@ class CheckAppver(unittest.TestCase):
                 with self.assertRaisesRegex(ca.Refused, "missing required bundle files: libggml-vulkan.so"):
                     ca.check(directory, sigs, self.key, str(self.crypt), kind="native")
 
+    def stage_native_ocr(self, app, **changes):
+        """A native OCR build staged by install.py: (version dir, sigs dir)."""
+        build = self.root / "ocr-build"
+        build.mkdir(exist_ok=True)
+        files = {"usnm_ocr": b"worker", "usnm_tesseract": b"engine", "tessdata_eng.traineddata": b"model"}
+        for name, data in files.items():
+            (build / name).write_bytes(data)
+        manifest = {"engine_version": "5.5.0", "platform": "x86_64-pc-linux-gnu", "v": 1, "files": {
+            name: {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()} for name, data in files.items()}}
+        (build / "usnm_native_build.json").write_text(ca.json.dumps({**manifest, **changes}))
+        project = self.root / f"{app}-project"
+        project.mkdir()
+        (project / "config.xml").write_text("<boinc/>")
+        directory = install.install(project, version="1.0", app=app, kind="native",
+                                    binary=build / "usnm_ocr", bundle_dir=build)
+        sigs = self.root / f"{app}-sigs"
+        sigs.mkdir()
+        return directory, sigs
+
+    def sign_all(self, directory, sigs):
+        for path in directory.iterdir():
+            if path.name != "version.xml":
+                (sigs / (path.name + ".sig")).write_text(f"good {hashlib.md5(path.read_bytes()).hexdigest()}\n")
+
+    def test_native_ocr_version_passes_with_linked_models(self):
+        for app in ("usnm_ocr_native", "usnm_gold_native"):
+            directory, sigs = self.stage_native_ocr(app)
+            self.sign_all(directory, sigs)
+            argv = ["--kind", "native", "--app", app, "--platform", "x86_64-pc-linux-gnu", "--version-dir",
+                    str(directory), "--sigs", str(sigs), "--public-key", str(self.key), "--crypt-prog", str(self.crypt)]
+            with self.subTest(app=app):
+                self.assertEqual(ca.main(argv), 0)
+                spec = ca.ET.parse(directory / "version.xml").getroot()
+                self.assertEqual(ca._infer_app_and_platform(Path("staged"), spec), (app, "x86_64-pc-linux-gnu"))
+
+    def test_native_ocr_refuses_a_manifest_that_names_a_field_twice(self):
+        # The worker's decoder refuses a field named twice, so this does too, even when the
+        # manifest is named for its digest.
+        directory, sigs = self.stage_native_ocr("usnm_ocr_native")
+        version = directory / "version.xml"
+        spec = ca.ET.parse(version).getroot()
+        old = next(f.findtext("physical_name") for f in spec.findall("file")
+                   if f.findtext("logical_name") == "usnm_native_build.json")
+        duplicated = (directory / old).read_text().replace('"v": 1', '"v": 0, "v": 1', 1).encode()
+        self.assertIn(b'"v": 0, "v": 1', duplicated)
+        (directory / old).unlink()
+        new = f"usnm_native_build_{hashlib.sha256(duplicated).hexdigest()}.json"
+        (directory / new).write_bytes(duplicated)
+        version.write_text(version.read_text().replace(old, new))
+        self.sign_all(directory, sigs)
+        with self.assertRaisesRegex(ca.Refused, "usnm_native_build.json is not a build manifest"):
+            ca.check(directory, sigs, self.key, str(self.crypt), kind="native",
+                     app="usnm_ocr_native", platform="x86_64-pc-linux-gnu")
+
+    def test_native_ocr_refuses_files_that_are_not_the_build(self):
+        directory, sigs = self.stage_native_ocr("usnm_gold_native")
+        spec = ca.ET.parse(directory / "version.xml").getroot()
+        physical = {f.findtext("logical_name"): f.findtext("physical_name") for f in spec.findall("file")}
+        model = directory / physical["tessdata_eng.traineddata"]
+        manifest = directory / physical["usnm_native_build.json"]
+        check = lambda: ca.check(directory, sigs, self.key, str(self.crypt), kind="native",
+                                 app="usnm_gold_native", platform="x86_64-pc-linux-gnu")
+
+        model.write_bytes(b"other")
+        self.sign_all(directory, sigs)
+        with self.assertRaisesRegex(ca.Refused, "tessdata_eng.traineddata differs from the build manifest"):
+            check()
+        model.write_bytes(b"model")
+        manifest.write_text(manifest.read_text() + "\n")
+        self.sign_all(directory, sigs)
+        with self.assertRaisesRegex(ca.Refused, "usnm_native_build.json is not named for its digest"):
+            check()
+        manifest.write_text(manifest.read_text()[:-1])
+        self.sign_all(directory, sigs)
+        item = next(f for f in spec.findall("file") if f.findtext("logical_name") == "tessdata_eng.traineddata")
+        ca.ET.SubElement(item, "copy_file")
+        ca.ET.ElementTree(spec).write(directory / "version.xml", encoding="unicode")
+        with self.assertRaisesRegex(ca.Refused, "extra files must not have <copy_file/>"):
+            check()
+        item.remove(item.find("copy_file"))
+        # A file with no physical_name, its staged file and signature gone.
+        entry = next(f for f in spec.findall("file") if f.findtext("logical_name") == "usnm_native_build.json")
+        entry.remove(entry.find("physical_name"))
+        ca.ET.ElementTree(spec).write(directory / "version.xml", encoding="unicode")
+        (sigs / (manifest.name + ".sig")).unlink()
+        manifest.unlink()
+        with self.assertRaisesRegex(ca.Refused, "a file with no staged physical_name"):
+            check()
+
+    def test_native_ocr_refuses_a_manifest_the_worker_would_not_read(self):
+        # The worker reads v as a u32 and refuses unknown fields.
+        base = self.root
+        for n, changes in enumerate(({"v": True}, {"v": 1.0}, {"extra": 1})):
+            with self.subTest(changes=changes):
+                self.root = base / f"case-{n}"
+                self.root.mkdir()
+                directory, sigs = self.stage_native_ocr("usnm_ocr_native", **changes)
+                self.sign_all(directory, sigs)
+                with self.assertRaisesRegex(ca.Refused, "is not a build manifest for x86_64-pc-linux-gnu"):
+                    ca.check(directory, sigs, self.key, str(self.crypt), kind="native",
+                             app="usnm_ocr_native", platform="x86_64-pc-linux-gnu")
+        self.root = base
+
+
 if __name__ == "__main__":
     unittest.main()

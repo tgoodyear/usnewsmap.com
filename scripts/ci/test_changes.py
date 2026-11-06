@@ -763,9 +763,10 @@ class BuildInputs(unittest.TestCase):
                 self.assertGreaterEqual(self.select(path), jobs)
 
     def test_the_tesseract_image_runs_the_worker_image_and_release_only(self):
+        # The native OCR build also runs: it's checked against this image's Tesseract version.
         on = self.select("ocr/engines/tesseract/Containerfile")
         self.assertEqual(on & (BOINC_IMAGES | DASHBOARD | {"ocr_worker"}),
-                         {"boinc_worker", "ocr_worker"}, on)
+                         {"boinc_worker", "boinc_ocr_native", "ocr_worker"}, on)
         on = self.select("scripts/ci/ocr-engine-cgroup-smoke.py")
         self.assertIn("ocr_worker", on)
         self.assertNotIn("image", on)
