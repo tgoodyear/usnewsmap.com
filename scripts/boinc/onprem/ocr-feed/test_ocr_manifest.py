@@ -114,6 +114,39 @@ class OcrClaimTest(unittest.TestCase):
             self.assertEqual(Path(d, "ocr-docs.txt").read_text().split(), [doc])
             self.assertEqual(Path(d, "ocr-active.txt").read_text().split(), [doc])
 
+    def test_claims_are_published_under_the_quality_follower_s_lock(self):
+        on = "sn1_1900-01-01_ed-1_seq-1"
+        with tempfile.TemporaryDirectory() as d:
+            lock = Path(d, "follower/kept.tsv.lock")
+            a = types.SimpleNamespace(state=d, reasons="user", scan_server="http://s", curated_url="http://c",
+                                      days=14, max_pages=10, curated_copy=d, what_if=False, claims_lock=str(lock))
+            # A manifest still being fetched: only the claim of on, already on the scan server.
+            Path(d, "last.json").write_text(json.dumps({
+                "name": "queue-ocr-x", "at": dt.datetime.now(UTC).isoformat(),
+                "pairs": [["b", "sn1_1900-01-01_ed-1_seq-2"]]}))
+            waiting, real = threading.Event(), m.fcntl.flock
+
+            def flock(f, op):
+                waiting.set()
+                return real(f, op)
+
+            lock.parent.mkdir()
+            with open(lock, "a") as held, \
+                    mock.patch.object(m, "staged_pairs", return_value={("b", on): {"doc_id": on, "batch": "b"}}), \
+                    mock.patch.object(m, "Lake"), \
+                    mock.patch.object(m, "cached_rows", side_effect=lambda lake, state, kind, *x:
+                                      [q(on, "user", 1)] if kind == "queued" else []), \
+                    mock.patch.object(m.fcntl, "flock", flock), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                real(held, m.fcntl.LOCK_EX)
+                t = threading.Thread(target=m.cmd_build, args=(a,))
+                t.start()
+                self.assertTrue(waiting.wait(5))
+                self.assertFalse(Path(d, "ocr-docs.txt").exists() or Path(d, "ocr-active.txt").exists())
+                real(held, m.fcntl.LOCK_UN)
+                t.join(10)
+            self.assertEqual(Path(d, "ocr-active.txt").read_text().split(), [on])
+
 
 def ranked(doc, batch, lccn, decade, rank):
     return [doc, batch, "1", "detected", "0.5", lccn, decade, str(rank)]

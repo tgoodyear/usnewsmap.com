@@ -21,8 +21,9 @@ curated copy. A new manifest is made only when the last one's pages are mostly o
 server (90%) or it is a day old, so the fetcher's queue never piles up.
 """
 import argparse
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 import datetime as dt
+import fcntl
 import glob
 import io
 import json
@@ -289,6 +290,20 @@ def write_ocr_active(state, docs):
     os.replace(path + ".tmp", path)
 
 
+@contextmanager
+def claims_lock(path):
+    """Holds `path`'s exclusive flock while OCR's claims are published: the quality follower
+    reads them and evicts kept scans under the same lock (its kept.tsv.lock), so it never
+    weighs its kept list against claims published halfway through a round."""
+    if not path:
+        yield
+        return
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "a") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        yield
+
+
 def cmd_build(a):
     os.makedirs(a.state, exist_ok=True)
     reasons = [r for r in a.reasons.split(",") if r]
@@ -322,10 +337,11 @@ def cmd_build(a):
     claimed = [q["doc_id"] for q in outstanding if (q["batch"], q["doc_id"]) in index]
     have = read_ocr_docs(a.state)
     if not a.what_if:
-        n = record_ocr_docs(a.state, claimed, have)
+        with claims_lock(getattr(a, "claims_lock", None)):
+            n = record_ocr_docs(a.state, claimed, have)
+            write_ocr_active(a.state, {q["doc_id"] for q in outstanding} & have)
         if n:
             log("queued pages already on the scan server claimed for OCR", pages=n)
-        write_ocr_active(a.state, {q["doc_id"] for q in outstanding} & have)
     if busy:
         log("the last manifest is still being fetched; nothing new", **busy)
         return
@@ -379,8 +395,9 @@ def cmd_build(a):
                    "pairs": [[r["batch"], r["doc_id"]] for r in rows]}, f)
     os.replace(last_path + ".tmp", last_path)
     # Every page OCR asked for: the quality feeder never deletes these scans.
-    record_ocr_docs(a.state, [r["doc_id"] for r in rows], have)
-    write_ocr_active(a.state, {q["doc_id"] for q in outstanding} & have)
+    with claims_lock(getattr(a, "claims_lock", None)):
+        record_ocr_docs(a.state, [r["doc_id"] for r in rows], have)
+        write_ocr_active(a.state, {q["doc_id"] for q in outstanding} & have)
     stamp = now.isoformat()
     for r in rows:
         t = tries.get(r["doc_id"])
@@ -668,6 +685,7 @@ def main(argv=None):
     b.add_argument("--curated-copy", default="/srv/curated")
     b.add_argument("--scan-server", default="http://usnm-scanfetch.tjg.fyi:8380")
     b.add_argument("--what-if", action="store_true")
+    b.add_argument("--claims-lock", help="the quality follower's kept.tsv.lock: OCR's claims are published under it")
     q = sub.add_parser("build-quality")
     q.add_argument("--state", required=True)
     q.add_argument("--dsn", required=True, help="usnm_quality, a role that may read page_summary")

@@ -1,6 +1,7 @@
 """Tests for the on-prem quality feeder (#962), with no network or production state."""
 import contextlib
 from concurrent.futures import ThreadPoolExecutor
+import fcntl
 import hashlib
 import importlib.util
 import io
@@ -10,6 +11,7 @@ import sqlite3
 import struct
 import sys
 import tempfile
+import threading
 import types
 import unittest
 import urllib.error
@@ -1270,6 +1272,25 @@ class FollowTest(unittest.TestCase):
                 feed.main(argv)
                 self.assertEqual(calls, [("GET", "buffer/b/q1.jp2.json")])
                 self.assertEqual(set(feed.read_kept(str(root / "state/kept.tsv"))), {"q1"})
+
+                # OCR's claims are read under the lock ocr_manifest.py publishes them under: one
+                # published while a round waits for it is seen.
+                waiting, real = threading.Event(), fcntl.flock
+
+                def flock(f, op):
+                    waiting.set()
+                    return real(f, op)
+
+                calls.clear()
+                with open(root / "state/kept.tsv.lock", "a") as held, mock.patch.object(feed.fcntl, "flock", flock):
+                    real(held, fcntl.LOCK_EX)
+                    t = threading.Thread(target=feed.main, args=(argv,))
+                    t.start()
+                    self.assertTrue(waiting.wait(5))
+                    (root / "ocr-active.txt").write_text("q1\nq2\n")
+                    real(held, fcntl.LOCK_UN)
+                    t.join(10)
+                self.assertEqual(calls, [])
 
     def test_an_unreadable_kept_line_is_weighed_again_not_fatal(self):
         with tempfile.TemporaryDirectory() as d:
