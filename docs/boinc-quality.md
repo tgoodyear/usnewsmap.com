@@ -1500,7 +1500,7 @@ under the follower's `kept.tsv.lock` (`--claims-lock`), and the follower reads t
 so no claim lands between its reading them and evicting by them. Its check time is reset,
 so it is among the first looked up once OCR is done with it, and it stays a kept page like any other if OCR's delete failed.
 `--keep-verify` (500) of the longest-unchecked are looked up a round; a lookup that fails goes to the back, and one the scan server doesn't answer ends that round's
-lookups and deletes, which the next round picks up where it left off. The follower looks
+lookups and deletes (every campaign's), which the next round picks up where it left off. The follower looks
 after the list every round, before its campaign has shipped anything too, and deletes (or
 keeps) the shipped scans of every campaign it has followed (`<state>/followed.txt`), so the
 chunks a shipper takes after a campaign switch don't leave their scans behind. Its own
