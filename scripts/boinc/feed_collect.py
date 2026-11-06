@@ -475,48 +475,55 @@ def config_fingerprint(data_dir):
     return found
 
 
+def session_record(session):
+    try:
+        record = json.loads(read_file(session, 65536))
+    except (OSError, ValueError):
+        return {}
+    return record if isinstance(record, dict) else {}
+
+
 def reservations_proven(session, client_start, fingerprint, messages):
     """Whether started tasks still hold their current records, kept per client session.
 
     A started task keeps the reservation it started with; the client gives a new usage
     only to unstarted tasks, at startup and when it rereads its config files. So within
-    one client session (client_start_time), started tasks match their records while no
-    config has been reread since startup. A session is trusted when first seen only if
-    the client's message log still covers the whole session with no reread, and every
-    app_config.xml predates the start. After that, any change to the configs (edit,
-    new file or deletion) ends the trust until the client restarts. The record is kept
-    in the source's state directory; without one, nothing is trusted."""
+    one client session (client_start_time), started tasks match their records while the
+    client has not reread a config since startup. The source reads the client's message
+    log every poll from a saved cursor: a session is trusted when first seen only if the
+    log still starts at its first message, every app_config.xml predates the start, and
+    no "Re-reading" line appears; afterwards any reread, any gap in the log (messages
+    rotated out between polls) or any change to the configs (edit, new file, deletion)
+    ends the trust until the client restarts. Without a record, nothing is trusted."""
     try:
         start = float(client_start)
     except (TypeError, ValueError):
         return False
-    if session is None or fingerprint is None or not math.isfinite(start) or start <= 0:
+    if session is None or not math.isfinite(start) or start <= 0:
         return False
-    try:
-        record = json.loads(read_file(session, 65536))
-    except (OSError, ValueError):
-        record = {}
-    if not isinstance(record, dict):
-        record = {}
-    if record.get("client_start") == start:
-        trusted = record.get("trusted") is True and record.get("fingerprint") == fingerprint
+    record = session_record(session)
+    same = record.get("client_start") == start
+    cursor = record.get("cursor", 0) if same else 0
+    seqnos, reread = [], False
+    if messages is not None:
+        for message in messages.findall(".//msg"):
+            try:
+                seqnos.append(int(message.findtext("seqno", "")))
+            except ValueError:
+                messages = None
+                break
+            reread |= "Re-reading" in message.findtext("body", "")
+    if messages is None or type(cursor) is not int:
+        trusted, last = False, cursor if type(cursor) is int else 0
     else:
-        trusted = (messages is not None and messages_cover_session_without_reread(messages)
-                   and all(mtime / 1e9 < start for _, mtime, _ in fingerprint))
-    atomic_json(session, {"client_start": start, "fingerprint": fingerprint, "trusted": trusted})
+        contiguous = not seqnos or min(seqnos) == cursor + 1
+        trusted = (fingerprint is not None and contiguous and not reread
+                   and (record.get("trusted") is True and record.get("fingerprint") == fingerprint if same
+                        else all(mtime / 1e9 < start for _, mtime, _ in fingerprint)))
+        last = max(seqnos, default=cursor)
+    atomic_json(session, {"client_start": start, "cursor": last, "fingerprint": fingerprint,
+                          "trusted": trusted})
     return trusted
-
-
-def messages_cover_session_without_reread(messages):
-    """True when the reply holds the session's first message (seqno 1) and no config reread."""
-    seqnos, bodies = [], []
-    for message in messages.findall(".//msg"):
-        try:
-            seqnos.append(int(message.findtext("seqno", "")))
-        except ValueError:
-            return False
-        bodies.append(message.findtext("body", ""))
-    return 1 in seqnos and not any("Re-reading" in body for body in bodies)
 
 
 def client(data_dir, port, session=None):
@@ -532,16 +539,14 @@ def client(data_dir, port, session=None):
         client_start = state.findtext(".//time_stats/client_start_time")
         messages = None
         if session is not None:
+            record = session_record(session)
             try:
-                known = json.loads(read_file(session, 65536)).get("client_start")
-            except (OSError, ValueError, AttributeError):
-                known = None
-            try:
-                new_session = known != float(client_start)
+                same = record.get("client_start") == float(client_start)
             except (TypeError, ValueError):
-                new_session = False
-            if new_session:
-                messages = rpc.call("get_messages", {"seqno": "0"})
+                same = False
+            cursor = record.get("cursor", 0) if same else 0
+            if type(cursor) is int and cursor >= 0:
+                messages = rpc.call("get_messages", {"seqno": str(cursor)})
     finally:
         rpc.close()
     proven = reservations_proven(session, client_start, config_fingerprint(data_dir), messages)

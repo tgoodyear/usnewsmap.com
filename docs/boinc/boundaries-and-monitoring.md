@@ -116,23 +116,24 @@ it rereads its config files or a scheduler reply changes an app version
 ([client_state.cpp](https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/client/client_state.cpp#L2462)),
 and GUI RPC shows only a rounded display string for running tasks. The client
 source keeps a record per client session (`client_start_time`) next to its
-output, `<name>.session.json`. A session is trusted when the source first sees
-it only if the client's message log still starts at the session's first
-message with no "Re-reading" line, and every `app_config.xml` under
-`projects/` is older than the start. After that, any change to those files
-(an edit, a new file or a deletion) ends the trust for the rest of the
-session. In a trusted session, a started task of this project counts at its
-current workunit or app version record, like an unstarted one. Otherwise, and
-for any other project's started task, the source is
-`active_task_resource_usage_unavailable`, and both stock checks are unknown,
-until the task ends or the client restarts. The log holds about 2,000
+output, `<name>.session.json`, and reads the client's message log every poll
+from the record's cursor. A session is trusted when the source first sees it
+only if the log still starts at the session's first message and every
+`app_config.xml` under `projects/` is older than the start. Trust ends for the
+rest of the session at the first "Re-reading" line, at any gap in the log
+(messages rotated out between polls), or at any change to those files (an
+edit, a new file or a deletion). In a trusted session, a started task of this
+project counts at its current workunit or app version record, like an
+unstarted one. Otherwise, and for any other project's started task, the source
+is `active_task_resource_usage_unavailable`, and both stock checks are
+unknown, until the task ends or the client restarts. The log holds about 2,000
 messages, so a client that was running before its source was installed needs
-one restart to be trusted. A scheduler-side change to this project's
-versions comes from a plan class change; while the client's cached version
-differs from the live plan class, the profile mismatch check above makes the
-stock checks unknown. A task that started before the client took the new
-version keeps the old usage until it ends, so the stock checks can be off by
-that task for up to its run time.
+one restart to be trusted. A scheduler-side change to this project's versions
+comes from a plan class change; while the client's cached version differs from
+the live plan class, the profile mismatch check above makes the stock checks
+unknown. A task that started before the client took the new version keeps the
+old usage until it ends, so the stock checks can be off by that task for up to
+its run time.
 
 **Paused clients:** a client that is suspended (any task suspend reason), set to
 fetch no more work, or has the project suspended reports `paused: true` with

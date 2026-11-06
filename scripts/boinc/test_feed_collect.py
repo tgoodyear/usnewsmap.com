@@ -105,6 +105,7 @@ def client_rpc_fixture():
 </client_state>""",
         "get_cc_status": "<cc_status><task_suspend_reason>0</task_suspend_reason><gpu_suspend_reason>0</gpu_suspend_reason></cc_status>",
         "get_global_prefs_working": "<global_preferences><max_ncpus_pct>50</max_ncpus_pct></global_preferences>",
+        "get_messages": "<msgs/>",
         "get_disk_usage": "<disk_usage_summary><project><disk_usage>600</disk_usage></project><d_free>900</d_free><d_boinc>100</d_boinc><d_allowed>1000</d_allowed></disk_usage_summary>",
     }
 
@@ -1279,11 +1280,11 @@ with socket.create_connection({listener.getsockname()!r}, timeout=2) as connecti
 
     def test_loopback_rpc_reads_only_and_never_uses_volunteer_hosts(self):
         with client_rpc_fixture() as (root, port, answers, operations):
-            result = C.client(root, port)
+            result = C.client(root, port, root / "client.session.json")
             self.assertEqual(result["host_id"], 9)
             self.assertEqual(result["idle_cpu"], 2)
             self.assertEqual(result["disk_bytes"], 300)
-            self.assertEqual(operations, list(answers))
+            self.assertEqual(sorted(operations), sorted(answers))  # every request is a read
             self.assertNotIn("secret", json.dumps(result))
             answers["get_state"] = answers["get_state"].replace("</client_state>", """
 <workunit><name>finished</name><app_name>usnm_ocr</app_name></workunit>
@@ -1338,11 +1339,15 @@ with socket.create_connection({listener.getsockname()!r}, timeout=2) as connecti
             session = root / "client.session.json"
             projects = root / "projects"
             config = projects / "boinc.usnewsmap.com" / "app_config.xml"
-            log = "<msgs><msg><seqno>1</seqno><body>Starting BOINC client</body></msg>{}</msgs>"
+            first = "<msgs><msg><seqno>1</seqno><body>Starting BOINC client</body></msg></msgs>"
+            reread = "<msgs><msg><seqno>{}</seqno><body>Re-reading cc_config.xml</body></msg></msgs>"
+            quiet = "<msgs><msg><seqno>{}</seqno><body>Requesting new tasks</body></msg></msgs>"
 
-            def observe(started="2000", messages=log.format("")):
+            # The fixture answers whatever seqno was asked; each call passes what the client
+            # would send after the saved cursor.
+            def observe(messages="<msgs/>", started="2000"):
                 answers["get_messages"] = messages
-                stats = f"<time_stats><client_start_time>{started}</client_start_time></time_stats>"
+                stats = f"<time_stats><client_start_time>{started}</client_start_time></time_stats>" if started else ""
                 answers["get_state"] = base.replace("</client_state>", stats + running + "</client_state>")
                 try:
                     return C.client(root, port, session)["available_cpu"]
@@ -1361,38 +1366,44 @@ with socket.create_connection({listener.getsockname()!r}, timeout=2) as connecti
                     os.utime(config, (config_mtime, config_mtime))
 
             reset()
-            self.assertEqual(observe(), 1)                     # whole session logged, no reread
-            operations.clear()
-            self.assertEqual(observe(messages="<msgs/>"), 1)   # same session: the record decides
-            self.assertNotIn("get_messages", operations)
-            for case, setup, kwargs in (
-                    ("log trimmed", None, {"messages": "<msgs><msg><seqno>7</seqno><body>x</body></msg></msgs>"}),
-                    ("reread logged", None, {"messages": log.format(
-                        "<msg><seqno>2</seqno><body>Re-reading cc_config.xml</body></msg>")}),
-                    ("config newer than start", 3000, {}),
-                    ("no start time", None, {"started": ""}),
-                    ("nan start time", None, {"started": "nan"})):
+            self.assertEqual(observe(first), 1)                # whole session logged, no reread
+            self.assertEqual(observe(quiet.format(2)), 1)      # new messages follow the cursor
+            self.assertEqual(observe(), 1)
+            self.assertEqual(json.loads(session.read_text())["cursor"], 2)
+            for case, setup, calls in (
+                    ("log rotated before first sight", None, [quiet.format(7)]),
+                    ("reread before first sight", None,
+                     [first.replace("</msgs>", reread.format(2)[6:])]),
+                    ("reread between polls", None, [first, reread.format(2), "<msgs/>"]),
+                    ("messages rotated out between polls", None, [first, quiet.format(9), "<msgs/>"]),
+                    ("config newer than start", 3000, [first]),
+                    ("unparseable seqno", None, [first, "<msgs><msg><seqno>x</seqno></msg></msgs>"])):
                 with self.subTest(case=case):
                     reset(setup)
-                    self.assertIsNone(observe(**kwargs))
+                    results = [observe(call) for call in calls]
+                    self.assertIsNone(results[-1])
+            for started in ("", "nan"):
+                with self.subTest(started=started):
+                    reset()
+                    self.assertIsNone(observe(first, started=started))
             reset(1000)
-            self.assertEqual(observe(), 1)                     # config loaded at start, unchanged
+            self.assertEqual(observe(first), 1)                # config loaded at start, unchanged
             for change in ("edit", "delete"):
                 with self.subTest(change=change):
                     reset(1000)
-                    self.assertEqual(observe(), 1)
+                    self.assertEqual(observe(first), 1)
                     if change == "edit":
                         os.utime(config, (1500, 1500))
                     else:
                         config.unlink()
                     self.assertIsNone(observe())               # changed in-session: never trusted again
                     self.assertIsNone(observe())
-                    self.assertEqual(observe(started="4000"), 1)  # a client restart starts a new session
+                    self.assertEqual(observe(first, started="4000"), 1)  # a client restart is a new session
             reset()
             with patch.object(C.Path, "iterdir", side_effect=PermissionError):
-                self.assertIsNone(observe())
+                self.assertIsNone(observe(first))
             reset()
-            answers["get_messages"] = log.format("")
+            answers["get_messages"] = first
             other = """<project><master_url>https://other.invalid/</master_url><hostid>7</hostid></project>
 <app_version><app_name>usnm_ocr</app_name><version_num>117</version_num><plan_class>docker</plan_class>
 <avg_ncpus>1</avg_ncpus></app_version>""" + running
