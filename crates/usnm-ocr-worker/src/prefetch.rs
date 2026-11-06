@@ -75,10 +75,23 @@
 //! `<out>/index-<tag>.jsonl`, and each failure to `<out>/failures-<tag>.jsonl`
 //! (`<tag>` is `full` or `pct<n>`).
 //!
+//! **Cut short at LoC** (#1457): a JP2 whose box, marker and tile-part
+//! headers say its codestream stops before its end
+//! ([`usnm_ocr_contract::jp2::truncation`]) is LoC's file as it is (it
+//! matched the bag's md5), so no fetch repairs it, and OCR would fail on it
+//! or read part of the page. It isn't written or indexed, so no worker or
+//! BOINC export gets it: it is a `source_truncated` failure line, counted in
+//! the status's `source_truncated`, and a line of
+//! `<out>/source-truncated.jsonl` ([`SourceTruncatedLine`]), the list to
+//! report to LoC. The page keeps LoC's text.
+//!
 //! **Resuming**: a page whose scan and sidecar are there, in either format,
 //! with the size, sha256 and (if recorded) md5 the sidecar records, is
-//! skipped; anything else is fetched again. The JPEGs fetched before the
-//! batch route stay valid and aren't fetched again as JP2s.
+//! skipped; anything else is fetched again, except a page
+//! `source-truncated.jsonl` lists for the same batch version, which is
+//! counted as `source_truncated` again without asking LoC. The JPEGs
+//! fetched before the batch route stay valid and aren't fetched again as
+//! JP2s.
 //!
 //! **Status**: `<out>/status-<tag>.json` ([`Status`]), rewritten every
 //! [`Options::progress_every`] pages and every 30 s, with a log line
@@ -98,6 +111,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{watch, Semaphore};
 use tokio::time::Instant;
 use usnm_core::ids::PageKey;
+use usnm_ocr_contract::jp2;
 use usnm_ocr_contract::prefetch::{self, ManifestRow};
 // The sets and the fetch order are the contract's, so the seeder (12 Step
 // 11) can queue pages in the order they are fetched.
@@ -319,6 +333,11 @@ pub struct Status {
     /// may ask LoC. Counted in `finished`, not as failures.
     #[serde(default)]
     pub deferred_needs_loc: u64,
+    /// Pages whose JP2 is cut short at LoC (#1457): fetched in this run and
+    /// not written, or listed in `source-truncated.jsonl` by an earlier one.
+    /// Counted in `finished`, not as failures.
+    #[serde(default)]
+    pub source_truncated: u64,
     pub bytes_fetched: u64,
     /// This run's pages on disk: already there plus fetched.
     pub bytes_on_disk: u64,
@@ -350,8 +369,9 @@ fn now_rfc3339() -> String {
 pub struct Failure {
     pub doc_id: String,
     /// `permanent` (LoC said no, or lists no image, or an item error
-    /// outlasted its cool-offs), `transient`, or `loc_item_error` (skipped
-    /// while its issue cools off after an item error, #414).
+    /// outlasted its cool-offs), `transient`, `loc_item_error` (skipped
+    /// while its issue cools off after an item error, #414), or
+    /// `source_truncated` (LoC's JP2 is cut short, #1457; never asked again).
     pub kind: String,
     pub error: String,
     pub at: String,
@@ -383,6 +403,7 @@ struct Counts {
     buffer_written: AtomicU64,
     failed_item_error: AtomicU64,
     deferred_needs_loc: AtomicU64,
+    source_truncated: AtomicU64,
 }
 
 /// The failures since the last page that was done, and their titles.
@@ -430,7 +451,13 @@ struct Run {
     deferred: Mutex<Vec<(DateTime<Utc>, ManifestRow)>>,
     /// JP2s only from LoC's bucket or a mirror ([`Options::no_loc_prefixes`]).
     no_loc: bool,
+    /// `source-truncated.jsonl`, and the pages it lists.
+    truncated_lines: Lines,
+    truncated: Mutex<std::collections::HashSet<TruncatedKey>>,
 }
+
+/// A page in `source-truncated.jsonl`: its doc_id, batch and batch version.
+type TruncatedKey = (String, String, u16);
 
 impl Run {
     fn snapshot(&self, state: &str) -> Status {
@@ -445,6 +472,7 @@ impl Run {
         s.failed_transient = c.failed_transient.load(Ordering::SeqCst);
         s.failed_item_error = c.failed_item_error.load(Ordering::SeqCst);
         s.deferred_needs_loc = c.deferred_needs_loc.load(Ordering::SeqCst);
+        s.source_truncated = c.source_truncated.load(Ordering::SeqCst);
         (s.issues_cooling, s.issues_item_permanent) = self.cooling.counts();
         s.bytes_fetched = c.bytes_fetched.load(Ordering::SeqCst);
         s.fetched_jp2 = c.fetched_jp2.load(Ordering::SeqCst);
@@ -518,6 +546,7 @@ impl Run {
             failed_transient = s.failed_transient,
             failed_item_error = s.failed_item_error,
             deferred_needs_loc = s.deferred_needs_loc,
+            source_truncated = s.source_truncated,
             issues_cooling = s.issues_cooling,
             bytes_fetched = s.bytes_fetched,
             bytes_on_disk = s.bytes_on_disk,
@@ -606,6 +635,46 @@ impl Run {
                 .push((until, row));
         }
         Ok(outcome)
+    }
+
+    /// A JP2 cut short at LoC: listed and counted, not written (#1457).
+    fn source_truncated(
+        &self,
+        row: ManifestRow,
+        t: &str,
+        scan: &Scan,
+        reason: &str,
+    ) -> anyhow::Result<()> {
+        tracing::warn!(
+            doc_id = row.doc_id,
+            reason,
+            "JP2 cut short at LoC; not written, not asked again"
+        );
+        let at = now_rfc3339();
+        self.truncated_lines.push(&SourceTruncatedLine {
+            doc_id: row.doc_id.clone(),
+            batch: row.batch.clone(),
+            batch_version: row.batch_version,
+            loc_url: scan.url.clone(),
+            md5: scan.md5.clone(),
+            sha256: sha256(&scan.bytes),
+            bytes: scan.bytes.len() as u64,
+            reason: reason.to_owned(),
+            at: at.clone(),
+        })?;
+        self.failures[t].push(&Failure {
+            doc_id: row.doc_id.clone(),
+            kind: "source_truncated".into(),
+            error: reason.chars().take(MAX_FAILURE_CHARS).collect(),
+            at,
+        })?;
+        self.counts.source_truncated.fetch_add(1, Ordering::SeqCst);
+        self.truncated.lock().expect("truncated lock").insert((
+            row.doc_id,
+            row.batch,
+            row.batch_version,
+        ));
+        Ok(())
     }
 
     /// A deferred page whose issue can be asked again, if any.
@@ -763,6 +832,18 @@ impl Run {
             }
         }
         let t = tag(size);
+        // LoC's JP2 is cut short, as an earlier run found: the same bytes
+        // again, so LoC isn't asked.
+        let listed = (row.doc_id.clone(), row.batch.clone(), row.batch_version);
+        if self
+            .truncated
+            .lock()
+            .expect("truncated lock")
+            .contains(&listed)
+        {
+            c.source_truncated.fetch_add(1, Ordering::SeqCst);
+            return Ok(Outcome::Done);
+        }
         let key = row.key()?;
         // A scaled page under no-LoC is deferred before it waits for room
         // in the buffer: nothing but LoC serves it.
@@ -792,6 +873,17 @@ impl Run {
                 Ok(Outcome::Done)
             }
             Fetched::Scan(scan, route, via) => {
+                if scan.format == ScanFormat::Jp2 {
+                    if let Some(reason) = jp2::truncation(&scan.bytes) {
+                        self.source_truncated(row, &t, &scan, &reason)?;
+                        // LoC (or a copy matching its bag) served the page.
+                        if !matches!(via, Via::Mirror(_)) {
+                            self.streak_ok();
+                            self.cooling.clear(&route)?;
+                        }
+                        return Ok(Outcome::Done);
+                    }
+                }
                 let path = scan_path(&self.opts.out, &row, size, scan.format);
                 let side = Sidecar {
                     doc_id: row.doc_id.clone(),
@@ -940,6 +1032,61 @@ pub struct SourceLine {
     pub at: String,
 }
 
+/// A line of `source-truncated.jsonl` (#1457): a page whose JP2 is cut
+/// short at LoC, with where and why, for a list to send LoC.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SourceTruncatedLine {
+    pub doc_id: String,
+    pub batch: String,
+    pub batch_version: u16,
+    pub loc_url: String,
+    /// The bag's md5, which the bytes matched.
+    pub md5: Option<String>,
+    pub sha256: String,
+    pub bytes: u64,
+    /// Where the codestream stops ([`jp2::truncation`]).
+    pub reason: String,
+    pub at: String,
+}
+
+/// The pages `source-truncated.jsonl` lists, and the numbers of its lines that
+/// can't be read, such as one cut off by a crash mid-write. Such a line's page
+/// is fetched, judged and listed again. The file only grows, so it is read a
+/// line at a time, as bytes: a line cut off mid-character is one unreadable
+/// line, not an unreadable file.
+fn read_truncated(
+    path: &Path,
+) -> anyhow::Result<(std::collections::HashSet<TruncatedKey>, Vec<usize>)> {
+    use std::io::BufRead;
+    let mut file = match std::fs::File::open(path) {
+        Ok(f) => std::io::BufReader::new(f),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Default::default()),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+    };
+    let mut keys = std::collections::HashSet::new();
+    let mut unreadable = Vec::new();
+    let mut line = Vec::new();
+    for n in 1.. {
+        line.clear();
+        let read = file
+            .read_until(b'\n', &mut line)
+            .with_context(|| format!("reading {}", path.display()))?;
+        if read == 0 {
+            break;
+        }
+        if line.iter().all(u8::is_ascii_whitespace) {
+            continue;
+        }
+        match serde_json::from_slice::<SourceTruncatedLine>(&line) {
+            Ok(l) => {
+                keys.insert((l.doc_id, l.batch, l.batch_version));
+            }
+            Err(_) => unreadable.push(n),
+        }
+    }
+    Ok((keys, unreadable))
+}
+
 /// Fetch the manifest's scans until done, stopped by `stop`, or too many
 /// pages fail in a row. Returns the final status.
 pub async fn run(
@@ -1036,6 +1183,16 @@ pub async fn run(
         loc.seed_storage_known_good(&jp2.loc_url);
     }
     let no_loc = no_loc_for(&opts.manifest, &opts.no_loc_prefixes);
+    let truncated_path = opts.out.join("source-truncated.jsonl");
+    let (truncated, unreadable) = read_truncated(&truncated_path)?;
+    if let Some(first) = unreadable.first() {
+        tracing::warn!(
+            path = %truncated_path.display(),
+            lines = unreadable.len(),
+            first_line = first,
+            "unreadable source-truncated lines skipped; their pages are fetched and judged again"
+        );
+    }
     let run = Arc::new(Run {
         loc,
         counts: Counts::default(),
@@ -1069,6 +1226,8 @@ pub async fn run(
         cooling,
         deferred: Mutex::new(Vec::new()),
         no_loc,
+        truncated_lines: Lines::open(&truncated_path)?,
+        truncated: Mutex::new(truncated),
         opts,
     });
     tracing::info!(

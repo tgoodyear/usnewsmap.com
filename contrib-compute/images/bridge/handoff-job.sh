@@ -43,6 +43,10 @@
 #   HANDOFF_STEP=dead-letter JOB_IDS=<id>[,<id>...]
 #                         puts claimed pages whose BOINC workunit failed for good on
 #                         ocr-deadletter and deletes their messages (#1154)
+#   HANDOFF_STEP=dead-letter SOURCE_TRUNCATED_DOCS=<doc_id>:<message sha256>[,...]
+#                         the same, unexported, for claimed pages whose JP2 LoC holds cut short
+#                         (push-boinc-scan.sh --skip-truncated, #1457); each still the message
+#                         claimed, by claim pull's sha256 of it
 #   HANDOFF_STEP=dead-letter SUPERSEDES_FAILED_JOB=<id> [CONFIRM_MESSAGE_SHA256=<sha256>]
 #                         an operator's only (#1417): the page of that dead-lettered job was
 #                         claimed again with a newer message; prints that message's sha256 and
@@ -366,7 +370,8 @@ case "${HANDOFF_STEP:-}" in
     if [ -n "${SUPERSEDES_FAILED_JOB:-}" ]; then
       # The operator's (#1417): a dead-lettered job's page claimed again with a newer message.
       # A dry run unless CONFIRM_MESSAGE_SHA256 names that message.
-      [ -z "${JOB_IDS:-}" ] || fail "SUPERSEDES_FAILED_JOB settles one page; don't give JOB_IDS too"
+      [ -z "${JOB_IDS:-}" ] && [ -z "${SOURCE_TRUNCATED_DOCS:-}" ] ||
+        fail "SUPERSEDES_FAILED_JOB settles one page; don't give JOB_IDS or SOURCE_TRUNCATED_DOCS too"
       [[ $SUPERSEDES_FAILED_JOB =~ ^[0-9a-f]{64}$ ]] || fail "SUPERSEDES_FAILED_JOB is a job id (64 hex)"
       confirm=()
       if [ -n "${CONFIRM_MESSAGE_SHA256:-}" ]; then
@@ -375,6 +380,16 @@ case "${HANDOFF_STEP:-}" in
       fi
       usnm-boinc claim dead-letter --handoff-url "$HANDOFF_URL" --queue-url "$QUEUE_URL" \
         --curated-url "$CURATED_URL" --supersedes-failed-job "$SUPERSEDES_FAILED_JOB" ${confirm[@]+"${confirm[@]}"}
+    elif [ -n "${SOURCE_TRUNCATED_DOCS:-}" ]; then
+      # Claimed pages whose JP2 LoC holds cut short (#1457): never exported, so no job to name.
+      [ -z "${JOB_IDS:-}" ] || fail "SOURCE_TRUNCATED_DOCS names pages that have no job; don't give JOB_IDS too"
+      [ -z "${CONFIRM_MESSAGE_SHA256:-}" ] || fail "CONFIRM_MESSAGE_SHA256 goes with SUPERSEDES_FAILED_JOB"
+      [[ $SOURCE_TRUNCATED_DOCS =~ ^[A-Za-z0-9_-]+:[0-9a-f]{64}(,[A-Za-z0-9_-]+:[0-9a-f]{64}){0,99}$ ]] ||
+        fail "SOURCE_TRUNCATED_DOCS is 1 to 100 comma-separated <doc id>:<message sha256>"
+      IFS=, read -r -a docs <<< "$SOURCE_TRUNCATED_DOCS"
+      doc_args=()
+      for d in "${docs[@]}"; do doc_args+=(--source-truncated "$d"); done
+      usnm-boinc claim dead-letter --handoff-url "$HANDOFF_URL" --queue-url "$QUEUE_URL" "${doc_args[@]}"
     else
       [ -z "${CONFIRM_MESSAGE_SHA256:-}" ] || fail "CONFIRM_MESSAGE_SHA256 goes with SUPERSEDES_FAILED_JOB"
       [[ ${JOB_IDS:-} =~ ^[0-9a-f]{64}(,[0-9a-f]{64}){0,99}$ ]] || fail "JOB_IDS is 1 to 100 comma-separated job ids"

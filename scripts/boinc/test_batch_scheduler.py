@@ -1323,6 +1323,7 @@ class QueueFake(Fake):
         super().__init__()
         self.waiting = list(waiting)
         self.uncached = set()
+        self.truncated = {}
         self.claimed = []
         self.released = []
         self.pushes = []
@@ -1335,8 +1336,9 @@ class QueueFake(Fake):
 
     def push_pages(self, bases):
         self.pushes.append(list(bases))
-        found = {base: f"{base}.jp2" for base in bases if base not in self.uncached}
-        return found, [base for base in bases if base in self.uncached]
+        found = {base: f"{base}.jp2" for base in bases if base not in self.uncached | set(self.truncated)}
+        return (found, [base for base in bases if base in self.uncached],
+                {base: self.truncated[base] for base in bases if base in self.truncated})
 
     def release(self, doc_ids):
         self.actions.append(("release", sorted(doc_ids)))
@@ -1344,6 +1346,9 @@ class QueueFake(Fake):
 
     def dead_letter(self, doc_ids):
         self.actions.append(("dead-letter", sorted(doc_ids)))
+
+    def dead_letter_truncated(self, claims):
+        self.actions.append(("dead-letter-truncated", sorted(claims)))
 
     def export(self, pages, job_ids=()):
         by_batch = {}
@@ -1515,6 +1520,77 @@ class QueueModeTests(unittest.TestCase):
         self.tick()
         self.assertEqual(self.fake.released, ["sn12345678_1900-01-01_ed-1_seq-1"])
         self.assertNotIn("sn12345678/1900-01-01/ed-1/seq-1", self.state["claims"])
+
+    def test_a_page_whose_jp2_loc_holds_cut_short_is_dead_lettered_never_exported(self):
+        # #1457: the push names it (--skip-truncated); it is listed for LoC and another page
+        # takes its place.
+        base = "keep/test_batch/sn12345678/1900-01-01/1/1"
+        self.fake.truncated = {base: "the codestream ends without an EOC marker after 4 of 4 tiles"}
+        self.tick()
+        # Named with the message claimed, so a newer claim of the page isn't taken.
+        self.assertIn(("dead-letter-truncated", [("sn12345678_1900-01-01_ed-1_seq-1", f"{1:064x}")]),
+                      self.fake.actions)
+        self.assertEqual(self.fake.released, [])
+        self.assertNotIn("sn12345678/1900-01-01/ed-1/seq-1", self.state["claims"])
+        self.assertEqual(self.state["source_truncated"], {"sn12345678/1900-01-01/ed-1/seq-1": {
+            "doc_id": "sn12345678_1900-01-01_ed-1_seq-1", "batch": "test_batch", "scan": base,
+            "reason": "the codestream ends without an EOC marker after 4 of 4 tiles", "at": int(NOW)}})
+        exported = [page for a in self.fake.actions if a[0] == "export" for page in a[2]]
+        self.assertNotIn("sn12345678/1900-01-01/ed-1/seq-1", exported)
+        self.assertIn("sn12345678/1900-01-01/ed-1/seq-2", exported)
+        self.assertEqual(len(self.fake.jobs), 1)
+        # The next tick claims in its place; it is not dead-lettered again.
+        self.tick()
+        self.assertEqual(len([a for a in self.fake.actions if a[0] == "dead-letter-truncated"]), 1)
+        self.assertEqual(len(self.fake.jobs), 3)
+        self.assertEqual(self.fake.claimed[2:], ["sn12345678/1900-01-01/ed-1/seq-3", "sn12345678/1900-01-01/ed-1/seq-4"])
+
+    def test_a_failed_truncated_dead_letter_is_retried_and_never_pushed_again(self):
+        base = "keep/test_batch/sn12345678/1900-01-01/1/1"
+        self.fake.truncated = {base: "the codestream ends inside its main header"}
+        original = self.fake.dead_letter_truncated
+        self.fake.dead_letter_truncated = lambda claims: (_ for _ in ()).throw(RuntimeError("dead letter failed"))
+        with self.assertRaisesRegex(RuntimeError, "dead letter failed"):
+            self.tick()
+        claim = self.state["claims"]["sn12345678/1900-01-01/ed-1/seq-1"]
+        self.assertEqual((claim["scan"], claim["source_truncated"]),
+                         (None, "the codestream ends inside its main header"))
+        self.fake.dead_letter_truncated = original
+        pushes = len(self.fake.pushes)
+        self.tick()
+        self.assertEqual(self.fake.actions.count(
+            ("dead-letter-truncated", [("sn12345678_1900-01-01_ed-1_seq-1", f"{1:064x}")])), 1)
+        self.assertNotIn(base, [b for push in self.fake.pushes[pushes:] for b in push])
+        self.assertIn("sn12345678/1900-01-01/ed-1/seq-1", self.state["source_truncated"])
+
+    def test_a_failed_truncated_dead_letter_is_retried_by_a_tick_that_claims_nothing(self):
+        # Retried before any refill, so a draining tick, or one with no room, still settles it
+        # before the claim's lease runs out.
+        base = "keep/test_batch/sn12345678/1900-01-01/1/1"
+        page = "sn12345678/1900-01-01/ed-1/seq-1"
+        self.fake.truncated = {base: "the codestream ends inside its main header"}
+        original = self.fake.dead_letter_truncated
+        self.fake.dead_letter_truncated = lambda claims: (_ for _ in ()).throw(RuntimeError("dead letter failed"))
+        with self.assertRaisesRegex(RuntimeError, "dead letter failed"):
+            self.tick()
+        self.fake.dead_letter_truncated = original
+        claimed = len(self.fake.claimed)
+        batch.tick(self.config, self.state, self.fake, lambda: self.saved.append(copy.deepcopy(self.state)),
+                   NOW, drain=True)
+        self.assertEqual(len(self.fake.claimed), claimed)
+        self.assertIn(("dead-letter-truncated", [("sn12345678_1900-01-01_ed-1_seq-1", f"{1:064x}")]),
+                      self.fake.actions)
+        self.assertNotIn(page, self.state["claims"])
+        self.assertIn(page, self.state["source_truncated"])
+
+    def test_a_truncated_claim_without_its_message_is_not_settled_blind(self):
+        base = "keep/test_batch/sn12345678/1900-01-01/1/1"
+        self.fake.truncated = {base: "the codestream ends inside its main header"}
+        self.fake.waiting[0].pop("message_sha256")
+        with self.assertRaisesRegex(ValueError, "no message sha256"):
+            self.tick()
+        self.assertFalse([a for a in self.fake.actions if a[0] == "dead-letter-truncated"])
+        self.assertIn("sn12345678/1900-01-01/ed-1/seq-1", self.state["claims"])
 
     def test_restart_resumes_claimed_pages_without_claiming_again(self):
         # A crash between claiming and pushing: the claims are in the state, not yet pushed.
@@ -2062,7 +2138,10 @@ class BatchedStepsTests(unittest.TestCase):
                 batch.main(["--config", "c.json", "--state-dir", d, "--apply",
                             "--batch-submit", "--batch-collect", "--collect-parallel", "3"])
             self.assertEqual((seen["batch_submit"], seen["batch_spool_out"], seen["batch_collect"],
-                              seen["collect_parallel"]), (True, False, True, 3))
+                              seen["collect_parallel"], seen["skip_truncated"]), (True, False, True, 3, False))
+            with self.assertRaises(SystemExit):
+                batch.main(["--config", "c.json", "--state-dir", d, "--apply", "--skip-truncated-scans"])
+            self.assertTrue(seen["skip_truncated"])
             for bad, message in ((["--batch-collect", "--collect-parallel", "9"], "invalid --collect-parallel"),
                                  (["--collect-parallel", "2"], "needs --batch-collect")):
                 err = io.StringIO()
@@ -2172,7 +2251,7 @@ class TimingsTests(unittest.TestCase):
                 base = "keep/batch/sn1/1900-01-01/1/1"
                 done = subprocess.CompletedProcess([], 0, f"pushed {base}.jpg\n", "")
                 with patch.object(batch.subprocess, "run", return_value=done):
-                    self.assertEqual(transport.push_pages([base]), ({base: base + ".jpg"}, []))
+                    self.assertEqual(transport.push_pages([base]), ({base: base + ".jpg"}, [], {}))
                 self.assertEqual(set(transport.timings.summary()["execution_routes"]), {route})
                 self.assertEqual(transport.timings.summary()["execution_routes"][route]["count"], 1)
                 self.assertEqual(transport.timings.summary()["scan_pages"][route.split("/")[0]],
@@ -2185,10 +2264,36 @@ class TimingsTests(unittest.TestCase):
         base = "keep/batch/sn1/1900-01-01/1/1"
         done = subprocess.CompletedProcess([], 3, f"missing {base.removeprefix('keep/')}\n", "")
         with patch.object(batch.subprocess, "run", return_value=done):
-            self.assertEqual(transport.push_pages([base]), ({}, [base]))
+            self.assertEqual(transport.push_pages([base]), ({}, [base], {}))
         summary = transport.timings.summary()
         self.assertEqual(summary["execution_routes"]["onprem/scans"]["failed"], 0)
         self.assertEqual(summary["scan_pages"]["onprem"], {"pushed": 0, "missing": 1})
+
+    def test_skip_truncated_asks_the_push_to_check_and_reads_what_it_names(self):
+        # #1457: off by default, so the live push command line is unchanged.
+        cfg = queue_config()
+        bases = ["keep/batch/sn1/1900-01-01/1/1", "keep/batch/sn1/1900-01-01/1/2"]
+        out = ("pushed keep/batch/sn1/1900-01-01/1/1.jp2\n"
+               "truncated batch/sn1/1900-01-01/1/2 the 'jp2c' box declares 9 bytes past the end of the file\n")
+        self.assertNotIn("--skip-truncated", batch.Transport(cfg, Path(".")).push_args())
+        transport = batch.Transport(cfg, Path("."), skip_truncated=True)
+        with patch.object(batch.subprocess, "run", return_value=subprocess.CompletedProcess([], 3, out, "")) as run:
+            self.assertEqual(transport.push_pages(bases), (
+                {bases[0]: bases[0] + ".jp2"}, [],
+                {bases[1]: "the 'jp2c' box declares 9 bytes past the end of the file"}))
+        self.assertIn("--skip-truncated", run.call_args.args[0])
+        self.assertEqual(transport.timings.summary()["scan_pages"]["azure"],
+                         {"pushed": 1, "missing": 0, "source_truncated": 1})
+        # Re-pushing a page already checked (export, after the destination moved) checks nothing.
+        self.assertNotIn("--skip-truncated", transport.push_args(skip_truncated=False))
+        # The dead letter names the pages.
+        with patch.object(transport, "step") as step:
+            transport.dead_letter_truncated([("sn1_1900-01-01_ed-1_seq-2", "d" * 64), ("sn1_1900-01-01_ed-1_seq-3", "e" * 64)])
+        step.assert_called_once_with("handoff", "dead-letter", SOURCE_TRUNCATED_DOCS=(
+            "sn1_1900-01-01_ed-1_seq-2:" + "d" * 64 + ",sn1_1900-01-01_ed-1_seq-3:" + "e" * 64))
+        # Timed apart from dead letters for failed jobs.
+        self.assertIn("dead-letter-truncated", transport.timings.phases)
+        self.assertNotIn("dead-letter", transport.timings.phases)
 
     def test_phases_add_up_and_report_as_they_end(self):
         ticker, lines = Ticker(), []
@@ -2572,8 +2677,8 @@ class QueueTransportTests(unittest.TestCase):
         # missing page without it.
         output = f"pushed {base}1.jp2\nmissing {base[5:]}2\n"
         with patch.object(self.transport, "run", return_value=output) as run:
-            found, missing = self.transport.push_pages([base + "1", base + "2"])
-        self.assertEqual((found, missing), ({base + "1": base + "1.jp2"}, [base + "2"]))
+            found, missing, truncated = self.transport.push_pages([base + "1", base + "2"])
+        self.assertEqual((found, missing, truncated), ({base + "1": base + "1.jp2"}, [base + "2"], {}))
         argv = run.call_args.args[0]
         pages = [argv[i + 1] for i, arg in enumerate(argv) if arg == "--keep-page"]
         self.assertEqual(pages, [base[5:] + "1", base[5:] + "2"])
@@ -2588,11 +2693,18 @@ class QueueTransportTests(unittest.TestCase):
         directory.mkdir()
         try:
             scans, manifests = directory / "scans", directory / "manifests"
-            for number, ext in ((1, "jp2"), (3, "jpg")):
+            vectors = {v["name"]: v for v in json.loads(
+                (batch.REPO / "fixtures/jp2-truncation-vectors.json").read_text())}
+            cut = vectors["encoded one tile: last 9 bytes cut"]
+            for number, ext, data in ((1, "jp2", bytes.fromhex(vectors["encoded one tile: complete"]["hex"])),
+                                      (3, "jpg", b"scan"), (4, "jp2", bytes.fromhex(cut["hex"]))):
                 scan = scans / "keep/test_batch/sn12345678/1900-01-01/1" / f"{number}.{ext}"
                 scan.parent.mkdir(parents=True, exist_ok=True)
-                scan.write_bytes(b"scan")
-                Path(f"{scan}.json").write_text("{}")
+                scan.write_bytes(data)
+                # As the fetcher records it: only a scan that matches is judged.
+                Path(f"{scan}.json").write_text(json.dumps({
+                    "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest(),
+                    **({"format": "jp2", "md5": hashlib.md5(data, usedforsecurity=False).hexdigest()} if ext == "jp2" else {})}))
             (manifests / "v1").mkdir(parents=True)
             (manifests / "v1/manifest.parquet").write_bytes(b"manifest")
             bin_dir = directory / "bin"
@@ -2604,10 +2716,17 @@ class QueueTransportTests(unittest.TestCase):
                       "push_command": [str(batch.REPO / "scripts/ocr-node/push-boinc-scan.sh")]}
             transport = batch.Transport(config, directory)
             base = "keep/test_batch/sn12345678/1900-01-01/1/"
+            pages = [base + "1", base + "2", base + "3", base + "4"]
             with patch.dict(batch.os.environ, {"PATH": f"{bin_dir}:{batch.os.environ['PATH']}"}):
-                found, missing = transport.push_pages([base + "1", base + "2", base + "3"])
+                found, missing, truncated = transport.push_pages(pages)
+                self.assertEqual(found, {base + "1": base + "1.jp2", base + "3": base + "3.jpg",
+                                         base + "4": base + "4.jp2"})
+                self.assertEqual((missing, truncated), ([base + "2"], {}))
+                # #1457: checked, the JP2 LoC holds cut short is named and not pushed.
+                transport = batch.Transport(config, directory, skip_truncated=True)
+                found, missing, truncated = transport.push_pages(pages)
             self.assertEqual(found, {base + "1": base + "1.jp2", base + "3": base + "3.jpg"})
-            self.assertEqual(missing, [base + "2"])
+            self.assertEqual((missing, truncated), ([base + "2"], {base + "4": cut["reason"]}))
         finally:
             import shutil
             shutil.rmtree(directory)
@@ -2701,13 +2820,14 @@ class QueueTransportTests(unittest.TestCase):
                   "scan_base": "keep/dlc_aaa/sn1/1890-05-03/1/2",
                   "scan": "/tank/ocr/scans/keep/dlc_aaa/sn1/1890-05-03/1/2.jp2"}]
         found = {"keep/dlc_aaa/sn1/1890-05-03/1/1": "keep/dlc_aaa/sn1/1890-05-03/1/1.jpg"}
-        with patch.object(t, "push_pages", return_value=(found, [])) as push, patch.object(t, "step") as step:
+        with patch.object(t, "push_pages", return_value=(found, [], {})) as push, patch.object(t, "step") as step:
             t.export(pages, [])
-        push.assert_called_once_with(["keep/dlc_aaa/sn1/1890-05-03/1/1"])
+        # Checked once, when first pushed (#1457): not again here.
+        push.assert_called_once_with(["keep/dlc_aaa/sn1/1890-05-03/1/1"], skip_truncated=False)
         # The export asks for the format the push found now.
         self.assertEqual(step.call_args.kwargs["HANDOFF_SCANS"],
                          "keep/dlc_aaa/sn1/1890-05-03/1/1.jpg,keep/dlc_aaa/sn1/1890-05-03/1/2.jp2")
-        with patch.object(t, "push_pages", return_value=({}, ["keep/dlc_aaa/sn1/1890-05-03/1/1"])), \
+        with patch.object(t, "push_pages", return_value=({}, ["keep/dlc_aaa/sn1/1890-05-03/1/1"], {})), \
                 patch.object(t, "step") as step:
             with self.assertRaisesRegex(ValueError, "gone from the scan server"):
                 t.export(pages, [])
@@ -2726,9 +2846,9 @@ class QueueTransportTests(unittest.TestCase):
                  "scan_base": "keep/dlc_bbb/sn1/1890-05-03/1/2",
                  "scan": "/tank/ocr/scans/keep/dlc_bbb/sn1/1890-05-03/1/2.jp2"}
         found = {"keep/dlc_aaa/sn1/1890-05-03/1/1": "keep/dlc_aaa/sn1/1890-05-03/1/1.jp2"}
-        with patch.object(t, "push_pages", return_value=(found, [])) as push, patch.object(t, "step") as step:
+        with patch.object(t, "push_pages", return_value=(found, [], {})) as push, patch.object(t, "step") as step:
             t.export([retried, plain], [])
-        push.assert_called_once_with(["keep/dlc_aaa/sn1/1890-05-03/1/1"])
+        push.assert_called_once_with(["keep/dlc_aaa/sn1/1890-05-03/1/1"], skip_truncated=False)
         sent = {call.kwargs["HANDOFF_BATCH"]: call.kwargs for call in step.call_args_list}
         self.assertEqual(sent["dlc_aaa"]["HANDOFF_DEADLINE_RETRIES"], "c" * 64)
         self.assertNotIn("HANDOFF_DEADLINE_RETRIES", sent["dlc_bbb"])

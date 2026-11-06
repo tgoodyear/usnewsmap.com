@@ -11,7 +11,7 @@ mod pipeline;
 mod run_metadata;
 
 /// Counts scan requests; a hold, when set, is reported as loc.gov's.
-/// Pages 95 to 97 come as JP2s (see [`FakeEngine`]).
+/// Pages 94 to 97 come as JP2s (see [`FakeEngine`]); 94's is cut short.
 #[derive(Debug, Default)]
 pub(super) struct FakeScans {
     requests: std::sync::atomic::AtomicUsize,
@@ -38,8 +38,9 @@ impl ScanSource for FakeScans {
             "https://tile.loc.gov/image-services/iiif/service:ndnp:x:{}",
             key.seq
         );
-        if (95..=97).contains(&key.seq) {
+        if (94..=97).contains(&key.seq) {
             let body: &'static [u8] = match key.seq {
+                94 => b"\x00\x00\x00\x0cjP  \r\n\x87\n\x00\x00\x01\x00jp2c\xff\x4f\xff\x51",
                 95 => b"jp2 exit 1",
                 _ => b"jp2 exit 136",
             };

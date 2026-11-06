@@ -1039,9 +1039,26 @@ again. Without that option (`usnm-quality-feed.service`), the page goes to
 `source-truncated scans in campaign`, giving page counts per `<batch>_verNN`.
 A JP2 that reaches EOC but is malformed in some other way still goes to the decoder
 and the three-failure rule. An existing `manual_review` record is left unchanged.
-This is a safe default that needs no decision: it only stops quality preparation from
-retrying the page. A stricter option, not implemented here, would also reject such
-pages from OCR. That is a separate maintainer decision.
+The same check now keeps such scans out of all OCR too (#1457). It runs as
+`usnm_ocr_contract::jp2`, a Rust port tested against the same vectors
+([`fixtures/jp2-truncation-vectors.json`](../fixtures/README.md)). The page keeps LoC's
+text, and nothing retries it:
+
+- The scan fetcher (`usnm-ocr-worker prefetch`) checks each JP2 once its bytes are
+  verified. It doesn't write or index one that is cut short. Instead it lists it in
+  `<out>/source-truncated.jsonl` (doc id, batch and version, LoC URL, checksums, size,
+  reason, time) and logs a `source_truncated` failure. The status counts it as
+  `source_truncated`. LoC isn't asked for that batch version of the page again, and the
+  dashboard counts it among the dead pages.
+- The on-prem node worker dead-letters such a page as `permanent`
+  (`source_truncated: LoC's JP2 is cut short: <reason>`), without decoding it or trying
+  the JPEG.
+- The BOINC worker (`usnm_ocr`, one page or a bundle) fails such a page before its engine
+  runs. A bundle's other pages still run.
+- With `--skip-truncated-scans`, the queue-fed controller checks each claimed JP2 before
+  pushing it. It dead-letters one that is cut short, never exports it, and lists it in its
+  state
+  ([A page whose JP2 LoC holds cut short](boinc-batch-scheduler.md#a-page-whose-jp2-loc-holds-cut-short-1457)).
 
 The preparation CT stores this evidence, decoder versions, failure counts/timestamps
 and review state in the campaign's

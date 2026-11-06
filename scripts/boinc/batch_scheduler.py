@@ -604,7 +604,8 @@ ONPREM_HANDOFF = {"claim": ("claim", "release", "dead-letter"), "collect": ("col
 class Transport:
     def __init__(self, config, directory, *, status_url=None, status_file=None,
                  batch_submit=False, batch_spool_out=False, batch_collect=False, batch_export=False,
-                 onprem_handoff=(), timings=None, rest_journals=False, collect_parallel=1):
+                 onprem_handoff=(), timings=None, rest_journals=False, collect_parallel=1,
+                 skip_truncated=False):
         self.config = config
         self.directory = directory
         self.status_url = status_url
@@ -625,6 +626,10 @@ class Transport:
         # List and fetch journals over the storage REST API, not one az process per list or file
         # (--rest-journals): a list of the dispatch prefix costs az half a minute of CPU.
         self.rest_journals = rest_journals
+        # Check each claimed page's JP2 headers before it is pushed, and dead-letter one LoC holds
+        # cut short instead (push-boinc-scan.sh --skip-truncated, #1457). Off until the hand-off
+        # image whose dead-letter step takes SOURCE_TRUNCATED_DOCS is live.
+        self.skip_truncated = skip_truncated
         self._storage_token = None
         # The hand-off steps that run on the on-prem BOINC host through step_command
         # (usnm-boinc-step --target handoff, #967 phase 3) instead of the Azure hand-off job:
@@ -987,7 +992,7 @@ class Transport:
         else the hand-off container."""
         return "onprem" if "export" in self.onprem_steps else "container"
 
-    def push_args(self):
+    def push_args(self, skip_truncated=False):
         argv = self.config["push_command"] + [
             "--account", self.config["account"], "--scans-root", self.config["scans_root"],
             "--manifests-root", self.config["manifests_root"],
@@ -999,6 +1004,8 @@ class Transport:
             argv += ["--to-onprem", "--onprem-env", self.config["env"]]
             for word in self.config["step_command"]:
                 argv += ["--onprem-step-arg", word]
+        if skip_truncated:
+            argv.append("--skip-truncated")
         return argv
 
     @timed("export")
@@ -1016,7 +1023,8 @@ class Transport:
                             if page.get("scan_base") and (page.get("pushed_to", "container") != dest
                                                           or page.get("supersedes"))})
             if stale:
-                found, missing = self.push_pages(stale)
+                # Not checked again: a page is checked once, when it is first pushed.
+                found, missing, _ = self.push_pages(stale, skip_truncated=False)
                 require(not missing, "a claimed page's scan is gone from the scan server; release it")
                 # The push finds each scan's format again: export asks for the file it sent.
                 root = self.config["scans_root"].rstrip("/")
@@ -1088,34 +1096,42 @@ class Transport:
         return summary["claims"]
 
     @timed("push")
-    def push_pages(self, bases):
+    def push_pages(self, bases, skip_truncated=None):
         """Push the cached scans of claimed pages, finding each one's format on the scan server.
-        Returns ({base: path under scans/}, [bases with no cached scan])."""
-        argv = self.push_args()
+        Returns ({base: path under scans/}, [bases with no cached scan], {base: why its JP2 is
+        cut short at LoC}); the last is empty unless the JP2s are checked (skip_truncated)."""
+        check = self.skip_truncated if skip_truncated is None else skip_truncated
+        argv = self.push_args(skip_truncated=check)
         for base in bases:
             # The script names a page by where the fetcher files it under keep/, without "keep/".
             require(base.startswith("keep/"), "claimed scan is not under keep/")
             argv += ["--keep-page", base[len("keep/"):]]
         route = "onprem" if "--to-onprem" in argv else "azure"
         output = self.run(argv, "cached scan push", ok=(0, 3), execution_route=f"{route}/scans")
-        pushed, missing = {}, []
+        pushed, missing, truncated = {}, [], {}
         for line in output.splitlines():
             kind, _, value = line.partition(" ")
             if kind == "pushed":
                 pushed[value] = value
             elif kind == "missing":
                 missing.append("keep/" + value)
+            elif kind == "truncated" and check:
+                page, _, reason = value.partition(" ")
+                truncated["keep/" + page] = reason
         found = {}
         for base in bases:
             match = [rel for rel in pushed if rel.startswith(f"{base}.")]
             if match:
                 found[base] = match[0]
-        require(set(found) | set(missing) == set(bases) and not (set(found) & set(missing)),
+        require(set(found) | set(missing) | set(truncated) == set(bases)
+                and len(found) + len(missing) + len(truncated) == len(bases),
                 "scan push did not account for every claimed page")
         counts = self.timings.scan_pages.setdefault(route, {"pushed": 0, "missing": 0})
         counts["pushed"] += len(found)
         counts["missing"] += len(missing)
-        return found, missing
+        if truncated:
+            counts["source_truncated"] = counts.get("source_truncated", 0) + len(truncated)
+        return found, missing, truncated
 
     @timed("release")
     def release(self, doc_ids):
@@ -1126,6 +1142,13 @@ class Transport:
         """Pages whose workunit failed for good go to ocr-deadletter (#1154), each dead letter
         saying why from its job's journal (#1159)."""
         self.step("handoff", "dead-letter", JOB_IDS=",".join(job_ids))
+
+    @timed("dead-letter-truncated")
+    def dead_letter_truncated(self, claims):
+        """Claimed pages whose scan LoC holds cut short (#1457) go to ocr-deadletter unexported:
+        `claims` are (doc id, sha256 of the message claimed), so a newer claim isn't taken."""
+        self.step("handoff", "dead-letter",
+                  SOURCE_TRUNCATED_DOCS=",".join(f"{doc_id}:{message}" for doc_id, message in claims))
 
     @timed("submit")
     def submit(self, job_id):
@@ -1357,7 +1380,9 @@ class QueueFeed:
     when asked), as a second consumer beside the on-prem nodes. Each claimed page is recorded
     here *before* anything else is done for it, because its message is hidden from the nodes
     for the lease and only a later `collect` deletes it. A page whose scan turns out not to be
-    on the scan server goes back to the queue. The record also stays after the page is
+    on the scan server goes back to the queue. One whose JP2 LoC holds cut short (checked with
+    --skip-truncated-scans, #1457) is dead-lettered and never exported, and kept in the state's
+    `source_truncated`, a list for LoC. The record also stays after the page is
     published: its journal belongs to this plan, and `owned_records` refuses a journal for a
     page the plan doesn't know."""
 
@@ -1391,10 +1416,12 @@ class QueueFeed:
         return page, {"page": page, "doc_id": claim["doc_id"], "batch": batch,
                       "scan_base": scan, "scan": None, "message": claim.get("message_sha256")}
 
-    def fill(self, count, selected, owned=None):
+    def fill(self, count, selected, owned=None, now=None):
         """Make `count` more pages ready: claim them (less any already claimed but not yet
-        started), push their scans and give back the ones with none. `owned` is the tick's
-        owned_records, for a newer claim of a dead-lettered page (deadline_retry)."""
+        started), push their scans, give back the ones with none and dead-letter the ones LoC
+        holds cut short. `owned` is the tick's owned_records, for a newer claim of a
+        dead-lettered page (deadline_retry)."""
+        now = time.time() if now is None else now
         self.retry_releases()
         started = set(selected)
         waiting = [claim for page, claim in self.claims.items() if page not in started]
@@ -1408,19 +1435,23 @@ class QueueFeed:
                 raise
             self.record(fresh, need, owned)
         unpushed = {page: claim for page, claim in self.claims.items()
-                    if claim.get("scan") is None and not claim.get("release")}
+                    if claim.get("scan") is None and not claim.get("release")
+                    and "source_truncated" not in claim}
         if unpushed:
-            found, missing = self.transport.push_pages(
+            found, missing, truncated = self.transport.push_pages(
                 sorted(claim["scan_base"] for claim in unpushed.values()))
             root = self.config["scans_root"].rstrip("/")
             for page, claim in unpushed.items():
                 if claim["scan_base"] in found:
                     claim["scan"] = f"{root}/{found[claim['scan_base']]}"
                     claim["pushed_to"] = getattr(self.transport, "push_destination", "container")
+                elif claim["scan_base"] in truncated:
+                    claim["source_truncated"] = truncated[claim["scan_base"]]
                 else:
                     claim["release"] = True
             self.persist()
         self.retry_releases()
+        self.retry_truncated(now)
         self.restore()
 
     def record(self, fresh, need, owned=None):
@@ -1497,6 +1528,26 @@ class QueueFeed:
             for page in pages:
                 del self.claims[page]
             self.persist()
+
+    def retry_truncated(self, now):
+        """Dead-letter the claimed pages whose JP2 LoC holds cut short (#1457): released, the
+        page would be claimed again, and LoC's copy is no better to fetch again. Each claim is
+        kept until its dead letter went, then listed in the state's `source_truncated`. Every
+        tick tries, draining or not, so a failed step doesn't leave the lease to run out."""
+        pages = sorted(page for page, claim in self.claims.items() if "source_truncated" in claim)
+        if not pages:
+            return
+        require(all(isinstance(self.claims[page]["message"], str) and ID.fullmatch(self.claims[page]["message"])
+                    for page in pages), "a source-truncated claim has no message sha256 to settle it by")
+        for i in range(0, len(pages), 100):  # the step takes 100 doc ids at most
+            self.transport.dead_letter_truncated(
+                [(self.claims[page]["doc_id"], self.claims[page]["message"]) for page in pages[i:i + 100]])
+        listed = self.state.setdefault("source_truncated", {})
+        for page in pages:
+            claim = self.claims.pop(page)
+            listed[page] = {"doc_id": claim["doc_id"], "batch": claim["batch"], "scan": claim["scan_base"],
+                            "reason": claim["source_truncated"], "at": int(now)}
+        self.persist()
 
 
 def _select_cohort_entry(mapping, keys, *, allow_single_default=False):
@@ -1942,6 +1993,8 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         persist()
 
     settle_failed(owned)
+    if feed:
+        feed.retry_truncated(now)
     held_results(state, held_jobs, now)
     persist()
     # Before collection: a host admitted now has its held results published by this tick's
@@ -2067,7 +2120,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
     if target and not held and not drain:
         if free > 0:
             if feed:
-                feed.fill(min(refill, free), selected, owned)
+                feed.fill(min(refill, free), selected, owned, now)
             fresh = [page for page in config["pages"] if page["page"] not in selected][
                 :min(refill, free)]
             for page in fresh:
@@ -2299,6 +2352,11 @@ def main(argv=None):
                         help="send a queue-fed page whose BOINC workunit failed for good to ocr-deadletter and go on "
                              "(#1154; needs the hand-off identity's sender role on ocr-deadletter); without it such a "
                              "page stops the tick")
+    parser.add_argument("--skip-truncated-scans", action="store_true",
+                        help="check each claimed page's JP2 headers before its scan is pushed, and send one LoC "
+                             "holds cut short to ocr-deadletter, never to OCR (#1457; needs push-boinc-scan.sh "
+                             "--skip-truncated and a hand-off image whose dead-letter step takes "
+                             "SOURCE_TRUNCATED_DOCS)")
     parser.add_argument("--batch-export", action="store_true",
                         help="export a tick's pages from all their batches in one hand-off execution "
                              "(needs a hand-off image whose export takes HANDOFF_BATCHES)")
@@ -2400,6 +2458,7 @@ def main(argv=None):
                 batch_collect=args.batch_collect, batch_export=args.batch_export,
                 onprem_handoff=tuple(args.onprem_handoff), rest_journals=args.rest_journals,
                 collect_parallel=args.collect_parallel, timings=timings,
+                skip_truncated=args.skip_truncated_scans,
             )
             tick_kwargs = {"drain": args.drain, "dead_letter_failed": args.dead_letter_failed}
             if args.low_watermark is not None:

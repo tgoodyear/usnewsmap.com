@@ -178,6 +178,7 @@ pub(crate) async fn run_with(
         let job = &bundle.pages[index].job;
         let read_page = async {
             let scan = bundle.scan(index, &pages)?;
+            crate::worker::check_complete(scan)?;
             check(job)?;
             let scratch = tempfile::tempdir()?;
             let image = scratch.path().join("page");
@@ -376,6 +377,32 @@ pub(crate) mod tests {
         );
         assert!(!tmp.path().join(CHECKPOINT_FILE).exists());
         assert!(!tmp.path().join(DONE_DIR).exists());
+    }
+
+    #[tokio::test]
+    async fn a_jp2_cut_short_at_loc_fails_unread_and_the_rest_still_run() {
+        // A 'jp2c' box that declares 256 bytes and holds 4 (#1457).
+        const CUT: &[u8] = b"\x00\x00\x00\x0cjP  \r\n\x87\n\x00\x00\x01\x00jp2c\xff\x4f\xff\x51";
+        let tmp = tempfile::tempdir().unwrap();
+        let mut cut = job(2);
+        cut.scan.sha256 = boinc::sha256(CUT);
+        cut.scan.bytes = CUT.len() as u64;
+        cut.id = cut.identity().unwrap();
+        let bundle = Bundle::new(vec![job(1), cut, job(3)]).unwrap();
+        let pages: Vec<u8> = [scan(1), CUT.to_vec(), scan(3)].concat();
+        std::fs::write(tmp.path().join(PAGES_FILE), pages).unwrap();
+        let engine = Fake::default();
+        run_with(tmp.path(), &bundle, &engine, &ok).await.unwrap();
+        assert_eq!(engine.calls.load(Ordering::SeqCst), 2);
+        let (results, texts, layouts) = outputs(tmp.path());
+        assert_eq!(texts, b"page1page3");
+        let out = |i: usize| results.page(&bundle, &bundle.pages[i].job, &texts, &layouts);
+        assert!(matches!(
+            out(1).unwrap(),
+            PageOutput::Failed(e) if e == "source_truncated: LoC's JP2 is cut short: \
+                the 'jp2c' box declares 244 bytes past the end of the file"
+        ));
+        assert!(matches!(out(2).unwrap(), PageOutput::Ok { .. }));
     }
 
     /// The checkpoint a task stopped after `pages` pages leaves, from a full run's results.

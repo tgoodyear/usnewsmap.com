@@ -354,6 +354,9 @@ class OnpremStep(unittest.TestCase):
                         " --var HOST_ID=7 --what-if",
                         "--env prod --target handoff --step release --var HANDOFF_DOCS=a_b,c_d --what-if",
                         "--env prod --target handoff --step dead-letter --var JOB_IDS=" + "a" * 64 + " --what-if",
+                        # #1457: claimed pages whose JP2 LoC holds cut short.
+                        "--env prod --target handoff --step dead-letter --var SOURCE_TRUNCATED_DOCS=a_b:" + "d" * 64 +
+                        ",c_d:" + "e" * 64 + " --what-if",
                         "--env prod --target handoff --step export --var HANDOFF_PAGES=sn1/1890-05-03/ed-1/seq-7"
                         " --var HANDOFF_BATCH=nbu_gage --var HANDOFF_PLAN=queue-feed-1"
                         " --var HANDOFF_MANIFEST=pages-v1/manifest.parquet --var ENGINE_IMAGE=sha256:" + "c" * 64 +

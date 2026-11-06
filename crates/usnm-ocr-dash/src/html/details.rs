@@ -534,7 +534,7 @@ pub(super) fn downloads(v: &View, o: &mut String) {
     }
     let _ = write!(
         o,
-        "<h3>Failures{}</h3><p>{} pages LoC can't serve (permanent failures). {} pages of queued manifests skipped for now because \
+        "<h3>Failures{}</h3><p>{} pages given up for good: LoC can't serve them (permanent failures), or the JP2 it holds is cut short (<code>source_truncated</code>: the bytes match LoC's checksums but stop early). {} pages of queued manifests skipped for now because \
          loc.gov answers 503 for their issue while serving others (<code>loc_item_error</code>); the queue runs their manifest again after a day's cool-off. \
          {} other pages skipped this way are in no queued manifest, so they are asked for again only if they are queued again. \
          A manifest that ends with transient failures runs again, so most of these pages are fetched later: \

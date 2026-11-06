@@ -1057,7 +1057,8 @@ impl Fetch {
                     continue;
                 };
                 match f.kind.as_str() {
-                    "permanent" => {
+                    // LoC's JP2 is cut short (#1457): never fetched again.
+                    "permanent" | "source_truncated" => {
                         self.cooling.remove(&f.doc_id);
                         self.dead.insert(f.doc_id.clone());
                     }
@@ -1531,7 +1532,8 @@ mod tests {
             format!("{{\"doc_id\":\"sn3_1890-01-01_ed-1_seq-1\",\"kind\":\"permanent\",\"error\":\"HTTP 404\",\"at\":\"{at}\"}}\n\
                      {{\"doc_id\":\"sn4_1890-01-01_ed-1_seq-1\",\"kind\":\"loc_item_error\",\"error\":\"HTTP 503\",\"at\":\"{old}\"}}\n\
                      {{\"doc_id\":\"sn1_1890-01-01_ed-1_seq-1\",\"kind\":\"loc_item_error\",\"error\":\"HTTP 503\",\"at\":\"{later}\"}}\n\
-                     {{\"doc_id\":\"sn5_1890-01-01_ed-1_seq-1\",\"kind\":\"loc_item_error\",\"error\":\"HTTP 503\",\"at\":\"{at}\"}}\n"),
+                     {{\"doc_id\":\"sn5_1890-01-01_ed-1_seq-1\",\"kind\":\"loc_item_error\",\"error\":\"HTTP 503\",\"at\":\"{at}\"}}\n\
+                     {{\"doc_id\":\"sn6_1890-01-01_ed-1_seq-1\",\"kind\":\"source_truncated\",\"error\":\"cut short\",\"at\":\"{at}\"}}\n"),
         )
         .unwrap();
         std::fs::write(
@@ -1549,6 +1551,7 @@ mod tests {
         assert_eq!(f.since(now - Duration::days(1)).bytes, 212);
         assert_eq!(f.current_group(), Some(0));
         assert!(f.dead.contains("sn3_1890-01-01_ed-1_seq-1"));
+        assert!(f.dead.contains("sn6_1890-01-01_ed-1_seq-1"));
         // sn4's page was skipped for an item error and fetched since; sn1's
         // was fetched before its item error, so it counts, as does sn5's.
         // No queue: neither is in a manifest that will run again.

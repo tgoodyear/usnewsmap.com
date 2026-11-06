@@ -11,6 +11,7 @@ Our own ALTO, where ocr-local has it, goes beside the texts as <doc_id>.ours.xml
       [--order damage|fetched]
   quality_feed.py run --campaign NAME --pages FILE --curated DIR --scan-server URL
       --outbox DIR --state DIR [--chunk-pages 500] [--max-pending 5] [--workers 4]
+  quality_feed.py jp2-check --scan FILE [--scan FILE ...] [--verify-sidecar]
 
 select picks pages from the scan server's index (/index/full.jsonl) that no campaign has
 staged (--staged: one doc_id a line), worst damage first (damage_rate from the curated
@@ -31,6 +32,13 @@ is recorded as source_truncated for its exact fingerprint, otherwise in skipped.
 --quarantine-decode, three known decoder failures of the same verified scan fingerprint
 are recorded separately and excluded until its bytes change.
 Decoder quarantines in run and follow require operator review.
+
+jp2-check prints one line a --scan, in order: `ok`, or `truncated`, a tab and the reason for a
+JP2 cut short at its source (the check above). push-boinc-scan.sh --skip-truncated uses it to
+keep such scans from BOINC OCR (#1457). With --verify-sidecar, a scan its sidecar (<scan>.json)
+doesn't record as a JP2 with this size, sha256 and bag md5 is `unverified`, a tab and why, and
+not judged: a copy damaged here says nothing about LoC's file.
+A file it can't read fails it, naming the file on stderr.
 """
 import argparse
 import concurrent.futures
@@ -40,6 +48,7 @@ import hashlib
 import heapq
 import io
 import json
+import mmap
 import os
 import re
 import shutil
@@ -1186,6 +1195,67 @@ def wait_for_room(camp_dir, max_pending, every_secs, busy, poll_secs=15, min_sec
         time.sleep(poll_secs)
 
 
+def bag_md5(raw):
+    """The md5 a bag records for `raw`. It is an integrity check, not security, so it is allowed
+    where FIPS mode disables md5 for security; Python before 3.9 has no such keyword."""
+    try:
+        return hashlib.md5(raw, usedforsecurity=False).hexdigest()
+    except TypeError:
+        return hashlib.md5(raw).hexdigest()
+
+
+def sidecar_mismatch(raw, side):
+    """Why `raw` isn't the JP2 its fetcher's sidecar records, or None: a JP2 with this size,
+    sha256 and bag md5 (the fetcher's matches_sidecar, for a JP2)."""
+    if not isinstance(side, dict):
+        return "its sidecar isn't a JSON object"
+    if side.get("format") != "jp2":
+        return "its sidecar doesn't record a JP2"
+    md5 = side.get("md5")
+    if md5 is None:
+        return "its sidecar has no md5"
+    if side.get("bytes") != len(raw):
+        return f"it is {len(raw)} bytes; its sidecar says {side.get('bytes')}"
+    if side.get("sha256") != hashlib.sha256(raw).hexdigest():
+        return "its sha256 isn't its sidecar's"
+    if md5 != bag_md5(raw):
+        return "its md5 isn't its sidecar's"
+    return None
+
+
+def cmd_jp2_check(a):
+    for path in a.scan:
+        name, side = path, None
+        try:
+            if a.verify_sidecar:
+                name = f"{path}.json"
+                with open(name, "rb") as f:
+                    side = f.read()
+                name = path
+            with open(path, "rb") as f:
+                if os.fstat(f.fileno()).st_size == 0:
+                    line = jp2_check_line(b"", side)
+                else:
+                    # Mapped, so a scan that isn't verified has only its headers read.
+                    with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as raw:
+                        line = jp2_check_line(raw, side)
+        except OSError as e:
+            sys.exit(f"jp2-check: can't read {name}: {type(e).__name__}: {e}")
+        print(line)
+
+
+def jp2_check_line(raw, side):
+    if side is not None:
+        try:
+            why = sidecar_mismatch(raw, json.loads(side))
+        except ValueError:
+            why = "its sidecar doesn't parse"
+        if why:
+            return f"unverified\t{why}"
+    reason = jp2_truncation(raw)
+    return "ok" if reason is None else f"truncated\t{reason}"
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -1242,8 +1312,14 @@ def main(argv=None):
     w.add_argument("--once", action="store_true")
     w.add_argument("--quarantine-decode", action="store_true",
                    help="quarantine repeated verified decoder failures for operator review")
+    j = sub.add_parser("jp2-check", help="say which scans are JP2s cut short at their source")
+    j.add_argument("--scan", action="append", required=True)
+    j.add_argument("--verify-sidecar", action="store_true",
+                   help="judge only a scan that is what its <scan>.json records")
     a = ap.parse_args(argv)
-    if a.cmd == "select":
+    if a.cmd == "jp2-check":
+        cmd_jp2_check(a)
+    elif a.cmd == "select":
         cmd_select(a)
     else:
         if not 1 <= a.chunk_pages <= 500:

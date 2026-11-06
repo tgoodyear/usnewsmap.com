@@ -477,6 +477,23 @@ pub enum DeadLettered {
     LeaseLost,
 }
 
+impl DeadLettered {
+    /// As `claim dead-letter` prints it.
+    pub fn word(self) -> &'static str {
+        match self {
+            DeadLettered::Done => "dead_lettered",
+            DeadLettered::Already => "already ended",
+            DeadLettered::LeaseLost => "lease_lost",
+        }
+    }
+}
+
+/// The dead letter's `error` for a claimed page whose JP2 LoC holds cut short (#1457): the
+/// bytes match LoC's checksums, so neither OCR nor fetching it again can help. The page keeps
+/// LoC's text.
+pub const SOURCE_TRUNCATED: &str =
+    "source_truncated: LoC's JP2 is cut short at its source; not OCRed (#1457)";
+
 /// A page whose BOINC workunit failed for good (#1154): put its message on `ocr-deadletter`
 /// as a v2 `permanent` dead letter, then delete it with the claim's pop receipt, so the page
 /// is not taken again. A release would not do: the copy is the same job, with the same
@@ -489,22 +506,57 @@ pub async fn dead_letter(
     error: &str,
     failed: Option<&OcrMessage>,
 ) -> anyhow::Result<DeadLettered> {
+    dead_letter_claim(handoff, queue, doc_id, error, |claim| {
+        // The claim must be the failed job's message: a page claimed again after a failure
+        // has a newer claim, which this must not take off its queue.
+        if let Some(m) = failed {
+            let c = claim.message()?;
+            ensure!(
+                c.page == m.page
+                    && c.batch == m.batch
+                    && c.reason == m.reason
+                    && c.language == m.language
+                    && c.queued_at == m.queued_at,
+                "the claim for {doc_id} is not the failed job's message"
+            );
+        }
+        Ok(())
+    })
+    .await
+}
+
+/// A claimed page whose JP2 LoC holds cut short (#1457), as [`dead_letter`] with the
+/// [`SOURCE_TRUNCATED`] error. The claim must still be the message the controller claimed,
+/// named by the sha256 of its text as `claim pull`'s summary gives it: a retry after the page
+/// was claimed again must not take the newer message off its queue.
+pub async fn dead_letter_source_truncated(
+    handoff: &dyn ObjectStore,
+    queue: &dyn Queue,
+    doc_id: &str,
+    message_sha256: &str,
+) -> anyhow::Result<DeadLettered> {
+    dead_letter_claim(handoff, queue, doc_id, SOURCE_TRUNCATED, |claim| {
+        let claimed = usnm_ocr_contract::boinc::sha256(claim.text.as_bytes());
+        ensure!(
+            claimed == message_sha256,
+            "the claim for {doc_id} is message {claimed}, not {message_sha256}; it was claimed again"
+        );
+        Ok(())
+    })
+    .await
+}
+
+async fn dead_letter_claim(
+    handoff: &dyn ObjectStore,
+    queue: &dyn Queue,
+    doc_id: &str,
+    error: &str,
+    check: impl FnOnce(&Claim) -> anyhow::Result<()>,
+) -> anyhow::Result<DeadLettered> {
     let Some(mut claim) = load(handoff, doc_id).await? else {
         bail!("no claim for {doc_id}");
     };
-    // The claim must be the failed job's message: a page claimed again after a failure has
-    // a newer claim, which this must not take off its queue.
-    if let Some(m) = failed {
-        let c = claim.message()?;
-        ensure!(
-            c.page == m.page
-                && c.batch == m.batch
-                && c.reason == m.reason
-                && c.language == m.language
-                && c.queued_at == m.queued_at,
-            "the claim for {doc_id} is not the failed job's message"
-        );
-    }
+    check(&claim)?;
     match claim.ended.as_deref() {
         Some("dead_lettered") => return Ok(DeadLettered::Already),
         // The dead letter went but its message had come back: still the operator's to settle.
