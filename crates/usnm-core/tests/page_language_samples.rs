@@ -31,6 +31,7 @@ const FIXTURE: &str = concat!(
 /// Languages with fewer than three samples of a source: Wikisource has too
 /// few dated, public-domain prose texts in them (the fixture's README).
 const FEWER: &[(&str, &str, usize)] = &[
+    ("chr", "wikisource", 0),
     ("haw", "wikisource", 0),
     ("ice", "wikisource", 1),
     ("lav", "wikisource", 2),

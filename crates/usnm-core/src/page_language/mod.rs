@@ -31,7 +31,8 @@ pub use text::{text_words, TextWords};
 
 /// The detector's version, and the index fields'. `current.json`'s
 /// `page_language` names it; the API filters by page language only at its
-/// own version. A change to the detector or its word lists bumps it.
+/// own version. A change to the detector or its word lists that changes any
+/// page's languages bumps it.
 pub const VERSION: u32 = 1;
 /// The field of a page's languages (`array<text>`, raw, fast).
 pub const FIELD: &str = "page_language";
@@ -42,6 +43,10 @@ pub const NO_LANGUAGE: &str = "none";
 /// The language of a page no language clearly wins.
 pub const UNKNOWN: &str = "und";
 const ENGLISH: &str = "eng";
+/// Title languages [`page_languages`] keeps whatever the result, though they
+/// have a word list: Cherokee's (#1581) is for the OCR audit's damage, and a
+/// Cherokee Phoenix page found English keeps `chr` as it did before.
+const ALWAYS_KEPT: &[&str] = &["chr"];
 
 /// A page with fewer word tokens than this: und.
 const MIN_WORDS: usize = 20;
@@ -430,8 +435,8 @@ fn other_script_language(
 /// The languages the index records for a page (05 §5.5.8): the detected
 /// language, or a mixed page's two; an und page, or one with no text of its
 /// own (`None`), its title's languages; and every title language with no
-/// word list whatever the result, since the detector can't see those (#251).
-/// Sorted, without repeats.
+/// word list whatever the result, since the detector can't see those (#251),
+/// and Cherokee (`ALWAYS_KEPT`). Sorted, without repeats.
 pub fn page_languages(detection: Option<&Detection>, title_languages: &[&str]) -> Vec<String> {
     let mut out: Vec<String> = match detection {
         Some(d) if d.decision == Decision::Detected => vec![d.lang.clone()],
@@ -443,7 +448,7 @@ pub fn page_languages(detection: Option<&Detection>, title_languages: &[&str]) -
     out.extend(
         title_languages
             .iter()
-            .filter(|l| function_words(l).is_none())
+            .filter(|l| function_words(l).is_none() || ALWAYS_KEPT.contains(l))
             .map(|l| (*l).to_owned()),
     );
     out.sort_unstable();

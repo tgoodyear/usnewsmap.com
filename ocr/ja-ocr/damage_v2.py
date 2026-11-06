@@ -29,7 +29,7 @@ WORDFREQ = {
 }
 # v2 only: languages wordfreq has no list for, with a top-5,000 list of our
 # own in wordlists/<code>.txt, built from open corpora (wordlists/README.md).
-LOCAL_WORDLISTS = {"haw": "haw", "yid": "yi"}
+LOCAL_WORDLISTS = {"chr": "chr", "haw": "haw", "yid": "yi"}
 WORDLIST_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wordlists")
 # Serbian pages in Cyrillic are scored by the Latin-script list, letter for
 # letter (Vuk's Cyrillic and Gaj's Latin match one to one).

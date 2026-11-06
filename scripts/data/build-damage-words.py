@@ -11,8 +11,8 @@ audit pins in ocr/ja-ocr/requirements.txt).
 For each wordfreq code in `ocr/ja-ocr/damage_v2.py`'s WORDFREQ table, the list is
 `wordfreq.top_n_list(code, 5000)`, the call `damage_v2.py` makes
 (`wordfreq_ranked`): wordfreq's 5,000 most frequent words, most frequent
-first, as wordfreq stores them. Hawaiian (`haw`) and Yiddish (`yi`) have no
-wordfreq list; theirs are copied from ocr/ja-ocr/wordlists/, first 5,000 words,
+first, as wordfreq stores them. Cherokee (`chr`), Hawaiian (`haw`) and Yiddish
+(`yi`) have no wordfreq list; theirs are copied from ocr/ja-ocr/wordlists/, first 5,000 words,
 as `damage_v2.py` reads them. One word per line, in rank order; the order
 matters, since the metric takes the top 100 and top 20 from the front.
 
@@ -60,7 +60,7 @@ def read_zst(path: Path) -> str:
 # it names has a file here.
 WORDFREQ_CODES = ["ar", "bg", "cs", "da", "de", "el", "en", "es", "fi", "fil", "fr", "he", "hu", "is", "it",
                   "lt", "lv", "nb", "nl", "pl", "pt", "ro", "ru", "sh", "sk", "sl", "sv", "uk"]
-LOCAL_CODES = ["haw", "yi"]
+LOCAL_CODES = ["chr", "haw", "yi"]
 
 
 def wordfreq_list(code: str) -> list[str]:

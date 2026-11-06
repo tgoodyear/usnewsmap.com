@@ -11,7 +11,7 @@ The lists come from the audit's own code, so they can't drift from it:
 `damage_v2.Models` (what `quality.py --metric v2` uses) builds each word
 list's model, and its function words are written out. For each list (the
 wordfreq codes in `damage_v2.WORDFREQ`, where Croatian and Serbian share
-`sh`, and our own Hawaiian and Yiddish lists), that is its 100 most
+`sh`, and our own Cherokee, Hawaiian and Yiddish lists), that is its 100 most
 frequent words of 2 letters or more, most frequent first, then for Danish
 and Norwegian their `aa` spellings (`paa` for `på`). One line per list:
 the code, the script of its words, then the words, separated by spaces.
@@ -50,7 +50,10 @@ HEADER = """\
 # - the Yiddish list (yi) of ocr/ja-ocr/wordlists/, derived from Yiddish
 #   Wikipedia and Wikisource (CC BY-SA 4.0, Wikimedia contributors);
 # - the Hawaiian list (haw) of ocr/ja-ocr/wordlists/, from the Hawaiian Corpus
-#   Project's frequency list (CC0).
+#   Project's frequency list (CC0);
+# - the Cherokee list (chr) of ocr/ja-ocr/wordlists/, from the Cherokee New
+#   Testament (1860 translation) typeset by Michael Joyner and Timothy Legg
+#   (CC0).
 """
 
 

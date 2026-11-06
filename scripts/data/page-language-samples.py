@@ -5,7 +5,7 @@
     scripts/data/page-language-samples.py [--out PATH] [--languages ger,fre,...] [--check]
         [--quality-rows PATH] [--min-pages 50] [--words 300] [--per-source 3] [--pause 1.0]
 
-For each catalog language with a word list (the 30 lists of
+For each catalog language with a word list (the 31 lists of
 crates/usnm-core/data/page-language-words.txt; Croatian and Serbian share
 `sh`, and each gets its own samples), it takes --per-source Wikipedia
 articles and --per-source Wikisource texts in that language, and keeps about
@@ -76,12 +76,13 @@ FIRST_YEAR = 1800
 
 # Each catalog language with a word list (usnm_core::lang): its MARC code
 # (what the detector reports), its word list, its wikis' code and its
-# Wikidata item. Latvian, Tagalog and Hawaiian have no Wikisource of their
-# own: their texts are on the multilingual one (wikisource.org), as are a few
+# Wikidata item. Latvian, Tagalog, Hawaiian and Cherokee have no Wikisource
+# of their own: their texts are on the multilingual one (wikisource.org), as are a few
 # of other languages.
 LANGUAGES = [
     ("ara", "ar", "ar", "Q13955"),
     ("bul", "bg", "bg", "Q7918"),
+    ("chr", "chr", "chr", "Q33388"),
     ("cze", "cs", "cs", "Q9056"),
     ("dan", "da", "da", "Q9035"),
     ("dut", "nl", "nl", "Q7411"),
@@ -136,8 +137,10 @@ TOPICS = [
     "Cat", "Bird", "Language", "History", "Music", "Song", "Family", "House", "Church (building)",
 ]
 # Articles to try after TOPICS, for a small wiki with few long articles on
-# them: its own longest articles on its own history and places.
+# them: its own longest articles on its own history and places (for Cherokee:
+# Sequoyah, the Trail of Tears, the Cherokee, then stories).
 WIKIPEDIA_EXTRA = {
+    "chr": ["ᏍᏏᏉᏯ", "ᎨᏥᎧᎲᏓ ᎠᏁᎬᎢ", "ᏣᎳᎩ", "ᏅᏓ ᎢᎦ ᎡᎯ ᎤᏪᏥ ᎠᎨᏳᏣ", "ᎤᏯ ᎤᏄᏫ", "ᏲᎾ ᏗᎧᏃᎩᏍᏗ"],
     "haw": ["Hawaiʻi", "Māui", "Molokaʻi", "Keōpūolani", "Hale Aliʻi ʻIolani", "Polenekia"],
 }
 # A Wikipedia article this many bytes of wikitext long or more is worth reading.
