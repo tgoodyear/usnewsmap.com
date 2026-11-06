@@ -1681,10 +1681,9 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
                 ..usnm_alto::ParseOptions::default()
             };
             for file in files {
-                let stem = file
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .context("an ALTO file has no name")?;
+                let stem = file.file_stem().and_then(|s| s.to_str()).with_context(|| {
+                    format!("{}: no file name, or one that isn't UTF-8", file.display())
+                })?;
                 let bytes =
                     std::fs::read(&file).with_context(|| format!("reading {}", file.display()))?;
                 let page = usnm_alto::parse(&bytes, &opts)

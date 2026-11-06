@@ -222,8 +222,10 @@ pub fn store_from(
 /// [`usnm_alto::split_columns`]): the text [`store_from`] derives, but with
 /// lines the engine read across a narrow gutter cut at it and the page read
 /// column by column. Returns `(text, Some(repair))` when the repair changed
-/// something, otherwise `(text, None)` with `text` exactly the stored text. The page and its ALTO
-/// are not changed. Offline only: the worker doesn't store this text.
+/// something, otherwise `(text, None)`. Given the engine and language the
+/// worker read the page with, that `text` is exactly the stored text. The page
+/// and its ALTO are not changed. Offline only: the worker doesn't store this
+/// text.
 pub fn column_text(
     page: &Page,
     ocr_engine: &str,
