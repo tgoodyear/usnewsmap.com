@@ -32,6 +32,10 @@
 //   HEALTH_HEARTBEAT        "true" also enables the opt-in scheduled readiness/wake path.
 //   HEALTH_HOSTNAME         Optional fixed onprem target for incoming and scheduled
 //                          probes; omitted means incoming hostname (no heartbeat).
+//   SEARCH_EDGE_LIMIT       Edge flood control on the search and MCP paths (#1541):
+//                          "normal" (also when unset or unknown), "strict" or "off".
+//   SEARCH_LIMIT,           Rate-limiting bindings for the normal and strict limits
+//   SEARCH_LIMIT_STRICT     (wrangler.jsonc). Without the binding, nothing is limited.
 
 // 502: the tunnel's connector could not reach Caddy or the API. 530: the tunnel has no
 // connector. Phase 2's outage drills (#1101) confirm what a Worker receives in each case;
@@ -56,6 +60,8 @@ export default {
     if (env.HEALTHCHECK_HOSTNAME && new URL(request.url).hostname === env.HEALTHCHECK_HOSTNAME) {
       return healthcheck(request, env);
     }
+    const limited = await edgeLimit(request, env);
+    if (limited) return limited;
     if (env.HEALTH_FAILOVER === "true" && !errorLayer(env)) return healthFailover(request, env);
     // Cloned before the first fetch, which uses the body up: a POST (the page-view beacon)
     // has to reach Azure whole when the tunnel fails.
@@ -89,6 +95,112 @@ export default {
     ctx.waitUntil(heartbeat(env));
   },
 };
+
+// Edge flood control (#1541, ADR-0027 settled decision 9). The API's own limiter (120
+// requests a minute, burst 40, per client, IPv6 by /64) still decides normal traffic; this
+// stops a flood at Cloudflare so its rejected requests no longer cross the tunnel. The
+// paths are the searches under both prefixes and both MCP paths; test_serving.py checks
+// them against the API's routes. Every method but OPTIONS counts, so MCP's POST tool
+// calls do, and a browser's preflight doesn't count twice.
+export const LIMITED_PATHS = new Set([
+  "/v1/aggregate", "/v1/hits", "/v1/search-report",
+  "/api/v1/aggregate", "/api/v1/hits", "/api/v1/search-report",
+  "/mcp", "/mcp/",
+]);
+// Both bindings count over 10 seconds (wrangler.jsonc), so a limited client waits that long.
+const LIMIT_PERIOD_SECS = 10;
+
+/**
+ * The 429 for a client over the edge limit, or null to go on. Fails open: no binding,
+ * no client address, or a limiter error lets the request through to the API's limiter.
+ */
+async function edgeLimit(request, env) {
+  const mode = env.SEARCH_EDGE_LIMIT === "off" || env.SEARCH_EDGE_LIMIT === "strict"
+    ? env.SEARCH_EDGE_LIMIT : "normal";
+  if (mode === "off" || request.method === "OPTIONS") return null;
+  if (!LIMITED_PATHS.has(new URL(request.url).pathname)) return null;
+  const limiter = mode === "strict" ? env.SEARCH_LIMIT_STRICT : env.SEARCH_LIMIT;
+  const key = clientKey(request.headers.get("cf-connecting-ip"));
+  if (typeof limiter?.limit !== "function" || key === null) return null;
+  let outcome;
+  try {
+    outcome = await limiter.limit({ key });
+  } catch {
+    return null;
+  }
+  if (outcome?.success !== false) return null;
+  const headers = new Headers({
+    "Content-Type": "application/problem+json",
+    "Cache-Control": "no-store",
+    "Retry-After": String(LIMIT_PERIOD_SECS),
+    "X-USNM-Edge-Limit": mode,
+    "Vary": "Origin",
+  });
+  const origin = request.headers.get("origin");
+  const allowed = typeof env.ALLOWED_ORIGINS === "string" ? env.ALLOWED_ORIGINS.split(",").map((s) => s.trim()) : [];
+  if (origin && allowed.includes(origin)) {
+    headers.set("Access-Control-Allow-Origin", origin);
+    headers.set("Access-Control-Expose-Headers", "Retry-After");
+  }
+  // The API's own 429 body (crates/usnm-api/src/error.rs), so clients handle both alike.
+  const answer = new Response(request.method === "HEAD" ? null : JSON.stringify({
+    type: "/errors/rate-limited",
+    title: "Too many requests",
+    status: 429,
+    detail: "This client has sent too many requests.",
+    hint: "Wait for the time in Retry-After, then try again.",
+  }), { status: 429, headers });
+  return selected(answer, env, "edge", "edge-rate-limit");
+}
+
+/**
+ * The rate-limit key for a client address: an IPv4 address whole, an IPv6 address by its
+ * /64 (one household or host usually owns a whole /64), as the API's limiter keys it. An
+ * IPv4-mapped IPv6 address counts as its IPv4 address. Null when there is no address. The
+ * key stays in Cloudflare's counters only; nothing logs it.
+ */
+export function clientKey(address) {
+  if (typeof address !== "string") return null;
+  const ip = address.trim().toLowerCase();
+  if (ip === "") return null;
+  if (!ip.includes(":")) return `4:${ip}`;
+  const groups = ipv6Groups(ip.split("%")[0]);
+  if (groups === null) return `?:${ip}`;
+  if (groups.slice(0, 5).every((g) => g === 0) && groups[5] === 0xffff) {
+    return `4:${groups[6] >> 8}.${groups[6] & 255}.${groups[7] >> 8}.${groups[7] & 255}`;
+  }
+  return `6:${groups.slice(0, 4).map((g) => g.toString(16)).join(":")}::/64`;
+}
+
+// The eight 16-bit groups of an IPv6 address, or null when it isn't one.
+function ipv6Groups(ip) {
+  const halves = ip.split("::");
+  if (halves.length > 2) return null;
+  const parse = (part) => {
+    if (part === "") return [];
+    const out = [];
+    const pieces = part.split(":");
+    for (const [i, piece] of pieces.entries()) {
+      if (i === pieces.length - 1 && piece.includes(".")) {
+        const octets = piece.split(".");
+        if (octets.length !== 4 || !octets.every((o) => /^\d{1,3}$/.test(o) && Number(o) < 256)) return null;
+        const [a, b, c, d] = octets.map(Number);
+        out.push((a << 8) | b, (c << 8) | d);
+      } else if (/^[0-9a-f]{1,4}$/.test(piece)) {
+        out.push(parseInt(piece, 16));
+      } else {
+        return null;
+      }
+    }
+    return out;
+  };
+  const head = parse(halves[0]);
+  const tail = halves.length === 2 ? parse(halves[1]) : [];
+  if (head === null || tail === null) return null;
+  if (halves.length === 1) return head.length === 8 ? head : null;
+  if (head.length + tail.length > 7) return null;
+  return [...head, ...new Array(8 - head.length - tail.length).fill(0), ...tail];
+}
 
 const PRIMARY_HEALTH_MS = 3000;
 // How long one Cloudflare location trusts a ready primary before probing again.
