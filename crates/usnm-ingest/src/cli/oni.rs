@@ -87,12 +87,20 @@ pub(crate) async fn oni_fetch_command(
             tracing::warn!(batch, "LoC lists this batch; left out");
             continue;
         }
-        let (listed, fetched) =
-            oni::fetch_batch(&fetch, store.as_ref(), &args.to, &opts, batch, &tmp)
-                .await
-                .with_context(|| format!("fetching {batch}"))?;
-        tracing::info!(batch = %listed.name, ?fetched, "batch fetched");
-        list.push(listed);
+        match oni::fetch_batch(&fetch, store.as_ref(), &args.to, &opts, batch, &tmp)
+            .await
+            .with_context(|| format!("fetching {batch}"))?
+        {
+            Some((listed, fetched)) => {
+                tracing::info!(batch = %listed.name, ?fetched, "batch fetched");
+                list.push(listed);
+            }
+            None => tracing::info!(
+                batch,
+                cutoff = %opts.issued_before,
+                "batch has no in-scope issues; skipped"
+            ),
+        }
     }
     std::fs::write(&args.list_out, serde_json::to_vec_pretty(&list)?)
         .with_context(|| args.list_out.display().to_string())?;

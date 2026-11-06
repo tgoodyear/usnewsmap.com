@@ -415,7 +415,7 @@ pub async fn fetch_batch(
     opts: &Options,
     site_batch: &str,
     tmp: &Path,
-) -> anyhow::Result<(ListedBatch, Fetched)> {
+) -> anyhow::Result<Option<(ListedBatch, Fetched)>> {
     let name = local_name(site_batch)?;
     let mut run = Run {
         fetch,
@@ -434,13 +434,19 @@ pub async fn fetch_batch(
             .filter(|i| i.date < opts.issued_before)
             .map(|i| i.lccn.clone())
             .collect();
+        if lccns.is_empty() {
+            return Ok(None);
+        }
         if run.scans_root.is_some() {
             run.materialize_stored_scans(&issues, opts.issued_before)
                 .await?;
             write_scan_catalog(run.scans_root.unwrap(), &name)?;
         }
         tracing::info!(batch = %name, archive = %m.path, "already fetched");
-        return Ok((listed(name, to, &m.path, m.sha256, lccns)?, run.done));
+        return Ok(Some((
+            listed(name, to, &m.path, m.sha256, lccns)?,
+            run.done,
+        )));
     }
     let tags = parse_manifest(&utf8(run.read("tagmanifest-md5.txt", None).await?)?)?;
     let mut manifest = None;
@@ -464,11 +470,9 @@ pub async fn fetch_batch(
     };
     let batch_xml = "data/BATCH.xml";
     let issues = batch_issues(&utf8(run.read(batch_xml, Some(md5(batch_xml)?)).await?)?)?;
-    ensure!(
-        issues.iter().any(|i| i.date < opts.issued_before),
-        "{site_batch}: no issue is dated before {}",
-        opts.issued_before
-    );
+    if !issues.iter().any(|i| i.date < opts.issued_before) {
+        return Ok(None);
+    }
     // Payload files by issue folder; the rest (reel METS, copies of
     // BATCH.xml) now.
     let issue_dirs: HashSet<&str> = issues.iter().map(|i| dir_of(&i.mets)).collect();
@@ -571,7 +575,10 @@ pub async fn fetch_batch(
     if let Some(root) = run.scans_root {
         write_scan_catalog(root, &name)?;
     }
-    Ok((listed(name, to, &path, sha256, lccns)?, run.done))
+    Ok(Some((
+        listed(name, to, &path, sha256, lccns)?,
+        run.done,
+    )))
 }
 
 /// One batch being fetched.
@@ -1110,6 +1117,7 @@ mod tests {
             &tmp,
         )
         .await
+        .unwrap()
         .unwrap();
         let asked_before = site.asked.lock().unwrap().len();
 
@@ -1125,6 +1133,7 @@ mod tests {
             &tmp,
         )
         .await
+        .unwrap()
         .unwrap();
 
         assert_eq!(site.asked.lock().unwrap().len(), asked_before);
@@ -1198,6 +1207,7 @@ mod tests {
             &tmp,
         )
         .await
+        .unwrap()
         .unwrap();
         let refreshed: PsuScanRecord =
             serde_json::from_slice(&std::fs::read(&sidecar).unwrap()).unwrap();
@@ -1256,6 +1266,7 @@ mod tests {
             &tmp,
         )
         .await
+        .unwrap()
         .unwrap();
         let catalog =
             std::fs::read_to_string(scans_root.join("catalog/psu_pst_test_ver01.jsonl")).unwrap();
@@ -1266,6 +1277,34 @@ mod tests {
         assert!(records
             .iter()
             .all(|record| record.alto_store_path.is_none()));
+    }
+
+    #[tokio::test]
+    async fn skips_batches_without_issues_before_the_cutoff() {
+        let dir = tempfile::tempdir().unwrap();
+        let to = dir.path().join("store");
+        let to = to.to_str().unwrap();
+        let store = usnm_store::open(to).unwrap();
+        let mut options = opts();
+        options.issued_before = NaiveDate::from_ymd_opt(1860, 1, 1).unwrap();
+        options.scans_root = Some(dir.path().join("scans"));
+
+        assert!(fetch_batch(
+            &site(),
+            store.as_ref(),
+            to,
+            &options,
+            "batch_pst_test_ver01",
+            &dir.path().join("tmp"),
+        )
+        .await
+        .unwrap()
+        .is_none());
+        assert!(raw::find(store.as_ref(), "psu_pst_test_ver01", None)
+            .await
+            .unwrap()
+            .is_none());
+        assert!(!options.scans_root.unwrap().exists());
     }
 
     #[tokio::test]
@@ -1285,6 +1324,7 @@ mod tests {
             &tmp,
         )
         .await
+        .unwrap()
         .unwrap();
 
         let mets = dir.path().join(
@@ -1323,6 +1363,7 @@ mod tests {
             &tmp,
         )
         .await
+        .unwrap()
         .unwrap();
         assert_eq!(listed.name, "psu_pst_test_ver01");
         assert_eq!(listed.lccns, ["sn84035968"]);
@@ -1400,6 +1441,7 @@ mod tests {
             &tmp,
         )
         .await
+        .unwrap()
         .unwrap();
         assert!(site.asked.lock().unwrap().is_empty());
         assert_eq!(
