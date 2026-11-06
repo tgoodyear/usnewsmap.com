@@ -450,7 +450,84 @@ def client_resource_usage(node, default_cpu):
         raise SupplyUnknown("task_resource_usage_unavailable") from None
 
 
-def client(data_dir, port):
+def config_fingerprint(data_dir):
+    """Every app_config.xml under projects/, as (project, mtime_ns, size); None when
+    the directory can't be listed or a config can't be read. Explicit listing, so
+    permission errors aren't hidden (Path.glob hides them)."""
+    root = Path(data_dir) / "projects"
+    try:
+        entries = sorted(root.iterdir())
+    except FileNotFoundError:
+        return [] if not root.exists() else None
+    except OSError:
+        return None
+    found = []
+    for project in entries:
+        try:
+            if not project.is_dir():
+                continue
+            info = (project / "app_config.xml").stat()
+        except FileNotFoundError:
+            continue
+        except OSError:
+            return None
+        found.append([project.name, info.st_mtime_ns, info.st_size])
+    return found
+
+
+def session_record(session):
+    try:
+        record = json.loads(read_file(session, 65536))
+    except (OSError, ValueError):
+        return {}
+    return record if isinstance(record, dict) else {}
+
+
+def reservations_proven(session, client_start, fingerprint, messages):
+    """Whether started tasks still hold their current records, kept per client session.
+
+    A started task keeps the reservation it started with; the client gives a new usage
+    only to unstarted tasks, at startup and when it rereads its config files. So within
+    one client session (client_start_time), started tasks match their records while the
+    client has not reread a config since startup. The source reads the client's message
+    log every poll from a saved cursor: a session is trusted when first seen only if the
+    log still starts at its first message, every app_config.xml predates the start, and
+    no "Re-reading" line appears; afterwards any reread, any gap in the log (messages
+    rotated out between polls) or any change to the configs (edit, new file, deletion)
+    ends the trust until the client restarts. Without a record, nothing is trusted."""
+    try:
+        start = float(client_start)
+    except (TypeError, ValueError):
+        return False
+    if session is None or not math.isfinite(start) or start <= 0:
+        return False
+    record = session_record(session)
+    same = record.get("client_start") == start
+    cursor = record.get("cursor", 0) if same else 0
+    seqnos, reread = [], False
+    if messages is not None:
+        for message in messages.findall(".//msg"):
+            try:
+                seqnos.append(int(message.findtext("seqno", "")))
+            except ValueError:
+                messages = None
+                break
+            reread |= "Re-reading" in message.findtext("body", "")
+    held = record.get("proven")
+    if messages is None or type(cursor) is not int:
+        proven, last = False, cursor if type(cursor) is int else 0
+    else:
+        contiguous = not seqnos or min(seqnos) == cursor + 1
+        proven = (fingerprint is not None and contiguous and not reread
+                  and (held is True and record.get("fingerprint") == fingerprint if same
+                       else all(mtime / 1e9 < start for _, mtime, _ in fingerprint)))
+        last = max(seqnos, default=cursor)
+    atomic_json(session, {"client_start": start, "cursor": last, "fingerprint": fingerprint,
+                          "proven": proven})
+    return proven
+
+
+def client(data_dir, port, session=None):
     from client_account import MASTER, RPC, flag
 
     password = read_file(data_dir / "gui_rpc_auth.cfg", 1024).decode().strip()
@@ -460,19 +537,36 @@ def client(data_dir, port):
         status = rpc.call("get_cc_status")
         prefs = rpc.call("get_global_prefs_working")
         disk = rpc.call("get_disk_usage")
+        client_start = state.findtext(".//time_stats/client_start_time")
+        messages = None
+        if session is not None:
+            record = session_record(session)
+            try:
+                same = record.get("client_start") == float(client_start)
+            except (TypeError, ValueError):
+                same = False
+            cursor = record.get("cursor", 0) if same else 0
+            if type(cursor) is int and cursor >= 0:
+                messages = rpc.call("get_messages", {"seqno": str(cursor)})
     finally:
         rpc.close()
+    proven = reservations_proven(session, client_start, config_fingerprint(data_dir), messages)
     projects = [p for p in state.findall(".//project")
                 if p.findtext("master_url", "").rstrip("/") == MASTER.rstrip("/")]
     if len(projects) != 1:
         raise ValueError("project not attached uniquely")
     project = projects[0]
     host_id = int(project.findtext("hostid", "0"))
-    if host_id <= 0 or flag(project, "suspended_via_gui") or flag(project, "dont_request_more_work"):
-        raise ValueError("client is not accepting work")
-    if any(int(status.findtext(".//" + tag, "-1")) != 0
-           for tag in ("task_suspend_reason", "gpu_suspend_reason")):
-        raise ValueError("client suspended or status unavailable")
+    if host_id <= 0:
+        raise ValueError("client is not attached")
+    reasons = {tag: int(status.findtext(".//" + tag, "-1")) for tag in ("task_suspend_reason", "gpu_suspend_reason")}
+    if any(reason < 0 for reason in reasons.values()):
+        raise ValueError("client status unavailable")
+    # A client that is suspended, or set to fetch no more work, has no idle slot for
+    # the feed to fill: zero capacity, not unknown. GPU suspension alone zeroes the GPUs.
+    paused = (flag(project, "suspended_via_gui") or flag(project, "dont_request_more_work")
+              or reasons["task_suspend_reason"] != 0)
+    gpu_paused = paused or reasons["gpu_suspend_reason"] != 0
     ncpus = int(state.findtext(".//host_info/p_ncpus", "0"))
     percent = float(prefs.findtext(".//max_ncpus_pct", "100")) or 100
     cpus = max(1, math.floor(ncpus * min(percent, 100) / 100)) if ncpus else 0
@@ -496,7 +590,7 @@ def client(data_dir, port):
     # Count queued/download-pending work as occupied: it already feeds this device.
     used_cpu, used_memory, used_gpu = 0, 0, {}
     units = {(owner, w.findtext("name")): w for owner, w in scoped if w.tag == "workunit"}
-    for owner, result in scoped:
+    for owner, result in ([] if paused else scoped):
         if result.tag != "result":
             continue
         # Stock RESULT_COMPUTE_ERROR=3, FILES_UPLOADING=4: neither occupies execution.
@@ -505,9 +599,12 @@ def client(data_dir, port):
         if flag(result, "suspended_via_gui"):
             raise ValueError("suspended queued task")
         active = result.findall("active_task")
-        if active and (len(active) != 1 or active[0].findtext("active_task_state") != "0"):
+        if active and (len(active) != 1 or active[0].findtext("active_task_state") != "0") and not (
+                len(active) == 1 and proven and owner == MASTER.rstrip("/")):
             # Running jobs retain old reservations after app_config/scheduler
             # updates; get_state exposes only a rounded display string for them.
+            # They count at their records only in a trusted session, and only for
+            # this project, whose scheduler-side changes the profile checks cover.
             raise SupplyUnknown("active_task_resource_usage_unavailable")
         if flag(result, "coproc_missing"):
             raise SupplyUnknown("task_resource_usage_unavailable")
@@ -560,6 +657,8 @@ def client(data_dir, port):
             }
     if any(device not in gpu_devices or gpu_devices[device] <= 0 for device in used_gpu):
         raise SupplyUnknown("task_resource_usage_unavailable")
+    if gpu_paused:
+        gpus = {vendor: 0 for vendor in gpus}
     blocked = {node.text for tag in ("no_rsc_pref", "no_rsc_apps", "no_rsc_ams", "no_rsc_config")
                for node in project.findall(tag)}
     for vendor, tag in (("NVIDIA", "no_cuda"), ("ATI", "no_ati"), ("intel_gpu", "no_intel_gpu"),
@@ -578,18 +677,19 @@ def client(data_dir, port):
     from acceptance_client import container_runtime
     monitored = [{k: value for k, value in v.items() if k != "project"} for v in versions
                  if v["project"] == MASTER.rstrip("/") and v["app"] in APP_NAMES]
-    return {"host_id": host_id, "versions": monitored,
+    available = 0 if paused else max(0, cpus - used_cpu)
+    return {"host_id": host_id, "versions": monitored, "paused": paused,
             "idle_cpu": 0 if "CPU" in blocked or flag(project, "no_cpu_pref") or flag(project, "no_cpu")
-            else max(0, cpus - used_cpu),
-            "available_cpu": max(0, cpus - used_cpu),
+            else available,
+            "available_cpu": available,
             "cpus": cpus, "idle_gpu": gpus, "gpu_memory": gpu_memory, "gpu_capabilities": capabilities,
             "gpu_devices": gpu_devices, "used_gpu": used_gpu,
             "client_version": sum(int(state.findtext(".//" + tag, "0")) * factor for tag, factor in (
                 ("core_client_major_version", 10000), ("core_client_minor_version", 100), ("core_client_release", 1))),
             "docker": container_runtime(read_command=run)
             if any(v["plan_class"].startswith("docker") for v in monitored) else False,
-            "memory_bytes": max(0, memory * fraction - used_memory),
-            "disk_bytes": max(0, min(float(free), float(allowance) - used))}
+            "memory_bytes": 0 if paused else max(0, memory * fraction - used_memory),
+            "disk_bytes": 0 if paused else max(0, min(float(free), float(allowance) - used))}
 
 
 def controller(unit):
@@ -809,14 +909,15 @@ def supply(database, hosts, resource, resource_usage=None):
     prepared, host_limits, host_costs = [], {}, {}
     for host in hosts:
         prefs = database["host_preferences"][str(host["host_id"])]
+        # No idle slot (a paused client, or a full one) can't make a shortage, whatever its preferences.
+        if resource == "gpu" and not any(host["idle_gpu"].values()):
+            continue
+        if resource == "cpu" and host["idle_cpu"] == 0:
+            continue
         if prefs.get("fallback"):
             raise ValueError("non-preferred fallback needs all-application inventory")
         app = "usnm_ocr" if resource == "cpu" else "usnm_qwen"
         if app not in prefs["apps"] or resource == "cpu" and "CPU" in prefs["blocked"]:
-            continue
-        if resource == "gpu" and not any(host["idle_gpu"].values()):
-            continue
-        if resource == "cpu" and host["idle_cpu"] == 0:
             continue
         devices = {gpu for gpu, count in host["idle_gpu"].items()
                    if count > 0 and gpu not in prefs["blocked"]} if resource == "gpu" else {"cpu"}
@@ -1151,7 +1252,7 @@ def main(argv=None):
             result.update(server(args.project, args.window_env, args.container, args.container_project,
                                  args.feeder_guard))
         elif args.source == "client":
-            result.update(client(args.data_dir, args.port))
+            result.update(client(args.data_dir, args.port, args.output.with_name(args.output.stem + ".session.json")))
         elif args.source == "controller":
             result["tick"] = controller(args.unit)
         else:

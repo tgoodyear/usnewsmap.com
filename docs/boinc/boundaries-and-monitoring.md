@@ -110,17 +110,35 @@ This includes other attached projects and CPU-only, GPU-only and fractional
 overrides; fields are never merged with stale version defaults. Invalid or
 ambiguous reservations produce `task_resource_usage_unavailable`.
 
-**Active-task evidence limit:** BOINC can retain old reservations for started
-tasks after app-version/configuration updates
-([client_state.cpp](https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/client/client_state.cpp#L2462)).
-GUI RPC exposes only rounded, cached task resource text, not an exact running
-resource record. An unfinished task with a started or unrecognized active-task
-state therefore makes its client source `active_task_resource_usage_unavailable`.
-The monitor does not infer a precise reservation from that display string.
-Consequently both stock checks can be unknown while any configured client has
-such a task; refill, backlog and controller checks remain independently evaluated.
-Unstarted tasks and completed uploads retain their normal accounting. This
-explicit evidence limitation does not change the unobserved-policy boundary.
+**Started tasks:** a running task keeps the resource usage it started with. The
+client gives a new usage only to tasks that haven't started, at startup and when
+it rereads its config files or a scheduler reply changes an app version
+([client_state.cpp](https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/client/client_state.cpp#L2462)),
+and GUI RPC shows only a rounded display string for running tasks. The client
+source keeps a record per client session (`client_start_time`) next to its
+output, `<name>.session.json`, and reads the client's message log every poll
+from the record's cursor. A session is trusted when the source first sees it
+only if the log still starts at the session's first message and every
+`app_config.xml` under `projects/` is older than the start. Trust ends for the
+rest of the session at the first "Re-reading" line, at any gap in the log
+(messages rotated out between polls), or at any change to those files (an
+edit, a new file or a deletion). In a trusted session, a started task of this
+project counts at its current workunit or app version record, like an
+unstarted one. Otherwise, and for any other project's started task, the source
+is `active_task_resource_usage_unavailable`, and both stock checks are
+unknown, until the task ends or the client restarts. The log holds about 2,000
+messages, so a client that was running before its source was installed needs
+one restart to be trusted. A scheduler-side change to this project's versions
+comes from a plan class change; while the client's cached version differs from
+the live plan class, the profile mismatch check above makes the stock checks
+unknown. A task that started before the client took the new version keeps the
+old usage until it ends, so the stock checks can be off by that task for up to
+its run time.
+
+**Paused clients:** a client that is suspended (any task suspend reason), set to
+fetch no more work, or has the project suspended reports `paused: true` with
+no idle CPU, GPU, memory or disk: it has no slot for the feed to fill, so it
+can't cause a shortage. A GPU suspend reason alone zeroes only its GPUs.
 
 Uniform resource costs cap graph capacity directly. Per-task GPU memory is
 `gpu_ram_used_mb`, falling
@@ -267,10 +285,24 @@ SOURCE_ARGS="server --project [host-project-path] --window-env /etc/usnm-boinc/q
 # append --feeder-guard /usr/local/lib/usnm-boinc/feeder-slot-guard.py to the server SOURCE_ARGS.
 PUSH_URL="http://[existing-dashboard]/api/feed-source/server"
 # controller: SOURCE_ARGS="controller --unit usnm-boinc-priority-controller.service"
-# backlog: SOURCE_ARGS="backlog --dashboard http://[existing-dashboard]/api/view.json --requests [qwen-state]/requests --outbox [outbox]/[qwen-campaign] --selection [read-only-selected.jsonl]"
+# backlog: SOURCE_ARGS="backlog --dashboard https://[dashboard-name]/api/view.json --requests [qwen-state]/requests --outbox [outbox]/[qwen-campaign] --selection [read-only-selected.jsonl]"
 # each own client: SOURCE_ARGS="client --data-dir [existing-boinc-data-dir]"
 # Its PUSH_URL ends in /controller, /backlog, or /client-<inventory-name>.
 ```
+
+The backlog source reads `view.json` from the dashboard's HTTPS name: with TLS
+on, the plain HTTP listener only redirects, and the collector refuses
+redirects. Pushes still go to the plain listener. With no Qwen source requests
+in use, `--requests` can be an empty directory; without a fresh `--selection`,
+the Qwen backlog is then known only while the campaign outbox holds `READY`
+chunks, and is otherwise unknown.
+
+On the evaluator host, each pushing source's address goes in the dashboard's
+`USNM_OCRDASH_FEED_PUSH` (`<name>=<address>`, comma-separated), and each own
+client goes in `feed-monitor.json` as
+`{"location": "[state-dir]/feed-sources/client-<inventory-name>.json", "host_id": <BOINC host id>}`.
+The file takes the push endpoint's source name; `host_id` only binds it to the
+host the client reports.
 
 For the **server instance only**, Podman needs writable metadata and lock paths
 even for a read-only `exec`. Keep `ProtectSystem=strict` and the other template

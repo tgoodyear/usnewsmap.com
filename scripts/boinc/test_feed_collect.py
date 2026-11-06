@@ -105,6 +105,7 @@ def client_rpc_fixture():
 </client_state>""",
         "get_cc_status": "<cc_status><task_suspend_reason>0</task_suspend_reason><gpu_suspend_reason>0</gpu_suspend_reason></cc_status>",
         "get_global_prefs_working": "<global_preferences><max_ncpus_pct>50</max_ncpus_pct></global_preferences>",
+        "get_messages": "<msgs/>",
         "get_disk_usage": "<disk_usage_summary><project><disk_usage>600</disk_usage></project><d_free>900</d_free><d_boinc>100</d_boinc><d_allowed>1000</d_allowed></disk_usage_summary>",
     }
 
@@ -738,6 +739,24 @@ class CollectionTests(unittest.TestCase):
                 with self.subTest(value=value), self.assertRaises(ValueError):
                     C.collect(config | {"feeder_allocation": value})
 
+    def test_a_paused_own_client_is_zero_idle_capacity_not_unknown(self):
+        docs = self.documents()
+        own = docs["/own"]
+        docs["/own"] = dict(own, idle_cpu=0, available_cpu=0, memory_bytes=0, disk_bytes=0, paused=True,
+                            idle_gpu={vendor: 0 for vendor in own["idle_gpu"]})
+        config = {name: "/" + name for name in ("server", "controller", "backlog")}
+        config["clients"] = ["/own"]
+        for fallback in (False, True):
+            prefs = docs["/server"]["host_preferences"][str(own["host_id"])]
+            prefs["fallback"] = fallback
+            with self.subTest(fallback=fallback), patch.object(C.time, "time", return_value=NOW), \
+                    patch.object(C, "read_source", side_effect=lambda path: docs[path]):
+                facts = C.collect(config)
+                document, _ = F.evaluate(facts, {}, NOW, 1000, "boot", "cfg")
+                checks = {c["code"]: c for c in document["checks"]}
+                for code in ("cpu_shortage", "gpu_shortage"):
+                    self.assertEqual((checks[code]["state"], checks[code]["idle_slots"]), ("healthy", 0))
+
     def test_client_bindings_must_match_the_reported_host(self):
         docs = self.documents()
         config = {name: "/" + name for name in ("server", "controller", "backlog")}
@@ -1261,11 +1280,11 @@ with socket.create_connection({listener.getsockname()!r}, timeout=2) as connecti
 
     def test_loopback_rpc_reads_only_and_never_uses_volunteer_hosts(self):
         with client_rpc_fixture() as (root, port, answers, operations):
-            result = C.client(root, port)
+            result = C.client(root, port, root / "client.session.json")
             self.assertEqual(result["host_id"], 9)
             self.assertEqual(result["idle_cpu"], 2)
             self.assertEqual(result["disk_bytes"], 300)
-            self.assertEqual(operations, list(answers))
+            self.assertEqual(sorted(operations), sorted(answers))  # every request is a read
             self.assertNotIn("secret", json.dumps(result))
             answers["get_state"] = answers["get_state"].replace("</client_state>", """
 <workunit><name>finished</name><app_name>usnm_ocr</app_name></workunit>
@@ -1312,6 +1331,111 @@ with socket.create_connection({listener.getsockname()!r}, timeout=2) as connecti
             observed = C.client(root, port)
             self.assertEqual((observed["available_cpu"], observed["idle_gpu"]["intel_gpu"], observed["memory_bytes"]),
                              (.5, .25, 300))
+
+    def test_started_tasks_count_at_their_records_only_in_a_trusted_client_session(self):
+        with client_rpc_fixture() as (root, port, answers, operations):
+            base = answers["get_state"]
+            running = queued_task("", "<active_task><active_task_state>1</active_task_state></active_task>")
+            session = root / "client.session.json"
+            projects = root / "projects"
+            config = projects / "boinc.usnewsmap.com" / "app_config.xml"
+            first = "<msgs><msg><seqno>1</seqno><body>Starting BOINC client</body></msg></msgs>"
+            reread = "<msgs><msg><seqno>{}</seqno><body>Re-reading cc_config.xml</body></msg></msgs>"
+            quiet = "<msgs><msg><seqno>{}</seqno><body>Requesting new tasks</body></msg></msgs>"
+
+            # The fixture answers whatever seqno was asked; each call passes what the client
+            # would send after the saved cursor.
+            def observe(messages="<msgs/>", started="2000"):
+                answers["get_messages"] = messages
+                stats = f"<time_stats><client_start_time>{started}</client_start_time></time_stats>" if started else ""
+                answers["get_state"] = base.replace("</client_state>", stats + running + "</client_state>")
+                try:
+                    return C.client(root, port, session)["available_cpu"]
+                except C.SupplyUnknown as error:
+                    self.assertEqual(str(error), "active_task_resource_usage_unavailable")
+                    return None
+
+            def reset(config_mtime=None):
+                shutil.rmtree(projects, ignore_errors=True)
+                session.unlink(missing_ok=True)
+                projects.mkdir()
+                (projects / "job_log.txt").write_text("")
+                if config_mtime is not None:
+                    config.parent.mkdir()
+                    config.write_text("<app_config/>")
+                    os.utime(config, (config_mtime, config_mtime))
+
+            reset()
+            self.assertEqual(observe(first), 1)                # whole session logged, no reread
+            self.assertEqual(observe(quiet.format(2)), 1)      # new messages follow the cursor
+            self.assertEqual(observe(), 1)
+            self.assertEqual(json.loads(session.read_text())["cursor"], 2)
+            for case, setup, calls in (
+                    ("log rotated before first sight", None, [quiet.format(7)]),
+                    ("reread before first sight", None,
+                     [first.replace("</msgs>", reread.format(2)[6:])]),
+                    ("reread between polls", None, [first, reread.format(2), "<msgs/>"]),
+                    ("messages rotated out between polls", None, [first, quiet.format(9), "<msgs/>"]),
+                    ("config newer than start", 3000, [first]),
+                    ("unparseable seqno", None, [first, "<msgs><msg><seqno>x</seqno></msg></msgs>"])):
+                with self.subTest(case=case):
+                    reset(setup)
+                    results = [observe(call) for call in calls]
+                    self.assertIsNone(results[-1])
+            for started in ("", "nan"):
+                with self.subTest(started=started):
+                    reset()
+                    self.assertIsNone(observe(first, started=started))
+            reset(1000)
+            self.assertEqual(observe(first), 1)                # config loaded at start, unchanged
+            for change in ("edit", "delete"):
+                with self.subTest(change=change):
+                    reset(1000)
+                    self.assertEqual(observe(first), 1)
+                    if change == "edit":
+                        os.utime(config, (1500, 1500))
+                    else:
+                        config.unlink()
+                    self.assertIsNone(observe())               # changed in-session: never trusted again
+                    self.assertIsNone(observe())
+                    self.assertEqual(observe(first, started="4000"), 1)  # a client restart is a new session
+            reset()
+            with patch.object(C.Path, "iterdir", side_effect=PermissionError):
+                self.assertIsNone(observe(first))
+            reset()
+            answers["get_messages"] = first
+            other = """<project><master_url>https://other.invalid/</master_url><hostid>7</hostid></project>
+<app_version><app_name>usnm_ocr</app_name><version_num>117</version_num><plan_class>docker</plan_class>
+<avg_ncpus>1</avg_ncpus></app_version>""" + running
+            answers["get_state"] = base.replace("</client_state>", "<time_stats><client_start_time>2000"
+                                                "</client_start_time></time_stats>" + other + "</client_state>")
+            with self.assertRaisesRegex(C.SupplyUnknown, "active_task_resource_usage_unavailable"):
+                C.client(root, port, session)              # another project's started task stays unknown
+            answers["get_state"] = base.replace("</client_state>", running + "</client_state>")
+            with self.assertRaisesRegex(C.SupplyUnknown, "active_task_resource_usage_unavailable"):
+                C.client(root, port)                       # no session record: never trusted
+
+    def test_paused_clients_have_no_idle_capacity_rather_than_unknown(self):
+        with client_rpc_fixture() as (root, port, answers, _):
+            base_state, base_status = answers["get_state"], answers["get_cc_status"]
+            suspended_task = queued_task("", "<suspended_via_gui/>")
+            for state, status, cpu, gpu in (
+                    (base_state, base_status.replace(">0</task_suspend_reason", ">1</task_suspend_reason"), 0, 0),
+                    (base_state.replace("</hostid>", "</hostid><dont_request_more_work/>"), base_status, 0, 0),
+                    (base_state.replace("</hostid>", "</hostid><suspended_via_gui/>").replace(
+                        "</client_state>", suspended_task + "</client_state>"), base_status, 0, 0),
+                    (base_state, base_status.replace(">0</gpu_suspend_reason", ">1</gpu_suspend_reason"), 2, 0)):
+                answers["get_state"], answers["get_cc_status"] = state, status
+                with self.subTest(state=state, status=status):
+                    observed = C.client(root, port)
+                    self.assertEqual((observed["idle_cpu"], observed["available_cpu"],
+                                      observed["idle_gpu"]["intel_gpu"]), (cpu, cpu, gpu))
+                    self.assertEqual(observed["paused"], cpu == 0)
+                    self.assertEqual(observed["host_id"], 9)
+                    C.fresh(dict(observed, schema_version=1, source="client", observed_at=NOW), NOW, "client")
+            answers["get_state"], answers["get_cc_status"] = base_state, "<cc_status/>"
+            with self.assertRaisesRegex(ValueError, "client status unavailable"):
+                C.client(root, port)
 
     def test_unprovable_task_reservations_are_source_local_unknown_and_recover(self):
         with client_rpc_fixture() as (root, port, answers, _):
