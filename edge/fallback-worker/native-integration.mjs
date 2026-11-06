@@ -192,3 +192,54 @@ try {
 } finally {
   await customInstance.dispose();
 }
+
+// The real rate-limiting binding in workerd, with wrangler.jsonc's own limits and
+// committed vars: a burst from one address past the normal limit gets the edge
+// 429, another address and other paths still reach the origin.
+const { parseJsonc } = await import("./parse-jsonc.mjs");
+const { readFileSync } = await import("node:fs");
+const wrangler = parseJsonc(readFileSync(new URL("./wrangler.jsonc", import.meta.url), "utf8"));
+const normal = wrangler.ratelimits.find((r) => r.name === "SEARCH_LIMIT").simple;
+let origins = 0;
+const limitOptions = convertV4MiniflareOptions({
+  modules: true,
+  scriptPath: fileURLToPath(new URL("./worker.mjs", import.meta.url)),
+  compatibilityDate: "2025-10-01",
+  bindings: { ...wrangler.vars, METRICS_MODE: "native" },
+  ratelimits: Object.fromEntries(wrangler.ratelimits.map((r) => [r.name, { namespace_id: r.namespace_id, simple: r.simple }])),
+  outboundService: async () => {
+    origins++;
+    return new NativeResponse("from the tunnel");
+  },
+  port: 0,
+  host: "127.0.0.1",
+});
+limitOptions.enableDevRegistry = false;
+const limitInstance = new Miniflare(limitOptions);
+try {
+  const statuses = [];
+  for (let n = 0; n < normal.limit + 10; n++) {
+    const answer = await limitInstance.dispatchFetch("https://usnewsmap.com/v1/hits?q=gold", {
+      headers: { "cf-connecting-ip": "2001:db8:1:2::" + (n % 7 + 1).toString(16) },
+    });
+    statuses.push(answer.status);
+    await answer.text();
+  }
+  assert.equal(statuses.filter((s) => s === 200).length, normal.limit);
+  assert.deepEqual(statuses.slice(normal.limit), new Array(10).fill(429));
+  assert.equal(origins, normal.limit);
+  const limited = await limitInstance.dispatchFetch("https://usnewsmap.com/mcp", {
+    method: "POST", headers: { "cf-connecting-ip": "2001:db8:1:2::ff" }, body: "{}",
+  });
+  assert.equal(limited.status, 429);
+  assert.equal(limited.headers.get("retry-after"), "10");
+  assert.equal((await limited.json()).type, "/errors/rate-limited");
+  for (const [path, ip] of [["/v1/hits?q=gold", "2001:db8:1:3::1"], ["/v1/datasets", "2001:db8:1:2::1"]]) {
+    const other = await limitInstance.dispatchFetch(`https://usnewsmap.com${path}`, { headers: { "cf-connecting-ip": ip } });
+    assert.equal(other.status, 200, path);
+    await other.text();
+  }
+  console.log(`Native rate-limiting binding: one /64 limited at ${normal.limit} in ${normal.period} s, other clients and paths unaffected`);
+} finally {
+  await limitInstance.dispose();
+}
