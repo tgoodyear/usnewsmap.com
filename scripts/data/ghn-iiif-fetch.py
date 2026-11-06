@@ -18,10 +18,11 @@ have from Chronicling America. Every other page is downloaded at full size
 manifest gives.
 
 Requests go one at a time, --delay seconds apart, with an identifying
-User-Agent. Redirects aren't followed. 429 and 5xx responses and dropped
-connections are retried with backoff, never sooner than Retry-After asks (a
-wait over 15 minutes stops the run instead); anything else, or a response that
-isn't JSON or the expected image, stops the run. Run again, it resumes: title
+User-Agent. Redirects aren't followed, and a response marked as a Cloudflare
+challenge (cf-mitigated: challenge) stops the run. 429 and 5xx responses and
+dropped connections are retried with backoff, never sooner than Retry-After
+asks (a wait over 15 minutes stops the run instead); anything else, or a
+response that isn't JSON or the expected image, stops the run. Run again, it resumes: title
 and issue JSON, issue pages and info.json are cached in OUT/manifests, and
 images already downloaded are checked again and kept if valid.
 
@@ -52,7 +53,7 @@ UA = "usnewsmap-ghn-iiif-fetch (trevor@goodyeartechnical.com)"
 GHN = "https://gahistoricnewspapers.galileo.usg.edu"
 IIIF_HOSTS = {"iiif-ha.galib.uga.edu"}
 CHEROKEE_PHOENIX = ["sn83020866", "sn83020874"]
-RETRY_STATUS = {429, 500, 502, 503, 504}
+RETRY_STATUS = {429} | set(range(500, 600))
 MAX_WAIT = 900
 LCCN_RE = re.compile(r"^[a-z]{1,3}\d{8,10}$")
 ISSUE_RE = re.compile(r"^/lccn/([a-z]{1,3}\d{8,10})/(\d{4}-\d\d-\d\d)/ed-(\d+)\.json$")
@@ -81,6 +82,10 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
+def challenged(headers):
+    return headers is not None and (headers.get("cf-mitigated") or "").strip().lower() == "challenge"
+
+
 class Client:
     def __init__(self, delay, retries=5, sleep=time.sleep, opener=urllib.request.build_opener(NoRedirect).open):
         self.delay, self.retries, self.sleep, self.opener = delay, retries, sleep, opener
@@ -96,8 +101,13 @@ class Client:
             try:
                 req = urllib.request.Request(url, headers={"User-Agent": UA})
                 with self.opener(req, timeout=120) as r:
+                    if challenged(r.headers):
+                        raise RuntimeError(f"{url}: Cloudflare challenge; stopping")
                     return r.headers.get("Content-Type", ""), r.read()
             except urllib.error.HTTPError as e:
+                if challenged(e.headers):
+                    e.close()
+                    raise RuntimeError(f"{url}: HTTP {e.code} Cloudflare challenge; stopping") from e
                 if e.code not in RETRY_STATUS or attempt == self.retries:
                     raise
                 asked = retry_after(e.headers.get("Retry-After") if e.headers else None)

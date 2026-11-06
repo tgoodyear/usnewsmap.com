@@ -165,11 +165,13 @@ class Response(io.BytesIO):
         self.headers = {"Content-Type": ctype}
 
 
-def http_error(code, retry_after=None):
-    headers = email.message.Message()
+def http_error(code, retry_after=None, headers=None):
+    msg = email.message.Message()
     if retry_after is not None:
-        headers["Retry-After"] = retry_after
-    return urllib.error.HTTPError("https://x/", code, "error", headers, None)
+        msg["Retry-After"] = retry_after
+    for k, v in (headers or {}).items():
+        msg[k] = v
+    return urllib.error.HTTPError("https://x/", code, "error", msg, None)
 
 
 class ClientTests(unittest.TestCase):
@@ -185,12 +187,22 @@ class ClientTests(unittest.TestCase):
         return open_
 
     def test_retry_waits_at_least_as_long_as_retry_after(self):
+        for code in (429, 503, 522):
+            with self.subTest(code=code):
+                sleeps = []
+                client = fetch.Client(delay=0, sleep=sleeps.append,
+                                      opener=self.opener(http_error(code, "45"), Response(b"{}", "application/json")))
+                self.assertEqual(client.get("https://x/"), ("application/json", b"{}"))
+                self.assertIn(45, sleeps)
+                self.assertEqual(client.requests, 2)
+
+    def test_a_cloudflare_challenge_stops_without_retrying(self):
         sleeps = []
         client = fetch.Client(delay=0, sleep=sleeps.append,
-                              opener=self.opener(http_error(429, "45"), Response(b"{}", "application/json")))
-        self.assertEqual(client.get("https://x/"), ("application/json", b"{}"))
-        self.assertIn(45, sleeps)
-        self.assertEqual(client.requests, 2)
+                              opener=self.opener(http_error(503, "5", {"Cf-Mitigated": "challenge"})))
+        with self.assertRaises(RuntimeError):
+            client.get("https://x/")
+        self.assertEqual((client.requests, sleeps), (1, []))
 
     def test_retry_after_reads_http_dates(self):
         now = datetime(2026, 11, 6, 1, 0, tzinfo=timezone.utc)
