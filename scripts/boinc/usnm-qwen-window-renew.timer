@@ -1,0 +1,9 @@
+[Unit]
+Description=Renew the Qwen refill window twice daily, 4:31 AM and PM Eastern
+
+[Timer]
+OnCalendar=*-*-* 04,16:31:00 America/New_York
+Persistent=true
+
+[Install]
+WantedBy=timers.target

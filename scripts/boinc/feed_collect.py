@@ -595,7 +595,9 @@ def client(data_dir, port):
 def controller(unit):
     if not re.fullmatch(r"[a-zA-Z0-9@_.-]+\.service", unit):
         raise ValueError("invalid unit")
-    raw = run(["journalctl", "--no-pager", "--quiet", "-u", unit, "-o", "json",
+    # --all: without it, journalctl's JSON output nulls any field over 4096 bytes, and a
+    # successful tick's line (its timings) is longer, so only failures were ever seen.
+    raw = run(["journalctl", "--no-pager", "--quiet", "--all", "-u", unit, "-o", "json",
                "--since=-2h", "-n", "2000"])
     latest, last_failure = None, 0
     for line in raw.splitlines():

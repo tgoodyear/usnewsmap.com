@@ -513,6 +513,21 @@ class ControllerTests(unittest.TestCase):
                 patch.object(C.time, "time", return_value=NOW):
             return C.controller("usnm-boinc-priority-controller.service")
 
+    def test_journal_read_keeps_long_tick_lines(self):
+        # journalctl -o json nulls fields over 4096 bytes unless --all is given; a real
+        # successful tick line is about 5.5 KB, so without it only failures were visible.
+        events = [(NOW - 5, {"event": "boinc_batch_tick", "timings": {"tick_seconds": 1}})]
+        with patch.object(C, "run") as run:
+            run.side_effect = [b"\n".join(json.dumps({"__REALTIME_TIMESTAMP": str(at * 1000000),
+                                                      "MESSAGE": json.dumps(event)}).encode()
+                                          for at, event in events),
+                               b"LoadState=loaded\nSubState=dead\nResult=success\n"
+                               b"ExecMainStartTimestampMonotonic=1\nExecMainExitTimestampMonotonic=2"]
+            with patch.object(C.time, "time", return_value=NOW):
+                tick = C.controller("usnm-boinc-priority-controller.service")
+        self.assertIn("--all", run.call_args_list[0].args[0])
+        self.assertIs(tick["ok"], True)
+
     def test_native_failures_survive_successful_or_running_restart_and_acknowledgement(self):
         for message_id, field, result in (
             ("d9b373ed55a64feb8242e02dbe79a49c", "UNIT_RESULT", "exit-code"),
