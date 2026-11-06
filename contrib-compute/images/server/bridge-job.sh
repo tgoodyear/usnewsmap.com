@@ -767,7 +767,7 @@ case "$step" in
     # the ones the database lacks, updates a changed user_friendly_name or min_version, and
     # leaves the rest; it never deletes. So a rerun changes nothing (BOINC 22bbebe, tools/xadd).
     # xadd gives a new app weight 1, so register-apps.php then sets the weight project.xml
-    # declares on the apps xadd added, and leaves registered apps' weights alone.
+    # declares on each app with no app version yet, and leaves the others' weights alone.
     cp "$TEMPLATES/project.xml" "$PROJ/project.xml"
     cd "$PROJ"
     exec php "$TEMPLATES/register-apps.php" ;;
