@@ -19,8 +19,11 @@
 //!   IIIF full image.
 //! - [`text()`]: the page text in reading order, which the worker
 //!   normalizes and stores, so text and ALTO always hold the same words.
+//! - [`columns::split_columns`]: lines an engine read across a narrow
+//!   gutter cut at it, and the page read column by column (#925).
 
 pub mod boxes;
+pub mod columns;
 pub mod markup;
 mod model;
 pub mod order;
@@ -28,6 +31,7 @@ mod parse;
 pub mod tiles;
 mod write;
 
+pub use columns::{split_columns, Repair};
 pub use markup::Markup;
 pub use model::{default_dir, text, Block, BlockKind, Dir, Granularity, Line, Page, Rect, Word};
 pub use parse::{parse, ParseError, ParseOptions};

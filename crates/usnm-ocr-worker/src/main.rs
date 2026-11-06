@@ -779,6 +779,29 @@ enum Command {
         #[command(flatten)]
         engine: EngineArgs,
     },
+    /// Stored pages' text with the column repair (#925), offline: lines the engine read across
+    /// a narrow gutter are cut at it and the page is read column by column. For each stored ALTO
+    /// file, writes `<stem>.txt` (normalized as the worker stores text) to `--out` and prints a
+    /// JSON line of what the repair changed. Reads only the files given; the ALTO isn't
+    /// rewritten and nothing is published.
+    ColumnText {
+        /// A stored ALTO file, or a directory of them (`*.xml`, any case).
+        #[arg(long)]
+        alto: PathBuf,
+        /// The pages' language, ISO 639-3: their script's direction and hyphenation.
+        #[arg(long)]
+        language: String,
+        /// The OCR engine tag the pages were read with, for the hyphenation rules.
+        #[arg(long)]
+        ocr_engine: String,
+        /// The scans' dpi, for engine ALTO in `inch1200` or `mm10`. Stored ALTO is in pixels and
+        /// needs none.
+        #[arg(long)]
+        dpi: Option<f64>,
+        /// Directory for the texts.
+        #[arg(long)]
+        out: PathBuf,
+    },
     /// Read a rendered line of English with the engine and fail unless it
     /// comes back: a node's check before the unit is enabled.
     CheckEngine {
@@ -1766,6 +1789,61 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
             .await;
             engine.shutdown().await;
             done
+        }
+        Command::ColumnText {
+            alto,
+            language,
+            ocr_engine,
+            dpi,
+            out,
+        } => {
+            let files = if alto.is_dir() {
+                let mut files: Vec<PathBuf> = std::fs::read_dir(&alto)
+                    .and_then(|d| d.map(|e| e.map(|e| e.path())).collect())
+                    .with_context(|| format!("listing {}", alto.display()))?;
+                files.retain(|p| {
+                    p.is_file()
+                        && p.extension()
+                            .and_then(|e| e.to_str())
+                            .is_some_and(|e| e.eq_ignore_ascii_case("xml"))
+                });
+                files.sort();
+                files
+            } else {
+                vec![alto]
+            };
+            std::fs::create_dir_all(&out).with_context(|| format!("creating {}", out.display()))?;
+            let opts = usnm_alto::ParseOptions {
+                dpi,
+                ..usnm_alto::ParseOptions::default()
+            };
+            for file in files {
+                let stem = file.file_stem().and_then(|s| s.to_str()).with_context(|| {
+                    format!("{}: no file name, or one that isn't UTF-8", file.display())
+                })?;
+                let bytes =
+                    std::fs::read(&file).with_context(|| format!("reading {}", file.display()))?;
+                let page = usnm_alto::parse(&bytes, &opts)
+                    .with_context(|| format!("parsing {}", file.display()))?;
+                let (text, repair) =
+                    usnm_ocr_worker::stored::column_text(&page, &ocr_engine, &language);
+                let txt = out.join(format!("{stem}.txt"));
+                std::fs::write(&txt, &text)
+                    .with_context(|| format!("writing {}", txt.display()))?;
+                let repair = repair.unwrap_or_default();
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "alto": file.display().to_string(),
+                        "text": txt.display().to_string(),
+                        "changed": repair.lines_split > 0,
+                        "gutters": repair.gutters,
+                        "lines_split": repair.lines_split,
+                        "blocks_split": repair.blocks_split,
+                    })
+                );
+            }
+            Ok(())
         }
         Command::Engines {
             command: EnginesCommand::Conformance { fixtures, engine },
