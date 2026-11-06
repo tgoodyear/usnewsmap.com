@@ -162,8 +162,9 @@ class ClientTests(unittest.TestCase):
 
     def test_a_404_is_not_retried(self):
         client = fetch.Client(delay=0, sleep=lambda s: None, opener=self.opener(http_error(404)))
-        with self.assertRaises(urllib.error.HTTPError):
+        with self.assertRaises(urllib.error.HTTPError) as e:
             client.get("https://x/")
+        e.exception.close()
         self.assertEqual(client.requests, 1)
 
     def test_redirects_are_not_followed(self):

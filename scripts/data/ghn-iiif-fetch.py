@@ -94,6 +94,7 @@ class Client:
                 if e.code not in RETRY_STATUS or attempt == self.retries:
                     raise
                 asked = retry_after(e.headers.get("Retry-After") if e.headers else None)
+                e.close()
                 if asked is not None and asked > MAX_WAIT:
                     raise RuntimeError(f"{url}: HTTP {e.code} asks to wait {asked}s, over {MAX_WAIT}s; stopping") from e
                 wait = max(asked or 0, min(MAX_WAIT, 30 * 2**attempt))
