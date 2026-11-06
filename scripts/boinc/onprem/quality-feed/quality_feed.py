@@ -570,8 +570,8 @@ def fill_chunk(a, texts, chunk, size, short_ok, camp_dir, state, seq, done_path,
     """Prepare up to `size` of `chunk`'s pages, in order, and write them to the outbox as one
     chunk. A page that can't be prepared is replaced by the next of `chunk` not yet tried, so
     pages past `size` are a reserve. A chunk that still comes up short is written only if
-    `short_ok`; otherwise nothing is written or recorded and its pages are left for a later
-    round. Returns (pages written, the number left for a retry, the next chunk number, how
+    `short_ok`; otherwise only the pages never worth a retry are recorded (skipped.txt), and
+    the rest are left for a later round. Returns (pages written, the number left for a retry, the next chunk number, how
     many of `chunk`'s pages were dealt with: those after it are for the next chunk)."""
     retry = 0
     docs = {p["doc_id"] for p in chunk}
@@ -600,6 +600,7 @@ def fill_chunk(a, texts, chunk, size, short_ok, camp_dir, state, seq, done_path,
         usable.append(p)
         at.append(i)
     if len(usable) < size and not short_ok:
+        record_skipped(skip_path, [(d, why) for _, d, why in skipped])
         return 0, 0, seq, 0
     tried = 0
     while len(prepared) < size and tried < len(usable):
@@ -611,6 +612,8 @@ def fill_chunk(a, texts, chunk, size, short_ok, camp_dir, state, seq, done_path,
     ok = [p for p in usable[:tried] if p["doc_id"] in prepared]
     if len(ok) < size and not short_ok:
         log("chunk came up short; its pages wait for the next round", pages=len(ok), chunk_pages=size)
+        # Bar those never worth a retry: selected again, they'd keep a full chunk from forming.
+        record_skipped(skip_path, [(d, why) for _, d, why in skipped] + terminal)
         return 0, retry, seq, 0
     used = len(chunk) if tried == len(usable) else at[tried - 1] + 1
     skipped = [(d, why) for i, d, why in skipped if i < used] + terminal
@@ -629,11 +632,16 @@ def fill_chunk(a, texts, chunk, size, short_ok, camp_dir, state, seq, done_path,
                             f"{'' if p.get('damage_rate') is None else p['damage_rate']}\n" for p in ok))
         log("chunk ready", chunk=name, pages=len(ok), with_as=sum(1 for p in ok if p["doc_id"] in as_map),
             with_ours=sum(1 for p in ok if p["doc_id"] in ours))
+    record_skipped(skip_path, skipped)
+    return len(ok), retry, seq, used
+
+
+def record_skipped(skip_path, skipped):
+    """Appends (doc, reason) pairs to skipped.txt: pages never selected again."""
     if skipped:
         with open(skip_path, "a") as f:
             f.write("".join(f"{d}\t{why}\n" for d, why in skipped))
         log("skipped", pages=len(skipped))
-    return len(ok), retry, seq, used
 
 
 def prepare_wave(a, texts, wave, loc, as_map, ours, state, prepared, skipped, truncated):

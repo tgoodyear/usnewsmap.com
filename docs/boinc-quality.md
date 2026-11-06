@@ -1477,7 +1477,8 @@ count towards a full chunk; they wait, logged, until it does. A page that can't 
 (its scan can't be fetched or decoded) is replaced by the next one, from a reserve of a
 tenth of `--chunk-pages`; a chunk still short after that ("chunk came up short") is
 written only once it's overdue, so a scan server that stops answering mid-chunk doesn't
-ship a small unit.
+ship a small unit. Its pages never worth a retry (no LoC text, a scan cut short at the
+source) still go to `skipped.txt`, so they don't hold the next round's chunk back.
 
 Once a chunk has shipped, the pass's buffer scans are deleted, except the most damaged
 (LoC's `damage_rate`; unscored pages last), up to `--keep-bytes` in all (1 TB from

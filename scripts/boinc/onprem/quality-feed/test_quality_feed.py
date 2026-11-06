@@ -1465,6 +1465,33 @@ class FollowChunkTest(unittest.TestCase):
         self.assertIn("waiting for the curated copy's LoC text", output.getvalue())
         self.assertIn('"pages": 2', output.getvalue().split("waiting for a full chunk")[1][:200])
 
+    def test_a_chunk_that_comes_up_short_still_records_the_pages_never_worth_a_retry(self):
+        raw = DecodeQuarantineTest.image()
+        pages = [DecodeQuarantineTest.page(seq, raw) for seq in (1, 2, 3)]
+        no_text, cut, _ = (p["doc_id"] for p in pages)
+        texts = mock.Mock()
+        texts.loc.side_effect = lambda batch, bv, docs: ({d: "LoC text" for d in docs if d != no_text}, True)
+        texts.american_stories.return_value = {}
+        texts.ours.return_value = {}
+        a = types.SimpleNamespace(scan_server="http://scan", workers=1, quarantine_decode=False, alto_cache=None)
+
+        def prepare(server, texts, p, *rest):
+            if p["doc_id"] == cut:
+                raise feed.SourceTruncated("no EOC")
+            return b"jpg", b"alto", "text", None
+
+        # Too few usable pages to try (3 wanted), or tried and one short (2 wanted).
+        for size, want in ((3, {no_text}), (2, {no_text, cut})):
+            with self.subTest(size=size), tempfile.TemporaryDirectory() as d, \
+                    mock.patch.object(feed, "prepare_page", side_effect=prepare), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                done, skip = Path(d, "done.txt"), Path(d, "skipped.txt")
+                self.assertEqual(feed.fill_chunk(a, texts, pages, size, False, d, d, 1, str(done), str(skip)),
+                                 (0, 0, 1, 0))
+                self.assertEqual([line.split("\t")[0] for line in skip.read_text().splitlines()],
+                                 [p["doc_id"] for p in pages if p["doc_id"] in want])
+                self.assertFalse(done.exists())
+
     def test_a_batch_without_curated_text_is_looked_for_again_and_one_with_is_remembered(self):
         texts = feed.Texts(str(self.root / "curated"))
         self.assertFalse(texts.has_loc("xx_later", 1))
