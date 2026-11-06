@@ -1,2 +1,0 @@
-model_load_seconds 2
-read_seconds 1019

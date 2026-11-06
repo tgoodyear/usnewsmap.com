@@ -1,11 +1,14 @@
 Report data: source attribution and redistribution
 ==================================================
 
-This notice accompanies the proposed cumulative report-data archive. Its
-file-by-file SHA-256 inventory is report-data-manifest.json in this directory.
-The inventory covers the earlier October archive overlaid with the tracked
-November study data; it is not evidence that a replacement was published.
-The October release and the separate Study 8 supplement remain unchanged.
+This notice accompanies the report-data archives. The cumulative report-data
+release has a file-by-file SHA-256 inventory, report-data-manifest.json in
+this directory, which covers the October archive. A report with its own set
+in ops/data-assets.json (report-YYYY-MM-topic) is released separately, with
+its member list and SHA256SUMS as release assets. The GPU studies' data is in
+data-report-2026-11-gpu-studies-20261106-0183479. The copy of this notice in
+that release has the earlier wording; its source terms are the same. The
+October release and the Study 8 supplement are unchanged.
 
 There is no single licence for the archive. The source terms below apply to
 the material they cover, not automatically to every file or to every output
@@ -93,8 +96,8 @@ https://gitlab.uni-bonn.de/digital-history/Chronicling-Germany-Dataset
 Where to find the sources
 -------------------------
 
-Paths below are relative to the repository root. They describe the candidate
-inventory, not all possible future files under those directories.
+Paths below are relative to the repository root. They describe the archives'
+contents, not all possible future files under those directories.
 
 * docs/data/: storage inventory and LOC metadata, not benchmark reference
   datasets.
@@ -125,8 +128,9 @@ inventory, not all possible future files under those directories.
   Crop IDs and the protocol's source-disjoint sample descriptions distinguish
   the sources.
 
-The archive does not include every upstream image or reference needed to
-rerun the studies. Some frozen ID lists and other non-archive files remain in
-the repository; consult the reports and benchmark source manifests to obtain
-the inputs separately under their own terms. Retained outputs and logs also
-have the reproducibility limitations recorded in the GPU study report.
+The archive does not include every upstream image or reference needed to rerun
+the studies. The GPU studies' frozen ID lists are in
+data-report-2026-11-gpu-studies-20261106-0183479; consult the reports and
+benchmark source manifests to obtain the inputs separately under their own
+terms. Retained outputs and logs also have the reproducibility limitations
+recorded in the GPU study report.

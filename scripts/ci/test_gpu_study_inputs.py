@@ -18,6 +18,10 @@ import unittest
 
 REPO = Path(__file__).resolve().parents[2]
 HERE = REPO / "docs/reports/2026-11-gpu-studies/scripts"
+
+# The 8B base revision recorded in data/s5/8b-train-report.json, which is in the report's data
+# release (docs/reports/2026-11-gpu-studies/report.md, "Data").
+RETAINED_8B_REVISION = "0c351dd01ed87e9c1b53cbc748cba10e6187ff3b"
 LOCK = REPO / "ocr/engines/tesseract/models.lock"
 SURVEY_LOCK = REPO / "scripts/ocr-survey/models.lock"
 WORK = Path.cwd() / f".gpu-study-review-tests-{os.getpid()}"
@@ -302,7 +306,7 @@ with open(os.environ['TRACE'], 'a') as f:
 
     def test_hf_revision_is_recorded_and_second_phase_is_validated(self):
         scripts, inp, out, env = self.lora_fixture("lora")
-        revision = json.loads((HERE.parent / "data/s5/8b-train-report.json").read_text())["base_revision"]
+        revision = RETAINED_8B_REVISION
         (out / "base-revision.txt").write_text("stale", encoding="utf-8")
         env["SNAPSHOT_FAIL"] = "1"
         result = self.run_script("bash", str(scripts[0]), env=env)
@@ -333,7 +337,7 @@ with open(os.environ['TRACE'], 'a') as f:
 
     def test_hf_revision_is_pinned_without_jq(self):
         scripts, _, _, env = self.lora_fixture("lora-no-jq")
-        revision = json.loads((HERE.parent / "data/s5/8b-train-report.json").read_text())["base_revision"]
+        revision = RETAINED_8B_REVISION
         for name in ("python3", "seq", "rm", "cat"):
             (self.bin / name).symlink_to(shutil.which(name))
         env["PATH"] = str(self.bin)
@@ -374,7 +378,7 @@ with open(os.environ['TRACE'], 'a') as f:
         self.assertEqual(result.returncode, 6, result.stderr)
         self.assertFalse(self.events())
 
-        revision = json.loads((HERE.parent / "data/s5/8b-train-report.json").read_text())["base_revision"]
+        revision = RETAINED_8B_REVISION
         config.write_text(settings("fixture/model", revision), encoding="utf-8")
         result = self.run_script("bash", str(script), env=env)
         self.assertEqual(result.returncode, 6, result.stderr)

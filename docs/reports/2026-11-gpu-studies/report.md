@@ -33,7 +33,7 @@ date: "November 2026"
 
 ## Reading this report
 
-The samples, measures and decision rules for each study were fixed in [`protocol.md`](protocol.md) before its runs, except Studies 8 and 10, which were added later. All limits are 95% bootstrap limits resampling source pages; "post-hoc" marks anything chosen after seeing results. Departures are listed under [Departures from the protocol](#departures-from-the-protocol). Some early comparisons are provisional because the historical runners could hide failed reads and the adapter files weren't checked for missing tensors; see [Reproduction notes](#reproduction-notes). Scripts are in [`scripts/`](scripts/), the scoring tool in [`tools/`](tools/), and the data in [`data/`](data/).
+The samples, measures and decision rules for each study were fixed in [`protocol.md`](protocol.md) before its runs, except Studies 8 and 10, which were added later. All limits are 95% bootstrap limits resampling source pages; "post-hoc" marks anything chosen after seeing results. Departures are listed under [Departures from the protocol](#departures-from-the-protocol). Some early comparisons are provisional because the historical runners could hide failed reads and the adapter files weren't checked for missing tensors; see [Reproduction notes](#reproduction-notes). Scripts are in [`scripts/`](scripts/), the scoring tool in [`tools/`](tools/), and the data in this report's release (see [Data](#data)).
 
 # Study 1: German Fraktur (#926, #835)
 
@@ -88,7 +88,7 @@ No German trust threshold comes out of this study, and #835 stays open.
 
 **Bottom line.** A rank-8 adapter on Qwen 2B cut Reichsanzeiger CER from 62.0% to 17.3%, but Study 5 shows that almost all of this was fewer loops: a loop guard alone gives the same gain. The adapter adds nothing shown on English and stays untrusted.
 
-A rank-8 adapter on Qwen3-VL-2B, trained for 2,000 optimizer steps on 4,032 crops from the Austrian newspapers, NewsEye BnF and NewsEye NLF Swedish. Validation was NZZ and NewsEye Finnish (378 crops), test Reichsanzeiger and Overproof (1,000 crops, 38 pages). The split was fixed before training: SHA-256 of [`data/samples/lora-split.json`](data/samples/lora-split.json) is `65fe42a25f9e2ee6f30c975b2c7bc9398c5293493a01ccad165930a51606ff81`.
+A rank-8 adapter on Qwen3-VL-2B, trained for 2,000 optimizer steps on 4,032 crops from the Austrian newspapers, NewsEye BnF and NewsEye NLF Swedish. Validation was NZZ and NewsEye Finnish (378 crops), test Reichsanzeiger and Overproof (1,000 crops, 38 pages). The split was fixed before training: SHA-256 of `data/samples/lora-split.json` is `65fe42a25f9e2ee6f30c975b2c7bc9398c5293493a01ccad165930a51606ff81`.
 
 Training took 61 minutes on an RTX 3090, with 8.8 GB allocated at peak and about 21.7 GB reserved. All 4,032 examples encoded.
 
@@ -134,7 +134,7 @@ Status. The adapter stays `untrusted-requires-held-out-evaluation`. It wasn't ex
 
 ## Latin-script crops, on human transcriptions
 
-612 crops. Pooled CER by source, with median crop CER in brackets. A reader with no output on a crop scores as empty. Limits and WER are in [`data/s3/compare.jsonl`](data/s3/compare.jsonl).
+612 crops. Pooled CER by source, with median crop CER in brackets. A reader with no output on a crop scores as empty. Limits and WER are in `data/s3/compare.jsonl`.
 
 | Source (crops, pages) | Qwen 8B | CHURRO | Tesseract | Surya | GOT-OCR | Granite | American Stories |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -287,7 +287,7 @@ The adapter was merged into its base and converted with llama.cpp commit `091b6a
 
 Export and quantization lost nothing measurable. The same adapter, GGUF against BF16: Reichsanzeiger -0.1 points (-0.4 to 0.3), `dta19` -0.1 (-0.2 to 0.1), Overproof -0.6 (-1.3 to -0.1), BLN600 -0.8 (-1.7 to 0). The GGUF path was better than BF16 where a difference shows, which isn't an export gain: the runtimes also differ in image handling. Peak VRAM was 3.5 GB on 2B Q8_0.
 
-**Qwen 8B adapter.** The Study 2 recipe on Qwen3-VL-8B-Instruct (revision [`0c351dd01ed87e9c1b53cbc748cba10e6187ff3b`](data/s5/8b-train-report.json), pinned in the training script), on an RTX 4090: 2,000 steps in 76 minutes, 22.5 GB allocated at peak and 24 GB reserved, so a 3090 just fits it and a 12 GB card doesn't. The first run, on a 3090, finished training and validation, but its files were lost when the host refused SSH during the copy and the wrapper destroyed the instance anyway. It was rerun with the same seed and settings, and the wrapper now copies results back during the job.
+**Qwen 8B adapter.** The Study 2 recipe on Qwen3-VL-8B-Instruct (revision `0c351dd01ed87e9c1b53cbc748cba10e6187ff3b`, recorded in `data/s5/8b-train-report.json`, pinned in the training script), on an RTX 4090: 2,000 steps in 76 minutes, 22.5 GB allocated at peak and 24 GB reserved, so a 3090 just fits it and a 12 GB card doesn't. The first run, on a 3090, finished training and validation, but its files were lost when the host refused SSH during the copy and the wrapper destroyed the instance anyway. It was rerun with the same seed and settings, and the wrapper now copies results back during the job.
 
 Validation, with guard, 378 crops: baseline 5.3% (3.8 to 7.5); 250 steps 3.5%; 500 steps 2.6%; 1,000 steps 2.5%; 2,000 steps 2.1% (1.6 to 2.8). The 2,000-step adapter was selected.
 
@@ -469,7 +469,7 @@ On a $0.20-an-hour rented 3090 with vLLM, 676 crops took 23 s: about 8,800 pages
 
 ## Validation across cards
 
-The `usnm_qwen` validator compares replicas crop by crop, with a floor of 0.5. Character similarity, the measure of `crop-consensus-v2` (#1434), passes nearly every honest pair and catches the faulty Vulkan readings. Word-bag Dice, the strict rule's measure, fails one honest CPU-and-GPU pair in nine. Counts are in [`validation-agreement.json`](data/s9/validation-agreement.json).
+The `usnm_qwen` validator compares replicas crop by crop, with a floor of 0.5. Character similarity, the measure of `crop-consensus-v2` (#1434), passes nearly every honest pair and catches the faulty Vulkan readings. Word-bag Dice, the strict rule's measure, fails one honest CPU-and-GPU pair in nine. Counts are in `data/s9/validation-agreement.json`.
 
 | Pair, 612 crops | Identical | Similarity under 0.5 | Dice under 0.5 |
 | --- | ---: | ---: | ---: |
@@ -490,7 +490,7 @@ Xiaomi-OCR-0 returns text without coordinates, so it can't make ALTO by itself. 
 | Swedish | 7.0% | 11.4% | -4.4 | -6.2 to -2.0 |
 | NZZ German | 18.4% | 13.4% | +5.1 | 2.5 to 7.5 |
 
-A prototype aligner maps Xiaomi-OCR-0's words onto RapidOCR's boxes in reading order ([`data/s9/align/`](data/s9/align/)). On the 612 crops the text keeps its accuracy (4.00% after against 4.04% before), 94.4% of words get a box of their own, and where both readers agree with the reference, the box is the right one 99.97% of the time. It can't rescue invented text: on whole-page readings only 6.7% of words matched LoC's, so a per-page match-share gate (about 88% on crops, under 30% on whole pages) must decide when to fall back. Two `usnm-alto` bugs turned up: #1488 and #1489.
+A prototype aligner maps Xiaomi-OCR-0's words onto RapidOCR's boxes in reading order (`data/s9/align/`). On the 612 crops the text keeps its accuracy (4.00% after against 4.04% before), 94.4% of words get a box of their own, and where both readers agree with the reference, the box is the right one 99.97% of the time. It can't rescue invented text: on whole-page readings only 6.7% of words matched LoC's, so a per-page match-share gate (about 88% on crops, under 30% on whole pages) must decide when to fall back. Two `usnm-alto` bugs turned up: #1488 and #1489.
 
 # Study 10: Tesseract trained on the Yiddish corpus (3 November 2026)
 
@@ -622,6 +622,23 @@ Of 69 instances, 37 ended with a clean job exit. The others: 20 with no SSH with
 
 From Study 5 on, jobs that fit in 12 GB ran on RTX 3060s at $0.058 to $0.078 an hour. Readers ran on different cards, which affects speed comparisons.
 
+# Data
+
+The study data isn't kept in the repository. The 178 files that were in `data/` (13.8 MB of scores, readings by crop and page, run logs, ledgers and the frozen sample lists) are in the release [`data-report-2026-11-gpu-studies-20261106-0183479`](https://github.com/tgoodyear/usnewsmap.com/releases/tag/data-report-2026-11-gpu-studies-20261106-0183479), with the source-rights notice. Paths in this report such as `data/s3/compare.jsonl` are paths inside it.
+
+| Asset | SHA-256 |
+| --- | --- |
+| `report-2026-11-gpu-studies.tar.gz` | `7c347ebce155158515a9a4256e25fc6e00351a455f648bc81e4713ce6e132884` |
+| `report-2026-11-gpu-studies.members.txt` | `db557e385ca550bdf8ae645291c2ce18e4774906564608684d86e90ad33ee84b` |
+
+To restore `data/`, run this from the repository root. It checks the tarball against the digest in `ops/data-assets.json` before extracting.
+
+```sh
+scripts/ops/data-assets.sh --fetch --set report-2026-11-gpu-studies
+```
+
+Some files hold OCR readings that contain text from the test sets' source pages. [`report-data-rights.txt`](../report-data-rights.txt) gives each source's attribution and terms. The Study 8 supplement and the October `report-data` release are separate and unchanged.
+
 # Reproduction notes
 
 **Historical runners.** The historical LoRA adapter files were not checked for missing tensors, earlier Surya page-mode runners could discard block errors, and earlier Tesseract wrappers could mask failed reads. The affected comparisons are provisional; the retained evidence does not establish whether these problems affected a result. Studies 8 and 10 used separately checked runners.
@@ -630,7 +647,7 @@ From Study 5 on, jobs that fit in 12 GB ran on RTX 3060s at $0.058 to $0.078 an 
 
 **Study 2 regeneration.** For regeneration, `analyze-2.sh` requires `--phase validation` to score checkpoints for selection or `--phase test` to score the held-out split; it has no default phase.
 
-**Study 3 regeneration.** For regeneration, `analyze-3.sh` decodes the American Stories `as.b64` in `${GPU_STUDY_DEV}/local/out/` (or `AMERICAN_STORIES_B64`), joining nonblank `bboxes[].raw_text` in order as the survey runner does. Alternatively, explicitly set `AMERICAN_STORIES_JSONL` to an existing `{id,text}` JSONL file, such as the [retained readings](data/s3/american-stories.jsonl); do not set it with `AMERICAN_STORIES_B64`. Input and override paths are absolute or relative to `GPU_STUDY_ROOT`. A valid empty reading is present; an absent row is missing. Before scoring, the last selected reading for each ID must match those retained readings, or `AMERICAN_STORIES_REFERENCE` if they are elsewhere. A missing input, malformed result, or mismatch stops regeneration rather than changing the historical scores. The raw batch was unavailable for this review, so its comparison has only been exercised on synthetic data.
+**Study 3 regeneration.** For regeneration, `analyze-3.sh` decodes the American Stories `as.b64` in `${GPU_STUDY_DEV}/local/out/` (or `AMERICAN_STORIES_B64`), joining nonblank `bboxes[].raw_text` in order as the survey runner does. Alternatively, explicitly set `AMERICAN_STORIES_JSONL` to an existing `{id,text}` JSONL file, such as the retained readings in `data/s3/american-stories.jsonl`; do not set it with `AMERICAN_STORIES_B64`. Input and override paths are absolute or relative to `GPU_STUDY_ROOT`. A valid empty reading is present; an absent row is missing. Before scoring, the last selected reading for each ID must match those retained readings, or `AMERICAN_STORIES_REFERENCE` if they are elsewhere. A missing input, malformed result, or mismatch stops regeneration rather than changing the historical scores. The raw batch was unavailable for this review, so its comparison has only been exercised on synthetic data.
 
 **Study 1 and 3 Tesseract wrappers.** The historical Tesseract wrappers could record failed or timed-out reads as text. The retained Study 1 and 3 outputs lack per-read exit receipts, so job-level success and zero missing counts cannot establish that all reads succeeded. Their Tesseract comparisons remain provisional. Updated wrappers record failures separately; no OCR was rerun.
 
@@ -640,7 +657,7 @@ From Study 5 on, jobs that fit in 12 GB ran on RTX 3060s at $0.058 to $0.078 an 
 
 **Study 8 data and provenance.** The [aggregate-only Study 8 supplement](https://github.com/tgoodyear/usnewsmap.com/releases/tag/data-report-data-s8-supplement-20261102-b7f7371) includes the complete summary scores, line diagnostics, newspaper agreement and provenance, but no images, transcriptions, OCR text or per-page or per-crop results. Its [archive](https://github.com/tgoodyear/usnewsmap.com/releases/download/data-report-data-s8-supplement-20261102-b7f7371/report-data.tar.gz) has SHA-256 `eff92070058bf0d065e3febcde6f215dc4f2f955e4a1dca002189de1e44e5030`; verify it against the published [checksums](https://github.com/tgoodyear/usnewsmap.com/releases/download/data-report-data-s8-supplement-20261102-b7f7371/SHA256SUMS) before extracting at the repository root. The [member list](https://github.com/tgoodyear/usnewsmap.com/releases/download/data-report-data-s8-supplement-20261102-b7f7371/report-data.members.txt) identifies the files.
 
-The supplement is **not** the cumulative `report-data` set and does not change `ops/data-assets.json`. A proposed cumulative package carries forward the October release and tracked November data, including textual reader outputs. Its [source-specific notice](../report-data-rights.txt) and file-by-file inventory cover the combined contents; the packer refuses files or bytes outside that inventory. The October release remains public and unchanged. The proposed migration still needs approval and a verified new release before the November data can be removed from the tree.
+The supplement is separate from this report's data release (see [Data](#data)), and both stay published. The October `report-data` release is unchanged.
 
 **GT4HistOCR terms.** The preregistered protocol called `dta19` CC BY 4.0, matching Zenodo's metadata. The source README says CC BY-SA 4.0; the redistribution notice follows that more restrictive statement. This corrects the rights description without changing the historical sample or protocol.
 
@@ -654,7 +671,7 @@ The historical Jochre runs have HTTP 200 receipts and valid text-containing ZIPs
 
 Run the [synthetic regression tests](../../../scripts/ci/test_gpu_study_yiddish.py) from the repository root with `python3 -B -I scripts/ci/test_gpu_study_yiddish.py`. The descendant tests require Linux, `/proc` and pidfd support; they use mock commands rather than BOINC, GPUs or OCR.
 
-**Study 9 setup.** Xiaomi-OCR-0 (Qwen3.5-0.8B base, Apache-2.0, released 30 September 2026) at revision `bbd8cf8d21f2`, on vLLM 0.29.0 in FP16 on the local RTX 2060 SUPER (no BF16 on that card; Triton attention), requests through saturate 0.3.0, in bounded windows with BOINC GPU work suspended. Region prompt, at most 2,048 tokens; Qwen 8B's Study 3 readings were scored with Study 5's guard applied afterwards. Folding long s, the double hyphen and superscript e (post-hoc) gives 3.6% for Xiaomi-OCR-0, 4.0% for Qwen and 8.2% for Tesseract. On vLLM the start took about 10 minutes on this card; crops read at 9.9 a second, whole pages at 224 an hour. saturate drove every run with no errors or retries; its window settled at 32 on crops. The deployed-path GGUF was converted at llama.cpp `e1a9a6dcb` (Q8_0 `61f0667b`, F16 projector `77dc7cf2`) with a one-line patch mapping the tokenizer's hash to the Qwen2 pre-tokenizer, whose regex it matches ([`converter.patch`](scripts/s9/converter.patch)); reads used `--parallel 1`, temperature 0, seed 42 and a 16,384-token context. The b12084 release (`f9448cddc`) archives matched GitHub's published digests. Rental costs are rate times time from creation to destruction ([`ledger-s9.csv`](data/s9/runs/ledger-s9.csv)); Vast set `NVIDIA_DRIVER_CAPABILITIES=compute,utility` whatever the request ([`vulkan-env.txt`](data/s9/runs/results/s9-r3090/vulkan-env.txt)). The aligner is a word-level Needleman–Wunsch over both readings with a rescue pass for reordered segments; of 13,471 words, 94.4% get a direct box, 1.3% share one, 3.1% are interpolated or line-fitted and 1.2% are guesses; boxes checked against 11,179 reference-matched words had mean IoU 0.998.
+**Study 9 setup.** Xiaomi-OCR-0 (Qwen3.5-0.8B base, Apache-2.0, released 30 September 2026) at revision `bbd8cf8d21f2`, on vLLM 0.29.0 in FP16 on the local RTX 2060 SUPER (no BF16 on that card; Triton attention), requests through saturate 0.3.0, in bounded windows with BOINC GPU work suspended. Region prompt, at most 2,048 tokens; Qwen 8B's Study 3 readings were scored with Study 5's guard applied afterwards. Folding long s, the double hyphen and superscript e (post-hoc) gives 3.6% for Xiaomi-OCR-0, 4.0% for Qwen and 8.2% for Tesseract. On vLLM the start took about 10 minutes on this card; crops read at 9.9 a second, whole pages at 224 an hour. saturate drove every run with no errors or retries; its window settled at 32 on crops. The deployed-path GGUF was converted at llama.cpp `e1a9a6dcb` (Q8_0 `61f0667b`, F16 projector `77dc7cf2`) with a one-line patch mapping the tokenizer's hash to the Qwen2 pre-tokenizer, whose regex it matches ([`converter.patch`](scripts/s9/converter.patch)); reads used `--parallel 1`, temperature 0, seed 42 and a 16,384-token context. The b12084 release (`f9448cddc`) archives matched GitHub's published digests. Rental costs are rate times time from creation to destruction (`data/s9/runs/ledger-s9.csv`); Vast set `NVIDIA_DRIVER_CAPABILITIES=compute,utility` whatever the request (`data/s9/runs/results/s9-r3090/vulkan-env.txt`). The aligner is a word-level Needleman–Wunsch over both readings with a rescue pass for reordered segments; of 13,471 words, 94.4% get a direct box, 1.3% share one, 3.1% are interpolated or line-fitted and 1.2% are guesses; boxes checked against 11,179 reference-matched words had mean IoU 0.998.
 
 # Departures from the protocol
 

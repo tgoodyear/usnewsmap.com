@@ -16,6 +16,8 @@ One directory per report, named `<year>-<month>-<topic>`. A report is `report.md
 
 `scripts/ops/data-assets.sh` defines the `report-data` set as every tracked file under `docs/reports/` and `docs/data/` that is not prose or code (`.csv`, `.json`, `.jsonl`, `.parquet`, `.txt`, `.gz`, `.pdf`, `.tar`). `ops/data-assets.json` records the release that holds the current set and the tarball's sha256. The tracked [source-rights notice](report-data-rights.txt) describes mixed-source material; the accompanying `report-data-manifest.json` records the SHA-256 of every staged file except the manifest itself. The packer refuses missing, changed or unlisted files. This is an inventory check, not an automatic determination of rights.
 
+A report can instead have a set of its own, named `report-<directory>` (for example `report-2026-11-gpu-studies`). It holds every tracked file in that report's `data/` directory and the rights notice, and those files leave `report-data`. To add one, add an entry with no tag to `ops/data-assets.json` and the set to the workflow's choices, publish it, record the printed tag and digest, and remove the data from the tree. The release tag is named for the report, and `--fetch --set report-<directory>` restores it.
+
 ```sh
 scripts/ops/data-assets.sh --fetch --set report-data     # downloads, checks the digest, extracts under the repository root
 scripts/ops/data-assets.sh --members --set report-data   # what the set holds at this commit

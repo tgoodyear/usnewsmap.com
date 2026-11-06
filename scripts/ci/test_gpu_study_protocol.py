@@ -12,6 +12,10 @@ import unittest
 
 REPO = Path(__file__).resolve().parents[2]
 REPORT = REPO / "docs/reports/2026-11-gpu-studies"
+
+# The 8B base revision recorded in data/s5/8b-train-report.json, which is in the report's data
+# release (docs/reports/2026-11-gpu-studies/report.md, "Data").
+RETAINED_8B_REVISION = "0c351dd01ed87e9c1b53cbc748cba10e6187ff3b"
 SCRIPTS = REPORT / "scripts"
 
 
@@ -216,7 +220,7 @@ class Study5PinnedBaseTests(ProtocolFixture):
         )
 
     def test_retained_revision_is_used_for_download_receipt_and_training(self):
-        expected = json.loads((REPORT / "data/s5/8b-train-report.json").read_text())["base_revision"]
+        expected = RETAINED_8B_REVISION
         self.assertRegex(expected, r"^[0-9a-f]{40}$")
         result = self.run_job()
         self.assertEqual(result.returncode, 0, result.stderr)

@@ -8,8 +8,8 @@
   "report-2026-11-gpu-studies": {
     "asset": "report-2026-11-gpu-studies.tar.gz",
     "members": "docs/reports/2026-11-gpu-studies/data and the source-rights notice",
-    "sha256": null,
-    "tag": null
+    "sha256": "7c347ebce155158515a9a4256e25fc6e00351a455f648bc81e4713ce6e132884",
+    "tag": "data-report-2026-11-gpu-studies-20261106-0183479"
   },
   "report-data": {
     "asset": "report-data.tar.gz",
