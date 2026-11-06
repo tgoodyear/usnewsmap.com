@@ -761,14 +761,21 @@ impl Run<'_> {
             ensure!(
                 old.batch == record.batch
                     && old.page_key == record.page_key
-                    && old.image_path == record.image_path
                     && old.md5 == record.md5
                     && old.sha256 == record.sha256,
                 "{}: existing Penn State sidecar disagrees with the verified scan",
                 sidecar.display()
             );
-            std::fs::set_permissions(&sidecar, std::fs::Permissions::from_mode(0o644))
-                .with_context(|| sidecar.display().to_string())?;
+            if old.batch_version != record.batch_version
+                || old.image_path != record.image_path
+                || old.alto_store_path != record.alto_store_path
+                || old.ocr_store_path != record.ocr_store_path
+            {
+                write_atomic(&sidecar, &serde_json::to_vec(&record)?)?;
+            } else {
+                std::fs::set_permissions(&sidecar, std::fs::Permissions::from_mode(0o644))
+                    .with_context(|| sidecar.display().to_string())?;
+            }
         } else {
             write_atomic(&sidecar, &serde_json::to_vec(&record)?)?;
         }
@@ -1162,6 +1169,24 @@ mod tests {
             Some("psu_pst_test_ver01/bag/data/sn84035968/000002003/1861100801/1024.xml")
         );
         assert!(records[1].ocr_store_path.is_none());
+
+        let sidecar = scan_sidecar_path(&image);
+        let mut stale = records[0].clone();
+        stale.image_path = "keep/psu_pst_test/sn84035968/1861-10-08/1/1.jp2".into();
+        write_atomic(&sidecar, &serde_json::to_vec(&stale).unwrap()).unwrap();
+        fetch_batch(
+            &site,
+            store.as_ref(),
+            to,
+            &scan_opts,
+            "batch_pst_test_ver01",
+            &tmp,
+        )
+        .await
+        .unwrap();
+        let refreshed: PsuScanRecord =
+            serde_json::from_slice(&std::fs::read(&sidecar).unwrap()).unwrap();
+        assert_eq!(refreshed.image_path, records[0].image_path);
         assert_eq!(
             std::fs::metadata(scans_root.join("catalog/psu_pst_test_ver01.jsonl"))
                 .unwrap()
