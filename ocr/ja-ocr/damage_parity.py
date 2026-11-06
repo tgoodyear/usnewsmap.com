@@ -255,8 +255,9 @@ def synthetic() -> list[tuple[str, str, tuple]]:
         ("synthetic-cherokee-mixed", (CHEROKEE + ENGLISH) * 3, ("chr", "eng")),
         # Cherokee's small letters casefold to its capitals (the other way round from Latin).
         ("synthetic-cherokee-small", CHEROKEE.lower() * 4, ("chr",)),
-        # The Phoenix's OCR: ᎾᏍᎩ read as ᏩᏍᎩ, Ꮅ as Ꮲ.
-        ("synthetic-cherokee-ocr", CHEROKEE.replace("ᎾᏍᎩ", "ᏩᏍᎩ").replace("Ꮅ", "Ꮲ") * 4, ("chr", "eng")),
+        # The Phoenix's OCR: ᎾᏍᎩ read as ᏩᏍᎩ, Ꮅ as Ꮲ. John 1:1-4 has no Ꮅ, so two list words with one follow it.
+        ("synthetic-cherokee-ocr", (CHEROKEE + "ᎤᏤᎵ ᎤᏤᎵᎦ. ").replace("ᎾᏍᎩ", "ᏩᏍᎩ").replace("Ꮅ", "Ꮲ") * 4,
+         ("chr", "eng")),
         ("synthetic-dano-norwegian", ("Han kom paa Mandag til Byen, og der var mange Folk af alle Slags. " * 6),
          ("nor", "dan", "eng")),
         ("synthetic-short", "The council met.", ("eng",)),
