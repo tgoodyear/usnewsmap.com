@@ -49,6 +49,14 @@ def fetch(url: str, path: str) -> str:
     return path
 
 
+def sha256_file(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def strip_marks(w: str) -> str:
     return "".join(c for c in unicodedata.normalize("NFD", w) if not unicodedata.combining(c))
 
@@ -138,8 +146,7 @@ def cherokee(tmp: str, pdfs: list[str]) -> None:
     for pdf in pdfs or [fetch(CHR_URL, os.path.join(tmp, "cnts.pdf"))]:
         words = [w for w in damage_v2.text_words(cherokee_text(pdf))[1] if damage_v2.script(w) == "cherokee"]
         editions.append(collections.Counter(words))
-        with open(pdf, "rb") as f:
-            digest = hashlib.file_digest(f, "sha256").hexdigest()
+        digest = sha256_file(pdf)
         print(f"{os.path.basename(pdf)}: sha256 {digest}, {len(words):,} words, {len(editions[-1]):,} different")
     # A word a line break or a verse number in the margin cuts leaves two pieces. Editions break their lines
     # in different places, so with both, a word counts as often as it does in the one it is fewest in.

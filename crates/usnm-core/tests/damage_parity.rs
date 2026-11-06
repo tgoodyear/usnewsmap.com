@@ -34,10 +34,13 @@ fn fixture_was_scored_by_this_damage_v2_py() {
         "damage_v2.py changed since the fixture was built: {RESCORE}"
     );
     // The models also read our own word lists.
-    assert_eq!(
-        header.wordlists_sha256.keys().collect::<Vec<_>>(),
-        ["chr", "haw", "yi"]
-    );
+    let mut codes = header
+        .wordlists_sha256
+        .keys()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    codes.sort_unstable();
+    assert_eq!(codes, ["chr", "haw", "yi"]);
     for (code, want) in &header.wordlists_sha256 {
         assert_eq!(
             want,
