@@ -255,7 +255,7 @@ Provision refuses uncommitted settings; `--allow-dirty` is for an emergency that
 
 The spare moves to a Container Apps environment without a VNet, so its load balancer and public IP go (#308, [ADR-0008, amendment "no VNet for the spare"](../design/adr/0008-private-networking.md#amendment-november-2026-no-vnet-for-the-spare-308)). The data lake, the index account and Cosmos then accept every network, and Entra ID roles are the only way in.
 
-**Stage 1, additive.** With `USNM_DATA_ALL_NETWORKS=true`, `USNM_SPARE_ENVIRONMENT=true` and `USNM_BOINC_HANDOFF_IMAGE` empty committed, run `scripts/azure/provision.sh --env prod --what-if --api-tag live`.
+**Stage 1, additive.** With `USNM_DATA_ALL_NETWORKS=true`, `USNM_SPARE_ENVIRONMENT=true` and `USNM_BOINC_HANDOFF_IMAGE` left out of `infra/env/prod.json` committed, run `scripts/azure/provision.sh --env prod --what-if --api-tag live`.
 
 - It may add `usnm-core-spare-cae-prod`, `usnm-api-spare-ca-prod`, `usnm-qw-spare-ca-prod`, their role assignments and the new environment's diagnostic setting.
 - It may set the lake and the index account to `defaultAction: Allow`, and Cosmos to no IP rules with the VNet filter off.

@@ -89,7 +89,7 @@ The VNet is the only reason the spare's environment has a load balancer and a pu
 
 - The environment `usnm-core-spare-cae-prod` has no VNet. Its API `usnm-api-spare-ca-prod` and searcher `usnm-qw-spare-ca-prod` scale to zero as before, and the Worker reaches the API by its default hostname. The new names follow ADR-0017, since a Container App can't move between environments.
 - `vnet-usnm-prod`, `cae-usnm-prod`, `ca-usnm-prod`, `usnm-qw-search-ca-prod` and the `ME_` group's load balancer and IP go once the cutover is checked.
-- The BOINC hand-off job `usnm-boinc-handoff-caj-prod` is retired (maintainer, 6 November 2026). It last ran on 25 October; claim, collect and export run on-prem (#967, #1072). Clearing `USNM_BOINC_HANDOFF_IMAGE` drops the job, its identity's grants, the Azure bridge identity's grants on `boinc-handoff` and the scan archive, and the BOINC subnet's rules on the lake, the exchange account and the scan archive. The BOINC group's own VNet stays.
+- The BOINC hand-off job `usnm-boinc-handoff-caj-prod` is retired (maintainer, 6 November 2026). It last ran on 25 October; claim, collect and export run on-prem (#967, #1072). Leaving `USNM_BOINC_HANDOFF_IMAGE` out of the settings drops the job, its identity's grants, the Azure bridge identity's grants on `boinc-handoff` and the scan archive, and the BOINC subnet's rules on the lake, the exchange account and the scan archive. The BOINC group's own VNet stays.
 
 **Firewalls**
 
@@ -118,6 +118,6 @@ The VNet is the only reason the spare's environment has a load balancer and a pu
 
 **Rollout.** Make-before-break, each stage a pull request and `scripts/azure/provision.sh --env prod --api-tag live` after a what-if whose delete list is checked first ([runbook](../../operations/search-serving.md#the-spares-environment-without-a-vnet)):
 
-1. `USNM_DATA_ALL_NETWORKS` and `USNM_SPARE_ENVIRONMENT` on, and `USNM_BOINC_HANDOFF_IMAGE` cleared. This adds the new environment and apps and opens the three accounts. It deletes only the hand-off job and the grants and BOINC subnet rules that came with it.
+1. `USNM_DATA_ALL_NETWORKS` and `USNM_SPARE_ENVIRONMENT` on, and `USNM_BOINC_HANDOFF_IMAGE` left out. This adds the new environment and apps and opens the three accounts. It deletes only the hand-off job and the grants and BOINC subnet rules that came with it.
 2. A cold check of the new API by its default hostname: `/readyz`, a search, `/v1/meta` and `/v1/status`.
 3. Cutover: the Worker's Azure origin, CI's app variables and the alerts and workbooks move to the new apps. The old environment, its apps, the VNet and its load balancer are removed. No data store is on any delete list.
