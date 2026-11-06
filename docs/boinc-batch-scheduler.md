@@ -1564,8 +1564,12 @@ python3 /root/usnm-archive/archive_history.py restore-held --batch <NNNN> \
 
 It checks every archived copy against its sha256, and uploads each blob only
 where none is (`If-None-Match: *`), with its archived Content-MD5. The journal
-goes last. Once every blob is listed with its archived size and MD5, it puts
-back the page's claim, selection and job entries and drops its `archived_held`
+goes last. It refuses before writing anything if the restored claims or
+journals would pass `MAX_JOBS`; the dry run shows `claims_after`,
+`journals_after` and `fits`, and `--page` restores fewer. A blob already in the
+container counts as restored only when its size and Content-MD5 match, or,
+without an MD5, its bytes match the archived sha256. Once every blob checks out
+that way, it puts back the page's claim, selection and job entries and drops its `archived_held`
 entry. It writes `receipts/restore-held-<time>.json`. A rerun skips pages
 already back. The bridge journal and the workunit row stay archived:
 `collect` reads only the hand-off container. A restored held job has no
