@@ -1325,6 +1325,27 @@ fn a_hold_is_lifted_only_by_a_calibration_within_its_limit() {
     assert!(calibrated(0.2).promote_to(&out, None).is_err());
     assert_eq!(std::fs::read(&out).unwrap(), before);
 
+    // Through `--merge` too: `out` holds German at 0.179, the merge source has an unheld German
+    // policy at 0.15, and the new policy is at 0.2. Merged one by one, the second step would no
+    // longer see a hold; the result is checked against `out`'s holds and refused.
+    let merge_from = tmp.path().join("merge.json");
+    let unheld = held.merge(&calibrated(0.15)).unwrap();
+    std::fs::write(&merge_from, serde_json::to_vec_pretty(&unheld).unwrap()).unwrap();
+    assert_eq!(unheld.policy_for("deu", "frak2021").unwrap().max_cer, 0.15);
+    let err = calibrated(0.2)
+        .promote_to(&out, Some(&merge_from))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("held until calibrated with max_cer <= 0.179"),
+        "{err}"
+    );
+    assert_eq!(std::fs::read(&out).unwrap(), before);
+    // Within the limit, the same chain lifts the hold.
+    let lifted = calibrated(0.1).promote_to(&out, Some(&merge_from)).unwrap();
+    let deu = lifted.policy_for("deu", "frak2021").unwrap();
+    assert_eq!((deu.hold.as_deref(), deu.max_cer), (None, 0.1));
+
     // A hold can be put on a calibrated scope, but not on the primary.
     let live: Trust = serde_json::from_value(two_scope_list()).unwrap();
     assert_eq!(live.merge(&held).unwrap(), held);
