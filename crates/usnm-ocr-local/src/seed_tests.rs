@@ -1233,3 +1233,111 @@ async fn a_pinned_supersession_list_must_exist_match_its_hash_and_verify() {
     assert!(format!("{err:#}").contains("checksum mismatch"), "{err:#}");
     assert_eq!(fx.queue.approximate_count(BULK).await.unwrap(), 0);
 }
+
+#[tokio::test]
+async fn accounting_counts_only_never_queued_verified_pages_as_avoidable() {
+    use crate::alternate_decisions::{self as decisions, Action, Decision};
+    use supersession::Standing;
+    let fx = fixture().await;
+    let pages = [
+        doc(GER, 3, 1),
+        doc(GER, 3, 2),
+        doc(GER, 3, 3),
+        doc(GER, 4, 1),
+        doc(GER, 4, 2),
+    ];
+    let mut entries = Vec::new();
+    for page in &pages {
+        entries.push(select_alternate(&fx, page, "aa_ger").await);
+    }
+    let sha = supersession::publish(fx.curated.as_ref(), &supersession_list(entries.clone()))
+        .await
+        .unwrap();
+    let now = Utc::now();
+    let then = now - chrono::Duration::hours(3);
+    ledger::write_queued(
+        fx.curated.as_ref(),
+        &[
+            mine(&pages[1], 1, then),
+            mine(&pages[2], 1, then),
+            mine(&pages[3], 1, then),
+        ],
+        then,
+        "r1",
+    )
+    .await
+    .unwrap();
+    fx.outcome(&pages[1], IMPORTED, None, now).await;
+    fx.outcome(&pages[3], DEAD_LETTERED, Some("dequeue_count"), now)
+        .await;
+    decisions::decide(
+        &fx.state,
+        "decide",
+        fx.curated.as_ref(),
+        &Decision {
+            subject: entries[4].subject(),
+            previous: Some(entries[4].selection.clone()),
+            action: Action::Revoke {
+                candidate: entries[4].candidate.clone(),
+            },
+            reason: "Synthetic revocation".into(),
+            evidence: "https://example.invalid/synthetic-review".into(),
+        },
+        None,
+    )
+    .await
+    .unwrap();
+
+    let listing = || async {
+        let mut paths = fx.curated.list(super::ROOT).await.unwrap();
+        paths.sort();
+        paths
+    };
+    let before = listing().await;
+    let led = ledger::load(fx.curated.as_ref()).await.unwrap();
+    let a = supersession::account(fx.curated.as_ref(), &led, &sha)
+        .await
+        .unwrap();
+    assert_eq!(listing().await, before, "accounting writes nothing");
+    assert_eq!((a.list.as_str(), a.entries), (sha.as_str(), 5));
+    assert_eq!(
+        (
+            a.avoidable,
+            a.imported,
+            a.in_flight,
+            a.settled,
+            a.unverified
+        ),
+        (1, 1, 1, 1, 1)
+    );
+    let standings: Vec<_> = a
+        .pages
+        .iter()
+        .map(|p| (p.doc_id.as_str(), p.standing))
+        .collect();
+    assert_eq!(
+        standings,
+        [
+            (pages[0].as_str(), Standing::Avoidable),
+            (pages[1].as_str(), Standing::Imported),
+            (pages[2].as_str(), Standing::InFlight),
+            (pages[3].as_str(), Standing::Settled),
+            (pages[4].as_str(), Standing::Unverified),
+        ]
+    );
+    assert_eq!(a.recognition_cost, "unknown");
+
+    // The seeder agrees: it leaves out the avoidable page and queues the
+    // unverified one; the ledger's pages never reach the list.
+    let r = fx
+        .seed(&Options {
+            dry_run: true,
+            supersession: Some(sha),
+            ..plan(100)
+        })
+        .await
+        .unwrap();
+    let s = r.supersession.unwrap();
+    assert_eq!((s.superseded, s.unverified), (a.avoidable, a.unverified));
+    assert_eq!(s.pages, [pages[0].clone()]);
+}

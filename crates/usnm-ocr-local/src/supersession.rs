@@ -13,6 +13,8 @@
 //!
 //! The scheduler has no scan hash of its own: that the listed scan is the
 //! copy the batch publishes rests on the staged registration attestation.
+//!
+//! [`account`] reports, read-only, which listed pages are avoidable new work.
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -25,6 +27,7 @@ use usnm_store::ObjectStore;
 
 use crate::alternate::{digest, put_exact};
 use crate::alternate_decisions::{self, hash_ok, Action, Subject};
+use crate::ledger::Ledger;
 use crate::ROOT;
 
 pub const FORMAT: &str = "usnm-ocr-alternate-supersession/1";
@@ -258,4 +261,107 @@ impl<'a> Pinned<'a> {
             Check::Unverified
         }
     }
+}
+
+/// Where a listed page stands for avoided-work accounting, in the seeder's
+/// own order: its ledger skips come before the list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Standing {
+    /// Never queued, and the selection verifies: new bulk work a pinned
+    /// seeder leaves out if its plan reaches the page.
+    Avoidable,
+    /// Never queued, and the selection doesn't verify: queued normally.
+    Unverified,
+    /// Already recognised and imported: spent, not avoided.
+    Imported,
+    /// Queued and not settled: in flight work is never cancelled.
+    InFlight,
+    /// Queued and settled without an import: only the seeder's retries,
+    /// which the list doesn't touch, queue it again.
+    Settled,
+}
+
+/// One listed page's standing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PageStanding {
+    pub doc_id: String,
+    pub batch: String,
+    pub batch_version: u16,
+    pub standing: Standing,
+}
+
+/// `usnm-ingest ocr-alternate-accounting`: what a list avoids, read-only.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Accounting {
+    /// The list's SHA-256.
+    pub list: String,
+    pub entries: u64,
+    pub avoidable: u64,
+    pub unverified: u64,
+    pub imported: u64,
+    pub in_flight: u64,
+    pub settled: u64,
+    pub pages: Vec<PageStanding>,
+    /// Always `unknown`: a page's recognition cost isn't measured, so the
+    /// avoided cost is neither zero nor estimated.
+    pub recognition_cost: String,
+    /// Whether a plan reaches a page: a seed dry run's `supersession` counts.
+    pub scope: String,
+}
+
+/// Account for the list pinned by `sha256` against the ledger, verifying
+/// only the selections of pages never queued. Writes nothing.
+pub async fn account(
+    curated: &dyn ObjectStore,
+    ledger: &Ledger,
+    sha256: &str,
+) -> anyhow::Result<Accounting> {
+    let list = load(curated, sha256).await?;
+    let mut a = Accounting {
+        list: sha256.to_owned(),
+        entries: list.entries.len() as u64,
+        avoidable: 0,
+        unverified: 0,
+        imported: 0,
+        in_flight: 0,
+        settled: 0,
+        pages: Vec::with_capacity(list.entries.len()),
+        recognition_cost: "unknown".to_owned(),
+        scope:
+            "listed pages; whether a plan reaches them is the seed dry run's supersession report"
+                .to_owned(),
+    };
+    for e in list.entries {
+        let standing = if ledger.imported(&e.doc_id) {
+            Standing::Imported
+        } else if ledger.outstanding(&e.doc_id).is_some() {
+            Standing::InFlight
+        } else if ledger.queued.contains_key(&e.doc_id) {
+            Standing::Settled
+        } else if let Err(err) = verify(curated, &e).await {
+            tracing::warn!(
+                doc_id = %e.doc_id,
+                error = %format!("{err:#}"),
+                "listed alternate selection does not verify"
+            );
+            Standing::Unverified
+        } else {
+            Standing::Avoidable
+        };
+        *match standing {
+            Standing::Avoidable => &mut a.avoidable,
+            Standing::Unverified => &mut a.unverified,
+            Standing::Imported => &mut a.imported,
+            Standing::InFlight => &mut a.in_flight,
+            Standing::Settled => &mut a.settled,
+        } += 1;
+        a.pages.push(PageStanding {
+            doc_id: e.doc_id,
+            batch: e.batch,
+            batch_version: e.batch_version,
+            standing,
+        });
+    }
+    Ok(a)
 }

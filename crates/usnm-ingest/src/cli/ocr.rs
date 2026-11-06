@@ -390,6 +390,15 @@ pub(crate) struct OcrAlternateSupersessionArgs {
     list: std::path::PathBuf,
 }
 
+/// Report, read-only, which pages of a stored supersession list are avoidable
+/// new work, already recognised, in flight or settled, and which don't verify.
+#[derive(Args)]
+pub(crate) struct OcrAlternateAccountingArgs {
+    /// The list's SHA-256, as `ocr-alternate-supersession` printed it.
+    #[arg(long)]
+    supersession: String,
+}
+
 fn alternate_read_file(path: &std::path::Path, max: u64) -> anyhow::Result<Vec<u8>> {
     use std::io::Read;
     let file = std::fs::File::open(path)?;
@@ -451,6 +460,19 @@ pub(crate) async fn ocr_alternate_supersession_command(
             "path": usnm_ocr_local::supersession::path(&sha256),
         }))?
     );
+    Ok(None)
+}
+
+pub(crate) async fn ocr_alternate_accounting_command(
+    cli: &Cli,
+    args: &OcrAlternateAccountingArgs,
+) -> anyhow::Result<Option<Published>> {
+    let curated = usnm_store::open(&cli.stores.curated)?;
+    let ledger = usnm_ocr_local::ledger::load(curated.as_ref()).await?;
+    let accounting =
+        usnm_ocr_local::supersession::account(curated.as_ref(), &ledger, args.supersession.trim())
+            .await?;
+    println!("{}", serde_json::to_string_pretty(&accounting)?);
     Ok(None)
 }
 
