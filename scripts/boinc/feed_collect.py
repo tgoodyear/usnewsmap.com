@@ -450,33 +450,76 @@ def client_resource_usage(node, default_cpu):
         raise SupplyUnknown("task_resource_usage_unavailable") from None
 
 
-def reservation_current(data_dir, client_start):
-    """A started task keeps the reservation it started with. The client loads every
-    app_config.xml at startup, so when none has changed since the client started,
-    every reread since gave the same values, and the task's reservation is its current
-    record. A config changed later, an unreadable projects directory or config, or a
-    missing start time leaves the reservation unproven."""
+def config_fingerprint(data_dir):
+    """Every app_config.xml under projects/, as (project, mtime_ns, size); None when
+    the directory can't be listed or a config can't be read. Explicit listing, so
+    permission errors aren't hidden (Path.glob hides them)."""
+    root = Path(data_dir) / "projects"
     try:
-        start = float(client_start)
-        if not math.isfinite(start) or start <= 0:
-            return False
-        # Explicit listing, so permission errors reach the handler (Path.glob hides them).
-        for project in (Path(data_dir) / "projects").iterdir():
+        entries = sorted(root.iterdir())
+    except FileNotFoundError:
+        return [] if not root.exists() else None
+    except OSError:
+        return None
+    found = []
+    for project in entries:
+        try:
             if not project.is_dir():
                 continue
-            try:
-                if (project / "app_config.xml").stat().st_mtime >= start:
-                    return False
-            except FileNotFoundError:
-                continue
-        return True
-    except FileNotFoundError:
-        return not (Path(data_dir) / "projects").exists()
-    except (OSError, TypeError, ValueError):
+            info = (project / "app_config.xml").stat()
+        except FileNotFoundError:
+            continue
+        except OSError:
+            return None
+        found.append([project.name, info.st_mtime_ns, info.st_size])
+    return found
+
+
+def reservations_proven(session, client_start, fingerprint, messages):
+    """Whether started tasks still hold their current records, kept per client session.
+
+    A started task keeps the reservation it started with; the client gives a new usage
+    only to unstarted tasks, at startup and when it rereads its config files. So within
+    one client session (client_start_time), started tasks match their records while no
+    config has been reread since startup. A session is trusted when first seen only if
+    the client's message log still covers the whole session with no reread, and every
+    app_config.xml predates the start. After that, any change to the configs (edit,
+    new file or deletion) ends the trust until the client restarts. The record is kept
+    in the source's state directory; without one, nothing is trusted."""
+    try:
+        start = float(client_start)
+    except (TypeError, ValueError):
         return False
+    if session is None or fingerprint is None or not math.isfinite(start) or start <= 0:
+        return False
+    try:
+        record = json.loads(read_file(session, 65536))
+    except (OSError, ValueError):
+        record = {}
+    if not isinstance(record, dict):
+        record = {}
+    if record.get("client_start") == start:
+        trusted = record.get("trusted") is True and record.get("fingerprint") == fingerprint
+    else:
+        trusted = (messages is not None and messages_cover_session_without_reread(messages)
+                   and all(mtime / 1e9 < start for _, mtime, _ in fingerprint))
+    atomic_json(session, {"client_start": start, "fingerprint": fingerprint, "trusted": trusted})
+    return trusted
 
 
-def client(data_dir, port):
+def messages_cover_session_without_reread(messages):
+    """True when the reply holds the session's first message (seqno 1) and no config reread."""
+    seqnos, bodies = [], []
+    for message in messages.findall(".//msg"):
+        try:
+            seqnos.append(int(message.findtext("seqno", "")))
+        except ValueError:
+            return False
+        bodies.append(message.findtext("body", ""))
+    return 1 in seqnos and not any("Re-reading" in body for body in bodies)
+
+
+def client(data_dir, port, session=None):
     from client_account import MASTER, RPC, flag
 
     password = read_file(data_dir / "gui_rpc_auth.cfg", 1024).decode().strip()
@@ -486,8 +529,22 @@ def client(data_dir, port):
         status = rpc.call("get_cc_status")
         prefs = rpc.call("get_global_prefs_working")
         disk = rpc.call("get_disk_usage")
+        client_start = state.findtext(".//time_stats/client_start_time")
+        messages = None
+        if session is not None:
+            try:
+                known = json.loads(read_file(session, 65536)).get("client_start")
+            except (OSError, ValueError, AttributeError):
+                known = None
+            try:
+                new_session = known != float(client_start)
+            except (TypeError, ValueError):
+                new_session = False
+            if new_session:
+                messages = rpc.call("get_messages", {"seqno": "0"})
     finally:
         rpc.close()
+    proven = reservations_proven(session, client_start, config_fingerprint(data_dir), messages)
     projects = [p for p in state.findall(".//project")
                 if p.findtext("master_url", "").rstrip("/") == MASTER.rstrip("/")]
     if len(projects) != 1:
@@ -504,7 +561,6 @@ def client(data_dir, port):
     paused = (flag(project, "suspended_via_gui") or flag(project, "dont_request_more_work")
               or reasons["task_suspend_reason"] != 0)
     gpu_paused = paused or reasons["gpu_suspend_reason"] != 0
-    client_start = state.findtext(".//time_stats/client_start_time")
     ncpus = int(state.findtext(".//host_info/p_ncpus", "0"))
     percent = float(prefs.findtext(".//max_ncpus_pct", "100")) or 100
     cpus = max(1, math.floor(ncpus * min(percent, 100) / 100)) if ncpus else 0
@@ -538,9 +594,11 @@ def client(data_dir, port):
             raise ValueError("suspended queued task")
         active = result.findall("active_task")
         if active and (len(active) != 1 or active[0].findtext("active_task_state") != "0") and not (
-                len(active) == 1 and reservation_current(data_dir, client_start)):
+                len(active) == 1 and proven and owner == MASTER.rstrip("/")):
             # Running jobs retain old reservations after app_config/scheduler
             # updates; get_state exposes only a rounded display string for them.
+            # They count at their records only in a trusted session, and only for
+            # this project, whose scheduler-side changes the profile checks cover.
             raise SupplyUnknown("active_task_resource_usage_unavailable")
         if flag(result, "coproc_missing"):
             raise SupplyUnknown("task_resource_usage_unavailable")
@@ -1188,7 +1246,7 @@ def main(argv=None):
             result.update(server(args.project, args.window_env, args.container, args.container_project,
                                  args.feeder_guard))
         elif args.source == "client":
-            result.update(client(args.data_dir, args.port))
+            result.update(client(args.data_dir, args.port, args.output.with_name(args.output.stem + ".session.json")))
         elif args.source == "controller":
             result["tick"] = controller(args.unit)
         else:

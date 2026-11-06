@@ -1331,44 +1331,78 @@ with socket.create_connection({listener.getsockname()!r}, timeout=2) as connecti
             self.assertEqual((observed["available_cpu"], observed["idle_gpu"]["intel_gpu"], observed["memory_bytes"]),
                              (.5, .25, 300))
 
-    def test_started_task_uses_its_record_only_while_app_config_predates_the_client(self):
-        with client_rpc_fixture() as (root, port, answers, _):
+    def test_started_tasks_count_at_their_records_only_in_a_trusted_client_session(self):
+        with client_rpc_fixture() as (root, port, answers, operations):
             base = answers["get_state"]
             running = queued_task("", "<active_task><active_task_state>1</active_task_state></active_task>")
+            session = root / "client.session.json"
             projects = root / "projects"
             config = projects / "boinc.usnewsmap.com" / "app_config.xml"
-            for setup, started, expected in (
-                    ("none", "2000", 1),            # no projects directory at all
-                    ("empty", "2000", 1),           # no app_config anywhere
-                    ("older", "2000", 1),           # loaded at client start, unchanged since
-                    ("newer", "2000", None),        # changed after the client started: may be reread later
-                    ("older", "", None),            # no client start time
-                    ("older", "nan", None),
-                    ("unreadable", "2000", None)):  # listing fails: never skip a project silently
+            log = "<msgs><msg><seqno>1</seqno><body>Starting BOINC client</body></msg>{}</msgs>"
+
+            def observe(started="2000", messages=log.format("")):
+                answers["get_messages"] = messages
+                stats = f"<time_stats><client_start_time>{started}</client_start_time></time_stats>"
+                answers["get_state"] = base.replace("</client_state>", stats + running + "</client_state>")
+                try:
+                    return C.client(root, port, session)["available_cpu"]
+                except C.SupplyUnknown as error:
+                    self.assertEqual(str(error), "active_task_resource_usage_unavailable")
+                    return None
+
+            def reset(config_mtime=None):
                 shutil.rmtree(projects, ignore_errors=True)
-                if setup != "none":
-                    projects.mkdir()
-                    (projects / "job_log.txt").write_text("")
-                if setup in ("older", "newer"):
+                session.unlink(missing_ok=True)
+                projects.mkdir()
+                (projects / "job_log.txt").write_text("")
+                if config_mtime is not None:
                     config.parent.mkdir()
                     config.write_text("<app_config/>")
-                    os.utime(config, (1000, 1000) if setup == "older" else (3000, 3000))
-                stats = f"<time_stats><client_start_time>{started}</client_start_time></time_stats>" if started else ""
-                answers["get_state"] = base.replace("</client_state>", stats + running + "</client_state>")
-                with self.subTest(setup=setup, started=started), \
-                        patch.object(C.Path, "iterdir", side_effect=PermissionError) if setup == "unreadable" \
-                        else contextlib.nullcontext():
-                    if expected is None:
-                        with self.assertRaisesRegex(C.SupplyUnknown, "active_task_resource_usage_unavailable"):
-                            C.client(root, port)
+                    os.utime(config, (config_mtime, config_mtime))
+
+            reset()
+            self.assertEqual(observe(), 1)                     # whole session logged, no reread
+            operations.clear()
+            self.assertEqual(observe(messages="<msgs/>"), 1)   # same session: the record decides
+            self.assertNotIn("get_messages", operations)
+            for case, setup, kwargs in (
+                    ("log trimmed", None, {"messages": "<msgs><msg><seqno>7</seqno><body>x</body></msg></msgs>"}),
+                    ("reread logged", None, {"messages": log.format(
+                        "<msg><seqno>2</seqno><body>Re-reading cc_config.xml</body></msg>")}),
+                    ("config newer than start", 3000, {}),
+                    ("no start time", None, {"started": ""}),
+                    ("nan start time", None, {"started": "nan"})):
+                with self.subTest(case=case):
+                    reset(setup)
+                    self.assertIsNone(observe(**kwargs))
+            reset(1000)
+            self.assertEqual(observe(), 1)                     # config loaded at start, unchanged
+            for change in ("edit", "delete"):
+                with self.subTest(change=change):
+                    reset(1000)
+                    self.assertEqual(observe(), 1)
+                    if change == "edit":
+                        os.utime(config, (1500, 1500))
                     else:
-                        self.assertEqual(C.client(root, port)["available_cpu"], expected)
-            shutil.rmtree(projects)
+                        config.unlink()
+                    self.assertIsNone(observe())               # changed in-session: never trusted again
+                    self.assertIsNone(observe())
+                    self.assertEqual(observe(started="4000"), 1)  # a client restart starts a new session
+            reset()
+            with patch.object(C.Path, "iterdir", side_effect=PermissionError):
+                self.assertIsNone(observe())
+            reset()
+            answers["get_messages"] = log.format("")
+            other = """<project><master_url>https://other.invalid/</master_url><hostid>7</hostid></project>
+<app_version><app_name>usnm_ocr</app_name><version_num>117</version_num><plan_class>docker</plan_class>
+<avg_ncpus>1</avg_ncpus></app_version>""" + running
             answers["get_state"] = base.replace("</client_state>", "<time_stats><client_start_time>2000"
-                                                "</client_start_time></time_stats>" + running.replace(
-                                                    "</result>", "<active_task/></result>") + "</client_state>")
+                                                "</client_start_time></time_stats>" + other + "</client_state>")
             with self.assertRaisesRegex(C.SupplyUnknown, "active_task_resource_usage_unavailable"):
-                C.client(root, port)
+                C.client(root, port, session)              # another project's started task stays unknown
+            answers["get_state"] = base.replace("</client_state>", running + "</client_state>")
+            with self.assertRaisesRegex(C.SupplyUnknown, "active_task_resource_usage_unavailable"):
+                C.client(root, port)                       # no session record: never trusted
 
     def test_paused_clients_have_no_idle_capacity_rather_than_unknown(self):
         with client_rpc_fixture() as (root, port, answers, _):

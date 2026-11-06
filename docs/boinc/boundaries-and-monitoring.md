@@ -111,23 +111,28 @@ overrides; fields are never merged with stale version defaults. Invalid or
 ambiguous reservations produce `task_resource_usage_unavailable`.
 
 **Started tasks:** a running task keeps the resource usage it started with. The
-client copies a new usage only to tasks that haven't started, after it rereads
-`app_config.xml` or a scheduler reply changes an app version
+client gives a new usage only to tasks that haven't started, at startup and when
+it rereads its config files or a scheduler reply changes an app version
 ([client_state.cpp](https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/client/client_state.cpp#L2462)),
 and GUI RPC shows only a rounded display string for running tasks. The client
-source counts a started task at its current workunit or app version record,
-like an unstarted one, while every `app_config.xml` under the client's
-`projects/` is older than the client's start (`client_start_time`): the client
-loaded them at startup, so any reread since gave the same values. A config
-changed after the client started, a missing start time, or a `projects/`
-directory that can't be listed makes the source
-`active_task_resource_usage_unavailable`, and both stock checks unknown, until
-the client restarts or the task ends. A scheduler-side change comes from a
-plan class change; while the client's cached version still differs from the
-live plan class, the profile mismatch check above makes the stock checks
-unknown. A task that started before the client took the new version keeps the
-old usage until it ends, so expect the stock checks to be off by that one task
-for at most a task's run time after such a change.
+source keeps a record per client session (`client_start_time`) next to its
+output, `<name>.session.json`. A session is trusted when the source first sees
+it only if the client's message log still starts at the session's first
+message with no "Re-reading" line, and every `app_config.xml` under
+`projects/` is older than the start. After that, any change to those files
+(an edit, a new file or a deletion) ends the trust for the rest of the
+session. In a trusted session, a started task of this project counts at its
+current workunit or app version record, like an unstarted one. Otherwise, and
+for any other project's started task, the source is
+`active_task_resource_usage_unavailable`, and both stock checks are unknown,
+until the task ends or the client restarts. The log holds about 2,000
+messages, so a client that was running before its source was installed needs
+one restart to be trusted. A scheduler-side change to this project's
+versions comes from a plan class change; while the client's cached version
+differs from the live plan class, the profile mismatch check above makes the
+stock checks unknown. A task that started before the client took the new
+version keeps the old usage until it ends, so the stock checks can be off by
+that task for up to its run time.
 
 **Paused clients:** a client that is suspended (any task suspend reason), set to
 fetch no more work, or has the project suspended reports `paused: true` with
