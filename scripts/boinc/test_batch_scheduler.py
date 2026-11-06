@@ -2814,9 +2814,9 @@ class QueueTransportTests(unittest.TestCase):
                  "scan_base": "keep/dlc_bbb/sn1/1890-05-03/1/2",
                  "scan": "/tank/ocr/scans/keep/dlc_bbb/sn1/1890-05-03/1/2.jp2"}
         found = {"keep/dlc_aaa/sn1/1890-05-03/1/1": "keep/dlc_aaa/sn1/1890-05-03/1/1.jp2"}
-        with patch.object(t, "push_pages", return_value=(found, [])) as push, patch.object(t, "step") as step:
+        with patch.object(t, "push_pages", return_value=(found, [], {})) as push, patch.object(t, "step") as step:
             t.export([retried, plain], [])
-        push.assert_called_once_with(["keep/dlc_aaa/sn1/1890-05-03/1/1"])
+        push.assert_called_once_with(["keep/dlc_aaa/sn1/1890-05-03/1/1"], skip_truncated=False)
         sent = {call.kwargs["HANDOFF_BATCH"]: call.kwargs for call in step.call_args_list}
         self.assertEqual(sent["dlc_aaa"]["HANDOFF_DEADLINE_RETRIES"], "c" * 64)
         self.assertNotIn("HANDOFF_DEADLINE_RETRIES", sent["dlc_bbb"])
