@@ -503,8 +503,10 @@ var dataSubnetOpen = dataSubnetAccess || !dataPrivateEndpoints
 var dataEveryNetwork = dataAllNetworks && dataPrivateEndpoints
   ? bool(int('USNM_DATA_ALL_NETWORKS needs USNM_DATA_PRIVATE_ENDPOINTS=false'))
   : dataAllNetworks
-var spareEnvOn = spareEnvironment && !dataEveryNetwork
-  ? bool(int('USNM_SPARE_ENVIRONMENT needs USNM_DATA_ALL_NETWORKS'))
+// The spare reuses the index-account searcher layout (prod's). With the lake searcher app
+// (searcherApp) both API modules would deploy n.searcherApp into different environments.
+var spareEnvOn = spareEnvironment && (!dataEveryNetwork || searcherApp)
+  ? bool(int('USNM_SPARE_ENVIRONMENT needs USNM_DATA_ALL_NETWORKS and USNM_SEARCHER_APP=false'))
   : spareEnvironment
 
 module network 'modules/network.bicep' = {

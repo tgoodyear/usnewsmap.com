@@ -581,7 +581,7 @@
     "USNM_SPARE_ENVIRONMENT": {
       "x-usnm-visibility": "public",
       "type": "boolean",
-      "description": "The Azure spare's VNet-less Container Apps environment, usnm-core-spare-cae-<env>, with its own API and searcher beside the VNet-integrated ones (#308). Default false; needs USNM_DATA_ALL_NETWORKS. The first stage of removing the VNet and its load balancer."
+      "description": "The Azure spare's VNet-less Container Apps environment, usnm-core-spare-cae-<env>, with its own API and searcher beside the VNet-integrated ones (#308). Default false; needs USNM_DATA_ALL_NETWORKS and USNM_SEARCHER_APP false. The first stage of removing the VNet and its load balancer."
     },
     "USNM_SPLIT_DOCS": {
       "x-usnm-visibility": "public",

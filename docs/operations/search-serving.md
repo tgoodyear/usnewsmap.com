@@ -273,7 +273,7 @@ Then confirm that `ContainerAppConsoleLogs` shows no storage or Cosmos 403 from 
 
 **Stage 2, the cutover and the deletes,** comes in its own pull request. It moves the Worker's Azure origin (`scripts/ci/deploy-edge-worker.sh`), CI's app variables, the alerts and the workbooks to the new apps. Then it removes `cae-usnm-prod`, `ca-usnm-prod`, `usnm-qw-search-ca-prod`, `vnet-usnm-prod` and the load balancer group.
 
-**Rollback after stage 1:** set the three settings back, commit them, and provision with `--api-tag live`. The new environment and apps go, and the accounts close to their subnet and IP rules again. The hand-off job comes back with its image setting, but it has nothing to do while claim, collect and export run on-prem.
+**Rollback after stage 1:** set the three settings back and commit them. The rename guard protects environments, so both the what-if and the provision name the one being removed: `scripts/azure/provision.sh --env prod --what-if --api-tag live --allow-rename=usnm-core-spare-cae-prod`, then the same without `--what-if`. The new environment and apps go, and the accounts close to their subnet and IP rules again. The hand-off job comes back with its image setting, but it has nothing to do while claim, collect and export run on-prem.
 
 ### Cold drill
 
