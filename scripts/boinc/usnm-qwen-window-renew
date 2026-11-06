@@ -1,20 +1,49 @@
 #!/bin/sh
 # Renews the native Qwen refill window for one day (one enablement allows at
-# most 24 hours). Stopgap until feed alerts (#1441) and automated renewal land;
-# installed at /usr/local/sbin/usnm-qwen-window-renew on the BOINC server and
-# run daily by usnm-qwen-window-renew.timer.
+# most 24 hours). Stopgap until automated renewal lands (#1441); installed at
+# /usr/local/sbin/usnm-qwen-window-renew on the BOINC server and run twice a
+# day by usnm-qwen-window-renew.timer, so the deadline stays about 12 hours or
+# more away and the feed monitor's six-hour qwen_refill_window warning fires
+# only when renewal stops.
 #
-# Renews only while the reviewed settings are unchanged (APP_VERSION_NUM=117,
-# REQUEST_VERSION=3); MAX_ADMISSIONS still caps the total. When the settings
-# change it exits non-zero and the window lapses at its deadline, which the
-# feed monitor's qwen_refill_window check reports six hours ahead.
+#   usnm-qwen-window-renew               renew, if the settings match the pin
+#   usnm-qwen-window-renew --print-pin   print the settings' hash, to review and pin
+#
+# Renews only while every line of the cohort controller's env file except
+# ENABLED_UNTIL (helper and config hashes, app versions, CAMPAIGN_ARGS,
+# MAX_ADMISSIONS, and the rest) hashes to the reviewed value in the pin file.
+# Any other change stops renewal until the new settings are reviewed and
+# pinned again; the window then lapses at its deadline. MAX_ADMISSIONS still
+# caps the total.
 set -eu
 f=/etc/usnm-boinc/qwen-cohort-auto.env
-if ! grep -qx APP_VERSION_NUM=117 "$f" || ! grep -qx REQUEST_VERSION=3 "$f"; then
-  echo "settings changed; not renewing" >&2
+pin=/etc/usnm-boinc/qwen-window-renew.sha256
+
+settings_hash() {
+  grep -v '^ENABLED_UNTIL=' "$f" | sha256sum | cut -d' ' -f1
+}
+
+case "${1:-}" in
+  --print-pin)
+    settings_hash
+    exit 0
+    ;;
+  "") ;;
+  *)
+    echo "usage: usnm-qwen-window-renew [--print-pin]" >&2
+    exit 2
+    ;;
+esac
+
+[ -r "$pin" ] || {
+  echo "no reviewed pin at $pin; not renewing" >&2
+  exit 1
+}
+if [ "$(settings_hash)" != "$(tr -d '[:space:]' < "$pin")" ]; then
+  echo "settings differ from the reviewed pin; not renewing" >&2
   exit 1
 fi
-n=$(( $(date +%s) + 86000 ))
+n=$(($(date +%s) + 86000))
 cp -p "$f" "$f.pre-autorenew"
 sed -i "s/^ENABLED_UNTIL=.*/ENABLED_UNTIL=$n/" "$f"
-echo "Qwen refill window renewed until $(date -d @$n)"
+echo "Qwen refill window renewed until $(date -d @"$n")"

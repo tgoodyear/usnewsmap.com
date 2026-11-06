@@ -160,14 +160,18 @@ Run a dry invocation under the same normal mutex before enabling the timer.
 Verify the real ordinary timer's immutable input receipt and actual signed
 assignments/returns afterwards; a policy change alone is not throughput.
 
-**Daily window renewal (stopgap).** Until automated renewal lands (#1441),
+**Window renewal (stopgap).** Until automated renewal lands (#1441),
 `usnm-qwen-window-renew.timer` runs `/usr/local/sbin/usnm-qwen-window-renew`
-(`scripts/boinc/usnm-qwen-window-renew` and its two units) at 4:31 PM Eastern.
-It moves `ENABLED_UNTIL` one day ahead, keeping the previous file as
-`qwen-cohort-auto.env.pre-autorenew`, and renews only while `APP_VERSION_NUM=117`
-and `REQUEST_VERSION=3` are unchanged; `MAX_ADMISSIONS` still caps the total.
-When those settings change it exits with an error and the window lapses at its
-deadline. The feed monitor's `qwen_refill_window` check fires six hours before.
+(`scripts/boinc/usnm-qwen-window-renew` and its two units) at 4:31 AM and 4:31 PM
+Eastern. Each run sets `ENABLED_UNTIL` 86,000 seconds ahead, keeping the previous
+file as `qwen-cohort-auto.env.pre-autorenew`, so the deadline stays about 12 hours
+or more away. It renews only while every other line of `qwen-cohort-auto.env`
+(hashes, app versions, `CAMPAIGN_ARGS`, `MAX_ADMISSIONS` and the rest) matches the
+reviewed hash in `/etc/usnm-boinc/qwen-window-renew.sha256`; `MAX_ADMISSIONS` still
+caps the total. After reviewing a settings change, pin it again with
+`usnm-qwen-window-renew --print-pin > /etc/usnm-boinc/qwen-window-renew.sha256`.
+Until then the renewer exits with an error and the window lapses at its deadline;
+the feed monitor's `qwen_refill_window` check fires six hours before.
 
 `CONFIG_SHA256` is the SHA-256 of the live `/project/usnmocr/config.xml`. `render_config`
 rewrites that file at every container start, and so do the submit, reconcile and
