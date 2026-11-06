@@ -31,10 +31,9 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    # Its own group: sharing CI's deploy-prod would let a dispatch replace a
-    # pending publish, leaving main's image unpublished and unattested. A push
-    # no longer rolls the API, so only a dispatched CI run with roll_api can
-    # overlap this, and roll-api.sh waits for the newest revision either way.
+    # Not CI's deploy-prod: sharing it would let a dispatch replace a pending
+    # publish, leaving main's image unpublished and unattested. CI's own roll
+    # job (roll_api) shares this group instead, so rolls never interleave.
     concurrency:
       group: spare-roll-prod
       cancel-in-progress: false
