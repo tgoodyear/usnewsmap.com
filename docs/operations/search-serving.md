@@ -247,7 +247,7 @@ The removal takes two provisions, so the subnet path is in place and checked bef
 ### Rollback
 
 - **After stage 1:** set `USNM_DATA_SUBNET_ACCESS` to `false`, commit it, and provision with `--api-tag live`. The index account closes again, and the Cosmos filter and service endpoint go.
-- **After stage 2:** set `USNM_DATA_PRIVATE_ENDPOINTS` back to `true` in `infra/env/prod.json`, commit it, and provision with `--api-tag live`. With `USNM_DATA_SUBNET_ACCESS` still `true` the subnet rules stay while the stack recreates the endpoints and zones, so the spare keeps a path throughout. That takes minutes and leaves on-prem untouched.
+- **After stage 2:** set `USNM_DATA_PRIVATE_ENDPOINTS` back to `true` in `infra/env/prod.json`, commit it, and provision with `--api-tag live`. With `USNM_DATA_SUBNET_ACCESS` still `true` the subnet rules stay while the stack recreates the endpoints and zones, which takes minutes and leaves on-prem untouched. The spare can still lose its data path for a while: the network module links the new zones before the endpoints write their records, and an empty zone answers for the account names in the VNet. Before relying on the spare again, check that the account names resolve to the endpoints from snet-cae, then run the cold drill below: `/readyz`, a search and `/v1/status`.
 
 Provision refuses uncommitted settings; `--allow-dirty` is for an emergency that can't wait for a pull request. Don't start the rollout during an on-prem incident.
 
