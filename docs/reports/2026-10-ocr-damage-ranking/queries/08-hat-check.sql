@@ -8,7 +8,10 @@ COPY (
     FROM quality.page_summary
     WHERE loc_est_cer IS NOT NULL AND damage_rate IS NOT NULL
   ), r AS (
-    SELECT rank() OVER (ORDER BY damage_rate) AS rd, rank() OVER (ORDER BY loc_est_cer) AS rh FROM h
+    -- Spearman's rho is Pearson's r on ranks, with tied values given their average rank.
+    SELECT rank() OVER (ORDER BY damage_rate) + (count(*) OVER (PARTITION BY damage_rate) - 1) / 2.0 AS rd,
+           rank() OVER (ORDER BY loc_est_cer) + (count(*) OVER (PARTITION BY loc_est_cer) - 1) / 2.0 AS rh
+    FROM h
   )
   SELECT 'all' AS grp, count(*) AS pages,
          round(corr(rd, rh)::numeric, 3) AS spearman_damage_hat,

@@ -335,7 +335,10 @@ def main():
           [[LANGUAGES[c], n(ge[(c, "own")]["scored"]), pct(ge[(c, "own")]["bad"], ge[(c, "own")]["scored"]), n(ge[(c, "eng")]["scored"]), pct(ge[(c, "eng")]["bad"], ge[(c, "eng")]["scored"])] for c in NAMED[:-1]])
 
     # Pilot candidates.
-    pilot = read(d / "german-pilot.csv")
+    # 13-german-pilot.sql's output. The data release holds only the ranked list it becomes, which
+    # carries the same rows and columns, so a fetched release regenerates from that.
+    source = d / "german-pilot.csv"
+    pilot = read(source if source.exists() else d / "german-fraktur-pilot-candidates.csv")
     quota = collections.Counter(r["tier"] for r in pilot)
     pilot.sort(key=lambda r: (int(r["tier_rank"]) / quota[r["tier"]], r["tier"] != "bad"))
     for i, r in enumerate(pilot, 1):

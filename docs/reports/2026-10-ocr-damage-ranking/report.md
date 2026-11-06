@@ -568,7 +568,7 @@ The list spans 4,572 issues. The ten largest titles hold 2,209 pages (44.2%), an
 
 # Reproducing this
 
-`run-queries.sh --dsn-file <file> --out-dir data` runs the queries one at a time with any role that can read schema `quality`. `data/titles.csv` is `GET /v1/titles?v=pages-v20261026-1` reduced to five columns. `python3 summarize.py --data-dir data --tables tables.md` writes the derived CSVs and the tables. The queries take about 10 minutes in all, and `02-cube.sql` is the source of the language, title, decade and candidate counts.
+`run-queries.sh --service <name> --out-dir data` runs the queries one at a time with any role that can read schema `quality`, connecting through a libpq service entry (`--service-file` names the file if it isn't the default). `data/titles.csv` is `GET /v1/titles?v=pages-v20261026-1` reduced to five columns. `python3 summarize.py --data-dir data --tables tables.md` writes the derived CSVs and the tables. The queries take about 10 minutes in all, and `02-cube.sql` is the source of the language, title, decade and candidate counts.
 
 The results are in the release [`data-report-2026-10-ocr-damage-ranking-20261106-1ab6d45`](https://github.com/tgoodyear/usnewsmap.com/releases/tag/data-report-2026-10-ocr-damage-ranking-20261106-1ab6d45):
 
