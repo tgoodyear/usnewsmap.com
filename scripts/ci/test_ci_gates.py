@@ -47,7 +47,7 @@ class Gates(unittest.TestCase):
         )
 
     def test_worker_gate_reports_success_when_all_path_scoped_jobs_are_skipped(self):
-        self.assertIn("    if: always()\n", job("worker-contrib"))
+        self.assertIn("    if: always() && needs.changes.result == 'success'\n", job("worker-contrib"))
         result = self.worker_gate()
         self.assertEqual(result.returncode, 0, result.stderr)
 

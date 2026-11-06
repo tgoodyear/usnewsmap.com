@@ -6,7 +6,9 @@
 # The changed files are worked out as scripts/ci/changes.sh does.
 # Every language runs for a schedule or workflow_dispatch, for a change to
 # codeql.yml or this script, and whenever the changed files can't be worked
-# out.
+# out. A pull request leaves Rust to the push to main after the merge and to
+# the weekly run (#1585): its analysis is the longest, and the Rust in a pull
+# request still goes through clippy and the tests.
 set -euo pipefail
 out=${GITHUB_OUTPUT:-/dev/stdout}
 everything='["actions","javascript-typescript","python","rust"]'
@@ -41,7 +43,12 @@ pattern() {
 }
 langs=()
 for lang in actions javascript-typescript python rust; do
-  if grep -Eq "$(pattern "$lang")" <<< "$files"; then langs+=("$lang"); fi
+  grep -Eq "$(pattern "$lang")" <<< "$files" || continue
+  if [ "$lang" = rust ] && [ "${GITHUB_EVENT_NAME:-}" = pull_request ]; then
+    echo "rust: analysed on main after the merge"
+    continue
+  fi
+  langs+=("$lang")
 done
 json=$(printf '%s\n' "${langs[@]+"${langs[@]}"}" | jq -Rnc '[inputs | select(. != "")]')
 echo "languages=$json" >> "$out"

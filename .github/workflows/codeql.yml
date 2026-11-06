@@ -6,7 +6,8 @@ name: codeql
 # lock files and tsconfig*.json count as JavaScript). The weekly run
 # analyses every language on main, as default setup did. Same languages,
 # query suite and build mode as default setup, and the same categories
-# (/language:<lang>), so the alerts it raised carry over.
+# (/language:<lang>), so the alerts it raised carry over. Rust is analysed on
+# main pushes and weekly, not on pull requests (#1585).
 on:
   pull_request:
   push:

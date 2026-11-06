@@ -4,7 +4,8 @@ ARG NDLOCR_FROM=${NDLOCR_IMAGE}
 FROM rust:1-bookworm@sha256:e12566d5abc17a0da741628782cdb504b68b8961f5bfcf677936bf3e8b32de29 AS build
 WORKDIR /src
 COPY . .
-RUN cargo build --release --locked --jobs 2 -p usnm-boinc --bin usnm-boinc --example ndlocr_fixture
+ARG BUILD_JOBS=2
+RUN cargo build --release --locked --jobs "$BUILD_JOBS" -p usnm-boinc --bin usnm-boinc --example ndlocr_fixture
 FROM ${NDLOCR_FROM}
 ARG NDLOCR_IMAGE
 ENV USNM_NDLOCR_IMAGE=${NDLOCR_IMAGE}

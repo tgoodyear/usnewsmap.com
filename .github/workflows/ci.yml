@@ -716,7 +716,9 @@ jobs:
       - contrib-images
       - ocr-worker-el9
       - ocr-worker-check
-    if: always()
+    # Skipped, like the other aggregates, when `changes` fails or never gets a runner: that
+    # required check already blocks the merge, and this one would only repeat it (#1585).
+    if: always() && needs.changes.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - name: Every applicable worker and BOINC check must pass

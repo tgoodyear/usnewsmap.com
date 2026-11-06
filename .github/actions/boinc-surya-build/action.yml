@@ -39,6 +39,7 @@ runs:
         docker build -f ocr/boinc/surya/Containerfile \
           "${pins[@]}" \
           --build-arg "LLAMA_VARIANT=$VARIANT" \
+          --build-arg "BUILD_JOBS=$(nproc)" \
           --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
           --label "org.opencontainers.image.revision=$SHA" \
           --label "org.opencontainers.image.description=usnewsmap BOINC Surya 2 worker ($VARIANT, surya-ocr, llama.cpp, usnm-boinc)" \
