@@ -8,7 +8,7 @@
 #     (--production | --drill-hostname NAME) [--error-layer --allowed-origins CSV] [--dry-run]
 #
 # --account-id: the Cloudflare account id (32 hex digits).
-# --azure-origin: ca-usnm-prod's default name, https://<name>.azurecontainerapps.io. It is
+# --azure-origin: the spare API's default name (usnm-api-spare-ca-prod), https://<name>.azurecontainerapps.io. It is
 #   set as the Worker's AZURE_FALLBACK_ORIGIN variable.
 # --wrangler-version: the exact Wrangler release to run (npx wrangler@X.Y.Z), so the tool
 #   that holds the token is the one you chose.
