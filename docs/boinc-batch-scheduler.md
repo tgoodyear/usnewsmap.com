@@ -351,6 +351,12 @@ of the configuration, so turning them on or off changes no hash:
   prefix (32,000 blobs in November 2026) took az 25 seconds and 20 of CPU; this takes 2. Changed
   journals are fetched one by one up to 2,000 of them, where the `az` path takes one
   `download-batch` of every journal past 32.
+  Each list passes the delimiter `t`, so a job's `accepted/` files and `request.json` come back
+  as one short prefix each and only `record.json` is listed whole (#308). A job id is hex and
+  `/record.json` has no `t`, so every journal is still listed with its ETag. That cut each
+  list's egress from the exchange account by about 71%: 1.08 MB to 0.31 MB for one digit on
+  6 November 2026. The consistency checks, which list again after a download and compare
+  ETags, are unchanged.
 - `--batch-export`: the hand-off `export` for pages from many base batches in one execution
   (up to 20 batches; more go in several), with `HANDOFF_BATCHES` naming each page's batch in
   `HANDOFF_PAGES`' order. The job exports each batch on its own. Without it, a queue-fed tick

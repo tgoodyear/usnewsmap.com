@@ -813,11 +813,15 @@ class SchedulerTests(unittest.TestCase):
 
         def pages(target):
             query = urllib.parse.parse_qs(target[1:], keep_blank_values=True)
+            self.assertEqual(query["delimiter"], ["t"])
             if query["prefix"] != ["dispatch/jobs/a"]:
                 return b"<EnumerationResults><Blobs/><NextMarker/></EnumerationResults>"
             if not query["marker"][0]:
-                return (f"<EnumerationResults><Blobs><Blob><Name>{first}</Name><Properties><Etag>one</Etag>"
-                        "</Properties></Blob></Blobs><NextMarker>more</NextMarker></EnumerationResults>").encode()
+                # A job's accepted/ and request.json come back grouped, and are skipped.
+                return (f"<EnumerationResults><Blobs><BlobPrefix><Name>{first[:-11]}accept</Name></BlobPrefix>"
+                        f"<Blob><Name>{first}</Name><Properties><Etag>one</Etag></Properties></Blob>"
+                        f"<BlobPrefix><Name>{first[:-11]}request</Name></BlobPrefix>"
+                        "</Blobs><NextMarker>more</NextMarker></EnumerationResults>").encode()
             return (f"<EnumerationResults><Blobs><Blob><Name>{second}</Name><Properties><Etag>two</Etag>"
                     "</Properties></Blob></Blobs><NextMarker/></EnumerationResults>").encode()
 
@@ -826,6 +830,15 @@ class SchedulerTests(unittest.TestCase):
             self.assertEqual(transport.journal_inventory(), {first: "one", second: "two"})
         self.assertEqual(len(seen), 17)  # one list a digit, and a's second page
         transport.run.assert_called_once()  # one token
+
+    def test_journal_list_delimiter_never_groups_a_journal(self):
+        # The delimiter's first match in a name after the prefix starts the grouped part, so
+        # it must not occur in a job id or in "/record.json".
+        name = "dispatch/jobs/" + "0123456789abcdef" * 4 + "/record.json"
+        rest = name[len("dispatch/jobs/0"):]
+        self.assertNotIn(batch.JOURNAL_LIST_DELIMITER, rest)
+        for grouped in ("accepted/text.txt", "accepted/result.json", "accepted/layout.xml", "request.json"):
+            self.assertIn(batch.JOURNAL_LIST_DELIMITER, grouped)
 
     def test_rest_journals_fetch_a_large_delta_without_a_batch_download(self):
         directory = Path(self.enterContext(tempfile.TemporaryDirectory(dir=Path(__file__).parent)))

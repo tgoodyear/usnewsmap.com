@@ -606,6 +606,16 @@ EXPORT_BATCHES = 20
 # before it takes one az download-batch of all of them (at this rate, a minute's work).
 JOURNAL_REQUESTS = 16
 JOURNAL_DELTA_REST = 2000
+# --rest-journals lists each digit's journals with this delimiter (#308). A job's directory
+# holds record.json, request.json and accepted/*, and only record.json is read. Each listed
+# blob costs about 760 bytes of the account's egress, a grouped prefix about 110. A name
+# after the prefix is the rest of the hex job id and then the file, so with "t" the first
+# "t" falls in "accepted/" or "request.json" and those group into one prefix each per job,
+# while record.json has no "t" and is listed whole, with its ETag. On 6 November 2026 one
+# digit's listing went from 1,079,496 bytes to 314,199, with the same records and ETags.
+JOURNAL_LIST_DELIMITER = "t"
+# Every journal name must reach the listing as a blob, never inside a prefix.
+assert not set(JOURNAL_LIST_DELIMITER) & set("0123456789abcdef/record.json")
 
 ONPREM_HANDOFF = {"claim": ("claim", "release", "dead-letter"), "collect": ("collect",),
                   "export": ("export",)}
@@ -866,12 +876,15 @@ class Transport:
         raise AssertionError("unreachable")
 
     def list_journal_prefix(self, digit):
-        """The name and ETag of every blob of the job ids that start with `digit`."""
+        """The name and ETag of every journal (and any other blob without the delimiter in its
+        name) of the job ids that start with `digit`."""
         entries, marker = [], ""
         while True:
             query = urllib.parse.urlencode({"restype": "container", "comp": "list", "maxresults": 5000,
-                                            "prefix": f"dispatch/jobs/{digit}", "marker": marker})
+                                            "prefix": f"dispatch/jobs/{digit}",
+                                            "delimiter": JOURNAL_LIST_DELIMITER, "marker": marker})
             root = ET.fromstring(self.storage_get(f"?{query}"))
+            # The grouped prefixes (Blobs/BlobPrefix) name no journal and are skipped.
             for blob in root.iterfind("./Blobs/Blob"):
                 entries.append({"name": blob.findtext("Name"), "etag": blob.findtext("Properties/Etag")})
             marker = root.findtext("NextMarker") or ""
