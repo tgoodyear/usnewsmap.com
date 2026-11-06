@@ -593,6 +593,9 @@ impl Run<'_> {
         let key = self.key(path)?;
         if let Some(body) = self.store.get(&key).await? {
             self.done.stored_before += 1;
+            if let Some(want) = md5 {
+                verify_bag_md5(path, &body, want)?;
+            }
             return Ok(body);
         }
         let body = self.fetch_checked(path, md5).await?;
@@ -628,8 +631,7 @@ impl Run<'_> {
             .await?
             .with_context(|| format!("{url}: not found"))?;
         if let Some(want) = md5 {
-            let got = hex(&Md5::digest(&body));
-            ensure!(got == want, "{url}: MD5 {got}, but the bag lists {want}");
+            verify_bag_md5(&url, &body, want)?;
         }
         self.done.fetched += 1;
         self.done.fetched_bytes += body.len() as u64;
@@ -664,7 +666,10 @@ impl Run<'_> {
         let manifest = utf8(self.read("manifest-md5.txt", None).await?)?;
         let md5s: HashMap<String, String> = parse_manifest(&manifest)?.into_iter().collect();
         for issue in issues.iter().filter(|issue| issue.date < issued_before) {
-            let mets = utf8(self.read(&issue.mets, None).await?)?;
+            let mets_md5 = md5s
+                .get(&issue.mets)
+                .with_context(|| format!("the bag's manifest doesn't list {}", issue.mets))?;
+            let mets = utf8(self.read(&issue.mets, Some(mets_md5)).await?)?;
             for page in issue_pages(&mets)? {
                 let key = PageKey::new(&issue.lccn, issue.date, issue.edition, page.seq)?;
                 let file = page.image_file.as_deref().with_context(|| {
@@ -771,7 +776,9 @@ impl Run<'_> {
                 || old.alto_store_path != record.alto_store_path
                 || old.ocr_store_path != record.ocr_store_path
             {
-                write_atomic(&sidecar, &serde_json::to_vec(&record)?)?;
+                let mut refreshed = record;
+                refreshed.fetched_at = old.fetched_at;
+                write_atomic(&sidecar, &serde_json::to_vec(&refreshed)?)?;
             } else {
                 std::fs::set_permissions(&sidecar, std::fs::Permissions::from_mode(0o644))
                     .with_context(|| sidecar.display().to_string())?;
@@ -804,6 +811,12 @@ fn content_type(path: &str) -> &'static str {
         Some("tif" | "tiff") => "image/tiff",
         _ => "application/octet-stream",
     }
+}
+
+fn verify_bag_md5(path: &str, bytes: &[u8], want: &str) -> anyhow::Result<()> {
+    let got = hex(&Md5::digest(bytes));
+    ensure!(got == want, "{path}: MD5 {got}, but the bag lists {want}");
+    Ok(())
 }
 
 /// The list entry for the archive at `path` in the store at `to`: its Blob
@@ -1173,6 +1186,8 @@ mod tests {
         let sidecar = scan_sidecar_path(&image);
         let mut stale = records[0].clone();
         stale.image_path = "keep/psu_pst_test/sn84035968/1861-10-08/1/1.jp2".into();
+        stale.alto_store_path = None;
+        stale.ocr_store_path = None;
         write_atomic(&sidecar, &serde_json::to_vec(&stale).unwrap()).unwrap();
         fetch_batch(
             &site,
@@ -1187,6 +1202,9 @@ mod tests {
         let refreshed: PsuScanRecord =
             serde_json::from_slice(&std::fs::read(&sidecar).unwrap()).unwrap();
         assert_eq!(refreshed.image_path, records[0].image_path);
+        assert_eq!(refreshed.alto_store_path, records[0].alto_store_path);
+        assert_eq!(refreshed.ocr_store_path, records[0].ocr_store_path);
+        assert_eq!(refreshed.fetched_at, records[0].fetched_at);
         assert_eq!(
             std::fs::metadata(scans_root.join("catalog/psu_pst_test_ver01.jsonl"))
                 .unwrap()
@@ -1248,6 +1266,44 @@ mod tests {
         assert!(records
             .iter()
             .all(|record| record.alto_store_path.is_none()));
+    }
+
+    #[tokio::test]
+    async fn verifies_mets_before_materializing_a_stored_batch() {
+        let dir = tempfile::tempdir().unwrap();
+        let to = dir.path().join("store");
+        let to = to.to_str().unwrap();
+        let store = usnm_store::open(to).unwrap();
+        let site = site();
+        let tmp = dir.path().join("tmp");
+        fetch_batch(
+            &site,
+            store.as_ref(),
+            to,
+            &opts(),
+            "batch_pst_test_ver01",
+            &tmp,
+        )
+        .await
+        .unwrap();
+
+        let mets = dir.path().join(
+            "store/psu_pst_test_ver01/bag/data/sn84035968/000002003/1861100801/1861100801.xml",
+        );
+        std::fs::write(&mets, b"<different mets/>").unwrap();
+        let mut options = opts();
+        options.scans_root = Some(dir.path().join("scans"));
+        let error = fetch_batch(
+            &site,
+            store.as_ref(),
+            to,
+            &options,
+            "batch_pst_test_ver01",
+            &tmp,
+        )
+        .await
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("MD5"));
     }
 
     #[tokio::test]

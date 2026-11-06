@@ -490,8 +490,10 @@ pub fn list(scans: &Path, set: &str) -> anyhow::Result<Vec<(PathBuf, String)>> {
             let path = entry.path();
             let ty = entry.file_type()?;
             if ty.is_dir() {
-                stack.push(path);
-            } else if ty.is_file() && is_scan(&path) && !is_psu_scan(&root, &path) {
+                if !is_psu_directory(&root, &path) {
+                    stack.push(path);
+                }
+            } else if ty.is_file() && is_scan(&path) {
                 let rel = path.strip_prefix(scans)?;
                 let name = rel
                     .components()
@@ -559,7 +561,7 @@ fn is_scan(path: &Path) -> bool {
     (name.ends_with(".jp2") || name.ends_with(".jpg")) && !name.contains(".pct")
 }
 
-fn is_psu_scan(root: &Path, path: &Path) -> bool {
+fn is_psu_directory(root: &Path, path: &Path) -> bool {
     path.strip_prefix(root)
         .ok()
         .and_then(|rel| rel.components().next())
