@@ -19,10 +19,12 @@ CARGO = shutil.which("cargo")
 WINDOWS_ONLY = ("windows-core", "windows-result", "windows-strings")
 # The image job's matrix on main: what `publish` pushes.
 ALL_IMAGES = ["api", "ingest", "ja-ocr"]
-# What the Qwen and Surya workflows' `publish` jobs build; a pull request builds the first alone
-# when its change reaches only the usnm-boinc build stage they share (#1585).
+# What the Qwen and Surya workflows' `publish` jobs build; a pull request or a push builds the
+# first alone when its change reaches only the usnm-boinc build stage they share (#1585).
 QWEN_MODELS = ["2b", "8b"]
 SURYA_VARIANTS = ["cuda", "vulkan"]
+# The worker's architectures: a pull request builds amd64 alone unless the recipe changed.
+WORKER_ARCHES = ["amd64", "arm64"]
 
 
 def downgrade_patch(repo: Path, *names: str) -> None:
@@ -43,7 +45,7 @@ def downgrade_patch(repo: Path, *names: str) -> None:
 class Dispatch(unittest.TestCase):
     def test_boinc_build_paths_exclude_markdown_after_positive_patterns(self):
         for workflow in (ROOT / ".github/workflows").glob("boinc-*.yml"):
-            paths = re.search(r"(?m)^    paths:\n((?:      .*\n)+)", workflow.read_text())
+            paths = re.search(r"(?m)^    paths:(?: &\w+)?\n((?:      .*\n)+)", workflow.read_text())
             self.assertIsNotNone(paths, workflow.name)
             patterns = [
                 line.strip()[2:].strip("'\"")
@@ -78,6 +80,7 @@ class Dispatch(unittest.TestCase):
         self.assertIn("images=[]", result.stdout)
         self.assertIn("boinc_qwen_models=[]", result.stdout)
         self.assertIn("boinc_surya_variants=[]", result.stdout)
+        self.assertIn("boinc_worker_arches=[]", result.stdout)
         self.assertEqual(flags["image"], "false")
         self.assertEqual(flags["contrib"], "false")
         self.assertEqual(flags["edge"], "false")
@@ -100,6 +103,7 @@ class Dispatch(unittest.TestCase):
                 self.assertIn('images=["api","ingest","ja-ocr"]', result.stdout)
                 self.assertIn('boinc_qwen_models=["2b","8b"]', result.stdout)
                 self.assertIn('boinc_surya_variants=["cuda","vulkan"]', result.stdout)
+                self.assertIn('boinc_worker_arches=["amd64","arm64"]', result.stdout)
 
     def test_unknown_dispatch_scope_fails_closed(self):
         result, flags = self.flags("ocr-wroker")
@@ -396,7 +400,7 @@ CLOSURE_GOVERNED = {"crates/**", "Cargo.toml", "Cargo.lock"}
 
 
 def workflow_paths(workflow: Path) -> list:
-    block = re.search(r"(?m)^    paths:\n((?:      .*\n)+)", workflow.read_text())
+    block = re.search(r"(?m)^    paths:(?: &\w+)?\n((?:      .*\n)+)", workflow.read_text())
     return [line.strip()[2:].strip("'\"") for line in block[1].splitlines()
             if line.strip().startswith("- ")]
 
@@ -500,12 +504,15 @@ class BuildInputs(unittest.TestCase):
             self.assertEqual(self.images, ALL_IMAGES)
         self.qwen_models = output_list("boinc_qwen_models")
         self.surya_variants = output_list("boinc_surya_variants")
+        self.worker_arches = output_list("boinc_worker_arches")
         for flag, built, every in [("boinc_qwen", self.qwen_models, QWEN_MODELS),
-                                   ("boinc_surya", self.surya_variants, SURYA_VARIANTS)]:
+                                   ("boinc_surya", self.surya_variants, SURYA_VARIANTS),
+                                   ("boinc_worker", self.worker_arches, WORKER_ARCHES)]:
             self.assertEqual(flag in on, bool(built))
             self.assertIn(built, ([], every[:1], every))
-            if event != "pull_request" and built:
-                self.assertEqual(built, every)
+        if event != "pull_request" and self.worker_arches:
+            # Main checks the worker on both architectures, as publishing builds them.
+            self.assertEqual(self.worker_arches, WORKER_ARCHES)
         return on
 
     def stub_tool(self, name: str) -> dict:
@@ -829,31 +836,60 @@ class BuildInputs(unittest.TestCase):
                 self.assertEqual(self.images, [])
 
     def test_a_pull_request_builds_one_qwen_model_and_surya_variant_for_their_shared_build(self):
-        # #1585: 2b and 8b, cuda and vulkan, compile the same usnm-boinc. A change that reaches only
-        # that build stage (a crate, a file it embeds outside the images' directories, the
-        # toolchain, the build context's filter) builds the first of each on a pull request.
-        for path in ["crates/usnm-boinc/src/lib.rs", "crates/usnm-core/src/lib.rs",
-                     "ocr/boinc/usnm_qwen_benchmark_in", "fixtures/ocr-gold/bundle-v1.lock.json",
-                     "rust-toolchain.toml", ".dockerignore"]:
+        # #1585: 2b and 8b, cuda and vulkan, compile the same usnm-boinc. The toolchain and the
+        # build context's filter reach only that build stage, so a pull request builds the first
+        # of each.
+        for path in ["rust-toolchain.toml", ".dockerignore"]:
             with self.subTest(path=path):
                 self.assertGreaterEqual(self.select(path, event="pull_request"), {"boinc_qwen", "boinc_surya"})
                 self.assertEqual((self.qwen_models, self.surya_variants), (["2b"], ["cuda"]))
-        # On main the same change builds every one, as publishing does.
-        self.select("crates/usnm-boinc/src/lib.rs")
-        self.assertEqual((self.qwen_models, self.surya_variants), (QWEN_MODELS, SURYA_VARIANTS))
+
+    def test_a_crate_change_builds_the_boinc_images_on_main_not_on_the_pull_request(self):
+        # #1585: a change that reaches the images only through the crates (a crate, a file the
+        # crates embed outside the images' directories) builds them once, after the merge.
+        for path in ["crates/usnm-boinc/src/lib.rs", "crates/usnm-core/src/lib.rs",
+                     "ocr/boinc/usnm_qwen_benchmark_in", "fixtures/ocr-gold/bundle-v1.lock.json",
+                     "ocr/routing/routes.toml"]:
+            with self.subTest(path=path):
+                on = self.select(path, event="pull_request")
+                self.assertFalse(on & {"boinc_worker", "boinc_qwen", "boinc_surya", "boinc_ndlocr"}, on)
+                on = self.select(path)
+                self.assertGreaterEqual(on, {"boinc_worker", "boinc_qwen", "boinc_surya", "boinc_ndlocr"})
+                # Main builds the first model and variant, which the change reaches as the second.
+                self.assertEqual((self.qwen_models, self.surya_variants), (["2b"], ["cuda"]))
+        # The native apps keep the crate closure on a pull request.
+        self.assertIn("boinc_ocr_native", self.select("crates/usnm-ocr-app/src/main.rs", event="pull_request"))
+
+    def test_a_pull_request_builds_arm64_only_for_the_worker_recipe(self):
+        for paths, arches in [
+            (["ocr/engines/tesseract/models.lock"], ["amd64"]),
+            (["ocr/engines/engines.toml"], ["amd64"]),
+            (["scripts/boinc/smoke-worker.py"], ["amd64"]),
+            (["ocr/boinc/Containerfile"], WORKER_ARCHES),
+            (["ocr/engines/tesseract/Containerfile"], WORKER_ARCHES),
+            ([".dockerignore"], WORKER_ARCHES),
+            ([".github/workflows/boinc-worker.yml"], WORKER_ARCHES),
+            ([".github/actions/boinc-worker-build/action.yml"], WORKER_ARCHES),
+            (["crates/usnm-boinc/src/lib.rs"], []),
+        ]:
+            with self.subTest(paths=paths):
+                self.select(*paths, event="pull_request")
+                self.assertEqual(self.worker_arches, arches)
+        # select() checks main builds both whenever the worker builds.
+        self.assertIn("boinc_worker", self.select("ocr/engines/tesseract/models.lock"))
 
     def test_a_pull_request_builds_every_model_or_variant_for_what_sets_them_apart(self):
         for paths, models, variants in [
             (["ocr/boinc/qwen/Containerfile"], QWEN_MODELS, []),
             (["scripts/boinc/qwen_disk.py"], QWEN_MODELS, []),
             (["scripts/boinc/qwen_cold_cache.py"], QWEN_MODELS, []),
-            # usnm-boinc embeds these pins too, so the other image builds its first.
-            (["ocr/boinc/qwen/weights.lock"], QWEN_MODELS, ["cuda"]),
-            (["ocr/boinc/qwen/disk-policy.json"], QWEN_MODELS, ["cuda"]),
-            (["ocr/boinc/surya/engine.lock"], ["2b"], SURYA_VARIANTS),
+            # usnm-boinc embeds these pins too, which reaches the other image on main only.
+            (["ocr/boinc/qwen/weights.lock"], QWEN_MODELS, []),
+            (["ocr/boinc/qwen/disk-policy.json"], QWEN_MODELS, []),
+            (["ocr/boinc/surya/engine.lock"], [], SURYA_VARIANTS),
             (["ocr/boinc/surya/Containerfile"], [], SURYA_VARIANTS),
             (["ocr/boinc/surya/run.py"], [], SURYA_VARIANTS),
-            (["crates/usnm-boinc/src/lib.rs", "ocr/boinc/qwen/Containerfile"], QWEN_MODELS, ["cuda"]),
+            (["crates/usnm-boinc/src/lib.rs", "ocr/boinc/qwen/Containerfile"], QWEN_MODELS, []),
             ([".github/workflows/boinc-qwen.yml"], QWEN_MODELS, []),
             ([".github/actions/boinc-qwen-build/action.yml"], QWEN_MODELS, []),
             ([".github/workflows/boinc-surya.yml"], [], SURYA_VARIANTS),
@@ -1210,6 +1246,28 @@ class Wiring(unittest.TestCase):
                 self.assertNotRegex(text, r"(?m)^  changes:")
                 for job in re.findall(r"(?m)^  (publish):", text):
                     self.assertNotIn("inputs", job_text(text, job))
+
+    def test_the_boinc_images_build_on_main_after_a_merge(self):
+        # #1585: a pull request leaves the crates' reach to main, so main must run the check.
+        for name in ("boinc-worker.yml", "boinc-qwen.yml", "boinc-surya.yml", "boinc-ndlocr-lite.yml"):
+            text = self.workflow(name)
+            with self.subTest(workflow=name):
+                self.assertIn("  push:\n    branches: [main]\n    paths: *paths\n", text)
+                self.assertIn("    paths: &paths\n", text.split("  push:", 1)[0])
+                self.assertIn("BEFORE_SHA: ${{ github.event.before }}", job_text(text, "inputs"))
+                self.assertIn("if: github.event_name != 'workflow_dispatch'\n", job_text(text, "inputs"))
+                self.assertIn("if: github.event_name != 'workflow_dispatch' && needs.inputs.outputs.build == 'true'",
+                              job_text(text, "check"))
+                # A merge never cancels or queues behind a publish run.
+                self.assertIn("github.event_name == 'push' && github.sha || github.ref", text)
+
+    def test_the_worker_check_builds_the_selected_architectures_and_publish_builds_both(self):
+        text = self.workflow("boinc-worker.yml")
+        self.assertIn("      arches: ${{ steps.f.outputs.boinc_worker_arches }}\n", job_text(text, "inputs"))
+        check = job_text(text, "check")
+        self.assertIn("        arch: ${{ fromJSON(needs.inputs.outputs.arches) }}\n", check)
+        self.assertNotIn("include:", check)
+        self.assertIn("        arch: [amd64, arm64]\n", job_text(text, "publish"))
 
     def test_the_qwen_and_surya_pull_request_matrices_follow_the_selector_and_publish_builds_all(self):
         for name, output, key, every in [("boinc-qwen.yml", "boinc_qwen_models", "model", QWEN_MODELS),

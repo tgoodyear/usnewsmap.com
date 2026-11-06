@@ -68,14 +68,25 @@
 # Cargo resolves for the roots change or the manifest's other settings do.
 # Files the image's own recipe reads are listed below. test_changes.py checks
 # the lists and the embedded files against each workflow's `paths:`.
+# A pull request builds the four BOINC worker images (boinc_worker, boinc_qwen,
+# boinc_surya, boinc_ndlocr) only for their own recipe: the files listed below,
+# their workflow and build action. A change that reaches them only through the
+# crates (a crate in the closure, a file the crates embed elsewhere, what Cargo
+# resolves) builds them once on main, after the merge, which a manual publish
+# from main rebuilds anyway (#1585). The native apps and the dashboard keep
+# the crate closure on pull requests too.
+# boinc_worker_arches: the worker's architectures, as a JSON list. A pull
+# request builds amd64 alone unless the worker's recipe changed (its
+# Containerfile, the engine's Containerfile, .dockerignore, its workflow or
+# build action); main builds both (#1585).
 # boinc_qwen_models, boinc_surya_variants: the Qwen models and the Surya
-# variants the image workflows' pull request job builds, as JSON lists (#1585).
+# variants the image workflows' check job builds, as JSON lists (#1585).
 # The two of each pair share the usnm-boinc build stage and differ only in
-# their weights or their llama.cpp base, so a pull request that reaches only
-# that stage (crates, the files they embed elsewhere, the toolchain,
-# .dockerignore) builds the first. A change to the image's own directory or
-# scripts, to its workflow or build action, and anything but a pull request
-# build every one, as publishing does.
+# their weights or their llama.cpp base, so a change that reaches only that
+# stage (crates, the files they embed elsewhere, the toolchain, .dockerignore)
+# builds the first, on main and on a pull request. A change to
+# the image's own directory or scripts, to its workflow or build action, and a
+# run of everything build every one, as publishing does.
 set -euo pipefail
 out=${GITHUB_OUTPUT:-/dev/stdout}
 # Known only once the changed files are; "run everything" keeps them.
@@ -83,7 +94,7 @@ provision=false
 ops=false
 forced=
 all() {
-  printf 'rust=true\nquickwit=true\nquickwit_parity=true\nquickwit_pipeline=true\nquickwit_suites=["parity","pipeline"]\nweb=true\nimage=true\ne2e=true\nfixtures=true\nops=%s\ncode=true\nmarkdown=true\nprovision=%s\nocr_worker=true\nocr_dash=true\nocr_dashboard=true\nboinc_worker=true\nboinc_qwen=true\nboinc_surya=true\nboinc_ndlocr=true\nboinc_native=true\nboinc_ocr_native=true\ninfra=true\npage_language=true\ncontrib=true\nocr_gold=true\nboinc_pages=true\nedge=true\nqueue=true\nimages=["api","ingest","ja-ocr"]\nboinc_qwen_models=["2b","8b"]\nboinc_surya_variants=["cuda","vulkan"]\n' "$ops" "$provision" >> "$out"
+  printf 'rust=true\nquickwit=true\nquickwit_parity=true\nquickwit_pipeline=true\nquickwit_suites=["parity","pipeline"]\nweb=true\nimage=true\ne2e=true\nfixtures=true\nops=%s\ncode=true\nmarkdown=true\nprovision=%s\nocr_worker=true\nocr_dash=true\nocr_dashboard=true\nboinc_worker=true\nboinc_qwen=true\nboinc_surya=true\nboinc_ndlocr=true\nboinc_native=true\nboinc_ocr_native=true\ninfra=true\npage_language=true\ncontrib=true\nocr_gold=true\nboinc_pages=true\nedge=true\nqueue=true\nimages=["api","ingest","ja-ocr"]\nboinc_qwen_models=["2b","8b"]\nboinc_surya_variants=["cuda","vulkan"]\nboinc_worker_arches=["amd64","arm64"]\n' "$ops" "$provision" >> "$out"
   echo "running everything: $1"
   exit 0
 }
@@ -99,7 +110,7 @@ if [ "${GITHUB_EVENT_NAME:-}" = workflow_dispatch ]; then
         case "$part" in rust|queue|ocr_worker) value=true ;; *) value=false ;; esac
         printf '%s=%s\n' "$part" "$value" >> "$out"
       done
-      printf '%s\n' 'quickwit_suites=[]' 'images=[]' 'boinc_qwen_models=[]' 'boinc_surya_variants=[]' >> "$out"
+      printf '%s\n' 'quickwit_suites=[]' 'images=[]' 'boinc_qwen_models=[]' 'boinc_surya_variants=[]' 'boinc_worker_arches=[]' >> "$out"
       echo "OCR worker checks and attested release only; no application rollout"
       exit 0
       ;;
@@ -175,7 +186,7 @@ workflow_input() {
   [ -z "${3:-}" ] || re="$re|actions/$3/"
   if matches "$re)"; then forced="$forced $1"; fi
 }
-workflow_input boinc_worker boinc-worker boinc-worker-build
+workflow_input "boinc_worker boinc_worker_arm64" boinc-worker boinc-worker-build
 workflow_input "boinc_qwen boinc_qwen_8b" boinc-qwen boinc-qwen-build
 workflow_input "boinc_surya boinc_surya_vulkan" boinc-surya boinc-surya-build
 workflow_input boinc_ndlocr boinc-ndlocr-lite
@@ -268,6 +279,9 @@ boinc_surya='^(ocr/boinc/surya/|rust-toolchain\.toml$|\.dockerignore$)'
 # .dockerignore reach only the build stage and context the two share.
 boinc_qwen_8b='^(ocr/boinc/qwen/|scripts/boinc/qwen_(disk|cold_cache)\.py$)'
 boinc_surya_vulkan='^ocr/boinc/surya/'
+# What the worker's arm64 build reads that amd64's doesn't already check: the two Containerfiles,
+# whose bases and Rust image differ by architecture, and the build context's filter (#1585).
+boinc_worker_arm64='^(ocr/boinc/Containerfile$|ocr/engines/tesseract/Containerfile$|\.dockerignore$)'
 boinc_ndlocr='^(ocr/engines/ndlocr-lite/|ocr/boinc/ndlocr-lite/|scripts/boinc/smoke-ndlocr(-worker)?\.py$|ocr/ja-ocr/(testdata/|alto\.py$|jaocr\.py$|undigitized\.py$)|rust-toolchain\.toml$|\.dockerignore$)'
 # The native apps (boinc-quality-native.yml) build usnm-quality-app and
 # usnm-qwen-app and test those and the two crates they share with the engines;
@@ -478,10 +492,14 @@ narrow e2e usnm-api
 narrow_release ocr_worker usnm-ocr-worker
 narrow_release ocr_dash usnm-ocr-dash
 narrow_release ocr_dashboard usnm-ocr-dash
-narrow_examples boinc_worker usnm-boinc
-narrow_release boinc_qwen usnm-boinc
-narrow_release boinc_surya usnm-boinc
-narrow_examples boinc_ndlocr usnm-boinc usnm-ocr-adapter
+# A pull request builds the BOINC worker images for their own recipe only; main builds them for
+# the crates too (#1585).
+if [ "${GITHUB_EVENT_NAME:-}" != pull_request ]; then
+  narrow_examples boinc_worker usnm-boinc
+  narrow_release boinc_qwen usnm-boinc
+  narrow_release boinc_surya usnm-boinc
+  narrow_examples boinc_ndlocr usnm-boinc usnm-ocr-adapter
+fi
 narrow_examples boinc_native usnm-quality-app usnm-qwen-app usnm-ocr-quality usnm-ocr-contract
 narrow_examples boinc_ocr_native usnm-ocr-app
 # Changes to the shared Quickwit workflow/action or its matrix force both
@@ -502,6 +520,7 @@ done
 selected_image=false
 selected_qwen=false
 selected_surya=false
+selected_worker=false
 for part in rust queue quickwit_parity quickwit_pipeline web image e2e fixtures ocr_worker ocr_dash ocr_dashboard boinc_worker boinc_qwen boinc_surya boinc_ndlocr boinc_native boinc_ocr_native; do
   if matches_built "${!part}" ||
     { [ "$part" = rust ] && matches '^fixtures/ocr-gold/bundle-v1\.lock\.json$'; } ||
@@ -514,6 +533,7 @@ for part in rust queue quickwit_parity quickwit_pipeline web image e2e fixtures 
       image) selected_image=true ;;
       boinc_qwen) selected_qwen=true ;;
       boinc_surya) selected_surya=true ;;
+      boinc_worker) selected_worker=true ;;
     esac
   else echo "$part=false" >> "$out"; fi
 done
@@ -534,15 +554,15 @@ elif [ "${GITHUB_EVENT_NAME:-}" = pull_request ] && [ "${#images[@]}" -gt 0 ] &&
 else
   echo 'images=["api","ingest","ja-ocr"]'
 fi >> "$out"
-# variants OUTPUT SELECTED PART FIRST SECOND: the JSON list of what the image workflow builds when
-# SELECTED. A pull request builds FIRST alone unless PART (what sets SECOND apart) changed or was
-# forced by the workflow; anything else builds both.
+# variants OUTPUT SELECTED PART FIRST SECOND [MAIN]: the JSON list of what the image workflow
+# builds when SELECTED. It builds FIRST alone unless PART (what sets SECOND apart) changed or was
+# forced by the workflow; with MAIN=both, a push builds both whatever changed.
 variants() {
-  local output=$1 selected=$2 part=$3 first=$4 second=$5
+  local output=$1 selected=$2 part=$3 first=$4 second=$5 main=${6:-}
   if [ "$selected" = false ]; then
     echo "$output=[]"
-  elif [ "${GITHUB_EVENT_NAME:-}" = pull_request ] && ! matches_built "${!part}" &&
-    [[ " $forced " != *" $part "* ]]; then
+  elif { [ "${GITHUB_EVENT_NAME:-}" = pull_request ] || [ "$main" != both ]; } &&
+    ! matches_built "${!part}" && [[ " $forced " != *" $part "* ]]; then
     printf '%s=["%s"]\n' "$output" "$first"
   else
     printf '%s=["%s","%s"]\n' "$output" "$first" "$second"
@@ -550,6 +570,7 @@ variants() {
 }
 variants boinc_qwen_models "$selected_qwen" boinc_qwen_8b 2b 8b >> "$out"
 variants boinc_surya_variants "$selected_surya" boinc_surya_vulkan cuda vulkan >> "$out"
+variants boinc_worker_arches "$selected_worker" boinc_worker_arm64 amd64 arm64 both >> "$out"
 for part in page_language contrib ocr_gold edge; do
   if matches "${!part}" || [[ " $forced " == *" $part "* ]]; then echo "$part=true" >> "$out"; else echo "$part=false" >> "$out"; fi
 done

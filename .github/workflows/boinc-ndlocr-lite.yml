@@ -1,5 +1,5 @@
 name: boinc-ndlocr-lite
-run-name: ${{ github.event_name == 'workflow_dispatch' && format('boinc-ndlocr-lite ({0})', inputs.correlation) || github.event.pull_request.title }}
+run-name: ${{ github.event_name == 'workflow_dispatch' && format('boinc-ndlocr-lite ({0})', inputs.correlation) || github.event.pull_request.title || format('boinc-ndlocr-lite (main {0})', github.sha) }}
 on:
   workflow_dispatch:
     inputs:
@@ -8,7 +8,7 @@ on:
         required: false
         default: manual
   pull_request:
-    paths:
+    paths: &paths
       - .github/workflows/boinc-ndlocr-lite.yml
       - ocr/engines/ndlocr-lite/**
       - ocr/boinc/ndlocr-lite/**
@@ -35,20 +35,25 @@ on:
       - "ocr/engines/tesseract/models.lock"
       - "ocr/routing/routes.toml"
       - "!**/*.md"
+  # After a merge, for what pull requests leave to main (#1585): see scripts/ci/changes.sh.
+  push:
+    branches: [main]
+    paths: *paths
 permissions:
   contents: read
 concurrency:
-  group: boinc-ndlocr-lite-${{ github.ref }}
+  # Every merge gets its own run, and none queues behind or cancels a publish.
+  group: boinc-ndlocr-lite-${{ github.event_name == 'push' && github.sha || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 env:
   IMAGE: ghcr.io/tgoodyear/usnm-boinc-worker
 jobs:
   # Whether this change touches what the image is built from (scripts/ci/changes.sh):
-  # a crate counts when the image builds it, not for being under crates/.
+  # a crate counts when the image builds it, not for being under crates/, and on main only.
   # Not named `changes`: ci.yml's required check has that name.
   inputs:
     name: NDLOCR-Lite image inputs
-    if: github.event_name == 'pull_request'
+    if: github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-latest
     outputs:
       build: ${{ steps.f.outputs.boinc_ndlocr }}
@@ -59,9 +64,11 @@ jobs:
           persist-credentials: false
       - id: f
         run: scripts/ci/changes.sh
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
   check:
     needs: inputs
-    if: github.event_name == 'pull_request' && needs.inputs.outputs.build == 'true'
+    if: github.event_name != 'workflow_dispatch' && needs.inputs.outputs.build == 'true'
     name: NDLOCR-Lite (pinned image and CPU contract smoke)
     runs-on: ubuntu-24.04
     timeout-minutes: 90
@@ -88,6 +95,7 @@ jobs:
           ENGINE_IMAGE: ${{ steps.engine.outputs.image }}
         run: |
           docker buildx build --builder default --load -f ocr/boinc/ndlocr-lite/Containerfile \
+            --build-arg "BUILD_JOBS=$(nproc)" \
             --build-arg NDLOCR_IMAGE="$ENGINE_IMAGE" \
             --build-arg NDLOCR_FROM="$IMAGE:ndlocr-lite-$GITHUB_SHA" \
             -t "$IMAGE:ndlocr-lite-worker-$GITHUB_SHA" .

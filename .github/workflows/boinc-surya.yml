@@ -9,7 +9,7 @@ name: boinc-surya
 #
 # It shares the worker's package, which is already public, so volunteers' Docker or Podman can
 # pull it anonymously; only the digest is used.
-run-name: ${{ github.event_name == 'workflow_dispatch' && format('boinc-surya ({0})', inputs.correlation) || github.event.pull_request.title }}
+run-name: ${{ github.event_name == 'workflow_dispatch' && format('boinc-surya ({0})', inputs.correlation) || github.event.pull_request.title || format('boinc-surya (main {0})', github.sha) }}
 on:
   workflow_dispatch:
     inputs:
@@ -18,7 +18,7 @@ on:
         required: false
         default: "manual"
   pull_request:
-    paths:
+    paths: &paths
       - ".github/workflows/boinc-surya.yml"
       - ".github/actions/boinc-surya-build/**"
       - "ocr/boinc/surya/**"
@@ -40,12 +40,17 @@ on:
       - "ocr/engines/tesseract/models.lock"
       - "ocr/routing/routes.toml"
       - "!**/*.md"
+  # After a merge, for what pull requests leave to main (#1585): see scripts/ci/changes.sh.
+  push:
+    branches: [main]
+    paths: *paths
 
 permissions:
   contents: read
 
 concurrency:
-  group: boinc-surya-${{ github.ref }}
+  # Every merge gets its own run, and none queues behind or cancels a publish.
+  group: boinc-surya-${{ github.event_name == 'push' && github.sha || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -53,11 +58,11 @@ env:
 
 jobs:
   # Whether this change touches what the image is built from (scripts/ci/changes.sh):
-  # a crate counts when the image builds it, not for being under crates/.
+  # a crate counts when the image builds it, not for being under crates/, and on main only.
   # Not named `changes`: ci.yml's required check has that name.
   inputs:
     name: surya worker image inputs
-    if: github.event_name == 'pull_request'
+    if: github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-latest
     outputs:
       build: ${{ steps.f.outputs.boinc_surya }}
@@ -69,11 +74,14 @@ jobs:
           persist-credentials: false
       - id: f
         run: scripts/ci/changes.sh
-  # Pull requests: build and check only, with a read-only token, the variants changes.sh selects.
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+  # Pull requests and main after a merge: build and check only, with a read-only token, the
+  # variants changes.sh selects.
   check:
     name: surya worker image (${{ matrix.variant }}, build)
     needs: inputs
-    if: github.event_name == 'pull_request' && needs.inputs.outputs.build == 'true'
+    if: github.event_name != 'workflow_dispatch' && needs.inputs.outputs.build == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 120
     strategy:

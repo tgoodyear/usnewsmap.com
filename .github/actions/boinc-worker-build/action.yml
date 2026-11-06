@@ -39,6 +39,7 @@ runs:
         [[ $engine =~ ^sha256:[0-9a-f]{64}$ ]]
         args=(--platform "linux/$ARCH" --build-arg "TESSERACT_IMAGE=$engine"
           --build-arg TESSERACT_FROM=usnm-ocr/tesseract:worker --build-arg "RUST_IMAGE=$RUST_IMAGE"
+          --build-arg "BUILD_JOBS=$(nproc)"
           -f ocr/boinc/Containerfile)
         docker build "${args[@]}" --target build -t usnm-boinc-build:worker .
         docker build "${args[@]}" --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \

@@ -1,6 +1,7 @@
 name: boinc-worker
-# Native builds on both architectures. Publishing remains manual and main-only.
-run-name: ${{ github.event_name == 'workflow_dispatch' && format('boinc-worker ({0})', inputs.correlation) || github.event.pull_request.title }}
+# Native builds on both architectures; a pull request builds arm64 only for the worker's recipe
+# (#1585). Publishing remains manual and main-only.
+run-name: ${{ github.event_name == 'workflow_dispatch' && format('boinc-worker ({0})', inputs.correlation) || github.event.pull_request.title || format('boinc-worker (main {0})', github.sha) }}
 on:
   workflow_dispatch:
     inputs:
@@ -9,7 +10,7 @@ on:
         required: false
         default: manual
   pull_request:
-    paths:
+    paths: &paths
       - .github/workflows/boinc-worker.yml
       - .github/actions/boinc-worker-build/**
       - ocr/engines/tesseract/**
@@ -32,23 +33,34 @@ on:
       - "ocr/engines/ndlocr-lite/models.lock"
       - "ocr/routing/routes.toml"
       - "!**/*.md"
+  # After a merge, for what pull requests leave to main (#1585): see scripts/ci/changes.sh.
+  push:
+    branches: [main]
+    paths: *paths
 permissions:
   contents: read
 concurrency:
-  group: boinc-worker-${{ github.ref }}
+  # Every merge gets its own run, and none queues behind or cancels a publish.
+  group: boinc-worker-${{ github.event_name == 'push' && github.sha || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 env:
   IMAGE: ghcr.io/tgoodyear/usnm-boinc-worker
+  # Each architecture's pinned Debian base and Rust build image, for check and publish alike.
+  AMD64_BASE: mirror.gcr.io/library/debian@sha256:918311b7b6c4c6f68b232ba516584925f6c78ad82b6fd534b98979df6438e483
+  AMD64_RUST: docker.io/library/rust@sha256:b36c246742b4d323472588f789601be34eb4af053255e2af53969078ee8dcec7
+  ARM64_BASE: docker.io/library/debian@sha256:a2ca65377c251208de42e1a2722cb949211236c161b634f6f3663754e2d06850
+  ARM64_RUST: docker.io/library/rust@sha256:e393e07b3c3c39f238de676b0eb60c03dc7aefe5d6e37be6d29c686bf4d7e256
 jobs:
   # Whether this change touches what the image is built from (scripts/ci/changes.sh):
-  # a crate counts when the image builds it, not for being under crates/.
+  # a crate counts when the image builds it, not for being under crates/, and on main only.
   # Not named `changes`: ci.yml's required check has that name.
   inputs:
     name: worker image inputs
-    if: github.event_name == 'pull_request'
+    if: github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-latest
     outputs:
       build: ${{ steps.f.outputs.boinc_worker }}
+      arches: ${{ steps.f.outputs.boinc_worker_arches }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -56,23 +68,19 @@ jobs:
           persist-credentials: false
       - id: f
         run: scripts/ci/changes.sh
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
   check:
     name: worker image (${{ matrix.arch }}, native build)
     needs: inputs
-    if: github.event_name == 'pull_request' && needs.inputs.outputs.build == 'true'
-    strategy: &native
+    if: github.event_name != 'workflow_dispatch' && needs.inputs.outputs.build == 'true'
+    strategy:
       fail-fast: false
       matrix:
-        include:
-          - arch: amd64
-            runner: ubuntu-24.04
-            base: mirror.gcr.io/library/debian@sha256:918311b7b6c4c6f68b232ba516584925f6c78ad82b6fd534b98979df6438e483
-            rust: docker.io/library/rust@sha256:b36c246742b4d323472588f789601be34eb4af053255e2af53969078ee8dcec7
-          - arch: arm64
-            runner: ubuntu-24.04-arm
-            base: docker.io/library/debian@sha256:a2ca65377c251208de42e1a2722cb949211236c161b634f6f3663754e2d06850
-            rust: docker.io/library/rust@sha256:e393e07b3c3c39f238de676b0eb60c03dc7aefe5d6e37be6d29c686bf4d7e256
-    runs-on: ${{ matrix.runner }}
+        # amd64 alone on a pull request that leaves the worker's recipe alone (#1585). An
+        # `include` here would add arm64 back, so the pins come from env.
+        arch: ${{ fromJSON(needs.inputs.outputs.arches) }}
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -82,13 +90,16 @@ jobs:
           image: ${{ env.IMAGE }}
           tag: ${{ github.sha }}-${{ matrix.arch }}
           arch: ${{ matrix.arch }}
-          base_image: ${{ matrix.base }}
-          rust_image: ${{ matrix.rust }}
+          base_image: ${{ matrix.arch == 'arm64' && env.ARM64_BASE || env.AMD64_BASE }}
+          rust_image: ${{ matrix.arch == 'arm64' && env.ARM64_RUST || env.AMD64_RUST }}
   publish:
     name: worker image (${{ matrix.arch }}, build and push)
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
-    strategy: *native
-    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
     permissions:
       contents: read
       packages: write
@@ -102,8 +113,8 @@ jobs:
           image: ${{ env.IMAGE }}
           tag: ${{ github.sha }}-${{ matrix.arch }}
           arch: ${{ matrix.arch }}
-          base_image: ${{ matrix.base }}
-          rust_image: ${{ matrix.rust }}
+          base_image: ${{ matrix.arch == 'arm64' && env.ARM64_BASE || env.AMD64_BASE }}
+          rust_image: ${{ matrix.arch == 'arm64' && env.ARM64_RUST || env.AMD64_RUST }}
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - name: Push the tested architecture
         env:
