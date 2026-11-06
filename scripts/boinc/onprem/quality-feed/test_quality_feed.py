@@ -1466,8 +1466,7 @@ class FollowChunkTest(unittest.TestCase):
         self.assertIn('"pages": 2', output.getvalue().split("waiting for a full chunk")[1][:200])
 
     def test_a_chunk_that_comes_up_short_still_records_the_pages_never_worth_a_retry(self):
-        raw = DecodeQuarantineTest.image()
-        pages = [DecodeQuarantineTest.page(seq, raw) for seq in (1, 2, 3)]
+        pages = [DecodeQuarantineTest.page(seq, b"scan") for seq in (1, 2, 3)]
         no_text, cut, _ = (p["doc_id"] for p in pages)
         texts = mock.Mock()
         texts.loc.side_effect = lambda batch, bv, docs: ({d: "LoC text" for d in docs if d != no_text}, True)
