@@ -513,17 +513,18 @@ def reservations_proven(session, client_start, fingerprint, messages):
                 messages = None
                 break
             reread |= "Re-reading" in message.findtext("body", "")
+    held = record.get("proven")
     if messages is None or type(cursor) is not int:
-        trusted, last = False, cursor if type(cursor) is int else 0
+        proven, last = False, cursor if type(cursor) is int else 0
     else:
         contiguous = not seqnos or min(seqnos) == cursor + 1
-        trusted = (fingerprint is not None and contiguous and not reread
-                   and (record.get("trusted") is True and record.get("fingerprint") == fingerprint if same
-                        else all(mtime / 1e9 < start for _, mtime, _ in fingerprint)))
+        proven = (fingerprint is not None and contiguous and not reread
+                  and (held is True and record.get("fingerprint") == fingerprint if same
+                       else all(mtime / 1e9 < start for _, mtime, _ in fingerprint)))
         last = max(seqnos, default=cursor)
     atomic_json(session, {"client_start": start, "cursor": last, "fingerprint": fingerprint,
-                          "trusted": trusted})
-    return trusted
+                          "proven": proven})
+    return proven
 
 
 def client(data_dir, port, session=None):
