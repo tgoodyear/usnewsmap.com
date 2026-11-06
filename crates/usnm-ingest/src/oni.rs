@@ -4,8 +4,9 @@
 //!
 //! [`fetch_batch`] copies a batch's BagIt tag files and requested XML payload
 //! (ALTO and METS), each checked against the bag's MD5. With a scan root, JP2s
-//! go directly to `keep/psu_*` and a per-batch JSONL catalog records their
-//! provenance; this avoids duplicating the images in the batch store. The bag
+//! go directly to `keep/{batch-version}/` and a per-batch JSONL catalog records
+//! their provenance; this avoids collisions between corrected batch versions
+//! and duplicating images in the batch store. The bag
 //! names page files by reel frame (`1024.jp2`), so each issue's METS gives the
 //! pages' sequence numbers. Each page's `ocr.txt` comes from the site, and the
 //! texts go into a `tar.zst` in the page-key layout `curate` reads
@@ -21,7 +22,7 @@
 //!   and `psu_pst_bonadea_ver03/manifest.json` ([`raw::Manifest`]).
 //!
 //! With `--scans-root /tank/ocr/scans`, page images instead live under
-//! `keep/psu_pst_bonadea/` and are listed in
+//! `keep/psu_pst_bonadea_ver03/` and are listed in
 //! `catalog/psu_pst_bonadea_ver03.jsonl`, separate from the LoC scan index.
 //!
 //! Stored files are kept, so a run that stops resumes where it stopped, and
@@ -212,9 +213,9 @@ pub struct PsuScanRecord {
 
 const PSU_SCAN_CATALOG_DIR: &str = "catalog";
 
-fn scan_rel_path(batch: &str, key: &PageKey) -> String {
+fn scan_rel_path(batch_version: &str, key: &PageKey) -> String {
     format!(
-        "keep/{batch}/{}/{}/{}/{}.jp2",
+        "keep/{batch_version}/{}/{}/{}/{}.jp2",
         key.lccn,
         key.date.format("%Y-%m-%d"),
         key.edition,
@@ -348,8 +349,8 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
 }
 
 fn write_scan_catalog(root: &Path, batch: &str) -> anyhow::Result<()> {
-    let (base, version) = split_version(batch)?;
-    let dir = root.join("keep").join(base);
+    let (_, version) = split_version(batch)?;
+    let dir = root.join("keep").join(batch);
     if !dir.exists() {
         return Ok(());
     }
@@ -703,7 +704,7 @@ impl Run<'_> {
             return Ok(());
         };
         let (batch, batch_version) = split_version(&self.name)?;
-        let rel = scan_rel_path(&batch, key);
+        let rel = scan_rel_path(&self.name, key);
         let path = root.join(&rel);
         let sidecar = scan_sidecar_path(&path);
         let store_key = self.key(bag_path)?;
@@ -734,6 +735,10 @@ impl Run<'_> {
             .map(|file| issue_file_path(&issue.mets, file))
             .transpose()?
             .map(|file| format!("{}/bag/{file}", self.name));
+        let alto_store_path = match alto_store_path {
+            Some(path) if self.store.exists(&path).await? => Some(path),
+            _ => None,
+        };
         let record = PsuScanRecord {
             doc_id: key.doc_id(),
             batch,
@@ -762,15 +767,8 @@ impl Run<'_> {
                 "{}: existing Penn State sidecar disagrees with the verified scan",
                 sidecar.display()
             );
-            if old.batch_version != record.batch_version
-                || old.alto_store_path != record.alto_store_path
-                || old.ocr_store_path != record.ocr_store_path
-            {
-                write_atomic(&sidecar, &serde_json::to_vec(&record)?)?;
-            } else {
-                std::fs::set_permissions(&sidecar, std::fs::Permissions::from_mode(0o644))
-                    .with_context(|| sidecar.display().to_string())?;
-            }
+            std::fs::set_permissions(&sidecar, std::fs::Permissions::from_mode(0o644))
+                .with_context(|| sidecar.display().to_string())?;
         } else {
             write_atomic(&sidecar, &serde_json::to_vec(&record)?)?;
         }
@@ -1110,7 +1108,29 @@ mod tests {
         .unwrap();
 
         assert_eq!(site.asked.lock().unwrap().len(), asked_before);
-        let image = scans_root.join("keep/psu_pst_test/sn84035968/1861-10-08/1/1.jp2");
+        let image = scans_root.join("keep/psu_pst_test_ver01/sn84035968/1861-10-08/1/1.jp2");
+        assert_ne!(
+            scan_rel_path(
+                "psu_pst_test_ver01",
+                &PageKey::new(
+                    "sn84035968",
+                    NaiveDate::from_ymd_opt(1861, 10, 8).unwrap(),
+                    1,
+                    1
+                )
+                .unwrap()
+            ),
+            scan_rel_path(
+                "psu_pst_test_ver02",
+                &PageKey::new(
+                    "sn84035968",
+                    NaiveDate::from_ymd_opt(1861, 10, 8).unwrap(),
+                    1,
+                    1
+                )
+                .unwrap()
+            )
+        );
         assert_eq!(std::fs::read(&image).unwrap(), b"page one image");
         assert_eq!(
             std::fs::metadata(&image).unwrap().permissions().mode() & 0o777,
@@ -1125,7 +1145,7 @@ mod tests {
             0o644
         );
         assert_eq!(
-            std::fs::read(scans_root.join("keep/psu_pst_test/sn84035968/1861-10-08/1/2.jp2"))
+            std::fs::read(scans_root.join("keep/psu_pst_test_ver01/sn84035968/1861-10-08/1/2.jp2"))
                 .unwrap(),
             b"page two image"
         );
@@ -1154,7 +1174,7 @@ mod tests {
         let mut v2 = records[0].clone();
         v2.batch_version = 2;
         v2.page_key = "sn84035968/1861-10-08/ed-1/seq-3".into();
-        v2.image_path = "keep/psu_pst_test/sn84035968/1861-10-08/1/3.jp2".into();
+        v2.image_path = "keep/psu_pst_test_ver02/sn84035968/1861-10-08/1/3.jp2".into();
         let v2_sidecar = scans_root.join(format!("{}.psu.json", v2.image_path));
         write_atomic(&v2_sidecar, &serde_json::to_vec(&v2).unwrap()).unwrap();
         write_scan_catalog(&scans_root, "psu_pst_test_ver01").unwrap();
@@ -1170,6 +1190,39 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(v2_records.len(), 1);
         assert_eq!(v2_records[0].batch_version, 2);
+    }
+
+    #[tokio::test]
+    async fn omits_alto_from_the_catalog_when_it_was_not_stored() {
+        let dir = tempfile::tempdir().unwrap();
+        let to = dir.path().join("store");
+        let to = to.to_str().unwrap();
+        let store = usnm_store::open(to).unwrap();
+        let site = site();
+        let tmp = dir.path().join("tmp");
+        let scans_root = dir.path().join("scans");
+        let mut options = opts();
+        options.exts = vec!["jp2".into()];
+        options.scans_root = Some(scans_root.clone());
+        fetch_batch(
+            &site,
+            store.as_ref(),
+            to,
+            &options,
+            "batch_pst_test_ver01",
+            &tmp,
+        )
+        .await
+        .unwrap();
+        let catalog =
+            std::fs::read_to_string(scans_root.join("catalog/psu_pst_test_ver01.jsonl")).unwrap();
+        let records = catalog
+            .lines()
+            .map(|line| serde_json::from_str::<PsuScanRecord>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert!(records
+            .iter()
+            .all(|record| record.alto_store_path.is_none()));
     }
 
     #[tokio::test]

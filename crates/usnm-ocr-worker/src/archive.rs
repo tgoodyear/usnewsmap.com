@@ -466,9 +466,10 @@ fn encode_path(name: &str) -> String {
         .join("/")
 }
 
-/// The scans under `<scans>/<set>`: full-size `.jp2` and `.jpg` files, in
-/// path order, with their blob names. Scaled sample files (`.pct<n>.jpg`),
-/// sidecars and consumed markers are left out.
+/// The LoC scans under `<scans>/<set>`: full-size `.jp2` and `.jpg` files, in
+/// path order, with their blob names. PSU Open ONI scans have a separate
+/// provenance format and are not uploaded by this archive. Scaled sample files
+/// (`.pct<n>.jpg`), sidecars and consumed markers are left out.
 pub fn list(scans: &Path, set: &str) -> anyhow::Result<Vec<(PathBuf, String)>> {
     if !matches!(set, "keep" | "buffer") {
         bail!("--set must be keep or buffer");
@@ -490,7 +491,7 @@ pub fn list(scans: &Path, set: &str) -> anyhow::Result<Vec<(PathBuf, String)>> {
             let ty = entry.file_type()?;
             if ty.is_dir() {
                 stack.push(path);
-            } else if ty.is_file() && is_scan(&path) {
+            } else if ty.is_file() && is_scan(&path) && !is_psu_scan(&root, &path) {
                 let rel = path.strip_prefix(scans)?;
                 let name = rel
                     .components()
@@ -556,6 +557,13 @@ fn is_scan(path: &Path) -> bool {
         return false;
     };
     (name.ends_with(".jp2") || name.ends_with(".jpg")) && !name.contains(".pct")
+}
+
+fn is_psu_scan(root: &Path, path: &Path) -> bool {
+    path.strip_prefix(root)
+        .ok()
+        .and_then(|rel| rel.components().next())
+        .is_some_and(|batch| batch.as_os_str().to_string_lossy().starts_with("psu_"))
 }
 
 /// Run over the whole set (or `limit` scans), `concurrency` at a time.
@@ -1146,6 +1154,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         put_scan(dir.path(), "keep/z/seq-1.jp2", b"1", true);
         put_scan(dir.path(), "keep/a/seq-1.jpg", b"2", true);
+        put_scan(
+            dir.path(),
+            "keep/psu_pst_bonadea_ver03/sn84035968/1859-07-18/1/1.jp2",
+            b"3",
+            true,
+        );
         let names: Vec<_> = list(dir.path(), "keep")
             .unwrap()
             .into_iter()
