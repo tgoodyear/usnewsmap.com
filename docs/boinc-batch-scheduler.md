@@ -1569,8 +1569,8 @@ on CT 211 runs this every day at 08:30 UTC
    does nothing.
 2. Bridges any earlier batch that has a dispatch receipt but no
    `receipts/bridge.json` (a run that stopped between the two steps).
-3. Runs `dispatch --include-held --min-age-hours 1 --pages 1000 --apply
-   --confirm-controller-paused` into `/srv/usnm-archive`, under the
+3. Runs the `dispatch` apply into `/srv/usnm-archive`, with
+   `--include-held`, `--min-age-hours 1` and `--pages 1000`, under the
    controller's own identity, at most 10 batches. After each batch it sends the
    batch's `manifest.json` and `receipts/dispatch.json` over the controller's
    ssh step command to the BOINC host, where
