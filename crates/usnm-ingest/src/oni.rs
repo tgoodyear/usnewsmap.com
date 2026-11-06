@@ -2,11 +2,13 @@
 //! its Open ONI site serves that LoC's bulk OCR doesn't have, made into
 //! retained archives that `curate` reads as it reads LoC's.
 //!
-//! [`fetch_batch`] copies a batch's BagIt bag: its tag files and the payload
-//! files asked for (by default the page JP2s, the ALTO and the METS), each
-//! checked against the bag's MD5 before it is stored. The bag names page
-//! files by reel frame (`1024.jp2`), so each issue's METS gives the pages'
-//! sequence numbers. Each page's `ocr.txt` comes from the site, and the
+//! [`fetch_batch`] copies a batch's BagIt tag files and requested XML payload
+//! (ALTO and METS), each checked against the bag's MD5. With a scan root, JP2s
+//! go directly to `keep/{batch-version}/` and a per-batch JSONL catalog records
+//! their provenance; this avoids collisions between corrected batch versions
+//! and duplicating images in the batch store. The bag
+//! names page files by reel frame (`1024.jp2`), so each issue's METS gives the
+//! pages' sequence numbers. Each page's `ocr.txt` comes from the site, and the
 //! texts go into a `tar.zst` in the page-key layout `curate` reads
 //! ([`crate::archive`]), recorded as the batch's retained archive
 //! ([`crate::raw`]). With `USNM_RAW_URL` at the same store, `curate` reads
@@ -14,17 +16,22 @@
 //!
 //! For the site's `batch_pst_bonaDea_ver03` ([`local_name`]:
 //! `psu_pst_bonadea_ver03`) the store holds:
-//! - `psu_pst_bonadea_ver03/bag/{path in the bag}`: the bag's files;
+//! - `psu_pst_bonadea_ver03/bag/{path in the bag}`: the tag and XML files;
 //! - `psu_pst_bonadea_ver03/ocr/{page key}/ocr.txt`: the site's page texts;
 //! - `psu_pst_bonadea_ver03/psu_pst_bonadea_ver03-{sha256 prefix}.tar.zst`
 //!   and `psu_pst_bonadea_ver03/manifest.json` ([`raw::Manifest`]).
+//!
+//! With `--scans-root /tank/ocr/scans`, page images instead live under
+//! `keep/psu_pst_bonadea_ver03/` and are listed in
+//! `catalog/psu_pst_bonadea_ver03.jsonl`, separate from the LoC scan index.
 //!
 //! Stored files are kept, so a run that stops resumes where it stopped, and
 //! a batch with a manifest is done.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io::{Seek, SeekFrom, Write};
-use std::path::Path;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 
 use anyhow::{ensure, Context};
 use chrono::{NaiveDate, Utc};
@@ -58,6 +65,10 @@ pub struct Options {
     pub exts: Vec<String>,
     /// Issues from this day on are left out, their files too.
     pub issued_before: NaiveDate,
+    /// Optional pve-big scan archive root. JP2s go under `keep/psu_*` and
+    /// receive a source-specific catalog; they are not duplicated in the
+    /// batch store.
+    pub scans_root: Option<PathBuf>,
 }
 
 /// An issue `BATCH.xml` lists.
@@ -173,14 +184,53 @@ pub fn batch_issues(xml: &str) -> anyhow::Result<Vec<Issue>> {
     }
 }
 
-/// An issue's pages from its METS: each page's sequence number
-/// (`extent/start`, as Open ONI reads it), and whether it has an OCR file.
-pub fn issue_pages(xml: &str) -> anyhow::Result<Vec<(u16, bool)>> {
+/// A page from its METS: sequence number, OCR presence and the service JP2
+/// and ALTO file names within the issue directory.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IssuePage {
+    pub seq: u16,
+    pub image_file: Option<String>,
+    pub alto_file: Option<String>,
+    pub has_ocr: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub struct PsuScanRecord {
+    pub doc_id: String,
+    pub batch: String,
+    pub batch_version: u16,
+    pub page_key: String,
+    pub image_path: String,
+    pub source_url: String,
+    pub viewer_url: String,
+    pub alto_store_path: Option<String>,
+    pub ocr_store_path: Option<String>,
+    pub bytes: u64,
+    pub md5: String,
+    pub sha256: String,
+    pub fetched_at: chrono::DateTime<Utc>,
+}
+
+const PSU_SCAN_CATALOG_DIR: &str = "catalog";
+
+fn scan_rel_path(batch_version: &str, key: &PageKey) -> String {
+    format!(
+        "keep/{batch_version}/{}/{}/{}/{}.jp2",
+        key.lccn,
+        key.date.format("%Y-%m-%d"),
+        key.edition,
+        key.seq
+    )
+}
+
+pub fn issue_pages(xml: &str) -> anyhow::Result<Vec<IssuePage>> {
     let mut reader = quick_xml::Reader::from_str(xml);
     let mut seqs: HashMap<String, u16> = HashMap::new();
     let mut uses: HashMap<String, String> = HashMap::new();
+    let mut locations: HashMap<String, String> = HashMap::new();
     let mut divs: Vec<(String, Vec<String>)> = Vec::new();
     let (mut dmd, mut page) = (None::<String>, None::<(String, Vec<String>)>);
+    let mut file_id = None::<String>;
     let (mut in_extent, mut in_start) = (false, false);
     loop {
         let event = reader.read_event()?;
@@ -193,6 +243,15 @@ pub fn issue_pages(xml: &str) -> anyhow::Result<Vec<(u16, bool)>> {
                 "file" => {
                     if let (Some(id), Some(u)) = (attr(&e, "ID")?, attr(&e, "USE")?) {
                         uses.insert(id, u);
+                    }
+                    file_id = attr(&e, "ID")?;
+                }
+                "FLocat" => {
+                    if let (Some(id), Some(href)) = (file_id.as_ref(), attr(&e, "href")?) {
+                        locations.insert(
+                            id.clone(),
+                            href.strip_prefix("./").unwrap_or(&href).to_owned(),
+                        );
                     }
                 }
                 "div" if attr(&e, "TYPE")?.as_deref() == Some("np:page") => {
@@ -217,6 +276,7 @@ pub fn issue_pages(xml: &str) -> anyhow::Result<Vec<(u16, bool)>> {
             }
             Event::End(e) => match e.local_name().as_ref() {
                 "dmdSec" => dmd = None,
+                "file" => file_id = None,
                 "extent" => in_extent = false,
                 "start" => in_start = false,
                 "div" => divs.extend(page.take()),
@@ -232,14 +292,134 @@ pub fn issue_pages(xml: &str) -> anyhow::Result<Vec<(u16, bool)>> {
             let seq = *seqs
                 .get(&id)
                 .with_context(|| format!("page `{id}` has no sequence number"))?;
-            let ocr = files
-                .iter()
-                .any(|f| uses.get(f).is_some_and(|u| u == "ocr"));
-            Ok((seq, ocr))
+            let image_file = files.iter().find_map(|f| {
+                (uses.get(f).is_some_and(|u| u == "service"))
+                    .then(|| locations.get(f).cloned())
+                    .flatten()
+            });
+            let alto_file = files.iter().find_map(|f| {
+                (uses.get(f).is_some_and(|u| u == "ocr"))
+                    .then(|| locations.get(f).cloned())
+                    .flatten()
+            });
+            Ok(IssuePage {
+                seq,
+                image_file,
+                alto_file,
+                has_ocr: files
+                    .iter()
+                    .any(|f| uses.get(f).is_some_and(|u| u == "ocr")),
+            })
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
-    pages.sort_unstable();
-    Ok(pages)
+    pages.sort_by_key(|page| page.seq);
+    let mut merged: Vec<IssuePage> = Vec::with_capacity(pages.len());
+    for page in pages {
+        if let Some(previous) = merged.last_mut() {
+            if previous.seq == page.seq {
+                if let Some(image_file) = page.image_file {
+                    if let Some(existing) = &previous.image_file {
+                        ensure!(
+                            existing == &image_file,
+                            "page {} has conflicting service images in its METS",
+                            page.seq
+                        );
+                    } else {
+                        previous.image_file = Some(image_file);
+                    }
+                }
+                if let Some(alto_file) = page.alto_file {
+                    if let Some(existing) = &previous.alto_file {
+                        ensure!(
+                            existing == &alto_file,
+                            "page {} has conflicting OCR files in its METS",
+                            page.seq
+                        );
+                    } else {
+                        previous.alto_file = Some(alto_file);
+                    }
+                }
+                previous.has_ocr |= page.has_ocr;
+                continue;
+            }
+        }
+        merged.push(page);
+    }
+    Ok(merged)
+}
+
+fn issue_file_path(mets: &str, href: &str) -> anyhow::Result<String> {
+    let file = href.trim_start_matches("./");
+    ensure!(
+        !file.is_empty()
+            && !file.contains('/')
+            && file != "."
+            && file != ".."
+            && file
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-' || b == b'_'),
+        "unsafe METS file reference {href:?}"
+    );
+    Ok(format!("{}/{file}", dir_of(mets)))
+}
+
+fn scan_sidecar_path(scan: &Path) -> PathBuf {
+    PathBuf::from(format!("{}.psu.json", scan.display()))
+}
+
+fn write_atomic(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
+    let parent = path.parent().context("output path has no parent")?;
+    std::fs::create_dir_all(parent).with_context(|| parent.display().to_string())?;
+    let mut tmp =
+        tempfile::NamedTempFile::new_in(parent).with_context(|| parent.display().to_string())?;
+    tmp.write_all(bytes)?;
+    tmp.as_file()
+        .set_permissions(std::fs::Permissions::from_mode(0o644))?;
+    tmp.persist(path)
+        .with_context(|| path.display().to_string())?;
+    Ok(())
+}
+
+fn write_scan_catalog(root: &Path, batch: &str) -> anyhow::Result<()> {
+    let (_, version) = split_version(batch)?;
+    let dir = root.join("keep").join(batch);
+    if !dir.exists() {
+        return Ok(());
+    }
+    let mut stack = vec![dir];
+    let mut records = Vec::new();
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).with_context(|| dir.display().to_string())? {
+            let entry = entry?;
+            let path = entry.path();
+            if entry.file_type()?.is_dir() {
+                stack.push(path);
+            } else if path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.ends_with(".jp2.psu.json"))
+            {
+                let bytes = std::fs::read(&path).with_context(|| path.display().to_string())?;
+                let record =
+                    serde_json::from_slice::<PsuScanRecord>(&bytes).with_context(|| {
+                        format!("invalid Penn State scan catalog sidecar {}", path.display())
+                    })?;
+                if record.batch_version == version {
+                    records.push(record);
+                }
+            }
+        }
+    }
+    records.sort_by(|a, b| a.page_key.cmp(&b.page_key));
+    let catalog_dir = root.join(PSU_SCAN_CATALOG_DIR);
+    std::fs::create_dir_all(&catalog_dir).with_context(|| catalog_dir.display().to_string())?;
+    let catalog = catalog_dir.join(format!("{batch}.jsonl"));
+    let mut body = Vec::new();
+    for record in records {
+        serde_json::to_writer(&mut body, &record)?;
+        body.push(b'\n');
+    }
+    write_atomic(&catalog, &body)
 }
 
 /// The value of `e`'s attribute named `name` (its local name: `href` for
@@ -267,7 +447,7 @@ pub async fn fetch_batch(
     opts: &Options,
     site_batch: &str,
     tmp: &Path,
-) -> anyhow::Result<(ListedBatch, Fetched)> {
+) -> anyhow::Result<Option<(ListedBatch, Fetched)>> {
     let name = local_name(site_batch)?;
     let mut run = Run {
         fetch,
@@ -275,17 +455,41 @@ pub async fn fetch_batch(
         site: &opts.site,
         bag: format!("{}/data/batches/{site_batch}", opts.site),
         name: name.clone(),
+        scans_root: opts.scans_root.as_deref(),
         done: Fetched::default(),
     };
     if let Some(m) = raw::find(store, &name, None).await? {
-        let xml = utf8(run.read("data/BATCH.xml", None).await?)?;
-        let lccns = batch_issues(&xml)?
-            .into_iter()
+        let tags = parse_manifest(&utf8(run.read("tagmanifest-md5.txt", None).await?)?)?;
+        let manifest_md5 = tags
+            .iter()
+            .find(|(path, _)| path == "manifest-md5.txt")
+            .map(|(_, md5)| md5.as_str())
+            .context("the tag manifest doesn't list manifest-md5.txt")?;
+        let manifest = utf8(run.read("manifest-md5.txt", Some(manifest_md5)).await?)?;
+        let md5s: HashMap<String, String> = parse_manifest(&manifest)?.into_iter().collect();
+        let batch_md5 = md5s
+            .get("data/BATCH.xml")
+            .context("the bag's manifest doesn't list data/BATCH.xml")?;
+        let xml = utf8(run.read("data/BATCH.xml", Some(batch_md5)).await?)?;
+        let issues = batch_issues(&xml)?;
+        let lccns: BTreeSet<String> = issues
+            .iter()
             .filter(|i| i.date < opts.issued_before)
-            .map(|i| i.lccn)
+            .map(|i| i.lccn.clone())
             .collect();
+        if lccns.is_empty() {
+            return Ok(None);
+        }
+        if run.scans_root.is_some() {
+            run.materialize_stored_scans(&issues, opts.issued_before, &md5s)
+                .await?;
+            write_scan_catalog(run.scans_root.unwrap(), &name)?;
+        }
         tracing::info!(batch = %name, archive = %m.path, "already fetched");
-        return Ok((listed(name, to, &m.path, m.sha256, lccns)?, run.done));
+        return Ok(Some((
+            listed(name, to, &m.path, m.sha256, lccns)?,
+            run.done,
+        )));
     }
     let tags = parse_manifest(&utf8(run.read("tagmanifest-md5.txt", None).await?)?)?;
     let mut manifest = None;
@@ -309,11 +513,9 @@ pub async fn fetch_batch(
     };
     let batch_xml = "data/BATCH.xml";
     let issues = batch_issues(&utf8(run.read(batch_xml, Some(md5(batch_xml)?)).await?)?)?;
-    ensure!(
-        issues.iter().any(|i| i.date < opts.issued_before),
-        "{site_batch}: no issue is dated before {}",
-        opts.issued_before
-    );
+    if !issues.iter().any(|i| i.date < opts.issued_before) {
+        return Ok(None);
+    }
     // Payload files by issue folder; the rest (reel METS, copies of
     // BATCH.xml) now.
     let issue_dirs: HashSet<&str> = issues.iter().map(|i| dir_of(&i.mets)).collect();
@@ -330,7 +532,7 @@ pub async fn fetch_batch(
         }
     }
     let mut archive = Archive::new(tmp)?;
-    let (mut lccns, mut seen) = (BTreeSet::new(), HashSet::new());
+    let (mut lccns, mut seen_text) = (BTreeSet::new(), HashSet::new());
     for (i, issue) in issues.iter().enumerate() {
         if issue.date >= opts.issued_before {
             run.done.issues_later += 1;
@@ -338,24 +540,52 @@ pub async fn fetch_batch(
         }
         let mets = utf8(run.read(&issue.mets, Some(md5(&issue.mets)?)).await?)?;
         let pages = issue_pages(&mets).with_context(|| issue.mets.clone())?;
+        let image_files: HashSet<String> = pages
+            .iter()
+            .filter_map(|page| page.image_file.as_ref())
+            .map(|file| issue_file_path(&issue.mets, file))
+            .collect::<anyhow::Result<_>>()?;
         for (path, md5) in by_dir.remove(dir_of(&issue.mets)).unwrap_or_default() {
-            if path != issue.mets {
+            if path != issue.mets && !(run.scans_root.is_some() && image_files.contains(path)) {
                 run.copy(path, md5).await?;
             }
         }
-        for (seq, ocr) in pages {
-            if !ocr {
+        for page in pages {
+            let key = PageKey::new(&issue.lccn, issue.date, issue.edition, page.seq)
+                .with_context(|| issue.mets.clone())?;
+            let already_has_text = seen_text.contains(&key);
+            let text = if page.has_ocr && !already_has_text {
+                run.text(&key).await?
+            } else {
+                None
+            };
+            if run.scans_root.is_some() {
+                let file = page.image_file.as_deref().with_context(|| {
+                    format!("{}: page {} has no service JP2", issue.mets, page.seq)
+                })?;
+                let bag_path = issue_file_path(&issue.mets, file)?;
+                let image_md5 = md5(bag_path.as_str())?;
+                run.copy_scan(
+                    issue,
+                    &key,
+                    &bag_path,
+                    image_md5,
+                    page.alto_file.as_deref(),
+                    already_has_text || text.is_some(),
+                )
+                .await?;
+            }
+            if !page.has_ocr {
                 run.done.pages_without_ocr += 1;
                 continue;
             }
-            let key = PageKey::new(&issue.lccn, issue.date, issue.edition, seq)
-                .with_context(|| issue.mets.clone())?;
-            if !seen.insert(key.clone()) {
+            if already_has_text {
                 continue;
             }
-            match run.text(&key).await? {
+            match text {
                 Some(text) => {
                     archive.add(&key, &text)?;
+                    seen_text.insert(key.clone());
                     lccns.insert(key.lccn);
                     run.done.pages += 1;
                 }
@@ -387,7 +617,10 @@ pub async fn fetch_batch(
         },
     )
     .await?;
-    Ok((listed(name, to, &path, sha256, lccns)?, run.done))
+    if let Some(root) = run.scans_root {
+        write_scan_catalog(root, &name)?;
+    }
+    Ok(Some((listed(name, to, &path, sha256, lccns)?, run.done)))
 }
 
 /// One batch being fetched.
@@ -398,6 +631,7 @@ struct Run<'a> {
     /// The bag's URL, without a trailing `/`.
     bag: String,
     name: String,
+    scans_root: Option<&'a Path>,
     done: Fetched,
 }
 
@@ -408,6 +642,9 @@ impl Run<'_> {
         let key = self.key(path)?;
         if let Some(body) = self.store.get(&key).await? {
             self.done.stored_before += 1;
+            if let Some(want) = md5 {
+                verify_bag_md5(path, &body, want)?;
+            }
             return Ok(body);
         }
         let body = self.fetch_checked(path, md5).await?;
@@ -443,8 +680,7 @@ impl Run<'_> {
             .await?
             .with_context(|| format!("{url}: not found"))?;
         if let Some(want) = md5 {
-            let got = hex(&Md5::digest(&body));
-            ensure!(got == want, "{url}: MD5 {got}, but the bag lists {want}");
+            verify_bag_md5(&url, &body, want)?;
         }
         self.done.fetched += 1;
         self.done.fetched_bytes += body.len() as u64;
@@ -470,6 +706,155 @@ impl Run<'_> {
             .await?;
         Ok(Some(text))
     }
+
+    async fn materialize_stored_scans(
+        &mut self,
+        issues: &[Issue],
+        issued_before: NaiveDate,
+        md5s: &HashMap<String, String>,
+    ) -> anyhow::Result<()> {
+        for issue in issues.iter().filter(|issue| issue.date < issued_before) {
+            let mets_md5 = md5s
+                .get(&issue.mets)
+                .with_context(|| format!("the bag's manifest doesn't list {}", issue.mets))?;
+            let mets = utf8(self.read(&issue.mets, Some(mets_md5)).await?)?;
+            for page in issue_pages(&mets)? {
+                let key = PageKey::new(&issue.lccn, issue.date, issue.edition, page.seq)?;
+                let file = page.image_file.as_deref().with_context(|| {
+                    format!("{}: page {} has no service JP2", issue.mets, page.seq)
+                })?;
+                let bag_path = issue_file_path(&issue.mets, file)?;
+                let want = md5s
+                    .get(&bag_path)
+                    .with_context(|| format!("the bag's manifest doesn't list {bag_path}"))?
+                    .clone();
+                let ocr_path = format!("{}/ocr/{key}/ocr.txt", self.name);
+                let text_exists = page.has_ocr && self.store.exists(&ocr_path).await?;
+                self.copy_scan(
+                    issue,
+                    &key,
+                    &bag_path,
+                    &want,
+                    page.alto_file.as_deref(),
+                    text_exists,
+                )
+                .await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn copy_scan(
+        &mut self,
+        issue: &Issue,
+        key: &PageKey,
+        bag_path: &str,
+        want_md5: &str,
+        alto_file: Option<&str>,
+        has_text: bool,
+    ) -> anyhow::Result<()> {
+        let Some(root) = self.scans_root else {
+            return Ok(());
+        };
+        let (batch, batch_version) = split_version(&self.name)?;
+        let rel = scan_rel_path(&self.name, key);
+        let path = root.join(&rel);
+        let sidecar = scan_sidecar_path(&path);
+        let store_key = self.key(bag_path)?;
+        let bytes = if path.exists() {
+            std::fs::read(&path).with_context(|| path.display().to_string())?
+        } else if let Some(bytes) = self.store.get(&store_key).await? {
+            self.done.stored_before += 1;
+            bytes
+        } else {
+            self.fetch_checked(bag_path, Some(want_md5)).await?
+        };
+        let got_md5 = hex(&Md5::digest(&bytes));
+        ensure!(
+            got_md5 == want_md5,
+            "{}: MD5 {got_md5}, but the bag lists {want_md5}",
+            path.display()
+        );
+        let sha256 = hex(&Sha256::digest(&bytes));
+        if !path.exists() {
+            write_atomic(&path, &bytes)?;
+        }
+        let image_path = rel;
+        let source_url = format!("{}/{bag_path}", self.bag);
+        let alto_store_path = alto_file
+            .map(|file| issue_file_path(&issue.mets, file))
+            .transpose()?
+            .map(|file| format!("{}/bag/{file}", self.name));
+        let alto_store_path = match alto_store_path {
+            Some(path) if self.store.exists(&path).await? => Some(path),
+            _ => None,
+        };
+        let mut record = PsuScanRecord {
+            doc_id: key.doc_id(),
+            batch,
+            batch_version,
+            page_key: key.to_string(),
+            image_path,
+            source_url,
+            viewer_url: format!("{}/lccn/{key}/", self.site),
+            alto_store_path,
+            ocr_store_path: has_text.then(|| format!("{}/ocr/{key}/ocr.txt", self.name)),
+            bytes: bytes.len() as u64,
+            md5: got_md5,
+            sha256,
+            fetched_at: Utc::now(),
+        };
+        if sidecar.exists() {
+            let old = std::fs::read(&sidecar).with_context(|| sidecar.display().to_string())?;
+            let old: PsuScanRecord = serde_json::from_slice(&old)
+                .with_context(|| format!("invalid sidecar {}", sidecar.display()))?;
+            ensure!(
+                old.batch == record.batch
+                    && old.page_key == record.page_key
+                    && old.md5 == record.md5
+                    && old.sha256 == record.sha256,
+                "{}: existing Penn State sidecar disagrees with the verified scan",
+                sidecar.display()
+            );
+            if old.batch_version == record.batch_version {
+                let batch_prefix = format!("{}/", self.name);
+                if record.alto_store_path.is_none() {
+                    if let Some(path) = old
+                        .alto_store_path
+                        .as_ref()
+                        .filter(|path| path.starts_with(&batch_prefix))
+                    {
+                        if self.store.exists(path).await? {
+                            record.alto_store_path = Some(path.clone());
+                        }
+                    }
+                }
+                if record.ocr_store_path.is_none() {
+                    if let Some(path) = old
+                        .ocr_store_path
+                        .as_ref()
+                        .filter(|path| path.starts_with(&batch_prefix))
+                    {
+                        if self.store.exists(path).await? {
+                            record.ocr_store_path = Some(path.clone());
+                        }
+                    }
+                }
+            }
+            if old.batch_version != record.batch_version
+                || old.image_path != record.image_path
+                || old.alto_store_path != record.alto_store_path
+                || old.ocr_store_path != record.ocr_store_path
+            {
+                let mut refreshed = record;
+                refreshed.fetched_at = old.fetched_at;
+                write_atomic(&sidecar, &serde_json::to_vec(&refreshed)?)?;
+            }
+        } else {
+            write_atomic(&sidecar, &serde_json::to_vec(&record)?)?;
+        }
+        Ok(())
+    }
 }
 
 fn utf8(bytes: Vec<u8>) -> anyhow::Result<String> {
@@ -493,6 +878,12 @@ fn content_type(path: &str) -> &'static str {
         Some("tif" | "tiff") => "image/tiff",
         _ => "application/octet-stream",
     }
+}
+
+fn verify_bag_md5(path: &str, bytes: &[u8], want: &str) -> anyhow::Result<()> {
+    let got = hex(&Md5::digest(bytes));
+    ensure!(got == want, "{path}: MD5 {got}, but the bag lists {want}");
+    Ok(())
 }
 
 /// The list entry for the archive at `path` in the store at `to`: its Blob
@@ -652,7 +1043,30 @@ mod tests {
     #[test]
     fn reads_page_numbers_from_the_mets_not_the_file_names() {
         // Frame 1025 is page 2, listed first and without OCR.
-        assert_eq!(issue_pages(&mets()).unwrap(), vec![(1, true), (2, false)]);
+        let pages = issue_pages(&mets()).unwrap();
+        assert_eq!(pages[0].seq, 1);
+        assert!(pages[0].has_ocr);
+        assert_eq!(pages[0].image_file.as_deref(), Some("1024.jp2"));
+        assert_eq!(pages[0].alto_file.as_deref(), Some("1024.xml"));
+        assert_eq!(pages[1].seq, 2);
+        assert!(!pages[1].has_ocr);
+        assert_eq!(pages[1].image_file.as_deref(), Some("1025.jp2"));
+    }
+
+    #[test]
+    fn duplicate_page_entries_keep_their_ocr_reference() {
+        let mut xml = mets();
+        let duplicate =
+            r#"<div TYPE="np:page" DMDID="pageModsBib1"><fptr FILEID="serviceFile1"/></div>"#;
+        xml = xml.replace(
+            "</div>\n  </structMap>",
+            &format!("{duplicate}</div>\n  </structMap>"),
+        );
+        let pages = issue_pages(&xml).unwrap();
+        assert_eq!(pages.len(), 2);
+        assert_eq!(pages[0].seq, 1);
+        assert!(pages[0].has_ocr);
+        assert_eq!(pages[0].alto_file.as_deref(), Some("1024.xml"));
     }
 
     /// A site holding one bag: a reel, an issue from 1861 with two pages
@@ -751,12 +1165,508 @@ mod tests {
         }
     }
 
+    fn reseal_bag(site: &mut Site) {
+        let prefix = format!("{BAG}/");
+        let mut payloads: Vec<_> = site
+            .files
+            .iter()
+            .filter_map(|(url, bytes)| {
+                let path = url.strip_prefix(&prefix)?;
+                path.starts_with("data/")
+                    .then(|| (path.to_owned(), bytes.clone()))
+            })
+            .collect();
+        payloads.sort_by(|a, b| a.0.cmp(&b.0));
+        let manifest = payloads
+            .iter()
+            .map(|(path, bytes)| format!("{}  {path}\n", hex(&Md5::digest(bytes))))
+            .collect::<String>();
+        site.files.insert(
+            format!("{BAG}/manifest-md5.txt"),
+            manifest.as_bytes().to_vec(),
+        );
+        let bagit = site.files.get(&format!("{BAG}/bagit.txt")).unwrap();
+        let tag_manifest = format!(
+            "{}  bagit.txt\n{}  manifest-md5.txt\n",
+            hex(&Md5::digest(bagit)),
+            hex(&Md5::digest(manifest.as_bytes()))
+        );
+        site.files.insert(
+            format!("{BAG}/tagmanifest-md5.txt"),
+            tag_manifest.into_bytes(),
+        );
+    }
+
     fn opts() -> Options {
         Options {
             site: SITE.into(),
             exts: vec!["jp2".into(), "xml".into()],
             issued_before: NaiveDate::from_ymd_opt(1931, 1, 1).unwrap(),
+            scans_root: None,
         }
+    }
+
+    #[tokio::test]
+    async fn bulk_xml_fetch_materializes_scans_from_empty_stores() {
+        let dir = tempfile::tempdir().unwrap();
+        let to = dir.path().join("store");
+        let to = to.to_str().unwrap();
+        let store = usnm_store::open(to).unwrap();
+        let site = site();
+        let tmp = dir.path().join("tmp");
+        let scans_root = dir.path().join("scans");
+        let mut options = opts();
+        options.exts = vec!["xml".into()];
+        options.scans_root = Some(scans_root.clone());
+
+        let (_, fetched) = fetch_batch(
+            &site,
+            store.as_ref(),
+            to,
+            &options,
+            "batch_pst_test_ver01",
+            &tmp,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(fetched.issues, 1);
+        assert_eq!(fetched.issues_later, 1);
+        for (page, expected) in [(1, b"page one image".as_slice()), (2, b"page two image")] {
+            let image = scans_root.join(format!(
+                "keep/psu_pst_test_ver01/sn84035968/1861-10-08/1/{page}.jp2"
+            ));
+            assert_eq!(std::fs::read(image).unwrap(), expected);
+        }
+        assert!(!store
+            .exists("psu_pst_test_ver01/bag/data/sn84035968/000002003/1861100801/1024.jp2")
+            .await
+            .unwrap());
+        assert!(store
+            .exists("psu_pst_test_ver01/bag/data/sn84035968/000002003/1861100801/1024.xml")
+            .await
+            .unwrap());
+        assert!(site
+            .asked
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|url| url.ends_with("/1861100801/1024.jp2")));
+        assert_eq!(
+            std::fs::read_to_string(scans_root.join("catalog/psu_pst_test_ver01.jsonl"))
+                .unwrap()
+                .lines()
+                .count(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn catalogs_verified_images_in_the_pve_scan_tree() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let to = dir.path().join("store");
+        let to = to.to_str().unwrap();
+        let store = usnm_store::open(to).unwrap();
+        let site = site();
+        let tmp = dir.path().join("tmp");
+        fetch_batch(
+            &site,
+            store.as_ref(),
+            to,
+            &opts(),
+            "batch_pst_test_ver01",
+            &tmp,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let asked_before = site.asked.lock().unwrap().len();
+
+        let scans_root = dir.path().join("scans");
+        let mut scan_opts = opts();
+        scan_opts.scans_root = Some(scans_root.clone());
+        fetch_batch(
+            &site,
+            store.as_ref(),
+            to,
+            &scan_opts,
+            "batch_pst_test_ver01",
+            &tmp,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(site.asked.lock().unwrap().len(), asked_before);
+        let image = scans_root.join("keep/psu_pst_test_ver01/sn84035968/1861-10-08/1/1.jp2");
+        assert_ne!(
+            scan_rel_path(
+                "psu_pst_test_ver01",
+                &PageKey::new(
+                    "sn84035968",
+                    NaiveDate::from_ymd_opt(1861, 10, 8).unwrap(),
+                    1,
+                    1
+                )
+                .unwrap()
+            ),
+            scan_rel_path(
+                "psu_pst_test_ver02",
+                &PageKey::new(
+                    "sn84035968",
+                    NaiveDate::from_ymd_opt(1861, 10, 8).unwrap(),
+                    1,
+                    1
+                )
+                .unwrap()
+            )
+        );
+        assert_eq!(std::fs::read(&image).unwrap(), b"page one image");
+        assert_eq!(
+            std::fs::metadata(&image).unwrap().permissions().mode() & 0o777,
+            0o644
+        );
+        assert_eq!(
+            std::fs::metadata(format!("{}.psu.json", image.display()))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o644
+        );
+        assert_eq!(
+            std::fs::read(scans_root.join("keep/psu_pst_test_ver01/sn84035968/1861-10-08/1/2.jp2"))
+                .unwrap(),
+            b"page two image"
+        );
+        let catalog =
+            std::fs::read_to_string(scans_root.join("catalog/psu_pst_test_ver01.jsonl")).unwrap();
+        let records = catalog
+            .lines()
+            .map(|line| serde_json::from_str::<PsuScanRecord>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].page_key, "sn84035968/1861-10-08/ed-1/seq-1");
+        assert_eq!(
+            records[0].alto_store_path.as_deref(),
+            Some("psu_pst_test_ver01/bag/data/sn84035968/000002003/1861100801/1024.xml")
+        );
+        assert!(records[1].ocr_store_path.is_none());
+
+        let sidecar = scan_sidecar_path(&image);
+        std::fs::set_permissions(&image, std::fs::Permissions::from_mode(0o640)).unwrap();
+        let mut stale = records[0].clone();
+        stale.image_path = "keep/psu_pst_test/sn84035968/1861-10-08/1/1.jp2".into();
+        stale.alto_store_path = None;
+        stale.ocr_store_path = None;
+        write_atomic(&sidecar, &serde_json::to_vec(&stale).unwrap()).unwrap();
+        fetch_batch(
+            &site,
+            store.as_ref(),
+            to,
+            &scan_opts,
+            "batch_pst_test_ver01",
+            &tmp,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            std::fs::metadata(&image).unwrap().permissions().mode() & 0o777,
+            0o640
+        );
+        let refreshed: PsuScanRecord =
+            serde_json::from_slice(&std::fs::read(&sidecar).unwrap()).unwrap();
+        assert_eq!(refreshed.image_path, records[0].image_path);
+        assert_eq!(refreshed.alto_store_path, records[0].alto_store_path);
+        assert_eq!(refreshed.ocr_store_path, records[0].ocr_store_path);
+        assert_eq!(refreshed.fetched_at, records[0].fetched_at);
+        std::fs::set_permissions(&sidecar, std::fs::Permissions::from_mode(0o640)).unwrap();
+
+        let issue = Issue {
+            lccn: "sn84035968".into(),
+            date: NaiveDate::from_ymd_opt(1861, 10, 8).unwrap(),
+            edition: 1,
+            mets: "data/sn84035968/000002003/1861100801/1861100801.xml".into(),
+        };
+        let key = PageKey::new(&issue.lccn, issue.date, issue.edition, 1).unwrap();
+        let mut run = Run {
+            fetch: &site,
+            store: store.as_ref(),
+            site: SITE,
+            bag: format!("{SITE}/data/batches/batch_pst_test_ver01"),
+            name: "psu_pst_test_ver01".into(),
+            scans_root: Some(&scans_root),
+            done: Fetched::default(),
+        };
+        run.copy_scan(
+            &issue,
+            &key,
+            "data/sn84035968/000002003/1861100801/1024.jp2",
+            &hex(&Md5::digest(b"page one image")),
+            None,
+            false,
+        )
+        .await
+        .unwrap();
+        let preserved: PsuScanRecord =
+            serde_json::from_slice(&std::fs::read(&sidecar).unwrap()).unwrap();
+        assert_eq!(preserved.alto_store_path, records[0].alto_store_path);
+        assert_eq!(preserved.ocr_store_path, records[0].ocr_store_path);
+        assert_eq!(
+            std::fs::metadata(&sidecar).unwrap().permissions().mode() & 0o777,
+            0o640
+        );
+
+        assert_eq!(
+            std::fs::metadata(scans_root.join("catalog/psu_pst_test_ver01.jsonl"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o644
+        );
+
+        let mut v2 = records[0].clone();
+        v2.batch_version = 2;
+        v2.page_key = "sn84035968/1861-10-08/ed-1/seq-3".into();
+        v2.image_path = "keep/psu_pst_test_ver02/sn84035968/1861-10-08/1/3.jp2".into();
+        let v2_sidecar = scans_root.join(format!("{}.psu.json", v2.image_path));
+        write_atomic(&v2_sidecar, &serde_json::to_vec(&v2).unwrap()).unwrap();
+        write_scan_catalog(&scans_root, "psu_pst_test_ver01").unwrap();
+        let v1_catalog =
+            std::fs::read_to_string(scans_root.join("catalog/psu_pst_test_ver01.jsonl")).unwrap();
+        assert_eq!(v1_catalog.lines().count(), 2);
+        write_scan_catalog(&scans_root, "psu_pst_test_ver02").unwrap();
+        let v2_catalog =
+            std::fs::read_to_string(scans_root.join("catalog/psu_pst_test_ver02.jsonl")).unwrap();
+        let v2_records = v2_catalog
+            .lines()
+            .map(|line| serde_json::from_str::<PsuScanRecord>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(v2_records.len(), 1);
+        assert_eq!(v2_records[0].batch_version, 2);
+    }
+
+    #[tokio::test]
+    async fn omits_alto_from_the_catalog_when_it_was_not_stored() {
+        let dir = tempfile::tempdir().unwrap();
+        let to = dir.path().join("store");
+        let to = to.to_str().unwrap();
+        let store = usnm_store::open(to).unwrap();
+        let site = site();
+        let tmp = dir.path().join("tmp");
+        let scans_root = dir.path().join("scans");
+        let mut options = opts();
+        options.exts = vec!["jp2".into()];
+        options.scans_root = Some(scans_root.clone());
+        fetch_batch(
+            &site,
+            store.as_ref(),
+            to,
+            &options,
+            "batch_pst_test_ver01",
+            &tmp,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let catalog =
+            std::fs::read_to_string(scans_root.join("catalog/psu_pst_test_ver01.jsonl")).unwrap();
+        let records = catalog
+            .lines()
+            .map(|line| serde_json::from_str::<PsuScanRecord>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert!(records
+            .iter()
+            .all(|record| record.alto_store_path.is_none()));
+    }
+
+    #[tokio::test]
+    async fn skips_batches_without_issues_before_the_cutoff() {
+        let dir = tempfile::tempdir().unwrap();
+        let to = dir.path().join("store");
+        let to = to.to_str().unwrap();
+        let store = usnm_store::open(to).unwrap();
+        let mut options = opts();
+        options.issued_before = NaiveDate::from_ymd_opt(1860, 1, 1).unwrap();
+        options.scans_root = Some(dir.path().join("scans"));
+
+        assert!(fetch_batch(
+            &site(),
+            store.as_ref(),
+            to,
+            &options,
+            "batch_pst_test_ver01",
+            &dir.path().join("tmp"),
+        )
+        .await
+        .unwrap()
+        .is_none());
+        assert!(raw::find(store.as_ref(), "psu_pst_test_ver01", None)
+            .await
+            .unwrap()
+            .is_none());
+        assert!(!options.scans_root.unwrap().exists());
+    }
+
+    #[tokio::test]
+    async fn verifies_mets_before_materializing_a_stored_batch() {
+        let dir = tempfile::tempdir().unwrap();
+        let to = dir.path().join("store");
+        let to = to.to_str().unwrap();
+        let store = usnm_store::open(to).unwrap();
+        let site = site();
+        let tmp = dir.path().join("tmp");
+        fetch_batch(
+            &site,
+            store.as_ref(),
+            to,
+            &opts(),
+            "batch_pst_test_ver01",
+            &tmp,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        let mets = dir.path().join(
+            "store/psu_pst_test_ver01/bag/data/sn84035968/000002003/1861100801/1861100801.xml",
+        );
+        std::fs::write(&mets, b"<different mets/>").unwrap();
+        let mut options = opts();
+        options.scans_root = Some(dir.path().join("scans"));
+        let error = fetch_batch(
+            &site,
+            store.as_ref(),
+            to,
+            &options,
+            "batch_pst_test_ver01",
+            &tmp,
+        )
+        .await
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("MD5"));
+    }
+
+    #[tokio::test]
+    async fn verifies_stored_batch_xml_before_materializing_scans() {
+        let dir = tempfile::tempdir().unwrap();
+        let to = dir.path().join("store");
+        let to = to.to_str().unwrap();
+        let store = usnm_store::open(to).unwrap();
+        let site = site();
+        let tmp = dir.path().join("tmp");
+        fetch_batch(
+            &site,
+            store.as_ref(),
+            to,
+            &opts(),
+            "batch_pst_test_ver01",
+            &tmp,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        let batch = dir
+            .path()
+            .join("store/psu_pst_test_ver01/bag/data/BATCH.xml");
+        std::fs::write(batch, b"<different batch/>").unwrap();
+        let mut options = opts();
+        options.scans_root = Some(dir.path().join("scans"));
+        let error = fetch_batch(
+            &site,
+            store.as_ref(),
+            to,
+            &options,
+            "batch_pst_test_ver01",
+            &tmp,
+        )
+        .await
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("MD5"));
+        assert!(!options.scans_root.unwrap().exists());
+    }
+
+    #[tokio::test]
+    async fn verifies_payload_manifest_against_the_stored_tag_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        let to = dir.path().join("store");
+        let to = to.to_str().unwrap();
+        let store = usnm_store::open(to).unwrap();
+        let site = site();
+        let tmp = dir.path().join("tmp");
+        fetch_batch(
+            &site,
+            store.as_ref(),
+            to,
+            &opts(),
+            "batch_pst_test_ver01",
+            &tmp,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        std::fs::write(
+            dir.path()
+                .join("store/psu_pst_test_ver01/bag/manifest-md5.txt"),
+            b"corrupted manifest",
+        )
+        .unwrap();
+        let mut options = opts();
+        options.scans_root = Some(dir.path().join("scans"));
+        let error = fetch_batch(
+            &site,
+            store.as_ref(),
+            to,
+            &options,
+            "batch_pst_test_ver01",
+            &tmp,
+        )
+        .await
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("MD5"));
+        assert!(!options.scans_root.unwrap().exists());
+    }
+
+    #[tokio::test]
+    async fn duplicate_page_without_ocr_does_not_hide_a_later_reading() {
+        let dir = tempfile::tempdir().unwrap();
+        let to = dir.path().join("store");
+        let to = to.to_str().unwrap();
+        let store = usnm_store::open(to).unwrap();
+        let mut site = site();
+        let mets_path = format!("{BAG}/data/sn84035968/000002003/1861100801/1861100801.xml");
+        let mets = String::from_utf8(site.files.get(&mets_path).unwrap().clone()).unwrap();
+        let page_with_ocr = r#"<div TYPE="np:page" DMDID="pageModsBib1"><fptr FILEID="serviceFile1"/><fptr FILEID="otherDerivativeFile1"/><fptr FILEID="ocrFile1"/></div>"#;
+        let duplicate_without_ocr =
+            r#"<div TYPE="np:page" DMDID="pageModsBib1"><fptr FILEID="serviceFile1"/></div>"#;
+        let duplicated = mets.replace(
+            page_with_ocr,
+            &format!("{duplicate_without_ocr}{page_with_ocr}"),
+        );
+        assert_ne!(duplicated, mets);
+        site.files.insert(mets_path, duplicated.into_bytes());
+        reseal_bag(&mut site);
+
+        let (_, fetched) = fetch_batch(
+            &site,
+            store.as_ref(),
+            to,
+            &opts(),
+            "batch_pst_test_ver01",
+            &dir.path().join("tmp"),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(fetched.pages, 1);
+        assert_eq!(fetched.pages_without_ocr, 1);
     }
 
     #[tokio::test]
@@ -776,6 +1686,7 @@ mod tests {
             &tmp,
         )
         .await
+        .unwrap()
         .unwrap();
         assert_eq!(listed.name, "psu_pst_test_ver01");
         assert_eq!(listed.lccns, ["sn84035968"]);
@@ -853,6 +1764,7 @@ mod tests {
             &tmp,
         )
         .await
+        .unwrap()
         .unwrap();
         assert!(site.asked.lock().unwrap().is_empty());
         assert_eq!(

@@ -1,0 +1,42 @@
+[Unit]
+Description=Resumable Penn State Open ONI pre-1931 backfill
+Wants=network-online.target
+After=network-online.target
+RequiresMountsFor=/tank/ocr/scans /tank/ocr/text
+ConditionPathExists=!/var/lib/usnm-psu-backfill/complete
+
+[Service]
+Type=oneshot
+DynamicUser=yes
+Group=ocrdata
+UMask=0002
+WorkingDirectory=/tank/ocr/text/psu-openoni
+StateDirectory=usnm-psu-backfill
+StateDirectoryMode=0750
+EnvironmentFile=/etc/usnm/psu-backfill.env
+Environment=USNM_WORK_DIR=/tank/ocr/text/psu-openoni/work
+# Required top-level store arguments; oni-fetch does not use either store.
+ExecStart=/usr/local/lib/usnm-psu-backfill/usnm-ingest --curated /var/empty --reference /var/empty --state-file /var/lib/usnm-psu-backfill/state.json oni-fetch --batches=${BATCHES} --to /tank/ocr/text/psu-openoni --scans-root /tank/ocr/scans --list-out /tank/ocr/text/psu-openoni/batches.json --ext xml --issued-before 1931-01-01 --gap-ms 1000
+ExecStartPost=/usr/bin/touch /var/lib/usnm-psu-backfill/complete
+Restart=on-failure
+RestartSec=60s
+TimeoutStartSec=0
+TimeoutStopSec=120
+Nice=10
+IOSchedulingClass=idle
+SyslogIdentifier=usnm-psu-backfill
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/tank/ocr/scans/keep /tank/ocr/scans/catalog /tank/ocr/text/psu-openoni
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

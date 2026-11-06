@@ -42,7 +42,7 @@ use usnm_store::ObjectStore;
 use super::curated::{self, CuratedPage};
 use super::fetch::cached;
 #[cfg(test)]
-use super::fetch::{retry_wait, MAX_RETRY_WAIT};
+use super::fetch::{retry_wait, MAX_BACKOFF_WAIT};
 pub use super::fetch::{Fetch, Http};
 use super::parse::{self, Chamber};
 use super::StateRef;
@@ -882,7 +882,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn retry_waits_double_honour_retry_after_and_stay_under_ten_minutes() {
+    fn retry_waits_double_and_honour_long_retry_after_values() {
         let d = Duration::from_secs(3);
         assert_eq!(retry_wait(d, 0, None), Duration::from_secs(6));
         assert_eq!(retry_wait(d, 2, None), Duration::from_secs(24));
@@ -895,15 +895,15 @@ mod tests {
             retry_wait(d, 0, Some(Duration::from_secs(120))),
             Duration::from_secs(120)
         );
-        // The cap holds for the doubling and for a hint over it.
-        assert_eq!(retry_wait(d, 10, None), MAX_RETRY_WAIT);
+        // The local backoff is capped, but a server hint is not.
+        assert_eq!(retry_wait(d, 10, None), MAX_BACKOFF_WAIT);
         assert_eq!(
             retry_wait(d, 0, Some(Duration::from_secs(3600))),
-            MAX_RETRY_WAIT
+            Duration::from_secs(3600)
         );
         assert_eq!(
             retry_wait(d, 0, Some(Duration::from_secs(u64::MAX))),
-            MAX_RETRY_WAIT
+            Duration::from_secs(u64::MAX)
         );
     }
 
