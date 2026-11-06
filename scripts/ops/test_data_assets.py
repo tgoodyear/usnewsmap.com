@@ -11,7 +11,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 INDEX = ROOT / "ops" / "data-assets.json"
-SETS = ("bench-assets", "report-data")
+SETS = tuple(sorted(json.loads(INDEX.read_text(encoding="utf-8"))))
+REPORT_SETS = tuple(name for name in SETS if name.startswith("report-") and name != "report-data")
 
 
 def run(*args, root=ROOT, check=False):
@@ -48,7 +49,10 @@ class DataAssets(unittest.TestCase):
     def test_the_index_names_every_set_with_sorted_keys_and_a_digest_or_nothing(self):
         text = INDEX.read_text(encoding="utf-8")
         index = json.loads(text)
-        self.assertEqual(sorted(index), list(SETS))
+        self.assertTrue({"bench-assets", "report-data"} <= set(index))
+        for name in REPORT_SETS:
+            self.assertRegex(name, r"^report-\d{4}-\d{2}-[a-z0-9-]+$")
+            self.assertTrue((ROOT / "docs" / "reports" / name.removeprefix("report-")).is_dir(), name)
         self.assertEqual(json.dumps(index, indent=2, sort_keys=True) + "\n", text, "keys sorted, two-space indent")
         for name, entry in index.items():
             self.assertEqual(sorted(entry), ["asset", "members", "sha256", "tag"])
@@ -66,7 +70,13 @@ class DataAssets(unittest.TestCase):
                 for m in members:
                     self.assertIn(m, tracked)
                     self.assertFalse(re.search(r"\.(md|py|sh|css|svg)$", m), m)
+                    if name in REPORT_SETS:
+                        own = f"docs/reports/{name.removeprefix('report-')}/data/"
+                        self.assertTrue(m.startswith(own) or m == "docs/reports/report-data-rights.txt", m)
+                        continue
                     self.assertTrue(m.startswith(("docs/reports/", "docs/data/") if name == "report-data" else "ocr/bench/"), m)
+                    for other in REPORT_SETS:
+                        self.assertFalse(m.startswith(f"docs/reports/{other.removeprefix('report-')}/data/"), m)
 
     def test_pack_writes_a_tarball_its_members_and_digests(self):
         # An isolated tracked fixture, with no network or changes to the checkout.
@@ -173,6 +183,27 @@ class DataAssets(unittest.TestCase):
             shutil.copyfile(candidate, root / "docs" / "reports" / "report-data-manifest.json")
             done = run("--pack", "--set", "report-data", "--out", out, "--previous", "none", root=root)
             self.assertEqual(done.returncode, 0, done.stderr)
+
+    def test_a_report_set_takes_its_data_out_of_report_data(self):
+        with tempfile.TemporaryDirectory() as repo:
+            root = fixture(repo)
+            index_path = root / "ops" / "data-assets.json"
+            index = json.loads(index_path.read_text())
+            index["report-2001-01-new"] = {"asset": "report-2001-01-new.tar.gz", "members": "fixture", "sha256": None, "tag": None}
+            index_path.write_text(json.dumps(index, indent=2, sort_keys=True) + "\n")
+            extra = root / "docs/reports/2001-01-new/data/sample.ids"
+            extra.write_text("a\n")
+            subprocess.run(["git", "-C", str(root), "add", "."], check=True)
+            own = run("--members", "--set", "report-2001-01-new", root=root, check=True).stdout.split()
+            self.assertEqual(own, ["docs/reports/2001-01-new/data/new.csv", "docs/reports/2001-01-new/data/sample.ids",
+                                   "docs/reports/report-data-rights.txt"])
+            shared = run("--members", "--set", "report-data", root=root, check=True).stdout.split()
+            self.assertNotIn("docs/reports/2001-01-new/data/new.csv", shared)
+            with tempfile.TemporaryDirectory() as d:
+                done = run("--pack", "--set", "report-2001-01-new", "--out", d, root=root)
+                self.assertEqual(done.returncode, 0, done.stderr)
+                self.assertEqual(Path(d, "report-2001-01-new.members.txt").read_text().split(), own)
+            self.assertNotEqual(run("--members", "--set", "report-2001-01-old", root=root).returncode, 0)
 
     def test_fetch_refuses_an_unpublished_set_and_bad_flags(self):
         for name in SETS:

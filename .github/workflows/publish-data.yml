@@ -1,7 +1,8 @@
 # Publish one data set (scripts/ops/data-assets.sh) as the assets of a GitHub release, from the commit
 # the run is started on. The release is immutable: a changed set is a new run and a new tag.
-# A set is cumulative: the pack starts from the release ops/data-assets.json records and lays the
-# commit's tracked files over it. After the run, replace ops/data-assets.json with the file the
+# A set is cumulative: the pack starts from the release ops/data-assets.json records (if any) and
+# lays the commit's tracked files over it. A report-YYYY-MM-topic set holds one report's data.
+# After the run, replace ops/data-assets.json with the file the
 # job summary prints and remove migrated data from the tree, keeping the rights notice and inventory
 # (docs/reports/README.md, "Data").
 name: publish data assets
@@ -12,7 +13,7 @@ on:
         description: The set to publish
         required: true
         type: choice
-        options: [report-data, bench-assets]
+        options: [report-data, bench-assets, report-2026-11-gpu-studies]
 permissions:
   contents: read
 jobs:

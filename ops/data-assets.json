@@ -5,6 +5,12 @@
     "sha256": "4fca03750551f6787920c92bfc3a33d948da7524cf07e2b01c710cc695851a89",
     "tag": "data-bench-assets-20261023-48fbb2a"
   },
+  "report-2026-11-gpu-studies": {
+    "asset": "report-2026-11-gpu-studies.tar.gz",
+    "members": "docs/reports/2026-11-gpu-studies/data and the source-rights notice",
+    "sha256": null,
+    "tag": null
+  },
   "report-data": {
     "asset": "report-data.tar.gz",
     "members": "docs/reports and docs/data files that are not prose or code",
