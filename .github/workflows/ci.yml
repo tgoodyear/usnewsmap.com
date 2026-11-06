@@ -1259,6 +1259,8 @@ jobs:
     concurrency:
       group: spare-roll-${{ matrix.environment }}
       cancel-in-progress: false
+    outputs:
+      rolled: ${{ steps.roll.outputs.rolled }}
     env:
       ACR: ${{ vars.USNM_ACR_LOGIN_SERVER }}
       APP: ${{ vars.USNM_API_APP }}
@@ -1266,8 +1268,17 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
-      - if: env.APP != ''
+      # Checked again once this job holds the roll slot: a rerun of an older
+      # dispatch must not roll the spare back. An older image on purpose is
+      # spare-roll's job.
+      - name: Is this still the image main's head needs?
+        id: head
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/ci/head-of-main.sh --unless-changed image
+      - if: env.APP != '' && steps.head.outputs.current == 'true'
         uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
         with:
           client-id: ${{ vars.USNM_CI_CLIENT_ID }}
@@ -1278,7 +1289,8 @@ jobs:
       # publish skips an older commit than main's head, so roll only an image
       # it pushed.
       - name: Roll the API onto this commit's image
-        if: env.APP != ''
+        id: roll
+        if: env.APP != '' && steps.head.outputs.current == 'true'
         env:
           IMAGE: ${{ env.ACR }}/usnewsmap-api:${{ github.sha }}
         run: |
@@ -1287,6 +1299,7 @@ jobs:
             exit 0
           fi
           scripts/ci/roll-api.sh
+          echo "rolled=true" >> "$GITHUB_OUTPUT"
 
   indexnow:
     name: notify changed URLs (${{ matrix.environment }})
@@ -1332,7 +1345,7 @@ jobs:
         id: deployed_sitemap
         if: >-
           env.APP != '' && steps.azure_login.outcome == 'success'
-          && github.event_name == 'workflow_dispatch' && inputs.roll_api
+          && needs.roll.outputs.rolled == 'true'
         continue-on-error: true
         env:
           APP: ${{ vars.USNM_API_APP }}
