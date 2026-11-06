@@ -246,6 +246,20 @@ class DurationTest(unittest.TestCase):
             checks = self.tick(at, config_id=config)
         self.assertEqual((checks["collection"]["state"], checks["collection"]["duration_s"]), ("firing", 180))
 
+    def test_a_wall_clock_jump_or_a_reboot_cannot_shorten_the_collection_hold(self):
+        self.tick(0)                                           # the first evaluation is a reset
+        self.assertEqual(self.tick(60)["collection"]["state"], "healthy")
+        self.facts.pop("tick")
+        self.assertEqual(self.tick(120)["collection"]["state"], "pending")
+        jumped = self.tick(780, monotonic=10180)              # wall +660 s, monotonic +60 s
+        self.assertEqual((jumped["collection"]["state"], jumped["collection"]["duration_s"]), ("pending", 60))
+        rebooted = self.tick(1500, monotonic=50, boot_id="next")  # a reboot adds nothing for that step
+        self.assertEqual((rebooted["collection"]["state"], rebooted["collection"]["duration_s"]), ("pending", 60))
+        self.assertEqual(self.tick(1560, monotonic=110, boot_id="next")["collection"]["state"], "pending")
+        self.assertEqual(self.tick(1620, monotonic=170, boot_id="next")["collection"]["state"], "firing")
+        self.facts["tick"] = {"ok": True, "seconds": 900}
+        self.assertEqual(self.tick(1680, monotonic=230, boot_id="next")["collection"]["state"], "healthy")
+
     def test_corrupt_duration_state_resets_instead_of_trusting_old_health(self):
         self.state = {"schema_version": 1, "time": "broken", "conditions": []}
         collection = self.tick(0)["collection"]

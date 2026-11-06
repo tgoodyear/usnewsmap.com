@@ -205,9 +205,11 @@ configuration changes, backwards time, wall/monotonic disagreement or a gap
 over 180 seconds reset them and mark `collection` as reset. `collection` itself
 is held for 180 seconds (`COLLECTION_HOLD_S`): it fires only after 180 seconds
 of evaluations that each have an unknown check, an unreadable source or a reset,
-so one failed source run stays pending and sends no email. Its timer survives
+so one failed source run stays pending and sends no email. Its time survives
 resets, unlike the condition timers, so resets that recur (an evaluator running
-only every few minutes, a configuration changing) still fire it. An open backlog
+only every few minutes, a configuration changing) still fire it. It counts
+monotonic time within one boot, so a wall-clock jump can't fire it early, and a
+step across a reboot adds nothing. An open backlog
 with no newly observed workunit for an uninterrupted hour fires; a new workunit
 or closed backlog resets that timer. Shortage fires at exactly 30 minutes.
 Refill expiry/remaining ≤6h, controller failure, or runtime >15 minutes fire

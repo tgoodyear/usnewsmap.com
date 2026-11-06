@@ -168,16 +168,18 @@ def evaluate(facts, previous, now, monotonic, boot_id, config_id):
               reason=guard["reason"], app_ids=guard["app_ids"])
     unknown = facts.get("errors", []) or [c["code"] for c in checks if c["state"] == "unknown"]
     # Held: one failed source run (a single unknown evaluation) is not worth an email.
-    # Its timer is kept apart from the condition timers a reset clears, so resets that
+    # Its time is kept apart from the condition timers a reset clears, so resets that
     # recur (an evaluator running only every few minutes, configs changing) still fire.
+    # It adds monotonic time within one boot only, so a wall-clock jump can't fire it
+    # early; across a reboot it adds nothing for that step.
     unhealthy = bool(unknown) or not continuous
-    since = previous.get("collection_since") if unhealthy else None
-    if since is not None and (type(since) not in (int, float) or not 0 <= since <= now):
-        since = None
-    since = now if unhealthy and since is None else since
-    duration = now - since if unhealthy else 0
-    checks.append({"code": "collection", "state": ("firing" if duration >= COLLECTION_HOLD_S else "pending")
-                   if unhealthy else "healthy", "duration_s": int(duration),
+    held = previous.get("collection_elapsed") if unhealthy else None
+    if held is not None and (type(held) not in (int, float) or not 0 <= held <= 10 ** 9):
+        held = None
+    step = monotonic - previous.get("monotonic", monotonic) if previous.get("boot_id") == boot_id else 0
+    elapsed = (held + (step if 0 < step <= 10 ** 9 else 0) if held is not None else 0) if unhealthy else None
+    checks.append({"code": "collection", "state": ("firing" if elapsed >= COLLECTION_HOLD_S else "pending")
+                   if unhealthy else "healthy", "duration_s": int(elapsed or 0),
                    "threshold_s": COLLECTION_HOLD_S, "reset": not continuous})
     document = {"schema_version": 1, "event": "boinc_feed_health", "observed_at": now,
                 "max_age_s": MAX_AGE, "checks": checks,
@@ -186,7 +188,7 @@ def evaluate(facts, previous, now, monotonic, boot_id, config_id):
     state = {"schema_version": 1, "config_id": config_id, "boot_id": boot_id,
              "time": now, "monotonic": monotonic, "conditions": conditions,
              "last_failure_at": max(failure_at, previous.get("last_failure_at", 0)),
-             "collection_since": since}
+             "collection_elapsed": elapsed}
     return document, state
 
 
