@@ -607,6 +607,12 @@ enum Command {
         #[arg(long)]
         unchecked_rights: bool,
     },
+    /// LoC's own text of pages a bulk OCR archive lacks, a page at a time from loc.gov's item
+    /// API, inside the host's global LoC budget (#1419).
+    LocText {
+        #[command(subcommand)]
+        command: LocTextCommand,
+    },
     /// LoC's word confidence per page from the bulk OCR archives (#962): one Parquet file
     /// per archive, skipping archives already read. Reads only.
     LocAltoStats {
@@ -1026,6 +1032,94 @@ enum EnginesCommand {
         #[command(flatten)]
         engine: EngineArgs,
     },
+}
+
+#[derive(Subcommand)]
+enum LocTextCommand {
+    /// Queue the batch's pages its curated counts have no page of on their title-day, planned
+    /// from the batch's bag manifest. Merges with the queue there; prints the plan as JSON.
+    /// Asks LoC nothing unless `--fetch-manifest` is given and the manifest is missing.
+    Enqueue {
+        /// The run's directory: one batch's queue, records and status.
+        #[arg(long)]
+        out: PathBuf,
+        /// `<batch>_ver<NN>`.
+        #[arg(long)]
+        batch: String,
+        /// Only this title's pages.
+        #[arg(long)]
+        lccn: Option<String>,
+        /// The batch's `manifest-md5.txt`.
+        #[arg(long)]
+        bag_manifest: PathBuf,
+        /// The batch's curated `counts.json`.
+        #[arg(long)]
+        counts: PathBuf,
+        /// `bulk-ocr`'s copy of LoC's datasets table, for the pages LoC lists in the batch.
+        #[arg(long)]
+        datasets: Option<PathBuf>,
+        /// Print the plan; write nothing and ask LoC nothing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Fetch the bag manifest into `--bag-manifest` when it's missing: one request,
+        /// inside the global LoC budget (only then needs `--loc-global-pacer`). Never on a dry
+        /// run.
+        #[arg(long)]
+        fetch_manifest: bool,
+        /// Where the batch directories are.
+        #[arg(long, default_value = usnm_ocr_worker::loc_text::BATCHES_ROOT)]
+        batches_root: String,
+        #[command(flatten)]
+        loc: LocTextAccess,
+    },
+    /// Fetch the queued pages that have no record yet, an issue at a time. Prints the
+    /// outcome as JSON (also `<out>/status.json`).
+    Run {
+        /// `enqueue`'s directory.
+        #[arg(long)]
+        out: PathBuf,
+        /// loc.gov's API.
+        #[arg(long, default_value = usnm_ocr_worker::loc_text::API_ROOT)]
+        api_root: String,
+        /// Stop starting pages after this many hours: more than 0, and at most 23 (LoC may stop
+        /// programs that run past 24).
+        #[arg(long, default_value_t = 20.0)]
+        max_hours: f64,
+        /// At most this many pages this run.
+        #[arg(long)]
+        limit: Option<usize>,
+        #[command(flatten)]
+        loc: LocTextAccess,
+    },
+}
+
+#[derive(clap::Args)]
+struct LocTextAccess {
+    /// The host's global LoC budget (required to ask LoC anything).
+    #[arg(long, env = "USNM_LOC_GLOBAL_PACER")]
+    loc_global_pacer: Option<PathBuf>,
+    /// Seconds between this process's requests; the LoC policy's gap (60 s) by default, and
+    /// at least 5 (www.loc.gov's `Crawl-Delay`).
+    #[arg(long)]
+    gap_secs: Option<u64>,
+    /// A directory of host policies (one `<name>.toml` each), instead of the built-in ones.
+    #[arg(long, env = "USNM_FETCH_POLICIES")]
+    policies: Option<PathBuf>,
+}
+
+impl LocTextAccess {
+    fn access(self) -> anyhow::Result<usnm_ocr_worker::loc_text::LocAccess> {
+        Ok(usnm_ocr_worker::loc_text::LocAccess {
+            global_pacer: self
+                .loc_global_pacer
+                .context("--loc-global-pacer: LoC is asked only inside the global budget")?,
+            policies: match self.policies {
+                Some(dir) => usnm_ocr_worker::fetcher::Policies::load_dir(&dir)?,
+                None => usnm_ocr_worker::fetcher::Policies::builtin(),
+            },
+            gap: self.gap_secs.map(Duration::from_secs),
+        })
+    }
 }
 
 /// The line `check-engine` renders and must read back.
@@ -1550,6 +1644,74 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
                     min_free_bytes: min_free_gb.saturating_mul(1_000_000_000),
                     limit,
                     unchecked_rights,
+                },
+                stop_signal(),
+            )
+            .await?;
+            println!("{}", serde_json::to_string(&status)?);
+            Ok(())
+        }
+        Command::LocText {
+            command:
+                LocTextCommand::Enqueue {
+                    out,
+                    batch,
+                    lccn,
+                    bag_manifest,
+                    counts,
+                    datasets,
+                    dry_run,
+                    fetch_manifest,
+                    batches_root,
+                    loc,
+                },
+        } => {
+            // LoC's budget is needed only for a fetch: not on a dry run, nor for a manifest
+            // that's there.
+            let missing = fetch_manifest
+                && !dry_run
+                && !tokio::fs::try_exists(&bag_manifest)
+                    .await
+                    .with_context(|| bag_manifest.display().to_string())?;
+            let fetch_manifest = if missing {
+                Some((batches_root, loc.access()?))
+            } else {
+                None
+            };
+            let plan = usnm_ocr_worker::loc_text::enqueue(
+                usnm_ocr_worker::loc_text::EnqueueOptions {
+                    out,
+                    batch,
+                    lccn,
+                    bag_manifest,
+                    counts,
+                    datasets,
+                    dry_run,
+                    fetch_manifest,
+                },
+                stop_signal(),
+            )
+            .await?;
+            println!("{}", serde_json::to_string(&plan)?);
+            Ok(())
+        }
+        Command::LocText {
+            command:
+                LocTextCommand::Run {
+                    out,
+                    api_root,
+                    max_hours,
+                    limit,
+                    loc,
+                },
+        } => {
+            let status = usnm_ocr_worker::loc_text::run(
+                usnm_ocr_worker::loc_text::RunOptions {
+                    out,
+                    api_root,
+                    loc: loc.access()?,
+                    max_hours,
+                    limit,
                 },
                 stop_signal(),
             )

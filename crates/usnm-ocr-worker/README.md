@@ -163,6 +163,30 @@ A run writes `status-<res>.json`, `index-<res>.jsonl` and `failures-<res>.jsonl`
 
 These `run` flags can also come from the environment (the retired node unit read them from `/etc/usnm/ocr-worker.env`): `USNM_OCR_QUEUE_URL`, `USNM_OCR_OUT_URL`, `USNM_OCR_NODE_ID`, `USNM_OCR_CONCURRENCY`, `USNM_OCR_API_GAP_MS`, `USNM_OCR_TILE_GAP_MS`, `USNM_OCR_SCAN_CACHE_URL`, `USNM_OCR_VISIBILITY_SECS`, and for the engine `USNM_OCR_TESSERACT_IMAGE`, `USNM_OCR_PODMAN_URL`, `USNM_OCR_SCRATCH_DIR`, `USNM_OCR_ENGINE_MEMORY_MIB`, `USNM_OCR_ENGINE_CPUS` and `USNM_OCR_ENGINE_PIDS` A flag on the command line wins. `--shutdown-grace-secs` and `--once` are command-line only.
 
+## LoC's text for pages a bulk archive lacks
+
+`loc-text` (#1419) fetches LoC's own text of a batch's pages that its bulk OCR archive doesn't hold, a page at a time, from the `fulltext_service` URL loc.gov's item JSON gives each page. It was written for the Wiregrass (`sn90052158`): LoC lists 10,904 pages in `gu_allmanbrothers_ver01`, curation holds 7,923, and the archive has no Wiregrass page.
+
+```sh
+# The plan: the bag's pages on title-days the curated counts.json has no page for.
+# Prints JSON; writes nothing and asks LoC nothing.
+usnm-ocr-worker loc-text enqueue --out <dir> --batch gu_allmanbrothers_ver01 --lccn sn90052158 \
+  --bag-manifest <batch cache>/gu_allmanbrothers_ver01/manifest-md5.txt \
+  --counts <the batch's curated counts.json> --datasets <bulk-ocr out>/datasets.json --dry-run
+
+# The same without --dry-run queues them in <dir>/queue.json; again, it adds nothing twice.
+# With --fetch-manifest --loc-global-pacer <file>, a missing bag manifest is one request to LoC.
+
+# Fetch the queue: an item JSON per issue, then one request per page.
+usnm-ocr-worker loc-text run --out <dir> --loc-global-pacer <file>
+```
+
+An issue's pages are its JP2s in the bag manifest, seq 1 on. A title-day `counts.json` has any page for is left out (the plan lists the days where the bag and the counts disagree). The plan also gives LoC's page count for the batch from `--datasets`, and the pages listed but not held.
+
+`run` sends every request through the fetcher under LoC's host policy, inside the host's global LoC budget (`--loc-global-pacer`, `USNM_LOC_GLOBAL_PACER`), and only to hosts LoC's policy covers. Requests are the policy's 60 s apart unless `--gap-secs` says otherwise (at least 5, www.loc.gov's `Crawl-Delay`); at 60 s the Wiregrass's pages take about three 20-hour runs. A push-back slows the budget for every process and ends the run, and a run doesn't start while the budget is slowed. `--max-hours` (20; more than 0, at most 23) and `--limit` bound a run; SIGTERM stops it between requests.
+
+Each page's text service answer is kept as it came in `<dir>/responses/<doc_id>.json`, and its item JSON in `<dir>/items/`. Then the page's record is written to `<dir>/pages/<doc_id>.json`: the page key, the batch, `ocr_source` `loc-api-fulltext`, the text and its SHA-256, the ALTO path the service names, and the URL and SHA-256 of both responses. A record has no archive checksum: the text didn't come from one. The record is written last, so a rerun skips pages that have one and doesn't ask again for an item JSON it kept. `<dir>/status.json` holds the last run's outcome. One batch to a directory.
+
 ## Queues
 
 There are three Azure Storage Queues: `ocr-priority`, `ocr-bulk` and `ocr-deadletter`. The worker polls `ocr-priority` first. When both are empty it waits before polling again, doubling the wait from 1 s up to 60 s.
