@@ -80,3 +80,44 @@ Production serves on-prem ([ADR-0029](0029-onprem-primary-azure-failover.md)), a
 The traffic stays on the Azure backbone. The change gives up one layer of defence. The accounts' public addresses now answer and refuse requests, where before they were closed. dev keeps its endpoints by default. The Azure portal still can't reach the data from outside the allowed addresses.
 
 The index account stays Hot. Moving the spare's index to Cool would save about $0.30 a day, but October's releases came 2 to 12 days apart. Each release costs $0.70 more in writes, and deleting a version early bills the rest of its 30 days in Cool, about $0.36 a day. Cool breaks even at about 18 days between releases, and loses about $0.30 a day at 12 days and about $5 a day at 2. So the maintainer kept Hot ([runbook](../../operations/search-serving.md#the-azure-cold-spare)). `USNM_INDEX_ACCESS_TIER` stays in the settings.
+
+## Amendment, November 2026: no VNet for the spare (#308)
+
+The VNet is the only reason the spare's environment has a load balancer and a public IP of ours: `capp-svc-lb` and `capp-svc-lb-ip` in the environment's `ME_` group, about $21.90 a month. They carry no traffic while on-prem serves. The maintainer approved rebuilding the environment without a VNet on 6 November 2026, with the data accounts open to public networks and Entra ID the only way in.
+
+**End state**
+
+- The environment `usnm-core-spare-cae-prod` has no VNet. Its API `usnm-api-spare-ca-prod` and searcher `usnm-qw-spare-ca-prod` scale to zero as before, and the Worker reaches the API by its default hostname. The new names follow ADR-0017, since a Container App can't move between environments.
+- `vnet-usnm-prod`, `cae-usnm-prod`, `ca-usnm-prod`, `usnm-qw-search-ca-prod` and the `ME_` group's load balancer and IP go once the cutover is checked.
+- The BOINC hand-off job `usnm-boinc-handoff-caj-prod` is retired (maintainer, 6 November 2026). It last ran on 25 October; claim, collect and export run on-prem (#967, #1072). Clearing `USNM_BOINC_HANDOFF_IMAGE` drops the job, its identity's grants, the Azure bridge identity's grants on `boinc-handoff` and the scan archive, and the BOINC subnet's rules on the lake, the exchange account and the scan archive. The BOINC group's own VNet stays.
+
+**Firewalls**
+
+| Account              | Network access                                       | Rules                      |
+| -------------------- | ---------------------------------------------------- | -------------------------- |
+| Data lake            | Public, every network (`defaultAction: Allow`)       | None in effect             |
+| Index account        | Public, every network                                | None in effect             |
+| Cosmos               | Public, every network (no IP rules, VNet filter off) | None                       |
+| OCR exchange account | Public, `defaultAction: Deny`                        | The on-prem addresses only |
+| Scan archive         | Public, `defaultAction: Deny`                        | The on-prem addresses only |
+
+`USNM_DATA_ALL_NETWORKS` opens the first three. Their IP and subnet rules stay in the template, so turning it off restores them; a rule for a subnet that no longer exists is dropped with the VNet. The exchange account and the scan archive keep their deny-by-default firewalls, because nothing in Azure reads them once the hand-off job is gone. The public-network policy lists all five by resource id.
+
+**What stays the only way in.** Storage shared keys are off and Policy denies turning them on. Cosmos local auth and key-based metadata writes are off. Anonymous blob access is off, there is no SAS of any kind, and TLS 1.2 is the minimum. A request needs an Entra token for an identity with a data-plane role on that container or database, and the roles are unchanged: the API's user-assigned identity, the searcher's system identity, and the on-prem hosts' Arc identities.
+
+**What this gives up.** The network layer. Before, a stolen token was useless outside snet-cae or the on-prem address. Now it works from any network until it expires (about an hour for an Entra access token). The accounts' public endpoints answer everyone, and refuse anyone without a role. Storage and Cosmos resource logs still record every authenticated caller.
+
+**Alternatives**
+
+| Option                                            | Why not                                                                                                                                                            |
+| ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Keep the VNet                                     | $21.90 a month for a path that is idle until a failover                                                                                                            |
+| IP rules for the environment's outbound addresses | A VNet-less environment's outbound addresses are shared with other tenants and can change, so a rule would admit others and could drop the spare during a failover |
+| A NAT gateway for a fixed outbound address        | Needs the VNet, and costs more than the load balancer it would replace                                                                                             |
+| Private endpoints                                 | Need the VNet; removed earlier this month (amendment above)                                                                                                        |
+
+**Rollout.** Make-before-break, each stage a pull request and `scripts/azure/provision.sh --env prod --api-tag live` after a what-if whose delete list is checked first ([runbook](../../operations/search-serving.md#the-spares-environment-without-a-vnet)):
+
+1. `USNM_DATA_ALL_NETWORKS` and `USNM_SPARE_ENVIRONMENT` on, and `USNM_BOINC_HANDOFF_IMAGE` cleared. This adds the new environment and apps and opens the three accounts. It deletes only the hand-off job and the grants and BOINC subnet rules that came with it.
+2. A cold check of the new API by its default hostname: `/readyz`, a search, `/v1/meta` and `/v1/status`.
+3. Cutover: the Worker's Azure origin, CI's app variables and the alerts and workbooks move to the new apps. The old environment, its apps, the VNet and its load balancer are removed. No data store is on any delete list.

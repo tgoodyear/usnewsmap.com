@@ -19,6 +19,10 @@
 // through a service endpoint. The virtual network filter then applies with
 // the IP firewall, so public access with no ipRules does not accept every
 // network. Local auth stays off.
+//
+// With allNetworks (the spare's VNet-less environment, ADR-0008 amendment
+// "No VNet for the spare") the account accepts every network: Entra ID with
+// local auth off is the only control.
 
 param location string
 param tags object
@@ -29,8 +33,10 @@ param freeTier bool = true
 param allowedIps array = []
 @description('Subnets allowed through the firewall, as resource ids; each needs a Microsoft.AzureCosmosDB service endpoint.')
 param subnetIds array = []
+@description('Accept requests from every network (#308): public network access with no IP rules and the virtual network filter off. Local auth stays off, so Entra ID data-plane roles are the only way in. allowedIps and subnetIds are then ignored.')
+param allNetworks bool = false
 
-var open = !empty(allowedIps) || !empty(subnetIds)
+var open = allNetworks || !empty(allowedIps) || !empty(subnetIds)
 
 var containers = [
   { name: 'titles', key: '/lccn' }
@@ -57,12 +63,12 @@ resource account 'Microsoft.DocumentDB/databaseAccounts@2024-11-15' = {
     disableKeyBasedMetadataWriteAccess: true
     publicNetworkAccess: open ? 'Enabled' : 'Disabled'
     ipRules: [
-      for ip in allowedIps: {
+      for ip in (allNetworks ? [] : allowedIps): {
         ipAddressOrRange: endsWith(ip, '/32') ? replace(ip, '/32', '') : ip
       }
     ]
-    isVirtualNetworkFilterEnabled: !empty(subnetIds)
-    virtualNetworkRules: [for id in subnetIds: { id: id, ignoreMissingVNetServiceEndpoint: false }]
+    isVirtualNetworkFilterEnabled: !allNetworks && !empty(subnetIds)
+    virtualNetworkRules: [for id in (allNetworks ? [] : subnetIds): { id: id, ignoreMissingVNetServiceEndpoint: false }]
     networkAclBypass: 'None'
     minimalTlsVersion: 'Tls12'
     // Continuous backup (7-day, free) needs provisioned throughput; serverless

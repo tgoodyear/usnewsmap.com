@@ -9,6 +9,10 @@
 // public-network policy exempts the account by resource id only while it is
 // open (main.bicep, public-accounts.bicep).
 //
+// With allNetworks (the spare's VNet-less environment, ADR-0008 amendment
+// "No VNet for the spare") the firewall allows every network, and Entra ID
+// is the only control.
+//
 // With subnetIds and no private endpoint (a cold spare, ADR-0008 amendment of
 // November 2026), the Container Apps reach the account from those subnets
 // through a service endpoint, behind the same deny-by-default firewall, and
@@ -24,6 +28,8 @@ param blobSoftDeleteDays int = 3
 param allowedIps array = []
 @description('Subnets allowed through the firewall, as resource ids; each needs a Microsoft.Storage service endpoint. With allowedIps empty too, public network access stays off.')
 param subnetIds array = []
+@description('Accept requests from every network (#308): the Azure spare\'s environment has no VNet and no stable outbound address. Entra ID stays the only way in: no shared key, no SAS, no anonymous access. The IP and subnet rules are kept, so turning this off restores them.')
+param allNetworks bool = false
 
 @description('Blob containers. Access is granted per container in rbac.bicep.')
 var containers = ['curated', 'reference', 'cache', 'qw-index', 'searches', 'ocr-requests']
@@ -43,9 +49,9 @@ resource account 'Microsoft.Storage/storageAccounts@2023-05-01' = {
     allowCrossTenantReplication: false
     minimumTlsVersion: 'TLS1_2'
     supportsHttpsTrafficOnly: true
-    publicNetworkAccess: empty(allowedIps) && empty(subnetIds) ? 'Disabled' : 'Enabled'
+    publicNetworkAccess: allNetworks || !empty(allowedIps) || !empty(subnetIds) ? 'Enabled' : 'Disabled'
     networkAcls: {
-      defaultAction: 'Deny'
+      defaultAction: allNetworks ? 'Allow' : 'Deny'
       bypass: 'None'
       ipRules: [
         for ip in allowedIps: {

@@ -223,6 +223,9 @@ var nameTypes = {
   releaseWriterRole: 'role'
   siteUnavailableAlert: 'alert'
   siteWebtest: 'webtest'
+  spareApiApp: 'ca'
+  spareContainerEnv: 'cae'
+  spareSearcherApp: 'ca'
   stateEndpoint: 'pep'
   stateEndpointNic: 'nic'
   vnet: 'vnet'
@@ -341,6 +344,9 @@ type Names = {
   releaseWriterRole: string
   siteUnavailableAlert: string
   siteWebtest: string
+  spareApiApp: string
+  spareContainerEnv: string
+  spareSearcherApp: string
   stateEndpoint: string
   stateEndpointNic: string
   vnet: string
@@ -448,6 +454,11 @@ func names(env string, sfx string, pinned bool) Names => {
   releaseWriterRole: usnmName('release-writer', 'role', env)
   siteUnavailableAlert: usnmName('site-unavailable', 'alert', env)
   siteWebtest: usnmName('site', 'webtest', env)
+  // The VNet-less Container Apps environment of the Azure spare, with its API and
+  // searcher (#308): made beside the VNet-integrated one, then the only one.
+  spareApiApp: usnmName('api-spare', 'ca', env)
+  spareContainerEnv: usnmName('core-spare', 'cae', env)
+  spareSearcherApp: usnmName('qw-spare', 'ca', env)
   stateEndpoint: pinned ? 'pe-usnm-cosmos' : usnmName('state-sql', 'pep', env)
   stateEndpointNic: pinned ? '' : usnmName('state-sql', 'nic', env)
   // Removed in Phase 1 (ADR-0017): legacy everywhere until then.
