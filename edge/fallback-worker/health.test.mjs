@@ -527,7 +527,7 @@ test("a primary that is ready on the second probe keeps the request and Azure is
     assert.equal(calls.length, 3);
     assert.equal(calls[1].url, `${SITE}/readyz`);
     assert.equal(calls[2].url, `${SITE}/v1/hits?q=private`);
-    assert.ok(calls.every((call) => !call.url.startsWith(AZURE)));
+    assert.ok(calls.every((call) => new URL(call.url).origin !== AZURE));
     assert.equal(answer.headers.get("x-usnm-origin"), "onprem");
     assert.equal(await answer.text(), "primary");
   }
@@ -550,7 +550,7 @@ test("a GET's timeout or network failure from a primary that still answers ready
     [Object.assign(network(), { name: "TimeoutError" }), "primary-timeout"]]) {
     const { answer, calls } = await run(t, get(), [response(), failed, response()]);
     assert.equal(calls.length, 3);
-    assert.ok(calls.every((call) => !call.url.startsWith(AZURE)));
+    assert.ok(calls.every((call) => new URL(call.url).origin !== AZURE));
     assert.equal(answer.status, 503);
     assert.equal(answer.headers.get("retry-after"), "10");
     assert.equal(answer.headers.get("x-usnm-origin"), "unavailable");
