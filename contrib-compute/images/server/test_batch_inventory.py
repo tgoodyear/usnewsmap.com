@@ -208,7 +208,8 @@ class InventoryTests(unittest.TestCase):
         for value in ("0", "-1", "1e5", "abc", str(inventory.MAX_EXISTING_WORKUNITS_CEILING + 1)):
             with self.assertRaises(ValueError):
                 inventory.max_existing_workunits({"USNM_MAX_EXISTING_WORKUNITS": value})
-        self.assertIn("LIMIT {limit}", inventory.QUERY)
+        self.assertIn("LIMIT 75001", inventory.query(75000))
+        self.assertNotIn("{limit}", inventory.query())
 
     def test_a_page_requeued_from_its_bundle_leaves_it(self):
         bundle, pages = "c" * 64, ["d" * 64, "e" * 64]
@@ -246,7 +247,7 @@ INSERT INTO workunit VALUES (0,'other-app',2),(1,'usnm_aaaaaaaaaaaaaaaaaaaaaaaaa
  (2,'done',2),(2,'usnm_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',1),(9,'unknown',2),
  (0,'usnm_ocrb_cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',1),(0,'usnm_ocrb_short',1),(0,'orphan',7);
 INSERT INTO host VALUES (0),(UNIX_TIMESTAMP()-90000),(UNIX_TIMESTAMP()),(UNIX_TIMESTAMP()-1);
-""" + inventory.QUERY + ";",
+""" + inventory.query() + ";",
             text=True, capture_output=True, check=True,
         )
         self.assertEqual(result.stdout.strip(),

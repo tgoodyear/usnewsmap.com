@@ -47,6 +47,11 @@ SELECT name, assimilate_state FROM workunit
 """
 
 
+def query(limit=DEFAULT_MAX_EXISTING_WORKUNITS):
+    """QUERY reading one existing workunit past `limit`, so an oversized inventory is seen."""
+    return QUERY.replace("{limit}", str(limit + 1))
+
+
 SPOOL_FILE = re.compile(
     r"usnm_([0-9a-f]{64})(__file_(result\.json|text\.txt|layout\.xml)|_error|_no_output_files)")
 # An OCR bundle's result (#1059): one workunit, usnm_ocrb_<bundle>, for several pages.
@@ -212,7 +217,7 @@ def main():
         ["mysql", f"--defaults-extra-file={args.mysql_defaults_file}", "--ssl",
          "--ssl-verify-server-cert", "--ssl-ca=/usr/local/share/usnm/mysql-ca.pem",
          "--batch", "--raw", "--skip-column-names", f"--database={args.database}",
-         "--execute", QUERY.replace("{limit}", str(existing_limit + 1))],
+         "--execute", query(existing_limit)],
         check=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=60,
     ).stdout.strip().splitlines()
     hosts = output[0] if output else ""
