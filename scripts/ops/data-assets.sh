@@ -100,14 +100,14 @@ case $MODE in
     if [ "$MODE" = inventory ]; then
       git -C "$ROOT" ls-files --error-unmatch docs/reports/report-data-rights.txt >/dev/null \
         || die "the report-data rights notice must be tracked"
-      python3 "$ROOT/scripts/ops/verify-report-data.py" --create "$stage/tree" > "$stage/report-data-manifest.json"
+      python3 "$ROOT/scripts/ops/verify-report-data.py" --create --tree "$stage/tree" > "$stage/report-data-manifest.json"
       cp "$stage/report-data-manifest.json" "$OUT/report-data-manifest.json"
       echo "Candidate inventory written to $OUT/report-data-manifest.json; review the sources and migration before using it."
       exit 0
     elif [ "$SET" = report-data ]; then
       git -C "$ROOT" ls-files --error-unmatch docs/reports/report-data-manifest.json >/dev/null \
         || die "the report-data rights inventory must be tracked"
-      python3 "$ROOT/scripts/ops/verify-report-data.py" "$stage/tree"
+      python3 "$ROOT/scripts/ops/verify-report-data.py" --tree "$stage/tree"
     fi
     list=$OUT/$SET.members.txt
     (cd "$stage/tree" && find . -type f | sed 's|^\./||' | LC_ALL=C sort) > "$list"

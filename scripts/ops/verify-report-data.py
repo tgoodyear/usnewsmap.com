@@ -90,7 +90,7 @@ def verify(tree):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--create", action="store_true", help="print a candidate inventory; this does not approve its contents")
-    parser.add_argument("tree", type=Path, help="staged archive tree")
+    parser.add_argument("--tree", type=Path, required=True, help="staged archive tree")
     args = parser.parse_args()
     try:
         if args.create:
