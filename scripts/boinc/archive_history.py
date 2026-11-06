@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """Archive drained OCR history out of the batch controller's stores, in lockstep (#1483).
 
+With --include-held, a page whose result a held trust scope kept from publication (#835) is
+archived too, quarantined result and all, and a small `archived_held` entry stays in the
+controller state so a re-claim of its message doesn't start another job. `restore-held` puts
+such pages back, exactly as they were, for `collect` to publish once the hold is lifted.
+
 The controller, the bridge and the BOINC database each cap their history at 10,000 jobs
 (docs/boinc-batch-scheduler.md#archive-drained-history-1483). This tool moves the oldest
 fully published pages' history out of every store, one batch at a time, into a retained
@@ -17,6 +22,10 @@ Three steps, each on the host that holds its stores, in this order for every bat
             and their spool outputs under the project's results/.
   db        Where the mysql client reaches the BOINC database. Exports, then deletes, the
             batch's finished workunit rows and their result rows.
+
+  restore-held  On the controller host. Uploads an archived batch's held pages' hand-off blobs
+            again, then puts their controller state back (the bridge and database steps need
+            no undoing: `collect` reads only the hand-off container).
 
 Each step writes an intent file before it changes anything and a receipt when it is done, so
 a step stopped half way is resumed by running it again with the same arguments.
@@ -64,6 +73,8 @@ STAGES = {"prepared", "reserved", "submitting", "submitted", "published", "faile
 # the hand-off's word. Anything earlier means the server has not finished with the job.
 DRAINED_SERVER_STAGES = {"submitted", "published", "failed"}
 STATE_KEYS = ("claims", "selected", "held_since", "dead_lettered")
+# Pages archived while held (#835), kept in the controller state (batch_scheduler.QueueFeed).
+ARCHIVED_HELD = "archived_held"
 UNIT = "usnm-boinc-priority-controller"
 # Blob lease states a new lease can be taken in.
 FREE_LEASE_STATES = ("available", "expired", "broken")
@@ -243,12 +254,12 @@ class RestContainer:
                 raise RuntimeError("could not get a storage token from az") from None
         return self._token[0]
 
-    def request(self, method, name="", query=None, headers=None, absent=(404,)):
+    def request(self, method, name="", query=None, headers=None, absent=(404,), body=None):
         url = self.base + ("/" + urllib.parse.quote(name) if name else "")
         if query:
             url += "?" + urllib.parse.urlencode(query)
         sent = {"Authorization": "Bearer " + self.token(), "x-ms-version": STORAGE_VERSION, **(headers or {})}
-        data = b"" if method == "PUT" else None
+        data = body if body is not None else (b"" if method == "PUT" else None)
         for attempt in range(3):
             try:
                 with urllib.request.urlopen(urllib.request.Request(url, data=data, headers=sent, method=method),
@@ -308,6 +319,19 @@ class RestContainer:
         status, _, _ = self.request("PUT", name, {"comp": "lease"}, {
             "x-ms-lease-action": "release", "x-ms-lease-id": lease})
         require(status == 200, f"could not release the lease on {name} (HTTP {status})")
+
+    def upload(self, name, data, md5=None):
+        """Writes a blob only where none is (If-None-Match: *), with the archived Content-MD5,
+        which the service checks. False if a blob is already there (a retried or resumed write)."""
+        headers = {"x-ms-blob-type": "BlockBlob", "If-None-Match": "*",
+                   "Content-Type": "application/octet-stream"}
+        if md5:
+            headers["Content-MD5"] = md5
+        status, _, _ = self.request("PUT", name, headers=headers, body=data)
+        if status in (409, 412):
+            return False
+        require(status == 201, f"writing {name} failed: HTTP {status}")
+        return True
 
     def delete(self, name, etag):
         """Deletes the blob only while it is still the version that was archived."""
@@ -430,13 +454,27 @@ def modified_at(blob):
         return None
 
 
-def choose(config, state, records, blobs, now, *, pages, min_age_hours):
+def kept_result(blobs):
+    """The jobs with a kept result in the container: blobs under both dispatch/quarantine/<id>/
+    (what collect kept) and spool/<id>/ (the outputs collect reads again)."""
+    found = {}
+    for name, blob in blobs.items():
+        for root in ("dispatch/quarantine/", "spool/"):
+            if name.startswith(root):
+                found.setdefault(blob["job"], set()).add(root)
+    return {job for job, roots in found.items() if len(roots) == 2}
+
+
+def choose(config, state, records, blobs, now, *, pages, min_age_hours, include_held=False):
     """The oldest fully published pages, up to `pages`, as (chosen, summary). A page qualifies
     when every journal it has forms one retry chain that ends `published`, the last write of
     that journal is at least min_age_hours old, and the controller's state agrees: a page of
     this plan is claimed for the batch its journals name, and a page of another plan isn't
-    claimed or selected here."""
+    claimed or selected here. With include_held, a chain may also end in a job a held trust
+    scope kept from publication (#835): a page of this plan, claimed with a message, whose
+    kept result is in the container."""
     queue = config.get("source") == "queue"
+    kept = kept_result(blobs) if include_held else set()
     claims, selected = state.get("claims", {}), state.get("selected", {})
     # A fixed plan's configured pages are allocated whether or not they are selected yet.
     configured = set() if queue else {page["page"] for page in config.get("pages", [])}
@@ -454,13 +492,27 @@ def choose(config, state, records, blobs, now, *, pages, min_age_hours):
             skip("unresolved_retry_lineage")
             continue
         current = chain[-1]
-        if current["stage"] != "published":
+        held = current["stage"] not in ("published", "failed") and bool(current.get("held"))
+        if held and not include_held:
+            skip("held_from_publication")
+            continue
+        if current["stage"] != "published" and not held:
             skip(f"current_journal_{current['stage']}")
+            continue
+        if held and plan != config["plan"]:
+            skip("held_for_another_plan")
+            continue
+        if held and current["job"]["id"] not in kept:
+            skip("held_without_kept_result")
+            continue
+        if held and not (isinstance(claims.get(page), dict) and isinstance(claims[page].get("message"), str)
+                         and ID.fullmatch(claims[page]["message"])):
+            skip("held_claim_without_message")
             continue
         blob = blobs[f"dispatch/jobs/{current['job']['id']}/record.json"]
         published_at = modified_at(blob)
         if published_at is None or now - published_at < min_age_hours * 3600:
-            skip("published_too_recently")
+            skip("held_too_recently" if held else "published_too_recently")
             continue
         if plan == config["plan"]:
             if not queue:
@@ -476,23 +528,35 @@ def choose(config, state, records, blobs, now, *, pages, min_age_hours):
             continue
         candidates.append({"plan": plan, "page": page, "published_at": int(published_at),
                            "stamp": str(current.get("stamp", "")),
-                           "jobs": [record["job"]["id"] for record in chain]})
+                           "jobs": [record["job"]["id"] for record in chain],
+                           **({"held": True} if held else {})})
     candidates.sort(key=lambda page: (page["published_at"], page["stamp"], page["plan"], page["page"]))
     chosen = candidates[:pages]
     summary = {"eligible": len(candidates), "skipped": dict(sorted(skipped.items())),
                "eligible_this_plan": sum(1 for page in candidates if page["plan"] == config["plan"]),
+               "eligible_held": sum(1 for page in candidates if page.get("held")),
                "published": sum(1 for history in by_page.values()
                                 if (chain := lineage(history)) and chain[-1]["stage"] == "published")}
     return chosen, summary
 
 
-def state_entries(config, state, chosen):
+def state_entries(config, state, chosen, now):
+    """The controller state entries the batch moves out, and for each held page (#835) the
+    `archived_held` entry left in their place: its job and message, so a re-claim of that
+    message keeps the archived job (batch_scheduler.QueueFeed.record)."""
     entries = {key: {} for key in STATE_KEYS}
-    published = 0
+    published = held = 0
+    tombstones = {}
     for page in chosen:
         if page["plan"] != config["plan"]:
             continue
-        published += 1
+        if page.get("held"):
+            held += 1
+            tombstones[page["page"]] = {"job": page["jobs"][-1],
+                                        "message": state["claims"][page["page"]]["message"],
+                                        "held_at": page["published_at"], "archived_at": int(now)}
+        else:
+            published += 1
         for key in ("claims", "selected"):
             if page["page"] in state.get(key, {}):
                 entries[key][page["page"]] = state[key][page["page"]]
@@ -500,7 +564,10 @@ def state_entries(config, state, chosen):
             for job in page["jobs"]:
                 if job in state.get(key, {}):
                     entries[key][job] = state[key][job]
-    return {**entries, "published": published}
+    result = {**entries, "published": published}
+    if held:
+        result.update(held=held, **{ARCHIVED_HELD: tombstones})
+    return result
 
 
 def without(state, entries):
@@ -510,11 +577,14 @@ def without(state, entries):
             after.get(key, {}).pop(name, None)
     if entries["published"]:
         after["published"] = max(0, int(after.get("published", 0)) - entries["published"])
+    if entries.get(ARCHIVED_HELD):
+        after.setdefault(ARCHIVED_HELD, {}).update(entries[ARCHIVED_HELD])
     return after
 
 
 def state_counts(state):
-    return {key: len(state.get(key, {})) for key in STATE_KEYS} | {"published": state.get("published", 0)}
+    return {key: len(state.get(key, {})) for key in STATE_KEYS} | {
+        "published": state.get("published", 0), ARCHIVED_HELD: len(state.get(ARCHIVED_HELD, {}))}
 
 
 # --- dispatch: controller state, then hand-off blobs -----------------------------------------
@@ -556,15 +626,22 @@ def plan_batch(scheduler, config, state, container, now, args):
     stages = {}
     for record in records:
         stages[record["stage"]] = stages.get(record["stage"], 0) + 1
+    include_held = getattr(args, "include_held", False)
     chosen, pages = choose(config, state, records, blobs, now, pages=args.pages,
-                           min_age_hours=args.min_age_hours)
+                           min_age_hours=args.min_age_hours, include_held=include_held)
     jobs = sorted(job for page in chosen for job in page["jobs"])
     require(len(set(jobs)) == len(jobs), "a job belongs to two pages; reconcile the journals first")
-    entries = state_entries(config, state, chosen)
+    entries = state_entries(config, state, chosen, now)
+    already = sorted(set(entries.get(ARCHIVED_HELD, {})) & set(state.get(ARCHIVED_HELD, {})))
+    require(not already, f"{len(already)} held pages are claimed again and already archived "
+                         f"(first: {already[:1]}); reconcile by hand")
     chosen_jobs = set(jobs)
     batch_blobs = sorted(({key: blob[key] for key in ("name", "etag", "size", "md5")}
                           for blob in blobs.values() if blob["job"] in chosen_jobs), key=lambda blob: blob["name"])
     after_state = without(state, entries)
+    require(len(after_state.get(ARCHIVED_HELD, {})) <= getattr(scheduler, "MAX_ARCHIVED_HELD", 0),
+            "the controller's archived_held cap would be passed (or its batch_scheduler.py predates "
+            "--include-held); restore or publish held pages first")
     remaining = [record for record in records if record["job"]["id"] not in chosen_jobs]
     check = {"before": None, "after": None, "error": None}
     try:
@@ -579,6 +656,7 @@ def plan_batch(scheduler, config, state, container, now, args):
         "schema_version": SCHEMA_VERSION, "kind": "usnm-boinc-archive-batch",
         "created_at": int(now), "account": config["account"], "plan": config["plan"],
         "config_sha256": scheduler.digest(config), "min_age_hours": args.min_age_hours,
+        "include_held": include_held,
         "pages": chosen, "jobs": jobs, "blobs": batch_blobs, "state": entries,
         "before": {"journals": journals, "blobs": len(blobs),
                    "state_sha256": sha256_bytes((args.state_dir / "state.json").read_bytes()),
@@ -589,8 +667,9 @@ def plan_batch(scheduler, config, state, container, now, args):
         "journals_by_stage": dict(sorted(stages.items())), "pages": pages,
         "batch": {"pages": len(chosen), "jobs": len(jobs), "blobs": len(batch_blobs),
                   "bytes": sum(blob["size"] for blob in batch_blobs),
-                  "this_plan_pages": entries["published"],
-                  "other_plan_pages": len(chosen) - entries["published"],
+                  "this_plan_pages": entries["published"] + entries.get("held", 0),
+                  "held_pages": entries.get("held", 0),
+                  "other_plan_pages": len(chosen) - entries["published"] - entries.get("held", 0),
                   "oldest_published_at": chosen[0]["published_at"] if chosen else None,
                   "newest_published_at": chosen[-1]["published_at"] if chosen else None,
                   "state_entries": {key: len(entries[key]) for key in STATE_KEYS}},
@@ -615,12 +694,17 @@ def controller_step(manifest, state_path, batch):
     present = {key: [name for name in entries[key] if name in state.get(key, {})] for key in STATE_KEYS}
     count = sum(len(entries[key]) for key in STATE_KEYS)
     found = sum(len(names) for names in present.values())
+    tombstones = entries.get(ARCHIVED_HELD, {})
     if count and found == 0:
         require(archive.is_file() and json.loads(archive.read_text()) == entries,
                 "the batch's state entries are gone but not in the archive; stop and reconcile by hand")
+        require(all(state.get(ARCHIVED_HELD, {}).get(page) == entry for page, entry in tombstones.items()),
+                "the batch's held pages are gone but not marked archived_held; stop and reconcile by hand")
         return {"entries": {key: len(entries[key]) for key in STATE_KEYS}, "resumed": True,
                 "archive_sha256": sha256_file(archive)}
     require(found == count, "the controller state changed since the batch was planned; stop and reconcile")
+    require(not set(tombstones) & set(state.get(ARCHIVED_HELD, {})),
+            "a held page of the batch is already archived; stop and reconcile")
     require(all(state[key][name] == entries[key][name] for key in STATE_KEYS for name in present[key]),
             "the controller state changed since the batch was planned; stop and reconcile")
     write_json(archive, entries)
@@ -772,6 +856,158 @@ def dispatch(args):
         }
         write_json(batch / "receipts/dispatch.json", receipt)
     emit({"event": "boinc_archive_dispatch", "apply": True, **receipt})
+    return 0
+
+
+# --- restore-held: held pages back into the hand-off and the controller state ------------------
+
+
+def restore_plan(manifest, batch, state, wanted):
+    """The batch's held pages to restore (all, or those in `wanted`), each with its blobs, as
+    (pages, done): `done` are pages already back (claimed, no archived_held entry)."""
+    held = {page["page"]: page for page in manifest["pages"] if page.get("held")}
+    require(held, f"batch {batch.name} archived no held page")
+    if wanted:
+        unknown = sorted(set(wanted) - set(held))
+        require(not unknown, f"{len(unknown)} pages are not held pages of batch {batch.name} (first: {unknown[:1]})")
+    tombstones = manifest["state"].get(ARCHIVED_HELD, {})
+    live = state.get(ARCHIVED_HELD, {})
+    pages, done = [], []
+    for name in sorted(set(wanted or held)):  # a page named twice is restored once
+        page = held[name]
+        if name not in live and name in state.get("claims", {}):
+            done.append(name)
+            continue
+        require(live.get(name) == tombstones.get(name),
+                f"{name} is not archived_held for this batch's job; stop and reconcile")
+        require(name not in state.get("claims", {}), f"{name} is claimed again; stop and reconcile")
+        pages.append(page)
+    blobs = {}
+    jobs = {job for page in pages for job in page["jobs"]}
+    for blob in manifest["blobs"]:
+        job = JOB_BLOB.fullmatch(blob["name"])[1]
+        if job in jobs:
+            path, digest_path = batch / "handoff" / blob["name"], batch / "handoff-sha256" / (blob["name"] + ".sha256")
+            require(verified_copy(path, digest_path, blob),
+                    f"the archived copy of {blob['name']} is missing or no longer matches its sha256")
+            blobs.setdefault(job, []).append(blob)
+    require(all(f"dispatch/jobs/{page['jobs'][-1]}/record.json" in {b["name"] for b in blobs.get(page["jobs"][-1], [])}
+                for page in pages), "the batch's archive lacks a held page's journal")
+    return pages, done, blobs
+
+
+def restored_copy(container, batch, blob, there):
+    """Whether the blob in the container is the archived copy: its size, and its Content-MD5 when
+    the archive has one, else its bytes against the sha256 taken when it was archived."""
+    if there is None or there["size"] != blob["size"]:
+        return False
+    if blob.get("md5"):
+        return there["md5"] == blob["md5"]
+    data, etag = container.get(blob["name"])
+    digest = (batch / "handoff-sha256" / (blob["name"] + ".sha256")).read_text().strip()
+    return etag == there["etag"] and sha256_bytes(data) == digest
+
+
+def restore_room(scheduler, state, pages, blobs, live):
+    """The claims and journals after the restore, and whether both stay within the controller's
+    caps: a restore past them would stop the next tick."""
+    claims = len(state.get("claims", {})) + len(pages)
+    journals = sum(1 for name in live if RECORD_BLOB.fullmatch(name)) + sum(
+        1 for items in blobs.values() for blob in items
+        if RECORD_BLOB.fullmatch(blob["name"]) and blob["name"] not in live)
+    return {"claims_after": claims, "journals_after": journals,
+            "fits": claims <= scheduler.MAX_JOBS and journals <= scheduler.MAX_JOBS}
+
+
+def restore_held(args):
+    scheduler = load_scheduler()
+    config = scheduler.load_config(args.config)
+    args.state_dir = args.state_dir.resolve()
+    state_path = args.state_dir / "state.json"
+    state = read_json(state_path)
+    require(state.get("config_sha256") == scheduler.digest(config),
+            "the state directory belongs to another allocation; give the controller's own config")
+    require(BATCH_NAME.fullmatch(args.batch), "--batch is a batch number such as 0011")
+    batch = args.archive_dir.resolve() / "batches" / args.batch
+    manifest = read_json(batch / "manifest.json")
+    receipt = read_json(batch / "receipts/dispatch.json")
+    require(receipt.get("complete") is True and receipt.get("manifest_sha256") == sha256_file(batch / "manifest.json"),
+            f"batch {batch.name}'s dispatch step is not complete; finish it first")
+    require(manifest["account"] == config["account"] and manifest["plan"] == config["plan"]
+            and manifest["config_sha256"] == scheduler.digest(config),
+            f"batch {batch.name} was archived for another allocation")
+    entries = read_json(batch / "controller/state-entries.json")
+    require(entries == manifest["state"], "controller/state-entries.json no longer matches the manifest")
+    container = RestContainer(config["account"])
+    units = {"timer": unit_state(f"{args.controller_unit}.timer"),
+             "service": unit_state(f"{args.controller_unit}.service")}
+    lease = container.lease_state(LEASE_BLOB)
+    pages, done, blobs = restore_plan(manifest, batch, state, args.page)
+    summary = {"batch": batch.name, "pages": len(pages), "already_restored": len(done),
+               "blobs": sum(len(items) for items in blobs.values()),
+               "bytes": sum(blob["size"] for items in blobs.values() for blob in items),
+               **restore_room(scheduler, state, pages, blobs, list_job_blobs(container))}
+    if not args.apply:
+        emit({"event": "boinc_archive_restore_held", "schema_version": SCHEMA_VERSION, "apply": False,
+              "controller": {**units, "lease": lease}, **summary})
+        return 0
+    require_apply(args, units)
+    require(lease in FREE_LEASE_STATES, f"the controller lease is {lease}: a tick may be running")
+    lock = args.state_dir / "controller.lock"
+    with flocked([lock], existing=[lock]), leased(container, LEASE_BLOB):
+        state = read_json(state_path)
+        pages, done, blobs = restore_plan(manifest, batch, state, args.page)
+        live = list_job_blobs(container)
+        room = restore_room(scheduler, state, pages, blobs, live)
+        require(room["fits"], f"restoring would leave {room['claims_after']} claims and {room['journals_after']} "
+                              f"journals, past the controller's cap of {scheduler.MAX_JOBS}: restore fewer pages "
+                              "with --page, or archive drained history first")
+
+        def restore_job(items):
+            written = 0
+            # The journal goes last, so the controller sees the job only once all of it is back.
+            for blob in sorted(items, key=lambda blob: (bool(RECORD_BLOB.fullmatch(blob["name"])), blob["name"])):
+                there = live.get(blob["name"])
+                if there is None:
+                    written += container.upload(blob["name"], (batch / "handoff" / blob["name"]).read_bytes(),
+                                                blob.get("md5"))
+                else:
+                    require(restored_copy(container, batch, blob, there),
+                            f"{blob['name']} is in the container but isn't the archived copy; stop and reconcile")
+            return written
+
+        written = sum(in_parallel(restore_job, list(blobs.values())))
+        live = list_job_blobs(container)
+        for items in blobs.values():
+            for blob in items:
+                require(restored_copy(container, batch, blob, live.get(blob["name"])),
+                        f"{blob['name']} did not come back as archived; nothing in the state changed")
+        # Then the state: the claim comes back with its journal already there (a claim without
+        # one would be exported again), and the archived_held entry goes.
+        after = json.loads(json.dumps(state))
+        for page in pages:
+            for key in ("claims", "selected"):
+                if page["page"] in entries[key]:
+                    after.setdefault(key, {})[page["page"]] = entries[key][page["page"]]
+            for key in ("held_since", "dead_lettered"):
+                for job in page["jobs"]:
+                    if job in entries[key]:
+                        after.setdefault(key, {})[job] = entries[key][job]
+            after[ARCHIVED_HELD].pop(page["page"])
+        if pages:
+            write_atomic(state_path, (json.dumps(after, sort_keys=True) + "\n").encode())
+        journals = sum(1 for name in live if RECORD_BLOB.fullmatch(name))
+        result = {
+            "schema_version": SCHEMA_VERSION, "step": "restore-held", "batch": batch.name, "complete": True,
+            "finished_at": int(time.time()), "manifest_sha256": sha256_file(batch / "manifest.json"),
+            "restored_pages": sorted(page["page"] for page in pages), "already_restored": done,
+            "blobs_written": written, "journals": journals, "state_sha256": sha256_file(state_path),
+            **{f"state_{key}": value for key, value in state_counts(after).items()},
+        }
+        write_json(batch / "receipts" / f"restore-held-{result['finished_at']}.json", result)
+    emit({"event": "boinc_archive_restore_held", "apply": True,
+          **{key: value for key, value in result.items() if key != "restored_pages"},
+          "restored": len(result["restored_pages"])})
     return 0
 
 
@@ -1246,6 +1482,9 @@ def main(argv=None):
                      help="archive only pages published at least this long ago")
     one.add_argument("--controller-unit", default=UNIT,
                      help="the controller's systemd service and timer name, without the suffix")
+    one.add_argument("--include-held", action="store_true",
+                     help="also archive pages a held trust scope kept from publication (#835); "
+                          "restore-held puts them back")
     common(one)
     two = steps.add_parser("bridge", help="the bridge journals and spool outputs (BOINC host)")
     two.add_argument("--batch-dir", type=Path, required=True,
@@ -1263,13 +1502,22 @@ def main(argv=None):
     three.add_argument("--mysql-ca", default="/usr/local/share/usnm/mysql-ca.pem", help="the server's CA")
     three.add_argument("--mysql", default="mysql", help="the mysql client")
     common(three)
+    four = steps.add_parser("restore-held", help="an archived batch's held pages, back for publishing (controller host)")
+    four.add_argument("--config", type=Path, required=True, help="the controller's config")
+    four.add_argument("--state-dir", type=Path, required=True, help="the controller's state directory")
+    four.add_argument("--archive-dir", type=Path, required=True, help="where batches are archived")
+    four.add_argument("--batch", required=True, help="the batch number, such as 0011")
+    four.add_argument("--page", action="append", help="restore only this held page (repeatable; default: all)")
+    four.add_argument("--controller-unit", default=UNIT,
+                      help="the controller's systemd service and timer name, without the suffix")
+    common(four)
     args = parser.parse_args(argv)
     if args.step == "dispatch" and not 1 <= args.pages <= MAX_PAGES:
         parser.error(f"--pages is 1 to {MAX_PAGES}")
     if args.step == "dispatch" and args.min_age_hours < 0:
         parser.error("--min-age-hours is 0 or more")
     try:
-        return {"dispatch": dispatch, "bridge": bridge, "db": db}[args.step](args)
+        return {"dispatch": dispatch, "bridge": bridge, "db": db, "restore-held": restore_held}[args.step](args)
     except (ValueError, KeyError, TypeError, OSError, RuntimeError) as error:
         message = str(error) if isinstance(error, (ValueError, RuntimeError)) else type(error).__name__
         emit({"event": "boinc_archive_failure", "schema_version": SCHEMA_VERSION, "step": args.step,

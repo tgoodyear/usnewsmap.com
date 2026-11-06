@@ -79,6 +79,7 @@ class FakeContainer:
         self.deletes = 0
         self.acquired = 0
         self.md5 = True
+        self.uploads = []
         self.lock = threading.Lock()
 
     def put(self, name, data, modified):
@@ -124,6 +125,16 @@ class FakeContainer:
     def snapshot(self):
         return {name: (blob["etag"], blob["data"]) for name, blob in self.blobs.items()}, self.lease_blob_state
 
+    def upload(self, name, data, md5=None):
+        with self.lock:
+            if name in self.blobs:
+                return False
+            if md5:
+                archive.require(base64.b64encode(hashlib.md5(data).digest()).decode() == md5, "Md5Mismatch")
+            self.uploads.append(name)
+            self.put(name, data, time.time())
+            return True
+
 
 def tree(root):
     root = Path(root)
@@ -145,8 +156,8 @@ def run(argv):
     return code, (lines[-1] if lines else None), errors
 
 
-class DispatchTests(unittest.TestCase):
-    """The controller host's step: the controller state, then the hand-off blobs."""
+class DispatchFixture(unittest.TestCase):
+    """The controller host's stores: a container, a controller state directory, an archive."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -220,6 +231,10 @@ class DispatchTests(unittest.TestCase):
 
     def jobs_in_container(self):
         return {match[1] for match in map(archive.JOB_BLOB.fullmatch, self.container.blobs) if match}
+
+
+class DispatchTests(DispatchFixture):
+    """The controller host's step: the controller state, then the hand-off blobs."""
 
     def test_dry_run_reads_only_and_picks_the_oldest_published_pages(self):
         before = self.snapshot()
@@ -435,6 +450,159 @@ class DispatchTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("don't agree already", errors[-1]["error"])
         self.assertEqual(before[0], self.snapshot()[0])
+
+
+HELD = "scope deu/frak2021 is held from publication: not calibrated (#835)"
+
+
+class HeldTests(DispatchFixture):
+    """--include-held (#835): pages kept from publication by a held trust scope, archived with
+    their kept result, and restore-held putting them back exactly."""
+
+    def setUp(self):
+        super().setUp()
+        now = time.time()
+        for number, kept in ((8, True), (9, True), (10, False)):
+            record = journal(number, page_key(number), "reserved")
+            record["held"] = HELD
+            job = record["job"]["id"]
+            modified = now - (2 * DAY if number != 9 else 3 * DAY)
+            self.container.put(f"dispatch/jobs/{job}/record.json", json.dumps(record).encode(), modified)
+            self.container.put(f"dispatch/jobs/{job}/page", b"synthetic page " + job.encode(), modified)
+            self.container.put(f"spool/{job}/usnm_{job}__file_text.txt", b"Fraktur " + job.encode(), modified)
+            if kept:
+                self.container.put(f"dispatch/quarantine/{job}/result.json", b'{"kept": true}', modified)
+            self.state["claims"][page_key(number)] = claim(number)
+            self.state["selected"][page_key(number)] = int(now - 3 * DAY)
+        (self.state_dir / "state.json").write_text(json.dumps(self.state, sort_keys=True) + "\n")
+
+    def restore_argv(self, *extra):
+        return ["restore-held", "--config", str(self.config_path), "--state-dir", str(self.state_dir),
+                "--archive-dir", str(self.archive_dir), "--batch", "0001", *extra]
+
+    def test_held_pages_stay_unless_asked_for(self):
+        code, summary, _ = run(self.argv())
+        self.assertEqual(code, 0)
+        self.assertEqual(summary["pages"]["skipped"]["held_from_publication"], 3)
+        self.assertEqual((summary["pages"]["eligible_held"], summary["batch"]["held_pages"]), (0, 0))
+
+    def test_dry_run_with_held_picks_only_held_pages_with_their_kept_result(self):
+        before = self.snapshot()
+        code, summary, _ = run(self.argv("--include-held"))
+        self.assertEqual(code, 0)
+        self.assertEqual(before, self.snapshot())
+        self.assertEqual(summary["pages"]["eligible_held"], 2)
+        self.assertEqual(summary["pages"]["skipped"]["held_without_kept_result"], 1)
+        self.assertEqual(summary["batch"]["held_pages"], 2)
+        self.assertEqual(summary["after_batch"]["state_archived_held"], 2)
+        self.assertTrue(summary["outstanding_pages"]["unchanged"])
+        # Too recent for a longer minimum age.
+        code, summary, _ = run(self.argv("--include-held", "--min-age-hours", "60"))
+        self.assertEqual((summary["pages"]["eligible_held"], summary["pages"]["skipped"]["held_too_recently"]), (1, 1))
+
+    def test_apply_archives_held_pages_and_restore_puts_them_back_exactly(self):
+        originals = self.container.snapshot()[0]
+        held_jobs = {job_id(8), job_id(9)}
+        held_blobs = {name: data for name, (_, data) in originals.items()
+                      if archive.JOB_BLOB.fullmatch(name) and archive.JOB_BLOB.fullmatch(name)[1] in held_jobs}
+        code, receipt, _ = self.apply("--include-held")
+        self.assertEqual(code, 0, receipt)
+        self.assertFalse(self.jobs_in_container() & held_jobs)
+        self.assertIn(job_id(10), self.jobs_in_container())
+        batch = self.archive_dir / "batches/0001"
+        for name, data in held_blobs.items():
+            self.assertEqual((batch / "handoff" / name).read_bytes(), data)
+        state = self.state_now()
+        self.assertFalse({page_key(8), page_key(9)} & (set(state["claims"]) | set(state["selected"])))
+        # Held pages aren't published: the count only drops by the published pages archived.
+        self.assertEqual(state["published"], 1)
+        self.assertEqual(sorted(state["archived_held"]), [page_key(8), page_key(9)])
+        for n in (8, 9):
+            entry = state["archived_held"][page_key(n)]
+            self.assertEqual((entry["job"], entry["message"]), (job_id(n), claim(n)["message"]))
+        self.assertEqual(receipt["after"]["state_archived_held"], 2)
+        # The controller accepts what is left, and the tick's own check agrees.
+        left = [json.loads(blob["data"]) for name, blob in self.container.blobs.items() if name.endswith("/record.json")]
+        loaded = {**scheduler.load_config(self.config_path), "pages": archive.claimed_pages(state)}
+        self.assertNotIn(page_key(8), scheduler.owned_records(loaded, left))
+        # A second run finds nothing more; the held pages aren't archived twice.
+        code, summary, _ = self.apply("--include-held")
+        self.assertIsNone(summary["batch"])
+
+        # restore-held: a dry run reads only.
+        before = self.snapshot()
+        code, summary, _ = run(self.restore_argv())
+        self.assertEqual((code, summary["pages"], summary["blobs"]), (0, 2, len(held_blobs)))
+        self.assertEqual(before, self.snapshot())
+        code, _, errors = run(self.restore_argv("--apply"))
+        self.assertEqual(code, 1)
+        self.assertIn("--confirm-controller-paused", errors[-1]["error"])
+        # Page 9 alone first, then the rest; the journal goes back last.
+        code, result, _ = run(self.restore_argv("--apply", "--confirm-controller-paused",
+                                                "--page", page_key(9), "--page", page_key(9)))
+        self.assertEqual((code, result["restored"]), (0, 1), result)
+        self.assertTrue(self.container.uploads[-1].endswith(f"{job_id(9)}/record.json"))
+        code, result, _ = run(self.restore_argv("--apply", "--confirm-controller-paused"))
+        self.assertEqual((code, result["restored"], len(result["already_restored"])), (0, 1, 1), result)
+        for name, data in held_blobs.items():
+            self.assertEqual(self.container.blobs[name]["data"], data)
+        state = self.state_now()
+        for n in (8, 9):
+            self.assertEqual(state["claims"][page_key(n)], claim(n))
+            self.assertEqual(state["selected"][page_key(n)], self.state["selected"][page_key(n)])
+        self.assertEqual(state["archived_held"], {})
+        left = [json.loads(blob["data"]) for name, blob in self.container.blobs.items() if name.endswith("/record.json")]
+        loaded = {**scheduler.load_config(self.config_path), "pages": archive.claimed_pages(state)}
+        owned = scheduler.owned_records(loaded, left)
+        self.assertTrue(scheduler.kept_by_policy(owned[page_key(8)]))
+        # Nothing left to restore; a page claimed again in the meantime would stop it.
+        code, result, _ = run(self.restore_argv("--apply", "--confirm-controller-paused"))
+        self.assertEqual((code, result["restored"]), (0, 0))
+
+    def test_restore_checks_bytes_without_an_md5_and_keeps_within_the_caps(self):
+        self.container.md5 = False
+        self.assertEqual(self.apply("--include-held")[0], 0)
+        # A same-size blob with other bytes where an archived one goes stops the restore.
+        name = f"spool/{job_id(9)}/usnm_{job_id(9)}__file_text.txt"
+        archived = (self.archive_dir / "batches/0001/handoff" / name).read_bytes()
+        self.container.put(name, bytes(len(archived)), time.time())
+        before = self.state_now()
+        code, _, errors = run(self.restore_argv("--apply", "--confirm-controller-paused", "--page", page_key(9)))
+        self.assertEqual(code, 1)
+        self.assertIn("isn't the archived copy", errors[-1]["error"])
+        self.assertEqual(before, self.state_now())
+        del self.container.blobs[name]
+        # Past the claims cap: refused before anything is written.
+        with mock.patch.object(archive, "load_scheduler", lambda: scheduler), \
+                mock.patch.object(scheduler, "MAX_JOBS", len(before["claims"]) + 1):
+            code, summary, _ = run(self.restore_argv())
+            self.assertFalse(summary["fits"])
+            uploads = list(self.container.uploads)
+            code, _, errors = run(self.restore_argv("--apply", "--confirm-controller-paused"))
+            self.assertEqual(code, 1)
+            self.assertIn("past the controller's cap", errors[-1]["error"])
+            self.assertEqual(self.container.uploads, uploads)
+            # One page fits.
+            code, result, _ = run(self.restore_argv("--apply", "--confirm-controller-paused", "--page", page_key(9)))
+            self.assertEqual((code, result["restored"]), (0, 1), result)
+
+    def test_restore_refuses_a_page_claimed_again_or_a_changed_copy(self):
+        self.assertEqual(self.apply("--include-held")[0], 0)
+        state = self.state_now()
+        state["claims"][page_key(8)] = claim(8)
+        (self.state_dir / "state.json").write_text(json.dumps(state, sort_keys=True) + "\n")
+        code, _, errors = run(self.restore_argv("--page", page_key(8)))
+        self.assertEqual(code, 1)
+        del state["claims"][page_key(8)]
+        (self.state_dir / "state.json").write_text(json.dumps(state, sort_keys=True) + "\n")
+        copy = self.archive_dir / "batches/0001/handoff/dispatch/jobs" / job_id(9) / "record.json"
+        copy.write_bytes(copy.read_bytes() + b" ")
+        code, _, errors = run(self.restore_argv("--page", page_key(9)))
+        self.assertEqual(code, 1)
+        self.assertIn("no longer matches", errors[-1]["error"])
+        before = self.snapshot()
+        self.assertEqual(run(self.restore_argv("--apply", "--confirm-controller-paused"))[0], 1)
+        self.assertEqual(before, self.snapshot())
 
 
 class RestContainerTests(unittest.TestCase):

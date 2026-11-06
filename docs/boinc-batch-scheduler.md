@@ -890,11 +890,13 @@ collected again, isn't `collection_backlog`, and doesn't hold up the refill. The
 tick line reports how many there are as `scope_held`. The page's message stays
 hidden until its lease runs out, then comes back: a later claim keeps the same
 job, but a node can read the page first, and the trust list doesn't govern what
-the nodes publish. Held journals count toward the `MAX_JOBS` caps, and
-`archive_history.py` only moves fully published pages, so drop the language
-from `claim_languages` if `scope_held` grows too far. Once
-a calibration lifts the hold, collect the held jobs again by hand to publish
-them.
+the nodes publish. Held journals count toward the `MAX_JOBS` caps (dispatch
+journals, claims and bridge journals) and their spool outputs toward the
+inventory's spool limit, like published ones. `archive_history.py dispatch
+--include-held` archives them with their kept result
+([below](#archive-held-pages-835)). Once a calibration lifts the hold, collect
+the held jobs again by hand to publish them, after `restore-held` for any that
+were archived.
 
 A page whose ledger row is already answered is **deleted** from the queue. Any
 other message it can't use is **sent back** (a copy is sent, then the original is
@@ -1512,6 +1514,68 @@ The maintainer approves each live run. To archive:
 
 The archive is the only copy of the moved history. Keep it, and back it up
 with the controller state.
+
+#### Archive held pages (#835)
+
+While a trust scope is held, its pages' jobs stay `reserved` with `held` set,
+and their journals, claims, bridge journals and spool outputs pile up toward
+the same caps. `dispatch --include-held` archives them too, in the same batches
+and with the same steps. A held page qualifies when its journal chain ends in
+the held job, it belongs to the current plan, its claim carries a message
+sha256, and both `dispatch/quarantine/<job>/` (what `collect` kept) and
+`spool/<job>/` (what `collect` reads again) are in the container. The manifest
+marks it `"held": true`, and its `published_at` is when it was held. Held
+pages don't lower the state's `published` count.
+
+Archiving moves the page's claim and selection out like a published page's,
+and leaves an `archived_held` entry in the controller state: its job, its
+message sha256, when it was held and when it was archived. The page's queue
+message isn't deleted, because the page isn't published. When its lease runs
+out and the claim step takes the same message again, the controller keeps it
+hidden for the archived job, as it does for a held claim that is still in the
+state. A different message for the page stops the tick, like a different
+message for a claimed page. The tick line reports `scope_held_archived`, and
+the controller warns at 80% of `MAX_ARCHIVED_HELD` (200,000).
+
+The bridge and db steps need nothing different. A held job's bridge journal is
+`submitted`, and its workunit is finished.
+
+The held pages' minimum age is the same `--min-age-hours`, counted from the
+held write. Nothing writes a held journal again, so an hour is enough:
+
+```sh
+python3 /root/usnm-archive/archive_history.py dispatch --include-held --min-age-hours 1 \
+  --config /etc/usnm/boinc-priority-controller.json \
+  --state-dir /var/lib/usnm-priority-controller \
+  --archive-dir /srv/usnm-archive
+```
+
+To publish held pages once their scope is calibrated, first put them back with
+`restore-held`, on the controller host with the controller paused. It needs
+`blobs/write` only, which the controller's identity has.
+
+```sh
+python3 /root/usnm-archive/archive_history.py restore-held --batch <NNNN> \
+  --config /etc/usnm/boinc-priority-controller.json \
+  --state-dir /var/lib/usnm-priority-controller \
+  --archive-dir /srv/usnm-archive
+# then the same with --apply --confirm-controller-paused; --page <page> restores one page
+```
+
+It checks every archived copy against its sha256, and uploads each blob only
+where none is (`If-None-Match: *`), with its archived Content-MD5. The journal
+goes last. It refuses before writing anything if the restored claims or
+journals would pass `MAX_JOBS`; the dry run shows `claims_after`,
+`journals_after` and `fits`, and `--page` restores fewer. A blob already in the
+container counts as restored only when its size and Content-MD5 match, or,
+without an MD5, its bytes match the archived sha256. Once every blob checks out
+that way, it puts back the page's claim, selection and job entries and drops its `archived_held`
+entry. It writes `receipts/restore-held-<time>.json`. A rerun skips pages
+already back. The bridge journal and the workunit row stay archived:
+`collect` reads only the hand-off container. A restored held job has no
+bridge journal and may still have its row, and the controller never submits a
+held job, so neither stops the tick. Then collect the jobs again with the
+hand-off `collect` step and `JOB_IDS`.
 
 ### Production acceptance remains separate
 
