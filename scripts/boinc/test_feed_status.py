@@ -235,7 +235,7 @@ class QwenAdmissionTest(unittest.TestCase):
                        "fresh_pairs_in_scan": 4, "currently_eligible_unsent_replicas": 0,
                        "native_gpu_inflight": {"9": 0}, "per_host_buffer_limit": 10, "admissible_backlog": 4}
         self.cohort = {"result": "ok", "timer_active": True, "last_completed_at": NOW, "last_failure_at": 0,
-                       "report": self.report, "report_at": NOW}
+                       "failure_streak": 0, "failing_since": None, "report": self.report, "report_at": NOW}
         self.facts = {"enabled_until": NOW + 86400, "qwen_admission": True, "cohort": self.cohort,
                       "backlogs": {"usnm_ocr": 0, "usnm_qwen": None},
                       "last_workunits": {"usnm_ocr": NOW, "usnm_qwen": NOW - 99999},
@@ -270,23 +270,26 @@ class QwenAdmissionTest(unittest.TestCase):
         self.assertEqual((checked["state"], checked["backlog"]), ("healthy", 0))
 
     def test_controller_failure_stall_or_silence_fires_and_missing_evidence_is_unknown(self):
-        self.cohort["result"] = "failed"
-        self.assertEqual(self.check(0)["state"], "pending")
-        self.check(60)
-        self.check(120)
-        failed = self.check(180)
-        self.assertEqual((failed["state"], failed["reason"]), ("firing", "cohort_run_failed"))
         for change, reason in (({"timer_active": False}, "cohort_timer_inactive"),
+                               ({"failure_streak": 3, "failing_since": NOW - 150}, "cohort_run_failed"),
                                ({"last_completed_at": NOW - 901}, "cohort_stalled"),
+                               ({"last_completed_at": NOW - 901, "result": "running"}, "cohort_stalled"),
                                ({"last_completed_at": None}, "cohort_stalled"),
                                ({"report_at": NOW - 1801}, "cohort_no_report"),
                                ({"report": None}, "cohort_no_report")):
-            with self.subTest(reason=reason):
+            with self.subTest(reason=reason, change=change):
                 self.setUp()
                 self.cohort.update(change)
                 document, _ = F.evaluate(self.facts, {}, NOW, 10000, "boot", "cfg")
                 checked = next(c for c in document["checks"] if c["code"] == "usnm_qwen_no_work")
                 self.assertEqual((checked["state"], checked["reason"]), ("firing", reason))
+        for streak in (1, 2):
+            with self.subTest(streak=streak):
+                self.setUp()
+                self.cohort.update(failure_streak=streak, failing_since=NOW - 60, result="failed")
+                document, _ = F.evaluate(self.facts, {}, NOW, 10000, "boot", "cfg")
+                self.assertEqual(next(c for c in document["checks"]
+                                      if c["code"] == "usnm_qwen_no_work")["state"], "pending")
         for cohort in (None, {"error": "cohort_unavailable"}):
             self.setUp()
             self.facts["cohort"] = cohort

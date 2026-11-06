@@ -148,10 +148,14 @@ def validate_cohort(record, now):
         if set(record) != {"error"} or record["error"] != "cohort_unavailable":
             raise ValueError("invalid cohort record")
         return
-    if (set(record) != {"result", "timer_active", "last_completed_at", "last_failure_at", "report", "report_at"}
+    if (set(record) != {"result", "timer_active", "last_completed_at", "last_failure_at", "failure_streak",
+                        "failing_since", "report", "report_at"}
             or record["result"] not in ("running", "ok", "failed") or type(record["timer_active"]) is not bool):
         raise ValueError("invalid cohort record")
-    for key in ("last_completed_at", "report_at"):
+    natural(record["failure_streak"])
+    if (record["failing_since"] is None) != (record["failure_streak"] == 0):
+        raise ValueError("invalid cohort failure streak")
+    for key in ("last_completed_at", "report_at", "failing_since"):
         if record[key] is not None and natural(record[key]) > now:
             raise ValueError("future cohort evidence")
     if natural(record["last_failure_at"]) > now:
@@ -247,7 +251,11 @@ def fresh(document, now, kind):
                     or version["plan_class"] and version["plan_class"] not in document["plans"]):
                 raise ValueError("invalid dispatchable version")
         if "cohort" in document:
-            validate_cohort(document["cohort"], now)
+            # An unusable cohort record makes only the Qwen check unknown, never the server source.
+            try:
+                validate_cohort(document["cohort"], now)
+            except (ValueError, KeyError, TypeError):
+                document["cohort"] = {"error": "cohort_unavailable"}
         if "feeder_allocation" in document:
             guard = document["feeder_allocation"]
             if (not isinstance(guard, dict) or set(guard) != {"status", "reason", "app_ids"}
@@ -487,7 +495,8 @@ def cohort(unit, timer):
             raise ValueError("invalid unit")
         raw = run(["journalctl", "--no-pager", "--quiet", "--all", "-u", unit, "-o", "json",
                    "--since=-45min", "-n", "20000"])
-        runs, failures, completed = {}, [], []
+        # outcomes: invocation -> (time, failed), from systemd's own terminal messages for the unit.
+        runs, outcomes = {}, {}
         for line in raw.splitlines():
             entry = json.loads(line)
             if not isinstance(entry, dict):
@@ -496,11 +505,10 @@ def cohort(unit, timer):
             invocation = entry.get("_SYSTEMD_INVOCATION_ID") or entry.get("INVOCATION_ID")
             message_id = entry.get("MESSAGE_ID")
             field = SYSTEMD_FAILURE_FIELDS.get(message_id) if isinstance(message_id, str) else None
-            if field and entry.get("UNIT") == unit:
-                failures.append(at)
-                continue
-            if message_id in SYSTEMD_FINISHED and entry.get("UNIT") == unit:
-                completed.append(at)
+            if (field or message_id in SYSTEMD_FINISHED) and entry.get("UNIT") == unit:
+                key = invocation or "at-%d" % at
+                failed = bool(field) or outcomes.get(key, (0, False))[1]
+                outcomes[key] = (max(at, outcomes.get(key, (0, False))[0]), failed)
                 continue
             message = entry.get("MESSAGE")
             if (not invocation or not isinstance(message, str) or entry.get("_TRANSPORT") != "stdout"
@@ -519,7 +527,10 @@ def cohort(unit, timer):
                 continue
             if not isinstance(document, dict):
                 continue
-            if report_at is None or lines[-1][0] >= report_at:
+            # A report without the admitted count and budget (a reconciled publication)
+            # is not a full report; the next run's is.
+            if (type(document.get("admitted_unique")) is int and type(document.get("limit")) is int
+                    and (report_at is None or lines[-1][0] >= report_at)):
                 report, report_at = document, lines[-1][0]
             # Each run scans one page of the audited candidates (the page moves on), so the
             # backlog is the most admissible fresh units any run saw in the last half hour:
@@ -539,11 +550,21 @@ def cohort(unit, timer):
         if status.get("LoadState") != "loaded":
             raise ValueError("cohort controller not loaded")
         running = status.get("SubState") in ("start", "running")
-        return {"result": "running" if running else "ok" if status.get("Result") == "success" else "failed",
-                "timer_active": timer_state.get("ActiveState") == "active",
-                "last_completed_at": max(completed, default=None),
-                "last_failure_at": max(failures, default=0),
-                "report": report, "report_at": report_at}
+        # Distinct finished runs, oldest first: the failures since the last success are the streak.
+        finished = sorted(outcomes.values())
+        streak = []
+        for at, failed in reversed(finished):
+            if not failed:
+                break
+            streak.append(at)
+        record = {"result": "running" if running else "ok" if status.get("Result") == "success" else "failed",
+                  "timer_active": timer_state.get("ActiveState") == "active",
+                  "last_completed_at": max((at for at, failed in finished if not failed), default=None),
+                  "last_failure_at": max((at for at, failed in finished if failed), default=0),
+                  "failure_streak": len(streak), "failing_since": min(streak, default=None),
+                  "report": report, "report_at": report_at}
+        validate_cohort(record, int(time.time()))
+        return record
     except Exception:
         return {"error": "cohort_unavailable"}
 

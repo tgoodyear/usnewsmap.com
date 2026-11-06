@@ -252,26 +252,32 @@ controller (`usnm-qwen-cohort-auto.service`, every minute), which admits audited
 units that already exist, so a new workunit is the wrong signal for
 `usnm_qwen_no_work`. With `--cohort-unit usnm-qwen-cohort-auto.service`, the
 server source also reads that unit's journal and `systemctl show`, read-only,
-and reports `cohort`: the last run's result, whether its timer is active, the
-last completed run, the last failure, and the last run's report (status,
-admitted count and budget, fresh pairs, unsent replicas in the current window,
-in-flight native GPU tasks per host and the per-host buffer limit). Each run
-scans one page of the audited candidates, so the backlog,
-`admissible_backlog`, is the most fresh pairs, less those passed over as out of
-cohort, that any run reported in the last 30 minutes. A run that found the step
-lock busy reports nothing and exits 75. Reading the cohort can't fail the server
-source: an error is `{"error": "cohort_unavailable"}`.
+and reports `cohort`:
+
+- whether a run is in progress, and whether the timer is active;
+- the last successful run, the last failed run, and the failed runs since the
+  last success (`failure_streak`, from systemd's outcome for each finished run);
+- the last full report: status, admitted count and budget, fresh pairs, unsent
+  replicas in the current window, in-flight native GPU tasks per host and the
+  per-host buffer limit. A report without the admitted count and budget (a
+  reconciled publication) is skipped, and so is a run that found the step lock
+  busy, which exits 75 and reports nothing;
+- `admissible_backlog`: each run scans one page of the audited candidates, so
+  this is the most fresh pairs, less those passed over as out of cohort, that
+  any run reported in the last 30 minutes.
+
+The collector validates the record it builds. Reading the cohort can't fail the
+server source: an error or a record that doesn't validate is
+`{"error": "cohort_unavailable"}`.
 
 With `"qwen_admission": true` in the evaluator's config, `usnm_qwen_no_work`
 comes from that record instead of from workunit creation, with the run's status
 or the failure as `reason`:
 
-- **firing at once:** the timer is not active (`cohort_timer_inactive`), no run
-  completed for 15 minutes (`cohort_stalled`), or runs complete but none reported
-  for 30 minutes, for instance because the step lock stays busy
-  (`cohort_no_report`);
-- **firing after three minutes:** the last run failed, three runs in a row
-  (`cohort_run_failed`);
+- **firing at once:** the timer is not active (`cohort_timer_inactive`); three
+  runs in a row failed (`cohort_run_failed`); no run succeeded for 15 minutes,
+  including while a run hangs (`cohort_stalled`); or no run reported for 30
+  minutes, for instance because the step lock stays busy (`cohort_no_report`);
 - **firing after an hour without another admission:** the window is open
   (`ENABLED_UNTIL` ahead, budget left, not closed) with admissible backlog, a host
   is below its in-flight buffer, and nothing is left unsent in the current

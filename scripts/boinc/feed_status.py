@@ -20,7 +20,7 @@ FEEDER_DRIFT_HOLD_S = 10 * 60
 # The native Qwen cohort controller (#1441): its timer runs every minute.
 COHORT_STALL_S = 15 * 60          # no completed run at all
 COHORT_REPORT_MAX_AGE_S = 30 * 60  # runs complete but none reports (the step lock stays busy)
-COHORT_FAILURE_HOLD_S = 3 * 60    # three failed runs in a row, not one
+COHORT_FAILURE_RUNS = 3           # failed runs in a row since the last success, not one
 NO_WORK_HOLD_S = 3600
 MAX_AGE = 180
 MAX_GAP = 180
@@ -57,7 +57,7 @@ def qwen_admission(record, facts, now):
 
     Qwen work comes from the cohort controller admitting audited units that already exist,
     not from new workunits. Firing: its timer is off, three runs in a row failed, no run
-    completed for 15 minutes, no run reported for 30, or, for an hour without one more
+    succeeded for 15 minutes (even while one hangs), no run reported for 30, or, for an hour without one more
     admission, the window was open (time and budget left) with admissible backlog, a host
     below its in-flight buffer and nothing left unsent in the current window. The hour
     restarts with every admission (the generation is the admitted count)."""
@@ -65,10 +65,11 @@ def qwen_admission(record, facts, now):
         return None, NO_WORK_HOLD_S, None, None, "cohort_unavailable"
     if not record["timer_active"]:
         return True, 0, "timer", None, "cohort_timer_inactive"
-    if record["result"] == "failed":
-        return True, COHORT_FAILURE_HOLD_S, "failed", None, "cohort_run_failed"
+    if record["failure_streak"] >= COHORT_FAILURE_RUNS:
+        return True, 0, "failed:%d" % record["failing_since"], None, "cohort_run_failed"
     last = record["last_completed_at"]
-    if record["result"] != "running" and (last is None or now - last > COHORT_STALL_S):
+    # Whether or not a run is in progress: a run that hangs must not hide a stall.
+    if last is None or now - last > COHORT_STALL_S:
         return True, 0, "stalled", None, "cohort_stalled"
     report = record["report"]
     if report is None or now - record["report_at"] > COHORT_REPORT_MAX_AGE_S:

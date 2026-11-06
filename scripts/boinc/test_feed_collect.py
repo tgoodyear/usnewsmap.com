@@ -1562,6 +1562,7 @@ class CohortTests(unittest.TestCase):
     UNIT = "usnm-qwen-cohort-auto.service"
 
     def journal(self, runs, finished=(), failed=()):
+        """finished and failed: (invocation, time) pairs, or times (one invocation each)."""
         entries = []
         for invocation, at, report in runs:
             entries.append({"__REALTIME_TIMESTAMP": str(at * 1000000), "_SYSTEMD_INVOCATION_ID": invocation,
@@ -1569,10 +1570,18 @@ class CohortTests(unittest.TestCase):
             for line in json.dumps(report, indent=2).splitlines():
                 entries.append({"__REALTIME_TIMESTAMP": str(at * 1000000), "_SYSTEMD_INVOCATION_ID": invocation,
                                 "_TRANSPORT": "stdout", "SYSLOG_IDENTIFIER": "flock", "MESSAGE": line})
-        entries += [{"__REALTIME_TIMESTAMP": str(at * 1000000), "MESSAGE_ID": "39f53479d3a045ac8e11786248231fbf",
-                     "UNIT": self.UNIT} for at in finished]
-        entries += [{"__REALTIME_TIMESTAMP": str(at * 1000000), "MESSAGE_ID": "d9b373ed55a64feb8242e02dbe79a49c",
-                     "UNIT": self.UNIT, "UNIT_RESULT": "exit-code"} for at in failed]
+        def pair(item):
+            return item if isinstance(item, tuple) else ("run-%d" % item, item)
+        for invocation, at in map(pair, finished):
+            for message_id in ("7ad2d189f7e94e70a38c781354912448", "39f53479d3a045ac8e11786248231fbf"):
+                entries.append({"__REALTIME_TIMESTAMP": str(at * 1000000), "MESSAGE_ID": message_id,
+                                "UNIT": self.UNIT, "INVOCATION_ID": invocation})
+        for invocation, at in map(pair, failed):
+            entries.append({"__REALTIME_TIMESTAMP": str(at * 1000000), "MESSAGE_ID": "d9b373ed55a64feb8242e02dbe79a49c",
+                            "UNIT": self.UNIT, "UNIT_RESULT": "exit-code", "INVOCATION_ID": invocation})
+            entries.append({"__REALTIME_TIMESTAMP": str(at * 1000000), "MESSAGE_ID": "be02cf6855d2428ba40df7e9d022f03d",
+                            "UNIT": self.UNIT, "JOB_RESULT": "failed", "INVOCATION_ID": invocation})
+        entries.sort(key=lambda entry: int(entry["__REALTIME_TIMESTAMP"]))
         return "\n".join(json.dumps(entry) for entry in entries).encode()
 
     def observe(self, journal, unit="SubState=dead\nResult=success\nLoadState=loaded", timer="ActiveState=active"):
@@ -1601,12 +1610,31 @@ class CohortTests(unittest.TestCase):
     def test_failures_running_runs_and_no_report(self):
         record = self.observe(self.journal([], failed=[NOW - 30]), unit="SubState=dead\nResult=exit-code\nLoadState=loaded",
                               timer="ActiveState=inactive")
-        self.assertEqual((record["result"], record["timer_active"], record["last_failure_at"], record["report"]),
-                         ("failed", False, NOW - 30, None))
-        C.validate_cohort(record, NOW)
+        self.assertEqual((record["result"], record["timer_active"], record["last_failure_at"], record["report"],
+                          record["failure_streak"], record["failing_since"]),
+                         ("failed", False, NOW - 30, None, 1, NOW - 30))
+        # Each finished run counts once (systemd logs two messages per outcome); the streak is the
+        # failures since the last success, and survives a run in progress.
+        record = self.observe(self.journal([], finished=[NOW - 300], failed=[NOW - 180, NOW - 120, NOW - 60]),
+                              unit="SubState=start\nResult=success\nLoadState=loaded")
+        self.assertEqual((record["result"], record["failure_streak"], record["failing_since"],
+                          record["last_completed_at"]), ("running", 3, NOW - 180, NOW - 300))
+        record = self.observe(self.journal([], finished=[NOW - 30], failed=[NOW - 180, NOW - 120]))
+        self.assertEqual((record["failure_streak"], record["failing_since"]), (0, None))
         self.assertEqual(self.observe(b"", unit="SubState=start\nResult=success\nLoadState=loaded")["result"], "running")
         self.assertEqual(self.observe(b"", unit="LoadState=not-found"), {"error": "cohort_unavailable"})
         self.assertEqual(self.observe(b"not json"), {"error": "cohort_unavailable"})
+
+    def test_a_reconciled_report_is_skipped_and_a_bad_record_never_costs_the_server_source(self):
+        reconciled = {"status": "reconciled-exact-published-intent", "window": [1, 2], "admitted_unique": 600,
+                      "apply": True}
+        record = self.observe(self.journal([("a", NOW - 120, self.report(2)), ("b", NOW - 60, reconciled)],
+                                           finished=[NOW - 59]))
+        self.assertEqual((record["report"]["status"], record["report_at"]), ("no-fresh-verified-pairs", NOW - 120))
+        docs = CollectionTests.documents(CollectionTests())
+        docs["/server"]["cohort"] = dict(record, result="sideways")
+        C.fresh(docs["/server"], NOW, "server")
+        self.assertEqual(docs["/server"]["cohort"], {"error": "cohort_unavailable"})
 
     def test_validation_rejects_malformed_records(self):
         good = self.observe(self.journal([("a", NOW - 60, self.report(1))], finished=[NOW - 59]))
@@ -1614,7 +1642,8 @@ class CohortTests(unittest.TestCase):
                        {"report": dict(good["report"], status="bad status!")},
                        {"report": dict(good["report"], admitted_unique=-1)},
                        {"report": dict(good["report"], native_gpu_inflight=[1])},
-                       {"report": dict(good["report"], surprise=1)}):
+                       {"report": dict(good["report"], surprise=1)},
+                       {"failure_streak": 2}, {"failing_since": NOW - 5}):
             with self.subTest(change=change), self.assertRaises(ValueError):
                 C.validate_cohort(dict(good, **change), NOW)
         with self.assertRaises(ValueError):
