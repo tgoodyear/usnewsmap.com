@@ -269,6 +269,25 @@ def read_ocr_docs(state):
         return {line.strip() for line in f if line.strip()}
 
 
+def still_there(scan_server, rows):
+    """doc_ids of `rows` (index lines) whose scans are still on the scan server. The index is
+    fetch history: a claim on a scan whose sidecar is gone would keep the quality follower from
+    looking it up while OCR waits on a fresh fetch of it (whose manifest claims it then). One
+    the scan server can't check is claimed, and if it doesn't answer, so is the rest: a claim
+    errs on the side of keeping a scan."""
+    out = []
+    for i, row in enumerate(rows):
+        try:
+            if available(scan_server, row):
+                out.append(row["doc_id"])
+        except urllib.error.HTTPError:
+            out.append(row["doc_id"])
+        except (urllib.error.URLError, OSError) as e:
+            log("claim check got no answer; the rest claimed unchecked", doc_id=row["doc_id"], error=str(e)[:200])
+            return out + [r["doc_id"] for r in rows[i:]]
+    return out
+
+
 def record_ocr_docs(state, docs, have):
     """Adds to ocr-docs.txt the ones of `docs` not in `have` (read_ocr_docs's set, updated in
     place). Returns how many."""
@@ -334,11 +353,14 @@ def cmd_build(a):
     outstanding = list(pending(queued, outcomes, reasons))
     # A queued page whose scan the fetcher already wrote (the quality pass's, say) gets no
     # manifest row, but it's OCR's all the same: the quality feeder must not evict it.
-    claimed = [q["doc_id"] for q in outstanding if (q["batch"], q["doc_id"]) in index]
+    claimed = [index[(q["batch"], q["doc_id"])] for q in outstanding if (q["batch"], q["doc_id"]) in index]
     have = read_ocr_docs(a.state)
     if not a.what_if:
         with claims_lock(getattr(a, "claims_lock", None)):
-            n = record_ocr_docs(a.state, claimed, have)
+            # A new claim needs its scan there now (checked under the lock, which the follower
+            # evicts under); one already made stands.
+            fresh = still_there(a.scan_server, [r for r in claimed if r["doc_id"] not in have])
+            n = record_ocr_docs(a.state, fresh, have)
             write_ocr_active(a.state, {q["doc_id"] for q in outstanding} & have)
         if n:
             log("queued pages already on the scan server claimed for OCR", pages=n)

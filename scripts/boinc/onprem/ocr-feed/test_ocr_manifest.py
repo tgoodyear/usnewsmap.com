@@ -84,6 +84,7 @@ class OcrClaimTest(unittest.TestCase):
 
             index = {("b", d): {"doc_id": d, "batch": "b"} for d in (on, ended)}
             with mock.patch.object(m, "staged_pairs", return_value=index), \
+                    mock.patch.object(m, "available", return_value=True), \
                     mock.patch.object(m, "Lake"), \
                     mock.patch.object(m, "cached_rows", side_effect=cached), \
                     contextlib.redirect_stdout(io.StringIO()) as out:
@@ -94,6 +95,37 @@ class OcrClaimTest(unittest.TestCase):
             self.assertIn("still being fetched", out.getvalue())
             # Claims see what was queued, and what OCR finished, since the manifest went out.
             self.assertEqual(refreshed, [("queued", True), ("outcomes", True)] * 2)
+
+    def test_a_new_claim_needs_its_scan_on_the_server_and_one_already_made_stands(self):
+        old, on, gone, later = (f"sn1_1900-01-01_ed-1_seq-{n}" for n in (1, 2, 3, 4))
+        for name, check, want in (
+                ("answered", lambda server, row: row["doc_id"] == on, [old, on]),
+                # No answer for on: it and the rest are claimed unchecked.
+                ("no answer", mock.Mock(side_effect=m.urllib.error.URLError("timed out")), [old, on, gone, later])):
+            with self.subTest(name), tempfile.TemporaryDirectory() as d:
+                Path(d, "last.json").write_text(json.dumps({
+                    "name": "queue-ocr-x", "at": dt.datetime.now(UTC).isoformat(), "pairs": [["b", "x"]]}))
+                Path(d, "ocr-docs.txt").write_text(f"{old}\n")
+                a = types.SimpleNamespace(state=d, reasons="user", scan_server="http://s", curated_url="http://c",
+                                          days=14, max_pages=10, curated_copy=d, what_if=False)
+                docs = (old, on, gone) if name == "answered" else (old, on, gone, later)
+                checked = []
+
+                def available(server, row):
+                    checked.append(row["doc_id"])
+                    return check(server, row)
+
+                with mock.patch.object(m, "staged_pairs",
+                                       return_value={("b", x): {"doc_id": x, "batch": "b"} for x in docs}), \
+                        mock.patch.object(m, "available", side_effect=available), \
+                        mock.patch.object(m, "Lake"), \
+                        mock.patch.object(m, "cached_rows", side_effect=lambda lake, state, kind, *x:
+                                          [q(x, "user", 1) for x in docs] if kind == "queued" else []), \
+                        contextlib.redirect_stdout(io.StringIO()):
+                    m.cmd_build(a)
+                self.assertEqual(Path(d, "ocr-docs.txt").read_text().split(), want)
+                self.assertEqual(Path(d, "ocr-active.txt").read_text().split(), sorted(want))
+                self.assertEqual(checked, [on, gone] if name == "answered" else [on])
 
     def test_a_new_manifest_s_pages_are_active_claims_at_once(self):
         doc = "sn1_1900-01-01_ed-1_seq-4"
@@ -133,6 +165,7 @@ class OcrClaimTest(unittest.TestCase):
             lock.parent.mkdir()
             with open(lock, "a") as held, \
                     mock.patch.object(m, "staged_pairs", return_value={("b", on): {"doc_id": on, "batch": "b"}}), \
+                    mock.patch.object(m, "available", return_value=True), \
                     mock.patch.object(m, "Lake"), \
                     mock.patch.object(m, "cached_rows", side_effect=lambda lake, state, kind, *x:
                                       [q(on, "user", 1)] if kind == "queued" else []), \

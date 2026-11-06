@@ -1221,12 +1221,14 @@ class FollowTest(unittest.TestCase):
                     "--outbox", str(root / "outbox"), "--state", str(root / "state"), "--staged-dsn", "test",
                     "--quality-docs", str(root / "quality-docs.txt"), "--keep-bytes", "60", "--once"]
             with mock.patch.object(feed, "staged_from_db", return_value=set()), \
-                    mock.patch.object(feed, "index_rows", return_value={}), \
+                    mock.patch.object(feed, "index_rows", return_value={}) as index, \
                     mock.patch.object(feed.urllib.request, "urlopen", fake), \
                     contextlib.redirect_stdout(io.StringIO()):
-                # k1's lookup gets no answer: old's q1 isn't DELETEd this round, nor written off.
+                # k1's lookup gets no answer: old's q1 isn't DELETEd this round, nor written off,
+                # and the round's feeding (the index first) waits for the next.
                 feed.main(argv)
                 self.assertEqual(calls, [("GET", "buffer/b/k1.jp2.json")])
+                index.assert_not_called()
                 self.assertEqual(feed.read_lines(root / "state/old/deleted.txt"), set())
                 self.assertEqual(set(feed.read_kept(str(root / "state/kept.tsv"))), {"k1"})
                 down[0] = False
@@ -1234,6 +1236,7 @@ class FollowTest(unittest.TestCase):
                 feed.main(argv)
                 self.assertEqual(calls, [("GET", "buffer/b/k1.jp2.json"), ("DELETE", "buffer/b/q1.jp2")])
                 self.assertEqual(feed.read_lines(root / "state/old/deleted.txt"), {"q1"})
+                index.assert_called_once()
 
     @unittest.skipUnless(importlib.util.find_spec("pyarrow"), "PyArrow required for the follower")
     def test_a_new_campaign_cleans_up_after_the_last_and_looks_after_the_kept_list_from_the_start(self):

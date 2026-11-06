@@ -1085,6 +1085,13 @@ def cmd_follow(a):
                                        retired_path=retired_path, outage=outage)
         if gone:
             log("buffer scans deleted after shipping", pages=gone)
+        if outage.get("down"):
+            # Its index alone can take minutes to time out: the round's feeding waits too.
+            log("the scan server isn't answering; feeding waits for the next round", campaign=a.campaign)
+            if a.once:
+                return
+            wait_for_room(camp_dir, a.max_pending, a.every_secs, busy=False)
+            continue
         quarantined = scan_quarantine.quarantined(state) if getattr(a, "quarantine_decode", False) else []
         truncated = scan_quarantine.source_truncated_summary(quarantined)
         if truncated["pages"] and truncated != reported:
