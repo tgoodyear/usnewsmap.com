@@ -511,8 +511,8 @@ var spareEnvOn = spareEnvironment && (!dataEveryNetwork || searcherApp)
   ? bool(int('USNM_SPARE_ENVIRONMENT needs USNM_DATA_ALL_NETWORKS and USNM_SEARCHER_APP=false'))
   : spareEnvironment
 // Without the VNet, the one environment is the spare's (#308).
-var vnetOn = !caeVnet && (!dataEveryNetwork || !empty(archiveAccountId))
-  ? bool(int('USNM_CAE_VNET=false needs USNM_DATA_ALL_NETWORKS and no USNM_ARCHIVE_ACCOUNT'))
+var vnetOn = !caeVnet && (!dataEveryNetwork || !empty(archiveAccountId) || (ingestJobs && useAcr && ingestScratchGiB > 0) || (searchClusterOn && searchLocalMode == 'nfs'))
+  ? bool(int('USNM_CAE_VNET=false needs USNM_DATA_ALL_NETWORKS, and no USNM_ARCHIVE_ACCOUNT or NFS scratch, which need the VNet'))
   : caeVnet
 
 module network 'modules/network.bicep' = if (vnetOn) {

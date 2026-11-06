@@ -301,7 +301,7 @@ Then confirm that `ContainerAppConsoleLogs` shows no storage or Cosmos 403 from 
 - Azure removes the `ME_` group with its load balancer and IP when the environment goes.
 - No storage account, Cosmos account, registry, workspace or Key Vault may be on the list. Then provision with the same flags, without `--what-if`.
 
-**After stage 2:** run the cold check above again. Confirm `az network lb list` and `az network public-ip list` show nothing for `rg-usnm-prod` and its `ME_` group. The origin certificate's weekly renewal (`origin-tls`) uploads to `usnm-core-spare-cae-prod` from then on.
+**After stage 2:** run the cold check above again. Confirm `az network lb list` and `az network public-ip list` show nothing for `rg-usnm-prod` and its `ME_` group. The origin certificate's weekly renewal (`origin-tls`) keeps it current in Key Vault and no longer uploads it to Azure, because no Azure app carries the custom domains (`AZURE_UPLOAD` in `scripts/azure/origin_tls.py`). To bind the domains to Azure again, set it, rerun `scripts/azure/origin_tls_bootstrap.py` so the renewal identity's certificate role covers `usnm-core-spare-cae-prod`, and run `origin-tls` once before relying on it.
 
 **Rollback after stage 2:** set `USNM_CAE_VNET` back to `true` and provision. That recreates the VNet and a VNet-integrated environment, with new apps under the old names. Then point the Worker back. It is a rebuild, so prefer fixing forward.
 

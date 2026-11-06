@@ -42,6 +42,11 @@ APP = (
     "/providers/Microsoft.App/containerApps/usnm-api-spare-ca-prod"
 )
 API_VERSION = "2025-01-01"
+# Since #308 no Azure app carries the custom domains: the spare is reached by its default
+# hostname, so the renewed origin certificate stays in Key Vault (its ACME state) and is not
+# uploaded or bound. Set this, and grant the renewal identity the certificate role on
+# ENVIRONMENT (origin_tls_bootstrap.py), only to bind the domains to Azure again.
+AZURE_UPLOAD = False
 
 
 def command(*args, **kwargs):
@@ -280,6 +285,9 @@ def renew(email, no_bind=False, staging=False, target="origin"):
         if "deploy" in spec:
             changed = deploy_pem(pem, spec["deploy"])
             print(f"{target} certificate " + ("published." if changed else "unchanged."))
+            return
+        if not AZURE_UPLOAD:
+            print("Production origin certificate current in Key Vault; no Azure upload (#308).")
             return
         upload(pem)
         if not no_bind:
