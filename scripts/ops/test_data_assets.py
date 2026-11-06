@@ -115,6 +115,14 @@ class DataAssets(unittest.TestCase):
             subprocess.run(["tar", "-C", out, "-xzf", f"{out}/{name}.tar.gz", replaced], check=True)
             self.assertEqual(Path(out, replaced).read_bytes(), (root / replaced).read_bytes())
 
+    def test_pack_rejects_an_empty_benchmark_set(self):
+        with tempfile.TemporaryDirectory() as repo, tempfile.TemporaryDirectory() as out:
+            root = fixture(repo)
+            subprocess.run(["git", "-C", str(root), "update-index", "--force-remove", "ocr/bench/fixture.png"], check=True)
+            done = run("--pack", "--set", "bench-assets", "--out", out, "--previous", "none", root=root)
+            self.assertNotEqual(done.returncode, 0)
+            self.assertIn("is empty", done.stderr)
+
     def test_report_pack_rejects_unapproved_or_changed_files(self):
         extra = "docs/reports/2000-01-old/data/unapproved.csv"
         with tempfile.TemporaryDirectory() as repo, tempfile.TemporaryDirectory() as prev, tempfile.TemporaryDirectory() as out:
