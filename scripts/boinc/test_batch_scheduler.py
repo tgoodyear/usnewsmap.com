@@ -144,6 +144,17 @@ class LocalHandoffTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "forbidden"):
                 self.transport.az("list")
 
+    def test_deadline_retry_reads_the_local_store_and_rest_reads_are_refused(self):
+        job_id, message = "1" * 64, "e" * 64
+        with patch.object(self.transport, "run", side_effect=AssertionError("network call")):
+            self.assertIsNone(self.transport.deadline_retry(job_id, message))
+            retry = self.store / "dispatch/jobs" / job_id / "deadline-retry"
+            retry.mkdir(parents=True)
+            (retry / f"{message}.json").write_text(json.dumps({"timeout_secs": 3600}))
+            self.assertEqual(self.transport.deadline_retry(job_id, message), {"timeout_secs": 3600})
+            with self.assertRaisesRegex(ValueError, "forbidden"):
+                self.transport.storage_get("?restype=container")
+
     def test_second_controller_is_rejected_and_exception_releases_lock(self):
         peer = self.make_transport()
         with self.assertRaisesRegex(RuntimeError, "synthetic failure"):
