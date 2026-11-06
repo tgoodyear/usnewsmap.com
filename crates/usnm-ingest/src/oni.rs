@@ -440,7 +440,7 @@ pub async fn fetch_batch(
             .context("the bag's manifest doesn't list data/BATCH.xml")?;
         let xml = utf8(run.read("data/BATCH.xml", Some(batch_md5)).await?)?;
         let issues = batch_issues(&xml)?;
-        let lccns = issues
+        let lccns: BTreeSet<String> = issues
             .iter()
             .filter(|i| i.date < opts.issued_before)
             .map(|i| i.lccn.clone())
