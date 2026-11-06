@@ -31,9 +31,12 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    # The same group as CI's publish, so a roll never overlaps one.
+    # Its own group: sharing CI's deploy-prod would let a dispatch replace a
+    # pending publish, leaving main's image unpublished and unattested. A push
+    # no longer rolls the API, so only a dispatched CI run with roll_api can
+    # overlap this, and roll-api.sh waits for the newest revision either way.
     concurrency:
-      group: deploy-prod
+      group: spare-roll-prod
       cancel-in-progress: false
     env:
       ACR: ${{ vars.USNM_ACR_LOGIN_SERVER }}
@@ -42,6 +45,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
       - uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
         with:
@@ -67,7 +71,17 @@ jobs:
           az acr repository show --name "$registry" --image "usnewsmap-api:$TAG" -o none ||
             { echo "::error::usnewsmap-api:$TAG is not in the registry"; exit 1; }
           echo "image=$ACR/usnewsmap-api:$TAG" >> "$GITHUB_OUTPUT"
+          echo "commit=$TAG" >> "$GITHUB_OUTPUT"
           echo "Rolling the spare onto usnewsmap-api:$TAG" >> "$GITHUB_STEP_SUMMARY"
+      # The rollout script and the searcher.yaml it applies come from the
+      # image's own commit, which must be on main.
+      - name: Check out the image's commit
+        env:
+          COMMIT: ${{ steps.image.outputs.commit }}
+        run: |
+          git merge-base --is-ancestor "$COMMIT" origin/main ||
+            { echo "::error::$COMMIT is not on main"; exit 1; }
+          git checkout --quiet --detach "$COMMIT"
       - name: Roll the spare
         env:
           IMAGE: ${{ steps.image.outputs.image }}

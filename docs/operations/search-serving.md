@@ -250,7 +250,7 @@ gh workflow run spare-roll --ref main                  # the commit usnewsmap-ap
 gh workflow run spare-roll --ref main -f tag=<commit>  # any published commit's image
 ```
 
-It runs `scripts/ci/roll-api.sh`, as CI's publish did, in the same `deploy-prod` concurrency group. `gh workflow run ci --ref main -f roll_api=true` also rolls, after a full CI run; `scripts/azure/bootstrap.sh` uses that. A provision keeps the running tag with `--api-tag live`, as before.
+It runs `scripts/ci/roll-api.sh` from the image's own commit, as CI's publish did, in its own concurrency group, so it never replaces a pending publish. `gh workflow run ci --ref main -f roll_api=true` also rolls, after a full CI run; `scripts/azure/bootstrap.sh` uses that. A provision keeps the running tag with `--api-tag live`, as before.
 
 `/readyz` isn't recorded in Application Insights, and a request abandoned before a replica is up isn't either, so a wake can show no request. `ContainerAppSystemLogs` shows wakes as `KEDAScaleTargetActivated`, `triggered by s0-upstream_rq_total`.
 
