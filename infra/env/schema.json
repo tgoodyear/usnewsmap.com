@@ -407,6 +407,10 @@
       "x-usnm-visibility": "public",
       "type": "string"
     },
+    "USNM_OCR_SEED_SUPERSESSION": {
+      "x-usnm-visibility": "public",
+      "type": "string"
+    },
     "USNM_OCR_SEED_YEARS": {
       "x-usnm-visibility": "public",
       "type": "string"

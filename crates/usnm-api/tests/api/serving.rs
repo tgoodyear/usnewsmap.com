@@ -1065,6 +1065,7 @@ async fn get_host(state: &Arc<AppState>, host: &str, uri: &str) -> axum::respons
 async fn www_redirects_to_the_apex() {
     let mut cfg = config();
     cfg.site_dir = Some(site_dir("www"));
+    cfg.allowed_origins = vec!["https://usnewsmap.com".to_owned()];
     let s = Arc::new(AppState::new(
         cfg,
         Arc::new(fixture_backend()),
@@ -1108,6 +1109,23 @@ async fn www_redirects_to_the_apex() {
     assert_eq!(
         header_str(&resp.1, header::LOCATION),
         "https://usnewsmap.com/status?x=1"
+    );
+    // An allowed cross-origin API request keeps its CORS grant through the redirect.
+    let resp = app(s.clone())
+        .oneshot(
+            Request::builder()
+                .uri("/v1/meta")
+                .header(header::HOST, "www.usnewsmap.com")
+                .header(header::ORIGIN, "https://usnewsmap.com")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::MOVED_PERMANENTLY);
+    assert_eq!(
+        header_str(resp.headers(), header::ACCESS_CONTROL_ALLOW_ORIGIN),
+        "https://usnewsmap.com"
     );
     // Other hosts are served as they are.
     for host in [

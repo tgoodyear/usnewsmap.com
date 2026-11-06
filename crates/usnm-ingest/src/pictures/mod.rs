@@ -18,9 +18,11 @@
 //!
 //! A row is keyed by the scan it was detected on, not by `page_key`: the
 //! dataset's `page_seq_num` is the JP2's frame number on its reel, not the
-//! page's place in its issue ([`url`]). The frame-to-`seq` join needs LoC's
-//! file list for each issue and is a later step.
+//! page's place in its issue ([`url`]). [`join`] puts a row on a page only
+//! through a scan whose page is known, and classes the others by the curated
+//! batches' title-days.
 
+pub mod join;
 pub mod read;
 pub mod source;
 pub mod url;
@@ -39,7 +41,7 @@ use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use bytes::Bytes;
 use chrono::{DateTime, NaiveDate, Utc};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-use parquet::arrow::ArrowWriter;
+use parquet::arrow::{ArrowWriter, ProjectionMask};
 use parquet::basic::{Compression, ZstdLevel};
 use parquet::file::properties::WriterProperties;
 use serde::{Deserialize, Serialize};
@@ -262,6 +264,71 @@ pub fn read_part(bytes: Bytes) -> anyhow::Result<Vec<Picture>> {
         }
     }
     Ok(out)
+}
+
+/// The fields of a row that name its scan, as [`read_scans`] reads them.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ScanFields<'a> {
+    pub kind: &'a str,
+    pub lccn: Option<&'a str>,
+    pub date: Option<NaiveDate>,
+    pub edition: Option<u32>,
+    pub batch: Option<&'a str>,
+    pub reel: Option<&'a str>,
+    pub frame: Option<&'a str>,
+}
+
+/// The columns [`read_scans`] reads.
+const SCAN_COLUMNS: [&str; 7] = ["kind", "lccn", "date", "edition", "batch", "reel", "frame"];
+
+/// Give `on_row` each row's [`ScanFields`], in order, reading only those
+/// columns of the part (not its boxes, captions or URLs). Returns the number
+/// of rows.
+pub fn read_scans(
+    bytes: Bytes,
+    mut on_row: impl FnMut(ScanFields<'_>) -> anyhow::Result<()>,
+) -> anyhow::Result<u64> {
+    let builder = ParquetRecordBatchReaderBuilder::try_new(bytes)?;
+    let wanted = SCAN_COLUMNS
+        .iter()
+        .map(|name| {
+            builder
+                .schema()
+                .index_of(name)
+                .with_context(|| format!("a pictures part has no `{name}` column"))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let mask = ProjectionMask::roots(builder.parquet_schema(), wanted);
+    let mut rows = 0;
+    for batch in builder.with_projection(mask).build()? {
+        let batch = batch?;
+        let (kind, lccn, batch_name, reel, frame) = (
+            text(&batch, "kind")?,
+            text(&batch, "lccn")?,
+            text(&batch, "batch")?,
+            text(&batch, "reel")?,
+            text(&batch, "frame")?,
+        );
+        let date = column(&batch, "date")?.as_primitive::<Date32Type>();
+        let edition = column(&batch, "edition")?.as_primitive::<UInt32Type>();
+        for i in 0..batch.num_rows() {
+            on_row(ScanFields {
+                kind: kind.value(i),
+                lccn: opt_str(lccn, i),
+                date: (!date.is_null(i)).then(|| from_unix_days(date.value(i))),
+                edition: (!edition.is_null(i)).then(|| edition.value(i)),
+                batch: opt_str(batch_name, i),
+                reel: opt_str(reel, i),
+                frame: opt_str(frame, i),
+            })?;
+        }
+        rows += batch.num_rows() as u64;
+    }
+    Ok(rows)
+}
+
+fn opt_str(a: &StringArray, i: usize) -> Option<&str> {
+    (!a.is_null(i)).then(|| a.value(i))
 }
 
 fn column<'a>(batch: &'a RecordBatch, name: &str) -> anyhow::Result<&'a ArrayRef> {

@@ -63,13 +63,16 @@ resource blobService 'Microsoft.Storage/storageAccounts/blobServices@2023-05-01'
   name: 'default'
   properties: {
     isVersioningEnabled: true
-    // Three days of blob soft delete (maintainer, 12 October 2026, #245), down
-    // from 14. It's the only recovery window for an old blob once deleted: the
-    // version rules count from a version's creation, so a deleted curated/
-    // blob older than 30 days loses its version at the next lifecycle pass.
-    // But it's account-wide, so it also keeps every index split Quickwit
+    // Three days of blob soft delete by default (maintainer, 12 October 2026,
+    // #245), down from 14. It's the only recovery window for an old blob once
+    // deleted: the version rules count from a version's creation, so a deleted
+    // curated/ blob older than 30 days loses its version at the next lifecycle
+    // pass. But it's account-wide, so it also keeps every index split Quickwit
     // deletes after a merge or prune, at Hot prices (2 TB after the first
-    // prune). Moving the index to its own account (#283) lets this go back up.
+    // prune). Prod is back at 14 since 5 November 2026 (#308): its index moved
+    // to its own account (#283) and the old one was retired (#245). The lake
+    // then deleted about 0.45 GB a day, mostly curated/ocr-local/ versions, so
+    // 14 days holds about 6 GB, about $0.10 a month more than 3.
     deleteRetentionPolicy: { enabled: true, days: blobSoftDeleteDays }
     containerDeleteRetentionPolicy: { enabled: true, days: 14 }
     // Lets the tiering rules below go by last read, not creation (#245).
@@ -118,7 +121,7 @@ resource lifecycle 'Microsoft.Storage/storageAccounts/managementPolicies@2023-05
         {
           // The Quickwit metastore rewrites small JSON files often, and every
           // merge deletes splits, which versioning would otherwise keep (#245).
-          // Deleted versions stay in the 3-day soft delete above, so the
+          // Deleted versions stay in the soft delete above, so the
           // metastore is still recoverable.
           name: 'prune-index-versions'
           enabled: true
@@ -178,7 +181,8 @@ resource lifecycle 'Microsoft.Storage/storageAccounts/managementPolicies@2023-05
           // are timed by their creation. The API copies each day, shuffled,
           // to searches/days/ an hour after it ends; these go a week after
           // they're written (STAGING_DAYS in crates/usnm-api/src/searchlog.rs),
-          // then stay in soft delete for 3 days (ADR-0012 counts that).
+          // then stay in soft delete for blobSoftDeleteDays (14 in prod;
+          // ADR-0012 counts that).
           name: 'expire-search-staging'
           enabled: true
           type: 'Lifecycle'

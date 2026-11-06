@@ -734,10 +734,14 @@ async fn app_route(req: Request, index: PathBuf, state: Arc<AppState>) -> Respon
         StatusCode::NOT_FOUND
     };
     let mut body = match tokio::fs::read(&index).await {
-        Ok(body) => social::shell(
-            req.uri(),
-            shell_for(path, req.uri().query().unwrap_or_default(), body),
-        ),
+        Ok(body) => {
+            social::shell(
+                req.uri(),
+                shell_for(path, req.uri().query().unwrap_or_default(), body),
+                &state,
+            )
+            .await
+        }
         Err(e) => {
             tracing::error!(error = %e, path = %index.display(), "site index missing");
             return (StatusCode::NOT_FOUND, "not found").into_response();

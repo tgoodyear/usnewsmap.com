@@ -103,6 +103,15 @@ The observer checks `VERSION()` is 8.4 and `@@require_secure_transport` is 1 bef
 each application phase. The normal `caching_sha2_password` runtime account also
 checks connector compatibility with MySQL's default authentication plugin.
 
+The matrix phase then loads BOINC's `schema.sql` and `constraints.sql` and runs
+`qwen-tiebreak-policy.py settle --apply` (#1477) on three synthetic disputed
+`usnm_qwen` units. One unit's workunit row is locked by another session. Another
+unit's unsent tie-breaker has been through the scheduler's exact `mark_as_sent`
+`UPDATE` in an open transaction, which commits while the tool waits for the row.
+The check requires one unit settled, one skipped as locked and one skipped with
+its replica running. A second run must settle the locked unit. The scheduler's
+`mark_as_sent` must then match no row for a cancelled replica.
+
 Both database and client containers are network-disabled (clients share the
 DB's loopback namespace), with no published ports, host files or Docker socket
 mounts. The server runs as fixture-only root without capabilities or privilege
@@ -177,6 +186,13 @@ It actually executes:
   `boincadm`. Each live DB session must have a nonempty server-side
   `performance_schema.status_by_thread` `Ssl_cipher`, correlated to its
   daemon-specific queries. All four distinct roles must be present.
+- The Qwen tie-breaker stop (`scripts/boinc/qwen-tiebreak-policy.py`, #1477) on
+  synthetic disputed `usnm_qwen` units, with the runtime credentials: `plan`,
+  then `settle --apply` while a second session holds one unit's row lock, then
+  `settle --apply` again. The locked unit must be skipped unchanged and settled
+  by the second run; units outside the policy or with a replica running must be
+  untouched. The live transitioner must then mark the settled units'
+  inconclusive returns NO_CHECK and make them ready to assimilate.
 - Both PHP APIs and Python from the **copied project**, not only the source
   tree, reporting actual session ciphers.
 - Wrong hostname and unrelated client CA: all three copied consumers and four

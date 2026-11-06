@@ -13,9 +13,12 @@ use serde::{Deserialize, Serialize};
 pub struct Job {
     /// The file's name, which also names its `.part`.
     pub name: String,
+    /// The listed size; for an unlisted file, the most it may be.
     pub size: u64,
-    /// Lower-case hex. It comes from the catalogue, never from a source.
-    pub sha256: String,
+    /// Lower-case hex. It comes from the catalogue, never from a source. None for a file no
+    /// catalogue lists, such as a IIIF image: its SHA-256 is computed and reported instead,
+    /// it never resumes, and a copy already at `dest` is replaced.
+    pub sha256: Option<String>,
     pub dest: PathBuf,
     /// URLs in preference order, all for the same bytes.
     pub sources: Vec<String>,
@@ -66,7 +69,11 @@ pub enum Attempt {
     /// Placed from this URL, or found there already.
     Fetched {
         source: String,
+        /// Over the network.
         bytes: u64,
+        /// The file's size and SHA-256.
+        size: u64,
+        sha256: String,
     },
     Failed {
         message: String,

@@ -7,24 +7,25 @@ not replace the proposed subscription/dev bootstrap in PR #634: the isolated
 BOINC resource group, registry, policy/waiver prerequisites and credentials must
 already exist. It never invokes the full application provisioner.
 
-It has no on-prem mode: it never gives `boinc-app-release.sh` the `--onprem-host` and
-`--onprem-ct` that a `"server": "onprem"` environment needs, so it cannot release to
-prod, whose server has run on-prem since 21 October 2026
-([boinc-onprem.md](../../docs/boinc-onprem.md)). Preflight rejects on-prem or unknown
-server modes from freshly fetched main, including on resume and `--dry-run`,
-before invoking acceptance validation or any lifecycle phase. It works on a
-server hosted in Azure; an omitted `server` keeps the schema's Azure default.
-Do not change production's server mode to bypass this gate. On-prem end-to-end
-orchestration remains a separate reviewed implementation, not a reason to replay
-the Azure build/provision path.
+This page covers the Azure lifecycle, for a server hosted in Azure; an omitted
+`server` keeps the schema's Azure default. Prod's server has run on-prem since
+21 October 2026. For it, pass `--onprem-host` and `--onprem-ct`, which select the
+separate on-prem lifecycle (`scripts/boinc/onprem_pipeline.py`, #1258). That
+lifecycle builds local Podman images and reviews an on-prem release manifest instead
+of Azure pins. It is described in
+[boinc-onprem.md](../../docs/boinc-onprem.md#reviewed-resumable-release-pipeline-551).
+Without those arguments, preflight rejects on-prem or unknown server modes from
+freshly fetched main, including on resume and `--dry-run`, before invoking
+acceptance validation or any lifecycle phase. Do not change production's server
+mode to bypass this gate.
 
 ## Interface
 
-Run from a clean, current-main checkout containing this pipeline and **the merged
-#548 entrypoint** `scripts/boinc/acceptance.py` (PR #807). Before any resource
-mutation the pipeline verifies that entrypoint exists on `origin/main` and invokes
-its offline config validator. An unmerged #807 is an explicit failure, not a
-fallback to registration-only acceptance or a copy of another branch's code.
+Run from a clean, current-main checkout. Before any resource mutation the pipeline
+verifies that #548's entrypoint `scripts/boinc/acceptance.py` exists on
+`origin/main` and in the checkout, and invokes its offline config validator. A
+missing entrypoint is an explicit failure, not a fallback to registration-only
+acceptance.
 
 Put operator inputs in ignored `target/`, with private directory/file permissions:
 
@@ -44,8 +45,8 @@ Put operator inputs in ignored `target/`, with private directory/file permission
 reviewed config format. No passwords, authenticators, key contents or arbitrary
 command overrides are accepted by this pipeline's own config. #548 owns private
 account configuration and client cleanup; do not put that config in Git. All
-fields above are required, and unknown fields are rejected. Initial support is
-Linux x86_64 container releases: `usnm_ocr/docker`,
+fields above are required, and unknown fields are rejected. The Azure lifecycle
+supports Linux x86_64 container releases: `usnm_ocr/docker`,
 `usnm_qwen/docker_mt_2b`, and `usnm_qwen/docker_nvidia_cuda_8b`. Other app,
 platform and native build contracts fail before deployment instead of silently
 selecting the wrong worker.
@@ -149,16 +150,19 @@ from deleting local state.
 ## Validation and outstanding operational acceptance
 
 ```sh
-python3 -m unittest scripts/boinc/test_bootstrap_pipeline.py
+python3 -m unittest scripts/boinc/test_bootstrap_pipeline.py scripts/boinc/test_onprem_pipeline.py
 ```
 
 The dedicated `boinc-bootstrap-pipeline` workflow runs only these offline tests
 and syntax checks. It has read-only repository permission and no Azure/signing
-credentials or publication jobs. No files owned by PR #807 or #634 are changed.
+credentials or publication jobs. The acceptance runner's tests run with the other
+script tests in `ci.yml`'s `script-tests` matrix (`scripts/ci/run-unit-tests.py`).
 
-A real end-to-end run is still gated on #807 merging, reviewed operator inputs,
-an approved reachable/unlocked signing service, explicit resource authorization,
-required pin PR reviews/CI and a live serialized #529 execution window. Native
-and additional worker/platform contracts and subscription bootstrap are outside
-this initial supported interface; they fail clearly instead of being claimed as
-tested. Live canonical execution/cleanup evidence is not established by fakes.
+A real end-to-end run needs reviewed operator inputs, an approved
+reachable/unlocked signing service, explicit resource authorization, the pin PR
+reviews/CI and a live serialized #529 execution window. Its acceptance phase also
+needs #548's isolated test account, dedicated client and staged fixture. In the
+Azure lifecycle, native and other worker/platform contracts and subscription
+bootstrap are outside the supported interface; they fail clearly instead of being
+claimed as tested. Live canonical execution/cleanup evidence is not established
+by fakes.

@@ -1680,6 +1680,60 @@ class SourceRequestTest(unittest.TestCase):
                 self.assertEqual(result["state"], "needs_science_review" if done else "preparing_and_publishing")
                 self.assertEqual(result["quarantined_refetch_states"], {"manual_review": 1} if done else {})
 
+    def test_source_truncated_member_is_terminal_not_waiting_or_under_review(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "requests").mkdir()
+            args = types.SimpleNamespace(state=root, prep_ct=215, server_ct=230, campaign="test",
+                                         server_host="server", archive_host="archive")
+            other = DOC.replace("seq-3", "seq-4")
+            spec, page = source.specification("sn1", 10, "test"), frozen_page()
+            pages = [page, frozen_page(other)]
+            record = {"request_id": source.digest(spec), "spec": spec, "pages": pages,
+                      "pages_sha256": source.digest(pages)}
+            native = {"pages": {DOC: {"status": "pending"}, other: {"status": "published"}},
+                      "published_workunits": 1, "agreed_workunits": 1, "unsent_replicas": 0,
+                      "running_replicas": 0, "returned_replicas": 0, "invalid_replicas": 0,
+                      "error_workunits": 0, "history_unavailable_workunits": 0, "source_conflict_pages": 0}
+            prepared = {"done.txt": {}, "skipped.txt": {},
+                        "quarantine": [{"source": page, "refetch_state": "source_truncated"}]}
+            with mock.patch("qwen_feed.remote", side_effect=[
+                    json.dumps(native).encode(), b'{"available_archives":["xx_test_ver01.tar.bz2"]}']), \
+                    mock.patch("qwen_feed.command", return_value=json.dumps(prepared).encode()):
+                result = source.inspect(args, record)
+        self.assertEqual(result["source_dispositions"], {"source_truncated": 1, "published": 1})
+        self.assertEqual(result["state"], "native_consensus_complete")
+        self.assertEqual(result["waiting_source_pages"], 0)
+        self.assertEqual(result["quarantined_refetch_states"], {"source_truncated": 1})
+
+    def test_an_all_truncated_request_ends_without_work_but_a_mix_with_rejections_needs_review(self):
+        other = DOC.replace("seq-3", "seq-4")
+        pages = [frozen_page(), frozen_page(other)]
+        native = {"pages": {DOC: {"status": "pending"}, other: {"status": "pending"}},
+                  "published_workunits": 0, "agreed_workunits": 0, "unsent_replicas": 0,
+                  "running_replicas": 0, "returned_replicas": 0, "invalid_replicas": 0,
+                  "error_workunits": 0, "history_unavailable_workunits": 0, "source_conflict_pages": 0}
+        for members, skipped, expected in (
+                (pages, {}, "source_truncated_no_work"),
+                (pages[:1], {other: "no LoC text"}, "needs_science_review")):
+            with self.subTest(expected), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                (root / "requests").mkdir()
+                args = types.SimpleNamespace(state=root, prep_ct=215, server_ct=230, campaign="test",
+                                             server_host="server", archive_host="archive")
+                spec = source.specification("sn1", 10, "test")
+                record = {"request_id": source.digest(spec), "spec": spec, "pages": pages,
+                          "pages_sha256": source.digest(pages)}
+                prepared = {"done.txt": {}, "skipped.txt": skipped,
+                            "quarantine": [{"source": page, "refetch_state": "source_truncated"}
+                                           for page in members]}
+                with mock.patch("qwen_feed.remote", side_effect=[
+                        json.dumps(native).encode(), b'{"available_archives":["xx_test_ver01.tar.bz2"]}']), \
+                        mock.patch("qwen_feed.command", return_value=json.dumps(prepared).encode()):
+                    result = source.inspect(args, record)
+                self.assertEqual(result["state"], expected)
+                self.assertEqual(result["waiting_source_pages"], 0)
+
 
 class ArchiveTest(unittest.TestCase):
     def test_existing_forced_stdin_command_returns_additive_inventory_on_empty_input(self):
@@ -1801,12 +1855,149 @@ class SourceTest(unittest.TestCase):
                     submit.assert_processed(root, sample)
                 if marker:
                     (unit / marker).unlink()
+            # A root of single pages reads no other unit's job.
+            other = root / "units" / "sn1_1900-01-02_ed-1_seq-4"
+            other.mkdir()
+            (other / "qwen.json").write_text("partly written")
+            (other / "submitted").touch()
+            with self.assertRaisesRegex(RuntimeError, "retain READY"):
+                submit.assert_processed(root, sample)
             for files in (("too_large", "rejected-qwen.json"), ("submitted", "qwen.json"), ("no_crops",)):
                 for name in files:
                     (unit / name).touch()
                 submit.assert_processed(root, sample)
                 for name in files:
                     (unit / name).unlink()
+
+    def test_a_bundled_page_is_processed_once_its_bundle_is_submitted(self):
+        other = "sn1_1900-01-02_ed-1_seq-4"
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            sample = root / "sample.jsonl"
+            sample.write_text("".join(json.dumps({"doc_id": d}) + "\n" for d in (DOC, other)))
+            for doc in (DOC, other):
+                (root / "pages" / doc).mkdir(parents=True)
+                (root / "pages" / doc / "qwen.json").write_text(json.dumps({"id": doc, "doc_id": doc}))
+            bundle = root / "units" / ("bundle-00001-" + DOC)
+            bundle.mkdir(parents=True)
+            (bundle / "qwen.json").write_text(json.dumps(
+                {"id": "b" * 64, "doc_id": DOC, "pages": [{"doc_id": DOC}, {"doc_id": other}]}))
+            # Staged and bundled, not yet submitted.
+            with self.assertRaisesRegex(RuntimeError, "retain READY"):
+                submit.assert_processed(root, sample)
+            (bundle / "submitted").touch()
+            # Only submitted units' jobs are read.
+            (root / "units" / "bundle-00002-other").mkdir()
+            (root / "units" / "bundle-00002-other" / "qwen.json").write_text("partly written")
+            submit.assert_processed(root, sample)
+            # A submitted job that doesn't parse names its unit.
+            (root / "units" / "bundle-00002-other" / "submitted").touch()
+            with self.assertRaisesRegex(RuntimeError, "bundle-00002-other has an unreadable qwen.json"):
+                submit.assert_processed(root, sample)
+            (root / "units" / "bundle-00002-other" / "submitted").unlink()
+            # So does a submitted marker with no job beside it.
+            (root / "units" / "bundle-00003-other").mkdir()
+            (root / "units" / "bundle-00003-other" / "submitted").touch()
+            with self.assertRaisesRegex(RuntimeError, "bundle-00003-other has no qwen.json"):
+                submit.assert_processed(root, sample)
+            (root / "units" / "bundle-00003-other" / "submitted").unlink()
+            # A page no bundle holds needs its own terminal disposition.
+            (bundle / "qwen.json").write_text(json.dumps({"id": "b" * 64, "doc_id": DOC, "pages": [{"doc_id": DOC}]}))
+            with self.assertRaisesRegex(RuntimeError, other):
+                submit.assert_processed(root, sample)
+            page = root / "pages" / other
+            # Too large for any bundle (beside its own qwen.json), or no crops.
+            for name in ("too_large", "no_crops"):
+                (page / name).touch()
+                submit.assert_processed(root, sample)
+                (page / name).unlink()
+            (page / "qwen.json").unlink()
+            (page / "too_large").touch()
+            with self.assertRaisesRegex(RuntimeError, other):
+                submit.assert_processed(root, sample)
+            (page / "rejected-qwen.json").touch()
+            submit.assert_processed(root, sample)
+
+    def legacy_stage(self, root, *extra, units=(), pages=False):
+        """The stage command the legacy path runs for a root with these single-page units."""
+        plan = root / "plan.json"
+        plan.write_text(json.dumps({"engine": {"image": "image", "llama": "llama", "weights": "weights"}}))
+        qwen_root = root / "qwen" / "qwen-test"
+        for doc in units:
+            (qwen_root / "units" / doc).mkdir(parents=True, exist_ok=True)
+            (qwen_root / "units" / doc / "qwen.json").write_text(json.dumps({"id": doc, "doc_id": doc}))
+        if pages:
+            (qwen_root / "pages").mkdir(parents=True, exist_ok=True)
+        argv = ["qwen_submit.py", "--share", str(root), "--project", str(root),
+                "--campaign", "qwen-test", "--engine-plan", str(plan), "--models", str(root), *extra]
+        with mock.patch.object(submit, "__file__", str(root / "qwen_submit.py")), \
+                mock.patch.object(sys, "argv", argv), \
+                mock.patch.object(submit, "inventory", return_value={
+                    "ready": 0, "fresh_pairs": 0, "unresolved_native": 0,
+                    "free_bytes": 100 * 1024**3, "app_versions": [], "min_version": 0}), \
+                mock.patch.object(submit, "assert_root_request_version"), \
+                mock.patch.object(submit.subprocess, "run") as run, \
+                mock.patch.object(submit, "assert_submitted"), \
+                mock.patch.object(submit, "audit", return_value={}), \
+                contextlib.redirect_stdout(io.StringIO()):
+            submit.main()
+        return run.call_args_list[0].args[0] if run.call_args_list else None
+
+    def test_bundle_size_defaults_to_one_page_per_unit(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            self.assertEqual(self.legacy_stage(root), [
+                "usnm-boinc", "qwen", "stage", "--quality-root", str(root / "quality/qwen-test"),
+                "--root", str(root / "qwen/qwen-test"), "--engine-image", "image", "--engine-llama", "llama",
+                "--engine-weights", "weights", "--max-pages", "100", "--gpu-timeout-secs", "14400",
+                "--cpu-timeout-secs", "7200", "--bundle-size", "1", "--prompt-version", "1"])
+            stage = self.legacy_stage(root, "--bundle-size", "8")
+            self.assertEqual(stage[stage.index("--bundle-size") + 1], "8")
+        for extra, error in ((["--bundle-size", "0"], "--bundle-size takes 1 to 32"),
+                             (["--bundle-size", "33"], "--bundle-size takes 1 to 32"),
+                             (["--bundle-size", "2", "--transaction", "a" * 64], "one page per unit")):
+            with self.subTest(extra=extra), tempfile.TemporaryDirectory() as folder, \
+                    contextlib.redirect_stderr(io.StringIO()) as stderr, self.assertRaises(SystemExit) as caught:
+                self.legacy_stage(Path(folder), *extra)
+            self.assertEqual(caught.exception.code, 2)
+            self.assertIn(error, stderr.getvalue())
+
+    def test_a_bundled_campaign_has_a_root_of_its_own(self):
+        for units, pages, extra, error in (
+                ([DOC], False, ["--bundle-size", "8"], "a unit not named as a bundle"),
+                ([DOC], False, ["--bundle-size", "8", "--preflight"], "a unit not named as a bundle"),
+                ([], True, [], "staged with bundles"),
+                ([], True, ["--preflight"], "staged with bundles"),
+                ([DOC], False, [], None), ([], False, ["--bundle-size", "8"], None),
+                ([DOC], True, ["--bundle-size", "8"], "a unit not named as a bundle"),
+                ([], True, ["--bundle-size", "8"], None)):
+            with self.subTest(units=units, pages=pages, extra=extra), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                if error:
+                    with self.assertRaisesRegex(RuntimeError, error):
+                        self.legacy_stage(root, *extra, units=units, pages=pages)
+                else:
+                    self.legacy_stage(root, *extra, units=units, pages=pages)
+        # A single-page unit with only a marker, and no job, counts too.
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            unit = root / "qwen" / "qwen-test" / "units" / DOC
+            unit.mkdir(parents=True)
+            (unit / "too_large").touch()
+            with self.assertRaisesRegex(RuntimeError, "a unit not named as a bundle"):
+                self.legacy_stage(root, "--bundle-size", "8")
+        # A bundle's name runs on past its number, of five digits or more; a refusal names the unit.
+        for name, error in (("bundle-00001-", r"holds bundle-00001-, a unit not named as a bundle"),
+                            ("bundle-0001-" + DOC, r"holds bundle-0001-sn"),
+                            ("bundle-00001-" + DOC, None), ("bundle-100000-" + DOC, None)):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                (root / "qwen" / "qwen-test" / "units" / name).mkdir(parents=True)
+                if error:
+                    with self.assertRaisesRegex(RuntimeError, error):
+                        self.legacy_stage(root, "--bundle-size", "8", pages=True)
+                else:
+                    self.legacy_stage(root, "--bundle-size", "8", pages=True)
 
     def test_isolated_staging_artifact_never_replaces_submit_binary(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -2142,9 +2333,12 @@ class SourceTest(unittest.TestCase):
             submit.main()
         transaction.assert_not_called()
 
-    def budget_tick(self, root, budget, yiddish, others, german_budget=None, german_pages=None, retryable=()):
+    def budget_tick(self, root, budget, yiddish, others, german_budget=None, german_pages=None, retryable=(),
+                    quarantine=None, finished=(), older=(), newer=()):
         """One feed tick with a stub corpus; returns the filters each select used and the
-        pages it sent to `run`. A filter's refused languages are one string when one is refused."""
+        pages it sent to `run`. A filter's refused languages are one string when one is refused.
+        With `quarantine`, the campaign's quarantine is real and kept from selection there.
+        `older` and `newer` are more index rows, before and after each page's own."""
         args = types.SimpleNamespace(
             state=root, outbox=root, campaign="test", prep_ct=215, server_ct=230, server_host="server",
             archive_host="archive", scan_server="http://scan", archives="/archives", alto_export="/cache",
@@ -2164,9 +2358,12 @@ class SourceTest(unittest.TestCase):
                 filters.append((wanted, refused[0] if len(refused) == 1 else tuple(refused) or None,
                                 int(argv[argv.index("--count") + 1])))
                 indexed = {json.loads(line)["doc_id"] for line in index.splitlines()}
+                blocked = {r["id"] for r in quality.scan_quarantine.quarantined(quarantine / "test")
+                           } if quarantine else set()
                 pool = [p for p in yiddish + others
                         if (wanted is None or p["lang"] == wanted) and p["lang"] not in refused
-                        and p["doc_id"] in indexed]
+                        and p["doc_id"] in indexed
+                        and quality.scan_quarantine.source_id(frozen_page(p["doc_id"])) not in blocked]
                 selected = "".join(json.dumps(p) + "\n" for p in pool[:filters[-1][2]]).encode()
             if "cat" in argv:
                 return selected
@@ -2174,6 +2371,14 @@ class SourceTest(unittest.TestCase):
                 prepared.extend(json.loads(line) for line in data.splitlines())
             if "-c" in argv and "retryable_ids" in argv[-1]:
                 return json.dumps(list(retryable)).encode()
+            if "-c" in argv and "done.txt" in argv[-1]:
+                return json.dumps(list(finished)).encode()
+            if "-c" in argv and "import quarantined;" in argv[argv.index("-c") + 1] and quarantine:
+                code, *paths = argv[argv.index("-c") + 1:]
+                paths = [path.replace("/opt/usnm-quality-feed", str(HERE)).replace(
+                    "/var/lib/usnm-quality-feed", str(quarantine)) for path in paths]
+                return subprocess.run([sys.executable, "-c", code, *paths], check=True,
+                                      capture_output=True).stdout
             return b"[]" if "-c" in argv else b""
 
         def remote(host, argv, data=None):
@@ -2183,13 +2388,15 @@ class SourceTest(unittest.TestCase):
             if "lvs" in argv:
                 return json.dumps({"report": [{"lv": [{"lv_size": 10**12, "data_percent": 0}]}]}).encode()
             if data == b"":
-                return json.dumps({"available_archives": ["xx_test_ver01.tar.bz2"]}).encode()
+                return json.dumps({"available_archives": sorted(
+                    {"xx_test_ver01.tar.bz2"} | {f"{row['batch']}_ver{row['batch_version']:02d}.tar.bz2"
+                                                 for row in [*older, *newer]})}).encode()
             return json.dumps({"cached": [json.loads(line)["doc_id"] for line in data.splitlines()],
                                "missing": [], "pending": []}).encode()
 
         rows = [{"doc_id": doc, "batch": "xx_test", "batch_version": 1, "bytes": 12, "sha256": "a" * 64}
                 for doc in [DOC] + [p["doc_id"] for p in yiddish + others if p["doc_id"] != DOC]]
-        listing = b"".join(json.dumps(row).encode() + b"\n" for row in rows)
+        listing = b"".join(json.dumps(row).encode() + b"\n" for row in [*older, *rows, *newer])
         with mock.patch.object(driver, "remote", side_effect=remote), \
                 mock.patch.object(driver, "command", side_effect=command), \
                 mock.patch.object(driver.shutil, "disk_usage", return_value=types.SimpleNamespace(free=10**12)), \
@@ -2229,6 +2436,46 @@ class SourceTest(unittest.TestCase):
             self.assertEqual(filters, [(None, "yid", 100)])
             self.assertEqual(chosen, [other["doc_id"]])
             self.assertEqual(json.loads((root / "yiddish-budget.json").read_text()), [DOC])
+
+    def test_a_budgeted_page_found_truncated_at_source_frees_its_place_for_another(self):
+        yiddish = [{"doc_id": f"sn1_1900-01-02_ed-1_seq-{n}", "lang": "yid", "damage_rate": .9}
+                   for n in range(1, 6)]
+        truncated, replacement, replaced, rescanned, done = (page["doc_id"] for page in yiddish)
+        others = [{"doc_id": "sn2_1900-01-02_ed-1_seq-1", "lang": "srp", "damage_rate": .8}]
+        # The cut short page's current scan is the quarantined one, after an older batch's;
+        # another page has a newer scan to prepare after its quarantined one.
+        older = [{**frozen_page(truncated), "batch": "xx_old", "sha256": "c" * 64}]
+        newer = [{**frozen_page(replaced), "batch_version": 2, "sha256": "c" * 64}]
+        reserved = [truncated, replaced, rescanned, done]
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            quarantine = root / "quarantine"
+            # Every reserved page was found cut short at source in some scan: one in a scan LoC
+            # has since replaced, and one that was done before.
+            for doc, sha in ((truncated, "a"), (replaced, "a"), (rescanned, "b"), (done, "a")):
+                page = {**frozen_page(doc), "sha256": sha * 64, "lang": "yid",
+                        "scan": f"keep/xx_test/sn1/1900-01-02/1/{doc.rsplit('-', 1)[1]}.jp2"}
+                quality.scan_quarantine.record_source_truncated(quarantine / "test", page, "ends early")
+            budget = root / "yiddish-budget.json"
+            budget.write_text(json.dumps(reserved))
+            filters, chosen = self.budget_tick(root, 4, yiddish, others, quarantine=quarantine,
+                                               finished=[done], older=older, newer=newer)
+            self.assertEqual(filters, [("yid", None, 1)])
+            self.assertEqual(chosen, [replacement])
+            self.assertEqual(sorted(json.loads(budget.read_text())), sorted(reserved[1:] + [replacement]))
+            # The budget is full again, so the next tick takes no Yiddish.
+            filters, chosen = self.budget_tick(root, 4, yiddish, others, quarantine=quarantine,
+                                               finished=[done], older=older, newer=newer)
+            self.assertEqual(filters, [(None, "yid", 100)])
+            self.assertEqual(chosen, [others[0]["doc_id"]])
+            self.assertEqual(sorted(json.loads(budget.read_text())), sorted(reserved[1:] + [replacement]))
+
+    def test_a_refund_reads_a_doc_id_written_with_a_json_escape(self):
+        doc = "sn1_1900-01-02_ed-1_seq-1"
+        line = json.dumps(frozen_page(doc)).replace('"sn1_', '"\\u0073n1_', 1).encode()
+        self.assertIn(b"\\u0073n1_", line)
+        self.assertEqual(driver.truncated_reservations(
+            line + b"\n", {doc}, {driver.scan_fingerprint(frozen_page(doc))}, set()), {doc})
 
     def test_the_budget_goes_ahead_of_a_source_request(self):
         yiddish = [{"doc_id": "sn1_1900-01-02_ed-1_seq-1", "lang": "yid", "damage_rate": .9}]

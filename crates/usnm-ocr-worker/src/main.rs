@@ -542,6 +542,71 @@ enum Command {
         #[arg(long, env = "USNM_BULK_RATE_BYTES_PER_SEC")]
         rate_bytes_per_sec: Option<u64>,
     },
+    /// Georgia Historic Newspapers (#1193), as a dry run: which public-domain issues of titles
+    /// we lack to take, written to `titles.tsv`, `issues.tsv` and `summary.json`. Enqueues
+    /// nothing.
+    GhnCatalog {
+        /// GHN's IIIF documents: `newspapers.json` and `lccn/<lccn>.json`.
+        #[arg(long, env = "USNM_GHN_CACHE")]
+        cache: PathBuf,
+        /// Our published `batches.json`, for the titles we have.
+        #[arg(long)]
+        ours: PathBuf,
+        /// Where the lists go.
+        #[arg(long)]
+        out: PathBuf,
+        /// The last publication date taken (at most 1930-12-31).
+        #[arg(long)]
+        through: Option<chrono::NaiveDate>,
+        /// DLG's rights statements: TSV of LCCN, date and statement URI. Only NoC-US issues
+        /// are selected; without it every issue is listed as `unchecked`.
+        #[arg(long)]
+        rights: Option<PathBuf>,
+        /// Ask GHN for the documents not in the cache, through the `ghn` policy.
+        #[arg(long, requires = "pacer")]
+        fetch_metadata: bool,
+        /// GHN's budget, shared by every process that asks GHN anything; one run holds it at
+        /// a time.
+        #[arg(long, env = "USNM_GHN_PACER")]
+        pacer: Option<PathBuf>,
+        /// A directory of host policies (one `<name>.toml` each), instead of the built-in ones.
+        #[arg(long, env = "USNM_FETCH_POLICIES")]
+        policies: Option<PathBuf>,
+        /// At most this many title documents asked for this run.
+        #[arg(long)]
+        max_titles: Option<usize>,
+    },
+    /// Georgia Historic Newspapers' page images for `ghn-catalog`'s issues (#1193): each
+    /// issue's IIIF manifest and full-size JPEGs, through the `ghn` policy, each page with a
+    /// sidecar of its `ghn:` id, provenance and SHA-256. Enqueues no OCR.
+    GhnFetch {
+        /// `ghn-catalog`'s `issues.tsv`.
+        #[arg(long)]
+        issues: PathBuf,
+        /// Where manifests and pages go.
+        #[arg(long, env = "USNM_GHN_OUT")]
+        out: PathBuf,
+        /// GHN's budget, shared by every process that asks GHN anything; one run holds it at
+        /// a time.
+        #[arg(long, env = "USNM_GHN_PACER")]
+        pacer: PathBuf,
+        /// A directory of host policies (one `<name>.toml` each), instead of the built-in ones.
+        #[arg(long, env = "USNM_FETCH_POLICIES")]
+        policies: Option<PathBuf>,
+        /// At most this many issues started this run.
+        #[arg(long)]
+        limit: Option<usize>,
+        /// Stop starting files after this many hours; more than 23 is taken as 23.
+        #[arg(long, env = "USNM_GHN_MAX_HOURS", default_value_t = 20.0)]
+        max_hours: f64,
+        /// Keep at least this many GB free on the output's filesystem.
+        #[arg(long, env = "USNM_GHN_MIN_FREE_GB", default_value_t = 50)]
+        min_free_gb: u64,
+        /// Take issues whose rights statement wasn't checked (a sample, before DLG's rights
+        /// filter is in place).
+        #[arg(long)]
+        unchecked_rights: bool,
+    },
     /// LoC's word confidence per page from the bulk OCR archives (#962): one Parquet file
     /// per archive, skipping archives already read. Reads only.
     LocAltoStats {
@@ -1390,6 +1455,78 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
                     state,
                     workers,
                     rate_bytes_per_sec,
+                },
+                stop_signal(),
+            )
+            .await?;
+            println!("{}", serde_json::to_string(&status)?);
+            Ok(())
+        }
+        Command::GhnCatalog {
+            cache,
+            ours,
+            out,
+            through,
+            rights,
+            fetch_metadata,
+            pacer,
+            policies,
+            max_titles,
+        } => {
+            use usnm_ocr_worker::ghn;
+            let fetch = match (fetch_metadata, pacer) {
+                (true, Some(pacer)) => Some(ghn::catalog::Fetch {
+                    pacer,
+                    policies: match policies {
+                        Some(dir) => usnm_ocr_worker::fetcher::Policies::load_dir(&dir)?,
+                        None => usnm_ocr_worker::fetcher::Policies::builtin(),
+                    },
+                    max_titles,
+                }),
+                _ => None,
+            };
+            let summary = ghn::catalog::run(
+                ghn::catalog::Options {
+                    cache,
+                    ours,
+                    out,
+                    through: through.unwrap_or_else(ghn::latest),
+                    rights,
+                    hosts: ghn::Hosts::ghn(),
+                    fetch,
+                },
+                stop_signal(),
+            )
+            .await?;
+            println!("{}", serde_json::to_string(&summary)?);
+            Ok(())
+        }
+        Command::GhnFetch {
+            issues,
+            out,
+            pacer,
+            policies,
+            limit,
+            max_hours,
+            min_free_gb,
+            unchecked_rights,
+        } => {
+            use usnm_ocr_worker::ghn;
+            let policies = match policies {
+                Some(dir) => usnm_ocr_worker::fetcher::Policies::load_dir(&dir)?,
+                None => usnm_ocr_worker::fetcher::Policies::builtin(),
+            };
+            let status = ghn::fetch::run(
+                ghn::fetch::Options {
+                    issues,
+                    out,
+                    pacer,
+                    policies,
+                    hosts: ghn::Hosts::ghn(),
+                    max_hours: max_hours.clamp(0.0, 23.0),
+                    min_free_bytes: min_free_gb.saturating_mul(1_000_000_000),
+                    limit,
+                    unchecked_rights,
                 },
                 stop_signal(),
             )

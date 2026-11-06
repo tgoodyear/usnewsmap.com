@@ -10,6 +10,8 @@ Candidate licensing, model-availability and bounded local CPU findings are recor
 
 The pilot's page images (`ocr/bench/serialset-pilot/images/`) and the raw native result archives under `ocr/bench/results/` are not tracked: they are the `bench-assets` set of `scripts/ops/data-assets.sh`, fetched with `scripts/ops/data-assets.sh --fetch --set bench-assets` and published by the `publish data assets` workflow ([reports/README.md](reports/README.md), "Data"). `SHA256SUMS` and `inputs.sha256` stay in the tree and pin the bytes.
 
+`ocr/bench/yiddish-newspaper/` holds the draw and an empty transcription template for a Yiddish newspaper line set ([#1479](https://github.com/tgoodyear/usnewsmap.com/issues/1479)). It isn't a release, and it holds no references until people transcribe the lines. See [its README](../ocr/bench/yiddish-newspaper/README.md).
+
 ## Fetch a release
 
 ```sh
@@ -289,6 +291,14 @@ counts intersecting boundary lines and excludes HYP elements. It never guesses
 DPI, silently drops malformed coordinates or substitutes whole-page text for
 a crop. This is a crop transcription adapter, **not whole-page reading-order
 evaluation**. OCR inference cost is `unknown`, not zero.
+
+To score an audited package, add `--audit-inventory artifacts.json
+--audit-inventory-sha256 HASH` (the `loc_archive.py --out` inventory). Each
+binding's page URL must then be an NDNP page in that inventory, and its
+`alto_sha256` must be that page's audited ALTO member. Any other binding is an
+error. Aligned rows record the archive, member and embedded software. This
+binds bytes to a page ID, not to the source scan; registration stays the
+operator's evidence. See [the note](notes/2026-11-05-loc-audit-binding.md).
 
 ```sh
 python3 scripts/ocr-bench/loc_align.py \

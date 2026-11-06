@@ -10,7 +10,8 @@
 # on the real corpus (web/e2e/slow.spec.ts).
 set -euo pipefail
 cargo build --release --locked -p usnm-api
-USNM_BIND=127.0.0.1:8080 USNM_RATE_PER_MIN=0 USNM_SITE_DIR=web/dist \
+# Exercise publication to a shared response store, as in production.
+USNM_BIND=127.0.0.1:8080 USNM_RATE_PER_MIN=0 USNM_SITE_DIR=web/dist USNM_RESPONSE_CACHE_URL="$(mktemp -d)" \
   USNM_SEARCH_TIMEOUT_SECS=1 USNM_FIXTURE_SLOW_TERM=slowsearch USNM_FIXTURE_SLOW_MS=4000 \
   ./target/release/usnm-api > api.log 2>&1 &
 for _ in $(seq 1 30); do

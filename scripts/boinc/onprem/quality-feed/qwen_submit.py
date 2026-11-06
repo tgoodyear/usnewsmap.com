@@ -22,6 +22,9 @@ REQUEST_MIN_APP = {1: 0, 2: 115, 3: 117, 4: 117}
 # without --submit-binary they go with the stage binary (#1449).
 GUARDED_VERSIONS = (3, 4)
 YIDDISH = "yid"
+# `qwen stage --bundle-size` above 1 names each bundle unit bundle-<index>-<first doc>, the index
+# at least five digits.
+BUNDLE_UNIT = re.compile(r"bundle-\d{5,}-.+")
 
 
 def jobs(root):
@@ -233,6 +236,7 @@ echo json_encode($rows);
 
 
 def assert_processed(root, sample):
+    bundled = None
     for line in sample.read_text().splitlines():
         doc = json.loads(line)["doc_id"]
         if not re.fullmatch(r"[a-z0-9]+_\d{4}-\d{2}-\d{2}_ed-\d+_seq-\d+", doc):
@@ -244,7 +248,47 @@ def assert_processed(root, sample):
             continue
         if (unit / "too_large").exists() and (unit / "rejected-qwen.json").exists():
             continue
+        # A bundled root (--bundle-size above 1) stages each page under pages/ and submits it
+        # in a bundle under units/. A page too large for any bundle keeps its own qwen.json.
+        page = root / "pages" / doc
+        if (page / "no_crops").exists():
+            continue
+        if (page / "too_large").exists() and any((page / f).exists() for f in ("rejected-qwen.json", "qwen.json")):
+            continue
+        if bundled is None:
+            # Only a bundled root's submitted units' jobs are read, not every staged one. A root
+            # of single pages (no pages/) reads none, as before bundles.
+            bundled = set()
+            markers = (root / "units").glob("*/submitted") if (root / "pages").is_dir() else ()
+            for marker in sorted(markers):
+                path = marker.parent / "qwen.json"
+                if not path.exists():
+                    raise RuntimeError(f"Submitted unit {path.parent.name} has no qwen.json")
+                try:
+                    job = json.loads(path.read_text())
+                except ValueError as error:
+                    raise RuntimeError(
+                        f"Submitted unit {path.parent.name} has an unreadable qwen.json: {error}") from error
+                if job.get("pages"):
+                    bundled.update(documents(job))
+        if doc in bundled:
+            continue
         raise RuntimeError(f"Chunk still has an unprocessed native source: {doc}; retain READY")
+
+
+def assert_bundle_layout(root, bundle_size):
+    """A bundled campaign has a root of its own. A root staged with bundles can't go back to
+    single pages, and bundling a root that already holds single-page units would mix both. Any
+    unit directory not named as a bundle was staged one page per unit, whatever its marker and
+    whether or not pages/ exists."""
+    if bundle_size == 1 and (root / "pages").is_dir():
+        raise RuntimeError(f"Root {root.name} was staged with bundles; keep its --bundle-size")
+    units = root / "units"
+    if bundle_size > 1 and units.is_dir():
+        unit = next((p.name for p in units.iterdir() if p.is_dir() and not BUNDLE_UNIT.fullmatch(p.name)), None)
+        if unit is not None:
+            raise RuntimeError(f"Root {root.name} holds {unit}, a unit not named as a bundle; "
+                               "a bundled campaign starts in a new root")
 
 
 def unreadable_versions(state, prompt_version):
@@ -890,6 +934,9 @@ def main():
                     help="submit every request version with this binary (the image's usnm-boinc once it is "
                          "from #1437 on); without it, versions 3 and 4 submit with --stage-binary")
     ap.add_argument("--max-pages", type=int, default=100)
+    ap.add_argument("--bundle-size", type=int, default=1,
+                    help="Pages per native unit, 1 to 32 (#1435). Above 1 the root keeps bundling for good, "
+                         "so a bundled campaign starts in a new root; never with --transaction")
     ap.add_argument("--prompt-version", type=int, choices=(1, 2, 3, 4), default=1,
                     help="Request version to stage; every dispatchable app version must read it")
     ap.add_argument("--max-ready", type=int, default=1000,
@@ -927,11 +974,15 @@ def main():
             or a.max_ready < 2 or not 1 <= a.max_unresolved <= 10000
             or a.reserve_mib < 64 or a.min_free_gb < 1):
         ap.error("need --campaign, --engine-plan, --models and positive bounded limits")
+    if not 1 <= a.bundle_size <= 32:
+        ap.error("--bundle-size takes 1 to 32 pages a unit")
     root = a.share / "qwen" / a.campaign
     quality = a.share / "quality" / a.campaign
     if a.transaction:
         if a.preflight:
             ap.error("transaction publication is not a read-only preflight")
+        if a.bundle_size != 1:
+            ap.error("subset transactions stage one page per unit")
         if a.submit_binary:
             ap.error("transactions submit with --stage-binary")
         if a.max_ready > 1000 or a.max_unresolved > 2000 or a.min_free_gb < 50:
@@ -941,6 +992,7 @@ def main():
         except subprocess.CalledProcessError as error:
             raise SystemExit(error.returncode) from error
         return
+    assert_bundle_layout(root, a.bundle_size)
     admission(a, state, root)
     if a.preflight:
         return
@@ -957,7 +1009,7 @@ def main():
     stage = [a.stage_binary, "qwen", "stage", "--quality-root", str(quality), "--root", str(root),
              "--engine-image", engine["image"], "--engine-llama", engine["llama"],
              "--engine-weights", engine["weights"], "--max-pages", str(a.max_pages),
-             "--gpu-timeout-secs", "14400", "--cpu-timeout-secs", "7200", "--bundle-size", "1",
+             "--gpu-timeout-secs", "14400", "--cpu-timeout-secs", "7200", "--bundle-size", str(a.bundle_size),
              "--prompt-version", str(a.prompt_version)]
     subprocess.run(stage, check=True)
     submit_binary = a.submit_binary or (a.stage_binary if a.prompt_version in GUARDED_VERSIONS else "usnm-boinc")

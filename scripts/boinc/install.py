@@ -45,6 +45,7 @@ QWEN_NATIVE_MODEL_TEMPLATES = {
     "nvidia_vulkan_6gb_8b": "usnm_qwen_8b_in",
     "amd_vulkan_8b": "usnm_qwen_8b_in",
     "nvidia_cuda_2b": "usnm_qwen_2b_in",
+    "nvidia_vulkan_2b": "usnm_qwen_2b_in",
     "mt": "usnm_qwen_2b_in",
 }
 DEFAULT_SERVER_WRAPPER = Path("/usr/local/lib/usnm-boinc/docker_wrapper")
@@ -86,9 +87,11 @@ NATIVE_PLAN_CLASSES = {
     ("usnm_qwen", "intel_vulkan_8b"): ("x86_64-pc-linux-gnu", "windows_x86_64"),
     ("usnm_qwen", "nvidia_vulkan_8b"): ("x86_64-pc-linux-gnu",),
     ("usnm_qwen", "nvidia_vulkan_6gb_8b"): ("x86_64-pc-linux-gnu",),
+    # The 2B model fully offloaded on 6 GB NVIDIA cards through the pinned Linux Vulkan build (#1234).
+    ("usnm_qwen", "nvidia_vulkan_2b"): ("x86_64-pc-linux-gnu",),
     ("usnm_qwen", "amd_vulkan_8b"): ("x86_64-pc-linux-gnu", "windows_x86_64"),
 }
-GPU_NATIVE_PLAN_CLASSES = frozenset({"apple_gpu_8b", "nvidia_cuda_8b", "nvidia_cuda_2b", "intel_vulkan_8b", "nvidia_vulkan_8b", "nvidia_vulkan_6gb_8b", "amd_vulkan_8b"})
+GPU_NATIVE_PLAN_CLASSES = frozenset({"apple_gpu_8b", "nvidia_cuda_8b", "nvidia_cuda_2b", "intel_vulkan_8b", "nvidia_vulkan_8b", "nvidia_vulkan_6gb_8b", "nvidia_vulkan_2b", "amd_vulkan_8b"})
 NATIVE_API_VERSION = "8.3.0"
 LOGICAL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,95}\Z")
 NATIVE_OCR_APPS = ("usnm_ocr_native", "usnm_gold_native")
@@ -277,7 +280,7 @@ def install(
             required_extras = (required_server, "llama.lock", "weights.lock")
             if plan_class == "amd_vulkan_8b":
                 required_extras += ("usnm-amd-device-map.exe" if platform == "windows_x86_64" else "usnm-amd-device-map",)
-            if plan_class in ("amd_vulkan_8b", "nvidia_vulkan_6gb_8b"):
+            if plan_class in ("amd_vulkan_8b", "nvidia_vulkan_6gb_8b", "nvidia_vulkan_2b"):
                 required_extras += (("ggml.dll", "ggml-base.dll", "ggml-vulkan.dll") if platform == "windows_x86_64"
                                     else ("libggml.so", "libggml-base.so", "libggml-vulkan.so"))
             if platform == "windows_x86_64":

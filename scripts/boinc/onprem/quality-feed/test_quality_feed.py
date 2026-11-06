@@ -7,6 +7,7 @@ import io
 import json
 import os
 import sqlite3
+import struct
 import sys
 import tempfile
 import types
@@ -261,6 +262,29 @@ class DecodeQuarantineTest(unittest.TestCase):
                 self.assertEqual(error.exception.original_type, "OSError")
                 self.assertIn("truncated" if not is_jp2 else "broken data stream", str(error.exception))
 
+    def test_real_jp2s_pass_the_completeness_check_and_flagged_cuts_do_not_decode(self):
+        from PIL import Image, features
+
+        if not features.check_codec("jpg_2000"):
+            self.skipTest("Pillow's JPEG2000 codec is required")
+        image = Image.effect_noise((96, 64), 40).convert("L")
+        for options in ({}, {"tile_size": (32, 32)},
+                        {"quality_mode": "rates", "quality_layers": [40, 10], "progression": "RLCP"}):
+            output = io.BytesIO()
+            image.save(output, "JPEG2000", **options)
+            raw = output.getvalue()
+            start, _ = feed.jp2_codestream(raw)
+            # LoC's truncated scans have a 'jp2c' box that runs to the end of the file.
+            to_end = raw[:start - 8] + struct.pack(">I", 0) + raw[start - 4:]
+            with self.subTest(options=options):
+                self.assertIsNone(feed.jp2_truncation(raw))
+                self.assertIsNone(feed.jp2_truncation(to_end))
+                for cut in sorted({1, 2, 3, 17, len(raw) // 4, len(raw) // 2, len(raw) - start}):
+                    for short in (raw[:-cut], to_end[:-cut]):
+                        self.assertIsNotNone(feed.jp2_truncation(short), cut)
+                        with self.assertRaises(Exception):
+                            feed.page_jpeg(short, True)
+
     def test_missing_codec_and_indexed_format_disagreement_are_not_decode_quarantines(self):
         from PIL import features
 
@@ -495,10 +519,11 @@ class DecodeQuarantineTest(unittest.TestCase):
 
         if not features.check_codec("jpg_2000"):
             self.skipTest("Pillow's JPEG2000 codec is required")
-        bad_raw, good_raw = self.image("JPEG2000")[:-2], self.image("JPEG2000", value=40)
-        bad, good = self.page(1, bad_raw, "jp2"), self.page(2, good_raw, "jp2")
-        later = {page["doc_id"]: {**page, "format": "jp2", "fetched_at": f"2026-11-03T03:0{i}:00Z"}
-                 for i, page in enumerate((bad, good))}
+        # A cut-short JPEG: a cut-short JP2 is source_truncated before decoding (below).
+        bad_raw, good_raw = self.image()[:-2], self.image("JPEG2000", value=40)
+        bad, good = self.page(1, bad_raw), self.page(2, good_raw, "jp2")
+        later = {page["doc_id"]: {**page, "format": fmt, "fetched_at": f"2026-11-03T03:0{i}:00Z"}
+                 for i, (page, fmt) in enumerate(((bad, "jpeg"), (good, "jp2")))}
         # The good page arrives once the bad one is quarantined: before, it would stand in for it.
         rows = {bad["doc_id"]: later.pop(bad["doc_id"])}
         scans = {bad["scan"]: bad_raw, good["scan"]: good_raw}
@@ -532,9 +557,9 @@ class DecodeQuarantineTest(unittest.TestCase):
             self.assertIn("quarantined scans excluded", output.getvalue())
 
             (camp / "c00001/READY").unlink()
-            replacement = self.image("JPEG2000", value=200)
+            replacement = self.image(value=200)
             scans[bad["scan"]] = replacement
-            rows[bad["doc_id"]] = {**self.page(1, replacement, "jp2"), "format": "jp2",
+            rows[bad["doc_id"]] = {**self.page(1, replacement), "format": "jpeg",
                                    "fetched_at": "2026-11-03T03:10:00Z"}
             feed.main(self.follow_argv())
             self.assertEqual(calls[-1], bad["scan"])
@@ -648,6 +673,230 @@ class ScanGoneTest(unittest.TestCase):
                                                     str(self.state / "skipped.txt")), (0, retry, 1))
         self.assertFalse((self.state / "done.txt").exists())
         self.assertFalse((self.state / "skipped.txt").exists())
+
+
+def codestream(tiles=1, data=b"\x80" * 20, last_runs_to_eoc=False):
+    """A synthetic JPEG 2000 codestream: SOC, SIZ, COD, QCD, one tile-part a tile, EOC.
+    The parser reads only marker and tile-part headers, so the entropy data is filler."""
+    width = 32 * tiles
+    main = (struct.pack(">HHH8IHBBB", 0xFF51, 41, 0, width, 32, 0, 0, 32, 32, 0, 0, 1, 7, 1, 1)
+            + struct.pack(">HHBBHBBBBBB", 0xFF52, 12, 0, 0, 1, 0, 5, 4, 4, 0, 1)
+            + struct.pack(">HHBB", 0xFF5C, 4, 0x40, 0x48))
+    parts = b""
+    for tile in range(tiles):
+        psot = 0 if last_runs_to_eoc and tile == tiles - 1 else 14 + len(data)
+        parts += struct.pack(">HHHIBB", 0xFF90, 10, tile, psot, 0, 1) + b"\xff\x93" + data
+    return b"\xff\x4f" + main + parts + b"\xff\xd9"
+
+
+def jp2(stream, lbox=None):
+    """A JP2 file around a codestream; lbox=0 is a 'jp2c' box that runs to the end of the file."""
+    ihdr = struct.pack(">I4sIIHBBBB", 22, b"ihdr", 32, 32, 1, 7, 7, 0, 0)
+    colr = struct.pack(">I4sBBBI", 15, b"colr", 1, 0, 0, 17)
+    header = (feed.JP2_SIGNATURE + struct.pack(">I4s4sI4s", 20, b"ftyp", b"jp2 ", 0, b"jp2 ")
+              + struct.pack(">I4s", 8 + len(ihdr) + len(colr), b"jp2h") + ihdr + colr)
+    return header + struct.pack(">I4s", 8 + len(stream) if lbox is None else lbox, b"jp2c") + stream
+
+
+class SourceTruncatedTest(unittest.TestCase):
+    """A JP2 cut short at LoC's source (#1457): flagged from its headers, never retried; no Pillow."""
+
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.root = Path(folder.name)
+        self.state = self.root / "state" / "qwen-test"
+        (self.root / "curated" / "pages").mkdir(parents=True)
+
+    @staticmethod
+    def page(seq, raw, batch="xx_test"):
+        return {"doc_id": f"sn1_1900-01-02_ed-1_seq-{seq}", "batch": batch, "batch_version": 1,
+                "lccn": "sn1", "date": "1900-01-02", "edition": 1, "seq": seq, "lang": "rus",
+                "damage_rate": 0.8, "scan": f"buffer/{batch}/sn1/1900-01-02/1/{seq}.jp2",
+                "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
+
+    def args(self, pages, quarantine_decode=True):
+        pages_file = self.root / "pages.jsonl"
+        pages_file.write_text("".join(json.dumps(page) + "\n" for page in pages))
+        return types.SimpleNamespace(campaign="qwen-test", curated=str(self.root / "curated"),
+                                     state=str(self.root / "state"), outbox=str(self.root / "outbox"),
+                                     pages=str(pages_file), scan_server="http://scan", chunk_pages=4,
+                                     max_pending=4, workers=1, once=True, alto_cache=None,
+                                     quarantine_decode=quarantine_decode)
+
+    @staticmethod
+    def texts():
+        texts = mock.Mock()
+        texts.loc.side_effect = lambda batch, version, docs: ({doc: "LoC text" for doc in docs}, True)
+        texts.american_stories.return_value = {}
+        texts.ours.return_value = {}
+        texts.ours_alto.return_value = None
+        return texts
+
+    @staticmethod
+    def logged(output, msg):
+        return [line for line in map(json.loads, output.getvalue().splitlines()) if line["msg"] == msg]
+
+    def test_complete_or_otherwise_malformed_scans_are_left_to_the_decoder(self):
+        four = codestream(4)
+        xl = jp2(four)[:-len(four) - 8] + struct.pack(">I4sQ", 1, b"jp2c", 16 + len(four)) + four
+        for name, raw in (("one tile", jp2(codestream())), ("four tiles", jp2(four)),
+                          ("last tile-part runs to EOC", jp2(codestream(2, last_runs_to_eoc=True))),
+                          ("jp2c box to end of file", jp2(four, lbox=0)), ("XL jp2c box", xl),
+                          ("bare codestream", four), ("JPEG", b"\xff\xd8\xff\xe0" + b"\x00" * 40),
+                          ("bad SOT length", jp2(four.replace(b"\xff\x90\x00\x0a", b"\xff\x90\x00\x0b", 1))),
+                          ("not a codestream", jp2(b"\x00" * 40))):
+            with self.subTest(name):
+                self.assertIsNone(feed.jp2_truncation(raw))
+
+    def test_cut_short_jp2s_are_flagged_with_where_they_end(self):
+        four, whole = codestream(4), jp2(codestream(4))
+        boundary = len(codestream(2)) - 2
+        for name, raw, reason in (
+                ("no EOC", jp2(four[:-2]), "the codestream ends without an EOC marker after 4 of 4 tiles"),
+                ("box past the file", whole[:-10], "the 'jp2c' box declares 10 bytes past the end of the file"),
+                ("inside a tile-part", jp2(four[:-10], lbox=0),
+                 "tile-part 0 of tile 3 declares 8 bytes past the end of the codestream"),
+                ("at a tile-part boundary", jp2(four[:boundary], lbox=0),
+                 "the codestream ends without an EOC marker after 2 of 4 tiles"),
+                ("inside a tile-part header", jp2(four[:boundary + 6], lbox=0),
+                 "the codestream ends inside a tile-part header"),
+                ("last tile-part with no EOC", jp2(codestream(2, last_runs_to_eoc=True)[:-2], lbox=0),
+                 "tile 1's last tile-part runs to the end of the codestream with no EOC marker"),
+                ("inside the main header", jp2(four[:20], lbox=0),
+                 "main-header marker 0xFF51 runs past the end of the codestream"),
+                ("only SOC", jp2(four[:2]), "the codestream ends inside its main header"),
+                ("header boxes only", whole[:len(whole) - len(four) - 8],
+                 "the file ends before its codestream box"),
+                ("inside a header box", whole[:60], "the 'jp2h' box declares"),
+                ("bare codestream", four[:-2], "the codestream ends without an EOC marker after 4 of 4 tiles")):
+            with self.subTest(name):
+                self.assertIn(reason, feed.jp2_truncation(raw) or "")
+
+    def test_a_truncated_jp2_is_recorded_once_and_is_never_fetched_or_decoded_again(self):
+        good_raw, bad_raw = jp2(codestream(2)), jp2(codestream(2)[:-2])
+        good, bad = self.page(1, good_raw), self.page(2, bad_raw)
+        args = self.args([good, bad])
+        scans = {good["scan"]: good_raw, bad["scan"]: bad_raw}
+        calls = []
+
+        def fetch(request, timeout):
+            path = request.full_url.split("/scans/", 1)[1]
+            calls.append(path)
+            return io.BytesIO(scans[path])
+
+        with mock.patch.object(feed, "Texts", return_value=self.texts()), \
+                mock.patch.object(feed.urllib.request, "urlopen", side_effect=fetch), \
+                mock.patch.object(feed, "page_jpeg", return_value=(b"jpeg", (32, 32))) as decode, \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            feed.cmd_run(args)  # no SystemExit: nothing is left to retry
+            self.assertEqual([call.args[0] for call in decode.call_args_list], [good_raw])
+            self.assertEqual(self.logged(output, "scan truncated at source; not retried")[0]["doc_id"],
+                             bad["doc_id"])
+            self.assertEqual(self.logged(output, "source-truncated scans found"),
+                             [{"msg": "source-truncated scans found", "pages": 1,
+                               "batches": {"xx_test_ver01": 1}}])
+            self.assertEqual(sorted(calls), sorted(scans))
+
+            feed.cmd_run(args)
+            self.assertEqual(len(calls), 2)
+            self.assertEqual(self.logged(output, "source-truncated scans in campaign"),
+                             [{"msg": "source-truncated scans in campaign", "campaign": "qwen-test",
+                               "pages": 1, "batches": {"xx_test_ver01": 1}}])
+
+            replacement = jp2(codestream(1))
+            scans[bad["scan"]] = replacement
+            Path(args.pages).write_text(json.dumps(self.page(2, replacement)) + "\n")
+            feed.cmd_run(args)
+            self.assertEqual(calls[-1], bad["scan"])
+
+        records = feed.scan_quarantine.quarantined(self.state)
+        self.assertEqual([(r["source"]["sha256"], r["refetch_state"], r["attempts"], r["error_type"])
+                          for r in records],
+                         [(bad["sha256"], "source_truncated", 0, "SourceTruncated")])
+        self.assertIn("without an EOC marker after 2 of 2 tiles", records[0]["error"])
+        self.assertEqual(feed.scan_quarantine.retryable_ids(self.state), set())
+        self.assertEqual(feed.read_lines(self.state / "done.txt"), {good["doc_id"], bad["doc_id"]})
+        self.assertFalse((self.state / "skipped.txt").exists())
+        self.assertEqual(feed.scan_quarantine.quarantined_documents(self.root / "state"), {bad["doc_id"]})
+
+    def test_without_quarantine_option_a_truncated_jp2_is_skipped_with_its_reason(self):
+        raw = jp2(codestream(1)[:-2])
+        page = self.page(1, raw)
+        args = self.args([page], quarantine_decode=False)
+        with mock.patch.object(feed, "Texts", return_value=self.texts()), \
+                mock.patch.object(feed.urllib.request, "urlopen",
+                                  side_effect=lambda *a, **k: io.BytesIO(raw)) as fetch, \
+                mock.patch.object(feed, "page_jpeg") as decode, \
+                contextlib.redirect_stdout(io.StringIO()):
+            feed.cmd_run(args)
+            feed.cmd_run(args)
+        self.assertEqual(fetch.call_count, 1)
+        decode.assert_not_called()
+        self.assertEqual((self.state / "skipped.txt").read_text(),
+                         f"{page['doc_id']}\tsource_truncated: the codestream ends without an EOC marker "
+                         "after 1 of 1 tiles\n")
+        self.assertFalse((self.state / feed.scan_quarantine.DB_NAME).exists())
+
+    def test_source_truncated_ends_observation_but_leaves_a_manual_review(self):
+        quarantine = feed.scan_quarantine
+        observed, reviewed, other = (self.page(1, b"one"), self.page(2, b"two"),
+                                     self.page(3, b"three", batch="yy_test"))
+        decoder = types.SimpleNamespace(original_type="OSError")
+        quarantine.record_retryable(self.state, observed, OSError("timeout"))
+        quarantine.record_failure(self.state, observed, decoder, {})
+        for _ in range(3):
+            quarantine.record_failure(self.state, reviewed, decoder, {})
+        for page in (observed, reviewed, other, other):
+            quarantine.record_source_truncated(self.state, page, "the codestream ends early")
+        records = {r["source"]["doc_id"]: r for r in quarantine.quarantined(self.state)}
+        self.assertEqual({doc: (r["refetch_state"], r["attempts"]) for doc, r in records.items()},
+                         {observed["doc_id"]: ("source_truncated", 1),
+                          reviewed["doc_id"]: ("manual_review", 3),
+                          other["doc_id"]: ("source_truncated", 0)})
+        self.assertEqual(quarantine.retryable_ids(self.state), set())
+        quarantine.record_success(self.state, observed)
+        self.assertEqual(len(quarantine.quarantined(self.state)), 3)
+        self.assertEqual(quarantine.source_truncated_summary(quarantine.quarantined(self.state)),
+                         {"pages": 2, "batches": {"xx_test_ver01": 1, "yy_test_ver01": 1}})
+
+    @unittest.skipUnless(importlib.util.find_spec("pyarrow"), "PyArrow required for the follower")
+    def test_follow_records_a_truncated_jp2_and_excludes_it_from_later_rounds(self):
+        good_raw, bad_raw = jp2(codestream(1)), jp2(codestream(1)[:-10], lbox=0)
+        good, bad = self.page(1, good_raw), self.page(2, bad_raw)
+        rows = {page["doc_id"]: {**page, "format": "jp2", "fetched_at": f"2026-11-03T03:0{i}:00Z"}
+                for i, page in enumerate((bad, good))}
+        scans = {bad["scan"]: bad_raw, good["scan"]: good_raw}
+        calls = []
+
+        def fetch(request, timeout):
+            path = request.full_url.split("/scans/", 1)[1]
+            calls.append(path)
+            return io.BytesIO(scans[path])
+
+        argv = ["follow", "--campaign", "cpu-test", "--curated", str(self.root / "curated"),
+                "--scan-server", "http://scan", "--outbox", str(self.root / "outbox"),
+                "--state", str(self.root / "state"), "--staged-dsn", "test", "--chunk-pages", "2",
+                "--max-pending", "1", "--workers", "1", "--once", "--quarantine-decode", "--max-wait-secs", "0"]
+        state = self.root / "state/cpu-test"
+        with mock.patch.object(feed, "Texts", return_value=self.texts()), \
+                mock.patch.object(feed, "staged_from_db", return_value=set()), \
+                mock.patch.object(feed, "index_rows", return_value=rows), \
+                mock.patch.object(feed, "scan_set", return_value="buffer"), \
+                mock.patch.object(feed.urllib.request, "urlopen", side_effect=fetch), \
+                mock.patch.object(feed, "page_jpeg", return_value=(b"jpeg", (32, 32))), \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            feed.main(argv)
+            self.assertEqual(calls, [bad["scan"], good["scan"]])
+            (self.root / "outbox/cpu-test/c00001/READY").unlink()
+            feed.main(argv)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(self.logged(output, "quarantined scans excluded")[0]["pages"], 1)
+        self.assertEqual(self.logged(output, "source-truncated scans in campaign")[0]["batches"],
+                         {"xx_test_ver01": 1})
+        self.assertEqual(feed.scan_quarantine.quarantined(state)[0]["error"],
+                         "tile-part 0 of tile 0 declares 8 bytes past the end of the codestream")
+        self.assertEqual(feed.read_lines(state / "done.txt"), {good["doc_id"]})
 
 
 class FollowTest(unittest.TestCase):

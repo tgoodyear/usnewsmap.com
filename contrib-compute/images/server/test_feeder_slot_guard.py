@@ -10,6 +10,7 @@ from pathlib import Path
 import shlex
 import struct
 import sys
+import tempfile
 import types
 import unittest
 from unittest.mock import Mock, call, patch
@@ -140,6 +141,20 @@ class Observation(unittest.TestCase):
             result = GUARD.check(PROJECT)
         self.assertEqual(result, {"status": "maintenance", "reason": "stop_maintenance"})
         db.assert_not_called()
+
+    def test_supervisor_restart_hold_is_unknown_without_a_query(self):
+        with tempfile.TemporaryDirectory() as root:
+            snapshot_path = Path(root, "usnm-feeder-slots.json")
+            Path(root, GUARD.HOLD).touch()
+            with patch.object(GUARD, "status_path", return_value=snapshot_path), \
+                 patch.object(GUARD, "feeder_identity") as identity, \
+                 patch.object(GUARD, "database_apps") as db:
+                result = GUARD.check(PROJECT)
+        self.assertEqual(result, {"status": "unknown", "reason": "feeder_restart_hold"})
+        identity.assert_not_called()
+        db.assert_not_called()
+        # The supervisor writes the marker the guard reads, in the same directory.
+        self.assertIn(f'hold="$dir/{GUARD.HOLD}"', (HERE / "boinc-daemons.sh").read_text())
 
     def test_unavailable_maintenance_probe_is_unknown_not_a_monitor_crash(self):
         with patch.object(Path, "exists", side_effect=PermissionError("private detail")), \

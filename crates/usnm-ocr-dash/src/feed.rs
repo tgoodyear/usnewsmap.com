@@ -15,6 +15,8 @@ const CHECKS: [&str; 7] = [
     "controller_tick",
     "collection",
 ];
+/// Opt-in checks (#1462): each appears at most once, and no other code is accepted.
+const OPTIONAL_CHECKS: [&str; 1] = ["feeder_allocation"];
 const MAX_BYTES: u64 = 65536;
 const MAX_AGE: i64 = 180;
 pub const MAX_SOURCE_BYTES: usize = 8 * 1024 * 1024;
@@ -98,6 +100,7 @@ pub struct Check {
     pub eligible_results: Option<u64>,
     pub reason: Option<String>,
     pub seconds: Option<f64>,
+    pub app_ids: Option<Vec<u64>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -133,10 +136,14 @@ fn parse(bytes: &[u8], now: DateTime<Utc>) -> anyhow::Result<FeedView> {
     anyhow::ensure!(
         doc.schema_version == 1
             && doc.event == "boinc_feed_health"
-            && doc.checks.len() == CHECKS.len()
-            && CHECKS
+            && doc.checks.iter().all(|c| CHECKS
                 .iter()
-                .all(|code| doc.checks.iter().filter(|c| c.code == *code).count() == 1),
+                .chain(&OPTIONAL_CHECKS)
+                .any(|code| c.code == *code))
+            && CHECKS.iter().chain(&OPTIONAL_CHECKS).all(|code| {
+                let count = doc.checks.iter().filter(|c| c.code == *code).count();
+                count == 1 || count == 0 && OPTIONAL_CHECKS.contains(code)
+            }),
         "invalid feed contract"
     );
     let stale = !(0..=MAX_AGE).contains(&(now.timestamp() - doc.observed_at));
@@ -210,17 +217,39 @@ mod tests {
     #[test]
     fn partial_duplicate_and_malformed_contracts_fail_closed() {
         let now = Utc::now();
-        for edit in ["missing", "duplicate", "state"] {
+        let optional = json!({
+            "code": "feeder_allocation", "state": "pending", "duration_s": 60,
+            "threshold_s": 600, "reason": "registry_changed", "app_ids": [3, 7]
+        });
+        for edit in [
+            "missing",
+            "duplicate",
+            "state",
+            "unknown_code",
+            "duplicate_optional",
+            "optional_replaces_required",
+        ] {
             let mut value = document(now.timestamp());
+            let checks = value["checks"].as_array_mut().unwrap();
             match edit {
                 "missing" => {
-                    value["checks"].as_array_mut().unwrap().pop();
+                    checks.pop();
                 }
-                "duplicate" => value["checks"][0]["code"] = json!(CHECKS[1]),
-                _ => value["checks"][0]["state"] = json!("fine"),
+                "duplicate" => checks[0]["code"] = json!(CHECKS[1]),
+                "unknown_code" => checks.push(json!({
+                    "code": "other", "state": "healthy", "duration_s": 0, "threshold_s": 0
+                })),
+                "duplicate_optional" => checks.extend([optional.clone(), optional.clone()]),
+                "optional_replaces_required" => checks[0] = optional.clone(),
+                _ => checks[0]["state"] = json!("fine"),
             }
             assert!(parse(&serde_json::to_vec(&value).unwrap(), now).is_err());
         }
+        let mut value = document(now.timestamp());
+        value["checks"].as_array_mut().unwrap().push(optional);
+        let view = parse(&serde_json::to_vec(&value).unwrap(), now).unwrap();
+        assert_eq!(view.checks.len(), CHECKS.len() + 1);
+        assert_eq!(view.checks[CHECKS.len()].app_ids, Some(vec![3, 7]));
         assert!(read(Some(Path::new("/no-such-feed-file")), now).stale);
     }
 

@@ -24,10 +24,13 @@ sample.jsonl, langs.txt and SHA256SUMS, then READY last. It waits while --max-pe
 chunks are READY and not yet shipped (the host's quality-ship.sh moves them to the BOINC
 server and removes them). Pages it has written are listed in <state>/<campaign>/done.txt,
 pages it can't use (no LoC text) in skipped.txt with the reason, so a restart goes on
-where it stopped. A scan/index mismatch is retried instead of used. With
+where it stopped. A scan/index mismatch is retried instead of used. A JP2 whose codestream
+stops early (a box or tile-part that runs past its end, or no EOC marker) is truncated at
+source: the bytes match LoC's, so it is never decoded or retried; with --quarantine-decode it
+is recorded as source_truncated for its exact fingerprint, otherwise in skipped.txt. With
 --quarantine-decode, three known decoder failures of the same verified scan fingerprint
 are recorded separately and excluded until its bytes change.
-Quarantines in either mode require operator review.
+Decoder quarantines in run and follow require operator review.
 """
 import argparse
 import concurrent.futures
@@ -40,6 +43,7 @@ import json
 import os
 import re
 import shutil
+import struct
 import sys
 import time
 import urllib.error
@@ -313,6 +317,103 @@ class ScanGone(Exception):
     page was selected."""
 
 
+class SourceTruncated(Exception):
+    """A JP2 whose codestream stops before its end. The bytes matched the index line (and the
+    fetcher took them only if they matched the batch bag's md5), so the copy at LoC is the
+    same: a retry or a re-fetch returns the same incomplete image."""
+
+
+JP2_SIGNATURE = b"\x00\x00\x00\x0cjP  \r\n\x87\n"
+J2K_SOC, J2K_SIZ, J2K_SOT, J2K_EOC = 0xFF4F, 0xFF51, 0xFF90, 0xFFD9
+
+
+def jp2_codestream(raw):
+    """(start, end) of a JP2's codestream, or a str saying where the file ends early, or None
+    when this isn't a JP2 the check can judge (the decoder reports those)."""
+    if raw[:4] == b"\xff\x4f\xff\x51":
+        return 0, len(raw)
+    if raw[:12] != JP2_SIGNATURE:
+        return None
+    pos = 0
+    while pos < len(raw):
+        if pos + 8 > len(raw):
+            return f"the file ends inside a box header at byte {pos}"
+        length, kind = struct.unpack_from(">I4s", raw, pos)
+        header = 8
+        if length == 1:
+            if pos + 16 > len(raw):
+                return f"the file ends inside a box header at byte {pos}"
+            length, header = struct.unpack_from(">Q", raw, pos + 8)[0], 16
+        elif length == 0:
+            length = len(raw) - pos
+        if length < header:
+            return None
+        if pos + length > len(raw):
+            return (f"the {kind.decode('latin-1')!r} box declares {pos + length - len(raw)} bytes "
+                    "past the end of the file")
+        if kind == b"jp2c":
+            return pos + header, pos + length
+        pos += length
+    return "the file ends before its codestream box"
+
+
+def jp2_truncation(raw):
+    """Why a JP2's codestream is cut short, from its box, marker and tile-part headers only
+    (no decoding): a box or marker segment that runs past the end of the data, or a codestream
+    that stops without its EOC marker. None when it reaches EOC, or when its structure is
+    malformed in another way, which the decoder judges as before."""
+    found = jp2_codestream(raw)
+    if not isinstance(found, tuple):
+        return found
+    start, end = found
+    if end - start < 2:
+        return "the codestream ends before its SOC marker"
+    if struct.unpack_from(">H", raw, start)[0] != J2K_SOC:
+        return None
+    pos, tiles = start + 2, None
+    while True:  # the main header, up to the first tile-part
+        if pos + 4 > end:
+            return "the codestream ends inside its main header"
+        marker, length = struct.unpack_from(">HH", raw, pos)
+        if marker == J2K_SOT:
+            break
+        if marker >> 8 != 0xFF or length < 2:
+            return None
+        if pos + 2 + length > end:
+            return f"main-header marker 0x{marker:04X} runs past the end of the codestream"
+        if marker == J2K_SIZ and length >= 38:
+            x, y, _, _, xt, yt, xt0, yt0 = struct.unpack_from(">8I", raw, pos + 6)
+            if xt and yt and x > xt0 and y > yt0:
+                tiles = -(-(x - xt0) // xt) * -(-(y - yt0) // yt)
+        pos += 2 + length
+    seen = set()
+    while True:  # SOT to SOT by each tile-part's declared length (Psot)
+        if pos + 12 > end:
+            return "the codestream ends inside a tile-part header"
+        marker, lsot, tile, psot, part, _ = struct.unpack_from(">HHHIBB", raw, pos)
+        if marker != J2K_SOT or lsot != 10:
+            return None
+        seen.add(tile)
+        if psot == 0:  # the last tile-part, which runs to EOC
+            if end - pos < 14 or struct.unpack_from(">H", raw, end - 2)[0] != J2K_EOC:
+                return f"tile {tile}'s last tile-part runs to the end of the codestream with no EOC marker"
+            return None
+        if psot < 14:
+            return None
+        if pos + psot > end:
+            return (f"tile-part {part} of tile {tile} declares {pos + psot - end} bytes past the end "
+                    "of the codestream")
+        pos += psot
+        if pos + 2 > end:
+            of = f" of {tiles}" if tiles else ""
+            return f"the codestream ends without an EOC marker after {len(seen)}{of} tiles"
+        marker = struct.unpack_from(">H", raw, pos)[0]
+        if marker == J2K_EOC:
+            return None
+        if marker != J2K_SOT:
+            return None
+
+
 def fetch_scan(server, p, timeout=120):
     url = f"{server.rstrip('/')}/scans/{p['scan']}"
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
@@ -325,6 +426,10 @@ def fetch_scan(server, p, timeout=120):
         raise
     if len(raw) != p["bytes"] or hashlib.sha256(raw).hexdigest() != p["sha256"]:
         raise ValueError("scan doesn't match its index line")
+    if p["scan"].endswith(".jp2"):
+        reason = jp2_truncation(raw)
+        if reason:
+            raise SourceTruncated(reason)
     return raw
 
 
@@ -480,7 +585,7 @@ def fill_chunk(a, texts, chunk, size, short_ok, camp_dir, state, seq, done_path,
         years = {p["date"][:4] for p in chunk if p["lccn"] == lccn}
         as_map.update(texts.american_stories(lccn, years, docs))
         ours.update(texts.ours(lccn, docs))
-    skipped = []
+    skipped, terminal, truncated = [], [], {}
     prepared = {}
     usable, at = [], []
     blocked = scan_quarantine.quarantined_ids(state) if getattr(a, "quarantine_decode", False) else set()
@@ -500,13 +605,15 @@ def fill_chunk(a, texts, chunk, size, short_ok, camp_dir, state, seq, done_path,
     while len(prepared) < size and tried < len(usable):
         wave = usable[tried : tried + size - len(prepared)]
         tried += len(wave)
-        retry += prepare_wave(a, texts, wave, loc, as_map, ours, state, prepared)
+        retry += prepare_wave(a, texts, wave, loc, as_map, ours, state, prepared, terminal, truncated)
+    if truncated:
+        log("source-truncated scans found", pages=sum(truncated.values()), batches=dict(sorted(truncated.items())))
     ok = [p for p in usable[:tried] if p["doc_id"] in prepared]
     if len(ok) < size and not short_ok:
         log("chunk came up short; its pages wait for the next round", pages=len(ok), chunk_pages=size)
         return 0, retry, seq, 0
     used = len(chunk) if tried == len(usable) else at[tried - 1] + 1
-    skipped = [(d, why) for i, d, why in skipped if i < used]
+    skipped = [(d, why) for i, d, why in skipped if i < used] + terminal
     if getattr(a, "alto_cache", None):
         # A corrupt source receipt is an integrity failure, not a permanently skipped page.
         for doc, (jpg, _, tx, ours_alto_path) in list(prepared.items()):
@@ -529,8 +636,10 @@ def fill_chunk(a, texts, chunk, size, short_ok, camp_dir, state, seq, done_path,
     return len(ok), retry, seq, used
 
 
-def prepare_wave(a, texts, wave, loc, as_map, ours, state, prepared):
-    """Prepares `wave`'s pages into `prepared`; returns how many failed in a way worth a retry."""
+def prepare_wave(a, texts, wave, loc, as_map, ours, state, prepared, skipped, truncated):
+    """Prepares `wave`'s pages into `prepared`, adding (doc, reason) to `skipped` for pages that
+    are never worth a retry and counting source-truncated scans by batch in `truncated`; returns
+    how many failed in a way worth a retry."""
     retry = 0
     with concurrent.futures.ThreadPoolExecutor(max_workers=a.workers) as ex:
         futs = {ex.submit(prepare_page, a.scan_server, texts, p, loc[p["doc_id"]],
@@ -545,6 +654,16 @@ def prepare_wave(a, texts, wave, loc, as_map, ours, state, prepared):
                 log("scan gone; left for a later selection", doc_id=p["doc_id"], error=str(e)[:200])
                 if getattr(a, "quarantine_decode", False):
                     scan_quarantine.record_retryable(state, p, e)
+            except SourceTruncated as e:
+                # Terminal for these bytes: never decoded, retried or counted as a decoder failure.
+                log("scan truncated at source; not retried", doc_id=p["doc_id"], sha256=p["sha256"],
+                    error=str(e)[:200])
+                if getattr(a, "quarantine_decode", False):
+                    scan_quarantine.record_source_truncated(state, p, str(e))
+                else:
+                    skipped.append((p["doc_id"], f"{scan_quarantine.SOURCE_TRUNCATED}: {e}"))
+                batch = f"{p['batch']}_ver{int(p['batch_version']):02d}"
+                truncated[batch] = truncated.get(batch, 0) + 1
             except ScanDecodeError as e:
                 log("scan decode failed", doc_id=p["doc_id"], sha256=p["sha256"],
                     error_type=e.original_type, error=str(e)[:200])
@@ -584,9 +703,13 @@ def cmd_run(a):
     done = read_lines(done_path) | read_lines(skip_path)
     with open(a.pages) as f:
         candidates = [p for p in map(json.loads, f) if p["doc_id"] not in done]
-    blocked = scan_quarantine.quarantined_ids(state) if getattr(a, "quarantine_decode", False) else set()
+    records = scan_quarantine.quarantined(state) if getattr(a, "quarantine_decode", False) else []
+    blocked = {record["id"] for record in records}
     todo = [p for p in candidates if not blocked or scan_quarantine.source_id(p) not in blocked]
     log("start", campaign=a.campaign, todo=len(todo), done=len(done), quarantined=len(candidates) - len(todo))
+    truncated = scan_quarantine.source_truncated_summary(records)
+    if truncated["pages"]:
+        log("source-truncated scans in campaign", campaign=a.campaign, **truncated)
     seq = 1 + max([int(os.path.basename(d)[1:]) for d in glob.glob(os.path.join(camp_dir, "c[0-9]*"))]
                   + [int(x) for x in read_lines(os.path.join(state, "chunks.txt"))] + [0])
     texts = Texts(a.curated)
@@ -921,6 +1044,7 @@ def cmd_follow(a):
             f.write(a.campaign + "\n")
     texts = Texts(a.curated)
     absent_path = os.path.join(state, "absent.txt")
+    reported = None
     while True:
         # Pages with a unit or a staging record anywhere (usnm_quality), plus a static list of
         # older campaigns' pages; with neither, stop rather than stage pages twice.
@@ -958,6 +1082,10 @@ def cmd_follow(a):
         if gone:
             log("buffer scans deleted after shipping", pages=gone)
         quarantined = scan_quarantine.quarantined(state) if getattr(a, "quarantine_decode", False) else []
+        truncated = scan_quarantine.source_truncated_summary(quarantined)
+        if truncated["pages"] and truncated != reported:
+            log("source-truncated scans in campaign", campaign=a.campaign, **truncated)
+        reported = truncated
         blocked_ids = {record["id"] for record in quarantined}
         blocked_docs = {record["source"]["doc_id"] for record in quarantined}
         rows, excluded, has_loc, no_text = [], 0, {}, 0
@@ -985,7 +1113,8 @@ def cmd_follow(a):
         slots = max(0, a.max_pending - len(pending_chunks(camp_dir)))
         # Pages past a chunk's --chunk-pages stand in for any that can't be prepared.
         reserve = max(1, a.chunk_pages // 10)
-        overdue = time.time() - last_chunk_at(state) >= a.max_wait_secs
+        # 0 never waits: a chunks.txt just created can carry an mtime a hair ahead of time.time().
+        overdue = a.max_wait_secs <= 0 or time.time() - last_chunk_at(state) >= a.max_wait_secs
         if len(rows) < a.chunk_pages and not overdue:
             if rows:
                 log("waiting for a full chunk", campaign=a.campaign, pages=len(rows), chunk_pages=a.chunk_pages)

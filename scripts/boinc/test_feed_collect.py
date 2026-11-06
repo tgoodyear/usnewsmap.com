@@ -699,6 +699,30 @@ class CollectionTests(unittest.TestCase):
                     self.assertFalse(document["healthy"])
             self.assertEqual({call.args[0] for call in read.call_args_list}, {"/server", "/controller"})
 
+    def test_feeder_allocation_is_opt_in_and_invalid_reports_fail_the_server_source(self):
+        docs = self.documents()
+        config = {"server": "/server", "controller": "/controller"}
+        guarded = config | {"feeder_allocation": True}
+        with patch.object(C, "read_source", side_effect=lambda path: deepcopy(docs[path])), \
+                patch.object(C.time, "time", return_value=NOW):
+            self.assertNotIn("feeder_allocation", C.collect(config))
+            self.assertEqual(C.collect(guarded)["feeder_allocation"]["reason"], "not_reported")
+            report = {"status": "drift", "reason": "registry_changed", "app_ids": [3, 7]}
+            docs["/server"]["feeder_allocation"] = report
+            facts = C.collect(guarded)
+            self.assertEqual(facts["feeder_allocation"], report)
+            self.assertNotIn("feeder_allocation", C.collect(config))
+            for bad in (report | {"status": "fine"}, report | {"reason": "a b"}, report | {"app_ids": [-1]},
+                        report | {"app_ids": "3"}, report | {"extra": 1}, "drift"):
+                with self.subTest(bad=bad):
+                    docs["/server"]["feeder_allocation"] = bad
+                    facts = C.collect(guarded)
+                    self.assertIn("server", facts["errors"])
+                    self.assertEqual(facts["feeder_allocation"]["reason"], "server_unavailable")
+            for value in ("yes", 1, None):
+                with self.subTest(value=value), self.assertRaises(ValueError):
+                    C.collect(config | {"feeder_allocation": value})
+
     def test_client_bindings_must_match_the_reported_host(self):
         docs = self.documents()
         config = {name: "/" + name for name in ("server", "controller", "backlog")}
@@ -1072,6 +1096,71 @@ with socket.create_connection({listener.getsockname()!r}, timeout=2) as connecti
             self.assertEqual(result["last_workunits"]["usnm_qwen"], NOW - 5)
             self.assertEqual(result["enabled_until"], NOW + 86400)
             self.assertEqual(result["plans"]["intel"]["max_wu_id"], "10")
+
+    def test_feeder_guard_reports_exit_codes_and_rejects_invalid_output(self):
+        drift = {"event": "boinc_feeder_slot_guard", "schema_version": 1, "status": "drift",
+                 "reason": "registry_changed", "added_app_ids": [7], "removed_app_ids": [3],
+                 "weight_changed_app_ids": [7]}
+        unknown = {"event": "boinc_feeder_slot_guard", "schema_version": 1, "status": "unknown",
+                   "reason": "database_unavailable"}
+        with fixture() as root:
+            guard = root / "guard.py"
+            cases = [
+                (drift, 1, {"status": "drift", "reason": "registry_changed", "app_ids": [3, 7]}),
+                (unknown, 2, {"status": "unknown", "reason": "database_unavailable", "app_ids": []}),
+                (drift, 3, C.GUARD_UNAVAILABLE),
+                (drift | {"event": "other"}, 1, C.GUARD_UNAVAILABLE),
+                (drift | {"schema_version": True}, 1, C.GUARD_UNAVAILABLE),
+                (drift | {"status": "fine"}, 1, C.GUARD_UNAVAILABLE),
+                (drift | {"reason": "not a name"}, 1, C.GUARD_UNAVAILABLE),
+                (drift | {"added_app_ids": [-1]}, 1, C.GUARD_UNAVAILABLE),
+                (drift | {"removed_app_ids": "3"}, 1, C.GUARD_UNAVAILABLE),
+            ]
+            for report, code, expected in cases:
+                with self.subTest(report=report, code=code):
+                    guard.write_text(f"import json, sys\nprint(json.dumps({report!r}))\nsys.exit({code})\n")
+                    self.assertEqual(C.feeder_allocation(str(guard), root), expected)
+            guard.unlink()
+            self.assertEqual(C.feeder_allocation(str(guard), root), C.GUARD_UNAVAILABLE)
+            # The image's guard, outside its container, is a valid unknown report.
+            real = ROOT / "contrib-compute/images/server/feeder-slot-guard.py"
+            result = C.feeder_allocation(str(real), root)
+            self.assertEqual(result["status"], "unknown")
+            self.assertNotEqual(result, C.GUARD_UNAVAILABLE)
+
+    def test_feeder_guard_runs_in_the_container_like_its_systemd_unit(self):
+        match = (b'{"event":"boinc_feeder_slot_guard","reason":"allocation_matches_registry",'
+                 b'"schema_version":1,"status":"match"}')
+        guard = "/usr/local/lib/usnm-boinc/feeder-slot-guard.py"
+        with patch.object(C, "run", return_value=match) as run:
+            result = C.feeder_allocation(guard, "/host/project", container="usnm-boinc-server")
+        self.assertEqual(result, {"status": "match", "reason": "allocation_matches_registry", "app_ids": []})
+        argv = run.call_args.args[0]
+        self.assertEqual(run.call_args.kwargs, {"limit": 65536, "exits": (0, 1, 2)})
+        unit = (ROOT / "scripts/boinc/onprem/usnm-feeder-slot-guard.service").read_text()
+        self.assertIn("ExecStart=/usr/bin/" + " ".join(argv) + "\n", unit)
+
+    def test_php_server_reports_feeder_allocation_only_with_a_guard(self):
+        with server_fixture() as root:
+            guard = root / "guard.py"
+            guard.write_text("import sys\nprint('{\"event\":\"boinc_feeder_slot_guard\",\"reason\":"
+                             "\"reload_changed_app_order_or_weights\",\"schema_version\":1,"
+                             "\"status\":\"drift\"}')\nsys.exit(1)\n")
+            output = root / "status.json"
+            args = ["server", "--project", str(root), "--window-env", str(root / "window.env"),
+                    "--output", str(output)]
+            self.assertEqual(C.main(args), 0)
+            self.assertNotIn("feeder_allocation", json.loads(output.read_text()))
+            self.assertEqual(C.main(args + ["--feeder-guard", str(guard)]), 0)
+            document = json.loads(output.read_text())
+            self.assertEqual(document["feeder_allocation"], {
+                "status": "drift", "reason": "reload_changed_app_order_or_weights", "app_ids": []})
+            # The fixture database's workunits are dated relative to NOW.
+            self.assertEqual(C.fresh(document | {"observed_at": NOW}, NOW, "server")["feeder_allocation"],
+                             document["feeder_allocation"])
+            guard.write_text("raise SystemExit(2)\n")
+            self.assertEqual(C.main(args + ["--feeder-guard", str(guard)]), 0)
+            self.assertEqual(json.loads(output.read_text())["feeder_allocation"], C.GUARD_UNAVAILABLE)
 
     def test_container_config_resolves_when_host_config_symlink_is_broken(self):
         with server_fixture() as root:

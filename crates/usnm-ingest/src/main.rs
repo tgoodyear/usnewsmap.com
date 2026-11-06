@@ -65,6 +65,7 @@ enum Command {
     OcrAlternateStage(ocr::OcrAlternateStageArgs),
     OcrAlternateDecide(ocr::OcrAlternateDecideArgs),
     OcrAlternatePreview(ocr::OcrAlternatePreviewArgs),
+    OcrAlternateSupersession(ocr::OcrAlternateSupersessionArgs),
     OcrSeed(ocr::OcrSeedArgs),
     OcrEnqueue(ocr::OcrEnqueueArgs),
     OcrRequeue(ocr::OcrRequeueArgs),
@@ -75,6 +76,7 @@ enum Command {
     SearchlogCopy(searchlog_copy::SearchlogCopyArgs),
     OcrLocalCopy(ocr_local_copy::OcrLocalCopyArgs),
     Pictures(pictures::PicturesArgs),
+    PicturesJoin(pictures::PicturesJoinArgs),
     ReleaseFinish(release::ReleaseFinishArgs),
     Run(run::RunArgs),
 }
@@ -158,6 +160,7 @@ impl Command {
             Command::OcrAlternateStage { .. } => "ocr-alternate-stage",
             Command::OcrAlternateDecide { .. } => "ocr-alternate-decide",
             Command::OcrAlternatePreview { .. } => "ocr-alternate-preview",
+            Command::OcrAlternateSupersession { .. } => "ocr-alternate-supersession",
             Command::OcrSeed { .. } => "ocr-seed",
             Command::OcrEnqueue { .. } => "ocr-enqueue",
             Command::OcrRequeue { .. } => "ocr-requeue",
@@ -168,6 +171,7 @@ impl Command {
             Command::SearchlogCopy { .. } => "searchlog-copy",
             Command::OcrLocalCopy { .. } => "ocr-local-copy",
             Command::Pictures { .. } => "pictures",
+            Command::PicturesJoin { .. } => "pictures-join",
             Command::Run { .. } => "run",
         }
     }
@@ -201,6 +205,7 @@ fn first_step(command: &Command) -> Option<Step> {
         | Command::OcrAlternateStage { .. }
         | Command::OcrAlternateDecide { .. }
         | Command::OcrAlternatePreview { .. }
+        | Command::OcrAlternateSupersession { .. }
         | Command::OcrSeed { .. }
         | Command::OcrEnqueue { .. }
         | Command::OcrRequeue { .. }
@@ -210,7 +215,8 @@ fn first_step(command: &Command) -> Option<Step> {
         | Command::CongressDamage { .. }
         | Command::SearchlogCopy { .. }
         | Command::OcrLocalCopy { .. }
-        | Command::Pictures { .. } => None,
+        | Command::Pictures { .. }
+        | Command::PicturesJoin { .. } => None,
     }
 }
 
@@ -295,6 +301,9 @@ async fn command(
             ocr::ocr_alternate_decide_command(cli, state, args).await
         }
         Command::OcrAlternatePreview(args) => ocr::ocr_alternate_preview_command(cli, args).await,
+        Command::OcrAlternateSupersession(args) => {
+            ocr::ocr_alternate_supersession_command(cli, args).await
+        }
         Command::OcrSeed(args) => ocr::ocr_seed_command(cli, state, start, args).await,
         Command::OcrEnqueue(args) => ocr::ocr_enqueue_command(cli, state, args).await,
         Command::OcrRequeue(args) => ocr::ocr_requeue_command(cli, state, args).await,
@@ -311,6 +320,7 @@ async fn command(
         Command::SearchlogCopy(args) => searchlog_copy::searchlog_copy_command(args).await,
         Command::OcrLocalCopy(args) => ocr_local_copy::ocr_local_copy_command(args).await,
         Command::Pictures(args) => pictures::pictures_command(cli, args).await,
+        Command::PicturesJoin(args) => pictures::pictures_join_command(cli, state, args).await,
         Command::Duplicates => batches::duplicates_command(cli, state).await,
         Command::Prune(args) => prune::prune_command(cli, state, args).await,
         Command::Curate(args) => curate::curate_command(cli, state, start, args).await,

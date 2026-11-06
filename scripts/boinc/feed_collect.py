@@ -33,6 +33,9 @@ NAME = re.compile(r"[a-zA-Z0-9_-]{1,80}")
 SOURCE_UNKNOWN_REASONS = ("task_resource_usage_unavailable", "active_task_resource_usage_unavailable")
 # An own client reporting another BOINC host than its configured binding.
 BINDING_MISMATCH = "host_binding_mismatch"
+# feeder-slot-guard.py prints one aggregate report and exits 0 (match, maintenance), 1 (drift) or 2 (#1462).
+GUARD_STATUSES = ("match", "maintenance", "drift", "unknown")
+GUARD_UNAVAILABLE = {"status": "unknown", "reason": "guard_unavailable", "app_ids": []}
 SYSTEMD_FAILURE_FIELDS = {
     # UNIT_FAILURE_RESULT and UNIT_FAILED (failed start job), not free-text messages.
     "d9b373ed55a64feb8242e02dbe79a49c": "UNIT_RESULT",
@@ -52,7 +55,7 @@ def read_file(path, limit=MAX_BYTES):
     return value
 
 
-def run(argv, cwd=None, limit=MAX_BYTES):
+def run(argv, cwd=None, limit=MAX_BYTES, exits=(0,)):
     """Bound reads and clean up the owned local process group before reaping."""
     process = subprocess.Popen(argv, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                                start_new_session=True)
@@ -78,7 +81,7 @@ def run(argv, cwd=None, limit=MAX_BYTES):
             if left <= 0:
                 raise TimeoutError("source timeout")
             time.sleep(min(.01, left))
-        if status.si_code != os.CLD_EXITED or status.si_status:
+        if status.si_code != os.CLD_EXITED or status.si_status not in exits:
             raise ValueError("source command failed")
         return bytes(output)
     finally:
@@ -206,6 +209,15 @@ def fresh(document, now, kind):
             if (version["app"] not in APP_NAMES or not isinstance(version["platform"], str)
                     or version["plan_class"] and version["plan_class"] not in document["plans"]):
                 raise ValueError("invalid dispatchable version")
+        if "feeder_allocation" in document:
+            guard = document["feeder_allocation"]
+            if (not isinstance(guard, dict) or set(guard) != {"status", "reason", "app_ids"}
+                    or guard["status"] not in GUARD_STATUSES
+                    or not isinstance(guard["reason"], str) or not NAME.fullmatch(guard["reason"])
+                    or not isinstance(guard["app_ids"], list) or len(guard["app_ids"]) > 768):
+                raise ValueError("invalid feeder allocation")
+            for app_id in guard["app_ids"]:
+                natural(app_id)
     if kind == "client":
         if (natural(document["host_id"]) == 0 or not isinstance(document["versions"], list)
                 or len(document["versions"]) > 256
@@ -352,7 +364,36 @@ def host_preferences(rows, apps):
     return preferences
 
 
-def server(project, env_file, container=None, container_project="/project/usnmocr"):
+def guard_report(raw):
+    """Keep the guard's status, reason and drifted app IDs; anything else is unavailable."""
+    report = json.loads(raw)
+    if (not isinstance(report, dict) or report.get("event") != "boinc_feeder_slot_guard"
+            or type(report.get("schema_version")) is not int or report["schema_version"] != 1
+            or report.get("status") not in GUARD_STATUSES
+            or not isinstance(report.get("reason"), str) or not NAME.fullmatch(report["reason"])):
+        raise ValueError("invalid guard report")
+    ids = []
+    for key in ("added_app_ids", "removed_app_ids", "weight_changed_app_ids"):
+        values = report.get(key, [])
+        if not isinstance(values, list) or len(values) > 256:
+            raise ValueError("invalid guard app IDs")
+        ids += [natural(value) for value in values]
+    return {"status": report["status"], "reason": report["reason"], "app_ids": sorted(set(ids))}
+
+
+def feeder_allocation(guard, project, container=None, container_project="/project/usnmocr"):
+    """The server image's read-only slot guard. Its failure is unknown, not the source's."""
+    command = [sys.executable, guard, "--project", str(project)]
+    if container:
+        command = ["podman", "exec", "--user", "boincadm", container,
+                   "/usr/bin/python3", guard, "--project", container_project]
+    try:
+        return guard_report(run(command, limit=65536, exits=(0, 1, 2)))
+    except (OSError, ValueError, TypeError, RecursionError):
+        return dict(GUARD_UNAVAILABLE)
+
+
+def server(project, env_file, container=None, container_project="/project/usnmocr", feeder_guard=None):
     # PHP validates config in its own namespace; only inventory crosses the container boundary.
     before = read_file(project / "plan_class_spec.xml")
     command = ["php", "-r", PHP]
@@ -380,7 +421,10 @@ def server(project, env_file, container=None, container_project="/project/usnmoc
     data["host_preferences"] = host_preferences(data.pop("preferences"), data["apps"])
     data["last_workunits"] = {r["name"]: int(r["last_workunit"]) for r in data["apps"]}
     data["minimum_versions"] = {r["name"]: int(r["min_version"]) for r in data.pop("apps")}
-    return data | {"plans": plans, "enabled_until": window(env_file)}
+    data |= {"plans": plans, "enabled_until": window(env_file)}
+    if feeder_guard:
+        data["feeder_allocation"] = feeder_allocation(feeder_guard, project, container, container_project)
+    return data
 
 
 def client_resource_usage(node, default_cpu):
@@ -957,6 +1001,10 @@ def own_clients(config):
 
 
 def collect(config):
+    # The feeder allocation check is opt-in, so a config without it keeps today's checks.
+    guarded = config.get("feeder_allocation", False)
+    if type(guarded) is not bool:
+        raise ValueError("feeder_allocation must be true or false")
     locations = {"server": config["server"], "controller": config["controller"]}
     # The backlog source is optional until it is deployed: unknown, never healthy.
     if config.get("backlog") is not None:
@@ -1057,6 +1105,10 @@ def collect(config):
     if "server" in documents:
         facts.update(enabled_until=documents["server"]["enabled_until"],
                      last_workunits=documents["server"]["last_workunits"])
+    if guarded:
+        reason = "not_reported" if "server" in documents else "server_unavailable"
+        facts["feeder_allocation"] = documents.get("server", {}).get(
+            "feeder_allocation", {"status": "unknown", "reason": reason, "app_ids": []})
     if "controller" in documents:
         facts["tick"] = documents["controller"]["tick"]
     if "backlog" in documents:
@@ -1075,6 +1127,8 @@ def main(argv=None):
     p.add_argument("--window-env", type=Path, required=True)
     p.add_argument("--container", help="Existing local BOINC container; PHP config and database reads run inside it")
     p.add_argument("--container-project", default="/project/usnmocr")
+    p.add_argument("--feeder-guard", help="The image's feeder-slot-guard.py, run read-only (as boincadm in "
+                   "--container) and reported as feeder_allocation")
     p = sub.add_parser("client")
     p.add_argument("--data-dir", type=Path, required=True)
     p.add_argument("--port", type=int, default=31416)
@@ -1092,7 +1146,8 @@ def main(argv=None):
     result = {"schema_version": 1, "source": args.source, "observed_at": int(time.time())}
     try:
         if args.source == "server":
-            result.update(server(args.project, args.window_env, args.container, args.container_project))
+            result.update(server(args.project, args.window_env, args.container, args.container_project,
+                                 args.feeder_guard))
         elif args.source == "client":
             result.update(client(args.data_dir, args.port))
         elif args.source == "controller":

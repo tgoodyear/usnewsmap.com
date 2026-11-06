@@ -169,6 +169,15 @@ fn feed_panel(v: &crate::feed::FeedView, o: &mut String) {
             "usnm_ocr_no_work" | "usnm_qwen_no_work" => {
                 check.backlog.map(|n| format!("{n} backlogged"))
             }
+            "feeder_allocation" => check.reason.as_ref().map(|reason| {
+                let ids = check.app_ids.as_deref().unwrap_or_default();
+                if ids.is_empty() {
+                    reason.clone()
+                } else {
+                    let ids = ids.iter().map(u64::to_string).collect::<Vec<_>>();
+                    format!("{reason}: app IDs {}", ids.join(", "))
+                }
+            }),
             _ => None,
         };
         let _ = write!(

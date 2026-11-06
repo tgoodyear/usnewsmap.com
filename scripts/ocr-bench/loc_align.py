@@ -15,7 +15,11 @@ spec = importlib.util.spec_from_file_location(
     "altotext", Path(__file__).resolve().parents[1] / "ocr-survey" / "altotext.py")
 altotext = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(altotext)
+spec = importlib.util.spec_from_file_location("loc_inventory", Path(__file__).with_name("loc_inventory.py"))
+loc_inventory = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(loc_inventory)
 POLICY = "loc-word-centres-xml-order-v1"
+AUDIT_FORMAT = "usnm-loc-ocr-artifacts/1"
 
 
 def checked_file(path, digest, limit):
@@ -129,6 +133,40 @@ def adapt(sample, binding):
     return align(xml, width, height, provenance["box"], binding["scale"])
 
 
+def load_audit(path, digest):
+    """Index a checksum-pinned `loc_archive.py --out` page inventory by canonical page ID."""
+    audit = json.loads(checked_file(path, digest, 64 << 20))
+    if audit.get("format") != AUDIT_FORMAT:
+        raise ValueError("audit inventory is not " + AUDIT_FORMAT)
+    archive = audit.get("archive_sha256")
+    if not isinstance(archive, str) or len(archive) != 64 or set(archive) - set("0123456789abcdef"):
+        raise ValueError("audit inventory has no archive SHA-256")
+    pages = {}
+    for page in audit["pages"]:
+        if page["doc_id"] in pages:
+            raise ValueError("duplicate audited page")
+        pages[page["doc_id"]] = page
+    if not pages or len(pages) != audit["page_count"]:
+        raise ValueError("audit inventory page count differs from its pages")
+    return {"inventory_sha256": digest, "archive_sha256": archive, "pages": pages}
+
+
+def audited(audit, binding):
+    """Bind a registration's ALTO to exactly the audited package member for the same page."""
+    doc_id = loc_inventory.ndnp_doc_id(binding["source_page_url"])
+    if doc_id is None:
+        raise ValueError("audited binding needs an NDNP page URL")
+    page = audit["pages"].get(doc_id)
+    if page is None:
+        raise ValueError("page is not in the audited package")
+    member = page["artifacts"]["xml"]
+    if member["sha256"] != binding["alto_sha256"]:
+        raise ValueError("ALTO differs from the audited package member")
+    return {"doc_id": doc_id, "archive_sha256": audit["archive_sha256"],
+            "inventory_sha256": audit["inventory_sha256"], "member": member["path"],
+            "member_bytes": member["bytes"], "software": page.get("software", [])}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--release", type=Path, required=True)
@@ -136,7 +174,13 @@ def main():
     parser.add_argument("--baseline", choices=("loc-legacy-v1", "loc-refreshed-v1"), required=True)
     parser.add_argument("--bindings", type=Path, required=True)
     parser.add_argument("--out-dir", type=Path, required=True)
+    parser.add_argument("--audit-inventory", type=Path,
+                        help="loc_archive.py --out page inventory every binding's ALTO must come from")
+    parser.add_argument("--audit-inventory-sha256", help="pinned SHA-256 of --audit-inventory")
     args = parser.parse_args()
+    if (args.audit_inventory is None) != (args.audit_inventory_sha256 is None):
+        parser.error("--audit-inventory and --audit-inventory-sha256 go together")
+    audit = args.audit_inventory and load_audit(args.audit_inventory, args.audit_inventory_sha256)
     manifest_bytes = (args.release / "manifest.json").read_bytes()
     manifest = json.loads(manifest_bytes)
     selected = set(manifest["subsets"][args.subset]["members"])
@@ -173,6 +217,8 @@ def main():
             if sample["reference_status"] != "human-verified":
                 raise ValueError("independent human reference required")
             result = adapt(sample, binding)
+            if audit:
+                result["audit"] = audited(audit, binding)
         except (ValueError, TypeError, KeyError, OSError, ET.ParseError) as error:
             statuses.append({"id": identity, "status": "error", "reason": str(error)})
             continue
@@ -191,6 +237,11 @@ def main():
               "counts": counts, "samples": statuses, "inference_cost": "unknown",
               "limitations": "crop transcription only; XML order, not whole-page reading-order evaluation; "
                              "String centres in crop; HYP elements excluded; registration is operator-verified"}
+    if audit:
+        report["audit_inventory_sha256"] = audit["inventory_sha256"]
+        report["audit_archive_sha256"] = audit["archive_sha256"]
+        report["limitations"] += ("; the audit binds ALTO bytes to the package's page ID, "
+                                  "not to the source scan")
     args.out_dir.mkdir()
     outputs_bytes = "".join(json.dumps(row) + "\n" for row in outputs).encode()
     (args.out_dir / "outputs.jsonl").write_bytes(outputs_bytes)

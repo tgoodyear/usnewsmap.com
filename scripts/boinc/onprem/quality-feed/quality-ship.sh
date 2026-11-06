@@ -19,6 +19,8 @@
 #     [--qwen-submit-binary usnm-boinc] (native only: submit every request version with this
 #     binary, the image's own once it is from #1437 on. Without it, qwen_submit.py submits
 #     versions 3 and 4 with its stage binary, #1449)
+#     [--qwen-bundle-size N] (native only, 2 to 32: pages per native unit in --qwen-root, which
+#     must be a root of its own, #1435. Never the Yiddish root. Without it, one page per unit)
 #
 # For each READY chunk under <outbox>/<campaign>/, oldest first, at most --max-chunks a run:
 #  1. Stops while usnm_quality has more than --max-unsent results ready to send (the public
@@ -62,7 +64,7 @@ READERS=loc-hist,as,ours-ndlocr,ours-paddle,ours-surya,ours-tesseract
 BUNDLE=500 MAX_UNSENT=300 MAX_CHUNKS=1 MIN_FREE=40 WHAT_IF=false
 SHARE=/srv/usnm-boinc/project STEP=/usr/local/sbin/usnm-boinc-step
 QWEN_PLAN="" QWEN_MODELS="" QWEN_MAX_READY=1000 STEP_WINDOW=0
-PROMPT=1 QWEN_ROOT="" YIDDISH_ROOT="" YIDDISH_PROMPT=4 SUBMIT_BINARY=""
+PROMPT=1 QWEN_ROOT="" YIDDISH_ROOT="" YIDDISH_PROMPT=4 SUBMIT_BINARY="" QWEN_BUNDLE=""
 STATUS_URL="https://boinc.usnewsmap.com/server_status.php?xml=1"
 while [ $# -gt 0 ]; do
   case $1 in
@@ -88,6 +90,7 @@ while [ $# -gt 0 ]; do
     --qwen-yiddish-root) YIDDISH_ROOT=${2:-}; shift 2 ;;
     --yiddish-prompt-version) YIDDISH_PROMPT=${2:-}; shift 2 ;;
     --qwen-submit-binary) SUBMIT_BINARY=${2:-}; shift 2 ;;
+    --qwen-bundle-size) QWEN_BUNDLE=${2:-}; shift 2 ;;
     -h | --help) usage ;;
     *) die "unknown argument: $1" ;;
   esac
@@ -112,9 +115,10 @@ for root in "$QWEN_ROOT" "$YIDDISH_ROOT"; do
 done
 [[ -z $SUBMIT_BINARY || $SUBMIT_BINARY =~ ^(/[A-Za-z0-9._/-]+|[A-Za-z0-9][A-Za-z0-9._-]*)$ ]] ||
   die "--qwen-submit-binary: an absolute path or a command name"
+[[ -z $QWEN_BUNDLE || $QWEN_BUNDLE =~ ^([2-9]|[12][0-9]|3[0-2])$ ]] || die "--qwen-bundle-size: 2 to 32"
 if [ -z "$QWEN_PLAN" ] && { [ "$PROMPT" != 1 ] || [ "$QWEN_ROOT" != "$CAMPAIGN" ] || [ -n "$YIDDISH_ROOT" ] ||
-  [ -n "$SUBMIT_BINARY" ]; }; then
-  die "--prompt-version, the root flags and --qwen-submit-binary need --qwen-engine-plan"
+  [ -n "$SUBMIT_BINARY" ] || [ -n "$QWEN_BUNDLE" ]; }; then
+  die "--prompt-version, the root flags, --qwen-submit-binary and --qwen-bundle-size need --qwen-engine-plan"
 fi
 if [ -n "$QWEN_PLAN" ]; then
   # Migration-safe: old inline and new independent ship units cannot copy/clean one chunk concurrently.
@@ -250,15 +254,16 @@ while [ "$shipped" -lt "$MAX_CHUNKS" ]; do
   [ ! -f "$OUTBOX/.qwen-transactions/$CAMPAIGN/$chunk/parent.json" ] ||
     die "$chunk: frozen subset parent exists; resume with --qwen-subsets, never whole-chunk replay"
   pages=$(cat "$dir/READY")
-  target=$CAMPAIGN version=1
+  target=$CAMPAIGN version=1 bundle=""
   if [ -n "$QWEN_PLAN" ]; then
     [[ $pages =~ ^[1-9][0-9]*$ && $pages -le 490 ]] || die "$chunk: invalid bounded READY page count"
-    target=$QWEN_ROOT version=$PROMPT
+    target=$QWEN_ROOT version=$PROMPT bundle=$QWEN_BUNDLE
     # The guarded roots read Yiddish at version 4 and everything else at version 3.
     if [ "$PROMPT" -ge 3 ]; then
       route=$(sort -u "$dir/langs.txt" | paste -sd, -)
       if [ "$route" = yid ] && [ -n "$YIDDISH_ROOT" ]; then
-        target=$YIDDISH_ROOT version=$YIDDISH_PROMPT
+        # Single pages: the Yiddish root holds them already, and its strict agreement is low.
+        target=$YIDDISH_ROOT version=$YIDDISH_PROMPT bundle=""
       elif [[ ,$route, == *,yid,* || -z $route ]]; then
         log "$chunk: languages '$route' have no root at this request version; READY retained"
         continue
@@ -281,7 +286,8 @@ while [ "$shipped" -lt "$MAX_CHUNKS" ]; do
     fi
     if in_ct podman exec usnm-boinc-server python3 /project/ops/qwen-feed/qwen_submit.py \
       --preflight --campaign "$target" --engine-plan "$QWEN_PLAN" --models "$QWEN_MODELS" \
-      --max-pages "$pages" --max-ready "$QWEN_MAX_READY" --prompt-version "$version"; then
+      --max-pages "$pages" --max-ready "$QWEN_MAX_READY" --prompt-version "$version" \
+      ${bundle:+--bundle-size "$bundle"}; then
       :
     else
       rc=$?
@@ -330,7 +336,7 @@ while [ "$shipped" -lt "$MAX_CHUNKS" ]; do
       podman exec usnm-boinc-server python3 /project/ops/qwen-feed/qwen_submit.py \
       --campaign "$target" --engine-plan "$QWEN_PLAN" --models "$QWEN_MODELS" \
       --sample "$sample" --max-pages "$n" --max-ready "$QWEN_MAX_READY" --prompt-version "$version" \
-      ${SUBMIT_BINARY:+--submit-binary "$SUBMIT_BINARY"}; then
+      ${bundle:+--bundle-size "$bundle"} ${SUBMIT_BINARY:+--submit-binary "$SUBMIT_BINARY"}; then
       :
     else
       rc=$?

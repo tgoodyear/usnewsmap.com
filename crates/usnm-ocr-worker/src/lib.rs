@@ -18,6 +18,8 @@ pub mod contract;
 pub mod engine;
 /// Fetching outside content: host policies and one fetcher (#1413).
 pub mod fetcher;
+/// Georgia Historic Newspapers' IIIF page images (#1193).
+pub mod ghn;
 pub mod loc;
 /// LoC's word confidence per page from the bulk OCR archives (#962).
 pub mod loc_alto;

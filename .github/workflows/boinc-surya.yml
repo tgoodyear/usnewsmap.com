@@ -3,7 +3,9 @@ name: boinc-surya
 # with usnm-boinc. A manual run on main publishes it to the public package
 # ghcr.io/tgoodyear/usnm-boinc-worker under the tag surya-<commit>, and its summary gives the
 # registry digest and the two values a campaign is staged with. A pull request that changes what
-# it is built from builds it without pushing.
+# it is built from builds it without pushing: both variants when the change reaches what sets them
+# apart (ocr/boinc/surya/, this workflow or its action), and only cuda when it reaches just the
+# usnm-boinc build stage the two share (crates, the files they embed elsewhere; #1585).
 #
 # It shares the worker's package, which is already public, so volunteers' Docker or Podman can
 # pull it anonymously; only the digest is used.
@@ -58,6 +60,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       build: ${{ steps.f.outputs.boinc_surya }}
+      variants: ${{ steps.f.outputs.boinc_surya_variants }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -65,7 +68,7 @@ jobs:
           persist-credentials: false
       - id: f
         run: scripts/ci/changes.sh
-  # Pull requests: build and check only, with a read-only token.
+  # Pull requests: build and check only, with a read-only token, the variants changes.sh selects.
   check:
     name: surya worker image (${{ matrix.variant }}, build)
     needs: inputs
@@ -75,11 +78,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - variant: cuda
-            tag_prefix: surya
-          - variant: vulkan
-            tag_prefix: surya-vulkan
+        variant: ${{ fromJSON(needs.inputs.outputs.variants) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -87,7 +86,8 @@ jobs:
       - uses: ./.github/actions/boinc-surya-build
         with:
           image: ${{ env.IMAGE }}
-          tag: ${{ matrix.tag_prefix }}-${{ github.sha }}
+          # publish's tag_prefix. An `include` here would add vulkan back when only cuda is selected.
+          tag: ${{ matrix.variant == 'vulkan' && 'surya-vulkan' || 'surya' }}-${{ github.sha }}
           variant: ${{ matrix.variant }}
 
   # A manual run on main: the same build, then the push. Only this job can write packages.

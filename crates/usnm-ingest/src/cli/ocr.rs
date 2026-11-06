@@ -79,6 +79,11 @@ struct SeedArgs {
     /// Default: the published version.
     #[arg(long, env = "USNM_OCR_SEED_MANIFEST")]
     seed_manifest: Option<String>,
+    /// The SHA-256 of a supersession list stored by
+    /// `ocr-alternate-supersession`: new bulk pages it names are left out
+    /// while their selected third-party reading verifies (#811). Empty: off.
+    #[arg(long, env = "USNM_OCR_SEED_SUPERSESSION")]
+    seed_supersession: Option<String>,
 }
 
 impl SeedArgs {
@@ -115,6 +120,12 @@ impl SeedArgs {
                 .unwrap_or_default()
                 .trim()
                 .to_owned(),
+            supersession: self
+                .seed_supersession
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned),
         };
         if opts.on() {
             opts.check()?;
@@ -371,6 +382,14 @@ pub(crate) struct OcrAlternatePreviewArgs {
     subject: std::path::PathBuf,
 }
 
+/// Verify a supersession list's every selection now and store it create-only
+/// by SHA-256. Changes no scheduling until `USNM_OCR_SEED_SUPERSESSION` pins it.
+#[derive(Args)]
+pub(crate) struct OcrAlternateSupersessionArgs {
+    #[arg(long)]
+    list: std::path::PathBuf,
+}
+
 fn alternate_read_file(path: &std::path::Path, max: u64) -> anyhow::Result<Vec<u8>> {
     use std::io::Read;
     let file = std::fs::File::open(path)?;
@@ -415,6 +434,23 @@ pub(crate) async fn ocr_alternate_preview_command(
     let curated = usnm_store::open(&cli.stores.curated)?;
     let receipt = usnm_ocr_local::alternate_decisions::read(curated.as_ref(), &subject).await?;
     println!("{}", serde_json::to_string_pretty(&receipt)?);
+    Ok(None)
+}
+
+pub(crate) async fn ocr_alternate_supersession_command(
+    cli: &Cli,
+    args: &OcrAlternateSupersessionArgs,
+) -> anyhow::Result<Option<Published>> {
+    let bytes = alternate_read_file(&args.list, usnm_ocr_local::supersession::MAX_BYTES as u64)?;
+    let curated = usnm_store::open(&cli.stores.curated)?;
+    let sha256 = usnm_ocr_local::supersession::publish(curated.as_ref(), &bytes).await?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "sha256": sha256,
+            "path": usnm_ocr_local::supersession::path(&sha256),
+        }))?
+    );
     Ok(None)
 }
 
@@ -864,6 +900,23 @@ mod tests {
         assert_eq!(opts.refill_below, 0);
         assert!(opts.pilot && !opts.skip_american_stories);
         assert!((opts.min_damage - 0.25).abs() < 1e-12);
+        assert_eq!(opts.supersession, None);
+        // A supersession list is pinned by its exact lowercase SHA-256.
+        for (sha, ok) in [
+            ("a".repeat(64), true),
+            ("A".repeat(64), false),
+            ("abc".to_owned(), false),
+        ] {
+            let cli = parse(&["--seed-plan", "p", "--seed-supersession", &sha]).unwrap();
+            let Command::OcrSeed(OcrSeedArgs { seed, .. }) = cli.command else {
+                panic!("not ocr-seed");
+            };
+            let opts = seed.options(false);
+            assert_eq!(opts.is_ok(), ok, "{sha}");
+            if ok {
+                assert_eq!(opts.unwrap().supersession, Some(sha));
+            }
+        }
         // A pilot needs a budget.
         let cli = parse(&[
             "--seed-plan",
