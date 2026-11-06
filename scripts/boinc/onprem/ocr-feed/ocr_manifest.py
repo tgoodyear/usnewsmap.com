@@ -21,14 +21,16 @@ curated copy. A new manifest is made only when the last one's pages are mostly o
 server (90%) or it is a day old, so the fetcher's queue never piles up.
 """
 import argparse
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 import datetime as dt
+import fcntl
 import glob
 import io
 import json
 import os
 import re
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -40,6 +42,10 @@ DEFAULT_QUARANTINE_ROOT = "/var/lib/usnm-quality-feed"
 USER_AGENT = "usnewsmap-ocr-manifest/1 (+https://usnewsmap.com)"
 # A page goes into at most this many manifests a week without its scan arriving.
 MAX_TRIES = 3
+# New claims looked up a run, and for how long (under the quality follower's lock): the
+# rest wait for the next run.
+MAX_CLAIM_CHECKS = 500
+CLAIM_CHECK_SECS = 60
 
 
 def log(msg, **kv):
@@ -112,15 +118,16 @@ class Lake:
 
 
 def cached_rows(lake, state, kind, days, columns):
-    """Every row of ocr-local/<kind>/<day>/*.parquet for the last `days` days, each file
-    read from the lake once and kept under <state>/<kind>/."""
+    """Every row of every file kept under <state>/<kind>/, first copying there any
+    ocr-local/<kind>/<day>/*.parquet of the last `days` days not yet kept (with no lake,
+    none). Kept files are never pruned, so rows from earlier days stay in."""
     import pyarrow.parquet as pq
 
     keep = os.path.join(state, kind)
     os.makedirs(keep, exist_ok=True)
     today = dt.datetime.now(dt.timezone.utc).date()
     rows = []
-    for back in range(days):
+    for back in range(days if lake else 0):
         day = (today - dt.timedelta(days=back)).isoformat()
         for name in lake.list(f"ocr-local/{kind}/{day}/"):
             if not name.endswith(".parquet"):
@@ -258,6 +265,95 @@ def row_of(q, dmg):
     }
 
 
+def read_ocr_docs(state):
+    """ocr-docs.txt's doc_ids: every page OCR asked for."""
+    path = os.path.join(state, "ocr-docs.txt")
+    if not os.path.exists(path):
+        return set()
+    with open(path) as f:
+        return {line.strip() for line in f if line.strip()}
+
+
+def still_there(scan_server, rows, state):
+    """doc_ids of `rows` (index lines) whose scans are still on the scan server. The index is
+    fetch history: a claim on a scan whose sidecar is gone would keep the quality follower from
+    looking it up while OCR waits on a fresh fetch of it (whose manifest claims it then). One
+    the scan server can't check is claimed, and if it doesn't answer, so is the rest: a claim
+    errs on the side of keeping a scan.
+
+    A miss is remembered by its fetch (claim-misses.txt), so the page is looked up again only
+    once it's fetched again. At most MAX_CLAIM_CHECKS are looked up a run, for at most
+    CLAIM_CHECK_SECS; the rest wait for the next run."""
+    path = os.path.join(state, "claim-misses.txt")
+    misses = set()
+    if os.path.exists(path):
+        with open(path) as f:
+            misses = {tuple(line.rstrip("\n").split("\t", 1)) for line in f if "\t" in line}
+
+    def fetch(row):
+        return (row["doc_id"], row.get("fetched_at") or "")
+
+    todo = [r for r in rows if fetch(r) not in misses]
+    out, missed = [], set()
+    start = time.monotonic()
+    for i, row in enumerate(todo):
+        if i >= MAX_CLAIM_CHECKS or time.monotonic() - start >= CLAIM_CHECK_SECS:
+            log("new claims left for the next run", pages=len(todo) - i)
+            break
+        try:
+            if available(scan_server, row):
+                out.append(row["doc_id"])
+            elif row.get("fetched_at"):
+                missed.add(fetch(row))
+        except urllib.error.HTTPError:
+            out.append(row["doc_id"])
+        except (urllib.error.URLError, OSError) as e:
+            log("claim check got no answer; the rest claimed unchecked", doc_id=row["doc_id"], error=str(e)[:200])
+            out += [r["doc_id"] for r in todo[i:]]
+            break
+    # Only the misses of pages still waiting for a claim.
+    misses = (misses & {fetch(r) for r in rows}) | missed
+    with open(path + ".tmp", "w") as f:
+        f.write("".join(f"{d}\t{at}\n" for d, at in sorted(misses)))
+    os.replace(path + ".tmp", path)
+    return out
+
+
+def record_ocr_docs(state, docs, have):
+    """Adds to ocr-docs.txt the ones of `docs` not in `have` (read_ocr_docs's set, updated in
+    place). Returns how many."""
+    new = [d for d in dict.fromkeys(docs) if d not in have]
+    if new:
+        with open(os.path.join(state, "ocr-docs.txt"), "a") as f:
+            f.write("".join(f"{d}\n" for d in new))
+        have.update(new)
+    return len(new)
+
+
+def write_ocr_active(state, docs):
+    """ocr-active.txt: of every page OCR asked for, the ones it still wants (no outcome has
+    ended them). Rewritten whole each run, unlike ocr-docs.txt's history: the quality
+    feeder holds a kept scan in it, counted and never evicted, until OCR is done with it."""
+    path = os.path.join(state, "ocr-active.txt")
+    with open(path + ".tmp", "w") as f:
+        f.write("".join(f"{d}\n" for d in sorted(docs)))
+    os.replace(path + ".tmp", path)
+
+
+@contextmanager
+def claims_lock(path):
+    """Holds `path`'s exclusive flock while OCR's claims are published: the quality follower
+    reads them and evicts kept scans under the same lock (its kept.tsv.lock), so it never
+    weighs its kept list against claims published halfway through a round."""
+    if not path:
+        yield
+        return
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "a") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        yield
+
+
 def cmd_build(a):
     os.makedirs(a.state, exist_ok=True)
     reasons = [r for r in a.reasons.split(",") if r]
@@ -265,6 +361,7 @@ def cmd_build(a):
         sys.exit("--reasons: comma-separated reasons, such as user,bulk")
     last_path = os.path.join(a.state, "last.json")
     index = staged_pairs(a.scan_server)
+    busy = None
     if os.path.exists(last_path):
         with open(last_path) as f:
             last = json.load(f)
@@ -276,13 +373,31 @@ def cmd_build(a):
             on = sum(1 for d in pairs if d in docs)
         age = dt.datetime.now(dt.timezone.utc) - dt.datetime.fromisoformat(last["at"])
         if on < 0.9 * len(pairs) and age < dt.timedelta(days=1):
-            log("the last manifest is still being fetched; nothing new", manifest=last["name"],
-                on_server=on, pages=len(pairs))
-            return
+            busy = {"manifest": last["name"], "on_server": on, "pages": len(pairs)}
+    # Refreshed even while the last manifest is still being fetched: a claim below is for
+    # good, so it must see every page queued since and every outcome (a page OCR is done
+    # with mustn't be claimed). Each lake file is fetched once, so a run is mostly listings.
     lake = Lake(a.curated_url)
     queued = cached_rows(lake, a.state, "queued", a.days,
                          ["doc_id", "batch", "batch_version", "reason", "language", "queued_at"])
     outcomes = cached_rows(lake, a.state, "outcomes", a.days, ["doc_id", "outcome", "cause", "at"])
+    outstanding = list(pending(queued, outcomes, reasons))
+    # A queued page whose scan the fetcher already wrote (the quality pass's, say) gets no
+    # manifest row, but it's OCR's all the same: the quality feeder must not evict it.
+    claimed = [index[(q["batch"], q["doc_id"])] for q in outstanding if (q["batch"], q["doc_id"]) in index]
+    have = read_ocr_docs(a.state)
+    if not a.what_if:
+        with claims_lock(getattr(a, "claims_lock", None)):
+            # A new claim needs its scan there now (checked under the lock, which the follower
+            # evicts under); one already made stands.
+            fresh = still_there(a.scan_server, [r for r in claimed if r["doc_id"] not in have], a.state)
+            n = record_ocr_docs(a.state, fresh, have)
+            write_ocr_active(a.state, {q["doc_id"] for q in outstanding} & have)
+        if n:
+            log("queued pages already on the scan server claimed for OCR", pages=n)
+    if busy:
+        log("the last manifest is still being fetched; nothing new", **busy)
+        return
     # Pages already put in MAX_TRIES manifests that still have no scan wait a week, so a
     # page LoC can't serve doesn't hold the front of every manifest.
     tries_path = os.path.join(a.state, "tries.json")
@@ -292,7 +407,7 @@ def cmd_build(a):
             tries = json.load(f)
     now = dt.datetime.now(dt.timezone.utc)
     todo, checked, deferred = [], 0, 0
-    for q in pending(queued, outcomes, reasons):
+    for q in outstanding:
         if len(todo) >= a.max_pages:
             break
         t = tries.get(q["doc_id"])
@@ -333,8 +448,9 @@ def cmd_build(a):
                    "pairs": [[r["batch"], r["doc_id"]] for r in rows]}, f)
     os.replace(last_path + ".tmp", last_path)
     # Every page OCR asked for: the quality feeder never deletes these scans.
-    with open(os.path.join(a.state, "ocr-docs.txt"), "a") as f:
-        f.write("".join(f"{r['doc_id']}\n" for r in rows))
+    with claims_lock(getattr(a, "claims_lock", None)):
+        record_ocr_docs(a.state, [r["doc_id"] for r in rows], have)
+        write_ocr_active(a.state, {q["doc_id"] for q in outstanding} & have)
     stamp = now.isoformat()
     for r in rows:
         t = tries.get(r["doc_id"])
@@ -480,8 +596,9 @@ def cmd_build_quality(a):
     behind OCR's. Taking whole issues lets the fetcher ask for each issue's METS, and each
     batch's manifest, once for all their pages, about one request a page. --batches limits
     the pass to those batches (LoC's bucket's public ones, say). Every row's lang is `eng`,
-    so the fetcher files the scan in its buffer set, which the quality feeder empties once
-    the page's unit has shipped; the page's own language stays in usnm_quality. Pages
+    so the fetcher files the scan in its buffer set, which the quality feeder deletes once
+    the page's unit has shipped, bar the most damaged it keeps for re-OCR (--keep-bytes);
+    the page's own language stays in usnm_quality. Pages
     already in the scan server's index are left out even if their scan is gone: the
     fetcher's `.done` markers keep it from fetching a consumed buffer page again, so
     queueing one would only stall the pass."""
@@ -621,6 +738,7 @@ def main(argv=None):
     b.add_argument("--curated-copy", default="/srv/curated")
     b.add_argument("--scan-server", default="http://usnm-scanfetch.tjg.fyi:8380")
     b.add_argument("--what-if", action="store_true")
+    b.add_argument("--claims-lock", help="the quality follower's kept.tsv.lock: OCR's claims are published under it")
     q = sub.add_parser("build-quality")
     q.add_argument("--state", required=True)
     q.add_argument("--dsn", required=True, help="usnm_quality, a role that may read page_summary")

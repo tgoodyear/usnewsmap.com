@@ -11,6 +11,10 @@
   "analytics_engine_datasets": [
     { "binding": "FALLBACK_METRICS", "dataset": "usnm_fallback" }
   ],
+  "ratelimits": [
+    { "name": "SEARCH_LIMIT", "namespace_id": "1541001", "simple": { "limit": 80, "period": 10 } },
+    { "name": "SEARCH_LIMIT_STRICT", "namespace_id": "1541002", "simple": { "limit": 20, "period": 10 } }
+  ],
   "routes": [
     { "pattern": "usnewsmap.com/*", "zone_name": "usnewsmap.com" },
     { "pattern": "www.usnewsmap.com/*", "zone_name": "usnewsmap.com" },
@@ -21,6 +25,7 @@
     "AZURE_FALLBACK_ORIGIN": "",
     "ERROR_LAYER": "false",
     "ALLOWED_ORIGINS": "https://usnewsmap.com",
+    "SEARCH_EDGE_LIMIT": "normal",
     "HEALTH_FAILOVER": "true",
     "HEALTH_HEARTBEAT": "true",
     "HEALTH_HOSTNAME": "usnewsmap.com"

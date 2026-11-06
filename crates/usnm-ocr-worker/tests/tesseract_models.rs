@@ -66,7 +66,17 @@ fn corpus_languages_route_to_pinned_models() {
             .iter()
             .map(|r| r.profile.as_str())
             .collect::<Vec<_>>(),
-        ["yid", "heb"]
+        ["yid", "heb", "yidj2"]
+    );
+    // yidj2 (#1479) is opt-in: not in the image, and stock yid wins where both are.
+    assert!(!installed.contains("yidj2"));
+    assert!(models_digest(MODELS_LOCK, "yidj2").is_none());
+    let with_yidj2 = BTreeSet::from(["yid".to_owned(), "heb".to_owned(), "yidj2".to_owned()]);
+    assert_eq!(
+        route("yid", &with_yidj2)
+            .as_ref()
+            .map(|r| r.profile.as_str()),
+        Some("yid")
     );
     let heb_only = BTreeSet::from(["heb".to_owned()]);
     assert_eq!(

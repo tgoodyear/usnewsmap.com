@@ -15,6 +15,7 @@ RUN python3 /checks/patch-server-db-tls.py --source /opt/boinc \
  && printf '#define HAVE_STRCASECMP 1\n#define HAVE_STRCASESTR 1\n#define HAVE_STRLCPY 1\n#define HAVE_STRLCAT 1\n' > config.h \
  && sed 's|@TOP_BUILD_DIR@|/opt/boinc|g' py/boinc_path_config.py.in > py/boinc_path_config.py
 COPY scripts/boinc/db-tls/ /checks/
+COPY scripts/boinc/qwen-tiebreak-policy.py /checks/qwen-tiebreak-policy.py
 RUN g++ -O1 -ffunction-sections -fdata-sections -include bsd/string.h \
       -I. -Ilib -Idb $(mariadb_config --include) \
       db/db_base.cpp /checks/consumer.cpp -Wl,--gc-sections \

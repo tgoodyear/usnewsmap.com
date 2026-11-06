@@ -10,6 +10,8 @@ Candidate licensing, model-availability and bounded local CPU findings are recor
 
 The pilot's page images (`ocr/bench/serialset-pilot/images/`) and the raw native result archives under `ocr/bench/results/` are not tracked: they are the `bench-assets` set of `scripts/ops/data-assets.sh`, fetched with `scripts/ops/data-assets.sh --fetch --set bench-assets` and published by the `publish data assets` workflow ([reports/README.md](reports/README.md), "Data"). `SHA256SUMS` and `inputs.sha256` stay in the tree and pin the bytes.
 
+`ocr/bench/yiddish-newspaper/` holds the draw and an empty transcription template for a Yiddish newspaper line set ([#1479](https://github.com/tgoodyear/usnewsmap.com/issues/1479)). It isn't a release, and it holds no references until people transcribe the lines. See [its README](../ocr/bench/yiddish-newspaper/README.md).
+
 ## Fetch a release
 
 ```sh

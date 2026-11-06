@@ -33,7 +33,7 @@ def load_onprem(path, args):
                 (("usnm_quality", ""), ("usnm_qwen", "mt"), ("usnm_qwen", "nvidia_cuda_8b"),
                  ("usnm_qwen", "nvidia_cuda_2b"), ("usnm_qwen", "intel_vulkan_8b"),
                  ("usnm_qwen", "nvidia_vulkan_8b"), ("usnm_qwen", "nvidia_vulkan_6gb_8b"),
-                 ("usnm_qwen", "amd_vulkan_8b"))):
+                 ("usnm_qwen", "nvidia_vulkan_2b"), ("usnm_qwen", "amd_vulkan_8b"))):
             raise PipelineError("unsupported native on-prem release contract")
         if (common["env"] not in ("dev", "prod")
                 or not re.fullmatch(r"[1-9][0-9]*\.[0-9]{1,2}", common["version"])
@@ -77,7 +77,7 @@ def verify_binary(config):
         required = {"llama-server", "llama.lock", "weights.lock"}
         if config["plan_class"] == "amd_vulkan_8b":
             required.add("usnm-amd-device-map")
-        if config["plan_class"] in ("amd_vulkan_8b", "nvidia_vulkan_6gb_8b"):
+        if config["plan_class"] in ("amd_vulkan_8b", "nvidia_vulkan_6gb_8b", "nvidia_vulkan_2b"):
             required |= {"libggml.so", "libggml-base.so", "libggml-vulkan.so"}
         if not required.issubset(config.get("extra_files", {})):
             raise PipelineError("native Qwen is missing required reviewed extra-file inputs")

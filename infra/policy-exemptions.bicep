@@ -44,6 +44,11 @@ param cosmosOnPremAccess bool = false
 param ocrSyncOnPrem bool = false
 @description('As in main.bicep. Off: the lake, the index account and Cosmos allow public network access, for snet-cae.')
 param dataPrivateEndpoints bool = true
+@description('As in main.bicep. On: the same three accounts allow public network access, for snet-cae, while the private endpoints stay.')
+param dataSubnetAccess bool = false
+
+// As main.bicep's dataSubnetOpen.
+var subnetOpen = dataSubnetAccess || !dataPrivateEndpoints
 
 // The same names main.bicep computes.
 var env = checkedEnvName(environmentName)
@@ -65,12 +70,12 @@ resource assignment 'Microsoft.Authorization/policyAssignments@2024-04-01' = {
           subscription().subscriptionId,
           n,
           ocrNodes,
-          !dataPrivateEndpoints || lakeOpen(
+          subnetOpen || lakeOpen(
             serialSetOnPrem || jaOcrOnPrem || onPremRelease || onPremServing || ocrSyncOnPrem || searchLogCopy || ocrLocalCopy,
             ocrNodeIps
           ),
-          (!dataPrivateEndpoints && indexStorage) || indexOpen(onPremRelease, indexStorage, ocrNodeIps),
-          !dataPrivateEndpoints || cosmosOpen(onPremServing || cosmosOnPremAccess || ocrSyncOnPrem, ocrNodeIps)
+          (subnetOpen && indexStorage) || indexOpen(onPremRelease, indexStorage, ocrNodeIps),
+          subnetOpen || cosmosOpen(onPremServing || cosmosOnPremAccess || ocrSyncOnPrem, ocrNodeIps)
         )
       }
     }

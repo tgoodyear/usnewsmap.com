@@ -164,8 +164,10 @@ class DaemonConfig(unittest.TestCase):
         for name in ("mt", "apple_gpu_8b", "nvidia_cuda_2b", "nvidia_cuda_8b",
                      "intel_vulkan_8b", "nvidia_vulkan_8b", "amd_vulkan_8b"):
             self.assertEqual(plans[name].findtext("min_core_client_version"), "80211")
-        self.assertEqual(plans["nvidia_vulkan_6gb_8b"].findtext("min_core_client_version"), "80209")
-        for name in ("docker_intel_vulkan", "intel_vulkan_8b", "nvidia_vulkan_8b", "nvidia_vulkan_6gb_8b", "amd_vulkan_8b", "nvidia_cuda_8b", "nvidia_cuda_2b"):
+        for name in ("nvidia_vulkan_6gb_8b", "nvidia_vulkan_2b"):
+            self.assertEqual(plans[name].findtext("min_core_client_version"), "80209")
+        for name in ("docker_intel_vulkan", "intel_vulkan_8b", "nvidia_vulkan_8b", "nvidia_vulkan_6gb_8b",
+                     "nvidia_vulkan_2b", "amd_vulkan_8b", "nvidia_cuda_8b", "nvidia_cuda_2b"):
             with self.subTest(plan=name):
                 self.assertEqual(plans[name].findtext("min_wu_id"), "2")
                 self.assertEqual(plans[name].findtext("max_wu_id"), "1")
@@ -177,6 +179,15 @@ class DaemonConfig(unittest.TestCase):
         self.assertIsNotNone(amd.find("opencl"))
         self.assertIsNone(amd.find("cuda"))
         self.assertIsNone(amd.find("docker"))
+        # #1234: a 6 GB NVIDIA card (a GTX 1660 SUPER reports about 5750 MB) is admitted only
+        # to batch-2 work, which the app reads with the 2B model fully offloaded.
+        small = plans["nvidia_vulkan_2b"]
+        for tag, value in (("gpu_type", "nvidia"), ("ngpus", "1"), ("min_batch", "2"),
+                           ("max_batch", "2"), ("min_gpu_ram_mb", "4500"),
+                           ("gpu_ram_used_mb", "4096"), ("avg_ncpus", "2")):
+            self.assertEqual(small.findtext(tag), value)
+        self.assertIsNotNone(small.find("cuda"))
+        self.assertIsNone(small.find("docker"))
 
     def test_high_throughput_scheduler_dispatch_limits(self):
         root = ET.parse(Path(__file__).with_name("config.xml.template"))

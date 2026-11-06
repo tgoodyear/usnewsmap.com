@@ -868,6 +868,7 @@ mod completion_tests {
                 used_before_mb: None,
                 use_gpu: true,
                 partial_offload: partial,
+                nvidia_2b: false,
                 device_label: "vulkan".into(),
                 probe_timed_out: false,
             };

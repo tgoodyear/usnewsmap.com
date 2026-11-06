@@ -173,6 +173,11 @@ pub enum QualityCommands {
         /// an agreeing pair vouched for. Without it every canonical crop joins (`strict-v1`).
         #[arg(long)]
         qwen_crop_states: Option<PathBuf>,
+        /// The directory `qwen compare --pages` writes: a bundle unit with no canonical result
+        /// joins each page two hosts agreed on (`page-strict-v1`, #1435). Without it only
+        /// canonical results join.
+        #[arg(long)]
+        qwen_pages: Option<PathBuf>,
         /// Reuse content-addressed per-unit rows; late canonical readings invalidate joins.
         #[arg(long)]
         cache: Option<PathBuf>,
@@ -431,6 +436,7 @@ pub async fn run(command: QualityCommands) -> anyhow::Result<()> {
             qwen_root,
             qwen_spool,
             qwen_crop_states,
+            qwen_pages,
             cache,
             max_dirty_units,
             inventory_only,
@@ -447,6 +453,7 @@ pub async fn run(command: QualityCommands) -> anyhow::Result<()> {
                 qwen_root,
                 qwen_spool,
                 qwen_crop_states,
+                qwen_pages,
                 cache,
                 max_dirty_units,
                 surya_root,

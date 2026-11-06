@@ -305,7 +305,11 @@ pub(super) async fn shell(uri: &Uri, index: Vec<u8>, state: &AppState) -> Vec<u8
         match preview_key(state, &card).await {
             Ok(key) => {
                 let path = preview_path(&key, &card);
-                if state.previews.is_published(&path).await {
+                if state
+                    .previews
+                    .is_published(&path, stored_at(state, &path))
+                    .await
+                {
                     image = format!("{SITE}{path}");
                 }
             }
@@ -533,11 +537,15 @@ fn preview_path(key: &str, card: &Card) -> String {
 }
 
 async fn published(state: &AppState, path: &str) -> Option<Vec<u8>> {
-    let persistent = state
+    state.previews.lookup(path, stored_at(state, path)).await
+}
+
+/// Where a public preview path is kept in the response store, if there is one.
+fn stored_at(state: &AppState, path: &str) -> Option<(Arc<dyn usnm_store::ObjectStore>, String)> {
+    state
         .responses
         .as_ref()
-        .map(|store| (store.clone(), path.trim_start_matches('/').to_owned()));
-    state.previews.lookup(path, persistent).await
+        .map(|store| (store.clone(), path.trim_start_matches('/').to_owned()))
 }
 
 fn preview_response(body: Vec<u8>) -> Response {
@@ -773,13 +781,9 @@ async fn cached(
     let identity = identity(state).await.map_err(Arc::new)?;
     let normalized = overview_key(&card.image);
     let key = preview_path(&render_key(&identity, &normalized), &card);
-    let persistent = state
-        .responses
-        .as_ref()
-        .map(|store| (store.clone(), key.trim_start_matches('/').to_owned()));
     let body = state
         .previews
-        .get(key.clone(), persistent, background, async {
+        .get(key.clone(), stored_at(state, &key), background, async {
             let body = screenshot(&card).await.map_err(RenderError::Failed)?;
             if self::identity(state).await? != identity {
                 return Err(RenderError::Failed(
@@ -789,7 +793,11 @@ async fn cached(
             Ok(body)
         })
         .await?;
-    let preview = state.previews.is_published(&key).await.then_some(key);
+    let preview = state
+        .previews
+        .is_published(&key, stored_at(state, &key))
+        .await
+        .then_some(key);
     Ok(Rendered { body, preview })
 }
 
@@ -1201,13 +1209,22 @@ mod tests {
                 .as_ref(),
             body
         );
-        assert!(!state.previews.is_published(&path).await);
+        assert!(
+            !state
+                .previews
+                .is_published(&path, stored_at(&state, &path))
+                .await
+        );
 
         tokio::fs::remove_file(&root).await.unwrap();
         tokio::fs::create_dir(&root).await.unwrap();
         // A later sharing request retries publication while still serving the PNG.
         tokio::time::timeout(std::time::Duration::from_secs(3), async {
-            while !state.previews.is_published(&path).await {
+            while !state
+                .previews
+                .is_published(&path, stored_at(&state, &path))
+                .await
+            {
                 let _ = image(
                     OriginalUri(card.image[SITE.len()..].parse().unwrap()),
                     state.clone(),

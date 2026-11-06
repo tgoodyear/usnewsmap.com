@@ -61,6 +61,8 @@ param indexStorageServe bool = false
 param indexAccessTier string = 'Hot'
 @description('Private endpoints and private DNS for the data lake, the index account and Cosmos (ADR-0008). Off (a cold spare, ADR-0008 amendment of November 2026): none of them, and each allows snet-cae through a service endpoint and a firewall rule, with Entra ID the only way in as always.')
 param dataPrivateEndpoints bool = true
+@description('Allow snet-cae into the data lake, the index account and Cosmos through service endpoints and firewall rules while the private endpoints stay (#308, #1425), so a later provision can remove the endpoints with the subnet path already proven. It has no effect with dataPrivateEndpoints off, which always allows the subnet.')
+param dataSubnetAccess bool = false
 @description('Data lake blob soft-delete days. Keep 3 until old qw-index is pruned; then restore 14 (#416).')
 @minValue(1)
 @maxValue(365)
@@ -488,6 +490,11 @@ module registry 'modules/registry.bicep' = {
   }
 }
 
+// snet-cae reaches the lake, the index account and Cosmos through service endpoints
+// and firewall rules without private endpoints, and alongside them with
+// dataSubnetAccess: the first stage of removing them make-before-break (#1425).
+var dataSubnetOpen = dataSubnetAccess || !dataPrivateEndpoints
+
 module network 'modules/network.bicep' = {
   scope: rg
   name: 'network'
@@ -496,8 +503,8 @@ module network 'modules/network.bicep' = {
     tags: tags
     name: n.vnet
     addressPrefix: vnetAddressPrefix
-    storageServiceEndpoint: ocrNodes || !dataPrivateEndpoints
-    cosmosServiceEndpoint: !dataPrivateEndpoints
+    storageServiceEndpoint: ocrNodes || dataSubnetOpen
+    cosmosServiceEndpoint: dataSubnetOpen
     blobPrivateDns: dataPrivateEndpoints || !empty(archiveAccountId)
     cosmosPrivateDns: dataPrivateEndpoints
   }
@@ -540,17 +547,17 @@ var indexNodeAccess = indexOpen(onPremRelease, indexStorage, ocrNodeIps)
 // which also uses the lake. The on-prem release host's index_runs write (#1096) needs one of
 // these three; onPremRelease doesn't open it.
 var stateNodeAccess = cosmosOpen(onPremServing || cosmosOnPremAccess || ocrSyncOnPrem, ocrNodeIps)
-// Without data private endpoints the Azure apps reach all three from snet-cae through
-// service endpoints, so each has public network access whatever the settings above say.
+// Without data private endpoints, or with dataSubnetAccess, the Azure apps reach all three
+// from snet-cae through service endpoints, so each has public network access whatever the settings above say.
 // The subnet's id is written out, not read from the network module: a runtime value here
 // would short-circuit these modules in a what-if, and the stack preview then refuses to run.
 // The modules depend on the network, whose service endpoints their rules need.
-var dataSubnetIds = dataPrivateEndpoints
-  ? []
-  : [resourceId(subscription().subscriptionId, n.rg, 'Microsoft.Network/virtualNetworks/subnets', n.vnet, 'snet-cae')]
-var dataLakeOpen = lakeNodeAccess || !dataPrivateEndpoints
-var indexAccountOpen = indexNodeAccess || (indexStorage && !dataPrivateEndpoints)
-var stateOpen = stateNodeAccess || !dataPrivateEndpoints
+var dataSubnetIds = dataSubnetOpen
+  ? [resourceId(subscription().subscriptionId, n.rg, 'Microsoft.Network/virtualNetworks/subnets', n.vnet, 'snet-cae')]
+  : []
+var dataLakeOpen = lakeNodeAccess || dataSubnetOpen
+var indexAccountOpen = indexNodeAccess || (indexStorage && dataSubnetOpen)
+var stateOpen = stateNodeAccess || dataSubnetOpen
 
 module storage 'modules/storage.bicep' = {
   scope: rg

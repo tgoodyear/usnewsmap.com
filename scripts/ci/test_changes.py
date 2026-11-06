@@ -19,6 +19,10 @@ CARGO = shutil.which("cargo")
 WINDOWS_ONLY = ("windows-core", "windows-result", "windows-strings")
 # The image job's matrix on main: what `publish` pushes.
 ALL_IMAGES = ["api", "ingest", "ja-ocr"]
+# What the Qwen and Surya workflows' `publish` jobs build; a pull request builds the first alone
+# when its change reaches only the usnm-boinc build stage they share (#1585).
+QWEN_MODELS = ["2b", "8b"]
+SURYA_VARIANTS = ["cuda", "vulkan"]
 
 
 def downgrade_patch(repo: Path, *names: str) -> None:
@@ -72,6 +76,8 @@ class Dispatch(unittest.TestCase):
         self.assertEqual(len(flags), 28)
         self.assertIn("quickwit_suites=[]", result.stdout)
         self.assertIn("images=[]", result.stdout)
+        self.assertIn("boinc_qwen_models=[]", result.stdout)
+        self.assertIn("boinc_surya_variants=[]", result.stdout)
         self.assertEqual(flags["image"], "false")
         self.assertEqual(flags["contrib"], "false")
         self.assertEqual(flags["edge"], "false")
@@ -92,6 +98,8 @@ class Dispatch(unittest.TestCase):
                 self.assertIn('quickwit_suites=["parity","pipeline"]', result.stdout)
                 self.assertEqual(flags["queue"], "true")
                 self.assertIn('images=["api","ingest","ja-ocr"]', result.stdout)
+                self.assertIn('boinc_qwen_models=["2b","8b"]', result.stdout)
+                self.assertIn('boinc_surya_variants=["cuda","vulkan"]', result.stdout)
 
     def test_unknown_dispatch_scope_fails_closed(self):
         result, flags = self.flags("ocr-wroker")
@@ -450,7 +458,8 @@ class BuildInputs(unittest.TestCase):
     def select(self, *changes, env=None, event="push") -> set:
         """The outputs that are true after committing each change (a path to append to, or a
         (path, text) pair to write), as changes.sh sees a push, or a pull request into the
-        commit before them. self.images is the image job's matrix."""
+        commit before them. self.images is the image job's matrix, self.qwen_models and
+        self.surya_variants the Qwen and Surya workflows'."""
         before = git(self.repo, "rev-parse", "HEAD")
         for change in changes:
             path, text = change if isinstance(change, tuple) else (change, None)
@@ -479,11 +488,24 @@ class BuildInputs(unittest.TestCase):
         self.assertEqual(suites, [s for s in ("parity", "pipeline")
                                   if f"quickwit_{s}" in on])
         self.assertEqual("quickwit" in on, bool(suites))
-        self.images = json.loads(re.search(r"^images=(.*)$", output, re.M)[1])
+        def output_list(name: str) -> list:
+            found = re.search(rf"^{name}=(.*)$", output, re.M)
+            self.assertIsNotNone(found, f"changes.sh wrote no {name}")
+            return json.loads(found[1])
+
+        self.images = output_list("images")
         self.assertEqual("image" in on, bool(self.images))
         if event != "pull_request" and self.images:
             # What main builds is what `publish` pushes: every image.
             self.assertEqual(self.images, ALL_IMAGES)
+        self.qwen_models = output_list("boinc_qwen_models")
+        self.surya_variants = output_list("boinc_surya_variants")
+        for flag, built, every in [("boinc_qwen", self.qwen_models, QWEN_MODELS),
+                                   ("boinc_surya", self.surya_variants, SURYA_VARIANTS)]:
+            self.assertEqual(flag in on, bool(built))
+            self.assertIn(built, ([], every[:1], every))
+            if event != "pull_request" and built:
+                self.assertEqual(built, every)
         return on
 
     def stub_tool(self, name: str) -> dict:
@@ -797,6 +819,48 @@ class BuildInputs(unittest.TestCase):
                 self.assertNotIn("image", self.select(path, event="pull_request"))
                 self.assertEqual(self.images, [])
 
+    def test_a_pull_request_builds_one_qwen_model_and_surya_variant_for_their_shared_build(self):
+        # #1585: 2b and 8b, cuda and vulkan, compile the same usnm-boinc. A change that reaches only
+        # that build stage (a crate, a file it embeds outside the images' directories, the
+        # toolchain, the build context's filter) builds the first of each on a pull request.
+        for path in ["crates/usnm-boinc/src/lib.rs", "crates/usnm-core/src/lib.rs",
+                     "ocr/boinc/usnm_qwen_benchmark_in", "fixtures/ocr-gold/bundle-v1.lock.json",
+                     "rust-toolchain.toml", ".dockerignore"]:
+            with self.subTest(path=path):
+                self.assertGreaterEqual(self.select(path, event="pull_request"), {"boinc_qwen", "boinc_surya"})
+                self.assertEqual((self.qwen_models, self.surya_variants), (["2b"], ["cuda"]))
+        # On main the same change builds every one, as publishing does.
+        self.select("crates/usnm-boinc/src/lib.rs")
+        self.assertEqual((self.qwen_models, self.surya_variants), (QWEN_MODELS, SURYA_VARIANTS))
+
+    def test_a_pull_request_builds_every_model_or_variant_for_what_sets_them_apart(self):
+        for paths, models, variants in [
+            (["ocr/boinc/qwen/Containerfile"], QWEN_MODELS, []),
+            (["scripts/boinc/qwen_disk.py"], QWEN_MODELS, []),
+            (["scripts/boinc/qwen_cold_cache.py"], QWEN_MODELS, []),
+            # usnm-boinc embeds these pins too, so the other image builds its first.
+            (["ocr/boinc/qwen/weights.lock"], QWEN_MODELS, ["cuda"]),
+            (["ocr/boinc/qwen/disk-policy.json"], QWEN_MODELS, ["cuda"]),
+            (["ocr/boinc/surya/engine.lock"], ["2b"], SURYA_VARIANTS),
+            (["ocr/boinc/surya/Containerfile"], [], SURYA_VARIANTS),
+            (["ocr/boinc/surya/run.py"], [], SURYA_VARIANTS),
+            (["crates/usnm-boinc/src/lib.rs", "ocr/boinc/qwen/Containerfile"], QWEN_MODELS, ["cuda"]),
+            ([".github/workflows/boinc-qwen.yml"], QWEN_MODELS, []),
+            ([".github/actions/boinc-qwen-build/action.yml"], QWEN_MODELS, []),
+            ([".github/workflows/boinc-surya.yml"], [], SURYA_VARIANTS),
+            ([".github/actions/boinc-surya-build/action.yml"], [], SURYA_VARIANTS),
+            (["docs/boinc-quality.md", "docs/boinc-surya.md", "ocr/boinc/qwen/README.md"], [], []),
+        ]:
+            with self.subTest(paths=paths):
+                self.select(*paths, event="pull_request")
+                self.assertEqual((self.qwen_models, self.surya_variants), (models, variants))
+
+    def test_a_pull_request_that_runs_everything_builds_every_model_and_variant(self):
+        path = ".github/workflows/ci.yml"
+        self.select((path, "# touched\n" + (ROOT / path).read_text()), event="pull_request")
+        self.assertIn("running everything: workflow changed", self.log)
+        self.assertEqual((self.qwen_models, self.surya_variants), (QWEN_MODELS, SURYA_VARIANTS))
+
     def test_main_builds_every_image_for_any_image_change(self):
         # select() checks a push's matrix is every image whenever the image job runs.
         for path in ["web/index.html", "ocr/ja-ocr/jaocr.py", "infra/quickwit-image.json"]:
@@ -874,8 +938,11 @@ class BuildInputs(unittest.TestCase):
 
     def test_the_native_apps_run_for_the_files_they_embed_or_their_tests_read(self):
         for path in ["ocr/boinc/qwen/llama.lock", "ocr/boinc/qwen/weights.lock", "ocr/contract/v1/schema.json",
-                     "ocr/boinc/qwen/amd-device-map.cpp", "scripts/boinc/test_amd_device_map.py",
-                     "scripts/boinc/patch_amd_vulkan_identity.py", "scripts/boinc/build_amd_vulkan_runtime.ps1"]:
+                     "ocr/boinc/qwen/amd-device-map.cpp", "ocr/boinc/qwen/disk-policy.json",
+                     "scripts/boinc/test_amd_device_map.py",
+                     "scripts/boinc/patch_amd_vulkan_identity.py", "scripts/boinc/build_amd_vulkan_runtime.ps1",
+                     "scripts/boinc/qwen_vulkan_bundle.py", "scripts/boinc/test_qwen_vulkan_bundle.py",
+                     "contrib-compute/infra/boinc/releases/prod-onprem-usnm_qwen-nvidia_vulkan_6gb_8b.json"]:
             with self.subTest(path=path):
                 self.assertIn("boinc_native", self.select(path))
         # What only the images embed is not theirs.
@@ -1134,6 +1201,31 @@ class Wiring(unittest.TestCase):
                 self.assertNotRegex(text, r"(?m)^  changes:")
                 for job in re.findall(r"(?m)^  (publish):", text):
                     self.assertNotIn("inputs", job_text(text, job))
+
+    def test_the_qwen_and_surya_pull_request_matrices_follow_the_selector_and_publish_builds_all(self):
+        for name, output, key, every in [("boinc-qwen.yml", "boinc_qwen_models", "model", QWEN_MODELS),
+                                         ("boinc-surya.yml", "boinc_surya_variants", "variant", SURYA_VARIANTS)]:
+            text = self.workflow(name)
+            with self.subTest(workflow=name):
+                read = re.search(rf"(?m)^      (\w+): \$\{{\{{ steps\.f\.outputs\.{output} \}}\}}$",
+                                 job_text(text, "inputs"))
+                self.assertIsNotNone(read)
+                check = job_text(text, "check")
+                self.assertIn(f"        {key}: ${{{{ fromJSON(needs.inputs.outputs.{read[1]}) }}}}\n", check)
+                # An `include` adds a combination the selected list leaves out.
+                self.assertNotIn("include:", check.split("    steps:", 1)[0])
+                publish = job_text(text, "publish").split("    steps:", 1)[0]
+                # `model: [2b, 8b]`, or one `- variant: cuda` line per include entry.
+                lines = re.findall(rf"(?m)^ +(?:- )?{key}: (.+)$", publish)
+                built = [item.strip() for line in lines for item in line.strip("[]").split(",")]
+                self.assertEqual(built, every)
+        # The Surya check tags each variant as publish does.
+        text = self.workflow("boinc-surya.yml")
+        prefixes = dict(re.findall(r"- variant: (\w+)\n +tag_prefix: ([\w-]+)", job_text(text, "publish")))
+        tag = re.search(r"tag: \$\{\{ matrix\.variant == '(\w+)' && '([\w-]+)' \|\| '([\w-]+)' \}\}"
+                        r"-\$\{\{ github\.sha \}\}", job_text(text, "check"))
+        self.assertIsNotNone(tag)
+        self.assertEqual({v: tag[2] if v == tag[1] else tag[3] for v in SURYA_VARIANTS}, prefixes)
 
     def test_ci_reports_every_required_check_on_every_pull_request(self):
         # The names the "Protect main" ruleset requires. A job skipped by its `if:` reports as

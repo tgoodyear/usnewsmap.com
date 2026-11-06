@@ -9,3 +9,7 @@ ocr/boinc/qwen/*.json text eol=lf
 ocr/boinc/surya/engine.lock text eol=lf
 # The picture baseline checks the bundled provenance's exact SHA256.
 scripts/pictures/newspaper-navigator-baseline.lock.json text eol=lf
+# The Fraktur pilot's SHA256SUMS covers these files' exact bytes.
+ocr/fraktur-pilot/*.json text eol=lf
+ocr/fraktur-pilot/*.jsonl text eol=lf
+ocr/fraktur-pilot/SHA256SUMS text eol=lf

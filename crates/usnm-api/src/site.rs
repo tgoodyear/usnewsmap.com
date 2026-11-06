@@ -622,7 +622,7 @@ async fn search_preview_data(
             let citation = match (!rd.current.synthetic)
                 .then(|| PageKey::from_doc_id(&hit.doc_id).ok())
                 .flatten()
-                .map(|key| key.viewer_url(None))
+                .map(|key| key.source_viewer_url(&hit.batch, None))
             {
                 Some(url) => format!(r#"<a href="{}">{label}</a>"#, escape_html(&url)),
                 None => label,

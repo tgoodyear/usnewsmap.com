@@ -74,6 +74,7 @@ test("the entry point exists and the file holds no setting this Worker does not 
     "name",
     "observability",
     "preview_urls",
+    "ratelimits",
     "routes",
     "vars",
     "workers_dev",
@@ -94,10 +95,33 @@ test("the routes are the apex, www and api, every path, nothing else", () => {
 });
 
 test("vars hold no secret, drill flag or Azure name; the Phase 4 mode stays off", () => {
-  assert.deepEqual(Object.keys(config.vars), ["AZURE_FALLBACK_ORIGIN", "ERROR_LAYER", "ALLOWED_ORIGINS"]);
+  assert.deepEqual(Object.keys(config.vars), ["AZURE_FALLBACK_ORIGIN", "ERROR_LAYER", "ALLOWED_ORIGINS", "SEARCH_EDGE_LIMIT"]);
   assert.equal(config.vars.AZURE_FALLBACK_ORIGIN, "");
+  assert.equal(config.vars.SEARCH_EDGE_LIMIT, "normal");
   assert.equal(config.vars.ERROR_LAYER, "false");
   assert.equal(config.vars.ALLOWED_ORIGINS, "https://usnewsmap.com");
+});
+
+test("the edge limits: normal above the API's own limit, strict at its sustained rate, own namespaces", () => {
+  // The API admits one client at most burst + rate * period in a window (config.rs:
+  // USNM_RATE_PER_MIN 120, USNM_RATE_BURST 40), so the normal edge limit sits above that and
+  // a client the API would answer is never stopped at the edge.
+  const api = readFileSync(new URL("../../crates/usnm-api/src/config.rs", import.meta.url), "utf8");
+  const perMinute = Number(api.match(/"USNM_RATE_PER_MIN", (\d+)\)/)[1]);
+  const burst = Number(api.match(/"USNM_RATE_BURST", (\d+)\)/)[1]);
+  const [normal, strict, ...rest] = config.ratelimits;
+  assert.deepEqual(rest, []);
+  assert.deepEqual(Object.keys(normal).sort(), ["name", "namespace_id", "simple"]);
+  assert.deepEqual([normal.name, strict.name], ["SEARCH_LIMIT", "SEARCH_LIMIT_STRICT"]);
+  assert.notEqual(normal.namespace_id, strict.namespace_id);
+  for (const { namespace_id: id, simple } of config.ratelimits) {
+    assert.match(id, /^[1-9]\d*$/);
+    // Cloudflare counts over 10 or 60 seconds only; the Worker's Retry-After is 10.
+    assert.equal(simple.period, 10);
+  }
+  assert.ok(normal.simple.limit > burst + (perMinute / 60) * normal.simple.period);
+  assert.ok(normal.simple.limit <= 2 * (burst + (perMinute / 60) * normal.simple.period));
+  assert.equal(strict.simple.limit, (perMinute / 60) * strict.simple.period);
 });
 
 test("the Worker does not fall back to the empty name committed here", async () => {

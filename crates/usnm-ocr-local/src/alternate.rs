@@ -1,5 +1,7 @@
 //! Explicit third-party staging under the normal import lock. Nothing staged
-//! here is read by the release, requested-work ledger or scheduler.
+//! here is read by the release or requested-work ledger; the seeder reads a
+//! selected candidate only through a pinned supersession list
+//! ([`crate::supersession`]).
 
 use std::io::Cursor;
 
@@ -581,23 +583,27 @@ pub(super) async fn read_retained(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::sync::Arc;
     use usnm_state::docs::MemoryDocs;
 
-    struct Fixture {
+    pub(crate) struct Fixture {
         image: Vec<u8>,
         baseline: Vec<u8>,
         alto: Vec<u8>,
         text: Vec<u8>,
         registration: Vec<u8>,
         rights: Vec<u8>,
-        binding: Binding,
+        pub(crate) binding: Binding,
     }
 
     impl Fixture {
         fn new(text: &str) -> Self {
+            Self::page("sn83045462_1890-05-03_ed-1_seq-7", text)
+        }
+
+        pub(crate) fn page(doc_id: &str, text: &str) -> Self {
             let image = image::RgbImage::new(100, 200);
             let mut encoded = Cursor::new(Vec::new());
             image
@@ -616,7 +622,7 @@ mod tests {
             )
             .into_bytes();
             let text = text.as_bytes().to_vec();
-            let doc_id = "sn83045462_1890-05-03_ed-1_seq-7".to_owned();
+            let doc_id = doc_id.to_owned();
             let registration = serde_json::to_vec(&serde_json::json!({
                 "doc_id":doc_id, "source_image_sha256":digest(&image),
                 "baseline_sha256":digest(&baseline), "orientation":"upright",
@@ -659,7 +665,7 @@ mod tests {
             }
         }
 
-        fn inputs(&self) -> Inputs<'_> {
+        pub(crate) fn inputs(&self) -> Inputs<'_> {
             Inputs {
                 image: &self.image,
                 baseline: &self.baseline,
@@ -679,7 +685,7 @@ mod tests {
             self.binding.rights_sha256 = digest(&self.rights);
         }
 
-        fn clear_synthetic_rights(&mut self) {
+        pub(crate) fn clear_synthetic_rights(&mut self) {
             let mut rights: serde_json::Value = serde_json::from_slice(&self.rights).unwrap();
             for name in ["text", "alto", "layout"] {
                 rights[name] = "cleared".into();

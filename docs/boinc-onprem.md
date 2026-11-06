@@ -38,7 +38,7 @@ For a native Linux x86_64 release, add `"kind": "native"`, `"binary": "worker"`,
 `"binary_sha256": "<64 lowercase hex>"`, and `"binary_source": "<40 hex source commit>"`.
 Supported native identities are `usnm_quality` with empty `plan_class`, or `usnm_qwen`
 with `mt`, `nvidia_cuda_2b`, `nvidia_cuda_8b`, `intel_vulkan_8b`,
-`nvidia_vulkan_8b`, `nvidia_vulkan_6gb_8b`, or `amd_vulkan_8b`. Supply an already built binary; additional
+`nvidia_vulkan_8b`, `nvidia_vulkan_6gb_8b`, `nvidia_vulkan_2b`, or `amd_vulkan_8b`. Supply an already built binary; additional
 platforms are not claimed. A native release reviews the
 binary checksum/source instead of dispatching a container worker workflow. Native
 auxiliary payloads use `"extra_files": {"llama-server": {"path": "llama-server",
@@ -157,6 +157,11 @@ usnm-boinc retry --root /private/jobs --spool /private/assimilated \
   --state-file /private/state.json \
   --curated-url /private/curated --reference-url /private/reference
 ```
+
+A page that ran out of time on every host fails again with the same deadline:
+add `--timeout-secs <1 to 3600>` to give the child a longer one (`engine.timeout_secs`,
+part of its identity). The parent keeps its own. Without it the child keeps the
+parent's, and a resumed retry must give the same value.
 
 Use `--expected-no-output-files` instead of `--expected-error-mask` only for an
 actual `_no_output_files` marker. Unknown and zero masks are refused, not treated
@@ -388,7 +393,9 @@ the on-prem group needs a role there before step 5.
 `claim`, `release` and `collect` can run on the host instead of the Azure hand-off job (#967
 phase 3). `dead-letter` runs here too, and as root on the host it also takes an operator's
 `SUPERSEDES_FAILED_JOB` and `CONFIRM_MESSAGE_SHA256`
-([boinc-batch-scheduler.md](boinc-batch-scheduler.md#a-retried-page-claimed-after-its-dead-letter)). `usnm-boinc-step --target handoff --step claim|release|collect` runs the bridge
+([boinc-batch-scheduler.md](boinc-batch-scheduler.md#a-retried-page-claimed-after-its-dead-letter)).
+`deadline-retry` (#1417, the same section) runs as root on the host only, never over ssh;
+the controller's export takes its `HANDOFF_DEADLINE_RETRIES`. `usnm-boinc-step --target handoff --step claim|release|collect` runs the bridge
 image's `handoff-job.sh`, the Azure job's own command, from `SERVER_IMAGE`, the image the other
 bridge steps use. It runs as the host's own Arc machine identity, which ADR-0008's Cosmos
 amendment gives the hand-off job's grants. The container mounts only the Arc agent's challenge

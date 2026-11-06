@@ -9,6 +9,7 @@ pub(crate) mod curate;
 pub(crate) mod ja_ocr;
 pub(crate) mod ocr;
 pub(crate) mod ocr_local_copy;
+pub(crate) mod oni;
 pub(crate) mod onprem;
 pub(crate) mod pictures;
 pub(crate) mod prune;

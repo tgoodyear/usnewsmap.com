@@ -173,7 +173,7 @@ fn to_batch(rows: &[CuratedRow]) -> anyhow::Result<RecordBatch> {
         chars.append_value(r.text_chars);
         words.append_value(r.word_count);
         sha.append_value(r.text_sha256)?;
-        url.append_value(k.viewer_url(None));
+        url.append_value(k.source_viewer_url(&r.batch, None));
         at.append_value(r.ingested_at.timestamp_micros());
     }
     let cols: Vec<ArrayRef> = vec![

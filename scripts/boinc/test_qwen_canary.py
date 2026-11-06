@@ -307,7 +307,7 @@ class PlanPolicyRefresh(unittest.TestCase):
     def test_upgrade_restores_missing_vulkan_classes_without_resetting_admission(self):
         tree = ET.parse(self.target)
         nodes = {node.findtext("name"): node for node in tree.findall("plan_class")}
-        for name in ("intel_vulkan_8b", "nvidia_vulkan_8b", "nvidia_vulkan_6gb_8b"):
+        for name in ("intel_vulkan_8b", "nvidia_vulkan_8b", "nvidia_vulkan_6gb_8b", "nvidia_vulkan_2b"):
             tree.getroot().remove(nodes[name])
         nodes["nvidia_cuda_2b"].find("min_wu_id").text = "100"
         nodes["nvidia_cuda_2b"].find("max_wu_id").text = "100"
@@ -317,7 +317,7 @@ class PlanPolicyRefresh(unittest.TestCase):
         self.assertTrue(POLICY.refresh(self.source, self.target))
         updated = ET.parse(self.target)
         nodes = {node.findtext("name"): node for node in updated.findall("plan_class")}
-        for name in ("intel_vulkan_8b", "nvidia_vulkan_8b", "nvidia_vulkan_6gb_8b",
+        for name in ("intel_vulkan_8b", "nvidia_vulkan_8b", "nvidia_vulkan_6gb_8b", "nvidia_vulkan_2b",
                      "nvidia_cuda_8b", "docker_nvidia_cuda_8b"):
             with self.subTest(plan_class=name):
                 self.assertEqual(nodes[name].findtext("min_wu_id"), "2")
@@ -341,7 +341,7 @@ class PlanPolicyRefresh(unittest.TestCase):
                 self.assertEqual(self.target.read_bytes(), payload)
 
     def test_independent_refresh_refuses_a_range_without_replacing_existing_policy(self):
-        for name in ("amd_vulkan_8b", "nvidia_vulkan_6gb_8b"):
+        for name in ("amd_vulkan_8b", "nvidia_vulkan_6gb_8b", "nvidia_vulkan_2b"):
             with self.subTest(plan_class=name):
                 tree = ET.parse(self.source)
                 node = tree.find(f"plan_class[name='{name}']")
@@ -379,6 +379,57 @@ class PlanPolicyRefresh(unittest.TestCase):
                 self.assertEqual(ET.tostring(node), before[name])
         self.assertEqual((nodes["nvidia_vulkan_6gb_8b"].findtext("min_wu_id"),
                           nodes["nvidia_vulkan_6gb_8b"].findtext("max_wu_id")), ("2", "1"))
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_two_b_profile_has_its_own_window_and_admits_only_two_b_work(self):
+        helper = ROOT / "scripts/boinc/native-qwen-cohort.php"
+        def change(plan, first, last=None):
+            source = json.dumps(self.target.read_text())
+            args = f"{json.dumps(plan)}, {first}, {last if last is not None else 'null'}"
+            result = subprocess.run(
+                ["php", "-r", f"require {json.dumps(str(helper))}; echo native_qwen_cohort_xml({source}, {args});"],
+                text=True, capture_output=True, check=True)
+            self.target.write_text(result.stdout)
+            POLICY.refresh(self.source, self.target)
+            return {n.findtext("name"): n for n in ET.parse(self.target).findall("plan_class")}
+        bounds = lambda node: (node.findtext("min_wu_id"), node.findtext("max_wu_id"))
+        before = {n.findtext("name"): ET.tostring(n) for n in ET.parse(self.target).findall("plan_class")}
+        nodes = change("nvidia_vulkan_2b", 500)
+        self.assertEqual(bounds(nodes["nvidia_vulkan_2b"]), ("500", "500"))
+        for name, node in nodes.items():
+            if name != "nvidia_vulkan_2b":
+                self.assertEqual(ET.tostring(node), before[name], name)
+        # The shared refill and the CUDA 2B stop leave the Vulkan 2B window alone.
+        change("shared_8b", 200, 209)
+        nodes = change("nvidia_cuda_2b", 0)
+        self.assertEqual(bounds(nodes["nvidia_vulkan_2b"]), ("500", "500"))
+        before = {name: ET.tostring(node) for name, node in nodes.items()}
+        nodes = change("nvidia_vulkan_2b", 0)
+        self.assertEqual(bounds(nodes["nvidia_vulkan_2b"]), ("2", "1"))
+        for name, node in nodes.items():
+            if name != "nvidia_vulkan_2b":
+                self.assertEqual(ET.tostring(node), before[name], name)
+        result = subprocess.run(["php", "-d", "zend.assertions=1", "-d", "assert.exception=1", "-r", r"""
+require $argv[1];
+$xml = file_get_contents($argv[2]);
+foreach ([["nvidia_vulkan_2b", 500, 501], ["nvidia_vulkan_2b", 1, 1]] as $bad) {
+    $refused = false;
+    try { native_qwen_cohort_xml($xml, ...$bad); } catch (RuntimeException $e) { $refused = true; }
+    assert($refused);
+}
+$wu = (object)["batch"=>2,"rsc_disk_bound"=>12884901888,"min_quorum"=>2,
+    "target_nresults"=>2,"canonical_resultid"=>0,"error_mask"=>0];
+$results = [(object)["server_state"=>2,"sent_time"=>0],(object)["server_state"=>2,"sent_time"=>0]];
+native_qwen_cohort_validate($wu, $results, "nvidia_vulkan_2b");
+foreach ([["batch"=>8,"rsc_disk_bound"=>19327352832], ["batch"=>8], ["rsc_disk_bound"=>19327352832]] as $change) {
+    $bad = clone $wu;
+    foreach ($change as $key => $value) $bad->$key = $value;
+    $refused = false;
+    try { native_qwen_cohort_validate($bad, $results, "nvidia_vulkan_2b"); } catch (RuntimeException $e) { $refused = true; }
+    assert($refused);
+}
+""", str(helper), str(self.source)], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
     def test_six_gb_cli_requires_fresh_pair_and_admission_deadline(self):

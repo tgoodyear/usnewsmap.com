@@ -239,6 +239,91 @@ def feeder_allocation_guard():
         link.unlink(missing_ok=True)
 
 
+def qwen_tiebreak():
+    """#1477: settle disputed Qwen units on the real database, under a competing
+    row lock, then let the real transitioner finish them."""
+    app = int(fixture.sql("SELECT id FROM full_fixture.app WHERE name='usnm_qwen'"))
+    now = int(fixture.sql("SELECT UNIX_TIMESTAMP()"))
+    units = {}
+    for case, language, third in (("settle", "yid", 2), ("locked", "yid", 2), ("running", "yid", 4),
+                                  ("other", "eng", 2)):
+        name = f"usnm_qwen_tiebreak-{case}"
+        wu = fixture.insert_row(fixture.sql, "full_fixture", "workunit", create_time=now - 60, appid=app,
+                                name=name, batch=8, min_quorum=2, target_nresults=3, max_error_results=3,
+                                max_total_results=4, max_success_results=4, delay_bound=86400,
+                                transition_time=now + 86400, rsc_fpops_est=1e12, rsc_fpops_bound=1e13,
+                                size_class=-1)
+        # The first pair disagreed; the third replica is unsent, or running.
+        for i, (state, outcome, validate) in enumerate(((5, 1, 4), (5, 1, 4), (third, 0, 0))):
+            fixture.insert_row(fixture.sql, "full_fixture", "result", create_time=now - 60, workunitid=wu,
+                               appid=app, batch=8, name=f"{name}_{i}", server_state=state, outcome=outcome,
+                               validate_state=validate, report_deadline=now + 86400, elapsed_time=300.0,
+                               random=i, size_class=-1)
+        job = ROOT / f"qwen/campaign/units/tiebreak-{case}"
+        job.mkdir(parents=True)
+        (job / "qwen.json").write_text(json.dumps(
+            {"id": f"tiebreak-{case}", "language": language, "prompt_version": 1}))
+        units[case] = wu
+
+    def state(wu):
+        return (fixture.sql("SELECT CONCAT_WS(',',error_mask,max_total_results,canonical_resultid,assimilate_state,"
+                            f"transition_time) FROM full_fixture.workunit WHERE id={wu}"),
+                fixture.sql("SELECT GROUP_CONCAT(CONCAT_WS(',',server_state,outcome,validate_state) ORDER BY id "
+                            f"SEPARATOR ';') FROM full_fixture.result WHERE workunitid={wu}"))
+
+    def policy(*args):
+        since, until = (time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t)) for t in (now - 3600, now + 3600))
+        return json.loads(run(
+            "python3", "/checks/qwen-tiebreak-policy.py", *args, "--since", since, "--until", until,
+            "--stop-tiebreakers", "yid:1", "--config", "/dev/shm/boinc/config.xml",
+            "--qwen-root", str(ROOT / "qwen"), "--download", str(PROJECT / "download")).stdout)
+
+    before = {case: state(wu) for case, wu in units.items()}
+    report = policy("plan", "--list-units")
+    assert report["settle"] == [units["settle"], units["locked"]], report
+    assert report["groups"]["yid v1"]["waiting: replica running"] == 1, report
+    assert "settle" not in report["groups"]["eng v1"], report
+    journal = ROOT / "qwen-tiebreak-journal.jsonl"
+    apply = ("settle", "--apply", "--max-units", "5", "--journal", str(journal))
+    holder = subprocess.Popen(
+        ["mariadb", "--no-defaults", "--protocol=tcp", "--host=tls-db.test", "--ssl", "--ssl-verify-server-cert",
+         "--ssl-ca=/dbfixture/ca.pem", "-ufixture", "-pfixture-only", "-e",
+         f"START TRANSACTION; SELECT id FROM full_fixture.workunit WHERE id={units['locked']} FOR UPDATE; "
+         "SELECT SLEEP(120)"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    connection = ""
+    try:
+        deadline = time.monotonic() + 20
+        while not (connection := fixture.sql(
+                "SELECT id FROM information_schema.processlist WHERE info='SELECT SLEEP(120)'")):
+            assert holder.poll() is None and time.monotonic() < deadline, "the competing lock was not taken"
+            time.sleep(0.2)
+        outcomes = policy(*apply)["outcomes"]
+    finally:
+        # Ending the holder's session rolls its transaction back and releases the lock.
+        if connection:
+            fixture.sql(f"KILL {int(connection)}")
+        holder.kill()
+        holder.wait(timeout=20)
+    assert outcomes == {"settled": 1, "locked": 1}, outcomes
+    for case in ("locked", "running", "other"):
+        assert state(units[case]) == before[case], f"{case} changed: {state(units[case])}"
+    assert policy(*apply)["outcomes"] == {"settled": 1}
+    deadline = time.monotonic() + 60
+    while any(state(units[case])[0].split(",")[-1] != "2147483647" for case in ("settle", "locked")):
+        assert time.monotonic() < deadline, "the transitioner did not handle the settled units"
+        time.sleep(1)
+    for case in ("settle", "locked"):
+        # Too many total results, cap lowered to the three rows, assimilation ready; the
+        # inconclusive pair is NO_CHECK and the unsent replica OVER/DIDNT_NEED.
+        assert state(units[case]) == ("8,3,0,1,2147483647", "5,1,3;5,1,3;5,5,0"), state(units[case])
+    for case in ("running", "other"):
+        assert state(units[case]) == before[case], f"{case} changed: {state(units[case])}"
+    events = [json.loads(line)["event"] for line in journal.read_text().splitlines()]
+    assert events == ["run", "begin", "settled", "skipped", "done", "run", "begin", "settled", "done"], events
+    emit("qwen-tiebreak-settle", settled=2, skipped_under_lock=1, untouched=2,
+         transitioner="no_check_and_assimilate_ready")
+
+
 def web():
     for path in ("get_project_config.php", "server_status.php", "index.php"):
         with urllib.request.urlopen(f"http://127.0.0.1/{path}", timeout=10) as response:
@@ -518,6 +603,8 @@ def main():
         web()
         code_trees_locked()
         connections()
+        if args.phase == "init":
+            qwen_tiebreak()
         stop_services()
         negatives()
         hashes = json.loads((ROOT / "copied-hashes.json").read_text())
