@@ -20,7 +20,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: codeql-${{ github.event.pull_request.number || github.ref }}
+  # A push to main analyses only its own diff, so each gets its own group: a later push must not
+  # replace a pending scan of Rust that pull requests leave to main (#1585).
+  group: codeql-${{ github.event.pull_request.number || (github.event_name == 'push' && github.sha) || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
