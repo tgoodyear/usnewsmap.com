@@ -224,3 +224,79 @@ class DurationTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class QwenAdmissionTest(unittest.TestCase):
+    """usnm_qwen_no_work from the native cohort controller (#1441, opt-in qwen_admission)."""
+
+    def setUp(self):
+        self.state = {}
+        self.report = {"status": "no-fresh-verified-pairs", "admitted_unique": 592, "limit": 700,
+                       "fresh_pairs_in_scan": 4, "currently_eligible_unsent_replicas": 0,
+                       "native_gpu_inflight": {"9": 0}, "per_host_buffer_limit": 10, "admissible_backlog": 4}
+        self.cohort = {"result": "ok", "timer_active": True, "last_completed_at": NOW, "last_failure_at": 0,
+                       "report": self.report, "report_at": NOW}
+        self.facts = {"enabled_until": NOW + 86400, "qwen_admission": True, "cohort": self.cohort,
+                      "backlogs": {"usnm_ocr": 0, "usnm_qwen": None},
+                      "last_workunits": {"usnm_ocr": NOW, "usnm_qwen": NOW - 99999},
+                      "supply": {"cpu": {"idle": 0, "eligible": 0}, "gpu": {"idle": 0, "eligible": 0}},
+                      "tick": {"ok": True, "seconds": 10}}
+
+    def check(self, elapsed):
+        self.cohort["last_completed_at"] = self.cohort["report_at"] = NOW + elapsed
+        document, self.state = F.evaluate(self.facts, self.state, NOW + elapsed, 10000 + elapsed, "boot", "cfg")
+        return next(c for c in document["checks"] if c["code"] == "usnm_qwen_no_work")
+
+    def test_backlog_and_capacity_without_an_admission_for_an_hour_fires_and_admission_resets(self):
+        for at in range(0, 3600, 60):
+            self.assertEqual(self.check(at)["state"], "pending")
+        fired = self.check(3600)
+        self.assertEqual((fired["state"], fired["backlog"], fired["reason"]),
+                         ("firing", 4, "no-fresh-verified-pairs"))
+        self.report["admitted_unique"] = 593
+        self.assertEqual(self.check(3660)["state"], "pending")
+
+    def test_no_backlog_full_buffer_waiting_window_or_closed_window_is_healthy(self):
+        for change in ({"admissible_backlog": 0}, {"native_gpu_inflight": {"9": 10}},
+                       {"currently_eligible_unsent_replicas": 3}, {"admitted_unique": 700},
+                       {"status": "closed-expired-budget-or-release-change"}):
+            with self.subTest(change=change):
+                self.setUp()
+                self.report.update(change)
+                self.assertEqual(self.check(0)["state"], "healthy")
+        self.setUp()
+        self.facts["enabled_until"] = NOW - 1
+        checked = self.check(0)
+        self.assertEqual((checked["state"], checked["backlog"]), ("healthy", 0))
+
+    def test_controller_failure_stall_or_silence_fires_and_missing_evidence_is_unknown(self):
+        self.cohort["result"] = "failed"
+        self.assertEqual(self.check(0)["state"], "pending")
+        self.check(60)
+        self.check(120)
+        failed = self.check(180)
+        self.assertEqual((failed["state"], failed["reason"]), ("firing", "cohort_run_failed"))
+        for change, reason in (({"timer_active": False}, "cohort_timer_inactive"),
+                               ({"last_completed_at": NOW - 901}, "cohort_stalled"),
+                               ({"last_completed_at": None}, "cohort_stalled"),
+                               ({"report_at": NOW - 1801}, "cohort_no_report"),
+                               ({"report": None}, "cohort_no_report")):
+            with self.subTest(reason=reason):
+                self.setUp()
+                self.cohort.update(change)
+                document, _ = F.evaluate(self.facts, {}, NOW, 10000, "boot", "cfg")
+                checked = next(c for c in document["checks"] if c["code"] == "usnm_qwen_no_work")
+                self.assertEqual((checked["state"], checked["reason"]), ("firing", reason))
+        for cohort in (None, {"error": "cohort_unavailable"}):
+            self.setUp()
+            self.facts["cohort"] = cohort
+            document, _ = F.evaluate(self.facts, {}, NOW, 10000, "boot", "cfg")
+            checks = {c["code"]: c for c in document["checks"]}
+            self.assertEqual(checks["usnm_qwen_no_work"]["state"], "unknown")
+            self.assertEqual(checks["collection"]["state"], "firing")
+
+    def test_without_the_opt_in_the_workunit_check_is_unchanged(self):
+        del self.facts["qwen_admission"]
+        document, _ = F.evaluate(self.facts, {}, NOW, 10000, "boot", "cfg")
+        self.assertEqual(next(c for c in document["checks"] if c["code"] == "usnm_qwen_no_work")["state"],
+                         "unknown")

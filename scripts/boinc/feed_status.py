@@ -17,6 +17,11 @@ REFILL_WARN_S = 6 * 3600
 TICK_LIMIT_S = 15 * 60
 # The same drift across two five-minute guard runs: the refresh runbook's first condition (#1462).
 FEEDER_DRIFT_HOLD_S = 10 * 60
+# The native Qwen cohort controller (#1441): its timer runs every minute.
+COHORT_STALL_S = 15 * 60          # no completed run at all
+COHORT_REPORT_MAX_AGE_S = 30 * 60  # runs complete but none reports (the step lock stays busy)
+COHORT_FAILURE_HOLD_S = 3 * 60    # three failed runs in a row, not one
+NO_WORK_HOLD_S = 3600
 MAX_AGE = 180
 MAX_GAP = 180
 APP_NAMES = ("usnm_ocr", "usnm_qwen")
@@ -45,6 +50,38 @@ def atomic_text(path, value):
 
 def atomic_json(path, value):
     atomic_text(path, json.dumps(value, sort_keys=True, allow_nan=False) + "\n")
+
+
+def qwen_admission(record, facts, now):
+    """usnm_qwen_no_work from the native cohort controller: (condition, hold, generation, backlog, reason).
+
+    Qwen work comes from the cohort controller admitting audited units that already exist,
+    not from new workunits. Firing: its timer is off, three runs in a row failed, no run
+    completed for 15 minutes, no run reported for 30, or, for an hour without one more
+    admission, the window was open (time and budget left) with admissible backlog, a host
+    below its in-flight buffer and nothing left unsent in the current window. The hour
+    restarts with every admission (the generation is the admitted count)."""
+    if not isinstance(record, dict) or "error" in record:
+        return None, NO_WORK_HOLD_S, None, None, "cohort_unavailable"
+    if not record["timer_active"]:
+        return True, 0, "timer", None, "cohort_timer_inactive"
+    if record["result"] == "failed":
+        return True, COHORT_FAILURE_HOLD_S, "failed", None, "cohort_run_failed"
+    last = record["last_completed_at"]
+    if record["result"] != "running" and (last is None or now - last > COHORT_STALL_S):
+        return True, 0, "stalled", None, "cohort_stalled"
+    report = record["report"]
+    if report is None or now - record["report_at"] > COHORT_REPORT_MAX_AGE_S:
+        return True, 0, "no_report", None, "cohort_no_report"
+    window_open = (report["status"] != "closed-expired-budget-or-release-change"
+                   and report["admitted_unique"] < report["limit"]
+                   and (facts.get("enabled_until") or 0) > now)
+    backlog = (report["admissible_backlog"] or 0) if window_open else 0
+    limit = report["per_host_buffer_limit"]
+    capacity = limit is not None and any(count < limit for count in (report["native_gpu_inflight"] or {}).values())
+    waiting = (report["currently_eligible_unsent_replicas"] or 0) > 0
+    return (backlog > 0 and capacity and not waiting, NO_WORK_HOLD_S, "admitted:%d" % report["admitted_unique"],
+            backlog, report["status"])
 
 
 def evaluate(facts, previous, now, monotonic, boot_id, config_id):
@@ -89,9 +126,14 @@ def evaluate(facts, previous, now, monotonic, boot_id, config_id):
     for app in APP_NAMES:
         backlog = facts.get("backlogs", {}).get(app)
         latest = facts.get("last_workunits", {}).get(app)
+        if app == "usnm_qwen" and facts.get("qwen_admission"):
+            no_work, hold, generation, backlog, reason = qwen_admission(facts.get("cohort"), facts, now)
+            check(app + "_no_work", no_work, hold, generation=generation, backlog=backlog,
+                  last_workunit_at=latest, reason=reason)
+            continue
         # None is unavailable, zero is a successfully queried app with no workunit yet.
         no_work = None if backlog is None or latest is None or latest > now else backlog > 0
-        check(app + "_no_work", no_work, 3600, generation=latest, backlog=backlog,
+        check(app + "_no_work", no_work, NO_WORK_HOLD_S, generation=latest, backlog=backlog,
               last_workunit_at=latest)
     for resource in ("cpu", "gpu"):
         supply = facts.get("supply", {}).get(resource)
