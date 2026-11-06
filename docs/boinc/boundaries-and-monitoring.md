@@ -279,13 +279,14 @@ or the failure as `reason`:
   including while a run hangs (`cohort_stalled`); or no run reported for 30
   minutes, for instance because the step lock stays busy (`cohort_no_report`);
 - **firing after an hour without another admission:** the window is open
-  (`ENABLED_UNTIL` ahead, budget left, not closed) with admissible backlog, a host
-  is below its in-flight buffer, and nothing is left unsent in the current
-  window. Each admission (the admitted count) restarts the hour;
+  (`ENABLED_UNTIL` ahead, budget left, not closed) with admissible backlog, every host the controller serves is below its
+  in-flight buffer (it refills within the smallest headroom), and nothing is left
+  unsent in the current window. Each admission (the admitted count) restarts the hour;
 - **healthy** otherwise, including no backlog, full buffers, a window still
   being worked, or a closed window or spent budget (the refill window check
   covers the deadline);
-- **unknown** without a cohort record, or when the server source is unavailable.
+- **unknown** without a cohort record, when the server source is unavailable,
+  or when a run that scanned left out a measurement (`cohort_report_incomplete`).
 
 Without the config key the check is the workunit check, as before. To turn it on,
 add `--cohort-unit` to the server source, confirm its `server.json` has a

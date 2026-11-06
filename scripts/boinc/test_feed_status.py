@@ -258,6 +258,10 @@ class QwenAdmissionTest(unittest.TestCase):
 
     def test_no_backlog_full_buffer_waiting_window_or_closed_window_is_healthy(self):
         for change in ({"admissible_backlog": 0}, {"native_gpu_inflight": {"9": 10}},
+                       {"native_gpu_inflight": {"9": 0, "10": 10}},
+                       {"status": "no-audited-fresh-inputs", "fresh_pairs_in_scan": None, "admissible_backlog": None,
+                        "native_gpu_inflight": None, "per_host_buffer_limit": None,
+                        "currently_eligible_unsent_replicas": None},
                        {"currently_eligible_unsent_replicas": 3}, {"admitted_unique": 700},
                        {"status": "closed-expired-budget-or-release-change"}):
             with self.subTest(change=change):
@@ -290,6 +294,14 @@ class QwenAdmissionTest(unittest.TestCase):
                 document, _ = F.evaluate(self.facts, {}, NOW, 10000, "boot", "cfg")
                 self.assertEqual(next(c for c in document["checks"]
                                       if c["code"] == "usnm_qwen_no_work")["state"], "pending")
+        for key in ("admissible_backlog", "per_host_buffer_limit", "native_gpu_inflight",
+                    "currently_eligible_unsent_replicas"):
+            with self.subTest(missing=key):
+                self.setUp()
+                self.report[key] = None
+                document, _ = F.evaluate(self.facts, {}, NOW, 10000, "boot", "cfg")
+                checked = next(c for c in document["checks"] if c["code"] == "usnm_qwen_no_work")
+                self.assertEqual((checked["state"], checked["reason"]), ("unknown", "cohort_report_incomplete"))
         for cohort in (None, {"error": "cohort_unavailable"}):
             self.setUp()
             self.facts["cohort"] = cohort

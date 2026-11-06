@@ -22,6 +22,9 @@ COHORT_STALL_S = 15 * 60          # no completed run at all
 COHORT_REPORT_MAX_AGE_S = 30 * 60  # runs complete but none reports (the step lock stays busy)
 COHORT_FAILURE_RUNS = 3           # failed runs in a row since the last success, not one
 NO_WORK_HOLD_S = 3600
+# Statuses of runs that scanned candidates and measured backlog, buffers and the window.
+COHORT_SCAN_STATUSES = ("no-fresh-verified-pairs", "current-window-still-eligible",
+                        "bounded-gpu-inflight-buffer-full", "refilled-finite-window")
 MAX_AGE = 180
 MAX_GAP = 180
 APP_NAMES = ("usnm_ocr", "usnm_qwen")
@@ -77,9 +80,16 @@ def qwen_admission(record, facts, now):
     window_open = (report["status"] != "closed-expired-budget-or-release-change"
                    and report["admitted_unique"] < report["limit"]
                    and (facts.get("enabled_until") or 0) > now)
+    measured = ("admissible_backlog", "per_host_buffer_limit", "native_gpu_inflight",
+                "currently_eligible_unsent_replicas")
+    if window_open and report["status"] in COHORT_SCAN_STATUSES and any(report[key] is None for key in measured):
+        # A run that scanned must have measured; a missing measurement is not a healthy zero.
+        return None, NO_WORK_HOLD_S, None, None, "cohort_report_incomplete"
     backlog = (report["admissible_backlog"] or 0) if window_open else 0
     limit = report["per_host_buffer_limit"]
-    capacity = limit is not None and any(count < limit for count in (report["native_gpu_inflight"] or {}).values())
+    inflight = report["native_gpu_inflight"] or {}
+    # The controller refills only within the smallest headroom of the hosts it serves.
+    capacity = limit is not None and bool(inflight) and all(count < limit for count in inflight.values())
     waiting = (report["currently_eligible_unsent_replicas"] or 0) > 0
     return (backlog > 0 and capacity and not waiting, NO_WORK_HOLD_S, "admitted:%d" % report["admitted_unique"],
             backlog, report["status"])
