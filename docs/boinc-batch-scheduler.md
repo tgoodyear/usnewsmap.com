@@ -771,8 +771,9 @@ pages rather than overwriting them, including for historical cohorts.
    and `zero_work_starvation` when scheduler logs or status report hosts
    receiving zero tasks). Errors emit `boinc_batch_failure` and exit nonzero
    without dumping command output or credentials. Past 80% of a lifetime cap
-   (`MAX_JOBS` for dispatch journals, claims, bridge journals and existing
-   native workunits, and the server's `spool_entries_limit` for spool entries)
+   (`MAX_JOBS` for dispatch journals, claims and bridge journals, the server's
+   `existing_jobs_limit` for existing native workunits, and its
+   `spool_entries_limit` for spool entries)
    each tick also writes one `boinc_batch_cap_warning` line for it to stderr
    with `cap`, `count`, the `limit` it's measured against and the tick's `at`,
    and otherwise runs unchanged: archive drained history before the cap stops
@@ -1226,8 +1227,17 @@ existing explicit reconcile procedure. Only the serialized operator may break
 the stale `scheduler/controller.lock` blob lease once the former owner is
 confirmed stopped. Do not delete journals, reset state, or break a live lease. A
 missing reply is not evidence that `create_work` failed. The inventory fails
-closed above 10,000 journals or existing native workunit IDs, or above 100,000
-spool entries. Archive only drained, operator-verified history before resuming,
+closed above 10,000 journals, above 100,000 spool entries, or above the
+existing native workunit cap. That cap is 50,000 by default, set by
+`USNM_MAX_EXISTING_WORKUNITS` in the BOINC host's `bridge.env` (1 to 200,000),
+and the server reports it as `existing_jobs_limit`. It is larger than the
+journal cap because BOINC keeps every workunit for `delete_delay_hours` (168)
+after it finishes, so finished rows outnumber live journals (#1483). The cap
+holds for both the workunit rows, reported as `existing_workunits`, and the pages
+they expand to, `existing_jobs`; the 80% warning uses the larger, since a bundle
+whose journals are archived is still a row but adds no pages. A server
+image without this change reports no limit, and the controller then holds
+existing workunits to 10,000. Archive only drained, operator-verified history before resuming,
 with [the archive tool](#archive-drained-history-1483).
 
 ### Archive drained history (#1483)
@@ -1397,7 +1407,7 @@ The maintainer approves each live run. To archive:
    deletes them. It deletes only workunits that are assimilated (2) with their
    input files deleted (2), and whose every result is over (5) with its output
    files deleted (2). It leaves the others for BOINC's `db_purge` and counts
-   them as `deferred`. Those still count towards the 10,000 existing-workunit
+   them as `deferred`. Those still count towards the existing-workunit
    cap. A stop before a chunk's `COMMIT` rolls it back, and the resumed step
    exports the rows again beside the first attempt. A stop after it leaves the
    export, which the resumed step counts as deleted.

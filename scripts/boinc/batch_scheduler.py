@@ -27,6 +27,9 @@ REPO = Path(__file__).resolve().parents[2]
 ID = re.compile(r"[0-9a-f]{64}")
 STAGES = {"prepared", "reserved", "submitting", "submitted", "published", "failed"}
 MAX_JOBS = 10000
+# The bridge reports its existing-workunit cap (batch-inventory.py, #1483); an older bridge that
+# doesn't report one keeps MAX_JOBS. The controller accepts no report above this ceiling.
+MAX_EXISTING_WORKUNITS_CEILING = 200000
 MAX_GLOBAL_PENDING = 100000
 DEFAULT_MAX_GLOBAL_PENDING = 1000
 # The feeder's shared-memory work slots (shmem_work_items in contrib-compute/boinc/config.xml.template).
@@ -1863,10 +1866,17 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
             all(isinstance(job_id, str) and ID.fullmatch(job_id) for job_id in pending_jobs) and
             len(set(pending_jobs)) == len(pending_jobs), "invalid pending job inventory")
     pending_jobs = set(pending_jobs)
+    existing_limit = snapshot.get("existing_jobs_limit", MAX_JOBS)
+    require(type(existing_limit) is int and 1 <= existing_limit <= MAX_EXISTING_WORKUNITS_CEILING,
+            "invalid existing workunit limit")
     existing_jobs = snapshot["existing_jobs"]
-    require(isinstance(existing_jobs, list) and len(existing_jobs) <= MAX_JOBS and
+    require(isinstance(existing_jobs, list) and len(existing_jobs) <= existing_limit and
             all(isinstance(job_id, str) and ID.fullmatch(job_id) for job_id in existing_jobs) and
             len(set(existing_jobs)) == len(existing_jobs) and pending_jobs <= set(existing_jobs),
+            "invalid existing workunit inventory")
+    # Workunit rows before bundles become pages; an image from before it reports none (#1483).
+    existing_workunits = snapshot.get("existing_workunits", 0)
+    require(type(existing_workunits) is int and 0 <= existing_workunits <= existing_limit,
             "invalid existing workunit inventory")
     existing_jobs = set(existing_jobs)
     server = snapshot["jobs"]
@@ -1876,7 +1886,8 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
                 and (job.get("spool") is None or isinstance(job["spool"], str)),
                 "invalid server job record")
     warn_near_cap("bridge_journals", len(server), MAX_JOBS, now)
-    warn_near_cap("existing_workunits", len(existing_jobs), MAX_JOBS, now)
+    # Bundles whose journals are gone count as rows but add no pages, so warn on the larger.
+    warn_near_cap("existing_workunits", max(len(existing_jobs), existing_workunits), existing_limit, now)
     spool = snapshot.get("spool_entries"), snapshot.get("spool_entries_limit")
     if all(type(value) is int for value in spool) and spool[1] > 0:
         warn_near_cap("spool_entries", *spool, now)

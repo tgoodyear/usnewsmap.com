@@ -206,6 +206,49 @@ class SchedulerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "branching"):
             batch.owned_records(self.config, [parent, child, branch])
 
+    def test_the_bridge_reported_existing_workunit_cap_applies(self):
+        # Finished workunits stay in the database for delete_delay_hours, so the bridge reports
+        # its own existing-workunit cap (#1483); the controller checks and warns against it.
+        self.tick()
+        extra = {format(n, "064x") for n in range(0x100, 0x108)}
+        over = copy.deepcopy(self.fake)
+        over.extra_existing = extra
+        with patch.object(batch, "MAX_JOBS", 6), self.assertRaisesRegex(ValueError, "existing workunit"):
+            batch.tick(self.config, copy.deepcopy(self.state), over, lambda: None, NOW)
+        reported = copy.deepcopy(self.fake)
+        reported.extra_existing = extra
+        inventory = reported.inventory
+        reported.inventory = lambda: {**inventory(), "existing_jobs_limit": 12}
+        stderr = io.StringIO()
+        with patch.object(batch, "MAX_JOBS", 6), contextlib.redirect_stderr(stderr):
+            batch.tick(self.config, copy.deepcopy(self.state), reported, lambda: None, NOW)
+        caps = {json.loads(line)["cap"]: json.loads(line)["limit"] for line in stderr.getvalue().splitlines()}
+        self.assertEqual(caps.get("existing_workunits"), 12)
+        for limit in (0, batch.MAX_EXISTING_WORKUNITS_CEILING + 1, "12"):
+            bad = copy.deepcopy(self.fake)
+            bad.inventory = (lambda value: lambda: {**inventory(), "existing_jobs_limit": value})(limit)
+            with self.assertRaisesRegex(ValueError, "existing workunit limit"):
+                batch.tick(self.config, copy.deepcopy(self.state), bad, lambda: None, NOW)
+
+    def test_the_raw_workunit_count_warns_when_bundles_add_no_pages(self):
+        # Bundles whose journals are gone are rows towards the cap with no pages (#1483).
+        self.tick()
+        rows = copy.deepcopy(self.fake)
+        inventory = rows.inventory
+        rows.inventory = lambda: {**inventory(), "existing_jobs_limit": 10, "existing_workunits": 9}
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            batch.tick(self.config, copy.deepcopy(self.state), rows, lambda: None, NOW)
+        warned = [json.loads(line) for line in stderr.getvalue().splitlines()]
+        self.assertIn(("existing_workunits", 9, 10),
+                      [(w["cap"], w["count"], w["limit"]) for w in warned])
+        for count in (-1, 11, "9"):
+            bad = copy.deepcopy(self.fake)
+            bad.inventory = (lambda value: lambda: {**inventory(), "existing_jobs_limit": 10,
+                                                    "existing_workunits": value})(count)
+            with self.assertRaisesRegex(ValueError, "existing workunit inventory"):
+                batch.tick(self.config, copy.deepcopy(self.state), bad, lambda: None, NOW)
+
     def test_caps_past_eighty_percent_warn_without_changing_the_tick(self):
         self.tick()
         quiet, warned = copy.deepcopy(self.fake), copy.deepcopy(self.fake)
