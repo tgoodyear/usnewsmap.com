@@ -5,7 +5,9 @@ Description=Archive the held pages' history once a day (#835)
 # 08:30 UTC, about 3:30 AM US Eastern.
 OnCalendar=*-*-* 08:30:00 UTC
 AccuracySec=1min
-Persistent=false
+# A run missed while CT 211 was down runs when it is back: a missed day could leave more
+# journals than the cap.
+Persistent=true
 
 [Install]
 WantedBy=timers.target

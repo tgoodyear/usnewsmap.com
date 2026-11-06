@@ -83,13 +83,31 @@ if [ "$timer" != active ]; then
   printf '{"event": "boinc_held_archive", "skipped": "the controller timer is %s: an operator has paused the controller"}\n' "$timer"
   exit 0
 fi
+# Starts the timer and a tick (so the feed source sees one soon after the pause). Either
+# failing fails the run, whatever its status was, so the alert sees a controller left stopped.
 resume() {
-  systemctl start "$UNIT.timer" || echo "error: could not start $UNIT.timer again; start it by hand" >&2
-  # A tick now, so the feed source sees one soon after the pause.
-  systemctl start --no-block "$UNIT.service" || true
+  local status=${1:-$?} failed=false
+  systemctl start "$UNIT.timer" || { echo "error: could not start $UNIT.timer again; start it by hand" >&2; failed=true; }
+  systemctl start --no-block "$UNIT.service" || { echo "error: could not start a $UNIT tick" >&2; failed=true; }
+  if $failed; then
+    echo '{"event": "boinc_held_archive_failure", "error": "the controller was not started again"}'
+    exit 1
+  fi
+  exit "$status"
+}
+# On a stop (systemd sends SIGTERM to this script only, KillMode=mixed), the archive tool gets
+# SIGTERM, raised in it as KeyboardInterrupt, and is waited for: it then leaves its step resumable and releases the controller's
+# blob lease (archive_history.py's leased()) before the controller starts again.
+child=""
+on_stop() {
+  if [ -n "$child" ]; then
+    kill -TERM "$child" 2> /dev/null || true
+    wait "$child" 2> /dev/null || true
+  fi
+  exit 143
 }
 trap resume EXIT
-trap 'exit 143' TERM INT
+trap on_stop TERM INT
 systemctl stop "$UNIT.timer"
 deadline=$((SECONDS + WAIT_MINS * 60))
 until state=$(systemctl is-active "$UNIT.service" || true); [ "$state" = inactive ] || [ "$state" = failed ]; do
@@ -135,11 +153,26 @@ done
 
 batches=() pages=0 held=0
 out=$(mktemp)
-trap 'rm -f "$out"; resume' EXIT
+# shellcheck disable=SC2154 # st is set in the trap itself
+trap 'st=$?; rm -f "$out"; resume "$st"' EXIT
 for _ in $(seq 1 "$MAX_BATCHES"); do
-  python3 "$TOOL" dispatch --include-held --min-age-hours "$MIN_AGE" --pages "$PAGES" \
-    --config "$CONFIG" --state-dir "$STATE_DIR" --archive-dir "$ARCHIVE" \
-    --apply --confirm-controller-paused > "$out" || { cat "$out"; die "the dispatch step failed; it resumes when run again"; }
+  # In the background, so a stop can reach it. A background job starts with SIGINT ignored,
+  # so the wrapper turns SIGTERM into KeyboardInterrupt: the tool's finally blocks then run.
+  python3 -c '
+import runpy, signal, sys
+def stop(*_):
+    raise KeyboardInterrupt
+signal.signal(signal.SIGTERM, stop)
+sys.argv = sys.argv[1:]
+runpy.run_path(sys.argv[0], run_name="__main__")
+' "$TOOL" dispatch --include-held --min-age-hours "$MIN_AGE" --pages "$PAGES" \
+    --config "$CONFIG" --state-dir "$STATE_DIR" --archive-dir "$ARCHIVE" --controller-unit "$UNIT" \
+    --apply --confirm-controller-paused > "$out" &
+  child=$!
+  status=0
+  wait "$child" || status=$?
+  child=""
+  [ "$status" -eq 0 ] || { cat "$out"; die "the dispatch step failed; it resumes when run again"; }
   cat "$out"
   n=$(field "$out" batch)
   [ "$n" != null ] || break
@@ -154,7 +187,8 @@ print(sum(1 for p in json.load(open(sys.argv[1]))["pages"] if p.get("held")))
 done
 # The counts after: a dry run for the journals and what is left, and the state file.
 python3 "$TOOL" dispatch --include-held --min-age-hours "$MIN_AGE" --pages "$PAGES" \
-  --config "$CONFIG" --state-dir "$STATE_DIR" --archive-dir "$ARCHIVE" > "$out" || die "the closing dry run failed"
+  --config "$CONFIG" --state-dir "$STATE_DIR" --archive-dir "$ARCHIVE" --controller-unit "$UNIT" > "$out" ||
+  die "the closing dry run failed"
 python3 -c '
 import json, sys
 d = [json.loads(l) for l in open(sys.argv[1]) if l.startswith("{")][-1]

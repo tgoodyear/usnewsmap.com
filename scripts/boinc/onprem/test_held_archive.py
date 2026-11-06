@@ -75,7 +75,9 @@ case "$1" in
       *) echo inactive ;;
     esac ;;
   stop) echo inactive > "$FAKE_TIMER" ;;
-  start) case "$2" in *.timer) echo active > "$FAKE_TIMER" ;; esac ;;
+  start)
+    [ -z "$FAKE_START_FAILS" ] || exit 1
+    case "$2" in *.timer) echo active > "$FAKE_TIMER" ;; esac ;;
 esac
 '''
 
@@ -172,6 +174,51 @@ class HeldArchive(unittest.TestCase):
         self.assertNotEqual(done.returncode, 0)
         self.assertIn("the dispatch step failed", done.stderr)
         self.assertEqual((self.root / "timer").read_text().strip(), "active")
+
+    def test_a_failed_restart_fails_an_otherwise_good_run(self):
+        done = self.run_archive(FAKE_START_FAILS="1")
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("the controller was not started again", done.stdout)
+
+    def test_the_tool_checks_the_same_controller_unit(self):
+        done = self.run_archive(USNM_CONTROLLER_UNIT="other-controller")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        tool = [line for line in self.log() if line.startswith("tool dispatch")]
+        self.assertTrue(tool and all("--controller-unit other-controller" in line for line in tool))
+        self.assertIn("systemctl stop other-controller.timer", self.log())
+
+    def test_a_stop_interrupts_the_tool_waits_for_it_and_resumes(self):
+        import signal
+        import time
+        (self.root / "tool.py").write_text(
+            "import os, sys, time\n"
+            "open(os.environ['FAKE_LOG'], 'a').write('tool ' + ' '.join(sys.argv[1:]) + '\\n')\n"
+            "try:\n"
+            "    time.sleep(30)\n"
+            "except KeyboardInterrupt:\n"
+            "    open(os.environ['FAKE_LOG'], 'a').write('tool released the lease\\n')\n"
+            "    sys.exit(1)\n")
+        root = self.root
+        env = {**os.environ, "PATH": f"{root / 'bin'}{os.pathsep}{os.environ['PATH']}",
+               "FAKE_LOG": str(root / "log"), "FAKE_TIMER": str(root / "timer"),
+               "FAKE_LEFT": str(root / "left"), "USNM_HELD_ARCHIVE_LOCK": str(root / "lock")}
+        proc = subprocess.Popen(
+            ["bash", str(SCRIPT), "--config", str(root / "config.json"), "--state-dir", str(root / "state"),
+             "--archive-dir", str(root / "archive"), "--tool", str(root / "tool.py"), "--wait-mins", "1"],
+            env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        deadline = time.time() + 20
+        def started():
+            log = root / "log"
+            return log.exists() and any(line.startswith("tool dispatch") for line in log.read_text().splitlines())
+        while time.time() < deadline and not started():
+            time.sleep(0.1)
+        proc.send_signal(signal.SIGTERM)
+        proc.communicate(timeout=30)
+        self.assertEqual(proc.returncode, 143)
+        log = self.log()
+        released = log.index("tool released the lease")
+        self.assertLess(released, log.index("systemctl start usnm-boinc-priority-controller.timer"))
+        self.assertEqual((root / "timer").read_text().strip(), "active")
 
     def test_max_batches(self):
         (self.root / "left").write_text("5")
