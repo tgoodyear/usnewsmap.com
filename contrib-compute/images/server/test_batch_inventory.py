@@ -211,6 +211,15 @@ class InventoryTests(unittest.TestCase):
         self.assertIn("LIMIT 75001", inventory.query(75000))
         self.assertNotIn("{limit}", inventory.query())
 
+    def test_a_truncated_workunit_read_is_refused_before_bundles_expand(self):
+        # Bundles with no journals left add no pages, so the row count, not the page count, shows
+        # that the LIMIT cut the read short.
+        rows = "".join(f"usnm_ocrb_{n:064x}\t2\n" for n in (1, 2))
+        with patch.dict(inventory.os.environ, {"USNM_MAX_EXISTING_WORKUNITS": "1"}):
+            with self.assertRaisesRegex(ValueError, "existing workunit inventory"):
+                self.run_main(f"2\n{rows}")
+            self.assertEqual(self.run_main(f"2\nusnm_ocrb_{1:064x}\t2\n")["existing_jobs"], [])
+
     def test_a_page_requeued_from_its_bundle_leaves_it(self):
         bundle, pages = "c" * 64, ["d" * 64, "e" * 64]
         self.bundle(bundle, pages)

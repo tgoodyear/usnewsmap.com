@@ -227,6 +227,11 @@ def main():
             any(not re.fullmatch(r"usnm_(ocrb_)?[0-9a-f]{64}\t-?[0-9]+", value) for value in names):
         raise ValueError("invalid database inventory")
     rows = [value.split("\t") for value in names]
+    # The query reads one row past the cap. Check the rows before bundles become their pages:
+    # bundles whose journals are gone add no pages, so a full LIMIT of them would otherwise pass
+    # with later workunits cut off.
+    if len(rows) > existing_limit:
+        raise ValueError("invalid/oversized existing workunit inventory")
     pages = [(name.removeprefix("usnm_"), int(state)) for name, state in rows
              if not name.startswith("usnm_" + BUNDLE_PREFIX)]
     bundles = [(name.removeprefix("usnm_" + BUNDLE_PREFIX), int(state)) for name, state in rows
