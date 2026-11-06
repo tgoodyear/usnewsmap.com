@@ -107,6 +107,7 @@ export const LIMITED_PATHS = new Set([
   "/api/v1/aggregate", "/api/v1/hits", "/api/v1/search-report",
   "/mcp", "/mcp/",
 ]);
+const MCP_ORIGINS = ["https://usnewsmap.com", "https://api.usnewsmap.com"];
 // Both bindings count over 10 seconds (wrangler.jsonc), so a limited client waits that long.
 const LIMIT_PERIOD_SECS = 10;
 
@@ -118,10 +119,15 @@ async function edgeLimit(request, env) {
   const mode = env.SEARCH_EDGE_LIMIT === "off" || env.SEARCH_EDGE_LIMIT === "strict"
     ? env.SEARCH_EDGE_LIMIT : "normal";
   if (mode === "off" || request.method === "OPTIONS") return null;
-  if (!LIMITED_PATHS.has(new URL(request.url).pathname)) return null;
+  const url = new URL(request.url);
+  if (!LIMITED_PATHS.has(url.pathname)) return null;
   const limiter = mode === "strict" ? env.SEARCH_LIMIT_STRICT : env.SEARCH_LIMIT;
-  const key = clientKey(request.headers.get("cf-connecting-ip"));
-  if (typeof limiter?.limit !== "function" || key === null) return null;
+  const address = clientKey(request.headers.get("cf-connecting-ip"));
+  if (typeof limiter?.limit !== "function" || address === null) return null;
+  // www is counted apart: the API answers it with a 301 to the apex before its own limiter
+  // (www_redirect in crates/usnm-api/src/site.rs), and the redirected request counts at
+  // the apex, so one count for both would charge a www search twice.
+  const key = url.hostname === "www.usnewsmap.com" ? `www|${address}` : address;
   let outcome;
   try {
     outcome = await limiter.limit({ key });
@@ -138,6 +144,8 @@ async function edgeLimit(request, env) {
   });
   const origin = request.headers.get("origin");
   const allowed = typeof env.ALLOWED_ORIGINS === "string" ? env.ALLOWED_ORIGINS.split(",").map((s) => s.trim()) : [];
+  // MCP always allows the apex and api origins as well (allowed_origins in mcp.rs).
+  if (url.pathname.startsWith("/mcp")) allowed.push(...MCP_ORIGINS);
   if (origin && allowed.includes(origin)) {
     headers.set("Access-Control-Allow-Origin", origin);
     headers.set("Access-Control-Expose-Headers", "Retry-After");

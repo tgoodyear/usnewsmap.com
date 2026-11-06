@@ -139,6 +139,42 @@ test("the 429 carries CORS only for the site's own origins", async () => {
   assert.equal(other.response.headers.get("access-control-allow-origin"), null);
 });
 
+test("MCP's 429 also allows the apex and api origins, as the MCP endpoint does", async () => {
+  const env = { SEARCH_LIMIT: binding(0), ALLOWED_ORIGINS: "https://www.usnewsmap.com" };
+  for (const origin of ["https://usnewsmap.com", "https://api.usnewsmap.com", "https://www.usnewsmap.com"]) {
+    const mcp = await run(search("/mcp", { method: "POST", headers: { origin } }), env);
+    assert.equal(mcp.response.headers.get("access-control-allow-origin"), origin, origin);
+  }
+  const rest = await run(search("/v1/hits?q=gold", { headers: { origin: "https://api.usnewsmap.com" } }), env);
+  assert.equal(rest.response.headers.get("access-control-allow-origin"), null);
+});
+
+test("a www search and the apex request its redirect leads to are counted once each, apart", async () => {
+  const limit = binding();
+  const calls = [];
+  const realFetch = globalThis.fetch;
+  // The API's www redirect, then the apex answer, as a client following redirects sees.
+  globalThis.fetch = async (input) => {
+    const url = new URL(input.url);
+    calls.push(url.hostname);
+    return url.hostname === "www.usnewsmap.com"
+      ? new Response(null, { status: 301, headers: { location: `${SITE}${url.pathname}${url.search}` } })
+      : new Response("from the tunnel", { status: 200 });
+  };
+  try {
+    let request = new Request("https://www.usnewsmap.com/v1/hits?q=gold", { headers: { "cf-connecting-ip": IP } });
+    let answer = await worker.fetch(request, { SEARCH_LIMIT: limit });
+    assert.equal(answer.status, 301);
+    request = new Request(answer.headers.get("location"), { headers: { "cf-connecting-ip": IP } });
+    answer = await worker.fetch(request, { SEARCH_LIMIT: limit });
+    assert.equal(answer.status, 200);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  assert.deepEqual(calls, ["www.usnewsmap.com", "usnewsmap.com"]);
+  assert.deepEqual(limit.keys, [`www|4:${IP}`, `4:${IP}`]);
+});
+
 test("the limit comes before health-driven failover's probes", async () => {
   const { response, calls } = await run(search(), {
     SEARCH_LIMIT: binding(0), HEALTH_FAILOVER: "true", HEALTH_HOSTNAME: "usnewsmap.com", METRICS_MODE: "native",
