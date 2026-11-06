@@ -51,6 +51,34 @@ class OnpremStep(unittest.TestCase):
         self.assertIn("localhost/usnm-boinc-bridge:abc", done.stdout)
         self.assertIn("BRIDGE_STEP=submit", done.stdout)
 
+    def test_local_handoff_mount_is_fixed_and_rejects_symlink_source(self):
+        root = Path(self.conf.name).resolve()
+        store = root / "store"
+        store.mkdir(mode=0o700)
+        binaries = root / "bin"
+        binaries.mkdir()
+        for name, body in (("flock", "exit 0"), ("podman", "printf '%s\\n' \"$@\"")):
+            path = binaries / name
+            path.write_text("#!/bin/sh\n" + body + "\n")
+            path.chmod(0o755)
+        env = {**os.environ, "PATH": str(binaries) + os.pathsep + os.environ["PATH"],
+               "USNM_BOINC_CONF": str(root), "USNM_BOINC_STEP_RUN": str(root),
+               "USNM_BOINC_HANDOFF_ROOT": str(store)}
+        argv = ["bash", str(SCRIPT), "--env", "prod", "--step", "work-volume", "--wait-mins", "1"]
+        done = subprocess.run(argv, env=env, capture_output=True, text=True, timeout=10)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn(f"{store}:/handoff-state", done.stdout)
+        store.chmod(0o755)
+        done = subprocess.run(argv, env=env, capture_output=True, text=True, timeout=10)
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("mode 0700", done.stderr)
+        store.chmod(0o700)
+        store.rename(root / "real-store")
+        store.symlink_to(root / "real-store")
+        done = subprocess.run(argv, env=env, capture_output=True, text=True, timeout=10)
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("must not be a symlink", done.stderr)
+
     def test_refusals(self):
         cases = [
             (("--env", "prod", "--target", "export", "--step", "collect", "--what-if"), "does not run on-prem"),
@@ -336,6 +364,26 @@ class OnpremStep(unittest.TestCase):
         settings = dict(HANDOFF_SETTINGS, **changes)
         Path(self.conf.name, "handoff.env").write_text(
             "".join(f"{k}={v}\n" for k, v in settings.items() if v is not None))
+
+    def test_handoff_backend_must_match_controller_before_launch(self):
+        azure = HANDOFF_SETTINGS["HANDOFF_URL"]
+        for actual, expected, passes in (
+                (azure, "/handoff-state", False),
+                ("/handoff-state", azure, False),
+                ("/handoff-state", None, False),
+                ("/handoff-state", "/handoff-state", True),
+                (azure, "https://other.blob.core.windows.net/boinc-handoff", False),
+                (azure, azure, True)):
+            with self.subTest(actual=actual, expected=expected):
+                self.write_handoff_env(HANDOFF_URL=actual)
+                marker = "" if expected is None else f" --var EXPECTED_HANDOFF_URL={expected}"
+                done = self.run_step(ssh="usnm-boinc-step --env prod --target handoff --step claim"
+                                         + marker + " --what-if")
+                if passes:
+                    self.assertEqual(done.returncode, 0, done.stderr)
+                else:
+                    self.assertNotEqual(done.returncode, 0)
+                    self.assertRegex(done.stderr, "backend mismatch|requires EXPECTED_HANDOFF_URL")
 
     def test_handoff_runs_the_job_command_with_the_hosts_settings(self):
         self.write_handoff_env()
