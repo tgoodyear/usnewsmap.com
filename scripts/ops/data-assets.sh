@@ -4,6 +4,7 @@
 # into place by this script (docs/reports/README.md, "Data").
 #
 #   scripts/ops/data-assets.sh --members --set report-data            # the tracked files of the set at this commit
+#   scripts/ops/data-assets.sh --inventory --set report-data --out DIR # candidate cumulative rights inventory
 #   scripts/ops/data-assets.sh --pack --set report-data --out DIR      # DIR/<set>.tar.gz, <set>.members.txt, SHA256SUMS
 #       [--previous none|FILE|URL]                                 # (default: the release ops/data-assets.json records)
 #   scripts/ops/data-assets.sh --fetch --set report-data [--tag TAG]  # download, check the digest, extract at the root
@@ -18,7 +19,7 @@
 set -euo pipefail
 die() { echo "error: $*" >&2; exit 1; }
 usage() {
-  echo "usage: scripts/ops/data-assets.sh (--members | --pack --out DIR [--previous none|FILE|URL] | --fetch [--tag TAG]) --set <report-data|bench-assets>" >&2
+  echo "usage: scripts/ops/data-assets.sh (--members | (--pack | --inventory) --out DIR [--previous none|FILE|URL] | --fetch [--tag TAG]) --set <report-data|bench-assets>" >&2
   exit 2
 }
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
@@ -27,7 +28,7 @@ INDEX=$ROOT/ops/data-assets.json
 MODE="" SET="" OUT="" TAG="" PREVIOUS=""
 while [ $# -gt 0 ]; do
   case $1 in
-    --members | --pack | --fetch) [ -z "$MODE" ] || usage; MODE=${1#--}; shift ;;
+    --members | --pack | --inventory | --fetch) [ -z "$MODE" ] || usage; MODE=${1#--}; shift ;;
     --set) [ $# -ge 2 ] || usage; SET=$2; shift 2 ;;
     --out) [ $# -ge 2 ] || usage; OUT=$2; shift 2 ;;
     --tag) [ $# -ge 2 ] || usage; TAG=$2; shift 2 ;;
@@ -64,8 +65,9 @@ PY
 case $MODE in
   members)
     members ;;
-  pack)
+  pack|inventory)
     [ -n "$OUT" ] || usage
+    [ "$MODE" != inventory ] || [ "$SET" = report-data ] || die "--inventory is only available for report-data"
     mkdir -p "$OUT"
     stage=$(mktemp -d)
     trap 'rm -rf "$stage"' EXIT
@@ -95,6 +97,18 @@ case $MODE in
       mkdir -p "$stage/tree/$(dirname "$f")"
       cp "$ROOT/$f" "$stage/tree/$f"
     done
+    if [ "$MODE" = inventory ]; then
+      git -C "$ROOT" ls-files --error-unmatch docs/reports/report-data-rights.txt >/dev/null \
+        || die "the report-data rights notice must be tracked"
+      python3 "$ROOT/scripts/ops/verify-report-data.py" --create "$stage/tree" > "$stage/report-data-manifest.json"
+      cp "$stage/report-data-manifest.json" "$OUT/report-data-manifest.json"
+      echo "Candidate inventory written to $OUT/report-data-manifest.json; review the sources and migration before using it."
+      exit 0
+    elif [ "$SET" = report-data ]; then
+      git -C "$ROOT" ls-files --error-unmatch docs/reports/report-data-manifest.json >/dev/null \
+        || die "the report-data rights inventory must be tracked"
+      python3 "$ROOT/scripts/ops/verify-report-data.py" "$stage/tree"
+    fi
     list=$OUT/$SET.members.txt
     (cd "$stage/tree" && find . -type f | sed 's|^\./||' | LC_ALL=C sort) > "$list"
     [ -s "$list" ] || die "the $SET set is empty: nothing tracked in this checkout and no previous release (or --previous none)"

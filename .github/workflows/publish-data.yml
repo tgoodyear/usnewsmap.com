@@ -2,7 +2,8 @@
 # the run is started on. The release is immutable: a changed set is a new run and a new tag.
 # A set is cumulative: the pack starts from the release ops/data-assets.json records and lays the
 # commit's tracked files over it. After the run, replace ops/data-assets.json with the file the
-# job summary prints and remove the set's files from the tree (docs/reports/README.md, "Data").
+# job summary prints and remove migrated data from the tree, keeping the rights notice and inventory
+# (docs/reports/README.md, "Data").
 name: publish data assets
 on:
   workflow_dispatch:

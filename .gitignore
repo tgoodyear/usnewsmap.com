@@ -28,6 +28,9 @@ docs/reports/**/*.txt
 docs/reports/**/*.gz
 docs/reports/**/*.pdf
 docs/reports/**/*.tar
+# The cumulative archive's rights notice and inventory stay in the tree.
+!docs/reports/report-data-rights.txt
+!docs/reports/report-data-manifest.json
 docs/data/*
 ocr/bench/**/*.jpg
 ocr/bench/**/*.jpeg
