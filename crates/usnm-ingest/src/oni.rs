@@ -778,9 +778,6 @@ impl Run<'_> {
         let sha256 = hex(&Sha256::digest(&bytes));
         if !path.exists() {
             write_atomic(&path, &bytes)?;
-        } else {
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))
-                .with_context(|| path.display().to_string())?;
         }
         let image_path = rel;
         let source_url = format!("{}/{bag_path}", self.bag);
@@ -1307,6 +1304,7 @@ mod tests {
         assert!(records[1].ocr_store_path.is_none());
 
         let sidecar = scan_sidecar_path(&image);
+        std::fs::set_permissions(&image, std::fs::Permissions::from_mode(0o640)).unwrap();
         let mut stale = records[0].clone();
         stale.image_path = "keep/psu_pst_test/sn84035968/1861-10-08/1/1.jp2".into();
         stale.alto_store_path = None;
@@ -1323,6 +1321,10 @@ mod tests {
         .await
         .unwrap()
         .unwrap();
+        assert_eq!(
+            std::fs::metadata(&image).unwrap().permissions().mode() & 0o777,
+            0o640
+        );
         let refreshed: PsuScanRecord =
             serde_json::from_slice(&std::fs::read(&sidecar).unwrap()).unwrap();
         assert_eq!(refreshed.image_path, records[0].image_path);

@@ -7,7 +7,7 @@ ConditionPathExists=!/var/lib/usnm-psu-backfill/complete
 
 [Service]
 Type=oneshot
-User=root
+DynamicUser=yes
 Group=ocrdata
 UMask=0002
 WorkingDirectory=/tank/ocr/text/psu-openoni
