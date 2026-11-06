@@ -1,4 +1,5 @@
 import base64
+import contextlib
 import email.message
 import email.utils
 from datetime import datetime, timedelta, timezone
@@ -216,6 +217,12 @@ class ClientTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             client.get("https://x/")
         self.assertEqual((client.requests, sleeps), (1, []))
+
+    def test_delay_must_be_a_finite_second_or_more(self):
+        for delay in ("0.5", "nan", "inf"):
+            with self.subTest(delay=delay), self.assertRaises(SystemExit), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                fetch.main(["--out", "unused", "--delay", delay])
 
     def test_a_404_is_not_retried(self):
         client = fetch.Client(delay=0, sleep=lambda s: None, opener=self.opener(http_error(404)))

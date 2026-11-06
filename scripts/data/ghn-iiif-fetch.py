@@ -333,7 +333,7 @@ def main(argv=None):
     for lccn in lccns:
         if not LCCN_RE.match(lccn):
             ap.error(f"not an LCCN: {lccn}")
-    if a.delay < 1:
+    if not math.isfinite(a.delay) or a.delay < 1:
         ap.error("--delay must be at least 1 second")
     out = Path(a.out)
     client = Client(a.delay)
