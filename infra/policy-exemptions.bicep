@@ -46,9 +46,11 @@ param ocrSyncOnPrem bool = false
 param dataPrivateEndpoints bool = true
 @description('As in main.bicep. On: the same three accounts allow public network access, for snet-cae, while the private endpoints stay.')
 param dataSubnetAccess bool = false
+@description('As in main.bicep. On: the same three accounts accept every network, Entra ID only.')
+param dataAllNetworks bool = false
 
-// As main.bicep's dataSubnetOpen.
-var subnetOpen = dataSubnetAccess || !dataPrivateEndpoints
+// As main.bicep's dataSubnetOpen, and its dataEveryNetwork: either opens the three accounts.
+var subnetOpen = dataSubnetAccess || !dataPrivateEndpoints || dataAllNetworks
 
 // The same names main.bicep computes.
 var env = checkedEnvName(environmentName)

@@ -1,4 +1,8 @@
-// VNet-integrated workload-profiles environment using the Consumption
+// Workload-profiles environment using the Consumption profile, VNet-integrated
+// when subnetId is set. Without one (the Azure spare's, #308) Azure manages its
+// network, so there is no load balancer or public IP of ours to pay for, and
+// the apps reach the data accounts over their public endpoints with Entra ID
+// (ADR-0008, amendment "No VNet for the spare"). Either way it has the Consumption
 // profile: no Dedicated profile, so no management fee, and replicas can
 // reach 4 vCPU / 8 GiB (08 §8.1). For a full index rebuild, the writer needs
 // more memory than that (#172): `dedicatedProfile` adds a memory-optimized
@@ -11,7 +15,8 @@ param tags object
 param name string
 @description('The resource group Azure creates for the environment\'s infrastructure (create-only); empty leaves Azure\'s ME_{name}_{group}_{region}.')
 param infrastructureResourceGroup string = ''
-param subnetId string
+@description('The delegated subnet for VNet integration; empty for an environment without a VNet.')
+param subnetId string = ''
 @description('Add the memory-optimized E4 profile the ingest job uses for a full rebuild (#172).')
 param dedicatedProfile bool = false
 
@@ -32,10 +37,6 @@ resource env 'Microsoft.App/managedEnvironments@2024-03-01' = {
           ? [{ name: dedicatedName, workloadProfileType: 'E4', minimumCount: 0, maximumCount: 1 }]
           : []
       )
-      vnetConfiguration: {
-        infrastructureSubnetId: subnetId
-        internal: false
-      }
       // Logs go through the environment's diagnostic setting
       // (diagnostics.bicep), not the workspace's shared key.
       appLogsConfiguration: {
@@ -43,7 +44,9 @@ resource env 'Microsoft.App/managedEnvironments@2024-03-01' = {
       }
       zoneRedundant: false
     },
-    empty(infrastructureResourceGroup) ? {} : { infrastructureResourceGroup: infrastructureResourceGroup }
+    empty(subnetId) ? {} : { vnetConfiguration: { infrastructureSubnetId: subnetId, internal: false } },
+    // Azure creates the infrastructure group only for a VNet-integrated environment.
+    empty(infrastructureResourceGroup) || empty(subnetId) ? {} : { infrastructureResourceGroup: infrastructureResourceGroup }
   )
 }
 

@@ -63,6 +63,10 @@ param indexAccessTier string = 'Hot'
 param dataPrivateEndpoints bool = true
 @description('Allow snet-cae into the data lake, the index account and Cosmos through service endpoints and firewall rules while the private endpoints stay (#308, #1425), so a later provision can remove the endpoints with the subnet path already proven. It has no effect with dataPrivateEndpoints off, which always allows the subnet.')
 param dataSubnetAccess bool = false
+@description('The data lake, the index account and Cosmos accept every network, with Entra ID the only way in (#308, ADR-0008 amendment "No VNet for the spare"): the spare\'s environment has no VNet and no stable outbound address. Shared keys, local auth, SAS and anonymous access stay off. Needs dataPrivateEndpoints off.')
+param dataAllNetworks bool = false
+@description('The Azure spare\'s VNet-less Container Apps environment, with its own API and searcher, beside the VNet-integrated one (#308). Needs dataAllNetworks. The first stage of removing the VNet and its load balancer without a gap.')
+param spareEnvironment bool = false
 @description('Data lake blob soft-delete days. Keep 3 until old qw-index is pruned; then restore 14 (#416).')
 @minValue(1)
 @maxValue(365)
@@ -494,6 +498,16 @@ module registry 'modules/registry.bicep' = {
 // and firewall rules without private endpoints, and alongside them with
 // dataSubnetAccess: the first stage of removing them make-before-break (#1425).
 var dataSubnetOpen = dataSubnetAccess || !dataPrivateEndpoints
+// The spare's environment has no VNet, so the three accounts it reads accept every
+// network, Entra ID only. It never applies with the private endpoints in place.
+var dataEveryNetwork = dataAllNetworks && dataPrivateEndpoints
+  ? bool(int('USNM_DATA_ALL_NETWORKS needs USNM_DATA_PRIVATE_ENDPOINTS=false'))
+  : dataAllNetworks
+// The spare reuses the index-account searcher layout (prod's). With the lake searcher app
+// (searcherApp) both API modules would deploy n.searcherApp into different environments.
+var spareEnvOn = spareEnvironment && (!dataEveryNetwork || searcherApp)
+  ? bool(int('USNM_SPARE_ENVIRONMENT needs USNM_DATA_ALL_NETWORKS and USNM_SEARCHER_APP=false'))
+  : spareEnvironment
 
 module network 'modules/network.bicep' = {
   scope: rg
@@ -555,9 +569,9 @@ var stateNodeAccess = cosmosOpen(onPremServing || cosmosOnPremAccess || ocrSyncO
 var dataSubnetIds = dataSubnetOpen
   ? [resourceId(subscription().subscriptionId, n.rg, 'Microsoft.Network/virtualNetworks/subnets', n.vnet, 'snet-cae')]
   : []
-var dataLakeOpen = lakeNodeAccess || dataSubnetOpen
-var indexAccountOpen = indexNodeAccess || (indexStorage && dataSubnetOpen)
-var stateOpen = stateNodeAccess || dataSubnetOpen
+var dataLakeOpen = lakeNodeAccess || dataSubnetOpen || dataEveryNetwork
+var indexAccountOpen = indexNodeAccess || (indexStorage && (dataSubnetOpen || dataEveryNetwork))
+var stateOpen = stateNodeAccess || dataSubnetOpen || dataEveryNetwork
 
 module storage 'modules/storage.bicep' = {
   scope: rg
@@ -569,6 +583,7 @@ module storage 'modules/storage.bicep' = {
     name: n.dataLake
     blobSoftDeleteDays: lakeBlobSoftDeleteDays
     allowedIps: lakeNodeAccess ? nodeIpList(ocrNodeIps) : []
+    allNetworks: dataEveryNetwork
     // The BOINC hand-off job reaches the lake from its own subnet, as it does the exchange account.
     subnetIds: empty(dataSubnetIds) || !boincHandoff
       ? dataSubnetIds
@@ -589,6 +604,7 @@ module indexStore 'modules/index-storage.bicep' = if (indexStorage) {
     accessTier: indexAccessTier
     allowedIps: indexNodeAccess ? nodeIpList(ocrNodeIps) : []
     subnetIds: dataSubnetIds
+    allNetworks: dataEveryNetwork
   }
 }
 
@@ -762,7 +778,9 @@ module boincHandoffLogs 'modules/boinc-handoff-logs.bicep' = if (deployBoincGrou
 }
 
 // The on-prem BOINC batch controller (#866): the runner starts the hand-off and bridge jobs.
-module boincController 'modules/boinc-controller.bicep' = if (boincHandoff && boincControllerOnPrem && !empty(trim(boincHandoffRunner))) {
+// Kept with the on-prem hand-off (boincOnPrem) after the Azure hand-off job is retired (#308):
+// its subscription Reader may serve the controller host's other az reads.
+module boincController 'modules/boinc-controller.bicep' = if ((boincHandoff || boincOnPrem) && boincControllerOnPrem && !empty(trim(boincHandoffRunner))) {
   name: 'boinc-controller'
   dependsOn: [rg, boincRg]
   params: {
@@ -908,6 +926,7 @@ module cosmos 'modules/cosmos.bicep' = {
     freeTier: cosmosFreeTier
     allowedIps: stateNodeAccess ? nodeIpList(ocrNodeIps) : []
     subnetIds: dataSubnetIds
+    allNetworks: dataEveryNetwork
   }
 }
 
@@ -1009,18 +1028,34 @@ module containerEnv 'modules/containerapps-env.bicep' = {
   }
 }
 
+// The Azure spare's environment without a VNet (#308): no load balancer or public IP
+// of ours. Its apps reach the data accounts over their public endpoints, which accept
+// every network with Entra ID only (dataEveryNetwork).
+module spareEnv 'modules/containerapps-env.bicep' = if (spareEnvOn) {
+  scope: rg
+  name: 'containerapps-env-spare'
+  params: {
+    location: location
+    tags: tags
+    name: n.spareContainerEnv
+  }
+}
+
 // Resource logs for everything that has them: to the environment's
 // workspace, except what the OCR nodes control (the exchange account's queue
 // logs, the nodes' rule's errors), which goes to the nodes' workspace.
 module diagnostics 'modules/diagnostics.bicep' = {
   scope: rg
   name: 'diagnostics'
+  dependsOn: [spareEnv]
   params: {
     workspaceId: monitoring.outputs.workspaceId
     workspaceName: monitoring.outputs.workspaceName
     registryName: registry.outputs.name
     vnetName: network.outputs.vnetName
     containerEnvName: containerEnv.outputs.name
+    // A name known before the deployment, so a what-if doesn't short-circuit the module.
+    spareContainerEnvName: spareEnvOn ? n.spareContainerEnv : ''
     cosmosName: cosmos.outputs.name
     dataStorageName: storage.outputs.name
     indexStorageName: indexStorage ? indexStore!.outputs.name : ''
@@ -1073,6 +1108,57 @@ module api 'modules/containerapp.bicep' = if (deployApi) {
     searchBackend: searchBackend
     searcherApp: searcherApp
     searcherAppRetain: searcherAppRetain
+    searcherName: n.searcherApp
+    // Warm where the API keeps a replica warm (prod); elsewhere it scales to
+    // zero with the API.
+    searcherMinReplicas: apiMinReplicas > 0 ? 1 : 0
+    appInsightsConnectionString: monitoring.outputs.appInsightsConnectionString
+    ingestCron: ingestJobs && useAcr ? ingestCron : ''
+    americanStoriesSearch: americanStoriesSearch
+    congressSearch: congressSearch
+    pageLanguageFilter: pageLanguageFilter
+    browsePages: browsePages
+  }
+}
+
+// The spare's API and searcher in the VNet-less environment (#308), beside the
+// VNet-integrated ones until the cutover. The same identity, images and settings;
+// new names, because a Container App can't move between environments.
+module apiSpare 'modules/containerapp.bicep' = if (deployApi && spareEnvOn) {
+  scope: rg
+  name: 'api-spare'
+  dependsOn: [rbac]
+  params: {
+    location: location
+    tags: tags
+    name: n.spareApiApp
+    environmentId: spareEnv!.outputs.id
+    image: useAcr ? '${registry.outputs.loginServer}/usnewsmap-api:${apiImageTag}' : apiImage
+    // Without the registry, the public upstream image: ours is only in the registry.
+    quickwitImage: useAcr ? '${registry.outputs.loginServer}/${quickwitPin.image}@${quickwitPin.digest}' : quickwitUpstream
+    registryServer: useAcr ? registry.outputs.loginServer : ''
+    // Reached by its default hostname alone: the Worker's AZURE_FALLBACK_ORIGIN (#308).
+    customDomains: []
+    identityId: identities.outputs.appId
+    identityClientId: identities.outputs.appClientId
+    storageBlobEndpoint: storage.outputs.blobEndpoint
+    // The API writes the hit requests the pickup reads, in Azure or on-prem (#917).
+    ocrRequests: ocrNodes && useAcr && (ingestJobs || (ocrSyncOnPrem && !empty(trim(batchHost))))
+    indexStorageAccountName: indexStorage ? indexStore!.outputs.name : ''
+    indexSearcherName: n.spareSearcherApp
+    indexStorageServe: indexStorageServe && !indexStorage
+      ? bool(int('USNM_INDEX_STORAGE_SERVE requires USNM_INDEX_STORAGE'))
+      : indexStorageServe
+    storageAccountName: storage.outputs.name
+    cosmosEndpoint: cosmos.outputs.endpoint
+    allowedOrigins: union(allowedOrigins, domainOrigins, ['https://${n.spareApiApp}.${spareEnv!.outputs.defaultDomain}'])
+    minReplicas: apiMinReplicas
+    maxReplicas: apiMaxReplicas
+    computeSlots: apiComputeSlots
+    searchBackend: searchBackend
+    searcherApp: searcherApp
+    // Nothing to retain in a new environment.
+    searcherAppRetain: false
     searcherName: n.searcherApp
     // Warm where the API keeps a replica warm (prod); elsewhere it scales to
     // zero with the API.

@@ -161,6 +161,11 @@
       "type": "boolean",
       "description": "Private endpoints for the data lake, the index account and Cosmos. Default true. False: service endpoints and firewall rules for snet-cae instead (ADR-0008, amendment of November 2026)."
     },
+    "USNM_DATA_ALL_NETWORKS": {
+      "x-usnm-visibility": "public",
+      "type": "boolean",
+      "description": "The data lake, the index account and Cosmos accept every network, Entra ID only: no shared key, local auth, SAS or anonymous access (#308). For the Azure spare's VNet-less environment. Default false; needs USNM_DATA_PRIVATE_ENDPOINTS false."
+    },
     "USNM_DATA_SUBNET_ACCESS": {
       "x-usnm-visibility": "public",
       "type": "boolean",
@@ -572,6 +577,11 @@
       "x-usnm-visibility": "private",
       "description": "Private: in the settings store, under the environment's label. A managed certificate's resource id, which names the subscription.",
       "not": {}
+    },
+    "USNM_SPARE_ENVIRONMENT": {
+      "x-usnm-visibility": "public",
+      "type": "boolean",
+      "description": "The Azure spare's VNet-less Container Apps environment, usnm-core-spare-cae-<env>, with its own API and searcher beside the VNet-integrated ones (#308). Default false; needs USNM_DATA_ALL_NETWORKS and USNM_SEARCHER_APP false. The first stage of removing the VNet and its load balancer."
     },
     "USNM_SPLIT_DOCS": {
       "x-usnm-visibility": "public",

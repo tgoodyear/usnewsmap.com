@@ -38,6 +38,8 @@ param workspaceName string
 param registryName string
 param vnetName string
 param containerEnvName string
+@description('The Azure spare\'s VNet-less environment (#308), if there is one.')
+param spareContainerEnvName string = ''
 param cosmosName string
 param dataStorageName string
 param indexStorageName string = ''
@@ -72,6 +74,10 @@ resource vnet 'Microsoft.Network/virtualNetworks@2024-05-01' existing = {
 
 resource containerEnv 'Microsoft.App/managedEnvironments@2024-03-01' existing = {
   name: containerEnvName
+}
+
+resource spareEnv 'Microsoft.App/managedEnvironments@2024-03-01' existing = if (!empty(spareContainerEnvName)) {
+  name: spareContainerEnvName
 }
 
 resource cosmos 'Microsoft.DocumentDB/databaseAccounts@2024-11-15' existing = {
@@ -128,6 +134,19 @@ resource vnetLogs 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
 // is azure-monitor), into ContainerAppConsoleLogs and ContainerAppSystemLogs.
 resource containerEnvLogs 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
   scope: containerEnv
+  name: name
+  properties: {
+    workspaceId: workspaceId
+    logAnalyticsDestinationType: 'Dedicated'
+    logs: [
+      { category: 'ContainerAppConsoleLogs', enabled: true }
+      { category: 'ContainerAppSystemLogs', enabled: true }
+    ]
+  }
+}
+
+resource spareEnvLogs 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = if (!empty(spareContainerEnvName)) {
+  scope: spareEnv
   name: name
   properties: {
     workspaceId: workspaceId
