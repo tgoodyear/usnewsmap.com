@@ -115,6 +115,10 @@ contents, not all possible future files under those directories.
 * docs/reports/2026-10-language-analysis/: LOC and American Stories-derived
   metadata and aggregates. data/issue-329/flags.jsonl.gz contains words and
   short contexts from OCR; labels.json also contains words.
+* docs/reports/2026-10-ocr-damage-ranking/data/: per-page, per-title and
+  per-batch damage scores, page IDs and LOC title metadata from the
+  corpus's stored quality summary; no OCR text. Released as its own set,
+  report-2026-10-ocr-damage-ranking.
 * docs/reports/2026-10-surya-volunteer/: scores on Overproof and
   Reichsanzeiger benchmark subsets, not the reference texts.
 * docs/reports/2026-11-gpu-studies/data/: ja/ contains reader outputs on LOC
