@@ -115,6 +115,16 @@ class DataAssets(unittest.TestCase):
             subprocess.run(["tar", "-C", out, "-xzf", f"{out}/{name}.tar.gz", replaced], check=True)
             self.assertEqual(Path(out, replaced).read_bytes(), (root / replaced).read_bytes())
 
+    def test_report_repack_after_tracked_data_is_migrated(self):
+        data = "docs/reports/2001-01-new/data/new.csv"
+        with tempfile.TemporaryDirectory() as repo, tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as second:
+            root = fixture(repo)
+            run("--pack", "--set", "report-data", "--out", first, "--previous", "none", root=root, check=True)
+            subprocess.run(["git", "-C", str(root), "update-index", "--force-remove", data], check=True)
+            (root / data).unlink()
+            run("--pack", "--set", "report-data", "--out", second, "--previous", f"{first}/report-data.tar.gz", root=root, check=True)
+            self.assertEqual(Path(first, "SHA256SUMS").read_text(), Path(second, "SHA256SUMS").read_text())
+
     def test_pack_rejects_an_empty_benchmark_set(self):
         with tempfile.TemporaryDirectory() as repo, tempfile.TemporaryDirectory() as out:
             root = fixture(repo)
