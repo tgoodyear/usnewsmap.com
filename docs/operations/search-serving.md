@@ -259,7 +259,7 @@ The spare moves to a Container Apps environment without a VNet, so its load bala
 
 - It may add `usnm-core-spare-cae-prod`, `usnm-api-spare-ca-prod`, `usnm-qw-spare-ca-prod`, their role assignments and the new environment's diagnostic setting.
 - It may set the lake and the index account to `defaultAction: Allow`, and Cosmos to no IP rules with the VNet filter off.
-- Its only deletes may be the retired hand-off job `usnm-boinc-handoff-caj-prod`, its identity, and the grants that came with it: the ledger, exchange and queue roles, the bridge identity's roles on `boinc-handoff` and the scan archive, the controller role, and the BOINC subnet's rules on the lake, the exchange account and the scan archive.
+- Its only deletes may be the retired hand-off job `usnm-boinc-handoff-caj-prod`, its identity, and the grants that came with it: the ledger, exchange and queue roles, the bridge identity's roles on `boinc-handoff` and the scan archive, and the BOINC subnet's rules on the lake, the exchange account and the scan archive.
 - Stop on anything else. Then provision with the same flags, without `--what-if`.
 
 **Check the new spare cold.** With both new apps at zero replicas, request through the new API's default hostname, with `DNT: 1`:

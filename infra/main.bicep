@@ -776,7 +776,9 @@ module boincHandoffLogs 'modules/boinc-handoff-logs.bicep' = if (deployBoincGrou
 }
 
 // The on-prem BOINC batch controller (#866): the runner starts the hand-off and bridge jobs.
-module boincController 'modules/boinc-controller.bicep' = if (boincHandoff && boincControllerOnPrem && !empty(trim(boincHandoffRunner))) {
+// Kept with the on-prem hand-off (boincOnPrem) after the Azure hand-off job is retired (#308):
+// its subscription Reader may serve the controller host's other az reads.
+module boincController 'modules/boinc-controller.bicep' = if ((boincHandoff || boincOnPrem) && boincControllerOnPrem && !empty(trim(boincHandoffRunner))) {
   name: 'boinc-controller'
   dependsOn: [rg, boincRg]
   params: {
