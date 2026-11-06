@@ -180,6 +180,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--padding-x", type=int, default=PADDING_X)
     parser.add_argument("--padding-y", type=int, default=PADDING_Y)
     args = parser.parse_args(argv)
+    if args.output.suffix == ".json":
+        parser.error("--output must not end in .json: the JSON sidecar is written next to it with that suffix")
     if args.padding_x < 0 or args.padding_y < 0:
         parser.error("padding must be non-negative")
     if not (args.tessdata_dir / f"{LANGUAGE}.traineddata").is_file():

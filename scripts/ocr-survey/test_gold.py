@@ -1,5 +1,6 @@
 """scripts/ocr-survey/gold.py: selection, validation and CER (#296)."""
 
+import io
 import json
 import sys
 import tempfile
@@ -133,6 +134,16 @@ class CherokeeHybrid(unittest.TestCase):
                           return_value=types.SimpleNamespace(returncode=1, stdout="", stderr="missing model")):
             with self.assertRaisesRegex(RuntimeError, "missing model"):
                 cherokee_hybrid.recognize_crop(Image.new("RGB", (30, 20)), Path("/tessdata"))
+
+    def test_json_output_is_refused_before_ocr(self):
+        # The sidecar takes the .json suffix, so a .json transcript would be overwritten by it.
+        with patch.object(cherokee_hybrid, "process_page") as process, \
+                patch("sys.stderr", new_callable=io.StringIO) as err:
+            with self.assertRaises(SystemExit):
+                cherokee_hybrid.main(["--image", "p.jp2", "--alto", "p.xml", "--tessdata-dir", "/tessdata",
+                                      "--output", "out.json"])
+        process.assert_not_called()
+        self.assertIn("must not end in .json", err.getvalue())
 
 
 class Validate(unittest.TestCase):

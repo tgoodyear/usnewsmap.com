@@ -159,7 +159,12 @@ def cherokee(tmp: str, pdfs: list[str]) -> None:
     # in different places, so with both, a word counts as often as it does in the one it is fewest in.
     counts = collections.Counter({w: min(e[w] for e in editions) for w in editions[0]
                                   if all(w in e for e in editions)})
-    write_attested(set(counts))
+    if len(editions) >= 2:
+        write_attested(set(counts))
+    else:
+        # One edition's line-break and verse-number fragments would become known spellings and hide
+        # damage, so the attested set is only rebuilt from both.
+        print("kept chr-attested.txt: it needs both editions (cntl.pdf and cnts.pdf)")
     top = sum(c for _, c in counts.most_common(TOP))
     print(f"the top {TOP:,} are {top / sum(counts.values()):.1%} of the words")
     write("chr", counts)
