@@ -215,12 +215,14 @@ fn blob_info(blob_xml: &str) -> Option<ObjectInfo> {
     let size = one("Content-Length")?.trim().parse().ok()?;
     let etag = one("Etag").unwrap_or_default();
     let created = one("Creation-Time").and_then(|t| httpdate::parse_http_date(t.trim()).ok());
+    let modified = one("Last-Modified").and_then(|t| httpdate::parse_http_date(t.trim()).ok());
     let content_md5 = one("Content-MD5").filter(|md5| !md5.trim().is_empty());
     Some(ObjectInfo {
         path,
         size,
         etag,
         created,
+        modified,
         content_md5,
     })
 }
@@ -690,6 +692,7 @@ mod tests {
             size,
             etag,
             created,
+            modified,
             content_md5,
         } = blob_info(blobs[0]).unwrap();
         assert_eq!(content_md5, None);
@@ -700,6 +703,10 @@ mod tests {
         assert_eq!(
             created,
             Some(httpdate::parse_http_date("Fri, 09 Oct 2026 21:04:30 GMT").unwrap())
+        );
+        assert_eq!(
+            modified,
+            Some(httpdate::parse_http_date("Fri, 09 Oct 2026 21:05:00 GMT").unwrap())
         );
         assert_eq!(blob_info(blobs[1]), None, "no size");
         // A name holding escaped markup stays one name: decoded once.
