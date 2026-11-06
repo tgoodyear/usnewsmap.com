@@ -1606,7 +1606,7 @@ mod tests {
         .unwrap()
         .unwrap();
         assert_eq!(fetched.pages, 1);
-        assert_eq!(fetched.pages_without_ocr, 2);
+        assert_eq!(fetched.pages_without_ocr, 1);
     }
 
     #[tokio::test]
