@@ -430,7 +430,15 @@ this repository does them.
   a node (`az rest --method put` on the machine's
   `extensions/AzureMonitorLinuxAgent`).
 - rsyslog runs and receives the journal's syslog; the agent reads syslog from
-  it.
+  it. A minimal Debian container may have neither rsyslog nor `sudo`, which the
+  Arc install script calls; install both first.
+- In an unprivileged LXC container, the agent's installer fails with exit code
+  52: `dmidecode` can't read the DMI tables, and the installer treats its
+  "Permission denied" as a failed install. Arc identifies the machine, not DMI,
+  so a wrapper at `/usr/local/sbin/dmidecode` that runs `/usr/sbin/dmidecode`
+  with its errors dropped is enough. Remove the failed extension and install it
+  again. The agent also wants 700 MB free under `/var/opt` and 500 MB each under
+  `/etc/opt` and `/opt`.
 - Nothing but the evaluator logs to `local0`. The rule drops other lines
   before ingestion, but Azure can still bill for processing data a
   transformation drops. This must list only `usnm-boinc-feed-health`:
