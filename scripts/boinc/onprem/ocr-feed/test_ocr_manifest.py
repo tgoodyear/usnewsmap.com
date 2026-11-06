@@ -127,6 +127,45 @@ class OcrClaimTest(unittest.TestCase):
                 self.assertEqual(Path(d, "ocr-active.txt").read_text().split(), sorted(want))
                 self.assertEqual(checked, [on, gone] if name == "answered" else [on])
 
+    def test_a_missing_scan_is_looked_up_once_a_fetch_and_a_run_s_lookups_are_bounded(self):
+        a_, b_, c_ = (f"sn1_1900-01-01_ed-1_seq-{n}" for n in (1, 2, 3))
+        index = {("b", x): {"doc_id": x, "batch": "b", "fetched_at": "t1"} for x in (a_, b_, c_)}
+        there, checked = set(), []
+
+        def available(server, row):
+            checked.append(row["doc_id"])
+            return row["doc_id"] in there
+
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "last.json").write_text(json.dumps({
+                "name": "queue-ocr-x", "at": dt.datetime.now(UTC).isoformat(), "pairs": [["b", "x"]]}))
+            a = types.SimpleNamespace(state=d, reasons="user", scan_server="http://s", curated_url="http://c",
+                                      days=14, max_pages=10, curated_copy=d, what_if=False)
+
+            def run(**limits):
+                checked.clear()
+                with mock.patch.object(m, "staged_pairs", return_value=index), \
+                        mock.patch.object(m, "available", side_effect=available), \
+                        mock.patch.object(m, "Lake"), \
+                        mock.patch.object(m, "cached_rows", side_effect=lambda lake, state, kind, *x:
+                                          [q(x, "user", 1) for x in (a_, b_, c_)] if kind == "queued" else []), \
+                        mock.patch.multiple(m, **{"MAX_CLAIM_CHECKS": 2, "CLAIM_CHECK_SECS": 60, **limits}), \
+                        contextlib.redirect_stdout(io.StringIO()):
+                    m.cmd_build(a)
+                return list(checked)
+
+            self.assertEqual(run(CLAIM_CHECK_SECS=0), [])
+            self.assertEqual(run(), [a_, b_])
+            self.assertEqual(run(), [c_])
+            self.assertEqual(run(), [])
+            self.assertEqual(Path(d, "ocr-active.txt").read_text(), "")
+            # b is fetched again: looked up again, and claimed.
+            index[("b", b_)] = {**index[("b", b_)], "fetched_at": "t2"}
+            there.add(b_)
+            self.assertEqual(run(), [b_])
+            self.assertEqual(Path(d, "ocr-active.txt").read_text().split(), [b_])
+            self.assertEqual(Path(d, "claim-misses.txt").read_text().split(), [a_, "t1", c_, "t1"])
+
     def test_a_new_manifest_s_pages_are_active_claims_at_once(self):
         doc = "sn1_1900-01-01_ed-1_seq-4"
         with tempfile.TemporaryDirectory() as d:

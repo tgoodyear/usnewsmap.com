@@ -1494,7 +1494,8 @@ effort, and one of ours that marked it done but couldn't unlink it leaves just t
 gone). One OCR still wants stays listed and counted, and is neither evicted nor looked up
 while it does: `ocr_manifest.py build` records every page OCR asked for in `ocr-docs.txt`
 (every queued page whose scan is already on the scan server, its sidecar looked up before
-it's first claimed, not only its manifests' pages)
+it's first claimed: up to 500 a run, a miss remembered until the page is fetched again in
+`claim-misses.txt`; not only its manifests' pages)
 and rewrites `ocr-active.txt` each run with those no outcome has ended yet, which the
 follower reads (`--ocr-active`; until that file exists, every page in `ocr-docs.txt`), and
 a newly shipped page in either is OCR's, neither kept nor deleted. Both files are written

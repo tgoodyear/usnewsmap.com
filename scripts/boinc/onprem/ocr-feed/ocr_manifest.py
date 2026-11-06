@@ -30,6 +30,7 @@ import json
 import os
 import re
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -41,6 +42,10 @@ DEFAULT_QUARANTINE_ROOT = "/var/lib/usnm-quality-feed"
 USER_AGENT = "usnewsmap-ocr-manifest/1 (+https://usnewsmap.com)"
 # A page goes into at most this many manifests a week without its scan arriving.
 MAX_TRIES = 3
+# New claims looked up a run, and for how long (under the quality follower's lock): the
+# rest wait for the next run.
+MAX_CLAIM_CHECKS = 500
+CLAIM_CHECK_SECS = 60
 
 
 def log(msg, **kv):
@@ -269,22 +274,48 @@ def read_ocr_docs(state):
         return {line.strip() for line in f if line.strip()}
 
 
-def still_there(scan_server, rows):
+def still_there(scan_server, rows, state):
     """doc_ids of `rows` (index lines) whose scans are still on the scan server. The index is
     fetch history: a claim on a scan whose sidecar is gone would keep the quality follower from
     looking it up while OCR waits on a fresh fetch of it (whose manifest claims it then). One
     the scan server can't check is claimed, and if it doesn't answer, so is the rest: a claim
-    errs on the side of keeping a scan."""
-    out = []
-    for i, row in enumerate(rows):
+    errs on the side of keeping a scan.
+
+    A miss is remembered by its fetch (claim-misses.txt), so the page is looked up again only
+    once it's fetched again. At most MAX_CLAIM_CHECKS are looked up a run, for at most
+    CLAIM_CHECK_SECS; the rest wait for the next run."""
+    path = os.path.join(state, "claim-misses.txt")
+    misses = set()
+    if os.path.exists(path):
+        with open(path) as f:
+            misses = {tuple(line.rstrip("\n").split("\t", 1)) for line in f if "\t" in line}
+
+    def fetch(row):
+        return (row["doc_id"], row.get("fetched_at") or "")
+
+    todo = [r for r in rows if fetch(r) not in misses]
+    out, missed = [], set()
+    start = time.monotonic()
+    for i, row in enumerate(todo):
+        if i >= MAX_CLAIM_CHECKS or time.monotonic() - start >= CLAIM_CHECK_SECS:
+            log("new claims left for the next run", pages=len(todo) - i)
+            break
         try:
             if available(scan_server, row):
                 out.append(row["doc_id"])
+            elif row.get("fetched_at"):
+                missed.add(fetch(row))
         except urllib.error.HTTPError:
             out.append(row["doc_id"])
         except (urllib.error.URLError, OSError) as e:
             log("claim check got no answer; the rest claimed unchecked", doc_id=row["doc_id"], error=str(e)[:200])
-            return out + [r["doc_id"] for r in rows[i:]]
+            out += [r["doc_id"] for r in todo[i:]]
+            break
+    # Only the misses of pages still waiting for a claim.
+    misses = (misses & {fetch(r) for r in rows}) | missed
+    with open(path + ".tmp", "w") as f:
+        f.write("".join(f"{d}\t{at}\n" for d, at in sorted(misses)))
+    os.replace(path + ".tmp", path)
     return out
 
 
@@ -359,7 +390,7 @@ def cmd_build(a):
         with claims_lock(getattr(a, "claims_lock", None)):
             # A new claim needs its scan there now (checked under the lock, which the follower
             # evicts under); one already made stands.
-            fresh = still_there(a.scan_server, [r for r in claimed if r["doc_id"] not in have])
+            fresh = still_there(a.scan_server, [r for r in claimed if r["doc_id"] not in have], a.state)
             n = record_ocr_docs(a.state, fresh, have)
             write_ocr_active(a.state, {q["doc_id"] for q in outstanding} & have)
         if n:
