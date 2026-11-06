@@ -538,7 +538,8 @@ class HeldTests(DispatchFixture):
         self.assertEqual(code, 1)
         self.assertIn("--confirm-controller-paused", errors[-1]["error"])
         # Page 9 alone first, then the rest; the journal goes back last.
-        code, result, _ = run(self.restore_argv("--apply", "--confirm-controller-paused", "--page", page_key(9)))
+        code, result, _ = run(self.restore_argv("--apply", "--confirm-controller-paused",
+                                                "--page", page_key(9), "--page", page_key(9)))
         self.assertEqual((code, result["restored"]), (0, 1), result)
         self.assertTrue(self.container.uploads[-1].endswith(f"{job_id(9)}/record.json"))
         code, result, _ = run(self.restore_argv("--apply", "--confirm-controller-paused"))

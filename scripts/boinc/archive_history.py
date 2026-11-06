@@ -873,7 +873,7 @@ def restore_plan(manifest, batch, state, wanted):
     tombstones = manifest["state"].get(ARCHIVED_HELD, {})
     live = state.get(ARCHIVED_HELD, {})
     pages, done = [], []
-    for name in sorted(wanted or held):
+    for name in sorted(set(wanted or held)):  # a page named twice is restored once
         page = held[name]
         if name not in live and name in state.get("claims", {}):
             done.append(name)
