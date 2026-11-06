@@ -28,6 +28,10 @@ REPO = Path(__file__).resolve().parents[2]
 ID = re.compile(r"[0-9a-f]{64}")
 STAGES = {"prepared", "reserved", "submitting", "submitted", "published", "failed"}
 MAX_JOBS = 10000
+# Pages whose held result (#835) archive_history.py archived (state `archived_held`): one small
+# entry each, so a re-claim of the page's message keeps the archived job instead of starting
+# another. Kept until the page is restored for publishing, so the cap is generous.
+MAX_ARCHIVED_HELD = 200000
 # The bridge reports its existing-workunit cap (batch-inventory.py, #1483); an older bridge that
 # doesn't report one keeps MAX_JOBS. The controller accepts no report above this ceiling.
 MAX_EXISTING_WORKUNITS_CEILING = 200000
@@ -1474,6 +1478,10 @@ class QueueFeed:
         self.state = state
         self.claims = state.setdefault("claims", {})
         require(len(self.claims) <= MAX_JOBS, "too many claimed pages; archive drained history first")
+        # Held pages archive_history.py archived (#835): page -> {"job", "message", ...}.
+        self.archived_held = state.get("archived_held", {})
+        require(isinstance(self.archived_held, dict) and len(self.archived_held) <= MAX_ARCHIVED_HELD,
+                "invalid or oversized archived_held state")
 
     def restore(self):
         self.config["pages"] = [
@@ -1541,6 +1549,13 @@ class QueueFeed:
         errors = []
         for item in fresh:
             page, claim = self.checked(item)
+            archived = self.archived_held.get(page)
+            if page not in self.claims and archived is not None:
+                # Its held result is archived (#835): the same message, hidden again for a fresh
+                # lease, stands for the archived job, as for a claim still here. A different
+                # message is two attempts at once, as below.
+                conflict = conflict or claim["message"] is None or claim["message"] != archived.get("message")
+                continue
             if page in self.claims:
                 # Its lease ran out while the job was pending and the same message came again,
                 # now hidden for a fresh lease: the existing claim, its scan and its job stand.
@@ -2003,6 +2018,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
             "inventory is not fresh")
     if feed:
         warn_near_cap("claims", len(feed.claims), MAX_JOBS, now)
+        warn_near_cap("archived_held", len(feed.archived_held), MAX_ARCHIVED_HELD, now)
     for key in ("pending_workunits", "active_hosts"):
         require(type(snapshot[key]) is int and snapshot[key] >= 0, "invalid capacity inventory")
     pending_jobs = snapshot["pending_jobs"]
@@ -2043,7 +2059,9 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         job_id = record["job"]["id"]
         require(server.get(job_id, {}).get("stage") != "submitting",
                 "uncertain BOINC submission; reconcile explicitly, never automatically resubmit")
-        require(record["stage"] in ("published", "failed") or job_id not in existing_jobs or
+        # A held job (#835) is settled like a published one and never submitted again; one
+        # restored from the archive has no bridge journal left, but may still have its row.
+        require(settled(record) or job_id not in existing_jobs or
                 server.get(job_id, {}).get("stage") == "submitted",
                 "SQL/journal mismatch; reconcile existing work before any automatic submission")
     selected = state.setdefault("selected", {})
@@ -2231,8 +2249,11 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
             stuck = sorted(page["page"] for page in export if retried(page))
             require(not stuck, f"the deadline retry of {', '.join(stuck)} exported no job of its own; "
                     "reconcile it before the next tick")
+        # A held job (#835) stays `reserved` once collected. Its bridge journal says `submitted`
+        # until it is archived; restored from the archive it has none, and is never submitted.
         candidates = {record["job"]["id"] for record in owned.values()
                       if not record.get("retry") and record["stage"] == "reserved"
+                      and not kept_by_policy(record)
                       and record["job"]["id"] not in existing_jobs
                       and server.get(record["job"]["id"], {}).get("stage") in (None, "reserved")}
         backlog = sum(not settled(record) and
@@ -2245,6 +2266,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         for record in owned.values():
             job_id = record["job"]["id"]
             if not record.get("retry") and record["stage"] == "reserved" and \
+                    not kept_by_policy(record) and \
                     server.get(job_id, {}).get("stage") in (None, "reserved") and \
                     len(to_submit) < submit_limit:
                 require(job_id not in existing_jobs,
@@ -2353,6 +2375,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         "collection_held": held_count,
         "oldest_held_seconds": oldest_held,
         "scope_held": scope_held,
+        "scope_held_archived": len(state.get("archived_held", {})),
         "gold_onboarding": gold_runs,
         "newly_published": max(0, published - previous),
         "pages_per_hour": round(published * 3600 / max(1, now - started), 3),

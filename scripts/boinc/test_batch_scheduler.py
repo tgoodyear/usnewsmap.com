@@ -1505,6 +1505,12 @@ class DeadlineFake(QueueFake):
         super().export([page for page in pages if not page.get("supersedes")], job_ids)
 
 
+def claim_of(saved, page):
+    """The claim a page had in the last saved state that holds it."""
+    return copy.deepcopy(next(state["claims"][page] for state in reversed(saved)
+                              if page in state.get("claims", {})))
+
+
 class QueueModeTests(unittest.TestCase):
     def setUp(self):
         self.config = queue_config()
@@ -1777,6 +1783,65 @@ class QueueModeTests(unittest.TestCase):
         self.assertGreaterEqual(len(self.fake.jobs), jobs)
         self.assertEqual(len([row for row in self.fake.rows
                               if row["job"]["message"]["page"] == "sn12345678/1900-01-01/ed-1/seq-1"]), 1)
+
+    def held_then_archived(self):
+        """Pages 1 and 2 held at collection (#835), then page 1 archived as archive_history.py
+        dispatch --include-held leaves it: no claim, selection, journal or bridge journal, and
+        an archived_held entry naming its job and message."""
+        self.tick()
+        for job in self.fake.jobs.values():
+            job["spool"] = "/project/usnmocr/results/batch1"
+        self.fake.scope_held = True
+        self.tick()
+        page = message(1)["page"]
+        row = next(row for row in self.fake.rows if row["job"]["message"]["page"] == page)
+        self.assertTrue(row["held"])
+        self.fake.rows.remove(row)
+        del self.fake.jobs[row["job"]["id"]]
+        claim = self.state["claims"].pop(page)
+        del self.state["selected"][page]
+        self.state["archived_held"] = {page: {"job": row["job"]["id"], "message": claim["message"],
+                                              "held_at": NOW, "archived_at": NOW}}
+        return page, row
+
+    def test_a_held_page_archived_away_is_not_claimed_again_as_new_work(self):
+        page, row = self.held_then_archived()
+        # Its lease ran out and the same message came round again.
+        self.fake.waiting = [message(1)] + self.fake.waiting
+        self.fake.actions.clear()
+        event = self.tick()
+        self.assertIn(page, self.fake.claimed[-3:])
+        self.assertNotIn(page, self.state["claims"])
+        self.assertNotIn(page, self.state["selected"])
+        self.assertFalse(any(r["job"]["message"]["page"] == page for r in self.fake.rows))
+        self.assertFalse(any(a[0] == "export" and page in a[-1] for a in self.fake.actions), self.fake.actions)
+        self.assertEqual((event["scope_held"], event["scope_held_archived"]), (1, 1))
+        self.assertEqual(self.state["archived_held"][page]["job"], row["job"]["id"])
+
+    def test_a_different_message_for_an_archived_held_page_stops_the_feed(self):
+        self.held_then_archived()
+        other = message(1)
+        other["message_sha256"] = "f" * 64
+        self.fake.waiting = [other]
+        with self.assertRaisesRegex(ValueError, "different message"):
+            self.tick()
+
+    def test_a_held_job_restored_without_its_bridge_journal_is_never_submitted(self):
+        # restore-held puts the journal and claim back; the bridge journal stays archived and
+        # BOINC may still have the workunit's row.
+        page, row = self.held_then_archived()
+        self.state["claims"][page] = {**claim_of(self.saved, page)}
+        self.state["selected"][page] = NOW
+        del self.state["archived_held"][page]
+        self.fake.rows.insert(0, row)
+        for existing in ({row["job"]["id"]}, set()):
+            with self.subTest(row_still_in_boinc=bool(existing)):
+                self.fake.extra_existing = existing
+                self.fake.actions.clear()
+                event = self.tick()
+                self.assertNotIn(("submit", row["job"]["id"]), self.fake.actions)
+                self.assertNotIn(("collect", row["job"]["id"]), self.fake.actions)
+                self.assertEqual(event["scope_held"], 2)
 
     def test_a_different_message_for_a_claimed_page_stops_the_feed(self):
         self.tick()
