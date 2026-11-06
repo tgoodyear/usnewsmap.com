@@ -720,7 +720,9 @@ case "$step" in
   gold-onboard | gold-promote)
     # gold-onboard: one bounded host-trust onboard pass, a targeted gold unit for each untrusted
     # host without one outstanding, including hosts whose last unit failed
-    # (docs/notes/2026-10-16-boinc-host-trust-followups.md). gold-promote: collect those units
+    # (docs/notes/2026-10-16-boinc-host-trust-followups.md). It skips hosts the scheduler can't
+    # send any version of the gold app to, by platform, plan class and the scheduler's reviewed
+    # engine bindings (#1418). gold-promote: collect those units
     # and admit the hosts whose complete native evidence passes the scope's existing
     # calibration in gold/trust.json (#901); it adds hosts only and never sets a threshold.
     [[ "${GOLD_MAX_HOSTS:-10}" =~ ^[1-9][0-9]?$|^100$ ]] || fail "GOLD_MAX_HOSTS must be 1 to 100"
@@ -739,11 +741,13 @@ case "$step" in
       --arg base "${GOLD_ENGINE_BASE:?set GOLD_ENGINE_BASE}" \
       --arg version "${GOLD_ENGINE_VERSION:-5.5.0}" --argjson max "${GOLD_MAX_HOSTS:-10}" \
       --argjson native "[${GOLD_NATIVE_HOSTS:-}]" \
+      --arg platforms /usr/local/lib/usnm-boinc/gold-engine-platforms.json \
       '{root:$root, project:$project, jobs_root:$jobs, mysql_defaults:$mycnf, mysql_ca:$ca,
         database:$db, trust:$trust, prepared:$prepared,
         scope:{language:$language, profile:$profile, psm:3, dpi:300},
         engine:{base:$base, dpi:300, image:$image, psm:3, timeout_secs:300, version:$version},
-        native_hosts:$native, max_hosts:$max, max_spots:1, sample_every:1}' > "$controller")
+        native_hosts:$native, engine_platforms:$platforms, max_hosts:$max, max_spots:1,
+        sample_every:1}' > "$controller")
     if [ "$step" = gold-promote ]; then
       # The gold units' batch is 0, so their canonical results are in results/0. Not exec:
       # the trap removes the database credentials afterwards.

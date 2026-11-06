@@ -1,5 +1,5 @@
 //! Host onboarding: one gold unit outstanding per untrusted host and campaign.
-use super::{attempt_root, campaign_roots, hosts, query, Config, MAX_ATTEMPTS};
+use super::{attempt_root, campaign_roots, capability, query, Config, MAX_ATTEMPTS};
 use crate::{atomic, gold, read, trust::Trust, Lock};
 use anyhow::{ensure, Context};
 use serde::Serialize;
@@ -220,19 +220,39 @@ pub async fn onboard(c: &Config, execute: bool) -> anyhow::Result<Vec<u64>> {
     let trust = Trust::load_or_none_trusted(&c.trust)?;
     let prepared = gold::prepare::read(&c.prepared)?;
     gold::submit::job(&prepared, &c.engine, 0)?;
-    let inventory =
-        hosts(&query(c, "SELECT id FROM host WHERE id>0 ORDER BY id LIMIT 100001").await?)?;
-    ensure!(
-        inventory.len() <= 100000,
-        "host inventory exceeds safety bound"
-    );
+    let app = if c.native_hosts.is_empty() {
+        gold::submit::APP
+    } else {
+        gold::submit::NATIVE_APP
+    };
+    let inventory = capability::inventory(c).await?;
     let trusted_hosts =
         trust.campaign_trusted_hosts(&c.engine.image, &prepared.manifest_sha256, scope);
-    let pending: Vec<_> = inventory
+    let mut pending: Vec<_> = inventory
         .into_iter()
-        .filter(|h| in_campaign(c, h))
-        .filter(|h| !trusted_hosts.is_some_and(|hosts| hosts.contains(h)))
+        .filter(|h| in_campaign(c, &h.id))
+        .filter(|h| !trusted_hosts.is_some_and(|hosts| hosts.contains(&h.id)))
         .collect();
+    if !pending.is_empty() {
+        // A unit for a host that no version can reach waits out its deadline and holds a place
+        // under the safety cap (#1418).
+        let requirements = capability::requirements(c, app).await?;
+        let (able, unable): (Vec<_>, Vec<_>) =
+            pending.into_iter().partition(|h| requirements.can_run(h));
+        if !unable.is_empty() {
+            let mut ids: Vec<_> = unable.iter().take(20).map(|h| h.id.to_string()).collect();
+            if unable.len() > ids.len() {
+                ids.push("...".into());
+            }
+            eprintln!(
+                "skipping {} host(s) no {app} version can run on: {}",
+                unable.len(),
+                ids.join(", ")
+            );
+        }
+        pending = able;
+    }
+    let pending: Vec<u64> = pending.into_iter().map(|h| h.id).collect();
     let (campaign_root, legacy_root) = campaign_roots(c, &prepared, scope)?;
     // Hosts are visited in id order and the pass stops at max_hosts, so hosts with an
     // outstanding unit never starve newly discovered ones.
@@ -325,11 +345,7 @@ pub async fn onboard(c: &Config, execute: bool) -> anyhow::Result<Vec<u64>> {
             )?;
         }
         let s = gold::submit::run(&gold::submit::Options {
-            app: if c.native_hosts.is_empty() {
-                gold::submit::APP
-            } else {
-                gold::submit::NATIVE_APP
-            },
+            app,
             root,
             project: c.project.clone(),
             units: 1,
