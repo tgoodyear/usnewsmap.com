@@ -13,8 +13,10 @@ For each wordfreq code in `ocr/ja-ocr/damage_v2.py`'s WORDFREQ table, the list i
 (`wordfreq_ranked`): wordfreq's 5,000 most frequent words, most frequent
 first, as wordfreq stores them. Cherokee (`chr`), Hawaiian (`haw`) and Yiddish
 (`yi`) have no wordfreq list; theirs are copied from ocr/ja-ocr/wordlists/, first 5,000 words,
-as `damage_v2.py` reads them. One word per line, in rank order; the order
-matters, since the metric takes the top 100 and top 20 from the front.
+as `damage_v2.py` reads them. `chr-attested` is the separate, unranked Cherokee
+vocabulary attested in both NT editions; it excludes those first 5,000 forms and
+prevents known forms from being treated as OCR near-misses. One word per line;
+frequency-list order matters, while the attested list is sorted.
 
 `usnm_core::damage` (cargo feature `damage`) embeds these files. Nothing in
 the pipeline runs this script. `--check` compares with the committed files
@@ -61,6 +63,7 @@ def read_zst(path: Path) -> str:
 WORDFREQ_CODES = ["ar", "bg", "cs", "da", "de", "el", "en", "es", "fi", "fil", "fr", "he", "hu", "is", "it",
                   "lt", "lv", "nb", "nl", "pl", "pt", "ro", "ru", "sh", "sk", "sl", "sv", "uk"]
 LOCAL_CODES = ["chr", "haw", "yi"]
+LOCAL_ATTESTED_CODES = ["chr"]
 
 
 def wordfreq_list(code: str) -> list[str]:
@@ -89,6 +92,8 @@ def main() -> int:
         raise SystemExit(f"wordfreq {WORDFREQ_VERSION} is needed, not {have}")
     lists = {code: wordfreq_list(code) for code in WORDFREQ_CODES}
     lists.update({code: local_list(code) for code in LOCAL_CODES})
+    lists.update({f"{code}-attested": (LOCAL_DIR / f"{code}-attested.txt").read_text(encoding="utf-8").splitlines()
+                  for code in LOCAL_ATTESTED_CODES})
     differs = False
     for code, words in sorted(lists.items()):
         if any(not w or any(c.isspace() for c in w) for w in words):

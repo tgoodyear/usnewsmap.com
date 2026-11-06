@@ -37,7 +37,8 @@ the page against it:
   of those 20 (a letter substituted or deleted, a thin letter inserted, or
   one letter read as two thin ones: "tbe", "tlie", "aud", "bie", "ift") and
   not a real word: not in the top 5,000 of the language, or of the title's
-  other languages and English (so "she", "an", "or" don't count).
+  other languages and English (so "she", "an", "or" don't count). Cherokee
+  also excludes forms attested in both editions of the 1860 New Testament.
 - garbage_share: the share of its whitespace tokens that rmgarbage-style
   rules (Taghva et al.) flag: longer than 40 characters; more than half not
   letters or digits; the same letter 3 times in a row; Latin letters only,

@@ -9,6 +9,7 @@ The english and damage lists are committed zstd-compressed (`zstd -19`) as `<nam
 | `english-words.txt.zst`, `english-shared-words.txt.zst`     | `usnm_core::query_language` (06 §6.3.3, #237)        | `scripts/data/build-english-words.py`                  | wordfreq 3.1.1                           | CC BY-SA 4.0 |
 | `damage-words/<code>.txt.zst`, except `chr`, `haw` and `yi` | `usnm_core::lang`, feature `damage` (12 §12.5, #296) | `scripts/data/build-damage-words.py`                   | wordfreq 3.1.1, `top_n_list(code, 5000)` | CC BY-SA 4.0 |
 | `damage-words/chr.txt.zst`                                  | the same                                             | copied from `ocr/ja-ocr/wordlists/` by the same script | Cherokee New Testament (1860), #1581     | CC0          |
+| `damage-words/chr-attested.txt.zst`                         | the same                                             | copied from `ocr/ja-ocr/wordlists/` by the same script | Cherokee NT forms shared by both editions, #1581 | CC0 |
 | `damage-words/haw.txt.zst`                                  | the same                                             | copied from `ocr/ja-ocr/wordlists/` by the same script | Hawaiian Corpus Project frequency list   | CC0          |
 | `damage-words/yi.txt.zst`                                   | the same                                             | copied from `ocr/ja-ocr/wordlists/` by the same script | Yiddish Wikipedia and Wikisource         | CC BY-SA 4.0 |
 | `page-language-words.txt`                                   | `usnm_core::page_language` (05 §5.5.8, #289)         | `scripts/data/build-page-language-words.py`            | the function words of the 31 lists above | CC BY-SA 4.0 |
@@ -17,7 +18,7 @@ The english and damage lists are committed zstd-compressed (`zstd -19`) as `<nam
 
 ## The damage word lists
 
-One `.txt.zst` file per word list code in `usnm_core::lang` (wordfreq's codes: `sh` serves Croatian and Serbian, `nb` Norwegian, `fil` Tagalog). Each holds, once decompressed, the language's 5,000 most frequent words, most frequent first, one per line, exactly as wordfreq 3.1.1's `top_n_list` returns them (the same call `ocr/ja-ocr/quality.py` makes). Order matters: the metric takes its function words and head words from the front of the list.
+One `.txt.zst` file per word list code in `usnm_core::lang` (wordfreq's codes: `sh` serves Croatian and Serbian, `nb` Norwegian, `fil` Tagalog). Each ranked list holds, once decompressed, the language's 5,000 most frequent words, most frequent first, one per line, exactly as wordfreq 3.1.1's `top_n_list` returns them (the same call `ocr/ja-ocr/quality.py` makes). `chr-attested.txt.zst` is the unranked Cherokee set of forms found in both NT editions, excluding Cherokee's top 5,000; these forms prevent false near-miss flags without changing frequency or function-word scoring. The ranked-list order matters: the metric takes its function words and head words from the front of each ranked list.
 
 Rebuild or check them with wordfreq 3.1.1 installed (`pip install wordfreq==3.1.1`) and the `zstd` command line tool on `PATH`:
 

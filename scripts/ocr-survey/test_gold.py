@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import cherokee_hybrid  # noqa: E402
 import gold  # noqa: E402
 
 
@@ -49,6 +50,89 @@ class Score(unittest.TestCase):
         r = gold.cer_wer("the cat sat", "the cot sat")
         self.assertEqual((r["ref_chars"], r["char_edits"], r["ref_words"], r["word_edits"]), (11, 1, 3, 1))
         self.assertEqual(gold.cer_wer("abc", "")["char_edits"], 3)
+
+
+CHEROKEE_HYBRID_ALTO = """<?xml version="1.0"?>
+<alto xmlns="http://www.loc.gov/standards/alto/ns-v2#"><Layout><Page WIDTH="200" HEIGHT="100"><PrintSpace>
+ <TextBlock ID="chr" language="chr">
+  <TextLine ID="c1" HPOS="10" VPOS="10" WIDTH="40" HEIGHT="10"><String CONTENT="ᎠᎴ"/></TextLine>
+  <TextLine ID="c2" HPOS="50" VPOS="20" WIDTH="30" HEIGHT="10"><String CONTENT="ᎾᏍᎩ"/></TextLine>
+ </TextBlock>
+ <TextBlock ID="eng" language="eng">
+  <TextLine ID="e1" HPOS="10" VPOS="40" WIDTH="50" HEIGHT="10">
+   <String CONTENT="English"/><String CONTENT="line"/>
+  </TextLine>
+ </TextBlock>
+ <TextBlock ID="unknown">
+  <TextLine ID="u1"><String CONTENT="Unlabeled"/></TextLine>
+ </TextBlock>
+</PrintSpace></Page></Layout></alto>"""
+
+
+class CherokeeHybrid(unittest.TestCase):
+    def test_only_cherokee_blocks_are_reread_and_other_text_is_preserved(self):
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory() as tmp:
+            image = Path(tmp) / "page.png"
+            Image.new("RGB", (400, 200), "white").save(image)
+            with patch.object(cherokee_hybrid, "recognize_crop", side_effect=["ᏣᏩ", "ᎾᏍᎩ"]) as recognize:
+                result = cherokee_hybrid.process_page(image, CHEROKEE_HYBRID_ALTO.encode(), Path(tmp))
+
+        self.assertEqual(result["recognized_lines"], 2)
+        self.assertEqual(result["empty_recognitions"], 0)
+        self.assertEqual(result["fallback_lines"], 0)
+        self.assertEqual(result["text"], "ᏣᏩ\nᎾᏍᎩ\n\nEnglish line\n\nUnlabeled")
+        self.assertEqual([call.args[0].size for call in recognize.call_args_list], [(104, 36), (84, 36)])
+        self.assertEqual(result["blocks"][1]["source"], "loc_alto")
+        self.assertEqual(result["blocks"][1]["text"], "English line")
+        self.assertEqual(result["blocks"][2]["language"], None)
+        self.assertEqual(result["blocks"][2]["text"], "Unlabeled")
+
+    def test_empty_cherokee_result_explicitly_keeps_loc_text(self):
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory() as tmp:
+            image = Path(tmp) / "page.png"
+            Image.new("RGB", (400, 200), "white").save(image)
+            with patch.object(cherokee_hybrid, "recognize_crop", return_value=""):
+                result = cherokee_hybrid.process_page(image, CHEROKEE_HYBRID_ALTO.encode(), Path(tmp))
+
+        line = result["blocks"][0]["lines"][0]
+        self.assertEqual(result["empty_recognitions"], 2)
+        self.assertEqual(result["fallback_lines"], 2)
+        self.assertEqual(line["tesseract_text"], "")
+        self.assertEqual(line["text"], line["source_text"])
+        self.assertEqual(line["source"], "loc_alto_fallback_empty_tesseract")
+
+    def test_page_without_cherokee_lines_fails(self):
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory() as tmp:
+            image = Path(tmp) / "page.png"
+            Image.new("RGB", (400, 200), "white").save(image)
+            english_alto = CHEROKEE_HYBRID_ALTO.replace('language="chr"', 'language="eng"')
+            with self.assertRaisesRegex(ValueError, "no language=chr TextLine"):
+                cherokee_hybrid.process_page(image, english_alto.encode(), Path(tmp))
+
+    def test_tesseract_uses_ch_paged_segmentation_and_reports_failure(self):
+        from PIL import Image
+
+        with patch.object(cherokee_hybrid.subprocess, "run",
+                          return_value=types.SimpleNamespace(returncode=0, stdout="  ᎠᎴ\n", stderr="")) as run:
+            text = cherokee_hybrid.recognize_crop(Image.new("RGB", (30, 20)), Path("/tessdata"))
+        self.assertEqual(text, "ᎠᎴ")
+        command = run.call_args.args[0]
+        self.assertIn("-l", command)
+        self.assertEqual(command[command.index("-l") + 1], "chr")
+        self.assertEqual(command[command.index("--psm") + 1], "7")
+        self.assertEqual(command[command.index("--tessdata-dir") + 1], "/tessdata")
+        self.assertEqual(run.call_args.kwargs["env"]["OMP_THREAD_LIMIT"], "1")
+
+        with patch.object(cherokee_hybrid.subprocess, "run",
+                          return_value=types.SimpleNamespace(returncode=1, stdout="", stderr="missing model")):
+            with self.assertRaisesRegex(RuntimeError, "missing model"):
+                cherokee_hybrid.recognize_crop(Image.new("RGB", (30, 20)), Path("/tessdata"))
 
 
 class Validate(unittest.TestCase):

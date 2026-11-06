@@ -29,7 +29,7 @@ const RELATED: &[(&str, &[&str])] = &[
 const AA_SPELLING: &[&str] = &["da", "nb"];
 
 /// A language's function words (top 100), its head words (top 20), their
-/// OCR near-misses that aren't real words, and its real words (top 5,000).
+/// OCR near-misses that aren't real words, and its known words.
 #[derive(Debug)]
 pub struct LangModel {
     /// The word list's code (`de`, `sh`, `yi`).
@@ -42,7 +42,7 @@ pub struct LangModel {
     /// Near-miss to the head word it is credited to (the simplest edit, the
     /// most frequent word).
     pub near: WordMap<String>,
-    /// Real words: never near-misses.
+    /// Known words: never near-misses (top 5,000 plus attested additions).
     pub real: WordSet,
     /// The script of its words.
     pub script: &'static str,
@@ -101,8 +101,8 @@ fn edits(
 }
 
 /// `build_model`: a model from a language's most frequent words, most
-/// frequent first; `also_real` are more words that aren't near-misses (a
-/// closely related language's).
+/// frequent first; `also_real` are additional words that aren't near-misses
+/// (from related languages or a source's attested vocabulary).
 pub fn build_model(code: &'static str, ranked: &[&str], also_real: &[&str]) -> Option<LangModel> {
     let mut real: WordSet = ranked
         .iter()
@@ -197,11 +197,14 @@ fn models() -> &'static HashMap<&'static str, LangModel> {
         lang::wordlist_codes()
             .into_iter()
             .filter_map(|code| {
-                let also: Vec<&str> = RELATED
+                let mut also: Vec<&str> = RELATED
                     .iter()
                     .filter(|(c, _)| *c == code)
                     .flat_map(|(_, rel)| rel.iter().flat_map(|r| ranked(r)))
                     .collect();
+                if let Some(attested) = lang::attested_wordlist(code) {
+                    also.extend(attested.lines());
+                }
                 build_model(code, &ranked(code), &also).map(|m| (code, m))
             })
             .collect()
@@ -268,6 +271,14 @@ mod tests {
         assert!(!nor.near.contains_key("af") && !nor.near.contains_key("aar"));
         assert!(nor.top.contains("paa"));
         assert_eq!(nor.near.get("fom").map(String::as_str), Some("som"));
+    }
+
+    #[test]
+    fn cherokee_attested_forms_are_known_not_near_misses() {
+        let chr = model("chr").unwrap();
+        assert!(chr.real.contains("ᎠᎴᏃ"));
+        assert!(!chr.near.contains_key("ᎠᎴᏃ"));
+        assert!(chr.near.contains_key("ᏩᏍᎩ"));
     }
 
     #[test]

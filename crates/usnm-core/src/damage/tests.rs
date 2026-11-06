@@ -337,6 +337,14 @@ fn forced_language() {
 }
 
 #[test]
+fn attested_cherokee_forms_do_not_count_as_damage() {
+    let got = score_forced("ᎠᎴᏃ", "chr").unwrap();
+    assert_eq!(got.damage.near, 0);
+    assert_eq!(got.known_words, 1);
+    assert_eq!(got.damage_rate, None);
+}
+
+#[test]
 fn numeric_short_line_and_fraktur_analytic_identities() {
     // 1. Disjoint partition bound: words/tokens + numeric_share <= 1.0, and short_line_share in 0..=1.
     let tabular = "Wheat $1.25 1890\nCorn $0.85 1891\nOats $0.45\nThe market closed steady across all active trading floors today in Chicago\n";
