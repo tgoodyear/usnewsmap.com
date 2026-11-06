@@ -58,6 +58,9 @@ pub struct StoredHit {
     pub ocr_source: Option<String>,
     #[serde(default)]
     pub ocr_engine: Option<String>,
+    /// The batch the page came from, for its viewer link.
+    #[serde(default)]
+    pub batch: String,
     /// A Congress page's stored fields (congress-index.yaml, #229).
     #[serde(flatten)]
     pub congress: crate::CongressFields,
@@ -347,6 +350,7 @@ fn hits_page(
             front_page,
             day,
             sort_key,
+            batch: d.batch,
             doc_id: d.doc_id,
             lccn: d.lccn,
             place_id: d.place_id,
@@ -400,7 +404,7 @@ mod tests {
             "hits": [
                 {"doc_id": "sn99000001_1896-07-10_ed-1_seq-1", "date": "1896-07-10T00:00:00Z",
                  "place_id": "P00001", "lccn": "sn99000001", "edition": 1, "seq": 1,
-                 "text": "a <gold> b"},
+                 "text": "a <gold> b", "batch": "psu_pst_bonadea"},
                 {"doc_id": "sn99000001_1896-07-10_ed-1_seq-3", "date": "1896-07-10T00:00:00Z",
                  "place_id": "P00001", "lccn": "sn99000001", "edition": 1, "seq": 3}
             ]
@@ -419,6 +423,9 @@ mod tests {
         );
         assert!(page.hits[0].front_page);
         assert!(!page.hits[1].front_page);
+        // The batch picks the page's viewer link (04 §4.12); none is LoC's.
+        assert_eq!(page.hits[0].batch, "psu_pst_bonadea");
+        assert_eq!(page.hits[1].batch, "");
         assert_eq!(page.hits[0].snippets, vec!["a &lt;<mark>gold</mark>&gt; b"]);
         assert!(page.hits[1].snippets.is_empty());
         // Without the `days` aggregation (a later page), no count.

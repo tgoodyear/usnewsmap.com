@@ -773,52 +773,31 @@ class Static(unittest.TestCase):
             self.assertRegex(rule["hostname"], r"^([a-z0-9-]+\.)?usnewsmap\.com$")
             self.assertEqual(rule["service"], "http://127.0.0.1:8080")
 
-    def test_flood_rule_is_recorded_off_and_blocks_only_the_searches(self):
-        # ADR-0027 settled decision 9. Keys are sorted, as in every keyed data file.
-        def sorted_keys(pairs):
-            keys = [k for k, _ in pairs]
-            self.assertEqual(keys, sorted(keys))
-            return dict(pairs)
-
-        text = self.read("flood-rule.json")
-        rules = json.loads(text, object_pairs_hook=sorted_keys)["rules"]
-        # Free allows one rate-limit rule.
-        self.assertEqual(len(rules), 1)
-        rule = rules[0]
-        # Written and off until a flood.
-        self.assertIs(rule["enabled"], False)
-        # Block sets no cookie; every challenge action would set cf_clearance, and
-        # /privacy says the site sets none.
-        self.assertEqual(rule["action"], "block")
-        self.assertNotIn("action_parameters", rule)
-        self.assertNotIn("challenge", text)
-        # The searches only, under both prefixes the API serves. They are checked
-        # against the API's own routes so a rename can't leave the rule matching nothing.
-        match = re.fullmatch(r'http\.request\.uri\.path in \{((?:"[^"]+" ?)+)\}', rule["expression"])
-        self.assertIsNotNone(match, rule["expression"])
+    def test_edge_flood_limit_covers_exactly_the_searches(self):
+        # #1541, ADR-0027 settled decision 9: the fallback Worker's rate-limiting binding,
+        # not a zone rule (the Free zone's one rate-limit slot holds the leaked-credential
+        # rule). Its paths are checked against the API's own routes here, because this test
+        # runs on API changes and the edge job doesn't, so a rename can't leave the edge
+        # limit matching nothing.
+        with open(os.path.join(ROOT, "edge", "fallback-worker", "worker.mjs")) as f:
+            worker = f.read()
+        match = re.search(r"export const LIMITED_PATHS = new Set\(\[([^\]]*)\]\);", worker)
+        self.assertIsNotNone(match)
         self.assertEqual(sorted(re.findall(r'"([^"]+)"', match.group(1))),
                          ["/api/v1/aggregate", "/api/v1/hits", "/api/v1/search-report",
-                          "/v1/aggregate", "/v1/hits", "/v1/search-report"])
+                          "/mcp", "/mcp/", "/v1/aggregate", "/v1/hits", "/v1/search-report"])
         with open(os.path.join(ROOT, "crates", "usnm-api", "src", "lib.rs")) as f:
             api = f.read()
         for route in ('("/aggregate", get(routes::aggregate))', '("/hits", get(routes::hits))',
                       '("/search-report", post(routes::search_report))',
                       '.nest("/v1", v1.clone())', '.nest("/api/v1", v1)'):
             self.assertIn(route, api)
-        # Free counts an IP over 10 seconds and blocks for 10 seconds. "IP with NAT
-        # support" would set a _cfuvid cookie, so the counters are the data center
-        # (the API requires it) and the plain IP.
-        limit = rule["ratelimit"]
-        self.assertEqual(limit["characteristics"], ["cf.colo.id", "ip.src"])
-        self.assertEqual(limit["period"], 10)
-        self.assertEqual(limit["mitigation_timeout"], 10)
-        self.assertEqual(limit["requests_per_period"], 50)
-        # It only bites past the API's own limit (so the API's 429s stay the normal case).
-        with open(os.path.join(ROOT, "crates", "usnm-api", "src", "config.rs")) as f:
-            per_minute = int(re.search(r'"USNM_RATE_PER_MIN", (\d+)\)', f.read()).group(1))
-        self.assertGreater(limit["requests_per_period"] * 60, per_minute * limit["period"])
-        # An account or zone id belongs to the operator's run, not the repository.
-        self.assertIsNone(re.search(r"\b[0-9a-f]{32}\b", text))
+        with open(os.path.join(ROOT, "crates", "usnm-api", "src", "mcp.rs")) as f:
+            mcp = f.read()
+        for path in ("/mcp", "/mcp/"):
+            self.assertIn(f'.route_service("{path}",', mcp)
+        # No zone rule is recorded any more.
+        self.assertFalse(os.path.exists(os.path.join(HERE, "flood-rule.json")))
 
     def test_logs_keep_no_addresses_or_queries(self):
         self.assertIn("ExecStart=/usr/local/libexec/usnm-serving/run-cloudflared",

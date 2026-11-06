@@ -795,8 +795,9 @@ pages rather than overwriting them, including for historical cohorts.
    and `zero_work_starvation` when scheduler logs or status report hosts
    receiving zero tasks). Errors emit `boinc_batch_failure` and exit nonzero
    without dumping command output or credentials. Past 80% of a lifetime cap
-   (`MAX_JOBS` for dispatch journals, claims, bridge journals and existing
-   native workunits, and the server's `spool_entries_limit` for spool entries)
+   (`MAX_JOBS` for dispatch journals, claims and bridge journals, the server's
+   `existing_jobs_limit` for existing native workunits, and its
+   `spool_entries_limit` for spool entries)
    each tick also writes one `boinc_batch_cap_warning` line for it to stderr
    with `cap`, `count`, the `limit` it's measured against and the tick's `at`,
    and otherwise runs unchanged: archive drained history before the cap stops
@@ -1009,7 +1010,74 @@ same attempt.
 Once the message is gone, no pull returns the page, and the next tick goes on. Nothing on the
 controller changes. A later attempt of the page is a new message and needs the same step again,
 with the same `SUPERSEDES_FAILED_JOB`. This settles the newer attempt as failed without running
-it. Running it instead, with a longer page deadline, would need a controller change (#1417).
+it. To run it instead, use a deadline retry, below.
+
+#### Retrying it with another page deadline
+
+The other choice is to run the newer message, with a longer page deadline. For a page that ran out
+of time on every host, the same deadline would only fail again, and it would be the same job and
+workunit. An operator records the retry as root on the BOINC host, with the hand-off
+`deadline-retry` step. The controller's ssh key can't run it.
+
+```sh
+# Dry run: checks, prints the newer message's sha256 and changes nothing.
+usnm-boinc-step --env prod --target handoff --step deadline-retry \
+  --var SUPERSEDES_FAILED_JOB=<the dead-lettered job's id> --var TIMEOUT_SECS=3600 --wait-mins 10
+# Compare the sha256 with the claim summary's message_sha256 for the page, then confirm it.
+usnm-boinc-step --env prod --target handoff --step deadline-retry \
+  --var SUPERSEDES_FAILED_JOB=<the dead-lettered job's id> --var TIMEOUT_SECS=3600 \
+  --var CONFIRM_MESSAGE_SHA256=<the newer message's sha256> --wait-mins 10
+```
+
+(`usnm-boinc claim deadline-retry --supersedes-failed-job <id> --timeout-secs <s> --curated-url
+<curated> [--confirm-message-sha256 <sha256>]`.) The step makes the superseding dead letter's
+checks. It also checks that the deadline is 1 to 3600 s and isn't the failed job's own, and that
+no superseding dead letter has been started for the message. A job's identity holds its deadline
+but not its message's `queued_at`, so the step also refuses a deadline that would build one of the
+page's earlier jobs again (600 s, then 3600 s, then 600 s): choose another. Then it writes one
+record, `dispatch/jobs/<failed job>/deadline-retry/<message sha256>.json`, holding:
+
+- the failed job;
+- the page's doc id;
+- the message's sha256 and `queued_at`;
+- the deadline.
+
+A rerun prints `already recorded`. Nothing else changes: the claim stays live and its message
+hidden. While the record exists, the superseding dead letter refuses the same job and message.
+Until the controller takes the claim, deleting the record undoes it.
+
+The controller takes the claim when a claim pull returns the message again. That happens when its
+lease runs out, or after the hand-off `release` step with `HANDOFF_DOCS=<doc id>`. On that
+conflict only, and only for a page whose job the controller dead-lettered, the tick looks for the
+record for that job and message:
+
+- With no record, the tick stops as before.
+- If the record can't be read or isn't valid, the tick keeps the pull's other claims first, then
+  stops.
+- With the record, the claim takes the old one's place, naming the job it `supersedes`. The
+  controller records the retry in its state (`deadline_retries`: the page, message, `queued_at`
+  and deadline) and logs a `boinc_batch_deadline_retry` event.
+
+The next export pushes the page's scan again, wherever export reads it: the host prunes its staged
+copy after four days, and the hand-off container's `scans/` expire after 30. It names the failed
+job in `HANDOFF_DEADLINE_RETRIES`. `usnm-boinc export --deadline-retry
+<failed job>` checks the record again against the failed journal and the claim, then builds the
+page's job with the recorded deadline. That is a new job id and workunit beside the failed one,
+which stays as it was. An export that would build an earlier job of the page instead is refused.
+If the export fails, the next tick exports the page again. After that the controller takes the
+new job as the page's: its state names the job's `queued_at` and deadline, so it never picks one
+of two jobs any other way. The new job is submitted, collected and finished like any other. If it
+fails for good too, `--dead-letter-failed` dead-letters it as usual. A later attempt of the page
+is then settled or retried again, naming the new job.
+
+Without a record, nothing in a tick changes. Roll out the hand-off image (its `deadline-retry`
+step and export's `--deadline-retry`), the host's `onprem-step.sh` and the controller from one
+revision before recording a retry:
+
+- An older controller never looks for a record.
+- An older host script refuses `HANDOFF_DEADLINE_RETRIES`, so the export fails closed.
+- `archive_history.py` doesn't archive a page with two root jobs
+  (`unresolved_retry_lineage`), so a retried page's jobs stay in place.
 
 ### The queue message's life
 
@@ -1045,8 +1113,8 @@ provisioned. `claims/` expires after 30 days.
 - A message queued again after its claim lapsed (the seeder re-queues a page outstanding
   for 14 days) is a different message and so a different job. The controller then sees two
   jobs on one page and stops for an operator to reconcile, as it does for any two. A page
-  queued again after its job was dead-lettered stops it the same way; settle it as
-  [above](#a-retried-page-claimed-after-its-dead-letter).
+  queued again after its job was dead-lettered stops it the same way; settle it, or retry it
+  with another deadline, as [above](#a-retried-page-claimed-after-its-dead-letter).
 - A claim can lapse while the job is pending, and a node can then import the page. When
   the BOINC result arrives, `collect` finds the page answered by another producer and marks
   the job `published` with a `superseded` note, without publishing anything, so the feed
@@ -1183,8 +1251,17 @@ existing explicit reconcile procedure. Only the serialized operator may break
 the stale `scheduler/controller.lock` blob lease once the former owner is
 confirmed stopped. Do not delete journals, reset state, or break a live lease. A
 missing reply is not evidence that `create_work` failed. The inventory fails
-closed above 10,000 journals or existing native workunit IDs, or above 100,000
-spool entries. Archive only drained, operator-verified history before resuming,
+closed above 10,000 journals, above 100,000 spool entries, or above the
+existing native workunit cap. That cap is 50,000 by default, set by
+`USNM_MAX_EXISTING_WORKUNITS` in the BOINC host's `bridge.env` (1 to 200,000),
+and the server reports it as `existing_jobs_limit`. It is larger than the
+journal cap because BOINC keeps every workunit for `delete_delay_hours` (168)
+after it finishes, so finished rows outnumber live journals (#1483). The cap
+holds for both the workunit rows, reported as `existing_workunits`, and the pages
+they expand to, `existing_jobs`; the 80% warning uses the larger, since a bundle
+whose journals are archived is still a row but adds no pages. A server
+image without this change reports no limit, and the controller then holds
+existing workunits to 10,000. Archive only drained, operator-verified history before resuming,
 with [the archive tool](#archive-drained-history-1483).
 
 ### Archive drained history (#1483)
@@ -1238,6 +1315,61 @@ throughout. It refuses if the lock file is missing, since the controller
 creates it on its first tick, so a missing one means a wrong `--state-dir`. A killed apply leaves that lease held, like a crashed controller.
 Once the process is confirmed gone, the operator breaks it as above.
 
+The `dispatch` apply deletes hand-off blobs, so it needs `blobs/delete` on
+`boinc-handoff`. The controller's own identity (`boincHandoffRunner`, CT 211's
+Arc machine identity) deliberately lacks it: its node writer role there reads
+and writes but doesn't delete (`infra/modules/ocr-exchange.bicep`). Under that
+identity, the apply stops at its first delete with HTTP 403
+`AuthorizationPermissionMismatch`, and the batch is left resumable. Don't widen
+the controller's role. Run the apply under an operator identity that may
+delete. The narrowest built-in role that does is Storage Blob Data Contributor
+assigned at the container's own scope,
+`<account resource ID>/blobServices/default/containers/boinc-handoff`. Azure
+accepts data-plane role assignments at that scope. A broader role an operator
+already holds also works, such as Storage Blob Data Owner on the account's
+resource group, but don't grant one for this.
+
+The tool takes its token from the first `az` on its `PATH`. It runs:
+
+```sh
+az account get-access-token --resource https://storage.azure.com/ \
+  --query '{token:accessToken,expires:expires_on}' -o json
+```
+
+It reads only the `token` and `expires` keys of that JSON object. `expires` must
+be a whole number of seconds since the epoch, so check that `expires_on` is one:
+`az account get-access-token --resource https://storage.azure.com/ --query
+'type(expires_on)' -o tsv` prints `number` (and no token). If it doesn't,
+upgrade the CLI rather than converting: `expires_on` was added in Azure CLI
+2.54.0, and older versions give only `expiresOn`, a local time string; don't
+project that instead. The tool converts `expires` with `int()`, which fails on a
+date string and stops the step. The tool asks again 10 minutes before expiry,
+and makes no other `az` call. To use an operator identity:
+
+- On CT 211, make a root-owned 0700 directory for the run, such as
+  `/root/usnm-archive`. In it, put a 0700 wrapper `azshim/az` that answers only
+  that one call, from a 0600 token file at a fixed path there, such as
+  `/root/usnm-archive/.maint-token.json`. Fail closed: the wrapper compares its
+  whole argument list with the command above, `--query` and `-o` included, and
+  prints the file only on an exact match. For any other arguments it prints
+  nothing to stdout and exits non-zero. It never calls the real `az`, so the
+  token can't reach any other command.
+- Put the wrapper's directory first on `PATH` for the archive tool's command
+  alone (`PATH=/root/usnm-archive/azshim:$PATH python3 archive_history.py …`).
+  Never change `PATH` in a profile or for the service.
+- On the operator's workstation, mint a short-lived storage-audience token with
+  the same command, including the `--query` projection, so that the file holds
+  the `token`/`expires` object. Pipe it over `ssh` into that file, never
+  printing it.
+- Rewrite the file before the token expires. Write the new token to a 0600
+  temporary file in the same directory, then `mv` it over the old one, so the
+  tool never reads a partial file. Only root can write to that directory, so
+  nothing else can swap the file or plant a link there.
+- Delete the token file and the wrapper after the run, and any copy left on the
+  way (for example on the Proxmox host).
+
+The dry run and the controller's own ticks keep the controller's identity.
+
 The maintainer approves each live run. To archive:
 
 1. Pause the controller on CT 211, and wait for any running tick to end:
@@ -1264,8 +1396,9 @@ The maintainer approves each live run. To archive:
      --archive-dir <archive dir>
    ```
 
-3. Apply it: the same command plus `--apply --confirm-controller-paused`. It
-   prints the batch's receipt, which is also kept in
+3. Apply it under an operator identity that may delete (above): the same
+   command plus `--apply --confirm-controller-paused`. It prints the batch's
+   receipt, which is also kept in
    `<archive dir>/batches/<NNNN>/receipts/dispatch.json`.
 4. Copy that batch's `manifest.json` and `receipts/dispatch.json`, unchanged, to
    `/srv/usnm-boinc/project/archive/batches/<NNNN>/` on the BOINC host, and
@@ -1298,7 +1431,7 @@ The maintainer approves each live run. To archive:
    deletes them. It deletes only workunits that are assimilated (2) with their
    input files deleted (2), and whose every result is over (5) with its output
    files deleted (2). It leaves the others for BOINC's `db_purge` and counts
-   them as `deferred`. Those still count towards the 10,000 existing-workunit
+   them as `deferred`. Those still count towards the existing-workunit
    cap. A stop before a chunk's `COMMIT` rolls it back, and the resumed step
    exports the rows again beside the first attempt. A stop after it leaves the
    export, which the resumed step counts as deleted.

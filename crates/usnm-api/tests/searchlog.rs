@@ -104,6 +104,35 @@ fn today() -> NaiveDate {
     Utc::now().date_naive()
 }
 
+#[tokio::test]
+async fn mcp_searches_never_enter_the_public_search_log() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, log) = app_with(Arc::new(LocalStore::new(dir.path())), hour()).await;
+    let body = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{
+        "name":"search","arguments":{"q":"gold"}
+    }});
+    let (status, response) = send(
+        &state,
+        Request::builder()
+            .method("POST")
+            .uri("/mcp")
+            .header(header::HOST, "usnewsmap.com")
+            .header(header::ORIGIN, "https://usnewsmap.com")
+            .header("sec-fetch-site", "same-origin")
+            .header(header::USER_AGENT, CHROME)
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::ACCEPT, "application/json, text/event-stream")
+            .header("mcp-protocol-version", "2025-11-25")
+            .body(Body::from(body.to_string()))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(response["result"]["isError"], false, "{response}");
+    log.shutdown(Duration::from_secs(5)).await;
+    assert!(staged(dir.path()).is_empty());
+}
+
 /// The records in today's staged batches.
 fn staged(dir: &std::path::Path) -> Vec<Record> {
     let Ok(entries) = std::fs::read_dir(dir.join(searchlog::staging_dir(today()))) else {

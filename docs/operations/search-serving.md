@@ -236,14 +236,20 @@ Each wake starts the API, which starts the searcher. The API stays about 5 minut
 
 ### Rollout
 
+The removal takes two provisions, so the subnet path is in place and checked before any endpoint goes (#1425). DNS inside the VNet keeps pointing at the endpoints until the second one.
+
 1. Check that on-prem serves and no index is being published or promoted. Bring a local checkout to `origin/main`.
-2. `scripts/azure/provision.sh --env prod --what-if --api-tag live --allow-rename=privatelink.blob.core.windows.net --allow-rename=privatelink.documents.azure.com`, and compare it with the summary in the pull request. Stop on anything new. Without the two flags the rename guard fails it, as it should.
-3. Provision: `scripts/azure/provision.sh --env prod --api-tag live --allow-rename=privatelink.blob.core.windows.net --allow-rename=privatelink.documents.azure.com`. The policy step writes the exempt list first. The stack then adds the service endpoints and firewall rules, and deletes the endpoints and zones last, as unmanaged resources.
-4. Run the cold drill below. Do nothing else until it passes.
+2. **Stage 1, additive.** With `USNM_DATA_PRIVATE_ENDPOINTS=true` and `USNM_DATA_SUBNET_ACCESS=true` committed, run `scripts/azure/provision.sh --env prod --what-if --api-tag live`. It may add the snet-cae rules, the Cosmos service endpoint and the index account's public access, and list the index in the policy; it must delete no endpoint, zone or link. Stop on anything new. Then provision with the same flags, without `--what-if`.
+3. Check the rules with `az`, that on-prem's lake and Cosmos traffic carries on, and that a request to the index account from outside gets 403.
+4. **Stage 2, the deletes.** Commit `USNM_DATA_PRIVATE_ENDPOINTS=false` (`USNM_DATA_SUBNET_ACCESS` then has no effect). Run `scripts/azure/provision.sh --env prod --what-if --api-tag live --allow-rename=privatelink.blob.core.windows.net --allow-rename=privatelink.documents.azure.com`. It must show only the three endpoints, their NICs and zone groups, and the two zones with their links and records. Without the two flags the rename guard fails it, as it should. Then provision with the same flags, without `--what-if`.
+5. Run the cold drill below. Do nothing else until it passes.
 
 ### Rollback
 
-Set `USNM_DATA_PRIVATE_ENDPOINTS` back to `true` in `infra/env/prod.json`, commit it, and provision with `--api-tag live`. Provision refuses uncommitted settings; `--allow-dirty` is for an emergency that can't wait for a pull request. The stack recreates the endpoints and zones and removes the subnet rules, which takes minutes and leaves on-prem untouched. If the drill fails while on-prem is down, the spare can't serve until this finishes, so don't start the rollout during an on-prem incident.
+- **After stage 1:** set `USNM_DATA_SUBNET_ACCESS` to `false`, commit it, and provision with `--api-tag live`. The index account closes again, and the Cosmos filter and service endpoint go.
+- **After stage 2:** set `USNM_DATA_PRIVATE_ENDPOINTS` back to `true` in `infra/env/prod.json`, commit it, and provision with `--api-tag live`. With `USNM_DATA_SUBNET_ACCESS` still `true` the subnet rules stay while the stack recreates the endpoints and zones, which takes minutes and leaves on-prem untouched. The spare can still lose its data path for a while: the network module links the new zones before the endpoints write their records, and an empty zone answers for the account names in the VNet. Before relying on the spare again, check that the account names resolve to the endpoints from snet-cae, then run the cold drill below: `/readyz`, a search and `/v1/status`.
+
+Provision refuses uncommitted settings; `--allow-dirty` is for an emergency that can't wait for a pull request. Don't start the rollout during an on-prem incident.
 
 ### Cold drill
 
@@ -317,7 +323,7 @@ Each computed search also logs `slow warm-up query` with its `ms` when it takes 
 
 ## Search log
 
-The API keeps every search from the site, with only its filters, page count and UTC day, in the `searches` container ([ADR-0012](../design/adr/0012-anonymous-search-log.md), 06 §6.8). Nothing expires `searches/days/` and `searches/import/`; staged batches are deleted after 7 days and stay in soft delete for 3 more. To read it:
+The API keeps every search from the site, with only its filters, page count and UTC day, in the `searches` container ([ADR-0012](../design/adr/0012-anonymous-search-log.md), 06 §6.8). Nothing expires `searches/days/` and `searches/import/`; staged batches are deleted after 7 days and stay in soft delete for 14 more. To read it:
 
 ```sh
 scripts/azure/settings.sh --env prod --key USNM_SEARCH_LOG_READERS \
@@ -332,7 +338,7 @@ The data account is reachable only through its private endpoint, so run `searche
 
 ## Search log: the copy on tank
 
-The day files can't be rebuilt. Since 26 October 2026 (#1097), the lake's Standard_LRS copy (3-day soft delete) has a second copy: `searches/days/` on a restricted dataset on `tank`, under [ADR-0027](../design/adr/0027-onprem-serving-behind-cloudflare.md) settled decision 3. `usnm-ingest searchlog-copy` runs daily on a dedicated non-serving host with its own read-only Arc identity. All 25 source days (87,005 bytes) passed full source-hash verification and an idempotent rerun; snapshot recovery was checked privately. [`scripts/onprem/searchlog-copy/`](../../scripts/onprem/searchlog-copy/README.md) has the live acceptance details and rebuild procedure.
+The day files can't be rebuilt. Since 26 October 2026 (#1097), the lake's Standard_LRS copy (14-day soft delete) has a second copy: `searches/days/` on a restricted dataset on `tank`, under [ADR-0027](../design/adr/0027-onprem-serving-behind-cloudflare.md) settled decision 3. `usnm-ingest searchlog-copy` runs daily on a dedicated non-serving host with its own read-only Arc identity. All 25 source days (87,005 bytes) passed full source-hash verification and an idempotent rerun; snapshot recovery was checked privately. [`scripts/onprem/searchlog-copy/`](../../scripts/onprem/searchlog-copy/README.md) has the live acceptance details and rebuild procedure.
 
 **What it does.** Each run lists `days/` in the lake and copies every `{day}.jsonl` the dataset lacks. A day is streamed into `days/{day}.jsonl.partial`, its size checked against the listing and its sha256 against the file as written, and then linked into place as a read-only file; the link fails if the name exists, so a copy is never replaced. A day already there is compared by size (`--verify` also hashes the lake's bytes again). The tool deletes nothing from the lake or the copy: a copy that differs, or a day that has left the lake, is reported and kept, and the only file it removes is its own `.partial` from an interrupted run (a regular file: a link or directory by that name is left alone, and its day is reported missing until an operator removes it). There is no stored hash of a day file to compare with (the listing gives a size, an ETag and a creation time, and the API sends no Content-MD5 when it writes one), so the checks are of the bytes received and of the file written, and `--verify` is the check against the lake itself.
 
@@ -348,6 +354,6 @@ The independent `home-searchlog-watch.timer` on the Proxmox host checks this sta
 
 - _Missing_: look at the journal for why the copy failed (the identity's grant, the lake's firewall, the dataset's quota, or a link or directory named `{day}.jsonl.partial` in `days/`, which the tool leaves for an operator to remove), fix that and run `sudo systemctl start usnm-searchlog-copy`.
 - _Mismatched_: the copy is not replaced. Check it against a snapshot, and against the lake with `--verify`. When the lake's file is the right one, move the bad copy aside by hand (`mv`, as an operator; the tool never removes one) and run the copy again.
-- _Local only_: the lake has lost a day file (soft delete keeps it for 3 days: restore it there first). The copy is then the only one: snapshot the dataset (`zfs snapshot`) before anything else.
+- _Local only_: the lake has lost a day file (soft delete keeps it for 14 days: restore it there first). The copy is then the only one: snapshot the dataset (`zfs snapshot`) before anything else.
 
 **Restoring.** A damaged copy comes back from a snapshot (`.zfs/snapshot/<name>/days/`, or `zfs clone`) or, for a day still in the lake, from the next run. A day lost from the lake is written back from the copy, create-only, by an operator with Storage Blob Data Contributor on the container and their own sign-in (no SAS, no key): `az storage blob upload --auth-mode login --account-name <account> --container-name searches --name days/<day>.jsonl --file <copy> --overwrite false`. A lost dataset is rebuilt by running the copy into an empty one (`--verify` afterwards), as long as the lake still has the files.

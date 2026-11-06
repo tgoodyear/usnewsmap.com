@@ -70,6 +70,13 @@ Japanese overlay's `ndlocr-lite <commit>`) and `models=local` are exempt. No pin
 in either `models.lock` has changed in the repository's history, so the first
 `profiles.lock` records the only digest each profile has had.
 
+`yidj2`, Tesseract `yid` trained on the Yiddish OCR Corpus (#1479), is such a
+profile, and opt-in. Its model is a release asset
+([`ocr/models/yidj2/`](../models/yidj2/README.md)), not in
+`tesseract/models.lock`, so no image carries it and it has no `profiles.lock`
+entry. It comes after `yid` and `heb`, so a worker that had all three would
+still pick `yid`.
+
 ## Credits data shape
 
 - `production_licenses`: array of licence identifier strings approved by the

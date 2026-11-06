@@ -62,15 +62,20 @@ The guarded feeder from #1464 records the app IDs and weights it allocated from 
 - The feeder is not a supervisord program. `[program:boinc]`
   ([`supervisord.conf` L15-L21](../../contrib-compute/images/server/supervisord.conf#L15-L21))
   runs `boinc-daemons.sh`, which runs `bin/start` once and then `bin/start --cron` every 300
-  seconds as `boincadm`, unless `stop_maintenance` is present
-  ([`boinc-daemons.sh` L35-L50](../../contrib-compute/images/server/boinc-daemons.sh#L35-L50)).
+  seconds as `boincadm`, unless `stop_maintenance` or its own restart hold is present
+  ([`boinc-daemons.sh` L132-L141](../../contrib-compute/images/server/boinc-daemons.sh#L132-L141)).
   That loop is the feeder's supervisor: a feeder that exits is started again within five minutes,
   as BOINC expects from cron ([feeder.cpp L269-L277][feeder-269-277], [start L14-L17][start-14-17]).
-  The loop is rate-limited but has no retry count. This procedure adds no loop to it, and holds it
-  once a start fails ([Hold the supervisor loop](#hold-the-supervisor-loop)).
-- `pid_<host>` is on the container's own disk and linked into the project
-  ([`boinc-daemons.sh` L16-L33](../../contrib-compute/images/server/boinc-daemons.sh#L16-L33)). The
-  guard's snapshot, `usnm-feeder-slots.json`, is in the same directory.
+  It restarts a stopped feeder at most three times an hour, then holds the project
+  ([The loop's restart bound](#the-loops-restart-bound)). This procedure adds no loop to it, and
+  holds it once a start fails ([Hold the supervisor loop](#hold-the-supervisor-loop)).
+- `pid_<host>` is on the container's own disk, `${USNM_PID_ROOT:-/var/lib/usnm-boinc}/pid_<host>`,
+  and linked into the project
+  ([`boinc-daemons.sh` L19-L44](../../contrib-compute/images/server/boinc-daemons.sh#L19-L44)). The
+  guard's snapshot, `usnm-feeder-slots.json`, and the loop's hold marker,
+  `usnm-feeder-restart-hold`, are always in that local directory, even where the wrapper keeps an
+  older `pid_<host>` directory in the project instead of the link. The commands below use the local
+  path.
 - The stock stop is `SIGHUP`. The handler only sets a flag; the feeder exits at its next
   `check_stop_daemons`, which runs every second while it sleeps and after every pass. On that exit,
   `cleanup_shmem` clears `ready` and removes the segment ([sched_util_basic.cpp
@@ -89,17 +94,64 @@ None of these is a feeder-only refresh:
   feeder is not the wrapper's child and holds its lock.
 - Restarting `usnm-boinc-server.service`. That restarts Apache, every daemon and the container.
 
+## The loop's restart bound
+
+Before each `bin/start --cron`, `boinc-daemons.sh` checks the feeder: `pid_<host>/feeder.pid` must
+name a live process called `feeder` that is not a zombie. If it doesn't, and `stop_daemons` is
+absent (a project stopped with `bin/stop` is not restarted anyway), the run counts as a restart and
+the wrapper logs `the feeder is not running; restart k of N in Ws` to the server unit's journal.
+If `N` restarts already fall within the last `W` seconds, it skips the run instead, creates the
+marker `usnm-feeder-restart-hold` in the local `pid_<host>` directory
+(`held_at=<epoch> restarts=<n> window_s=<W>`) and logs `holding the project until ... is removed`
+([`boinc-daemons.sh` L54-L130](../../contrib-compute/images/server/boinc-daemons.sh#L54-L130)).
+The wrapper runs as root in a directory `boincadm` can write, so it only ever creates a new file
+there. If anything already occupies the path, such as a link, or the write fails, it logs
+`could not write` and stays held without a marker until the container restarts; the guard then
+reports `unknown` for the stopped feeder. Remove whatever occupies the path before that restart.
+Only the feeder is counted. The first `bin/start` and a run that finds the feeder running don't
+count, and the count starts again after each hold.
+
+While the marker exists, the loop treats it like `stop_maintenance`: it starts no daemon and runs
+no periodic task, but stops nothing that is running, and a restart of the wrapper waits for it.
+The guard reports `unknown` with reason `feeder_restart_hold` without querying anything, so the host
+unit fails: a held project is an incident. The loop never creates `stop_maintenance` itself. The
+marker is on the container's own disk, so a container start clears it. Otherwise only an operator
+removes it, once the cause is found and fixed, as `boincadm` in the server container:
+
+```sh
+host=$(python3 -c 'import socket; print(socket.gethostname().split(".")[0])')
+rm "${USNM_PID_ROOT:-/var/lib/usnm-boinc}/pid_$host/usnm-feeder-restart-hold"
+```
+
+The next run, within five minutes, starts the feeder with a fresh count.
+
+The default bound is `N` = 3 restarts in any `W` = 3600 seconds. A feeder that fails every start
+is started three times, five minutes apart, and held at the next run, 15 minutes after the loop
+first found it stopped: within one `maintenance_delay` (1200 s), the back-off every scheduler request
+gets while no feeder is ready. A rolling window, unlike a count of consecutive failures, also holds a
+feeder that starts, runs for a while and dies. On CT 230 between 21 October and 5 November 2026
+the loop restarted the feeder once, and each database restart took less than one five-minute cycle
+([the measurements](../notes/2026-11-05-feeder-restart-bound.md)). The cost is that a database
+outage of more than about 15 minutes that doesn't restart the server leaves the project held after
+the database returns, until an operator removes the marker.
+
+`USNM_FEEDER_RESTART_LIMIT` (0 to 9999; 0 holds as soon as the loop finds the feeder stopped) and
+`USNM_FEEDER_RESTART_WINDOW` (1 to 999999 seconds) in the server container's environment change
+the bound. The wrapper logs any other value and keeps the default. Like any setting, a change is a
+reviewed `-e` flag in
+[`usnm-boinc-server.service`](../../scripts/boinc/onprem/usnm-boinc-server.service).
+
 ## When a refresh is warranted
 
 The guard's statuses (`feeder-slot-guard.py`, its exit code in brackets):
 
-| Status (exit)                                             | Meaning                                                                                                                                                                                                              | Action                                                                                                                                                                                     |
-| --------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `match` (0)                                               | The allocation equals the active registry.                                                                                                                                                                           | No refresh. A match does not show that eligible work exists or reaches a host: look at plan-class bounds, app versions, `one_result_per_host_per_wu` and the enumeration budget instead.   |
-| `maintenance` (0)                                         | `stop_maintenance` is present; nothing was checked.                                                                                                                                                                  | No refresh. Someone holds the project.                                                                                                                                                     |
-| `unknown` (2)                                             | The check could not be made: `stale_snapshot`, `snapshot_process_mismatch`, `feeder_reload_in_progress`, `feeder_snapshot_uncertain`, `database_unavailable`, `not_allapps_feeder`, `observation_changed` and so on. | No refresh. A feeder that is starting, reloading or stalled, or a database that is down, is not fixed by a restart. Find the reason; a persistent `unknown` is an incident, not a trigger. |
-| `drift` (1), reason `registry_changed`                    | The active registry differs from the startup allocation. The report lists the added, removed and changed app IDs.                                                                                                    | Candidate, if the registry is the intended one.                                                                                                                                            |
-| `drift` (1), reason `reload_changed_app_order_or_weights` | A reread loaded different apps or weights. Latched until the feeder restarts.                                                                                                                                        | Candidate.                                                                                                                                                                                 |
+| Status (exit)                                             | Meaning                                                                                                                                                                                                                                     | Action                                                                                                                                                                                     |
+| --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `match` (0)                                               | The allocation equals the active registry.                                                                                                                                                                                                  | No refresh. A match does not show that eligible work exists or reaches a host: look at plan-class bounds, app versions, `one_result_per_host_per_wu` and the enumeration budget instead.   |
+| `maintenance` (0)                                         | `stop_maintenance` is present; nothing was checked.                                                                                                                                                                                         | No refresh. Someone holds the project.                                                                                                                                                     |
+| `unknown` (2)                                             | The check could not be made: `stale_snapshot`, `snapshot_process_mismatch`, `feeder_reload_in_progress`, `feeder_snapshot_uncertain`, `database_unavailable`, `not_allapps_feeder`, `observation_changed`, `feeder_restart_hold` and so on. | No refresh. A feeder that is starting, reloading or stalled, or a database that is down, is not fixed by a restart. Find the reason; a persistent `unknown` is an incident, not a trigger. |
+| `drift` (1), reason `registry_changed`                    | The active registry differs from the startup allocation. The report lists the added, removed and changed app IDs.                                                                                                                           | Candidate, if the registry is the intended one.                                                                                                                                            |
+| `drift` (1), reason `reload_changed_app_order_or_weights` | A reread loaded different apps or weights. Latched until the feeder restarts.                                                                                                                                                               | Candidate.                                                                                                                                                                                 |
 
 A refresh is warranted only when all of these hold:
 
@@ -124,11 +176,18 @@ pass. Restarting it with `bin/start --cron` would also start the same unguarded 
 the server replaces only when the container starts ([Before first use](#before-first-use)). Such a
 feeder is not refreshed with this procedure: it is replaced when the guarded image is deployed,
 which is the maintainer's rollout decision. Evidence that it is stale can support that decision:
-`show_shmem`'s `apps:` list differs from the active rows, or the feeder log shows
-`Found trigger file reread_db` after its last `Starting` line and the change's own record puts an
-active-registry change between the two. Cached results whose app differs from the slot's app in the
+`show_shmem`'s `apps:` list differs from the active rows, or the feeder log has a reread after its
+start and the change's own record puts an active-registry change between the two. The feeder runs
+at `-d 2`, which drops BOINC's normal-level lines such as `Starting` and
+`Found trigger file reread_db`. Its log does show each start as one
+`Executing command: feeder ...` line from `bin/start`, and each scan of the tables, at a start or a
+reread, as five `have apps for` lines ([start L463][start-463],
+[sched_shmem.cpp L247-L251][sched-shmem-247-251]). The first five `have apps for` lines after
+the last `Executing command` line are that start's own scan; any later group of five is a reread. Cached results whose app differs from the slot's app in the
 current registry's interleave confirm the second case; the
-[proposed helper](#proposed-a-dry-run---plan-refresh-mode-not-implemented) would compute that.
+[proposed helper](#proposed-a-dry-run---plan-refresh-mode-not-implemented) would compute that. On
+5 November 2026 that comparison found none on CT 230
+([the measurements](../notes/2026-11-05-feeder-restart-bound.md)).
 
 ## Preconditions
 
@@ -164,7 +223,9 @@ Project state:
 - None of these exists in the project directory: `stop_maintenance` (pauses the supervisor loop),
   `stop_sched` (scheduler maintenance), `stop_daemons` (stops every daemon, and `bin/start`
   removes it, which would undo someone else's stop: [start L209-L221][start-209-221],
-  [L467-L470][start-467-470]) or `reread_db` (a pending reread).
+  [L467-L470][start-467-470]) or `reread_db` (a pending reread). Nor is there a restart hold
+  marker (`$restart_hold` in step 1): the loop has [held itself](#the-loops-restart-bound), and why
+  comes first.
 - Exactly one feeder: `pgrep -u boincadm -x feeder` prints one PID, the PID in
   `pid_<host>/feeder.pid`. Its command line is `feeder -d 2 --allapps --purge_stale 5`, and the
   guard's snapshot names the same PID and start ticks.
@@ -289,11 +350,12 @@ In that shell (create `/project/ops` as root first if `boincadm` cannot write to
 ```sh
 cd /project/usnmocr
 host=$(python3 -c 'import socket; print(socket.gethostname().split(".")[0])')
+restart_hold="${USNM_PID_ROOT:-/var/lib/usnm-boinc}/pid_$host/usnm-feeder-restart-hold"
 evidence=/project/ops/feeder-refresh-$(date -u +%Y%m%dT%H%M%SZ)
 mkdir "$evidence"
 python3 /usr/local/lib/usnm-boinc/feeder-slot-guard.py --project /project/usnmocr | tee "$evidence/guard-before.json"
 bin/status --verbose | tee "$evidence/status-before.txt"
-ls -ld stop_maintenance stop_sched stop_daemons reread_db .usnm-publish.lock 2>&1 | tee "$evidence/markers-before.txt"
+ls -ld stop_maintenance stop_sched stop_daemons reread_db .usnm-publish.lock "$restart_hold" 2>&1 | tee "$evidence/markers-before.txt"
 bin/show_shmem > "$evidence/shmem-before.txt"
 ipcs -m | tee "$evidence/ipcs-before.txt"
 cp "pid_$host/usnm-feeder-slots.json" "$evidence/snapshot-before.json"
@@ -356,10 +418,12 @@ Wait at most two minutes for it to exit:
 
 ```sh
 for i in $(seq 24); do [ "$(awk '{print $22}' "/proc/$pid/stat" 2>/dev/null)" = "$ticks" ] || break; sleep 5; done
-tail -n +"$((lines + 1))" "log_$host/feeder.log" | grep 'Quitting due to SIGHUP'
+tail -n +"$((lines + 1))" "log_$host/feeder.log" | grep 'GOT STOP SIGNAL'
 ```
 
-The feeder exits after its current pass, normally within seconds. If it is still running after two
+The `grep` shows that the feeder caught the signal ([sched_util_basic.cpp
+L61-L64][sched-util-basic-61-64]); the loop above shows that it exited. The feeder exits after its
+current pass, normally within seconds. If it is still running after two
 minutes, do not send another signal, `SIGTERM` or `SIGKILL`. The flag is set, and it will exit
 when its current database call returns. Check the database and the feeder log, and stay with it:
 the supervisor loop starts a new feeder within five minutes of the exit if you don't. If it still
@@ -392,10 +456,10 @@ Within two minutes:
 newpid=$(cat "pid_$host/feeder.pid"); echo "$newpid"
 pgrep -u boincadm -x feeder
 tr '\0' ' ' < "/proc/$newpid/cmdline"; echo
-# From the last Starting line since the stop: only the feeder running now, whoever started it.
-from=$(awk -v after="$lines" 'NR > after && / Starting$/ {n = NR} END {print n ? n : after + 1}' "log_$host/feeder.log")
+# From the last feeder start since the stop: only the feeder running now, whoever started it.
+from=$(awk -v after="$lines" 'NR > after && /Executing command: feeder / {n = NR} END {print n ? n : after + 1}' "log_$host/feeder.log")
 tail -n +"$from" "log_$host/feeder.log" > "$evidence/feeder-log-after-$attempt.txt"
-grep -E 'Starting|read [0-9]+ platforms|Using [0-9]+ job slots' "$evidence/feeder-log-after-$attempt.txt"
+grep -E 'Executing command: feeder |have apps for' "$evidence/feeder-log-after-$attempt.txt"
 grep -F '[CRITICAL]' "$evidence/feeder-log-after-$attempt.txt"
 bin/show_shmem > "$evidence/shmem-after-$attempt.txt"
 grep -E '^(ready|max_wu_results):' "$evidence/shmem-after-$attempt.txt"
@@ -408,9 +472,9 @@ Each attempt keeps its own files, and an earlier failed attempt's log lines stay
 attempt's readback. Expect:
 
 - A new PID, different from `$pid`, as the only feeder, with the same command line.
-- `Starting`, then `read P platforms, A apps, V app_versions, N assignments` with `A` equal to the
-  number of active apps ([feeder.cpp L887-L902][feeder-887-902]), then `Using 4096 job slots`. The
-  `[CRITICAL]` `grep` prints nothing.
+- One `Executing command: feeder -d 2 --allapps --purge_stale 5` line, then the startup scan's five
+  `have apps for` lines. The `[CRITICAL]` `grep` prints nothing. At `-d 2` the feeder doesn't log
+  its app or slot counts ([feeder.cpp L887-L902][feeder-887-902]), so they come from `show_shmem`.
 - `ready: 1` and `max_wu_results: 4096`.
 - The `apps:` list is the active rows in `id` order: same IDs, `hr: 0`, and the same weights to the
   two decimals `show_shmem` prints ([sched_shmem.cpp L345-L353][sched-shmem-345-353]). A position in
@@ -504,7 +568,7 @@ the requesting host may take is not a feeder fault.
 ## Failed start and retry
 
 A start has failed if, within two minutes of step 3, there is no new live feeder, `ready` is not 1,
-the feeder log has a `[CRITICAL]` line, the `read ... apps` count is not the number of active apps,
+the feeder log has a `[CRITICAL]` line, `show_shmem`'s `apps:` list is not the active rows,
 or the new PID disappears or changes before the guard reports `match`. Every error below ends the
 feeder, except perhaps the census one. One that gets past creating the segment removes it on the
 way out ([feeder.cpp L869][feeder-869]), so no ready segment is left, every request gets the
@@ -520,7 +584,7 @@ tries `bin/start --cron` again every five minutes until it is held.
 | `HR type ... out of range` and the other HR messages       | [feeder.cpp L612-L691][feeder-612-691]                                                                       | Deterministic: the registry.                                                                                                                                            |
 | `can't destroy shmem`                                      | [feeder.cpp L854-L858][feeder-854-858]                                                                       | Deterministic: the segment belongs to another user.                                                                                                                     |
 | `can't create shmem`                                       | [feeder.cpp L860-L865][feeder-860-865]                                                                       | Deterministic: memory or kernel limits.                                                                                                                                 |
-| `Missing size census file`, then `read ... 0 apps`         | [sched_shmem.cpp L145-L171][sched-shmem-145-171], [feeder.cpp L887][feeder-887], [L904-L933][feeder-904-933] | Deterministic: the registry. The scan stops before any app is counted, and allocating slots over no apps is undefined: the feeder may crash or stay up serving nothing. |
+| `Missing size census file`, and `show_shmem` lists no apps | [sched_shmem.cpp L145-L171][sched-shmem-145-171], [feeder.cpp L887][feeder-887], [L904-L933][feeder-904-933] | Deterministic: the registry. The scan stops before any app is counted, and allocating slots over no apps is undefined: the feeder may crash or stay up serving nothing. |
 
 ### Hold the supervisor loop
 
@@ -533,12 +597,16 @@ echo "hold $(date -u +%FT%TZ)" | tee -a "$evidence/hold-time.txt"
 
 `boinc-daemons.sh` checks the marker before each `bin/start --cron` and skips the run while it
 exists, and a container start waits for it
-([`boinc-daemons.sh` L38-L50](../../contrib-compute/images/server/boinc-daemons.sh#L38-L50)). It
+([`boinc-daemons.sh` L46-L52](../../contrib-compute/images/server/boinc-daemons.sh#L46-L52)). It
 stops nothing that is running. While it is in place, the loop starts no daemon and runs no periodic
 task, and the guard reports `maintenance`, which doesn't fail the host unit. The hold is part of
-the approved window. Record the loop's own attempts made before the hold: every `Starting` line in
-the feeder log after `$lines` that your `bin/start --cron` didn't make. There are few, because the
-loop runs every five minutes and the hold follows the failure at once.
+the approved window. Record the loop's own attempts made before the hold: every
+`Executing command: feeder` line in the feeder log after `$lines` that your `bin/start --cron`
+didn't make, which match the wrapper's `restart k of N` lines in
+`journalctl -u usnm-boinc-server.service` on CT 230. There are few, because the loop runs every five
+minutes and the hold follows the failure at once. If the loop has already held itself
+([The loop's restart bound](#the-loops-restart-bound)), add `stop_maintenance` all the same and copy
+`$restart_hold` into the evidence directory.
 
 Release the hold only once a feeder passes step 4 after the hold: run step 4 up to the guard
 check, then release it and run the guard check, which reports `maintenance` while the hold is in
@@ -546,6 +614,7 @@ place:
 
 ```sh
 rm stop_maintenance
+rm -f "$restart_hold"
 echo "release $(date -u +%FT%TZ)" | tee -a "$evidence/hold-time.txt"
 ```
 
@@ -560,7 +629,7 @@ needs the maintainer, the hold stays until they decide.
   database, confirm it with a read-only query such as `SELECT COUNT(*) FROM app WHERE deprecated=0`
   over step 1's verified-TLS connection, saved to `$evidence/db-check.txt`. The guard can't confirm
   it: during the hold it reports `maintenance` before it queries anything
-  ([`feeder-slot-guard.py` L164-L167](../../contrib-compute/images/server/feeder-slot-guard.py#L164-L167)).
+  ([`feeder-slot-guard.py` L165-L168](../../contrib-compute/images/server/feeder-slot-guard.py#L165-L168)).
   Then repeat step 4. If a feeder is already running by
   then (the loop started it before the hold), don't retry: verify that feeder with step 4 and
   `attempt=2`. Never script a retry, loop, or watch and restart.
@@ -625,7 +694,8 @@ without the maintainer's approval for that occasion:
 - Anything on volunteer hosts.
 
 The only automation this design allows is notification: the failed guard unit, and the read-only
-plan below when an operator asks for it.
+plan below when an operator asks for it. The loop's [restart bound](#the-loops-restart-bound) is no
+repair either: it only stops the loop's own restarts, and an operator releases it.
 
 ## Proposed: a dry-run `--plan-refresh` mode (not implemented)
 
@@ -717,6 +787,9 @@ and review.
 [synch-41-105]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/lib/synch.cpp#L41-L105
 [sched-send-780-786]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/sched_send.cpp#L780-L786
 [sched-main-517-523]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/sched_main.cpp#L517-L523
+[start-463]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/start#L463
+[sched-shmem-247-251]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/sched_shmem.cpp#L247-L251
+[sched-util-basic-61-64]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/sched_util_basic.cpp#L61-L64
 [start-794-797]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/start#L794-L797
 [start-589-599]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/start#L589-L599
 [feeder-887-902]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/feeder.cpp#L887-L902

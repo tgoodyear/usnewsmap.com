@@ -22,6 +22,7 @@ BOOT_ID = re.compile(r"[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}")
 BITS = re.compile(r"[0-9a-f]{16}")
 TLS_OPTIONS = Path("/usr/local/share/usnm/mysql-tls.cnf")
 TLS_CA = "/usr/local/share/usnm/mysql-ca.pem"
+HOLD = "usnm-feeder-restart-hold"  # boinc-daemons.sh's restart bound, next to the snapshot
 
 
 class Unknown(Exception):
@@ -165,8 +166,11 @@ def check(project, proc=Path("/proc")):
     try:
         if (project / "stop_maintenance").exists():
             return {"status": "maintenance", "reason": "stop_maintenance"}
-        directory, identity = feeder_identity(project, proc)
         path = status_path()
+        # The supervisor stopped restarting a feeder that kept stopping: an incident, never healthy.
+        if path.with_name(HOLD).exists():
+            return {"status": "unknown", "reason": "feeder_restart_hold"}
+        directory, identity = feeder_identity(project, proc)
         raw = read_bounded(path, owner=os.geteuid())
         record, allocated = parse_snapshot(raw, identity, int(time.monotonic() * 1000))
         current = None if record["drift"] else database_apps(project)

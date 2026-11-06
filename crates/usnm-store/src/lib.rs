@@ -64,6 +64,9 @@ pub struct ObjectInfo {
     /// When the store created the object, by the store's clock (Blob
     /// Storage's `Creation-Time`; a local file's modification time).
     pub created: Option<std::time::SystemTime>,
+    /// When the store last changed the object, by its clock. This is the
+    /// recency signal for bounded caches; reading an object does not change it.
+    pub modified: Option<std::time::SystemTime>,
     /// The store's base64 MD5 of the bytes, when it has one (Blob Storage's
     /// `Content-MD5`; none for a local file).
     pub content_md5: Option<String>,

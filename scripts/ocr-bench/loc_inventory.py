@@ -111,22 +111,30 @@ def candidates(inventory, lccn, year, batch=None):
     return sorted(set(result))
 
 
+def ndnp_doc_id(page_url):
+    """Canonical page ID of a www.loc.gov NDNP page URL, or None for any other URL."""
+    url = urlparse(page_url)
+    match = re.fullmatch(r"/resource/(sn\d+)/(\d{4}-\d{2}-\d{2})/ed-(\d+)/?", url.path)
+    if url.hostname != "www.loc.gov" or not match:
+        return None
+    seq = parse_qs(url.query).get("sp", [])
+    if len(seq) != 1 or not seq[0].isdigit() or int(seq[0]) <= 0:
+        raise ValueError("missing unambiguous page sequence")
+    return f"{match[1]}_{match[2]}_ed-{match[3]}_seq-{seq[0]}"
+
+
 def benchmark_overlap(inventory, manifest):
     rows = []
     for sample in manifest["samples"]:
-        provenance = sample["provenance"]
-        url = urlparse(provenance.get("page_url", ""))
-        match = re.fullmatch(r"/resource/(sn\d+)/(\d{4}-\d{2}-\d{2})/ed-(\d+)/?", url.path)
-        if url.hostname != "www.loc.gov" or not match:
+        doc_id = ndnp_doc_id(sample["provenance"].get("page_url", ""))
+        if doc_id is None:
             rows.append({"id": sample["id"], "source_page_id": sample["source_page_id"],
                          "status": "outside-ndnp", "candidate_batches": []})
             continue
-        seq = parse_qs(url.query).get("sp", [])
-        if len(seq) != 1 or not seq[0].isdigit() or int(seq[0]) <= 0:
-            raise ValueError("missing unambiguous page sequence")
-        batches = candidates(inventory, match[1], int(match[2][:4]))
+        lccn, issued = doc_id.split("_")[:2]
+        batches = candidates(inventory, lccn, int(issued[:4]))
         rows.append({"id": sample["id"], "source_page_id": sample["source_page_id"],
-                     "doc_id": f"{match[1]}_{match[2]}_ed-{match[3]}_seq-{seq[0]}",
+                     "doc_id": doc_id,
                      "languages": sample["languages"], "source": sample["source"],
                      "image_sha256": sample["image"]["sha256"],
                      "reference_sha256": sample["reference"]["sha256"],

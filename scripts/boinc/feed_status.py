@@ -15,6 +15,8 @@ import time
 
 REFILL_WARN_S = 6 * 3600
 TICK_LIMIT_S = 15 * 60
+# The same drift across two five-minute guard runs: the refresh runbook's first condition (#1462).
+FEEDER_DRIFT_HOLD_S = 10 * 60
 MAX_AGE = 180
 MAX_GAP = 180
 APP_NAMES = ("usnm_ocr", "usnm_qwen")
@@ -103,6 +105,13 @@ def evaluate(facts, previous, now, monotonic, boot_id, config_id):
     check("controller_tick", None if tick is None else (
         new_failure or tick["ok"] is False or tick["seconds"] > TICK_LIMIT_S),
         seconds=None if tick is None else tick["seconds"])
+    guard = facts.get("feeder_allocation")
+    if guard is not None:
+        # Opt-in (#1462). Maintenance skips the comparison, so it is unknown, like any unproven allocation.
+        drift = {"match": False, "drift": True}.get(guard["status"])
+        check("feeder_allocation", drift, FEEDER_DRIFT_HOLD_S,
+              generation=guard["reason"] + ":" + ",".join(map(str, guard["app_ids"])),
+              reason=guard["reason"], app_ids=guard["app_ids"])
     unknown = facts.get("errors", []) or [c["code"] for c in checks if c["state"] == "unknown"]
     check("collection", bool(unknown) or not continuous, reset=not continuous)
     document = {"schema_version": 1, "event": "boinc_feed_health", "observed_at": now,

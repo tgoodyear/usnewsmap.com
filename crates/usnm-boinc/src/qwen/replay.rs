@@ -72,7 +72,7 @@ fn candidates() -> Vec<(String, Params)> {
     let mut out = Vec::new();
     for (metric, name) in [(Metric::Similarity, "similarity"), (Metric::Dice, "dice")] {
         for share in [0.0, 0.5, 2.0 / 3.0] {
-            for floor in [0.4, 0.5, 0.6] {
+            for floor in [0.4, 0.5, 0.6, 0.7] {
                 out.push((
                     format!("{name}>={floor},share>{share:.2}"),
                     Params {

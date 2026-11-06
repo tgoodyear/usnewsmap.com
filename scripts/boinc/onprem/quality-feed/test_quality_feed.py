@@ -1,14 +1,17 @@
 """Tests for the on-prem quality feeder (#962), with no network or production state."""
 import contextlib
 from concurrent.futures import ThreadPoolExecutor
+import fcntl
 import hashlib
 import importlib.util
 import io
 import json
 import os
 import sqlite3
+import struct
 import sys
 import tempfile
+import threading
 import types
 import unittest
 import urllib.error
@@ -261,6 +264,29 @@ class DecodeQuarantineTest(unittest.TestCase):
                 self.assertEqual(error.exception.original_type, "OSError")
                 self.assertIn("truncated" if not is_jp2 else "broken data stream", str(error.exception))
 
+    def test_real_jp2s_pass_the_completeness_check_and_flagged_cuts_do_not_decode(self):
+        from PIL import Image, features
+
+        if not features.check_codec("jpg_2000"):
+            self.skipTest("Pillow's JPEG2000 codec is required")
+        image = Image.effect_noise((96, 64), 40).convert("L")
+        for options in ({}, {"tile_size": (32, 32)},
+                        {"quality_mode": "rates", "quality_layers": [40, 10], "progression": "RLCP"}):
+            output = io.BytesIO()
+            image.save(output, "JPEG2000", **options)
+            raw = output.getvalue()
+            start, _ = feed.jp2_codestream(raw)
+            # LoC's truncated scans have a 'jp2c' box that runs to the end of the file.
+            to_end = raw[:start - 8] + struct.pack(">I", 0) + raw[start - 4:]
+            with self.subTest(options=options):
+                self.assertIsNone(feed.jp2_truncation(raw))
+                self.assertIsNone(feed.jp2_truncation(to_end))
+                for cut in sorted({1, 2, 3, 17, len(raw) // 4, len(raw) // 2, len(raw) - start}):
+                    for short in (raw[:-cut], to_end[:-cut]):
+                        self.assertIsNotNone(feed.jp2_truncation(short), cut)
+                        with self.assertRaises(Exception):
+                            feed.page_jpeg(short, True)
+
     def test_missing_codec_and_indexed_format_disagreement_are_not_decode_quarantines(self):
         from PIL import features
 
@@ -495,10 +521,13 @@ class DecodeQuarantineTest(unittest.TestCase):
 
         if not features.check_codec("jpg_2000"):
             self.skipTest("Pillow's JPEG2000 codec is required")
-        bad_raw, good_raw = self.image("JPEG2000")[:-2], self.image("JPEG2000", value=40)
-        bad, good = self.page(1, bad_raw, "jp2"), self.page(2, good_raw, "jp2")
-        rows = {page["doc_id"]: {**page, "format": "jp2", "fetched_at": f"2026-11-03T03:0{i}:00Z"}
-                for i, page in enumerate((bad, good))}
+        # A cut-short JPEG: a cut-short JP2 is source_truncated before decoding (below).
+        bad_raw, good_raw = self.image()[:-2], self.image("JPEG2000", value=40)
+        bad, good = self.page(1, bad_raw), self.page(2, good_raw, "jp2")
+        later = {page["doc_id"]: {**page, "format": fmt, "fetched_at": f"2026-11-03T03:0{i}:00Z"}
+                 for i, (page, fmt) in enumerate(((bad, "jpeg"), (good, "jp2")))}
+        # The good page arrives once the bad one is quarantined: before, it would stand in for it.
+        rows = {bad["doc_id"]: later.pop(bad["doc_id"])}
         scans = {bad["scan"]: bad_raw, good["scan"]: good_raw}
         calls = []
 
@@ -520,6 +549,8 @@ class DecodeQuarantineTest(unittest.TestCase):
             self.assertEqual(calls, [bad["scan"]] * 3)
             records = feed.scan_quarantine.quarantined(state)
             self.assertEqual((records[0]["attempts"], records[0]["refetch_state"]), (3, "manual_review"))
+            self.assertIn("chunk came up short", output.getvalue())
+            rows.update(later)
             feed.main(self.follow_argv())
             self.assertEqual(calls, [bad["scan"]] * 3 + [good["scan"]])
             self.assertEqual(scan_set.call_count, 4)
@@ -528,9 +559,9 @@ class DecodeQuarantineTest(unittest.TestCase):
             self.assertIn("quarantined scans excluded", output.getvalue())
 
             (camp / "c00001/READY").unlink()
-            replacement = self.image("JPEG2000", value=200)
+            replacement = self.image(value=200)
             scans[bad["scan"]] = replacement
-            rows[bad["doc_id"]] = {**self.page(1, replacement, "jp2"), "format": "jp2",
+            rows[bad["doc_id"]] = {**self.page(1, replacement), "format": "jpeg",
                                    "fetched_at": "2026-11-03T03:10:00Z"}
             feed.main(self.follow_argv())
             self.assertEqual(calls[-1], bad["scan"])
@@ -646,6 +677,230 @@ class ScanGoneTest(unittest.TestCase):
         self.assertFalse((self.state / "skipped.txt").exists())
 
 
+def codestream(tiles=1, data=b"\x80" * 20, last_runs_to_eoc=False):
+    """A synthetic JPEG 2000 codestream: SOC, SIZ, COD, QCD, one tile-part a tile, EOC.
+    The parser reads only marker and tile-part headers, so the entropy data is filler."""
+    width = 32 * tiles
+    main = (struct.pack(">HHH8IHBBB", 0xFF51, 41, 0, width, 32, 0, 0, 32, 32, 0, 0, 1, 7, 1, 1)
+            + struct.pack(">HHBBHBBBBBB", 0xFF52, 12, 0, 0, 1, 0, 5, 4, 4, 0, 1)
+            + struct.pack(">HHBB", 0xFF5C, 4, 0x40, 0x48))
+    parts = b""
+    for tile in range(tiles):
+        psot = 0 if last_runs_to_eoc and tile == tiles - 1 else 14 + len(data)
+        parts += struct.pack(">HHHIBB", 0xFF90, 10, tile, psot, 0, 1) + b"\xff\x93" + data
+    return b"\xff\x4f" + main + parts + b"\xff\xd9"
+
+
+def jp2(stream, lbox=None):
+    """A JP2 file around a codestream; lbox=0 is a 'jp2c' box that runs to the end of the file."""
+    ihdr = struct.pack(">I4sIIHBBBB", 22, b"ihdr", 32, 32, 1, 7, 7, 0, 0)
+    colr = struct.pack(">I4sBBBI", 15, b"colr", 1, 0, 0, 17)
+    header = (feed.JP2_SIGNATURE + struct.pack(">I4s4sI4s", 20, b"ftyp", b"jp2 ", 0, b"jp2 ")
+              + struct.pack(">I4s", 8 + len(ihdr) + len(colr), b"jp2h") + ihdr + colr)
+    return header + struct.pack(">I4s", 8 + len(stream) if lbox is None else lbox, b"jp2c") + stream
+
+
+class SourceTruncatedTest(unittest.TestCase):
+    """A JP2 cut short at LoC's source (#1457): flagged from its headers, never retried; no Pillow."""
+
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.root = Path(folder.name)
+        self.state = self.root / "state" / "qwen-test"
+        (self.root / "curated" / "pages").mkdir(parents=True)
+
+    @staticmethod
+    def page(seq, raw, batch="xx_test"):
+        return {"doc_id": f"sn1_1900-01-02_ed-1_seq-{seq}", "batch": batch, "batch_version": 1,
+                "lccn": "sn1", "date": "1900-01-02", "edition": 1, "seq": seq, "lang": "rus",
+                "damage_rate": 0.8, "scan": f"buffer/{batch}/sn1/1900-01-02/1/{seq}.jp2",
+                "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
+
+    def args(self, pages, quarantine_decode=True):
+        pages_file = self.root / "pages.jsonl"
+        pages_file.write_text("".join(json.dumps(page) + "\n" for page in pages))
+        return types.SimpleNamespace(campaign="qwen-test", curated=str(self.root / "curated"),
+                                     state=str(self.root / "state"), outbox=str(self.root / "outbox"),
+                                     pages=str(pages_file), scan_server="http://scan", chunk_pages=4,
+                                     max_pending=4, workers=1, once=True, alto_cache=None,
+                                     quarantine_decode=quarantine_decode)
+
+    @staticmethod
+    def texts():
+        texts = mock.Mock()
+        texts.loc.side_effect = lambda batch, version, docs: ({doc: "LoC text" for doc in docs}, True)
+        texts.american_stories.return_value = {}
+        texts.ours.return_value = {}
+        texts.ours_alto.return_value = None
+        return texts
+
+    @staticmethod
+    def logged(output, msg):
+        return [line for line in map(json.loads, output.getvalue().splitlines()) if line["msg"] == msg]
+
+    def test_complete_or_otherwise_malformed_scans_are_left_to_the_decoder(self):
+        four = codestream(4)
+        xl = jp2(four)[:-len(four) - 8] + struct.pack(">I4sQ", 1, b"jp2c", 16 + len(four)) + four
+        for name, raw in (("one tile", jp2(codestream())), ("four tiles", jp2(four)),
+                          ("last tile-part runs to EOC", jp2(codestream(2, last_runs_to_eoc=True))),
+                          ("jp2c box to end of file", jp2(four, lbox=0)), ("XL jp2c box", xl),
+                          ("bare codestream", four), ("JPEG", b"\xff\xd8\xff\xe0" + b"\x00" * 40),
+                          ("bad SOT length", jp2(four.replace(b"\xff\x90\x00\x0a", b"\xff\x90\x00\x0b", 1))),
+                          ("not a codestream", jp2(b"\x00" * 40))):
+            with self.subTest(name):
+                self.assertIsNone(feed.jp2_truncation(raw))
+
+    def test_cut_short_jp2s_are_flagged_with_where_they_end(self):
+        four, whole = codestream(4), jp2(codestream(4))
+        boundary = len(codestream(2)) - 2
+        for name, raw, reason in (
+                ("no EOC", jp2(four[:-2]), "the codestream ends without an EOC marker after 4 of 4 tiles"),
+                ("box past the file", whole[:-10], "the 'jp2c' box declares 10 bytes past the end of the file"),
+                ("inside a tile-part", jp2(four[:-10], lbox=0),
+                 "tile-part 0 of tile 3 declares 8 bytes past the end of the codestream"),
+                ("at a tile-part boundary", jp2(four[:boundary], lbox=0),
+                 "the codestream ends without an EOC marker after 2 of 4 tiles"),
+                ("inside a tile-part header", jp2(four[:boundary + 6], lbox=0),
+                 "the codestream ends inside a tile-part header"),
+                ("last tile-part with no EOC", jp2(codestream(2, last_runs_to_eoc=True)[:-2], lbox=0),
+                 "tile 1's last tile-part runs to the end of the codestream with no EOC marker"),
+                ("inside the main header", jp2(four[:20], lbox=0),
+                 "main-header marker 0xFF51 runs past the end of the codestream"),
+                ("only SOC", jp2(four[:2]), "the codestream ends inside its main header"),
+                ("header boxes only", whole[:len(whole) - len(four) - 8],
+                 "the file ends before its codestream box"),
+                ("inside a header box", whole[:60], "the 'jp2h' box declares"),
+                ("bare codestream", four[:-2], "the codestream ends without an EOC marker after 4 of 4 tiles")):
+            with self.subTest(name):
+                self.assertIn(reason, feed.jp2_truncation(raw) or "")
+
+    def test_a_truncated_jp2_is_recorded_once_and_is_never_fetched_or_decoded_again(self):
+        good_raw, bad_raw = jp2(codestream(2)), jp2(codestream(2)[:-2])
+        good, bad = self.page(1, good_raw), self.page(2, bad_raw)
+        args = self.args([good, bad])
+        scans = {good["scan"]: good_raw, bad["scan"]: bad_raw}
+        calls = []
+
+        def fetch(request, timeout):
+            path = request.full_url.split("/scans/", 1)[1]
+            calls.append(path)
+            return io.BytesIO(scans[path])
+
+        with mock.patch.object(feed, "Texts", return_value=self.texts()), \
+                mock.patch.object(feed.urllib.request, "urlopen", side_effect=fetch), \
+                mock.patch.object(feed, "page_jpeg", return_value=(b"jpeg", (32, 32))) as decode, \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            feed.cmd_run(args)  # no SystemExit: nothing is left to retry
+            self.assertEqual([call.args[0] for call in decode.call_args_list], [good_raw])
+            self.assertEqual(self.logged(output, "scan truncated at source; not retried")[0]["doc_id"],
+                             bad["doc_id"])
+            self.assertEqual(self.logged(output, "source-truncated scans found"),
+                             [{"msg": "source-truncated scans found", "pages": 1,
+                               "batches": {"xx_test_ver01": 1}}])
+            self.assertEqual(sorted(calls), sorted(scans))
+
+            feed.cmd_run(args)
+            self.assertEqual(len(calls), 2)
+            self.assertEqual(self.logged(output, "source-truncated scans in campaign"),
+                             [{"msg": "source-truncated scans in campaign", "campaign": "qwen-test",
+                               "pages": 1, "batches": {"xx_test_ver01": 1}}])
+
+            replacement = jp2(codestream(1))
+            scans[bad["scan"]] = replacement
+            Path(args.pages).write_text(json.dumps(self.page(2, replacement)) + "\n")
+            feed.cmd_run(args)
+            self.assertEqual(calls[-1], bad["scan"])
+
+        records = feed.scan_quarantine.quarantined(self.state)
+        self.assertEqual([(r["source"]["sha256"], r["refetch_state"], r["attempts"], r["error_type"])
+                          for r in records],
+                         [(bad["sha256"], "source_truncated", 0, "SourceTruncated")])
+        self.assertIn("without an EOC marker after 2 of 2 tiles", records[0]["error"])
+        self.assertEqual(feed.scan_quarantine.retryable_ids(self.state), set())
+        self.assertEqual(feed.read_lines(self.state / "done.txt"), {good["doc_id"], bad["doc_id"]})
+        self.assertFalse((self.state / "skipped.txt").exists())
+        self.assertEqual(feed.scan_quarantine.quarantined_documents(self.root / "state"), {bad["doc_id"]})
+
+    def test_without_quarantine_option_a_truncated_jp2_is_skipped_with_its_reason(self):
+        raw = jp2(codestream(1)[:-2])
+        page = self.page(1, raw)
+        args = self.args([page], quarantine_decode=False)
+        with mock.patch.object(feed, "Texts", return_value=self.texts()), \
+                mock.patch.object(feed.urllib.request, "urlopen",
+                                  side_effect=lambda *a, **k: io.BytesIO(raw)) as fetch, \
+                mock.patch.object(feed, "page_jpeg") as decode, \
+                contextlib.redirect_stdout(io.StringIO()):
+            feed.cmd_run(args)
+            feed.cmd_run(args)
+        self.assertEqual(fetch.call_count, 1)
+        decode.assert_not_called()
+        self.assertEqual((self.state / "skipped.txt").read_text(),
+                         f"{page['doc_id']}\tsource_truncated: the codestream ends without an EOC marker "
+                         "after 1 of 1 tiles\n")
+        self.assertFalse((self.state / feed.scan_quarantine.DB_NAME).exists())
+
+    def test_source_truncated_ends_observation_but_leaves_a_manual_review(self):
+        quarantine = feed.scan_quarantine
+        observed, reviewed, other = (self.page(1, b"one"), self.page(2, b"two"),
+                                     self.page(3, b"three", batch="yy_test"))
+        decoder = types.SimpleNamespace(original_type="OSError")
+        quarantine.record_retryable(self.state, observed, OSError("timeout"))
+        quarantine.record_failure(self.state, observed, decoder, {})
+        for _ in range(3):
+            quarantine.record_failure(self.state, reviewed, decoder, {})
+        for page in (observed, reviewed, other, other):
+            quarantine.record_source_truncated(self.state, page, "the codestream ends early")
+        records = {r["source"]["doc_id"]: r for r in quarantine.quarantined(self.state)}
+        self.assertEqual({doc: (r["refetch_state"], r["attempts"]) for doc, r in records.items()},
+                         {observed["doc_id"]: ("source_truncated", 1),
+                          reviewed["doc_id"]: ("manual_review", 3),
+                          other["doc_id"]: ("source_truncated", 0)})
+        self.assertEqual(quarantine.retryable_ids(self.state), set())
+        quarantine.record_success(self.state, observed)
+        self.assertEqual(len(quarantine.quarantined(self.state)), 3)
+        self.assertEqual(quarantine.source_truncated_summary(quarantine.quarantined(self.state)),
+                         {"pages": 2, "batches": {"xx_test_ver01": 1, "yy_test_ver01": 1}})
+
+    @unittest.skipUnless(importlib.util.find_spec("pyarrow"), "PyArrow required for the follower")
+    def test_follow_records_a_truncated_jp2_and_excludes_it_from_later_rounds(self):
+        good_raw, bad_raw = jp2(codestream(1)), jp2(codestream(1)[:-10], lbox=0)
+        good, bad = self.page(1, good_raw), self.page(2, bad_raw)
+        rows = {page["doc_id"]: {**page, "format": "jp2", "fetched_at": f"2026-11-03T03:0{i}:00Z"}
+                for i, page in enumerate((bad, good))}
+        scans = {bad["scan"]: bad_raw, good["scan"]: good_raw}
+        calls = []
+
+        def fetch(request, timeout):
+            path = request.full_url.split("/scans/", 1)[1]
+            calls.append(path)
+            return io.BytesIO(scans[path])
+
+        argv = ["follow", "--campaign", "cpu-test", "--curated", str(self.root / "curated"),
+                "--scan-server", "http://scan", "--outbox", str(self.root / "outbox"),
+                "--state", str(self.root / "state"), "--staged-dsn", "test", "--chunk-pages", "2",
+                "--max-pending", "1", "--workers", "1", "--once", "--quarantine-decode", "--max-wait-secs", "0"]
+        state = self.root / "state/cpu-test"
+        with mock.patch.object(feed, "Texts", return_value=self.texts()), \
+                mock.patch.object(feed, "staged_from_db", return_value=set()), \
+                mock.patch.object(feed, "index_rows", return_value=rows), \
+                mock.patch.object(feed, "scan_set", return_value="buffer"), \
+                mock.patch.object(feed.urllib.request, "urlopen", side_effect=fetch), \
+                mock.patch.object(feed, "page_jpeg", return_value=(b"jpeg", (32, 32))), \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            feed.main(argv)
+            self.assertEqual(calls, [bad["scan"], good["scan"]])
+            (self.root / "outbox/cpu-test/c00001/READY").unlink()
+            feed.main(argv)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(self.logged(output, "quarantined scans excluded")[0]["pages"], 1)
+        self.assertEqual(self.logged(output, "source-truncated scans in campaign")[0]["batches"],
+                         {"xx_test_ver01": 1})
+        self.assertEqual(feed.scan_quarantine.quarantined(state)[0]["error"],
+                         "tile-part 0 of tile 0 declares 8 bytes past the end of the codestream")
+        self.assertEqual(feed.read_lines(state / "done.txt"), {good["doc_id"]})
+
+
 class FollowTest(unittest.TestCase):
     def test_a_busy_feeder_waits_only_until_the_shipper_takes_a_chunk(self):
         with tempfile.TemporaryDirectory() as d:
@@ -718,6 +973,543 @@ class FollowTest(unittest.TestCase):
             self.assertEqual(calls, [("DELETE", "http://s/scans/buffer/b/q1.jp2")])
             with mock.patch.object(feed.urllib.request, "urlopen", fake):
                 self.assertEqual(feed.delete_shipped(a, str(camp), str(done), {"q1"}, str(Path(d, "deleted.txt"))), 0)
+
+    def test_most_damaged_shipped_scans_are_kept_within_the_budget(self):
+        with tempfile.TemporaryDirectory() as d:
+            camp, done, deleted, kept = Path(d, "camp"), Path(d, "done.txt"), Path(d, "deleted.txt"), Path(d, "kept.tsv")
+            camp.mkdir()
+            done.write_text("q1\tc1\tbuffer/b/q1.jp2\t40\t0.9\n"
+                            "q2\tc1\tbuffer/b/q2.jp2\t40\t0.5\n"
+                            "q3\tc1\tbuffer/b/q3.jp2\t40\t0.1\n"
+                            "q4\tc1\tbuffer/b/q4.jp2\t10\t\n"      # unscored: last, after q3 ends the list
+                            "q5\tc1\tbuffer/b/q5.jp2\n")           # written before sizes: deleted
+            calls, gone = [], set()
+
+            class Resp(io.BytesIO):
+                pass
+
+            def fake(req, timeout=0):
+                path = req.full_url.removeprefix("http://s/scans/")
+                calls.append((req.get_method(), path))
+                if path.removesuffix(".json") in gone:
+                    raise urllib.error.HTTPError(req.full_url, 404, "Not Found", {}, None)
+                return Resp(b"{}")
+
+            a = types.SimpleNamespace(scan_server="http://s", keep_bytes=85, keep_verify=10)
+            ship = lambda docs, ocr=(): feed.delete_shipped(a, str(camp), str(done), docs, str(deleted), str(kept),
+                                                            set(ocr))
+            with mock.patch.object(feed.urllib.request, "urlopen", fake), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(ship({"q1", "q2", "q3", "q4", "q5"}), 3)
+                self.assertEqual(calls, [("DELETE", f"buffer/b/{q}.jp2") for q in ("q3", "q4", "q5")])
+                self.assertEqual(set(feed.read_kept(str(kept))), {"q1", "q2"})
+
+                # An empty quality-docs list (missing, say) releases nothing.
+                self.assertEqual(ship(set()), 0)
+                self.assertEqual(set(feed.read_kept(str(kept))), {"q1", "q2"})
+
+                # OCR asks for q2 and q1's sidecar is found gone: q2 stays listed and counted,
+                # unlooked-up, while q1 leaves once a DELETE makes sure of its bytes, which makes
+                # room for a newly shipped q6.
+                calls.clear()
+                gone.add("buffer/b/q1.jp2")
+                with open(done, "a") as f:
+                    f.write("q6\tc2\tbuffer/b/q6.jp2\t40\t0.3\n")
+                self.assertEqual(ship({"q1", "q3", "q4", "q5", "q6"}, {"q2"}), 0)
+                self.assertEqual(calls, [("GET", "buffer/b/q1.jp2.json"), ("DELETE", "buffer/b/q1.jp2")])
+                self.assertEqual(set(feed.read_kept(str(kept))), {"q2", "q6"})
+                self.assertEqual(feed.read_kept(str(kept))["q2"][3], 0)
+                self.assertEqual(feed.read_lines(str(deleted)), {"q1", "q3", "q4", "q5"})
+
+                # OCR is done with q2, but its worker's best-effort DELETE failed: the lookup
+                # after finds it there, so it stays a kept scan like any other.
+                calls.clear()
+                self.assertEqual(ship({"q6"}), 0)
+                self.assertEqual(calls, [("GET", "buffer/b/q2.jp2.json"), ("GET", "buffer/b/q6.jp2.json")])
+                self.assertEqual(set(feed.read_kept(str(kept))), {"q2", "q6"})
+
+                # No budget at all evicts every one.
+                calls.clear()
+                a.keep_bytes = 0
+                self.assertEqual(ship({"q6"}), 2)
+                self.assertEqual(calls, [("DELETE", "buffer/b/q2.jp2"), ("DELETE", "buffer/b/q6.jp2")])
+                self.assertEqual(feed.read_kept(str(kept)), {})
+
+    def test_a_kept_scan_ocr_asks_for_stays_counted_until_a_lookup_after_finds_its_bytes_gone(self):
+        with tempfile.TemporaryDirectory() as d:
+            camp, done, deleted, kept = Path(d, "camp"), Path(d, "done.txt"), Path(d, "deleted.txt"), Path(d, "kept.tsv")
+            camp.mkdir()
+            done.write_text("new\tc1\tbuffer/b/new.jp2\t40\t0.9\n")
+            # ocr was checked later than other ever will be: only OCR asking for it puts it first.
+            kept.write_text("ocr\tbuffer/b/ocr.jp2\t40\t0.1\t4102444800\nother\tbuffer/b/other.jp2\t10\t0.95\t1\n")
+            a = types.SimpleNamespace(scan_server="http://s", keep_bytes=60, keep_verify=1)
+            calls, status = [], {}
+
+            def fake(req, timeout=0):
+                path = req.full_url.removeprefix("http://s/scans/")
+                calls.append((req.get_method(), path))
+                if status.get(path):
+                    raise urllib.error.HTTPError(req.full_url, status[path], "error", {}, None)
+                return io.BytesIO(b"{}")
+
+            ship = lambda ocr=(): feed.delete_shipped(a, str(camp), str(done), {"new"}, str(deleted), str(kept),
+                                                      set(ocr))
+            with mock.patch.object(feed.urllib.request, "urlopen", fake), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                # While OCR wants it, ocr isn't looked up or evicted and still counts: new doesn't
+                # fit beside it, though it's more damaged.
+                self.assertEqual(ship({"ocr"}), 1)
+                self.assertEqual(calls, [("GET", "buffer/b/other.jp2.json"), ("DELETE", "buffer/b/new.jp2")])
+                self.assertEqual(set(feed.read_kept(str(kept))), {"ocr", "other"})
+
+                # Once OCR is done with it, it's looked up first. OCR's worker DELETE got only as
+                # far as its sidecar, so it stays until one of ours makes sure of its bytes.
+                calls.clear()
+                status.update({"buffer/b/ocr.jp2.json": 404, "buffer/b/ocr.jp2": 500})
+                self.assertEqual(ship(), 0)
+                self.assertEqual(calls, [("GET", "buffer/b/ocr.jp2.json"), ("DELETE", "buffer/b/ocr.jp2")])
+                self.assertEqual(set(feed.read_kept(str(kept))), {"ocr", "other"})
+
+                calls.clear()
+                a.keep_verify = 2
+                status["buffer/b/ocr.jp2"] = 0
+                self.assertEqual(ship(), 0)
+                self.assertEqual(sorted(calls), [("DELETE", "buffer/b/ocr.jp2"), ("GET", "buffer/b/ocr.jp2.json"),
+                                                 ("GET", "buffer/b/other.jp2.json")])
+                self.assertEqual(set(feed.read_kept(str(kept))), {"other"})
+                self.assertEqual(feed.read_lines(str(deleted)), {"new", "ocr"})
+
+    def test_a_kept_scan_that_fails_to_go_holds_its_place_and_its_replacement_is_deleted(self):
+        with tempfile.TemporaryDirectory() as d:
+            camp, done, deleted, kept = Path(d, "camp"), Path(d, "done.txt"), Path(d, "deleted.txt"), Path(d, "kept.tsv")
+            camp.mkdir()
+            done.write_text("old\tc1\tbuffer/b/old.jp2\t80\t0.2\n")
+            a = types.SimpleNamespace(scan_server="http://s", keep_bytes=80, keep_verify=0)
+            fail = {"buffer/b/old.jp2"}
+            calls = []
+
+            def fake(req, timeout=0):
+                path = req.full_url.removeprefix("http://s/scans/")
+                calls.append((req.get_method(), path))
+                if path in fail:
+                    raise urllib.error.HTTPError(req.full_url, 503, "Unavailable", {}, None)
+                return io.BytesIO(b"")
+
+            ship = lambda: feed.delete_shipped(a, str(camp), str(done), {"old", "new"}, str(deleted), str(kept))
+            with mock.patch.object(feed.urllib.request, "urlopen", fake), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(ship(), 0)
+                with open(done, "a") as f:
+                    f.write("new\tc2\tbuffer/b/new.jp2\t80\t0.9\n")
+                self.assertEqual(ship(), 1)  # old's DELETE fails: it stays, and new goes instead
+                self.assertEqual(set(feed.read_kept(str(kept))), {"old"})
+                self.assertEqual(calls[-2:], [("DELETE", "buffer/b/old.jp2"), ("DELETE", "buffer/b/new.jp2")])
+                self.assertEqual(feed.read_lines(str(deleted)), {"new"})
+
+    def test_a_failed_kept_scan_check_goes_to_the_back_and_only_no_answer_ends_the_round(self):
+        with tempfile.TemporaryDirectory() as d:
+            camp, done, deleted, kept = Path(d, "camp"), Path(d, "done.txt"), Path(d, "deleted.txt"), Path(d, "kept.tsv")
+            camp.mkdir()
+            done.write_text("")
+            kept.write_text("".join(f"{doc}\tbuffer/b/{doc}.jp2\t10\t0.5\t{n}\n"
+                                    for n, doc in enumerate(["down", "flaky", "gone", "ok"], 1)))
+            a = types.SimpleNamespace(scan_server="http://s", keep_bytes=100, keep_verify=3)
+            calls, up = [], [False]
+
+            def fake(req, timeout=0):
+                doc = req.full_url.split("/")[-1].split(".")[0]
+                calls.append(doc)
+                if not up[0]:
+                    raise urllib.error.URLError("connection refused")
+                if doc in ("flaky", "gone"):
+                    raise urllib.error.HTTPError(req.full_url, 503 if doc == "flaky" else 404, "", {}, None)
+                return io.BytesIO(b"{}")
+
+            ship = lambda: feed.delete_shipped(a, str(camp), str(done), {"down", "flaky", "gone", "ok"},
+                                               str(deleted), str(kept))
+            with mock.patch.object(feed.urllib.request, "urlopen", fake), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                ship()
+                self.assertEqual(calls, ["down"])
+                up[0] = True
+                calls.clear()
+                ship()
+            self.assertEqual(calls, ["flaky", "gone", "gone", "ok"])  # gone: its check, then its DELETE
+            self.assertEqual(set(feed.read_kept(str(kept))), {"down", "flaky", "ok"})
+
+    def test_a_kept_scan_whose_sidecar_is_gone_but_bytes_are_not_stays_until_deleted(self):
+        with tempfile.TemporaryDirectory() as d:
+            camp, done, deleted, kept = Path(d, "camp"), Path(d, "done.txt"), Path(d, "deleted.txt"), Path(d, "kept.tsv")
+            camp.mkdir()
+            done.write_text("")
+            kept.write_text("half\tbuffer/b/half.jp2\t10\t0.9\t1\n")
+            a = types.SimpleNamespace(scan_server="http://s", keep_bytes=100, keep_verify=1)
+            unlink = [None]
+
+            def fake(req, timeout=0):
+                if req.get_method() == "GET":  # the sidecar: renamed by a DELETE whose unlink failed
+                    raise urllib.error.HTTPError(req.full_url, 404, "", {}, None)
+                if unlink[0] == "reset":
+                    raise urllib.error.URLError(ConnectionResetError("reset by peer"))
+                if unlink[0] != 204:
+                    raise urllib.error.HTTPError(req.full_url, unlink[0], "", {}, None)
+                return io.BytesIO(b"")
+
+            ship = lambda: feed.delete_shipped(a, str(camp), str(done), {"half"}, str(deleted), str(kept))
+            with mock.patch.object(feed.urllib.request, "urlopen", fake), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                for fails in (500, "reset"):
+                    unlink[0] = fails
+                    ship()
+                    self.assertEqual(set(feed.read_kept(str(kept))), {"half"})
+                    self.assertGreater(feed.read_kept(str(kept))["half"][3], 1)  # checked: to the back
+                    self.assertEqual(feed.read_lines(str(deleted)), set())
+                unlink[0] = 204
+                ship()
+            self.assertEqual(feed.read_kept(str(kept)), {})
+            self.assertEqual(feed.read_lines(str(deleted)), {"half"})
+
+    def test_a_scan_server_that_stops_answering_mid_round_loses_nothing(self):
+        with tempfile.TemporaryDirectory() as d:
+            camp, done, deleted, kept = Path(d, "camp"), Path(d, "done.txt"), Path(d, "deleted.txt"), Path(d, "kept.tsv")
+            camp.mkdir()
+            done.write_text("new\tc2\tbuffer/b/new.jp2\t80\t0.9\n")
+            kept.write_text("old\tbuffer/b/old.jp2\t80\t0.2\t1\n")
+            a = types.SimpleNamespace(scan_server="http://s", keep_bytes=80, keep_verify=1)
+            calls, down = [], [True]
+
+            def fake(req, timeout=0):
+                calls.append((req.get_method(), req.full_url.removeprefix("http://s/scans/")))
+                if down[0] and req.get_method() == "DELETE":
+                    raise urllib.error.URLError(ConnectionResetError("reset by peer"))
+                return io.BytesIO(b"{}")
+
+            ship = lambda: feed.delete_shipped(a, str(camp), str(done), {"new"}, str(deleted), str(kept))
+            with mock.patch.object(feed.urllib.request, "urlopen", fake), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(ship(), 0)
+                # old's eviction got no answer: new's DELETE isn't tried, and old's check is kept.
+                self.assertEqual(calls, [("GET", "buffer/b/old.jp2.json"), ("DELETE", "buffer/b/old.jp2")])
+                self.assertEqual(set(feed.read_kept(str(kept))), {"old"})
+                self.assertGreater(feed.read_kept(str(kept))["old"][3], 1)
+                self.assertEqual(feed.read_lines(str(deleted)), set())
+                down[0] = False
+                self.assertEqual(ship(), 1)
+            self.assertEqual(set(feed.read_kept(str(kept))), {"new"})
+            self.assertEqual(feed.read_lines(str(deleted)), {"old"})
+
+    @unittest.skipUnless(importlib.util.find_spec("pyarrow"), "PyArrow required for the follower")
+    def test_a_scan_server_that_doesn_t_answer_costs_one_timeout_a_round_across_campaigns(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "curated/pages").mkdir(parents=True)
+            (root / "state/old").mkdir(parents=True)
+            (root / "state/followed.txt").write_text("old\n")
+            # old's q1 shipped after its follower last ran, and doesn't fit beside k1.
+            (root / "state/old/done.txt").write_text("q1\tc00001\tbuffer/b/q1.jp2\t40\t0.5\n")
+            (root / "state/kept.tsv").write_text("k1\tbuffer/b/k1.jp2\t40\t0.9\t0\n")
+            (root / "quality-docs.txt").write_text("k1\nq1\n")
+            calls, down = [], [True]
+
+            def fake(req, timeout=0):
+                calls.append((req.get_method(), req.full_url.removeprefix("http://scan/scans/")))
+                if down[0]:
+                    raise urllib.error.URLError("timed out")
+                return io.BytesIO(b"{}")
+
+            argv = ["follow", "--campaign", "new", "--curated", str(root / "curated"), "--scan-server", "http://scan",
+                    "--outbox", str(root / "outbox"), "--state", str(root / "state"), "--staged-dsn", "test",
+                    "--quality-docs", str(root / "quality-docs.txt"), "--keep-bytes", "60", "--once"]
+            with mock.patch.object(feed, "staged_from_db", return_value=set()), \
+                    mock.patch.object(feed, "index_rows", return_value={}) as index, \
+                    mock.patch.object(feed.urllib.request, "urlopen", fake), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                # k1's lookup gets no answer: old's q1 isn't DELETEd this round, nor written off,
+                # and the round's feeding (the index first) waits for the next.
+                feed.main(argv)
+                self.assertEqual(calls, [("GET", "buffer/b/k1.jp2.json")])
+                index.assert_not_called()
+                self.assertEqual(feed.read_lines(root / "state/old/deleted.txt"), set())
+                self.assertEqual(set(feed.read_kept(str(root / "state/kept.tsv"))), {"k1"})
+                down[0] = False
+                calls.clear()
+                feed.main(argv)
+                self.assertEqual(calls, [("GET", "buffer/b/k1.jp2.json"), ("DELETE", "buffer/b/q1.jp2")])
+                self.assertEqual(feed.read_lines(root / "state/old/deleted.txt"), {"q1"})
+                index.assert_called_once()
+
+    @unittest.skipUnless(importlib.util.find_spec("pyarrow"), "PyArrow required for the follower")
+    def test_a_new_campaign_cleans_up_after_the_last_and_looks_after_the_kept_list_from_the_start(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "curated/pages").mkdir(parents=True)
+            (root / "state/old").mkdir(parents=True)
+            (root / "outbox/old/c00002").mkdir(parents=True)  # not shipped yet: left alone
+            (root / "state/followed.txt").write_text("old\n")
+            # old kept k1, which OCR's worker has since read; q1 and q3 shipped after old's
+            # follower last ran, and q2 is still in the outbox.
+            (root / "state/old/done.txt").write_text("k1\tc00001\tbuffer/b/k1.jp2\t40\t0.9\n"
+                                                     "q1\tc00001\tbuffer/b/q1.jp2\t40\t0.5\n"
+                                                     "q2\tc00002\tbuffer/b/q2.jp2\t40\t0.3\n"
+                                                     "q3\tc00001\tbuffer/b/q3.jp2\t40\t0.1\n")
+            (root / "state/kept.tsv").write_text("k1\tbuffer/b/k1.jp2\t40\t0.9\t0\n")
+            (root / "quality-docs.txt").write_text("k1\nq1\nq2\nq3\n")
+            (root / "ocr-docs.txt").write_text("")
+            (root / "ocr-active.txt").write_text("")
+            calls = []
+
+            def fake(req, timeout=0):
+                path = req.full_url.removeprefix("http://scan/scans/")
+                calls.append((req.get_method(), path))
+                if path == "buffer/b/k1.jp2.json":
+                    raise urllib.error.HTTPError(req.full_url, 404, "Not Found", {}, None)
+                return io.BytesIO(b"{}")
+
+            argv = ["follow", "--campaign", "new", "--curated", str(root / "curated"), "--scan-server", "http://scan",
+                    "--outbox", str(root / "outbox"), "--state", str(root / "state"), "--staged-dsn", "test",
+                    "--quality-docs", str(root / "quality-docs.txt"), "--ocr-docs", str(root / "ocr-docs.txt"),
+                    "--ocr-active", str(root / "ocr-active.txt"), "--keep-bytes", "60", "--once"]
+            with mock.patch.object(feed, "staged_from_db", return_value=set()), \
+                    mock.patch.object(feed, "index_rows", return_value={}), \
+                    mock.patch.object(feed.urllib.request, "urlopen", fake), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                # Before new has shipped anything, k1 is found gone, and the room it leaves
+                # goes to old's q1 (q3 doesn't fit). k1 isn't taken back from old's done.txt.
+                feed.main(argv)
+                self.assertEqual(calls, [("GET", "buffer/b/k1.jp2.json"), ("DELETE", "buffer/b/k1.jp2"),
+                                         ("DELETE", "buffer/b/q3.jp2")])
+                self.assertEqual(set(feed.read_kept(str(root / "state/kept.tsv"))), {"q1"})
+                self.assertEqual(feed.read_lines(root / "state/retired.txt"), {"k1"})
+                self.assertEqual(feed.read_lines(root / "state/old/deleted.txt"), {"q3"})
+                self.assertEqual(feed.read_lines(root / "state/followed.txt"), {"old", "new"})
+
+                calls.clear()
+                feed.main(argv)
+                self.assertEqual(calls, [("GET", "buffer/b/q1.jp2.json")])
+                self.assertEqual(set(feed.read_kept(str(root / "state/kept.tsv"))), {"q1"})
+
+                # While OCR wants q1 it isn't looked up: by ocr-active.txt, or by ocr-docs.txt
+                # until there is one. Once OCR's outcome ends it, it is, though ocr-docs.txt
+                # still lists it.
+                (root / "ocr-docs.txt").write_text("q1\n")
+                (root / "ocr-active.txt").unlink()
+                calls.clear()
+                feed.main(argv)
+                self.assertEqual(calls, [])
+                (root / "ocr-active.txt").write_text("q1\n")
+                feed.main(argv)
+                self.assertEqual(calls, [])
+                (root / "ocr-active.txt").write_text("")
+                feed.main(argv)
+                self.assertEqual(calls, [("GET", "buffer/b/q1.jp2.json")])
+                self.assertEqual(set(feed.read_kept(str(root / "state/kept.tsv"))), {"q1"})
+
+                # q2 ships once OCR wants it, though ocr-docs.txt doesn't say so yet: it's OCR's
+                # scan, neither kept nor deleted.
+                (root / "outbox/old/c00002").rmdir()
+                (root / "ocr-active.txt").write_text("q2\n")
+                calls.clear()
+                feed.main(argv)
+                self.assertEqual(calls, [("GET", "buffer/b/q1.jp2.json")])
+                self.assertEqual(set(feed.read_kept(str(root / "state/kept.tsv"))), {"q1"})
+
+                # OCR's claims are read under the lock ocr_manifest.py publishes them under: one
+                # published while a round waits for it is seen.
+                waiting, real = threading.Event(), fcntl.flock
+
+                def flock(f, op):
+                    waiting.set()
+                    return real(f, op)
+
+                calls.clear()
+                with open(root / "state/kept.tsv.lock", "a") as held, mock.patch.object(feed.fcntl, "flock", flock):
+                    real(held, fcntl.LOCK_EX)
+                    t = threading.Thread(target=feed.main, args=(argv,))
+                    t.start()
+                    self.assertTrue(waiting.wait(5))
+                    (root / "ocr-active.txt").write_text("q1\nq2\n")
+                    real(held, fcntl.LOCK_UN)
+                    t.join(10)
+                self.assertEqual(calls, [])
+
+    def test_an_unreadable_kept_line_is_weighed_again_not_fatal(self):
+        with tempfile.TemporaryDirectory() as d:
+            camp, done, deleted, kept = Path(d, "camp"), Path(d, "done.txt"), Path(d, "deleted.txt"), Path(d, "kept.tsv")
+            camp.mkdir()
+            done.write_text("x\tc1\tbuffer/b/x.jp2\t80\t0.5\n")
+            kept.write_text("x\tbuffer/b/x.jp2\t8")  # cut off mid-write
+            a = types.SimpleNamespace(scan_server="http://s", keep_bytes=100, keep_verify=0)
+            with mock.patch.object(feed.urllib.request, "urlopen") as urlopen, \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(feed.delete_shipped(a, str(camp), str(done), {"x"}, str(deleted), str(kept)), 0)
+            urlopen.assert_not_called()
+            self.assertEqual(feed.read_kept(str(kept))["x"][:3], ("buffer/b/x.jp2", 80, 0.5))
+
+
+class FollowChunkTest(unittest.TestCase):
+    """follow writes full chunks, and a part one only once --max-wait-secs has passed."""
+
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.root = Path(folder.name)
+        (self.root / "curated" / "pages").mkdir(parents=True)
+
+    @unittest.skipUnless(importlib.util.find_spec("pyarrow") and importlib.util.find_spec("PIL"),
+                         "PyArrow and Pillow required for the follower")
+    def test_a_part_chunk_waits_for_more_pages_until_overdue(self):
+        raw = DecodeQuarantineTest.image()
+        pages = [DecodeQuarantineTest.page(seq, raw) for seq in (1, 2, 3)]
+        rows = {p["doc_id"]: {**p, "format": "jpeg", "fetched_at": f"2026-11-03T03:0{p['seq']}:00Z"}
+                for p in pages}
+        argv = ["follow", "--campaign", "cpu-test", "--curated", str(self.root / "curated"),
+                "--scan-server", "http://scan", "--outbox", str(self.root / "outbox"),
+                "--state", str(self.root / "state"), "--staged-dsn", "test", "--chunk-pages", "2",
+                "--max-pending", "4", "--workers", "1", "--max-wait-secs", "3600", "--once"]
+        state, camp = self.root / "state/cpu-test", self.root / "outbox/cpu-test"
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        (self.root / "curated/audit/damage/v2").mkdir(parents=True)
+        pq.write_table(pa.table({"doc_id": [pages[0]["doc_id"]], "lang": ["rus"], "damage_rate": [0.8]}),
+                       self.root / "curated/audit/damage/v2/xx_test_ver01.parquet")
+        with mock.patch.object(feed, "Texts", return_value=DecodeQuarantineTest.texts(self)), \
+                mock.patch.object(feed, "staged_from_db", return_value=set()), \
+                mock.patch.object(feed, "index_rows", return_value=rows), \
+                mock.patch.object(feed, "scan_set", return_value="buffer") as scan_set, \
+                mock.patch.object(feed.urllib.request, "urlopen", side_effect=lambda *a, **k: io.BytesIO(raw)), \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            # A fresh state's clock starts now: the full chunk goes and the remainder waits.
+            feed.main(argv)
+            self.assertEqual((camp / "c00001/READY").read_text().strip(), "2")
+            self.assertFalse((camp / "c00002").exists())
+            done = [line.split("\t") for line in (state / "done.txt").read_text().splitlines()]
+            self.assertEqual([r[0] for r in done], [pages[0]["doc_id"], pages[1]["doc_id"]])
+            self.assertEqual(done[0][1:], ["c00001", pages[0]["scan"], str(len(raw)), "0.8"])
+            self.assertEqual(done[1][4], "")  # unscored
+
+            # A chunk was just written: the last page waits, without looking at the scan server.
+            checked = scan_set.call_count
+            feed.main(argv)
+            self.assertEqual(scan_set.call_count, checked)
+            self.assertFalse((camp / "c00002").exists())
+            self.assertIn("waiting for a full chunk", output.getvalue())
+
+            old = feed.time.time() - 3600
+            os.utime(state / "chunks.txt", (old, old))
+            feed.main(argv)
+            self.assertEqual((camp / "c00002/READY").read_text().strip(), "1")
+            self.assertEqual(feed.read_lines(state / "done.txt"), set(rows))
+
+    @unittest.skipUnless(importlib.util.find_spec("pyarrow") and importlib.util.find_spec("PIL"),
+                         "PyArrow and Pillow required for the follower")
+    def test_a_page_that_fails_is_replaced_and_a_chunk_still_short_waits(self):
+        raw = DecodeQuarantineTest.image()
+        pages = [DecodeQuarantineTest.page(seq, raw) for seq in (1, 2, 3)]
+        later = {p["doc_id"]: {**p, "format": "jpeg", "fetched_at": f"2026-11-03T03:0{p['seq']}:00Z"}
+                 for p in pages}
+        rows = {d: later.pop(d) for d in (pages[0]["doc_id"], pages[1]["doc_id"])}
+        argv = ["follow", "--campaign", "cpu-test", "--curated", str(self.root / "curated"),
+                "--scan-server", "http://scan", "--outbox", str(self.root / "outbox"),
+                "--state", str(self.root / "state"), "--staged-dsn", "test", "--chunk-pages", "2",
+                "--max-pending", "4", "--workers", "1", "--max-wait-secs", "3600", "--once"]
+        state, camp = self.root / "state/cpu-test", self.root / "outbox/cpu-test"
+        fetched = []
+
+        def fetch(request, timeout):
+            fetched.append(request.full_url.rsplit("/", 1)[1])
+            if request.full_url.endswith("/" + pages[0]["scan"]):
+                raise ConnectionResetError("reset")
+            return io.BytesIO(raw)
+
+        with mock.patch.object(feed, "Texts", return_value=DecodeQuarantineTest.texts(self)), \
+                mock.patch.object(feed, "staged_from_db", return_value=set()), \
+                mock.patch.object(feed, "index_rows", return_value=rows), \
+                mock.patch.object(feed, "scan_set", return_value="buffer"), \
+                mock.patch.object(feed.urllib.request, "urlopen", side_effect=fetch), \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            # Two pages make a full chunk, but one can't be fetched: one page isn't a unit yet.
+            feed.main(argv)
+            self.assertFalse((camp / "c00001").exists())
+            self.assertFalse((state / "done.txt").exists())
+            self.assertIn("chunk came up short", output.getvalue())
+
+            # A third page stands in for the one that fails.
+            rows.update(later)
+            feed.main(argv)
+            self.assertEqual((camp / "c00001/READY").read_text().strip(), "2")
+            self.assertEqual(feed.read_lines(state / "done.txt"), {pages[1]["doc_id"], pages[2]["doc_id"]})
+            self.assertEqual(fetched, [pages[0]["scan"].rsplit("/", 1)[1], pages[1]["scan"].rsplit("/", 1)[1]] * 2
+                             + [pages[2]["scan"].rsplit("/", 1)[1]])
+
+    @unittest.skipUnless(importlib.util.find_spec("pyarrow") and importlib.util.find_spec("PIL"),
+                         "PyArrow and Pillow required for the follower")
+    def test_pages_waiting_for_curated_text_do_not_make_a_chunk_full(self):
+        raw = DecodeQuarantineTest.image()
+        pages = [DecodeQuarantineTest.page(seq, raw) for seq in (1, 2, 3)]
+        rows = {p["doc_id"]: {**p, "format": "jpeg", "fetched_at": f"2026-11-03T03:0{p['seq']}:00Z"}
+                for p in pages}
+        rows[pages[0]["doc_id"]]["batch"] = "xx_later"
+        argv = ["follow", "--campaign", "cpu-test", "--curated", str(self.root / "curated"),
+                "--scan-server", "http://scan", "--outbox", str(self.root / "outbox"),
+                "--state", str(self.root / "state"), "--staged-dsn", "test", "--chunk-pages", "3",
+                "--max-pending", "4", "--workers", "1", "--max-wait-secs", "3600", "--once"]
+        texts = DecodeQuarantineTest.texts(self)
+        texts.has_loc.side_effect = lambda batch, bv: batch != "xx_later"
+        with mock.patch.object(feed, "Texts", return_value=texts), \
+                mock.patch.object(feed, "staged_from_db", return_value=set()), \
+                mock.patch.object(feed, "index_rows", return_value=rows), \
+                mock.patch.object(feed, "scan_set", return_value="buffer") as scan_set, \
+                mock.patch.object(feed.urllib.request, "urlopen", side_effect=lambda *a, **k: io.BytesIO(raw)), \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            feed.main(argv)
+        self.assertFalse((self.root / "outbox/cpu-test/c00001").exists())
+        self.assertEqual(scan_set.call_count, 0)
+        self.assertIn("waiting for the curated copy's LoC text", output.getvalue())
+        self.assertIn('"pages": 2', output.getvalue().split("waiting for a full chunk")[1][:200])
+
+    def test_a_chunk_that_comes_up_short_still_records_the_pages_never_worth_a_retry(self):
+        pages = [DecodeQuarantineTest.page(seq, b"scan") for seq in (1, 2, 3)]
+        no_text, cut, _ = (p["doc_id"] for p in pages)
+        texts = mock.Mock()
+        texts.loc.side_effect = lambda batch, bv, docs: ({d: "LoC text" for d in docs if d != no_text}, True)
+        texts.american_stories.return_value = {}
+        texts.ours.return_value = {}
+        a = types.SimpleNamespace(scan_server="http://scan", workers=1, quarantine_decode=False, alto_cache=None)
+
+        def prepare(server, texts, p, *rest):
+            if p["doc_id"] == cut:
+                raise feed.SourceTruncated("no EOC")
+            return b"jpg", b"alto", "text", None
+
+        # Too few usable pages to try (3 wanted), or tried and one short (2 wanted).
+        for size, want in ((3, {no_text}), (2, {no_text, cut})):
+            with self.subTest(size=size), tempfile.TemporaryDirectory() as d, \
+                    mock.patch.object(feed, "prepare_page", side_effect=prepare), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                done, skip = Path(d, "done.txt"), Path(d, "skipped.txt")
+                self.assertEqual(feed.fill_chunk(a, texts, pages, size, False, d, d, 1, str(done), str(skip)),
+                                 (0, 0, 1, 0))
+                self.assertEqual([line.split("\t")[0] for line in skip.read_text().splitlines()],
+                                 [p["doc_id"] for p in pages if p["doc_id"] in want])
+                self.assertFalse(done.exists())
+
+    def test_a_batch_without_curated_text_is_looked_for_again_and_one_with_is_remembered(self):
+        texts = feed.Texts(str(self.root / "curated"))
+        self.assertFalse(texts.has_loc("xx_later", 1))
+        run = self.root / "curated/pages/xx_later/v01/run1"
+        run.mkdir(parents=True)
+        (run / "part-0.parquet").write_bytes(b"")
+        with mock.patch.object(feed.glob, "glob", wraps=feed.glob.glob) as looked:
+            self.assertTrue(texts.has_loc("xx_later", 1))
+            self.assertTrue(texts.has_loc("xx_later", 1))
+        self.assertEqual(looked.call_count, 1)
+
+    def test_a_fresh_state_is_not_overdue(self):
+        state = self.root / "state"
+        state.mkdir()
+        self.assertLess(feed.time.time() - feed.last_chunk_at(str(state)), 60)
+        self.assertEqual(feed.read_lines(state / "chunks.txt"), set())
 
 
 class LoadTest(unittest.TestCase):

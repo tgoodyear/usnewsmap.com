@@ -266,11 +266,16 @@ impl Shared {
             self.ended();
             drop(held);
             match res {
-                Ok(Got { written, placed }) => {
+                Ok(Got {
+                    written,
+                    placed,
+                    size,
+                    sha256,
+                }) => {
                     {
                         let mut s = self.track();
                         s.status.done += 1;
-                        s.status.bytes_done += job.size;
+                        s.status.bytes_done += size;
                         if placed {
                             s.status.fetched_this_run += 1;
                             s.status.bytes_this_run += written;
@@ -280,6 +285,8 @@ impl Shared {
                     let how = Attempt::Fetched {
                         source: url.clone(),
                         bytes: written,
+                        size,
+                        sha256,
                     };
                     self.store.finished(job, &how).await?;
                     return Ok(true);

@@ -10,7 +10,7 @@ Our own ALTO, where ocr-local has it, goes beside the texts as <doc_id>.ours.xml
   quality_feed.py select --index FILE --staged FILE --curated DIR --count N --out FILE
       [--order damage|fetched]
   quality_feed.py run --campaign NAME --pages FILE --curated DIR --scan-server URL
-      --outbox DIR --state DIR [--chunk-pages 200] [--max-pending 5] [--workers 4]
+      --outbox DIR --state DIR [--chunk-pages 500] [--max-pending 5] [--workers 4]
 
 select picks pages from the scan server's index (/index/full.jsonl) that no campaign has
 staged (--staged: one doc_id a line), worst damage first (damage_rate from the curated
@@ -24,20 +24,26 @@ sample.jsonl, langs.txt and SHA256SUMS, then READY last. It waits while --max-pe
 chunks are READY and not yet shipped (the host's quality-ship.sh moves them to the BOINC
 server and removes them). Pages it has written are listed in <state>/<campaign>/done.txt,
 pages it can't use (no LoC text) in skipped.txt with the reason, so a restart goes on
-where it stopped. A scan/index mismatch is retried instead of used. With
+where it stopped. A scan/index mismatch is retried instead of used. A JP2 whose codestream
+stops early (a box or tile-part that runs past its end, or no EOC marker) is truncated at
+source: the bytes match LoC's, so it is never decoded or retried; with --quarantine-decode it
+is recorded as source_truncated for its exact fingerprint, otherwise in skipped.txt. With
 --quarantine-decode, three known decoder failures of the same verified scan fingerprint
 are recorded separately and excluded until its bytes change.
-Quarantines in either mode require operator review.
+Decoder quarantines in run and follow require operator review.
 """
 import argparse
 import concurrent.futures
+import fcntl
 import glob
 import hashlib
+import heapq
 import io
 import json
 import os
 import re
 import shutil
+import struct
 import sys
 import time
 import urllib.error
@@ -249,12 +255,23 @@ class Texts:
     def __init__(self, curated):
         self.curated = curated
         self._ours_alto = None
+        self._has_loc = set()
+
+    def _loc_files(self, batch, bv):
+        return glob.glob(os.path.join(self.curated, "pages", batch, f"v{bv:02d}", "*", "*.parquet"))
+
+    def has_loc(self, batch, bv):
+        """Whether the curated copy has the batch's LoC text yet (loc's second value). Once it
+        has, it keeps it, so only a batch without is looked for again."""
+        if (batch, bv) not in self._has_loc and self._loc_files(batch, bv):
+            self._has_loc.add((batch, bv))
+        return (batch, bv) in self._has_loc
 
     def loc(self, batch, bv, docs):
         import pyarrow.parquet as pq
 
         # Every run directory of the batch, oldest first, so the newest run's text wins.
-        files = sorted(glob.glob(os.path.join(self.curated, "pages", batch, f"v{bv:02d}", "*", "*.parquet")))
+        files = sorted(self._loc_files(batch, bv))
         got = {}
         for fp in files:
             for x in pq.read_table(fp, columns=["doc_id", "ocr_source", "text"]).to_pylist():
@@ -300,6 +317,103 @@ class ScanGone(Exception):
     page was selected."""
 
 
+class SourceTruncated(Exception):
+    """A JP2 whose codestream stops before its end. The bytes matched the index line (and the
+    fetcher took them only if they matched the batch bag's md5), so the copy at LoC is the
+    same: a retry or a re-fetch returns the same incomplete image."""
+
+
+JP2_SIGNATURE = b"\x00\x00\x00\x0cjP  \r\n\x87\n"
+J2K_SOC, J2K_SIZ, J2K_SOT, J2K_EOC = 0xFF4F, 0xFF51, 0xFF90, 0xFFD9
+
+
+def jp2_codestream(raw):
+    """(start, end) of a JP2's codestream, or a str saying where the file ends early, or None
+    when this isn't a JP2 the check can judge (the decoder reports those)."""
+    if raw[:4] == b"\xff\x4f\xff\x51":
+        return 0, len(raw)
+    if raw[:12] != JP2_SIGNATURE:
+        return None
+    pos = 0
+    while pos < len(raw):
+        if pos + 8 > len(raw):
+            return f"the file ends inside a box header at byte {pos}"
+        length, kind = struct.unpack_from(">I4s", raw, pos)
+        header = 8
+        if length == 1:
+            if pos + 16 > len(raw):
+                return f"the file ends inside a box header at byte {pos}"
+            length, header = struct.unpack_from(">Q", raw, pos + 8)[0], 16
+        elif length == 0:
+            length = len(raw) - pos
+        if length < header:
+            return None
+        if pos + length > len(raw):
+            return (f"the {kind.decode('latin-1')!r} box declares {pos + length - len(raw)} bytes "
+                    "past the end of the file")
+        if kind == b"jp2c":
+            return pos + header, pos + length
+        pos += length
+    return "the file ends before its codestream box"
+
+
+def jp2_truncation(raw):
+    """Why a JP2's codestream is cut short, from its box, marker and tile-part headers only
+    (no decoding): a box or marker segment that runs past the end of the data, or a codestream
+    that stops without its EOC marker. None when it reaches EOC, or when its structure is
+    malformed in another way, which the decoder judges as before."""
+    found = jp2_codestream(raw)
+    if not isinstance(found, tuple):
+        return found
+    start, end = found
+    if end - start < 2:
+        return "the codestream ends before its SOC marker"
+    if struct.unpack_from(">H", raw, start)[0] != J2K_SOC:
+        return None
+    pos, tiles = start + 2, None
+    while True:  # the main header, up to the first tile-part
+        if pos + 4 > end:
+            return "the codestream ends inside its main header"
+        marker, length = struct.unpack_from(">HH", raw, pos)
+        if marker == J2K_SOT:
+            break
+        if marker >> 8 != 0xFF or length < 2:
+            return None
+        if pos + 2 + length > end:
+            return f"main-header marker 0x{marker:04X} runs past the end of the codestream"
+        if marker == J2K_SIZ and length >= 38:
+            x, y, _, _, xt, yt, xt0, yt0 = struct.unpack_from(">8I", raw, pos + 6)
+            if xt and yt and x > xt0 and y > yt0:
+                tiles = -(-(x - xt0) // xt) * -(-(y - yt0) // yt)
+        pos += 2 + length
+    seen = set()
+    while True:  # SOT to SOT by each tile-part's declared length (Psot)
+        if pos + 12 > end:
+            return "the codestream ends inside a tile-part header"
+        marker, lsot, tile, psot, part, _ = struct.unpack_from(">HHHIBB", raw, pos)
+        if marker != J2K_SOT or lsot != 10:
+            return None
+        seen.add(tile)
+        if psot == 0:  # the last tile-part, which runs to EOC
+            if end - pos < 14 or struct.unpack_from(">H", raw, end - 2)[0] != J2K_EOC:
+                return f"tile {tile}'s last tile-part runs to the end of the codestream with no EOC marker"
+            return None
+        if psot < 14:
+            return None
+        if pos + psot > end:
+            return (f"tile-part {part} of tile {tile} declares {pos + psot - end} bytes past the end "
+                    "of the codestream")
+        pos += psot
+        if pos + 2 > end:
+            of = f" of {tiles}" if tiles else ""
+            return f"the codestream ends without an EOC marker after {len(seen)}{of} tiles"
+        marker = struct.unpack_from(">H", raw, pos)[0]
+        if marker == J2K_EOC:
+            return None
+        if marker != J2K_SOT:
+            return None
+
+
 def fetch_scan(server, p, timeout=120):
     url = f"{server.rstrip('/')}/scans/{p['scan']}"
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
@@ -312,6 +426,10 @@ def fetch_scan(server, p, timeout=120):
         raise
     if len(raw) != p["bytes"] or hashlib.sha256(raw).hexdigest() != p["sha256"]:
         raise ValueError("scan doesn't match its index line")
+    if p["scan"].endswith(".jp2"):
+        reason = jp2_truncation(raw)
+        if reason:
+            raise SourceTruncated(reason)
     return raw
 
 
@@ -445,6 +563,16 @@ def cached_alto(cache, doc):
 def process_chunk(a, texts, chunk, camp_dir, state, seq, done_path, skip_path):
     """Prepare one chunk of pages and write it to the outbox; returns (pages written, the
     number left for a retry, the next chunk number)."""
+    return fill_chunk(a, texts, chunk, len(chunk), True, camp_dir, state, seq, done_path, skip_path)[:3]
+
+
+def fill_chunk(a, texts, chunk, size, short_ok, camp_dir, state, seq, done_path, skip_path):
+    """Prepare up to `size` of `chunk`'s pages, in order, and write them to the outbox as one
+    chunk. A page that can't be prepared is replaced by the next of `chunk` not yet tried, so
+    pages past `size` are a reserve. A chunk that still comes up short is written only if
+    `short_ok`; otherwise only the pages never worth a retry are recorded (skipped.txt), and
+    the rest are left for a later round. Returns (pages written, the number left for a retry, the next chunk number, how
+    many of `chunk`'s pages were dealt with: those after it are for the next chunk)."""
     retry = 0
     docs = {p["doc_id"] for p in chunk}
     loc, as_map, ours = {}, {}, {}
@@ -457,22 +585,73 @@ def process_chunk(a, texts, chunk, camp_dir, state, seq, done_path, skip_path):
         years = {p["date"][:4] for p in chunk if p["lccn"] == lccn}
         as_map.update(texts.american_stories(lccn, years, docs))
         ours.update(texts.ours(lccn, docs))
-    skipped = []
+    skipped, terminal, truncated = [], [], {}
     prepared = {}
-    usable = []
+    usable, at = [], []
     blocked = scan_quarantine.quarantined_ids(state) if getattr(a, "quarantine_decode", False) else set()
-    for p in chunk:
+    for i, p in enumerate(chunk):
         if blocked and scan_quarantine.source_id(p) in blocked:
             log("scan remains quarantined", doc_id=p["doc_id"], sha256=p["sha256"])
             continue
         if p["doc_id"] not in loc:
             if complete:
-                skipped.append((p["doc_id"], "no LoC text in the curated copy"))
+                skipped.append((i, p["doc_id"], "no LoC text in the curated copy"))
             continue
         usable.append(p)
+        at.append(i)
+    if len(usable) < size and not short_ok:
+        record_skipped(skip_path, [(d, why) for _, d, why in skipped])
+        return 0, 0, seq, 0
+    tried = 0
+    while len(prepared) < size and tried < len(usable):
+        wave = usable[tried : tried + size - len(prepared)]
+        tried += len(wave)
+        retry += prepare_wave(a, texts, wave, loc, as_map, ours, state, prepared, terminal, truncated)
+    if truncated:
+        log("source-truncated scans found", pages=sum(truncated.values()), batches=dict(sorted(truncated.items())))
+    ok = [p for p in usable[:tried] if p["doc_id"] in prepared]
+    if len(ok) < size and not short_ok:
+        log("chunk came up short; its pages wait for the next round", pages=len(ok), chunk_pages=size)
+        # Bar those never worth a retry: selected again, they'd keep a full chunk from forming.
+        record_skipped(skip_path, [(d, why) for _, d, why in skipped] + terminal)
+        return 0, retry, seq, 0
+    used = len(chunk) if tried == len(usable) else at[tried - 1] + 1
+    skipped = [(d, why) for i, d, why in skipped if i < used] + terminal
+    if getattr(a, "alto_cache", None):
+        # A corrupt source receipt is an integrity failure, not a permanently skipped page.
+        for doc, (jpg, _, tx, ours_alto_path) in list(prepared.items()):
+            prepared[doc] = (jpg, cached_alto(a.alto_cache, doc), tx, ours_alto_path)
+    if ok:
+        name = f"c{seq:05d}"
+        write_chunk(camp_dir, name, ok, prepared, getattr(a, "alto_cache", None))
+        with open(os.path.join(state, "chunks.txt"), "a") as f:
+            f.write(f"{seq}\n")
+        seq += 1
+        with open(done_path, "a") as f:
+            f.write("".join(f"{p['doc_id']}\t{name}\t{p['scan']}\t{p.get('bytes', '')}\t"
+                            f"{'' if p.get('damage_rate') is None else p['damage_rate']}\n" for p in ok))
+        log("chunk ready", chunk=name, pages=len(ok), with_as=sum(1 for p in ok if p["doc_id"] in as_map),
+            with_ours=sum(1 for p in ok if p["doc_id"] in ours))
+    record_skipped(skip_path, skipped)
+    return len(ok), retry, seq, used
+
+
+def record_skipped(skip_path, skipped):
+    """Appends (doc, reason) pairs to skipped.txt: pages never selected again."""
+    if skipped:
+        with open(skip_path, "a") as f:
+            f.write("".join(f"{d}\t{why}\n" for d, why in skipped))
+        log("skipped", pages=len(skipped))
+
+
+def prepare_wave(a, texts, wave, loc, as_map, ours, state, prepared, skipped, truncated):
+    """Prepares `wave`'s pages into `prepared`, adding (doc, reason) to `skipped` for pages that
+    are never worth a retry and counting source-truncated scans by batch in `truncated`; returns
+    how many failed in a way worth a retry."""
+    retry = 0
     with concurrent.futures.ThreadPoolExecutor(max_workers=a.workers) as ex:
         futs = {ex.submit(prepare_page, a.scan_server, texts, p, loc[p["doc_id"]],
-                          as_map.get(p["doc_id"]), ours.get(p["doc_id"])): p for p in usable}
+                          as_map.get(p["doc_id"]), ours.get(p["doc_id"])): p for p in wave}
         for fut in concurrent.futures.as_completed(futs):
             p = futs[fut]
             try:
@@ -483,6 +662,16 @@ def process_chunk(a, texts, chunk, camp_dir, state, seq, done_path, skip_path):
                 log("scan gone; left for a later selection", doc_id=p["doc_id"], error=str(e)[:200])
                 if getattr(a, "quarantine_decode", False):
                     scan_quarantine.record_retryable(state, p, e)
+            except SourceTruncated as e:
+                # Terminal for these bytes: never decoded, retried or counted as a decoder failure.
+                log("scan truncated at source; not retried", doc_id=p["doc_id"], sha256=p["sha256"],
+                    error=str(e)[:200])
+                if getattr(a, "quarantine_decode", False):
+                    scan_quarantine.record_source_truncated(state, p, str(e))
+                else:
+                    skipped.append((p["doc_id"], f"{scan_quarantine.SOURCE_TRUNCATED}: {e}"))
+                batch = f"{p['batch']}_ver{int(p['batch_version']):02d}"
+                truncated[batch] = truncated.get(batch, 0) + 1
             except ScanDecodeError as e:
                 log("scan decode failed", doc_id=p["doc_id"], sha256=p["sha256"],
                     error_type=e.original_type, error=str(e)[:200])
@@ -505,26 +694,7 @@ def process_chunk(a, texts, chunk, camp_dir, state, seq, done_path, skip_path):
                 if getattr(a, "quarantine_decode", False):
                     scan_quarantine.record_success(state, p)
                 prepared[p["doc_id"]] = result
-    if getattr(a, "alto_cache", None):
-        # A corrupt source receipt is an integrity failure, not a permanently skipped page.
-        for doc, (jpg, _, tx, ours_alto_path) in list(prepared.items()):
-            prepared[doc] = (jpg, cached_alto(a.alto_cache, doc), tx, ours_alto_path)
-    ok = [p for p in usable if p["doc_id"] in prepared]
-    if ok:
-        name = f"c{seq:05d}"
-        write_chunk(camp_dir, name, ok, prepared, getattr(a, "alto_cache", None))
-        with open(os.path.join(state, "chunks.txt"), "a") as f:
-            f.write(f"{seq}\n")
-        seq += 1
-        with open(done_path, "a") as f:
-            f.write("".join(f"{p['doc_id']}\t{name}\t{p['scan']}\n" for p in ok))
-        log("chunk ready", chunk=name, pages=len(ok), with_as=sum(1 for p in ok if p["doc_id"] in as_map),
-            with_ours=sum(1 for p in ok if p["doc_id"] in ours))
-    if skipped:
-        with open(skip_path, "a") as f:
-            f.write("".join(f"{d}\t{why}\n" for d, why in skipped))
-        log("skipped", pages=len(skipped))
-    return len(ok), retry, seq
+    return retry
 
 
 def cmd_run(a):
@@ -541,9 +711,13 @@ def cmd_run(a):
     done = read_lines(done_path) | read_lines(skip_path)
     with open(a.pages) as f:
         candidates = [p for p in map(json.loads, f) if p["doc_id"] not in done]
-    blocked = scan_quarantine.quarantined_ids(state) if getattr(a, "quarantine_decode", False) else set()
+    records = scan_quarantine.quarantined(state) if getattr(a, "quarantine_decode", False) else []
+    blocked = {record["id"] for record in records}
     todo = [p for p in candidates if not blocked or scan_quarantine.source_id(p) not in blocked]
     log("start", campaign=a.campaign, todo=len(todo), done=len(done), quarantined=len(candidates) - len(todo))
+    truncated = scan_quarantine.source_truncated_summary(records)
+    if truncated["pages"]:
+        log("source-truncated scans in campaign", campaign=a.campaign, **truncated)
     seq = 1 + max([int(os.path.basename(d)[1:]) for d in glob.glob(os.path.join(camp_dir, "c[0-9]*"))]
                   + [int(x) for x in read_lines(os.path.join(state, "chunks.txt"))] + [0])
     texts = Texts(a.curated)
@@ -624,38 +798,200 @@ def page_of(row, set_name, damage):
     }
 
 
-def delete_shipped(a, camp_dir, done_path, quality_docs, deleted_path):
-    """DELETE the buffer scans of the quality pass's pages whose chunks have shipped (the
-    shipper removed the chunk from the outbox after submitting it). Only pages the quality
-    pass asked for and OCR didn't (the caller leaves OCR's manifests' pages out of
-    `quality_docs`); OCR's pages and the keep set are never touched. Returns how many."""
-    deleted = read_lines(deleted_path)
-    n = 0
-    with open(done_path) as f:
-        rows = [line.rstrip("\n").split("\t") for line in f if "\t" in line]
+def read_kept(path):
+    """kept.tsv: doc_id, scan, bytes, damage_rate ('' when unscored), last checked (epoch)."""
+    out = {}
+    if path and os.path.exists(path):
+        with open(path) as f:
+            for line in f:
+                try:
+                    doc, scan, size, damage, checked = line.rstrip("\n").split("\t")
+                    out[doc] = (scan, int(size), float(damage) if damage else None, float(checked))
+                except ValueError:
+                    # Left out, the page is still in done.txt and not deleted, so the next
+                    # round weighs it again as newly shipped.
+                    log("kept.tsv line unreadable; skipped", line=line[:200])
+    return out
+
+
+def write_kept(path, kept):
+    with open(path + ".tmp", "w") as f:
+        f.write("".join(f"{doc}\t{scan}\t{size}\t{'' if damage is None else damage}\t{int(checked)}\n"
+                        for doc, (scan, size, damage, checked) in sorted(kept.items())))
+    os.replace(path + ".tmp", path)
+
+
+def scan_exists(server, scan):
+    """Whether the scan server still has a scan, from its sidecar (a few hundred bytes)."""
+    req = urllib.request.Request(f"{server.rstrip('/')}/scans/{scan}.json", headers={"User-Agent": USER_AGENT})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            r.read(1 << 16)
+            return True
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return False
+        raise
+
+
+def delete_shipped(a, camp_dir, done_path, quality_docs, deleted_path, kept_path=None, ocr_active=frozenset(),
+                   verify=True, retired_path=None, outage=None):
+    """DELETEs the buffer scans of the quality pass's shipped pages (the shipper has removed
+    their chunk from the outbox), bar the most damaged, which stay for re-OCR.
+
+    Only pages in `quality_docs`: the caller leaves OCR's pages out, and OCR's scans and the
+    keep set are never touched.
+
+    Retention needs --keep-bytes and `kept_path` (the kept list); without either, every scan
+    is deleted. With both, the most damaged of the kept and newly shipped scans stay, up to
+    that many bytes in all, and the rest are DELETEd.
+
+    A kept scan leaves the list, no longer counting against the budget, only once its sidecar
+    is found gone and a DELETE confirms its bytes are too. One OCR still wants (it's in
+    `ocr_active`: asked for, with no outcome yet that ends it) stays listed and counted, and
+    is neither evicted nor looked up while it's there: OCR's worker
+    reads it by its sidecar and then deletes it, best effort. Its check time is reset, so it is
+    among the first looked up once OCR is done with it. With `verify` (the follower asks once
+    a round, whatever its campaigns), --keep-verify of the longest-unchecked are looked up; one
+    the scan server doesn't answer ends the round's lookups and deletes: `outage`, a dict the
+    round's calls share, carries that to its other campaigns, which send nothing.
+
+    `deleted_path` gets every page this is done with, deleted or released, so neither is
+    weighed again; with `retired_path`, the kept list's pages go there instead: the list is
+    every campaign's, so the page's own campaign must see one another campaign retired.
+    Returns how many were DELETEd (or already gone); releases aren't counted.
+    """
+    deleted = read_lines(deleted_path) | read_lines(retired_path)
+    # Retention needs kept.tsv to carry it from round to round: with no kept_path, none.
+    budget = (getattr(a, "keep_bytes", 0) or 0) if kept_path else 0
+    kept = read_kept(kept_path)
+    now = int(time.time())
+    rows = []
+    if os.path.exists(done_path):
+        with open(done_path) as f:
+            rows = [line.rstrip("\n").split("\t") for line in f if "\t" in line]
     pending = {os.path.basename(d) for d in glob.glob(os.path.join(camp_dir, "c[0-9]*"))}
-    out = []
+    shipped = {}
     for doc, chunk, *rest in rows:
-        if doc in deleted or doc not in quality_docs or chunk in pending or not rest:
+        if doc in deleted or doc in kept or doc not in quality_docs or chunk in pending or not rest:
             continue
         scan = rest[0]
         if not scan.startswith("buffer/"):
             continue
+        # Rows written before --keep-bytes have no size, so they can't be budgeted: deleted.
+        size = int(rest[1]) if len(rest) > 1 and rest[1] else 0
+        damage = float(rest[2]) if len(rest) > 2 and rest[2] else None
+        shipped[doc] = (scan, size, damage, now)
+    if not verify and not shipped:
+        return 0  # nothing of this campaign's, and the kept list is another call's
+    # "down" is set once the scan server doesn't answer: the round's other requests wait for
+    # the next round, which finds every page this one couldn't finish where it was.
+    outage = {} if outage is None else outage
+
+    def delete(doc, scan):
+        """Whether the scan is gone. A failure is logged, never raised, so the round's
+        bookkeeping is still written."""
+        if outage.get("down"):
+            return False
         req = urllib.request.Request(f"{a.scan_server.rstrip('/')}/scans/{scan}", method="DELETE",
                                      headers={"User-Agent": USER_AGENT})
         try:
-            with urllib.request.urlopen(req, timeout=60):
+            with urllib.request.urlopen(req, timeout=30):
                 pass
         except urllib.error.HTTPError as e:
             if e.code != 404:
                 log("buffer delete failed", doc_id=doc, status=e.code)
+                return False
+        except (urllib.error.URLError, OSError) as e:
+            log("buffer delete failed; the rest wait for the next round", doc_id=doc, error=str(e)[:200])
+            outage["down"] = True
+            return False
+        return True
+
+    # OCR's worker deletes a scan it read best effort, so one OCR wants is handed back only
+    # once a lookup after finds its bytes gone; until then it counts.
+    claimed = {doc: (*k[:3], 0) for doc, k in kept.items() if doc in ocr_active}
+    kept.update(claimed)
+    released = []
+    if budget and verify and not outage.get("down"):
+        unclaimed = ((doc, k) for doc, k in kept.items() if doc not in claimed)
+        for doc, k in heapq.nsmallest(getattr(a, "keep_verify", 0), unclaimed, key=lambda kv: kv[1][3]):
+            try:
+                there = scan_exists(a.scan_server, k[0])
+            except (urllib.error.URLError, OSError) as e:
+                # Counted as checked, so a scan whose check keeps failing doesn't hold up the rest.
+                kept[doc] = (*k[:3], now)
+                log("kept scan check failed; next round", doc_id=doc, error=str(e)[:200])
+                if isinstance(e, urllib.error.HTTPError):
+                    continue  # the server answered, so it's this scan: go on to the next
+                outage["down"] = True
+                break  # no answer (down or unreachable): one timeout a round, not --keep-verify
+            # With its sidecar gone (marked done: OCR's worker read it, or a DELETE of ours
+            # got that far and failed), a DELETE makes sure the bytes are gone too.
+            if not there and delete(doc, k[0]):
+                released.append(doc)
+            else:
+                kept[doc] = (*k[:3], now)
+            if outage.get("down"):
+                break
+    for doc in released:
+        kept.pop(doc, None)
+    pool = {d: k for d, k in {**kept, **shipped}.items() if d not in claimed}
+    want, used = {}, sum(k[1] for k in claimed.values())
+    if budget:
+        # Most damaged first (unscored last); the first that doesn't fit ends the list.
+        for doc, k in sorted(pool.items(), key=lambda kv: (-(kv[1][2] if kv[1][2] is not None else -1.0), kv[0])):
+            if not k[1]:
                 continue
-        out.append(doc)
-        n += 1
-    if out:
-        with open(deleted_path, "a") as f:
-            f.write("".join(f"{d}\n" for d in out))
+            if used + k[1] > budget:
+                break
+            want[doc] = k
+            used += k[1]
+
+    out = list(released)
+    # Kept scans that lost their place go first. One that fails to go stays kept and still
+    # counts, so this round's newly shipped pages are deleted rather than kept in its place:
+    # the kept list's bytes never grow past the budget (a budget cut below them is reached as
+    # those deletes succeed), and no scan waits on the server outside both lists.
+    stuck = {}
+    for doc in sorted(d for d in kept if d not in want and d not in claimed):
+        if delete(doc, kept[doc][0]):
+            out.append(doc)
+        else:
+            stuck[doc] = kept[doc]
+    keep = {d: k for d, k in want.items() if d in kept or not stuck}
+    keep.update(stuck)
+    keep.update(claimed)
+    if stuck:
+        log("kept scans not deleted; newly shipped ones deleted in their place", pages=len(stuck),
+            not_kept=sum(1 for d in want if d not in keep))
+    for doc in sorted(d for d in shipped if d not in keep):
+        if delete(doc, shipped[doc][0]):
+            out.append(doc)
+    used = sum(k[1] for k in keep.values())
+    n = len(out) - len(released)
+    # Pages out of the kept list (any campaign's), and this campaign's newly shipped ones.
+    retired = [d for d in out if d not in shipped] if retired_path else []
+    for path, docs in ((retired_path, retired), (deleted_path, [d for d in out if d in shipped or not retired_path])):
+        if docs:
+            with open(path, "a") as f:
+                f.write("".join(f"{d}\n" for d in docs))
+    if kept_path and (keep or os.path.exists(kept_path)):
+        write_kept(kept_path, keep)
+        if shipped or released:
+            floor = min((k[2] for k in keep.values() if k[2] is not None), default=None)
+            log("buffer scans kept for re-OCR", pages=len(keep), bytes=used, budget=budget,
+                damage_floor=floor, released=len(released))
     return n
+
+
+def last_chunk_at(state):
+    """When the last chunk was written (chunks.txt's mtime). A state with none yet gets an
+    empty chunks.txt, so --max-wait-secs counts from the follower's first round there."""
+    path = os.path.join(state, "chunks.txt")
+    if not os.path.exists(path):
+        open(path, "a").close()
+    return os.path.getmtime(path)
 
 
 def staged_from_db(dsn):
@@ -672,8 +1008,12 @@ def staged_from_db(dsn):
 
 def cmd_follow(a):
     """The piggyback and the quality pass, as a loop: every page the fetcher writes
-    (OCR's and the quality pass's) that no campaign has staged gets a unit, in fetch order;
-    the quality pass's buffer scans are deleted once their chunk has shipped."""
+    (OCR's and the quality pass's) that no campaign has staged gets a unit, in fetch order,
+    in chunks of --chunk-pages: a part chunk only once no chunk has been written for
+    --max-wait-secs, so a trickle of fetches doesn't become a stream of small units, and a
+    page that can't be prepared is replaced by the next rather than shrinking its chunk. The
+    quality pass's buffer scans are deleted once their chunk has shipped, except the most
+    damaged, up to --keep-bytes, which stay for re-OCR."""
     import pyarrow.parquet as pq
 
     if not CAMPAIGN_RE.match(a.campaign):
@@ -687,8 +1027,19 @@ def cmd_follow(a):
     done_path = os.path.join(state, "done.txt")
     skip_path = os.path.join(state, "skipped.txt")
     deleted_path = os.path.join(state, "deleted.txt")
+    # One list for every campaign, so a new campaign's budget counts the scans an earlier one kept.
+    kept_path = os.path.join(a.state, "kept.tsv")
+    # Kept pages that have left it, whichever campaign's round let them go.
+    retired_path = os.path.join(a.state, "retired.txt")
+    # Every campaign followed here: one switched away from still has chunks the shipper took
+    # after its last round, whose scans are deleted (or kept) from here.
+    followed_path = os.path.join(a.state, "followed.txt")
+    if a.campaign not in read_lines(followed_path):
+        with open(followed_path, "a") as f:
+            f.write(a.campaign + "\n")
     texts = Texts(a.curated)
     absent_path = os.path.join(state, "absent.txt")
+    reported = None
     while True:
         # Pages with a unit or a staging record anywhere (usnm_quality), plus a static list of
         # older campaigns' pages; with neither, stop rather than stage pages twice.
@@ -705,31 +1056,83 @@ def cmd_follow(a):
                 for line in f:
                     d, _, at = line.rstrip("\n").partition("\t")
                     absent[d] = at
-        ocr_docs = read_lines(a.ocr_docs) if a.ocr_docs else set()
         done = read_lines(done_path) | read_lines(skip_path)
         quality_docs = read_lines(a.quality_docs) if a.quality_docs else set()
-        if os.path.exists(done_path):
-            gone = delete_shipped(a, camp_dir, done_path, quality_docs - ocr_docs, deleted_path)
-            if gone:
-                log("buffer scans deleted after shipping", pages=gone)
+        # kept.tsv is every campaign's: one follower at a time reads and rewrites it. It's
+        # looked after every round, before this campaign has shipped anything too.
+        gone = 0
+        with open(kept_path + ".lock", "a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            # OCR's claims are read under the lock ocr_manifest.py publishes them under
+            # (--claims-lock), so none lands between reading them and evicting by them.
+            ocr_docs = read_lines(a.ocr_docs) if a.ocr_docs else set()
+            # Every page OCR asked for stands in for the ones it still wants until ocr_manifest.py
+            # has written them: an empty list is OCR wanting none, but a missing one says nothing.
+            active_path = getattr(a, "ocr_active", None)
+            ocr_active = read_lines(active_path) if active_path and os.path.exists(active_path) else ocr_docs
+            # ocr-active.txt can name a page ocr-docs.txt, read a moment before, didn't yet.
+            quality_only = quality_docs - ocr_docs - ocr_active
+            # This campaign's first: it checks the kept list, so space freed there is free
+            # to every campaign's newly shipped pages. Once the scan server doesn't answer, the
+            # rest send nothing (one timeout a round, held under the lock), but still keep pages.
+            outage = {}
+            gone += delete_shipped(a, camp_dir, done_path, quality_only, deleted_path, kept_path, ocr_active,
+                                   retired_path=retired_path, outage=outage)
+            past = sorted(c for c in read_lines(followed_path) if c != a.campaign and CAMPAIGN_RE.match(c))
+            for c in past:
+                gone += delete_shipped(a, os.path.join(a.outbox, c), os.path.join(a.state, c, "done.txt"), quality_only,
+                                       os.path.join(a.state, c, "deleted.txt"), kept_path, ocr_active, verify=False,
+                                       retired_path=retired_path, outage=outage)
+        if gone:
+            log("buffer scans deleted after shipping", pages=gone)
+        if outage.get("down"):
+            # Its index alone can take minutes to time out: the round's feeding waits too.
+            log("the scan server isn't answering; feeding waits for the next round", campaign=a.campaign)
+            if a.once:
+                return
+            wait_for_room(camp_dir, a.max_pending, a.every_secs, busy=False)
+            continue
         quarantined = scan_quarantine.quarantined(state) if getattr(a, "quarantine_decode", False) else []
+        truncated = scan_quarantine.source_truncated_summary(quarantined)
+        if truncated["pages"] and truncated != reported:
+            log("source-truncated scans in campaign", campaign=a.campaign, **truncated)
+        reported = truncated
         blocked_ids = {record["id"] for record in quarantined}
         blocked_docs = {record["source"]["doc_id"] for record in quarantined}
-        rows, excluded = [], 0
+        rows, excluded, has_loc, no_text = [], 0, {}, 0
         for doc, row in index_rows(a.scan_server).items():
             if doc in staged or doc in done or absent.get(doc) == row.get("fetched_at", ""):
                 continue
             if doc in blocked_docs and scan_quarantine.source_id(row) in blocked_ids:
                 excluded += 1
                 continue
+            # A batch the curated copy has no LoC text for yet: process_chunk would leave its
+            # pages for later, so they mustn't count towards a full chunk.
+            batch = (row["batch"], int(row.get("batch_version") or 1))
+            if batch not in has_loc:
+                has_loc[batch] = texts.has_loc(*batch)
+            if not has_loc[batch]:
+                no_text += 1
+                continue
             rows.append(row)
         if excluded:
             log("quarantined scans excluded", campaign=a.campaign, pages=excluded)
+        if no_text:
+            log("waiting for the curated copy's LoC text", campaign=a.campaign, pages=no_text,
+                batches=sum(1 for v in has_loc.values() if not v))
         rows.sort(key=lambda r: (r.get("fetched_at", ""), r["doc_id"]))
-        room = max(0, a.max_pending - len(pending_chunks(camp_dir))) * a.chunk_pages
+        slots = max(0, a.max_pending - len(pending_chunks(camp_dir)))
+        # Pages past a chunk's --chunk-pages stand in for any that can't be prepared.
+        reserve = max(1, a.chunk_pages // 10)
+        # 0 never waits: a chunks.txt just created can carry an mtime a hair ahead of time.time().
+        overdue = a.max_wait_secs <= 0 or time.time() - last_chunk_at(state) >= a.max_wait_secs
+        if len(rows) < a.chunk_pages and not overdue:
+            if rows:
+                log("waiting for a full chunk", campaign=a.campaign, pages=len(rows), chunk_pages=a.chunk_pages)
+            rows = []
         todo = []
         for r in rows:
-            if len(todo) >= room:
+            if not slots or len(todo) >= slots * a.chunk_pages + reserve:
                 break
             st = scan_set(a.scan_server, r)
             if st:
@@ -737,6 +1140,7 @@ def cmd_follow(a):
             else:
                 with open(absent_path, "a") as f:
                     f.write(f"{r['doc_id']}\t{r.get('fetched_at', '')}\n")
+        wrote = 0
         if todo:
             damage = {}
             for (batch, bv) in sorted({(r["batch"], int(r.get("batch_version") or 1)) for r, _ in todo}):
@@ -749,12 +1153,22 @@ def cmd_follow(a):
             pages = [page_of(r, st, damage) for r, st in todo]
             seq = 1 + max([int(os.path.basename(d)[1:]) for d in glob.glob(os.path.join(camp_dir, "c[0-9]*"))]
                           + [int(x) for x in read_lines(os.path.join(state, "chunks.txt"))] + [0])
-            for i in range(0, len(pages), a.chunk_pages):
-                _, _, seq = process_chunk(a, texts, pages[i : i + a.chunk_pages], camp_dir, state, seq,
-                                          done_path, skip_path)
+            pos = 0
+            while pos < len(pages) and wrote < slots:
+                # A part chunk only when overdue; a round that writes a full chunk restarts
+                # --max-wait-secs, so its remainder isn't overdue either.
+                short_ok = overdue and (not wrote or a.max_wait_secs <= 0)
+                n, _, seq, used = fill_chunk(a, texts, pages[pos : pos + a.chunk_pages + reserve], a.chunk_pages,
+                                             short_ok, camp_dir, state, seq, done_path, skip_path)
+                if not used:
+                    log("waiting for a full chunk", campaign=a.campaign, pages=len(pages) - pos,
+                        chunk_pages=a.chunk_pages)
+                    break
+                pos += used
+                wrote += 1 if n else 0
         if a.once:
             return
-        wait_for_room(camp_dir, a.max_pending, a.every_secs, busy=room == 0 or bool(todo))
+        wait_for_room(camp_dir, a.max_pending, a.every_secs, busy=slots == 0 or bool(wrote))
 
 
 def wait_for_room(camp_dir, max_pending, every_secs, busy, poll_secs=15, min_secs=60):
@@ -796,7 +1210,7 @@ def main(argv=None):
     r.add_argument("--scan-server", required=True)
     r.add_argument("--outbox", required=True)
     r.add_argument("--state", required=True)
-    r.add_argument("--chunk-pages", type=int, default=200)
+    r.add_argument("--chunk-pages", type=int, default=500)
     r.add_argument("--max-pending", type=int, default=5)
     r.add_argument("--workers", type=int, default=4)
     r.add_argument("--once", action="store_true", help="stop instead of waiting at --max-pending")
@@ -812,11 +1226,19 @@ def main(argv=None):
     w.add_argument("--staged", help="doc_ids older campaigns staged, one a line")
     w.add_argument("--staged-dsn", help="usnm_quality: pages with a unit or a staging record are left out")
     w.add_argument("--ocr-docs", help="doc_ids OCR's manifests asked for (ocr_manifest.py): never deleted")
+    w.add_argument("--ocr-active", help="doc_ids OCR still wants (ocr_manifest.py's ocr-active.txt): "
+                                        "kept scans among them stay counted and aren't evicted")
     w.add_argument("--quality-docs", help="doc_ids the quality pass fetched (ocr_manifest.py build-quality)")
-    w.add_argument("--chunk-pages", type=int, default=200)
+    w.add_argument("--chunk-pages", type=int, default=500)
     w.add_argument("--max-pending", type=int, default=5)
     w.add_argument("--workers", type=int, default=4)
     w.add_argument("--every-secs", type=int, default=600)
+    w.add_argument("--max-wait-secs", type=int, default=6 * 3600,
+                   help="write a part chunk once no chunk has been written for this long")
+    w.add_argument("--keep-bytes", type=int, default=0,
+                   help="keep the most damaged shipped quality-pass buffer scans, up to this many bytes")
+    w.add_argument("--keep-verify", type=int, default=500,
+                   help="kept scans checked a round, so ones read and deleted elsewhere stop counting")
     w.add_argument("--once", action="store_true")
     w.add_argument("--quarantine-decode", action="store_true",
                    help="quarantine repeated verified decoder failures for operator review")
@@ -826,6 +1248,8 @@ def main(argv=None):
     else:
         if not 1 <= a.chunk_pages <= 500:
             sys.exit("--chunk-pages: 1 to 500")
+        if a.cmd == "follow" and min(a.max_wait_secs, a.keep_bytes, a.keep_verify) < 0:
+            sys.exit("--max-wait-secs, --keep-bytes and --keep-verify: 0 or more")
         cmd_follow(a) if a.cmd == "follow" else cmd_run(a)
 
 

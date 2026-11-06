@@ -30,7 +30,8 @@
 # keep submits and publishing waiting, and an hour's native publication, which holds the step lock
 # for 10 minutes, doesn't fail a tick after the lock wait.
 #
-# --target handoff --step claim|release|collect|export runs the hand-off job's command (#967 phase 3),
+# --target handoff --step claim|release|dead-letter|deadline-retry|collect|export runs the hand-off
+# job's command (#967 phase 3),
 # contrib-compute/images/bridge/handoff-job.sh from the same bridge image, in place of the
 # Azure hand-off job (infra/modules/boinc-handoff-job.bicep). Its settings are the job's own,
 # in $CONF/handoff.env: HANDOFF_URL COSMOS_ENDPOINT CURATED_URL REFERENCE_URL OUT_URL
@@ -78,8 +79,10 @@ HANDOFF_DEAD_LETTER_VARS=" JOB_IDS "
 # An operator's settlement of a page claimed again after its dead letter (#1417), as root on the
 # host only: never the controller's key.
 HANDOFF_DEAD_LETTER_OPERATOR_VARS="SUPERSEDES_FAILED_JOB CONFIRM_MESSAGE_SHA256 "
+# Its other choice, retrying that page with another page deadline (#1417): root on the host only.
+HANDOFF_DEADLINE_RETRY_VARS=" SUPERSEDES_FAILED_JOB TIMEOUT_SECS CONFIRM_MESSAGE_SHA256 "
 HANDOFF_COLLECT_VARS=" JOB_ID JOB_IDS HOST_ID COLLECT_PARALLEL "
-HANDOFF_EXPORT_VARS=" HANDOFF_PAGES HANDOFF_BATCH HANDOFF_BATCHES HANDOFF_PLAN HANDOFF_MANIFEST ENGINE_IMAGE HANDOFF_SCANS HANDOFF_JOBS HANDOFF_CLAIMS "
+HANDOFF_EXPORT_VARS=" HANDOFF_PAGES HANDOFF_BATCH HANDOFF_BATCHES HANDOFF_PLAN HANDOFF_MANIFEST ENGINE_IMAGE HANDOFF_SCANS HANDOFF_JOBS HANDOFF_CLAIMS HANDOFF_DEADLINE_RETRIES "
 # handoff.env must set these, as the Azure job sets them (its AZURE_CLIENT_ID is Container
 # Apps' identity; the Arc identity needs none).
 HANDOFF_HOST_VARS=" HANDOFF_URL COSMOS_ENDPOINT CURATED_URL REFERENCE_URL OUT_URL QUEUE_URL IDENTITY_ENDPOINT IMDS_ENDPOINT "
@@ -133,7 +136,9 @@ case $TARGET in
       die "--target publish needs --image <appver image>" ;;
   handoff)
     [ -z "$APPVER_IMAGE" ] || die "--image is for --target publish"
-    case $STEP in claim | release | dead-letter | collect | export) ;; *) die "--target handoff runs claim, release, dead-letter, collect or export on-prem; $STEP stays in Azure" ;; esac ;;
+    case $STEP in claim | release | dead-letter | deadline-retry | collect | export) ;; *) die "--target handoff runs claim, release, dead-letter, deadline-retry, collect or export on-prem; $STEP stays in Azure" ;; esac
+    [ "$STEP" != deadline-retry ] || [ "${USNM_BOINC_STEP_FROM_SSH:-}" != 1 ] ||
+      die "--step deadline-retry is an operator's, as root on the host; it isn't allowed over ssh" ;;
   *) die "--target $TARGET does not run on-prem; only bridge, publish and handoff steps do" ;;
 esac
 [[ $STEP =~ ^[a-z][a-z-]{0,40}$ ]] || die "--step is a bridge step name, such as register-apps or submit"
@@ -313,6 +318,7 @@ if [ "$TARGET" = handoff ]; then
     dead-letter)
       SSH_ALLOWED=$HANDOFF_DEAD_LETTER_VARS
       [ "${USNM_BOINC_STEP_FROM_SSH:-}" = 1 ] || SSH_ALLOWED+=$HANDOFF_DEAD_LETTER_OPERATOR_VARS ;;
+    deadline-retry) SSH_ALLOWED=$HANDOFF_DEADLINE_RETRY_VARS ;;
     collect) SSH_ALLOWED=$HANDOFF_COLLECT_VARS ;;
     export) SSH_ALLOWED=$HANDOFF_EXPORT_VARS ;;
   esac

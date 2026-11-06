@@ -187,7 +187,11 @@ def inspect(args, record):
         status = value["status"]
         if status == "pending":
             key = tuple(requested[doc].get(field) for field in fields)
-            if key in quarantined:
+            if quarantined.get(key) == "source_truncated":
+                # Terminal: the same bytes as LoC's, cut short; nothing to review or retry.
+                status = "source_truncated"
+                quarantine_states[quarantined[key]] += 1
+            elif key in quarantined:
                 status = "preparation_quarantined"
                 quarantine_states[quarantined[key]] += 1
                 waiting.append(doc)
@@ -206,6 +210,9 @@ def inspect(args, record):
         state = "needs_science_review"
     elif unfinished_sources:
         state = "preparing_and_publishing"
+    elif not native["published_workunits"] and counts["source_truncated"] == len(pages):
+        # Every member is cut short in LoC's own copy: nothing to publish, review or retry.
+        state = "source_truncated_no_work"
     elif not native["published_workunits"]:
         state = "needs_science_review"
     elif unresolved_jobs and native["unsent_replicas"] and not native["running_replicas"]:

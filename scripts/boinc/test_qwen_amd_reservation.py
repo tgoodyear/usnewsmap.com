@@ -115,6 +115,13 @@ class AmdReservation(unittest.TestCase):
             with self.assertRaises(ValueError):
                 R.strict_pair(current, 100, 68)
 
+    def test_a_published_native_2b_vulkan_version_is_a_guarded_competitor(self):
+        # Its window is closed or bounded by the reservation like every other GPU class (#1234).
+        current = copy.deepcopy(self.snapshot)
+        current["versions"].append({"id": 79, "version_num": 118, "platformid": 2,
+                                    "plan_class": "nvidia_vulkan_2b"})
+        R.strict_pair(current, 100, 68)
+
     def test_actual_assignment_race_and_expiry_have_distinct_release_reasons(self):
         intent = {"host": 5, "app_version": 68, "expires": 2000}
         self.assertIsNone(R.tick_reason(self.snapshot, intent, 1999))

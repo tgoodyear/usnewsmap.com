@@ -89,6 +89,11 @@ starved host lets the controller open the next fresh window. The left-behind
 replicas are not cancelled, reassigned or edited; they stay ordinary unsent work
 for every other eligible class, and the receipt records them
 (`rotated_past_window`, `starved_hosts`, `left_unsent_replicas`).
+The read-only `scripts/boinc/qwen-dispatch-fairness.py` shows how this plays out under
+ordinary work: each host's Qwen sends by day, the unsent units each host can take, the
+blocked head in feeder order, and the feeder cache. The
+[5 November reading](notes/2026-11-05-qwen-intel-dispatch.md) found the queue moving past
+its blocked head and Intel idle only because no fresh pairs were left.
 
 Once the operator gives `nvidia_vulkan_8b` general admission (the helper's
 `--general` and its marker, [app releases](../contrib-compute/docs/app-release.md)), the

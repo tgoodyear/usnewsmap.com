@@ -25,7 +25,7 @@ mod tests;
 pub use budget::{Budget, Budgets, FileBudgets};
 pub use engine::{Engine, EngineOptions, Fail, Got, Reservation};
 pub use job::{Attempt, FileJobs, HeldBack, Job, JobStore, Status};
-pub use policy::{Policies, Policy, PushBack, ServingProbe, LOC};
+pub use policy::{Policies, Policy, PushBack, ServingProbe, GHN, LOC};
 
 /// A URL for logs and errors: no query, which on a CDN redirect holds a signature.
 pub(crate) fn plain(url: &reqwest::Url) -> String {

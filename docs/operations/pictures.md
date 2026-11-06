@@ -4,7 +4,7 @@ Part of the [operations guide](README.md).
 
 ## Newspaper Navigator's picture boxes
 
-`usnm-ingest pictures` ([04 §4.11](../design/04-data-sources-and-ingestion.md#411-pictures-1102), #1102) writes Newspaper Navigator's boxes of photographs, illustrations, maps, comics and cartoons to the curated store, one row per box, keyed by the scan the box was found on and with its crop URL on tile.loc.gov. It is the first part of the picture layer. Nothing reads the table yet: the join to the curated pages, the search field and filter, and the crops in the hit list come later (#1102).
+`usnm-ingest pictures` ([04 §4.11](../design/04-data-sources-and-ingestion.md#411-pictures-1102), #1102) writes Newspaper Navigator's boxes of photographs, illustrations, maps, comics and cartoons to the curated store, one row per box, keyed by the scan the box was found on and with its crop URL on tile.loc.gov. It is the first part of the picture layer. The [join report](#join-report) reads the table; the search field and filter and the crops in the hit list come later (#1102).
 
 1. **The revision.** `--revision` is required and is the full 40-character commit SHA of [`biglam/newspaper-navigator`](https://huggingface.co/datasets/biglam/newspaper-navigator) (CC0), in lower case; a branch or tag is refused, because it would not pin the data. The one #1102 was triaged against is `e2e585824cdd28d52755c481dca69ed0bfa992a1`. A later revision is a separate run with its own path.
 2. **Where.** On an on-prem node, as a detached unit. It downloads about 1.4 GB of Parquet (the cartoons file alone is 71 MB for 206,054 rows) one file at a time into `$USNM_WORK_DIR/pictures` (default: `usnm-ingest` in the system temp directory), each under a name of its own (revision, file and a random part) so runs can share the directory, hashes and reads the file it opened, deletes each once read, and holds about one part of 100,000 rows in memory. The command takes the top-level options every `usnm-ingest` command takes; it reads nothing from `--reference` and keeps no state, but the binary wants both an empty directory and a state file:
@@ -48,6 +48,44 @@ Part of the [operations guide](README.md).
 5. **When it stops.** If more than 1% of a kind's rows have no complete scan identity or no crop URL, the run stops with an error naming the counts, logs the 20 batches with the most rows without a crop URL, and writes no `provenance.json`. That means the shapes of `page_url` and `prediction_section_iiif_url` read here do not fit this data. Look at the batches, fix the reader, and run again; `--max-unplaced-pct` raises the limit to write the attempt anyway and read the counts in its provenance. A file that is not Parquet, lacks one of the columns read (`batch`, `box`, `ocr`, `page_seq_num`, `page_url`, `predicted_type`, `prediction_section_iiif_url`, `score`) or has a column of a type the reader does not know fails the run with the file named.
 
 Licence and credit: the dataset is CC0, and the paper places the dataset, the model and the code in the public domain. The credits page needs a section for data sources (#372 built it for OCR engines and models) before the picture layer is shown on the site; that is part of #1102 and not done here.
+
+## Join report
+
+`usnm-ingest pictures-join` (#1102) reports how the boxes of a revision's newest finished attempt meet the curated pages: counts by class, in total, by kind and by batch, never rows. It reads the state, each curated batch's `counts.json`, the curated parts (without their text) of the batches that the placements' scans are in, stopping at a batch's last part or once all of its placed pages are found, and the scan columns of the attempt's parts (not the boxes, captions or URLs). It writes only the report file `--out`, which must not exist yet, and asks LoC nothing. Stdout has the logs, which are JSON, so the report is kept out of it.
+
+1. **Placing a box on a page.** A box is keyed by its scan and a page by `page_key`, and a frame is not a `seq` ([04 §4.11](../design/04-data-sources-and-ingestion.md#411-pictures-1102)). So the report puts a box on a page only through a scan whose page is known. Each `--placements` file is JSON Lines; a line names a page's `doc_id` and the `iiif_base` of the scan fetched for it (`https://tile.loc.gov/image-services/iiif/service:ndnp:{awardee}:batch_{batch}:data:{lccn}:{reel}:{issue}:{frame}`). A scan fetcher's prefetch index (`index-{tag}.jsonl`, [prefetched scans](onprem-ocr.md#prefetched-scans-368)) has such lines. Other fields are ignored, and `--placements` can be repeated. The same scan and page pair on several lines counts once. Some are counted and left out:
+   - `unreadable` (lines): the line has no `doc_id` or no `iiif_base` of that shape, with `{awardee}` the batch name's first `_` token;
+   - `inconsistent` (lines): the `doc_id` is of another title, date or edition than the scan's issue directory;
+   - `conflicting` (distinct pairs, after duplicate lines are merged): a scan has two pages, or a page has two scans.
+
+   Without placements, no box is put on a page and the report holds only the title-day classes.
+
+2. **Classes.** Each row gets the first class that fits:
+
+   | Class               | The row                                                                                                 |
+   | ------------------- | ------------------------------------------------------------------------------------------------------- |
+   | `page`              | is on a placed scan whose page is in the curated version of the batch the row was detected in           |
+   | `same_batch_day`    | is not on such a page, but that batch version is curated with the title-day: its page is probably there |
+   | `other_version_day` | has another version of its batch curated with the title-day: LoC reissued the batch after 2020          |
+   | `other_batch_day`   | has only another batch curated with the title-day                                                       |
+   | `not_curated`       | has no curated batch with pages of its title that day                                                   |
+   | `unplaced`          | has no full scan identity, or a batch with no `_verNN`                                                  |
+
+3. **Running it.** It takes the top-level options every `usnm-ingest` command takes and needs read access to the state and the curated store. `--pictures` names the store `pictures` wrote to, when that was not the curated store; the first run wrote to a directory on its node. Memory holds the placements, the curated title-days (a few million) and one part of 100,000 rows.
+
+   ```sh
+   usnm-ingest --state-file <state> --curated <curated directory or container URL> \
+     --reference <empty directory> \
+     pictures-join --revision e2e585824cdd28d52755c481dca69ed0bfa992a1 \
+     --pictures <directory pictures wrote to> \
+     --placements <scans>/index-full.jsonl \
+     --out <new file>.json
+   ```
+
+4. **What it checks.** The attempt must be the current schema version. Each part's size, SHA-256, row count and kind must be what `provenance.json` records, it must be under the attempt's directory, and the row totals by kind and overall must match. Any difference stops the report, as does a curated part that a placed batch lists but the store lacks, when it is reached. The `--out` file is created first, so an existing one stops the command at once, and it is removed if the report stops.
+5. **What it writes.** JSON with `revision`, `attempt`, `curated_batches`, `curated_title_days`, `placements` (`files`, `lines`, `placed`, `unreadable`, `inconsistent`, `conflicting`) and `placements_on_curated_pages`. A placement makes `page` rows only if the curated version of the scan's batch holds its `doc_id`: a page of an edition or `seq` that version lacks leaves its rows `same_batch_day`. Then `total` (`rows` and a count per class), `pages` (distinct pages with a `page` row), `kinds` (the same per kind, each with its `pages`) and `batches` (the classes per batch directory in the dataset, `(none)` for a row without one). In `batches`, `other_version_day` points at batches LoC reissued after 2020, and `not_curated` at title-days the curated store lacks.
+
+**Limits.** `counts.json` is by day, not by edition, so the day classes don't tell a day's editions apart. `same_batch_day` doesn't show that the box's page is curated, or which page it is, only that its batch version has pages of the title that day. Only scans whose pages were fetched can be placed exactly. Placing the rest needs each issue's file list (frame → `seq`), which comes from LoC's issue METS or item JSON and is not in the curated store. Fetching it is a request budget for the maintainer to decide. The report stores no join: the index field and `picture=` filter are later steps of #1102 that need the maintainer's sign-off and a full rebuild.
 
 ## Verified Beyond Words baseline
 

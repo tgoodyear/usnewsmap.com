@@ -1,4 +1,5 @@
-"""Durable, source-fingerprint-specific decode failures for operator review."""
+"""Durable, source-fingerprint-specific decode failures for operator review, and scans whose
+JP2 codestream is cut short at source (terminal, never retried)."""
 
 from contextlib import contextmanager
 import datetime as dt
@@ -16,6 +17,7 @@ import urllib.parse
 DB_NAME = "decode-quarantine.sqlite3"
 LOCK_NAME = ".decode-quarantine.lock"
 FAILURES_BEFORE_QUARANTINE = 3
+SOURCE_TRUNCATED = "source_truncated"
 CAMPAIGN_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,40}")
 DOC_RE = re.compile(r"(?P<lccn>[a-z0-9]{1,16})_(?P<date>\d{4}-\d{2}-\d{2})_ed-(?P<ed>\d+)_seq-(?P<seq>\d+)")
 
@@ -159,6 +161,35 @@ def record_failure(state, page, error, decoder):
             connection.close()
 
 
+def record_source_truncated(state, page, reason):
+    """Mark a verified scan whose JP2 codestream ends early. Terminal for these exact bytes; a
+    changed fingerprint is a new record. An existing manual review is left as it is."""
+    source, scan, lang, rate = _page_details(page)
+    identity = source_id(source)
+    encoded = json.dumps(source, sort_keys=True, separators=(",", ":"))
+    with publication_lock(Path(state).parent, create=True):
+        connection = _database(state, create=True)
+        try:
+            with connection:
+                connection.execute("BEGIN IMMEDIATE")
+                previous = connection.execute("SELECT source FROM failures WHERE id = ?", (identity,)).fetchone()
+                if previous is not None and previous["source"] != encoded:
+                    raise ValueError("scan-quarantine fingerprint collision")
+                now = _now()
+                connection.execute("""
+                    INSERT INTO failures
+                      (id, source, scan, lang, damage_rate, attempts, first_at, last_at,
+                       error_type, error, decoder, refetch_state)
+                    VALUES (?, ?, ?, ?, ?, 0, ?, ?, 'SourceTruncated', ?, '{}', ?)
+                    ON CONFLICT(id) DO UPDATE SET last_at = excluded.last_at,
+                        error_type = excluded.error_type, error = excluded.error,
+                        decoder = excluded.decoder, refetch_state = excluded.refetch_state
+                    WHERE failures.refetch_state = 'observing'
+                """, (identity, encoded, scan, lang, rate, now, now, str(reason)[:500], SOURCE_TRUNCATED))
+        finally:
+            connection.close()
+
+
 def record_retryable(state, page, error):
     """Keep transient/unknown failures eligible without counting them as decoder failures."""
     source, scan, lang, rate = _page_details(page)
@@ -204,12 +235,13 @@ def _record(row):
     record["decoder"] = json.loads(record["decoder"])
     source, _, _, _ = _page_details({**record["source"], "scan": record["scan"],
                                      "lang": record["lang"], "damage_rate": record["damage_rate"]})
-    states = {"observing", "manual_review"}
+    states = {"observing", "manual_review", SOURCE_TRUNCATED}
     attempts, state = record["attempts"], record["refetch_state"]
     if (source != record["source"] or source_id(source) != record["id"]
             or type(attempts) is not int or attempts < 0 or state not in states
             or not isinstance(record["decoder"], dict)
-            or (state == "observing") != (attempts < FAILURES_BEFORE_QUARANTINE)):
+            or (state != SOURCE_TRUNCATED
+                and (state == "observing") != (attempts < FAILURES_BEFORE_QUARANTINE))):
         raise ValueError("invalid scan-quarantine record")
     if any(record[field] is not None for field in ("manifest_name", "manifest_sha256", "manifest_body")):
         raise ValueError("unexpected recovery data in scan-quarantine record")
@@ -226,6 +258,17 @@ def quarantined(state):
         return [record for record in records if record["refetch_state"] != "observing"]
     finally:
         connection.close()
+
+
+def source_truncated_summary(records):
+    """Aggregate source-truncated scans among quarantined() records, by batch version."""
+    batches = {}
+    for record in records:
+        if record["refetch_state"] == SOURCE_TRUNCATED:
+            source = record["source"]
+            batch = f"{source['batch']}_ver{source['batch_version']:02d}"
+            batches[batch] = batches.get(batch, 0) + 1
+    return {"pages": sum(batches.values()), "batches": dict(sorted(batches.items()))}
 
 
 def quarantined_ids(state):

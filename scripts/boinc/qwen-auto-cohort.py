@@ -210,6 +210,53 @@ def producer_paths(project, doc, campaign):
             base / "quality" / campaign / "texts" / (doc + ".loc-provenance.json")]
 
 
+def safe_doc(doc):
+    return isinstance(doc, str) and re.fullmatch("[a-zA-Z0-9][a-zA-Z0-9_.-]*", doc) is not None
+
+
+class BundleUnits:
+    """Each producer root's units/bundle-<n>-<first doc> directories by first doc, from one scan
+    of its units/ per pass rather than one per bundle looked up. A pass that must see units staged
+    since (the check before apply) takes a new one."""
+
+    def __init__(self):
+        self.roots = {}
+
+    def named(self, units, doc):
+        if units not in self.roots:
+            index = {}
+            try:
+                with os.scandir(units) as entries:
+                    for entry in entries:
+                        match = re.fullmatch("bundle-[0-9]{5,}-(.+)", entry.name)
+                        if match:
+                            index.setdefault(match.group(1), []).append(units / entry.name)
+            except FileNotFoundError:
+                pass
+            self.roots[units] = index
+        return self.roots[units].get(doc, [])
+
+
+def bundle_unit(project, campaign, job_raw, doc, bundles=None):
+    """The one bundle unit the producer staged the job in: `qwen stage --bundle-size` names it
+    units/bundle-<n>-<first doc>, and a crash may leave a partial one of the same first doc."""
+    units = project.parent / "qwen" / campaign / "units"
+    found = [unit for unit in (BundleUnits() if bundles is None else bundles).named(units, doc)
+             if (unit / "qwen.json").is_file() and (unit / "qwen.json").read_bytes() == job_raw]
+    require(len(found) == 1, "Producer bundle unit missing or ambiguous")
+    return found[0]
+
+
+def bundle_paths(project, campaign, unit, docs):
+    """Every producer file a bundle's binding reads: the bundle unit, then each page's own
+    staged unit (pages/<doc>) and source evidence."""
+    paths = [unit / "qwen.json", unit / "page.jpg", unit / "submitted", unit / "membership.json"]
+    for doc in docs:
+        staged = project.parent / "qwen" / campaign / "pages" / doc
+        paths += [staged / "qwen.json", staged / "sample.json", *producer_paths(project, doc, campaign)[-2:]]
+    return paths
+
+
 def input_paths(project, row):
     download = (project / "download").resolve()
     files = {}
@@ -225,7 +272,7 @@ def input_paths(project, row):
     return files
 
 
-def exclusion_key(project, row, job_id, audit, campaign, prompt_version):
+def exclusion_key(project, row, job_id, audit, campaign, prompt_version, bundles=None):
     # Everything a cached out-of-cohort decision rests on, without reading page bytes: the
     # audit record, the WU binding, the job bytes and the identity of every file bind_inputs
     # reads. Any change misses the cache, so the unit is bound again from scratch and
@@ -234,12 +281,20 @@ def exclusion_key(project, row, job_id, audit, campaign, prompt_version):
     try:
         paths = input_paths(project, row)
         job = paths["job"].read_bytes()
-        doc = json.loads(job)["doc_id"]
-        if not isinstance(doc, str) or not re.fullmatch("[a-zA-Z0-9][a-zA-Z0-9_.-]*", doc):
+        parsed = json.loads(job)
+        doc = parsed["doc_id"]
+        if not safe_doc(doc):
             return None
+        if parsed.get("pages"):
+            docs = [page["doc_id"] for page in parsed["pages"]]
+            if not all(map(safe_doc, docs)):
+                return None
+            producer = bundle_paths(project, campaign, bundle_unit(project, campaign, job, doc, bundles), docs)
+        else:
+            producer = producer_paths(project, doc, campaign)
         stats = [[str(path), info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns]
-                 for path in list(paths.values()) + producer_paths(project, doc, campaign) for info in [path.stat()]]
-    except (OSError, ValueError, KeyError, TypeError, ET.ParseError):
+                 for path in list(paths.values()) + producer for info in [path.stat()]]
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, ET.ParseError):
         return None
     key = [job_id, audit, wu["name"], int(wu["id"]), wu["xml_doc"], sha(job), stats, campaign, prompt_version]
     # A unit passed over for its language is bound again once another language is admitted.
@@ -248,7 +303,83 @@ def exclusion_key(project, row, job_id, audit, campaign, prompt_version):
     return sha(json.dumps(key, sort_keys=True).encode())
 
 
-def bind_inputs(project, row, job_id, audit, campaign=DEFAULT_CAMPAIGN, prompt_version=1):
+def bind_source(project, doc, campaign, page, language, sample_path):
+    """The source evidence the producer staged a page from: its quality record, the archive
+    provenance of its ALTO and its sample row, each bound to the page bytes the hosts read."""
+    quality_path, provenance_path = producer_paths(project, doc, campaign)[-2:]
+    quality_raw, provenance_raw, sample_raw = (quality_path.read_bytes(), provenance_path.read_bytes(),
+                                             sample_path.read_bytes())
+    quality, provenance, sample = map(json.loads, (quality_raw, provenance_raw, sample_raw))
+    require(quality["doc_id"] == provenance["doc_id"] == sample["doc_id"] == doc
+            and quality["language"] == sample["lang"] == language,
+            "Source-quality/provenance identity mismatch")
+    require(quality["inputs"]["page"]["sha256"] == sha(page)
+            and quality["inputs"]["page"]["bytes"] == len(page)
+            and quality["inputs"]["alto"]["sha256"] == provenance["sha256"]
+            and re.fullmatch("[a-f0-9]{64}", provenance["sha256"])
+            and provenance["archive"] and provenance["member"] and int(provenance["archive_bytes"]) > 0,
+            "Source-quality/archive-provenance binding mismatch")
+    return {"quality_sha256": sha(quality_raw), "provenance_sha256": sha(provenance_raw),
+            "sample_sha256": sha(sample_raw), "source_quality": sample, "provenance": provenance}
+
+
+def bind_bundle(project, wu, job, files, campaign, bundles=None):
+    """bind_inputs for a multi-page unit (qwen stage --bundle-size): the bundle unit the producer
+    submitted, its membership, and each page's own staged job and source evidence, bound to that
+    page's slice of the bundled page.jpg."""
+    pages = job["pages"]
+    docs = [page["doc_id"] for page in pages]
+    require(1 <= len(pages) <= 32 and all(map(safe_doc, docs)) and len(set(docs)) == len(docs)
+            and docs[0] == job["doc_id"] and pages[0]["language"] == job["language"],
+            "Bad bundle page contract")
+    require(all(page["group"] == campaign for page in pages), "Unreviewed prompt/budget/cohort")
+    # Each page's own crop ids, before the bundle prefixes them with its doc id.
+    require(all(1 <= len(page["crops"]) <= 12
+                and all(isinstance(crop["id"], str) and crop["id"] for crop in page["crops"])
+                and len({crop["id"] for crop in page["crops"]}) == len(page["crops"]) for page in pages),
+            "Bad crop contract")
+    flat = [dict(crop, id=page["doc_id"] + ":" + crop["id"]) for page in pages for crop in page["crops"]]
+    require(1 <= len(job["crops"]) <= 256 and job["crops"] == flat
+            and all(len(crop["loc_text"].encode("utf-8")) <= 8192 for crop in flat), "Bad crop contract")
+    unit = bundle_unit(project, campaign, files["job"], job["doc_id"], bundles)
+    require((unit / "page.jpg").read_bytes() == files["page"]
+            and (unit / "submitted").read_text().strip() == wu["name"], "Producer input/submission mismatch")
+    membership_raw = (unit / "membership.json").read_bytes()
+    membership = json.loads(membership_raw)
+    members = membership["pages"]
+    require(membership["v"] == 1 and membership["job_id"] == job["id"]
+            and membership["page_sha256"] == sha(files["page"]) and len(members) == len(pages),
+            "Bundle membership mismatch")
+    bound, offset = [], 0
+    for member, page in zip(members, pages):
+        doc, size = page["doc_id"], page["input"]["bytes"]
+        piece = files["page"][offset:offset + size]
+        # The slices lie end to end in bundle order, as qwen stage packs them.
+        require(member["doc_id"] == member["unit"] == doc and member["offset"] == page["input"]["offset"] == offset
+                and member["bytes"] == size == len(piece) > 0
+                and member["page_sha256"] == page["input"]["sha256"] == sha(piece), "Bundle membership mismatch")
+        offset += size
+        staged = project.parent / "qwen" / campaign / "pages" / doc
+        raw = (staged / "qwen.json").read_bytes()
+        single = json.loads(raw)
+        require(sha(raw) == member["job_sha256"] and single["id"] == member["job_id"] and single["doc_id"] == doc
+                and not single.get("pages") and single["crops"] == page["crops"]
+                and single["group"] == page["group"] and single["language"] == page["language"]
+                and single["input"]["sha256"] == sha(piece) and single["input"]["bytes"] == len(piece),
+                "Bundle page differs from its staged job")
+        bound.append({"doc_id": doc, "crops": len(page["crops"]), "job_sha256": sha(raw), "page_sha256": sha(piece),
+                      **bind_source(project, doc, campaign, piece, page["language"], staged / "sample.json")})
+    require(offset == len(files["page"]), "Bundle membership mismatch")
+    # Checked last, as for one page: a bundle with a page outside the cohort is passed over whole.
+    outside = [page["language"] for page in pages if page["language"] not in COHORT_LANGUAGES + EXTRA_LANGUAGES]
+    if outside:
+        raise OutOfCohort("Unreviewed prompt/budget/cohort: language " + repr(outside[0]))
+    return {"workunit": int(wu["id"]), "job_id": job["id"], "doc_id": job["doc_id"], "crops": len(job["crops"]),
+            "job_sha256": sha(files["job"]), "page_sha256": sha(files["page"]),
+            "membership_sha256": sha(membership_raw), "pages": bound, "accuracy_established": False}
+
+
+def bind_inputs(project, row, job_id, audit, campaign=DEFAULT_CAMPAIGN, prompt_version=1, bundles=None):
     wu = row["unit"]
     require(re.fullmatch("[a-f0-9]{64}", job_id) is not None, "Bad native audit identity")
     require(wu["name"] == "usnm_qwen_" + job_id and int(audit["workunit_id"]) == int(wu["id"])
@@ -257,7 +388,7 @@ def bind_inputs(project, row, job_id, audit, campaign=DEFAULT_CAMPAIGN, prompt_v
     files = {kind: path.read_bytes() for kind, path in input_paths(project, row).items()}
     job = json.loads(files["job"])
     doc = job["doc_id"]
-    require(isinstance(doc, str) and re.fullmatch("[a-zA-Z0-9][a-zA-Z0-9_.-]*", doc), "Unsafe doc identity")
+    require(safe_doc(doc), "Unsafe doc identity")
     require(sha(files["job"]) == audit["job_sha256"] and job["id"] == job_id,
             "Actual job differs from producer audit")
     require(job["input"]["sha256"] == sha(files["page"]) and job["input"]["bytes"] == len(files["page"]),
@@ -267,35 +398,23 @@ def bind_inputs(project, row, job_id, audit, campaign=DEFAULT_CAMPAIGN, prompt_v
     require(type(job["v"]) is int and job["v"] == 1 and type(job["prompt_version"]) is int
             and job["prompt_version"] == prompt_version and job["max_tokens_per_1000px2"] == 4
             and job["group"] == campaign, "Unreviewed prompt/budget/cohort")
+    if job.get("pages"):
+        return bind_bundle(project, wu, job, files, campaign, bundles)
     crops = job["crops"]
     require(1 <= len(crops) <= 12 and len({crop["id"] for crop in crops}) == len(crops)
             and all(isinstance(crop["id"], str) and crop["id"] and
                     len(crop["loc_text"].encode("utf-8")) <= 8192 for crop in crops), "Bad crop contract")
     base = project.parent
     unit = base / "qwen" / campaign / "units" / doc
-    quality_path, provenance_path = producer_paths(project, doc, campaign)[-2:]
     require((unit / "qwen.json").read_bytes() == files["job"]
             and (unit / "page.jpg").read_bytes() == files["page"]
             and (unit / "submitted").read_text().strip() == wu["name"], "Producer input/submission mismatch")
-    quality_raw, provenance_raw, sample_raw = (quality_path.read_bytes(), provenance_path.read_bytes(),
-                                             (unit / "sample.json").read_bytes())
-    quality, provenance, sample = map(json.loads, (quality_raw, provenance_raw, sample_raw))
-    require(quality["doc_id"] == provenance["doc_id"] == sample["doc_id"] == doc
-            and quality["language"] == sample["lang"] == job["language"],
-            "Source-quality/provenance identity mismatch")
-    require(quality["inputs"]["page"]["sha256"] == sha(files["page"])
-            and quality["inputs"]["page"]["bytes"] == len(files["page"])
-            and quality["inputs"]["alto"]["sha256"] == provenance["sha256"]
-            and re.fullmatch("[a-f0-9]{64}", provenance["sha256"])
-            and provenance["archive"] and provenance["member"] and int(provenance["archive_bytes"]) > 0,
-            "Source-quality/archive-provenance binding mismatch")
+    source = bind_source(project, doc, campaign, files["page"], job["language"], unit / "sample.json")
     # Checked last: an out-of-cohort job is only passed over once every integrity check holds.
     if job["language"] not in COHORT_LANGUAGES + EXTRA_LANGUAGES:
         raise OutOfCohort("Unreviewed prompt/budget/cohort: language " + repr(job["language"]))
     return {"workunit": int(wu["id"]), "job_id": job_id, "doc_id": doc, "crops": len(crops),
-            "job_sha256": sha(files["job"]), "page_sha256": sha(files["page"]),
-            "quality_sha256": sha(quality_raw), "provenance_sha256": sha(provenance_raw),
-            "sample_sha256": sha(sample_raw), "source_quality": sample, "provenance": provenance,
+            "job_sha256": sha(files["job"]), "page_sha256": sha(files["page"]), **source,
             "accuracy_established": False}
 
 
@@ -540,18 +659,19 @@ def run(args):
             # Later ticks pass them over without re-reading every page while that key holds.
             known = {key: value for key, value in state.get("out_of_cohort", {}).items()
                      if int(key) in scanned}
+            bundles = BundleUnits()
 
             def admissible(row):
                 # Only a language outside the reviewed cohort is passed over; every other
                 # binding failure still stops the tick.
                 unit = int(row["unit"]["id"])
-                key = exclusion_key(project, row, *by_wu[unit])
+                key = exclusion_key(project, row, *by_wu[unit], bundles)
                 if key is not None and known.get(str(unit)) == key:
                     skipped.append(unit)
                     remembered.append(unit)
                     return False
                 try:
-                    bind_inputs(project, row, *by_wu[unit])
+                    bind_inputs(project, row, *by_wu[unit], bundles)
                 except OutOfCohort:
                     skipped.append(unit)
                     if key is not None:
@@ -584,7 +704,7 @@ def run(args):
                 # The left-behind replicas stay ordinary unsent work for every other eligible class;
                 # nothing is cancelled, reassigned or edited.
                 output |= {"rotated_past_window": window, "left_unsent_replicas": available}
-            proof = [bind_inputs(project, row, *by_wu[int(row["unit"]["id"])])
+            proof = [bind_inputs(project, row, *by_wu[int(row["unit"]["id"])], bundles)
                      for row in selected]
             target = [int(selected[0]["unit"]["id"]), int(selected[-1]["unit"]["id"])]
             command = ["--workunit", str(target[0]), "--workunit-end", str(target[1]), "--fresh-pair",
@@ -611,7 +731,9 @@ def run(args):
             }
             persist(state_path, state)
             if selected:
-                require([bind_inputs(project, row, *by_wu[int(row["unit"]["id"])])
+                # Scanned again, so a bundle staged twice since is seen.
+                bundles = BundleUnits()
+                require([bind_inputs(project, row, *by_wu[int(row["unit"]["id"])], bundles)
                          for row in selected] == proof,
                         "Input/source provenance changed before apply")
                 require(int(time.time()) < args.enabled_until, "Admission deadline passed before publication")

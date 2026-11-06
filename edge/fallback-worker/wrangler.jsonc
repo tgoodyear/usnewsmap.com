@@ -31,12 +31,27 @@
     { "pattern": "api.usnewsmap.com/*", "zone_name": "usnewsmap.com" }
   ],
 
+  // Edge flood control on the search and MCP paths (#1541, ADR-0027 settled decision 9),
+  // keyed by client address (IPv6 by /64). Cloudflare counts in each location, roughly,
+  // over 10 or 60 seconds only. The API admits one client at most 60 requests in 10
+  // seconds (a burst of 40, then 2 a second), so the normal limit, 80, never stops a
+  // client the API would have answered. The strict limit, 20, is the API's sustained rate,
+  // for an incident; SEARCH_EDGE_LIMIT below chooses (README.md, "Edge flood control").
+  // The namespace ids are this account's own. The drill Worker (deploy.sh --drill-hostname)
+  // shares them, which only adds its requests to the same counts; no other Worker may use them.
+  "ratelimits": [
+    { "name": "SEARCH_LIMIT", "namespace_id": "1541001", "simple": { "limit": 80, "period": 10 } },
+    { "name": "SEARCH_LIMIT_STRICT", "namespace_id": "1541002", "simple": { "limit": 20, "period": 10 } }
+  ],
+
   "vars": {
     // The Container App's default name, https://<name>.azurecontainerapps.io. Not a secret, and
     // not in the repository: it is the environment's random domain, which only Azure
     // can say. deploy.sh --azure-origin sets it. Empty turns the fallback off.
     "AZURE_FALLBACK_ORIGIN": "",
     "ERROR_LAYER": "false",
-    "ALLOWED_ORIGINS": "https://usnewsmap.com"
+    "ALLOWED_ORIGINS": "https://usnewsmap.com",
+    // "normal", "strict" or "off": which edge limit applies (README.md, "Edge flood control").
+    "SEARCH_EDGE_LIMIT": "normal"
   }
 }

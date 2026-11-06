@@ -206,7 +206,30 @@ minutes so a five-minute alert evaluation does not miss a shortage or other
 failure that recovers between evaluations. Duration thresholds are already
 enforced by the evaluator; this retention does not shorten them.
 
-`feed-health.prom` exports the same seven checks as one-hot
+**Feeder allocation (opt-in, #1462).** With `--feeder-guard`, the server source
+also runs the server image's read-only
+[`feeder-slot-guard.py`](../../contrib-compute/images/server/feeder-slot-guard.py)
+as `boincadm` in the container, the same command as
+`usnm-feeder-slot-guard.service`, and reports its status, reason and the drifted
+app IDs as `feeder_allocation`. The guard stops, restarts and rereads nothing. Its
+exit codes 1 (`drift`) and 2 (`unknown`) are reports, not source failures; a
+missing guard, another exit code, a timeout or malformed output is unknown
+(`guard_unavailable`) and leaves the rest of the server source intact. With
+`"feeder_allocation": true` in the evaluator's config, the evaluator adds an
+eighth check, `feeder_allocation`. `match` is healthy. `drift` fires after the
+same reason and app IDs have held for 600 seconds (`FEEDER_DRIFT_HOLD_S`), two
+runs of the guard's five-minute timer, which is the runbook's first condition
+for a [refresh](feeder-refresh.md#when-a-refresh-is-warranted); different drift
+restarts the timer. `maintenance` and `unknown` skip the comparison, so the
+check is unknown with the guard's reason and `collection` fires. That includes a
+deliberate `stop_maintenance`, a stopped feeder and the supervisor loop's restart
+hold. The alert is a prompt to follow the runbook; nothing here refreshes the
+feeder. Without the config key the evaluator emits the same seven checks as
+before. With it, a server source run without `--feeder-guard` makes the check
+unknown (`not_reported`), as does an unavailable server source
+(`server_unavailable`).
+
+`feed-health.prom` exports the same checks as one-hot
 `boinc_feed_check{check,state}` gauges (`healthy`, `pending`, `firing`, `unknown`),
 their continuous durations, and `boinc_feed_observed_at_seconds`. There is no
 new Prometheus service. The dashboard reads `feed-health.json` using
@@ -240,6 +263,8 @@ Create a **private** `/etc/usnm-boinc/feed-source-<name>.env` for each source:
 ```sh
 # Source-host examples; replace bracketed values from the private inventory.
 SOURCE_ARGS="server --project [host-project-path] --window-env /etc/usnm-boinc/qwen-cohort-auto.env --container usnm-boinc-server --container-project /project/usnmocr"
+# Optional feeder allocation check (#1462), after a server image that ships the guard:
+# append --feeder-guard /usr/local/lib/usnm-boinc/feeder-slot-guard.py to the server SOURCE_ARGS.
 PUSH_URL="http://[existing-dashboard]/api/feed-source/server"
 # controller: SOURCE_ARGS="controller --unit usnm-boinc-priority-controller.service"
 # backlog: SOURCE_ARGS="backlog --dashboard http://[existing-dashboard]/api/view.json --requests [qwen-state]/requests --outbox [outbox]/[qwen-campaign] --selection [read-only-selected.jsonl]"
@@ -303,6 +328,14 @@ allowlist. Until the backlog source publishes, `sources.backlog` is unknown
 both shortage checks are unknown (`no_own_clients_configured`), never zero idle
 slots. Either way `collection` fires. When the backlog source publishes, set
 `backlog` to `/var/lib/usnm-ocrdash/feed-sources/backlog.json`.
+
+`feeder_allocation` may also be left out, and is off by default. To turn the
+check on, first deploy a dashboard that accepts it (older dashboards reject an
+eighth check as an invalid contract and show the panel as unavailable), then add
+`--feeder-guard` to the server source and confirm its `server.json` has a
+`feeder_allocation` object, and only then add `"feeder_allocation": true` here.
+The guard's exec adds at most 15 seconds to the server source, within its
+75-second unit timeout.
 
 Add an own client only after verifying its binding read-only. Once its source
 publishes, `jq .host_id /var/lib/usnm-ocrdash/feed-sources/client-<name>.json`

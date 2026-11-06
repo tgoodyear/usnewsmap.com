@@ -292,6 +292,7 @@ fn hit(
         doc_id: d.doc_id.clone(),
         day: d.day,
         sort_key: d.sort_key,
+        batch: d.batch.clone(),
         lccn: d.lccn.clone(),
         place_id: d.place_id.clone(),
         edition: d.edition,

@@ -82,6 +82,37 @@ def budget_spent(path):
     return json.loads(path.read_text()) if path.exists() else []
 
 
+def scan_fingerprint(row):
+    """A scan as the decode quarantine names it (scan_quarantine.fingerprint)."""
+    return (row["doc_id"], row["batch"], int(row.get("batch_version") or 1), row["bytes"], row["sha256"])
+
+
+# An index row's doc_id, read without parsing the row. Index rows are flat, and a quote inside
+# a JSON string is escaped, so this matches only the doc_id key. A doc_id written with an escape
+# doesn't match at all, so its row is parsed in full.
+DOC_ID_FIELD = re.compile(rb'"doc_id"\s*:\s*"([^"\\]*)"')
+
+
+def truncated_reservations(index, reserved, truncated, finished):
+    """The reserved pages whose scans are cut short at source (#1457), given the fingerprints
+    the quarantine records as source_truncated. select never takes such a page again, so it
+    frees its place in its budget. A page counts only when its current scan, the last full
+    one in the index as select reads it, is cut short: a page done or skipped, or with a newer
+    scan to prepare, stays spent."""
+    candidates = {fingerprint[0] for fingerprint in truncated} & (reserved - finished)
+    if not candidates:
+        return set()
+    wanted = {doc.encode() for doc in candidates}
+    current = {}
+    for line in index.splitlines():
+        if (found := DOC_ID_FIELD.search(line)) and found[1] not in wanted:
+            continue
+        row = json.loads(line)
+        if row["doc_id"] in candidates and row.get("resolution", "full") == "full":
+            current[row["doc_id"]] = scan_fingerprint(row)
+    return {doc for doc, scan in current.items() if scan in truncated}
+
+
 def budgets(a):
     """(language, name, budget) for each language the feed prepares only under a budget."""
     return [(language, name, budget) for language, name, budget in (
@@ -514,6 +545,7 @@ def _tick(a):
     if count < 1:
         return
     work = "/var/lib/usnm-quality-feed/work/" + a.campaign
+    quarantine_state = "/var/lib/usnm-quality-feed/" + a.campaign
     command(ct + ["mkdir", "-p", work])
     done = command(python + ["-c", (
         "from pathlib import Path; import json; "
@@ -540,7 +572,7 @@ def _tick(a):
                          "--out", work + "/selected.jsonl", "--non-english", "--order", "damage",
                          "--damage-dsn-file", "/etc/usnm/quality-db/dsn",
                          "--scan-server", a.scan_server,
-                         "--quarantine-state", "/var/lib/usnm-quality-feed/" + a.campaign, *filters])
+                         "--quarantine-state", quarantine_state, *filters])
         selected = command(ct + ["cat", work + "/selected.jsonl"])
         return selected, [json.loads(line) for line in selected.splitlines() if line]
 
@@ -552,8 +584,30 @@ def _tick(a):
     filters = tuple(arg for language, _, _ in budgeted for arg in ("--exclude-language", language))
     pages = []
     retryable = None
+    # A reserved page whose scan is cut short at source is refunded (#1457): the quarantine
+    # holds it for good, so it would otherwise take its place in the budget forever.
+    reservations = {name: budget_spent(a.state / f"{name}-budget.json") for _, name, _ in budgeted}
+    refunds = set()
+    if any(reservations.values()):
+        truncated = {scan_fingerprint(source) for source in json.loads(command(python + ["-c", (
+            "from pathlib import Path; import json, sys; "
+            "sys.path.insert(0, sys.argv[1]); from scan_quarantine import quarantined; "
+            "print(json.dumps([r['source'] for r in quarantined(Path(sys.argv[2])) "
+            "if r['refetch_state'] == 'source_truncated']))"
+        ), helper, quarantine_state]))}
+        # done holds both done.txt and skipped.txt.
+        refunds = truncated_reservations(index, {doc for spent in reservations.values() for doc in spent},
+                                         truncated, set(json.loads(done)))
     for language, name, budget in budgeted:
-        spent = budget_spent(a.state / f"{name}-budget.json")
+        budget_path = a.state / f"{name}-budget.json"
+        spent = reservations[name]
+        if refunds & set(spent):
+            spent = [doc for doc in spent if doc not in refunds]
+            tmp = budget_path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(spent))
+            tmp.replace(budget_path)
+            phase(name + "_budget_refund", refunded=len(reservations[name]) - len(spent), spent=len(spent),
+                  budget=budget)
         own = index
         if language == GERMAN and a.german_pages is not None:
             own = listed_pages(index, a.german_pages)
