@@ -24,6 +24,7 @@
   "boincFeedConditionAlert": "usnm-boinc-feed-condition-alert-prod",
   "boincFeedDcr": "usnm-boinc-feed-dcr-prod",
   "boincFeedMissingAlert": "usnm-boinc-feed-missing-alert-prod",
+  "boincHandoffArchiverRole": "usnm-boinc-handoff-archiver-role-prod",
   "boincHandoffIdentity": "usnm-boinc-handoff-id-prod",
   "boincHandoffJob": "usnm-boinc-handoff-caj-prod",
   "boincLedgerRole": "usnm-boinc-ledger-role-prod",

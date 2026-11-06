@@ -50,6 +50,17 @@
 # hand-off export reads them (mounted read-only as /scans), and the bridge's submit takes a job's
 # page from them, so no scan goes through Azure. The BOINC host never reads /tank/ocr itself.
 #
+# --target archive --step bridge --var ARCHIVE_BATCH=<NNNN> (#835) runs archive_history.py's
+# bridge step for one batch the controller host's held-page archive dispatched
+# (scripts/boinc/onprem/held-archive.sh, over ssh). It reads a tar of that batch's manifest.json
+# and receipts/dispatch.json from stdin, and nothing else, into
+# $USNM_BOINC_ARCHIVE_ROOT/batches/<NNNN> (default /srv/usnm-boinc/project/archive). A batch
+# already there must have the same two files. Then it runs the tool installed there,
+# $USNM_BOINC_ARCHIVE_ROOT/archive_history.py, as a dry run and then with --apply. The tool
+# holds the bridge step locks itself, so this step takes none of them. A batch whose bridge
+# receipt already names the same manifest is done: the step prints that receipt and changes
+# nothing. The db step stays an operator's, as root on the host (#1587).
+#
 # --target publish --step publish --image <appver image or sha256:<id>> publishes an app version (#961), as the
 # Azure publish job did: the image's own publish-appver.sh runs with the host's settings and
 # mounts and APPVER_REUSE_PROJECT=1 (the only --var it takes, 0 or 1). It is refused over ssh.
@@ -128,6 +139,10 @@ case $TARGET in
   scans)
     [ "$STEP" = receive ] || die "--target scans takes --step receive"
     [ -z "$APPVER_IMAGE" ] && [ ${#VARS[@]} -eq 0 ] || die "--target scans takes no --image or --var" ;;
+  archive)
+    [ "$STEP" = bridge ] || die "--target archive takes --step bridge"
+    [ -z "$APPVER_IMAGE" ] && [ ${#VARS[@]} -eq 1 ] && [[ ${VARS[0]} =~ ^ARCHIVE_BATCH=[0-9]{4}$ ]] ||
+      die "--target archive takes --var ARCHIVE_BATCH=<NNNN> and nothing else" ;;
   publish)
     [ "${USNM_BOINC_STEP_FROM_SSH:-}" != 1 ] || die "--target publish isn't allowed over ssh"
     [ "$STEP" = publish ] || die "--target publish takes --step publish"
@@ -139,7 +154,7 @@ case $TARGET in
     case $STEP in claim | release | dead-letter | deadline-retry | collect | export) ;; *) die "--target handoff runs claim, release, dead-letter, deadline-retry, collect or export on-prem; $STEP stays in Azure" ;; esac
     [ "$STEP" != deadline-retry ] || [ "${USNM_BOINC_STEP_FROM_SSH:-}" != 1 ] ||
       die "--step deadline-retry is an operator's, as root on the host; it isn't allowed over ssh" ;;
-  *) die "--target $TARGET does not run on-prem; only bridge, publish and handoff steps do" ;;
+  *) die "--target $TARGET does not run on-prem; only bridge, publish, handoff, scans and archive steps do" ;;
 esac
 [[ $STEP =~ ^[a-z][a-z-]{0,40}$ ]] || die "--step is a bridge step name, such as register-apps or submit"
 
@@ -218,6 +233,114 @@ for root, dirs, files in os.walk(os.path.join(stage, "keep"), topdown=False):
         os.rmdir(root)
 print(f"received {count} files ({total} bytes), pruned {pruned}")
 ' "$STAGE" "$RUN_DIR/usnm-boinc-scans.lock" "$WAIT_MINS" || die "the scans were not all received"
+  exit 0
+fi
+
+ARCHIVE_ROOT=${USNM_BOINC_ARCHIVE_ROOT:-/srv/usnm-boinc/project/archive}
+if [ "$TARGET" = archive ]; then
+  batch=${VARS[0]#ARCHIVE_BATCH=}
+  handoff_dir=${USNM_BOINC_ARCHIVE_HANDOFF_DIR:-/srv/usnm-boinc/project/handoff}
+  results=${USNM_BOINC_ARCHIVE_RESULTS:-/srv/usnm-boinc/project/usnmocr/results}
+  tool=$ARCHIVE_ROOT/archive_history.py
+  if $WHAT_IF; then
+    echo "would receive batch $batch's manifest and dispatch receipt from stdin into $ARCHIVE_ROOT/batches/$batch"
+    echo "then: python3 $tool bridge --batch-dir $ARCHIVE_ROOT/batches/$batch --handoff-dir $handoff_dir --results $results [--apply --confirm-controller-paused]"
+    exit 0
+  fi
+  [ -n "$WAIT_MINS" ] || die "--wait-mins is required on-prem"
+  [ -f "$tool" ] && [ ! -L "$tool" ] || die "no $tool: install archive_history.py there first (docs/boinc-batch-scheduler.md)"
+  mkdir -p "$ARCHIVE_ROOT"; [ -d "$ARCHIVE_ROOT/batches" ] || mkdir -m 0700 "$ARCHIVE_ROOT/batches"
+  # One archive step at a time (a lock in the run directory). Reads the two files, checks them,
+  # and puts them in place; prints "done" when the batch's bridge receipt already names the
+  # manifest, else "new" or "same".
+  state=$(python3 -c '
+import fcntl, hashlib, json, os, signal, sys, tarfile, tempfile
+root, batch, lock_path, wait = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
+WANTED = {"manifest.json": 256 * 1024 * 1024, "receipts/dispatch.json": 1024 * 1024}
+
+
+class Member(tarfile.TarInfo):
+    # As for the scans: refuse a long PAX or GNU extension record before tarfile reads it.
+    def _proc_member(self, tarfile_):
+        if self.type in tarfile.GNU_TYPES + (tarfile.XHDTYPE, tarfile.XGLTYPE, tarfile.SOLARIS_XHDTYPE) \
+                and self.size > 4096:
+            raise tarfile.HeaderError(f"a {self.size}-byte tar extension record")
+        return super()._proc_member(tarfile_)
+
+
+signal.alarm(wait * 60)
+lock = open(lock_path, "w")
+fcntl.flock(lock, fcntl.LOCK_EX)
+batches = os.path.join(root, "batches")
+got = {}
+with tempfile.TemporaryDirectory(dir=batches) as tmp:
+    with tarfile.open(fileobj=sys.stdin.buffer, mode="r|", tarinfo=Member) as tar:
+        for index, m in enumerate(tar):
+            if index >= 8:
+                sys.exit("error: more tar entries than a batch sends")
+            name = m.name[2:] if m.name.startswith("./") else m.name
+            if m.isdir() and name.rstrip("/") in ("", ".", "receipts"):
+                continue
+            if not m.isreg() or name not in WANTED or name in got or m.size > WANTED[name]:
+                sys.exit(f"error: {m.name!r} is not a batch manifest or dispatch receipt")
+            path = os.path.join(tmp, name.replace("/", "_"))
+            src = tar.extractfile(m)
+            with open(path, "wb") as out:
+                while chunk := src.read(1 << 20):
+                    out.write(chunk)
+            if os.path.getsize(path) != m.size:
+                sys.exit(f"error: {m.name} came short")
+            got[name] = path
+    if set(got) != set(WANTED):
+        sys.exit("error: the tar must hold manifest.json and receipts/dispatch.json")
+    data = {name: open(path, "rb").read() for name, path in got.items()}
+    receipt = json.loads(data["receipts/dispatch.json"])
+    sha = hashlib.sha256(data["manifest.json"]).hexdigest()
+    if not (isinstance(receipt, dict) and receipt.get("step") == "dispatch" and receipt.get("complete") is True
+            and receipt.get("batch") == batch and receipt.get("manifest_sha256") == sha):
+        sys.exit(f"error: the dispatch receipt is not batch {batch}'"'"'s complete receipt for this manifest")
+    dest = os.path.join(batches, batch)
+    if os.path.lexists(dest):
+        if os.path.islink(dest) or not os.path.isdir(dest):
+            sys.exit(f"error: {dest} is not a directory")
+        for name, body in data.items():
+            have = os.path.join(dest, name)
+            if os.path.islink(have) or not os.path.isfile(have) or open(have, "rb").read() != body:
+                sys.exit(f"error: batch {batch} is here with another {name}; stop and reconcile")
+        done = os.path.join(dest, "receipts", "bridge.json")
+        if os.path.isfile(done) and not os.path.islink(done):
+            bridged = json.load(open(done))
+            if bridged.get("complete") is True and bridged.get("manifest_sha256") == sha:
+                print("done")
+                sys.exit(0)
+        print("same")
+        sys.exit(0)
+    staged = os.path.join(tmp, "batch")
+    os.makedirs(os.path.join(staged, "receipts"), mode=0o700)
+    os.chmod(staged, 0o700)
+    for name, body in data.items():
+        with open(os.path.join(staged, name), "wb") as out:
+            out.write(body)
+            out.flush()
+            os.fsync(out.fileno())
+    os.rename(staged, dest)
+    print("new")
+' "$ARCHIVE_ROOT" "$batch" "$RUN_DIR/usnm-boinc-archive.lock" "$WAIT_MINS")
+  [ -n "$state" ] || die "batch $batch was not received"
+  dir=$ARCHIVE_ROOT/batches/$batch
+  if [ "$state" = "done" ]; then
+    python3 -c '
+import json, sys
+r = json.load(open(sys.argv[1]))
+r["workunits"] = len(r.get("workunits", []))
+print(json.dumps({"event": "boinc_archive_bridge", "apply": True, "already": True, **r}, sort_keys=True))
+' "$dir/receipts/bridge.json"
+    exit 0
+  fi
+  bridge=(python3 "$tool" bridge --batch-dir "$dir" --handoff-dir "$handoff_dir" --results "$results")
+  timeout --signal=TERM "${WAIT_MINS}m" "${bridge[@]}" || die "batch $batch's bridge dry run failed"
+  timeout --signal=TERM "${WAIT_MINS}m" "${bridge[@]}" --apply --confirm-controller-paused ||
+    die "batch $batch's bridge step failed; it resumes when run again"
   exit 0
 fi
 

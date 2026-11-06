@@ -1,0 +1,11 @@
+[Unit]
+Description=Archive the held pages' history once a day (#835)
+
+[Timer]
+# 08:30 UTC, about 3:30 AM US Eastern.
+OnCalendar=*-*-* 08:30:00 UTC
+AccuracySec=1min
+Persistent=false
+
+[Install]
+WantedBy=timers.target

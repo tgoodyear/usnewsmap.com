@@ -164,6 +164,9 @@ param boincHandoffRunner string = ''
 @description('Let boincHandoffRunner run the BOINC batch controller on-prem (#866, docs/boinc-batch-scheduler.md): Reader on the subscription and a custom role that updates and starts the hand-off and bridge jobs (modules/boinc-controller.bicep). Needs the hand-off job and boincHandoffRunner. Off removes the grants.')
 param boincControllerOnPrem bool = false
 
+@description('Let boincHandoffRunner, the batch controller (CT 211), delete blobs in boinc-handoff for the daily held-page archive (#835, docs/boinc-batch-scheduler.md): a custom role with blobs/delete only, assigned on that container only (modules/ocr-exchange.bicep). Needs ocrNodes, boincControllerOnPrem and boincHandoffRunner. Off removes the grant and the role.')
+param boincHeldArchive bool = false
+
 @description('The BOINC server runs on-prem (#942): its Azure stack keeps no Log Analytics workspace, so the scan fetcher gets no reader grant there (modules/boinc-handoff-logs.bicep). Set with "server": "onprem" in contrib-compute/infra/boinc/env/<env>.json.')
 param boincServerOnPrem bool = false
 
@@ -840,6 +843,11 @@ module ocrExchange 'modules/ocr-exchange.bicep' = if (ocrNodes) {
     ingestPrincipalId: identities.outputs.ingestPrincipalId
     ingest: ingestIdentityOn
     nodeWriterRoleLabel: n.ocrNodeWriterRole
+    // The held-page archive's deletes (#835), on boinc-handoff only.
+    handoffArchiverIds: boincHeldArchive && boincControllerOnPrem && !empty(trim(boincHandoffRunner))
+      ? [trim(boincHandoffRunner)]
+      : []
+    handoffArchiverRoleLabel: n.boincHandoffArchiverRole
   }
 }
 

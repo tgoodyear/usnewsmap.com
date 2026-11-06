@@ -1,0 +1,17 @@
+[Unit]
+Description=Archive the held pages' history: dispatch, then the BOINC host's bridge step (#835)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# The controller's own checkout, identity (its az sign-in) and settings: the archive tool
+# imports the controller's batch_scheduler.py beside it.
+WorkingDirectory=/opt/usnm
+Environment=USNM_SETTINGS_HOME=/root/.config/usnewsmap
+ExecStart=/usr/bin/bash /opt/usnm/scripts/boinc/onprem/held-archive.sh
+# A batch of 1,000 pages takes about 15 minutes, and a run does at most 10. On a stop or a
+# timeout the script starts the controller's timer again; a batch stopped half way resumes on
+# the next run.
+TimeoutStartSec=4h
+Nice=10

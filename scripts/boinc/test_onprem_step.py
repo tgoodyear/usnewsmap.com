@@ -360,6 +360,118 @@ class OnpremStep(unittest.TestCase):
         self.assertNotEqual(done.returncode, 0)
         self.assertIn("no --image or --var", done.stderr)
 
+    def archive(self, root, members, batch="0016", wait="5"):
+        """Run --target archive over ssh with a tar of `members` ((name, bytes) pairs) on stdin."""
+        import io
+        import tarfile
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w") as tar:
+            for name, data in members:
+                info = tarfile.TarInfo(name)
+                info.size = len(data)
+                tar.addfile(info, io.BytesIO(data))
+        env = {"PATH": os.environ["PATH"], "USNM_BOINC_CONF": self.conf.name,
+               "USNM_BOINC_ARCHIVE_ROOT": str(root / "archive"), "USNM_BOINC_STEP_RUN": str(root),
+               "USNM_BOINC_ARCHIVE_HANDOFF_DIR": str(root / "handoff"),
+               "USNM_BOINC_ARCHIVE_RESULTS": str(root / "results"),
+               "SSH_ORIGINAL_COMMAND": "--env prod --target archive --step bridge "
+                                       f"--var ARCHIVE_BATCH={batch} --wait-mins {wait}"}
+        return subprocess.run(["bash", str(SCRIPT), "--from-ssh"], env=env, input=buf.getvalue(),
+                              capture_output=True, timeout=60)
+
+    def archive_root(self, d):
+        """A scratch archive root whose archive_history.py logs its arguments and prints a receipt."""
+        root = Path(d)
+        (root / "archive").mkdir()
+        (root / "archive" / "archive_history.py").write_text(
+            "import json, sys\n"
+            "open(sys.argv[0] + '.log', 'a').write(' '.join(sys.argv[1:]) + '\\n')\n"
+            "print(json.dumps({'event': 'boinc_archive_bridge', 'apply': '--apply' in sys.argv}))\n")
+        return root
+
+    @staticmethod
+    def batch_files(batch="0016", manifest=b'{"pages": []}', **receipt):
+        import hashlib
+        import json
+        body = {"step": "dispatch", "complete": True, "batch": batch,
+                "manifest_sha256": hashlib.sha256(manifest).hexdigest(), **receipt}
+        return [("manifest.json", manifest), ("receipts/dispatch.json", json.dumps(body).encode())]
+
+    def test_archive_bridge_receives_the_batch_then_dry_runs_and_applies(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = self.archive_root(d)
+            done = self.archive(root, self.batch_files())
+            self.assertEqual(done.returncode, 0, done.stderr)
+            batch = root / "archive/batches/0016"
+            self.assertEqual((batch / "manifest.json").read_bytes(), b'{"pages": []}')
+            self.assertTrue((batch / "receipts/dispatch.json").is_file())
+            self.assertEqual(batch.stat().st_mode & 0o777, 0o700)
+            calls = (root / "archive/archive_history.py.log").read_text().splitlines()
+            common = f"bridge --batch-dir {batch} --handoff-dir {root / 'handoff'} --results {root / 'results'}"
+            self.assertEqual(calls, [common, common + " --apply --confirm-controller-paused"])
+            self.assertIn(b'"apply": true', done.stdout)
+            # Sent again (a resume): the same files are taken, and the step runs again.
+            done = self.archive(root, self.batch_files())
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertEqual(len((root / "archive/archive_history.py.log").read_text().splitlines()), 4)
+
+    def test_archive_bridge_done_batch_prints_its_receipt_and_runs_nothing(self):
+        import hashlib
+        import json
+        with tempfile.TemporaryDirectory() as d:
+            root = self.archive_root(d)
+            self.assertEqual(self.archive(root, self.batch_files()).returncode, 0)
+            sha = hashlib.sha256(b'{"pages": []}').hexdigest()
+            (root / "archive/batches/0016/receipts/bridge.json").write_text(json.dumps(
+                {"step": "bridge", "batch": "0016", "complete": True, "manifest_sha256": sha,
+                 "workunits": [1, 2, 3]}))
+            done = self.archive(root, self.batch_files())
+            self.assertEqual(done.returncode, 0, done.stderr)
+            line = json.loads(done.stdout.decode().strip().splitlines()[-1])
+            self.assertEqual((line["already"], line["workunits"], line["manifest_sha256"]), (True, 3, sha))
+            self.assertEqual(len((root / "archive/archive_history.py.log").read_text().splitlines()), 2)
+
+    def test_archive_bridge_refuses_anything_but_the_batch_files(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = self.archive_root(d)
+            files = self.batch_files()
+            for members, why in (
+                    (files + [("receipts/other.json", b"{}")], b"not a batch manifest"),
+                    (files[:1], b"must hold manifest.json and receipts/dispatch.json"),
+                    ([("../manifest.json", files[0][1]), files[1]], b"not a batch manifest"),
+                    (self.batch_files(complete=False), b"complete receipt"),
+                    (self.batch_files(batch="0017"), b"complete receipt"),
+                    ([files[0], self.batch_files(manifest=b"other")[1]], b"complete receipt")):
+                with self.subTest(why=why):
+                    done = self.archive(root, members)
+                    self.assertNotEqual(done.returncode, 0)
+                    self.assertIn(why, done.stderr)
+            self.assertFalse((root / "archive/batches/0016").exists())
+            self.assertFalse((root / "archive/archive_history.py.log").exists())
+            # A batch already here with another manifest stays as it is.
+            self.assertEqual(self.archive(root, files).returncode, 0)
+            done = self.archive(root, self.batch_files(manifest=b'{"pages": [1]}'))
+            self.assertNotEqual(done.returncode, 0)
+            self.assertIn(b"another manifest.json", done.stderr)
+            self.assertEqual((root / "archive/batches/0016/manifest.json").read_bytes(), b'{"pages": []}')
+            self.assertEqual([p.name for p in (root / "archive/batches").iterdir()], ["0016"])
+
+    def test_archive_bridge_takes_one_batch_var_only(self):
+        for command, why in (
+                ("--env prod --target archive --step db --var ARCHIVE_BATCH=0016 --wait-mins 5", "--step bridge"),
+                ("--env prod --target archive --step bridge --wait-mins 5", "ARCHIVE_BATCH=<NNNN>"),
+                ("--env prod --target archive --step bridge --var ARCHIVE_BATCH=16 --wait-mins 5", "ARCHIVE_BATCH=<NNNN>"),
+                ("--env prod --target archive --step bridge --var ARCHIVE_BATCH=0016 --var JOB_ID=x --wait-mins 5",
+                 "ARCHIVE_BATCH=<NNNN>")):
+            with self.subTest(command=command):
+                done = self.run_step(ssh=command)
+                self.assertNotEqual(done.returncode, 0)
+                self.assertIn(why, done.stderr)
+        done = self.run_step("--env", "prod", "--target", "archive", "--step", "bridge",
+                             "--var", "ARCHIVE_BATCH=0016", "--what-if")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn("batches/0016", done.stdout)
+
     def write_handoff_env(self, **changes):
         settings = dict(HANDOFF_SETTINGS, **changes)
         Path(self.conf.name, "handoff.env").write_text(

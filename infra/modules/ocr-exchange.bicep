@@ -23,6 +23,8 @@ param boincSubnetId string = ''
 param handoffWriterIds array = []
 @description('Principals given the node writer role on `ocr-out` for the fetched-scans list (#1056): the scan fetcher\'s Arc machine identity, which runs `usnm-ocr-worker publish-fetched` after each fetch. Service principals; empty grants none.')
 param fetchedPublisherIds array = []
+@description('Principals given the hand-off archiver role on `boinc-handoff` (#835): delete blobs there and nothing else, for the daily held-page archive (`archive_history.py dispatch`, docs/boinc-batch-scheduler.md). The batch controller\'s Arc machine identity, which already lists, reads and writes there. Service principals; empty grants none.')
+param handoffArchiverIds array = []
 @description('Object id of the on-prem hosts\' Entra group (usnm-onprem-grp-<env>, scripts/ocr-node/group.sh --kind onprem): the node writer role on `boinc-handoff`, as the handoffWriterIds have. Empty grants none.')
 param onPremGroupId string = ''
 @description('Principals that take pages off the two work queues for BOINC (the hand-off job\'s identity, #296, and the on-prem BOINC host\'s Arc machine identity, #967), all service principals: Message Processor and Message Sender on `ocr-priority` and `ocr-bulk`, and Message Sender only on `ocr-deadletter` (#1154). No Update Message.')
@@ -35,6 +37,8 @@ param ingestPrincipalId string
 param ingest bool = true
 @description('The node writer role\'s name, before its scope (infra/naming.bicep).')
 param nodeWriterRoleLabel string
+@description('The hand-off archiver role\'s name, before its scope (infra/naming.bicep).')
+param handoffArchiverRoleLabel string
 
 // Role definition ids, from
 // https://learn.microsoft.com/en-us/azure/role-based-access-control/built-in-roles/storage
@@ -407,6 +411,45 @@ resource handoffOnPremWriter 'Microsoft.Authorization/roleAssignments@2022-04-01
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', nodeWriter.name)
   }
 }
+
+// The hand-off archiver (#835): delete blobs, and nothing else, assigned on boinc-handoff
+// only. The held-page archive moves drained and held pages' journals, quarantined results and
+// spool entries out of the container once its copy is verified; the controller's node writer
+// role above already lets it list, read and write (and take the controller lease) there. The
+// role is defined only while it is assigned, and goes with its last assignment.
+var handoffArchiving = !empty(handoffArchiverIds)
+var handoffArchiverRoleId = guid(resourceGroup().id, 'usnm-boinc-handoff-archiver')
+resource handoffArchiver 'Microsoft.Authorization/roleDefinitions@2022-04-01' = if (handoffArchiving) {
+  name: handoffArchiverRoleId
+  properties: {
+    // Role names are unique per tenant: include the subscription and group.
+    roleName: '${handoffArchiverRoleLabel} (${take(subscription().subscriptionId, 8)}/${resourceGroup().name})'
+    description: 'The held-page archive (#835): delete blobs. Assigned on the boinc-handoff container only.'
+    type: 'CustomRole'
+    permissions: [
+      {
+        actions: []
+        dataActions: [
+          'Microsoft.Storage/storageAccounts/blobServices/containers/blobs/delete'
+        ]
+      }
+    ]
+    assignableScopes: [resourceGroup().id]
+  }
+}
+
+resource handoffArchivers 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
+  for p in handoffArchiverIds: {
+    scope: handoff
+    name: guid(handoff.id, p, 'usnm-boinc-handoff-archiver')
+    dependsOn: [handoffArchiver]
+    properties: {
+      principalId: p
+      principalType: 'ServicePrincipal'
+      roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', handoffArchiverRoleId)
+    }
+  }
+]
 
 // The ingest identity: ocr-enqueue and the seeder add pages to the queues,
 // and ocr-sync drains the dead letters (reads and deletes them), so Queue

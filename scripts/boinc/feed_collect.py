@@ -834,13 +834,19 @@ def client(data_dir, port, session=None):
             "disk_bytes": 0 if paused else max(0, min(float(free), float(allowance) - used))}
 
 
-def controller(unit):
-    if not re.fullmatch(r"[a-zA-Z0-9@_.-]+\.service", unit):
+def controller(unit, maintenance=()):
+    """The controller's last tick and last failure, from its unit's journal and systemd.
+
+    `maintenance` are units that pause the controller to do its upkeep, such as the daily
+    held-page archive (#835): their failures count as the controller's, and while one runs, or
+    for 15 minutes after it ends, a tick that is overdue because of the pause isn't unknown."""
+    units = (unit, *maintenance)
+    if not all(re.fullmatch(r"[a-zA-Z0-9@_.-]+\.service", u) for u in units) or len(set(units)) != len(units):
         raise ValueError("invalid unit")
     # --all: without it, journalctl's JSON output nulls any field over 4096 bytes, and a
     # successful tick's line (its timings) is longer, so only failures were ever seen.
-    raw = run(["journalctl", "--no-pager", "--quiet", "--all", "-u", unit, "-o", "json",
-               "--since=-2h", "-n", "2000"])
+    raw = run(["journalctl", "--no-pager", "--quiet", "--all", *(a for u in units for a in ("-u", u)),
+               "-o", "json", "--since=-2h", "-n", "2000"])
     latest, last_failure = None, 0
     for line in raw.splitlines():
         entry = json.loads(line)
@@ -848,7 +854,7 @@ def controller(unit):
             continue
         message_id = entry.get("MESSAGE_ID")
         field = SYSTEMD_FAILURE_FIELDS.get(message_id) if isinstance(message_id, str) else None
-        if field and entry.get("UNIT") == unit:
+        if field and entry.get("UNIT") in units:
             outcome = entry.get(field)
             if not isinstance(outcome, str) or not outcome or outcome in ("success", "done"):
                 raise ValueError("invalid native controller failure evidence")
@@ -859,6 +865,9 @@ def controller(unit):
         except (ValueError, TypeError):
             continue
         if not isinstance(event, dict) or event.get("event") not in ("boinc_batch_tick", "boinc_batch_failure"):
+            continue
+        # Only the controller's own ticks: a maintenance unit's lines are read for its failures.
+        if maintenance and entry.get("_SYSTEMD_UNIT", unit) != unit:
             continue
         finished = int(entry["__REALTIME_TIMESTAMP"]) // 1000000
         ok = event["event"] == "boinc_batch_tick"
@@ -893,8 +902,32 @@ def controller(unit):
         return {"ok": False, "seconds": max(0, end - start), "finished_at": int(time.time()),
                 "last_failure_at": last_failure}
     if latest is None or time.time() - latest["finished_at"] > 900:
+        paused = paused_by(maintenance)
+        if paused:
+            # Paused on purpose: nothing ran, so nothing ran long or failed.
+            return {"ok": None, "seconds": 0, "finished_at": int(time.time()), "last_failure_at": last_failure,
+                    "paused_by": paused}
         raise ValueError("no recent completed controller tick")
     return latest | {"last_failure_at": last_failure}
+
+
+def paused_by(maintenance):
+    """The first maintenance unit that is running, or ended under 15 minutes ago, else None."""
+    for unit in maintenance:
+        status = dict(line.split("=", 1) for line in run([
+            "systemctl", "show", unit, "-p", "LoadState", "-p", "SubState",
+            "-p", "ExecMainStartTimestampMonotonic", "-p", "ExecMainExitTimestampMonotonic",
+        ]).decode().splitlines() if "=" in line)
+        if status.get("LoadState") != "loaded":
+            continue
+        start = int(status.get("ExecMainStartTimestampMonotonic", "0")) / 1e6
+        end = int(status.get("ExecMainExitTimestampMonotonic", "0")) / 1e6
+        now = time.clock_gettime(time.CLOCK_MONOTONIC)
+        if status.get("SubState") in ("start", "running") and start > end:
+            return unit
+        if start and end >= start and 0 <= now - end <= 900:
+            return unit
+    return None
 
 
 def backlog(dashboard, requests, outbox, selection=None):
@@ -1388,6 +1421,9 @@ def main(argv=None):
     p.add_argument("--port", type=int, default=31416)
     p = sub.add_parser("controller")
     p.add_argument("--unit", default="usnm-boinc-priority-controller.service")
+    p.add_argument("--maintenance-unit", action="append", default=[],
+                   help="A unit that pauses the controller for upkeep, such as the held-page archive (#835): "
+                        "its failures count as the controller's, and its pause isn't a missing tick")
     p = sub.add_parser("backlog")
     p.add_argument("--dashboard", required=True)
     p.add_argument("--requests", type=Path, required=True)
@@ -1405,7 +1441,7 @@ def main(argv=None):
         elif args.source == "client":
             result.update(client(args.data_dir, args.port, args.output.with_name(args.output.stem + ".session.json")))
         elif args.source == "controller":
-            result["tick"] = controller(args.unit)
+            result["tick"] = controller(args.unit, tuple(args.maintenance_unit))
         else:
             result.update(backlog(args.dashboard, args.requests, args.outbox, args.selection))
     except SupplyUnknown as error:

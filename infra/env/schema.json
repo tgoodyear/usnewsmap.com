@@ -86,6 +86,11 @@
       "description": "Let USNM_BOINC_HANDOFF_RUNNER (CT 211) run the BOINC batch controller (#866): Reader on the subscription and a role that updates and starts the hand-off and bridge jobs.",
       "type": "boolean"
     },
+    "USNM_BOINC_HELD_ARCHIVE": {
+      "x-usnm-visibility": "public",
+      "description": "Let USNM_BOINC_HANDOFF_RUNNER (CT 211, the batch controller) delete blobs in boinc-handoff for the daily held-page archive (#835): a custom role with blobs/delete only, assigned on that container only. Needs USNM_BOINC_CONTROLLER_ONPREM.",
+      "type": "boolean"
+    },
     "USNM_BOINC_SERVER_ONPREM": {
       "x-usnm-visibility": "public",
       "description": "The BOINC server runs on-prem (#942): skip the scan fetcher's reader grant on the BOINC Log Analytics workspace, which the on-prem server mode removes. Match \"server\" in contrib-compute/infra/boinc/env/<env>.json.",
