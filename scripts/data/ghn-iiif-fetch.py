@@ -14,10 +14,12 @@ have from Chronicling America. Every other page is downloaded at full size
 manifest gives.
 
 Requests go one at a time, --delay seconds apart, with an identifying
-User-Agent. 429 and 5xx responses and dropped connections are retried with
-backoff (Retry-After honoured); anything else, or a response that isn't JSON or
-the expected image, stops the run. Run again, it resumes: title and issue JSON
-are cached in OUT/manifests, and images already downloaded and valid are kept.
+User-Agent. Redirects aren't followed. 429 and 5xx responses and dropped
+connections are retried with backoff, never sooner than Retry-After asks (a
+wait over 15 minutes stops the run instead); anything else, or a response that
+isn't JSON or the expected image, stops the run. Run again, it resumes: title
+and issue JSON are cached in OUT/manifests, and images already downloaded are
+checked again and kept if valid.
 
 Writes OUT/images/<lccn>/<date>/ed-<n>/seq-<n>.jpg, OUT/inventory.jsonl (one
 line per page, LoC's included) and OUT/summary.json.
@@ -26,9 +28,11 @@ Usage: ghn-iiif-fetch.py --out OUTDIR [--lccn LCCN ...] [--delay 3] [--inventory
 With no --lccn it fetches both Cherokee Phoenix titles, sn83020866 and sn83020874.
 """
 import argparse
+import email.utils
 import hashlib
 import http.client
 import json
+import math
 import os
 import re
 import sys
@@ -36,6 +40,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 
 UA = "usnewsmap-ghn-iiif-fetch (trevor@goodyeartechnical.com)"
@@ -49,15 +54,28 @@ ISSUE_RE = re.compile(r"^/lccn/([a-z]{1,3}\d{8,10})/(\d{4}-\d\d-\d\d)/ed-(\d+)\.
 PAGE_RE = re.compile(r"^/lccn/([a-z]{1,3}\d{8,10})/(\d{4}-\d\d-\d\d)/ed-(\d+)/seq-(\d+)/?$")
 
 
-def retry_after(value):
+def retry_after(value, now=None):
+    """Seconds a Retry-After header (delta-seconds or HTTP-date) asks for, else None."""
+    value = (value or "").strip()
+    if value.isdigit():
+        return int(value)
     try:
-        return min(MAX_WAIT, max(1, int(value)))
+        when = email.utils.parsedate_to_datetime(value)
     except (TypeError, ValueError):
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return max(0, math.ceil((when - (now or datetime.now(timezone.utc))).total_seconds()))
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    # Returning None makes urllib raise the 3xx as an HTTPError, which stops the run.
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
 
 
 class Client:
-    def __init__(self, delay, retries=5, sleep=time.sleep, opener=urllib.request.urlopen):
+    def __init__(self, delay, retries=5, sleep=time.sleep, opener=urllib.request.build_opener(NoRedirect).open):
         self.delay, self.retries, self.sleep, self.opener = delay, retries, sleep, opener
         self.last = None
         self.requests = 0
@@ -75,7 +93,10 @@ class Client:
             except urllib.error.HTTPError as e:
                 if e.code not in RETRY_STATUS or attempt == self.retries:
                     raise
-                wait = retry_after(e.headers.get("Retry-After")) or min(MAX_WAIT, 30 * 2**attempt)
+                asked = retry_after(e.headers.get("Retry-After") if e.headers else None)
+                if asked is not None and asked > MAX_WAIT:
+                    raise RuntimeError(f"{url}: HTTP {e.code} asks to wait {asked}s, over {MAX_WAIT}s; stopping") from e
+                wait = max(asked or 0, min(MAX_WAIT, 30 * 2**attempt))
                 why = f"HTTP {e.code}"
             except (urllib.error.URLError, TimeoutError, ConnectionError, http.client.IncompleteRead) as e:
                 if attempt == self.retries:
@@ -147,20 +168,53 @@ def pages(manifest):
 
 
 def jpeg_size(data):
-    """(width, height) of a complete JPEG (SOI ... EOI), else None."""
+    """(width, height) of a complete JPEG, else None.
+
+    Complete: SOI, well-formed segments, a frame header, at least one scan with
+    entropy-coded data, and EOI as the last two bytes.
+    """
+    n = len(data)
     if not (data.startswith(b"\xff\xd8") and data.endswith(b"\xff\xd9")):
         return None
-    i = 2
-    while i + 9 <= len(data):
+    i, size, scans = 2, None, 0
+    while i + 2 <= n:
         if data[i] != 0xFF:
             return None
         marker = data[i + 1]
-        if marker == 0xFF:
+        if marker == 0xFF:  # fill byte
             i += 1
             continue
+        if marker == 0xD9:  # EOI
+            return size if scans and i + 2 == n else None
+        if 0xD0 <= marker <= 0xD7 or marker == 0x01:  # no length
+            i += 2
+            continue
+        if i + 4 > n:
+            return None
+        end = i + 2 + int.from_bytes(data[i + 2:i + 4], "big")
+        if end - i < 4 or end > n:
+            return None
         if 0xC0 <= marker <= 0xCF and marker not in (0xC4, 0xC8, 0xCC):
-            return int.from_bytes(data[i + 7:i + 9], "big"), int.from_bytes(data[i + 5:i + 7], "big")
-        i += 2 + int.from_bytes(data[i + 2:i + 4], "big")
+            if end - i < 10:
+                return None
+            size = int.from_bytes(data[i + 7:i + 9], "big"), int.from_bytes(data[i + 5:i + 7], "big")
+        i = end
+        if marker == 0xDA:  # SOS: entropy-coded data runs to the next marker other than RSTn
+            if size is None:
+                return None
+            j = i
+            while True:
+                j = data.find(b"\xff", j)
+                if j < 0 or j + 1 >= n:
+                    return None
+                if data[j + 1] == 0x00 or 0xD0 <= data[j + 1] <= 0xD7:
+                    j += 2
+                    continue
+                break
+            if j == i:
+                return None
+            scans += 1
+            i = j
     return None
 
 
