@@ -263,7 +263,8 @@ impl Http {
             // Paced from the end of the last request, across retries too.
             let mut last = self.last.lock().await;
             let now = tokio::time::Instant::now();
-            let start = last.map_or(now, |t| (t + wait).max(now));
+            let start = retry_start(*last, now, wait)
+                .with_context(|| format!("`{url}`: retry deadline is out of range"))?;
             let Some(budget) = try_budget(start, self.cutoff, timeout) else {
                 bail!(
                     "`{url}`: no time left before the run's cutoff for try {} of {}",
@@ -291,6 +292,17 @@ impl Http {
                 Err(e) => return Err(e),
             };
             wait = retry_wait(self.delay, attempt, retry_after);
+            if attempt == self.retries {
+                let retry_at = retry_start(*last, tokio::time::Instant::now(), wait)
+                    .with_context(|| format!("`{url}`: final retry deadline is out of range"))?;
+                if self.cutoff.is_some_and(|cutoff| retry_at >= cutoff) {
+                    bail!(
+                        "`{url}`: no time left before the run's cutoff after {} failed tries",
+                        self.retries + 1
+                    );
+                }
+                tokio::time::sleep_until(retry_at).await;
+            }
         }
         bail!("`{url}` failed {} times", self.retries + 1)
     }
@@ -438,6 +450,21 @@ pub fn retry_wait(delay: Duration, attempt: u32, retry_after: Option<Duration>) 
     doubled
         .min(MAX_BACKOFF_WAIT)
         .max(retry_after.unwrap_or_default())
+}
+
+fn retry_start(
+    last: Option<tokio::time::Instant>,
+    now: tokio::time::Instant,
+    wait: Duration,
+) -> anyhow::Result<tokio::time::Instant> {
+    let start = last
+        .map(|last| {
+            last.checked_add(wait)
+                .ok_or_else(|| anyhow::anyhow!("retry delay {wait:?} exceeds the clock range"))
+        })
+        .transpose()?
+        .unwrap_or(now);
+    Ok(start.max(now))
 }
 
 /// A page the server has not (it answered 404), kept so a resumed fetch
@@ -851,6 +878,40 @@ mod tests {
         assert_eq!(
             retry_wait(Duration::from_secs(1), 10, None),
             MAX_BACKOFF_WAIT
+        );
+    }
+
+    #[test]
+    fn retry_deadline_rejects_an_unrepresentable_wait() {
+        let now = tokio::time::Instant::now();
+        let err = retry_start(Some(now), now, Duration::from_secs(u64::MAX)).unwrap_err();
+        assert!(err.to_string().contains("exceeds the clock range"));
+    }
+
+    #[tokio::test]
+    async fn waits_for_retry_after_after_the_last_attempt() {
+        use axum::http::{header, StatusCode};
+        let app = axum::Router::new().fallback(|| async {
+            (
+                StatusCode::TOO_MANY_REQUESTS,
+                [(header::RETRY_AFTER, "1")],
+                "later",
+            )
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let mut http = Http::new(Duration::from_millis(10), "usnm-test", "test").unwrap();
+        http.retries = 0;
+        let started = tokio::time::Instant::now();
+        let err = http.get(&format!("http://{addr}/retry")).await.unwrap_err();
+
+        assert!(err.to_string().contains("failed 1 times"), "{err:#}");
+        assert!(
+            started.elapsed() >= Duration::from_secs(1),
+            "{:?}",
+            started.elapsed()
         );
     }
 

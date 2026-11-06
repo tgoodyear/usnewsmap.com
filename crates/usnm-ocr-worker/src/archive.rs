@@ -1160,7 +1160,7 @@ mod tests {
             dir.path(),
             "keep/psu_pst_bonadea_ver03/sn84035968/1859-07-18/1/1.jp2",
             b"3",
-            true,
+            false,
         );
         let names: Vec<_> = list(dir.path(), "keep")
             .unwrap()

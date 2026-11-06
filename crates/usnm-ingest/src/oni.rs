@@ -313,7 +313,39 @@ pub fn issue_pages(xml: &str) -> anyhow::Result<Vec<IssuePage>> {
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
     pages.sort_by_key(|page| page.seq);
-    Ok(pages)
+    let mut merged: Vec<IssuePage> = Vec::with_capacity(pages.len());
+    for page in pages {
+        if let Some(previous) = merged.last_mut() {
+            if previous.seq == page.seq {
+                if let Some(image_file) = page.image_file {
+                    if let Some(existing) = &previous.image_file {
+                        ensure!(
+                            existing == &image_file,
+                            "page {} has conflicting service images in its METS",
+                            page.seq
+                        );
+                    } else {
+                        previous.image_file = Some(image_file);
+                    }
+                }
+                if let Some(alto_file) = page.alto_file {
+                    if let Some(existing) = &previous.alto_file {
+                        ensure!(
+                            existing == &alto_file,
+                            "page {} has conflicting OCR files in its METS",
+                            page.seq
+                        );
+                    } else {
+                        previous.alto_file = Some(alto_file);
+                    }
+                }
+                previous.has_ocr |= page.has_ocr;
+                continue;
+            }
+        }
+        merged.push(page);
+    }
+    Ok(merged)
 }
 
 fn issue_file_path(mets: &str, href: &str) -> anyhow::Result<String> {
@@ -760,7 +792,7 @@ impl Run<'_> {
             Some(path) if self.store.exists(&path).await? => Some(path),
             _ => None,
         };
-        let record = PsuScanRecord {
+        let mut record = PsuScanRecord {
             doc_id: key.doc_id(),
             batch,
             batch_version,
@@ -787,6 +819,31 @@ impl Run<'_> {
                 "{}: existing Penn State sidecar disagrees with the verified scan",
                 sidecar.display()
             );
+            if old.batch_version == record.batch_version {
+                let batch_prefix = format!("{}/", self.name);
+                if record.alto_store_path.is_none() {
+                    if let Some(path) = old
+                        .alto_store_path
+                        .as_ref()
+                        .filter(|path| path.starts_with(&batch_prefix))
+                    {
+                        if self.store.exists(path).await? {
+                            record.alto_store_path = Some(path.clone());
+                        }
+                    }
+                }
+                if record.ocr_store_path.is_none() {
+                    if let Some(path) = old
+                        .ocr_store_path
+                        .as_ref()
+                        .filter(|path| path.starts_with(&batch_prefix))
+                    {
+                        if self.store.exists(path).await? {
+                            record.ocr_store_path = Some(path.clone());
+                        }
+                    }
+                }
+            }
             if old.batch_version != record.batch_version
                 || old.image_path != record.image_path
                 || old.alto_store_path != record.alto_store_path
@@ -1000,6 +1057,22 @@ mod tests {
         assert_eq!(pages[1].seq, 2);
         assert!(!pages[1].has_ocr);
         assert_eq!(pages[1].image_file.as_deref(), Some("1025.jp2"));
+    }
+
+    #[test]
+    fn duplicate_page_entries_keep_their_ocr_reference() {
+        let mut xml = mets();
+        let duplicate =
+            r#"<div TYPE="np:page" DMDID="pageModsBib1"><fptr FILEID="serviceFile1"/></div>"#;
+        xml = xml.replace(
+            "</div>\n  </structMap>",
+            &format!("{duplicate}</div>\n  </structMap>"),
+        );
+        let pages = issue_pages(&xml).unwrap();
+        assert_eq!(pages.len(), 2);
+        assert_eq!(pages[0].seq, 1);
+        assert!(pages[0].has_ocr);
+        assert_eq!(pages[0].alto_file.as_deref(), Some("1024.xml"));
     }
 
     /// A site holding one bag: a reel, an issue from 1861 with two pages
@@ -1256,6 +1329,38 @@ mod tests {
         assert_eq!(refreshed.alto_store_path, records[0].alto_store_path);
         assert_eq!(refreshed.ocr_store_path, records[0].ocr_store_path);
         assert_eq!(refreshed.fetched_at, records[0].fetched_at);
+
+        let issue = Issue {
+            lccn: "sn84035968".into(),
+            date: NaiveDate::from_ymd_opt(1861, 10, 8).unwrap(),
+            edition: 1,
+            mets: "data/sn84035968/000002003/1861100801/1861100801.xml".into(),
+        };
+        let key = PageKey::new(&issue.lccn, issue.date, issue.edition, 1).unwrap();
+        let mut run = Run {
+            fetch: &site,
+            store: store.as_ref(),
+            site: SITE,
+            bag: format!("{SITE}/data/batches/batch_pst_test_ver01"),
+            name: "psu_pst_test_ver01".into(),
+            scans_root: Some(&scans_root),
+            done: Fetched::default(),
+        };
+        run.copy_scan(
+            &issue,
+            &key,
+            "data/sn84035968/000002003/1861100801/1024.jp2",
+            &hex(&Md5::digest(b"page one image")),
+            None,
+            false,
+        )
+        .await
+        .unwrap();
+        let preserved: PsuScanRecord =
+            serde_json::from_slice(&std::fs::read(&sidecar).unwrap()).unwrap();
+        assert_eq!(preserved.alto_store_path, records[0].alto_store_path);
+        assert_eq!(preserved.ocr_store_path, records[0].ocr_store_path);
+
         assert_eq!(
             std::fs::metadata(scans_root.join("catalog/psu_pst_test_ver01.jsonl"))
                 .unwrap()
