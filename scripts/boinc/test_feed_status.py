@@ -151,7 +151,7 @@ class DurationTest(unittest.TestCase):
             self.assertEqual(self.tick(60)["cpu_shortage"]["duration_s"], 60)
             checks = self.tick(120, **change)
             self.assertEqual(checks["cpu_shortage"]["duration_s"], 0)
-            self.assertEqual(checks["collection"]["state"], "firing")
+            self.assertEqual((checks["collection"]["state"], checks["collection"]["reset"]), ("pending", True))
 
     def test_immediate_conditions_and_metrics_contract(self):
         self.facts["enabled_until"] = NOW + 21600
@@ -215,11 +215,55 @@ class DurationTest(unittest.TestCase):
             checks = self.tick(at)
             self.assertEqual((checks["feeder_allocation"]["state"], checks["feeder_allocation"]["reason"]),
                              ("unknown", reason))
-            self.assertEqual(checks["collection"]["state"], "firing")
+            self.assertEqual(checks["collection"]["state"], "pending")
+
+    def test_collection_fires_after_three_minutes_of_unknown_and_a_single_blip_never_fires(self):
+        self.tick(0)
+        self.assertEqual(self.tick(60)["collection"]["state"], "healthy")
+        tick = self.facts.pop("tick")
+        self.assertEqual(self.tick(120)["collection"]["state"], "pending")   # one failed source run
+        self.facts["tick"] = tick
+        self.assertEqual(self.tick(180)["collection"]["state"], "healthy")   # recovered: no email
+        self.facts.pop("tick")
+        for at in (240, 300, 360):
+            self.assertEqual(self.tick(at)["collection"]["state"], "pending")
+        fired = self.tick(420)
+        self.assertEqual((fired["collection"]["state"], fired["collection"]["duration_s"]), ("firing", 180))
+
+    def test_recurring_resets_fire_collection_and_a_single_reset_does_not(self):
+        self.tick(0)
+        self.assertEqual(self.tick(60)["collection"]["state"], "healthy")
+        first = self.tick(300)                                   # one gap over 180 s: a reset
+        self.assertEqual((first["collection"]["state"], first["collection"]["reset"]), ("pending", True))
+        self.assertEqual(self.tick(360)["collection"]["state"], "healthy")
+        for at, overrides in ((600, {}), (840, {}), (1080, {})):  # an evaluator running every four minutes
+            checks = self.tick(at, **overrides)
+        self.assertEqual(self.tick(1080 + 240)["collection"]["state"], "firing")
+        self.assertEqual(checks["collection"]["state"], "firing")
+        self.tick(1400)
+        self.assertEqual(self.tick(1460)["collection"]["state"], "healthy")
+        for at, config in ((1520, "a"), (1580, "b"), (1640, "c"), (1700, "d")):  # configs changing every minute
+            checks = self.tick(at, config_id=config)
+        self.assertEqual((checks["collection"]["state"], checks["collection"]["duration_s"]), ("firing", 180))
+
+    def test_a_wall_clock_jump_or_a_reboot_cannot_shorten_the_collection_hold(self):
+        self.tick(0)                                           # the first evaluation is a reset
+        self.assertEqual(self.tick(60)["collection"]["state"], "healthy")
+        self.facts.pop("tick")
+        self.assertEqual(self.tick(120)["collection"]["state"], "pending")
+        jumped = self.tick(780, monotonic=10180)              # wall +660 s, monotonic +60 s
+        self.assertEqual((jumped["collection"]["state"], jumped["collection"]["duration_s"]), ("pending", 60))
+        rebooted = self.tick(1500, monotonic=50, boot_id="next")  # a reboot adds nothing for that step
+        self.assertEqual((rebooted["collection"]["state"], rebooted["collection"]["duration_s"]), ("pending", 60))
+        self.assertEqual(self.tick(1560, monotonic=110, boot_id="next")["collection"]["state"], "pending")
+        self.assertEqual(self.tick(1620, monotonic=170, boot_id="next")["collection"]["state"], "firing")
+        self.facts["tick"] = {"ok": True, "seconds": 900}
+        self.assertEqual(self.tick(1680, monotonic=230, boot_id="next")["collection"]["state"], "healthy")
 
     def test_corrupt_duration_state_resets_instead_of_trusting_old_health(self):
         self.state = {"schema_version": 1, "time": "broken", "conditions": []}
-        self.assertEqual(self.tick(0)["collection"]["state"], "firing")
+        collection = self.tick(0)["collection"]
+        self.assertEqual((collection["state"], collection["reset"]), ("pending", True))
 
 
 if __name__ == "__main__":
@@ -308,7 +352,7 @@ class QwenAdmissionTest(unittest.TestCase):
             document, _ = F.evaluate(self.facts, {}, NOW, 10000, "boot", "cfg")
             checks = {c["code"]: c for c in document["checks"]}
             self.assertEqual(checks["usnm_qwen_no_work"]["state"], "unknown")
-            self.assertEqual(checks["collection"]["state"], "firing")
+            self.assertEqual(checks["collection"]["state"], "pending")
 
     def test_without_the_opt_in_the_workunit_check_is_unchanged(self):
         del self.facts["qwen_admission"]

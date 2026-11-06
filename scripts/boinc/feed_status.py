@@ -22,6 +22,7 @@ COHORT_STALL_S = 15 * 60          # no completed run at all
 COHORT_REPORT_MAX_AGE_S = 30 * 60  # runs complete but none reports (the step lock stays busy)
 COHORT_FAILURE_RUNS = 3           # failed runs in a row since the last success, not one
 NO_WORK_HOLD_S = 3600
+COLLECTION_HOLD_S = 3 * 60        # three evaluations in a row
 # Statuses of runs that scanned candidates and measured backlog, buffers and the window.
 COHORT_SCAN_STATUSES = ("no-fresh-verified-pairs", "current-window-still-eligible",
                         "bounded-gpu-inflight-buffer-full", "refilled-finite-window")
@@ -166,14 +167,28 @@ def evaluate(facts, previous, now, monotonic, boot_id, config_id):
               generation=guard["reason"] + ":" + ",".join(map(str, guard["app_ids"])),
               reason=guard["reason"], app_ids=guard["app_ids"])
     unknown = facts.get("errors", []) or [c["code"] for c in checks if c["state"] == "unknown"]
-    check("collection", bool(unknown) or not continuous, reset=not continuous)
+    # Held: one failed source run (a single unknown evaluation) is not worth an email.
+    # Its time is kept apart from the condition timers a reset clears, so resets that
+    # recur (an evaluator running only every few minutes, configs changing) still fire.
+    # It adds monotonic time within one boot only, so a wall-clock jump can't fire it
+    # early; across a reboot it adds nothing for that step.
+    unhealthy = bool(unknown) or not continuous
+    held = previous.get("collection_elapsed") if unhealthy else None
+    if held is not None and (type(held) not in (int, float) or not 0 <= held <= 10 ** 9):
+        held = None
+    step = monotonic - previous.get("monotonic", monotonic) if previous.get("boot_id") == boot_id else 0
+    elapsed = (held + (step if 0 < step <= 10 ** 9 else 0) if held is not None else 0) if unhealthy else None
+    checks.append({"code": "collection", "state": ("firing" if elapsed >= COLLECTION_HOLD_S else "pending")
+                   if unhealthy else "healthy", "duration_s": int(elapsed or 0),
+                   "threshold_s": COLLECTION_HOLD_S, "reset": not continuous})
     document = {"schema_version": 1, "event": "boinc_feed_health", "observed_at": now,
                 "max_age_s": MAX_AGE, "checks": checks,
                 "sources": facts.get("sources", {}),
                 "healthy": all(c["state"] == "healthy" for c in checks)}
     state = {"schema_version": 1, "config_id": config_id, "boot_id": boot_id,
              "time": now, "monotonic": monotonic, "conditions": conditions,
-             "last_failure_at": max(failure_at, previous.get("last_failure_at", 0))}
+             "last_failure_at": max(failure_at, previous.get("last_failure_at", 0)),
+             "collection_elapsed": elapsed}
     return document, state
 
 
