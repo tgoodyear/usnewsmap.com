@@ -8,7 +8,10 @@ async function preparePreview(link: string, signal: AbortSignal) {
   const image = html.querySelector('meta[property="og:image"]')?.getAttribute("content");
   if (!image) throw new Error("Sharing metadata has no preview");
   const advertised = new URL(image, link);
-  if (advertised.pathname !== "/share-image.png") {
+  const revisioned =
+    /^\/search-preview\/[0-9a-f]{16}\/[a-z0-9]+(?:-[a-z0-9]+)*\.png$/.test(advertised.pathname) &&
+    !/[?#]/.test(advertised.href);
+  if (advertised.pathname !== "/share-image.png" && !revisioned) {
     throw new Error("Sharing metadata has no dynamic preview");
   }
   // Metadata has the production origin even on local/preview deployments.

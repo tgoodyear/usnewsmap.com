@@ -46,6 +46,7 @@ jobs:
       quickwit_suites: ${{ steps.f.outputs.quickwit_suites }}
       web: ${{ steps.f.outputs.web }}
       image: ${{ steps.f.outputs.image }}
+      images: ${{ steps.f.outputs.images }}
       e2e: ${{ steps.f.outputs.e2e }}
       fixtures: ${{ steps.f.outputs.fixtures }}
       ops: ${{ steps.f.outputs.ops }}
@@ -60,6 +61,7 @@ jobs:
       ocr_gold: ${{ steps.f.outputs.ocr_gold }}
       boinc_pages: ${{ steps.f.outputs.boinc_pages }}
       edge: ${{ steps.f.outputs.edge }}
+      queue: ${{ steps.f.outputs.queue }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -111,7 +113,7 @@ jobs:
   queue:
     name: queue (PostgreSQL + pgmq, live)
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.queue == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -184,6 +186,19 @@ jobs:
         run: python3 -m unittest -v boinc/test_config.py
       - name: The daemon runner keeps bin/start's pid directory off the share
         run: python3 -m unittest -v images/server/test_boinc_daemons.py
+      - name: The feeder patch and real Linux process identity pass
+        working-directory: .
+        run: |
+          ref=$(sed -n 's/^ARG BOINC_COMMIT=//p' contrib-compute/images/base/Containerfile)
+          [[ "$ref" =~ ^[0-9a-f]{40}$ ]]
+          trap 'rm -f .feeder-upstream.cpp' EXIT
+          curl -fsSL --retry 3 "https://raw.githubusercontent.com/BOINC/boinc/$ref/sched/feeder.cpp" -o .feeder-upstream.cpp
+          BOINC_FEEDER_SOURCE="$PWD/.feeder-upstream.cpp" python3 -m unittest -v scripts/boinc/test_feeder_guard.py
+      - name: The feeder allocation guard detects drift and fails unknown
+        run: python3 -m unittest -v images/server/test_feeder_slot_guard.py
+      - name: BOINC feed monitoring collects live facts and preserves alert durations
+        working-directory: .
+        run: python3 -m unittest -v scripts/boinc/test_feed_status.py scripts/boinc/test_feed_collect.py
       - name: The Arc token path sends its key only to a loopback endpoint
         run: python3 -m unittest -v images/server/test_lib_kv_token.py
       - name: Key Vault reads retry transient failures (#958)
@@ -199,6 +214,11 @@ jobs:
         run: python3 -m unittest -v contrib-compute/images/server/test_batch_inventory.py
         env:
           USNM_WORK_VOLUME_MYSQL_PORT: '3307'
+      - name: Fresh Qwen publication excludes concurrent database writers
+        working-directory: .
+        run: python3 -m unittest -v scripts/boinc/test_qwen_publication_db.py
+        env:
+          USNM_QWEN_MYSQL_PORT: '3307'
       # The app version's signature checks and the installer (no server needed).
       - name: Install scheduler gate test headers
         run: sudo apt-get update -q && sudo apt-get install -y -q nlohmann-json3-dev
@@ -333,7 +353,7 @@ jobs:
         run: |
           python3 -m unittest -v scripts/boinc/test_full_db_tls.py contrib-compute/images/server/test_refresh_project_code.py
           shellcheck -x -S warning scripts/boinc/check-full-db-tls.sh
-          scripts/boinc/check-full-db-tls.sh --local-server-image usnm-boinc-server:check
+          scripts/boinc/check-full-db-tls.sh --local-server-image usnm-boinc-server:check --check-feeder-guard
       # crates/usnm-boinc arrives with PR #441; until then there is no bridge binary to build.
       - name: The bridge image builds
         if: hashFiles('crates/usnm-boinc/Cargo.toml') != ''
@@ -382,7 +402,7 @@ jobs:
       - run: npx --yes --package=wrangler@4.154.0 --call 'node edge/fallback-worker/native-integration.mjs'
         env:
           WRANGLER_SEND_METRICS: "false"
-      - run: shellcheck -x -S warning edge/fallback-worker/deploy.sh
+      - run: shellcheck -x -S warning edge/fallback-worker/deploy.sh edge/fallback-worker/drift.sh
 
   quickwit-tests:
     name: quickwit (${{ matrix.suite }})
@@ -489,8 +509,10 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
+      # A pull request builds the images its change can affect; main builds all three,
+      # which `publish` pushes from the same cache (scripts/ci/changes.sh).
       matrix:
-        image: [api, ingest, ja-ocr]
+        image: ${{ fromJSON(needs.changes.outputs.images) }}
     # Build and smoke-test the images. Publishing happens per environment in
     # `publish`, from the same build cache.
     permissions:
@@ -840,6 +862,13 @@ jobs:
       - name: Engine pins written in more than one place agree
         if: needs.changes.outputs.infra == 'true'
         run: scripts/ci/check-engine-pins.py
+      - name: Qwen transactions retain frozen inputs and the real host bridge lock
+        if: needs.changes.outputs.infra == 'true'
+        run: |
+          command -v flock
+          mkdir -p "$PWD/target/qwen-test-scratch"
+          TMPDIR="$PWD/target/qwen-test-scratch" PYTHONDONTWRITEBYTECODE=1 \
+            python3 -m unittest -v scripts/boinc/onprem/quality-feed/test_qwen_feed.py
       - name: The OCR gold set's tests pass (#296)
         if: needs.changes.outputs.ocr_gold == 'true'
         run: |
@@ -853,13 +882,15 @@ jobs:
         if: needs.changes.outputs.infra == 'true'
         run: |
           python3 -m unittest -v scripts/ocr-node/test_install_data_flow.py
+          python3 -m unittest -v scripts/ocr-node/test_throughput_collect.py
           python3 -m pip install --quiet --break-system-packages pillow==13.0.0
           python3 -m unittest -v scripts/ocr-node/test_quality_jpeg_cache.py
           python3 -m unittest -v scripts/ocr-node/test_quality_jpeg_list.py
           python3 -m unittest -v scripts/ocr-node/test_repair_reading_order.py
+          python3 -m unittest -v scripts/boinc/onprem/quality-feed/test_quality_campaign.py
           shellcheck -x -S warning scripts/ocr-node/reboot-if-needed.sh scripts/ocr-node/push-boinc-scan.sh \
             scripts/ocr-node/check-scan-archive.sh scripts/ocr-node/grant-archive-uploader.sh \
-            scripts/ocr-node/install-archive-host.sh
+            scripts/ocr-node/install-archive-host.sh scripts/ocr-node/restore-drill.sh
       - name: The BOINC scripts pass shellcheck
         if: needs.changes.outputs.infra == 'true'
         run: |
@@ -1215,7 +1246,7 @@ jobs:
     environment: ${{ matrix.environment }}
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       id-token: write
     concurrency:
       group: indexnow-${{ matrix.environment }}
@@ -1227,33 +1258,43 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - if: env.APP != ''
+      - id: azure_login
+        if: env.APP != ''
+        continue-on-error: true
         uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
         with:
           client-id: ${{ vars.USNM_CI_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-      - name: Restore the last successful IndexNow submission
-        if: env.APP != ''
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Defer notification if Azure authentication fails
+        if: env.APP != '' && steps.azure_login.outcome != 'success'
+        run: echo "::warning::Azure authentication failed; IndexNow notification will be retried hourly"
+      - name: Find the deployed Azure sitemap
+        id: deployed_sitemap
+        if: env.APP != '' && steps.azure_login.outcome == 'success'
         continue-on-error: true
-        with:
-          path: ${{ runner.temp }}/indexnow/sitemap.sha256
-          key: indexnow-v1-${{ matrix.environment }}-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: indexnow-v1-${{ matrix.environment }}-
+        env:
+          APP: ${{ vars.USNM_API_APP }}
+          RG: ${{ vars.USNM_RESOURCE_GROUP }}
+        run: |
+          if ! fqdn=$(az containerapp show --name "$APP" --resource-group "$RG" \
+            --query properties.configuration.ingress.fqdn --output tsv); then
+            echo "::warning::could not discover Azure sitemap; IndexNow notification will be retried hourly"
+            exit 1
+          fi
+          [[ $fqdn =~ ^[a-z0-9.-]+$ ]] || {
+            echo "::warning::invalid Azure app FQDN; IndexNow notification will be retried hourly"
+            exit 1
+          }
+          echo "INDEXNOW_EXPECTED_SITEMAP_URL=https://$fqdn/sitemap.xml" >> "$GITHUB_ENV"
       # Submit added/removed URLs and existing URLs whose lastmod changed. Record
       # state only after all batches succeed, so failures are retried later.
       - name: Submit the sitemap to IndexNow
         id: indexnow
-        if: env.APP != ''
+        if: env.APP != '' && steps.deployed_sitemap.outcome == 'success'
         continue-on-error: true
         env:
           INDEXNOW_STATE_FILE: ${{ runner.temp }}/indexnow/sitemap.sha256
+          INDEXNOW_ENVIRONMENT: ${{ matrix.environment }}
+          GH_TOKEN: ${{ github.token }}
         run: scripts/ci/indexnow.sh
-      - name: Save the successful IndexNow submission
-        if: steps.indexnow.outputs.submitted == 'true'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        continue-on-error: true
-        with:
-          path: ${{ runner.temp }}/indexnow/sitemap.sha256
-          key: indexnow-v1-${{ matrix.environment }}-${{ github.run_id }}-${{ github.run_attempt }}

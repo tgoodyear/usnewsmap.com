@@ -10,6 +10,7 @@ mod assets;
 mod details;
 mod ecosystem;
 mod fmt;
+mod throughput;
 
 use assets::{SCRIPT, STYLE};
 use ecosystem::ecosystem_panel;
@@ -34,7 +35,11 @@ pub fn render(v: &View) -> String {
         time(now),
         v.refresh_secs
     );
+    if let Some(w) = &v.warming {
+        o.push_str(&warming_panel(w));
+    }
     o.push_str(&ecosystem_panel(v));
+    o.push_str(&throughput::panel(&v.throughput));
     o.push_str(&crate::diagrams::section(v));
     o.push_str("<section class=\"wide\" id=\"operational-details\"><h2>Operational details</h2>\
         <details class=\"diagnostics\" data-refresh-key=\"operational-details\"><summary>\
@@ -57,10 +62,28 @@ pub fn render(v: &View) -> String {
     o
 }
 
+/// A panel, so the page's refresh drops it once the read is over.
+fn warming_panel(w: &crate::fetch::Warming) -> String {
+    let read = match w.manifests {
+        Some(n) => format!(
+            "{} of {} queued manifests read",
+            int(w.manifests_read as u64),
+            int(n as u64)
+        ),
+        None => "the queued manifests not yet read".to_owned(),
+    };
+    format!(
+        "<section class=\"wide\" id=\"warming\"><h2>Reading the fetcher's files</h2>\
+         <p class=\"stale\">From the start, since {} (a restart, or a new plan or index): {read}. \
+         The fetch and queue counts are partial until it is done.</p></section>",
+        time(w.since)
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::ecosystem::pipeline_panel;
-    use super::fmt::{msg, pct, short_urls};
+    use super::fmt::{failure_msg, msg, pct, short_urls};
     use super::*;
     use chrono::Utc;
 
@@ -123,6 +146,85 @@ mod tests {
         assert!(html.contains("data-refresh-key=\"stage-scan\""));
         assert!(html.contains("data-refresh-key=\"corpus-metadata\""));
         assert!(SCRIPT.contains("d.dataset.refreshKey ||"));
+    }
+
+    #[test]
+    fn historical_stages_are_named_in_the_row_and_the_badge() {
+        let now = Utc::now();
+        let mut source = crate::pipeline::tests::fixture(now);
+        source["stages"][0]["historical"] = serde_json::json!(true);
+        source["stages"][0]["observed_at"] =
+            serde_json::json!((now - chrono::Duration::days(8)).to_rfc3339());
+        source["stages"][1]["state"] = serde_json::json!("observed");
+        source["stages"][1]["count"] = serde_json::json!(5);
+        source["stages"][1]["observed_at"] = serde_json::json!(now.to_rfc3339());
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pipeline.json");
+        std::fs::write(&path, serde_json::to_vec(&source).unwrap()).unwrap();
+        let mut pipeline = crate::pipeline::Pipeline::new(Some(path), 900);
+        pipeline.poll(now);
+        let v = pipeline.view(now);
+        assert!(!v.stale, "{:?}", v.last_error);
+        let html = pipeline_panel(&v);
+        assert!(html.contains("Live stages current; 1 historical"));
+        assert!(html.contains("observed / historical"));
+        assert!(!html.contains("Some evidence old or unknown"));
+    }
+
+    #[test]
+    fn the_import_summary_uses_the_label_of_the_count_it_shows() {
+        let now = Utc::now();
+        let mut v = summary_view();
+        let mut source = crate::pipeline::tests::healthy(now);
+        source["stages"][0]["id"] = serde_json::json!("imported");
+        source["stages"][0]["label"] = serde_json::json!("Cataloged curated imports");
+        v.pipeline.snapshot =
+            Some(crate::pipeline::parse(&serde_json::to_vec(&source).unwrap(), now).unwrap());
+        v.pipeline.stage_freshness = vec![crate::pipeline::StageFreshness {
+            id: "imported".into(),
+            age_secs: Some(5),
+            stale: false,
+            historical: false,
+        }];
+        let html = render(&v);
+        assert!(html.contains("<li>Cataloged curated imports: 1,234</li>"));
+    }
+
+    #[test]
+    fn a_historical_stage_inside_its_budget_is_not_a_current_summary() {
+        let now = Utc::now();
+        let mut v = summary_view();
+        let mut source = crate::pipeline::tests::fixture(now);
+        source["stages"][0]["id"] = serde_json::json!("accepted");
+        source["stages"][0]["historical"] = serde_json::json!(true);
+        source["stages"][0]["observed_at"] = serde_json::json!(now.to_rfc3339());
+        v.pipeline.snapshot =
+            Some(crate::pipeline::parse(&serde_json::to_vec(&source).unwrap(), now).unwrap());
+        v.pipeline.stage_freshness = vec![crate::pipeline::StageFreshness {
+            id: "accepted".into(),
+            age_secs: Some(5),
+            stale: false,
+            historical: true,
+        }];
+        assert!(summary_stage(&v, "accepted").is_none());
+    }
+
+    #[test]
+    fn a_stale_live_stage_outranks_the_historical_badge() {
+        let now = Utc::now();
+        let mut source = crate::pipeline::tests::fixture(now);
+        source["stages"][0]["historical"] = serde_json::json!(true);
+        source["stages"][0]["observed_at"] =
+            serde_json::json!((now - chrono::Duration::days(8)).to_rfc3339());
+        source["stages"][1]["observed_at"] = serde_json::Value::Null;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pipeline.json");
+        std::fs::write(&path, serde_json::to_vec(&source).unwrap()).unwrap();
+        let mut pipeline = crate::pipeline::Pipeline::new(Some(path), 900);
+        pipeline.poll(now);
+        let html = pipeline_panel(&pipeline.view(now));
+        assert!(html.contains("Some evidence old or unknown"));
+        assert!(!html.contains("Live stages current"));
     }
 
     fn summary_view() -> View {
@@ -225,6 +327,7 @@ mod tests {
                 id: s.id.clone(),
                 age_secs: Some(5),
                 stale: false,
+                historical: false,
             })
             .collect();
         v.pipeline.snapshot = Some(snapshot);
@@ -430,6 +533,30 @@ mod tests {
             msg("a <b> https://www.loc.gov/item/x/", None),
             "<td class=\"msg\"><details class=\"more\"><summary><span class=\"clamp\">a &lt;b&gt; /item/x/</span></summary>\
              <div>a &lt;b&gt; https://www.loc.gov/item/x/</div></details></td>"
+        );
+    }
+
+    #[test]
+    fn a_fetch_failure_shows_its_cause_before_its_address() {
+        let url = "https://tile.loc.gov/image-services/iiif/service:ndnp:dlc:batch_x:data:0352/full/full/0/default.jpg";
+        let cell = failure_msg(
+            &format!("{url}: the answer's body could not be read (end of file)"),
+            None,
+        );
+        assert!(
+            cell.contains("<span class=\"clamp\">the answer&#39;s body could not be read (end of file) — /image-services/iiif/"),
+            "{cell}"
+        );
+        assert!(
+            cell.contains(&format!(
+                "<div>{url}: the answer&#39;s body could not be read"
+            )),
+            "{cell}"
+        );
+        // An error that doesn't start with an address is as it was.
+        assert_eq!(
+            failure_msg("loc.gov lists no image for sn1/x: seq-2", None),
+            msg("loc.gov lists no image for sn1/x: seq-2", None)
         );
     }
 }

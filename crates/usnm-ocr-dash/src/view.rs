@@ -17,6 +17,7 @@ use crate::sset::{SsetStatus, Ssets};
 /// Settings that shape the view.
 #[derive(Debug, Clone, Default)]
 pub struct Settings {
+    pub feed_health_path: Option<std::path::PathBuf>,
     /// Guests whose names start with this are shown.
     pub guest_prefix: String,
     /// Rows in each "what's next" list and each node's latest pages.
@@ -29,9 +30,14 @@ pub struct Settings {
 
 #[derive(Debug, Serialize)]
 pub struct View {
+    pub feed: crate::feed::FeedView,
     pub pipeline: crate::pipeline::PipelineView,
+    pub throughput: crate::throughput::ThroughputView,
     pub generated_at: DateTime<Utc>,
     pub refresh_secs: u64,
+    /// While the dashboard's first read of the fetcher's files after a
+    /// start is under way, how far it has got; null once it is over.
+    pub warming: Option<crate::fetch::Warming>,
     pub hosts: Vec<HostView>,
     pub fetch: FetchView,
     pub nodes: Vec<NodeView>,
@@ -355,8 +361,8 @@ pub fn merge_queues(nodes: &Nodes, now: DateTime<Utc>) -> (Option<QueueStats>, O
 
 /// Why imports aren't shown.
 pub const IMPORTS_NOTE: &str =
-    "In Azure. ocr-sync's import counts and the damage of our text against LoC's are in the \
-curated store and the ocr-sync job's logs, which nothing on the LAN can read without a new grant.";
+    "ocr-sync's import counts are in the step throughput panel. The damage of our text against \
+LoC's is in the curated store, which nothing on the LAN can read without a new grant.";
 
 fn rate(t: Tally, secs: f64) -> Rate {
     Rate {
@@ -435,9 +441,12 @@ fn fetch_view(f: &mut Fetch, now: DateTime<Utc>) -> FetchView {
     }
     let fresh = f.status_error.is_none() && status_fresh(f.status.as_ref(), now);
     let state = f.status.as_ref().map(|s| s.state.as_str());
+    // Until the first poll is over the totals are short, as with a manifest
+    // that can't be read.
+    let queue_error = f.queue_error.clone().or_else(|| f.warming_note());
     let activity = if fresh && state != Some("done") {
         "running"
-    } else if f.manifests.is_none() || f.queue_error.is_some() {
+    } else if f.manifests.is_none() || queue_error.is_some() {
         if fresh {
             "idle"
         } else {
@@ -465,7 +474,7 @@ fn fetch_view(f: &mut Fetch, now: DateTime<Utc>) -> FetchView {
         queue,
         queue_summary: qs,
         queue_configured: f.manifests.is_some(),
-        queue_error: f.queue_error.clone(),
+        queue_error,
         bulk: FileView::of(&f.bulk),
         pacer: FileView::of(&f.pacer),
         publish: FileView::of(&f.publish),
@@ -481,7 +490,16 @@ fn fetch_view(f: &mut Fetch, now: DateTime<Utc>) -> FetchView {
         dead_pages: f.dead.len(),
         cooling_pages,
         cooling_unqueued,
-        recent_failures: f.failures.iter().rev().take(15).cloned().collect(),
+        recent_failures: f
+            .failures
+            .iter()
+            .rev()
+            .take(15)
+            .map(|e| FailureLine {
+                recovered_at: f.fetched_after(&e.doc_id, e.at),
+                ..e.clone()
+            })
+            .collect(),
         keep_eta_secs: keep_eta,
     }
 }
@@ -648,9 +666,12 @@ pub fn build(
         .collect();
     let queues = merge_queues(nodes, now);
     View {
+        feed: crate::feed::FeedView::default(),
         pipeline: crate::pipeline::PipelineView::default(),
+        throughput: crate::throughput::ThroughputView::default(),
         generated_at: now,
         refresh_secs: s.refresh_secs,
+        warming: fetch.warming.clone(),
         hosts: host_views(hosts, s, now),
         fetch: fv,
         nodes: node_views,
@@ -732,6 +753,44 @@ pub fn read_seed_plan(bytes: &[u8]) -> anyhow::Result<BTreeMap<String, String>> 
 mod tests {
     use super::*;
     use usnm_ocr_contract::status::HostStats;
+
+    #[test]
+    fn a_failure_shows_when_its_page_was_fetched_after_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let failure = |id: &str| {
+            format!(
+                "{{\"doc_id\":\"{id}\",\"kind\":\"transient\",\"error\":\"e\",\"at\":\"2026-11-03T14:18:07Z\"}}\n"
+            )
+        };
+        std::fs::write(
+            dir.path().join("failures-full.jsonl"),
+            failure("a") + &failure("b") + &failure("c"),
+        )
+        .unwrap();
+        // `a` again after it failed, `b` only before, `c` never.
+        std::fs::write(
+            dir.path().join("index-full.jsonl"),
+            "{\"doc_id\":\"b\",\"fetched_at\":\"2026-11-03T14:00:00Z\",\"bytes\":1}\n\
+             {\"doc_id\":\"a\",\"fetched_at\":\"2026-11-03T14:22:02Z\",\"bytes\":1}\n",
+        )
+        .unwrap();
+        let now = "2026-11-03T15:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let mut f = Fetch::new(dir.path().to_owned(), None);
+        f.poll(now);
+        let recovered: Vec<_> = fetch_view(&mut f, now)
+            .recent_failures
+            .into_iter()
+            .map(|l| (l.doc_id, l.recovered_at.map(|t| t.to_rfc3339())))
+            .collect();
+        assert_eq!(
+            recovered,
+            [
+                ("c".to_owned(), None),
+                ("b".to_owned(), None),
+                ("a".to_owned(), Some("2026-11-03T14:22:02+00:00".to_owned())),
+            ]
+        );
+    }
 
     #[test]
     fn a_host_is_as_old_as_its_stats_not_the_last_read() {

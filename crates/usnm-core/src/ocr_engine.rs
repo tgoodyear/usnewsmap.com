@@ -13,6 +13,7 @@
 //! `tesseract-<version>/<models>` and `ndlocr-lite <commit>`, as
 //! [`EngineTag::Legacy`].
 
+use std::collections::{btree_map::Entry, BTreeMap};
 use std::fmt;
 
 /// A parsed or built `ocr_engine` value.
@@ -283,6 +284,62 @@ impl EngineTag {
     }
 }
 
+/// When 13 §13.7.2's rule took effect (#1481): a different model file gets
+/// a new profile id, so one short key names one model set. 2026-11-05
+/// 00:00 UTC, in microseconds since the epoch, as `ocred_at` is stored.
+/// Rows read before it are exempt from [`ModelSets`].
+pub const ONE_MODEL_SET_SINCE_MICROS: i64 = 1_793_836_800_000_000;
+
+/// Two rows with one short key and two `models=` digests.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "ocr_engine `{key}` names two model sets, `{first}` and `{second}`; the engine index, \
+     API and credits page can't tell them apart. A different model file needs a new \
+     profile id (13 §13.7.2, #1481)"
+)]
+pub struct ModelSetConflict {
+    /// The short key.
+    pub key: String,
+    /// The first row's full tag.
+    pub first: String,
+    /// The conflicting row's full tag.
+    pub second: String,
+}
+
+/// The `models=` digest of each short key among rows read since
+/// [`ONE_MODEL_SET_SINCE_MICROS`], to refuse a model swap inside a profile.
+#[derive(Debug, Default)]
+pub struct ModelSets(BTreeMap<String, (String, String)>);
+
+impl ModelSets {
+    /// Records a row's `ocr_engine`, read at `ocred_at_micros`. Rows read
+    /// before the rule, legacy or unreadable values and `models=local`
+    /// are skipped.
+    pub fn add(&mut self, ocr_engine: &str, ocred_at_micros: i64) -> Result<(), ModelSetConflict> {
+        if ocred_at_micros < ONE_MODEL_SET_SINCE_MICROS {
+            return Ok(());
+        }
+        let Ok(EngineTag::Tag(tag)) = EngineTag::parse(ocr_engine) else {
+            return Ok(());
+        };
+        let Digest::Sha256(models) = tag.models() else {
+            return Ok(());
+        };
+        match self.0.entry(tag.short_key()) {
+            Entry::Vacant(v) => {
+                v.insert((models.clone(), ocr_engine.to_owned()));
+                Ok(())
+            }
+            Entry::Occupied(o) if o.get().0 == *models => Ok(()),
+            Entry::Occupied(o) => Err(ModelSetConflict {
+                key: o.key().clone(),
+                first: o.get().1.clone(),
+                second: ocr_engine.to_owned(),
+            }),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -367,5 +424,44 @@ mod tests {
                 "{profile}"
             );
         }
+    }
+
+    #[test]
+    fn one_short_key_with_two_model_sets_conflicts_after_the_rule() {
+        let tag = |models: &str, image: &str| {
+            format!(
+                "tesseract/5.5.1 profile=yid image=sha256:{image} models={models} route=minimal@r1 contract=0"
+            )
+        };
+        let (old, new) = ("sha256:111111111111", "sha256:222222222222");
+        let after = ONE_MODEL_SET_SINCE_MICROS;
+        let before = after - 1;
+
+        let mut sets = ModelSets::default();
+        sets.add(&tag(old, "aaaaaaaaaaaa"), after).unwrap();
+        // Another image with the same models, rows from before the rule,
+        // `models=local`, legacy and unreadable values are all fine.
+        sets.add(&tag(old, "bbbbbbbbbbbb"), after + 1).unwrap();
+        sets.add(&tag(new, "aaaaaaaaaaaa"), before).unwrap();
+        sets.add(&tag("local", "aaaaaaaaaaaa"), after).unwrap();
+        sets.add("tesseract-5.5.1/yid", after).unwrap();
+        sets.add("tesseract/5.5.1 profile=yid", after).unwrap();
+        // The new models under their own profile id.
+        sets.add(
+            &tag(new, "aaaaaaaaaaaa").replace("=yid", "=yid_jochre"),
+            after,
+        )
+        .unwrap();
+
+        let err = sets.add(&tag(new, "cccccccccccc"), after).unwrap_err();
+        assert_eq!(
+            err,
+            ModelSetConflict {
+                key: "tesseract/5.5.1 yid".into(),
+                first: tag(old, "aaaaaaaaaaaa"),
+                second: tag(new, "cccccccccccc"),
+            }
+        );
+        assert!(err.to_string().contains("new profile id"), "{err}");
     }
 }

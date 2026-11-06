@@ -59,7 +59,7 @@ describe("report", () => {
     const first = report("search", true, landing("https://t.co/abc", "?q=zebrasecret&state=GA&utm_source=X"));
     expect(first).toEqual({
       route: "search",
-      title: "US News Map",
+      title: "US News Map: historic American newspaper search",
       referrer_origin: "https://t.co",
       utm_source: "x",
     });
@@ -67,7 +67,7 @@ describe("report", () => {
     expect(JSON.stringify(first)).not.toContain("GA");
     expect(report("datasets", false, landing("https://t.co/abc", "?utm_source=x"))).toEqual({
       route: "datasets",
-      title: "Dataset details · US News Map",
+      title: "Dataset details and index status · US News Map",
       referrer_origin: "internal",
     });
     expect(report("privacy", true, landing("", "")).referrer_origin).toBe("");

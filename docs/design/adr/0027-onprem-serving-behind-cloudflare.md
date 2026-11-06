@@ -70,6 +70,7 @@ The container:
   | `robots.txt`, `favicon.svg`, `og-image.png`                                                                | Cloudflare's defaults (1 hour from the origin)                                                                           |
   | `/`, `/datasets`, `/privacy`, `/credits` and the 404 shell                                                 | Not cached. `/` revalidates with its ETag; the `app_route` pages get an ETag in Phase 0                                  |
   | `/v1/aggregate` with `v` and `g`                                                                           | Amended 2026-10-30: cached for 14 days when both match what the API serves, `no-store` otherwise (06 §6.5)               |
+  | `/search-preview/<revision>/<name>.png`                                                                    | Amended 2026-11-05: all published search screenshots cache for 14 days; missing/invalid images are `no-store` (06 §6.5)  |
 
 | Other `/v1/aggregate`, `/v1/hits`, `/v1/meta`, `/v1/status`, `/v1/versions`, `/v1/beacon`, `/healthz`, `/readyz` | Bypass. The aggregate and hits bypass is the last rule in the list |
 
@@ -205,7 +206,7 @@ The maintainer chose these on 24 October 2026. Decision 6 waits for a Phase 2 te
 
 ## Measurements
 
-Before the gates that need them:
+Before the gates that need them. The [Phase 2 checklist](../../operations/onprem-serving-phase2.md) maps each one, and the gates moved from #955, to its method, evidence and status (#1101):
 
 - cold-search latency on the NVMe, idle, during a rebuild and during a publish, against p95 ≤ 2 seconds (09 §9.1), with the same scripts run against Azure on the same day. The evidence that `file://` beats Blob comes from SSD-backed NFS, not from this host;
 - time to first byte, asset load and LCP, today and through the tunnel, from several regions;

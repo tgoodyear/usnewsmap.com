@@ -66,7 +66,17 @@ fn corpus_languages_route_to_pinned_models() {
             .iter()
             .map(|r| r.profile.as_str())
             .collect::<Vec<_>>(),
-        ["yid", "heb"]
+        ["yid", "heb", "yidj2"]
+    );
+    // yidj2 (#1479) is opt-in: not in the image, and stock yid wins where both are.
+    assert!(!installed.contains("yidj2"));
+    assert!(models_digest(MODELS_LOCK, "yidj2").is_none());
+    let with_yidj2 = BTreeSet::from(["yid".to_owned(), "heb".to_owned(), "yidj2".to_owned()]);
+    assert_eq!(
+        route("yid", &with_yidj2)
+            .as_ref()
+            .map(|r| r.profile.as_str()),
+        Some("yid")
     );
     let heb_only = BTreeSet::from(["heb".to_owned()]);
     assert_eq!(
@@ -180,4 +190,26 @@ fn adding_unrelated_models_preserves_existing_profile_identity() {
         assert_ne!(job.identity().unwrap(), original_identity, "{profile}");
         assert_eq!(tag(old), tag(new));
     }
+}
+
+/// The tag's `models=` is the first 12 hex digits of the profile's
+/// `profiles.lock` digest, so the lock guards what the rows record (#1481).
+#[test]
+fn tag_models_digest_is_the_profile_lock_digest() {
+    let lock = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../ocr/engines/profiles.lock"),
+    )
+    .unwrap();
+    let lock = usnm_ocr_route::lock::parse(&lock).unwrap();
+    let engine = usnm_ocr_route::ENGINES.engine("tesseract-5.5").unwrap();
+    let mut checked = 0;
+    for p in &engine.profile {
+        let Some(digest) = models_digest(MODELS_LOCK, &p.id) else {
+            continue;
+        };
+        let locked = &lock[&("tesseract-5.5".to_owned(), p.id.clone())];
+        assert_eq!(Digest::short(locked).unwrap(), digest, "{}", p.id);
+        checked += 1;
+    }
+    assert!(checked > 10, "{checked}");
 }

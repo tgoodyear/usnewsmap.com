@@ -4,7 +4,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { Examples } from "./Examples";
 import { EXAMPLE_ORDER, EXAMPLES, EXAMPLES_MORE, EXAMPLES_SHOWN } from "../examples";
 import { DEFAULTS, parseViewUrl, viewUrl, type ViewState } from "../state/url";
-import { searchPath } from "../route";
+import { examplePath } from "../examples";
 
 /** The cards as App shows them, with the press count held in state. */
 function Home({ onPick = () => undefined }: { onPick?: (view: ViewState) => void }) {
@@ -71,16 +71,16 @@ describe("Examples", () => {
     const onPick = vi.fn();
     render(<Home onPick={onPick} />);
     const link = document.querySelectorAll<HTMLAnchorElement>("#examples a.example")[1]!;
-    expect(link.getAttribute("href")).toMatch(/^\/search\//);
+    expect(link.getAttribute("href")).toBe(examplePath(EXAMPLE_ORDER[1]!));
     fireEvent.click(link);
     expect(onPick).toHaveBeenCalledWith({ ...DEFAULTS, ...EXAMPLE_ORDER[1]!.view });
     expect(viewUrl(onPick.mock.calls[0]![0])).toBe(link.getAttribute("href"));
   });
 
-  it("filters by canonical base query without losing historical filters or promoted links", () => {
+  it("filters by example path without losing historical filters or server links", () => {
     const example = EXAMPLE_ORDER[0]!;
     const query = example.view.q ?? DEFAULTS.q;
-    const base = searchPath(query);
+    const base = examplePath(example);
     const onPick = vi.fn();
     render(
       <Examples

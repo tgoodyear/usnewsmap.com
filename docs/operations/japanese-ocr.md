@@ -46,13 +46,32 @@ reason to restart repeatedly.
 
 The [27 October residual-page audit](https://github.com/tgoodyear/usnewsmap.com/releases/tag/data-ja-availability-20261027)
 distinguishes 19 image-listed pages from 24 explicitly undigitized placeholders.
-Preserve sequence slots; image availability is not an OCR receipt. The latter
-pages need legitimate alternate scans or source correction, not an exclusion
-waiver. The runner retains completed image-available pages when other exact
-sequence slots are explicitly marked `digitized: false`, but those undigitized
-pages remain pending in the unchanged target list. Unknown missing images and
-missing engine outputs still prevent the issue's available output from being
-committed; neither is silently classified as undigitized.
+Preserve sequence slots; image availability is not an OCR receipt. The runner
+retains completed image-available pages when other exact sequence slots are
+explicitly marked `digitized: false`. Unknown missing images and missing engine
+outputs still prevent the issue's available output from being committed; neither
+is silently classified as undigitized.
+
+The 24 placeholders have no scan, so they aren't missing work (#1415, by the
+maintainer's decision). They stay in the unchanged target list and in
+`ocr/ja-ocr/undigitized.py`, with the release and each issue's metadata hash, and
+out of every count of pages read. Progress reports them as `undigitized`, the
+target count and the percent cover digitized pages, and `jaocr.py run` doesn't ask
+LoC for them. If a later audit finds an image for one, take it off that list and it
+becomes a target again.
+
+`jaocr.py status` rewrites `status/ocr-ja.json` from the target list and the ALTO
+listing, without OCR or any request to LoC. Run it after pages arrive by another
+route, such as BOINC's collect:
+
+```sh
+systemd-run --wait --pipe --uid=usnm --property=SupplementaryGroups=himds \
+  --property=EnvironmentFile=/opt/usnm-ja-native/current/runtime.env \
+  --property=EnvironmentFile=/etc/usnm/ja-ocr-native.env \
+  --setenv=IDENTITY_ENDPOINT=http://localhost:40342/metadata/identity/oauth2/token \
+  --setenv=IMDS_ENDPOINT=http://localhost:40342 \
+  /opt/usnm-ja-native/current/venv/bin/python /opt/usnm-ja-native/current/jaocr/jaocr.py status
+```
 
 ### Opt-in native-run monitoring
 

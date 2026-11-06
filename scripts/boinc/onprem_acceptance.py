@@ -9,6 +9,10 @@ import re
 import subprocess
 import sys
 
+# EX_TEMPFAIL: another step held the project lock, so nothing was read or forwarded.
+# acceptance.py tries the same request again; any other failure ends its run.
+BUSY = 75
+
 LOCK_EXEC = """import argparse, json, os
 parser = argparse.ArgumentParser()
 parser.add_argument("--lock-fd", type=int, required=True)
@@ -76,7 +80,12 @@ def main():
     try:
         # Share the installed bridge runner's lock, without waiting behind live work.
         with open("/run/usnm-boinc-step.lock", "a") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                print("on-prem acceptance transport busy: another step holds the project lock; nothing ran",
+                      file=sys.stderr)
+                return BUSY
             receipt = execute(args, sys.stdin.read(65537), lock_fd=lock.fileno())
         print(json.dumps(receipt))
     except (OSError, ValueError, subprocess.SubprocessError):

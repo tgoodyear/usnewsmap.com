@@ -18,6 +18,11 @@
 //   (onPremServing, #955) or the on-prem BOINC host runs claim and collect
 //   (cosmosOnPremAccess, #967). The private endpoint stays for the Azure
 //   apps. Otherwise it stays private-only.
+//
+// Without data private endpoints (dataPrivateEndpoints off, ADR-0008, amendment
+// of November 2026) the lake, the index account and Cosmos also need public
+// network access for the Azure apps, behind a firewall that allows snet-cae,
+// so main.bicep and policy-exemptions.bicep pass each as open then.
 
 import { Names } from 'naming.bicep'
 
@@ -45,7 +50,8 @@ func publicAccountIds(
 
 // The data lake opens to the node IPs only for an on-prem host that uses it
 // (the Serial Set's and the Japanese OCR's runners, the release, the serving
-// container, the search log copy), and only when there are IPs to allow.
+// container, the search log and OCR output copies), and only when there are
+// IPs to allow.
 @export()
 func lakeOpen(onPremLakeRunner bool, ocrNodeIps string) bool =>
   onPremLakeRunner && !empty(nodeIpList(ocrNodeIps))

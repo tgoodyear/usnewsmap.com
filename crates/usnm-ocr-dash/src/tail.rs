@@ -30,6 +30,11 @@ impl Tail {
         Self { path, offset: 0 }
     }
 
+    /// The same file, read from `offset` on.
+    pub fn at(self, offset: u64) -> Self {
+        Self { offset, ..self }
+    }
+
     /// The whole lines past the offset. A last line without its newline
     /// is left for the next read.
     pub fn read(&mut self) -> std::io::Result<Got> {

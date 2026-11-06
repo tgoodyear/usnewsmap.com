@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 from contextlib import contextmanager
 from copy import deepcopy
-import fcntl
 import hashlib
 import hmac
 import json
@@ -26,6 +25,7 @@ def client_lock(data_dir, apply):
     if not apply:
         yield
         return
+    import fcntl
     descriptor = os.open(data_dir / ".usnm-account-rejoin.lock",
                          os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     try:

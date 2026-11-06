@@ -38,8 +38,14 @@
 #   HANDOFF_STEP=dead-letter JOB_IDS=<id>[,<id>...]
 #                         puts claimed pages whose BOINC workunit failed for good on
 #                         ocr-deadletter and deletes their messages (#1154)
+#   HANDOFF_STEP=dead-letter SUPERSEDES_FAILED_JOB=<id> [CONFIRM_MESSAGE_SHA256=<sha256>]
+#                         an operator's only (#1417): the page of that dead-lettered job was
+#                         claimed again with a newer message; prints that message's sha256 and
+#                         changes nothing, or with its sha256 confirmed dead-letters and deletes it
+#                         (docs/boinc-batch-scheduler.md#a-retried-page-claimed-after-its-dead-letter)
 #   HANDOFF_STEP=collect  JOB_ID [HOST_ID=<the canonical result's host id>], or JOB_IDS=<id>[,<id>...]
-#                         (up to 100, one execution for a tick's results, #932)
+#                         (up to 100, one execution for a tick's results, #932) and
+#                         [COLLECT_PARALLEL=<1 to 8, default 1>] jobs collected at once (#1447)
 #                         copies the dispatch root, spool/<id>/ and gold/trust.json down, runs
 #                         usnm-boinc collect --trust into ocr-out (a terminal BOINC failure:
 #                         collect without a host or trust list, which marks the job failed) and
@@ -68,18 +74,64 @@ for v in HANDOFF_URL COSMOS_ENDPOINT CURATED_URL REFERENCE_URL OUT_URL; do
 done
 [[ $HANDOFF_URL =~ ^https://[a-z0-9]{3,24}\.blob\.core\.windows\.net/boinc-handoff$ ]] ||
   fail "HANDOFF_URL must be https://<account>.blob.core.windows.net/boinc-handoff"
+# The steps load the ledger once per job or batch, and it is hundreds of small files, so they keep
+# the files for this execution's later loads (usnm_ocr_local::ledger::load). The files are
+# create-only and every load lists them, so a load sees what it would see without this. The
+# directory goes with the container.
+if [ -z "${USNM_LEDGER_CACHE:-}" ]; then
+  USNM_LEDGER_CACHE=$(mktemp -d)
+  export USNM_LEDGER_CACHE
+fi
+# Each usnm-boinc process fetched its own access tokens, and a collect runs several, so collects
+# at once drew HTTP 429 from the Arc agent's identity endpoint (#1447). The processes share them
+# through this directory instead (USNM_TOKEN_CACHE, crates/usnm-store/src/credential.rs): mktemp
+# makes it this user's only, this execution's runs of the script below inherit it, and the run
+# that made it removes it.
+token_cache=""
+if [ -z "${USNM_TOKEN_CACHE:-}" ]; then
+  token_cache=$(mktemp -d)
+  export USNM_TOKEN_CACHE=$token_cache
+  trap 'rm -rf "$token_cache"' EXIT
+fi
 # collect for a tick's jobs in one execution (#932): JOB_IDS. Each job runs this script's
 # single-job collect again, with its own work directory; a failed one doesn't stop the rest,
-# and the run fails at the end so the controller sees it.
+# and the run fails at the end so the controller sees it. COLLECT_PARALLEL=<1 to 8, default 1>
+# runs that many at once (#1447): each has its own work directory and dispatch root and writes
+# back only its own job's entries, and they share the ledger and token caches above.
 if [ "${HANDOFF_STEP:-}" = collect ] && [ -n "${JOB_IDS:-}" ]; then
   [ -z "${JOB_ID:-}" ] && [ -z "${HOST_ID:-}" ] || fail "set JOB_ID (and HOST_ID), or JOB_IDS, not both"
   [[ $JOB_IDS =~ ^[0-9a-f]{64}(,[0-9a-f]{64}){0,99}$ ]] || fail "JOB_IDS is 1 to 100 comma-separated job ids"
+  parallel=${COLLECT_PARALLEL:-1}
+  [[ $parallel =~ ^[1-8]$ ]] || fail "COLLECT_PARALLEL is 1 to 8 jobs collected at once"
   IFS=, read -r -a batch_ids <<< "$JOB_IDS"
-  failed=0
+  [ "$parallel" -eq 1 ] || [ "$(printf '%s\n' "${batch_ids[@]}" | sort -u | wc -l)" -eq "${#batch_ids[@]}" ] ||
+    fail "JOB_IDS names each job once when COLLECT_PARALLEL is above 1"
+  failed=0 running=()
+  # reap: waits for any running collect to end (bash 3.2 has no wait -n) and counts its failure.
+  reap() {
+    local i
+    while :; do
+      for i in "${!running[@]}"; do
+        ! kill -0 "${running[i]}" 2> /dev/null || continue
+        wait "${running[i]}" || failed=$((failed + 1))
+        unset 'running[i]'
+        running=(${running[@]+"${running[@]}"})
+        return
+      done
+      sleep 0.1
+    done
+  }
   for id in "${batch_ids[@]}"; do
+    [ "${#running[@]}" -lt "$parallel" ] || reap
     log "collect $id"
-    JOB_ID=$id JOB_IDS="" bash "${BASH_SOURCE[0]}" || { log "collect failed for $id"; failed=$((failed + 1)); }
+    if [ "$parallel" -eq 1 ]; then
+      JOB_ID=$id JOB_IDS="" bash "${BASH_SOURCE[0]}" || { log "collect failed for $id"; failed=$((failed + 1)); }
+    else
+      (JOB_ID=$id JOB_IDS="" bash "${BASH_SOURCE[0]}" || { log "collect failed for $id"; exit 1; }) &
+      running+=("$!")
+    fi
   done
+  while [ "${#running[@]}" -gt 0 ]; do reap; done
   [ "$failed" -eq 0 ] || fail "collect failed for $failed of ${#batch_ids[@]} jobs"
   exit 0
 fi
@@ -122,7 +174,7 @@ if [ "${HANDOFF_STEP:-}" = export ] && [ -n "${HANDOFF_BATCHES:-}" ]; then
   exit 0
 fi
 work=$(mktemp -d)
-trap 'rm -rf "$work"' EXIT
+trap 'rm -rf "$work" ${token_cache:+"$token_cache"}' EXIT
 root="$work/dispatch"
 # put_back DIR...: writes each journal directory (relative to the root) back, retrying.
 put_back() {
@@ -285,12 +337,27 @@ case "${HANDOFF_STEP:-}" in
     # Pages whose BOINC workunit failed for good (#1154): to ocr-deadletter, and their messages
     # deleted, so they aren't taken again as the same job.
     [ -n "${QUEUE_URL:-}" ] || fail "QUEUE_URL is not set (the job's own setting)"
-    [[ ${JOB_IDS:-} =~ ^[0-9a-f]{64}(,[0-9a-f]{64}){0,99}$ ]] || fail "JOB_IDS is 1 to 100 comma-separated job ids"
-    IFS=, read -r -a ids <<< "$JOB_IDS"
-    job_args=()
-    for id in "${ids[@]}"; do job_args+=(--job "$id"); done
-    # Each dead letter says why its workunit failed (the error mask), from the job's journal.
-    usnm-boinc claim dead-letter --handoff-url "$HANDOFF_URL" --queue-url "$QUEUE_URL" "${job_args[@]}" ;;
+    if [ -n "${SUPERSEDES_FAILED_JOB:-}" ]; then
+      # The operator's (#1417): a dead-lettered job's page claimed again with a newer message.
+      # A dry run unless CONFIRM_MESSAGE_SHA256 names that message.
+      [ -z "${JOB_IDS:-}" ] || fail "SUPERSEDES_FAILED_JOB settles one page; don't give JOB_IDS too"
+      [[ $SUPERSEDES_FAILED_JOB =~ ^[0-9a-f]{64}$ ]] || fail "SUPERSEDES_FAILED_JOB is a job id (64 hex)"
+      confirm=()
+      if [ -n "${CONFIRM_MESSAGE_SHA256:-}" ]; then
+        [[ $CONFIRM_MESSAGE_SHA256 =~ ^[0-9a-f]{64}$ ]] || fail "CONFIRM_MESSAGE_SHA256 is a sha256 (64 hex)"
+        confirm=(--confirm-message-sha256 "$CONFIRM_MESSAGE_SHA256")
+      fi
+      usnm-boinc claim dead-letter --handoff-url "$HANDOFF_URL" --queue-url "$QUEUE_URL" \
+        --curated-url "$CURATED_URL" --supersedes-failed-job "$SUPERSEDES_FAILED_JOB" ${confirm[@]+"${confirm[@]}"}
+    else
+      [ -z "${CONFIRM_MESSAGE_SHA256:-}" ] || fail "CONFIRM_MESSAGE_SHA256 goes with SUPERSEDES_FAILED_JOB"
+      [[ ${JOB_IDS:-} =~ ^[0-9a-f]{64}(,[0-9a-f]{64}){0,99}$ ]] || fail "JOB_IDS is 1 to 100 comma-separated job ids"
+      IFS=, read -r -a ids <<< "$JOB_IDS"
+      job_args=()
+      for id in "${ids[@]}"; do job_args+=(--job "$id"); done
+      # Each dead letter says why its workunit failed (the error mask), from the job's journal.
+      usnm-boinc claim dead-letter --handoff-url "$HANDOFF_URL" --queue-url "$QUEUE_URL" "${job_args[@]}"
+    fi ;;
   collect)
     [[ ${JOB_ID:-} =~ ^[0-9a-f]{64}$ ]] || fail "JOB_ID is a job id (64 hex)"
     usnm-boinc handoff get-file --from-url "$HANDOFF_URL" --path "dispatch/jobs/$JOB_ID/record.json" \

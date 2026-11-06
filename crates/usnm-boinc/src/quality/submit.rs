@@ -6,7 +6,7 @@
 //! downloads it once (the input template marks it sticky).
 use super::{units, APP, JOB_FILE, PLACES_FILE};
 use crate::{atomic, read};
-use anyhow::{ensure, Context};
+use anyhow::ensure;
 use std::path::PathBuf;
 use tokio::process::Command;
 use usnm_ocr_contract::quality::{
@@ -116,15 +116,16 @@ fn limit(file: &str) -> usize {
 }
 
 pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
+    run_selected(opts, None).await
+}
+
+pub async fn run_selected(
+    opts: &Options,
+    members: Option<&std::path::Path>,
+) -> anyhow::Result<Summary> {
     let project = opts.project.canonicalize()?;
     let dir = units(&opts.root);
-    let mut names: Vec<_> = std::fs::read_dir(&dir)
-        .with_context(|| format!("reading {dir:?}"))?
-        .filter_map(|e| e.ok())
-        .filter(|e| e.path().join(JOB_FILE).exists())
-        .map(|e| e.path())
-        .collect();
-    names.sort();
+    let names = crate::selection::units(&dir, JOB_FILE, members)?;
     let mut summary = Summary::default();
     for unit in names {
         if summary.submitted >= opts.max_units {
@@ -172,6 +173,7 @@ pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
             unit.display()
         );
         std::fs::rename(unit.join("submitting"), unit.join("submitted"))?;
+        std::fs::File::open(&unit)?.sync_all()?;
         summary.submitted += 1;
     }
     Ok(summary)
@@ -180,6 +182,48 @@ pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bounded_submission_keeps_unrelated_quality_jobs_pending() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("quality");
+        let a = "sn1_1900-01-01_ed-1_seq-1";
+        let b = "sn1_1900-01-01_ed-1_seq-2";
+        for doc in [a, b] {
+            let unit = units(&root).join(doc);
+            let mut job = crate::quality::work::tests::unit(&unit);
+            job.doc_id = doc.into();
+            job.id = job.identity().unwrap();
+            atomic(&unit.join(JOB_FILE), &serde_json::to_vec(&job).unwrap()).unwrap();
+        }
+        let project = tmp.path().join("project");
+        crate::bundle::submit::tests::executable(
+            &project.join("bin/dir_hier_path"),
+            "#!/bin/sh\nprintf 'download/%s\\n' \"$1\"\n",
+        );
+        crate::bundle::submit::tests::executable(
+            &project.join("bin/create_work"),
+            "#!/bin/sh\nexit 0\n",
+        );
+        let members = tmp.path().join("members.json");
+        atomic(&members, &serde_json::to_vec(&[b]).unwrap()).unwrap();
+        let opts = Options {
+            root: root.clone(),
+            project,
+            max_units: 1,
+        };
+        assert_eq!(
+            run_selected(&opts, Some(&members)).await.unwrap().submitted,
+            1
+        );
+        assert_eq!(
+            run_selected(&opts, Some(&members)).await.unwrap().submitted,
+            0
+        );
+        assert!(units(&root).join(b).join("submitted").is_file());
+        assert!(!units(&root).join(a).join("submitted").exists());
+    }
 
     #[test]
     fn five_inputs_in_template_order_with_a_shared_places_file() {

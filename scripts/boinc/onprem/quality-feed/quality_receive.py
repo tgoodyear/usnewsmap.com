@@ -38,17 +38,72 @@ def fail(msg):
     sys.exit(f"error: {msg}")
 
 
+def own(path):
+    info = os.lstat(path)
+    if (info.st_uid, info.st_gid) != (OWNER, OWNER):
+        os.lchown(path, OWNER, OWNER)
+
+
+def sample_docs(path):
+    with open(path) as f:
+        return [json.loads(line)["doc_id"] for line in f]
+
+
+def bundle_docs(path):
+    with open(os.path.join(path, "quality.json")) as f:
+        job = json.load(f)
+    return [p["doc_id"] for p in job.get("pages") or []] or [job["doc_id"]]
+
+
 def after_submit(camp, inc):
     units = os.path.join(camp, "units")
-    bundles = [d for d in os.listdir(units) if os.path.isdir(os.path.join(units, d))] if os.path.isdir(units) else []
-    if not bundles or any(not os.path.exists(os.path.join(units, b, "submitted")) for b in bundles):
-        fail("a bundle has no submitted marker; nothing freed")
-    with open(os.path.join(inc, "sample.jsonl")) as f:
-        docs = [json.loads(line)["doc_id"] for line in f]
+    docs = sample_docs(os.path.join(inc, "sample.jsonl"))
+    # Every page of the chunk must be in a submitted unit, or have LoC's `missing` marker, before
+    # anything is freed: a bundle whose quality.json the share lost after staging is skipped by
+    # submit, and freeing its pages then would lose them. A run names its bundles after its first
+    # page (bundle-<n>-<doc_id>), so the chunk's own are found without reading every bundle; a
+    # directory without quality.json is no bundle (a crash stopped packing; staging removes it).
+    names = os.listdir(units) if os.path.isdir(units) else []
+    wanted = set(docs)
+    own = [n for n in names if n.startswith("bundle-") and n.split("-", 2)[-1] in wanted]
+    covered = set()
+    for group in (own, [n for n in names if n not in own]):
+        for n in group:
+            b = os.path.join(units, n)
+            if not os.path.isfile(os.path.join(b, "quality.json")):
+                continue
+            members = bundle_docs(b)
+            if not os.path.exists(os.path.join(b, "submitted")):
+                if wanted.intersection(members):
+                    fail(f"{n} has no submitted marker; nothing freed")
+                continue
+            covered.update(members)
+        left = [d for d in docs if d not in covered
+                and not any(os.path.exists(os.path.join(camp, t, d, "missing")) for t in ("pages", "units"))]
+        if not left:
+            break
+    else:
+        fail(f"{len(left)} pages are in no submitted unit (first {left[0]}); nothing freed")
+    # The shipper receives the next chunk while this one stages and submits: a page that chunk
+    # holds too keeps its scan and texts, so its stage never has to ask LoC.
+    # One that can't be read (a receive cut short) keeps all of this chunk's copies: they are
+    # freed with a later chunk's, or never, which costs disk, not correctness.
+    keep = set()
+    incoming = os.path.dirname(inc)
+    for other in os.listdir(incoming):
+        sample = os.path.join(incoming, other, "sample.jsonl")
+        if other == os.path.basename(inc) or not CHUNK_RE.match(other) or not os.path.exists(sample):
+            continue
+        try:
+            keep.update(sample_docs(sample))
+        except (OSError, ValueError, KeyError, TypeError):
+            keep.update(docs)
     freed = 0
     for d in docs:
         if not DOC_RE.match(d):
             fail(f"not a page id: {d}")
+        if d in keep:
+            continue
         paths = [os.path.join(camp, "scans", f"{d}.jpg"), os.path.join(camp, "scans", f"{d}.xml"),
                  os.path.join(camp, "texts", f"{d}.json"), os.path.join(camp, "texts", f"{d}.ours.xml")]
         paths += [os.path.join(camp, "pages", d, n) for n in ("page.jpg", "loc.xml", "texts.json")]
@@ -118,9 +173,11 @@ def main(argv=None):
         if root == camp:
             # Staging's own trees: never walked, they only grow.
             dirs[:] = [d for d in dirs if d not in ("units", "pages")]
+        # On the share each chown is a synchronous write to disk, and texts/ holds thousands of
+        # files, so only what isn't the owner's yet: without this check, half an hour a chunk.
         for n in dirs + files:
-            os.lchown(os.path.join(root, n), OWNER, OWNER)
-    os.lchown(camp, OWNER, OWNER)
+            own(os.path.join(root, n))
+    own(camp)
     with open(os.path.join(inc, "langs.txt")) as f:
         langs = f.read().strip()
     if not re.match(r"^[a-z]{3}(,[a-z]{3})*$", langs):

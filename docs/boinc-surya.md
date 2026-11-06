@@ -2,7 +2,9 @@
 
 Issue: [#516](https://github.com/tgoodyear/usnewsmap.com/issues/516), [#842](https://github.com/tgoodyear/usnewsmap.com/issues/842). Round 1 of the engine survey ([report](reports/2026-10-ocr-engine-survey/report.md), #370) ran Surya 2 on one CPU node, on 8 pages. This app, `usnm_surya`, runs it on volunteer hosts, on CPU, on NVIDIA GPUs (CUDA), and on Intel Xe / Iris GPUs (Vulkan, #842), to read a larger sample and to measure CPU and GPU time per page. The other apps are described in [boinc/README.md](boinc/README.md) and [boinc-assessment.md](notes/2026-10-16-boinc-assessment.md).
 
-Status: a probe of a few pages, to find out whether volunteers' container runtimes can give the job a GPU, how long a page takes, and how far two hosts' texts agree. The larger sample comes after it.
+Status: retired on 2 November 2026. The server sends no `usnm_surya` work: the app and all its versions are deprecated (see [Retirement](#retirement-2-november-2026)). The rest of this page describes the app as it ran, for anyone reading its results or bringing it back.
+
+Why: in the November GPU studies ([#1428](https://github.com/tgoodyear/usnewsmap.com/pull/1428)), Surya's best pooled CER was 23.0% (Study 6, line mode), against Tesseract's 9.0% on the same 612 crops. Tiled pages cost about $36 per 1,000 on a rented RTX 3090, against about $3.40 per 1,000 pages for Qwen (12 crops a page). Study 6 also scored Surya's native weights on vLLM at 61.4% CER against 18.9% for the GGUF on 50 crops. That gap is unexplained and may come from our server settings, so the native-weights result is unresolved.
 
 ## What a unit is
 
@@ -31,7 +33,7 @@ The weights are in the image: Surya 2's GGUF model and vision projector, and the
 
 Each of those three values, and the Vulkan base, is written once, in `ocr/boinc/surya/engine.lock`: one `KEY=value` per line, the keys named as the Containerfile's build arguments. `SURYA_VERSION` is surya-ocr's version, `LLAMA_DIGEST` and `LLAMA_VULKAN_DIGEST` are the two llama.cpp images, and `SURYA_WEIGHTS` is the sha256 of the lines of `weights.lock` that are not comments, which the build compares with the weights it fetched. The Containerfile gives those arguments no defaults, so a build that is not given them fails. `.github/actions/boinc-surya-build` passes each line of the lock to `docker build --build-arg`; by hand, `pins=$(sed -n 's/^[A-Z][A-Z_]*=/--build-arg &/p' ocr/boinc/surya/engine.lock)` gives the same flags. `usnm-boinc` compiles the lock in and uses `SURYA_VERSION` as the default of `--engine-surya` (`surya stage`, `stage-crops`, `stage-gold`, `benchmark-stage` and `local-unit`), so a unit is staged for the version the image installs. A pin that cannot read the lock is checked instead: `scripts/ci/check-engine-pins.py` (CI job `infra`) fails when `SURYA_WEIGHTS` is not the hash of `weights.lock`, or when the Containerfile gains a copy of a pin. To change a pin, edit `engine.lock` (and `weights.lock` for the weights) and nothing else. Because `usnm-boinc` embeds the file, the other BOINC image workflows build on that pull request too. The staging commands still take `--engine-llama` and `--engine-weights` (the bridge's `SURYA_ENGINE_LLAMA` and `SURYA_ENGINE_WEIGHTS`) as the operator's record of which build a unit is for: use `LLAMA_DIGEST` (`LLAMA_VULKAN_DIGEST` for a Vulkan image) and `SURYA_WEIGHTS`, and take `SURYA_ENGINE_IMAGE` from the summary of the run that published the image.
 
-The image is several GB (the weights alone are 1.6 GB), which a volunteer downloads once per image version. `.github/workflows/boinc-surya.yml` builds both `cuda` and `vulkan` variants, checks that each reads a rendered line on CPU, and, when started by hand on main, pushes them to the public package `ghcr.io/tgoodyear/usnm-boinc-worker` with the tags `surya-<commit>` and `surya-vulkan-<commit>`. The run's summary gives each digest and the values to stage with.
+The image is several GB (the weights alone are 1.6 GB), which a volunteer downloads once per image version. `.github/workflows/boinc-surya.yml` builds both `cuda` and `vulkan` variants (a pull request that changes only the crates or the files they embed outside `ocr/boinc/surya/` builds `cuda` alone, since the two share their `usnm-boinc` build; #1585), checks that each reads a rendered line on CPU, and, when started by hand on main, pushes them to the public package `ghcr.io/tgoodyear/usnm-boinc-worker` with the tags `surya-<commit>` and `surya-vulkan-<commit>`. The run's summary gives each digest and the values to stage with.
 
 ## App versions and plan classes
 
@@ -41,7 +43,23 @@ The image is several GB (the weights alone are 1.6 GB), which a volunteer downlo
 | 1.5     | `docker_nvidia_cuda`  | hosts with Docker or Podman whose client reports an NVIDIA GPU with CUDA 12.0 or later, compute capability 5.0 or later and 3,000 MB of memory                               | `--gpus all`, 2 CPUs, 8 GiB, no swap (`ocr/boinc/surya/job-gpu.toml`)                             |
 | 1.x     | `docker_intel_vulkan` | hosts with Docker or Podman whose client reports an Intel OpenCL GPU with at least 4,096 MB of memory (#842; closed by default with `min_wu_id=2, max_wu_id=1` until staged) | `use_gpu = false`, `--device=/dev/dri`, 2 CPUs, 8 GiB, no swap (`ocr/boinc/surya/job-intel.toml`) |
 
-1.4 and 1.5 have been the active versions since 22 October 2026 (see the [Wave 1 runbook](#wave-1-runbook-22-october-2026)); 1.2 and 1.3 are deprecated, and 1.0 and 1.1 are retired. Both classes need client 8.2.13 or later and are in `contrib-compute/boinc/plan_class_spec.xml`. The scheduler sends a host the version it expects to be fastest, so a host with a qualifying GPU gets the GPU version.
+Every version has been deprecated since 2 November 2026 (see [Retirement](#retirement-2-november-2026)). Before that, 1.4 and 1.5 were the active versions from 22 October 2026 (see the [Wave 1 runbook](#wave-1-runbook-22-october-2026)), 1.6 was published for Intel with its class closed, 1.2 and 1.3 were deprecated, and 1.0 and 1.1 were retired. Both classes need client 8.2.13 or later and are in `contrib-compute/boinc/plan_class_spec.xml`. The scheduler sends a host the version it expects to be fastest, so a host with a qualifying GPU gets the GPU version.
+
+## Retirement (2 November 2026)
+
+The app and its versions were deprecated on the prod server on 2 November 2026. Nothing was deleted: the workunit and result rows, the signed app versions, the images and the staged units all stay.
+
+Before the change no result was in progress. Four results were unsent: the third replicas of 4 workunits from 24 October whose first two results disagreed. They stay unsent. The last workunit was created on 26 October, and no controller plan, timer or feed staged Surya work.
+
+The steps, in the server container:
+
+1. Save the `app` row and every `app_version` row of `usnm_surya` as JSON under `/project/ops/surya-retire-20261102/`.
+2. Set `deprecated=1` on the app and on each version not already deprecated: 1.4, 1.5 and 1.6 (app versions 58, 59 and 60). 1.2 and 1.3 were already deprecated.
+3. Touch `reread_db` in the project directory so the feeder reloads its tables. `server_status.php` stops listing the app.
+
+The `usnm_surya` validator and assimilator keep running, with nothing to do, until the server runs an image built from #1449, which drops them from `render_config`. The bridge steps (`surya-stage`, `surya-stage-crops`, `surya-submit`, `surya-collect`), the `usnm_surya` plan kind in `batch_scheduler.py`, the image workflow and `scripts/boinc/surya-benchmark.py` stay in the repo, so the studies can be rerun.
+
+Rollback: put back the saved `deprecated` values (0 on the app and on app versions 58, 59 and 60) and touch `reread_db`. The 4 unsent results become sendable again. On an image built from #1449, also put the validator, the assimilator and the `usnm_surya_check` and `usnm_surya_compare` links back in `render_config`, and deploy a new image, before any result is sent. To start a new campaign, follow [Running a campaign](#running-a-campaign).
 
 ### How the GPU reaches the container
 
@@ -159,6 +177,8 @@ scripts/ocr-survey/gold.py score --crops fixtures/ocr-gold/cze-srp-pol-rus/crops
 ```
 
 ### Wave 1 runbook (22 October 2026)
+
+This is the record of the October wave. The app is now retired (see [Retirement](#retirement-2-november-2026)).
 
 The first wave on the on-prem server, in order. Everything runs through `scripts/boinc/onprem-step.sh --env prod --target bridge` on the BOINC host (`--wait-mins 30` unless noted); the controller's ssh key may run only the two steps the [Surya plan](boinc-batch-scheduler.md#surya-waves) takes.
 

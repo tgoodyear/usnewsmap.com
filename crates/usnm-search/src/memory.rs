@@ -292,6 +292,7 @@ fn hit(
         doc_id: d.doc_id.clone(),
         day: d.day,
         sort_key: d.sort_key,
+        batch: d.batch.clone(),
         lccn: d.lccn.clone(),
         place_id: d.place_id.clone(),
         edition: d.edition,
@@ -371,6 +372,19 @@ impl SearchBackend for MemoryBackend {
         })
     }
 
+    async fn summary_with_cube(
+        &self,
+        indexes: &IndexSet,
+        query: &Node,
+        filters: &Filters,
+        spec: &BucketSpec,
+    ) -> Result<Option<(Summary, Vec<CubeCell>)>, SearchError> {
+        let shards: Vec<u8> = (0..usnm_core::cube::PLACE_SHARDS).collect();
+        let summary = self.summary(indexes, query, filters, spec).await?;
+        let cells = self.cube(indexes, query, filters, spec, &shards).await?;
+        Ok(Some((summary, cells)))
+    }
+
     async fn cube(
         &self,
         indexes: &IndexSet,
@@ -439,7 +453,10 @@ impl SearchBackend for MemoryBackend {
                 .take(page.limit)
                 .map(|(_, d)| {
                     let (snippets, snippet_source) = match &d.printed {
-                        Some(printed) => (ja_snippets(printed, query, indexes.analyzer()), None),
+                        Some(printed) => (
+                            ja_snippets(printed, query, indexes.analyzer(), page.snippet_length),
+                            None,
+                        ),
                         None => page_snippets(
                             &d.text,
                             d.text_as.as_deref(),
@@ -447,6 +464,7 @@ impl SearchBackend for MemoryBackend {
                             query,
                             indexes.american_stories(),
                             indexes.text_layout(),
+                            page.snippet_length,
                         ),
                     };
                     let matched_in =

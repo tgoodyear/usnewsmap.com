@@ -14,6 +14,6 @@ Type=oneshot
 EnvironmentFile=/etc/usnm/ocr-manifest.env
 ExecStart=/opt/usnm-quality-feed/venv/bin/python /opt/usnm-quality-feed/ocr_manifest.py build \
   --state /var/lib/usnm-ocr-manifest --scan-server ${SCAN_SERVER} --max-pages ${MAX_PAGES} \
-  --reasons ${REASONS}
+  --reasons ${REASONS} --claims-lock /var/lib/usnm-quality-feed/kept.tsv.lock
 Nice=10
 TimeoutStartSec=1h

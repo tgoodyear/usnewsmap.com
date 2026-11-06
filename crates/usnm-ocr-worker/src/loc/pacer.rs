@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use tokio::time::Instant;
 
-use super::global::GlobalPacer;
+use crate::fetcher::Budget;
 
 /// A minimum gap between requests, shared by every task holding it. Each
 /// caller reserves the next free slot, so N concurrent callers are spaced
@@ -18,7 +18,7 @@ pub struct Pacer {
     held: Mutex<Option<Instant>>,
     /// The host's budget across every LoC server and process, waited for
     /// after this pacer's own slot (#962).
-    global: Option<Arc<GlobalPacer>>,
+    global: Option<Arc<dyn Budget>>,
     /// With a global budget, one caller at a time goes through both waits,
     /// so a slot this pacer gave out can't go stale while another caller
     /// waits for the host's budget (tokio's mutex is fair: callers keep
@@ -38,7 +38,12 @@ impl Pacer {
     }
 
     /// The same, inside the host's global budget.
-    pub fn with_global(gap: Duration, global: Option<Arc<GlobalPacer>>) -> Self {
+    pub fn with_global<B: Budget + 'static>(gap: Duration, global: Option<Arc<B>>) -> Self {
+        Self::with_budget(gap, global.map(|g| g as Arc<dyn Budget>))
+    }
+
+    /// The same, with any budget.
+    pub fn with_budget(gap: Duration, global: Option<Arc<dyn Budget>>) -> Self {
         Self {
             global,
             ..Self::new(gap)
@@ -106,6 +111,7 @@ impl Pacer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::loc::global::GlobalPacer;
 
     /// With a global budget held past this pacer's slot, the next request
     /// still waits this pacer's whole gap after the first actually went.

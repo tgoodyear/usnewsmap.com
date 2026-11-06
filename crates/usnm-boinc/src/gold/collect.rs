@@ -224,7 +224,7 @@ fn parse_native_rows(
             .get(&workunit)
             .context("unknown Gold workunit in native result")?;
         anyhow::ensure!(
-            fields[0] == submit::APP,
+            submit::is_gold_app(fields[0]),
             "native result belongs to another BOINC app"
         );
         rows.push(NativeResult {
@@ -377,7 +377,7 @@ fn run_inner(
                 row.schema_version == 3
                     && row.workunit_assimilate_state == BOINC_ASSIMILATE_STATE_DONE
                     && row.workunit_result_count > 0
-                    && row.app == submit::APP
+                    && submit::is_gold_app(&row.app)
                     && row.bundle_version == job.bundle_version
                     && row.engine_image == job.engine.image
                     && row.manifest_sha256 == job.manifest_sha256

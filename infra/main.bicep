@@ -56,6 +56,11 @@ param searcherAppRetain bool = false
 param indexStorage bool = false
 @description('Serve the separate index account instead of the lake. Requires indexStorage. Enable only after the staged rebuild is verified and its pending pointer is promoted.')
 param indexStorageServe bool = false
+@description('The index account\'s default access tier. Prod stays Hot: Cool only pays if full releases come at least about 18 days apart (docs/operations/search-serving.md, "The Azure cold spare").')
+@allowed(['Hot', 'Cool'])
+param indexAccessTier string = 'Hot'
+@description('Private endpoints and private DNS for the data lake, the index account and Cosmos (ADR-0008). Off (a cold spare, ADR-0008 amendment of November 2026): none of them, and each allows snet-cae through a service endpoint and a firewall rule, with Entra ID the only way in as always.')
+param dataPrivateEndpoints bool = true
 @description('Data lake blob soft-delete days. Keep 3 until old qw-index is pruned; then restore 14 (#416).')
 @minValue(1)
 @maxValue(365)
@@ -141,6 +146,9 @@ param searchLogCopy bool = false
 
 @description('Object id of the search log copy host\'s Arc machine identity (with searchLogCopy). Settings only, never in the repository.')
 param searchLogCopyHost string = ''
+
+@description('Copy curated/ocr-local/ to a dataset on tank each day: searchLogCopyHost gets read and list on that prefix (modules/ocr-local-copy.bicep), and the data lake opens to ocrNodeIps only (the firewall denies everything else; the private endpoint stays).')
+param ocrLocalCopy bool = false
 
 @description('Object id of the scan fetcher\'s identity (#469): the scan-fetch container\'s Arc machine identity, which pushes cached scans with scripts/ocr-node/push-boinc-scan.sh. It gets the node writer role on the exchange account\'s boinc-handoff container (modules/ocr-exchange.bicep) and Log Analytics Reader on the BOINC workspace (modules/boinc-handoff-logs.bicep). Set it only after the BOINC stack is deployed: the workspace grant needs its workspace. Settings only, never in the repository.')
 param boincHandoffRunner string = ''
@@ -322,6 +330,12 @@ param backfillOnPrem bool = false
 @description('Alert on the on-prem OCR pickup (#1139, modules/ocr-sync-alerts.bicep): a failed run, no run through the pickup for more than 2 hours, and node output left in ocr-out over 72 hours, from the metrics it sends to the environment\'s Application Insights. With ocrSyncOnPrem and alert emails.')
 param ocrSyncAlerts bool = false
 
+@description('Alert on the live BOINC feed health (#1441, modules/boinc-feed-alerts.bicep): a data collection rule that takes the evaluator host\'s local0 lines into the OCR nodes\' workspace, and two log alerts through the action group (a check firing or unknown, the evaluator\'s events missing). With ocrNodes, alert emails and boincFeedMachine. The host\'s association with the rule is made by hand (docs/boinc/boundaries-and-monitoring.md).')
+param boincFeedAlerts bool = false
+
+@description('Name of the BOINC feed evaluator host\'s Arc machine in the environment\'s resource group, for boincFeedAlerts: the alerts read only its rows. Settings only, never in the repository.')
+param boincFeedMachine string = ''
+
 @description('Deploy the on-prem OCR exchange account (stusnmo<suffix>, #296, ADR-0015): work queues and an output container for OCR nodes outside Azure, behind a firewall that allows nodeIps and the Container Apps subnet.')
 param ocrNodes bool = false
 
@@ -482,7 +496,10 @@ module network 'modules/network.bicep' = {
     tags: tags
     name: n.vnet
     addressPrefix: vnetAddressPrefix
-    storageServiceEndpoint: ocrNodes
+    storageServiceEndpoint: ocrNodes || !dataPrivateEndpoints
+    cosmosServiceEndpoint: !dataPrivateEndpoints
+    blobPrivateDns: dataPrivateEndpoints || !empty(archiveAccountId)
+    cosmosPrivateDns: dataPrivateEndpoints
   }
 }
 
@@ -509,43 +526,62 @@ var ingestIdentityOn = (ingestJobs && useAcr) || ocr
 
 // The data lake opens to the node IPs only for the on-prem Serial Set
 // runner (serialSetOnPrem), the Japanese OCR, the release, the serving
-// container, the on-prem OCR pickup (#917) or the search log copy (#1097); the
-// Cosmos account only for the serving container (#955). The public-network
-// policy then exempts each by resource id, like the accounts below. Provision
+// container, the on-prem OCR pickup (#917), the search log copy (#1097) or the
+// OCR output copy; the Cosmos account only for the serving container (#955). The
+// public-network policy then exempts each by resource id, like the accounts below. Provision
 // writes the policy's exemptions before the stack (policy-exemptions.bicep, #336).
-var dataLakeOpen = lakeOpen(
-  serialSetOnPrem || jaOcrOnPrem || onPremRelease || onPremServing || ocrSyncOnPrem || searchLogCopy,
+var lakeNodeAccess = lakeOpen(
+  serialSetOnPrem || jaOcrOnPrem || onPremRelease || onPremServing || ocrSyncOnPrem || searchLogCopy || ocrLocalCopy,
   ocrNodeIps
 )
-var indexAccountOpen = indexOpen(onPremRelease, indexStorage, ocrNodeIps)
+var indexNodeAccess = indexOpen(onPremRelease, indexStorage, ocrNodeIps)
 // Cosmos opens to the node IPs for the serving container (#955) or the
 // on-prem BOINC host's claim and collect (#967), and for the on-prem OCR pickup (#917),
 // which also uses the lake. The on-prem release host's index_runs write (#1096) needs one of
 // these three; onPremRelease doesn't open it.
-var stateOpen = cosmosOpen(onPremServing || cosmosOnPremAccess || ocrSyncOnPrem, ocrNodeIps)
+var stateNodeAccess = cosmosOpen(onPremServing || cosmosOnPremAccess || ocrSyncOnPrem, ocrNodeIps)
+// Without data private endpoints the Azure apps reach all three from snet-cae through
+// service endpoints, so each has public network access whatever the settings above say.
+// The subnet's id is written out, not read from the network module: a runtime value here
+// would short-circuit these modules in a what-if, and the stack preview then refuses to run.
+// The modules depend on the network, whose service endpoints their rules need.
+var dataSubnetIds = dataPrivateEndpoints
+  ? []
+  : [resourceId(subscription().subscriptionId, n.rg, 'Microsoft.Network/virtualNetworks/subnets', n.vnet, 'snet-cae')]
+var dataLakeOpen = lakeNodeAccess || !dataPrivateEndpoints
+var indexAccountOpen = indexNodeAccess || (indexStorage && !dataPrivateEndpoints)
+var stateOpen = stateNodeAccess || !dataPrivateEndpoints
 
 module storage 'modules/storage.bicep' = {
   scope: rg
   name: 'storage'
-  dependsOn: [policies]
+  dependsOn: [policies, network]
   params: {
     location: location
     tags: tags
     name: n.dataLake
     blobSoftDeleteDays: lakeBlobSoftDeleteDays
-    allowedIps: dataLakeOpen ? nodeIpList(ocrNodeIps) : []
+    allowedIps: lakeNodeAccess ? nodeIpList(ocrNodeIps) : []
+    // The BOINC hand-off job reaches the lake from its own subnet, as it does the exchange account.
+    subnetIds: empty(dataSubnetIds) || !boincHandoff
+      ? dataSubnetIds
+      : concat(dataSubnetIds, [
+          resourceId(subscription().subscriptionId, n.boincRg, 'Microsoft.Network/virtualNetworks/subnets', n.boincVnet, 'aca')
+        ])
   }
 }
 
 module indexStore 'modules/index-storage.bicep' = if (indexStorage) {
   scope: rg
   name: 'index-storage'
-  dependsOn: [policies]
+  dependsOn: [policies, network]
   params: {
     location: location
     tags: tags
     name: n.indexAccount
-    allowedIps: indexAccountOpen ? nodeIpList(ocrNodeIps) : []
+    accessTier: indexAccessTier
+    allowedIps: indexNodeAccess ? nodeIpList(ocrNodeIps) : []
+    subnetIds: dataSubnetIds
   }
 }
 
@@ -857,17 +893,18 @@ module ocrNodeMonitoring 'modules/ocr-node-monitoring.bicep' = if (ocrNodes) {
 module cosmos 'modules/cosmos.bicep' = {
   scope: rg
   name: 'cosmos'
-  dependsOn: [policies]
+  dependsOn: [policies, network]
   params: {
     location: location
     tags: tags
     name: n.cosmos
     freeTier: cosmosFreeTier
-    allowedIps: stateOpen ? nodeIpList(ocrNodeIps) : []
+    allowedIps: stateNodeAccess ? nodeIpList(ocrNodeIps) : []
+    subnetIds: dataSubnetIds
   }
 }
 
-module privateEndpoints 'modules/private-endpoints.bicep' = {
+module privateEndpoints 'modules/private-endpoints.bicep' = if (dataPrivateEndpoints) {
   scope: rg
   name: 'private-endpoints'
   params: {
@@ -922,6 +959,16 @@ module onPremServingGrant 'modules/onprem-serving.bicep' = if (onPremServing && 
 module searchLogCopyGrant 'modules/searchlog-copy.bicep' = if (searchLogCopy && !empty(trim(searchLogCopyHost))) {
   scope: rg
   name: 'searchlog-copy'
+  params: {
+    storageName: storage.outputs.name
+    principalId: trim(searchLogCopyHost)
+  }
+}
+
+// The OCR output copy's grant: the same host and identity as the search log's.
+module ocrLocalCopyGrant 'modules/ocr-local-copy.bicep' = if (ocrLocalCopy && !empty(trim(searchLogCopyHost))) {
+  scope: rg
+  name: 'ocr-local-copy'
   params: {
     storageName: storage.outputs.name
     principalId: trim(searchLogCopyHost)
@@ -1294,6 +1341,27 @@ module jaOcrAlertRules 'modules/jaocr-alerts.bicep' = if (!empty(emails) && jaOc
   }
 }
 
+// The live BOINC feed health (#1441): the evaluator host's local0 lines into
+// the OCR nodes' workspace, and alerts on them through the action group.
+var boincFeedOn = !empty(emails) && boincFeedAlerts && ocrNodes && !empty(trim(boincFeedMachine))
+
+module boincFeedAlertRules 'modules/boinc-feed-alerts.bicep' = if (boincFeedOn) {
+  scope: rg
+  name: 'boinc-feed-alerts'
+  params: {
+    location: location
+    tags: tags
+    workspaceName: ocrNodeMonitoring!.outputs.workspaceName
+    actionGroupId: monitoring.outputs.actionGroupId
+    machineName: trim(boincFeedMachine)
+    ruleName: n.boincFeedDcr
+    alertNames: {
+      condition: n.boincFeedConditionAlert
+      missing: n.boincFeedMissingAlert
+    }
+  }
+}
+
 // API server errors and latency, from the requests it exports; search
 // capacity (queue wait and replica CPU, #238); availability tests of the
 // site and the API on the custom domain once its certificates are bound.
@@ -1492,6 +1560,9 @@ output SCAN_ARCHIVE_BLOB_ENDPOINT string = ocrNodes ? scanArchive!.outputs.blobE
 output OCR_KEYVAULT string = ocrNodes ? ocrVault!.outputs.name : ''
 // The nodes' data collection rule; onboard.sh associates each node with it.
 output OCR_NODE_DCR_ID string = ocrNodes ? ocrNodeMonitoring!.outputs.ruleId : ''
+// The BOINC feed evaluator's data collection rule (#1441); associate the
+// evaluator host with it by hand (docs/boinc/boundaries-and-monitoring.md).
+output BOINC_FEED_DCR_ID string = boincFeedOn ? boincFeedAlertRules!.outputs.ruleId : ''
 // The nodes' own Application Insights component: onboard.sh passes its
 // ingestion settings (not a credential: local auth is off) to the worker.
 output OCR_NODE_APPINSIGHTS string = ocrNodes ? ocrNodeMonitoring!.outputs.appInsightsConnectionString : ''

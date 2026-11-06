@@ -8,13 +8,18 @@ param name string
 param addressPrefix string
 var caeSubnetPrefix = cidrSubnet(addressPrefix, 27, 0)
 var peSubnetPrefix = cidrSubnet(addressPrefix, 28, 2)
-@description('A Microsoft.Storage service endpoint on snet-cae, for the OCR exchange account\'s firewall rule (ocr-exchange.bicep).')
+@description('A Microsoft.Storage service endpoint on snet-cae, for the firewall rules of the OCR exchange account (ocr-exchange.bicep) and, without data private endpoints, the data lake and the index account.')
 param storageServiceEndpoint bool = false
+@description('A Microsoft.AzureCosmosDB service endpoint on snet-cae, for the Cosmos account\'s firewall rule without data private endpoints.')
+param cosmosServiceEndpoint bool = false
+@description('The Blob private DNS zone, for the data lake\'s, the index account\'s and the archive account\'s private endpoints.')
+param blobPrivateDns bool = true
+@description('The Cosmos private DNS zone, for the Cosmos account\'s private endpoint.')
+param cosmosPrivateDns bool = true
 
-var dnsZones = [
-  'privatelink.blob.${environment().suffixes.storage}'
-  'privatelink.documents.azure.com'
-]
+var blobZone = 'privatelink.blob.${environment().suffixes.storage}'
+var cosmosZone = 'privatelink.documents.azure.com'
+var dnsZones = concat(blobPrivateDns ? [blobZone] : [], cosmosPrivateDns ? [cosmosZone] : [])
 
 resource vnet 'Microsoft.Network/virtualNetworks@2024-05-01' = {
   name: name
@@ -31,12 +36,18 @@ resource vnet 'Microsoft.Network/virtualNetworks@2024-05-01' = {
           // accounts' public endpoints leaves from its private addresses,
           // which the exchange account's virtual network rule allows. The
           // data lake and archive accounts are reached through private
-          // endpoints, whose private DNS names resolve to the endpoints'
-          // addresses, so their traffic doesn't change. No account here
+          // endpoints where they have them, whose private DNS names resolve
+          // to the endpoints' addresses, so their traffic doesn't change.
+          // Without data private endpoints (ADR-0008, amendment of November
+          // 2026) the lake, the index account and, with its own service
+          // endpoint, Cosmos are reached the same way. No account here
           // allows the environment's public outbound IP, so no IP rule stops
           // matching. Turning it on or off closes open connections to storage
           // public endpoints from the subnet, so provision between jobs.
-          serviceEndpoints: storageServiceEndpoint ? [{ service: 'Microsoft.Storage', locations: [location] }] : []
+          serviceEndpoints: concat(
+            storageServiceEndpoint ? [{ service: 'Microsoft.Storage', locations: [location] }] : [],
+            cosmosServiceEndpoint ? [{ service: 'Microsoft.AzureCosmosDB', locations: [location] }] : []
+          )
           delegations: [
             {
               name: 'containerapps'
@@ -81,5 +92,5 @@ output vnetId string = vnet.id
 output vnetName string = vnet.name
 output caeSubnetId string = '${vnet.id}/subnets/snet-cae'
 output peSubnetId string = '${vnet.id}/subnets/snet-pe'
-output blobDnsZoneId string = zones[0].id
-output cosmosDnsZoneId string = zones[1].id
+output blobDnsZoneId string = blobPrivateDns ? resourceId('Microsoft.Network/privateDnsZones', blobZone) : ''
+output cosmosDnsZoneId string = cosmosPrivateDns ? resourceId('Microsoft.Network/privateDnsZones', cosmosZone) : ''

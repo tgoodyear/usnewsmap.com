@@ -3,6 +3,7 @@
 
 import argparse
 import datetime as dt
+import errno
 import hashlib
 import http.server
 import json
@@ -26,6 +27,9 @@ MAX_RESULT = 1024 * 1024
 MAX_LIMIT = 100
 MAX_AGGREGATES = 24  # Eight built-in stages also fit dashboard coverage's 32-entry cap.
 QUERY_SECONDS = 2
+# refresh-live's SQLite budget for the whole run. The hourly run starts on a cold page cache,
+# where its snapshot misses QUERY_SECONDS; the unit's TimeoutStartSec still bounds the process.
+REFRESH_SECONDS = 60
 TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:/@+-]{0,255}\Z")
 SHA = re.compile(r"[0-9a-f]{64}\Z")
 STAGES = ("queued", "allocated", "outcome", "accepted", "imported", "indexed")
@@ -46,6 +50,57 @@ ENGINE_LEGACY_RE = re.compile(
     r"([a-z0-9][a-z0-9_.+]{0,63})-([0-9A-Za-z][0-9A-Za-z.+-]{0,63})/([a-z0-9][a-z0-9_.+-]{0,63})\Z"
 )
 INDEXED_KEY_SCOPE_VERSION = 2
+# Sources that will never report again: one-off proofs, and the worker receiver retired with the
+# direct OCR path. A stage fed only by these is historical (14: Overall evidence age). A source
+# absent from this list counts as live, so a source that stops is flagged rather than excused.
+HISTORICAL_SOURCES = frozenset((
+    "ct212-cached-stat", "curated-import-proof", "instrumentation-smoke-eng-not-quality",
+    "issue704-current-release", "issue704-current-search", "issue780-committed-import",
+    "issue780-live-search", "issue780-serving-release", "issue780-verified-cache",
+    "worker-node3-live",
+))
+LIVE_SOURCE = "throughput-live"
+HOUR = 3600
+# All the dashboard keeps, so a trailing total is as long as its evidence goes.
+LIVE_WINDOW_HOURS = 336
+MAX_THROUGHPUT_FILE = 4 * 1024 * 1024
+# (stage_id, label, throughput source, series, "gauge" or a trailing "total", detail)
+LIVE_STAGES = (
+    ("live_queued", "Pages in the ocr-bulk queue", "batch", ("ocr_bulk_queue_pages",), "gauge",
+     "ocr-sync's approximate depth of ocr-bulk at its last run in the newest reported hour, "
+     "leased messages included. ocr-priority's depth is not logged, so this is not every "
+     "queued page."),
+    ("live_allocated", "OCR pages at BOINC or awaiting collection", "controller",
+     ("ocr_pending_pages",), "gauge",
+     "The controller's cohort_pending at its last tick in the newest reported hour: pages at "
+     "BOINC, held for collection, or selected with no job yet."),
+    ("live_validated", "BOINC OCR workunits with a canonical result, last 14 days", "boinc", ("ocr_units",),
+     "total", "From the BOINC database, by when the canonical result returned. A bundled "
+     "workunit holds an unknown number of pages, so this counts workunits. Validation, not "
+     "collection or import."),
+    ("live_collected", "OCR pages collected through hand-off checks, last 14 days", "controller",
+     ("ocr_collect_pages",), "total",
+     "Jobs the hand-off marked published: results that passed its collection checks. Includes "
+     "jobs superseded by an earlier import, which publish nothing. Not import or release "
+     "selection."),
+    ("live_imported", "OCR pages in committed imports, last 14 days", "batch", ("ocr_import_pages",), "total",
+     "From ocr-sync's log, after each committed import record. Structural import into "
+     "ocr-local, not release selection or search."),
+    ("live_rejected", "OCR parts rejected or dead-lettered, last 14 days", "batch",
+     ("ocr_import_rejected", "ocr_dead_letters"), "total",
+     "Parts ocr-sync rejected and dead letters it archived. Attempts, not pages lost."),
+    ("live_quality_loaded", "Quality and Qwen pages loaded, last 14 days", "ship",
+     ("quality_load_pages", "qwen_load_pages"), "total",
+     "Pages of finished units loaded into the quality database, from the loaders' logs. "
+     "Scores, not OCR acceptance."),
+)
+# The BOINC apps the throughput collector counts results for, by its series prefix, and the
+# statuses it sorts a returned result into (VALIDATE_NAMES in throughput-collect.py).
+LIVE_BOINC_APPS = {"ocr": "usnm_ocr", "quality": "usnm_quality", "qwen": "usnm_qwen"}
+BOINC_STATUSES = ("valid", "inconclusive", "invalid", "waiting", "error")
+BOINC_APP = re.compile(r"[a-z][a-z0-9_]{0,63}")
+MAX_BOINC_RESULTS = 64
+MAX_BOINC_WINDOW_HOURS = 8784  # A leap year.
 
 # RunRecord v1 in crates/usnm-ocr-contract/src/runs.rs, not an engine-run replacement.
 RUN_STR = set("""run_id doc_id node worker_version ocr_engine engine_id family
@@ -383,6 +438,8 @@ def validate_event(event):
         token(event[key])
     if event["kind"] == "stage":
         require(event["page_id"] is None, "aggregate stage page_id must be null")
+    elif event["kind"] == "boinc_results":
+        require(event["page_id"] is None, "BOINC result count page_id must be null")
     else:
         token(event["page_id"])
         require(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}:.+", event["page_id"]),
@@ -405,6 +462,17 @@ def validate_event(event):
         require(p["state"] != "unknown" or p["count"] is None,
                 "unknown aggregate must not claim a count")
         identity, invariant, data = [p["stage_id"]], "", dict(p)
+    elif kind == "boinc_results":
+        obj(p, ("app", "status", "count", "window_hours", "reported_hours"))
+        require(isinstance(p["app"], str) and BOINC_APP.fullmatch(p["app"]), "invalid BOINC app name")
+        require(p["status"] in BOINC_STATUSES, "invalid BOINC result status")
+        require(type(p["count"]) is int and 0 <= p["count"] <= 1000000000000,
+                "invalid BOINC result count")
+        require(type(p["window_hours"]) is int and 1 <= p["window_hours"] <= MAX_BOINC_WINDOW_HOURS,
+                "invalid BOINC result window")
+        require(type(p["reported_hours"]) is int and 1 <= p["reported_hours"] <= p["window_hours"],
+                "BOINC result reported hours must be within the window")
+        identity, invariant, data = [p["app"], p["status"]], "", dict(p)
     elif kind == "artifact":
         require(isinstance(p, dict), "artifact payload must be an object")
         obj({k: v for k, v in p.items() if k not in ("fetched_at", "bytes", "condition", "observed_sha256")},
@@ -534,9 +602,10 @@ CREATE INDEX by_stage ON latest(kind,stage,state);
 """
 
 
-def migrate_indexed_keys(conn):
+def migrate_indexed_keys(conn, deadline):
     """One-time writable upgrade: collapse legacy run-scoped indexed keys to page-scoped keys."""
     with conn:
+        wait_until(conn, deadline)
         conn.execute("BEGIN IMMEDIATE")
         found = conn.execute(
             "SELECT key, source, page_id, observed_at, event_id FROM latest "
@@ -561,24 +630,50 @@ def migrate_indexed_keys(conn):
                  winner["run_id"], winner["stage"], winner["state"]),
             )
         conn.execute(f"PRAGMA user_version={INDEXED_KEY_SCOPE_VERSION}")
+        wait_until(conn, deadline)  # for the commit's wait on readers
 
 
-def connect(path, writable=False):
+def remaining(deadline):
+    """Seconds left before `deadline` (time.monotonic()). Once it has passed, fail rather than try."""
+    left = deadline - time.monotonic()
+    require(left > 0, "catalog deadline exceeded")
+    return left
+
+
+def interrupt_after(conn, deadline):
+    """A statement still running at `deadline` fails with SQLITE_INTERRUPT."""
+    conn.set_progress_handler(lambda: int(time.monotonic() > deadline), 1000)
+
+
+def wait_until(conn, deadline):
+    """SQLite's busy timeout applies afresh to each lock wait, so before each one that a deadline
+    bounds, set it to what is left."""
+    conn.execute(f"PRAGMA busy_timeout={math.ceil(remaining(deadline) * 1000)}")
+
+
+def connect(path, writable=False, deadline=None):
+    """`deadline` (time.monotonic()) bounds the lock wait and schema checks; QUERY_SECONDS by default.
+    It bounds only this function's own work: the returned connection has no progress handler, so a
+    caller whose later statements share the deadline installs it again with interrupt_after."""
     path = Path(path)
     require(not path.is_symlink(), "catalog cannot be a symlink")
     require(writable or path.is_file(), "catalog not found; ingest evidence first")
+    if deadline is None:
+        deadline = time.monotonic() + QUERY_SECONDS
     conn = sqlite3.connect(path.resolve().as_uri() + ("?mode=rwc" if writable else "?mode=ro"),
-                           uri=True, timeout=2)
+                           uri=True, timeout=remaining(deadline))
     conn.row_factory = sqlite3.Row
-    deadline = time.monotonic() + QUERY_SECONDS
-    conn.set_progress_handler(lambda: int(time.monotonic() > deadline), 1000)
+    interrupt_after(conn, deadline)
     try:
         if writable:
             # The schema transaction also makes first creation recoverable.
             if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='meta'").fetchone():
                 require(not conn.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone(),
                         "not a catalog; choose a new database path")
-                conn.executescript("BEGIN IMMEDIATE;\n" + DDL + "\nCOMMIT;")
+                wait_until(conn, deadline)
+                conn.executescript("BEGIN IMMEDIATE;\n" + DDL)
+                wait_until(conn, deadline)
+                conn.commit()
         versions = conn.execute("SELECT version FROM meta LIMIT 2").fetchall()
         require(len(versions) == 1 and versions[0][0] == 1,
                 "unsupported catalog schema (rebuild from evidence)")
@@ -590,7 +685,7 @@ def connect(path, writable=False):
             conn.execute("PRAGMA journal_mode=DELETE")
             conn.execute("PRAGMA synchronous=FULL")
             if user_version != INDEXED_KEY_SCOPE_VERSION:
-                migrate_indexed_keys(conn)
+                migrate_indexed_keys(conn, deadline)
         else:
             require(conn.execute("PRAGMA journal_mode").fetchone()[0] == "delete",
                     "catalog must use DELETE journaling; reopen with init to migrate")
@@ -604,8 +699,9 @@ def connect(path, writable=False):
         raise
 
 
-def ingest(db, batch):
-    """Validate the entire bounded batch before one durable transaction."""
+def ingest(db, batch, deadline=None):
+    """Validate the entire bounded batch before one durable transaction. A `deadline` also bounds
+    that transaction, its lock waits and its commit; without one only each lock wait is bounded."""
     with Path(batch).open("rb") as stream:
         file_stat = os.fstat(stream.fileno())
         require(stat.S_ISREG(file_stat.st_mode) and file_stat.st_size <= MAX_BATCH,
@@ -624,8 +720,11 @@ def ingest(db, batch):
         require(event["batch_id"] == batch_id, "mixed batch_id")
         parsed.append(projected)
     batch_hash = hashlib.sha256(raw).hexdigest()
-    conn = connect(db, writable=True)
+    conn = connect(db, writable=True, deadline=deadline)
     try:
+        if deadline is not None:
+            interrupt_after(conn, deadline)  # connect clears it.
+            wait_until(conn, deadline)
         with conn:
             conn.execute("BEGIN IMMEDIATE")
             previous = conn.execute("SELECT sha256 FROM batches WHERE batch_id=?", (batch_id,)).fetchone()
@@ -646,6 +745,9 @@ def ingest(db, batch):
                 if event["kind"] == "stage" and not current:
                     require(conn.execute("SELECT count(*) FROM latest WHERE kind='stage'").fetchone()[0] < MAX_AGGREGATES,
                             "aggregate stage limit is 24")
+                if event["kind"] == "boinc_results" and not current:
+                    require(conn.execute("SELECT count(*) FROM latest WHERE kind='boinc_results'").fetchone()[0]
+                            < MAX_BOINC_RESULTS, "BOINC result count limit is 64")
                 conn.execute("INSERT INTO events VALUES(?,?,?,?,?)",
                              (event["source"], event["event_id"], event["event_hash"],
                               batch_id, line_number))
@@ -664,6 +766,8 @@ def ingest(db, batch):
                               data.get("engine_id"), data.get("status") or data.get("decision"),
                               data.get("run_id"), data.get("stage"), data.get("state")))
             conn.execute("INSERT INTO batches VALUES(?,?,?)", (batch_id, batch_hash, len(parsed)))
+            if deadline is not None:
+                wait_until(conn, deadline)  # The commit waits for readers to let go.
         return {"batch_id": batch_id, "inserted": inserted, "replayed": False}
     finally:
         conn.close()
@@ -1075,11 +1179,15 @@ def ingest_search_provenance(db, input_path, evidence_out, batch_id, source, pag
     return ingest(db, write_atomic_evidence(evidence_out, db, [canonical(event) + "\n"]))
 
 
-def bounded_query(db, action):
-    conn = connect(db)
-    deadline = time.monotonic() + QUERY_SECONDS
-    conn.set_progress_handler(lambda: int(time.monotonic() > deadline), 1000)
+def bounded_query(db, action, deadline=None):
+    """Without a `deadline`, connect and the query transaction each get QUERY_SECONDS, as they
+    always have; with one, they share it."""
+    conn = connect(db, deadline=deadline)
+    if deadline is None:
+        deadline = time.monotonic() + QUERY_SECONDS
     try:
+        interrupt_after(conn, deadline)
+        wait_until(conn, deadline)
         conn.execute("BEGIN")  # Consistent multi-query snapshot, including source freshness.
         result = action(conn)
         require(len(canonical(result).encode()) <= MAX_RESULT, "response exceeds 1 MiB; narrow query")
@@ -1109,7 +1217,8 @@ def rows(conn, kind, filters, limit=50, after=""):
 
 
 def query(db, kind, filters, limit=50, after=""):
-    require(kind in ("run", "execution", "artifact", "page_state", "stage"), "unsupported query kind")
+    require(kind in ("run", "execution", "artifact", "page_state", "stage", "boinc_results"),
+            "unsupported query kind")
     return bounded_query(db, lambda conn: rows(conn, kind, filters, limit, after))
 
 
@@ -1504,39 +1613,55 @@ def acceptance_report(db, cohort, index_version, as_of, max_age_seconds):
     }
 
 
-def snapshot(db):
+def stage_age(rows):
+    """(as-of time, historical) from a stage's (source, newest observation) rows. A historical
+    source can't hold back a stage that also has a live one."""
+    live = [at for source, at in rows if source not in HISTORICAL_SOURCES]
+    if live:
+        return min(live), False
+    return min((at for _, at in rows), default=None), bool(rows)
+
+
+def snapshot(db, deadline=None):
     def read(conn):
         def count(sql, args=()):
             return conn.execute(sql, args).fetchone()[0]
 
         observed = count("SELECT max(observed_at) FROM latest")
         stages, coverage, issues = [], [], []
+        aggregates = {load_json(row[0])["stage_id"]: row[1] for row in conn.execute(
+            "SELECT data,state FROM latest WHERE kind='stage' LIMIT 25")}
         for stage in ("runs", "artifacts") + STAGES:
             if stage in ("runs", "artifacts"):
                 kind = {"runs": "run", "artifacts": "artifact"}[stage]
                 kinds = (kind, "execution" if kind == "run" else kind)
                 total = count("SELECT count(*) FROM latest WHERE kind IN (?,?)", kinds)
                 n = count("SELECT count(DISTINCT page_id) FROM latest WHERE kind IN (?,?)", kinds)
-                as_of = count("""SELECT min(t) FROM
-                    (SELECT max(observed_at) t FROM latest WHERE kind IN (?,?) GROUP BY source)""", kinds)
+                sources = conn.execute("""SELECT source,max(observed_at) FROM latest
+                    WHERE kind IN (?,?) GROUP BY source""", kinds).fetchall()
                 blocked = 0
             else:
                 total = count("SELECT count(*) FROM latest WHERE kind='page_state' AND stage=?", (stage,))
-                as_of = count("""SELECT min(t) FROM (SELECT max(observed_at) t FROM latest
-                    WHERE kind='page_state' AND stage=? GROUP BY source)""", (stage,))
+                sources = conn.execute("""SELECT source,max(observed_at) FROM latest
+                    WHERE kind='page_state' AND stage=? GROUP BY source""", (stage,)).fetchall()
                 n = count("""SELECT count(DISTINCT page_id) FROM latest
                     WHERE kind='page_state' AND stage=? AND state='present'""", (stage,))
                 blocked = count("""SELECT count(*) FROM latest
                     WHERE kind='page_state' AND stage=? AND state='blocked'""", (stage,))
-            coverage.append(stage + (":observed" if total else ":unknown"))
-            if not total:
+            as_of, historical = stage_age([tuple(row) for row in sources])
+            aggregate = aggregates.get("live_" + stage) == "observed"
+            coverage.append(stage + (":observed" if total else ":aggregate" if aggregate else ":unknown"))
+            if not total and not aggregate:
                 issues.append({"code": "missing_source", "detail": stage + ": no observations imported"})
-            stages.append({"id": stage, "label": stage.capitalize(),
-                           "count": n if total else None,
-                           "state": "blocked" if blocked else "observed" if total else "unknown",
-                           "observed_at": as_of,
-                           "detail": "Independent source observations; not inferred from engine success."
-                           if total else "No source evidence; adapter/export required."})
+            row = {"id": stage, "label": stage.capitalize(),
+                   "count": n if total else None,
+                   "state": "blocked" if blocked else "observed" if total else "unknown",
+                   "observed_at": as_of,
+                   "detail": "Independent source observations; not inferred from engine success."
+                   if total else "No source evidence; adapter/export required."}
+            if historical:
+                row["historical"] = True
+            stages.append(row)
         aggregate_rows = conn.execute("SELECT * FROM latest WHERE kind='stage' ORDER BY key LIMIT 25").fetchall()
         require(len(aggregate_rows) <= MAX_AGGREGATES, "aggregate stage limit exceeded")
         ids = [load_json(row["data"])["stage_id"] for row in aggregate_rows]
@@ -1571,7 +1696,169 @@ def snapshot(db):
                     "verified": count("SELECT count(*) FROM latest WHERE kind='artifact' AND state='verified'"),
                     "missing": count("SELECT count(*) FROM latest WHERE kind='artifact' AND state='missing'")},
                 "issues": issues}
-    return bounded_query(db, read)
+    return bounded_query(db, read, deadline)
+
+
+def utc_text(epoch):
+    return dt.datetime.fromtimestamp(epoch, dt.timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def throughput_values(stored, name, first, last):
+    """{hour: value} of one series' known hours in [first, last]."""
+    series = stored["series"].get(name)
+    if series is None:
+        return {}
+    require(isinstance(series, dict) and type(series.get("first")) is int and
+            isinstance(series.get("values"), list), "invalid throughput series")
+    known = {}
+    for index, value in enumerate(series["values"]):
+        hour = series["first"] + index * HOUR
+        if value is None or not first <= hour <= last:
+            continue
+        require(type(value) in (int, float) and math.isfinite(value) and 0 <= value <= 1e12,
+                "invalid throughput value")
+        known[hour] = value
+    return known
+
+
+def live_window(stored, source, at):
+    """(first, last) complete hours of the window ending at `source`'s newest report, or None if it
+    hasn't reported."""
+    state = stored["sources"].get(source)
+    if state is None or state.get("observed_at") is None:
+        return None
+    reported = timestamp(state["observed_at"])
+    require(timestamp_ns(reported) <= timestamp_ns(at) + 60 * 10**9, "future throughput observation")
+    # Collectors report complete hours, so the newest is the one before the report's.
+    last = timestamp_ns(reported) // 10**9 // HOUR * HOUR - HOUR
+    return last - (LIVE_WINDOW_HOURS - 1) * HOUR, last
+
+
+def live_stage(stored, spec, at):
+    """One stage from the dashboard's hourly history, or None with no known hour to report: the
+    stage then keeps its last evidence and age. The evidence time is the end of the newest known
+    hour, never the time of this run."""
+    stage_id, label, source, names, form, detail = spec
+    window = live_window(stored, source, at)
+    if window is None:
+        return None
+    first, last = window
+    series = [throughput_values(stored, name, first, last) for name in names]
+    # Every series must cover an hour, so one that stopped can't pass as the whole stage.
+    known = set.intersection(*(set(values) for values in series))
+    if not known:
+        return None
+    newest = max(known)
+    if form == "gauge":
+        amount = sum(values.get(newest, 0) for values in series)
+        text = detail
+    else:
+        amount = sum(values[hour] for values in series for hour in known)
+        text = f"Last {LIVE_WINDOW_HOURS} hours, {len(known)} reported. {detail}"
+    return utc_text(newest + HOUR), {"stage_id": stage_id, "label": label, "count": round(amount),
+                                     "state": "observed", "detail": text,
+                                     "coverage": stage_id + " (hourly evidence)"}
+
+
+def live_event_id(db, stage_id, observed, payload, batch_id, deadline=None):
+    """An unchanged stage reuses its id, so it replays. A changed one sorts after the id it
+    replaces, so a correction to the same evidence hour wins over the earlier count."""
+    conn = connect(db, writable=True, deadline=deadline)
+    try:
+        if deadline is not None:
+            interrupt_after(conn, deadline)
+            wait_until(conn, deadline)
+        current = conn.execute("SELECT event_id,observed_at,data FROM latest WHERE key=?",
+                               (digest([LIVE_SOURCE, "stage", [stage_id]]),)).fetchone()
+    finally:
+        conn.close()
+    if current and current["observed_at"] == timestamp(observed) and load_json(current["data"]) == payload:
+        return current["event_id"]
+    return batch_id + "-" + digest([observed, payload])
+
+
+def live_boinc_results(stored, at):
+    """[(observed_at, payload)]: BOINC results the collector counted in the window, by app and
+    status. Each status is its own series, so each count has its own known hours and time, the
+    end of its newest known hour. Apps the collector doesn't count are not reported."""
+    window = live_window(stored, "boinc", at)
+    if window is None:
+        return []
+    first, last = window
+    found = []
+    for lane, app in LIVE_BOINC_APPS.items():
+        for status in BOINC_STATUSES:
+            known = throughput_values(stored, lane + "_" + status, first, last)
+            if known:
+                found.append((utc_text(max(known) + HOUR),
+                              {"app": app, "status": status, "count": round(sum(known.values())),
+                               "window_hours": LIVE_WINDOW_HOURS, "reported_hours": len(known)}))
+    return found
+
+
+def live_boinc_result_ids(db, found, batch_id, deadline=None):
+    """The event ids of `found`, chosen as live_event_id chooses a stage's, read in one
+    connection."""
+    if not found:
+        return []
+    conn = connect(db, writable=True, deadline=deadline)
+    try:
+        if deadline is not None:
+            interrupt_after(conn, deadline)
+            wait_until(conn, deadline)
+        conn.execute("BEGIN")  # One read lock, so one wait, for all the lookups.
+        ids = []
+        for observed, payload in found:
+            current = conn.execute("SELECT event_id,observed_at,data FROM latest WHERE key=?", (digest(
+                [LIVE_SOURCE, "boinc_results", [payload["app"], payload["status"]]]),)).fetchone()
+            if current and current["observed_at"] == timestamp(observed) and load_json(current["data"]) == payload:
+                ids.append(current["event_id"])
+            else:
+                ids.append(batch_id + "-" + digest([observed, payload]))
+        return ids
+    finally:
+        conn.close()
+
+
+def refresh_live(db, throughput, evidence_dir, out):
+    """One bounded refresh: the dashboard's kept counts -> one immutable batch -> snapshot.
+    Besides the catalog it reads one local file: no Postgres or cloud access. Its SQLite work
+    shares one REFRESH_SECONDS deadline rather than QUERY_SECONDS each."""
+    at = now()
+    with Path(throughput).open("rb") as stream:
+        require(stat.S_ISREG(os.fstat(stream.fileno()).st_mode), "throughput input must be a regular file")
+        raw = stream.read(MAX_THROUGHPUT_FILE + 1)
+    require(0 < len(raw) <= MAX_THROUGHPUT_FILE, "empty or oversized throughput history")
+    stored = load_json(raw)
+    require(isinstance(stored, dict) and stored.get("schema") == 1 and
+            isinstance(stored.get("sources"), dict) and isinstance(stored.get("series"), dict),
+            "unsupported throughput history")
+    batch_id = "live-" + re.sub(r"[-:]", "", at)[:15] + "Z"
+    deadline = time.monotonic() + REFRESH_SECONDS
+    events = []
+    for spec in LIVE_STAGES:
+        found = live_stage(stored, spec, at)
+        if found is None:
+            continue
+        observed, payload = found
+        event = {"schema_version": 1, "batch_id": batch_id,
+                 "event_id": live_event_id(db, payload["stage_id"], observed, payload, batch_id, deadline),
+                 "kind": "stage", "source": LIVE_SOURCE, "observed_at": observed,
+                 "page_id": None, "payload": payload}
+        validate_event(event)
+        events.append(canonical(event) + "\n")
+    results = live_boinc_results(stored, at)
+    for (observed, payload), event_id in zip(results, live_boinc_result_ids(db, results, batch_id, deadline)):
+        event = {"schema_version": 1, "batch_id": batch_id, "event_id": event_id,
+                 "kind": "boinc_results", "source": LIVE_SOURCE, "observed_at": observed,
+                 "page_id": None, "payload": payload}
+        validate_event(event)
+        events.append(canonical(event) + "\n")
+    require(events, "no throughput source has reported")
+    path = Path(evidence_dir) / (batch_id + ".jsonl")
+    result = ingest(db, write_atomic_evidence(path, db, events), deadline)
+    atomic_snapshot(out, snapshot(db, deadline), db)
+    return result
 
 
 def plan_missing(db, page_id, limit=50, after=""):
@@ -1723,6 +2010,12 @@ count <= 10^12; unknown requires null count, observed requires an integer.
 Aggregate stage_id must not shadow runs/artifacts or independent per-page stage names.
 Snapshot appends aggregate stages with source/time provenance in detail; duplicate
 stage_ids from independent sources receive @<source-hash> suffixes, never summed.
+kind=boinc_results has page_id:null and payload exactly:
+{"app":"usnm_ocr","status":"valid","count":1200,"window_hours":336,"reported_hours":72}.
+status: valid|inconclusive|invalid|waiting|error. count is BOINC result replicas the
+server received in the reported hours of the window, not pages or workunits. One row per
+source, app and status, at most 64. They are not in the snapshot; list them with
+query boinc_results.
 These statuses remain independent, per source and optional run_id; ok/selected NEVER
 implies accepted/imported/indexed. Event time, then lexicographic event_id breaks ties.
 Artifact hash/reference and run config/input are immutable within their identities.
@@ -1732,11 +2025,13 @@ Adapters provided: actual worker metadata capture JSON, RunRecord JSON projectio
 bounded local cached-scan index/stat, committed ocr-sync ImportRecord JSON
 (ingest-import), authoritative release selection/rejection/revocation decisions
 (ingest-release), public /v1/hits search provenance receipts (ingest-search),
-page provenance reconciliation (trace / query trace / GET /trace) and explicit
-artifact/page-state/stage evidence.
+page provenance reconciliation (trace / query trace / GET /trace), the dashboard's
+hourly throughput history (refresh-live: aggregate stages and BOINC result counts by
+app and status) and explicit artifact/page-state/stage evidence.
 NOT provided: Parquet/Blob inventory or queue/outcomes Parquet, ocr-local/pages import
-ledger, BOINC allocation journal, or live Quickwit index pointer mutation. Export those
-authoritative sources independently; do not label a local catalog ingest as page import.
+ledger, BOINC allocation journal, per-result BOINC run records, or live Quickwit index
+pointer mutation. Export those authoritative sources independently; do not label a
+local catalog ingest as page import.
 Missing adapters/sources produce unknown coverage (no fabricated BOINC-ready counts).
 Mere worker ok/selected or imported status NEVER implies accepted or published search
 inclusion. Release decisions keep accepted, rejected, revoked and unchanged_baseline
@@ -1750,7 +2045,8 @@ Counts are observed metadata, NOT corpus totals or allocation readiness.
 Limits: 16 MiB/10000 events per batch, 64 KiB/line, identifiers 256 chars,
 references 512 chars (relative object keys ONLY, no URI/credentials), run strings
 8192 chars, 100 rows/page, 1 MiB/response or snapshot, SQLite query deadline 2s,
-busy timeout 2s, HTTP socket timeout 3s, 2048-char URI, 10 query parameters.
+busy timeout 2s (refresh-live: 60s for the whole run), HTTP socket timeout 3s,
+2048-char URI, 10 query parameters.
 HTTP is optional read-only numeric loopback, single-request bounded backlog; no SQL.
 Catalog uses DELETE rollback journaling so read-only connections do not create WAL/SHM.
 Migrate older local WAL catalogs by stopping readers and running --db DB init once.
@@ -1827,13 +2123,18 @@ def main(argv=None):
     p.add_argument("--max-receipt-age-seconds", type=int, required=True)
     subs.add_parser("init", help="create an empty local catalog; snapshot coverage remains unknown")
     p = subs.add_parser("query", help="bounded page detail or filtered metadata (keyset pagination)")
-    p.add_argument("kind", choices=("page", "trace", "run", "execution", "artifact", "page_state", "stage", "missing"))
+    p.add_argument("kind", choices=("page", "trace", "run", "execution", "artifact", "page_state", "stage",
+                                    "boinc_results", "missing"))
     for name in ("page-id", "source", "engine", "status", "run-id"):
         p.add_argument("--" + name)
     p.add_argument("--limit", type=int, default=50)
     p.add_argument("--after", default="")
     p = subs.add_parser("snapshot", help="source-fresh dashboard summary; atomically replace --out")
     p.add_argument("--out")
+    p = subs.add_parser("refresh-live", help="the dashboard's kept hourly counts -> one evidence batch -> snapshot")
+    p.add_argument("--throughput", required=True, help="the dashboard's throughput.json, read-only")
+    p.add_argument("--evidence-dir", required=True, help="where retained batches are kept")
+    p.add_argument("--out", required=True)
     p = subs.add_parser("serve", help="optional read-only GET /page?page_id=... and /runs?engine=...")
     p.add_argument("--host", default="127.0.0.1", choices=("127.0.0.1", "::1"))
     p.add_argument("--port", type=int, default=8764)
@@ -1887,6 +2188,8 @@ def main(argv=None):
             if args.out:
                 atomic_snapshot(args.out, result, args.db)
                 return 0
+        elif args.command == "refresh-live":
+            result = refresh_live(args.db, args.throughput, args.evidence_dir, args.out)
         else:
             require(0 <= args.port <= 65535, "invalid port")
             with make_server(args.db, args.host, args.port) as server:
@@ -1897,9 +2200,19 @@ def main(argv=None):
         return 0
     except (CatalogError, OSError, sqlite3.Error) as exc:
         # Do not echo raw source values, SQL, request strings or credential-bearing paths.
-        message = str(exc) if isinstance(exc, CatalogError) else "local catalog I/O or query failure"
-        print(canonical({"error": message}), file=sys.stderr)
+        if isinstance(exc, CatalogError):
+            failure = {"error": str(exc)}
+        else:
+            failure = {"error": "local catalog I/O or query failure", "cause": failure_cause(exc)}
+        print(canonical(failure), file=sys.stderr)
         return 2
+
+
+def failure_cause(exc):
+    """A fixed code such as SQLITE_INTERRUPT or ENOENT, never the message, which can hold paths or SQL."""
+    if isinstance(exc, OSError) and exc.errno in errno.errorcode:
+        return errno.errorcode[exc.errno]
+    return getattr(exc, "sqlite_errorname", None) or type(exc).__name__
 
 
 if __name__ == "__main__":

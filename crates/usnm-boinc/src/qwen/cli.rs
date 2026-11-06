@@ -31,6 +31,10 @@ pub enum QwenCommands {
         max_crops: usize,
         #[arg(long, default_value_t = 1800)]
         timeout_secs: u32,
+        /// `sample` names each crop by its dataset sample id; a campaign keeps the spelling
+        /// it was staged with.
+        #[arg(long, value_enum, default_value_t = crate::qwen::benchmark::DocIds::Legacy)]
+        doc_ids: crate::qwen::benchmark::DocIds,
     },
     /// Score canonical benchmark outputs; missing hypotheses count as deletions.
     BenchmarkCollect {
@@ -46,6 +50,9 @@ pub enum QwenCommands {
         /// The usnm_quality staging root whose units to cut crops from.
         #[arg(long)]
         quality_root: PathBuf,
+        /// Ordered JSON array of source doc_ids; never scan unrelated quality pages.
+        #[arg(long)]
+        members: Option<PathBuf>,
         #[arg(long)]
         root: PathBuf,
         /// The worker image's registry digest (sha256:...).
@@ -65,6 +72,9 @@ pub enum QwenCommands {
         /// Output tokens allowed per 1,000 square pixels of crop.
         #[arg(long, default_value_t = 4)]
         max_tokens_per_1000px2: u32,
+        /// The request version to stage. Every dispatchable app version must read it.
+        #[arg(long, default_value_t = usnm_ocr_contract::qwen::PROMPT_VERSION)]
+        prompt_version: u32,
         #[arg(long, default_value_t = 20)]
         max_pages: usize,
         /// Pack staged pages into multi-page bundle workunits of up to this many pages (1 to 32),
@@ -74,6 +84,9 @@ pub enum QwenCommands {
     },
     /// Hand staged units to create_work, two results each.
     Submit {
+        /// Ordered JSON array of source doc_ids; never publish unrelated pending jobs.
+        #[arg(long)]
+        members: Option<PathBuf>,
         #[arg(long)]
         root: PathBuf,
         #[arg(long)]
@@ -153,6 +166,56 @@ pub enum QwenCommands {
         /// Keep each bundle page's verdict and both readings of it here.
         #[arg(long)]
         pages: Option<PathBuf>,
+        /// The rule that decides the pair. `strict-v1` is the rule in force.
+        #[arg(long, value_enum, default_value_t = super::validate::Rule::StrictV1)]
+        rule: super::validate::Rule,
+        /// Under `crop-consensus-v2`, keep each pair's crop states here.
+        #[arg(long)]
+        crop_states: Option<PathBuf>,
+    },
+    /// Measure the crop-consensus-v2 floor on crops with human transcriptions, offline.
+    Grounded {
+        /// JSON Lines of `{id, source, lang, ref}`.
+        #[arg(long)]
+        refs: PathBuf,
+        /// `NAME=PATH`, JSON Lines of `{id, text}`; repeatable.
+        #[arg(long = "reader", required = true, value_parser = named_path)]
+        readers: Vec<(String, PathBuf)>,
+        /// `A:B`, two reader names; repeatable.
+        #[arg(long = "pair", required = true, value_parser = reader_pair)]
+        pairs: Vec<(String, String)>,
+        /// A reader whose error on each crop bands it `clean`, `fair` or `poor`.
+        #[arg(long)]
+        legibility: Option<PathBuf>,
+        #[arg(long, default_value_t = 0.10)]
+        good_cer: f64,
+        #[arg(long, default_value_t = 0.50)]
+        bad_cer: f64,
+        /// Another floor for the rule (and the Dice it is compared with).
+        #[arg(long, default_value_t = super::consensus::Params::IN_RULE.floor)]
+        floor: f64,
+        #[arg(long, default_value_t = 1434)]
+        seed: u64,
+        #[arg(long)]
+        out: PathBuf,
+        /// Also write one JSON line per crop and pair here.
+        #[arg(long)]
+        crops: Option<PathBuf>,
+    },
+    /// Measure validator rules against retained results, offline, with negative controls.
+    Replay {
+        /// The directory `check --keep` writes to.
+        #[arg(long)]
+        seen: PathBuf,
+        #[arg(long, default_value = "qwen3-vl-8b-q4km")]
+        model: String,
+        #[arg(long, default_value_t = 1420)]
+        seed: u64,
+        /// Random cross-page pairs and random crop pairs per control.
+        #[arg(long, default_value_t = 2000)]
+        controls: usize,
+        #[arg(long)]
+        out: PathBuf,
     },
     /// Print a Markdown table of the kept results and the logged pairs.
     Summary {
@@ -182,6 +245,7 @@ pub async fn run(command: QwenCommands) -> anyhow::Result<()> {
             engine,
             max_crops,
             timeout_secs,
+            doc_ids,
         } => {
             let engine = serde_json::from_slice(&std::fs::read(engine)?)?;
             let staged = x::benchmark::stage(&x::benchmark::Options {
@@ -190,6 +254,7 @@ pub async fn run(command: QwenCommands) -> anyhow::Result<()> {
                 engine,
                 max_crops,
                 timeout_secs,
+                doc_ids,
             })?;
             eprintln!("{staged} benchmark units staged");
         }
@@ -199,6 +264,7 @@ pub async fn run(command: QwenCommands) -> anyhow::Result<()> {
         }
         QwenCommands::Stage {
             quality_root,
+            members,
             root,
             engine_image,
             engine_llama,
@@ -206,41 +272,50 @@ pub async fn run(command: QwenCommands) -> anyhow::Result<()> {
             gpu_timeout_secs,
             cpu_timeout_secs,
             max_tokens_per_1000px2,
+            prompt_version,
             max_pages,
             bundle_size,
         } => {
-            let s = x::stage::run(&x::stage::Options {
-                quality_root,
-                root,
-                engine: usnm_ocr_contract::qwen::Engine {
-                    image: engine_image,
-                    llama: engine_llama,
-                    models: x::default_models(),
-                    weights: engine_weights,
+            let s = x::stage::run_selected(
+                &x::stage::Options {
+                    quality_root,
+                    root,
+                    engine: usnm_ocr_contract::qwen::Engine {
+                        image: engine_image,
+                        llama: engine_llama,
+                        models: x::default_models(),
+                        weights: engine_weights,
+                    },
+                    gpu_timeout_secs,
+                    cpu_timeout_secs,
+                    max_tokens_per_1000px2,
+                    prompt_version,
+                    max_pages,
+                    bundle_size,
                 },
-                gpu_timeout_secs,
-                cpu_timeout_secs,
-                max_tokens_per_1000px2,
-                max_pages,
-                bundle_size,
-            })
+                members.as_deref(),
+            )
             .await?;
             eprintln!("{s:?}");
         }
         QwenCommands::Submit {
+            members,
             root,
             project,
             max_units,
             target,
             model_dir,
         } => {
-            let s = x::submit::run(&x::submit::Options {
-                root,
-                project,
-                max_units,
-                target,
-                model_dir,
-            })
+            let s = x::submit::run_selected(
+                &x::submit::Options {
+                    root,
+                    project,
+                    max_units,
+                    target,
+                    model_dir,
+                },
+                members.as_deref(),
+            )
             .await?;
             eprintln!("{s:?}");
         }
@@ -293,7 +368,52 @@ pub async fn run(command: QwenCommands) -> anyhow::Result<()> {
             min_dice,
             log,
             pages,
-        } => x::validate::compare(&files, &files2, min_dice, log.as_deref(), pages.as_deref())?,
+            rule,
+            crop_states,
+        } => x::validate::compare_with(
+            &files,
+            &files2,
+            x::validate::Compare {
+                min_dice,
+                rule,
+                log: log.as_deref(),
+                pages: pages.as_deref(),
+                crop_states: crop_states.as_deref(),
+            },
+        )?,
+        QwenCommands::Grounded {
+            refs,
+            readers,
+            pairs,
+            legibility,
+            good_cer,
+            bad_cer,
+            floor,
+            seed,
+            out,
+            crops,
+        } => {
+            let got = x::grounded::run(&x::grounded::Options {
+                refs: &refs,
+                readers: &readers,
+                pairs: &pairs,
+                legibility: legibility.as_deref(),
+                good_cer,
+                bad_cer,
+                floor,
+                seed,
+                out: &out,
+                crops: crops.as_deref(),
+            })?;
+            print!("{}", x::grounded::table(&got));
+        }
+        QwenCommands::Replay {
+            seen,
+            model,
+            seed,
+            controls,
+            out,
+        } => x::replay::run(&seen, &model, seed, controls, &out)?,
         QwenCommands::PageLedger { root, pages } => {
             for p in x::ledger::run(&root, &pages)? {
                 println!("{}", serde_json::to_string(&p)?);
@@ -304,4 +424,20 @@ pub async fn run(command: QwenCommands) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+fn named_path(s: &str) -> Result<(String, PathBuf), String> {
+    let (name, path) = s.split_once('=').ok_or("expected NAME=PATH")?;
+    if name.is_empty() || path.is_empty() {
+        return Err("expected NAME=PATH".into());
+    }
+    Ok((name.to_owned(), PathBuf::from(path)))
+}
+
+fn reader_pair(s: &str) -> Result<(String, String), String> {
+    let (a, b) = s.split_once(':').ok_or("expected A:B")?;
+    if a.is_empty() || b.is_empty() {
+        return Err("expected A:B".into());
+    }
+    Ok((a.to_owned(), b.to_owned()))
 }

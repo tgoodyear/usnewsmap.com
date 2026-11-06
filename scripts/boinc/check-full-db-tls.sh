@@ -2,11 +2,13 @@
 set -euo pipefail
 image=""
 local_image=""
+fixture_args=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --server-image) image=${2:?}; shift 2 ;;
     --local-server-image) local_image=${2:?}; shift 2 ;;
-    *) echo "usage: scripts/boinc/check-full-db-tls.sh --server-image IMAGE@sha256:DIGEST | --local-server-image LOCAL_TAG" >&2; exit 2 ;;
+    --check-feeder-guard) fixture_args+=(--check-feeder-guard); shift ;;
+    *) echo "usage: scripts/boinc/check-full-db-tls.sh [--check-feeder-guard] (--server-image IMAGE@sha256:DIGEST | --local-server-image LOCAL_TAG)" >&2; exit 2 ;;
   esac
 done
 if [[ -n $local_image && -z $image ]]; then
@@ -70,5 +72,5 @@ for phase in init restart; do
     --mount "type=volume,src=$name-app,dst=/fixture" \
     --mount "type=volume,src=$name-keys,dst=/fixture-keys" \
     --mount "type=volume,src=$name-db,dst=/dbfixture,readonly" \
-    --tmpfs /usr/local/share/usnm:rw,nosuid,noexec,size=1m "$tag" --phase "$phase"
+    --tmpfs /usr/local/share/usnm:rw,nosuid,noexec,size=1m "$tag" --phase "$phase" "${fixture_args[@]}"
 done

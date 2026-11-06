@@ -1,10 +1,13 @@
-//! `pictures`: Newspaper Navigator's picture boxes into the curated store (#1102, 04 §4.11).
+//! `pictures`: Newspaper Navigator's picture boxes into the curated store, and
+//! `pictures-join`: how they meet the curated pages (#1102, 04 §4.11).
 use std::path::PathBuf;
 
 use clap::Args;
+use usnm_ingest::pictures::join::{self, Placements};
 use usnm_ingest::pictures::source::{Source, HUB};
 use usnm_ingest::pictures::{self, Options};
 use usnm_ingest::release::Published;
+use usnm_ingest::state::State;
 
 use crate::Cli;
 
@@ -80,6 +83,79 @@ pub(crate) async fn pictures_command(
     Ok(None)
 }
 
+/// Report how the picture boxes `pictures` wrote meet the curated pages
+/// (#1102, 04 §4.11), as JSON in the new file `--out` (stdout has the logs):
+/// the rows of the revision's newest finished attempt by class (`page`,
+/// `same_batch_day`, `other_version_day`, `other_batch_day`, `not_curated`,
+/// `unplaced`), in total, by kind and by batch, with the distinct pages
+/// placed. A row is put on a page only through a scan named in a
+/// `--placements` file, and only if the curated version of the scan's batch
+/// holds that page; a frame is never made into a `seq`. The rest are classed
+/// by the curated batches' title-days. Checks every part against
+/// provenance.json first and stops if one differs. Reads the state, each
+/// curated batch's counts.json, the curated parts (without their text) of the
+/// batches the placements' scans are in, and the picture parts; writes only
+/// `--out` and asks LoC nothing. Reports counts, never rows.
+#[derive(Args)]
+pub(crate) struct PicturesJoinArgs {
+    /// The dataset revision the rows were written at (the full 40-character
+    /// commit SHA, in lower case).
+    #[arg(long, value_parser = pictures::parse_revision)]
+    revision: String,
+    /// The store `pictures` wrote to, when not the curated store: a Blob
+    /// container URL or a directory.
+    #[arg(long)]
+    pictures: Option<String>,
+    /// A JSON Lines file whose lines name a page's `doc_id` and the
+    /// `iiif_base` of the scan it was fetched from, such as a scan fetcher's
+    /// `index-{tag}.jsonl`. Other fields are ignored. Repeat for more files.
+    #[arg(long)]
+    placements: Vec<PathBuf>,
+    /// The file to write the report to; it must not exist yet.
+    #[arg(long)]
+    out: PathBuf,
+}
+
+pub(crate) async fn pictures_join_command(
+    cli: &Cli,
+    state: State,
+    args: &PicturesJoinArgs,
+) -> anyhow::Result<Option<Published>> {
+    let PicturesJoinArgs {
+        revision,
+        pictures,
+        placements,
+        out,
+    } = args;
+    let mut file = join::create_report(out)?;
+    let written = async {
+        let curated = usnm_store::open(&cli.stores.curated)?;
+        let pictures = match pictures {
+            Some(location) => usnm_store::open(location)?,
+            None => curated.clone(),
+        };
+        let placements = Placements::read(placements)?;
+        let report = join::report(
+            &state,
+            curated.as_ref(),
+            pictures.as_ref(),
+            revision,
+            &placements,
+        )
+        .await?;
+        join::write_report(&mut file, out, &report)
+    }
+    .await;
+    drop(file);
+    if written.is_err() {
+        // Only this run made the file; leave no empty or partial report.
+        let _ = std::fs::remove_file(out);
+    }
+    written?;
+    tracing::info!(out = %out.display(), "pictures-join report written");
+    Ok(None)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -147,5 +223,80 @@ mod tests {
         assert!(parse(&["--revision", REVISION, "--max-unplaced-pct", "x"]).is_err());
         // A directory and a Hub are two sources.
         assert!(parse(&["--revision", REVISION, "--from-dir", "d", "--hub-url", "u"]).is_err());
+    }
+
+    fn parse_join(extra: &[&str]) -> Result<Cli, clap::Error> {
+        let mut args = vec![
+            "usnm-ingest",
+            "--curated",
+            "c",
+            "--reference",
+            "r",
+            "pictures-join",
+        ];
+        args.extend_from_slice(extra);
+        Cli::try_parse_from(args)
+    }
+
+    #[test]
+    fn pictures_join_takes_named_arguments_and_a_pinned_revision() {
+        let Command::PicturesJoin(PicturesJoinArgs {
+            revision,
+            pictures,
+            placements,
+            out,
+        }) = parse_join(&["--revision", REVISION, "--out", "join.json"])
+            .unwrap()
+            .command
+        else {
+            panic!("not pictures-join");
+        };
+        assert_eq!(revision, REVISION);
+        assert_eq!(pictures, None);
+        assert!(placements.is_empty());
+        assert_eq!(out, PathBuf::from("join.json"));
+
+        // The report goes to a file, not stdout, which has the logs.
+        assert!(parse_join(&["--revision", REVISION]).is_err());
+        assert!(parse_join(&["--out", "join.json"]).is_err());
+        assert!(parse_join(&["--revision", "main", "--out", "j"]).is_err());
+        assert!(
+            parse_join(&[REVISION, "--out", "j"]).is_err(),
+            "named arguments only"
+        );
+        assert!(
+            parse_join(&["--revision", REVISION, "--out", "j", "a.jsonl"]).is_err(),
+            "named arguments only"
+        );
+
+        let Command::PicturesJoin(PicturesJoinArgs {
+            pictures,
+            placements,
+            ..
+        }) = parse_join(&[
+            "--revision",
+            REVISION,
+            "--out",
+            "join.json",
+            "--pictures",
+            "/var/lib/usnm-pictures/curated",
+            "--placements",
+            "index-full.jsonl",
+            "--placements",
+            "index-pct50.jsonl",
+        ])
+        .unwrap()
+        .command
+        else {
+            panic!("not pictures-join");
+        };
+        assert_eq!(pictures.as_deref(), Some("/var/lib/usnm-pictures/curated"));
+        assert_eq!(
+            placements,
+            [
+                PathBuf::from("index-full.jsonl"),
+                PathBuf::from("index-pct50.jsonl")
+            ]
+        );
     }
 }

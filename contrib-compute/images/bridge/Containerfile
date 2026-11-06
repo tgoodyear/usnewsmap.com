@@ -72,10 +72,10 @@ RUN apt-get update \
 ENV PYTHONPATH=/usr/local/lib/usnm-boinc/gold/py
 COPY --from=bin /usnm-ocr-survey /usr/local/bin/usnm-ocr-survey
 # gold.py and the modules it imports, in the repository's layout: locfetch.py finds jaocr.py
-# and alto.py at ../../ocr/ja-ocr (their Azure imports are lazy and unused here).
+# and its modules at ../../ocr/ja-ocr (their Azure imports are lazy and unused here).
 COPY scripts/ocr-survey/gold.py scripts/ocr-survey/locfetch.py scripts/ocr-survey/crops.py \
      scripts/ocr-survey/altotext.py scripts/ocr-survey/transcription.py /usr/local/lib/usnm-boinc/gold/scripts/ocr-survey/
-COPY ocr/ja-ocr/jaocr.py ocr/ja-ocr/alto.py /usr/local/lib/usnm-boinc/gold/ocr/ja-ocr/
+COPY ocr/ja-ocr/jaocr.py ocr/ja-ocr/undigitized.py ocr/ja-ocr/alto.py /usr/local/lib/usnm-boinc/gold/ocr/ja-ocr/
 COPY fixtures/ocr-gold/bundle-v1.lock.json /usr/local/lib/usnm-boinc/gold/bundle-v1.lock.json
 COPY fixtures/ocr-gold/bundle-v2.lock.json /usr/local/lib/usnm-boinc/gold/bundle-v2.lock.json
 COPY fixtures/ocr-gold/selections/ /usr/local/lib/usnm-boinc/gold/selections/

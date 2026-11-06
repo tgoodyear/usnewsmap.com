@@ -91,6 +91,8 @@
 #   BRIDGE_STEP=quality-submit  [QUALITY_MAX=500]
 #   BRIDGE_STEP=quality-collect QUALITY_SPOOL=<assimilator results directory>
 #                               [QWEN_CAMPAIGN=... QWEN_SPOOL=...]
+#                               [QWEN_CROP_STATES=<project>/qwen/crop-states] (only the crops an
+#                               agreeing crop-consensus-v2 pair vouched for join, #1434)
 #                               [SURYA_CAMPAIGN=... SURYA_SPOOL=...] (crop units' texts join
 #                               crops.parquet as the reader surya, #968)
 #                               [QUALITY_CURATED_URL=...] (else writes <campaign>/out)
@@ -460,6 +462,7 @@ case "$step" in
     [ -n "${QUALITY_CURATED_URL:-}" ] && out_args=(--curated-url "$QUALITY_CURATED_URL")
     exec usnm-boinc quality collect --campaign "$QUALITY_CAMPAIGN" --root "$QUALITY" \
       --spool "${QUALITY_SPOOL:?set QUALITY_SPOOL}" --qwen-root "$qwen_root" --qwen-spool "$qwen_spool" \
+      ${QWEN_CROP_STATES:+--qwen-crop-states "$QWEN_CROP_STATES"} \
       ${surya_args[@]+"${surya_args[@]}"} "${out_args[@]}" ;;
   quality-summary)
     usnm-boinc quality summary --root "$QUALITY" --seen "$PROJ/quality/seen" --pairs "$PROJ/quality/pairs.jsonl" \
@@ -721,6 +724,9 @@ case "$step" in
     # and admit the hosts whose complete native evidence passes the scope's existing
     # calibration in gold/trust.json (#901); it adds hosts only and never sets a threshold.
     [[ "${GOLD_MAX_HOSTS:-10}" =~ ^[1-9][0-9]?$|^100$ ]] || fail "GOLD_MAX_HOSTS must be 1 to 100"
+    # A native campaign (docs/boinc-native-ocr.md) names its hosts. Not settable over the
+    # controller's ssh: a person chooses them.
+    [[ "${GOLD_NATIVE_HOSTS:-}" =~ ^([1-9][0-9]*(,[1-9][0-9]*)*)?$ ]] || fail "GOLD_NATIVE_HOSTS must be a comma-separated list of host ids"
     write_mycnf
     controller="$SECRETS/host-trust.json"
     trap 'rm -f "$mycnf" "$SECRETS/db-runtime" "$controller"' EXIT
@@ -732,11 +738,12 @@ case "$step" in
       --arg image "${GOLD_ENGINE_IMAGE:?set GOLD_ENGINE_IMAGE}" \
       --arg base "${GOLD_ENGINE_BASE:?set GOLD_ENGINE_BASE}" \
       --arg version "${GOLD_ENGINE_VERSION:-5.5.0}" --argjson max "${GOLD_MAX_HOSTS:-10}" \
+      --argjson native "[${GOLD_NATIVE_HOSTS:-}]" \
       '{root:$root, project:$project, jobs_root:$jobs, mysql_defaults:$mycnf, mysql_ca:$ca,
         database:$db, trust:$trust, prepared:$prepared,
         scope:{language:$language, profile:$profile, psm:3, dpi:300},
         engine:{base:$base, dpi:300, image:$image, psm:3, timeout_secs:300, version:$version},
-        max_hosts:$max, max_spots:1, sample_every:1}' > "$controller")
+        native_hosts:$native, max_hosts:$max, max_spots:1, sample_every:1}' > "$controller")
     if [ "$step" = gold-promote ]; then
       # The gold units' batch is 0, so their canonical results are in results/0. Not exec:
       # the trap removes the database credentials afterwards.

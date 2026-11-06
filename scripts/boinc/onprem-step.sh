@@ -17,12 +17,27 @@
 # budget rather than extending it. --what-if prints the settings and runs nothing.
 # --target is bridge, publish or handoff.
 #
+# quality-stage is the exception to that lock (#1415): it takes a lock of its own, so one stage
+# runs at a time while the other steps go on. It uses no database, secrets or project files and
+# writes only its campaign's tree, where a unit counts once its quality.json is in place and
+# later steps wait for that or for `submitted`. It takes about two minutes per 200 pages (#529).
+# $CONF/stage-image may name another image for it, as sha256:<image id>, like handoff-image.
+#
+# The hand-off steps are the other exception: they take a lock of their own, because they touch
+# Azure storage, Cosmos and the queues only, and the controller, their one caller, runs one at a
+# time, and so do spool-out and batch-inventory, the controller's two bridge steps that only read
+# the project and the database and write only the hand-off container. So a long collect doesn't
+# keep submits and publishing waiting, and an hour's native publication, which holds the step lock
+# for 10 minutes, doesn't fail a tick after the lock wait.
+#
 # --target handoff --step claim|release|collect|export runs the hand-off job's command (#967 phase 3),
 # contrib-compute/images/bridge/handoff-job.sh from the same bridge image, in place of the
 # Azure hand-off job (infra/modules/boinc-handoff-job.bicep). Its settings are the job's own,
 # in $CONF/handoff.env: HANDOFF_URL COSMOS_ENDPOINT CURATED_URL REFERENCE_URL OUT_URL
 # QUEUE_URL, plus the Arc identity endpoints IDENTITY_ENDPOINT and IMDS_ENDPOINT (the host's
-# own Arc machine identity holds the job's grants, boinc-handoff-runner.bicep). It gets
+# own Arc machine identity holds the job's grants, boinc-handoff-runner.bicep). $CONF/handoff-image
+# may name another image for these steps, as sha256:<image id>, so a hand-off fix needn't wait for a
+# server image. It gets
 # HANDOFF_STEP and only the step's own inputs, mounts only the Arc agent's challenge
 # directory: no project tree, no database, no Key Vault. texts-export still runs in Azure.
 #
@@ -60,7 +75,10 @@ SSH_GOLD_ONBOARD_VARS=" GOLD_CAMPAIGN GOLD_LANGUAGE GOLD_PROFILE GOLD_ENGINE_IMA
 HANDOFF_CLAIM_VARS=" HANDOFF_MANIFEST CLAIM_NONCE CLAIM_MAX CLAIM_QUEUES CLAIM_LEASE_HOURS CLAIM_LANGUAGES "
 HANDOFF_RELEASE_VARS=" HANDOFF_DOCS "
 HANDOFF_DEAD_LETTER_VARS=" JOB_IDS "
-HANDOFF_COLLECT_VARS=" JOB_ID JOB_IDS HOST_ID "
+# An operator's settlement of a page claimed again after its dead letter (#1417), as root on the
+# host only: never the controller's key.
+HANDOFF_DEAD_LETTER_OPERATOR_VARS="SUPERSEDES_FAILED_JOB CONFIRM_MESSAGE_SHA256 "
+HANDOFF_COLLECT_VARS=" JOB_ID JOB_IDS HOST_ID COLLECT_PARALLEL "
 HANDOFF_EXPORT_VARS=" HANDOFF_PAGES HANDOFF_BATCH HANDOFF_BATCHES HANDOFF_PLAN HANDOFF_MANIFEST ENGINE_IMAGE HANDOFF_SCANS HANDOFF_JOBS HANDOFF_CLAIMS "
 # handoff.env must set these, as the Azure job sets them (its AZURE_CLIENT_ID is Container
 # Apps' identity; the Arc identity needs none).
@@ -207,6 +225,16 @@ if [ "$TARGET" = handoff ]; then
 fi
 IMAGE=$(sed -n 's/^SERVER_IMAGE=\([A-Za-z0-9._/:@-]\{1,200\}\)$/\1/p' "$CONF/server.env")
 [ -n "$IMAGE" ] || die "$CONF/server.env names no SERVER_IMAGE"
+# The hand-off steps may run a newer image of their own: they share nothing with the server.
+if [ "$TARGET" = handoff ] && [ -f "$CONF/handoff-image" ]; then
+  IMAGE=$(sed -n 's/^\(sha256:[0-9a-f]\{64\}\)$/\1/p' "$CONF/handoff-image")
+  [ -n "$IMAGE" ] || die "$CONF/handoff-image is not sha256:<image id>"
+fi
+# So may quality-stage, which writes only its campaign's tree: $CONF/stage-image, for a staging fix.
+if [ "$TARGET:$STEP" = bridge:quality-stage ] && [ -f "$CONF/stage-image" ]; then
+  IMAGE=$(sed -n 's/^\(sha256:[0-9a-f]\{64\}\)$/\1/p' "$CONF/stage-image")
+  [ -n "$IMAGE" ] || die "$CONF/stage-image is not sha256:<image id>"
+fi
 BASE=()
 LINES=()
 QUEUE_LOCATION=""
@@ -282,7 +310,9 @@ if [ "$TARGET" = handoff ]; then
   case $STEP in
     claim) SSH_ALLOWED=$HANDOFF_CLAIM_VARS ;;
     release) SSH_ALLOWED=$HANDOFF_RELEASE_VARS ;;
-    dead-letter) SSH_ALLOWED=$HANDOFF_DEAD_LETTER_VARS ;;
+    dead-letter)
+      SSH_ALLOWED=$HANDOFF_DEAD_LETTER_VARS
+      [ "${USNM_BOINC_STEP_FROM_SSH:-}" = 1 ] || SSH_ALLOWED+=$HANDOFF_DEAD_LETTER_OPERATOR_VARS ;;
     collect) SSH_ALLOWED=$HANDOFF_COLLECT_VARS ;;
     export) SSH_ALLOWED=$HANDOFF_EXPORT_VARS ;;
   esac
@@ -331,7 +361,12 @@ lock_wait=$((10#$lock_wait))
 [ "$lock_wait" -le 300 ] || die "USNM_BOINC_STEP_LOCK_WAIT_SECS must be 0..300"
 step_timeout=$((WAIT_MINS * 60))
 [ "$lock_wait" -lt "$step_timeout" ] || die "lock wait must be shorter than --wait-mins"
-exec 9> "$RUN_DIR/usnm-boinc-step.lock"
+lock_file=usnm-boinc-step.lock
+case $TARGET:$STEP in
+  bridge:quality-stage) lock_file=usnm-boinc-stage.lock ;;
+  handoff:* | bridge:spool-out | bridge:batch-inventory) lock_file=usnm-boinc-handoff.lock ;;
+esac
+exec 9> "$RUN_DIR/$lock_file"
 lock_started=$SECONDS
 if [ "$lock_wait" -eq 0 ]; then
   flock -n 9 || die "another bridge step is running on this host - wait for it to end first"

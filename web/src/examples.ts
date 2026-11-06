@@ -26,6 +26,16 @@ export interface Example {
 // checks every entry has exactly these fields, with the right types.
 export const EXAMPLES: Example[] = examples as Example[];
 
+export function examplePath(example: Example): string {
+  return `/examples/${example.id}`;
+}
+
+const BY_PATH = new Map(EXAMPLES.map((example) => [examplePath(example), example]));
+
+export function exampleForPath(path: string): Example | undefined {
+  return BY_PATH.get(path.replace(/\/$/, ""));
+}
+
 /** How many examples the home page shows at first. */
 export const EXAMPLES_SHOWN = 3;
 

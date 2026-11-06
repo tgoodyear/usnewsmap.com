@@ -9,12 +9,13 @@ use super::{check_no_hold, units, JOB_FILE, PAGE_FILE};
 use crate::{atomic, read};
 use anyhow::{ensure, Context};
 use image::GenericImageView as _;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeSet,
     path::{Path, PathBuf},
 };
 use usnm_ocr_contract::{
-    boinc::sha256,
+    boinc::{is_sha256, sha256},
     quality::{
         BundleSlice, Input, Job as QualityJob, MAX_ALTO, MAX_BUNDLE_SCAN,
         MAX_JOB_JSON as MAX_QUALITY_JOB, MAX_SCAN,
@@ -36,6 +37,10 @@ pub struct Options {
     pub gpu_timeout_secs: u32,
     pub cpu_timeout_secs: u32,
     pub max_tokens_per_1000px2: u32,
+    /// The request version every staged job reads with. A host whose app
+    /// version can't read it ends the job with a unit error, so stage a
+    /// version only once every dispatchable app version reads it.
+    pub prompt_version: u32,
     pub max_pages: usize,
     /// Pack staged pages into multi-page bundle workunits of up to this many pages
     /// (1 to [`MAX_BUNDLE_PAGES`]).
@@ -57,10 +62,144 @@ pub struct Summary {
 const BUNDLE_SOURCE: &str = "bundle:page.jpg";
 /// The marker on a staged page too large to publish, alone or in a bundle.
 const TOO_LARGE: &str = "too_large";
+const SOURCE_FILE: &str = "source-provenance.json";
+const MAX_SOURCE_PROVENANCE: usize = 16 * 1024;
 /// Room in a bundle's `readings.json` for its `diag` facts (the context
 /// size, the GPU layers, the model file, the threads, a 256-character
 /// server version line).
 const READINGS_DIAG_RESERVE: usize = 16 * 1024;
+
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SourceFingerprint {
+    doc_id: String,
+    batch: String,
+    batch_version: u16,
+    bytes: u64,
+    sha256: String,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ImageFingerprint {
+    bytes: u64,
+    sha256: String,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ImageProvenance {
+    schema: u8,
+    source: SourceFingerprint,
+    jpeg: ImageFingerprint,
+}
+
+impl ImageProvenance {
+    fn validate(&self, quality: &QualityJob) -> anyhow::Result<()> {
+        let valid_batch = self
+            .source
+            .batch
+            .split_once('_')
+            .is_some_and(|(prefix, name)| {
+                !prefix.is_empty()
+                    && prefix.bytes().all(|c| c.is_ascii_lowercase())
+                    && !name.is_empty()
+                    && name.bytes().all(|c| c.is_ascii_alphanumeric())
+            });
+        ensure!(
+            self.schema == 1
+                && self.source.doc_id == quality.doc_id
+                && valid_batch
+                && (1..=99).contains(&self.source.batch_version)
+                && self.source.bytes > 0
+                && is_sha256(&self.source.sha256)
+                && self.jpeg.bytes == quality.inputs.page.bytes
+                && self.jpeg.sha256 == quality.inputs.page.sha256,
+            "{}: image provenance does not bind to quality source",
+            quality.doc_id
+        );
+        Ok(())
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StagedSource {
+    schema: u8,
+    binding: ImageProvenance,
+    quality_sha256: String,
+}
+
+fn image_provenance(root: &Path, quality: &QualityJob) -> anyhow::Result<Option<ImageProvenance>> {
+    let path = root
+        .join("texts")
+        .join(format!("{}.image-provenance.json", quality.doc_id));
+    if !path.try_exists()? {
+        return Ok(None);
+    }
+    let binding: ImageProvenance = serde_json::from_slice(&read(&path, MAX_SOURCE_PROVENANCE)?)?;
+    binding.validate(quality)?;
+    Ok(Some(binding))
+}
+
+fn retain_source(
+    root: &Path,
+    unit: &Path,
+    quality: &QualityJob,
+    quality_bytes: &[u8],
+) -> anyhow::Result<()> {
+    if let Some(binding) = image_provenance(root, quality)? {
+        let receipt = StagedSource {
+            schema: 1,
+            binding,
+            quality_sha256: sha256(quality_bytes),
+        };
+        // Both records precede any terminal marker or publishable job.
+        atomic(&unit.join(crate::quality::JOB_FILE), quality_bytes)?;
+        atomic(
+            &unit.join(SOURCE_FILE),
+            &serde_json::to_vec_pretty(&receipt)?,
+        )?;
+    }
+    Ok(())
+}
+
+fn check_retained_source(root: &Path, page: &Path, unit: &Path) -> anyhow::Result<()> {
+    if !unit.join(SOURCE_FILE).try_exists()? {
+        ensure!(
+            !unit.join(crate::quality::JOB_FILE).try_exists()?
+                || [JOB_FILE, "no_crops", TOO_LARGE]
+                    .iter()
+                    .any(|name| unit.join(name).exists()),
+            "{}: incomplete retained source provenance; retain existing evidence",
+            unit.display()
+        );
+        // Legacy markers are preserved, not rebound to a current source.
+        return Ok(());
+    }
+    let receipt: StagedSource =
+        serde_json::from_slice(&read(&unit.join(SOURCE_FILE), MAX_SOURCE_PROVENANCE)?)?;
+    let retained = read(&unit.join(crate::quality::JOB_FILE), MAX_QUALITY_JOB)?;
+    let current = read(&page.join(crate::quality::JOB_FILE), MAX_QUALITY_JOB)?;
+    ensure!(
+        receipt.schema == 1
+            && sha256(&retained) == receipt.quality_sha256
+            && sha256(&current) == receipt.quality_sha256,
+        "{}: retained quality source changed; retain existing evidence",
+        unit.display()
+    );
+    let quality: QualityJob = serde_json::from_slice(&retained)?;
+    quality.validate()?;
+    receipt.binding.validate(&quality)?;
+    if let Some(current_binding) = image_provenance(root, &quality)? {
+        ensure!(
+            current_binding == receipt.binding,
+            "{}: retained original source changed; retain existing evidence",
+            unit.display()
+        );
+    }
+    Ok(())
+}
 
 /// Writes one unit per staged `usnm_quality` page (those with a
 /// `quality.json`), in doc id order, up to `max_pages` new ones. When
@@ -73,6 +212,10 @@ const READINGS_DIAG_RESERVE: usize = 16 * 1024;
 /// no unit. The quality unit's `sample.json`, when there, is copied along
 /// for `collect`.
 pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
+    run_selected(opts, None).await
+}
+
+pub async fn run_selected(opts: &Options, members: Option<&Path>) -> anyhow::Result<Summary> {
     let bundle_size = if opts.bundle_size == 0 {
         1
     } else {
@@ -81,6 +224,10 @@ pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
     ensure!(
         (1..=MAX_BUNDLE_PAGES).contains(&bundle_size),
         "--bundle-size must be 1 to {MAX_BUNDLE_PAGES}"
+    );
+    ensure!(
+        members.is_none() || bundle_size == 1,
+        "explicit membership requires --bundle-size 1"
     );
     super::check_digest(&opts.engine.image, "--engine-image")?;
     super::check_digest(&opts.engine.llama, "--engine-llama")?;
@@ -124,6 +271,27 @@ pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
         .filter(|p| p.join(crate::quality::JOB_FILE).exists())
         .collect();
     pages.sort();
+    if let Some(members) = members {
+        let docs = crate::selection::members(members)?;
+        ensure!(
+            docs.len() <= opts.max_pages,
+            "membership exceeds --max-pages"
+        );
+        pages = docs
+            .into_iter()
+            .map(|doc| {
+                let mut page = src.join(&doc);
+                if !page.join(crate::quality::JOB_FILE).is_file() {
+                    page = crate::quality::units(&opts.quality_root).join(&doc);
+                }
+                ensure!(
+                    page.join(crate::quality::JOB_FILE).is_file(),
+                    "{doc}: missing selected quality job"
+                );
+                Ok(page)
+            })
+            .collect::<anyhow::Result<_>>()?;
+    }
     let mut summary = Summary::default();
     for page in pages {
         if summary.staged + summary.no_crops + summary.too_large >= opts.max_pages {
@@ -142,15 +310,27 @@ pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
                 .iter()
                 .any(|f| dir.join(f).exists())
         };
-        if staged(&unit) || (bundle_size > 1 && staged(&units_dir.join(&name))) {
+        let old_unit = units_dir.join(&name);
+        if bundle_size > 1 {
+            // A crash may retain evidence before a job or terminal marker.
+            // Switching layouts must not bypass that original binding.
+            check_retained_source(&opts.quality_root, &page, &old_unit)?;
+        }
+        let existing = if staged(&unit) {
+            Some(&unit)
+        } else if bundle_size > 1 && staged(&old_unit) {
+            Some(&old_unit)
+        } else {
+            None
+        };
+        if let Some(existing) = existing {
+            check_retained_source(&opts.quality_root, &page, existing)?;
             summary.already += 1;
             continue;
         }
-        let quality: QualityJob = serde_json::from_slice(&read(
-            &page.join(crate::quality::JOB_FILE),
-            MAX_QUALITY_JOB,
-        )?)
-        .with_context(|| format!("{name}: quality.json"))?;
+        let quality_bytes = read(&page.join(crate::quality::JOB_FILE), MAX_QUALITY_JOB)?;
+        let quality: QualityJob = serde_json::from_slice(&quality_bytes)
+            .with_context(|| format!("{name}: quality.json"))?;
         quality.validate()?;
         let bytes = read(&page.join(crate::quality::PAGE_FILE), MAX_SCAN)?;
         ensure!(
@@ -165,6 +345,8 @@ pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
         let crops = cut(&bytes, &alto, quality.crop_seed, quality.k_crops)
             .with_context(|| format!("{name}: cutting crops"))?;
         std::fs::create_dir_all(&unit)?;
+        check_retained_source(&opts.quality_root, &page, &unit)?;
+        retain_source(&opts.quality_root, &unit, &quality, &quality_bytes)?;
         let sample = page.join(crate::quality::stage::SAMPLE_FILE);
         if sample.exists() {
             atomic(
@@ -194,7 +376,7 @@ pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
             language: quality.language.clone(),
             max_tokens_per_1000px2: opts.max_tokens_per_1000px2,
             pages: vec![],
-            prompt_version: PROMPT_VERSION,
+            prompt_version: opts.prompt_version,
         };
         job.id = job.identity()?;
         job.validate_source_candidate()
@@ -218,17 +400,12 @@ pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
                 &serde_json::to_vec_pretty(&job)?,
             )?;
             atomic(&unit.join(crate::quality::ALTO_FILE), &alto)?;
-            atomic(
-                &unit.join(crate::quality::JOB_FILE),
-                &std::fs::read(page.join(crate::quality::JOB_FILE))?,
-            )?;
+            atomic(&unit.join(crate::quality::JOB_FILE), &quality_bytes)?;
             let why = format!(
                 "{}: {}\nquality.json sha256={}; loc.xml sha256={}; page.jpg sha256={}\n",
                 job.doc_id,
                 oversized.join("; "),
-                usnm_ocr_contract::boinc::sha256(&std::fs::read(
-                    page.join(crate::quality::JOB_FILE)
-                )?),
+                sha256(&quality_bytes),
                 quality.inputs.alto.sha256,
                 quality.inputs.page.sha256,
             );
@@ -239,14 +416,11 @@ pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
         }
         job.validate()
             .with_context(|| format!("{name}: staged job"))?;
-        let json = serde_json::to_vec_pretty(&job)?;
-        if json.len() > MAX_JOB_JSON {
-            mark_too_large(&unit, &job.doc_id, "qwen.json", json.len())?;
+        if publish(&unit, &job)? {
+            summary.staged += 1;
+        } else {
             summary.too_large += 1;
-            continue;
         }
-        atomic(&unit.join(JOB_FILE), &json)?;
-        summary.staged += 1;
     }
     if let Some(held) = &bundling {
         let (bundles, too_large) = pack_bundles(&page_dir, &units_dir, bundle_size, held)?;
@@ -254,6 +428,33 @@ pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
         summary.too_large += too_large;
     }
     Ok(summary)
+}
+
+/// Writes a staged page's `qwen.json`, or, when that would pass
+/// `MAX_JOB_JSON`, keeps it as `rejected-qwen.json` and marks the page
+/// `too_large`: as for an oversized crop text, the evidence is the page's
+/// disposition for the feed. Returns whether the job was written. Staging
+/// calls it only for a unit with no `qwen.json`, `no_crops` or `too_large`
+/// yet, and it refuses a unit with any of them (`submitted` comes only after
+/// a `qwen.json`). The one file it writes over is a `rejected-qwen.json`
+/// with no marker beside it, left by a run stopped between the two writes:
+/// it writes the evidence again, then the marker.
+fn publish(unit: &Path, job: &Job) -> anyhow::Result<bool> {
+    ensure!(
+        ![JOB_FILE, "no_crops", TOO_LARGE]
+            .iter()
+            .any(|f| unit.join(f).exists()),
+        "{}: already staged",
+        unit.display()
+    );
+    let json = serde_json::to_vec_pretty(job)?;
+    if json.len() > MAX_JOB_JSON {
+        atomic(&unit.join("rejected-qwen.json"), &json)?;
+        mark_too_large(unit, &job.doc_id, "qwen.json", json.len())?;
+        return Ok(false);
+    }
+    atomic(&unit.join(JOB_FILE), &json)?;
+    Ok(true)
 }
 
 /// Marks a staged page `too_large`: its `qwen.json` (`what`) would be `len`
@@ -956,6 +1157,29 @@ pub(crate) mod tests {
         }
     }
 
+    fn bind_source(root: &Path, unit: &Path) -> PathBuf {
+        let job_path = unit.join(crate::quality::JOB_FILE);
+        let mut job: QualityJob =
+            serde_json::from_slice(&std::fs::read(&job_path).unwrap()).unwrap();
+        job.doc_id = unit.file_name().unwrap().to_str().unwrap().into();
+        job.id = job.identity().unwrap();
+        atomic(&job_path, &serde_json::to_vec(&job).unwrap()).unwrap();
+        let binding = serde_json::json!({
+            "schema": 1,
+            "source": {
+                "doc_id": job.doc_id, "batch": "xx_test", "batch_version": 1,
+                "bytes": 12, "sha256": "a".repeat(64),
+            },
+            "jpeg": {"bytes": job.inputs.page.bytes, "sha256": job.inputs.page.sha256},
+        });
+        let path = root
+            .join("texts")
+            .join(format!("{}.image-provenance.json", job.doc_id));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        atomic(&path, &serde_json::to_vec(&binding).unwrap()).unwrap();
+        path
+    }
+
     #[test]
     fn local_unit_cuts_crops_from_the_alto() {
         let tmp = tempfile::tempdir().unwrap();
@@ -985,6 +1209,251 @@ pub(crate) mod tests {
         assert_eq!(again, j.crops);
     }
 
+    #[test]
+    fn a_job_over_the_manifest_limit_is_kept_as_evidence() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("q");
+        crate::quality::work::tests::unit(&source);
+        let mut job = local_unit(
+            &source.join("page.jpg"),
+            &source.join("loc.xml"),
+            &tmp.path().join("u"),
+            engine(),
+            522,
+            4,
+            600,
+            4,
+        )
+        .unwrap();
+        let crop = job.crops[0].clone();
+        // Every crop text within its limit, the page's qwen.json over its own.
+        job.crops = (0..usnm_ocr_contract::qwen::MAX_CROPS)
+            .map(|n| Crop {
+                id: format!("c{n:02}"),
+                loc_text: "\"".repeat(MAX_CROP_TEXT),
+                ..crop.clone()
+            })
+            .collect();
+        job.id = job.identity().unwrap();
+        job.validate().unwrap();
+        let unit = tmp.path().join("big");
+        std::fs::create_dir(&unit).unwrap();
+        assert!(!publish(&unit, &job).unwrap());
+        let evidence = std::fs::read(unit.join("rejected-qwen.json")).unwrap();
+        assert!(evidence.len() > MAX_JOB_JSON);
+        assert_eq!(serde_json::from_slice::<Job>(&evidence).unwrap(), job);
+        assert!(unit.join(TOO_LARGE).exists() && !unit.join(JOB_FILE).exists());
+        // A unit already staged is refused, never written over.
+        assert!(publish(&unit, &job).is_err());
+        assert_eq!(
+            std::fs::read(unit.join("rejected-qwen.json")).unwrap(),
+            evidence
+        );
+        let staged = tmp.path().join("staged");
+        std::fs::create_dir(&staged).unwrap();
+        std::fs::write(staged.join(JOB_FILE), b"{}").unwrap();
+        assert!(publish(&staged, &job).is_err());
+        assert_eq!(std::fs::read(staged.join(JOB_FILE)).unwrap(), b"{}");
+        assert!(!staged.join(TOO_LARGE).exists());
+        // A run stopped between the evidence and its marker is finished.
+        std::fs::remove_file(unit.join(TOO_LARGE)).unwrap();
+        assert!(!publish(&unit, &job).unwrap());
+        assert!(unit.join(TOO_LARGE).exists() && !unit.join(JOB_FILE).exists());
+    }
+
+    #[tokio::test]
+    async fn stages_the_request_version_it_is_given() {
+        let tmp = tempfile::tempdir().unwrap();
+        let qroot = tmp.path().join("quality");
+        let unit = crate::quality::units(&qroot).join("sn83045462_1890-05-03_ed-1_seq-1");
+        crate::quality::work::tests::unit(&unit);
+        std::fs::write(unit.join("sample.json"), b"{}").unwrap();
+        let opts = Options {
+            quality_root: qroot,
+            root: tmp.path().join("qwen"),
+            engine: engine(),
+            gpu_timeout_secs: 1800,
+            cpu_timeout_secs: 7200,
+            max_tokens_per_1000px2: 4,
+            prompt_version: usnm_ocr_contract::qwen::PROMPT_VERSION_LOOP_GUARD,
+            max_pages: 20,
+            bundle_size: 1,
+        };
+        run(&opts).await.unwrap();
+        let out = units(&opts.root).join("sn83045462_1890-05-03_ed-1_seq-1");
+        let job: Job = serde_json::from_slice(&std::fs::read(out.join(JOB_FILE)).unwrap()).unwrap();
+        job.validate().unwrap();
+        assert_eq!(job.prompt_version, opts.prompt_version);
+    }
+
+    #[tokio::test]
+    async fn quality_only_partial_stage_cannot_rebind_but_completed_legacy_units_are_preserved() {
+        let tmp = tempfile::tempdir().unwrap();
+        let qroot = tmp.path().join("quality");
+        let source = crate::quality::units(&qroot).join("sn83045462_1890-05-03_ed-1_seq-1");
+        crate::quality::work::tests::unit(&source);
+        let binding_path = bind_source(&qroot, &source);
+        let original = std::fs::read(source.join("quality.json")).unwrap();
+        let opts = Options {
+            quality_root: qroot,
+            root: tmp.path().join("qwen"),
+            engine: engine(),
+            gpu_timeout_secs: 1800,
+            cpu_timeout_secs: 7200,
+            max_tokens_per_1000px2: 4,
+            prompt_version: PROMPT_VERSION,
+            max_pages: 20,
+            bundle_size: 1,
+        };
+        let unit = units(&opts.root).join(source.file_name().unwrap());
+        std::fs::create_dir_all(&unit).unwrap();
+        atomic(&unit.join("quality.json"), &original).unwrap();
+        for change_quality in [false, true] {
+            if change_quality {
+                let mut quality: QualityJob = serde_json::from_slice(&original).unwrap();
+                quality.crop_seed += 1;
+                quality.id = quality.identity().unwrap();
+                atomic(
+                    &source.join("quality.json"),
+                    &serde_json::to_vec(&quality).unwrap(),
+                )
+                .unwrap();
+            } else {
+                let mut binding: serde_json::Value =
+                    serde_json::from_slice(&std::fs::read(&binding_path).unwrap()).unwrap();
+                binding["source"]["batch_version"] = serde_json::json!(2);
+                atomic(&binding_path, &serde_json::to_vec(&binding).unwrap()).unwrap();
+            }
+            assert!(run(&opts)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("incomplete retained source provenance"));
+            assert_eq!(std::fs::read(unit.join("quality.json")).unwrap(), original);
+            assert!(!unit.join(SOURCE_FILE).exists());
+            assert!(!unit.join(JOB_FILE).exists());
+        }
+        for marker in [JOB_FILE, "no_crops", TOO_LARGE] {
+            atomic(&unit.join(marker), b"legacy evidence").unwrap();
+            assert_eq!(run(&opts).await.unwrap().already, 1);
+            assert_eq!(
+                std::fs::read(unit.join(marker)).unwrap(),
+                b"legacy evidence"
+            );
+            assert_eq!(std::fs::read(unit.join("quality.json")).unwrap(), original);
+            assert!(!unit.join(SOURCE_FILE).exists());
+            std::fs::remove_file(unit.join(marker)).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn switching_to_bundles_checks_partial_single_page_evidence() {
+        let tmp = tempfile::tempdir().unwrap();
+        let qroot = tmp.path().join("quality");
+        let source = crate::quality::units(&qroot).join("sn83045462_1890-05-03_ed-1_seq-1");
+        crate::quality::work::tests::unit(&source);
+        let binding_path = bind_source(&qroot, &source);
+        let original_binding = std::fs::read(&binding_path).unwrap();
+        let original = std::fs::read(source.join("quality.json")).unwrap();
+        let quality: QualityJob = serde_json::from_slice(&original).unwrap();
+        let opts = Options {
+            quality_root: qroot,
+            root: tmp.path().join("qwen"),
+            engine: engine(),
+            gpu_timeout_secs: 1800,
+            cpu_timeout_secs: 7200,
+            max_tokens_per_1000px2: 4,
+            prompt_version: PROMPT_VERSION,
+            max_pages: 20,
+            bundle_size: 2,
+        };
+        let unit = units(&opts.root).join(source.file_name().unwrap());
+        std::fs::create_dir_all(&unit).unwrap();
+        retain_source(&opts.quality_root, &unit, &quality, &original).unwrap();
+        let retained = std::fs::read(unit.join(SOURCE_FILE)).unwrap();
+        let mut binding: serde_json::Value = serde_json::from_slice(&original_binding).unwrap();
+        binding["source"]["batch_version"] = serde_json::json!(2);
+        atomic(&binding_path, &serde_json::to_vec(&binding).unwrap()).unwrap();
+        assert!(run(&opts)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("retained original source changed"));
+        atomic(&binding_path, &original_binding).unwrap();
+        let mut changed = quality.clone();
+        changed.crop_seed += 1;
+        changed.id = changed.identity().unwrap();
+        atomic(
+            &source.join("quality.json"),
+            &serde_json::to_vec(&changed).unwrap(),
+        )
+        .unwrap();
+        assert!(run(&opts)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("retained quality source changed"));
+        assert_eq!(std::fs::read(unit.join(SOURCE_FILE)).unwrap(), retained);
+        std::fs::remove_file(unit.join(SOURCE_FILE)).unwrap();
+        assert!(run(&opts)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("incomplete retained source provenance"));
+        assert!(!opts
+            .root
+            .join("pages")
+            .join(source.file_name().unwrap())
+            .exists());
+        atomic(&unit.join("no_crops"), b"legacy evidence").unwrap();
+        assert_eq!(run(&opts).await.unwrap().already, 1);
+        assert_eq!(std::fs::read(unit.join("quality.json")).unwrap(), original);
+    }
+
+    #[tokio::test]
+    async fn explicit_membership_does_not_stage_unrelated_quality_pages() {
+        let tmp = tempfile::tempdir().unwrap();
+        let qroot = tmp.path().join("quality");
+        let selected = "sn83045462_1890-05-03_ed-1_seq-2";
+        let unrelated = "sn83045462_1890-05-03_ed-1_seq-1";
+        for doc in [selected, unrelated] {
+            let unit = crate::quality::units(&qroot).join(doc);
+            crate::quality::work::tests::unit(&unit);
+            bind_source(&qroot, &unit);
+        }
+        let opts = Options {
+            quality_root: qroot,
+            root: tmp.path().join("qwen"),
+            engine: engine(),
+            gpu_timeout_secs: 1800,
+            cpu_timeout_secs: 7200,
+            max_tokens_per_1000px2: 4,
+            prompt_version: PROMPT_VERSION,
+            max_pages: 1,
+            bundle_size: 1,
+        };
+        let members = tmp.path().join("members.json");
+        atomic(&members, &serde_json::to_vec(&[selected]).unwrap()).unwrap();
+        assert_eq!(run_selected(&opts, Some(&members)).await.unwrap().staged, 1);
+        assert!(units(&opts.root).join(selected).join(JOB_FILE).exists());
+        assert!(!units(&opts.root).join(unrelated).exists());
+        assert_eq!(
+            run_selected(&opts, Some(&members)).await.unwrap().already,
+            1
+        );
+        assert!(!units(&opts.root).join(unrelated).exists());
+        atomic(
+            &members,
+            &serde_json::to_vec(&[selected, unrelated]).unwrap(),
+        )
+        .unwrap();
+        assert!(run_selected(&opts, Some(&members))
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("exceeds"));
+    }
+
     #[tokio::test]
     async fn stages_every_quality_unit_once() {
         let tmp = tempfile::tempdir().unwrap();
@@ -999,6 +1468,7 @@ pub(crate) mod tests {
             gpu_timeout_secs: 1800,
             cpu_timeout_secs: 7200,
             max_tokens_per_1000px2: 4,
+            prompt_version: PROMPT_VERSION,
             max_pages: 20,
             bundle_size: 1,
         };
@@ -1038,11 +1508,59 @@ pub(crate) mod tests {
             k_crops: 4,
         })
         .unwrap();
+        let provenance = bind_source(&qroot, &empty);
+        let original_binding = std::fs::read(&provenance).unwrap();
+        let mut changed: serde_json::Value = serde_json::from_slice(&original_binding).unwrap();
+        changed["jpeg"]["sha256"] = serde_json::json!("c".repeat(64));
+        atomic(&provenance, &serde_json::to_vec(&changed).unwrap()).unwrap();
+        assert!(run(&opts)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("image provenance does not bind"));
+        let rejected = units(&opts.root).join(empty.file_name().unwrap());
+        assert!(!rejected.join("no_crops").exists());
+        atomic(&provenance, &original_binding).unwrap();
         let s = run(&opts).await.unwrap();
         assert_eq!((s.staged, s.no_crops, s.already), (0, 1, 1));
-        assert!(units(&opts.root)
-            .join("sn83045462_1890-05-04_ed-1_seq-1/no_crops")
-            .exists());
+        assert!(rejected.join("no_crops").exists());
+        let retained = std::fs::read(rejected.join(SOURCE_FILE)).unwrap();
+        let receipt: StagedSource = serde_json::from_slice(&retained).unwrap();
+        assert_eq!(
+            receipt.quality_sha256,
+            sha256(&std::fs::read(empty.join("quality.json")).unwrap())
+        );
+        std::fs::remove_file(&provenance).unwrap();
+        assert_eq!(run(&opts).await.unwrap().already, 2);
+        assert_eq!(std::fs::read(rejected.join(SOURCE_FILE)).unwrap(), retained);
+        atomic(&provenance, &original_binding).unwrap();
+        changed = serde_json::from_slice(&original_binding).unwrap();
+        changed["source"]["batch_version"] = serde_json::json!(2);
+        atomic(&provenance, &serde_json::to_vec(&changed).unwrap()).unwrap();
+        assert!(run(&opts)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("retained original source changed"));
+        atomic(&provenance, &original_binding).unwrap();
+        // A crash before publishing the marker may replay only the same receipt.
+        std::fs::remove_file(rejected.join("no_crops")).unwrap();
+        assert_eq!(run(&opts).await.unwrap().no_crops, 1);
+        assert_eq!(std::fs::read(rejected.join(SOURCE_FILE)).unwrap(), retained);
+        std::fs::remove_file(rejected.join("no_crops")).unwrap();
+        let path = empty.join("quality.json");
+        let mut quality: QualityJob =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        quality.crop_seed += 1;
+        quality.id = quality.identity().unwrap();
+        atomic(&path, &serde_json::to_vec(&quality).unwrap()).unwrap();
+        assert!(run(&opts)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("retained quality source changed"));
+        assert!(!rejected.join("no_crops").exists());
+        assert_eq!(std::fs::read(rejected.join(SOURCE_FILE)).unwrap(), retained);
     }
 
     #[tokio::test]
@@ -1076,6 +1594,7 @@ pub(crate) mod tests {
                 k_crops: 12,
             })
             .unwrap();
+            bind_source(&qroot, &source);
             let quality = std::fs::read(source.join("quality.json")).unwrap();
             let valid = crate::quality::units(&qroot).join(good);
             let mut good_job = crate::quality::work::tests::unit(&valid);
@@ -1093,6 +1612,7 @@ pub(crate) mod tests {
                 gpu_timeout_secs: 14400,
                 cpu_timeout_secs: 7200,
                 max_tokens_per_1000px2: 4,
+                prompt_version: PROMPT_VERSION,
                 max_pages: 1,
                 bundle_size,
             };
@@ -1132,6 +1652,10 @@ pub(crate) mod tests {
                 .join(if bundle_size == 1 { "units" } else { "pages" })
                 .join(bad);
             let evidence = std::fs::read(rejected.join("rejected-qwen.json")).unwrap();
+            let provenance = std::fs::read(rejected.join(SOURCE_FILE)).unwrap();
+            let receipt: StagedSource = serde_json::from_slice(&provenance).unwrap();
+            assert_eq!(receipt.binding.source.doc_id, bad);
+            assert_eq!(receipt.quality_sha256, sha256(&quality));
             let candidate: Job = serde_json::from_slice(&evidence).unwrap();
             assert_eq!(
                 candidate.crops,
@@ -1173,6 +1697,10 @@ pub(crate) mod tests {
                 evidence
             );
             assert_eq!(std::fs::read(rejected.join(TOO_LARGE)).unwrap(), reason);
+            assert_eq!(
+                std::fs::read(rejected.join(SOURCE_FILE)).unwrap(),
+                provenance
+            );
         }
     }
 
@@ -1202,6 +1730,7 @@ pub(crate) mod tests {
             gpu_timeout_secs: 14_400,
             cpu_timeout_secs: 7200,
             max_tokens_per_1000px2: 4,
+            prompt_version: PROMPT_VERSION,
             max_pages: 20,
             bundle_size: 2,
         };

@@ -356,6 +356,85 @@ fn native_report_and_outcome(
 }
 
 #[test]
+fn native_gold_earns_trust_for_its_own_build_at_the_same_threshold() {
+    let native = format!("sha256:{}", "8".repeat(64));
+    let worker = format!("sha256:{}", "2".repeat(64));
+    let manifest = "d".repeat(64);
+    let max_cer = 0.08734328574534386;
+    let dir = tempfile::tempdir().unwrap();
+    let native_app = |outcome: String| outcome.replace("\"usnm_gold\"", "\"usnm_gold_native\"");
+    // Host 13 passes on the native build. Host 5 misses by a little: the threshold doesn't move.
+    let (r13, o13) = native_report_and_outcome(
+        'a',
+        1,
+        &native,
+        13,
+        &manifest,
+        "eng",
+        "eng",
+        0.08,
+        1_700_000_000,
+    );
+    let (r5, o5) = native_report_and_outcome(
+        'b',
+        2,
+        &native,
+        5,
+        &manifest,
+        "eng",
+        "eng",
+        max_cer + 1e-9,
+        1_700_000_000,
+    );
+    let reports = dir.path().join("reports.jsonl");
+    let outcomes = dir.path().join("outcomes.jsonl");
+    std::fs::write(&reports, [r13, r5].join("\n")).unwrap();
+    std::fs::write(&outcomes, [native_app(o13), native_app(o5)].join("\n")).unwrap();
+    let built = Trust::build_with_outcomes(
+        std::slice::from_ref(&reports),
+        std::slice::from_ref(&outcomes),
+        max_cer,
+        &manifest,
+        scope(),
+    )
+    .unwrap();
+    assert_eq!(built.hosts[&native], BTreeSet::from([13]));
+    // A native pass says nothing about the worker image, or the other way round.
+    assert!(!built.hosts.contains_key(&worker));
+    assert!(built
+        .refuse_job(&job(&native, "eng", "eng"), Some(13))
+        .is_none());
+    assert!(built
+        .refuse_job(&job(&worker, "eng", "eng"), Some(13))
+        .is_some());
+    assert!(built
+        .refuse_job(&job(&native, "eng", "eng"), Some(5))
+        .is_some());
+    // Nor is another app's result gold evidence.
+    let (r, o) = native_report_and_outcome(
+        'c',
+        3,
+        &native,
+        7,
+        &manifest,
+        "eng",
+        "eng",
+        0.01,
+        1_700_000_000,
+    );
+    std::fs::write(&reports, r).unwrap();
+    std::fs::write(&outcomes, o.replace("\"usnm_gold\"", "\"usnm_ocr_native\"")).unwrap();
+    assert!(Trust::build_with_outcomes(
+        std::slice::from_ref(&reports),
+        std::slice::from_ref(&outcomes),
+        max_cer,
+        &manifest,
+        scope(),
+    )
+    .is_err());
+}
+
+#[test]
 fn v4_single_scope_english_policy_remains_backward_compatible() {
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join("host-trust.json");

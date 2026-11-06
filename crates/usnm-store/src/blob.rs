@@ -207,15 +207,24 @@ fn error_code(resp: &reqwest::Response) -> &str {
         .unwrap_or("")
 }
 
-/// One `<Blob>` of a List Blobs response: its name, size, ETag and
-/// creation time. `None` for an entry without a name or size.
-fn blob_info(blob_xml: &str) -> Option<(String, u64, String, Option<SystemTime>)> {
+/// One `<Blob>` of a List Blobs response. `None` for an entry without a name
+/// or size.
+fn blob_info(blob_xml: &str) -> Option<ObjectInfo> {
     let one = |tag: &str| xml_values(blob_xml, tag).next();
-    let name = one("Name")?;
+    let path = one("Name")?;
     let size = one("Content-Length")?.trim().parse().ok()?;
     let etag = one("Etag").unwrap_or_default();
     let created = one("Creation-Time").and_then(|t| httpdate::parse_http_date(t.trim()).ok());
-    Some((name, size, etag, created))
+    let modified = one("Last-Modified").and_then(|t| httpdate::parse_http_date(t.trim()).ok());
+    let content_md5 = one("Content-MD5").filter(|md5| !md5.trim().is_empty());
+    Some(ObjectInfo {
+        path,
+        size,
+        etag,
+        created,
+        modified,
+        content_md5,
+    })
 }
 
 /// An ETag as an `If-Match` value: quoted, as the service sends it in headers
@@ -284,6 +293,44 @@ impl BlobStore {
         );
         while let Some(chunk) = resp.chunk().await.map_err(|e| transport("get", path, e))? {
             if (body.len() + chunk.len()) as u64 > MAX_OBJECT_BYTES {
+                return Err(StoreError::TooLarge(path.into()));
+            }
+            body.extend_from_slice(&chunk);
+        }
+        Ok(Some(body))
+    }
+
+    async fn get_if_match_once(
+        &self,
+        path: &str,
+        etag: &str,
+        max_bytes: u64,
+    ) -> Result<Option<Vec<u8>>, StoreError> {
+        let mut resp = self
+            .request(Method::GET, path)
+            .await?
+            .header(IF_MATCH, quoted(etag))
+            .send()
+            .await
+            .map_err(|e| transport("get", path, e))?;
+        match resp.status() {
+            StatusCode::NOT_FOUND | StatusCode::PRECONDITION_FAILED => return Ok(None),
+            s if !s.is_success() => {
+                return Err(StoreError::Http {
+                    op: "get",
+                    path: path.into(),
+                    status: s.as_u16(),
+                })
+            }
+            _ => {}
+        }
+        let max = max_bytes.min(MAX_OBJECT_BYTES);
+        if resp.content_length().is_some_and(|n| n > max) {
+            return Err(StoreError::TooLarge(path.into()));
+        }
+        let mut body = Vec::new();
+        while let Some(chunk) = resp.chunk().await.map_err(|e| transport("get", path, e))? {
+            if (body.len() + chunk.len()) as u64 > max {
                 return Err(StoreError::TooLarge(path.into()));
             }
             body.extend_from_slice(&chunk);
@@ -457,14 +504,9 @@ impl ObjectStore for BlobStore {
     async fn list_info(&self, prefix: &str) -> Result<Vec<ObjectInfo>, StoreError> {
         let mut out = Vec::new();
         for (path, xml) in self.list_blobs(prefix).await? {
-            let (_, size, etag, created) = blob_info(&xml)
+            let info = blob_info(&xml)
                 .ok_or_else(|| StoreError::Io(format!("list `{prefix}`: no size for `{path}`")))?;
-            out.push(ObjectInfo {
-                path,
-                size,
-                etag,
-                created,
-            });
+            out.push(ObjectInfo { path, ..info });
         }
         out.sort_by(|a, b| a.path.cmp(&b.path));
         Ok(out)
@@ -476,36 +518,10 @@ impl ObjectStore for BlobStore {
         etag: &str,
         max_bytes: u64,
     ) -> Result<Option<Vec<u8>>, StoreError> {
-        let mut resp = self
-            .request(Method::GET, path)
-            .await?
-            .header(IF_MATCH, quoted(etag))
-            .send()
-            .await
-            .map_err(|e| transport("get", path, e))?;
-        match resp.status() {
-            StatusCode::NOT_FOUND | StatusCode::PRECONDITION_FAILED => return Ok(None),
-            s if !s.is_success() => {
-                return Err(StoreError::Http {
-                    op: "get",
-                    path: path.into(),
-                    status: s.as_u16(),
-                })
-            }
-            _ => {}
-        }
-        let max = max_bytes.min(MAX_OBJECT_BYTES);
-        if resp.content_length().is_some_and(|n| n > max) {
-            return Err(StoreError::TooLarge(path.into()));
-        }
-        let mut body = Vec::new();
-        while let Some(chunk) = resp.chunk().await.map_err(|e| transport("get", path, e))? {
-            if (body.len() + chunk.len()) as u64 > max {
-                return Err(StoreError::TooLarge(path.into()));
-            }
-            body.extend_from_slice(&chunk);
-        }
-        Ok(Some(body))
+        retrying("get", path, self.tuning.get, retryable, |_| {
+            self.get_if_match_once(path, etag, max_bytes)
+        })
+        .await
     }
 
     async fn delete_if_match(&self, path: &str, etag: &str) -> Result<bool, StoreError> {
@@ -529,6 +545,39 @@ impl ObjectStore for BlobStore {
 }
 
 impl BlobStore {
+    /// One page of [`BlobStore::list_blobs`], from one request: its XML.
+    async fn list_page(
+        &self,
+        container: &str,
+        full: &str,
+        marker: &str,
+        prefix: &str,
+    ) -> Result<String, StoreError> {
+        let token = self.credential.token().await?;
+        let mut query = vec![("restype", "container"), ("comp", "list"), ("prefix", full)];
+        if !marker.is_empty() {
+            query.push(("marker", marker));
+        }
+        let resp = self
+            .http
+            .get(container)
+            .query(&query)
+            .bearer_auth(token)
+            .header("x-ms-version", API_VERSION)
+            .header("x-ms-date", httpdate::fmt_http_date(SystemTime::now()))
+            .send()
+            .await
+            .map_err(|e| transport("list", prefix, e))?;
+        if !resp.status().is_success() {
+            return Err(StoreError::Http {
+                op: "list",
+                path: prefix.into(),
+                status: resp.status().as_u16(),
+            });
+        }
+        resp.text().await.map_err(|e| transport("list", prefix, e))
+    }
+
     /// List Blobs under `prefix`, following continuation markers: each
     /// blob's path (relative to the store) and its `<Blob>` element.
     async fn list_blobs(&self, prefix: &str) -> Result<Vec<(String, String)>, StoreError> {
@@ -555,36 +604,12 @@ impl BlobStore {
         let mut blobs = Vec::new();
         let mut marker = String::new();
         loop {
-            let token = self.credential.token().await?;
-            let mut query = vec![
-                ("restype", "container"),
-                ("comp", "list"),
-                ("prefix", full.as_str()),
-            ];
-            if !marker.is_empty() {
-                query.push(("marker", marker.as_str()));
-            }
-            let resp = self
-                .http
-                .get(&container)
-                .query(&query)
-                .bearer_auth(token)
-                .header("x-ms-version", API_VERSION)
-                .header("x-ms-date", httpdate::fmt_http_date(SystemTime::now()))
-                .send()
-                .await
-                .map_err(|e| transport("list", prefix, e))?;
-            if !resp.status().is_success() {
-                return Err(StoreError::Http {
-                    op: "list",
-                    path: prefix.into(),
-                    status: resp.status().as_u16(),
-                });
-            }
-            let xml = resp
-                .text()
-                .await
-                .map_err(|e| transport("list", prefix, e))?;
+            // Each page is retried on its own, so a dropped connection doesn't
+            // restart the listing from its first page.
+            let xml = retrying("list", prefix, self.tuning.get, retryable, |_| {
+                self.list_page(&container, &full, &marker, prefix)
+            })
+            .await?;
             for blob in xml_elements(&xml, "Blob") {
                 let Some(name) = xml_values(blob, "Name").next() else {
                     continue;
@@ -662,7 +687,15 @@ mod tests {
                    <Blob><Name>pages/b</Name><Properties /></Blob></Blobs></EnumerationResults>";
         let blobs: Vec<&str> = xml_elements(xml, "Blob");
         assert_eq!(blobs.len(), 2);
-        let (name, size, etag, created) = blob_info(blobs[0]).unwrap();
+        let ObjectInfo {
+            path: name,
+            size,
+            etag,
+            created,
+            modified,
+            content_md5,
+        } = blob_info(blobs[0]).unwrap();
+        assert_eq!(content_md5, None);
         assert_eq!(
             (name.as_str(), size, etag.as_str()),
             ("pages/a.parquet", 1234, "0x8DCE1")
@@ -671,12 +704,18 @@ mod tests {
             created,
             Some(httpdate::parse_http_date("Fri, 09 Oct 2026 21:04:30 GMT").unwrap())
         );
+        assert_eq!(
+            modified,
+            Some(httpdate::parse_http_date("Fri, 09 Oct 2026 21:05:00 GMT").unwrap())
+        );
         assert_eq!(blob_info(blobs[1]), None, "no size");
         // A name holding escaped markup stays one name: decoded once.
         let sneaky = "<Blobs><Blob><Name>pages/a&lt;/Name&gt;&lt;Content-Length&gt;1</Name>\
                       <Properties><Content-Length>99</Content-Length></Properties></Blob></Blobs>";
         let b = xml_elements(sneaky, "Blob");
-        let (name, size, _, _) = blob_info(b[0]).unwrap();
+        let ObjectInfo {
+            path: name, size, ..
+        } = blob_info(b[0]).unwrap();
         assert_eq!(
             (name.as_str(), size),
             ("pages/a</Name><Content-Length>1", 99)
@@ -793,6 +832,99 @@ mod tests {
         assert_eq!(n.load(Ordering::SeqCst), 4);
         // The text says what went wrong, not only "error decoding response body".
         assert!(err.to_string().contains("get `pages/a.parquet`: "), "{err}");
+    }
+
+    #[tokio::test]
+    async fn conditional_get_retries_transient_failures_and_stops_on_a_changed_object() {
+        use std::sync::atomic::Ordering;
+        const CHANGED: &str =
+            "HTTP/1.1 412 Precondition Failed\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+
+        let (url, n) = scripted(vec![CUT_SHORT, BUSY, WHOLE]).await;
+        let mut store = BlobStore::new(&url, cred()).unwrap();
+        store.tuning.get = FAST;
+        assert_eq!(
+            store
+                .get_if_match("pages/a.parquet", "e1", 11)
+                .await
+                .unwrap(),
+            Some(b"hello world".to_vec())
+        );
+        assert_eq!(n.load(Ordering::SeqCst), 3);
+
+        let (url, n) = scripted(vec![BUSY, CHANGED]).await;
+        let mut store = BlobStore::new(&url, cred()).unwrap();
+        store.tuning.get = FAST;
+        assert_eq!(
+            store
+                .get_if_match("pages/a.parquet", "e1", 11)
+                .await
+                .unwrap(),
+            None
+        );
+        assert_eq!(n.load(Ordering::SeqCst), 2);
+
+        let (url, n) = scripted(vec![DENIED]).await;
+        let mut store = BlobStore::new(&url, cred()).unwrap();
+        store.tuning.get = FAST;
+        assert!(matches!(
+            store.get_if_match("pages/a.parquet", "e1", 11).await,
+            Err(StoreError::Http { status: 403, .. })
+        ));
+        assert_eq!(n.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn conditional_get_preserves_the_etag_on_every_attempt() {
+        use axum::http::{HeaderMap, StatusCode as S};
+
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = seen.clone();
+        let app = axum::Router::new().route(
+            "/c/pages/a.parquet",
+            axum::routing::get(move |headers: HeaderMap| {
+                let etag = headers
+                    .get("if-match")
+                    .and_then(|value| value.to_str().ok())
+                    .unwrap_or("")
+                    .to_owned();
+                let mut requests = log.lock().unwrap();
+                requests.push(etag);
+                let first = requests.len() == 1;
+                async move {
+                    if first {
+                        S::SERVICE_UNAVAILABLE.into_response()
+                    } else {
+                        (S::OK, "hello").into_response()
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let mut store = BlobStore::new(&format!("http://{addr}/c"), cred()).unwrap();
+        store.tuning.get = FAST;
+        assert_eq!(
+            store
+                .get_if_match("pages/a.parquet", "e1", 5)
+                .await
+                .unwrap(),
+            Some(b"hello".to_vec())
+        );
+        assert_eq!(*seen.lock().unwrap(), ["\"e1\"", "\"e1\""]);
+    }
+
+    #[tokio::test]
+    async fn a_listing_page_is_tried_again_after_a_busy_server() {
+        use std::sync::atomic::Ordering;
+        const EMPTY_LIST: &str = "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n<EnumerationResults><Blobs/><NextMarker/></EnumerationResults>";
+        let (url, n) = scripted(vec![BUSY, EMPTY_LIST]).await;
+        let mut store = BlobStore::new(&url, cred()).unwrap();
+        store.tuning.get = FAST;
+        assert!(store.list("pages").await.unwrap().is_empty());
+        assert_eq!(n.load(Ordering::SeqCst), 2);
     }
 
     /// Four tries, a millisecond or two apart.

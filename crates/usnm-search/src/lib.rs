@@ -440,6 +440,30 @@ pub struct HitsQuery {
     /// Also count the days the selected pages appeared on (#127): for the
     /// first page of a list a visitor asked for, not the internal lookups.
     pub days: bool,
+    /// How much text each snippet shows around its matches.
+    pub snippet_length: SnippetLength,
+}
+
+/// How much of a page's text a snippet shows around its matches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SnippetLength {
+    /// About a line of print either side, as `/v1/hits` returns them.
+    #[default]
+    Standard,
+    /// Three times as much, for the server-rendered sample results that
+    /// readers without the app see in place of the full list.
+    Long,
+}
+
+impl SnippetLength {
+    /// Characters of context either side of a match, from a standard
+    /// snippet's `standard`.
+    pub fn context(self, standard: usize) -> usize {
+        match self {
+            Self::Standard => standard,
+            Self::Long => 3 * standard,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -450,6 +474,11 @@ pub struct Hit {
     /// [`BrowseKey`] a browse list resumes after. Not in the JSON.
     #[serde(skip)]
     pub sort_key: u64,
+    /// The batch this copy of the page came from, for its viewer link
+    /// ([`usnm_core::ids::PageKey::source_viewer_url`]); empty when the
+    /// index doesn't say. Not in the JSON.
+    #[serde(skip)]
+    pub batch: String,
     pub lccn: String,
     pub place_id: String,
     pub edition: u16,
@@ -521,6 +550,11 @@ pub enum SearchError {
     /// `Backend`, trying again won't help.
     #[error("search backend rejected the request: {0}")]
     Rejected(String),
+    /// The engine refused an aggregation for its size. The API treats it as
+    /// [`SearchError::Backend`]; [`SearchBackend::summary_with_cube`] takes it
+    /// as the sign to ask call by call.
+    #[error("search backend error: {0}")]
+    OverAggregationLimit(String),
     /// The backend has no index by this id: a lookup found nothing (Quickwit's
     /// metastore answered 404). Only [`SearchBackend::prepare`] returns it.
     #[error("the search backend has no index `{0}`")]
@@ -548,6 +582,20 @@ pub trait SearchBackend: Send + Sync {
         spec: &BucketSpec,
         shards: &[u8],
     ) -> Result<Vec<CubeCell>, SearchError>;
+
+    /// The summary and the whole cube in one request, the same as
+    /// [`Self::summary`] and [`Self::cube`] of every shard. `None` from a
+    /// backend without such a request, or when the engine refuses it for
+    /// its size: the caller then asks for them separately.
+    async fn summary_with_cube(
+        &self,
+        _indexes: &IndexSet,
+        _query: &Node,
+        _filters: &Filters,
+        _spec: &BucketSpec,
+    ) -> Result<Option<(Summary, Vec<CubeCell>)>, SearchError> {
+        Ok(None)
+    }
 
     /// Cube cells for the places in `places` only, whatever their shard
     /// (`/v1/days`). Callers pass validated place ids. A backend without it
@@ -657,7 +705,12 @@ pub fn mark_html(segments: &[(bool, &str)]) -> String {
 ///
 /// The page's Latin runs are folded by `analyzer`, the one the Japanese
 /// index was built with (#168).
-pub fn ja_snippets(printed: &str, query: &Node, analyzer: Analyzer) -> Vec<String> {
+pub fn ja_snippets(
+    printed: &str,
+    query: &Node,
+    analyzer: Analyzer,
+    length: SnippetLength,
+) -> Vec<String> {
     const CONTEXT: usize = 40;
     let tokens = usnm_core::ja::tokenize(printed, analyzer);
     let mut phrases: Vec<Vec<String>> = Vec::new();
@@ -683,7 +736,7 @@ pub fn ja_snippets(printed: &str, query: &Node, analyzer: Analyzer) -> Vec<Strin
     }
     phrases.sort();
     phrases.dedup();
-    usnm_core::ja::snippets(printed, &phrases, CONTEXT, 1, analyzer)
+    usnm_core::ja::snippets(printed, &phrases, length.context(CONTEXT), 1, analyzer)
         .into_iter()
         .map(|pieces| {
             let borrowed: Vec<(bool, &str)> =

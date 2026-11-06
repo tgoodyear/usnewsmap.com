@@ -16,9 +16,16 @@ pub mod cache;
 /// Engines behind the engine contract: long-lived instances (#307).
 pub mod contract;
 pub mod engine;
+/// Fetching outside content: host policies and one fetcher (#1413).
+pub mod fetcher;
+/// Georgia Historic Newspapers' IIIF page images (#1193).
+pub mod ghn;
 pub mod loc;
 /// LoC's word confidence per page from the bulk OCR archives (#962).
 pub mod loc_alto;
+pub mod loc_alto_words;
+/// Which software made LoC's OCR, one row per bulk OCR archive.
+pub mod loc_software;
 /// Fetching scans ahead of the workers (#368).
 pub mod prefetch;
 /// The page's `run_id` and runs record (13 §13.8, #307).

@@ -147,7 +147,7 @@ Each full-size page is the original JP2 from its batch directory on tile.loc.gov
 
 Scans go to `<out>/<set>/<batch>/<lccn>/<date>/<edition>/<seq>.jp2` (`<seq>.jpg` for an IIIF JPEG, `<seq>.pct<n>.jpg` when scaled), each with a sidecar `<file>.json` holding the tile.loc.gov URL, the IIIF base, the fetch time, the size, the sha256, the format and, for a JP2, the bag's md5. A run skips scans in either format that match their sidecar, so it resumes where it stopped, keeps the JPEGs fetched before the batch route, and can be pointed at a newer manifest.
 
-Other flags: `--limit`, `--order priority|issue`, `--concurrency` (4; the pages share the gaps), `--lock-file` (default `<out>/.prefetch.lock`; one fetching process at a time), `--progress-every` (100), `--api-gap-ms` (5000), `--tile-gap-ms` (1000), `--storage-gap-ms` (1000) and `--storage-own-budget` (without it, storage and image requests share one pacer at the longer gap).
+Other flags: `--limit`, `--order priority|issue`, `--concurrency` (4; the pages share the gaps), `--lock-file` (default `<out>/.prefetch.lock`; one fetching process at a time), `--progress-every` (100), `--api-gap-ms` (5000), `--tile-gap-ms` (1000), `--storage-gap-ms` (1000) and `--storage-own-budget` (without it, storage and image requests share one pacer at the longer gap). `--loc-in-flight` (4, at most 16) caps requests to LoC's own servers in flight at once, whatever `--concurrency` is. `--loc-bucket-concurrency` (1, at most 16) sets how many requests to LoC's S3 bucket run at once, their starts `--loc-bucket-gap-ms` apart. A run starts from the last run's buffer count (`status-<tag>.json`, under a day old and under 90% of `--buffer-cap`) and walks the buffer alongside; without one it walks first.
 
 A run writes `status-<res>.json`, `index-<res>.jsonl` and `failures-<res>.jsonl` in `<out>`, logs progress as JSON lines, and stops after 20 pages from at least 3 titles fail in a row (`--max-failures-in-a-row`, `--stop-min-titles`). An issue whose item JSON answers 503 at once, with no `Retry-After`, while other items answer is an item error, not a hold; on the storage service, only a second such 503 for the same METS or JP2 counts as one. The issue's pages are skipped for `--item-cooloff-secs` (86400) and asked again after it, up to `--item-max-cooloffs` (3) times, then taken as permanent. They are written to `failures-<res>.jsonl` as `loc_item_error` and kept in `<out>/item-errors.json` (12 §12.2.4).
 
@@ -299,15 +299,19 @@ profiles both pass the same `usnm-ocr-route::Catalog::check_production` gate
 before a page can be read. A contract profile is checked against the model
 list in its `hello`.
 
-Validate the minimal route without an engine, credentials or network access:
+Validate the minimal route without an engine, credentials or network access,
+from the repository root:
 
 ```sh
 usnm-ocr-worker routes check
-usnm-ocr-worker routes check --engines ocr/engines/engines.toml --routes ocr/routing/routes.toml
+usnm-ocr-worker routes check --engines ocr/engines/engines.toml --routes ocr/routing/routes.toml --lock ocr/engines/profiles.lock
+usnm-ocr-worker routes check --update-lock
 ```
 
 This command checks every named candidate, `auto` profile and cascade target.
-It is a licence check, not the later validator for route matching, node
-capabilities and locks. The [catalog schema](../../ocr/engines/README.md)
+It then checks that no profile's model files changed under the same profile id
+(`ocr/engines/profiles.lock`, [one model set per profile id](../../ocr/engines/README.md#one-model-set-per-profile-id));
+`--update-lock` adds new profiles to the lock. It is not the later validator
+for route matching, node capabilities and the engine lock. The [catalog schema](../../ocr/engines/README.md)
 documents the attribution data for the follow-on credits page (#372). The
 catalog holds no attributed or credit-required production profiles yet.

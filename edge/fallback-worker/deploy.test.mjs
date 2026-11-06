@@ -50,6 +50,17 @@ echo "npx $*" >> "$STUB_DIR/calls.log"
 } > "$STUB_DIR/env.log"
 [ -z "\${STUB_NPX_FAIL:-}" ] || exit 3
 `,
+  // fail-open.mjs is stubbed (it calls Cloudflare); everything else runs on the real node.
+  node: `#!/bin/sh
+case "$1" in
+  */fail-open.mjs)
+    shift
+    echo "node fail-open.mjs $* token=\${CLOUDFLARE_API_TOKEN:+set}" >> "$STUB_DIR/calls.log"
+    [ -z "\${STUB_FAIL_OPEN_FAIL:-}" ] || exit 4
+    exit 0 ;;
+esac
+exec "${process.execPath}" "$@"
+`,
 };
 
 function deploy(args, extraEnv = {}) {
@@ -344,7 +355,28 @@ test("a deploy reads the token into Wrangler's environment only", () => {
   assert.match(result.env, new RegExp(`^token=${TOKEN}$`, "m"));
   assert.match(result.env, /^account=0123456789abcdef0123456789abcdef$/m);
   assert.match(result.env, /^metrics=false$/m);
-  assert.match(result.stdout, /fail open/);
+  assert.match(result.stdout, /routes fail open/);
+});
+
+test("a deploy sets its Worker's routes to fail open with the same token", () => {
+  const production = deploy([...COMMON, "--production"]);
+  assert.equal(production.status, 0, production.stderr);
+  assert.match(production.calls, /^node fail-open\.mjs --zone usnewsmap\.com --script usnm-fallback token=set$/m);
+  const drill = deploy([...COMMON, "--drill-hostname", "failover-drill.usnewsmap.com"]);
+  assert.equal(drill.status, 0, drill.stderr);
+  assert.match(drill.calls, /^node fail-open\.mjs --zone usnewsmap\.com --script usnm-fallback-drill token=set$/m);
+});
+
+test("a deploy whose routes can't be set to fail open fails", () => {
+  const result = deploy([...COMMON, "--production"], { STUB_FAIL_OPEN_FAIL: "1" });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /could not set the routes to fail open/);
+});
+
+test("a failed Wrangler deploy doesn't touch the routes", () => {
+  const result = deploy([...COMMON, "--production"], { STUB_NPX_FAIL: "1" });
+  assert.notEqual(result.status, 0);
+  assert.doesNotMatch(result.calls, /^node fail-open\.mjs/m);
 });
 
 test("a drill deploy names the drill Worker, its one route and DNT", () => {

@@ -111,6 +111,14 @@ struct Cli {
     /// name or address of the node running it>`.
     #[arg(long, env = "USNM_OCRDASH_SSET_PUSH", value_delimiter = ',')]
     sset_push: Vec<String>,
+    /// A throughput collector that pushes its hourly counts, as `<source>=<the
+    /// host name or address of the host running it>`, with source `controller`,
+    /// `ship`, `boinc` or `batch`.
+    #[arg(long, env = "USNM_OCRDASH_THROUGHPUT_PUSH", value_delimiter = ',')]
+    throughput_push: Vec<String>,
+    /// Read-only feed source observation, `<server|controller|backlog|client-N>=<source address>`.
+    #[arg(long, env = "USNM_OCRDASH_FEED_PUSH", value_delimiter = ',')]
+    feed_push: Vec<String>,
     /// An OCR node's worker status, as `<name>=http://<address>:<port>`.
     #[arg(long, env = "USNM_OCRDASH_WORKER", value_delimiter = ',')]
     worker: Vec<String>,
@@ -127,6 +135,9 @@ struct Cli {
     /// Local corpus-catalog JSON snapshot, read-only; no database or cloud access.
     #[arg(long, env = "USNM_OCRDASH_PIPELINE_SNAPSHOT")]
     pipeline_snapshot: Option<PathBuf>,
+    /// Atomic aggregate BOINC feed monitor output, read-only.
+    #[arg(long, env = "USNM_OCRDASH_FEED_HEALTH")]
+    feed_health: Option<PathBuf>,
     /// Maximum age of source evidence in seconds (not the snapshot generation time).
     #[arg(
         long,
@@ -193,7 +204,33 @@ async fn main() -> anyhow::Result<()> {
             .map_err(|e| anyhow::anyhow!("--sset-push {p:?}: {e}"))?;
         sset_pushers.insert(name, Allow::new(vec![source]));
     }
+    let mut throughput_pushers = BTreeMap::new();
+    for p in &cli.throughput_push {
+        let (name, host) = pair(p, "--throughput-push")?;
+        if !usnm_ocr_dash::throughput::SOURCES.contains(&name.as_str()) {
+            bail!("--throughput-push {p:?}: the source must be controller, ship, boinc or batch");
+        }
+        let source: Source = host
+            .parse()
+            .map_err(|e| anyhow::anyhow!("--throughput-push {p:?}: {e}"))?;
+        throughput_pushers.insert(name, Allow::new(vec![source]));
+    }
     let app = Arc::new(App {
+        feed_pushers: cli
+            .feed_push
+            .iter()
+            .map(|p| {
+                let (name, host) = pair(p, "--feed-push")?;
+                if usnm_ocr_dash::feed::source_kind(&name).is_none() {
+                    bail!("invalid --feed-push source");
+                }
+                Ok((
+                    name,
+                    Allow::new(vec![host.parse().map_err(anyhow::Error::msg)?]),
+                ))
+            })
+            .collect::<anyhow::Result<BTreeMap<_, _>>>()?,
+        feed_source_dir: Mutex::new(Some(cli.state_dir.join("feed-sources"))),
         pipeline: Mutex::new(usnm_ocr_dash::pipeline::Pipeline::new(
             cli.pipeline_snapshot.clone(),
             cli.pipeline_max_age_secs,
@@ -210,9 +247,11 @@ async fn main() -> anyhow::Result<()> {
         queues: Mutex::new(usnm_ocr_dash::queues::Queues::new(
             cli.queue_url.as_deref(),
         )?),
+        throughput: Mutex::new(usnm_ocr_dash::throughput::Throughput::open(&cli.state_dir)),
         seed_plan_path: cli.seed_plan.clone(),
         seed_plan: Mutex::new(None),
         settings: Settings {
+            feed_health_path: cli.feed_health.clone(),
             guest_prefix: cli.guest_prefix.clone(),
             next_n: cli.rows.clamp(1, 200),
             workbook_url: cli.workbook_url.clone(),
@@ -221,11 +260,18 @@ async fn main() -> anyhow::Result<()> {
         allow: Allow::new(cli.allow.clone()),
         pushers,
         sset_pushers,
+        throughput_pushers,
     });
     // Names and subnets now, then every five minutes.
     let refresh = |app: Arc<App>| async move {
         app.allow.refresh().await;
-        for a in app.pushers.values().chain(app.sset_pushers.values()) {
+        for a in app
+            .pushers
+            .values()
+            .chain(app.sset_pushers.values())
+            .chain(app.throughput_pushers.values())
+            .chain(app.feed_pushers.values())
+        {
             a.refresh().await;
         }
     };

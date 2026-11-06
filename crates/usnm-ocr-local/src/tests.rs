@@ -3047,3 +3047,82 @@ async fn a_legacy_part_record_replays_on_its_own() {
     assert_eq!(status.last_run.imported, 1, "{:?}", status.last_run);
     assert!(fx.records().await.is_empty());
 }
+
+/// Counts what a load fetches from the store.
+#[derive(Debug)]
+struct CountingStore {
+    inner: Arc<dyn ObjectStore>,
+    gets: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait]
+impl ObjectStore for CountingStore {
+    async fn get(&self, path: &str) -> Result<Option<Vec<u8>>, usnm_store::StoreError> {
+        self.gets.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.inner.get(path).await
+    }
+    async fn put_new(
+        &self,
+        path: &str,
+        body: Vec<u8>,
+        content_type: &str,
+    ) -> Result<bool, usnm_store::StoreError> {
+        self.inner.put_new(path, body, content_type).await
+    }
+    async fn put(
+        &self,
+        path: &str,
+        body: Vec<u8>,
+        content_type: &str,
+    ) -> Result<(), usnm_store::StoreError> {
+        self.inner.put(path, body, content_type).await
+    }
+    async fn list(&self, prefix: &str) -> Result<Vec<String>, usnm_store::StoreError> {
+        self.inner.list(prefix).await
+    }
+}
+
+#[tokio::test]
+async fn a_cached_load_fetches_only_new_files_and_matches_a_full_load() {
+    let dir = tempfile::tempdir().unwrap();
+    let curated = CountingStore {
+        inner: open(dir.path(), "curated"),
+        gets: Default::default(),
+    };
+    let cache = dir.path().join("cache");
+    std::fs::create_dir(&cache).unwrap();
+    let outcome = |page: &str, run: &str, at| ledger::Outcome {
+        doc_id: page.into(),
+        outcome: ledger::IMPORTED.into(),
+        cause: None,
+        kind: None,
+        source: format!("{page}.parquet"),
+        at,
+        run: run.into(),
+        message_sha256: None,
+    };
+    let at = DateTime::from_timestamp(1_790_000_000, 0).unwrap();
+    ledger::write_outcomes(&curated, &[outcome("a", "one", at)], at, "one")
+        .await
+        .unwrap();
+    ledger::write_outcomes(&curated, &[outcome("b", "two", at)], at, "two")
+        .await
+        .unwrap();
+    let gets = || curated.gets.load(std::sync::atomic::Ordering::SeqCst);
+
+    let first = ledger::load_cached(&curated, Some(&cache)).await.unwrap();
+    assert_eq!(gets(), 2);
+    let second = ledger::load_cached(&curated, Some(&cache)).await.unwrap();
+    assert_eq!(gets(), 2, "nothing new, so nothing is fetched");
+    assert_eq!(first.outcomes, second.outcomes);
+
+    let later = at + chrono::Duration::minutes(1);
+    ledger::write_outcomes(&curated, &[outcome("c", "three", later)], later, "three")
+        .await
+        .unwrap();
+    let third = ledger::load_cached(&curated, Some(&cache)).await.unwrap();
+    assert_eq!(gets(), 3, "a new file is fetched, once");
+    assert!(third.outcomes.contains_key("c"));
+    let full = ledger::load_cached(&curated, None).await.unwrap();
+    assert_eq!(third.outcomes, full.outcomes);
+}

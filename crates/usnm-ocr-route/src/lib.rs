@@ -8,6 +8,7 @@ use anyhow::{bail, Context};
 use serde::{Deserialize, Serialize};
 
 pub mod credits;
+pub mod lock;
 
 pub const ENGINES_TOML: &str = include_str!("../../../ocr/engines/engines.toml");
 pub static ENGINES: LazyLock<Catalog> =

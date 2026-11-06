@@ -38,7 +38,7 @@ For a native Linux x86_64 release, add `"kind": "native"`, `"binary": "worker"`,
 `"binary_sha256": "<64 lowercase hex>"`, and `"binary_source": "<40 hex source commit>"`.
 Supported native identities are `usnm_quality` with empty `plan_class`, or `usnm_qwen`
 with `mt`, `nvidia_cuda_2b`, `nvidia_cuda_8b`, `intel_vulkan_8b`,
-`nvidia_vulkan_8b`, or `amd_vulkan_8b`. Supply an already built binary; additional
+`nvidia_vulkan_8b`, `nvidia_vulkan_6gb_8b`, `nvidia_vulkan_2b`, or `amd_vulkan_8b`. Supply an already built binary; additional
 platforms are not claimed. A native release reviews the
 binary checksum/source instead of dispatching a container worker workflow. Native
 auxiliary payloads use `"extra_files": {"llama-server": {"path": "llama-server",
@@ -111,7 +111,12 @@ durable #548 receipt must prove canonical acceptance **and cleanup**, and is che
 on subsequent resumes. Fake tests are not live #548/#551 closure evidence.
 
 Exit 3 means a workflow/review checkpoint is pending; rerun the identical command
-after it completes. Interrupted/failed phases persist an ambiguous intent and require
+after it completes. Exit 3 also means another step held the production step lock when
+a build, installation or verification was due to start. Nothing ran, so rerun the
+identical command later. Publication waits up to five minutes for that lock
+(`USNM_BOINC_STEP_LOCK_WAIT_SECS=300`), because the verification before it has just
+released the lock and queued steps take it first. If the lock is still held,
+publication fails like any other phase. Interrupted/failed phases persist an ambiguous intent and require
 operator reconciliation followed by `--approve-retry PHASE`. Completed phases never
 repeat automatically. A crash after `server.env` replacement can be reconciled by the
 runtime retry, which restarts and reads back the already-reviewed pin. There is no
@@ -208,6 +213,7 @@ and record all identities. Code tests or a merged PR do not prove this live gate
 | `usnm-boinc-step --target handoff` | The hand-off job's `claim`, `release`, `collect` and `export`, in place of the Azure hand-off job; `--target scans --step receive` takes the controller's scan push | The controller's `--onprem-handoff`; settings in `/etc/usnm-boinc/handoff.env` (#967)                                     |
 | `cloudflared`                      | A Cloudflare Tunnel with ingress `boinc.usnewsmap.com` → `http://localhost:80`                                                                                      | Public ingress with no inbound port                                                                                       |
 | `usnm-image-security-check.timer`  | A daily check of the server image against `bookworm-security`, and of the MySQL pin                                                                                 | A failed `usnm-image-security-check.service` is the alert ([Security updates](#security-updates), #969)                   |
+| `usnm-feeder-slot-guard.timer`     | A read-only check for a stale or unknown `--allapps` allocation every five minutes                                                                                  | A failed `usnm-feeder-slot-guard.service` is the local alert ([Feeder allocation guard](#feeder-allocation-guard-1462))   |
 | `caddy`                            | TLS for `boinc.usnewsmap.com` on the LAN, on 443, in front of `http://localhost:80`                                                                                 | [LAN access](#lan-access-1357)                                                                                            |
 | `usnm-boinc-lan-tls.timer`         | Daily pull of the LAN certificate from the TLS vault                                                                                                                | Fails closed: a bad certificate leaves the installed one                                                                  |
 | `usnm-boinc-lan-guard.service`     | nftables: port 80 answers loopback only                                                                                                                             | Apache stays reachable to cloudflared, not the LAN                                                                        |
@@ -227,6 +233,36 @@ verifies the server unchanged.
 
 **Credentials.** The admin and runtime passwords come from the BOINC Key Vault, the same ones the
 Azure server uses. They are kept in `/etc/usnm-boinc/secrets` (0600). The root password is local.
+
+## Feeder allocation guard (#1462)
+
+After a reviewed image containing the guard has been deployed and its instrumented
+feeder has started at a coordinated boundary, install the host check from that
+reviewed checkout:
+
+```sh
+install -m 0644 scripts/boinc/onprem/usnm-feeder-slot-guard.service scripts/boinc/onprem/usnm-feeder-slot-guard.timer /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now usnm-feeder-slot-guard.timer
+systemctl start usnm-feeder-slot-guard.service
+```
+
+The oneshot runs the image's read-only check as `boincadm` in the running server
+container. `drift` exits 1 and `unknown` exits 2, so both fail the unit and appear
+in `systemctl --failed` and `journalctl -u usnm-feeder-slot-guard.service`.
+`maintenance` is distinct from a match and does not fail the unit. The unit sends
+no external notification; monitor failed units and missing timer runs separately,
+or enable the feed monitor's opt-in
+[`feeder_allocation` check](boinc/boundaries-and-monitoring.md#live-feed-health-1441),
+which runs the same command and alerts through the BOINC feed alerts.
+An unreachable container, old feeder, stale snapshot or failed verified-TLS query
+is unknown, not success. So is `feeder_restart_hold`: the server's supervisor loop
+stopped restarting a feeder that kept stopping
+([The loop's restart bound](boinc/feeder-refresh.md#the-loops-restart-bound)). The image's independent five-minute JSON event is useful
+for diagnosis. See [Allocation drift detection](../contrib-compute/docs/app-release.md#allocation-drift-detection)
+for the scope and limitations, and [Feeder-only refresh](boinc/feeder-refresh.md) for the
+recovery procedure.
+Neither check restarts a process or edits work.
 
 ## Security updates
 
@@ -350,7 +386,9 @@ the on-prem group needs a role there before step 5.
 ## Hand-off steps on-prem
 
 `claim`, `release` and `collect` can run on the host instead of the Azure hand-off job (#967
-phase 3). `usnm-boinc-step --target handoff --step claim|release|collect` runs the bridge
+phase 3). `dead-letter` runs here too, and as root on the host it also takes an operator's
+`SUPERSEDES_FAILED_JOB` and `CONFIRM_MESSAGE_SHA256`
+([boinc-batch-scheduler.md](boinc-batch-scheduler.md#a-retried-page-claimed-after-its-dead-letter)). `usnm-boinc-step --target handoff --step claim|release|collect` runs the bridge
 image's `handoff-job.sh`, the Azure job's own command, from `SERVER_IMAGE`, the image the other
 bridge steps use. It runs as the host's own Arc machine identity, which ADR-0008's Cosmos
 amendment gives the hand-off job's grants. The container mounts only the Arc agent's challenge
@@ -380,6 +418,31 @@ controller then sends the steps here with `--onprem-handoff claim --onprem-hando
 `texts-export` runs on the host with the local copy of curated (`scripts/boinc/texts-export-onprem.sh`, [boinc-quality.md](boinc-quality.md)). Once claim and collect have run cleanly here
 for a day, a separate Bicep change retires the job's claim and collect use.
 
+The hand-off steps take `/run/usnm-boinc-handoff.lock`, not the step lock: they touch only Azure
+storage, Cosmos and the queues, and the controller runs one at a time. `spool-out` and
+`batch-inventory` take it too: they only read the project and the database. A collect of 100 jobs
+doesn't keep publishing or submits waiting, and a publish doesn't fail a claim or a spool-out.
+
+Every `usnm-boinc` process of a hand-off step needs access tokens from the Arc agent, and a
+collect runs several processes for each job. Four collects at once drew HTTP 429 from the agent
+(#1447). So `handoff-job.sh` gives an execution's processes one token cache (`USNM_TOKEN_CACHE`, a
+private directory it removes when it ends): one process fetches a token and the others reuse it
+until five minutes before it expires. With that image, a batched `collect` takes
+`COLLECT_PARALLEL=<1 to 8>` (the controller's `--collect-parallel`) and collects that many jobs
+at once. The default is still one at a time.
+
+To ship a hand-off fix without a new server image, build the changed `usnm-boinc` or
+`handoff-job.sh` over the running image, built on bookworm from the running image's source plus the
+fix, and put the new image's `sha256:<id>` in `/etc/usnm-boinc/handoff-image`. Only hand-off steps
+read that file. `/etc/usnm-boinc/stage-image` does the same for `quality-stage` alone, which
+writes only its campaign's tree (#529). Delete either once `SERVER_IMAGE` carries the fix:
+
+```dockerfile
+FROM <SERVER_IMAGE>
+COPY usnm-boinc /usr/local/bin/usnm-boinc
+COPY handoff-job.sh /usr/local/lib/usnm-boinc/handoff-job.sh
+```
+
 ## Azure after the cutover
 
 With `"server": "onprem"`, `provision-boinc.sh` deploys only what the on-prem server still uses: the two identities (the main environment's Bicep reads `usnm-boinc-id-<env>`), the Key Vault the host reads, the VNet (its `aca` subnet is in the main environment's storage network rules) and the static site. The stack deletes the rest: the server app, its jobs and environment, MySQL, both project storage accounts, Log Analytics, the workbook and the private endpoints. The provision then checks that the on-prem server answers at the master URL. Prod moved on 2026-10-21.
@@ -401,7 +464,7 @@ Work that ran as Azure jobs, and where it runs now:
 
 ## LAN access (#1357)
 
-**Status: rolled back on 30 October 2026, so home hosts go through Cloudflare.** Firefox failed with `SSL_ERROR_INTERNAL_ERROR_ALERT`, because the gateway still forwarded the public HTTPS record advertising Cloudflare's Encrypted Client Hello, and Caddy here can't answer its outer name, `cloudflare-ech.com`. Both local records were removed. Caddy, the certificate, its timer and the guard remain. Don't restore the records until browsers are handled and tested as well as BOINC clients. The rest of this section describes the setup as designed.
+**Status: the network-wide records were rolled back on 30 October 2026, and [project-run clients](#project-run-clients) now use a hosts entry instead.** Everything else on the LAN goes through Cloudflare. Firefox failed with `SSL_ERROR_INTERNAL_ERROR_ALERT`, because the gateway still forwarded the public HTTPS record advertising Cloudflare's Encrypted Client Hello, and Caddy here can't answer its outer name, `cloudflare-ech.com`. Both local records were removed. Caddy, the certificate, its timer and the guard remain. Don't restore the records until browsers are handled and tested as well as BOINC clients. The rest of this section, up to the 30 October live acceptance, describes that setup as designed.
 
 Home hosts don't go out to Cloudflare and back in through the tunnel. The UniFi gateway's local
 DNS answers `boinc.usnewsmap.com` with CT230's LAN IPv4 and IPv6 addresses. Its IPv4 address has a DHCP reservation, the same
@@ -445,9 +508,48 @@ again with an unchanged certificate. The BOINC server's PID and startup timestam
 change. A CT230 reboot was deliberately not performed during active work; boot ordering was
 checked with systemd instead.
 
+### Project-run clients
+
+Clients the project runs on the LAN reach CT230 through one entry in their own
+`/etc/hosts`, so the network's DNS and every browser stay as they are. This covers hosts 2, 9, 10
+and 12. The master URL, scheduler, download and upload URLs don't change. Certificate validation
+stays on. The client checks Caddy's public Let's Encrypt certificate against the roots it already
+trusts, with nothing disabled and no new root added. The client resolves the name for each new
+connection, so running tasks and the client itself need no restart. A connection already open to
+Cloudflare stays in use until it's been idle for about two minutes, so the Caddy log can lag the
+change by a few minutes.
+
+In the client's container, as root, using CT230's current LAN IPv4 address:
+
+```sh
+cp -p /etc/hosts "/etc/hosts.pre-boinc-lan-$(date -u +%Y%m%dT%H%M%SZ)"
+printf '%s boinc.usnewsmap.com\n' "$CT230_LAN_IPV4" >> /etc/hosts
+getent ahosts boinc.usnewsmap.com    # only that address
+curl -sS -o /dev/null -w '%{http_code} %{ssl_verify_result}\n' https://boinc.usnewsmap.com/server_status.php?xml=1
+```
+
+Append in place, keeping the file's inode, because a client in its own mount namespace may hold
+the same file. Keep the entry outside the `# --- BEGIN PVE ---` block. Proxmox rewrites only that block,
+so the entry survives a restart. Check the result in `/var/log/caddy/boinc-lan.log`, where
+the client's LAN address appears, and in the validator log.
+
+**There's no automatic fallback to Cloudflare.** If Caddy or its certificate fails, these clients
+retry with BOINC's usual backoff and keep their finished work. The tunnel runs on the same container,
+so losing the container stops both paths anyway. If CT230's address changes, update each entry.
+
+**Rollback:** delete the entry, or restore the backup, on that client. Its next connection goes
+through Cloudflare. No restart is needed.
+
+Live acceptance (1 November 2026, all four hosts, no client restarted): real scheduler RPCs on
+each host and real uploads on hosts 2, 9 and 10 returned 200 in the Caddy log from each client's LAN address, and
+the validators accepted the results those uploads carried. Host 12 runs no tasks, so it proved the
+scheduler path only. In Cloudflare's analytics the LAN's public address went from 367 POSTs and
+62 MB of uploads in the hour before, to 1 POST and 0.1 MB in a 30-minute window after. Caddy logged
+about the same upload rate over that period.
+
 ## Qwen model files on R2
 
-The four Qwen model files are too large for Cloudflare's cache (512 MB on the plans the zone can use) and are the largest repeat downloads, so they're also hosted in the public R2 bucket `usnm-boinc-models`, at `https://models.usnewsmap.com`. Workunits don't change: the Single Redirect `usnm_boinc_models_r2` sends those exact `/usnmocr_download/<dir>/<name>` paths to the object of the same name with a `302`. The BOINC client follows it. The rule runs at Cloudflare, so a host that reaches the server directly would download from the server. While LAN access stays rolled back, home hosts follow the redirect like any other client.
+The four Qwen model files are too large for Cloudflare's cache (512 MB on the plans the zone can use) and are the largest repeat downloads, so they're also hosted in the public R2 bucket `usnm-boinc-models`, at `https://models.usnewsmap.com`. Workunits don't change. The Single Redirect `usnm_boinc_models_r2` sends those exact `/usnmocr_download/<dir>/<name>` paths to the object of the same name with a `302`. The BOINC client follows it. The rule runs at Cloudflare, so a client that reaches the server directly downloads from the server. [Project-run clients](#project-run-clients) do that, so all four files must stay on the server while they use the LAN path. Other clients follow the redirect.
 
 The rule lists exact paths on purpose, so a file that isn't in the bucket keeps coming from the server. The server's copies stay in place as the source of truth.
 

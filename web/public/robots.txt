@@ -1,5 +1,11 @@
+# Content-Signal (https://contentsignals.org/) states how this site's content
+# may be used: search=yes for search indexes and results, ai-input=yes for
+# AI answers that fetch pages at the time of a question, ai-train=yes for
+# training AI models. Groups don't inherit from `*`, so each group states it.
+
 # Search engines and other crawlers: the site, not the API.
 User-agent: *
+Content-Signal: search=yes, ai-input=yes, ai-train=yes
 Allow: /
 Disallow: /v1/
 Disallow: /api/v1/
@@ -11,6 +17,7 @@ User-agent: ChatGPT-User
 User-agent: Perplexity-User
 User-agent: MistralAI-User
 User-agent: Google-Agent
+Content-Signal: search=yes, ai-input=yes, ai-train=yes
 Allow: /
 
 Sitemap: https://usnewsmap.com/sitemap.xml

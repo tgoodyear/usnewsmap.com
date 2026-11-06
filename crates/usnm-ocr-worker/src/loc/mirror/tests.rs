@@ -655,6 +655,49 @@ async fn a_request_given_up_midway_still_makes_the_next_wait_the_gap() {
     assert!(t.elapsed() >= Duration::from_secs(5), "{:?}", t.elapsed());
 }
 
+/// With lanes, up to that many requests run at once, their starts a gap
+/// apart, and one more waits for a lane to free.
+#[tokio::test(start_paused = true)]
+async fn lanes_overlap_requests_with_starts_a_gap_apart() {
+    let gate = Arc::new(Gate::with_lanes(Duration::from_secs(1), 3));
+    let t0 = Instant::now();
+    let wait = Duration::from_secs(60);
+    let mut held = Vec::new();
+    let mut starts = Vec::new();
+    for _ in 0..3 {
+        let turn = gate.turn(Instant::now() + wait).await.unwrap();
+        starts.push(t0.elapsed());
+        // The request's guard drops before its turn's permit.
+        let sending = gate.sending();
+        held.push((sending, turn));
+    }
+    // Three in flight at once, started 1 s apart, none waiting for another to end.
+    assert_eq!(
+        starts,
+        [
+            Duration::ZERO,
+            Duration::from_secs(1),
+            Duration::from_secs(2)
+        ]
+    );
+    // A fourth waits for a lane.
+    let fourth = {
+        let gate = Arc::clone(&gate);
+        tokio::spawn(async move {
+            let _t = gate.turn(Instant::now() + wait).await.unwrap();
+            Instant::now()
+        })
+    };
+    tokio::time::sleep(Duration::from_secs(10)).await;
+    assert!(!fourth.is_finished());
+    let freed = Instant::now();
+    drop(held.pop());
+    assert!(fourth.await.unwrap() >= freed);
+    // A hold still stops new turns.
+    gate.hold(Duration::from_secs(30));
+    assert!(gate.turn(Instant::now() + wait).await.is_none());
+}
+
 fn wayback_with(s: &StandIn, f: impl FnOnce(&mut MirrorConfig)) -> Mirrors {
     let mut c = MirrorConfig {
         wayback: Some(s.root.clone()),

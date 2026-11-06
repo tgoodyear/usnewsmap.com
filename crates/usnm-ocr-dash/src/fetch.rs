@@ -317,6 +317,9 @@ struct IndexLine {
     doc_id: String,
     fetched_at: DateTime<Utc>,
     bytes: u64,
+    /// Absent on lines from before downloads were timed.
+    #[serde(default)]
+    download_ms: Option<u64>,
 }
 
 /// A failure line.
@@ -326,6 +329,10 @@ pub struct FailureLine {
     pub kind: String,
     pub error: String,
     pub at: DateTime<Utc>,
+    /// When the index says the page was fetched after it failed: filled in
+    /// for the page from [`Fetch::fetched_after`], never in the log.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovered_at: Option<DateTime<Utc>>,
 }
 
 /// A keep-set page, in fetch order.
@@ -453,8 +460,20 @@ pub struct Fetch {
     pub buffer: Tally,
     /// Fetches (time, bytes) over the last day.
     events: VecDeque<(DateTime<Utc>, u64)>,
+    /// Lines of the index and their download milliseconds, by the hour.
+    pub hourly: BTreeMap<i64, (u64, u64)>,
+    /// Download times by the hour, for the last day or so: a count in each
+    /// of [`TIME_BUCKETS`] buckets.
+    hourly_times: BTreeMap<i64, Box<[u32; TIME_BUCKETS]>>,
+    /// When the index was last read to its end, and the hour of its oldest
+    /// line, which outlives that hour's count in `hourly`.
+    pub index_read_at: Option<DateTime<Utc>>,
+    index_first_hour: Option<i64>,
     /// The latest failures, newest last.
     pub failures: VecDeque<FailureLine>,
+    /// When the failure log was last read to its end; `None` if it's missing
+    /// or unreadable, so its count isn't known.
+    pub failures_read_at: Option<DateTime<Utc>>,
     pub dead: HashSet<String>,
     /// Pages skipped because loc.gov couldn't serve their issue's item
     /// (`loc_item_error`), and when they last were; until permanent.
@@ -466,9 +485,272 @@ pub struct Fetch {
     last_hold_count: Option<u64>,
     /// The manifest last read, or tried: (path, sha256), when.
     attempt: Option<((PathBuf, String), DateTime<Utc>)>,
+    /// While a poll reads the files from the start, how far it has got.
+    pub warming: Option<Warming>,
+}
+
+/// How far a poll that reads the fetcher's files from the start has got:
+/// the first after the dashboard starts, which reads the whole index and
+/// decodes every queued manifest, minutes with a queue of about 2,000
+/// (#1436), or one after a new plan or index. Until it is over the counts
+/// are partial.
+#[derive(Debug, Clone, Serialize)]
+pub struct Warming {
+    /// When the dashboard started, or the plan or index changed.
+    pub since: DateTime<Utc>,
+    /// The queue's manifests to decode, once its directory is listed.
+    pub manifests: Option<usize>,
+    pub manifests_read: usize,
+}
+
+impl Warming {
+    fn now() -> Self {
+        Warming {
+            since: Utc::now(),
+            manifests: None,
+            manifests_read: 0,
+        }
+    }
+}
+
+/// How a poll gets at the [`Fetch`]: as it is, or through the dashboard's
+/// lock, taken for each step and let go while files are read and decoded,
+/// so a view never waits on a decode.
+trait Hold {
+    fn hold<R>(&mut self, step: impl FnOnce(&mut Fetch) -> R) -> R;
+}
+
+impl Hold for &mut Fetch {
+    fn hold<R>(&mut self, step: impl FnOnce(&mut Fetch) -> R) -> R {
+        step(self)
+    }
+}
+
+impl Hold for &std::sync::Mutex<Fetch> {
+    fn hold<R>(&mut self, step: impl FnOnce(&mut Fetch) -> R) -> R {
+        step(&mut self.lock().expect("fetch lock"))
+    }
+}
+
+/// A queue directory as listed, before its manifest is read.
+struct Listed {
+    name: String,
+    path: PathBuf,
+    stamp: Option<(SystemTime, u64)>,
+    state: &'static str,
+    marked_at: Option<DateTime<Utc>>,
+}
+
+impl Listed {
+    fn entry(&self) -> QueueEntry {
+        QueueEntry {
+            info: QueuedManifest {
+                kind: queue_kind(&self.name).unwrap_or("ocr"),
+                name: self.name.clone(),
+                path: self.path.display().to_string(),
+                pages: 0,
+                fetched: 0,
+                state: self.state,
+                marked_at: self.marked_at,
+                error: None,
+            },
+            stamp: None,
+            hashes: Vec::new(),
+            rows: Vec::new(),
+        }
+    }
+}
+
+/// A queued manifest's pages as hashes, and its first pages not yet fetched.
+type Decoded = anyhow::Result<(Vec<u64>, Vec<(Box<str>, Box<str>)>)>;
+
+/// List the queue's directories, with each manifest's size and time and its
+/// markers. Reads no manifest.
+fn list_queue(dir: &Path, now: DateTime<Utc>) -> Result<Vec<Listed>, String> {
+    let names = std::fs::read_dir(dir)
+        .map_err(|e| format!("{}: {e}", dir.display()))?
+        .filter_map(|e| e.ok())
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|n| queue_kind(n).is_some());
+    Ok(names
+        .map(|name| {
+            let d = dir.join(&name);
+            let path = d.join("manifest.parquet");
+            let stamp = std::fs::metadata(&path)
+                .ok()
+                .and_then(|m| Some((m.modified().ok()?, m.len())));
+            let marker = |f: &str| {
+                std::fs::metadata(d.join(f))
+                    .ok()
+                    .and_then(|m| m.modified().ok())
+                    .map(DateTime::<Utc>::from)
+            };
+            let fetched_at = marker("fetched");
+            let cooling_at = marker("cooling").filter(|t| now - *t < COOLING);
+            let (state, marked_at) = match (fetched_at, cooling_at) {
+                (Some(t), _) => ("fetched", Some(t)),
+                (None, Some(t)) => ("cooling", Some(t)),
+                (None, None) => ("queued", None),
+            };
+            Listed {
+                name,
+                path,
+                stamp,
+                state,
+                marked_at,
+            }
+        })
+        .collect())
+}
+
+/// Decode a queued manifest: every page's hash, and while it is unfinished,
+/// its first [`QUEUE_ROWS`] pages not in `fetched`.
+fn decode_queued(l: &Listed, fetched: &HashSet<u64>) -> Decoded {
+    let keep_rows = l.state != "fetched";
+    let mut hashes = Vec::new();
+    let mut rows = Vec::new();
+    let bytes = std::fs::read(&l.path)?;
+    decode_where(Bytes::from(bytes), |r| {
+        let h = doc_hash(&r.doc_id);
+        hashes.push(h);
+        if keep_rows && rows.len() < QUEUE_ROWS && !fetched.contains(&h) {
+            rows.push((
+                Box::<str>::from(r.doc_id.as_str()),
+                Box::<str>::from(iso(r.lang_or_und())),
+            ));
+        }
+        false
+    })?;
+    Ok((hashes, rows))
+}
+
+/// Read a plan, checking it is the one the fetcher read.
+fn load_checked(want: &Path, sha: &str) -> anyhow::Result<Plan> {
+    let p = Plan::load(want)?;
+    // One swapped in under the same path would mix two plans.
+    anyhow::ensure!(
+        sha.is_empty() || p.sha256 == sha,
+        "{}'s sha256 is {}, not the {} the fetcher's status names",
+        want.display(),
+        p.sha256,
+        sha
+    );
+    Ok(p)
+}
+
+/// Index lines taken in at a time: a view waits for at most one batch.
+const INDEX_BATCH: usize = 50_000;
+
+/// Read what the index added, a chunk at a time, read and parsed with the
+/// lock let go; the whole index, some 260 MB, after a start.
+fn poll_index(h: &mut impl Hold, now: DateTime<Utc>) {
+    let read = loop {
+        let mut tail = h.hold(|f| Tail::new(f.index.path.clone()).at(f.index.offset));
+        let lines = match tail.read() {
+            Ok(Got::Reset) => {
+                h.hold(|f| f.reset_index());
+                continue;
+            }
+            Ok(Got::Lines(l)) => l,
+            Err(e) => break Err(e),
+        };
+        if lines.is_empty() {
+            break Ok(tail.path.is_file());
+        }
+        let mut parsed = lines
+            .iter()
+            .filter_map(|l| serde_json::from_str::<IndexLine>(l).ok());
+        loop {
+            // Parsed before the lock is taken: the iterator is lazy.
+            let batch: Vec<IndexLine> = parsed.by_ref().take(INDEX_BATCH).collect();
+            if batch.is_empty() {
+                break;
+            }
+            h.hold(|f| batch.into_iter().for_each(|l| f.add_fetch(l)));
+        }
+        h.hold(|f| f.index.offset = tail.offset);
+    };
+    h.hold(|f| {
+        f.index_error = match read {
+            Ok(there) => {
+                // A missing file reads as empty: that says nothing about the hour.
+                if there {
+                    f.index_read_at = Some(now);
+                }
+                None
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "can't read the fetch index");
+                Some(format!("{e:#}"))
+            }
+        };
+    });
+}
+
+/// The steps of a poll. Reading the plan, the index and the queue's
+/// manifests, minutes after a start (#1436), happens between them, so with
+/// a lock views go on being answered, from what was read so far.
+fn poll_steps(h: &mut impl Hold, now: DateTime<Utc>) {
+    let plan = h.hold(|f| {
+        f.read_status(now);
+        f.plan_wanted(now)
+    });
+    if let Some((want, sha)) = plan {
+        let loaded = load_checked(&want, &sha);
+        h.hold(|f| f.apply_plan(&want, loaded));
+    }
+    poll_index(h, now);
+    if let Some(dir) = h.hold(|f| f.manifests.clone()) {
+        let listed = list_queue(&dir, now);
+        if let Some((jobs, fetched)) = h.hold(|f| f.queue_jobs(listed)) {
+            let mut read = Vec::with_capacity(jobs.len());
+            for l in jobs {
+                let decoded = decode_queued(&l, &fetched);
+                h.hold(|f| {
+                    if let Some(w) = &mut f.warming {
+                        w.manifests_read += 1;
+                    }
+                });
+                read.push((l, decoded));
+            }
+            h.hold(|f| f.apply_queue(read));
+        }
+    }
+    h.hold(|f| f.poll_rest(now));
 }
 
 const KEEP_FAILURES: usize = 50;
+/// Four buckets to a doubling, so a percentile is good to about 19%, from a
+/// millisecond to weeks.
+const TIME_BUCKETS: usize = 128;
+/// Hours of download times kept: the 24 the page shows and the two around them.
+const TIME_HOURS: i64 = 26;
+
+fn time_bucket(ms: u64) -> usize {
+    ((ms.max(1) as f64).log2() * 4.0)
+        .ceil()
+        .clamp(0.0, (TIME_BUCKETS - 1) as f64) as usize
+}
+
+/// The top of a bucket.
+fn bucket_seconds(bucket: usize) -> f64 {
+    2f64.powf(bucket as f64 / 4.0) / 1000.0
+}
+
+/// What went wrong, without what it went wrong with: no URLs or page ids, no
+/// detail in brackets, and only the first clause, so failures group.
+fn failure_reason(f: &FailureLine) -> String {
+    let words: Vec<&str> = f
+        .error
+        .split_whitespace()
+        .filter(|w| !w.contains('/'))
+        .collect();
+    let text = words.join(" ");
+    let head = text.split([';', '(']).next().unwrap_or_default().trim();
+    let head = head.trim_end_matches([':', ',']);
+    let short: String = head.chars().take(80).collect();
+    format!("{}: {short}", f.kind)
+}
 
 impl Fetch {
     pub fn new(scans: PathBuf, manifest: Option<PathBuf>) -> Self {
@@ -494,7 +776,12 @@ impl Fetch {
             groups: [Tally::default(); 6],
             buffer: Tally::default(),
             events: VecDeque::new(),
+            hourly: BTreeMap::new(),
+            hourly_times: BTreeMap::new(),
+            index_read_at: None,
+            index_first_hour: None,
             failures: VecDeque::new(),
+            failures_read_at: None,
             dead: HashSet::new(),
             cooling: HashMap::new(),
             failure_times: VecDeque::new(),
@@ -502,6 +789,7 @@ impl Fetch {
             last_hold_until: None,
             last_hold_count: None,
             attempt: None,
+            warming: Some(Warming::now()),
         }
     }
 
@@ -523,8 +811,10 @@ impl Fetch {
         self
     }
 
-    /// Forget what the index said, to read it again from the start.
+    /// Forget what the index said, to read it again from the start. The
+    /// counts are partial until the poll is over.
     fn reset_index(&mut self) {
+        self.warming.get_or_insert_with(Warming::now);
         self.index.offset = 0;
         self.all.clear();
         self.total = Tally::default();
@@ -532,36 +822,62 @@ impl Fetch {
         self.groups = [Tally::default(); 6];
         self.buffer = Tally::default();
         self.events.clear();
+        self.hourly.clear();
+        self.hourly_times.clear();
+        self.index_first_hour = None;
     }
 
     /// Read what changed. Blocking (file reads); run it off the async
     /// threads.
     pub fn poll(&mut self, now: DateTime<Utc>) {
-        self.read_status(now);
-        self.load_plan(now);
-        self.index_error = match self.read_index() {
-            Ok(()) => None,
-            Err(e) => {
-                tracing::warn!(error = %e, "can't read the fetch index");
-                Some(format!("{e:#}"))
-            }
-        };
-        self.read_queue(now);
+        poll_steps(&mut &mut *self, now);
+    }
+
+    /// [`Fetch::poll`] through the dashboard's lock, let go while the plan
+    /// and the queue's manifests are read and decoded. One poll at a time:
+    /// the steps of two would mix.
+    pub fn poll_locked(fetch: &std::sync::Mutex<Fetch>, now: DateTime<Utc>) {
+        poll_steps(&mut &*fetch, now);
+    }
+
+    /// The small files, the failures, and what has aged out.
+    fn poll_rest(&mut self, now: DateTime<Utc>) {
         self.bulk.poll();
         self.pacer.poll();
         self.publish.poll();
-        if let Err(e) = self.read_failures() {
-            tracing::warn!(error = %e, "can't read the fetch failures");
-        }
+        self.failures_read_at = match self.read_failures() {
+            Ok(()) => self
+                .scans
+                .join("failures-full.jsonl")
+                .is_file()
+                .then_some(now),
+            Err(e) => {
+                tracing::warn!(error = %e, "can't read the fetch failures");
+                None
+            }
+        };
+        let kept = now.timestamp() - crate::throughput::KEEP_HOURS * crate::throughput::HOUR;
+        self.hourly = self.hourly.split_off(&kept);
+        let kept = now.timestamp() - TIME_HOURS * crate::throughput::HOUR;
+        self.hourly_times = self.hourly_times.split_off(&kept);
         let day = now - Duration::days(1);
         while self.events.front().is_some_and(|(t, _)| *t < day) {
             self.events.pop_front();
         }
-        while self.failure_times.front().is_some_and(|t| *t < day) {
+        // The last 24 full hours began up to 25 hours ago.
+        let oldest = now - Duration::hours(TIME_HOURS);
+        while self.failure_times.front().is_some_and(|t| *t < oldest) {
             self.failure_times.pop_front();
         }
         while self.holds.front().is_some_and(|t| *t < day) {
             self.holds.pop_front();
+        }
+        if let Some(w) = self.warming.take() {
+            tracing::info!(
+                secs = (Utc::now() - w.since).num_seconds(),
+                manifests = w.manifests_read,
+                "read of the fetcher's files done"
+            );
         }
     }
 
@@ -608,7 +924,9 @@ impl Fetch {
         }
     }
 
-    fn load_plan(&mut self, now: DateTime<Utc>) {
+    /// The plan to read, if it isn't the one held: (path, the sha256 the
+    /// status names for it, or empty).
+    fn plan_wanted(&mut self, now: DateTime<Utc>) -> Option<(PathBuf, String)> {
         let named = self
             .status
             .as_ref()
@@ -622,9 +940,7 @@ impl Fetch {
             Some(m) => Some(m.clone()),
             None => named.clone().filter(|m| !is_queue_manifest(m)),
         };
-        let Some(want) = want else {
-            return;
-        };
+        let want = want?;
         // The status's sha256 checks the file only when it names this one.
         let sha = match (&named, &self.status) {
             (Some(n), Some(s)) if *n == want => s.manifest_sha256.clone(),
@@ -635,7 +951,7 @@ impl Fetch {
             .as_ref()
             .is_some_and(|p| p.path == want && (sha.is_empty() || sha == p.sha256))
         {
-            return;
+            return None;
         }
         // A manifest that can't be read is tried again when the status
         // names another, or after ten minutes.
@@ -645,21 +961,15 @@ impl Fetch {
             .as_ref()
             .is_some_and(|(k, t)| *k == key && now - *t < Duration::minutes(10))
         {
-            return;
+            return None;
         }
         self.attempt = Some((key.clone(), now));
-        let loaded = Plan::load(&want).and_then(|p| {
-            // The file must be the one the fetcher read; one swapped in
-            // under the same path would mix two plans.
-            anyhow::ensure!(
-                key.1.is_empty() || p.sha256 == key.1,
-                "{}'s sha256 is {}, not the {} the fetcher's status names",
-                want.display(),
-                p.sha256,
-                key.1
-            );
-            Ok(p)
-        });
+        // Views go on with the plan held while this one is read.
+        self.warming.get_or_insert_with(Warming::now);
+        Some(key)
+    }
+
+    fn apply_plan(&mut self, want: &Path, loaded: anyhow::Result<Plan>) {
         match loaded {
             Ok(p) => {
                 tracing::info!(manifest = %want.display(), keep = p.keep.len(), buffer = p.buffer_pages, "manifest read");
@@ -679,29 +989,18 @@ impl Fetch {
         }
     }
 
-    fn read_index(&mut self) -> anyhow::Result<()> {
-        loop {
-            let lines = match self.index.read()? {
-                Got::Reset => {
-                    self.reset_index();
-                    continue;
-                }
-                Got::Lines(l) => l,
-            };
-            if lines.is_empty() {
-                return Ok(());
-            }
-            for l in lines {
-                let Ok(line) = serde_json::from_str::<IndexLine>(&l) else {
-                    continue;
-                };
-                self.add_fetch(line);
-            }
-        }
-    }
-
     fn add_fetch(&mut self, line: IndexLine) {
         self.events.push_back((line.fetched_at, line.bytes));
+        let hour = line.fetched_at.timestamp().div_euclid(3600) * 3600;
+        self.index_first_hour = Some(self.index_first_hour.map_or(hour, |h| h.min(hour)));
+        let tally = self.hourly.entry(hour).or_default();
+        tally.0 += 1;
+        tally.1 += line.download_ms.unwrap_or(0);
+        if let Some(ms) = line.download_ms {
+            self.hourly_times
+                .entry(hour)
+                .or_insert_with(|| Box::new([0; TIME_BUCKETS]))[time_bucket(ms)] += 1;
+        }
         match self.all.entry(doc_hash(&line.doc_id)) {
             std::collections::hash_map::Entry::Occupied(mut e) => {
                 let t = e.get_mut();
@@ -777,6 +1076,15 @@ impl Fetch {
         }
     }
 
+    /// The whole hours the index says something about: from its oldest line
+    /// to the last one over before the last read. Inside them, an hour with
+    /// no lines is a real zero.
+    pub fn hours_covered(&self) -> Option<(i64, i64)> {
+        let first = self.index_first_hour?;
+        let last = self.index_read_at?.timestamp().div_euclid(3600) * 3600 - 3600;
+        (first <= last).then_some((first, last))
+    }
+
     /// Fetches and bytes since `since`.
     pub fn since(&self, since: DateTime<Utc>) -> Tally {
         self.events
@@ -819,66 +1127,33 @@ impl Fetch {
         (queued, other)
     }
 
-    /// Read the queue's directories; a manifest is decoded again only when
-    /// its file changes.
-    fn read_queue(&mut self, now: DateTime<Utc>) {
-        let Some(dir) = self.manifests.clone() else {
-            return;
-        };
-        let names = match std::fs::read_dir(&dir) {
-            Ok(rd) => rd
-                .filter_map(|e| e.ok())
-                .filter_map(|e| e.file_name().into_string().ok())
-                .filter(|n| queue_kind(n).is_some())
-                .collect::<HashSet<String>>(),
+    /// Take in the queue's listing, and say which manifests to decode, with
+    /// the pages fetched so far, which the decode leaves out of the rows it
+    /// keeps. `None` if the directory couldn't be listed. A manifest is
+    /// decoded again only when its file changes, or for its next rows.
+    fn queue_jobs(
+        &mut self,
+        listed: Result<Vec<Listed>, String>,
+    ) -> Option<(Vec<Listed>, HashSet<u64>)> {
+        let listed = match listed {
+            Ok(l) => l,
             Err(e) => {
-                self.queue_error = Some(format!("{}: {e}", dir.display()));
-                return;
+                self.queue_error = Some(e);
+                return None;
             }
         };
-        self.queue_error = None;
-        self.queue.retain(|n, _| names.contains(n));
-        for name in names {
-            let d = dir.join(&name);
-            let path = d.join("manifest.parquet");
-            let stamp = std::fs::metadata(&path)
-                .ok()
-                .and_then(|m| Some((m.modified().ok()?, m.len())));
-            let marker = |f: &str| {
-                std::fs::metadata(d.join(f))
-                    .ok()
-                    .and_then(|m| m.modified().ok())
-                    .map(DateTime::<Utc>::from)
-            };
-            let fetched_at = marker("fetched");
-            let cooling_at = marker("cooling").filter(|t| now - *t < COOLING);
-            let (state, marked_at) = match (fetched_at, cooling_at) {
-                (Some(t), _) => ("fetched", Some(t)),
-                (None, Some(t)) => ("cooling", Some(t)),
-                (None, None) => ("queued", None),
-            };
-            let entry = self
-                .queue
-                .entry(name.clone())
-                .or_insert_with(|| QueueEntry {
-                    info: QueuedManifest {
-                        kind: queue_kind(&name).unwrap_or("ocr"),
-                        name: name.clone(),
-                        path: path.display().to_string(),
-                        pages: 0,
-                        fetched: 0,
-                        state,
-                        marked_at,
-                        error: None,
-                    },
-                    stamp: None,
-                    hashes: Vec::new(),
-                    rows: Vec::new(),
-                });
-            entry.info.state = state;
-            entry.info.marked_at = marked_at;
-            if stamp.is_none() {
+        let names: HashSet<&str> = listed.iter().map(|l| l.name.as_str()).collect();
+        self.queue.retain(|n, _| names.contains(n.as_str()));
+        let mut jobs = Vec::new();
+        for l in listed {
+            if l.stamp.is_none() {
                 // Not there yet (a PUT in progress), or gone.
+                let entry = self
+                    .queue
+                    .entry(l.name.clone())
+                    .or_insert_with(|| l.entry());
+                entry.info.state = l.state;
+                entry.info.marked_at = l.marked_at;
                 entry.stamp = None;
                 entry.hashes.clear();
                 entry.rows.clear();
@@ -886,13 +1161,20 @@ impl Fetch {
                 entry.info.error = Some("no manifest.parquet".into());
                 continue;
             }
+            // New ones go in once decoded.
+            let Some(entry) = self.queue.get_mut(&l.name) else {
+                jobs.push(l);
+                continue;
+            };
+            entry.info.state = l.state;
+            entry.info.marked_at = l.marked_at;
             // Rows are cached a window at a time; once every cached row is
             // fetched and the manifest has more, it is read again for the next.
             // Refilled when fewer than half a window of cached rows are
             // still pending and pending pages remain outside the window (a
             // page that keeps failing doesn't pin it, and a manifest whose
             // pending pages are all cached isn't read again).
-            let window_done = state != "fetched" && {
+            let window_done = l.state != "fetched" && {
                 let cached = entry
                     .rows
                     .iter()
@@ -905,42 +1187,43 @@ impl Fetch {
                     .count();
                 cached < QUEUE_ROWS / 2 && pending > cached
             };
-            if entry.stamp == stamp && entry.info.error.is_none() && !window_done {
-                if state == "fetched" {
+            if entry.stamp == l.stamp && entry.info.error.is_none() && !window_done {
+                if l.state == "fetched" {
                     entry.rows = Vec::new();
                 }
                 continue;
             }
-            entry.stamp = stamp;
-            let mut hashes = Vec::new();
-            let mut rows = Vec::new();
-            let keep_rows = state != "fetched";
-            let read = std::fs::read(&path)
-                .map_err(anyhow::Error::from)
-                .and_then(|b| {
-                    decode_where(Bytes::from(b), |r| {
-                        hashes.push(doc_hash(&r.doc_id));
-                        if keep_rows
-                            && rows.len() < QUEUE_ROWS
-                            && !self.all.contains_key(&doc_hash(&r.doc_id))
-                        {
-                            rows.push((
-                                Box::<str>::from(r.doc_id.as_str()),
-                                Box::<str>::from(iso(r.lang_or_und())),
-                            ));
-                        }
-                        false
-                    })
-                });
-            match read {
-                Ok(_) => {
+            jobs.push(l);
+        }
+        let fetched = if jobs.iter().any(|l| l.state != "fetched") {
+            self.all.keys().copied().collect()
+        } else {
+            HashSet::new()
+        };
+        if let Some(w) = &mut self.warming {
+            w.manifests = Some(jobs.len());
+            w.manifests_read = 0;
+        }
+        Some((jobs, fetched))
+    }
+
+    /// Put the decoded manifests in.
+    fn apply_queue(&mut self, read: Vec<(Listed, Decoded)>) {
+        for (l, decoded) in read {
+            let entry = self
+                .queue
+                .entry(l.name.clone())
+                .or_insert_with(|| l.entry());
+            entry.stamp = l.stamp;
+            match decoded {
+                Ok((hashes, rows)) => {
                     entry.info.pages = hashes.len() as u64;
                     entry.hashes = hashes;
                     entry.rows = rows;
                     entry.info.error = None;
                 }
                 Err(e) => {
-                    tracing::warn!(manifest = %path.display(), error = format!("{e:#}"), "can't read a queued manifest");
+                    tracing::warn!(manifest = %l.path.display(), error = format!("{e:#}"), "can't read a queued manifest");
                     entry.hashes.clear();
                     entry.rows.clear();
                     entry.info.pages = 0;
@@ -955,13 +1238,29 @@ impl Fetch {
             .filter(|e| e.info.error.is_some())
             .map(|e| e.info.name.as_str())
             .collect();
-        if !unread.is_empty() {
-            self.queue_error = Some(format!(
+        self.queue_error = (!unread.is_empty()).then(|| {
+            format!(
                 "{} queued manifests can't be read, so the queue totals leave them out: {}",
                 unread.len(),
                 unread.join(", ")
-            ));
-        }
+            )
+        });
+    }
+
+    /// While a poll reads the files from the start, why the queue totals
+    /// are short.
+    pub fn warming_note(&self) -> Option<String> {
+        let w = self.warming.as_ref().filter(|_| self.manifests.is_some())?;
+        Some(match w.manifests {
+            None => "Reading the fetcher's files: the index and queue totals are partial until \
+                     it is done"
+                .to_owned(),
+            Some(n) => format!(
+                "Reading the queue's manifests, {} of {n} so far: the queue totals leave the \
+                 rest out until all are read",
+                w.manifests_read
+            ),
+        })
     }
 
     /// The queue's manifests in the order the queue takes them (OCR's
@@ -1015,6 +1314,65 @@ impl Fetch {
             })
             .take(n)
             .collect()
+    }
+
+    /// Download seconds per page at the median and the 95th percentile, over
+    /// the `hours` hours from `first`, to within a bucket.
+    pub fn download_seconds(&self, first: i64, hours: i64) -> Option<(f64, f64)> {
+        let mut all = [0u64; TIME_BUCKETS];
+        let last = first + (hours - 1) * crate::throughput::HOUR;
+        for counts in self.hourly_times.range(first..=last).map(|(_, c)| c) {
+            for (a, c) in all.iter_mut().zip(counts.iter()) {
+                *a += u64::from(*c);
+            }
+        }
+        let pages: u64 = all.iter().sum();
+        let at = |share: u64| {
+            let rank = (pages * share).div_ceil(100);
+            let mut seen = 0;
+            let bucket = all.iter().position(|c| {
+                seen += c;
+                seen >= rank
+            });
+            bucket_seconds(bucket.unwrap_or(TIME_BUCKETS - 1))
+        };
+        (pages > 0).then(|| (at(50), at(95)))
+    }
+
+    /// When the index last has `doc_id` fetched, if that is after `at`: a
+    /// failure the queue's later run got past.
+    pub fn fetched_after(&self, doc_id: &str, at: DateTime<Utc>) -> Option<DateTime<Utc>> {
+        self.all.get(&doc_hash(doc_id)).copied().filter(|t| *t > at)
+    }
+
+    /// The latest failures' reasons, most common first, and how many failures
+    /// that covers.
+    pub fn failure_reasons(&self, n: usize) -> (Vec<(String, usize)>, usize) {
+        let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+        for f in &self.failures {
+            *counts.entry(failure_reason(f)).or_default() += 1;
+        }
+        let mut reasons: Vec<_> = counts.into_iter().collect();
+        reasons.sort_by_key(|r| std::cmp::Reverse(r.1));
+        reasons.truncate(n);
+        (reasons, self.failures.len())
+    }
+
+    /// Failures from the hour starting at `first` up to the one at `end`.
+    pub fn failures_in_hours(&self, first: i64, end: i64) -> usize {
+        self.failure_times
+            .iter()
+            .filter(|t| (first..end).contains(&t.timestamp()))
+            .count()
+    }
+
+    /// Failures in the hours from `first` that the index covers: the hours
+    /// their rate is taken over. Unknown if the failure log wasn't read, or the
+    /// index reaches none of those hours.
+    pub fn failures_in_covered_hours(&self, first: i64) -> Option<usize> {
+        self.failures_read_at?;
+        let (from, to) = self.hours_covered().filter(|(_, to)| *to >= first)?;
+        Some(self.failures_in_hours(from.max(first), to + crate::throughput::HOUR))
     }
 
     pub fn failures_since(&self, since: DateTime<Utc>) -> usize {
@@ -1204,6 +1562,127 @@ mod tests {
         assert_eq!(f.holds_since(now - Duration::hours(1)), 1);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn a_poll_lets_go_of_the_lock_while_it_reads_the_fetchers_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let scans = dir.path().join("scans");
+        let manifests = dir.path().join("manifests");
+        std::fs::create_dir_all(&scans).unwrap();
+        let now = Utc::now();
+        let at = (now - Duration::minutes(5)).to_rfc3339();
+        std::fs::write(
+            scans.join("index-full.jsonl"),
+            format!("{{\"doc_id\":\"sn1_1890-01-01_ed-1_seq-1\",\"fetched_at\":\"{at}\",\"bytes\":10}}\n"),
+        )
+        .unwrap();
+        // A queued manifest read only once the test writes it: the poll
+        // waits on it as on a long decode.
+        let slow = |name: &str| {
+            let q = manifests.join(name);
+            std::fs::create_dir_all(&q).unwrap();
+            let path = q.join("manifest.parquet");
+            let made = std::process::Command::new("mkfifo").arg(&path).status();
+            assert!(made.unwrap().success());
+            (q, path)
+        };
+        let (q, fifo) = slow("queue-ocr-20261101t000000");
+        let fetch = std::sync::Arc::new(std::sync::Mutex::new(
+            Fetch::new(scans.clone(), None).with_manifests(Some(manifests.clone())),
+        ));
+        assert!(fetch.lock().unwrap().warming.is_some());
+        let poll = || {
+            let fetch = fetch.clone();
+            std::thread::spawn(move || Fetch::poll_locked(&fetch, now))
+        };
+        // Views get the lock while the poll waits on a file, and see how
+        // far it has got.
+        let when_locked = |there: &dyn Fn(&Fetch) -> bool, check: &dyn Fn(&Fetch)| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+            loop {
+                if let Ok(f) = fetch.try_lock() {
+                    if there(&f) {
+                        check(&f);
+                        return;
+                    }
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the poll kept the lock, or never got there"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        };
+        let while_reading = |check: &dyn Fn(&Fetch)| {
+            when_locked(
+                &|f| f.warming.as_ref().is_some_and(|w| w.manifests == Some(1)),
+                &|f| {
+                    assert_eq!(f.warming.as_ref().unwrap().manifests_read, 0);
+                    let note = f.warming_note().unwrap();
+                    assert!(note.contains("0 of 1 so far"), "{note}");
+                    check(f);
+                },
+            )
+        };
+        let rows = [
+            row("sn1_1890-01-01_ed-1_seq-1", "az_a", "eng"),
+            row("sn2_1890-01-01_ed-1_seq-1", "az_a", "eng"),
+        ];
+        let poller = poll();
+        while_reading(&|f| {
+            // The index is in; the manifest isn't.
+            assert_eq!(f.total.pages, 1);
+            assert!(f.queue(now).is_empty());
+        });
+        std::fs::write(&fifo, encode(&rows).unwrap()).unwrap();
+        poller.join().unwrap();
+        {
+            let f = fetch.lock().unwrap();
+            assert!(f.warming.is_none());
+            assert!(f.warming_note().is_none());
+            assert!(f.queue_error.is_none(), "{:?}", f.queue_error);
+            let q = f.queue(now);
+            assert_eq!((q[0].pages, q[0].fetched), (2, 1));
+            let next = f.next_queued(5);
+            let docs: Vec<&str> = next.iter().map(|(_, d, _)| d.as_str()).collect();
+            assert_eq!(docs, ["sn2_1890-01-01_ed-1_seq-1"]);
+        }
+
+        // An index read again from the start (the fetcher's was replaced)
+        // leaves the counts partial too until the poll is over.
+        std::fs::remove_dir_all(&q).unwrap();
+        let (q, fifo) = slow("queue-ocr-20261102t000000");
+        std::fs::write(scans.join("index-full.jsonl"), "").unwrap();
+        let poller = poll();
+        while_reading(&|f| assert_eq!(f.total.pages, 0));
+        std::fs::write(&fifo, encode(&rows).unwrap()).unwrap();
+        poller.join().unwrap();
+        {
+            let f = fetch.lock().unwrap();
+            assert!(f.warming.is_none());
+            assert_eq!(f.queue(now)[0].fetched, 0);
+        }
+
+        // So does a new plan the status names, from when its read starts.
+        std::fs::remove_dir_all(&q).unwrap();
+        let (_, plan) = slow("pages-v2");
+        std::fs::write(
+            scans.join("status-full.json"),
+            format!(
+                "{{\"state\":\"running\",\"manifest\":\"{}\",\"manifest_sha256\":\"\"}}",
+                plan.display()
+            ),
+        )
+        .unwrap();
+        let poller = poll();
+        when_locked(&|f| f.warming.is_some(), &|f| assert!(f.plan.is_none()));
+        std::fs::write(&plan, encode(&rows).unwrap()).unwrap();
+        poller.join().unwrap();
+        let f = fetch.lock().unwrap();
+        assert!(f.warming.is_none());
+        assert!(f.plan.is_some(), "{:?}", f.plan_error);
+    }
+
     #[test]
     fn a_pinned_plan_stays_while_the_queue_runs_and_each_manifest_shows_its_progress() {
         let dir = tempfile::tempdir().unwrap();
@@ -1315,6 +1794,40 @@ mod tests {
     }
 
     #[test]
+    fn hours_are_covered_up_to_the_last_whole_one_read_and_no_further() {
+        let dir = tempfile::tempdir().unwrap();
+        let index = dir.path().join("index-full.jsonl");
+        let now = Utc::now();
+        let hour = now.timestamp().div_euclid(3600) * 3600;
+        let mut f = Fetch::new(dir.path().to_owned(), None);
+        f.poll(now);
+        assert_eq!(f.hours_covered(), None, "no index, no hours");
+        let at = now - Duration::hours(3);
+        std::fs::write(
+            &index,
+            format!(
+                "{{\"doc_id\":\"a\",\"fetched_at\":\"{}\",\"bytes\":5,\"download_ms\":1500}}\n",
+                at.to_rfc3339()
+            ),
+        )
+        .unwrap();
+        f.poll(now);
+        let first = hour - 3 * 3600;
+        assert_eq!(f.hours_covered(), Some((first, hour - 3600)));
+        assert_eq!(f.hourly[&first], (1, 1500));
+        // A quiet fortnight empties the counts, not the coverage.
+        let later = now + Duration::days(20);
+        f.poll(later);
+        assert!(f.hourly.is_empty());
+        assert_eq!(f.hours_covered().unwrap().0, first);
+        f.index_read_at = Some(now);
+        // The index goes away: later hours aren't counted zeros.
+        std::fs::remove_file(&index).unwrap();
+        f.poll(now + Duration::hours(2));
+        assert_eq!(f.hours_covered(), Some((first, hour - 3600)));
+    }
+
+    #[test]
     fn publisher_completion_is_not_inferred_from_empty_or_failed_metadata() {
         let now = Utc::now();
         let mut status = PublishStatus {
@@ -1390,5 +1903,116 @@ mod tests {
         f.poll(Utc::now());
         assert!(f.plan.is_none());
         assert!(f.plan_error.as_deref().unwrap().contains("sha256"));
+    }
+
+    #[test]
+    fn download_times_give_percentiles_to_within_a_bucket() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut f = Fetch::new(dir.path().to_owned(), None);
+        let hour = 3_600_000;
+        for ms in (1..=100).map(|n| n * 100) {
+            f.hourly_times
+                .entry(hour)
+                .or_insert_with(|| Box::new([0; TIME_BUCKETS]))[time_bucket(ms)] += 1;
+        }
+        let (p50, p95) = f.download_seconds(hour, 24).unwrap();
+        assert!((5.0..=5.0 * 1.2).contains(&p50), "{p50}");
+        assert!((9.5..=9.5 * 1.2).contains(&p95), "{p95}");
+        assert_eq!(f.download_seconds(hour + 3600, 24), None);
+        assert_eq!(f.download_seconds(hour - 7200, 1), None);
+        assert!(time_bucket(0) == 0 && time_bucket(u64::MAX) == TIME_BUCKETS - 1);
+    }
+
+    #[test]
+    fn a_failure_reason_has_no_urls_or_page_ids_and_groups() {
+        let line = |kind: &str, error: &str| FailureLine {
+            doc_id: "sn1_1900-01-01_ed-1_seq-1".into(),
+            kind: kind.into(),
+            error: error.into(),
+            at: Utc::now(),
+            recovered_at: None,
+        };
+        assert_eq!(
+            failure_reason(&line(
+                "transient",
+                "https://tile.loc.gov/x/1.jp2: the answer's body could not be read (error decoding)"
+            )),
+            "transient: the answer's body could not be read"
+        );
+        assert_eq!(
+            failure_reason(&line(
+                "loc_item_error",
+                "https://www.loc.gov/item/x/ returned HTTP 503 at once; asked again"
+            )),
+            "loc_item_error: returned HTTP 503 at once"
+        );
+        assert_eq!(
+            failure_reason(&line(
+                "permanent",
+                "loc.gov lists no image for sn1/1900-01-01/ed-1/seq-2"
+            )),
+            "permanent: loc.gov lists no image for"
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let mut f = Fetch::new(dir.path().to_owned(), None);
+        f.failures
+            .push_back(line("transient", "giving up on https://a/b HTTP 520"));
+        f.failures
+            .push_back(line("transient", "giving up on https://c/d HTTP 520"));
+        f.failures.push_back(line("permanent", "gone"));
+        let (reasons, from) = f.failure_reasons(1);
+        assert_eq!(
+            reasons,
+            [("transient: giving up on HTTP 520".to_owned(), 2)]
+        );
+        assert_eq!(from, 3);
+    }
+
+    #[test]
+    fn failures_are_known_only_once_their_log_is_read_and_count_by_the_hour() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut f = Fetch::new(dir.path().to_owned(), None);
+        let now = Utc::now();
+        f.poll(now);
+        assert_eq!(f.failures_read_at, None);
+        let hour = now.timestamp().div_euclid(3600) * 3600;
+        let at = |t: i64| {
+            DateTime::from_timestamp(t, 0)
+                .unwrap()
+                .format("%Y-%m-%dT%H:%M:%SZ")
+                .to_string()
+        };
+        let lines: String = [hour - 90_000, hour - 86_400, hour - 1, hour + 1]
+            .iter()
+            .map(|t| {
+                format!(
+                    "{{\"doc_id\":\"d\",\"kind\":\"transient\",\"error\":\"e\",\"at\":\"{}\"}}\n",
+                    at(*t)
+                )
+            })
+            .collect();
+        std::fs::write(dir.path().join("failures-full.jsonl"), lines).unwrap();
+        f.poll(now);
+        assert_eq!(f.failures_read_at, Some(now));
+        // The current hour isn't in the full hours; the hour 25 ago is kept
+        // only as far as they reach.
+        assert_eq!(f.failures_in_hours(hour - 86_400, hour), 2);
+        // An index last read two days ago covers none of those hours.
+        assert_eq!(f.failures_in_covered_hours(hour - 86_400), None);
+        // This line has no download time: it's a page, not a sample of 0 ms.
+        std::fs::write(
+            dir.path().join("index-full.jsonl"),
+            format!(
+                "{{\"doc_id\":\"d\",\"fetched_at\":\"{}\",\"bytes\":1}}\n",
+                at(hour - 172_800)
+            ),
+        )
+        .unwrap();
+        f.poll(now);
+        assert_eq!(f.hourly.values().map(|t| t.0).sum::<u64>(), 1);
+        assert_eq!(f.download_seconds(hour - 172_800, 48), None);
+        assert_eq!(f.failures_in_covered_hours(hour - 86_400), Some(2));
+        f.index_read_at = Some(now - Duration::days(2));
+        assert_eq!(f.failures_in_covered_hours(hour - 86_400), None);
     }
 }

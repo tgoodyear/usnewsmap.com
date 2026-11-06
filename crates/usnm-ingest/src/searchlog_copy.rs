@@ -309,7 +309,7 @@ fn prepare(o: &Options<'_>) -> anyhow::Result<DaysDir> {
 ///
 /// The path is resolved first, so the parent is the real one: `dir.join("..")` at the root is the
 /// root again, on the same device, and would call it no mount point.
-fn is_mount_point(dir: &Path) -> std::io::Result<bool> {
+pub(crate) fn is_mount_point(dir: &Path) -> std::io::Result<bool> {
     let dir = std::fs::canonicalize(dir)?;
     let Some(parent) = dir.parent() else {
         return Ok(true);
@@ -645,13 +645,18 @@ fn previous_success(path: &Path) -> Option<DateTime<Utc>> {
 /// Replace the status file whole: readers see the old one or the new one, and once this returns
 /// the new one survives a crash.
 fn write_status(path: &Path, report: &Report) -> anyhow::Result<()> {
+    write_status_file(path, report)
+}
+
+/// [`write_status`] for any serializable report.
+pub(crate) fn write_status_file(path: &Path, report: &impl Serialize) -> anyhow::Result<()> {
     write_status_with(path, report, std::fs::File::sync_all, sync_dir)
 }
 
 /// [`write_status`] with its two syncs given, so a test can look at the file at each.
 fn write_status_with(
     path: &Path,
-    report: &Report,
+    report: &impl Serialize,
     sync_file: impl FnOnce(&std::fs::File) -> std::io::Result<()>,
     sync_parent: impl FnOnce(&Path) -> std::io::Result<()>,
 ) -> anyhow::Result<()> {

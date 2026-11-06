@@ -1,5 +1,5 @@
 /**
- * The page for a path. `/` and `/search/<query>` are search, `/datasets`
+ * The page for a path. `/`, `/search/<query>` and known `/examples/<id>` are search, `/datasets`
  * the dataset details, `/privacy` the privacy notice, `/credits` the OCR credits, and anything else not
  * found. The API answers the same paths with 200 and the rest with 404
  * (`is_app_page` in crates/usnm-api/src/site.rs). `/index.html` is the home
@@ -9,6 +9,8 @@
  * server that doesn't redirect (the dev server). The page names are also the
  * routes `/v1/beacon` accepts (`ROUTES` in crates/usnm-api/src/routes/beacon.rs).
  */
+import { exampleForPath } from "./examples";
+
 export type Page = "search" | "datasets" | "privacy" | "credits" | "not-found";
 
 /** The dataset details page's path, and its old one (#294). */
@@ -68,7 +70,7 @@ export function queryForPath(pathname: string, mode = "phrase"): string | null {
 }
 
 export function pageFor(pathname: string): Page {
-  if (queryForPath(pathname) !== null) return "search";
+  if (exampleForPath(pathname) || queryForPath(pathname) !== null) return "search";
   switch (pathname.replace(/\/+$/, "")) {
     case "":
     case "/index.html":
@@ -87,9 +89,9 @@ export function pageFor(pathname: string): Page {
 
 /** Each page's document title. None of them holds search text. */
 export const TITLES: Record<Page, string> = {
-  search: "US News Map",
-  datasets: "Dataset details · US News Map",
-  privacy: "Privacy · US News Map",
-  credits: "OCR credits · US News Map",
+  search: "US News Map: historic American newspaper search",
+  datasets: "Dataset details and index status · US News Map",
+  privacy: "Privacy and data handling · US News Map",
+  credits: "OCR engine and model credits · US News Map",
   "not-found": "Page not found · US News Map",
 };

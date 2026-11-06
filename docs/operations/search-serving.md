@@ -2,6 +2,61 @@
 
 Part of the [operations guide](README.md).
 
+## Cloudflare API schema
+
+The upload artifact is
+[`ops/api/usnewsmap-cloudflare-api-schema.yaml`](../../ops/api/usnewsmap-cloudflare-api-schema.yaml).
+It is a reviewed OpenAPI 3.0.3 **snapshot**, not an automatically deployed policy.
+The authoritative public contract is
+[`/v1/openapi.json`](https://api.usnewsmap.com/v1/openapi.json), generated as OpenAPI
+3.1 by `crates/usnm-api/src/openapi.rs`.
+
+The upload lists both public hosts and both `/v1` and `/api/v1` prefixes, including
+the two internal POST routes omitted from the public document. Its `x-source`
+records the source checkout revision, router hash, source URL and SHA-256 of the
+source JSON serialized with sorted keys and compact separators. The revision is
+the code used to check route coverage, **not** an attestation of the deployed
+binary.
+
+Regenerate from a checkout whose API code matches the intended release, then
+review and commit the diff:
+
+```sh
+python3 -m venv /tmp/usnm-cloudflare-schema-venv
+/tmp/usnm-cloudflare-schema-venv/bin/python -m pip install -r scripts/ops/requirements-cloudflare.txt
+/tmp/usnm-cloudflare-schema-venv/bin/python scripts/ops/export-cloudflare-schema.py \
+  --checkout . \
+  --source https://api.usnewsmap.com/v1/openapi.json \
+  --output ops/api/usnewsmap-cloudflare-api-schema.yaml
+python3 -m unittest -v scripts/ops/test_export_cloudflare_schema.py
+git diff -- ops/api/usnewsmap-cloudflare-api-schema.yaml
+```
+
+`--source` also accepts a saved public OpenAPI JSON file. The exporter refuses
+dirty API code, an unsupported router layout, mismatched routes/methods/hosts or
+changed internal POST coverage, and replaces the output only after conversion
+succeeds. It does not prove that the live parameter semantics match the source
+revision. The offline unit tests run in the existing script-test suite; they
+exercise conversion, not the live service or Cloudflare's evaluator.
+
+Regenerate and review after API route, parameter, parser or deployment-configuration
+changes (for example, whether queryless browsing is enabled). Committing this file
+does not upload it, register endpoints or enable enforcement. Upload the reviewed
+file manually under Cloudflare's **Web Assets > Schema validation**, with relevant
+blocking rules disabled, and inspect **Profile Analysis** before enforcing it.
+See Cloudflare's [schema-validation documentation](https://developers.cloudflare.com/api-shield/security/schema-validation/).
+
+**Deliberate limits:** comma lists are represented as strings because Cloudflare
+does not support their `explode: false` encoding. Empty optional values, signed
+integers and unpadded dates follow the origin's permissive parsing; query lengths,
+list counts, membership, repeated/unknown keys and cross-parameter rules remain
+origin checks. POST bodies are not edge-validated: the origin accepts JSON sent
+as `text/plain` or `application/json`, with limits above the Free plan's 1 KiB
+validation limit. Responses are not validated by Cloudflare. Health probes,
+static pages, implicit `HEAD` and CORS `OPTIONS` are outside this inventory:
+**do not use it as a whole-host fallthrough allowlist**. Review encoding and
+legitimate-traffic violations before adding any block rule.
+
 ## Sitemap eligibility
 
 The durable sitemap publishes the four canonical application pages and only
@@ -136,6 +191,87 @@ Budget division runs in `infra/main.bicep` using deployment parameters only; the
 
    The stack now deletes the unused searcher app and its role without changing the API's sidecar template or its identity. Keeping retention on longer is safe but continues billing for the extra searcher. Unsetting both settings in the first provision skips this protection and can drop search until the sidecar is ready.
 
+## The Azure cold spare
+
+[ADR-0029](../design/adr/0029-onprem-primary-azure-failover.md) keeps the Azure API and searcher at zero replicas for failover. `USNM_DATA_PRIVATE_ENDPOINTS=false` removes the spare's private endpoints ([ADR-0008, amendment of November 2026](../design/adr/0008-private-networking.md)). The spare's index stays Hot.
+
+### What a failover needs
+
+| Azure service                         | Used for                                                                                                      | Without it                                                                    |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| Index account, `qw-index`             | The searcher's metastore and splits. `/readyz` asks the searcher's health, so the Worker's readiness needs it | `/readyz` fails; `/v1/aggregate`, `/v1/hits` and `/v1/days` fail; no failover |
+| Lake, `reference`                     | Loaded at start and refreshed every 10 minutes: `current.json`, catalog, places, baselines                    | The API can't start; every route fails                                        |
+| Lake, `cache`                         | Stored responses and search screenshots, read with a 2 s limit                                                | Searches are computed each time; nothing else breaks                          |
+| Lake, `searches`                      | The anonymous search log, and `/v1/search-report`                                                             | Searches still answer; the log loses them                                     |
+| Lake, `ocr-requests`                  | Page ids from hit results                                                                                     | Hits still answer; the requests are lost                                      |
+| Cosmos DB                             | `/v1/status` only                                                                                             | The status page has no pipeline state; search is unaffected                   |
+| Application Insights                  | `POST /v1/beacon` (page views), telemetry, the API alerts                                                     | Beacons are accepted and dropped                                              |
+| Registry                              | The API and searcher images, pulled on each start                                                             | A start can't pull an image a node doesn't hold                               |
+| OCR exchange account and scan archive | Nothing. The API has no setting for either                                                                    | Nothing                                                                       |
+
+Page images come from the Library of Congress. The site itself is in the API image.
+
+### Network and tier
+
+Without private endpoints, snet-cae reaches the lake, the index account and Cosmos through service endpoints and each account's firewall rule for that subnet. Every default stays deny, with no trusted-service bypass. Entra roles remain the only way in, with no keys, no SAS and no anonymous access. The on-prem addresses keep their IP rules, so the search log copy, the OCR output copy, serving and releases are unchanged. The public-network policy lists all three accounts while the setting is off (`infra/public-accounts.bicep`), and `lakeOpen`, `indexOpen` and `cosmosOpen` still decide the IP rules alone.
+
+The maintainer kept the index Hot in November 2026, because October's releases came 2 to 12 days apart and Cool loses money at that pace. `USNM_INDEX_ACCESS_TIER` stays in the settings so this can be revisited. On the 1,086.7 GiB index, Cool saves about $0.30 a day in storage ($0.66 against $0.36). Against that:
+
+- Writes cost $0.10 per 10,000 against $0.05, so copying a version in costs $1.40 against $0.70.
+- A blob deleted within 30 days of arriving in Cool is billed for the rest of the 30, about $0.36 a day for the whole index.
+- Reads cost $0.01 per 10,000 against $0.004, and retrieval $0.01/GB against nothing, so a failover day costs $2.70-8.20 more.
+- Moving back to Hot costs about $11.
+
+With releases `d` days apart and each old version deleted at once, Cool saves $0.30 × `d` and costs $0.70 + $0.36 × (30 - `d`) per release. It breaks even at about 18 days. At 12 days it loses about $0.30 a day, and at 2 days about $5. Cold isn't worth it, at $0.10 per 10,000 reads.
+
+### What wakes it
+
+Each wake starts the API, which starts the searcher. The API stays about 5 minutes after its last request and the searcher about 9 minutes more. These reach the Azure ingress:
+
+- The Worker, when the primary doesn't answer `/readyz` with `ready` within 3 s: the minute heartbeat, `healthcheck.usnewsmap.com`, or a visitor's request after a 5xx or a failed probe. Each polls Azure's `/readyz` until it's ready, and those polls keep the app up.
+- `usnm-fallback-drill`, which has the same Azure origin. Its `dev.usnewsmap.com/*` route is removed between drills, because with the dev connector stopped any request there wakes production's spare. The Worker itself stays deployed.
+- Anything that reaches the app's default hostname directly.
+
+`/readyz` isn't recorded in Application Insights, and a request abandoned before a replica is up isn't either, so a wake can show no request. `ContainerAppSystemLogs` shows wakes as `KEDAScaleTargetActivated`, `triggered by s0-upstream_rq_total`.
+
+### Rollout
+
+1. Check that on-prem serves and no index is being published or promoted. Bring a local checkout to `origin/main`.
+2. `scripts/azure/provision.sh --env prod --what-if --api-tag live --allow-rename=privatelink.blob.core.windows.net --allow-rename=privatelink.documents.azure.com`, and compare it with the summary in the pull request. Stop on anything new. Without the two flags the rename guard fails it, as it should.
+3. Provision: `scripts/azure/provision.sh --env prod --api-tag live --allow-rename=privatelink.blob.core.windows.net --allow-rename=privatelink.documents.azure.com`. The policy step writes the exempt list first. The stack then adds the service endpoints and firewall rules, and deletes the endpoints and zones last, as unmanaged resources.
+4. Run the cold drill below. Do nothing else until it passes.
+
+### Rollback
+
+Set `USNM_DATA_PRIVATE_ENDPOINTS` back to `true` in `infra/env/prod.json`, commit it, and provision with `--api-tag live`. Provision refuses uncommitted settings; `--allow-dirty` is for an emergency that can't wait for a pull request. The stack recreates the endpoints and zones and removes the subnet rules, which takes minutes and leaves on-prem untouched. If the drill fails while on-prem is down, the spare can't serve until this finishes, so don't start the rollout during an on-prem incident.
+
+### Cold drill
+
+Use the drill Worker, which sends `DNT: 1`, so the drill stays out of the search log and off the public hostnames. Its route doesn't exist between drills, so add it first. `deploy.sh` deploys the current Worker and adds the route; look at the command with `--dry-run` first:
+
+```bash
+edge/fallback-worker/deploy.sh --account-id <id> --azure-origin https://<default name> \
+  --wrangler-version <X.Y.Z> --vault <vault> --token-secret <secret> \
+  --drill-hostname dev.usnewsmap.com --health-failover --health-hostname dev.usnewsmap.com \
+  --allowed-origins <the API's USNM_ALLOWED_ORIGINS> --native-metrics --worker-logs
+```
+
+Leave out `--health-heartbeat`: the drill Worker needs no cron. Then stop the dev connector, so the Worker's primary fails.
+
+1. Confirm both apps have no replicas: `az containerapp replica list` for the API's and the searcher's latest revisions. Wait until they do.
+2. Poll `https://dev.usnewsmap.com/readyz`. It must answer 200 with `X-USNM-Origin: azure` inside the Worker's 180 s budget. Record the time; the last drills took about 70 s.
+3. Through the same hostname, each with `X-USNM-Origin: azure`:
+   - a real search on `/v1/aggregate` and `/v1/hits`, which proves the index account;
+   - `/v1/meta`, which must name the version on-prem serves, and proves `reference`;
+   - `/v1/status`, compared with the public one, which proves Cosmos;
+   - `POST /v1/beacon`, which must answer 204.
+4. Check a write: `StorageBlobLogs` shows a `PutBlob` under `cache/` from the app's identity after an uncached search of more than 500 ms.
+5. Confirm that `ContainerAppConsoleLogs` shows no storage or Cosmos 403 from the API or the searcher.
+6. Remove the route: find its id with `GET /zones/{zone_id}/workers/routes`, and send `DELETE /zones/{zone_id}/workers/routes/{route_id}` for `dev.usnewsmap.com/*`. Don't leave it for later. Then restart the dev connector.
+7. Confirm both apps return to zero with no command, usually within 20 minutes, and stay there.
+
+The drill is not a proof until every step passes against the real production Azure apps. A warm replica proves nothing, so step 1 comes first.
+
 ## The Quickwit image
 
 The searcher sidecar, the ingest image (whose Quickwit is the release's writer) and the ingest job's init container run our build of Quickwit v0.9.1 ([ADR-0013](../design/adr/0013-quickwit-from-our-fork.md)). `docker/Dockerfile.quickwit-patched` builds it from our fork, [`tgoodyear/quickwit`](https://github.com/tgoodyear/quickwit), at a pinned commit. `infra/quickwit-image.json` records its digest for each environment, and `infra/main.bicep` and CI's publish read it there; an environment the file doesn't list runs upstream v0.9.1.
@@ -181,7 +317,7 @@ Each computed search also logs `slow warm-up query` with its `ms` when it takes 
 
 ## Search log
 
-The API keeps every search from the site, with only its filters, page count and UTC day, in the `searches` container ([ADR-0012](../design/adr/0012-anonymous-search-log.md), 06 §6.8). Nothing expires `searches/days/` and `searches/import/`; staged batches are deleted after 7 days and stay in soft delete for 3 more. To read it:
+The API keeps every search from the site, with only its filters, page count and UTC day, in the `searches` container ([ADR-0012](../design/adr/0012-anonymous-search-log.md), 06 §6.8). Nothing expires `searches/days/` and `searches/import/`; staged batches are deleted after 7 days and stay in soft delete for 14 more. To read it:
 
 ```sh
 scripts/azure/settings.sh --env prod --key USNM_SEARCH_LOG_READERS \
@@ -196,7 +332,7 @@ The data account is reachable only through its private endpoint, so run `searche
 
 ## Search log: the copy on tank
 
-The day files can't be rebuilt. Since 26 October 2026 (#1097), the lake's Standard_LRS copy (3-day soft delete) has a second copy: `searches/days/` on a restricted dataset on `tank`, under [ADR-0027](../design/adr/0027-onprem-serving-behind-cloudflare.md) settled decision 3. `usnm-ingest searchlog-copy` runs daily on a dedicated non-serving host with its own read-only Arc identity. All 25 source days (87,005 bytes) passed full source-hash verification and an idempotent rerun; snapshot recovery was checked privately. [`scripts/onprem/searchlog-copy/`](../../scripts/onprem/searchlog-copy/README.md) has the live acceptance details and rebuild procedure.
+The day files can't be rebuilt. Since 26 October 2026 (#1097), the lake's Standard_LRS copy (14-day soft delete) has a second copy: `searches/days/` on a restricted dataset on `tank`, under [ADR-0027](../design/adr/0027-onprem-serving-behind-cloudflare.md) settled decision 3. `usnm-ingest searchlog-copy` runs daily on a dedicated non-serving host with its own read-only Arc identity. All 25 source days (87,005 bytes) passed full source-hash verification and an idempotent rerun; snapshot recovery was checked privately. [`scripts/onprem/searchlog-copy/`](../../scripts/onprem/searchlog-copy/README.md) has the live acceptance details and rebuild procedure.
 
 **What it does.** Each run lists `days/` in the lake and copies every `{day}.jsonl` the dataset lacks. A day is streamed into `days/{day}.jsonl.partial`, its size checked against the listing and its sha256 against the file as written, and then linked into place as a read-only file; the link fails if the name exists, so a copy is never replaced. A day already there is compared by size (`--verify` also hashes the lake's bytes again). The tool deletes nothing from the lake or the copy: a copy that differs, or a day that has left the lake, is reported and kept, and the only file it removes is its own `.partial` from an interrupted run (a regular file: a link or directory by that name is left alone, and its day is reported missing until an operator removes it). There is no stored hash of a day file to compare with (the listing gives a size, an ETag and a creation time, and the API sends no Content-MD5 when it writes one), so the checks are of the bytes received and of the file written, and `--verify` is the check against the lake itself.
 
@@ -212,6 +348,6 @@ The independent `home-searchlog-watch.timer` on the Proxmox host checks this sta
 
 - _Missing_: look at the journal for why the copy failed (the identity's grant, the lake's firewall, the dataset's quota, or a link or directory named `{day}.jsonl.partial` in `days/`, which the tool leaves for an operator to remove), fix that and run `sudo systemctl start usnm-searchlog-copy`.
 - _Mismatched_: the copy is not replaced. Check it against a snapshot, and against the lake with `--verify`. When the lake's file is the right one, move the bad copy aside by hand (`mv`, as an operator; the tool never removes one) and run the copy again.
-- _Local only_: the lake has lost a day file (soft delete keeps it for 3 days: restore it there first). The copy is then the only one: snapshot the dataset (`zfs snapshot`) before anything else.
+- _Local only_: the lake has lost a day file (soft delete keeps it for 14 days: restore it there first). The copy is then the only one: snapshot the dataset (`zfs snapshot`) before anything else.
 
 **Restoring.** A damaged copy comes back from a snapshot (`.zfs/snapshot/<name>/days/`, or `zfs clone`) or, for a day still in the lake, from the next run. A day lost from the lake is written back from the copy, create-only, by an operator with Storage Blob Data Contributor on the container and their own sign-in (no SAS, no key): `az storage blob upload --auth-mode login --account-name <account> --container-name searches --name days/<day>.jsonl --file <copy> --overwrite false`. A lost dataset is rebuilt by running the copy into an empty one (`--verify` afterwards), as long as the lake still has the files.

@@ -696,3 +696,89 @@ async fn our_ocr_replaces_locs_text_where_rule_v1_prefers_it() {
     // The page counts once: one document.
     assert_eq!(docs3.keys().filter(|k| **k == id(&late[g])).count(), 1);
 }
+
+/// One engine short key with two `models=` digests among the rows given in
+/// place of LoC's text fails the release, unless the rows were read before
+/// the rule (13 §13.7.2, #1481).
+#[tokio::test]
+async fn a_model_swap_inside_a_profile_fails_the_release() {
+    use usnm_core::ocr_engine::ONE_MODEL_SET_SINCE_MICROS;
+    use usnm_ocr_local::{pages, pages_path};
+    let e = env().await;
+    let split = NaiveDate::from_ymd_opt(1897, 7, 1).unwrap();
+    let mut early: Vec<Page> = fixture_pages()
+        .into_iter()
+        .filter(|p| p.date < split)
+        .collect();
+    let sel: Vec<usize> = early
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| p.lccn == "sn99000001" && !p.text.is_empty())
+        .map(|(i, _)| i)
+        .collect();
+    let clean: Vec<String> = (0..2).map(prose).collect();
+    let pages_of = [(sel[0], 0, "111111111111"), (sel[1], 1, "222222222222")];
+    for (i, n, _) in pages_of {
+        early[i].text = garble(&clean[n]);
+    }
+    let path = e.root.join("batch_fx_early_ver01.tar.gz");
+    write_archive(&path, &early.iter().collect::<Vec<_>>(), true, true);
+    curate(&e, vec![listed("batch_fx_early_ver01", &path, None)]).await;
+
+    let tag = |models: &str| {
+        format!(
+            "tesseract/5.5.1 profile=eng image=sha256:aaaaaaaaaaaa models=sha256:{models} \
+             route=minimal@r1 contract=0"
+        )
+    };
+    let since = ONE_MODEL_SET_SINCE_MICROS / 1_000_000;
+    let release = |day| {
+        let r = Release {
+            ja_latin: true,
+            ocr_local: true,
+            congress: false,
+            congress_manual: false,
+            ..e.releaser(day, true)
+        };
+        let root = e.root.clone();
+        async move {
+            let mut sink = JsonlSink::new(root.join("reference/indexes"));
+            r.run(&mut sink).await
+        }
+    };
+    for (day, run, at) in [
+        (5, "20261104T000000Z-aaaa", since - 86_400),
+        (6, "20261105T010000Z-bbbb", since + 3_600),
+    ] {
+        let rows = pages_of.map(|(i, n, models)| {
+            let mut row = local_row(
+                &early[i],
+                "batch_fx_early",
+                &clean[n],
+                &early[i].text,
+                "node1",
+                at,
+            );
+            row.row.ocr_engine = tag(models);
+            row
+        });
+        e.curated
+            .put(
+                &pages_path("sn99000001", run),
+                pages::encode(&rows).unwrap(),
+                "application/octet-stream",
+            )
+            .await
+            .unwrap();
+        let result = release(day).await;
+        if at < since {
+            assert!(result.unwrap().is_some(), "rows from before the rule");
+        } else {
+            let err = format!("{:#}", result.unwrap_err());
+            for models in ["111111111111", "222222222222"] {
+                assert!(err.contains(&tag(models)), "{err}");
+            }
+            assert!(err.contains("new profile id"), "{err}");
+        }
+    }
+}

@@ -1,10 +1,15 @@
 <?php
 // Operator-only dispatch window; never changes account preferences or scientific rows.
 // shared_8b opens Intel/NVIDIA Vulkan classes over the same audited, bounded workunit range.
-const NATIVE_QWEN_CLASSES = ["nvidia_cuda_2b", "nvidia_cuda_8b", "intel_vulkan_8b", "nvidia_vulkan_8b", "nvidia_vulkan_6gb_8b", "amd_vulkan_8b"];
-const INDEPENDENT_QWEN_CLASSES = ["amd_vulkan_8b", "nvidia_vulkan_6gb_8b"];
+const NATIVE_QWEN_CLASSES = ["nvidia_cuda_2b", "nvidia_cuda_8b", "intel_vulkan_8b", "nvidia_vulkan_8b", "nvidia_vulkan_6gb_8b", "nvidia_vulkan_2b", "amd_vulkan_8b"];
+const INDEPENDENT_QWEN_CLASSES = ["amd_vulkan_8b", "nvidia_vulkan_6gb_8b", "nvidia_vulkan_2b"];
+// Native classes that run the 2B model on batch-2 workunits; the rest run 8B on batch 8.
+const NATIVE_QWEN_2B_CLASSES = ["nvidia_cuda_2b", "nvidia_vulkan_2b"];
 const SHARED_QWEN_CLASSES = ["intel_vulkan_8b", "nvidia_vulkan_8b"];
 const TIEBREAKER_QWEN_CLASSES = ["intel_vulkan_8b", "nvidia_vulkan_8b", "shared_8b"];
+// A contiguous range of up to ten workunits: the shared window, or Intel's alone, which the
+// refill opens while nvidia_vulkan_8b is generally admitted (#1445).
+const RANGE_QWEN_CLASSES = ["shared_8b", "intel_vulkan_8b"];
 const AMD_GENERAL_MARKER = "usnm-amd-general-admission-v1";
 // General admission: the class takes any of the app's work, with no workunit bounds. The
 // marker records the operator's choice, so a plan-policy refresh keeps it (refresh-plan-policy.py).
@@ -45,7 +50,24 @@ function native_qwen_general_xml($xml, $plan_class = "amd_vulkan_8b") {
     return $doc->saveXML();
 }
 
-function native_qwen_cohort_xml($xml, $plan_class, $workunit_id, $last_id = null) {
+// The classes in GENERAL_MARKERS that a policy admits generally: the marker and no bounds.
+function native_qwen_general_admitted($xml) {
+    $doc = new DOMDocument();
+    if (!$doc->loadXML($xml, LIBXML_NONET)) throw new RuntimeException("Invalid plan XML");
+    $xpath = new DOMXPath($doc);
+    $open = [];
+    foreach (GENERAL_MARKERS as $name => $marker) {
+        foreach ($xpath->query("//plan_class[name='$name']") as $node) {
+            if ($xpath->query("comment()[normalize-space(.)='$marker']", $node)->length === 1
+                && $xpath->query("min_wu_id|max_wu_id", $node)->length === 0) $open[] = $name;
+        }
+    }
+    return $open;
+}
+
+// $keep_general (with --stop only) closes this scope's bounded windows as --stop does and
+// leaves general admission; independent windows keep their own stops.
+function native_qwen_cohort_xml($xml, $plan_class, $workunit_id, $last_id = null, $keep_general = false) {
     // Unqualified profiles have independent one-workunit windows; shared refills leave them alone.
     $classes = in_array($plan_class, INDEPENDENT_QWEN_CLASSES, true) ? [$plan_class]
         : array_values(array_diff(NATIVE_QWEN_CLASSES, INDEPENDENT_QWEN_CLASSES));
@@ -54,7 +76,8 @@ function native_qwen_cohort_xml($xml, $plan_class, $workunit_id, $last_id = null
     if ((!in_array($plan_class, $classes, true) && $plan_class !== "shared_8b")
         || $workunit_id < 0 || $workunit_id === 1 || $last_id < $workunit_id
         || $last_id - $workunit_id >= 10
-        || ($plan_class !== "shared_8b" && $last_id !== $workunit_id)) {
+        || (!in_array($plan_class, RANGE_QWEN_CLASSES, true) && $last_id !== $workunit_id)
+        || ($keep_general && $workunit_id !== 0)) {
         throw new RuntimeException("Unsupported native cohort");
     }
     $doc = new DOMDocument();
@@ -75,9 +98,10 @@ function native_qwen_cohort_xml($xml, $plan_class, $workunit_id, $last_id = null
                 if ($markers->length !== 1 || $xpath->query("min_wu_id|max_wu_id", $node)->length) {
                     throw new RuntimeException("Invalid explicit $name general admission");
                 }
-                // A window for another class leaves this one generally admitted; --stop, or a
-                // window for this class itself, replaces general admission with bounds.
-                if ($name !== "amd_vulkan_8b" && $workunit_id > 1 && !$open_here) continue;
+                // A window for another class leaves this one generally admitted, as does
+                // --stop --keep-general; --stop, or a window for this class itself, replaces
+                // general admission with bounds.
+                if ($name !== "amd_vulkan_8b" && (($workunit_id > 1 && !$open_here) || $keep_general)) continue;
                 $node->removeChild($markers->item(0));
                 $node->appendChild($doc->createElement("min_wu_id"));
                 $node->appendChild($doc->createElement("max_wu_id"));
@@ -194,7 +218,7 @@ function native_qwen_cohort_validate($workunit, $results, $plan_class, $ordinary
     if ($ordinary_canary && $plan_class !== "amd_vulkan_8b") {
         throw new RuntimeException("Ordinary canary is for amd_vulkan_8b only");
     }
-    $model = $plan_class === "nvidia_cuda_2b" ? "2b" : "8b";
+    $model = in_array($plan_class, NATIVE_QWEN_2B_CLASSES, true) ? "2b" : "8b";
     $batch = $model === "2b" ? 2 : 8;
     $disk = $model === "2b" ? 12884901888 : 19327352832;
     if (intval($workunit->batch) !== $batch || intval($workunit->rsc_disk_bound) !== $disk
@@ -269,9 +293,24 @@ function native_qwen_fresh_pair_validate($workunit, $results, $assignments) {
     }
 }
 
+function native_qwen_fresh_pair_lock($db) {
+    // The policy flock does not exclude BOINC's SQL writers. READ table locks
+    // protect the final snapshot through rename for both InnoDB and MyISAM.
+    if (!$db->do_query("SET SESSION lock_wait_timeout=5")
+        || !$db->do_query("LOCK TABLES DBNAME.app READ, DBNAME.workunit READ, DBNAME.result READ, DBNAME.assignment READ")) {
+        throw new RuntimeException("Cannot lock fresh-pair database state");
+    }
+    return function() use ($db) {
+        if (!$db->do_query("UNLOCK TABLES")) throw new RuntimeException("Cannot release fresh-pair database lock");
+    };
+}
+
 function native_qwen_cohort_write($project, $plan_class, $workunit_id, $apply, $last_id = null, $general = false,
         $ordinary_canary = false, $tiebreaker = false, $expected_sha256 = null, $revalidate = null,
-        $admit_until = null) {
+        $admit_until = null, $keep_general = false, $publication_guard = null) {
+    if ($keep_general && ($general || $ordinary_canary || $tiebreaker || $workunit_id !== 0)) {
+        throw new RuntimeException("--keep-general only qualifies --stop");
+    }
     if ($tiebreaker && (!in_array($plan_class, TIEBREAKER_QWEN_CLASSES, true) || $general || $ordinary_canary
             || $workunit_id <= 1 || ($last_id !== null && $last_id !== $workunit_id))) {
         throw new RuntimeException("Tiebreaker is one intel_vulkan_8b, nvidia_vulkan_8b, or shared_8b workunit");
@@ -290,6 +329,7 @@ function native_qwen_cohort_write($project, $plan_class, $workunit_id, $apply, $
     $lock = fopen($lock_path, "c");
     if (!$lock || !flock($lock, LOCK_EX)) throw new RuntimeException("Cannot lock cohort policy");
     $staged = null;
+    $unlock_database = null;
     try {
         $original = file_get_contents($path);
         if ($original === false) throw new RuntimeException("Cannot read plan XML");
@@ -297,6 +337,7 @@ function native_qwen_cohort_write($project, $plan_class, $workunit_id, $apply, $
             || hash("sha256", $original) !== $expected_sha256)) {
             throw new RuntimeException("Policy changed since reviewed preview");
         }
+        if ($publication_guard !== null) $unlock_database = $publication_guard();
         if ($revalidate !== null) $revalidate();
         // Lock waits/DB revalidation can cross an automatic admission deadline; closing stays allowed.
         $admission_expired = function() use ($admit_until, $workunit_id) {
@@ -306,7 +347,7 @@ function native_qwen_cohort_write($project, $plan_class, $workunit_id, $apply, $
         };
         $admission_expired();
         $updated = $general ? native_qwen_general_xml($original, $plan_class)
-            : native_qwen_cohort_xml($original, $plan_class, $workunit_id, $last_id);
+            : native_qwen_cohort_xml($original, $plan_class, $workunit_id, $last_id, $keep_general);
         native_qwen_reservation_guard($original, $updated);
         $proof = [
             "plan_class" => $plan_class, "workunit_id" => $workunit_id,
@@ -314,10 +355,12 @@ function native_qwen_cohort_write($project, $plan_class, $workunit_id, $apply, $
             "other_managed_class_closed" => !$general && native_qwen_other_closed($updated, $plan_class),
             "admission_mode" => $general ? "general"
                 : ($workunit_id > 1 ? ($ordinary_canary ? "ordinary_canary" : ($tiebreaker ? "tiebreaker" : "bounded")) : "closed"),
-            "independent_amd_window" => true, "apply" => $apply,
+            "independent_amd_window" => true, "general_admission" => native_qwen_general_admitted($updated),
+            "apply" => $apply,
             "before_sha256" => hash("sha256", $original),
             "after_sha256" => hash("sha256", $updated),
         ];
+        if ($unlock_database !== null) $proof["fresh_pair_guard"] = "mysql-read-lock-v1";
         if ($apply && $original !== $updated) {
             $journal = "$project/ops-issue-559/native-cohort";
             if (is_link("$project/ops-issue-559") || is_link($journal)) {
@@ -343,6 +386,8 @@ function native_qwen_cohort_write($project, $plan_class, $workunit_id, $apply, $
             fclose($stream);
             if (!chmod($staged, fileperms($path) & 0777)) throw new RuntimeException("Cannot preserve plan permissions");
             if (hash_file("sha256", $path) !== $proof["before_sha256"]) throw new RuntimeException("Concurrent plan change");
+            // Detect a lost DB session after filesystem I/O before exposing its policy.
+            if ($revalidate !== null) $revalidate();
             $admission_expired();
             if (!rename($staged, $path)) throw new RuntimeException("Cannot replace cohort policy");
             $staged = null;
@@ -351,22 +396,31 @@ function native_qwen_cohort_write($project, $plan_class, $workunit_id, $apply, $
         }
         return $proof;
     } finally {
-        if ($staged !== null) unlink($staged);
-        flock($lock, LOCK_UN);
-        fclose($lock);
+        try {
+            if ($staged !== null) unlink($staged);
+        } finally {
+            try {
+                if ($unlock_database !== null) $unlock_database();
+            } finally {
+                flock($lock, LOCK_UN);
+                fclose($lock);
+            }
+        }
     }
 }
 
 function native_qwen_cohort_main() {
-    $options = getopt("", ["project:", "db-project:", "plan-class:", "workunit:", "workunit-end:", "stop", "general", "ordinary-canary", "tiebreaker", "apply", "fresh-pair", "expected-policy-sha256:", "admit-until:"]);
+    $options = getopt("", ["project:", "db-project:", "plan-class:", "workunit:", "workunit-end:", "stop", "keep-general", "general", "ordinary-canary", "tiebreaker", "apply", "fresh-pair", "expected-policy-sha256:", "admit-until:"]);
     $project = isset($options["project"]) ? realpath($options["project"]) : false;
     $db_project = isset($options["db-project"]) ? realpath($options["db-project"]) : $project;
     $plan_class = $options["plan-class"] ?? "nvidia_cuda_2b";
     $stop = array_key_exists("stop", $options);
+    $keep_general = array_key_exists("keep-general", $options);
     $general = array_key_exists("general", $options);
     $ordinary_canary = array_key_exists("ordinary-canary", $options);
     $tiebreaker = array_key_exists("tiebreaker", $options);
     $fresh_pair = array_key_exists("fresh-pair", $options);
+    $apply = array_key_exists("apply", $options);
     $expected_sha256 = $options["expected-policy-sha256"] ?? null;
     $admit_until = $options["admit-until"] ?? null;
     if (!$project || !is_dir($project) || !$db_project || !is_file("$db_project/config.xml")
@@ -374,6 +428,7 @@ function native_qwen_cohort_main() {
         || (!$stop && !$general && !preg_match('/^[1-9][0-9]*$/', $options["workunit"] ?? ""))
         || (isset($options["workunit-end"]) && !preg_match('/^[1-9][0-9]*$/', $options["workunit-end"]))
         || ($stop && (isset($options["workunit"]) || isset($options["workunit-end"])))
+        || ($keep_general && (!$stop || in_array($plan_class, INDEPENDENT_QWEN_CLASSES, true)))
         || ($general && ($stop || !isset(GENERAL_MARKERS[$plan_class])
             || isset($options["workunit"]) || isset($options["workunit-end"])))
         || ($ordinary_canary && ($stop || $general || $plan_class !== "amd_vulkan_8b"
@@ -386,13 +441,14 @@ function native_qwen_cohort_main() {
         || (!$stop && $plan_class === "nvidia_vulkan_6gb_8b" && (!$fresh_pair || $admit_until === null))
         || ($expected_sha256 !== null && !preg_match('/^[a-f0-9]{64}$/D', $expected_sha256))
         || ($admit_until !== null && ($stop || $general || !preg_match('/^[1-9][0-9]*$/D', $admit_until)))) {
-        throw new RuntimeException("usage: --project PATH [--db-project PATH] [--stop | --plan-class amd_vulkan_8b|nvidia_vulkan_8b --general | --plan-class amd_vulkan_8b --ordinary-canary --workunit ID | --plan-class intel_vulkan_8b|nvidia_vulkan_8b|shared_8b --tiebreaker --workunit ID | --plan-class ".implode("|", NATIVE_QWEN_CLASSES)."|shared_8b --workunit ID [--workunit-end ID]] [--fresh-pair] [--expected-policy-sha256 SHA256] [--admit-until UNIX] [--apply]");
+        throw new RuntimeException("usage: --project PATH [--db-project PATH] [--stop [--keep-general] | --plan-class amd_vulkan_8b|nvidia_vulkan_8b --general | --plan-class amd_vulkan_8b --ordinary-canary --workunit ID | --plan-class intel_vulkan_8b|nvidia_vulkan_8b|shared_8b --tiebreaker --workunit ID | --plan-class ".implode("|", NATIVE_QWEN_CLASSES)."|shared_8b --workunit ID [--workunit-end ID (".implode("|", RANGE_QWEN_CLASSES).")]] [--fresh-pair] [--expected-policy-sha256 SHA256] [--admit-until UNIX] [--apply]");
     }
     $id = ($stop || $general) ? 0 : intval($options["workunit"]);
     $last_id = isset($options["workunit-end"]) ? intval($options["workunit-end"]) : $id;
     if ($last_id < $id || $last_id - $id >= 10
-        || ($plan_class !== "shared_8b" && $last_id !== $id)) {
-        throw new RuntimeException("Only shared_8b supports a contiguous range of at most ten workunits");
+        || (!in_array($plan_class, RANGE_QWEN_CLASSES, true) && $last_id !== $id)) {
+        throw new RuntimeException("Only ".implode(" and ", RANGE_QWEN_CLASSES)
+            ." support a contiguous range of at most ten workunits");
     }
     $revalidate = null;
     if (!$stop && !$general) {
@@ -429,9 +485,10 @@ function native_qwen_cohort_main() {
         $revalidate();
     }
     echo json_encode(native_qwen_cohort_write(
-        $project, $plan_class, $id, array_key_exists("apply", $options), $last_id, $general, $ordinary_canary,
+        $project, $plan_class, $id, $apply, $last_id, $general, $ordinary_canary,
         $tiebreaker, $expected_sha256, $fresh_pair ? $revalidate : null,
-        $admit_until === null ? null : intval($admit_until)
+        $admit_until === null ? null : intval($admit_until), $keep_general,
+        $fresh_pair && $apply ? fn() => native_qwen_fresh_pair_lock(BoincDb::get()) : null
     ), JSON_PRETTY_PRINT)."\n";
 }
 

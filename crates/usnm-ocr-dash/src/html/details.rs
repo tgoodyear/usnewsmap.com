@@ -135,6 +135,65 @@ pub(super) fn at_a_glance(v: &View, o: &mut String) {
     o.push_str("</table></section>");
 
     o.push_str(&pipeline_panel(&v.pipeline));
+    feed_panel(&v.feed, o);
+}
+
+fn feed_panel(v: &crate::feed::FeedView, o: &mut String) {
+    use crate::feed::State;
+    o.push_str("<section class=\"wide\" id=\"boinc-feed-health\"><h2>BOINC feed / stale data</h2>");
+    if let Some(error) = v.error {
+        let _ = write!(o, "<p class=\"stale\">{}</p>", esc(error));
+    }
+    o.push_str(
+        "<table><tr><th>Check</th><th>State</th><th>Observed duration</th><th>Evidence</th></tr>",
+    );
+    for check in &v.checks {
+        let (class, state) = match check.state {
+            State::Healthy => ("good", "healthy"),
+            State::Pending => ("warning", "pending"),
+            State::Firing => ("critical", "alert"),
+            State::Unknown => ("warning", "unknown"),
+        };
+        let detail = match check.code.as_str() {
+            "qwen_refill_window" => check
+                .remaining_s
+                .map(|n| format!("{n}s until expiry (warn at 6h)")),
+            "cpu_shortage" | "gpu_shortage" => check
+                .idle_slots
+                .zip(check.eligible_results)
+                .map(|(idle, eligible)| {
+                    format!("{eligible} modeled candidates / {idle} resource-eligible own slots")
+                })
+                .or_else(|| check.reason.clone()),
+            "controller_tick" => check.seconds.map(|n| format!("{n:.0}s (limit 900s)")),
+            "usnm_ocr_no_work" | "usnm_qwen_no_work" => {
+                check.backlog.map(|n| format!("{n} backlogged"))
+            }
+            "feeder_allocation" => check.reason.as_ref().map(|reason| {
+                let ids = check.app_ids.as_deref().unwrap_or_default();
+                if ids.is_empty() {
+                    reason.clone()
+                } else {
+                    let ids = ids.iter().map(u64::to_string).collect::<Vec<_>>();
+                    format!("{reason}: app IDs {}", ids.join(", "))
+                }
+            }),
+            _ => None,
+        };
+        let _ = write!(
+            o,
+            "<tr><td>{}</td><td>{}</td><td>{}s / {}s</td><td>{}</td></tr>",
+            esc(&check.code),
+            badge(class, state),
+            check.duration_s,
+            check.threshold_s,
+            esc(&detail.unwrap_or_else(|| "—".into()))
+        );
+    }
+    o.push_str("</table><p class=\"note\">Modeled candidate supply, not guaranteed scheduler dispatch. \
+        Additional account restrictions, host/app quotas and scheduler request limits are unobserved. \
+        Read-only observations; no work is admitted or scheduled here. \
+        Missing or old sources are unknown, not healthy. Duration windows reset on gaps or clock changes.</p></section>");
 }
 
 pub(super) fn pool_and_hosts(v: &View, o: &mut String) {
@@ -477,7 +536,9 @@ pub(super) fn downloads(v: &View, o: &mut String) {
         o,
         "<h3>Failures{}</h3><p>{} pages LoC can't serve (permanent failures). {} pages of queued manifests skipped for now because \
          loc.gov answers 503 for their issue while serving others (<code>loc_item_error</code>); the queue runs their manifest again after a day's cool-off. \
-         {} other pages skipped this way are in no queued manifest, so they are asked for again only if they are queued again.</p>",
+         {} other pages skipped this way are in no queued manifest, so they are asked for again only if they are queued again. \
+         A manifest that ends with transient failures runs again, so most of these pages are fetched later: \
+         <em>Fetched since</em> says which.</p>",
         if f.recent_failures.is_empty() {
             String::new()
         } else {
@@ -489,15 +550,19 @@ pub(super) fn downloads(v: &View, o: &mut String) {
     );
     if !f.recent_failures.is_empty() {
         o.push_str(&scroll("Latest failures"));
-        o.push_str("<table><tr><th>When</th><th>doc_id</th><th>Kind</th><th>Error</th></tr>");
+        o.push_str("<table><tr><th>When</th><th>doc_id</th><th>Kind</th><th>Error</th><th>Fetched since</th></tr>");
         for e in &f.recent_failures {
+            let since = e.recovered_at.map_or_else(
+                || "<span class=\"muted\">not yet</span>".to_owned(),
+                |t| format!("{} {}", badge("good", "fetched"), ago(now, t)),
+            );
             let _ = write!(
                 o,
-                "<tr><td>{}</td><td><code>{}</code></td><td>{}</td>{}</tr>",
+                "<tr><td>{}</td><td><code>{}</code></td><td>{}</td>{}<td>{since}</td></tr>",
                 ago(now, e.at),
                 esc(&e.doc_id),
                 esc(&e.kind),
-                msg(&e.error, Some(e.at))
+                failure_msg(&e.error, Some(e.at))
             );
         }
         o.push_str("</table></div>");

@@ -33,7 +33,7 @@ use futures::stream::{self, StreamExt};
 use serde::Serialize;
 use usnm_core::params::{Filters, RawParams, SearchRequest};
 use usnm_core::query::Node;
-use usnm_core::time::{BucketSpec, BucketUnit};
+use usnm_core::time::BucketSpec;
 use usnm_search::plan::{self, Planned};
 use usnm_search::quickwit::QuickwitBackend;
 use usnm_search::{
@@ -210,15 +210,6 @@ pub fn request(
         .map_err(|e| anyhow::anyhow!("{qs}: {e}"))
 }
 
-fn coarser(unit: BucketUnit) -> Option<BucketUnit> {
-    match unit {
-        BucketUnit::Day => Some(BucketUnit::Week),
-        BucketUnit::Week => Some(BucketUnit::Month),
-        BucketUnit::Month => Some(BucketUnit::Year),
-        BucketUnit::Year => None,
-    }
-}
-
 /// One search's result in a pass.
 #[derive(Debug, Clone, Serialize)]
 pub struct SearchResult {
@@ -251,13 +242,17 @@ pub async fn search(
     let outcome = loop {
         match plan::aggregate(&timed, indexes, &req.query, &req.filters, &spec, MAX_CELLS).await {
             Ok(Planned::Complete(agg)) => break Ok(agg),
-            Ok(Planned::TooManyCells { upper_bound }) => match coarser(spec.unit) {
-                Some(unit) => {
-                    spec = BucketSpec::new(unit, spec.from, spec.to);
-                    coarsened = true;
+            Ok(Planned::TooManyCells { places, .. }) => {
+                match plan::coarser(&spec, places, MAX_CELLS) {
+                    Ok(coarse) => {
+                        spec = coarse;
+                        coarsened = true;
+                    }
+                    Err(upper_bound) => {
+                        break Err(format!("too broad: about {upper_bound} cells by year"))
+                    }
                 }
-                None => break Err(format!("too broad: about {upper_bound} cells by year")),
-            },
+            }
             Err(e) => break Err(e.to_string()),
         }
     };
@@ -990,6 +985,7 @@ async fn profile(
 mod tests {
     use super::*;
     use usnm_core::text::Analyzer;
+    use usnm_core::time::BucketUnit;
 
     fn d(s: &str) -> NaiveDate {
         NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()

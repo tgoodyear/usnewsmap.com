@@ -115,6 +115,38 @@ class DaemonConfig(unittest.TestCase):
             self.assertEqual(before, [(project / name).lstat().st_ino for name in ("keys", "config.xml")])
             self.assertEqual((secrets / "keys/upload_public").read_text(), "public fixture")
 
+    def test_retired_apps_get_no_daemons_or_validator_links(self):
+        # #1449: the apps retired in "Retiring an app" (docs/boinc/server-and-apps.md) leave the
+        # status page; every other app keeps one validator and one assimilator.
+        root = Path(__file__).resolve().parents[2]
+        with tempfile.TemporaryDirectory(dir=root) as directory:
+            work = Path(directory)
+            for name in ("path", "secrets", "share/usnmocr/bin"):
+                (work / name).mkdir(parents=True)
+            (work / "path/usnm-boinc").write_text("#!/bin/sh\n")
+            (work / "path/usnm-boinc").chmod(0o755)
+            (work / "secrets/db-runtime").write_text("fixture")
+            subprocess.run(
+                ["bash", "-eu", "-c", '. "$1"; SECRETS=$2 TEMPLATES=$3; chown() { :; }; render_config', "_",
+                 str(root / "contrib-compute/images/server/lib.sh"), str(work / "secrets"), str(Path(__file__).parent)],
+                check=True,
+                env={**os.environ, "PATH": f"{work / 'path'}{os.pathsep}{os.environ['PATH']}",
+                     "KEY_VAULT_NAME": "kv", "DB_HOST": "db", "DB_NAME": "usnmocr", "MASTER_HOST": "boinc.example",
+                     "PROJECT_DIR": str(work / "share"), "PROJECT_HOST_OVERRIDE": "server"},
+            )
+            commands = [shlex.split(cmd.text) for cmd in
+                        ET.parse(work / "secrets/config.xml").findall("./daemons/daemon/cmd")]
+            daemons = sorted((cmd[0], cmd[cmd.index("--app") + 1]) for cmd in commands if "--app" in cmd)
+            links = sorted(path.name for path in (work / "share/usnmocr/bin").iterdir())
+        live = ("usnm_gold", "usnm_ndlocr", "usnm_quality", "usnm_qwen")
+        self.assertEqual(daemons, sorted([("sample_trivial_validator", "usnm_ocr"),
+                                          ("batch_collect_assimilator", "usnm_ocr"),
+                                          *(("script_validator", app) for app in live),
+                                          *(("batch_collect_assimilator", app) for app in live)]))
+        self.assertEqual(links, ["usnm_gold_check", "usnm_ndlocr_check", "usnm_ndlocr_compare",
+                                 "usnm_quality_check", "usnm_quality_compare", "usnm_qwen_check",
+                                 "usnm_qwen_compare"])
+
     def test_db_purge_runs_continuously_with_thirty_day_retention(self):
         root = ET.parse(Path(__file__).with_name("config.xml.template"))
         commands = [
@@ -132,8 +164,10 @@ class DaemonConfig(unittest.TestCase):
         for name in ("mt", "apple_gpu_8b", "nvidia_cuda_2b", "nvidia_cuda_8b",
                      "intel_vulkan_8b", "nvidia_vulkan_8b", "amd_vulkan_8b"):
             self.assertEqual(plans[name].findtext("min_core_client_version"), "80211")
-        self.assertEqual(plans["nvidia_vulkan_6gb_8b"].findtext("min_core_client_version"), "80209")
-        for name in ("docker_intel_vulkan", "intel_vulkan_8b", "nvidia_vulkan_8b", "nvidia_vulkan_6gb_8b", "amd_vulkan_8b", "nvidia_cuda_8b", "nvidia_cuda_2b"):
+        for name in ("nvidia_vulkan_6gb_8b", "nvidia_vulkan_2b"):
+            self.assertEqual(plans[name].findtext("min_core_client_version"), "80209")
+        for name in ("docker_intel_vulkan", "intel_vulkan_8b", "nvidia_vulkan_8b", "nvidia_vulkan_6gb_8b",
+                     "nvidia_vulkan_2b", "amd_vulkan_8b", "nvidia_cuda_8b", "nvidia_cuda_2b"):
             with self.subTest(plan=name):
                 self.assertEqual(plans[name].findtext("min_wu_id"), "2")
                 self.assertEqual(plans[name].findtext("max_wu_id"), "1")
@@ -145,6 +179,15 @@ class DaemonConfig(unittest.TestCase):
         self.assertIsNotNone(amd.find("opencl"))
         self.assertIsNone(amd.find("cuda"))
         self.assertIsNone(amd.find("docker"))
+        # #1234: a 6 GB NVIDIA card (a GTX 1660 SUPER reports about 5750 MB) is admitted only
+        # to batch-2 work, which the app reads with the 2B model fully offloaded.
+        small = plans["nvidia_vulkan_2b"]
+        for tag, value in (("gpu_type", "nvidia"), ("ngpus", "1"), ("min_batch", "2"),
+                           ("max_batch", "2"), ("min_gpu_ram_mb", "4500"),
+                           ("gpu_ram_used_mb", "4096"), ("avg_ncpus", "2")):
+            self.assertEqual(small.findtext(tag), value)
+        self.assertIsNotNone(small.find("cuda"))
+        self.assertIsNone(small.find("docker"))
 
     def test_high_throughput_scheduler_dispatch_limits(self):
         root = ET.parse(Path(__file__).with_name("config.xml.template"))
@@ -153,3 +196,9 @@ class DaemonConfig(unittest.TestCase):
         self.assertEqual(root.findtext("./config/max_wus_in_progress"), "32")
         self.assertEqual(root.findtext("./config/daily_result_quota"), "50000")
         self.assertEqual(root.findtext("./config/max_wus_to_send"), "64")
+
+    def test_project_down_replies_ask_clients_back_in_twenty_minutes(self):
+        # #1462: without it, BOINC's default (sched_config.cpp L93 at 22bbebe0) tells every client
+        # that asks during a feeder restart to wait an hour.
+        root = ET.parse(Path(__file__).with_name("config.xml.template"))
+        self.assertEqual(root.findtext("./config/maintenance_delay"), "1200")

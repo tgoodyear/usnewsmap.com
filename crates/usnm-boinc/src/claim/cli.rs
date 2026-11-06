@@ -80,8 +80,24 @@ pub enum ClaimCommands {
         queue_url: String,
         /// A failed job's id (its journal in the hand-off container's dispatch/ names the page
         /// and why it failed); repeat for more.
-        #[arg(long = "job", required = true)]
+        #[arg(
+            long = "job",
+            required_unless_present = "supersedes_failed_job",
+            conflicts_with = "supersedes_failed_job"
+        )]
         jobs: Vec<String>,
+        /// Operator only (#1417): a dead-lettered job whose page was claimed again with a newer
+        /// message. That newer claim is dead-lettered, naming this job, and its message deleted.
+        /// A dry run unless --confirm-message-sha256 is given.
+        #[arg(long, requires = "curated_url")]
+        supersedes_failed_job: Option<String>,
+        /// The lake, for the ledger that must show the failed job dead-lettered and the newer
+        /// claim outstanding.
+        #[arg(long, requires = "supersedes_failed_job")]
+        curated_url: Option<String>,
+        /// The newer claim's message_sha256, as the dry run prints it: dead-letter it.
+        #[arg(long, requires = "supersedes_failed_job")]
+        confirm_message_sha256: Option<String>,
     },
     /// Hand-off job: give claimed pages back to the queue, for the nodes.
     Release {
@@ -228,27 +244,51 @@ pub async fn run(command: ClaimCommands) -> anyhow::Result<()> {
             handoff_url,
             queue_url,
             jobs,
+            supersedes_failed_job,
+            curated_url,
+            confirm_message_sha256,
         } => {
             let handoff = usnm_store::open(&handoff_url)?;
             let queue = usnm_store::queue::open(&queue_url)?;
+            if let Some(job) = supersedes_failed_job {
+                if let Some(sha) = &confirm_message_sha256 {
+                    anyhow::ensure!(
+                        usnm_ocr_contract::boinc::is_sha256(sha),
+                        "--confirm-message-sha256 is a sha256 (64 lower-case hex)"
+                    );
+                }
+                let record = failed_record(handoff.as_ref(), &job).await?;
+                let curated = usnm_store::open(&curated_url.context("--curated-url required")?)?;
+                let ledger = usnm_ocr_local::ledger::load(curated.as_ref()).await?;
+                let s = x::dead_letter_superseding(
+                    handoff.as_ref(),
+                    queue.as_ref(),
+                    &record,
+                    &ledger,
+                    confirm_message_sha256.as_deref(),
+                )
+                .await?;
+                println!(
+                    "{} claim from {}: message {} (id {}), queued_at {}, ledger attempt {}; supersedes dead-lettered job {job}",
+                    s.doc_id, s.queue, s.message_sha256, s.message_id, s.queued_at, s.attempt
+                );
+                match s.done {
+                    None => println!(
+                        "dry run: nothing changed; to dead-letter this message and delete it, give --confirm-message-sha256 {}",
+                        s.message_sha256
+                    ),
+                    Some(x::DeadLettered::Done) => println!("{} dead_lettered", s.doc_id),
+                    Some(x::DeadLettered::Already) => println!("{} already ended", s.doc_id),
+                    Some(x::DeadLettered::LeaseLost) => anyhow::bail!(
+                        "the dead letter went, but {}'s message had come back to its queue; run this again after the next claim pull",
+                        s.doc_id
+                    ),
+                }
+                return Ok(());
+            }
             let mut lost = 0;
             for job in jobs {
-                anyhow::ensure!(
-                    job.len() == 64 && job.bytes().all(|b| b.is_ascii_hexdigit()),
-                    "invalid job id"
-                );
-                let path = format!("dispatch/jobs/{job}/record.json");
-                let bytes = handoff
-                    .get(&path)
-                    .await?
-                    .with_context(|| format!("no {path} in the hand-off container"))?;
-                let record: crate::Record = serde_json::from_slice(&bytes)?;
-                record.job.validate()?;
-                crate::retry::validate(&record)?;
-                anyhow::ensure!(
-                    record.job.id == job && record.stage == crate::Stage::Failed,
-                    "job {job} has not failed; nothing to dead-letter"
-                );
+                let record = failed_record(handoff.as_ref(), &job).await?;
                 let doc_id = record.job.message.key()?.doc_id();
                 if record.retry.is_some() || record.ledger.is_none() {
                     let done = crate::retry::dead_letter(&record, handoff.as_ref(), queue.as_ref())
@@ -309,4 +349,28 @@ pub async fn run(command: ClaimCommands) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+/// A failed job's journal from the hand-off container's dispatch/.
+async fn failed_record(
+    handoff: &dyn usnm_store::ObjectStore,
+    job: &str,
+) -> anyhow::Result<crate::Record> {
+    anyhow::ensure!(
+        job.len() == 64 && job.bytes().all(|b| b.is_ascii_hexdigit()),
+        "invalid job id"
+    );
+    let path = format!("dispatch/jobs/{job}/record.json");
+    let bytes = handoff
+        .get(&path)
+        .await?
+        .with_context(|| format!("no {path} in the hand-off container"))?;
+    let record: crate::Record = serde_json::from_slice(&bytes)?;
+    record.job.validate()?;
+    crate::retry::validate(&record)?;
+    anyhow::ensure!(
+        record.job.id == job && record.stage == crate::Stage::Failed,
+        "job {job} has not failed; nothing to dead-letter"
+    );
+    Ok(record)
 }

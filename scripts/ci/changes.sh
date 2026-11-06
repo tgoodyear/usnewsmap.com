@@ -44,12 +44,19 @@
 # infra: what the infra job's Bicep, naming, workbook and script-test steps read.
 # `code` still runs that job's shared-key and named-argument scans over every
 # crate; `infra` alone runs the rest. It is false for a change confined to
-# src/ and tests/ of the dashboard crate, which none of those steps name
-# (test_changes.py checks that).
+# files none of those steps name (test_changes.py checks that): src/ and tests/
+# of the dashboard crate, the API's site presentation (src/site.rs and
+# src/site/), and web/ but for web/public/, web/src/examples.json and shell
+# scripts, which scripts read.
+# queue: the live PostgreSQL + pgmq job: the crates usnm-store and usnm-state
+# depend on, and the schemas and fixtures of the queue and quality databases.
+# images: the image job's matrix, a JSON list. A pull request builds only the
+# images whose own inputs changed (image_api, image_ingest, image_ja_ocr below);
+# main and a dispatch build all three whenever `image`, as `publish` pushes all three.
 # ocr_worker, ocr_dash: the OCR worker's and the LAN dashboard's EL9 build.
 # ocr_worker also runs the RHEL 10 and Tesseract image check. On main, either
 # one runs the release job, whose release holds both binaries.
-# boinc_worker, boinc_qwen, boinc_surya, boinc_ndlocr, boinc_native,
+# boinc_worker, boinc_qwen, boinc_surya, boinc_ndlocr, boinc_native, boinc_ocr_native,
 # ocr_dashboard: the BOINC worker image workflows, the native BOINC apps'
 # builds on five targets and the dashboard's static build, which read these
 # outputs from their own `inputs` job. They run for what each builds, not for
@@ -61,6 +68,14 @@
 # Cargo resolves for the roots change or the manifest's other settings do.
 # Files the image's own recipe reads are listed below. test_changes.py checks
 # the lists and the embedded files against each workflow's `paths:`.
+# boinc_qwen_models, boinc_surya_variants: the Qwen models and the Surya
+# variants the image workflows' pull request job builds, as JSON lists (#1585).
+# The two of each pair share the usnm-boinc build stage and differ only in
+# their weights or their llama.cpp base, so a pull request that reaches only
+# that stage (crates, the files they embed elsewhere, the toolchain,
+# .dockerignore) builds the first. A change to the image's own directory or
+# scripts, to its workflow or build action, and anything but a pull request
+# build every one, as publishing does.
 set -euo pipefail
 out=${GITHUB_OUTPUT:-/dev/stdout}
 # Known only once the changed files are; "run everything" keeps them.
@@ -68,7 +83,7 @@ provision=false
 ops=false
 forced=
 all() {
-  printf 'rust=true\nquickwit=true\nquickwit_parity=true\nquickwit_pipeline=true\nquickwit_suites=["parity","pipeline"]\nweb=true\nimage=true\ne2e=true\nfixtures=true\nops=%s\ncode=true\nmarkdown=true\nprovision=%s\nocr_worker=true\nocr_dash=true\nocr_dashboard=true\nboinc_worker=true\nboinc_qwen=true\nboinc_surya=true\nboinc_ndlocr=true\nboinc_native=true\ninfra=true\npage_language=true\ncontrib=true\nocr_gold=true\nboinc_pages=true\nedge=true\n' "$ops" "$provision" >> "$out"
+  printf 'rust=true\nquickwit=true\nquickwit_parity=true\nquickwit_pipeline=true\nquickwit_suites=["parity","pipeline"]\nweb=true\nimage=true\ne2e=true\nfixtures=true\nops=%s\ncode=true\nmarkdown=true\nprovision=%s\nocr_worker=true\nocr_dash=true\nocr_dashboard=true\nboinc_worker=true\nboinc_qwen=true\nboinc_surya=true\nboinc_ndlocr=true\nboinc_native=true\nboinc_ocr_native=true\ninfra=true\npage_language=true\ncontrib=true\nocr_gold=true\nboinc_pages=true\nedge=true\nqueue=true\nimages=["api","ingest","ja-ocr"]\nboinc_qwen_models=["2b","8b"]\nboinc_surya_variants=["cuda","vulkan"]\n' "$ops" "$provision" >> "$out"
   echo "running everything: $1"
   exit 0
 }
@@ -80,11 +95,11 @@ if [ "${GITHUB_EVENT_NAME:-}" = workflow_dispatch ]; then
         echo "ocr-worker publication scope requires refs/heads/main" >&2
         exit 1
       }
-      for part in rust quickwit quickwit_parity quickwit_pipeline web image e2e fixtures ops code markdown provision ocr_worker ocr_dash ocr_dashboard boinc_worker boinc_qwen boinc_surya boinc_ndlocr boinc_native infra page_language contrib ocr_gold boinc_pages edge; do
-        case "$part" in rust|ocr_worker) value=true ;; *) value=false ;; esac
+      for part in rust quickwit quickwit_parity quickwit_pipeline web image e2e fixtures ops code markdown provision ocr_worker ocr_dash ocr_dashboard boinc_worker boinc_qwen boinc_surya boinc_ndlocr boinc_native boinc_ocr_native infra page_language contrib ocr_gold boinc_pages edge queue; do
+        case "$part" in rust|queue|ocr_worker) value=true ;; *) value=false ;; esac
         printf '%s=%s\n' "$part" "$value" >> "$out"
       done
-      echo 'quickwit_suites=[]' >> "$out"
+      printf '%s\n' 'quickwit_suites=[]' 'images=[]' 'boinc_qwen_models=[]' 'boinc_surya_variants=[]' >> "$out"
       echo "OCR worker checks and attested release only; no application rollout"
       exit 0
       ;;
@@ -152,17 +167,20 @@ matches '^\.github/workflows/ci\.yml$' && {
   echo "workflow jobs changed, forcing:$forced"
 }
 # A workflow, or the composite action it builds with, is an input of its own
-# job: editing it runs that job and no other.
+# job: editing it runs that job and no other. The first argument may name more
+# than one output: an edit to the Qwen or Surya workflow builds every model or
+# variant.
 workflow_input() {
   local re="^\.github/(workflows/$2\.yml$"
   [ -z "${3:-}" ] || re="$re|actions/$3/"
   if matches "$re)"; then forced="$forced $1"; fi
 }
 workflow_input boinc_worker boinc-worker boinc-worker-build
-workflow_input boinc_qwen boinc-qwen boinc-qwen-build
-workflow_input boinc_surya boinc-surya boinc-surya-build
+workflow_input "boinc_qwen boinc_qwen_8b" boinc-qwen boinc-qwen-build
+workflow_input "boinc_surya boinc_surya_vulkan" boinc-surya boinc-surya-build
 workflow_input boinc_ndlocr boinc-ndlocr-lite
 workflow_input boinc_native boinc-quality-native
+workflow_input boinc_ocr_native boinc-ocr-native
 workflow_input ocr_dashboard ocr-dashboard
 # The composite actions ci.yml's jobs call are steps of those jobs, as if written in ci.yml:
 # editing one runs the jobs that call it, by the flags their `if:` lines read
@@ -171,7 +189,7 @@ action_input() {
   local action=$1; shift
   if matches "^\.github/actions/$action/"; then forced="$forced $*"; fi
 }
-action_input setup-rust rust quickwit page_language ocr_worker ocr_dash e2e
+action_input setup-rust rust queue quickwit page_language ocr_worker ocr_dash e2e
 action_input setup-node-web web e2e
 action_input build-check-image image contrib
 # Workflow files are settled above; they are not code for the file rules below.
@@ -206,13 +224,24 @@ web='^(web/|ocr/engines/engines\.toml$|ocr/engines/tesseract/models\.lock$|fixtu
 # Crates count for these two below, by closure.
 e2e="$rust_files|$web"
 image="$rust_files|^(web/|ocr/ja-ocr/|docker/|\.dockerignore$|infra/quickwit-image\.json$|scripts/data/build-page-language-words\.py$|scripts/ci/(check-(api|ingest|ja-ocr)-image|quickwit-image|roll-api|head-of-main|indexnow)\.sh$)"
+# What each image's build and smoke test read, for a pull request's matrix. Crates count by
+# what a release build of the image's root compiles (narrow_release, below), so usnm-ingest's
+# dev-dependency on usnm-api doesn't rebuild the ingest image for an API change. The Japanese
+# OCR image is Python; its tests also read usnm-core's page-language word list and parity
+# fixtures, and the script that writes the list.
+image_api="$rust_files|^(web/|docker/Dockerfile\.api$|\.dockerignore$|scripts/ci/check-api-image\.sh$)"
+image_ingest="$rust_files|^(docker/Dockerfile\.ingest$|\.dockerignore$|infra/quickwit-image\.json$|scripts/ci/check-ingest-image\.sh$)"
+image_ja_ocr='^(docker/Dockerfile\.ja-ocr$|\.dockerignore$|ocr/ja-ocr/|scripts/ci/check-ja-ocr-image\.sh$|scripts/data/build-page-language-words\.py$|crates/usnm-core/(data/page-language-words\.txt|tests/data/(damage|page-language)-parity\.jsonl\.zst)$)'
 # The BOINC integration tests execute this wrapper at run time. Its changes
 # need the Rust tests, but it is not an input to the serving/ingest images above.
 rust="$rust|^contrib-compute/images/server/bridge-job\.sh$|^scripts/ci/rust-test-times\.py$"
-# The queue job (usnm-store against PostgreSQL + pgmq) also runs for its schema and fixture (#967).
-rust="$rust|^scripts/onprem/queue/"
-# The OCR-quality results database (#962): its schema and loader, checked in the queue job.
-rust="$rust|^scripts/onprem/quality/"
+# The queue job: usnm-store and usnm-state (by closure, below) against PostgreSQL + pgmq, with
+# the queue's schema and fixture (#967) and the OCR-quality results database's schema and
+# loader (#962). No crate reads these scripts, so they are not the rust job's.
+queue='^(rust-toolchain\.toml$|scripts/onprem/(queue|quality)/)'
+# The profile lock and the NDLOCR-Lite pins it hashes: `routes check`'s
+# tests read them (#1481).
+rust="$rust|^ocr/engines/(profiles|ndlocr-lite/models)\.lock$"
 # The synthetic corpus must match its generator.
 fixtures='^fixtures/'
 # The OCR worker's EL9 build, RHEL 10 check and release, and the LAN dashboard's
@@ -232,11 +261,23 @@ ocr_dashboard=$ocr_dash
 boinc_worker='^(ocr/engines/tesseract/|ocr/engines/engines\.toml$|ocr/boinc/Containerfile$|scripts/boinc/smoke-worker\.py$|rust-toolchain\.toml$|\.dockerignore$)'
 boinc_qwen='^(ocr/boinc/qwen/|scripts/boinc/qwen_(disk|cold_cache)\.py$|rust-toolchain\.toml$|\.dockerignore$)'
 boinc_surya='^(ocr/boinc/surya/|rust-toolchain\.toml$|\.dockerignore$)'
-boinc_ndlocr='^(ocr/engines/ndlocr-lite/|ocr/boinc/ndlocr-lite/|scripts/boinc/smoke-ndlocr(-worker)?\.py$|ocr/ja-ocr/(testdata/|alto\.py$|jaocr\.py$)|rust-toolchain\.toml$|\.dockerignore$)'
+# What sets the second Qwen model (8b) and Surya variant (vulkan) apart from the first, so a pull
+# request builds them too (#1585): the image's own directory, whose pins usnm-boinc also embeds
+# (the Qwen weights and disk policy, the Surya engine lock with the Vulkan base), and the scripts
+# that check each Qwen payload. Crates, the files they embed elsewhere, the toolchain and
+# .dockerignore reach only the build stage and context the two share.
+boinc_qwen_8b='^(ocr/boinc/qwen/|scripts/boinc/qwen_(disk|cold_cache)\.py$)'
+boinc_surya_vulkan='^ocr/boinc/surya/'
+boinc_ndlocr='^(ocr/engines/ndlocr-lite/|ocr/boinc/ndlocr-lite/|scripts/boinc/smoke-ndlocr(-worker)?\.py$|ocr/ja-ocr/(testdata/|alto\.py$|jaocr\.py$|undigitized\.py$)|rust-toolchain\.toml$|\.dockerignore$)'
 # The native apps (boinc-quality-native.yml) build usnm-quality-app and
 # usnm-qwen-app and test those and the two crates they share with the engines;
-# usnm-ocr-contract's tests read the v1 contract files.
-boinc_native='^(ocr/contract/|ocr/boinc/qwen/amd-device-map\.cpp$|scripts/boinc/(test_amd_device_map\.py|patch_amd_vulkan_identity\.py|build_amd_vulkan_runtime\.ps1)$|rust-toolchain\.toml$)'
+# usnm-ocr-contract's tests read the v1 contract files. The Linux NVIDIA 2B release inputs
+# are assembled by qwen_vulkan_bundle.py within the disk policy's bundle bound and checked
+# against the 6 GB release's runtime (#1234).
+boinc_native='^(ocr/contract/|ocr/boinc/qwen/(amd-device-map\.cpp|disk-policy\.json)$|scripts/boinc/(test_amd_device_map\.py|patch_amd_vulkan_identity\.py|build_amd_vulkan_runtime\.ps1|(test_)?qwen_vulkan_bundle\.py)$|contrib-compute/infra/boinc/releases/prod-onprem-usnm_qwen-nvidia_vulkan_6gb_8b\.json$|rust-toolchain\.toml$)'
+# The native OCR app (boinc-ocr-native.yml) builds usnm-ocr-app and the static Tesseract, and
+# fetches the locked models for its smoke test.
+boinc_ocr_native='^(ocr/boinc/native/|scripts/boinc/smoke-native-ocr\.sh$|ocr/engines/tesseract/models\.lock$|rust-toolchain\.toml$|\.dockerignore$)'
 # The page-language detector's test on text of known language (05 §5.5.8):
 # the detector, its word lists and the language table it reads them by, its
 # crate's manifest and the lock file, the samples and their test, and the
@@ -429,6 +470,9 @@ narrow_examples() { _narrow examples "$@"; }
 narrow quickwit_parity usnm-search usnm-ingest
 narrow quickwit_pipeline usnm-ingest
 narrow image usnm-api usnm-ingest
+narrow_release image_api usnm-api
+narrow_release image_ingest usnm-ingest
+narrow queue usnm-store usnm-state
 narrow e2e usnm-api
 narrow_release ocr_worker usnm-ocr-worker
 narrow_release ocr_dash usnm-ocr-dash
@@ -438,6 +482,7 @@ narrow_release boinc_qwen usnm-boinc
 narrow_release boinc_surya usnm-boinc
 narrow_examples boinc_ndlocr usnm-boinc usnm-ocr-adapter
 narrow_examples boinc_native usnm-quality-app usnm-qwen-app usnm-ocr-quality usnm-ocr-contract
+narrow_examples boinc_ocr_native usnm-ocr-app
 # Changes to the shared Quickwit workflow/action or its matrix force both
 # suites; suite-specific workflow inputs can force just their own flag.
 if [[ " $forced " == *" quickwit "* ]] || [[ " $forced " == *" quickwit_suites "* ]]; then
@@ -445,14 +490,29 @@ if [[ " $forced " == *" quickwit "* ]] || [[ " $forced " == *" quickwit_suites "
 fi
 selected_parity=false
 selected_pipeline=false
-for part in rust quickwit_parity quickwit_pipeline web image e2e fixtures ocr_worker ocr_dash ocr_dashboard boinc_worker boinc_qwen boinc_surya boinc_ndlocr boinc_native; do
+# The images whose own inputs changed. Any of them also selects `image`, the union.
+images=()
+for part in image_api image_ingest image_ja_ocr; do
+  if matches_built "${!part}" || [[ " $forced " == *" $part "* ]]; then
+    name=${part#image_}
+    images+=("${name//_/-}")
+  fi
+done
+selected_image=false
+selected_qwen=false
+selected_surya=false
+for part in rust queue quickwit_parity quickwit_pipeline web image e2e fixtures ocr_worker ocr_dash ocr_dashboard boinc_worker boinc_qwen boinc_surya boinc_ndlocr boinc_native boinc_ocr_native; do
   if matches_built "${!part}" ||
     { [ "$part" = rust ] && matches '^fixtures/ocr-gold/bundle-v1\.lock\.json$'; } ||
+    { [ "$part" = image ] && [ "${#images[@]}" -gt 0 ]; } ||
     [[ " $forced " == *" $part "* ]]; then
     echo "$part=true" >> "$out"
     case "$part" in
       quickwit_parity) selected_parity=true ;;
       quickwit_pipeline) selected_pipeline=true ;;
+      image) selected_image=true ;;
+      boinc_qwen) selected_qwen=true ;;
+      boinc_surya) selected_surya=true ;;
     esac
   else echo "$part=false" >> "$out"; fi
 done
@@ -462,6 +522,33 @@ case "$selected_parity/$selected_pipeline" in
   false/true) echo 'quickwit=true'; echo 'quickwit_suites=["pipeline"]' ;;
   false/false) echo 'quickwit=false'; echo 'quickwit_suites=[]' ;;
 esac >> "$out"
+# A pull request builds the images whose inputs changed. It builds all three when the image job
+# or its action changed, or when only what publishing reads did (roll-api.sh, say), as main
+# and a dispatch always do.
+if [ "$selected_image" = false ]; then
+  echo 'images=[]'
+elif [ "${GITHUB_EVENT_NAME:-}" = pull_request ] && [ "${#images[@]}" -gt 0 ] &&
+  [[ " $forced " != *" image "* ]]; then
+  printf 'images=["%s"]\n' "$(printf '%s\n' "${images[@]}" | paste -sd, - | sed 's/,/","/g')"
+else
+  echo 'images=["api","ingest","ja-ocr"]'
+fi >> "$out"
+# variants OUTPUT SELECTED PART FIRST SECOND: the JSON list of what the image workflow builds when
+# SELECTED. A pull request builds FIRST alone unless PART (what sets SECOND apart) changed or was
+# forced by the workflow; anything else builds both.
+variants() {
+  local output=$1 selected=$2 part=$3 first=$4 second=$5
+  if [ "$selected" = false ]; then
+    echo "$output=[]"
+  elif [ "${GITHUB_EVENT_NAME:-}" = pull_request ] && ! matches_built "${!part}" &&
+    [[ " $forced " != *" $part "* ]]; then
+    printf '%s=["%s"]\n' "$output" "$first"
+  else
+    printf '%s=["%s","%s"]\n' "$output" "$first" "$second"
+  fi
+}
+variants boinc_qwen_models "$selected_qwen" boinc_qwen_8b 2b 8b >> "$out"
+variants boinc_surya_variants "$selected_surya" boinc_surya_vulkan cuda vulkan >> "$out"
 for part in page_language contrib ocr_gold edge; do
   if matches "${!part}" || [[ " $forced " == *" $part "* ]]; then echo "$part=true" >> "$out"; else echo "$part=false" >> "$out"; fi
 done
@@ -471,8 +558,12 @@ echo "boinc_pages=$boinc_pages" >> "$out"
 if [ -n "$files" ] || [[ " $forced " == *" code "* ]]; then echo "code=true" >> "$out"; else echo "code=false" >> "$out"; fi
 # The infra job's Bicep, naming, workbook and script-test steps read nothing in
 # the dashboard crate's src/ and tests/ (its manifest is read, with every
-# crate's, by the selector's own tests), so a change confined to them skips
+# crate's, by the selector's own tests), the API's site presentation, or web/
+# but for web/public/ (indexnow.sh and the native OCR smoke test read it),
+# web/src/examples.json (compare-versions.py reads it) and shell scripts
+# (test_boinc_scripts.py reads every one). A change confined to them skips
 # those steps. Anything else, a crate's other Rust sources included, runs them.
-infra_files=$(grep -Ev '^crates/usnm-ocr-dash/(src|tests)/' <<< "$files" || true)
+infra_files=$( { grep -Ev '^(crates/usnm-ocr-dash/(src|tests)/|crates/usnm-api/src/(site\.rs$|site/)|web/)' <<< "$files"
+  grep -E '^web/(public/|src/examples\.json$)|^web/.*\.sh$' <<< "$files"; } || true)
 if [ -n "$infra_files" ] || [[ " $forced " == *" infra "* ]]; then echo "infra=true" >> "$out"; else echo "infra=false" >> "$out"; fi
 echo "provision=$provision" >> "$out"

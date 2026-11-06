@@ -401,6 +401,8 @@ class SearcherRollbackTemplate(unittest.TestCase):
             {"name": "USNM_PREWARM_STARTUP_BUDGET_SECS",
              "value": "[string(if(variables('holdReadyForWarmUp'), variables('startupWarmUpSecs'), 0))]"},
             {"name": "USNM_READY_CAP_SECS", "value": "[string(variables('readyCapSecs'))]"},
+            {"name": "USNM_SITEMAP_GENERATE",
+             "value": "[if(variables('holdReadyForWarmUp'), 'true', 'false')]"},
         ])
         self.assertEqual(variables["readyCapSecs"],
                          "[if(variables('holdReadyForWarmUp'), add(variables('startupWarmUpSecs'), 60), 60)]")

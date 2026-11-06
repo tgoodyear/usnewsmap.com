@@ -5,6 +5,7 @@
 //! text: pages appear by doc_id, with counts, sizes, times and engine tags.
 
 pub mod diagrams;
+pub mod feed;
 pub mod fetch;
 pub mod hosts;
 pub mod html;
@@ -15,6 +16,7 @@ pub mod public;
 pub mod queues;
 pub mod sset;
 pub mod tail;
+pub mod throughput;
 pub mod view;
 
 use std::collections::BTreeMap;
@@ -45,6 +47,7 @@ pub struct App {
     pub hosts: Mutex<Hosts>,
     pub ssets: Mutex<Ssets>,
     pub queues: Mutex<queues::Queues>,
+    pub throughput: Mutex<throughput::Throughput>,
     pub seed_plan_path: Option<PathBuf>,
     pub seed_plan: Mutex<Option<BTreeMap<String, String>>>,
     pub settings: Settings,
@@ -55,14 +58,20 @@ pub struct App {
     /// Serial Set fetch → the addresses that may push its status (the
     /// node that runs it).
     pub sset_pushers: BTreeMap<String, Allow>,
+    /// Throughput source → the addresses that may push it (its host's).
+    pub throughput_pushers: BTreeMap<String, Allow>,
+    pub feed_pushers: BTreeMap<String, Allow>,
+    pub feed_source_dir: Mutex<Option<PathBuf>>,
 }
 
 impl App {
     /// Read the files: the fetcher's, the hosts', the seed plan. Blocking.
+    /// One call at a time: the fetcher's files are read with the lock let
+    /// go, so views aren't held up ([`Fetch::poll_locked`]).
     pub fn poll_files(&self) {
         let now = Utc::now();
         self.pipeline.lock().expect("pipeline lock").poll(now);
-        self.fetch.lock().expect("fetch lock").poll(now);
+        Fetch::poll_locked(&self.fetch, now);
         self.hosts.lock().expect("hosts lock").poll(now);
         if let Some(p) = &self.seed_plan_path {
             let plan = match std::fs::read(p) {
@@ -136,6 +145,32 @@ impl App {
             now,
         );
         v.pipeline = self.pipeline.lock().expect("pipeline lock").view(now);
+        v.feed = feed::read(self.settings.feed_health_path.as_deref(), now);
+        v.throughput = throughput::view(
+            &self.throughput.lock().expect("throughput lock"),
+            &fetch.hourly,
+            fetch.hours_covered(),
+            now,
+        );
+        let (reasons, reasons_from) = fetch.failure_reasons(throughput::FETCH_REASONS);
+        let last_full_day = now.timestamp().div_euclid(throughput::HOUR) * throughput::HOUR
+            - throughput::DAY_HOURS * throughput::HOUR;
+        v.throughput.add_fetch(
+            throughput::FetchFacts {
+                read_at: fetch.index_read_at,
+                // The same hours as the pages, from a file of their own, which
+                // may not be there.
+                failed_day: fetch.failures_in_covered_hours(last_full_day),
+                last_failed: fetch
+                    .failures_read_at
+                    .and(fetch.failures.back())
+                    .map(|f| f.at),
+                reasons,
+                reasons_from,
+                seconds: fetch.download_seconds(last_full_day, throughput::DAY_HOURS),
+            },
+            now,
+        );
         self.queues
             .lock()
             .expect("queues lock")
@@ -218,6 +253,7 @@ async fn api_as(app: Arc<App>, part: &str, public: bool) -> Response {
         "serialset" => serde_json::to_value(&v.serial_set),
         "next" => serde_json::to_value(&v.next),
         "ocred" => serde_json::to_value(&v.ocred),
+        "throughput" => serde_json::to_value(&v.throughput),
         _ => return StatusCode::NOT_FOUND.into_response(),
     };
     let cache = if public { PUBLIC_CACHE } else { LAN_CACHE };
@@ -281,13 +317,103 @@ async fn put_sset(
     }
 }
 
+/// A collector pushes its hourly counts: only from its own host's address,
+/// and only its own source.
+async fn put_throughput(
+    State(app): State<Arc<App>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    Path(source): Path<String>,
+    body: Bytes,
+) -> Response {
+    let ip = peer.ip().to_canonical();
+    if !app
+        .throughput_pushers
+        .get(&source)
+        .is_some_and(|a| a.contains(ip))
+    {
+        tracing::info!(peer = %ip, source, "refused a throughput push");
+        return StatusCode::FORBIDDEN.into_response();
+    }
+
+    let now = Utc::now();
+    let packet = match throughput::parse(&body, &source, now) {
+        Ok(p) => p,
+        Err(e) => return (StatusCode::BAD_REQUEST, format!("{e:#}\n")).into_response(),
+    };
+    let saved = tokio::task::spawn_blocking(move || {
+        app.throughput
+            .lock()
+            .expect("throughput lock")
+            .apply(packet, now)
+    })
+    .await;
+    match saved {
+        Ok(Ok(())) => StatusCode::NO_CONTENT.into_response(),
+        Ok(Err(e)) => {
+            tracing::error!(
+                error = format!("{e:#}"),
+                "can't save the throughput history"
+            );
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+async fn put_feed_source(
+    State(app): State<Arc<App>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    Path(source): Path<String>,
+    body: Bytes,
+) -> StatusCode {
+    if !app
+        .feed_pushers
+        .get(&source)
+        .is_some_and(|a| a.contains(peer.ip().to_canonical()))
+    {
+        return StatusCode::FORBIDDEN;
+    }
+    tokio::task::spawn_blocking(move || {
+        let root = app.feed_source_dir.lock().expect("feed source lock");
+        let Some(root) = root.as_ref() else {
+            return StatusCode::SERVICE_UNAVAILABLE;
+        };
+        match feed::save_source(root, &source, &body, Utc::now()) {
+            Ok(()) => StatusCode::NO_CONTENT,
+            Err(_) => StatusCode::BAD_REQUEST,
+        }
+    })
+    .await
+    .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+/// 503 until the first read of the fetcher's files after a start is over,
+/// while the counts are partial; `/healthz` says only that it answers.
+async fn readyz(State(app): State<Arc<App>>) -> Response {
+    let warming = tokio::task::spawn_blocking(move || {
+        app.fetch.lock().expect("fetch lock").warming.is_some()
+    })
+    .await;
+    match warming {
+        Ok(false) => (StatusCode::OK, "ready\n").into_response(),
+        Ok(true) => (StatusCode::SERVICE_UNAVAILABLE, "warming\n").into_response(),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
 pub fn router(app: Arc<App>) -> Router {
     Router::new()
         .route("/", get(page))
         .route("/healthz", get(|| async { "ok\n" }))
+        .route("/readyz", get(readyz))
         .route("/api/{part}", get(api))
         .route("/api/host/{name}", put(put_host))
         .route("/api/sset/{name}", put(put_sset))
+        .route("/api/throughput/{source}", put(put_throughput))
+        .route(
+            "/api/feed-source/{source}",
+            put(put_feed_source).layer(DefaultBodyLimit::max(feed::MAX_SOURCE_BYTES)),
+        )
         .layer(DefaultBodyLimit::max(hosts::MAX_HOST_BYTES))
         .layer(middleware::from_fn_with_state(app.clone(), allow_only))
         .with_state(app)
@@ -324,8 +450,9 @@ pub fn public_router(app: Arc<App>) -> Router {
 /// Plain HTTP when the page itself is served over HTTPS: every request is
 /// redirected to `https://<authority>` (the name, and the port unless 443)
 /// with the same path and query, except
-/// the hosts' stats pushes (`PUT /api/host/{name}`) and the Serial Set
-/// status push (`PUT /api/sset/{name}`), which carry no secret,
+/// the hosts' stats pushes (`PUT /api/host/{name}`), the Serial Set status
+/// push (`PUT /api/sset/{name}`) and the throughput counters
+/// (`PUT /api/throughput/{source}`), which carry no secret,
 /// are checked by address, and come from `curl` that doesn't follow
 /// redirects. The same `--allow` as the page.
 pub fn redirect_router(app: Arc<App>, authority: &str) -> Router {
@@ -338,6 +465,14 @@ pub fn redirect_router(app: Arc<App>, authority: &str) -> Router {
         // Any other method on the push path is redirected too, not a 405.
         .route("/api/host/{name}", put(put_host).fallback(redirect.clone()))
         .route("/api/sset/{name}", put(put_sset).fallback(redirect.clone()))
+        .route(
+            "/api/throughput/{source}",
+            put(put_throughput).fallback(redirect.clone()),
+        )
+        .route(
+            "/api/feed-source/{source}",
+            put(put_feed_source).layer(DefaultBodyLimit::max(feed::MAX_SOURCE_BYTES)),
+        )
         .fallback(redirect)
         .layer(DefaultBodyLimit::max(hosts::MAX_HOST_BYTES))
         .layer(middleware::from_fn_with_state(app.clone(), allow_only))
@@ -360,6 +495,9 @@ mod tests {
             hosts: Mutex::new(Hosts::new(Vec::new())),
             ssets: Mutex::new(Ssets::default()),
             queues: Mutex::new(queues::Queues::default()),
+            throughput: Mutex::new(throughput::Throughput::default()),
+            feed_pushers: BTreeMap::new(),
+            feed_source_dir: Mutex::new(None),
             seed_plan_path: None,
             seed_plan: Mutex::new(None),
             settings: Settings {
@@ -367,8 +505,14 @@ mod tests {
                 refresh_secs: 30,
                 guest_prefix: "usnm-".into(),
                 workbook_url: None,
+                feed_health_path: None,
             },
             allow: Allow::new(vec!["198.51.100.0/24".parse().unwrap()]),
+            throughput_pushers: [(
+                "ship".to_owned(),
+                Allow::new(vec!["198.51.100.14".parse().unwrap()]),
+            )]
+            .into(),
             pushers: [(
                 "pve".to_owned(),
                 Allow::new(vec!["198.51.100.12".parse().unwrap()]),
@@ -380,6 +524,112 @@ mod tests {
             )]
             .into(),
         })
+    }
+
+    #[tokio::test]
+    async fn feed_pushes_are_source_scoped_private_and_drive_the_stale_panel() {
+        let dir = std::env::temp_dir().join(format!("usnm-feed-route-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut a = app(&dir);
+        {
+            let a = Arc::get_mut(&mut a).unwrap();
+            a.feed_pushers.insert(
+                "client-own".into(),
+                Allow::new(vec!["198.51.100.14".parse().unwrap()]),
+            );
+            *a.feed_source_dir.get_mut().unwrap() = Some(dir.join("feed-sources"));
+            a.settings.feed_health_path = Some(dir.join("feed-health.json"));
+        }
+        let envelope = serde_json::json!({"schema_version":1,"source":"client",
+            "observed_at":Utc::now().timestamp(),"host_id":9});
+        let body = envelope.to_string();
+        let route = "/api/feed-source/client-own";
+        assert_eq!(
+            call(a.clone(), "198.51.100.15", "PUT", route, &body)
+                .await
+                .0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            call(
+                a.clone(),
+                "198.51.100.14",
+                "PUT",
+                "/api/feed-source/server",
+                &body
+            )
+            .await
+            .0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            call(a.clone(), "198.51.100.14", "PUT", route, &body)
+                .await
+                .0,
+            StatusCode::NO_CONTENT
+        );
+        assert!(dir.join("feed-sources/client-own.json").exists());
+        let public = public_router(a.clone())
+            .oneshot(
+                HttpRequest::builder()
+                    .method("PUT")
+                    .uri(route)
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(public.status(), StatusCode::NOT_FOUND);
+        let (_, html) = call(a.clone(), "198.51.100.14", "GET", "/", "").await;
+        assert!(html.contains("BOINC feed / stale data"));
+        assert!(html.contains("BOINC feed evidence is unavailable or invalid"));
+        let (_, json) = call(a.clone(), "198.51.100.14", "GET", "/api/view.json", "").await;
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&json).unwrap()["feed"]["stale"],
+            true
+        );
+        let checks = [
+            "qwen_refill_window",
+            "usnm_ocr_no_work",
+            "usnm_qwen_no_work",
+            "cpu_shortage",
+            "gpu_shortage",
+            "controller_tick",
+            "collection",
+            "feeder_allocation",
+        ]
+        .map(|code| {
+            let mut check = serde_json::json!({
+                "code": code, "state": "healthy", "duration_s": 0, "threshold_s": 0
+            });
+            if code == "cpu_shortage" {
+                check["idle_slots"] = 2.into();
+                check["eligible_results"] = 2.into();
+            } else if code == "gpu_shortage" {
+                check["state"] = "unknown".into();
+                check["reason"] = "gpu_memory_packing".into();
+            } else if code == "feeder_allocation" {
+                check["state"] = "pending".into();
+                check["reason"] = "registry_changed".into();
+                check["app_ids"] = serde_json::json!([3, 7]);
+            }
+            check
+        });
+        std::fs::write(
+            dir.join("feed-health.json"),
+            serde_json::json!({
+                "schema_version": 1, "event": "boinc_feed_health",
+                "observed_at": Utc::now().timestamp(), "checks": checks
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let (_, html) = call(a, "198.51.100.14", "GET", "/", "").await;
+        assert!(html.contains("2 modeled candidates / 2 resource-eligible own slots"));
+        assert!(html.contains("not guaranteed scheduler dispatch"));
+        assert!(html.contains("gpu_memory_packing"));
+        assert!(html.contains("registry_changed: app IDs 3, 7"));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[tokio::test]
@@ -467,7 +717,7 @@ mod tests {
         let path = dir.path().join("pipeline.json");
         std::fs::write(
             &path,
-            serde_json::to_vec(&pipeline::tests::fixture(now)).unwrap(),
+            serde_json::to_vec(&pipeline::tests::healthy(now)).unwrap(),
         )
         .unwrap();
         *a.pipeline.lock().unwrap() = pipeline::Pipeline::new(Some(path), 900);
@@ -534,6 +784,43 @@ mod tests {
             .map(|v| v.to_str().unwrap().to_owned());
         let b = axum::body::to_bytes(r.into_body(), 1 << 20).await.unwrap();
         ((status, String::from_utf8_lossy(&b).into_owned()), location)
+    }
+
+    #[tokio::test]
+    async fn readiness_waits_for_the_first_read_of_the_files_and_health_does_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = app(dir.path());
+        let get = |uri: &'static str| call(a.clone(), "198.51.100.50", "GET", uri, "");
+        let view = || async {
+            serde_json::from_str::<serde_json::Value>(&get("/api/view.json").await.1).unwrap()
+        };
+        let warming = (StatusCode::SERVICE_UNAVAILABLE, "warming\n".to_owned());
+        assert_eq!(get("/readyz").await, warming);
+        assert_eq!(get("/healthz").await, (StatusCode::OK, "ok\n".to_owned()));
+        assert!(view().await["warming"]["since"].is_string());
+        assert!(get("/")
+            .await
+            .1
+            .contains("<section class=\"wide\" id=\"warming\">"));
+        // The public listener has no readiness route.
+        let ((s, _), _) = call_on(
+            public_router(a.clone()),
+            "203.0.113.3",
+            "GET",
+            "/readyz",
+            "",
+        )
+        .await;
+        assert_eq!(s, StatusCode::NOT_FOUND);
+
+        let polled = a.clone();
+        tokio::task::spawn_blocking(move || polled.poll_files())
+            .await
+            .unwrap();
+        assert_eq!(get("/readyz").await, (StatusCode::OK, "ready\n".to_owned()));
+        assert_eq!(get("/healthz").await, (StatusCode::OK, "ok\n".to_owned()));
+        assert!(view().await["warming"].is_null());
+        assert!(!get("/").await.1.contains("id=\"warming\""));
     }
 
     #[tokio::test]
@@ -637,6 +924,166 @@ mod tests {
         assert!(page.contains("Serial Set"));
     }
 
+    fn throughput_push() -> String {
+        let hour = (Utc::now().timestamp() / 3600 - 1) * 3600;
+        format!(
+            r#"{{"schema":1,"source":"ship","observed_at":"{}","first_hour":{hour},"hours":1,
+                "series":{{"quality_load_pages":[200]}},
+                "limits":{{"quality_ship":"1 chunk a run on pve-laptop"}}}}"#,
+            Utc::now().to_rfc3339()
+        )
+    }
+
+    #[tokio::test]
+    async fn a_throughput_source_pushes_from_its_own_address_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = app(dir.path());
+        let body = throughput_push();
+        let push = |from, uri| call(a.clone(), from, "PUT", uri, &body);
+        assert_eq!(
+            push("198.51.100.50", "/api/throughput/ship").await.0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            push("198.51.100.14", "/api/throughput/boinc").await.0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            push("203.0.113.3", "/api/throughput/ship").await.0,
+            StatusCode::FORBIDDEN
+        );
+        let (s, _) = call(
+            a.clone(),
+            "198.51.100.14",
+            "PUT",
+            "/api/throughput/ship",
+            "{}",
+        )
+        .await;
+        assert_eq!(s, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            push("198.51.100.14", "/api/throughput/ship").await.0,
+            StatusCode::NO_CONTENT
+        );
+        // Plain HTTP takes the push too.
+        let ((s, _), _) = call_on(
+            redirect_router(a.clone(), "ocr.example.org"),
+            "198.51.100.14",
+            "PUT",
+            "/api/throughput/ship",
+            &body,
+        )
+        .await;
+        assert_eq!(s, StatusCode::NO_CONTENT);
+        let (_, json) = call(
+            a.clone(),
+            "198.51.100.50",
+            "GET",
+            "/api/throughput.json",
+            "",
+        )
+        .await;
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let step = v["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["id"] == "quality_load")
+            .unwrap();
+        assert_eq!(step["last_hour"], 200.0);
+        assert!(json.contains("1 chunk a run on pve-laptop"));
+        let (_, page) = call(a.clone(), "198.51.100.50", "GET", "/", "").await;
+        assert!(page.contains("id=\"step-throughput\""));
+        // On the public listener: in the view, scrubbed; no push and no part of its own.
+        let ((_, public), _) = call_on(
+            public_router(a.clone()),
+            "203.0.113.3",
+            "GET",
+            "/api/view.json",
+            "",
+        )
+        .await;
+        assert!(public.contains("\"quality_load\""));
+        assert!(public.contains("1 chunk a run on a lab host"));
+        assert!(leaks(&public).is_empty(), "{:?}", leaks(&public));
+        let ((s, _), _) = call_on(
+            public_router(a.clone()),
+            "203.0.113.3",
+            "GET",
+            "/api/throughput.json",
+            "",
+        )
+        .await;
+        assert_eq!(s, StatusCode::NOT_FOUND);
+        let ((s, _), _) = call_on(
+            public_router(a),
+            "198.51.100.14",
+            "PUT",
+            "/api/throughput/ship",
+            &body,
+        )
+        .await;
+        assert_eq!(s, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn failure_reasons_and_limits_are_scrubbed_on_the_public_listener() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = app(dir.path());
+        let now = Utc::now();
+        let hour = (now.timestamp() / 3600 - 1) * 3600;
+        {
+            let mut t = a.throughput.lock().unwrap();
+            let body = format!(
+                r#"{{"schema":1,"source":"ship","observed_at":"{}","first_hour":{hour},"hours":1,
+                    "series":{{"reason.controller.pve-lab-unreachable":[2],
+                               "reason.controller.usnm-ocr-node9-unreachable":[2],
+                               "reason.controller.bridge-submit-failed":[1],"ticks_failed":[3]}},
+                    "limits":{{"usnm_ocr.now":"225 runnable on usnm-ocr-node9 at 192.0.2.7:8381"}}}}"#,
+                now.to_rfc3339()
+            );
+            t.apply(
+                throughput::parse(body.as_bytes(), "ship", now).unwrap(),
+                now,
+            )
+            .unwrap();
+            let at = (now - chrono::Duration::hours(2)).to_rfc3339();
+            std::fs::write(
+                dir.path().join("index-full.jsonl"),
+                format!(
+                    "{{\"doc_id\":\"sn1\",\"fetched_at\":\"{at}\",\"bytes\":1,\"download_ms\":5}}\n"
+                ),
+            )
+            .unwrap();
+            std::fs::write(
+                dir.path().join("failures-full.jsonl"),
+                format!(
+                    "{{\"doc_id\":\"sn1\",\"kind\":\"transient\",\"error\":\"pve-lab at 192.0.2.7 refused from CT 999\",\"at\":\"{at}\"}}\n"
+                ),
+            )
+            .unwrap();
+            a.fetch.lock().unwrap().poll(now);
+        }
+        let (_, lan) = call(a.clone(), "198.51.100.50", "GET", "/", "").await;
+        assert!(lan.contains("bridge submit failed"));
+        assert!(lan.contains("pve lab unreachable"));
+        for path in ["/", "/api/view.json"] {
+            let ((s, body), _) =
+                call_on(public_router(a.clone()), "203.0.113.3", "GET", path, "").await;
+            assert_eq!(s, StatusCode::OK);
+            assert!(leaks(&body).is_empty(), "{path}: {:?}", leaks(&body));
+            for bad in ["pve lab", "pve-lab", "192.0.2", "CT 999"] {
+                assert!(!body.contains(bad), "{bad} in {path}");
+            }
+            assert!(body.contains("bridge submit failed"));
+            assert!(!body.contains("node9"), "{path}");
+            assert!(body.contains("a lab host"));
+            assert!(body.contains("an OCR node"));
+            assert!(body.contains("transient: a lab host at an address refused from a container"));
+            assert!(body.contains("225 runnable on an OCR node at an address"));
+        }
+    }
+
     /// The lab's names, numbers, paths and addresses, as the LAN sees them.
     fn realistic(dir: &std::path::Path) -> Arc<App> {
         use usnm_ocr_contract::status::{
@@ -687,6 +1134,9 @@ mod tests {
             hosts: Mutex::new(Hosts::new(Vec::new())),
             ssets: Mutex::new(Ssets::default()),
             queues: Mutex::new(queues::Queues::default()),
+            throughput: Mutex::new(throughput::Throughput::default()),
+            feed_pushers: BTreeMap::new(),
+            feed_source_dir: Mutex::new(None),
             seed_plan_path: None,
             seed_plan: Mutex::new(Some(
                 [("pve-big".to_owned(), "/etc/usnm/seed.env".to_owned())].into(),
@@ -696,10 +1146,12 @@ mod tests {
                 refresh_secs: 30,
                 guest_prefix: "usnm-".into(),
                 workbook_url: Some(workbook),
+                feed_health_path: None,
             },
             allow: Allow::new(vec!["198.51.100.0/24".parse().unwrap()]),
             pushers: BTreeMap::new(),
             sset_pushers: BTreeMap::new(),
+            throughput_pushers: BTreeMap::new(),
         });
         let guest = |vmid, kind: &str, name: &str, node: &str| PveGuest {
             vmid,

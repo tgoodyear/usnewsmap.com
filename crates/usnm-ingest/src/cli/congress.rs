@@ -303,14 +303,13 @@ pub(crate) async fn congress_serialset_command(
     let scratch = cli.stores.work_dir.join("serialset");
     std::fs::create_dir_all(&scratch).with_context(|| format!("creating {}", scratch.display()))?;
     let run_deadline = deadline(start, *max_runtime_secs);
-    // Sitemaps and MODS get 120 s a try, a PDF 30 minutes; every
-    // request ends within the grace after the deadline.
-    let fetch = usnm_congress::fetch::Http::new(
-        std::time::Duration::from_secs(*delay_secs),
-        serialset::USER_AGENT,
-        "GovInfo",
-    )?
-    .with_cutoff(run_deadline.map(|d| d + usnm_congress::fetch::REQUEST_GRACE));
+    // Sitemaps and MODS get 120 s a try, a PDF 30 minutes or as long as
+    // its size takes at 256 KiB/s (a 1.26 GB package PDF: about 80
+    // minutes), and only if the scratch disk has room for it with 512 MiB
+    // to spare; every request ends within the grace after the deadline. A
+    // redirect to GovInfo's error page is a 404.
+    let fetch = serialset::http(std::time::Duration::from_secs(*delay_secs))?
+        .with_cutoff(run_deadline.map(|d| d + usnm_congress::fetch::REQUEST_GRACE));
     let pdf = serialset::Pdftotext::new(pdftotext.clone());
     let opts = serialset::Options {
         base: govinfo_url.trim_end_matches('/').to_owned(),
@@ -368,6 +367,7 @@ pub(crate) async fn congress_serialset_command(
             tracing::warn!(
                 left = report.left,
                 incomplete = report.incomplete.len(),
+                rejected = report.bad_ids.len(),
                 "the Serial Set fetch isn't finished; no marker, and the next start fetches what's left"
             );
         }

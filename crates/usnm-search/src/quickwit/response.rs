@@ -5,11 +5,11 @@ use serde_json::Value;
 use usnm_core::query::Node;
 use usnm_core::time::BucketSpec;
 
-use super::error::{cause, splits_named};
+use super::error::{aggregation_limit, failure_cause, splits_named};
 use crate::snippet::{matched_in, opening_snippet, page_snippets};
 use crate::{
     ja_snippets, rank, CubeCell, Hit, HitsPage, IndexSet, KeyCount, PlaceSummary, SearchError,
-    Summary,
+    SnippetLength, Summary,
 };
 
 #[derive(Debug, Deserialize)]
@@ -58,6 +58,9 @@ pub struct StoredHit {
     pub ocr_source: Option<String>,
     #[serde(default)]
     pub ocr_engine: Option<String>,
+    /// The batch the page came from, for its viewer link.
+    #[serde(default)]
+    pub batch: String,
     /// A Congress page's stored fields (congress-index.yaml, #229).
     #[serde(flatten)]
     pub congress: crate::CongressFields,
@@ -72,7 +75,8 @@ impl StoredHit {
 }
 
 /// Reject responses that report partial failures, without echoing their
-/// content: the error names how many, what they were about ([`cause`]) and
+/// content: the error names how many, what they were about
+/// ([`failure_cause`]) and
 /// up to 5 of the failed splits, whose ids are opaque.
 pub fn check_complete(resp: &SearchResponse, query: &str) -> Result<(), SearchError> {
     if resp.errors.is_empty() {
@@ -83,7 +87,7 @@ pub fn check_complete(resp: &SearchResponse, query: &str) -> Result<(), SearchEr
     for e in &resp.errors {
         // Quickwit 0.9's REST response gives each error as a string.
         let text = e.as_str().map_or_else(|| e.to_string(), str::to_owned);
-        *causes.entry(cause(&text, query)).or_default() += 1;
+        *causes.entry(failure_cause(&text, query)).or_default() += 1;
         texts.push(text);
     }
     let causes: Vec<String> = causes.iter().map(|(c, n)| format!("{c}×{n}")).collect();
@@ -93,6 +97,10 @@ pub fn check_complete(resp: &SearchResponse, query: &str) -> Result<(), SearchEr
         causes.join(", "),
         splits_named(&texts.join(" "), query)
     );
+    // With any other failure among them, the search failed for that.
+    if texts.iter().all(|t| aggregation_limit(t).is_some()) {
+        return Err(SearchError::OverAggregationLimit(msg));
+    }
     Err(SearchError::Backend(msg))
 }
 
@@ -248,12 +256,14 @@ pub fn parse_cube(resp: &SearchResponse, spec: &BucketSpec) -> Result<Vec<CubeCe
 /// `indexes`: whether the search covered American Stories' text, whose
 /// snippets stand in when LoC's text has no match (05 §5.5.4), and the
 /// analyzer that folded a Japanese page's text, for its snippets (#168).
+/// `length`: how much text the snippets show around their matches.
 pub fn parse_hits(
     resp: SearchResponse,
     query: &Node,
     indexes: &IndexSet,
+    length: SnippetLength,
 ) -> Result<HitsPage, SearchError> {
-    hits_page(resp, Some(query), indexes)
+    hits_page(resp, Some((query, length)), indexes)
 }
 
 /// The pages of a [`browse_request`] (#274): each with the opening of its
@@ -265,11 +275,11 @@ pub fn parse_browse(resp: SearchResponse, indexes: &IndexSet) -> Result<HitsPage
     hits_page(resp, None, indexes)
 }
 
-/// The hits of `resp`, with snippets of `query`, or without one the
-/// opening of each page's text.
+/// The hits of `resp`, with snippets of `query` as long as it asks, or
+/// without one the opening of each page's text.
 fn hits_page(
     resp: SearchResponse,
-    query: Option<&Node>,
+    query: Option<(&Node, SnippetLength)>,
     indexes: &IndexSet,
 ) -> Result<HitsPage, SearchError> {
     let american_stories = indexes.american_stories();
@@ -301,9 +311,9 @@ fn hits_page(
                 None,
                 None,
             ),
-            Some(query) => {
+            Some((query, length)) => {
                 let (snippets, snippet_source) = match &d.printed {
-                    Some(printed) => (ja_snippets(printed, query, analyzer), None),
+                    Some(printed) => (ja_snippets(printed, query, analyzer, length), None),
                     None => page_snippets(
                         text,
                         d.text_as.as_deref(),
@@ -311,6 +321,7 @@ fn hits_page(
                         query,
                         american_stories,
                         layout,
+                        length,
                     ),
                 };
                 // Which texts match, from the same stored texts: no extra query.
@@ -339,6 +350,7 @@ fn hits_page(
             front_page,
             day,
             sort_key,
+            batch: d.batch,
             doc_id: d.doc_id,
             lccn: d.lccn,
             place_id: d.place_id,
@@ -363,6 +375,28 @@ mod tests {
     use usnm_core::text_layout::TextLayout;
     use usnm_core::time::BucketUnit;
 
+    /// Partial failures count as a refusal for size only when each of them
+    /// is the engine's refusal.
+    #[test]
+    fn partial_failures_are_a_size_refusal_only_when_all_of_them_are() {
+        let refusal = "Aborting aggregation because bucket limit was exceeded.";
+        let check = |errors: Vec<&str>| {
+            let resp: SearchResponse =
+                serde_json::from_value(json!({ "num_hits": 1, "errors": errors })).unwrap();
+            check_complete(&resp, "text:gold").unwrap_err()
+        };
+        assert!(matches!(
+            check(vec![refusal, refusal]),
+            SearchError::OverAggregationLimit(_)
+        ));
+        for errors in [
+            vec![refusal, "storage error"],
+            vec!["could not read the bucket from storage"],
+        ] {
+            assert!(matches!(check(errors), SearchError::Backend(_)));
+        }
+    }
+
     #[test]
     fn decodes_hits_from_stored_fields_only() {
         let resp: SearchResponse = serde_json::from_value(json!({
@@ -370,7 +404,7 @@ mod tests {
             "hits": [
                 {"doc_id": "sn99000001_1896-07-10_ed-1_seq-1", "date": "1896-07-10T00:00:00Z",
                  "place_id": "P00001", "lccn": "sn99000001", "edition": 1, "seq": 1,
-                 "text": "a <gold> b"},
+                 "text": "a <gold> b", "batch": "psu_pst_bonadea"},
                 {"doc_id": "sn99000001_1896-07-10_ed-1_seq-3", "date": "1896-07-10T00:00:00Z",
                  "place_id": "P00001", "lccn": "sn99000001", "edition": 1, "seq": 3}
             ]
@@ -380,6 +414,7 @@ mod tests {
             resp,
             &usnm_core::query::parse("gold").unwrap(),
             &stories(false),
+            SnippetLength::Standard,
         )
         .unwrap();
         assert_eq!(
@@ -388,6 +423,9 @@ mod tests {
         );
         assert!(page.hits[0].front_page);
         assert!(!page.hits[1].front_page);
+        // The batch picks the page's viewer link (04 §4.12); none is LoC's.
+        assert_eq!(page.hits[0].batch, "psu_pst_bonadea");
+        assert_eq!(page.hits[1].batch, "");
         assert_eq!(page.hits[0].snippets, vec!["a &lt;<mark>gold</mark>&gt; b"]);
         assert!(page.hits[1].snippets.is_empty());
         // Without the `days` aggregation (a later page), no count.
@@ -398,7 +436,9 @@ mod tests {
         .unwrap();
         let q = usnm_core::query::parse("gold").unwrap();
         assert_eq!(
-            parse_hits(first, &q, &stories(false)).unwrap().days,
+            parse_hits(first, &q, &stories(false), SnippetLength::Standard)
+                .unwrap()
+                .days,
             Some(2)
         );
     }
@@ -414,6 +454,7 @@ mod tests {
             offset: 0,
             limit: 20,
             days: true,
+            ..HitsQuery::default()
         };
         let mut f = filters();
         f.lccns = vec!["sn99000001".into()];
@@ -507,7 +548,9 @@ mod tests {
         }))
         .unwrap();
         let q = usnm_core::query::parse("gold").unwrap();
-        let hit = &parse_hits(resp, &q, &stories(false)).unwrap().hits[0];
+        let hit = &parse_hits(resp, &q, &stories(false), SnippetLength::Standard)
+            .unwrap()
+            .hits[0];
         assert!(!hit.front_page);
         assert_eq!((hit.seq, hit.place_id.as_str()), (1, "PC001"));
         assert_eq!(hit.congress.series.as_deref(), Some("globe"));
@@ -539,7 +582,7 @@ mod tests {
             .unwrap()
         };
         let q = usnm_core::query::parse("gold").unwrap();
-        let on = parse_hits(resp(), &q, &stories(true)).unwrap();
+        let on = parse_hits(resp(), &q, &stories(true), SnippetLength::Standard).unwrap();
         let matched: Vec<_> = on.hits.iter().map(|h| h.matched_in.clone()).collect();
         assert_eq!(
             matched,
@@ -549,7 +592,7 @@ mod tests {
                 Some(vec!["loc"]),
             ]
         );
-        let off = parse_hits(resp(), &q, &stories(false)).unwrap();
+        let off = parse_hits(resp(), &q, &stories(false), SnippetLength::Standard).unwrap();
         assert!(off.hits.iter().all(|h| h.matched_in.is_none()));
     }
 
@@ -576,7 +619,7 @@ mod tests {
         };
         let kept = stories(false).with_text_layout(TextLayout::SingleWithLoc);
         let q = usnm_core::query::parse(r#""Wege nach Mailand""#).unwrap();
-        let page = parse_hits(resp(), &q, &kept).unwrap();
+        let page = parse_hits(resp(), &q, &kept, SnippetLength::Standard).unwrap();
         assert_eq!(
             page.hits[0].snippets,
             ["Die Frauen waren auf dem <mark>Wege nach Mailand</mark> begriffen"]
@@ -587,7 +630,7 @@ mod tests {
         assert_eq!(page.hits[1].matched_in, Some(vec!["loc"]));
         // Layout 2 has no such field; a document that has it is read as before.
         let single = stories(false).with_text_layout(TextLayout::Single);
-        let page = parse_hits(resp(), &q, &single).unwrap();
+        let page = parse_hits(resp(), &q, &single, SnippetLength::Standard).unwrap();
         assert!(page.hits[0].snippets.is_empty());
         assert!(page.hits.iter().all(|h| h.matched_in.is_none()));
     }

@@ -23,12 +23,12 @@ scripts/azure/logs.sh --env prod --query-name curation-throughput --span 6h
 
 `scripts/azure/logs.sh` needs `az` signed in with access to the workspace and `jq`. The `ocr-node-*` queries run against the OCR nodes' own workspace, not the environment's. A name is lowercase letters, digits and hyphens, and the file must exist here. To add a query, add `queries/<name>.kql` with a first comment line that says what it shows.
 
-| Group              | Queries                                                                                                                                                        |
-| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| API and site       | `api-errors`, `api-requests`, `backend-latency`, `traffic`, `warm-up`                                                                                          |
-| Searcher           | `searcher-caches`, `searcher-health`, `searcher-threads`                                                                                                       |
-| Ingest and release | `curate-replicas`, `curation-throughput`, `errors-by-batch`, `index-layout`, `ingest-endings`, `job-executions`, `prune`, `release-progress`, `titles-archive` |
-| OCR                | `ocr-node-errors`, `ocr-node-health`, `ocr-node-updates` (the on-prem nodes), `ocr-quality` (the OCR quality audit of `ocr/ja-ocr/quality.py`)                 |
+| Group              | Queries                                                                                                                                                                                          |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| API and site       | `api-errors`, `api-requests`, `backend-latency`, `traffic`, `warm-up`                                                                                                                            |
+| Searcher           | `searcher-caches`, `searcher-health`, `searcher-threads`                                                                                                                                         |
+| Ingest and release | `curate-replicas`, `curation-throughput`, `errors-by-batch`, `index-layout`, `ingest-endings`, `job-executions`, `prune`, `release-progress`, `titles-archive`                                   |
+| OCR                | `ocr-node-errors`, `ocr-node-health`, `ocr-node-updates` (the on-prem nodes), `ocr-node-boinc-feed` (the BOINC feed evaluator), `ocr-quality` (the OCR quality audit of `ocr/ja-ocr/quality.py`) |
 
 Three queries are kept in step with workbook panels by a test: `ocr-node-health`, `searcher-caches` and `searcher-threads` (`scripts/ci/test_check_workbooks.py`). `ocr-node-health.kql` also holds the nodes' workspace cap (`cap_gb`), which `infra/modules/ocr-node-monitoring.bicep` repeats.
 

@@ -7,16 +7,22 @@ use std::fmt::Write as _;
 pub(super) fn pipeline_panel(v: &crate::pipeline::PipelineView) -> String {
     let mut o =
         String::from("<section class=\"wide\" id=\"corpus-data-flow\"><h2>Corpus data flow</h2>");
+    let historical = v.stage_freshness.iter().filter(|f| f.historical).count();
+    let current = match historical {
+        0 => "observed".to_owned(),
+        n => format!("Live stages current; {n} historical"),
+    };
     o.push_str(&badge(
         if v.stale { "warning" } else { "good" },
         if v.stale {
             "Some evidence old or unknown"
         } else {
-            "observed"
+            &current
         },
     ));
     o.push_str(
         "<p class=\"note\">Partial catalog; stage counts are separate from local worker totals, not whole-corpus totals. \
+        Historical stages come only from sources that will never report again; they keep their age and are left out of the overall evidence age. \
         <a href=\"/api/pipeline.json\">JSON</a></p>",
     );
     if let Some(s) = &v.snapshot {
@@ -43,7 +49,9 @@ pub(super) fn pipeline_panel(v: &crate::pipeline::PipelineView) -> String {
                     .map_or_else(|| "unknown".into(), time),
                 stage.count.map_or_else(|| "unknown".into(), int),
                 state,
-                if stage.state != crate::pipeline::StageState::Unknown
+                if stage.historical {
+                    " / historical"
+                } else if stage.state != crate::pipeline::StageState::Unknown
                     && freshness.is_none_or(|f| f.stale)
                 {
                     " / stale"
@@ -104,6 +112,7 @@ pub(crate) fn summary_stage<'a>(v: &'a View, id: &str) -> Option<&'a crate::pipe
     let freshness = pipeline.stage_freshness.iter().find(|s| s.id == id)?;
     (stage.state == crate::pipeline::StageState::Observed
         && stage.count.is_some()
+        && !stage.historical
         && !freshness.stale)
         .then_some(stage)
 }
@@ -339,7 +348,16 @@ pub(super) fn ecosystem_panel(v: &View) -> String {
         ("imported", "Curated imports"),
         ("indexed", "Search inclusion"),
     ] {
-        let _ = write!(publishing, "<li>{}: {}</li>", label, summary_count(v, id));
+        // The count's own label says what it covers: a trailing window or retained evidence.
+        let label = summary_stage(v, id)
+            .filter(|_| id == "imported")
+            .map_or(label, |s| s.label.as_str());
+        let _ = write!(
+            publishing,
+            "<li>{}: {}</li>",
+            esc(label),
+            summary_count(v, id)
+        );
     }
     let publication_connected = ["accepted", "imported", "indexed"]
         .iter()

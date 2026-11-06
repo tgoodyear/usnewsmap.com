@@ -293,6 +293,7 @@ access off and are reached through private endpoints in the project's VNet. The 
 `boinc.usnewsmap.com` with a managed certificate; #470 records a successful production health
 check. The master URL is part of every volunteer's attachment and cannot change.
 
+- The web server user runs the public PHP and shares a group with the project owner, so it can write `upload/`, `download/`, the logs and the page cache. `lock_code_trees` removes its write access to the project root, `html/`, `bin/`, `cgi-bin/`, `py/` and `apps/` at every start.
 - Keep the PHP surface small: disable forums, profiles, private messages and teams in
   `html/project/project.inc`. Account creation can use `INVITE_CODES` so the project starts
   effectively private (#441's pilot is a few friends).

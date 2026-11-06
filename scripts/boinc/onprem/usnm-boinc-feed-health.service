@@ -1,0 +1,19 @@
+[Unit]
+Description=Read-only BOINC feed health and durable alert windows
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=usnm-feed-monitor
+Group=usnm-feed-monitor
+StateDirectory=usnm-boinc-feed-health
+ExecStart=/usr/bin/python3 /opt/usnm-feed-monitor/feed_status.py --config /etc/usnm-boinc/feed-monitor.json --state-dir /var/lib/usnm-boinc-feed-health
+SyslogIdentifier=usnm-boinc-feed-health
+SyslogFacility=local0
+TimeoutStartSec=90
+MemoryMax=256M
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=false
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6

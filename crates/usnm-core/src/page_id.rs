@@ -11,6 +11,7 @@
 //! | `unt`       | `unt-{metadc}_p{seq}`                                          |
 //! | `lcg`       | `lcg-{series}-{volume}_p{seq}` (Congress.gov)                  |
 //! | `sample`    | `{dataset}/{sample id}`: a dataset sample with no known parent |
+//! | `ghn`       | Georgia Historic Newspapers, in a LoC `doc_id`'s shape         |
 //!
 //! An identity names a page, never a version or a container: a benchmark release or a gold
 //! bundle is the version of an artifact that holds pages, not part of their id.
@@ -47,15 +48,17 @@ pub enum Source {
     Unt,
     Lcg,
     Sample,
+    Ghn,
 }
 
 impl Source {
-    pub const ALL: [Source; 5] = [
+    pub const ALL: [Source; 6] = [
         Source::Loc,
         Source::Serialset,
         Source::Unt,
         Source::Lcg,
         Source::Sample,
+        Source::Ghn,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -65,6 +68,7 @@ impl Source {
             Source::Unt => "unt",
             Source::Lcg => "lcg",
             Source::Sample => "sample",
+            Source::Ghn => "ghn",
         }
     }
 }
@@ -222,7 +226,9 @@ fn check_local(source: Source, local: &str) -> Result<(), String> {
         return Err("each /-separated part must be a safe path segment".to_owned());
     }
     match source {
-        Source::Loc => {
+        // GHN runs Open ONI, so its pages have LoC's lccn/date/edition/sequence shape. The
+        // same shape under another source is a different page: it never gives a `PageKey`.
+        Source::Loc | Source::Ghn => {
             let key = PageKey::from_doc_id(local).map_err(|e: PageKeyError| e.to_string())?;
             if key.doc_id() == local {
                 Ok(())
@@ -280,6 +286,8 @@ mod tests {
             "lcg:lcg-crecb-1925_p3".to_owned(),
             "sample:bln600/pub-bln600-063".to_owned(),
             "sample:overproof/overproof-1".to_owned(),
+            "ghn:sn89053815_1876-10-15_ed-1_seq-1".to_owned(),
+            "ghn:gua1179162_1930-12-31_ed-2_seq-12".to_owned(),
         ] {
             let id: PageId = s.parse().unwrap_or_else(|e| panic!("{s}: {e}"));
             assert_eq!(id.to_string(), s);
@@ -299,6 +307,15 @@ mod tests {
         assert!(id.page_key().is_none());
         assert_eq!(id.stored(), "unt:unt-metadc123456_p12");
         assert_eq!(id.path(), "unt/unt-metadc123456_p12");
+    }
+
+    #[test]
+    fn a_ghn_page_is_not_the_loc_page_of_the_same_shape() {
+        let ghn: PageId = format!("ghn:{LOC}").parse().unwrap();
+        assert_ne!(ghn, LOC.parse::<PageId>().unwrap());
+        assert!(ghn.page_key().is_none());
+        assert_eq!(ghn.stored(), format!("ghn:{LOC}"));
+        assert_eq!(ghn.path(), format!("ghn/{LOC}"));
     }
 
     #[test]
@@ -332,6 +349,10 @@ mod tests {
             "sample:bln600/_x",
             "unt:unt-metadc123456_p+1",
             "loc:",
+            "ghn:",
+            "ghn:sn85055101_1917-04-03_ed-01_seq-3",
+            "ghn:sn85055101_1917-4-3_ed-1_seq-3",
+            "ghn:sn85055101/1917-04-03_ed-1_seq-3",
         ] {
             assert!(bad.parse::<PageId>().is_err(), "{bad}");
         }

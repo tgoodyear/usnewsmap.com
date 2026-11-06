@@ -70,7 +70,9 @@ impl From<SearchError> for ApiError {
         match e {
             SearchError::Unsupported(what) => Self::Unsupported(what),
             SearchError::Timeout => Self::Timeout,
-            SearchError::Backend(msg) => Self::Backend(msg),
+            SearchError::Backend(msg) | SearchError::OverAggregationLimit(msg) => {
+                Self::Backend(msg)
+            }
             SearchError::Rejected(msg) => Self::BackendRejected(msg),
             // Only a version's load looks indexes up, so a search never sees it.
             e @ SearchError::MissingIndex(_) => Self::Backend(e.to_string()),

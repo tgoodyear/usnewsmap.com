@@ -35,6 +35,11 @@ pub struct Config {
     #[serde(default)]
     pub scope: Option<crate::trust::Scope>,
     pub engine: gold::job::Engine,
+    /// A native gold campaign (#1418): only these hosts get a unit, through the native app.
+    /// Empty for a container campaign. It's a list because BOINC can't tell which hosts a
+    /// native build suits, and nothing else limits who a campaign reaches.
+    #[serde(default)]
+    pub native_hosts: BTreeSet<u64>,
     pub max_hosts: usize,
     pub max_spots: usize,
     /// One job in every N, selected deterministically from its digest.
@@ -73,6 +78,10 @@ impl Config {
             "max_spots must be 1 to 100"
         );
         ensure!(c.sample_every > 0, "sample_every must be positive");
+        ensure!(
+            !c.native_hosts.contains(&0),
+            "native_hosts must be positive ids"
+        );
         ensure!(
             c.engine
                 .image

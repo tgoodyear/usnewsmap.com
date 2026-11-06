@@ -156,6 +156,11 @@
       "x-usnm-visibility": "public",
       "type": "boolean"
     },
+    "USNM_DATA_PRIVATE_ENDPOINTS": {
+      "x-usnm-visibility": "public",
+      "type": "boolean",
+      "description": "Private endpoints for the data lake, the index account and Cosmos. Default true. False: service endpoints and firewall rules for snet-cae instead (ADR-0008, amendment of November 2026)."
+    },
     "USNM_DNS_ZONE": {
       "x-usnm-visibility": "public",
       "type": "string"
@@ -187,6 +192,12 @@
       "x-usnm-visibility": "local",
       "description": "Local: in the environment's local settings file. The image tag dev runs, which scripts/azure/stand-up.sh sets to the commit it builds; elsewhere the default (main).",
       "not": {}
+    },
+    "USNM_INDEX_ACCESS_TIER": {
+      "x-usnm-visibility": "public",
+      "type": "string",
+      "enum": ["Hot", "Cool"],
+      "description": "The index account's default access tier. Default Hot. See docs/operations/search-serving.md, The Azure cold spare."
     },
     "USNM_INDEX_STORAGE": {
       "x-usnm-visibility": "public",
@@ -281,6 +292,11 @@
       "x-usnm-visibility": "public",
       "type": "boolean"
     },
+    "USNM_OCR_LOCAL_COPY": {
+      "x-usnm-visibility": "public",
+      "type": "boolean",
+      "description": "Copy curated/ocr-local/ to a dataset on tank each day. The grant goes to USNM_SEARCH_LOG_COPY_HOST."
+    },
     "USNM_OCR_NODES": {
       "x-usnm-visibility": "public",
       "type": "boolean"
@@ -319,6 +335,16 @@
       "x-usnm-visibility": "public",
       "description": "Alert on the on-prem OCR pickup (#1139): a failed ocr-sync run, no run through the pickup for more than 2 hours, and node output left in ocr-out over 72 hours (usnm-ocrs-failed-alert-<env>, usnm-ocrs-stale-alert-<env>, usnm-ocrs-backlog-alert-<env>), from the metrics it sends to the environment's Application Insights. With USNM_OCR_SYNC_ONPREM and alert emails.",
       "type": "boolean"
+    },
+    "USNM_BOINC_FEED_ALERTS": {
+      "x-usnm-visibility": "public",
+      "description": "Alert on the live BOINC feed health (#1441): a data collection rule for the evaluator host's local0 lines into the OCR nodes' workspace (usnm-boinc-feed-dcr-<env>) and two log alerts through the action group (usnm-boinc-feed-condition-alert-<env>, usnm-boinc-feed-missing-alert-<env>). With USNM_OCR_NODES, alert emails and USNM_BOINC_FEED_MACHINE; after provisioning, associate the host with the rule by hand (docs/boinc/boundaries-and-monitoring.md).",
+      "type": "boolean"
+    },
+    "USNM_BOINC_FEED_MACHINE": {
+      "x-usnm-visibility": "private",
+      "description": "Private: in the settings store, under the environment's label. The BOINC feed evaluator host's Arc machine name in the environment's resource group, with USNM_BOINC_FEED_ALERTS (#1441).",
+      "not": {}
     },
     "USNM_BATCH_HOST": {
       "x-usnm-visibility": "private",
@@ -378,6 +404,10 @@
       "type": "string"
     },
     "USNM_OCR_SEED_SOURCE": {
+      "x-usnm-visibility": "public",
+      "type": "string"
+    },
+    "USNM_OCR_SEED_SUPERSESSION": {
       "x-usnm-visibility": "public",
       "type": "string"
     },

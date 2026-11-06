@@ -11,6 +11,8 @@ import sys
 import time
 
 LOCK_FD = None
+# EX_TEMPFAIL: another step held the production step lock, so the operation did not start.
+BUSY = 75
 
 
 def image_id(value):
@@ -216,7 +218,12 @@ def main():
     value = json.loads(args.payload)
     if args.lock_fd is None:
         with open("/run/usnm-boinc-step.lock", "a") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                print("another step holds the production step lock; " + args.operation + " did not start",
+                      file=sys.stderr)
+                return BUSY
             return supervise(args, lock)
     with os.fdopen(args.lock_fd, "a") as lock:
         inherited, expected = os.fstat(lock.fileno()), os.stat("/run/usnm-boinc-step.lock")

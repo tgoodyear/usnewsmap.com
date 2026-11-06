@@ -21,12 +21,15 @@ pub struct Counts {
 
 /// gold.py's `cer_wer`: the transcription is normalized as truth, the hypothesis as plain text.
 pub fn cer_wer(truth: &str, hyp: &str) -> Counts {
-    let t = text::normalize(truth, true);
-    let h = text::normalize(hyp, false);
-    let (tw, hw) = (text::py_split(&t), text::py_split(&h));
+    counts(&text::normalize(truth, true), &text::normalize(hyp, false))
+}
+
+/// Edit counts of `hyp` against `reference`, both already normalized with [`text::normalize`].
+pub fn counts(reference: &str, hyp: &str) -> Counts {
+    let (tw, hw) = (text::py_split(reference), text::py_split(hyp));
     Counts {
-        ref_chars: t.chars().count(),
-        char_edits: distance::chars(&t, &h),
+        ref_chars: reference.chars().count(),
+        char_edits: distance::chars(reference, hyp),
         ref_words: tw.len(),
         word_edits: distance::words(&tw, &hw),
     }

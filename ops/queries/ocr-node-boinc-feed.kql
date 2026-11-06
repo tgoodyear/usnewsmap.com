@@ -1,0 +1,21 @@
+// The BOINC feed evaluator's lines (#1441), one row per machine and event,
+// newest first, from the OCR nodes' workspace usnm-ocr-log-<env>
+// (scripts/azure/logs.sh runs ocr-node-* queries there): how many arrived,
+// the first and last arrival, and the last observed_at they carry.
+// boinc_feed_health is the minute's health document; boinc_feed_delivery_test
+// is the end-to-end notification check (feed_status.py --delivery-test). The
+// alerts read only USNM_BOINC_FEED_MACHINE's rows
+// (infra/modules/boinc-feed-alerts.bicep), so Machine must be that name.
+// No Syslog table yet gives no rows, not an error.
+let machines = "/providers/microsoft.hybridcompute/machines/";
+let node_of = (id: string) { tolower(extract(@"(?i)/machines/([^/]+)$", 1, id)) };
+union isfuzzy=true
+    (Syslog
+    | where _ResourceId contains machines and ProcessName == "usnm-boinc-feed-health"
+    | extend Feed = parse_json(SyslogMessage)
+    | project TimeGenerated, Machine = node_of(_ResourceId), Event = tostring(Feed.event),
+        Observed = unixtime_seconds_todatetime(tolong(Feed.observed_at))),
+    (datatable(TimeGenerated: datetime, Machine: string, Event: string, Observed: datetime)[])
+| summarize Lines = count(), First = min(TimeGenerated), Last = max(TimeGenerated), LastObserved = max(Observed)
+    by Machine, Event
+| order by Last desc

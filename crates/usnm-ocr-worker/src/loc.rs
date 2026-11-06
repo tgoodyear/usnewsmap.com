@@ -95,7 +95,7 @@ pub use batch_route::{Bag, BatchPage};
 pub use pacer::Pacer;
 pub use types::{
     iiif_base, image_url, issue_id, page_images, FetchError, ImageSize, LocConfig, Scan,
-    ScanFormat, Server, IIIF_ROOT, MAX_IMAGE_BYTES, STORAGE_SERVICE_ROOT,
+    ScanFormat, Server, DEFAULT_MAX_IN_FLIGHT, IIIF_ROOT, MAX_IMAGE_BYTES, STORAGE_SERVICE_ROOT,
 };
 
 use fetch::{challenge, html_page, retry_after, ApiHealth, Got};
@@ -157,6 +157,9 @@ pub struct LocClient {
     health: Mutex<ApiHealth>,
     storage_health: Mutex<ApiHealth>,
     metrics: Metrics,
+    /// [`LocConfig::max_in_flight`]: a permit from the start of a request to
+    /// LoC's servers to the end of its body.
+    in_flight: tokio::sync::Semaphore,
 }
 
 impl std::fmt::Debug for LocClient {
@@ -234,11 +237,19 @@ impl LocClient {
             health: Mutex::new(ApiHealth::default()),
             storage_health: Mutex::new(ApiHealth::default()),
             bucket: cfg.bucket.clone().map(bucket::Bucket::new).transpose()?,
+            in_flight: tokio::sync::Semaphore::new(cfg.max_in_flight.max(1)),
             cfg,
             http,
             http_here,
             metrics: Metrics::global(),
         })
+    }
+
+    /// A slot for one request to LoC's servers ([`LocConfig::max_in_flight`]),
+    /// held until its body is read. Taken before the pacer's wait, so a slot
+    /// in the budget isn't spent waiting for it.
+    pub(crate) async fn in_flight(&self) -> tokio::sync::SemaphorePermit<'_> {
+        self.in_flight.acquire().await.expect("never closed")
     }
 
     /// The item JSON URL of `key`'s issue.

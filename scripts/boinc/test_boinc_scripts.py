@@ -1478,6 +1478,27 @@ class HandoffAndBridgeQualitySteps(unittest.TestCase):
         self.assertIn("--job " + "a" * 64 + " --job " + "b" * 64, call)
         self.assertNotEqual(self.handoff("dead-letter", JOB_IDS="a_b").returncode, 0)
 
+    def test_handoff_dead_letter_superseding_is_a_dry_run_unless_confirmed(self):
+        # #1417: an operator settles a page claimed again after its job was dead-lettered.
+        queue = "https://usnmst.queue.core.windows.net"
+        r = self.handoff("dead-letter", QUEUE_URL=queue, SUPERSEDES_FAILED_JOB="a" * 64)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        (call,) = self.calls()
+        self.assertIn("--supersedes-failed-job " + "a" * 64, call)
+        self.assertIn("--curated-url ", call)
+        self.assertNotIn("--confirm-message-sha256", call)
+        self.assertNotIn("--job ", call)
+        r = self.handoff("dead-letter", QUEUE_URL=queue, SUPERSEDES_FAILED_JOB="a" * 64,
+                         CONFIRM_MESSAGE_SHA256="c" * 64)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("--confirm-message-sha256 " + "c" * 64, self.calls()[-1])
+        for bad in (dict(SUPERSEDES_FAILED_JOB="a" * 63),
+                    dict(SUPERSEDES_FAILED_JOB="a" * 64, JOB_IDS="b" * 64),
+                    dict(SUPERSEDES_FAILED_JOB="a" * 64, CONFIRM_MESSAGE_SHA256="C" * 64),
+                    dict(JOB_IDS="b" * 64, CONFIRM_MESSAGE_SHA256="c" * 64)):
+            with self.subTest(bad=bad):
+                self.assertNotEqual(self.handoff("dead-letter", QUEUE_URL=queue, **bad).returncode, 0)
+
     def test_handoff_export_with_claims_downloads_each_claim_first(self):
         self.stub(self.COPY_STUB)
         r = self.handoff(
@@ -1622,11 +1643,52 @@ class HandoffAndBridgeQualitySteps(unittest.TestCase):
     def test_handoff_collect_batch_rejects_mixed_or_malformed_ids(self):
         j1 = "1" * 64
         for extra in ({"JOB_IDS": j1, "JOB_ID": j1}, {"JOB_IDS": "not-a-job"},
-                      {"JOB_IDS": ",".join([j1] * 101)}):
+                      {"JOB_IDS": ",".join([j1] * 101)}, {"JOB_IDS": j1, "COLLECT_PARALLEL": "0"},
+                      {"JOB_IDS": j1, "COLLECT_PARALLEL": "9"}, {"JOB_IDS": j1, "COLLECT_PARALLEL": "2x"},
+                      {"JOB_IDS": f"{j1},{j1}", "COLLECT_PARALLEL": "2"}):
             with self.subTest(extra=extra):
                 r = self.handoff("collect", **extra)
                 self.assertEqual(r.returncode, 1, r.stderr)
                 self.assertFalse([c for c in self.calls() if c.startswith("collect ")])
+
+    def test_handoff_collect_batch_runs_jobs_at_once_sharing_one_token_cache(self):
+        # #1447: COLLECT_PARALLEL collects that many jobs at once, starting the next as soon as
+        # any ends, and every usnm-boinc process of the execution shares one token cache, which
+        # goes when it ends.
+        j1, j2, j3 = "1" * 64, "2" * 64, "3" * 64
+        self.stub('printf "%s\\n" "${USNM_TOKEN_CACHE:-}" >> "$STUB_LOG.cache"\n'
+                  'case "$*" in\n'
+                  '  "handoff get-spool"*) for a in "$@"; do [ "$prev" = --trust-out ] && echo "{}" > "$a"; prev=$a; done; echo 8 ;;\n'
+                  '  "collect"*) all="$*"; job=${all#*--job }; job=${job%% *}; echo "start $job" >> "$STUB_LOG.order"\n'
+                  '    touch "$STUB_LOG.run.$$"; if [ "$job" = ' + j1 + ' ]; then sleep 1.5; else sleep 0.3; fi\n'
+                  '    ls "$STUB_LOG".run.* | wc -l >> "$STUB_LOG.peak"; rm "$STUB_LOG.run.$$"\n'
+                  '    echo "end $job" >> "$STUB_LOG.order"; [ "$job" != ' + j2 + ' ] || exit 4 ;;\n'
+                  'esac')
+        r = self.handoff("collect", JOB_IDS=f"{j1},{j2},{j3}", COLLECT_PARALLEL="2")
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertIn("collect failed for 1 of 3 jobs", r.stderr)
+        with open(self.log + ".order") as f:
+            order = f.read().splitlines()
+        self.assertEqual(sorted(order), sorted(f"{e} {j}" for e in ("start", "end") for j in (j1, j2, j3)))
+        # The slow first job doesn't hold up the third: it starts once the second ends.
+        self.assertLess(order.index(f"start {j3}"), order.index(f"end {j1}"), order)
+        with open(self.log + ".peak") as f:
+            self.assertEqual(max(int(n) for n in f.read().split()), 2)
+        with open(self.log + ".cache") as f:
+            caches = set(f.read().splitlines())
+        self.assertEqual(len(caches), 1, caches)
+        cache = caches.pop()
+        self.assertTrue(cache)
+        self.assertFalse(os.path.exists(cache))
+        # One the caller gives is used as it is, and kept.
+        os.remove(self.log + ".cache")
+        given = os.path.join(self.tmp, "tokens")
+        os.mkdir(given, 0o700)
+        r = self.handoff("collect", JOB_ID=j1, USNM_TOKEN_CACHE=given)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        with open(self.log + ".cache") as f:
+            self.assertEqual(set(f.read().splitlines()), {given})
+        self.assertTrue(os.path.isdir(given))
 
     def bridge_copy(self):
         share = os.path.join(self.tmp, "share")

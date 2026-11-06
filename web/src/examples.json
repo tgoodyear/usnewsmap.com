@@ -1797,12 +1797,12 @@
     "view": { "bucket": "month", "from": "1955-01-01", "q": "Roberto Clemente", "to": "1957-12-31" }
   },
   {
-    "aggregate": "q=Anna+May+Wong&mode=phrase&from=1961-01-01&to=1961-12-31&bucket=month",
-    "blurb": "The Chinese American screen pioneer's death prompted accounts of her film career.",
-    "era": "1945-1963",
+    "aggregate": "q=Anna+May+Wong&mode=phrase&from=1924-01-01&to=1941-12-31&bucket=year",
+    "blurb": "The Chinese American actress worked in silent films and Hollywood features from the 1920s.",
+    "era": "1929-1945",
     "id": "anna-may-wong",
-    "title": "Anna May Wong remembered",
-    "view": { "bucket": "month", "from": "1961-01-01", "q": "Anna May Wong", "to": "1961-12-31" }
+    "title": "Anna May Wong in film",
+    "view": { "bucket": "year", "from": "1924-01-01", "q": "Anna May Wong", "to": "1941-12-31" }
   },
   {
     "aggregate": "q=Everest&mode=phrase&from=1953-03-01&to=1953-08-31&bucket=month",
@@ -1813,12 +1813,12 @@
     "view": { "bucket": "month", "from": "1953-03-01", "q": "Everest", "to": "1953-08-31" }
   },
   {
-    "aggregate": "q=Antarctic+treaty&mode=phrase&from=1958-01-01&to=1961-12-31&bucket=month",
+    "aggregate": "q=Antarctic+AND+treaty&from=1958-01-01&to=1962-12-31&bucket=month",
     "blurb": "The treaty reserved Antarctica for peaceful activity and international scientific work.",
     "era": "1945-1963",
     "id": "antarctic-treaty",
     "title": "Antarctic Treaty",
-    "view": { "bucket": "month", "from": "1958-01-01", "q": "Antarctic treaty", "to": "1961-12-31" }
+    "view": { "bucket": "month", "from": "1958-01-01", "q": "Antarctic AND treaty", "to": "1962-12-31" }
   },
   {
     "aggregate": "q=International+Geophysical+Year&mode=phrase&from=1957-01-01&to=1958-12-31&bucket=month",
@@ -1879,12 +1879,12 @@
     "view": { "bucket": "month", "from": "1962-01-01", "q": "Telstar", "to": "1963-12-31" }
   },
   {
-    "aggregate": "q=Albany+AND+union&from=1754-01-01&to=1754-12-31&bucket=month",
-    "blurb": "Franklin promoted colonial union as delegates met at Albany in 1754.",
+    "aggregate": "q=Lafayette&mode=phrase&from=1824-06-01&to=1825-12-31&bucket=month",
+    "blurb": "Lafayette returned in 1824 and toured all 24 states over the next year.",
     "era": "1751-1828",
-    "id": "albany-union",
-    "title": "Albany Plan of Union",
-    "view": { "bucket": "month", "from": "1754-01-01", "q": "Albany AND union", "to": "1754-12-31" }
+    "id": "lafayette-tour",
+    "title": "Lafayette's American tour",
+    "view": { "bucket": "month", "from": "1824-06-01", "q": "Lafayette", "to": "1825-12-31" }
   },
   {
     "aggregate": "q=stamp+act&mode=phrase&from=1765-01-01&to=1766-12-31&bucket=month",
@@ -1895,16 +1895,16 @@
     "view": { "bucket": "month", "from": "1765-01-01", "q": "stamp act", "to": "1766-12-31" }
   },
   {
-    "aggregate": "q=Boston+AND+tea+AND+%28destroyed+OR+destruction%29&from=1773-12-01&to=1774-03-31&bucket=month",
+    "aggregate": "q=tea+AND+Boston&from=1773-11-01&to=1774-12-31&bucket=month",
     "blurb": "Colonists destroyed East India Company tea in Boston Harbor in December 1773.",
     "era": "1751-1828",
     "id": "boston-tea-party",
     "title": "Boston Tea Party",
     "view": {
       "bucket": "month",
-      "from": "1773-12-01",
-      "q": "Boston AND tea AND (destroyed OR destruction)",
-      "to": "1774-03-31"
+      "from": "1773-11-01",
+      "q": "tea AND Boston",
+      "to": "1774-12-31"
     }
   },
   {

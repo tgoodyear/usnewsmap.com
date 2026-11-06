@@ -8,7 +8,7 @@ const meta = (selector: string) => doc.querySelector(selector)?.getAttribute("co
 
 describe("index.html", () => {
   it("has a title, a description and a canonical URL", () => {
-    expect(doc.title).toBe("US News Map");
+    expect(doc.title).toBe("US News Map: historic American newspaper search");
     expect(meta('meta[name="description"]')).toBeTruthy();
     expect(doc.querySelector('link[rel="canonical"]')?.getAttribute("href")).toBe("https://usnewsmap.com/");
   });

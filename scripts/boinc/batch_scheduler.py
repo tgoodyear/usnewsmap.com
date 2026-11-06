@@ -2,6 +2,7 @@
 """One bounded BOINC OCR tick; offline validation unless explicitly --apply."""
 
 import argparse
+import concurrent.futures
 import contextlib
 import copy
 import fcntl
@@ -28,8 +29,12 @@ STAGES = {"prepared", "reserved", "submitting", "submitted", "published", "faile
 MAX_JOBS = 10000
 MAX_GLOBAL_PENDING = 100000
 DEFAULT_MAX_GLOBAL_PENDING = 1000
+# The feeder's shared-memory work slots (shmem_work_items in contrib-compute/boinc/config.xml.template).
+# With --other-app-budget, every app's unassimilated work, counted in full, stays under it (#1474).
+FEEDER_SHMEM_SLOTS = 4096
 MAX_STATUS_BYTES = 1024 * 1024
 MAX_FAILURE_OUTPUT_CHARS = 16384
+MAX_COLLECT_PARALLEL = 8  # handoff-job.sh's COLLECT_PARALLEL
 OCR_APP_NAME = "usnm_ocr"
 SUPPORTED_COHORT_APPS = (OCR_APP_NAME,)
 SURYA_APP_NAME = "usnm_surya"
@@ -56,6 +61,28 @@ def raise_transport_errors(errors):
             str(error) for error in [errors[0], *receipt_errors]
         )))
     raise errors[0]
+
+
+# The percentage of a lifetime cap past which a tick warns that history needs archiving (#1483).
+CAP_WARNING_PERCENT = 80
+
+
+def warn_near_cap(cap, count, limit, now=None):
+    """One event on stderr while a count that stops the tick at `limit` is past 80% of it, so
+    the cap is a warning before it is an outage (#1483). The tick itself is unchanged. Each cap
+    is checked once a tick, so it repeats each tick until history is archived."""
+    if count * 100 <= limit * CAP_WARNING_PERCENT:
+        return
+    try:
+        print(json.dumps({
+            "event": "boinc_batch_cap_warning", "schema_version": 1,
+            "at": int(time.time() if now is None else now),
+            "cap": cap, "count": count, "limit": limit,
+            "message": f"{cap} at {count} of {limit}: archive drained history (#1483) before it stops the tick",
+        }, sort_keys=True), file=sys.stderr, flush=True)
+    except (OSError, ValueError):
+        # A closed or broken log stream never stops a tick.
+        pass
 
 
 def require(ok, message):
@@ -562,6 +589,10 @@ class ClaimFailed(RuntimeError):
 # Most base batches one batched export execution takes (--batch-export): each is about half a
 # minute of the hand-off job's 30-minute timeout.
 EXPORT_BATCHES = 20
+# --rest-journals: requests at once, and the most changed journals a tick fetches one by one
+# before it takes one az download-batch of all of them (at this rate, a minute's work).
+JOURNAL_REQUESTS = 16
+JOURNAL_DELTA_REST = 2000
 
 ONPREM_HANDOFF = {"claim": ("claim", "release", "dead-letter"), "collect": ("collect",),
                   "export": ("export",)}
@@ -570,7 +601,7 @@ ONPREM_HANDOFF = {"claim": ("claim", "release", "dead-letter"), "collect": ("col
 class Transport:
     def __init__(self, config, directory, *, status_url=None, status_file=None,
                  batch_submit=False, batch_spool_out=False, batch_collect=False, batch_export=False,
-                 onprem_handoff=(), timings=None):
+                 onprem_handoff=(), timings=None, rest_journals=False, collect_parallel=1):
         self.config = config
         self.directory = directory
         self.status_url = status_url
@@ -581,9 +612,17 @@ class Transport:
         self.batch_submit = batch_submit
         self.batch_spool_out = batch_spool_out
         self.batch_collect = batch_collect
+        # Jobs the batched collect runs at once (COLLECT_PARALLEL, #1447): one by default.
+        require(1 <= collect_parallel <= MAX_COLLECT_PARALLEL and (collect_parallel == 1 or batch_collect),
+                f"collect_parallel is 1 to {MAX_COLLECT_PARALLEL}, and above 1 only with batch_collect")
+        self.collect_parallel = collect_parallel
         # One hand-off execution for all of a tick's export batches (HANDOFF_BATCHES), instead of
         # one per base batch: queued pages come from many batches.
         self.batch_export = batch_export
+        # List and fetch journals over the storage REST API, not one az process per list or file
+        # (--rest-journals): a list of the dispatch prefix costs az half a minute of CPU.
+        self.rest_journals = rest_journals
+        self._storage_token = None
         # The hand-off steps that run on the on-prem BOINC host through step_command
         # (usnm-boinc-step --target handoff, #967 phase 3) instead of the Azure hand-off job:
         # "claim" (with its release), "collect" and/or "export". Off by default.
@@ -731,9 +770,92 @@ class Transport:
         require(result.get("nonce") == nonce, "stale/concurrent inventory; another controller may be active")
         return result
 
+    def storage_token(self):
+        """A token for the storage REST API, from the identity az logged in with."""
+        # az hands back its cached token, which may be near its end: go by the token's own expiry.
+        if self._storage_token is None or self._storage_token[1] < time.time() + 600:
+            token = json.loads(self.run(["az", "account", "get-access-token", "--resource",
+                                         "https://storage.azure.com/", "--query",
+                                         "{token:accessToken,expires:expires_on}", "-o", "json"], "storage token"))
+            self._storage_token = (token["token"], int(token["expires"]))
+        return self._storage_token[0]
+
+    def storage_get(self, query):
+        """GET a path and query of the hand-off container, retrying transient failures. The token
+        goes in a header and never into an error."""
+        url = f"https://{self.config['account']}.blob.core.windows.net/boinc-handoff{query}"
+        headers = {"Authorization": f"Bearer {self.storage_token()}", "x-ms-version": "2023-11-03"}
+        for attempt in range(3):
+            try:
+                with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=60) as response:
+                    return response.read()
+            except OSError as error:  # URLError and HTTPError are OSErrors
+                if attempt == 2:
+                    raise RuntimeError(f"hand-off storage read failed: {type(error).__name__}") from None
+                time.sleep(1 + attempt)
+        raise AssertionError("unreachable")
+
+    def list_journal_prefix(self, digit):
+        """The name and ETag of every blob of the job ids that start with `digit`."""
+        entries, marker = [], ""
+        while True:
+            query = urllib.parse.urlencode({"restype": "container", "comp": "list", "maxresults": 5000,
+                                            "prefix": f"dispatch/jobs/{digit}", "marker": marker})
+            root = ET.fromstring(self.storage_get(f"?{query}"))
+            for blob in root.iterfind("./Blobs/Blob"):
+                entries.append({"name": blob.findtext("Name"), "etag": blob.findtext("Properties/Etag")})
+            marker = root.findtext("NextMarker") or ""
+            if not marker:
+                return entries
+
+    def journal_listing(self):
+        if not self.rest_journals:
+            return json.loads(self.az("list", "--prefix", "dispatch/jobs/", "--num-results", "*", "--query",
+                                      "[].{name:name,etag:properties.etag}", "-o", "json"))
+        # A job id starts with a hex digit, so one list per digit fetches the prefix in parallel.
+        self.storage_token()  # before the threads, so they share one
+        start, cpu = self.timings.clock(), self.timings.cpu()
+        passed = False
+        try:
+            with concurrent.futures.ThreadPoolExecutor(JOURNAL_REQUESTS) as pool:
+                listed = list(pool.map(self.list_journal_prefix, "0123456789abcdef"))
+            passed = True
+        finally:
+            self.timings.command("storage rest list", self.timings.clock() - start,
+                                 self.timings.cpu() - cpu, passed)
+        return [entry for entries in listed for entry in entries]
+
+    def download_journals(self, cache, names):
+        """Fetch these journals into the cache, each one replaced whole."""
+        if not self.rest_journals:
+            for name in names:
+                path = cache / name
+                path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+                self.az("download", "--name", name, "--file", str(path),
+                        "--overwrite", "true", "-o", "none")
+            return
+
+        def fetch(name):
+            data = self.storage_get("/" + urllib.parse.quote(name))
+            path = cache / name
+            path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+            partial = path.with_name(path.name + ".partial")
+            partial.write_bytes(data)
+            partial.replace(path)
+
+        self.storage_token()
+        start, cpu = self.timings.clock(), self.timings.cpu()
+        passed = False
+        try:
+            with concurrent.futures.ThreadPoolExecutor(JOURNAL_REQUESTS) as pool:
+                list(pool.map(fetch, names))
+            passed = True
+        finally:
+            self.timings.command("storage rest download", self.timings.clock() - start,
+                                 self.timings.cpu() - cpu, passed)
+
     def journal_inventory(self):
-        listing = json.loads(self.az("list", "--prefix", "dispatch/jobs/", "--num-results", "*",
-                                     "--query", "[].{name:name,etag:properties.etag}", "-o", "json"))
+        listing = self.journal_listing()
         require(isinstance(listing, list), "invalid dispatch inventory")
         snapshot = {}
         for entry in listing:
@@ -806,7 +928,7 @@ class Transport:
                         "invalid journal cache content inventory")
                 changed = [name for name in names if previous.get(name) != snapshot[name]]
                 # Bound CLI startups; broad changes keep the single batch download.
-                if len(changed) <= 32:
+                if len(changed) <= (JOURNAL_DELTA_REST if self.rest_journals else 32):
                     self.read_journal_cache(cache, previous, stored["files"])
                     delta = changed
         if not reusable:
@@ -822,11 +944,7 @@ class Transport:
                     path = cache / name
                     path.unlink()
                     path.parent.rmdir()
-                for name in delta:
-                    path = cache / name
-                    path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
-                    self.az("download", "--name", name, "--file", str(path),
-                            "--overwrite", "true", "-o", "none")
+                self.download_journals(cache, delta)
             else:
                 if cache.exists():
                     shutil.rmtree(cache)
@@ -1053,7 +1171,8 @@ class Transport:
                     errors.append(error)
         if self.batch_collect:
             try:
-                self.step("handoff", "collect", JOB_IDS=",".join(j for j, _ in pairs))
+                parallel = {"COLLECT_PARALLEL": str(self.collect_parallel)} if self.collect_parallel > 1 else {}
+                self.step("handoff", "collect", JOB_IDS=",".join(j for j, _ in pairs), **parallel)
             except RuntimeError as error:
                 errors.append(error)
         else:
@@ -1269,7 +1388,8 @@ def _select_cohort_entry(mapping, keys, *, allow_single_default=False):
 
 
 def resolve_watermarks(config, snapshot, status=None, *,
-                       low_watermark=None, high_watermark=None, max_global_pending=None):
+                       low_watermark=None, high_watermark=None, max_global_pending=None,
+                       other_app_budget=None):
     cohorts = config.get("cohorts") or {}
     app = normalize_cohort_apps(config.get("app", OCR_APP_NAME))
     platform = normalize_cohort_platform(config.get("platform", "all"))
@@ -1304,7 +1424,8 @@ def resolve_watermarks(config, snapshot, status=None, *,
     explicit_global = (max_global_pending if max_global_pending is not None
                        else config.get("max_global_pending"))
     cohort_mode = (status is not None or explicit_high is not None or explicit_low is not None or
-                   explicit_global is not None or "cohorts" in config or "cohort" in config)
+                   explicit_global is not None or other_app_budget is not None or
+                   "cohorts" in config or "cohort" in config)
 
     if explicit_high is not None:
         require(type(explicit_high) is int and 1 <= explicit_high <= MAX_JOBS,
@@ -1341,6 +1462,12 @@ def resolve_watermarks(config, snapshot, status=None, *,
         global_cap = max(DEFAULT_MAX_GLOBAL_PENDING, high_target, config["max_pending"])
     else:
         global_cap = high_target
+    if other_app_budget is not None:
+        # Against a cap set explicitly, as main checks it in a dry run. A budget as large as
+        # the cap would leave the cohort no share of it.
+        require(explicit_global is not None and type(other_app_budget) is int and
+                0 <= other_app_budget < min(global_cap, FEEDER_SHMEM_SLOTS),
+                "invalid other_app_budget")
 
     return {
         "app": app,
@@ -1351,8 +1478,51 @@ def resolve_watermarks(config, snapshot, status=None, *,
         "low_watermark": low_target,
         "high_watermark": high_target,
         "max_global_pending": global_cap,
+        "other_app_budget": other_app_budget,
+        "global_hard_cap": None if other_app_budget is None else FEEDER_SHMEM_SLOTS,
         "cohort_mode": cohort_mode,
     }
+
+
+def other_app_workunits(snapshot, app):
+    """Other apps' unassimilated workunits, by the server's per-app count, at most all of
+    `snapshot`'s. None from a server image without the count: then no work is other apps'
+    for the budget, and all of it counts in full."""
+    counts = snapshot.get("pending_workunits_by_app")
+    if counts is None:
+        return None
+    require(isinstance(counts, dict) and all(isinstance(name, str) and type(n) is int and n >= 0
+                                             for name, n in counts.items()),
+            "invalid per-app inventory counts")
+    return min(snapshot["pending_workunits"], sum(n for name, n in counts.items() if name != app))
+
+
+def counted_pending(info, pending, other):
+    """The part of `pending` (unassimilated workunits of every app plus retained backlog, `other`
+    of them other apps' by the server's per-app count) that max_global_pending counts. With
+    other_app_budget, other apps' work counts only up to the budget, so a backlog no host can
+    take can't fill the cap and starve the cohort (#1474); without it, all of it counts."""
+    budget = info["other_app_budget"]
+    return pending if budget is None else pending - max(0, other - budget)
+
+
+def global_room(info, pending, other):
+    """Room under the global caps, negative past one: max_global_pending for the counted part
+    and, with a budget, the feeder's slots for all of it, every app's work counted in full."""
+    room = info["max_global_pending"] - counted_pending(info, pending, other)
+    if info["global_hard_cap"] is not None:
+        room = min(room, info["global_hard_cap"] - pending)
+    return room
+
+
+def global_cap_reason(info, pending, other):
+    """Which global cap `pending` has reached, if any. The hard one first: raising
+    max_global_pending doesn't lift it."""
+    if info["global_hard_cap"] is not None and pending >= info["global_hard_cap"]:
+        return "global_hard_cap"
+    if counted_pending(info, pending, other) >= info["max_global_pending"]:
+        return "global_safety_cap"
+    return None
 
 
 def _extract_status(snapshot, transport, server_status=None, *, drain=False):
@@ -1548,11 +1718,17 @@ def held_results(state, held_jobs, now):
 
 
 def tick(config, state, transport, persist, now=None, *, drain=False, dead_letter_failed=False,
-         low_watermark=None, high_watermark=None, max_global_pending=None, server_status=None):
+         low_watermark=None, high_watermark=None, max_global_pending=None, server_status=None,
+         refill_cap=None, other_app_budget=None):
     if config.get("app") == SURYA_APP_NAME:
+        require(refill_cap is None, "--refill-cap is for OCR plans")
+        require(other_app_budget is None, "--other-app-budget is for OCR plans")
         return surya_tick(config, state, transport, persist, now, drain=drain,
                           low_watermark=low_watermark, high_watermark=high_watermark,
                           server_status=server_status)
+    # Claims, exports and submits per tick (#1447). Collection still takes up to batch_size, so a
+    # shorter tick doesn't leave held results that stop the next refill.
+    refill = config["batch_size"] if refill_cap is None else min(config["batch_size"], refill_cap)
     feed = QueueFeed(config, state, transport, persist) if config.get("source") == "queue" else None
     if feed:
         feed.restore()
@@ -1560,6 +1736,8 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
     now = time.time() if now is None else now
     require(snapshot["schema_version"] == 1 and -60 <= now - snapshot["created_at"] <= 3600,
             "inventory is not fresh")
+    if feed:
+        warn_near_cap("claims", len(feed.claims), MAX_JOBS, now)
     for key in ("pending_workunits", "active_hosts"):
         require(type(snapshot[key]) is int and snapshot[key] >= 0, "invalid capacity inventory")
     pending_jobs = snapshot["pending_jobs"]
@@ -1579,7 +1757,14 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         require(ID.fullmatch(job_id) and isinstance(job, dict) and job.get("stage") in STAGES
                 and (job.get("spool") is None or isinstance(job["spool"], str)),
                 "invalid server job record")
+    warn_near_cap("bridge_journals", len(server), MAX_JOBS, now)
+    warn_near_cap("existing_workunits", len(existing_jobs), MAX_JOBS, now)
+    spool = snapshot.get("spool_entries"), snapshot.get("spool_entries_limit")
+    if all(type(value) is int for value in spool) and spool[1] > 0:
+        warn_near_cap("spool_entries", *spool, now)
     records = transport.records()
+    # Here rather than in journal_inventory, which a tick runs several times.
+    warn_near_cap("dispatch_journals", len(records), MAX_JOBS, now)
     owned = owned_records(config, records)
     for record in owned.values():
         job_id = record["job"]["id"]
@@ -1622,17 +1807,19 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
     # collect, which otherwise stops at the first result it must hold.
     gold_runs = []
     if not drain and config.get("gold_onboarding"):
-        # The same cap and the same retained backlog the refill below counts, from the same
+        # The same caps and the same retained backlog the refill below counts, from the same
         # status. Without status there is no room for gold units (promotion still runs); the
         # status read after collection fails the tick as it always has.
         try:
             gold_status = _extract_status(snapshot, transport, server_status=server_status)
-            cap = resolve_watermarks(config, snapshot, gold_status, low_watermark=low_watermark,
-                                     high_watermark=high_watermark,
-                                     max_global_pending=max_global_pending)["max_global_pending"]
+            caps = resolve_watermarks(config, snapshot, gold_status, low_watermark=low_watermark,
+                                      high_watermark=high_watermark,
+                                      max_global_pending=max_global_pending,
+                                      other_app_budget=other_app_budget)
             uncollected, missing = retained_backlog(config, records, owned, selected, pending_jobs)
-            room = cap - (max(snapshot["pending_workunits"], ocr_workunit_counts(snapshot, pending_jobs)[0])
-                          + uncollected + len(missing))
+            in_flight = max(snapshot["pending_workunits"], ocr_workunit_counts(snapshot, pending_jobs)[0])
+            room = global_room(caps, in_flight + uncollected + len(missing),
+                               other_app_workunits(snapshot, caps["app"]) or 0)
         except (ValueError, KeyError, TypeError, OSError, RuntimeError):
             room = 0
         gold_runs, reserved = gold_onboarding(config, state, transport, persist, now,
@@ -1666,7 +1853,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
     cohort_info = resolve_watermarks(
         config, snapshot, status,
         low_watermark=low_watermark, high_watermark=high_watermark,
-        max_global_pending=max_global_pending,
+        max_global_pending=max_global_pending, other_app_budget=other_app_budget,
     )
     ocr_app = cohort_info["app"]
     active_hosts = cohort_info["active_hosts"]
@@ -1702,9 +1889,14 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         ocr_in_flight = global_in_flight
 
     other_pending = max(0, global_in_flight - ocr_in_flight)
+    # By the inventory's per-app count, which leaves out this tick's gold units: they count in
+    # full, having taken room under the cap.
+    other_workunits = other_app_workunits(snapshot, ocr_app)
+    budgeted_other = other_workunits or 0
     ocr_in_flight += bundled_pages
     cohort_pending = ocr_in_flight + uncollected_not_pending + len(missing)
     global_pending = global_in_flight + uncollected_not_pending + len(missing)
+    global_pending_counted = counted_pending(cohort_info, global_pending, budgeted_other)
     cohort_pending_results = (max(ocr_workunits, ocr_status_results) + bundled_pages
                               + uncollected_not_pending + len(missing))
     other_app_pending_results = other_status_results
@@ -1726,15 +1918,15 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         refilling = bool(state.get("refilling", False))
 
     cohort_free = max(0, high_target - pending) if refilling else 0
-    global_free = max(0, global_cap - global_pending)
+    global_free = max(0, global_room(cohort_info, global_pending, budgeted_other))
     free = min(cohort_free, global_free)
     submitted = 0
     if target and not held and not drain:
         if free > 0:
             if feed:
-                feed.fill(min(config["batch_size"], free), selected)
+                feed.fill(min(refill, free), selected)
             fresh = [page for page in config["pages"] if page["page"] not in selected][
-                :min(config["batch_size"], free)]
+                :min(refill, free)]
             for page in fresh:
                 selected[page["page"]] = now
             persist()
@@ -1743,7 +1935,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
                    (owned[page["page"]]["stage"] == "prepared"
                     and not owned[page["page"]].get("retry")))]
         if export:
-            export = export[:config["batch_size"]]
+            export = export[:refill]
             pages = {page["page"] for page in export}
             journals = [record["job"]["id"] for record in records
                         if record["job"]["message"]["page"] in pages]
@@ -1759,8 +1951,8 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
                       record["job"]["id"] not in pending_jobs | candidates for record in records)
         backlog += sum(page not in owned for page in selected)
         cohort_submit_room = max(0, target - ocr_in_flight - backlog)
-        global_submit_room = max(0, global_cap - global_in_flight - backlog)
-        submit_limit = min(config["batch_size"], cohort_submit_room, global_submit_room)
+        global_submit_room = max(0, global_room(cohort_info, global_in_flight + backlog, budgeted_other))
+        submit_limit = min(refill, cohort_submit_room, global_submit_room)
         to_submit = []
         for record in owned.values():
             job_id = record["job"]["id"]
@@ -1792,6 +1984,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
     else:
         state["refilling"] = refilling
 
+    global_block = global_cap_reason(cohort_info, global_pending, budgeted_other)
     if drain:
         backpressure = True
         backpressure_reason = "draining"
@@ -1801,18 +1994,18 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
     elif target == 0:
         backpressure = True
         backpressure_reason = "no_active_hosts"
-    elif cohort_mode and global_pending >= global_cap:
+    elif cohort_mode and global_block:
         backpressure = True
-        backpressure_reason = "global_safety_cap"
+        backpressure_reason = global_block
     elif pending >= target:
         backpressure = True
         backpressure_reason = "cohort_high_watermark"
     elif not refilling:
         backpressure = True
         backpressure_reason = "cohort_hysteresis"
-    elif global_pending >= global_cap:
+    elif global_block:
         backpressure = True
-        backpressure_reason = "global_safety_cap"
+        backpressure_reason = global_block
     else:
         backpressure = False
         backpressure_reason = None
@@ -1879,15 +2072,20 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
                                          default=0)),
         "backpressure": backpressure,
         "backpressure_reason": backpressure_reason,
+        "refill_cap": refill,
         "low_watermark": low_target,
         "high_watermark": high_target,
         "cohort_pending": cohort_pending,
         "other_app_pending": other_pending,
         "global_pending": global_pending,
+        "global_pending_counted": global_pending_counted,
+        "other_app_workunits": other_workunits,
         "cohort_pending_results": cohort_pending_results,
         "other_app_pending_results": other_app_pending_results,
         "global_pending_results": global_pending_results,
         "max_global_pending": global_cap,
+        "other_app_budget": cohort_info["other_app_budget"],
+        "global_hard_cap": cohort_info["global_hard_cap"],
         "cohort": {
             "name": cohort_info["cohort"],
             "app": ocr_app,
@@ -1921,6 +2119,14 @@ def main(argv=None):
                         help="runnable cohort high watermark target for refill")
     parser.add_argument("--max-global-pending", type=int, default=None,
                         help="global safety cap on total unassimilated work across all BOINC apps")
+    parser.add_argument("--refill-cap", type=int, default=None,
+                        help="claim, export and submit at most this many pages a tick (1-100; never more than "
+                             "batch_size, the default); collection still takes up to batch_size (#1447)")
+    parser.add_argument("--other-app-budget", type=int, default=None,
+                        help="count at most this many of other apps' unassimilated workunits toward "
+                             "--max-global-pending (needed, and above it), and hold all apps' work to the "
+                             f"feeder's {FEEDER_SHMEM_SLOTS} slots (#1474); needs the server's per-app "
+                             "inventory counts to take effect")
     parser.add_argument("--server-status-url", default=None,
                         help="optional https server_status.php?xml=1 URL for per-app queue counts")
     parser.add_argument("--server-status-file", type=Path, default=None,
@@ -1931,6 +2137,9 @@ def main(argv=None):
                         help="spool out a tick's results in one bridge execution (needs spool-out with HANDOFF_SPOOLS)")
     parser.add_argument("--batch-collect", action="store_true",
                         help="collect a tick's results in one hand-off execution (needs a hand-off image whose collect takes JOB_IDS)")
+    parser.add_argument("--collect-parallel", type=int, default=1,
+                        help=f"with --batch-collect, collect up to this many jobs at once (1 to {MAX_COLLECT_PARALLEL}, "
+                             "default 1; needs a hand-off image whose collect takes COLLECT_PARALLEL, #1447)")
     parser.add_argument("--dead-letter-failed", action="store_true",
                         help="send a queue-fed page whose BOINC workunit failed for good to ocr-deadletter and go on "
                              "(#1154; needs the hand-off identity's sender role on ocr-deadletter); without it such a "
@@ -1938,6 +2147,8 @@ def main(argv=None):
     parser.add_argument("--batch-export", action="store_true",
                         help="export a tick's pages from all their batches in one hand-off execution "
                              "(needs a hand-off image whose export takes HANDOFF_BATCHES)")
+    parser.add_argument("--rest-journals", action="store_true",
+                        help="list and fetch journals over the storage REST API with az's token")
     parser.add_argument("--onprem-handoff", action="append", choices=sorted(ONPREM_HANDOFF), default=[],
                         help="run this hand-off step (claim, with its release, or collect) on the on-prem BOINC "
                              "host through step_command instead of the Azure hand-off job; repeat for both (#967)")
@@ -1955,8 +2166,20 @@ def main(argv=None):
             })
         if args.max_global_pending is not None:
             require(1 <= args.max_global_pending <= MAX_GLOBAL_PENDING, "invalid max_global_pending")
+        if args.refill_cap is not None:
+            require(1 <= args.refill_cap <= 100, "invalid --refill-cap")
+            require(config.get("app") != SURYA_APP_NAME, "--refill-cap is for OCR plans")
+        if args.other_app_budget is not None:
+            require(config.get("app") != SURYA_APP_NAME, "--other-app-budget is for OCR plans")
+            # As the tick checks it, so a dry run catches it: below a cap set explicitly.
+            cap = (args.max_global_pending if args.max_global_pending is not None
+                   else config.get("max_global_pending"))
+            require(cap is not None and 0 <= args.other_app_budget < min(cap, FEEDER_SHMEM_SLOTS),
+                    "invalid other_app_budget")
         if args.server_status_url is not None:
             _validate_status_url(args.server_status_url)
+        require(1 <= args.collect_parallel <= MAX_COLLECT_PARALLEL, "invalid --collect-parallel")
+        require(args.collect_parallel == 1 or args.batch_collect, "--collect-parallel needs --batch-collect")
         surya = config.get("app") == SURYA_APP_NAME
         require(not args.onprem_handoff or (config.get("step_command") and not surya),
                 "--onprem-handoff needs a hand-off plan with step_command")
@@ -1982,6 +2205,9 @@ def main(argv=None):
                 "allocated_pages": len(config["pages"]),
                 "max_pending": config["max_pending"], "config_sha256": digest(config),
                 "onprem_handoff": sorted(set(args.onprem_handoff)),
+                "batch_size": config["batch_size"],
+                "refill_cap": (config["batch_size"] if args.refill_cap is None
+                               else min(config["batch_size"], args.refill_cap)),
             }
             if args.low_watermark is not None or "low_watermark" in config:
                 plan_event["low_watermark"] = (args.low_watermark if args.low_watermark is not None
@@ -1994,6 +2220,8 @@ def main(argv=None):
                     args.max_global_pending if args.max_global_pending is not None
                     else config["max_global_pending"]
                 )
+            if args.other_app_budget is not None:
+                plan_event["other_app_budget"] = args.other_app_budget
             print(json.dumps(plan_event))
             return 0
         args.state_dir = args.state_dir.resolve()
@@ -2015,8 +2243,8 @@ def main(argv=None):
                 status_url=args.server_status_url, status_file=args.server_status_file,
                 batch_submit=args.batch_submit, batch_spool_out=args.batch_spool_out,
                 batch_collect=args.batch_collect, batch_export=args.batch_export,
-                onprem_handoff=tuple(args.onprem_handoff),
-                timings=timings,
+                onprem_handoff=tuple(args.onprem_handoff), rest_journals=args.rest_journals,
+                collect_parallel=args.collect_parallel, timings=timings,
             )
             tick_kwargs = {"drain": args.drain, "dead_letter_failed": args.dead_letter_failed}
             if args.low_watermark is not None:
@@ -2025,6 +2253,10 @@ def main(argv=None):
                 tick_kwargs["high_watermark"] = args.high_watermark
             if args.max_global_pending is not None:
                 tick_kwargs["max_global_pending"] = args.max_global_pending
+            if args.refill_cap is not None:
+                tick_kwargs["refill_cap"] = args.refill_cap
+            if args.other_app_budget is not None:
+                tick_kwargs["other_app_budget"] = args.other_app_budget
             with transport.lock():
                 event = tick(config, state, transport, lambda: save(path, state), **tick_kwargs)
             # Again after the lease is released, so the line counts the release too.

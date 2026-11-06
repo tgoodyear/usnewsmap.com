@@ -262,3 +262,41 @@ async fn the_pacer_reports_its_hold() {
     tokio::time::sleep(Duration::from_secs(3601)).await;
     assert_eq!(pacer.held_until(), None);
 }
+
+/// However many pages are in flight, at most `max_in_flight` requests to
+/// LoC's servers are, from the start of each to the end of its answer.
+#[tokio::test]
+async fn requests_to_loc_are_capped_in_flight() {
+    let s = crate::standin::StandIn::start().await;
+    for i in 0..6 {
+        s.script(
+            &format!("/slow/{i}.jp2"),
+            crate::standin::Scripted::Slow(200, Duration::from_millis(300)),
+        );
+    }
+    let loc = Arc::new(
+        LocClient::new(LocConfig {
+            max_in_flight: 2,
+            ..super::batch_client(&s, Duration::ZERO, None, true).cfg
+        })
+        .unwrap(),
+    );
+    let t0 = std::time::Instant::now();
+    let tasks: Vec<_> = (0..6)
+        .map(|i| {
+            let (loc, url) = (Arc::clone(&loc), format!("{}/slow/{i}.jp2", s.root));
+            tokio::spawn(async move {
+                loc.get(&url, Server::Storage, MAX_IMAGE_BYTES, None)
+                    .await
+                    .unwrap();
+            })
+        })
+        .collect();
+    for t in tasks {
+        t.await.unwrap();
+    }
+    // Six answers of 300 ms, two at a time: at least three rounds.
+    let took = t0.elapsed();
+    assert!(took >= Duration::from_millis(880), "{took:?}");
+    assert_eq!(LocConfig::default().max_in_flight, 4);
+}

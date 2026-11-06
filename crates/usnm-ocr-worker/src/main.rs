@@ -437,8 +437,8 @@ enum Command {
         )]
         batch_cache: PathBuf,
         /// The host's global LoC budget (#962): a state file every LoC client
-        /// on the host shares, 45 requests a minute in all, 10 once LoC pushes
-        /// back. Without it, only this process's own gaps apply.
+        /// on the host shares, 20 requests a minute in all, 12 for 24 hours
+        /// after LoC pushes back. Without it, only this process's own gaps apply.
         #[arg(long, env = "USNM_LOC_GLOBAL_PACER")]
         loc_global_pacer: Option<PathBuf>,
         /// Copies of LoC's JP2s to ask before LoC, comma-separated: the
@@ -459,8 +459,8 @@ enum Command {
         /// each batch it holds (1,074 of 3,010 batches, 38.1% of pages, on 24
         /// October 2026), each checked as LoC's are. A manifest from it is
         /// kept under the LoC URL the batch's name gives, marked as a guess
-        /// until LoC confirms it. One request at a time, outside the host's
-        /// LoC budget; anything it can't serve goes to LoC. Only an
+        /// until LoC confirms it. One request at a time unless
+        /// `--loc-bucket-concurrency` says more, outside the host's LoC budget; anything it can't serve goes to LoC. Only an
         /// amazonaws.com host. Empty: off (the default).
         #[arg(long, env = "USNM_PREFETCH_LOC_BUCKET")]
         loc_bucket: Option<String>,
@@ -468,6 +468,19 @@ enum Command {
         /// next; at least 1000.
         #[arg(long, env = "USNM_PREFETCH_LOC_BUCKET_GAP_MS", default_value_t = 2000)]
         loc_bucket_gap_ms: u64,
+        /// Requests to LoC's bucket at once, 1 to 16. Above 1, the gap runs
+        /// from one request's start to the next's.
+        #[arg(
+            long,
+            env = "USNM_PREFETCH_LOC_BUCKET_CONCURRENCY",
+            default_value_t = 1
+        )]
+        loc_bucket_concurrency: usize,
+        /// Requests to LoC's own servers in flight at once, whatever
+        /// `--concurrency` is (1 to 16; LoC's bucket isn't counted).
+        #[arg(long, env = "USNM_PREFETCH_LOC_IN_FLIGHT", default_value_t = 4,
+              value_parser = clap::value_parser!(u16).range(1..=16))]
+        loc_in_flight: u16,
         /// Only pages of these awardees' batches, comma-separated (the
         /// batch name's first part, e.g. `nbu`); all by default.
         #[arg(long, env = "USNM_PREFETCH_AWARDEES", value_delimiter = ',')]
@@ -507,6 +520,92 @@ enum Command {
         /// At most this many archives this run.
         #[arg(long)]
         limit: Option<usize>,
+        /// A directory of host policies (one `<name>.toml` each), instead of the built-in ones.
+        #[arg(long, env = "USNM_FETCH_POLICIES")]
+        policies: Option<PathBuf>,
+        /// A mirror to prefer: an archive's URL is this plus its name.
+        #[arg(long, env = "USNM_BULK_MIRROR_URL", requires_all = ["mirror_manifest", "state"])]
+        mirror_url: Option<String>,
+        /// The mirror's manifest, naming each archive and its sha256.
+        #[arg(long, env = "USNM_BULK_MIRROR_MANIFEST", requires = "mirror_url")]
+        mirror_manifest: Option<PathBuf>,
+        /// Take archives only from the mirror, and ask LoC nothing.
+        #[arg(long, env = "USNM_BULK_MIRROR_ONLY", requires = "mirror_url")]
+        mirror_only: bool,
+        /// Keeps resumable `.part` files and the held-back and failure lists.
+        #[arg(long, env = "USNM_BULK_STATE")]
+        state: Option<PathBuf>,
+        /// Transfers at once, within each host's own limit.
+        #[arg(long, env = "USNM_BULK_WORKERS", default_value_t = 1)]
+        workers: usize,
+        /// Lowers the mirror's byte cap.
+        #[arg(long, env = "USNM_BULK_RATE_BYTES_PER_SEC")]
+        rate_bytes_per_sec: Option<u64>,
+    },
+    /// Georgia Historic Newspapers (#1193), as a dry run: which public-domain issues of titles
+    /// we lack to take, written to `titles.tsv`, `issues.tsv` and `summary.json`. Enqueues
+    /// nothing.
+    GhnCatalog {
+        /// GHN's IIIF documents: `newspapers.json` and `lccn/<lccn>.json`.
+        #[arg(long, env = "USNM_GHN_CACHE")]
+        cache: PathBuf,
+        /// Our published `batches.json`, for the titles we have.
+        #[arg(long)]
+        ours: PathBuf,
+        /// Where the lists go.
+        #[arg(long)]
+        out: PathBuf,
+        /// The last publication date taken (at most 1930-12-31).
+        #[arg(long)]
+        through: Option<chrono::NaiveDate>,
+        /// DLG's rights statements: TSV of LCCN, date and statement URI. Only NoC-US issues
+        /// are selected; without it every issue is listed as `unchecked`.
+        #[arg(long)]
+        rights: Option<PathBuf>,
+        /// Ask GHN for the documents not in the cache, through the `ghn` policy.
+        #[arg(long, requires = "pacer")]
+        fetch_metadata: bool,
+        /// GHN's budget, shared by every process that asks GHN anything; one run holds it at
+        /// a time.
+        #[arg(long, env = "USNM_GHN_PACER")]
+        pacer: Option<PathBuf>,
+        /// A directory of host policies (one `<name>.toml` each), instead of the built-in ones.
+        #[arg(long, env = "USNM_FETCH_POLICIES")]
+        policies: Option<PathBuf>,
+        /// At most this many title documents asked for this run.
+        #[arg(long)]
+        max_titles: Option<usize>,
+    },
+    /// Georgia Historic Newspapers' page images for `ghn-catalog`'s issues (#1193): each
+    /// issue's IIIF manifest and full-size JPEGs, through the `ghn` policy, each page with a
+    /// sidecar of its `ghn:` id, provenance and SHA-256. Enqueues no OCR.
+    GhnFetch {
+        /// `ghn-catalog`'s `issues.tsv`.
+        #[arg(long)]
+        issues: PathBuf,
+        /// Where manifests and pages go.
+        #[arg(long, env = "USNM_GHN_OUT")]
+        out: PathBuf,
+        /// GHN's budget, shared by every process that asks GHN anything; one run holds it at
+        /// a time.
+        #[arg(long, env = "USNM_GHN_PACER")]
+        pacer: PathBuf,
+        /// A directory of host policies (one `<name>.toml` each), instead of the built-in ones.
+        #[arg(long, env = "USNM_FETCH_POLICIES")]
+        policies: Option<PathBuf>,
+        /// At most this many issues started this run.
+        #[arg(long)]
+        limit: Option<usize>,
+        /// Stop starting files after this many hours; more than 23 is taken as 23.
+        #[arg(long, env = "USNM_GHN_MAX_HOURS", default_value_t = 20.0)]
+        max_hours: f64,
+        /// Keep at least this many GB free on the output's filesystem.
+        #[arg(long, env = "USNM_GHN_MIN_FREE_GB", default_value_t = 50)]
+        min_free_gb: u64,
+        /// Take issues whose rights statement wasn't checked (a sample, before DLG's rights
+        /// filter is in place).
+        #[arg(long)]
+        unchecked_rights: bool,
     },
     /// LoC's word confidence per page from the bulk OCR archives (#962): one Parquet file
     /// per archive, skipping archives already read. Reads only.
@@ -521,6 +620,44 @@ enum Command {
         #[arg(long, env = "USNM_LOC_ALTO_THRESHOLD", default_value_t = 0.5)]
         threshold: f64,
         /// At most this many archives this run.
+        #[arg(long)]
+        limit: Option<usize>,
+    },
+    /// Every word of LoC's OCR from the bulk OCR archives (#1424): one Parquet file per
+    /// archive, skipping archives already read. Reads only the archives.
+    LocAltoWords {
+        /// The archives (`bulk-ocr`'s output).
+        #[arg(long, env = "USNM_LOC_WORDS_ARCHIVES")]
+        archives: PathBuf,
+        /// Where the Parquet files go. Not `loc-alto-stats`' directory, whose files its loader
+        /// reads.
+        #[arg(long, env = "USNM_LOC_WORDS_OUT")]
+        out: PathBuf,
+        /// Archives read at once, one thread each.
+        #[arg(long, env = "USNM_LOC_WORDS_WORKERS", default_value_t = 1)]
+        workers: usize,
+        /// At most this many archives this run.
+        #[arg(long)]
+        limit: Option<usize>,
+        /// Starts no archive while the output's filesystem has less than this free, in GiB.
+        #[arg(long, env = "USNM_LOC_WORDS_MIN_FREE_GIB", default_value_t = 0)]
+        min_free_gib: u64,
+    },
+    /// Which software made LoC's OCR (the engine, its version, the wrapper and the vendor),
+    /// from the first page's ALTO header in each bulk OCR archive: one Parquet file, one row
+    /// an archive, for `load.py locsw`. Reads only.
+    LocSoftware {
+        /// The archives (`bulk-ocr`'s output).
+        #[arg(long, env = "USNM_LOC_SOFTWARE_ARCHIVES")]
+        archives: PathBuf,
+        /// The Parquet file to write (replaced whole). Not in `loc-alto-stats`' directory
+        /// itself, whose loader reads every `<batch>_verNN.parquet` there.
+        #[arg(long, env = "USNM_LOC_SOFTWARE_OUT")]
+        out: PathBuf,
+        /// Archives read at once, one thread each.
+        #[arg(long, env = "USNM_LOC_SOFTWARE_WORKERS", default_value_t = 2)]
+        workers: usize,
+        /// At most this many archives (the first, by name).
         #[arg(long)]
         limit: Option<usize>,
     },
@@ -786,8 +923,13 @@ mod cli_tests {
                 Command::Prefetch {
                     loc_bucket,
                     loc_bucket_gap_ms,
+                    loc_bucket_concurrency,
                     ..
-                } => loc_bucket_config(loc_bucket.as_deref(), loc_bucket_gap_ms),
+                } => loc_bucket_config(
+                    loc_bucket.as_deref(),
+                    loc_bucket_gap_ms,
+                    loc_bucket_concurrency,
+                ),
                 _ => panic!("expected prefetch"),
             }
         };
@@ -804,6 +946,14 @@ mod cli_tests {
         assert_eq!(b.gap, Duration::from_secs(9));
         assert!(bucket(&["--loc-bucket", root, "--loc-bucket-gap-ms", "0"]).is_err());
         assert!(bucket(&["--loc-bucket", "https://tile.loc.gov/"]).is_err());
+        // One request at a time unless told otherwise, at most 16.
+        assert_eq!(bucket(&["--loc-bucket", root]).unwrap().unwrap().lanes, 1);
+        let b = bucket(&["--loc-bucket", root, "--loc-bucket-concurrency", "8"])
+            .unwrap()
+            .unwrap();
+        assert_eq!(b.lanes, 8);
+        assert!(bucket(&["--loc-bucket", root, "--loc-bucket-concurrency", "0"]).is_err());
+        assert!(bucket(&["--loc-bucket", root, "--loc-bucket-concurrency", "17"]).is_err());
         // The environment, as the unit sets it.
         std::env::set_var(NAMES[0], root);
         std::env::set_var(NAMES[1], "7000");
@@ -818,12 +968,22 @@ mod cli_tests {
 
 #[derive(Subcommand)]
 enum RoutesCommand {
-    /// Refuse production candidates whose code or models fail the licence gate.
+    /// Refuse production candidates whose code or models fail the licence
+    /// gate, and profiles whose model files changed under the same profile
+    /// id (`profiles.lock`, 13 §13.7.2).
     Check {
         #[arg(long, env = "USNM_OCR_ENGINES")]
         engines: Option<PathBuf>,
         #[arg(long, default_value = "ocr/routing/routes.toml")]
         routes: PathBuf,
+        /// The profile lock; each engine's `models.lock` is read from its
+        /// directory.
+        #[arg(long, default_value = "ocr/engines/profiles.lock")]
+        lock: PathBuf,
+        /// Add entries for new profiles to the lock. A changed digest still
+        /// fails.
+        #[arg(long)]
+        update_lock: bool,
     },
 }
 
@@ -867,15 +1027,17 @@ enum Priority {
     Bulk,
 }
 
-/// LoC's bucket from `--loc-bucket` and `--loc-bucket-gap-ms`: `None` when
-/// the flag is absent or empty.
+/// LoC's bucket from `--loc-bucket`, `--loc-bucket-gap-ms` and
+/// `--loc-bucket-concurrency`: `None` when the flag is absent or empty.
 fn loc_bucket_config(
     root: Option<&str>,
     gap_ms: u64,
+    lanes: usize,
 ) -> anyhow::Result<Option<usnm_ocr_worker::loc::bucket::BucketConfig>> {
-    usnm_ocr_worker::loc::bucket::BucketConfig::at(
+    usnm_ocr_worker::loc::bucket::BucketConfig::with_lanes(
         root.unwrap_or_default(),
         Duration::from_millis(gap_ms),
+        lanes,
     )
 }
 
@@ -924,10 +1086,43 @@ async fn main() -> std::process::ExitCode {
     code
 }
 
+/// `routes check`'s profile lock: one model set per profile id (#1481).
+fn check_profile_lock(
+    catalog: &usnm_ocr_route::Catalog,
+    lock: &std::path::Path,
+    update: bool,
+) -> anyhow::Result<()> {
+    use usnm_ocr_route::lock;
+    let dir = lock.parent().unwrap_or(std::path::Path::new(""));
+    let current = lock::profile_digests(catalog, &lock::read_model_locks(dir)?)?;
+    let text = match std::fs::read_to_string(lock) {
+        Ok(text) => text,
+        Err(e) if update && e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", lock.display())),
+    };
+    let context = || format!("checking {}", lock.display());
+    if update {
+        let updated = lock::update(&text, &current).with_context(context)?;
+        if updated != text {
+            std::fs::write(lock, updated).with_context(|| format!("writing {}", lock.display()))?;
+        }
+    } else {
+        lock::verify(&text, &current).with_context(context)?;
+    }
+    println!("{} profiles match {}", current.len(), lock.display());
+    Ok(())
+}
+
 async fn command(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         Command::Routes {
-            command: RoutesCommand::Check { engines, routes },
+            command:
+                RoutesCommand::Check {
+                    engines,
+                    routes,
+                    lock,
+                    update_lock,
+                },
         } => {
             let catalog = match engines {
                 Some(path) => usnm_ocr_route::Catalog::load(&path)?,
@@ -938,7 +1133,7 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
                     .with_context(|| format!("reading {}", routes.display()))?,
             )?;
             println!("production route licences cleared");
-            Ok(())
+            check_profile_lock(&catalog, &lock, update_lock)
         }
         Command::Run {
             queue_url,
@@ -1146,6 +1341,8 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
             wayback_gap_ms,
             loc_bucket,
             loc_bucket_gap_ms,
+            loc_bucket_concurrency,
+            loc_in_flight,
             awardees,
             no_loc_prefixes,
         } => {
@@ -1161,7 +1358,11 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
                     Some(Arc::new(usnm_ocr_worker::loc::mirror::Mirrors::new(cfg)?))
                 }
             };
-            let bucket = loc_bucket_config(loc_bucket.as_deref(), loc_bucket_gap_ms)?;
+            let bucket = loc_bucket_config(
+                loc_bucket.as_deref(),
+                loc_bucket_gap_ms,
+                loc_bucket_concurrency,
+            )?;
             let loc = Arc::new(LocClient::new(LocConfig {
                 global_pacer: loc_global_pacer,
                 bucket,
@@ -1171,6 +1372,7 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
                 storage_own_budget,
                 batch_cache: Some(batch_cache),
                 html_is_block: true,
+                max_in_flight: usize::from(loc_in_flight),
                 ..LocConfig::default()
             })?);
             let opts = prefetch::Options {
@@ -1222,7 +1424,23 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
             max_hours,
             min_free_gb,
             limit,
+            policies,
+            mirror_url,
+            mirror_manifest,
+            mirror_only,
+            state,
+            workers,
+            rate_bytes_per_sec,
         } => {
+            let policies = match policies {
+                Some(dir) => usnm_ocr_worker::fetcher::Policies::load_dir(&dir)?,
+                None => usnm_ocr_worker::fetcher::Policies::builtin(),
+            };
+            let mirror = mirror_url.map(|base_url| usnm_ocr_worker::bulk::Mirror {
+                base_url,
+                manifest: mirror_manifest.unwrap_or_default(),
+                only: mirror_only,
+            });
             let status = usnm_ocr_worker::bulk::run(
                 usnm_ocr_worker::bulk::Options {
                     out,
@@ -1232,6 +1450,83 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
                     min_free_bytes: min_free_gb.saturating_mul(1_000_000_000),
                     limit,
                     global_pacer: loc_global_pacer,
+                    policies,
+                    mirror,
+                    state,
+                    workers,
+                    rate_bytes_per_sec,
+                },
+                stop_signal(),
+            )
+            .await?;
+            println!("{}", serde_json::to_string(&status)?);
+            Ok(())
+        }
+        Command::GhnCatalog {
+            cache,
+            ours,
+            out,
+            through,
+            rights,
+            fetch_metadata,
+            pacer,
+            policies,
+            max_titles,
+        } => {
+            use usnm_ocr_worker::ghn;
+            let fetch = match (fetch_metadata, pacer) {
+                (true, Some(pacer)) => Some(ghn::catalog::Fetch {
+                    pacer,
+                    policies: match policies {
+                        Some(dir) => usnm_ocr_worker::fetcher::Policies::load_dir(&dir)?,
+                        None => usnm_ocr_worker::fetcher::Policies::builtin(),
+                    },
+                    max_titles,
+                }),
+                _ => None,
+            };
+            let summary = ghn::catalog::run(
+                ghn::catalog::Options {
+                    cache,
+                    ours,
+                    out,
+                    through: through.unwrap_or_else(ghn::latest),
+                    rights,
+                    hosts: ghn::Hosts::ghn(),
+                    fetch,
+                },
+                stop_signal(),
+            )
+            .await?;
+            println!("{}", serde_json::to_string(&summary)?);
+            Ok(())
+        }
+        Command::GhnFetch {
+            issues,
+            out,
+            pacer,
+            policies,
+            limit,
+            max_hours,
+            min_free_gb,
+            unchecked_rights,
+        } => {
+            use usnm_ocr_worker::ghn;
+            let policies = match policies {
+                Some(dir) => usnm_ocr_worker::fetcher::Policies::load_dir(&dir)?,
+                None => usnm_ocr_worker::fetcher::Policies::builtin(),
+            };
+            let status = ghn::fetch::run(
+                ghn::fetch::Options {
+                    issues,
+                    out,
+                    pacer,
+                    policies,
+                    hosts: ghn::Hosts::ghn(),
+                    max_hours: max_hours.clamp(0.0, 23.0),
+                    min_free_bytes: min_free_gb.saturating_mul(1_000_000_000),
+                    limit,
+                    unchecked_rights,
                 },
                 stop_signal(),
             )
@@ -1256,6 +1551,47 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
             })
             .await??;
             println!("{}", serde_json::to_string(&s)?);
+            Ok(())
+        }
+        Command::LocAltoWords {
+            archives,
+            out,
+            workers,
+            limit,
+            min_free_gib,
+        } => {
+            let s = tokio::task::spawn_blocking(move || {
+                usnm_ocr_worker::loc_alto_words::run(&usnm_ocr_worker::loc_alto_words::Options {
+                    archives,
+                    out,
+                    workers,
+                    limit,
+                    min_free_bytes: min_free_gib.saturating_mul(1 << 30),
+                })
+            })
+            .await??;
+            println!("{}", serde_json::to_string(&s)?);
+            anyhow::ensure!(s.failed == 0, "{} archives failed", s.failed);
+            anyhow::ensure!(!s.stopped_low_disk, "stopped: too little disk free");
+            Ok(())
+        }
+        Command::LocSoftware {
+            archives,
+            out,
+            workers,
+            limit,
+        } => {
+            let s = tokio::task::spawn_blocking(move || {
+                usnm_ocr_worker::loc_software::run(&usnm_ocr_worker::loc_software::Options {
+                    archives,
+                    out,
+                    workers,
+                    limit,
+                })
+            })
+            .await??;
+            println!("{}", serde_json::to_string(&s)?);
+            anyhow::ensure!(s.failed == 0, "{} archives failed", s.failed);
             Ok(())
         }
         Command::LocPacer { file, reset } => {

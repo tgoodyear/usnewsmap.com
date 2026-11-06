@@ -3,10 +3,11 @@ import { chromium } from "playwright-core";
 
 const { values } = parseArgs({ options: { url: { type: "string" } } });
 const target = new URL(values.url);
+const searchPage = target.pathname.startsWith("/search/") || target.pathname.startsWith("/examples/");
 if (
   target.protocol !== "http:" ||
   target.hostname !== "127.0.0.1" ||
-  (!["/", "/index.html"].includes(target.pathname) && !target.pathname.startsWith("/search/"))
+  (!["/", "/index.html"].includes(target.pathname) && !searchPage)
 ) {
   throw new Error("Screenshot target must be a local search permalink");
 }
@@ -47,19 +48,22 @@ try {
       basemapFailed = true;
     }
   });
-  // A search URL cannot turn this into an arbitrary URL screenshot service.
+  // A search URL cannot turn this into an arbitrary URL screenshot service,
+  // and a page's own map images would ask for the render being made.
   await page.route("**/*", (route) => {
     const url = new URL(route.request().url());
     const local = url.origin === target.origin;
     const basemap = url.protocol === "https:" && url.hostname === "tiles.openfreemap.org";
-    if ((local || basemap) && !["/share-image.png", "/search-map.png"].includes(url.pathname)) {
+    const ownImage =
+      ["/share-image.png", "/search-map.png"].includes(url.pathname) || url.pathname.startsWith("/search-preview/");
+    if ((local || basemap) && !ownImage) {
       return route.continue();
     }
     return route.abort();
   });
   const response = await page.goto(target.href, { waitUntil: "domcontentloaded" });
   if (!response?.ok()) throw new Error("Screenshot page failed to load");
-  if (target.pathname.startsWith("/search/") || target.searchParams.get("q")?.trim()) {
+  if (searchPage || target.searchParams.get("q")?.trim()) {
     const results = page.locator('[data-share-ready="true"], [data-share-error="true"]');
     await results.waitFor();
     if ((await results.getAttribute("data-share-error")) === "true") {

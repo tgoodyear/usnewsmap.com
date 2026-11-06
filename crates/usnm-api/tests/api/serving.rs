@@ -783,7 +783,11 @@ async fn uncurated_searches_are_noindex_and_site_pages_are_indexable() {
         refdata().await,
     ));
     let robots = header::HeaderName::from_static("x-robots-tag");
-    for uri in ["/search/x", "/search/cross-of-gold?from=1896-06-01"] {
+    for uri in [
+        "/search/x",
+        "/search/cross-of-gold",
+        "/examples/cross-of-gold?from=1896-06-01",
+    ] {
         let (status, h, _) = get_site(&s, uri, None).await;
         assert_eq!(status, StatusCode::OK, "{uri}");
         assert_eq!(header_str(&h, robots.clone()), "noindex", "{uri}");
@@ -796,7 +800,7 @@ async fn uncurated_searches_are_noindex_and_site_pages_are_indexable() {
         "/",
         "/?t=1896-07-01",
         "/favicon.svg",
-        "/search/cross-of-gold",
+        "/examples/cross-of-gold",
         "/datasets",
         "/credits",
     ] {
@@ -832,13 +836,15 @@ async fn legacy_searches_redirect_and_curated_results_render_without_javascript(
         assert_eq!(status, StatusCode::MOVED_PERMANENTLY, "{uri}");
         assert_eq!(header_str(&headers, header::LOCATION), location);
     }
-    let uri = "/search/cross-of-gold";
+    let uri = "/examples/cross-of-gold";
     let (status, headers, body) = get_site(&s, uri, None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(header_str(&headers, header::LOCATION), "");
     assert_eq!(header_str(&headers, header::CACHE_CONTROL), "no-cache");
-    assert!(body.contains("<title>cross of gold · US News Map</title>"));
-    assert!(body
-        .contains(r#"<link rel="canonical" href="https://usnewsmap.com/search/cross-of-gold" />"#));
+    assert!(body.contains("<title>Cross of Gold, 1896 · US News Map</title>"));
+    assert!(body.contains(
+        r#"<link rel="canonical" href="https://usnewsmap.com/examples/cross-of-gold" />"#
+    ));
     assert!(body.contains("matching newspaper pages"));
     assert!(body.contains("1896-07-18"), "{body}");
     assert!(
@@ -850,8 +856,30 @@ async fn legacy_searches_redirect_and_curated_results_render_without_javascript(
     assert!(body.contains(r#"<div id="root"></div><div id="search-landing">"#));
     assert!(!body.contains(r#"id="site-fallback""#));
     assert!(!body.contains(r#"class="visually-hidden" inert"#));
-    assert!(body.contains(r#"src="/search-map.png?q=cross+of+gold""#));
-    assert!(body.contains("Map and timeline of newspaper matches for cross of gold"));
+    let map = body
+        .split(r#"class="static-search-map"><img src=""#)
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .unwrap();
+    let revision = map
+        .strip_prefix("/search-preview/")
+        .and_then(|rest| rest.strip_suffix("/cross-of-gold.png"))
+        .unwrap_or_else(|| panic!("{map}"));
+    assert!(
+        revision.len() == 16
+            && revision
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+        "{map}"
+    );
+    let (legacy, headers, _) = get_site(&s, "/search-map.png?example=cross-of-gold", None).await;
+    assert_eq!(legacy, StatusCode::TEMPORARY_REDIRECT);
+    assert_eq!(header_str(&headers, header::LOCATION), map);
+    assert_eq!(header_str(&headers, header::CACHE_CONTROL), "no-store");
+    let (queried, headers, _) = get_site(&s, &format!("{map}?x=1"), None).await;
+    assert_eq!(queried, StatusCode::BAD_REQUEST);
+    assert_eq!(header_str(&headers, header::CACHE_CONTROL), "no-store");
+    assert!(body.contains("Map and timeline of newspaper matches for Cross of Gold, 1896"));
     assert!(!body.contains("Explore interactive map"));
     assert!(body.contains("Demo data: this server is running on a small synthetic corpus"));
     for href in ["/privacy", "/datasets", "/credits"] {
@@ -859,7 +887,8 @@ async fn legacy_searches_redirect_and_curated_results_render_without_javascript(
     }
     for dynamic in [
         "/search/not-a-listed-search",
-        "/search/cross-of-gold?from=1896-06-01",
+        "/search/cross-of-gold",
+        "/examples/cross-of-gold?from=1896-06-01",
     ] {
         let (status, headers, body) = get_site(&s, dynamic, None).await;
         assert_eq!(status, StatusCode::OK);
@@ -869,6 +898,17 @@ async fn legacy_searches_redirect_and_curated_results_render_without_javascript(
         );
         assert!(!body.contains(r#"id="search-landing""#), "{dynamic}");
         assert!(body.contains(r#"<div id="root">"#), "{dynamic}");
+    }
+    for query in ["from=1900-01-01&to=1901-12-31", "from=&to="] {
+        let (status, _, body) =
+            get_site(&s, &format!("/examples/cross-of-gold?{query}"), None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains(
+            "<title>Newspaper coverage of &quot;cross of gold&quot; · US News Map</title>"
+        ));
+        assert!(body.contains("<h1>Newspaper coverage of &quot;cross of gold&quot;</h1>"));
+        assert!(body.contains("<p>Search results for &quot;cross of gold&quot;"));
+        assert!(!body.contains("<h1>Cross of Gold, 1896</h1>"));
     }
     let resp = app(s.clone())
         .oneshot(
@@ -897,7 +937,7 @@ async fn legacy_searches_redirect_and_curated_results_render_without_javascript(
     assert!(home.contains(r#"<details><summary>Show newspaper searches</summary>"#));
     assert!(home.contains(r#"<ul class="examples">"#));
     assert!(home.contains(
-        r#"<a class="example" href="/search/cross-of-gold"><strong>cross of gold</strong>"#
+        r#"<a class="example" href="/examples/cross-of-gold"><strong>Cross of Gold, 1896</strong>"#
     ));
 }
 
@@ -912,13 +952,16 @@ async fn search_previews_preserve_escaped_snippet_text_without_double_escaping()
     .unwrap();
     let mut doc = load_docs("pages-base-fixture").remove(0);
     doc.text = "Reader's & Co. <archive>. cross of gold.".to_owned();
+    doc.day = usnm_core::time::day_number(chrono::NaiveDate::from_ymd_opt(1896, 7, 18).unwrap());
+    doc.year = 1896;
+    doc.ym = 1896 * 12 + 6;
     doc.ocr_source = Some("usnm-tesseract".to_owned());
     doc.ocr_engine = Some("tesseract-test/model".to_owned());
     let mut backend = MemoryBackend::new();
     backend.add_index("pages-base-fixture", vec![doc]);
     backend.add_index("pages-delta-fixture-1", vec![]);
     let s = Arc::new(AppState::new(cfg, Arc::new(backend), refdata().await));
-    let (status, _, body) = get_site(&s, "/search/cross-of-gold", None).await;
+    let (status, _, body) = get_site(&s, "/examples/cross-of-gold", None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert!(body.contains("Our OCR: machine-read text"));
     assert!(body.contains("href=\"/credits#tesseract-test%2Fmodel\""));
@@ -937,6 +980,35 @@ async fn search_previews_preserve_escaped_snippet_text_without_double_escaping()
 }
 
 #[tokio::test]
+async fn search_previews_show_long_snippets() {
+    let mut cfg = config();
+    cfg.site_dir = Some(site_dir("search-long-snippets"));
+    std::fs::write(
+        cfg.site_dir.as_ref().unwrap().join("index.html"),
+        include_str!("../../../../web/index.html"),
+    )
+    .unwrap();
+    let mut doc = load_docs("pages-base-fixture").remove(0);
+    // About 150 characters either side of the match: past a standard
+    // snippet's context, within a long one's.
+    let filler = "and so on ".repeat(15);
+    doc.text = format!("Convention opens. {filler}cross of gold {filler}Delegates adjourn.");
+    doc.day = usnm_core::time::day_number(chrono::NaiveDate::from_ymd_opt(1896, 7, 18).unwrap());
+    doc.year = 1896;
+    doc.ym = 1896 * 12 + 6;
+    let mut backend = MemoryBackend::new();
+    backend.add_index("pages-base-fixture", vec![doc]);
+    backend.add_index("pages-delta-fixture-1", vec![]);
+    let s = Arc::new(AppState::new(cfg, Arc::new(backend), refdata().await));
+    let (status, _, body) = get_site(&s, "/examples/cross-of-gold", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(
+        body.contains("<p>Convention opens.") && body.contains("Delegates adjourn.</p>"),
+        "{body}"
+    );
+}
+
+#[tokio::test]
 async fn static_searches_explain_alternate_ocr_and_empty_demo_results() {
     for source in ["american_stories", "loc_original", "empty"] {
         let mut cfg = config();
@@ -947,6 +1019,10 @@ async fn static_searches_explain_alternate_ocr_and_empty_demo_results() {
         )
         .unwrap();
         let mut doc = load_docs("pages-base-fixture").remove(0);
+        doc.day =
+            usnm_core::time::day_number(chrono::NaiveDate::from_ymd_opt(1896, 7, 18).unwrap());
+        doc.year = 1896;
+        doc.ym = 1896 * 12 + 6;
         doc.text = "unrelated text".to_owned();
         if source == "american_stories" {
             doc.text_as = Some("cross of gold".to_owned());
@@ -960,7 +1036,7 @@ async fn static_searches_explain_alternate_ocr_and_empty_demo_results() {
         rd.current.american_stories = Some(usnm_core::american_stories::VERSION);
         rd.current.text_layout = Some(usnm_core::text_layout::TextLayout::SingleWithLoc.version());
         let state = Arc::new(AppState::new(cfg, Arc::new(backend), rd));
-        let (status, _, body) = get_site(&state, "/search/cross-of-gold", None).await;
+        let (status, _, body) = get_site(&state, "/examples/cross-of-gold", None).await;
         assert_eq!(status, StatusCode::OK, "{body}");
         assert!(body.contains("Demo data: this server is running on a small synthetic corpus"));
         let expected = match source {
@@ -989,6 +1065,7 @@ async fn get_host(state: &Arc<AppState>, host: &str, uri: &str) -> axum::respons
 async fn www_redirects_to_the_apex() {
     let mut cfg = config();
     cfg.site_dir = Some(site_dir("www"));
+    cfg.allowed_origins = vec!["https://usnewsmap.com".to_owned()];
     let s = Arc::new(AppState::new(
         cfg,
         Arc::new(fixture_backend()),
@@ -1032,6 +1109,23 @@ async fn www_redirects_to_the_apex() {
     assert_eq!(
         header_str(&resp.1, header::LOCATION),
         "https://usnewsmap.com/status?x=1"
+    );
+    // An allowed cross-origin API request keeps its CORS grant through the redirect.
+    let resp = app(s.clone())
+        .oneshot(
+            Request::builder()
+                .uri("/v1/meta")
+                .header(header::HOST, "www.usnewsmap.com")
+                .header(header::ORIGIN, "https://usnewsmap.com")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::MOVED_PERMANENTLY);
+    assert_eq!(
+        header_str(resp.headers(), header::ACCESS_CONTROL_ALLOW_ORIGIN),
+        "https://usnewsmap.com"
     );
     // Other hosts are served as they are.
     for host in [

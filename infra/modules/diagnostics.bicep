@@ -16,7 +16,8 @@
 //   the cap: one row per write or delete request (PutBlob, or PutBlock
 //   for each block and PutBlockList), so bulk jobs write many.
 // - Cosmos DataPlaneRequests and the per-query/per-request statistics: every
-//   ingest write. Control-plane changes are the audit trail.
+//   ingest write. Control-plane changes are the audit trail. PartitionKeyStatistics
+//   too: about 3,400 rows a day that no query, workbook or alert reads.
 // - Container Apps HTTP logs: every API request, with its query string (the
 //   search text, 09 §9.4.2). usnm-api reports each request itself as one
 //   Application Insights request, without the path or query.
@@ -146,7 +147,6 @@ resource cosmosLogs 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' =
     logAnalyticsDestinationType: 'Dedicated'
     logs: [
       { category: 'ControlPlaneRequests', enabled: true }
-      { category: 'PartitionKeyStatistics', enabled: true }
     ]
   }
 }

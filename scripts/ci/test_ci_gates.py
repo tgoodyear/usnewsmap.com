@@ -125,7 +125,7 @@ class Gates(unittest.TestCase):
         self.assertIn("suite: ${{ fromJSON(needs.changes.outputs.quickwit_suites) }}",
                       job("quickwit-tests"))
         self.assertIn("if: matrix.suite == 'parity'", job("quickwit-tests"))
-        self.assertIn("image: [api, ingest, ja-ocr]", job("image-tests"))
+        self.assertIn("image: ${{ fromJSON(needs.changes.outputs.images) }}", job("image-tests"))
         self.assertIn("shard: [0, 1, 2]", job("script-tests"))
         for name in ("quickwit-tests", "image-tests", "script-tests",
                      "quickwit", "image", "infra-checks", "infra"):

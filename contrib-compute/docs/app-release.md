@@ -47,17 +47,21 @@ therefore received weight 16 of 24: about 666 Qwen slots and 41–42 for each
 other app, whose backlog was at most nine results.
 
 On 30 October, 1,788–1,798 unsent Qwen replicas exceeded that cache share again.
-The cache is now sized at 4,096 slots: about 2,730 for Qwen and 170–171 for
-each other app. This requires approximately 380 MB of shared memory rather
-than 93 MB; verify container memory headroom before applying it. The template
-sets `feeder_query_size=196608`: 8,192 candidates per weight-1 app and 131,072
-for Qwen. The sizing invariant is that **each positive-weight app's
-rounded query budget covers at least twice the entire cache capacity**, Qwen's
+With the then-active nine apps and weight 16 of 24, 4,096 slots meant about
+2,730 for Qwen and 170–171 for each other app. Retirements change the active
+weight sum; calculate actual shares from the database, not that historical
+denominator. The larger cache requires approximately 380 MB of shared memory
+rather than 93 MB; verify container memory headroom before applying it. With
+that same denominator, `feeder_query_size=196608` meant 8,192 candidates per
+weight-1 app and 131,072 for Qwen. The sizing invariant is that **each
+positive-weight app's rounded query budget covers at least twice the entire
+cache capacity**, Qwen's
 covers at least four times its 1,800-result ready baseline, and Qwen's cache
 share covers that baseline. The query is bounded by the rows that exist: the
 Qwen enumeration returned 624 rows in 3 ms on 28 October. Tests derive the
 budgets and slot shares from `project.xml` weights, so app additions, weight
-changes and cache growth must still satisfy the invariant.
+changes and cache growth must still satisfy the invariant. That test includes
+declared retired apps conservatively; the live database is authoritative.
 
 Registering apps with `xadd` does not update an existing app's weight. Apply
 the `app.weight` change in the database and the rendered `feeder_query_size`
@@ -77,6 +81,46 @@ app weights, ready counts, cache contents and feeder/database load before
 backlog growth exhausts this headroom; update the sizing baseline and budget
 together. Do not clear queues or weaken `one_result_per_host_per_wu` or quorum
 to improve apparent dispatch.
+
+#### Allocation drift detection
+
+The guarded feeder records its actual ordered app IDs and full-precision weights
+from the startup scan that creates `--allapps` slot and enumeration allocations.
+The snapshot is in the container-local
+`${USNM_PID_ROOT:-/var/lib/usnm-boinc}/pid_<host>/usnm-feeder-slots.json`; it is tied
+to the feeder PID, Linux process start ticks and boot ID, and refreshed about once
+per minute as the feeder loop advances. A snapshot over three minutes old is
+unknown, even if a long-running scan or I/O delay is the cause. A reload that
+changes the ordered app IDs or weights is latched even if the registry later
+reverts. The independent
+`feeder-slot-guard.py` checks the current **active** database apps through verified
+TLS against that allocation, including changes made outside `xadd`. It rejects
+stale, malformed, missing, uninstrumented, in-progress or wrong-process snapshots
+and failed database checks rather than inventing a baseline for an existing feeder.
+If publication and removal of the preceding snapshot both fail, that snapshot may
+still appear valid until its three-minute expiry; also monitor the feeder's
+`usnm-feeder-guard: allocation status unavailable` warning.
+
+The server image's separate supervisor program emits a
+`boinc_feeder_slot_guard` JSON event about every five minutes: `match`, `drift`,
+`unknown`, or `maintenance`. `drift` and `unknown` both need attention; `match`
+only means the allocation and registry agree, **not** that any work is eligible or
+visible to a scheduler. On-prem, install and inspect the
+[failed-unit check](../../docs/boinc-onprem.md#feeder-allocation-guard-1462);
+it has no external paging by itself. Ensure the event stream and missing reports
+are monitored in other environments. An old binary, a failed binary refresh, or a
+stalled feeder reports `unknown`, not a clean result. A new base/server/bridge
+image and a separately coordinated feeder start are required before the guard can
+observe the actual allocation; merging this code does not deploy or restart it.
+
+The guard does not change the app table, trigger `reread_db`, touch queues, widen
+admission or restart anything. For drift, coordinate a **single feeder-only**
+refresh under the existing supervisor and verify the resulting snapshot, actual
+shared-memory visibility and eligible host assignment. Do not repeatedly restart
+on `unknown` or a failed database check. [Feeder-only refresh](../../docs/boinc/feeder-refresh.md)
+defines when a refresh is warranted, its preconditions, the operator procedure and readbacks,
+the retry limit, rollback and what must stay manual; rollout acceptance is tracked in
+[#1462](https://github.com/tgoodyear/usnewsmap.com/issues/1462).
 
 Release verification remains separate from these configuration tests: confirm
 the rendered runtime query size, feeder restart/cache visibility and actual
@@ -167,7 +211,15 @@ php scripts/boinc/native-qwen-cohort.php --project /project/usnmocr --plan-class
 The marker comment `usnm-nvidia-general-admission-v1` records it, and
 `refresh-plan-policy.py` keeps it across restarts. A bounded window for another class leaves
 it as it is; a window that includes `nvidia_vulkan_8b` (its own, or `shared_8b`) replaces it
-with that window's bounds, and the operator stop above closes it.
+with that window's bounds, and the operator stop above closes it. `--stop --keep-general` is
+that stop without closing general admission: it bounds-closes the same classes
+(`intel_vulkan_8b`, `nvidia_vulkan_8b` and the CUDA classes, plus `docker_nvidia_cuda_8b`
+with `--plan-class shared_8b`). Neither stop touches the independent `amd_vulkan_8b`,
+`nvidia_vulkan_6gb_8b` or `nvidia_vulkan_2b` windows; close those with their own
+`--plan-class` and `--stop`.
+`intel_vulkan_8b`, like `shared_8b`, takes a range of up to ten workunits (`--workunit-end`).
+With both, the automatic refill keeps an Intel-only window beside NVIDIA's general admission
+([Intel GPU](../../docs/boinc-intel-gpu.md#persistent-finite-nvidiaintel-refill)).
 
 The helper checks Qwen identity, model batch, disk bound, independent quorum and
 target of 2, and two unsent results. It journals the old plan, atomically opens
@@ -205,8 +257,39 @@ libraries alongside the AMD PCI helper.
 Other plans must omit it and retain their existing fresh create-on-dispatch flow;
 generic unsent replicas cannot be resumed through targeted assignments.
 
-These native-only classes admit stable BOINC 8.2.11+ and do not require a
-container runtime. The ordinary OCR `docker` class also admits stable 8.2.11 when
+### Linux NVIDIA 2B (`nvidia_vulkan_2b`)
+
+`nvidia_vulkan_2b` (Linux x86-64 only, #1234) runs the 2B `Q8_0` model and projector fully
+on NVIDIA cards too small for the 8B classes, such as a 6 GB GTX 1660 SUPER. BOINC detects
+and assigns the card through CUDA; the app runs the same pinned `ubuntu-vulkan-x64`
+llama.cpp runtime as `nvidia_vulkan_8b`, and refuses to start with less than 4,096 MiB of
+free Vulkan memory. The scheduler wants >= 4,500 MB of GPU RAM and, as for
+`nvidia_vulkan_6gb_8b`, BOINC 8.2.9. Both memory numbers are estimates from the model files
+(2,174 MiB) plus context, not measurements; measure the peak on the first unit. The class
+ships closed. Its own window admits one batch-2 workunit staged with
+`usnm-boinc qwen submit --target native-2b`: `--plan-class nvidia_vulkan_2b --workunit ID`
+(preview, then `--apply`), and `--plan-class nvidia_vulkan_2b --stop --apply` closes only it.
+
+Every `boinc-quality-native.yml` run uploads the release inputs as the
+`boinc-native-qwen-nvidia_vulkan_2b` artifact. `scripts/boinc/qwen_vulkan_bundle.py`
+builds them from that commit's musl `usnm_qwen` and the `llama.lock`-pinned archive (links
+copied as files, the two locks added); its `release.json` holds the on-prem manifest's
+`release` and `worker` entries. CI checks that the runtime is byte for byte the one already
+signed for `nvidia_vulkan_6gb_8b`. Download the artifact of the merged commit, then verify it
+and hand its files to the release script (on-prem flags as in step 4):
+
+```sh
+python3 scripts/boinc/qwen_vulkan_bundle.py verify --bundle "$PWD/target/qwen-2b" \
+  --same-runtime-as contrib-compute/infra/boinc/releases/prod-onprem-usnm_qwen-nvidia_vulkan_6gb_8b.json
+mapfile -t inputs < <(python3 scripts/boinc/qwen_vulkan_bundle.py args --bundle "$PWD/target/qwen-2b")
+scripts/boinc/boinc-app-release.sh --env prod --app usnm_qwen --version VERSION --kind native \
+  --plan-class nvidia_vulkan_2b --platform x86_64-pc-linux-gnu "${inputs[@]}" --signing-host HOST ... --what-if
+```
+
+The server must first run a build with this class in its `plan_class_spec.xml`.
+
+These native-only classes admit stable BOINC 8.2.11+ (the 6 GB and 2B profiles 8.2.9) and
+do not require a container runtime. The ordinary OCR `docker` class also admits stable 8.2.11 when
 its platform runtime is available; do not require a development Mac client for it.
 Native CUDA classes require a CUDA 12.4-capable NVIDIA driver (the pinned runtime
 includes CUDA libraries; no toolkit, WSL or Podman), 3 GB and 7 GB of detected GPU
@@ -365,8 +448,9 @@ fake migration.
      `apps/usnm_qwen/<version>/<platform>__<plan_class>` for plan classes `apple_gpu_8b`
      (`arm64-apple-darwin`), `nvidia_cuda_8b` and `nvidia_cuda_2b` (`x86_64-pc-linux-gnu`,
      `aarch64-unknown-linux-gnu`, `windows_x86_64`), `intel_vulkan_8b` and
-     `amd_vulkan_8b` (`x86_64-pc-linux-gnu`, `windows_x86_64`), `nvidia_vulkan_8b`
-     and `nvidia_vulkan_6gb_8b` (`x86_64-pc-linux-gnu`), and `mt` (all five platforms). Model files
+     `amd_vulkan_8b` (`x86_64-pc-linux-gnu`, `windows_x86_64`), `nvidia_vulkan_8b`,
+     `nvidia_vulkan_6gb_8b` and `nvidia_vulkan_2b` (`x86_64-pc-linux-gnu`), and `mt` (all five
+     platforms). Model files
      are staged separately as `<sticky/><no_delete/>` inputs in `download/` using the
      plan-class-specific model input templates (`usnm_qwen_8b_in` for 8B classes and
      `usnm_qwen_2b_in` for 2B/`mt` classes).
@@ -543,15 +627,21 @@ Example **operator-local, secret-free** config for an existing dedicated client
 ```
 
 `server_command` is an argv transport accepting one JSON request on stdin and
-returning one JSON receipt. Use the included server adapter **on the project
+returning one JSON receipt. Exit status 75 (`EX_TEMPFAIL`) means the transport ran
+nothing: `acceptance.py` sends the same request again after `--poll-interval`, until
+the run's deadline (or, for the final release, the cleanup deadline), and counts
+these retries as `server_busy_retries` in the evidence. Any other failure ends the
+run. Use the included server adapter **on the project
 host**, as project owner, never on the signing host. It uses the existing TLS
 MySQL connector and project configuration; no DB credentials leave the server.
 
 For the current on-prem server, `scripts/boinc/onprem_acceptance.py` is a
 root-local transport for that same adapter. Install it **and its adjacent reviewed
 `acceptance_server.py`** in an operator-owned directory on the BOINC host. It
-shares `/run/usnm-boinc-step.lock` with the bridge runner and fails immediately
-while another step holds the lock. It checks the running `usnm-boinc-server`
+shares `/run/usnm-boinc-step.lock` with the bridge runner and never waits for it:
+while another step holds the lock it exits 75 before reading the request, so a
+production step, which can hold the lock for minutes, delays a run rather than
+failing it. It checks the running `usnm-boinc-server`
 container against an explicitly reviewed **local image ID**, then runs the adapter
 inside that existing container as project owner UID/GID 1000. It neither creates
 nor restarts a container, installs a daemon, enables assignment, stages fixtures,

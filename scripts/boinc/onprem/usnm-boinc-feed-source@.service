@@ -1,0 +1,15 @@
+[Unit]
+Description=Read-only BOINC feed observation (%i)
+After=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/usnm-boinc/feed-source-%i.env
+StateDirectory=usnm-boinc-feed-source
+ExecStart=/usr/bin/python3 /opt/usnm-feed-monitor/feed_collect.py $SOURCE_ARGS --output /var/lib/usnm-boinc-feed-source/%i.json --push-url ${PUSH_URL}
+TimeoutStartSec=75
+MemoryMax=256M
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6

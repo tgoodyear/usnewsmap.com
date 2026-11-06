@@ -46,13 +46,37 @@ pub const PROMPT_VERSION: u32 = 1;
 /// unreadable, looping Hebrew-script readings came from (#529).
 pub const PROMPT_VERSION_IMAGE_MIN_TOKENS: u32 = 2;
 pub const V2_IMAGE_MIN_TOKENS: u32 = 1024;
+/// Request version 3: version 1's encoding with the loop guard
+/// ([`loop_guard`]). Version 4 is version 2's encoding with the same guard.
+pub const PROMPT_VERSION_LOOP_GUARD: u32 = 3;
+pub const PROMPT_VERSION_IMAGE_MIN_TOKENS_LOOP_GUARD: u32 = 4;
 /// Every request version this contract's apps can read with.
-pub const SUPPORTED_PROMPT_VERSIONS: [u32; 2] = [PROMPT_VERSION, PROMPT_VERSION_IMAGE_MIN_TOKENS];
+pub const SUPPORTED_PROMPT_VERSIONS: [u32; 4] = [
+    PROMPT_VERSION,
+    PROMPT_VERSION_IMAGE_MIN_TOKENS,
+    PROMPT_VERSION_LOOP_GUARD,
+    PROMPT_VERSION_IMAGE_MIN_TOKENS_LOOP_GUARD,
+];
 
 /// `--image-min-tokens` for a job's request version; `None` keeps the
 /// engine default, as version 1 always has.
 pub fn image_min_tokens(prompt_version: u32) -> Option<u32> {
-    (prompt_version == PROMPT_VERSION_IMAGE_MIN_TOKENS).then_some(V2_IMAGE_MIN_TOKENS)
+    matches!(
+        prompt_version,
+        PROMPT_VERSION_IMAGE_MIN_TOKENS | PROMPT_VERSION_IMAGE_MIN_TOKENS_LOOP_GUARD
+    )
+    .then_some(V2_IMAGE_MIN_TOKENS)
+}
+
+/// Whether a job's request version stops a reading that starts to repeat
+/// (Study 5's `stop` rule, #1420): generation ends when [`tail_repetition`]
+/// fires, and the reading keeps the text before the repeated run plus one
+/// period of it ([`loop_cut`]).
+pub fn loop_guard(prompt_version: u32) -> bool {
+    matches!(
+        prompt_version,
+        PROMPT_VERSION_LOOP_GUARD | PROMPT_VERSION_IMAGE_MIN_TOKENS_LOOP_GUARD
+    )
 }
 pub const PROMPT: &str = "Transcribe exactly the printed text in the image. Keep the original spelling, punctuation, line breaks and hyphenation. Do not correct or modernise anything, and do not add anything that is not printed. If a word is unreadable, write [?] for it. Output only the transcription.";
 /// The repeated run that ends `text`, ignoring trailing whitespace: the
@@ -71,6 +95,15 @@ pub fn tail_repetition(text: &str) -> Option<(usize, usize)> {
         let span = n - 1 - i + p;
         (span >= 3 * p && span >= 30).then_some((p, span))
     })
+}
+
+/// `text` cut by the `stop` rule: the text before the repeated run that ends
+/// it, plus one period of the run. `None` when no such run ends it.
+pub fn loop_cut(text: &str) -> Option<String> {
+    let trimmed = text.trim_end();
+    let (period, span) = tail_repetition(trimmed)?;
+    let kept = trimmed.chars().count() - span + period;
+    Some(trimmed.chars().take(kept).collect())
 }
 
 /// The probe's acceptance floor for word-bag Dice between two hosts'
@@ -801,9 +834,43 @@ pub(crate) mod tests {
         assert!(tampered.validate().is_ok());
         assert_ne!(tampered.id, j.id);
         let mut unknown = j;
-        unknown.prompt_version = 3;
+        unknown.prompt_version = 5;
         unknown.id = unknown.identity().unwrap();
         assert!(unknown.validate().is_err());
+    }
+
+    #[test]
+    fn request_versions_set_the_encoding_and_the_guard_apart() {
+        for (version, tokens, guard) in [
+            (PROMPT_VERSION, None, false),
+            (
+                PROMPT_VERSION_IMAGE_MIN_TOKENS,
+                Some(V2_IMAGE_MIN_TOKENS),
+                false,
+            ),
+            (PROMPT_VERSION_LOOP_GUARD, None, true),
+            (
+                PROMPT_VERSION_IMAGE_MIN_TOKENS_LOOP_GUARD,
+                Some(V2_IMAGE_MIN_TOKENS),
+                true,
+            ),
+        ] {
+            assert!(SUPPORTED_PROMPT_VERSIONS.contains(&version));
+            assert_eq!(image_min_tokens(version), tokens);
+            assert_eq!(loop_guard(version), guard);
+        }
+    }
+
+    #[test]
+    fn loop_cut_keeps_the_head_and_one_period() {
+        let looped = format!("Head line.\n{}", "[?] ".repeat(40));
+        assert_eq!(loop_cut(&looped).unwrap(), "Head line.\n[?] ");
+        // Cutting twice changes nothing: one period no longer repeats.
+        assert_eq!(loop_cut("Head line.\n[?] "), None);
+        // Multibyte text is cut on chars, not bytes.
+        let hebrew = format!("\u{5d0}\u{5d1} {}", "\u{5d2}\u{5d3} ".repeat(20));
+        assert_eq!(loop_cut(&hebrew).unwrap(), "\u{5d0}\u{5d1} \u{5d2}\u{5d3}");
+        assert_eq!(loop_cut("a plain reading that stops"), None);
     }
 
     #[test]

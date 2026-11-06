@@ -28,6 +28,12 @@ class Blocked(PipelineError):
     pass
 
 
+class CommandFailed(PipelineError):
+    def __init__(self, name, returncode):
+        super().__init__(f"{name} failed (exit {returncode}); output suppressed")
+        self.returncode = returncode
+
+
 def run(argv, cwd=ROOT, timeout=14400, cleanup_timeout=30):
     process = subprocess.Popen([str(x) for x in argv], cwd=cwd, text=True,
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -60,7 +66,7 @@ def run(argv, cwd=ROOT, timeout=14400, cleanup_timeout=30):
                 signal.signal(sig, handler)
         raise
     if process.returncode:
-        raise PipelineError(f"{Path(argv[0]).name} failed (exit {process.returncode}); output suppressed")
+        raise CommandFailed(Path(argv[0]).name, process.returncode)
     return out.rstrip("\n")
 
 

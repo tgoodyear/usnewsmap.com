@@ -802,6 +802,8 @@ struct ObservedStore {
     inner: Arc<dyn ObjectStore>,
     calls: Mutex<Vec<String>>,
     lose_write_response: AtomicBool,
+    /// Fail to write `.sent` markers.
+    refuse_sent: AtomicBool,
 }
 impl ObservedStore {
     fn new(inner: Arc<dyn ObjectStore>) -> Self {
@@ -809,6 +811,7 @@ impl ObservedStore {
             inner,
             calls: Mutex::new(Vec::new()),
             lose_write_response: AtomicBool::new(false),
+            refuse_sent: AtomicBool::new(false),
         }
     }
     fn count(&self, call: &str) -> usize {
@@ -833,6 +836,9 @@ impl ObjectStore for ObservedStore {
         content_type: &str,
     ) -> Result<bool, usnm_store::StoreError> {
         self.calls.lock().unwrap().push(format!("put_new:{path}"));
+        if path.ends_with(".sent") && self.refuse_sent.load(Ordering::SeqCst) {
+            return Err(usnm_store::StoreError::Io("marker not written".into()));
+        }
         let written = self.inner.put_new(path, body, content_type).await?;
         if path.starts_with("ocr-local/queued/")
             && written
@@ -2909,6 +2915,440 @@ mod queue_feed {
             1
         );
         assert_eq!(q.peek(BULK, 32).await.unwrap().len(), 1);
+    }
+
+    /// The page's `permanent` dead letter of `message`, as `ocr-sync` drains it into the ledger.
+    async fn settle(f: &Fed, message: &OcrMessage, source: String, at: chrono::DateTime<Utc>) {
+        ledger::write_outcomes(
+            f.fx.stores.curated.as_ref(),
+            &[ledger::Outcome {
+                doc_id: DOC.into(),
+                outcome: ledger::DEAD_LETTERED.into(),
+                cause: Some("permanent".into()),
+                kind: None,
+                source,
+                at,
+                run: "sync".into(),
+                message_sha256: Some(usnm_ocr_contract::boinc::sha256(
+                    &serde_json::to_vec(message).unwrap(),
+                )),
+            }],
+            at,
+            &format!("sync-{}", at.timestamp_micros()),
+        )
+        .await
+        .unwrap();
+    }
+
+    /// The page's next attempt, queued at `at`, then claimed into `dir` for `lease`; its claim
+    /// replaces the page's last one in the hand-off container.
+    async fn requeue(
+        f: &mut Fed,
+        at: chrono::DateTime<Utc>,
+        dir: &str,
+        lease: Duration,
+    ) -> OcrMessage {
+        f.queued.queued_at = at;
+        f.queued.retry_message_at = Some(at);
+        f.queued.attempt += 1;
+        ledger::write_queued(
+            f.fx.stores.curated.as_ref(),
+            std::slice::from_ref(&f.queued),
+            at,
+            &format!("requeue-{}", at.timestamp_micros()),
+        )
+        .await
+        .unwrap();
+        let newer = OcrMessage {
+            queued_at: at.to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
+            ..f.message.clone()
+        };
+        f.fx.stores.queue.send(BULK, &newer.encode()).await.unwrap();
+        let dir = f.fx.tmp.path().join(dir);
+        assert_eq!(pull(f, &dir, lease).await.claims.len(), 1);
+        publish_claim(f, &dir).await;
+        newer
+    }
+
+    /// #1417: the page's job failed for good and, with `dead_lettered`, its claim was
+    /// dead-lettered and drained into the ledger. Then the next attempt was queued, claimed
+    /// for `lease`, and its claim replaced the old one. Returns the failed job and the newer
+    /// message.
+    async fn superseded(
+        dead_lettered: bool,
+        lease: Duration,
+    ) -> (Fed, usnm_boinc::Record, OcrMessage) {
+        let mut f = fed(true).await;
+        let claims = f.fx.tmp.path().join("claims");
+        pull(&f, &claims, Duration::from_secs(3600)).await;
+        publish_claim(&f, &claims).await;
+        f.fx.options.claims = Some(claims);
+        let id = f.fx.export().await;
+        let mut failed = usnm_boinc::load(&f.fx.options.root, &id).unwrap();
+        failed.stage = Stage::Failed;
+        failed.error = Some("BOINC workunit failed for good: page deadline 600 s".into());
+        let first = f.queued.queued_at;
+        if dead_lettered {
+            let q = f.fx.stores.queue.as_ref();
+            claim::dead_letter(
+                f.handoff.as_ref(),
+                q,
+                DOC,
+                failed.error.as_deref().unwrap(),
+                Some(&f.message),
+            )
+            .await
+            .unwrap();
+            let letter = q
+                .receive(usnm_store::queue::DEADLETTER, Duration::from_secs(60))
+                .await
+                .unwrap()
+                .unwrap();
+            q.delete(&letter).await.unwrap();
+            settle(
+                &f,
+                &f.message,
+                letter.id,
+                first + chrono::Duration::seconds(1),
+            )
+            .await;
+        }
+        let newer = requeue(
+            &mut f,
+            first + chrono::Duration::seconds(2),
+            "claims2",
+            lease,
+        )
+        .await;
+        (f, failed, newer)
+    }
+
+    async fn handoff_claim(f: &Fed) -> claim::Claim {
+        claim::Claim::load(&f.handoff.get(&claim::path(DOC)).await.unwrap().unwrap()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_claim_superseding_a_dead_lettered_job_is_dead_lettered_once_confirmed() {
+        let (f, failed, newer) = superseded(true, Duration::from_secs(3600)).await;
+        let q = f.fx.stores.queue.as_ref();
+        let ledger = ledger::load(f.fx.stores.curated.as_ref()).await.unwrap();
+        let sha = usnm_ocr_contract::boinc::sha256(newer.encode().as_bytes());
+        let letters = || q.peek(usnm_store::queue::DEADLETTER, 32);
+        // The ordinary path refuses it: the claim isn't the failed job's message.
+        assert!(
+            claim::dead_letter(f.handoff.as_ref(), q, DOC, "x", Some(&failed.job.message))
+                .await
+                .is_err()
+        );
+        // A dry run names the message and changes nothing.
+        let dry = claim::dead_letter_superseding(f.handoff.as_ref(), q, &failed, &ledger, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            (dry.done, dry.message_sha256.as_str(), dry.attempt),
+            (None, sha.as_str(), f.queued.attempt)
+        );
+        assert_eq!(dry.queued_at, newer.queued_at);
+        assert!(letters().await.unwrap().is_empty());
+        assert_eq!(handoff_claim(&f).await.ended, None);
+        // A confirmation of another message changes nothing either.
+        let other = "0".repeat(64);
+        assert!(claim::dead_letter_superseding(
+            f.handoff.as_ref(),
+            q,
+            &failed,
+            &ledger,
+            Some(&other)
+        )
+        .await
+        .is_err());
+        assert!(letters().await.unwrap().is_empty());
+        let done =
+            claim::dead_letter_superseding(f.handoff.as_ref(), q, &failed, &ledger, Some(&sha))
+                .await
+                .unwrap();
+        assert_eq!(done.done, Some(claim::DeadLettered::Done));
+        assert_eq!(q.approximate_count(BULK).await.unwrap(), 0);
+        let sent = letters().await.unwrap();
+        assert_eq!(sent.len(), 1);
+        let letter = usnm_ocr_contract::message::decode_dead_letter(&sent[0]).unwrap();
+        assert_eq!(letter.message.as_ref(), Some(&newer));
+        assert_eq!(
+            letter.cause,
+            Some(usnm_ocr_contract::message::Cause::Permanent)
+        );
+        assert!(letter.error.starts_with(&format!(
+            "superseded failed BOINC job {}",
+            &failed.job.id[..12]
+        )));
+        assert_eq!(
+            handoff_claim(&f).await.ended.as_deref(),
+            Some("dead_lettered")
+        );
+        let receipt = format!(
+            "dispatch/jobs/{}/superseding/{}.json",
+            failed.job.id,
+            usnm_ocr_contract::boinc::sha256(&serde_json::to_vec(&newer).unwrap())
+        );
+        assert!(f.handoff.get(&receipt).await.unwrap().is_some());
+        // Again, confirmed or not: already done, and no second dead letter.
+        for confirm in [Some(sha.as_str()), None] {
+            assert_eq!(
+                claim::dead_letter_superseding(f.handoff.as_ref(), q, &failed, &ledger, confirm)
+                    .await
+                    .unwrap()
+                    .done,
+                Some(claim::DeadLettered::Already)
+            );
+        }
+        assert_eq!(letters().await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_claim_for_another_batch_does_not_supersede_the_job() {
+        let (f, failed, newer) = superseded(true, Duration::from_secs(3600)).await;
+        let q = f.fx.stores.queue.as_ref();
+        let mut other = handoff_claim(&f).await;
+        other.text = OcrMessage {
+            batch: "test_other".into(),
+            ..newer
+        }
+        .encode();
+        f.handoff
+            .put(
+                &claim::path(DOC),
+                serde_json::to_vec(&other).unwrap(),
+                "application/json",
+            )
+            .await
+            .unwrap();
+        let ledger = ledger::load(f.fx.stores.curated.as_ref()).await.unwrap();
+        let sha = usnm_ocr_contract::boinc::sha256(other.text.as_bytes());
+        let e = claim::dead_letter_superseding(f.handoff.as_ref(), q, &failed, &ledger, Some(&sha))
+            .await
+            .unwrap_err();
+        assert!(e.to_string().contains("is not job"), "{e}");
+        assert!(q
+            .peek(usnm_store::queue::DEADLETTER, 32)
+            .await
+            .unwrap()
+            .is_empty());
+        assert_eq!(handoff_claim(&f).await.ended, None);
+    }
+
+    #[tokio::test]
+    async fn a_job_that_was_not_dead_lettered_is_not_superseded() {
+        let (f, failed, newer) = superseded(false, Duration::from_secs(3600)).await;
+        let q = f.fx.stores.queue.as_ref();
+        let ledger = ledger::load(f.fx.stores.curated.as_ref()).await.unwrap();
+        let sha = usnm_ocr_contract::boinc::sha256(newer.encode().as_bytes());
+        for confirm in [None, Some(sha.as_str())] {
+            let e =
+                claim::dead_letter_superseding(f.handoff.as_ref(), q, &failed, &ledger, confirm)
+                    .await
+                    .unwrap_err();
+            assert!(e.to_string().contains("is not dead-lettered"), "{e}");
+        }
+        assert!(q
+            .peek(usnm_store::queue::DEADLETTER, 32)
+            .await
+            .unwrap()
+            .is_empty());
+        assert_eq!(handoff_claim(&f).await.ended, None);
+    }
+
+    #[tokio::test]
+    async fn a_superseding_dead_letter_whose_lease_ran_out_is_finished_on_a_fresh_claim() {
+        let (f, failed, newer) = superseded(true, Duration::from_secs(1)).await;
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        let q = f.fx.stores.queue.as_ref();
+        // The lease ran out: the message is back on its queue.
+        assert_eq!(q.peek(BULK, 32).await.unwrap().len(), 1);
+        let curated = f.fx.stores.curated.as_ref();
+        let sha = usnm_ocr_contract::boinc::sha256(newer.encode().as_bytes());
+        let letters = || q.peek(usnm_store::queue::DEADLETTER, 32);
+        let ledger = ledger::load(curated).await.unwrap();
+        for _ in 0..2 {
+            assert_eq!(
+                claim::dead_letter_superseding(f.handoff.as_ref(), q, &failed, &ledger, Some(&sha))
+                    .await
+                    .unwrap()
+                    .done,
+                Some(claim::DeadLettered::LeaseLost)
+            );
+        }
+        assert_eq!(letters().await.unwrap().len(), 1);
+        assert_eq!(
+            handoff_claim(&f).await.ended.as_deref(),
+            Some("dead_letter_lease_lost")
+        );
+        // The next pull claims the message afresh, then ocr-sync drains the dead letter, so the
+        // page has no outstanding row. The rerun only deletes the message.
+        let back = f.fx.tmp.path().join("claims3");
+        assert_eq!(
+            pull(&f, &back, Duration::from_secs(3600))
+                .await
+                .claims
+                .len(),
+            1
+        );
+        publish_claim(&f, &back).await;
+        settle(
+            &f,
+            &newer,
+            "drained".into(),
+            f.queued.queued_at + chrono::Duration::seconds(1),
+        )
+        .await;
+        let ledger = ledger::load(curated).await.unwrap();
+        assert!(ledger.outstanding(DOC).is_none());
+        assert_eq!(
+            claim::dead_letter_superseding(f.handoff.as_ref(), q, &failed, &ledger, Some(&sha))
+                .await
+                .unwrap()
+                .done,
+            Some(claim::DeadLettered::Done)
+        );
+        assert_eq!(letters().await.unwrap().len(), 1);
+        assert_eq!(q.approximate_count(BULK).await.unwrap(), 0);
+        assert_eq!(
+            handoff_claim(&f).await.ended.as_deref(),
+            Some("dead_lettered")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_dead_letter_whose_marker_was_not_written_is_settled_once_drained() {
+        let (f, failed, newer) = superseded(true, Duration::from_secs(3600)).await;
+        let q = f.fx.stores.queue.as_ref();
+        let curated = f.fx.stores.curated.as_ref();
+        let sha = usnm_ocr_contract::boinc::sha256(newer.encode().as_bytes());
+        let handoff = ObservedStore::new(f.handoff.clone());
+        handoff.refuse_sent.store(true, Ordering::SeqCst);
+        let ledger = ledger::load(curated).await.unwrap();
+        assert!(
+            claim::dead_letter_superseding(&handoff, q, &failed, &ledger, Some(&sha))
+                .await
+                .is_err()
+        );
+        // The dead letter went, and ocr-sync drains it before the rerun.
+        let letter = q
+            .receive(usnm_store::queue::DEADLETTER, Duration::from_secs(60))
+            .await
+            .unwrap()
+            .unwrap();
+        q.delete(&letter).await.unwrap();
+        settle(
+            &f,
+            &newer,
+            letter.id,
+            f.queued.queued_at + chrono::Duration::seconds(1),
+        )
+        .await;
+        handoff.refuse_sent.store(false, Ordering::SeqCst);
+        let ledger = ledger::load(curated).await.unwrap();
+        assert_eq!(
+            claim::dead_letter_superseding(&handoff, q, &failed, &ledger, Some(&sha))
+                .await
+                .unwrap()
+                .done,
+            Some(claim::DeadLettered::Done)
+        );
+        assert!(q
+            .peek(usnm_store::queue::DEADLETTER, 32)
+            .await
+            .unwrap()
+            .is_empty());
+        assert_eq!(q.approximate_count(BULK).await.unwrap(), 0);
+        assert_eq!(
+            handoff_claim(&f).await.ended.as_deref(),
+            Some("dead_lettered")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_later_attempt_supersedes_the_job_once_the_last_one_is_drained() {
+        let (mut f, failed, newer) = superseded(true, Duration::from_secs(3600)).await;
+        let sha = |m: &OcrMessage| usnm_ocr_contract::boinc::sha256(m.encode().as_bytes());
+        let ledger = ledger::load(f.fx.stores.curated.as_ref()).await.unwrap();
+        let q = f.fx.stores.queue.as_ref();
+        claim::dead_letter_superseding(f.handoff.as_ref(), q, &failed, &ledger, Some(&sha(&newer)))
+            .await
+            .unwrap();
+        let letter = q
+            .receive(usnm_store::queue::DEADLETTER, Duration::from_secs(60))
+            .await
+            .unwrap()
+            .unwrap();
+        q.delete(&letter).await.unwrap();
+        let at = f.queued.queued_at;
+        settle(&f, &newer, letter.id, at + chrono::Duration::seconds(1)).await;
+        let third = requeue(
+            &mut f,
+            at + chrono::Duration::seconds(2),
+            "claims3",
+            Duration::from_secs(3600),
+        )
+        .await;
+        let ledger = ledger::load(f.fx.stores.curated.as_ref()).await.unwrap();
+        let q = f.fx.stores.queue.as_ref();
+        let done = claim::dead_letter_superseding(
+            f.handoff.as_ref(),
+            q,
+            &failed,
+            &ledger,
+            Some(&sha(&third)),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            (done.done, done.attempt),
+            (Some(claim::DeadLettered::Done), f.queued.attempt)
+        );
+        let sent = q.peek(usnm_store::queue::DEADLETTER, 32).await.unwrap();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(
+            usnm_ocr_contract::message::decode_dead_letter(&sent[0])
+                .unwrap()
+                .message
+                .as_ref(),
+            Some(&third)
+        );
+        assert_eq!(q.approximate_count(BULK).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_later_attempt_after_another_dead_letter_is_not_superseded() {
+        let (mut f, failed, newer) = superseded(true, Duration::from_secs(3600)).await;
+        // The newer attempt was dead-lettered some other way, not by this job's step.
+        let at = f.queued.queued_at;
+        settle(
+            &f,
+            &newer,
+            "elsewhere".into(),
+            at + chrono::Duration::seconds(1),
+        )
+        .await;
+        let third = requeue(
+            &mut f,
+            at + chrono::Duration::seconds(2),
+            "claims3",
+            Duration::from_secs(3600),
+        )
+        .await;
+        let ledger = ledger::load(f.fx.stores.curated.as_ref()).await.unwrap();
+        let q = f.fx.stores.queue.as_ref();
+        let sha = usnm_ocr_contract::boinc::sha256(third.encode().as_bytes());
+        let e = claim::dead_letter_superseding(f.handoff.as_ref(), q, &failed, &ledger, Some(&sha))
+            .await
+            .unwrap_err();
+        assert!(e.to_string().contains("is not dead-lettered"), "{e}");
+        assert!(q
+            .peek(usnm_store::queue::DEADLETTER, 32)
+            .await
+            .unwrap()
+            .is_empty());
+        assert_eq!(handoff_claim(&f).await.ended, None);
     }
 
     #[tokio::test]

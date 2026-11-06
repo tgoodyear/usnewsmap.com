@@ -14,7 +14,7 @@ use usnm_core::cube::{Cell, SparseCube};
 use usnm_core::params::{RawParams, SearchRequest};
 use usnm_core::query::highlight_terms;
 use usnm_core::query_language::{baseline_languages, BaselineWhy};
-use usnm_core::time::{BucketSpec, BucketUnit};
+use usnm_core::time::BucketUnit;
 use usnm_search::plan::{self, Planned};
 
 use super::hits::Item;
@@ -266,15 +266,6 @@ pub(crate) async fn aggregate_in(
     Ok(resp)
 }
 
-fn coarser(unit: BucketUnit) -> Option<BucketUnit> {
-    match unit {
-        BucketUnit::Day => Some(BucketUnit::Week),
-        BucketUnit::Week => Some(BucketUnit::Month),
-        BucketUnit::Month => Some(BucketUnit::Year),
-        BucketUnit::Year => None,
-    }
-}
-
 async fn compute(
     state: Arc<AppState>,
     ctx: Ctx,
@@ -299,7 +290,8 @@ async fn compute(
     }
     let t = Instant::now();
     // The planner checks places-with-hits × buckets before issuing the cube,
-    // so an oversized cube is coarsened here instead of failing in the engine.
+    // so an oversized cube is coarsened here instead of failing in the engine,
+    // straight to the first unit those places fit (`plan::coarser`).
     let agg = async {
         loop {
             let planned = with_timeout(
@@ -317,17 +309,16 @@ async fn compute(
             .await?;
             match planned {
                 Planned::Complete(agg) => break Ok(*agg),
-                Planned::TooManyCells { upper_bound } => match coarser(spec.unit) {
-                    Some(unit) => {
-                        spec = BucketSpec::new(unit, spec.from, spec.to);
-                        coarsened = true;
-                    }
-                    None => {
-                        return Err(ApiError::TooBroad(format!(
-                            "this search would produce about {upper_bound} map cells even by year"
-                        )))
-                    }
-                },
+                Planned::TooManyCells { places, .. } => {
+                    spec = plan::coarser(&spec, places, state.config.max_cells).map_err(
+                        |upper_bound| {
+                            ApiError::TooBroad(format!(
+                                "this search would produce about {upper_bound} map cells even by year"
+                            ))
+                        },
+                    )?;
+                    coarsened = true;
+                }
             }
         }
     }

@@ -1806,6 +1806,9 @@ impl Release {
         // Our OCR from `ocr-local` weighed and given in place of LoC's (Step 9).
         let mut local_tally = ocr_local::replace::Tally::default();
         let mut local_replaced: LocalReplaced = Vec::new();
+        // The model set of each engine short key among the rows given in
+        // place of LoC's text: one per key since the rule (13 §13.7.2).
+        let mut model_sets = usnm_core::ocr_engine::ModelSets::default();
         // The next batch's American Stories text and curated parts download
         // while this one is built (they're the release's network reads); one
         // batch ahead, so two batches' downloads are held at most.
@@ -1968,6 +1971,17 @@ impl Release {
                 } = part;
                 replaced.extend(part_replaced);
                 local_tally.merge(tally)?;
+                for (doc_id, _, _) in &part_local {
+                    let row = &mine.pages.get(doc_id).context("replaced page")?.row;
+                    model_sets
+                        .add(&row.ocr_engine, row.ocred_at)
+                        .with_context(|| {
+                            format!(
+                                "{doc_id}: revoke the rows read with the wrong models \
+                                 (ocr-local/revoked/) and read them again under a new profile id"
+                            )
+                        })?;
+                }
                 local_replaced.extend(part_local);
                 // The pages that move to another set than their title's
                 // (05 §5.5.8); their own languages were found as they were built.

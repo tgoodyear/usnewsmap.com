@@ -171,6 +171,159 @@ def start_services():
                                          "batch_collect_assimilator"])
 
 
+def feeder_allocation_guard():
+    host = socket.gethostname().split(".")[0]
+    directory = ROOT / f"pid_{host}"
+    link = PROJECT / f"pid_{host}"
+    pid_file = directory / "feeder.pid"
+    feeder = next(process for process in PROCESSES if Path(process.args[0]).name == "feeder")
+    if link.exists() or link.is_symlink() or pid_file.exists():
+        raise RuntimeError("feeder guard fixture PID path is already in use")
+
+    def wait_for(status, reason):
+        deadline = time.monotonic() + 25
+        while True:
+            result = subprocess.run(
+                ["python3", str(TEMPLATES / "feeder-slot-guard.py"), "--project", str(PROJECT)],
+                capture_output=True, text=True, timeout=30, user="boincadm", group="boincadm")
+            try:
+                report = json.loads(result.stdout)
+            except json.JSONDecodeError:
+                report = {}
+            if (report.get("status"), report.get("reason"), result.returncode) == (
+                    status, reason, {"match": 0, "drift": 1, "unknown": 2}[status]):
+                return report
+            if time.monotonic() >= deadline:
+                raise AssertionError(f"feeder guard did not report {status}/{reason}: {report}")
+            time.sleep(0.5)
+
+    def wait_for_reload():
+        trigger = PROJECT / "reread_db"
+        deadline = time.monotonic() + 25
+        while trigger.exists() and time.monotonic() < deadline:
+            time.sleep(0.5)
+        assert not trigger.exists(), "feeder did not finish its app scan"
+
+    config = Path("/dev/shm/boinc/config.xml")
+    original_config = config.read_text()
+    app_id = int(fixture.sql("SELECT id FROM full_fixture.app WHERE name='usnm_ocr'"))
+    original_weight = fixture.sql(f"SELECT weight FROM full_fixture.app WHERE id={app_id}")
+    link.symlink_to(directory)
+    try:
+        pid_file.write_text(str(feeder.pid) + "\n")
+        try:
+            wait_for("match", "allocation_matches_registry")
+            assert "tls-db.test" in original_config
+            config.write_text(original_config.replace("tls-db.test", "wrong-db.test"))
+            try:
+                wait_for("unknown", "database_unavailable")
+            finally:
+                config.write_text(original_config)
+            wait_for("match", "allocation_matches_registry")
+            fixture.sql(f"UPDATE full_fixture.app SET weight=weight+1 WHERE id={app_id}")
+            report = wait_for("drift", "registry_changed")
+            assert report["weight_changed_app_ids"] == [app_id]
+            (PROJECT / "reread_db").touch()
+            wait_for("drift", "reload_changed_app_order_or_weights")
+        finally:
+            config.write_text(original_config)
+            fixture.sql(f"UPDATE full_fixture.app SET weight={float(original_weight)} WHERE id={app_id}")
+            wait_for_reload()
+            (PROJECT / "reread_db").touch()
+            wait_for_reload()
+        wait_for("drift", "reload_changed_app_order_or_weights")
+        emit("actual-feeder-allocation-guard", match="verified", wrong_host="unknown",
+             changed_weight="drift", reread="latched_after_reversion")
+    finally:
+        pid_file.unlink(missing_ok=True)
+        link.unlink(missing_ok=True)
+
+
+def qwen_tiebreak():
+    """#1477: settle disputed Qwen units on the real database, under a competing
+    row lock, then let the real transitioner finish them."""
+    app = int(fixture.sql("SELECT id FROM full_fixture.app WHERE name='usnm_qwen'"))
+    now = int(fixture.sql("SELECT UNIX_TIMESTAMP()"))
+    units = {}
+    for case, language, third in (("settle", "yid", 2), ("locked", "yid", 2), ("running", "yid", 4),
+                                  ("other", "eng", 2)):
+        name = f"usnm_qwen_tiebreak-{case}"
+        wu = fixture.insert_row(fixture.sql, "full_fixture", "workunit", create_time=now - 60, appid=app,
+                                name=name, batch=8, min_quorum=2, target_nresults=3, max_error_results=3,
+                                max_total_results=4, max_success_results=4, delay_bound=86400,
+                                transition_time=now + 86400, rsc_fpops_est=1e12, rsc_fpops_bound=1e13,
+                                size_class=-1)
+        # The first pair disagreed; the third replica is unsent, or running.
+        for i, (state, outcome, validate) in enumerate(((5, 1, 4), (5, 1, 4), (third, 0, 0))):
+            fixture.insert_row(fixture.sql, "full_fixture", "result", create_time=now - 60, workunitid=wu,
+                               appid=app, batch=8, name=f"{name}_{i}", server_state=state, outcome=outcome,
+                               validate_state=validate, report_deadline=now + 86400, elapsed_time=300.0,
+                               random=i, size_class=-1)
+        job = ROOT / f"qwen/campaign/units/tiebreak-{case}"
+        job.mkdir(parents=True)
+        (job / "qwen.json").write_text(json.dumps(
+            {"id": f"tiebreak-{case}", "language": language, "prompt_version": 1}))
+        units[case] = wu
+
+    def state(wu):
+        return (fixture.sql("SELECT CONCAT_WS(',',error_mask,max_total_results,canonical_resultid,assimilate_state,"
+                            f"transition_time) FROM full_fixture.workunit WHERE id={wu}"),
+                fixture.sql("SELECT GROUP_CONCAT(CONCAT_WS(',',server_state,outcome,validate_state) ORDER BY id "
+                            f"SEPARATOR ';') FROM full_fixture.result WHERE workunitid={wu}"))
+
+    def policy(*args):
+        since, until = (time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t)) for t in (now - 3600, now + 3600))
+        return json.loads(run(
+            "python3", "/checks/qwen-tiebreak-policy.py", *args, "--since", since, "--until", until,
+            "--stop-tiebreakers", "yid:1", "--config", "/dev/shm/boinc/config.xml",
+            "--qwen-root", str(ROOT / "qwen"), "--download", str(PROJECT / "download")).stdout)
+
+    before = {case: state(wu) for case, wu in units.items()}
+    report = policy("plan", "--list-units")
+    assert report["settle"] == [units["settle"], units["locked"]], report
+    assert report["groups"]["yid v1"]["waiting: replica running"] == 1, report
+    assert "settle" not in report["groups"]["eng v1"], report
+    journal = ROOT / "qwen-tiebreak-journal.jsonl"
+    apply = ("settle", "--apply", "--max-units", "5", "--journal", str(journal))
+    holder = subprocess.Popen(
+        ["mariadb", "--no-defaults", "--protocol=tcp", "--host=tls-db.test", "--ssl", "--ssl-verify-server-cert",
+         "--ssl-ca=/dbfixture/ca.pem", "-ufixture", "-pfixture-only", "-e",
+         f"START TRANSACTION; SELECT id FROM full_fixture.workunit WHERE id={units['locked']} FOR UPDATE; "
+         "SELECT SLEEP(120)"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    connection = ""
+    try:
+        deadline = time.monotonic() + 20
+        while not (connection := fixture.sql(
+                "SELECT id FROM information_schema.processlist WHERE info='SELECT SLEEP(120)'")):
+            assert holder.poll() is None and time.monotonic() < deadline, "the competing lock was not taken"
+            time.sleep(0.2)
+        outcomes = policy(*apply)["outcomes"]
+    finally:
+        # Ending the holder's session rolls its transaction back and releases the lock.
+        if connection:
+            fixture.sql(f"KILL {int(connection)}")
+        holder.kill()
+        holder.wait(timeout=20)
+    assert outcomes == {"settled": 1, "locked": 1}, outcomes
+    for case in ("locked", "running", "other"):
+        assert state(units[case]) == before[case], f"{case} changed: {state(units[case])}"
+    assert policy(*apply)["outcomes"] == {"settled": 1}
+    deadline = time.monotonic() + 60
+    while any(state(units[case])[0].split(",")[-1] != "2147483647" for case in ("settle", "locked")):
+        assert time.monotonic() < deadline, "the transitioner did not handle the settled units"
+        time.sleep(1)
+    for case in ("settle", "locked"):
+        # Too many total results, cap lowered to the three rows, assimilation ready; the
+        # inconclusive pair is NO_CHECK and the unsent replica OVER/DIDNT_NEED.
+        assert state(units[case]) == ("8,3,0,1,2147483647", "5,1,3;5,1,3;5,5,0"), state(units[case])
+    for case in ("running", "other"):
+        assert state(units[case]) == before[case], f"{case} changed: {state(units[case])}"
+    events = [json.loads(line)["event"] for line in journal.read_text().splitlines()]
+    assert events == ["run", "begin", "settled", "skipped", "done", "run", "begin", "settled", "done"], events
+    emit("qwen-tiebreak-settle", settled=2, skipped_under_lock=1, untouched=2,
+         transitioner="no_check_and_assimilate_ready")
+
+
 def web():
     for path in ("get_project_config.php", "server_status.php", "index.php"):
         with urllib.request.urlopen(f"http://127.0.0.1/{path}", timeout=10) as response:
@@ -189,6 +342,30 @@ def validate_page(path, status, data):
     )), "web endpoint returned an error page"
     if path == "get_project_config.php":
         assert ET.fromstring(data).tag == "project_config"
+
+
+def as_web(test):
+    return subprocess.run(["su", "-s", "/bin/sh", "www-data", "-c", test]).returncode == 0
+
+
+def code_trees_locked():
+    locked = ("", "html", "apps", "bin", "cgi-bin", "py", "html/inc", "html/ops", "html/project",
+              "html/user", "html/inc/util.inc", "cgi-bin/file_upload_handler")
+    for name in locked:
+        assert not as_web(f"test -w {PROJECT / name}"), f"www-data can write {name or 'the project root'}"
+    for name in ("upload", "html/cache"):
+        assert as_web(f"test -w {PROJECT / name}"), f"www-data lost write access to {name}"
+    # The scheduler reads this as www-data to send assigned jobs, so it must stay readable.
+    assert as_web(f"test -r {PROJECT / 'keys/upload_private'}"), "the scheduler lost the upload key"
+    request = urllib.request.Request(
+        "http://127.0.0.1/usnmocr_cgi/file_upload_handler",
+        data=b"<data_server_request>\n<core_client_major_version>8</core_client_major_version>\n"
+             b"<file_upload>\n<file_info>\n<name>unsigned</name>\n<max_nbytes>1</max_nbytes>\n"
+             b"</file_info>\n<nbytes>1</nbytes>\n<offset>0</offset>\n<data>\nx")
+    with urllib.request.urlopen(request, timeout=20) as response:
+        reply = response.read()
+    assert b"missing signature" in reply, f"upload handler reply: {reply[:200]!r}"
+    emit("code-trees-locked", locked=len(locked), unsigned_upload="rejected")
 
 
 def scheduler_rpc(case=None):
@@ -388,11 +565,17 @@ def rehearse_code_migration():
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--phase", required=True, choices=("init", "restart"))
+    parser.add_argument("--check-feeder-guard", action="store_true")
     args = parser.parse_args()
     os.environ.update(KEY_VAULT_NAME="unused-local", DB_HOST="tls-db.test", DB_NAME="full_fixture",
                       DB_RUNTIME_USER="runtime", MASTER_HOST="localhost", PROJECT_DIR="/fixture/share",
                       PROJECT="usnmocr")
     setup()
+    if args.check_feeder_guard:
+        pid_dir = ROOT / f"pid_{socket.gethostname().split('.')[0]}"
+        pid_dir.mkdir(exist_ok=True)
+        shutil.chown(pid_dir, user="boincadm", group="boincadm")
+        os.environ["USNM_PID_ROOT"] = str(ROOT)
     emit("runtime", server_image=os.environ["ACCEPTANCE_SERVER_IMAGE"],
          require_secure_transport=fixture.sql("SELECT @@require_secure_transport"),
          database_version=fixture.sql("SELECT VERSION()"))
@@ -415,8 +598,13 @@ def main():
         (PROJECT / ".usnm-initialised").touch()
         run("bash", "-c", "set -- --ensure-project; . /usr/local/lib/usnm-boinc/entrypoint.sh; project_tree")
         start_services()
+        if args.check_feeder_guard:
+            feeder_allocation_guard()
         web()
+        code_trees_locked()
         connections()
+        if args.phase == "init":
+            qwen_tiebreak()
         stop_services()
         negatives()
         hashes = json.loads((ROOT / "copied-hashes.json").read_text())

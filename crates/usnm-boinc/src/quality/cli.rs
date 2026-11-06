@@ -106,6 +106,9 @@ pub enum QualityCommands {
     },
     /// Hand staged units to create_work, two results each.
     Submit {
+        /// Ordered JSON array of source doc_ids; never publish unrelated pending jobs.
+        #[arg(long)]
+        members: Option<PathBuf>,
         #[arg(long)]
         root: PathBuf,
         #[arg(long)]
@@ -166,6 +169,15 @@ pub enum QualityCommands {
         qwen_root: PathBuf,
         #[arg(long)]
         qwen_spool: PathBuf,
+        /// The directory `qwen compare --crop-states` writes: a reading joins only on the crops
+        /// an agreeing pair vouched for. Without it every canonical crop joins (`strict-v1`).
+        #[arg(long)]
+        qwen_crop_states: Option<PathBuf>,
+        /// The directory `qwen compare --pages` writes: a bundle unit with no canonical result
+        /// joins each page two hosts agreed on (`page-strict-v1`, #1435). Without it only
+        /// canonical results join.
+        #[arg(long)]
+        qwen_pages: Option<PathBuf>,
         /// Reuse content-addressed per-unit rows; late canonical readings invalidate joins.
         #[arg(long)]
         cache: Option<PathBuf>,
@@ -367,15 +379,19 @@ pub async fn run(command: QualityCommands) -> anyhow::Result<()> {
             eprintln!("{s:?}");
         }
         QualityCommands::Submit {
+            members,
             root,
             project,
             max_units,
         } => {
-            let s = x::submit::run(&x::submit::Options {
-                root,
-                project,
-                max_units,
-            })
+            let s = x::submit::run_selected(
+                &x::submit::Options {
+                    root,
+                    project,
+                    max_units,
+                },
+                members.as_deref(),
+            )
             .await?;
             eprintln!("{s:?}");
         }
@@ -419,6 +435,8 @@ pub async fn run(command: QualityCommands) -> anyhow::Result<()> {
             spool,
             qwen_root,
             qwen_spool,
+            qwen_crop_states,
+            qwen_pages,
             cache,
             max_dirty_units,
             inventory_only,
@@ -434,6 +452,8 @@ pub async fn run(command: QualityCommands) -> anyhow::Result<()> {
                 spool,
                 qwen_root,
                 qwen_spool,
+                qwen_crop_states,
+                qwen_pages,
                 cache,
                 max_dirty_units,
                 surya_root,

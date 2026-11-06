@@ -2,9 +2,8 @@
 
 `usnm_qwen` plan class `amd_vulkan_8b` supports automatic eligible AMD volunteer
 scheduling, including initial use of a possible Radeon RX 9070 XT (16 GB).
-**Initial volunteer use is hardware-unverified:** no RX 9070 XT was available
-for this change. Driver compatibility, correctness,
-memory use and performance on that card remain unverified in
+One RX 9070 XT on Windows has run it (below). Other AMD cards and Linux drivers
+have not, and correctness, memory use and performance remain unmeasured in
 [#885](https://github.com/tgoodyear/usnewsmap.com/issues/885).
 
 This is a native application, not Docker/Podman, ROCm or a CUDA fallback. Neither
@@ -20,17 +19,24 @@ This is not a successful RX 9070 XT execution or a resolved startup-failure clai
 
 ## Admission status and qualification
 
-AMD admission is **currently stopped** under
-[home-infra#81](https://github.com/tgoodyear/home-infra/issues/81) after signed
-Windows 1.10/110 failed before inference on an actual RX 9070 XT. Do not apply
-the general promotion below until a corrected signed release completes the
-**required** bounded exact-one-workunit acceptance (real-device inference and a
-valid returned result) and ordinary independent-peer validation/collection, and
-the reopening is coordinated on #529. After that acceptance, the intended mode
-is automatic again: compatible hosts receive eligible accelerator-only work
-through normal BOINC scheduling without per-volunteer cohorts or manual host
-approval. Promotion removes only AMD workunit bounds, not GPU, memory or
-validation checks.
+AMD admission is **general** since 1 November 2026, with the maintainer's approval
+and after a dry run: `amd_vulkan_8b` has no workunit bounds, and compatible hosts
+receive eligible accelerator-only work through normal BOINC scheduling without
+per-volunteer cohorts or manual host approval. Promotion removed only AMD workunit
+bounds, not GPU, memory or validation checks. It came after the pause in
+[home-infra#81](https://github.com/tgoodyear/home-infra/issues/81), which followed
+signed Windows 1.10/110 failing before inference on an actual RX 9070 XT.
+
+The acceptance evidence is one ordinary canary. On workunit 23296 (30 October),
+signed Windows 1.14 on the RX 9070 XT read 12 of 12 crops, an Apple host's reading
+agreed under the strict validator, and the AMD result became canonical. Workunit
+21128 (1.11, 27 October) stays inconclusive; see
+[the validation note](notes/2026-11-01-qwen-cross-vendor-validation.md). That is
+one validated unit on one card, not an equivalence or accuracy claim.
+
+The published AMD versions read request version 1 only. Request versions 2 to 4 need
+a newer signed AMD release; until one is published, `qwen-auto-cohort.py` closes its
+window rather than admit jobs an open AMD class cannot read.
 
 GPU-only Qwen routes use separate resource classes: AMD/ATI and Intel are
 detected through OpenCL for Vulkan execution; NVIDIA uses CUDA detection for
@@ -100,8 +106,7 @@ The actual signed Windows 1.10/110 RX 9070 XT task failed before inference with
 OpenCL `????:03:00.0` and Vulkan `[]`. In baseline b8799, ggml exports no
 `device_id` when `VK_EXT_pci_bus_info` is absent, even when the adapter supports
 Vulkan inference. Re-signing the helper alone cannot fix that runtime limitation.
-AMD admission remains intentionally closed under `home-infra#81`; neither a
-successful build nor a device listing is hardware acceptance.
+Neither a successful build nor a device listing is hardware acceptance.
 
 The pinned source patch exports `luid:` followed by the **same physical Vulkan
 device's eight LUID bytes** only when PCI information is unavailable on Windows.

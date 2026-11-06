@@ -10,12 +10,14 @@ use usnm_core::text_layout::TextLayout;
 
 use crate::memory::{as_analyzed, eval, term_matches, word_matches};
 use crate::{
-    mark_html, MATCHED_IN_LOC, SNIPPETS_FROM_AMERICAN_STORIES, SNIPPETS_FROM_LOC_ORIGINAL,
+    mark_html, SnippetLength, MATCHED_IN_LOC, SNIPPETS_FROM_AMERICAN_STORIES,
+    SNIPPETS_FROM_LOC_ORIGINAL,
 };
 
 /// Fragments per page.
 pub const MAX_FRAGMENTS: usize = 3;
-/// Characters of context on each side of a match, about a line of print.
+/// Characters of context on each side of a match, about a line of print:
+/// [`SnippetLength::Standard`]'s.
 pub const CONTEXT: usize = 80;
 
 /// One word as the analyzer counts positions: its folded token, or `None`
@@ -165,19 +167,19 @@ fn word_end(chars: &[char], mut at: usize) -> usize {
     at
 }
 
-/// Up to [`MAX_FRAGMENTS`] fragments of `text` around the matches of the
-/// query's positive words and phrases: exact phrases marked as a whole, a
-/// NEAR phrase's words one by one, prefix, wildcard and fuzzy terms on each
-/// word they match. A number with a fraction (`61½`) is also marked where
+/// Up to [`MAX_FRAGMENTS`] fragments of `text`, with `context` characters
+/// either side of the matches of the query's positive words and phrases:
+/// exact phrases marked as a whole, a NEAR phrase's words one by one, prefix,
+/// wildcard and fuzzy terms on each word they match. A number with a fraction (`61½`) is also marked where
 /// OCR read it with a slash (`611/2`, `61 1/2`), as a whole (#1067). Matches
-/// closer together than the context share a fragment, and fragments never
+/// closer together than `context` share a fragment, and fragments never
 /// overlap. Line breaks (columns) become spaces; a fragment that doesn't
 /// reach the text's start or end is marked with `…`. The words
 /// are matched as the engine matches them: the text's as `usnm_text` reads
 /// them, the query's analyzed again ([`as_analyzed`]), so with any analyzer
 /// version the marks land on the words the engine found (#168), and with
 /// either text layout on the words its searched field holds.
-pub fn text_snippets(text: &str, query: &Node, layout: TextLayout) -> Vec<String> {
+pub fn text_snippets(text: &str, query: &Node, layout: TextLayout, context: usize) -> Vec<String> {
     let chars: Vec<char> = text
         .chars()
         .map(|c| if c.is_whitespace() { ' ' } else { c })
@@ -188,14 +190,14 @@ pub fn text_snippets(text: &str, query: &Node, layout: TextLayout) -> Vec<String
     let mut k = 0;
     while k < hits.len() && out.len() < MAX_FRAGMENTS {
         let (s, _) = hits[k];
-        let from = word_start(&chars, s.saturating_sub(CONTEXT).max(covered)).max(covered);
+        let from = word_start(&chars, s.saturating_sub(context).max(covered)).max(covered);
         let mut pieces: Vec<(bool, String)> = Vec::new();
         if from > 0 {
             pieces.push((false, "… ".to_owned()));
         }
         let mut at = from;
         // Take every match that starts within the context of the last one.
-        while k < hits.len() && hits[k].0 <= at.max(s) + CONTEXT {
+        while k < hits.len() && hits[k].0 <= at.max(s) + context {
             let (hs, he) = hits[k];
             if hs > at {
                 pieces.push((false, chars[at..hs].iter().collect()));
@@ -204,7 +206,7 @@ pub fn text_snippets(text: &str, query: &Node, layout: TextLayout) -> Vec<String
             at = he;
             k += 1;
         }
-        let to = word_end(&chars, (at + CONTEXT).min(chars.len()));
+        let to = word_end(&chars, (at + context).min(chars.len()));
         if to > at {
             pieces.push((false, chars[at..to].iter().collect()));
         }
@@ -236,7 +238,8 @@ fn kept_loc_original(text_loc: Option<&str>, layout: TextLayout) -> Option<&str>
 /// American Stories' text (`american_stories`), that text's, from
 /// [`SNIPPETS_FROM_AMERICAN_STORIES`]; when it marks nothing in either and
 /// the layout keeps LoC's original text of the page (`text_loc`, #925),
-/// that text's, from [`SNIPPETS_FROM_LOC_ORIGINAL`]. Both backends use it.
+/// that text's, from [`SNIPPETS_FROM_LOC_ORIGINAL`]. Both backends use it,
+/// with as much context as `length` asks for.
 pub fn page_snippets(
     text: &str,
     text_as: Option<&str>,
@@ -244,8 +247,10 @@ pub fn page_snippets(
     query: &Node,
     american_stories: bool,
     layout: TextLayout,
+    length: SnippetLength,
 ) -> (Vec<String>, Option<&'static str>) {
-    let own = text_snippets(text, query, layout);
+    let context = length.context(CONTEXT);
+    let own = text_snippets(text, query, layout, context);
     if !own.is_empty() {
         return (own, None);
     }
@@ -261,7 +266,7 @@ pub fn page_snippets(
     ];
     for (other, source) in others {
         if let Some(other) = other {
-            let snippets = text_snippets(other, query, layout);
+            let snippets = text_snippets(other, query, layout, context);
             if !snippets.is_empty() {
                 return (snippets, Some(source));
             }
@@ -386,7 +391,34 @@ mod tests {
     use usnm_core::query::parse;
 
     fn snip(text: &str, q: &str) -> Vec<String> {
-        text_snippets(text, &parse(q).unwrap(), TextLayout::Separate)
+        text_snippets(text, &parse(q).unwrap(), TextLayout::Separate, CONTEXT)
+    }
+
+    #[test]
+    fn long_snippets_show_three_times_the_context() {
+        // `lead` and `tail` are about 150 characters from the match: past
+        // a standard snippet's context, within a long one's.
+        let filler = "far ".repeat(36);
+        let text = format!(
+            "{}lead {filler}gold {filler}tail{}",
+            "far ".repeat(60),
+            " far".repeat(60)
+        );
+        let q = parse("gold").unwrap();
+        let of = |length| {
+            let (snippets, _) =
+                page_snippets(&text, None, None, &q, false, TextLayout::Separate, length);
+            assert_eq!(snippets.len(), 1, "{snippets:?}");
+            snippets[0].clone()
+        };
+        let standard = of(SnippetLength::Standard);
+        assert!(
+            !standard.contains("lead") && !standard.contains("tail"),
+            "{standard}"
+        );
+        let long = of(SnippetLength::Long);
+        assert!(long.contains("lead") && long.contains("tail"), "{long}");
+        assert!(long.starts_with("… ") && long.ends_with(" …"), "{long}");
     }
 
     #[test]
@@ -518,10 +550,12 @@ mod tests {
         // the phrase "1 2" (#168): the mark lands on `1/2`.
         let q = usnm_core::query::parse_with("½", usnm_core::text::Analyzer::V1).unwrap();
         assert_eq!(
-            text_snippets("Oats closed 1/2 lower", &q, TextLayout::Separate),
+            text_snippets("Oats closed 1/2 lower", &q, TextLayout::Separate, CONTEXT),
             ["Oats closed <mark>1/2</mark> lower"]
         );
-        assert!(text_snippets("Wheat closed ½ higher", &q, TextLayout::Separate).is_empty());
+        assert!(
+            text_snippets("Wheat closed ½ higher", &q, TextLayout::Separate, CONTEXT).is_empty()
+        );
     }
 
     #[test]
@@ -614,15 +648,15 @@ mod tests {
         let long = "y".repeat(41);
         let text = format!("{long} gold");
         assert_eq!(
-            text_snippets(&text, &q, TextLayout::Single),
+            text_snippets(&text, &q, TextLayout::Single, CONTEXT),
             [format!("{long} <mark>gold</mark>")]
         );
         assert_eq!(
-            text_snippets(&text, &q, TextLayout::Separate),
+            text_snippets(&text, &q, TextLayout::Separate, CONTEXT),
             [format!("<mark>{long}</mark> <mark>gold</mark>")]
         );
         let q = parse("yyyyy*").unwrap();
-        assert!(text_snippets(&long, &q, TextLayout::Single).is_empty());
+        assert!(text_snippets(&long, &q, TextLayout::Single, CONTEXT).is_empty());
         assert_eq!(
             matched_in("gold", Some(&long), None, &q, TextLayout::Separate),
             [SNIPPETS_FROM_AMERICAN_STORIES]
@@ -655,11 +689,27 @@ mod tests {
         let american = "BRYAN AT CHICAGO the boy orator spoke";
         // Off: LoC's text only.
         assert_eq!(
-            page_snippets(loc, Some(american), None, &q, false, TextLayout::Separate),
+            page_snippets(
+                loc,
+                Some(american),
+                None,
+                &q,
+                false,
+                TextLayout::Separate,
+                SnippetLength::Standard
+            ),
             (Vec::new(), None)
         );
         assert_eq!(
-            page_snippets(loc, Some(american), None, &q, true, TextLayout::Separate),
+            page_snippets(
+                loc,
+                Some(american),
+                None,
+                &q,
+                true,
+                TextLayout::Separate,
+                SnippetLength::Standard
+            ),
             (
                 vec!["<mark>BRYAN</mark> AT CHICAGO the boy orator spoke".to_owned()],
                 Some(SNIPPETS_FROM_AMERICAN_STORIES)
@@ -668,17 +718,41 @@ mod tests {
         // A match in LoC's text keeps its snippets.
         let q = parse("orator").unwrap();
         assert_eq!(
-            page_snippets(loc, Some(american), None, &q, true, TextLayout::Separate),
+            page_snippets(
+                loc,
+                Some(american),
+                None,
+                &q,
+                true,
+                TextLayout::Separate,
+                SnippetLength::Standard
+            ),
             (vec!["the boy <mark>orator</mark> spoke".to_owned()], None)
         );
         // Nothing in either text, or no second text.
         let q = parse("silver").unwrap();
         assert_eq!(
-            page_snippets(loc, Some(american), None, &q, true, TextLayout::Separate),
+            page_snippets(
+                loc,
+                Some(american),
+                None,
+                &q,
+                true,
+                TextLayout::Separate,
+                SnippetLength::Standard
+            ),
             (Vec::new(), None)
         );
         assert_eq!(
-            page_snippets(loc, None, None, &q, true, TextLayout::Separate),
+            page_snippets(
+                loc,
+                None,
+                None,
+                &q,
+                true,
+                TextLayout::Separate,
+                SnippetLength::Standard
+            ),
             (Vec::new(), None)
         );
     }
@@ -728,14 +802,30 @@ mod tests {
         let american = Some("BRYAN AT CHICAGO the boy orator spoke");
         // Ours marks the word: its snippets, whatever else matches.
         let q = parse("Mailand").unwrap();
-        let (snippets, source) = page_snippets(OURS, None, Some(LOC_ORIGINAL), &q, true, layout);
+        let (snippets, source) = page_snippets(
+            OURS,
+            None,
+            Some(LOC_ORIGINAL),
+            &q,
+            true,
+            layout,
+            SnippetLength::Standard,
+        );
         assert_eq!(source, None);
         assert!(snippets[0].contains("<mark>Mailand</mark>"), "{snippets:?}");
         assert!(snippets[0].contains("Dubnaue"), "{snippets:?}");
         // The phrase is only in LoC's original text.
         let q = parse(r#""Wege nach Mailand""#).unwrap();
         assert_eq!(
-            page_snippets(OURS, None, Some(LOC_ORIGINAL), &q, true, layout),
+            page_snippets(
+                OURS,
+                None,
+                Some(LOC_ORIGINAL),
+                &q,
+                true,
+                layout,
+                SnippetLength::Standard
+            ),
             (
                 vec!["waren auf dem <mark>Wege nach Mailand</mark> begriffen".to_owned()],
                 Some(SNIPPETS_FROM_LOC_ORIGINAL)
@@ -743,15 +833,39 @@ mod tests {
         );
         // American Stories' text comes before LoC's original.
         let q = parse("bryan").unwrap();
-        let both = page_snippets(OURS, american, Some("bryan was here"), &q, true, layout);
+        let both = page_snippets(
+            OURS,
+            american,
+            Some("bryan was here"),
+            &q,
+            true,
+            layout,
+            SnippetLength::Standard,
+        );
         assert_eq!(both.1, Some(SNIPPETS_FROM_AMERICAN_STORIES));
         let q = parse("here").unwrap();
-        let both = page_snippets(OURS, american, Some("bryan was here"), &q, true, layout);
+        let both = page_snippets(
+            OURS,
+            american,
+            Some("bryan was here"),
+            &q,
+            true,
+            layout,
+            SnippetLength::Standard,
+        );
         assert_eq!(both.1, Some(SNIPPETS_FROM_LOC_ORIGINAL));
         // With American Stories' text left out of the search it isn't marked.
         let q = parse("bryan").unwrap();
         assert_eq!(
-            page_snippets(OURS, american, Some("bryan was here"), &q, false, layout),
+            page_snippets(
+                OURS,
+                american,
+                Some("bryan was here"),
+                &q,
+                false,
+                layout,
+                SnippetLength::Standard
+            ),
             (
                 vec!["<mark>bryan</mark> was here".to_owned()],
                 Some(SNIPPETS_FROM_LOC_ORIGINAL)
@@ -760,7 +874,15 @@ mod tests {
         // Nothing marks in any text.
         let q = parse("silver").unwrap();
         assert_eq!(
-            page_snippets(OURS, american, Some(LOC_ORIGINAL), &q, true, layout),
+            page_snippets(
+                OURS,
+                american,
+                Some(LOC_ORIGINAL),
+                &q,
+                true,
+                layout,
+                SnippetLength::Standard
+            ),
             (Vec::new(), None)
         );
     }
@@ -772,7 +894,15 @@ mod tests {
         let q = parse(r#""Wege nach Mailand""#).unwrap();
         for layout in [TextLayout::Separate, TextLayout::Single] {
             assert_eq!(
-                page_snippets(OURS, None, Some(LOC_ORIGINAL), &q, true, layout),
+                page_snippets(
+                    OURS,
+                    None,
+                    Some(LOC_ORIGINAL),
+                    &q,
+                    true,
+                    layout,
+                    SnippetLength::Standard
+                ),
                 (Vec::new(), None)
             );
             assert_eq!(

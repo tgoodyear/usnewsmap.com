@@ -20,7 +20,15 @@ ROOT = Path(__file__).resolve().parents[2]
 CLIENT = Path(__file__).with_name('acceptance_client.py')
 
 
+# EX_TEMPFAIL from a server transport: it ran nothing, so the same request may be sent again.
+BUSY = 75
+
+
 class AcceptanceError(Exception):
+    pass
+
+
+class TransportBusy(AcceptanceError):
     pass
 
 
@@ -44,6 +52,8 @@ def run(argv, seconds, payload=None):
                 if stream is not None:
                     stream.close()
         raise
+    if process.returncode == BUSY:
+        raise TransportBusy(f'{Path(argv[0]).name} busy (exit {BUSY}); output suppressed')
     if process.returncode:
         # Command output can contain account keys, URLs with SAS, and RPC passwords.
         raise AcceptanceError(f'{Path(argv[0]).name} failed (exit {process.returncode}); output suppressed')
@@ -148,7 +158,8 @@ class Runner:
         self.provision_dir = None
         self.report = dict(schema_version=1, run_id=self.run_id, release=release,
                            fixture=config['fixture'], accepted=False, cleanup_complete=False,
-                           coordination_claim=getattr(args, 'coordination_claim', None))
+                           coordination_claim=getattr(args, 'coordination_claim', None),
+                           server_busy_retries=0)
         settings = json.loads((ROOT / f'contrib-compute/infra/boinc/env/{args.env}.json').read_text())
         self.subscription = settings['subscriptionId']
         self.url = settings['projectUrl']
@@ -165,9 +176,16 @@ class Runner:
         return self.call(['az', *argv, '--subscription', self.subscription, '--only-show-errors'])
 
     def server(self, action, **extra):
-        payload = dict(action=action, run_id=self.run_id, fixture=self.config['fixture'],
-                       release=self.release, **extra)
-        return json.loads(self.call(self.config['server_command'], json.dumps(payload)))
+        payload = json.dumps(dict(action=action, run_id=self.run_id, fixture=self.config['fixture'],
+                                  release=self.release, **extra))
+        while True:
+            try:
+                return json.loads(self.call(self.config['server_command'], payload))
+            except TransportBusy:
+                # onprem_acceptance.py exits 75 while another step holds the project lock,
+                # before it reads the request, so every action may be sent again.
+                self.report['server_busy_retries'] += 1
+                self.pause()
 
     def client(self, action):
         code = CLIENT.read_text()

@@ -41,6 +41,13 @@ remote = next(i for i, arg in enumerate(args) if arg.startswith("root@")) + 1
 args = args[:remote] + shlex.split(" ".join(args[remote:]))
 with (root / "calls.jsonl").open("a") as f:
     f.write(json.dumps(args) + "\\n")
+if "--max-units" in args:
+    sys.exit(int(os.environ.get("SHIP_TEST_SUBMIT_EXIT", "0")))
+locked = os.environ.get("SHIP_TEST_LOCKED_STEP")
+if locked and locked in args:
+    print(os.environ.get("SHIP_TEST_LOCKED_MESSAGE",
+                         "error: another bridge step is running on this host"), file=sys.stderr)
+    sys.exit(1)
 if "df" in args:
     print("Avail\\n100")
     if "/srv/usnm-boinc/project/quality" in args:
@@ -63,7 +70,11 @@ elif "python3" in args and "-" in args:
     if "--after-submit" in args:
         print("freed 0 bytes")
     else:
-        print("/project/quality/test/incoming/c00001/sample.jsonl\\trus\\t1")
+        campaign = args[args.index("--campaign") + 1]
+        chunk = args[args.index("--chunk") + 1]
+        if os.environ.get("SHIP_TEST_RECEIVE_FAIL") == chunk:
+            sys.exit(1)
+        print(f"/project/quality/{campaign}/incoming/{chunk}/sample.jsonl\\trus\\t1")
 """)
 
     def stub(self, name, body):
@@ -71,10 +82,11 @@ elif "python3" in args and "-" in args:
         path.write_text(body)
         path.chmod(0o755)
 
-    def run_ship(self, extra, native=True):
+    def run_ship(self, extra, native=True, langs="rus\n"):
         chunk = self.root / "outbox/test/c00001"
         chunk.mkdir(parents=True, exist_ok=True)
         (chunk / "READY").write_text("1\n")
+        (chunk / "langs.txt").write_text(langs)
         return subprocess.run(
             ["bash", str(HERE / "quality-ship.sh"), "--campaign", "test",
              "--engine-image", "sha256:" + "a" * 64, "--outbox", str(self.root / "outbox"),
@@ -97,6 +109,270 @@ elif "python3" in args and "-" in args:
                     capture_output=True, text=True, timeout=5)
                 self.assertEqual(probe.returncode, 0, probe.stderr)
                 self.assertEqual(probe.stdout, "locked argv survives")
+
+    def test_legacy_shipper_cannot_bypass_a_frozen_subset_parent(self):
+        journal = self.root / "outbox/.qwen-transactions/test/c00001"
+        journal.mkdir(parents=True)
+        (journal / "parent.json").write_text("{}")
+        result = self.run_ship([], native=False)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("resume with --qwen-subsets", result.stderr)
+        self.assertFalse((self.root / "calls.jsonl").exists())
+        self.assertTrue((self.root / "outbox/test/c00001/READY").exists())
+
+    GUARDED = ["--prompt-version", "3", "--qwen-root", "guard-v3", "--qwen-yiddish-root", "guard-v4"]
+
+    def native_calls(self):
+        calls = [json.loads(line) for line in (self.root / "calls.jsonl").read_text().splitlines()]
+        return [c for c in calls if "/project/ops/qwen-feed/qwen_submit.py" in c]
+
+    def test_by_default_chunks_keep_their_campaign_and_request_version_1(self):
+        result = self.run_ship([])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for call in self.native_calls():
+            self.assertEqual(call[call.index("--campaign") + 1], "test")
+            self.assertEqual(call[call.index("--prompt-version") + 1], "1")
+
+    def test_a_chunk_goes_to_the_root_and_version_of_its_language(self):
+        for langs, root, version in (("srp\n", "guard-v3", "3"), ("srp\nspa\n", "guard-v3", "3"),
+                                     ("yid\n", "guard-v4", "4")):
+            with self.subTest(langs=langs):
+                (self.root / "calls.jsonl").unlink(missing_ok=True)
+                result = self.run_ship(self.GUARDED, langs=langs)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                native = self.native_calls()
+                self.assertEqual(len(native), 2)
+                for call in native:
+                    self.assertEqual(call[call.index("--campaign") + 1], root)
+                    self.assertEqual(call[call.index("--prompt-version") + 1], version)
+                text = (self.root / "calls.jsonl").read_text()
+                self.assertIn(f"QUALITY_CAMPAIGN={root}", text)
+                self.assertIn(f"QUALITY_GROUP={root}", text)
+                self.assertIn(f"/project/quality/{root}", text)
+                self.assertNotIn("QUALITY_CAMPAIGN=test", text)
+                # The chunk leaves the outbox it came from.
+                self.assertFalse((self.root / "outbox/test/c00001").exists())
+
+    def test_yiddish_never_ships_at_request_version_3(self):
+        for extra, langs in ((["--prompt-version", "3", "--qwen-root", "guard-v3"], "yid\n"),
+                             (self.GUARDED, "srp\nyid\n"), (self.GUARDED, "")):
+            with self.subTest(langs=langs):
+                (self.root / "calls.jsonl").unlink(missing_ok=True)
+                result = self.run_ship(extra, langs=langs)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("READY retained", result.stderr)
+                self.assertFalse((self.root / "calls.jsonl").exists())
+                self.assertTrue((self.root / "outbox/test/c00001/READY").exists())
+
+    def test_request_versions_and_roots_are_native_only_and_checked(self):
+        for extra, native in ((["--prompt-version", "3"], False), (["--qwen-root", "x"], False),
+                              (["--prompt-version", "5"], True), (["--qwen-root", "Bad_Name"], True),
+                              (["--qwen-submit-binary", "usnm-boinc"], False),
+                              (["--qwen-submit-binary", "-x"], True), (["--qwen-submit-binary", "a b"], True)):
+            with self.subTest(extra=extra):
+                result = self.run_ship(extra, native=native)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertFalse((self.root / "calls.jsonl").exists())
+
+    def test_a_submit_binary_reaches_only_the_native_submit(self):
+        # #1449: once the image submits every request version, the service names it by config.
+        for extra, expected in (([], None), (["--qwen-submit-binary", "usnm-boinc"], "usnm-boinc"),
+                                (["--qwen-submit-binary", "/project/ops/x/usnm-boinc"], "/project/ops/x/usnm-boinc")):
+            with self.subTest(extra=extra):
+                (self.root / "calls.jsonl").unlink(missing_ok=True)
+                result = self.run_ship([*self.GUARDED, *extra], langs="srp\n")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                preflight, publish = self.native_calls()
+                self.assertIn("--preflight", preflight)
+                self.assertNotIn("--submit-binary", preflight)
+                self.assertEqual(publish[publish.index("--submit-binary") + 1] if expected else None, expected)
+                self.assertEqual(publish.count("--submit-binary"), 1 if expected else 0)
+
+    def test_a_bundle_size_reaches_both_native_calls_for_the_main_root_only(self):
+        # #1435: unset, neither call names a bundle size, so qwen_submit.py stages one page a unit.
+        for extra, langs, expected in (([], "srp\n", None), (["--qwen-bundle-size", "8"], "srp\n", "8"),
+                                       (["--qwen-bundle-size", "32"], "srp\nspa\n", "32"),
+                                       (["--qwen-bundle-size", "8"], "yid\n", None)):
+            with self.subTest(extra=extra, langs=langs):
+                (self.root / "calls.jsonl").unlink(missing_ok=True)
+                result = self.run_ship([*self.GUARDED, *extra], langs=langs)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                native = self.native_calls()
+                self.assertEqual(len(native), 2)
+                for call in native:
+                    self.assertEqual(call.count("--bundle-size"), 1 if expected else 0)
+                    if expected:
+                        self.assertEqual(call[call.index("--bundle-size") + 1], expected)
+                        self.assertEqual(call[call.index("--campaign") + 1], "guard-v3")
+
+    def test_a_bundle_size_is_native_only_and_bounded(self):
+        for extra, native in ((["--qwen-bundle-size", "8"], False), (["--qwen-bundle-size", "1"], True),
+                              (["--qwen-bundle-size", "33"], True), (["--qwen-bundle-size", "08"], True)):
+            with self.subTest(extra=extra, native=native):
+                result = self.run_ship(extra, native=native)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn("--qwen-bundle-size", result.stderr)
+                self.assertFalse((self.root / "calls.jsonl").exists())
+
+    def test_stage_and_submit_do_not_wait_for_the_step_window(self):
+        # The stage has its own lock on the host, and only native publication reads the clock.
+        self.stub("date", "#!/bin/bash\nexit 9\n")
+        self.stub("sleep", "#!/bin/bash\necho \"$@\" >> " + str(self.root / "slept") + "\n")
+        result = self.run_ship(["--step-window-minutes", "15"], native=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("waiting for the next step window", result.stderr)
+        self.assertFalse((self.root / "slept").exists())
+        self.assertIn("shipped 1 chunk(s)", result.stderr)
+
+    def test_a_stage_that_stays_locked_defers_and_retains_ready(self):
+        # Another stage holds the stage lock: 60 tries 30 s apart, then exit 75, no acknowledgement.
+        self.env["SHIP_TEST_LOCKED_STEP"] = "quality-stage"
+        self.stub("sleep", "#!/bin/bash\necho \"$@\" >> " + str(self.root / "slept") + "\n")
+        result = self.run_ship(["--step-window-minutes", "15"], native=False)
+        self.assertEqual(result.returncode, 75, result.stderr)
+        self.assertIn("quality-stage: the lock stayed held for 30 minutes; READY retained", result.stderr)
+        self.assertEqual(len((self.root / "slept").read_text().split()), 60)
+        self.assertTrue((self.root / "outbox/test/c00001/READY").exists())
+        calls = [json.loads(line) for line in (self.root / "calls.jsonl").read_text().splitlines()]
+        self.assertFalse(any("--after-submit" in c for c in calls))
+
+    def run_chunks(self, names, extra=()):
+        for name in names:
+            chunk = self.root / "outbox/test" / name
+            chunk.mkdir(parents=True, exist_ok=True)
+            (chunk / "READY").write_text("1\n")
+            (chunk / "langs.txt").write_text("eng\n")
+        return subprocess.run(
+            ["bash", str(HERE / "quality-ship.sh"), "--campaign", "test",
+             "--engine-image", "sha256:" + "a" * 64, "--outbox", str(self.root / "outbox"), *extra],
+            env=self.env, capture_output=True, text=True, timeout=30)
+
+    def steps(self):
+        """What each remote call did, in order: receive, stage, submit or free, with its chunk."""
+        out = []
+        for c in (json.loads(line) for line in (self.root / "calls.jsonl").read_text().splitlines()):
+            if "--after-submit" in c:
+                out.append(("free", c[c.index("--chunk") + 1]))
+            elif "python3" in c and "--chunk" in c:
+                out.append(("receive", c[c.index("--chunk") + 1]))
+            elif "quality-stage" in c:
+                sample = next(v for v in c if v.startswith("QUALITY_SAMPLE="))
+                out.append(("stage", sample.split("/")[-2]))
+            elif "--max-units" in c:
+                out.append(("submit", None))
+        return out
+
+    def test_the_next_chunk_is_received_while_this_one_stages_and_before_it_submits(self):
+        result = self.run_chunks(["c00001", "c00002", "c00003"], ["--max-chunks", "3"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("shipped 3 chunk(s)", result.stderr)
+        steps = self.steps()
+        # Each chunk is received exactly once, before its stage, and the receive ahead is done
+        # before the current chunk's submit takes the step lock.
+        for n in ("c00001", "c00002", "c00003"):
+            self.assertEqual(steps.count(("receive", n)), 1, steps)
+            self.assertLess(steps.index(("receive", n)), steps.index(("stage", n)))
+        submits = [i for i, s in enumerate(steps) if s[0] == "submit"]
+        self.assertEqual(len(submits), 3)
+        self.assertLess(steps.index(("receive", "c00002")), submits[0])
+        self.assertLess(steps.index(("receive", "c00003")), submits[1])
+        self.assertLess(submits[0], steps.index(("free", "c00001")))
+        self.assertEqual(list((self.root / "outbox/test").glob("c*")), [])
+        self.assertEqual(list((self.root / "outbox").glob(".receive-*")), [])
+
+    def test_max_chunks_bounds_the_receive_ahead(self):
+        result = self.run_chunks(["c00001", "c00002"], ["--max-chunks", "1"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn(("receive", "c00002"), self.steps())
+        self.assertTrue((self.root / "outbox/test/c00002/READY").exists())
+
+    def test_a_failed_receive_ahead_is_received_again_in_its_turn(self):
+        self.env["SHIP_TEST_RECEIVE_FAIL"] = "c00002"
+        result = self.run_chunks(["c00001", "c00002"], ["--max-chunks", "3"])
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("c00002: receiving ahead failed", result.stderr)
+        steps = self.steps()
+        self.assertIn(("free", "c00001"), steps)
+        self.assertEqual(steps.count(("receive", "c00002")), 2)
+        self.assertNotIn(("stage", "c00002"), steps)
+        self.assertFalse((self.root / "outbox/test/c00001").exists())
+        self.assertTrue((self.root / "outbox/test/c00002/READY").exists())
+
+    def test_a_stage_that_fails_waits_for_the_receive_ahead(self):
+        self.env["SHIP_TEST_LOCKED_STEP"] = "quality-stage"
+        self.env["SHIP_TEST_LOCKED_MESSAGE"] = "error: the step's container ended with status 1"
+        result = self.run_chunks(["c00001", "c00002"], ["--max-chunks", "3"])
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn(("receive", "c00002"), self.steps())
+        self.assertEqual(list((self.root / "outbox").glob(".receive-*")), [])
+        for n in ("c00001", "c00002"):
+            self.assertTrue((self.root / "outbox/test" / n / "READY").exists())
+
+    def test_native_chunks_are_never_received_ahead(self):
+        for name in ("c00001", "c00002"):
+            chunk = self.root / "outbox/test" / name
+            chunk.mkdir(parents=True, exist_ok=True)
+            (chunk / "READY").write_text("1\n")
+            (chunk / "langs.txt").write_text("rus\n")
+        result = self.run_ship(["--max-chunks", "2"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        steps = self.steps()
+        self.assertLess(steps.index(("free", "c00001")), steps.index(("receive", "c00002")))
+
+    def test_submit_runs_in_the_server_under_the_step_lock_with_bounded_units(self):
+        result = self.run_ship([], native=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = [json.loads(line) for line in (self.root / "calls.jsonl").read_text().splitlines()]
+        submit = next(c for c in calls if "--max-units" in c)
+        self.assertEqual(submit[submit.index("-w") + 1], "1800")
+        self.assertIn("/run/usnm-boinc-step.lock", submit)
+        self.assertEqual(submit[submit.index("--root") + 1], "/project/quality/test")
+        self.assertEqual(submit[submit.index("--max-units") + 1], "6")
+        self.assertFalse(any("quality-submit" in c for c in calls))
+        script = submit[submit.index("-c") + 1]
+        self.assertIn('usnm-boinc quality submit "$@"', script)
+
+    def test_submit_that_stays_locked_or_fails_retains_ready(self):
+        for code, message in ((75, "READY retained"), (1, "")):
+            with self.subTest(code=code):
+                self.env["SHIP_TEST_SUBMIT_EXIT"] = str(code)
+                result = self.run_ship([], native=False)
+                self.assertEqual(result.returncode, code, result.stderr)
+                self.assertIn(message, result.stderr)
+                self.assertTrue((self.root / "outbox/test/c00001/READY").exists())
+                calls = [json.loads(line) for line in (self.root / "calls.jsonl").read_text().splitlines()]
+                self.assertFalse(any("--after-submit" in c for c in calls))
+
+    def test_a_step_that_fails_for_another_reason_is_not_deferred(self):
+        self.env["SHIP_TEST_LOCKED_STEP"] = "quality-stage"
+        self.env["SHIP_TEST_LOCKED_MESSAGE"] = "error: the step's container ended with status 1"
+        result = self.run_ship([], native=False)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("ended with status 1", result.stderr)
+        self.assertTrue((self.root / "outbox/test/c00001/READY").exists())
+
+    def test_native_submit_waits_for_the_step_window_too(self):
+        minutes = self.root / "minutes"
+        minutes.write_text("40:00\n14:30\n")
+        self.stub("date", f"""#!/bin/bash
+head -1 {minutes}
+sed -i.bak 1d {minutes}
+""")
+        self.stub("sleep", "#!/bin/bash\nexit 0\n")
+        result = self.run_ship(["--step-window-minutes", "15"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr.count("waiting for the next step window"), 1)
+        # At 14:30 of a 15-minute window, the lock wait ends with the window.
+        calls = [json.loads(line) for line in (self.root / "calls.jsonl").read_text().splitlines()]
+        submit = next(c for c in reversed(calls) if "/project/ops/qwen-feed/qwen_submit.py" in c)
+        self.assertEqual(submit[submit.index("-w") + 1], "30")
+
+    def test_step_window_is_off_by_default_and_checked(self):
+        self.stub("date", "#!/bin/bash\nexit 9\n")
+        self.assertEqual(self.run_ship([], native=False).returncode, 0)
+        result = self.run_ship(["--step-window-minutes", "60"], native=False)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("--step-window-minutes", result.stderr)
 
     def test_full_watermark_defers_repeated_ticks_before_any_transfer_or_stage(self):
         self.env["SHIP_TEST_PREFLIGHT_EXIT"] = "75"
@@ -125,7 +401,7 @@ elif "python3" in args and "-" in args:
         self.assertTrue(any("tar" in c for c in calls))
         self.assertTrue(any("--preflight" in c for c in calls))
         self.assertTrue(any("flock" in c and "/run/usnm-boinc-step.lock" in c for c in calls))
-        self.assertFalse(any("quality-submit" in c or "--after-submit" in c for c in calls))
+        self.assertFalse(any("--max-units" in c or "--after-submit" in c for c in calls))
         self.env["SHIP_TEST_PUBLISH_EXIT"] = "0"
         result = self.run_ship([])
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -182,7 +458,7 @@ elif "python3" in args and "-" in args:
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("shipped 1 chunk(s)", result.stderr)
         calls = [json.loads(line) for line in (self.root / "calls.jsonl").read_text().splitlines()]
-        self.assertTrue(any("quality-submit" in call for call in calls))
+        self.assertTrue(any("--max-units" in call for call in calls))
 
     def test_quality_queue_retains_its_own_unsent_backpressure(self):
         self.env["SHIP_TEST_QUALITY_READY"] = "301"

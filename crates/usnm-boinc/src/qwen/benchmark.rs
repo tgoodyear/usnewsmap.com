@@ -1,5 +1,5 @@
 //! Held-out transcription experiments on public gold crops. References never enter a workunit.
-use super::{outputs, units, JOB_FILE, PAGE_FILE};
+use super::{doc_id::DocId, outputs, units, JOB_FILE, PAGE_FILE};
 use crate::{atomic, read};
 use anyhow::{ensure, Context};
 use image::GenericImageView as _;
@@ -9,6 +9,7 @@ use std::{
     collections::{BTreeMap, HashMap},
     path::{Path, PathBuf},
 };
+use usnm_core::page_id::{PageId, Source};
 use usnm_ocr_contract::{
     boinc::sha256,
     quality::{Input, MAX_SCAN},
@@ -65,6 +66,17 @@ pub struct Options {
     pub engine: Engine,
     pub max_crops: usize,
     pub timeout_secs: u32,
+    pub doc_ids: DocIds,
+}
+
+/// How a campaign spells each crop's `doc_id`. Both pass every released worker's check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+pub enum DocIds {
+    /// `benchmark-<sha256 of the crop id>`, as every campaign staged before #983.
+    #[default]
+    Legacy,
+    /// `sample-<source_dataset>_<crop id>`, the crop's sample id (ADR-0026) in wire form.
+    Sample,
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
@@ -162,6 +174,15 @@ pub fn stage(opts: &Options) -> anyhow::Result<usize> {
             w > 0 && h > 0 && w <= 16384 && h <= 16384,
             "invalid crop dimensions"
         );
+        let doc_id = match opts.doc_ids {
+            DocIds::Legacy => DocId::legacy_benchmark(cid),
+            DocIds::Sample => {
+                let dataset = provenance["source_dataset"]
+                    .as_str()
+                    .with_context(|| format!("{cid}: sample doc ids need a source_dataset"))?;
+                DocId::Page(PageId::new(Source::Sample, &format!("{dataset}/{cid}"))?)
+            }
+        };
         let mut job = Job {
             v: VERSION,
             id: String::new(),
@@ -173,7 +194,7 @@ pub fn stage(opts: &Options) -> anyhow::Result<usize> {
                 loc_text: String::new(),
                 stratum: "benchmark".into(),
             }],
-            doc_id: format!("benchmark-{}", sha256(cid.as_bytes())),
+            doc_id: doc_id.wire()?,
             engine: opts.engine.clone(),
             group: row["group"].as_str().context("missing group")?.into(),
             input: Input::of(&bytes, &format!("benchmark:{}", sha256(&notice))),
@@ -280,6 +301,12 @@ pub fn collect(root: &Path, spool: &Path, out: &Path) -> anyhow::Result<Summary>
         ensure!(
             job.crops.len() == 1 && job.crops[0].id == cid && job.crops[0].loc_text.is_empty(),
             "invalid benchmark crop"
+        );
+        ensure!(
+            DocId::parse(&job.doc_id)?.names_crop(entry.provenance["source_dataset"].as_str(), cid),
+            "{}: doc id {:?} does not name crop {cid}",
+            job.id,
+            job.doc_id
         );
         ensure!(!hypotheses.contains_key(cid), "duplicate reference");
         let files: Vec<PathBuf> = outputs()
@@ -415,6 +442,7 @@ mod tests {
             "crop_id": "public-001", "source_license": "CC-BY-4.0",
             "source_url": "https://example.org/public",
             "source_attribution": "Synthetic dataset authors",
+            "source_dataset": "synthetic-public",
             "crop_sha256": sha256(&std::fs::read(dir.join("image.jpg")).unwrap()),
         });
         std::fs::write(dir.join("manifest.jsonl"), provenance.to_string()).unwrap();
@@ -426,6 +454,78 @@ mod tests {
             engine,
             max_crops: 20,
             timeout_secs: 600,
+            doc_ids: DocIds::Legacy,
+        }
+    }
+
+    fn staged(opts: &Options) -> Manifest {
+        stage(opts).unwrap();
+        serde_json::from_slice(&std::fs::read(opts.root.join(MANIFEST)).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn legacy_doc_ids_are_unchanged_and_sample_ids_need_a_new_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut opts = fixture(tmp.path());
+        let legacy = staged(&opts);
+        assert_eq!(
+            legacy.entries[0].job.doc_id,
+            "benchmark-6f892088f1a6f86391beba14f4f5b382bc3621592e906db75762a7a1db726c61"
+        );
+        opts.doc_ids = DocIds::Sample;
+        let err = stage(&opts).unwrap_err().to_string();
+        assert!(err.contains("immutable"), "{err}");
+        opts.root = tmp.path().join("sample-campaign");
+        let job = staged(&opts).entries.remove(0).job;
+        assert_eq!(job.doc_id, "sample-synthetic-public_public-001");
+        assert_ne!(job.id, legacy.entries[0].job.id);
+        assert_eq!(
+            DocId::parse(&job.doc_id).unwrap(),
+            DocId::Page("sample:synthetic-public/public-001".parse().unwrap())
+        );
+        let path = tmp.path().join("manifest.jsonl");
+        let row: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        opts.root = tmp.path().join("bad-dataset");
+        for dataset in [Value::Null, "Synthetic_Public".into(), "../x".into()] {
+            let mut bad = row.clone();
+            bad["source_dataset"] = dataset;
+            std::fs::write(&path, bad.to_string()).unwrap();
+            assert!(stage(&opts).is_err(), "{bad}");
+            assert!(!opts.root.exists());
+        }
+    }
+
+    #[test]
+    fn legacy_and_sample_campaigns_collect_and_a_foreign_doc_id_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let spool = tmp.path().join("spool");
+        std::fs::create_dir(&spool).unwrap();
+        let out = tmp.path().join("out");
+        let mut opts = fixture(tmp.path());
+        let forged = [
+            DocId::legacy_benchmark("public-002").wire().unwrap(),
+            "sample-nzz_public-001".into(),
+            "sample-synthetic-public_public-002".into(),
+            "sn85055101_1917-04-03_ed-1_seq-3".into(),
+        ];
+        for doc_ids in [DocIds::Legacy, DocIds::Sample] {
+            opts.doc_ids = doc_ids;
+            opts.root = tmp.path().join(format!("{doc_ids:?}"));
+            stage(&opts).unwrap();
+            let path = opts.root.join(MANIFEST);
+            let original = std::fs::read(&path).unwrap();
+            for doc_id in &forged {
+                let mut manifest: Manifest = serde_json::from_slice(&original).unwrap();
+                let job = &mut manifest.entries[0].job;
+                job.doc_id.clone_from(doc_id);
+                job.id = job.identity().unwrap();
+                std::fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+                let err = collect(&opts.root, &spool, &out).unwrap_err().to_string();
+                assert!(err.contains("does not name crop"), "{doc_id}: {err}");
+            }
+            std::fs::write(&path, &original).unwrap();
+            let s = collect(&opts.root, &spool, &out).unwrap();
+            assert_eq!((s.expected, s.pending), (1, 1), "{doc_ids:?}");
         }
     }
 

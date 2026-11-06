@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # CI for the OCR-quality results database (#962): a throwaway PostgreSQL 17 (the queue
 # fixture's pinned image), usnm_quality with setup.sql applied twice, the role checks in
-# test_roles.sql, load.py's upserts run as quality_loader and quality_text_writer, the
-# summary's refresh, and rank.sql as quality_reader.
+# test_roles.sql, load.py's upserts run as quality_loader and quality_text_writer (LoC's
+# software among them), the summary's refresh, and rank.sql and the campaign builder's
+# export as quality_reader.
 #
 #   ci-check.sh [--name usnm-quality-ci]
 #
@@ -48,6 +49,13 @@ print(m.campaign_sql("damage-v2", "damage") + m.campaign_sql("v1-ci", "boinc-qua
       + m.upsert_sql("unit_pages", m.UNIT_COLS, ["campaign", "doc_id"], units)
       + m.upsert_sql("reader_scores", m.SCORE_COLS, ["campaign", "doc_id", "reader"], scores)
       + m.upsert_sql("pages", m.PAGE_COLS, ["doc_id"], pages))  # a rerun replaces
+sw = {"batch": "b", "batch_version": 1, "archive": "b_ver01.tar.bz2", "header_doc": d, "engine_family": "abbyy",
+      "software": '[{"block":1,"step":"pre","name":"CCS docWorks","version":"7.0-1.52"},{"block":1,"step":"ocr","name":"FineReader","version":"11.0"}]',
+      "agencies": "[]", "steps": '["Align"]', "settings_engines": "[]", "engine_name": "FineReader", "engine_version": "11.0",
+      "wrapper": "CCS docWorks", "wrapper_version": "7.0-1.52", "vendor": "CCS Content Conversion Specialists",
+      "read_at": "2026-11-03T21:45:00Z"}
+rows = m.locsw_rows([sw, {**sw, "engine_version": "12.0"}])  # one row a batch version, the last kept
+print(m.upsert_sql("loc_software", m.LOCSW_COLS, ["batch", "batch_version"], rows) * 2)
 PY
 } | psql_admin -d usnm_quality > /dev/null
 # The agreement loader's SQL, as the text writer, then the loader's refresh.
@@ -78,5 +86,56 @@ PY
 } | psql_admin -d usnm_quality > /dev/null
 got=$(psql_admin -d usnm_quality -tA -c "SELECT doc_id, damage_rate, loc_est_cer, has_image_features, loc_as_local_cer_sym FROM quality.page_summary")
 [ "$got" = "sn1_1900-01-01_ed-1_seq-1|0.4|0.3|t|0.08" ] || die "page_summary after the load: $got"
+got=$(psql_admin -d usnm_quality -tA -c "SELECT engine_family, engine_version, software->1->>'name', vendor FROM quality.pages p JOIN quality.loc_software USING (batch, batch_version)")
+[ "$got" = "abbyy|12.0|FineReader|CCS Content Conversion Specialists" ] || die "loc_software after the load: $got"
 { echo "SET ROLE quality_reader;"; cat "$here/rank.sql"; } | psql_admin -d usnm_quality -v limit=5 > /dev/null
-echo "usnm_quality checked: schema, roles, loader upserts, page_summary, rank queries"
+# Pages at the campaign builder's band edges, rate:occurrences, so that its own test of a row
+# is checked against the report's SQL.
+export QC_EDGES="0.1:60 0.25:60 0.25000001:60 0.2500001:60 0.0999999:60 0.5:49 0.5:50"
+{
+  echo "SET ROLE quality_loader;"
+  python3 - "$here/load.py" <<'PY'
+import datetime, importlib.util, os, sys
+spec = importlib.util.spec_from_file_location("load", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+xs = [{"doc_id": f"sn9_1900-01-01_ed-1_seq-{i}", "batch": "b", "batch_version": 1, "lccn": "sn9",
+       "date": datetime.date(1900, 1, 1), "edition": 1, "seq": i, "lang": "eng", "damage_rate": rate,
+       "decision": "detected", "head": occurrences, "near": 0}
+      for i, (rate, occurrences) in enumerate((e.split(":") for e in os.environ["QC_EDGES"].split()), 1)]
+pages, damage = m.damage_rows(xs, "damage-v2")
+print(m.upsert_sql("pages", m.PAGE_COLS, ["doc_id"], pages) + m.upsert_sql("damage", m.DAMAGE_COLS, ["doc_id"], damage))
+PY
+  echo "SELECT quality.refresh_summary();"
+} | psql_admin -d usnm_quality > /dev/null
+# The builder's export runs as the reader, so its columns and grants are checked, and the bands
+# it gives the rows are the report's.
+qc="$here/../../boinc/onprem/quality-feed/quality_campaign.py"
+export_csv=$({
+  echo "SET ROLE quality_reader;"
+  python3 - "$qc" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("quality_campaign", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+print(m.export_sql(m.DEFAULT_FILTERS))
+PY
+} | psql_admin -d usnm_quality)
+worst=$(psql_admin -d usnm_quality -tA -c "SET ROLE quality_reader" \
+  -c "SELECT doc_id FROM quality.page_summary WHERE damage_rate > 0.25")
+QC_EXPORT=$export_csv QC_WORST=$worst python3 - "$qc" <<'PY' || die "the campaign export"
+import csv, importlib.util, io, os, sys
+spec = importlib.util.spec_from_file_location("quality_campaign", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+rows = list(csv.reader(io.StringIO(os.environ["QC_EXPORT"])))
+if rows[:1] != [m.COLUMNS]:
+    sys.exit(f"columns {rows[:1]}")
+want = {}
+for i, edge in enumerate(os.environ["QC_EDGES"].split(), 1):
+    rate, occurrences = edge.split(":")
+    band = m.band_of(float(rate), int(occurrences), m.DEFAULT_FILTERS)
+    if band:
+        want[f"sn9_1900-01-01_ed-1_seq-{i}"] = band
+worst = set(os.environ["QC_WORST"].split())
+got = {r[0]: m.band_of(float(r[8]), int(r[9]), m.DEFAULT_FILTERS) for r in rows[1:]}
+sql = {r[0]: "worst" if r[0] in worst else "moderate" for r in rows[1:]}
+if not got == sql == want:
+    sys.exit(f"bands: the builder's on the export {got}, the report's SQL {sql},"
+             f" the builder's on the rates loaded {want}")
+PY
+echo "usnm_quality checked: schema, roles, loader upserts, LoC software, page_summary, rank queries, campaign export"

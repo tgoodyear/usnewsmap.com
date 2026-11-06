@@ -504,19 +504,24 @@ export function japaneseOcr(s: Status, now: number): OcrLine | null {
     };
   const done = o.done.pages;
   const total = o.targets.pages;
+  // Pages LoC lists with no scan aren't targets. A report from before they
+  // were counted apart has none.
+  const noScan = o.undigitized?.pages ?? 0;
+  const kind = noScan > 0 ? "digitized Japanese pages" : "Japanese pages";
+  const noScanNote = noScan > 0 ? ` No scan exists for ${count(noScan)} more.` : "";
   // No bar for an empty target list: a zero-length range says nothing.
   const progress =
     total > 0
       ? {
           done,
           total,
-          label: `${count(done)} of ${count(total)} Japanese pages read`,
+          label: `${count(done)} of ${count(total)} ${kind} read`,
         }
       : undefined;
   if (total === 0) return { text: "There are no Japanese pages to read.", searchable };
   if (done >= total) {
     return {
-      text: `All ${count(total)} Japanese pages read.`,
+      text: `All ${count(total)} ${kind} read (100%).${noScanNote}`,
       progress,
       searchable,
     };
@@ -524,13 +529,13 @@ export function japaneseOcr(s: Status, now: number): OcrLine | null {
   if (o.running) {
     const left = o.eta ? Date.parse(o.eta) - now : NaN;
     return {
-      text: `Reading Japanese pages: ${count(done)} of ${count(total)} done (${pct(done, total)})${left > 60_000 ? `, about ${span(left)} left` : ""}.`,
+      text: `Reading ${kind}: ${count(done)} of ${count(total)} done (${pct(done, total)})${left > 60_000 ? `, about ${span(left)} left` : ""}.${noScanNote}`,
       progress,
       searchable,
     };
   }
   return {
-    text: `The first pass read ${count(done)} of ${count(total)} Japanese pages (${pct(done, total)}) and last reported ${relative(o.updated_at, now)}. Any further OCR runs through BOINC, below.`,
+    text: `The first pass read ${count(done)} of ${count(total)} ${kind} (${pct(done, total)}) and last reported ${relative(o.updated_at, now)}. Any further OCR runs through BOINC, below.${noScanNote}`,
     progress,
     searchable,
   };

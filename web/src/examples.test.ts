@@ -6,12 +6,14 @@ import {
   EXAMPLES,
   EXAMPLES_MORE,
   EXAMPLES_SHOWN,
+  examplePath,
   examplesShown,
   mixByEra,
   setsOf,
   shuffle,
 } from "./examples";
 import raw from "./examples.json";
+import { searchPath } from "./route";
 import { DEFAULTS, isIsoDate, parseView, parseViewUrl, searchParams, serializeView, viewUrl } from "./state/url";
 import type { ViewState } from "./state/url";
 
@@ -33,8 +35,8 @@ describe("examples", () => {
       const view = { ...DEFAULTS, ...ex.view };
       expect(parseView(serializeView(view)), ex.id).toEqual(view);
       const linked = parseViewUrl(viewUrl(view));
-      // Readable search paths normalize case and phrase quotes, but not filters.
-      expect({ ...linked, q: view.q }, ex.id).toEqual(view);
+      expect(viewUrl(view), ex.id).toBe(examplePath(ex));
+      expect(linked, ex.id).toEqual(view);
       expect(viewUrl(linked), ex.id).toBe(viewUrl(view));
     }
   });
@@ -68,14 +70,15 @@ describe("examples", () => {
 
   // scripts/onprem/serving/warm-edge.py requests these, with `v` and `g` after
   // them as the app sends, so the query strings must match to the byte. A card
-  // click, a /search/ link with its filters and the plain /search/ link that
-  // the sitemap names can all differ. `vitest -u` updates the file.
+  // click, an example link and legacy /search/ links can differ.
+  // Keep warming legacy links too. `vitest -u` updates the file.
   it("list every search an example can send, for warming Cloudflare", async () => {
     const queries = new Set<string>();
     for (const ex of EXAMPLES) {
       const clicked = parseView(serializeView({ ...DEFAULTS, ...ex.view }));
       const plain = parseViewUrl(viewUrl({ ...DEFAULTS, q: clicked.q }));
-      for (const view of [clicked, parseViewUrl(viewUrl(clicked)), plain]) {
+      const legacy = parseViewUrl(`${searchPath(clicked.q, clicked.mode)}${serializeView(clicked)}`);
+      for (const view of [clicked, parseViewUrl(viewUrl(clicked)), legacy, plain]) {
         const sent = searchQuery(searchParams(view), "VERSION");
         sent.delete("v");
         queries.add(sent.toString());

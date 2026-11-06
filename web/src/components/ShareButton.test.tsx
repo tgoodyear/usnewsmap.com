@@ -3,8 +3,8 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { ShareButton } from "./ShareButton";
 
 const image = "/share-image.png?page=%2F&q=cross+of+gold&state=IL&v=2";
-const metadata = () =>
-  new Response(`<meta property="og:image" content="https://usnewsmap.com${image.replaceAll("&", "&amp;")}">`);
+const metadata = (path = image) =>
+  new Response(`<meta property="og:image" content="https://usnewsmap.com${path.replaceAll("&", "&amp;")}">`);
 const png = (fallback = false) =>
   new Response("png", {
     headers: { "content-type": "image/png", "cache-control": fallback ? "no-store" : "max-age=3600" },
@@ -71,6 +71,27 @@ describe("Share preview preparation", () => {
     expect(fetch.mock.calls.length).toBeLessThan(25);
   });
 
+  it("uses a warm revisioned preview from fresh metadata at the local origin without adding view parameters", async () => {
+    const preview = "/search-preview/0123456789abcdef/cross-of-gold.png";
+    vi.stubGlobal("navigator", { clipboard: { writeText: vi.fn().mockResolvedValue(undefined) } });
+    const fetch = vi.fn().mockResolvedValueOnce(metadata(preview)).mockResolvedValueOnce(png());
+    vi.stubGlobal("fetch", fetch);
+    window.history.replaceState(null, "", "/search/cross-of-gold?state=IL&z=6&c=-83,33");
+    render(<ShareButton />);
+    fireEvent.click(screen.getByRole("button"));
+    await waitFor(() => expect(screen.getByRole("button").hasAttribute("disabled")).toBe(false));
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch).toHaveBeenNthCalledWith(1, window.location.href, {
+      signal: expect.any(AbortSignal),
+      cache: "no-store",
+    });
+    expect(fetch).toHaveBeenLastCalledWith(new URL(preview, window.location.href).href, {
+      signal: expect.any(AbortSignal),
+      cache: "no-store",
+    });
+    expect(screen.getByRole("status").textContent).toBe("");
+  });
+
   it("finishes background preparation only after a fallback is replaced by a completed screenshot", async () => {
     vi.useFakeTimers();
     vi.stubGlobal("navigator", { clipboard: { writeText: vi.fn().mockResolvedValue(undefined) } });
@@ -110,6 +131,27 @@ describe("Share preview preparation", () => {
     await waitFor(() => expect(screen.getByRole("button").hasAttribute("disabled")).toBe(false));
     expect(screen.getByRole("status").textContent).toBe("");
     expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    "/search-preview/0123456789abcde/cross-of-gold.png",
+    "/search-preview/0123456789abcdeF/cross-of-gold.png",
+    "/search-preview/0123456789abcdeg/cross-of-gold.png",
+    "/search-preview/0123456789abcdef/Cross-of-gold.png",
+    "/search-preview/0123456789abcdef/cross_of_gold.png",
+    "/search-preview/0123456789abcdef/cross-of-gold/extra.png",
+    "/search-preview/0123456789abcdef/cross-of-gold.png?state=GA",
+    "/search-preview/0123456789abcdef/cross-of-gold.png?",
+    "/search-preview/0123456789abcdef/cross-of-gold.png#map",
+  ])("does not fetch a malformed revisioned preview: %s", async (path) => {
+    vi.stubGlobal("navigator", { clipboard: { writeText: vi.fn().mockResolvedValue(undefined) } });
+    const fetch = vi.fn().mockResolvedValueOnce(metadata(path));
+    vi.stubGlobal("fetch", fetch);
+    render(<ShareButton />);
+    fireEvent.click(screen.getByRole("button"));
+    await waitFor(() => expect(screen.getByRole("button").hasAttribute("disabled")).toBe(false));
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("status").textContent).toBe("");
   });
 
   it("cancels preparation when the sharing control unmounts", async () => {

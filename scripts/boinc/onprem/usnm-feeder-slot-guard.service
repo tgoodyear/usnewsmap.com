@@ -1,0 +1,8 @@
+[Unit]
+Description=Check BOINC feeder slot allocation against the active app registry (#1462)
+After=usnm-boinc-server.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/podman exec --user boincadm usnm-boinc-server /usr/bin/python3 /usr/local/lib/usnm-boinc/feeder-slot-guard.py --project /project/usnmocr
+TimeoutStartSec=45

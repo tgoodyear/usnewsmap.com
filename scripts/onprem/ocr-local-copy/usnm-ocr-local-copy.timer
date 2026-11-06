@@ -1,0 +1,12 @@
+# Daily, an hour after the search log's copy, on the same host.
+# Not enabled by anything in this repository: README.md here.
+[Unit]
+Description=usnewsmap OCR output copy to tank, daily
+
+[Timer]
+OnCalendar=*-*-* 03:30:00 UTC
+RandomizedDelaySec=20min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -42,6 +42,11 @@
         <one_result_per_host_per_wu/>
         <min_sendwork_interval>2</min_sendwork_interval>
         <next_rpc_delay>3600</next_rpc_delay>
+        <!-- The request_delay of every "project is down" reply: no feeder or one not yet
+             ready, stop_sched, no database. BOINC's default is 3600. A client waits the later
+             of this and its own backoff, so the first four such replies in a row each mean
+             about 20 minutes (docs/boinc/feeder-refresh.md, Client retry behaviour; #1462). -->
+        <maintenance_delay>1200</maintenance_delay>
         <max_wus_in_progress>32</max_wus_in_progress>
         <daily_result_quota>50000</daily_result_quota>
         <max_wus_to_send>64</max_wus_to_send>
@@ -51,8 +56,9 @@
         <!-- All-app interleaving divides both these cache slots and the query below by app weight.
              Keep each positive-weight app's rounded query budget >= 2 * total cache
              slots, and Qwen's cache share >= its 1800-result ready baseline (#860, #529).
-             Qwen weight 16 of 24 gives about 2730 Qwen slots, 170-171 per other app and
-             8192 candidates per weight-1 app. Re-size for app/weight or backlog growth.
+             With the former nine active apps, Qwen weight 16 of 24 gave about 2730 Qwen
+             slots, 170-171 per other app and 8192 candidates per weight-1 app. Re-size
+             for the actual active DB apps, app/weight changes or backlog growth.
              This bounded window is not starvation-free scheduling.
              See contrib-compute/docs/app-release.md, Feeder visibility. -->
         <feeder_query_size>196608</feeder_query_size>

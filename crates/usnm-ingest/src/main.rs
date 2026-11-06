@@ -8,8 +8,8 @@ mod cli;
 use clap::{Parser, Subcommand};
 use cli::common::{state, Stores};
 use cli::{
-    batches, congress, curate, ja_ocr, ocr, onprem, pictures, prune, release, run, searchlog_copy,
-    titles,
+    batches, congress, curate, ja_ocr, ocr, ocr_local_copy, oni, onprem, pictures, prune, release,
+    run, searchlog_copy, titles,
 };
 use usnm_ingest::activity::{self, Reporter};
 use usnm_ingest::release::{Published, PublishedUnrecorded, TitlesLeft};
@@ -48,6 +48,7 @@ enum Command {
     /// already; never replaces a file.
     TitlesSeed,
     ArchiveCopy(batches::ArchiveCopyArgs),
+    OniFetch(oni::OniFetchArgs),
     /// Report pages that ship in more than one curated batch (04 §4.7):
     /// JSON on stdout. Reads every batch's counts and the parts of the
     /// batches that share title-days; changes nothing.
@@ -65,6 +66,8 @@ enum Command {
     OcrAlternateStage(ocr::OcrAlternateStageArgs),
     OcrAlternateDecide(ocr::OcrAlternateDecideArgs),
     OcrAlternatePreview(ocr::OcrAlternatePreviewArgs),
+    OcrAlternateSupersession(ocr::OcrAlternateSupersessionArgs),
+    OcrAlternateAccounting(ocr::OcrAlternateAccountingArgs),
     OcrSeed(ocr::OcrSeedArgs),
     OcrEnqueue(ocr::OcrEnqueueArgs),
     OcrRequeue(ocr::OcrRequeueArgs),
@@ -73,7 +76,9 @@ enum Command {
     CongressManual(congress::CongressManualArgs),
     CongressDamage(congress::CongressDamageArgs),
     SearchlogCopy(searchlog_copy::SearchlogCopyArgs),
+    OcrLocalCopy(ocr_local_copy::OcrLocalCopyArgs),
     Pictures(pictures::PicturesArgs),
+    PicturesJoin(pictures::PicturesJoinArgs),
     ReleaseFinish(release::ReleaseFinishArgs),
     Run(run::RunArgs),
 }
@@ -144,6 +149,7 @@ impl Command {
             Command::TitlesSeed => "titles-seed",
             Command::Duplicates => "duplicates",
             Command::ArchiveCopy { .. } => "archive-copy",
+            Command::OniFetch { .. } => "oni-fetch",
             Command::Prune { .. } => "prune",
             Command::SeedState { .. } => "seed-state",
             Command::PublishStaged { .. } => "publish-staged",
@@ -157,6 +163,8 @@ impl Command {
             Command::OcrAlternateStage { .. } => "ocr-alternate-stage",
             Command::OcrAlternateDecide { .. } => "ocr-alternate-decide",
             Command::OcrAlternatePreview { .. } => "ocr-alternate-preview",
+            Command::OcrAlternateSupersession { .. } => "ocr-alternate-supersession",
+            Command::OcrAlternateAccounting { .. } => "ocr-alternate-accounting",
             Command::OcrSeed { .. } => "ocr-seed",
             Command::OcrEnqueue { .. } => "ocr-enqueue",
             Command::OcrRequeue { .. } => "ocr-requeue",
@@ -165,7 +173,9 @@ impl Command {
             Command::CongressManual { .. } => "congress-manual",
             Command::CongressDamage { .. } => "congress-damage",
             Command::SearchlogCopy { .. } => "searchlog-copy",
+            Command::OcrLocalCopy { .. } => "ocr-local-copy",
             Command::Pictures { .. } => "pictures",
+            Command::PicturesJoin { .. } => "pictures-join",
             Command::Run { .. } => "run",
         }
     }
@@ -186,6 +196,7 @@ fn first_step(command: &Command) -> Option<Step> {
         | Command::TitlesSeed
         | Command::Duplicates
         | Command::ArchiveCopy { .. }
+        | Command::OniFetch { .. }
         | Command::Prune { .. }
         | Command::SeedState { .. }
         | Command::PublishStaged { .. }
@@ -199,6 +210,8 @@ fn first_step(command: &Command) -> Option<Step> {
         | Command::OcrAlternateStage { .. }
         | Command::OcrAlternateDecide { .. }
         | Command::OcrAlternatePreview { .. }
+        | Command::OcrAlternateSupersession { .. }
+        | Command::OcrAlternateAccounting { .. }
         | Command::OcrSeed { .. }
         | Command::OcrEnqueue { .. }
         | Command::OcrRequeue { .. }
@@ -207,7 +220,9 @@ fn first_step(command: &Command) -> Option<Step> {
         | Command::CongressManual { .. }
         | Command::CongressDamage { .. }
         | Command::SearchlogCopy { .. }
-        | Command::Pictures { .. } => None,
+        | Command::OcrLocalCopy { .. }
+        | Command::Pictures { .. }
+        | Command::PicturesJoin { .. } => None,
     }
 }
 
@@ -280,6 +295,7 @@ async fn command(
         Command::ImportStagedRun(args) => onprem::import_staged_run_command(cli, state, args).await,
         Command::MirrorStore(args) => onprem::mirror_store_command(args).await,
         Command::ArchiveCopy(args) => batches::archive_copy_command(args).await,
+        Command::OniFetch(args) => oni::oni_fetch_command(cli, args).await,
         Command::OcrDamage(args) => ocr::ocr_damage_command(cli, start, args).await,
         Command::OcrAgreement(args) => ocr::ocr_agreement_command(cli, start, args).await,
         Command::OcrPrefetchManifest(args) => ocr::ocr_prefetch_manifest_command(cli, args).await,
@@ -292,6 +308,12 @@ async fn command(
             ocr::ocr_alternate_decide_command(cli, state, args).await
         }
         Command::OcrAlternatePreview(args) => ocr::ocr_alternate_preview_command(cli, args).await,
+        Command::OcrAlternateSupersession(args) => {
+            ocr::ocr_alternate_supersession_command(cli, args).await
+        }
+        Command::OcrAlternateAccounting(args) => {
+            ocr::ocr_alternate_accounting_command(cli, args).await
+        }
         Command::OcrSeed(args) => ocr::ocr_seed_command(cli, state, start, args).await,
         Command::OcrEnqueue(args) => ocr::ocr_enqueue_command(cli, state, args).await,
         Command::OcrRequeue(args) => ocr::ocr_requeue_command(cli, state, args).await,
@@ -306,7 +328,9 @@ async fn command(
         }
         Command::CongressDamage(args) => congress::congress_damage_command(cli, start, args).await,
         Command::SearchlogCopy(args) => searchlog_copy::searchlog_copy_command(args).await,
+        Command::OcrLocalCopy(args) => ocr_local_copy::ocr_local_copy_command(args).await,
         Command::Pictures(args) => pictures::pictures_command(cli, args).await,
+        Command::PicturesJoin(args) => pictures::pictures_join_command(cli, state, args).await,
         Command::Duplicates => batches::duplicates_command(cli, state).await,
         Command::Prune(args) => prune::prune_command(cli, state, args).await,
         Command::Curate(args) => curate::curate_command(cli, state, start, args).await,

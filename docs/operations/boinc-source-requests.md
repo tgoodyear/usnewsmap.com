@@ -19,7 +19,16 @@ The normal source loop chooses remaining retained members of the oldest request
 before ordinary replenishment. Already prepared/rejected/retained source
 identities are excluded using the same existing disposition records. A changed
 index checksum or archive version fails explicitly instead of silently changing
-request membership. Requests waiting for unavailable archives do not starve
+request membership. An exactly matching decode-quarantined member is instead
+reported as `preparation_quarantined` / `needs_science_review` and is not
+rebound to a changed fingerprint; other request members and ordinary feeding
+can continue. A member whose JP2 is truncated at source is reported as
+`source_truncated`. That status is terminal, so it is neither waiting nor under review.
+A request whose members are all `source_truncated` ends as `source_truncated_no_work`,
+with nothing to publish or review. A mix with other rejections still needs review.
+`quarantined_refetch_states` reports each such state even if
+another copy of that document has since been prepared; no re-fetch is queued.
+Requests waiting for unavailable archives do not starve
 ordinary feeding. The 500-fresh-pair watermark, 2,000-unresolved ceiling,
 three-READY-chunk bound, 50 GiB floor and reservation checks still apply.
 
@@ -47,12 +56,30 @@ one needs science review and cannot satisfy source consensus; deduplication rema
 in force and no historical source receipt is invented or backfilled. Missing
 bindings can instead be resolved by the explicit retrospective verification below.
 
+New Qwen staging also retains `source-provenance.json` and the exact `quality.json`
+before writing `no_crops` or `too_large`. The receipt binds the original image
+fingerprint to the verified JPEG and hashes the quality manifest, including ALTO
+identity and crop recipe. Source status accepts these terminal dispositions only
+for that exact frozen source; a conflicting terminal receipt remains visible even
+when another campaign has published work for the page. Staging retries reject
+changed source evidence without rewriting the receipt. A crash leaving only the
+quality manifest, before its source receipt, requires review rather than automatic
+rebinding. Partial staging without a terminal marker remains nonterminal; retained
+receipts survive removal of handoff texts.
+
+Legacy terminal markers are preserved, not automatically backfilled: source status
+reports `source_provenance_unavailable` and requires review. Upgrade the staging
+binary and `qwen_submit.py` together to produce new bound dispositions. This does
+not implement subset shipment, change the existing whole-chunk acknowledgement
+protocol, or close the scheduler/admission publication race.
+
 Deploy `qwen_provenance.py` beside `qwen_submit.py` on the native server, and
 `qwen_source.py` on the producer,
 before activating the Temporal source entry. Replace `qwen_feed.py` only at an
 idle boundary; keep its existing service and receipts. Other callers can keep
 using the ordinary inventory/preflight/submit interfaces.
-Deploy the matching `quality_feed.py` in preparation CT215 so new handoffs retain
+Deploy `scan_quarantine.py` before the matching `quality_feed.py` in preparation
+CT215 so the helper import is available and new handoffs retain
 their original-image binding before native audit. Legacy READY chunks still ship,
 but their unverifiable original provenance remains explicit in source progress.
 

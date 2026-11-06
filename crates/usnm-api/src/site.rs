@@ -8,16 +8,17 @@
 //!   The app's own pages (`/`, `/datasets`, `/privacy`, `/credits`) are 200; any other
 //!   such path gets the same shell with a 404, and the app shows a not-found
 //!   page. Missing files are a plain 404, which no cache may keep
-//!   (`no-store`): it can be a gap in a deploy. `/privacy` gets its own
-//!   title, canonical link and `og:url` in the shell, since it is indexed.
+//!   (`no-store`): it can be a gap in a deploy. Each page gets its own title,
+//!   description, canonical link and `og:url` in the shell, since it is
+//!   indexed (`head`).
 //! - `/status`, the dataset details page's old path, is redirected (301) to
 //!   `/datasets` with its query, so existing links keep working.
 //! - Hashed assets are cached for a year; `index.html` is revalidated on
 //!   every load so a release shows up at once. The app's pages carry an
 //!   `ETag` for that, as `ServeDir` gives the home page, so an unchanged page
 //!   costs a `304`.
-//! - Legacy search links redirect to `/search/<query>`. Curated and promoted base searches
-//!   are indexable; other searches and filter variants carry `noindex`.
+//! - Legacy search links redirect to `/search/<query>`. Curated `/examples/<id>`
+//!   pages render their saved searches directly; other searches carry `noindex`.
 //! - Requests for `www.` + the site's host are redirected to the host itself.
 
 use std::path::PathBuf;
@@ -36,11 +37,15 @@ use tower_http::services::ServeDir;
 use crate::error::ApiError;
 use crate::AppState;
 
+mod examples;
+mod head;
 pub(crate) mod sitemap;
 pub(crate) mod social;
 
 /// Headers on every response (the site's and the API's). `connect-src`
 /// allows the same-origin API, the OpenFreeMap basemap and public BOINC counts.
+/// `script-src` adds one hash: `index.html`'s inline script that marks
+/// scripting as running, so blocked scripts leave the static fallback shown.
 ///
 /// HSTS starts at five minutes, for the host that sends it alone (no
 /// `includeSubDomains`) and without `preload`: a browser keeps it for
@@ -48,7 +53,9 @@ pub(crate) mod social;
 pub const SECURITY_HEADERS: [(&str, &str); 5] = [
     (
         "content-security-policy",
-        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
+        "default-src 'self'; \
+         script-src 'self' 'sha256-ZnYJX5ypMaaAhxxWhSEjbMkhO2A9yPmbzEQH3LFaITA='; \
+         style-src 'self' 'unsafe-inline'; \
          img-src 'self' data: blob: https:; font-src 'self' https://tiles.openfreemap.org; \
          connect-src 'self' https://tiles.openfreemap.org https://boinc.usnewsmap.com; \
          worker-src 'self' blob:; child-src blob:; object-src 'none'; base-uri 'self'; \
@@ -92,6 +99,7 @@ pub fn router(dir: PathBuf, state: Arc<AppState>) -> Router {
     // like any other path with no file.
     let sharing = state.clone();
     let static_map = state.clone();
+    let preview = state.clone();
     let robots = state.clone();
     let app_paths = move |req: Request, next: Next| {
         let index = index.clone();
@@ -115,7 +123,8 @@ pub fn router(dir: PathBuf, state: Arc<AppState>) -> Router {
             }
             // Search terms can contain dots, encoded slashes or long segments;
             // they are routes, never files in the static directory.
-            if search_query(req.uri().path()).is_some()
+            if examples::for_path(req.uri().path()).is_some()
+                || search_query(req.uri().path()).is_some()
                 || matches!(req.uri().path(), "/" | "/index.html")
                 || req
                     .uri()
@@ -137,6 +146,10 @@ pub fn router(dir: PathBuf, state: Arc<AppState>) -> Router {
         .route(
             "/search-map.png",
             axum::routing::get(move |uri| social::search_map(uri, static_map.clone())),
+        )
+        .route(
+            "/search-preview/{revision}/{file}",
+            axum::routing::get(move |uri| social::search_preview(uri, preview.clone())),
         )
         .fallback_service(files)
         .layer(middleware::from_fn(app_paths))
@@ -165,7 +178,8 @@ fn decoded_len(segment: &str) -> usize {
 /// `ServeDir` serves directly; since tower-http 0.7 it no longer serves a
 /// file at a path with a trailing slash, so `/index.html/` comes here.
 fn is_app_page(path: &str) -> bool {
-    search_query(path).is_some()
+    examples::for_path(path).is_some()
+        || search_query(path).is_some()
         || matches!(
             path.trim_end_matches('/'),
             "" | "/datasets" | "/privacy" | "/credits" | "/index.html"
@@ -288,20 +302,9 @@ fn search_redirect(uri: &Uri) -> Option<String> {
 
 pub(crate) static CURATED_SEARCHES: std::sync::LazyLock<std::collections::HashSet<String>> =
     std::sync::LazyLock::new(|| {
-        #[derive(serde::Deserialize)]
-        struct Example {
-            view: Query,
-        }
-        #[derive(serde::Deserialize)]
-        struct Query {
-            q: String,
-        }
-        let examples: Vec<Example> =
-            serde_json::from_str(include_str!("../../../web/src/examples.json"))
-                .expect("valid curated examples");
-        examples
-            .into_iter()
-            .map(|e| search_path(&e.view.q))
+        crate::prewarm::examples()
+            .iter()
+            .map(examples::path)
             .collect()
     });
 
@@ -317,64 +320,43 @@ fn datasets_redirect(uri: &Uri) -> Option<String> {
 }
 
 /// Indexable pages name themselves in the head, even without JavaScript.
-fn shell_for(path: &str, index: Vec<u8>) -> Vec<u8> {
-    let query = search_query(path);
-    let (title, canonical) = if path.trim_end_matches('/') == "/privacy" {
-        ("Privacy · US News Map".to_owned(), "/privacy".to_owned())
-    } else if path.trim_end_matches('/') == "/datasets" {
-        (
-            "Dataset details · US News Map".to_owned(),
-            "/datasets".to_owned(),
-        )
-    } else if path.trim_end_matches('/') == "/credits" {
-        (
-            "OCR credits · US News Map".to_owned(),
-            "/credits".to_owned(),
-        )
-    } else if let Some(q) = &query {
-        (format!("{q} · US News Map"), search_path(q))
-    } else {
+fn shell_for(path: &str, query: &str, index: Vec<u8>) -> Vec<u8> {
+    let example = examples::for_path(path);
+    let search = search_query(path);
+    let Some(head) = head::for_page(path, query) else {
         return index;
     };
-    let escape = |s: &str| {
-        s.replace('&', "&amp;")
-            .replace('<', "&lt;")
-            .replace('>', "&gt;")
-            .replace('"', "&quot;")
-            .replace('\'', "&#39;")
+    let canonical = match &search {
+        Some(q) => search_path(q),
+        None => path.trim_end_matches('/').to_owned(),
     };
-    let title = escape(&title);
     let canonical = format!("https://usnewsmap.com{canonical}");
-    let Ok(html) = String::from_utf8(index) else {
+    let Ok(mut html) = String::from_utf8(index) else {
         return Vec::new();
     };
-    let mut html = html
-        .replacen(
-            "<title>US News Map</title>",
-            &format!("<title>{title}</title>"),
-            1,
-        )
-        .replacen(
-            r#"<link rel="canonical" href="https://usnewsmap.com/" />"#,
-            &format!(r#"<link rel="canonical" href="{canonical}" />"#),
-            1,
-        )
-        .replacen(
-            r#"<meta property="og:url" content="https://usnewsmap.com/" />"#,
-            &format!(r#"<meta property="og:url" content="{canonical}" />"#),
-            1,
-        )
-        .replacen(
-            r#"<meta property="og:title" content="US News Map" />"#,
-            &format!(r#"<meta property="og:title" content="{title}" />"#),
+    head::apply(&mut html, &head);
+    head::set_meta(&mut html, "property", "og:url", &canonical);
+    let mut html = html.replacen(
+        r#"<link rel="canonical" href="https://usnewsmap.com/" />"#,
+        &format!(r#"<link rel="canonical" href="{canonical}" />"#),
+        1,
+    );
+    if example.is_some() {
+        html = html.replacen(
+            r#"<main class="empty">"#,
+            &format!(
+                r#"<main class="empty"><h1>{}</h1><p>{}</p>"#,
+                escape_html(head.title.trim_end_matches(head::SUFFIX)),
+                escape_html(&head.description)
+            ),
             1,
         );
-    if let Some(q) = query {
+    } else if let Some(q) = search {
         html = html.replacen(
             r#"<main class="empty">"#,
             &format!(
                 r#"<main class="empty"><h1>Newspaper results for {}</h1>"#,
-                escape(&q)
+                escape_html(&q)
             ),
             1,
         );
@@ -455,15 +437,28 @@ fn site_metadata(body: Vec<u8>, state: &AppState) -> Vec<u8> {
     }
 }
 
-fn search_landing(body: Vec<u8>, preview: &str, query: &str) -> Vec<u8> {
+/// `map` is the example's revisioned map; the old address redirects to it
+/// once the renderer's identity can be read.
+fn search_landing(
+    body: Vec<u8>,
+    preview: &str,
+    example: &crate::prewarm::Example,
+    map: Option<&str>,
+) -> Vec<u8> {
     let body = insert_content(body, preview);
-    let image_query = form_urlencoded::Serializer::new(String::new())
-        .append_pair("q", query)
-        .finish();
+    let src = map.map_or_else(
+        || {
+            let query = form_urlencoded::Serializer::new(String::new())
+                .append_pair("example", &example.id)
+                .finish();
+            format!("/search-map.png?{query}")
+        },
+        str::to_owned,
+    );
     let map = format!(
-        "<figure class=\"static-search-map\"><img src=\"/search-map.png?{}\" width=\"1200\" height=\"630\" alt=\"Map and timeline of newspaper matches for {}\" loading=\"lazy\" decoding=\"async\"><figcaption>The map and timeline for this search. Interactive controls load automatically when available.</figcaption></figure>",
-        escape_html(&image_query),
-        escape_html(query),
+        "<figure class=\"static-search-map\"><img src=\"{}\" width=\"1200\" height=\"630\" alt=\"Map and timeline of newspaper matches for {}\" loading=\"lazy\" decoding=\"async\"><figcaption>The map and timeline for this search. Interactive controls load automatically when available.</figcaption></figure>",
+        escape_html(&src),
+        escape_html(&example.title),
     );
     match String::from_utf8(body) {
         Ok(html) => html
@@ -501,17 +496,19 @@ fn search_links(sitemap: &sitemap::Service) -> String {
         .search_paths()
         .into_iter()
         .map(|path| {
-            let q = search_query(&path).expect("sitemap search path");
+            let example = examples::for_path(&path).expect("sitemap example path");
             format!(
-                r#"<li><a class="example" href="{}"><strong>{}</strong><span>Explore matching newspaper pages on the map.</span></a></li>"#,
+                r#"<li><a class="example" href="{}"><strong>{}</strong><span>{}</span></a></li>"#,
                 escape_html(&path),
-                escape_html(&q)
+                escape_html(&example.title),
+                escape_html(&example.blurb)
             )
         })
         .collect();
     format!("<nav id=\"common-searches\" aria-label=\"Common newspaper searches\"><details><summary>Show newspaper searches</summary><ul class=\"examples\">{links}</ul></details></nav>")
 }
 
+#[cfg(test)]
 fn preview_query(q: &str) -> String {
     let mut params = form_urlencoded::Serializer::new(String::new());
     params.append_pair("q", q);
@@ -521,10 +518,6 @@ fn preview_query(q: &str) -> String {
     params.finish()
 }
 
-async fn search_preview(state: &Arc<AppState>, q: &str) -> Result<String, ApiError> {
-    search_preview_snapshot(state, state.snapshot.load_full(), q, false).await
-}
-
 #[derive(serde::Deserialize, serde::Serialize)]
 pub(super) struct SearchPreview {
     html: String,
@@ -532,19 +525,24 @@ pub(super) struct SearchPreview {
     sample_hits: usize,
 }
 
+#[cfg(test)]
 pub(crate) async fn search_preview_snapshot(
     state: &Arc<AppState>,
     snap: Arc<crate::Snapshot>,
     q: &str,
     background: bool,
 ) -> Result<String, ApiError> {
-    Ok(search_preview_data(state, snap, q, background).await?.html)
+    Ok(
+        search_preview_data(state, snap, &preview_query(q), background)
+            .await?
+            .html,
+    )
 }
 
 async fn search_preview_data(
     state: &Arc<AppState>,
     snap: Arc<crate::Snapshot>,
-    q: &str,
+    raw: &str,
     background: bool,
 ) -> Result<SearchPreview, ApiError> {
     use crate::routes::{cached_body, with_timeout, Job};
@@ -552,10 +550,9 @@ async fn search_preview_data(
     use usnm_core::ids::PageKey;
     use usnm_core::params::RawParams;
     use usnm_core::time::date_from_day;
-    use usnm_search::HitsQuery;
+    use usnm_search::{HitsQuery, SnippetLength};
 
-    let raw = preview_query(q);
-    let search = snap.refdata.search_request(&RawParams::parse(&raw)?)?;
+    let search = snap.refdata.search_request(&RawParams::parse(raw)?)?;
     let canonical = search.canonical();
     let version = snap.refdata.version().to_owned();
     let key = snap.refdata.search_key(
@@ -602,6 +599,8 @@ async fn search_preview_data(
         let page = HitsQuery {
             place_id: Some(top.place_id.clone()),
             limit: 10,
+            // Readers here see these pages' text, not the full list's.
+            snippet_length: SnippetLength::Long,
             ..HitsQuery::default()
         };
         let result = with_timeout(
@@ -623,7 +622,7 @@ async fn search_preview_data(
             let citation = match (!rd.current.synthetic)
                 .then(|| PageKey::from_doc_id(&hit.doc_id).ok())
                 .flatten()
-                .map(|key| key.viewer_url(None))
+                .map(|key| key.source_viewer_url(&hit.batch, None))
             {
                 Some(url) => format!(r#"<a href="{}">{label}</a>"#, escape_html(&url)),
                 None => label,
@@ -735,18 +734,35 @@ async fn app_route(req: Request, index: PathBuf, state: Arc<AppState>) -> Respon
         StatusCode::NOT_FOUND
     };
     let mut body = match tokio::fs::read(&index).await {
-        Ok(body) => social::shell(req.uri(), shell_for(path, body)),
+        Ok(body) => {
+            social::shell(
+                req.uri(),
+                shell_for(path, req.uri().query().unwrap_or_default(), body),
+                &state,
+            )
+            .await
+        }
         Err(e) => {
             tracing::error!(error = %e, path = %index.display(), "site index missing");
             return (StatusCode::NOT_FOUND, "not found").into_response();
         }
     };
     if status == StatusCode::OK {
-        if let Some(q) = search_query(path) {
-            // Only admitted base searches add backend work on a page load.
+        if let Some(example) = examples::for_path(path) {
+            // Only admitted examples add backend work on a page load.
             if !noindex(req.uri(), &state.sitemap) {
-                match search_preview(&state, &q).await {
-                    Ok(preview) => body = search_landing(body, &preview, &q),
+                match search_preview_data(
+                    &state,
+                    state.snapshot.load_full(),
+                    &example.aggregate,
+                    false,
+                )
+                .await
+                {
+                    Ok(preview) => {
+                        let map = social::search_map_path(&state, example).await;
+                        body = search_landing(body, &preview.html, example, map.as_deref());
+                    }
                     Err(error) => {
                         tracing::warn!("search page preview unavailable");
                         return error.into_response();
@@ -875,12 +891,14 @@ async fn cache_control(req: Request, next: Next) -> Response {
     resp
 }
 
-/// Only curated or promoted, unfiltered searches are indexable. Legacy search links
-/// and the old dataset path keep their noindex policy.
+/// Only admitted example pages are indexable; parameter variants are not.
 fn noindex(uri: &Uri, sitemap: &sitemap::Service) -> bool {
-    if let Some(q) = search_query(uri.path()) {
-        let path = search_path(&q);
-        return !sitemap.contains(&path) || uri.query().is_some_and(|q| !q.is_empty());
+    if let Some(example) = examples::for_path(uri.path()) {
+        return !sitemap.contains(&examples::path(example))
+            || uri.query().is_some_and(|q| !q.is_empty());
+    }
+    if uri.path().starts_with("/examples/") || search_query(uri.path()).is_some() {
+        return true;
     }
     match uri.path().trim_end_matches('/') {
         OLD_DATASETS_PATH => true,
@@ -982,6 +1000,38 @@ mod tests {
     }
 
     #[test]
+    fn script_src_allows_exactly_the_index_inline_scripts() {
+        use base64::Engine;
+        let csp = SECURITY_HEADERS
+            .iter()
+            .find(|(name, _)| *name == "content-security-policy")
+            .unwrap()
+            .1;
+        let script_src = csp
+            .split(';')
+            .map(str::trim)
+            .find(|directive| directive.starts_with("script-src "))
+            .unwrap();
+        let index = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../web/index.html"),
+        )
+        .unwrap();
+        let hashes: Vec<String> = index
+            .split("<script>")
+            .skip(1)
+            .map(|rest| {
+                let body = &rest[..rest.find("</script>").unwrap()];
+                let digest = base64::engine::general_purpose::STANDARD
+                    .encode(Sha256::digest(body.as_bytes()));
+                format!("'sha256-{digest}'")
+            })
+            .collect();
+        assert_eq!(hashes.len(), 1, "{index}");
+        let expected = format!("script-src 'self' {}", hashes.join(" "));
+        assert_eq!(script_src, expected);
+    }
+
+    #[test]
     fn hsts_is_short_and_for_this_host_alone() {
         let hsts = SECURITY_HEADERS
             .iter()
@@ -1065,8 +1115,8 @@ mod tests {
     #[test]
     fn the_datasets_page_names_itself_in_the_head() {
         let index = br#"<title>US News Map</title><link rel="canonical" href="https://usnewsmap.com/" /><meta property="og:url" content="https://usnewsmap.com/" />"#;
-        let html = String::from_utf8(shell_for("/datasets/", index.to_vec())).unwrap();
-        assert!(html.contains("<title>Dataset details · US News Map</title>"));
+        let html = String::from_utf8(shell_for("/datasets/", "", index.to_vec())).unwrap();
+        assert!(html.contains("<title>Dataset details and index status · US News Map</title>"));
         assert!(html.contains(r#"href="https://usnewsmap.com/datasets""#));
         assert!(html.contains(r#"content="https://usnewsmap.com/datasets""#));
     }
@@ -1074,8 +1124,8 @@ mod tests {
     #[test]
     fn the_credits_page_names_itself_in_the_head() {
         let index = br#"<title>US News Map</title><link rel="canonical" href="https://usnewsmap.com/" /><meta property="og:url" content="https://usnewsmap.com/" />"#;
-        let html = String::from_utf8(shell_for("/credits/", index.to_vec())).unwrap();
-        assert!(html.contains("<title>OCR credits · US News Map</title>"));
+        let html = String::from_utf8(shell_for("/credits/", "", index.to_vec())).unwrap();
+        assert!(html.contains("<title>OCR engine and model credits · US News Map</title>"));
         assert!(html.contains(r#"href="https://usnewsmap.com/credits""#));
         assert!(html.contains(r#"content="https://usnewsmap.com/credits""#));
     }
@@ -1086,10 +1136,10 @@ mod tests {
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../web/index.html"),
         )
         .unwrap();
-        let home = String::from_utf8(shell_for("/", index.clone().into_bytes())).unwrap();
+        let home = String::from_utf8(shell_for("/", "", index.clone().into_bytes())).unwrap();
         assert_eq!(home, index);
-        let privacy = String::from_utf8(shell_for("/privacy/", index.into_bytes())).unwrap();
-        assert!(privacy.contains("<title>Privacy · US News Map</title>"));
+        let privacy = String::from_utf8(shell_for("/privacy/", "", index.into_bytes())).unwrap();
+        assert!(privacy.contains("<title>Privacy and data handling · US News Map</title>"));
         assert!(
             privacy.contains(r#"<link rel="canonical" href="https://usnewsmap.com/privacy" />"#)
         );
@@ -1235,8 +1285,10 @@ mod tests {
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../web/index.html"),
         )
         .unwrap();
-        let html = String::from_utf8(shell_for(&search_path("<b> & \"gold\""), index)).unwrap();
-        assert!(html.contains("<title>&lt;b&gt; &amp; &quot;gold&quot; · US News Map</title>"));
+        let html = String::from_utf8(shell_for(&search_path("<b> & \"gold\""), "", index)).unwrap();
+        assert!(html.contains(
+            "<title>Newspaper coverage of &lt;b&gt; &amp; &quot;gold&quot; · US News Map</title>"
+        ));
         assert!(html.contains("https://usnewsmap.com/search/%3Cb%3E%20%26%20%22gold%22"));
         assert!(html.contains("<h1>Newspaper results for &lt;b&gt; &amp; &quot;gold&quot;</h1>"));
     }

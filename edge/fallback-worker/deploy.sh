@@ -169,8 +169,10 @@ fi
 if [ -n "$ALLOWED" ]; then
   cmd+=(--var "ALLOWED_ORIGINS:$ALLOWED")
 fi
+WORKER=usnm-fallback
 if [ -n "$DRILL_HOST" ]; then
-  cmd+=(--name usnm-fallback-drill --route "$DRILL_HOST/*" --var ADD_DNT:true)
+  WORKER=usnm-fallback-drill
+  cmd+=(--name "$WORKER" --route "$DRILL_HOST/*" --var ADD_DNT:true)
 fi
 
 echo "The deployment:"
@@ -186,6 +188,9 @@ TOKEN=$(az keyvault secret show --vault-name "$VAULT" -n "$SECRET" --query value
 # The token reaches Wrangler in its environment and nowhere else.
 status=0
 CLOUDFLARE_API_TOKEN=$TOKEN CLOUDFLARE_ACCOUNT_ID=$ACCOUNT WRANGLER_SEND_METRICS=false "${cmd[@]}" || status=$?
+[ "$status" -eq 0 ] || { unset TOKEN; die "wrangler deploy failed ($status)"; }
+# The deploy recreates the routes, and a new route fails closed (README.md, Configuration).
+CLOUDFLARE_API_TOKEN=$TOKEN node "$HERE/fail-open.mjs" --zone usnewsmap.com --script "$WORKER" || status=$?
 unset TOKEN
-[ "$status" -eq 0 ] || die "wrangler deploy failed ($status)"
-echo "deployed. Now verify route failure mode is fail open and the explicitly selected Workers Logs policy in Cloudflare (README.md)."
+[ "$status" -eq 0 ] || die "deployed, but could not set the routes to fail open ($status)"
+echo "deployed, routes fail open. Now verify the explicitly selected Workers Logs policy in Cloudflare (README.md)."

@@ -348,7 +348,8 @@ class OnpremStep(unittest.TestCase):
         self.assertIn("handoff.env", done.stdout)
         self.assertIn("HANDOFF_STEP=claim", done.stdout)
         self.assertNotIn("BRIDGE_STEP", done.stdout)
-        for command in ("--env prod --target handoff --step collect --var JOB_IDS=" + "a" * 64 + " --what-if",
+        for command in ("--env prod --target handoff --step collect --var JOB_IDS=" + "a" * 64 +
+                        " --var COLLECT_PARALLEL=4 --what-if",
                         "--env prod --target handoff --step collect --var JOB_ID=" + "a" * 64 +
                         " --var HOST_ID=7 --what-if",
                         "--env prod --target handoff --step release --var HANDOFF_DOCS=a_b,c_d --what-if",
@@ -383,6 +384,27 @@ class OnpremStep(unittest.TestCase):
         # As root on the host too: a hand-off step never takes another input.
         done = self.run_step("--env", "prod", "--target", "handoff", "--step", "collect",
                              "--var", "KEY_VAULT_NAME=kv2", "--what-if")
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("takes only", done.stderr)
+
+    def test_handoff_superseding_dead_letter_is_the_operators_only(self):
+        # #1417: root on the host may settle a page claimed again after its dead letter; the
+        # controller's key may not.
+        self.write_handoff_env()
+        done = self.run_step("--env", "prod", "--target", "handoff", "--step", "dead-letter",
+                             "--var", "SUPERSEDES_FAILED_JOB=" + "a" * 64,
+                             "--var", "CONFIRM_MESSAGE_SHA256=" + "b" * 64, "--wait-mins", "10", "--what-if")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn("HANDOFF_STEP=dead-letter", done.stdout)
+        for var in ("SUPERSEDES_FAILED_JOB=" + "a" * 64, "CONFIRM_MESSAGE_SHA256=" + "b" * 64):
+            with self.subTest(var=var):
+                done = self.run_step(ssh="usnm-boinc-step --env prod --target handoff --step dead-letter "
+                                         f"--var {var} --what-if")
+                self.assertNotEqual(done.returncode, 0)
+                self.assertIn("takes only JOB_IDS", done.stderr)
+        # Only dead-letter takes them.
+        done = self.run_step("--env", "prod", "--target", "handoff", "--step", "release",
+                             "--var", "SUPERSEDES_FAILED_JOB=" + "a" * 64, "--what-if")
         self.assertNotEqual(done.returncode, 0)
         self.assertIn("takes only", done.stderr)
 
@@ -471,6 +493,96 @@ class OnpremStep(unittest.TestCase):
                 release.join()
             self.assertEqual(done.returncode, 0, done.stderr)
             self.assertIn("BRIDGE_STEP=submit", captured)
+
+    @unittest.skipUnless(shutil.which("flock"), "native flock is required")
+    def test_handoff_steps_have_their_own_lock(self):
+        import fcntl
+        import shlex
+
+        self.write_handoff_env()
+        claim = ("--env", "prod", "--target", "handoff", "--step", "claim", "--wait-mins", "1")
+        directory = Path(self.conf.name, "run")
+        directory.mkdir()
+        script = f'exec {shlex.quote(shutil.which("flock"))} "$@"\n'
+        with (directory / "usnm-boinc-step.lock").open("w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            done, captured = self.run_for_real(*claim, flock_script=script)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertIn("HANDOFF_STEP=claim", captured)
+            for step in ("spool-out", "batch-inventory"):
+                done, captured = self.run_for_real("--env", "prod", "--step", step, "--wait-mins", "1",
+                                                   flock_script=script)
+                self.assertEqual(done.returncode, 0, done.stderr)
+                self.assertIn(f"BRIDGE_STEP={step}", captured)
+        Path(self.conf.name, "envfile").unlink()
+        with (directory / "usnm-boinc-handoff.lock").open("w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            done, captured = self.run_for_real(*claim, flock_script=script)
+            self.assertIn("another bridge step is running", done.stderr)
+            self.assertIsNone(captured)
+
+    def test_handoff_image_applies_to_handoff_steps_only(self):
+        self.write_handoff_env()
+        image = "sha256:" + "b" * 64
+        handoff = Path(self.conf.name, "handoff-image")
+        handoff.write_text(image + "\n")
+        done = self.run_step("--env", "prod", "--target", "handoff", "--step", "collect",
+                             "--var", "JOB_ID=" + "a" * 64, "--wait-mins", "30", "--what-if")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn(f"would run {image}'s handoff-job.sh", done.stdout)
+        done = self.run_step("--env", "prod", "--step", "submit", "--wait-mins", "30", "--what-if")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertNotIn(image, done.stdout)
+        handoff.write_text("localhost/not-an-image-id\n")
+        done = self.run_step("--env", "prod", "--target", "handoff", "--step", "collect",
+                             "--var", "JOB_ID=" + "a" * 64, "--wait-mins", "30", "--what-if")
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("handoff-image is not sha256", done.stderr)
+
+    def test_stage_image_applies_to_quality_stage_only(self):
+        image = "sha256:" + "c" * 64
+        stage = Path(self.conf.name, "stage-image")
+        stage.write_text(image + "\n")
+        done = self.run_step("--env", "prod", "--step", "quality-stage", "--wait-mins", "30", "--what-if")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn(f"would run {image} as", done.stdout)
+        for step in ("quality-submit", "submit"):
+            done = self.run_step("--env", "prod", "--step", step, "--wait-mins", "30", "--what-if")
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertNotIn(image, done.stdout)
+        stage.write_text("localhost/not-an-image-id\n")
+        done = self.run_step("--env", "prod", "--step", "quality-stage", "--wait-mins", "30", "--what-if")
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("stage-image is not sha256", done.stderr)
+
+    @unittest.skipUnless(shutil.which("flock"), "native flock is required")
+    def test_quality_stage_has_its_own_lock_and_other_steps_keep_the_shared_one(self):
+        import fcntl
+        import shlex
+
+        stage = ("--env", "prod", "--step", "quality-stage", "--wait-mins", "1")
+        submit = ("--env", "prod", "--step", "quality-submit", "--wait-mins", "1")
+        directory = Path(self.conf.name, "run")
+        directory.mkdir()
+        script = f'exec {shlex.quote(shutil.which("flock"))} "$@"\n'
+        with (directory / "usnm-boinc-step.lock").open("w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            done, captured = self.run_for_real(*stage, flock_script=script)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertIn("BRIDGE_STEP=quality-stage", captured)
+            Path(self.conf.name, "envfile").unlink()
+            done, captured = self.run_for_real(*submit, flock_script=script)
+            self.assertIn("another bridge step is running", done.stderr)
+            self.assertIsNone(captured)
+        with (directory / "usnm-boinc-stage.lock").open("w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            # The shipper retries on these words, for its one stage at a time.
+            done, captured = self.run_for_real(*stage, flock_script=script)
+            self.assertIn("another bridge step is running", done.stderr)
+            self.assertIsNone(captured)
+            done, captured = self.run_for_real(*submit, flock_script=script)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertIn("BRIDGE_STEP=quality-submit", captured)
 
     def test_pgmq_handoff_mounts_only_fixed_certificate_files_read_only(self):
         url = ("postgres://queue.example/usnm_queue?user=boinc_claim"

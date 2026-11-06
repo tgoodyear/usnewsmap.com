@@ -30,14 +30,46 @@ authorized: `--app-version-num`, `--intel-app-version` and `--nvidia-app-version
 (default the published 1.14 pair, Intel67/NVIDIA66) name it, and redeploying with a
 successor pair is a reviewed step. `--prompt-version` (default 1) is the one request
 version admitted; 2 (`--image-min-tokens 1024`, [quality](boinc-quality.md)) needs
-1.15 or later. A job of another request version fails the tick rather than being
-admitted. A superseding release on any platform (including a
+1.15 or later, and 3 and 4 (the loop guard) need 1.17 or later. A job of another
+request version fails the tick rather than being admitted. The controller does not
+open AMD or Apple, but an unbounded class of either takes any unsent replica, so it
+also reads their dispatchable versions: if one cannot read the request version, the
+owned window closes and the receipt names it in
+`open_classes_that_cannot_read_request`. A superseding release on any platform (including a
 Windows release of either opened class) or changed project config closes the
 owned window instead of silently adopting a new release. The guard checks the
 complete non-deprecated version set the feeder would dispatch: with the app's
 `min_version` at 0 the stock feeder loads only the newest version per
 platform/plan class, so older reviewed Linux rows stay superseded; a nonzero
 `min_version` that would make an older Linux row dispatchable also closes it.
+
+For `--fresh-pair --apply`, the helper takes MySQL `READ` locks on `app`,
+`workunit`, `result` and `assignment` after acquiring its policy-file lock.
+It rechecks the candidate under those database locks and holds them through
+journaling, atomic policy replacement and readback. The pinned BOINC scheduler
+updates the workunit and calls `mark_as_sent` before adding the result to its reply;
+these SQL writes cannot cross that publication interval. This works with both
+InnoDB and MyISAM and does not rely on an advisory lock the scheduler never takes.
+A final database recheck after staging the policy detects a lost session before
+rename. The receipt records `fresh_pair_guard: mysql-read-lock-v1`.
+
+These are table-wide locks: other apps' writes can briefly wait too. Acquisition
+times out after five seconds, and the existing 20-second process-group timeout
+still bounds the owned operation. Failures release the database and policy locks;
+preview and stop do not take database locks. No scientific row is modified.
+Deployment needs `SELECT` and `LOCK TABLES` privileges on these tables and the
+normal coordinated helper-SHA update at an idle boundary. Do not combine a refill
+with database restart/failover or filesystem maintenance; this is not a distributed
+transaction across MySQL and the policy filesystem.
+
+The repeatable `scripts/boinc/test_qwen_publication_db.py` fixture uses actual
+concurrent MySQL connections and the real PHP entry point, with disposable BOINC
+table shapes and a thin database adapter. Set `USNM_QWEN_MYSQL_PORT` to a
+**disposable localhost** MySQL port with an empty-password root account, as in CI.
+It covers both storage engines, result/workunit/assignment writers, publication
+failure, killed publishers, lost database sessions, a writer winning before final
+revalidation, and lock-acquisition timeout.
+It does not run a full scheduler RPC or mutate a live project.
 
 Refill also reads actual native-8B **in-progress tasks across all windows** for
 both pilot hosts. New window size is reduced to the smaller remaining headroom
@@ -57,6 +89,28 @@ starved host lets the controller open the next fresh window. The left-behind
 replicas are not cancelled, reassigned or edited; they stay ordinary unsent work
 for every other eligible class, and the receipt records them
 (`rotated_past_window`, `starved_hosts`, `left_unsent_replicas`).
+The read-only `scripts/boinc/qwen-dispatch-fairness.py` shows how this plays out under
+ordinary work: each host's Qwen sends by day, the unsent units each host can take, the
+blocked head in feeder order, and the feeder cache. The
+[5 November reading](notes/2026-11-05-qwen-intel-dispatch.md) found the queue moving past
+its blocked head and Intel idle only because no fresh pairs were left.
+
+Once the operator gives `nvidia_vulkan_8b` general admission (the helper's
+`--general` and its marker, [app releases](../contrib-compute/docs/app-release.md)), the
+NVIDIA host takes any Qwen work on its own, and the controller owns Intel's window alone
+(#1445). It refills that window with `--plan-class intel_vulkan_8b`, and its release is
+`--stop --keep-general`, so neither ever bounds or closes NVIDIA's general admission.
+Buffer headroom, window eligibility, starvation and the pinned-release check then cover
+the Intel host and Intel's release only; the NVIDIA host's unbounded queue never fills
+the buffer or holds a window. Like an open AMD or Apple class, a generally admitted
+NVIDIA release that cannot read the request version closes Intel's window and is named in
+`open_classes_that_cannot_read_request`. With one result per host, the Intel host's
+replicas reach quorum only through another class, so Intel's window also closes unless an
+open NVIDIA, AMD or Apple release can read the request (`open_peer_readers`). The flip keeps
+the controller's state: the
+open shared window becomes Intel's. A marker beside bounds fails the tick, and an
+AMD-first reservation needs NVIDIA bounded. The receipt reports
+`nvidia_general_admission`.
 
 The controller reads the producer's durable
 `/project/qwen/qwen-nonenglish-v1/audit.json` directly, not a human handoff or a
@@ -106,6 +160,20 @@ Run a dry invocation under the same normal mutex before enabling the timer.
 Verify the real ordinary timer's immutable input receipt and actual signed
 assignments/returns afterwards; a policy change alone is not throughput.
 
+`CONFIG_SHA256` is the SHA-256 of the live `/project/usnmocr/config.xml`. `render_config`
+rewrites that file at every container start, and so do the submit, reconcile and
+`register-apps` bridge steps (`bridge-job.sh`), with the `SERVER_IMAGE` in `/etc/usnm-boinc/server.env`. A tick that
+finds a different hash releases its window and publishes `--stop`. A server image that
+renders a different `config.xml` therefore needs the timer disabled before `SERVER_IMAGE`
+changes. After the restart, take the new hash from the running server
+(`podman exec usnm-boinc-server sha256sum /project/usnmocr/config.xml`), and check the diff
+against the previous config. Then set `CONFIG_SHA256`, run a dry invocation, and enable the
+timer again. #1449's image is such an image: it drops eight retired daemons and sets
+`maintenance_delay` (#1462), so one re-pin covers both. Don't predict the
+hash from the repository, because the rendered file carries the host's secrets and paths. An
+app-version image prepared on the old `SERVER_IMAGE` renders the old file when it publishes,
+so prepare it again on the new one.
+
 The helper rechecks pristine DB state **inside the policy lock** and accepts an
 expected policy SHA and `--admit-until` deadline (checked under the lock and again
 just before the atomic rename; closing remains allowed), so a stale preview cannot overwrite a concurrent operator.
@@ -119,7 +187,9 @@ validation remain mandatory, and high backend agreement is not accuracy.
 
 `usnm_iris` ([#703](https://github.com/tgoodyear/usnewsmap.com/issues/703),
 [docs/notes/2026-10-16-boinc-iris-pilot.md](notes/2026-10-16-boinc-iris-pilot.md)) is a separate experiment with a different model
-(4B INT4 on OpenVINO). Its readings are not comparable with the 8B quorum.
+(4B INT4 on OpenVINO). Its readings are not comparable with the 8B quorum. It was retired on
+2 November 2026 (last workunit 18 October) and sends no work; `usnm_qwen`'s `intel_vulkan_8b` class
+replaced it.
 
 ## How a host is chosen and checked
 

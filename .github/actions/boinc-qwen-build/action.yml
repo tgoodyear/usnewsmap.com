@@ -39,6 +39,11 @@ runs:
         # Podman refuses images with a healthcheck where no systemd user session exists.
         hc=$(docker image inspect --format '{{json .Config.Healthcheck}}' "$IMAGE:$SHA")
         [[ $hc == null || $hc == '{"Test":["NONE"]}' ]] || { echo "::error::image declares a healthcheck: $hc"; exit 1; }
+    - name: Release build cache before cold-store measurement
+      shell: bash
+      run: |
+        docker builder prune --all --force
+        df -h /
     - name: Cold and warm extraction in an isolated empty image store
       env:
         IMAGE: ${{ inputs.image }}

@@ -50,7 +50,7 @@ python3 scripts/boinc/install.py --project /srv/boinc/newspapers \
   --platform x86_64-pc-linux-gnu --version 1.1
 ```
 
-`contrib-compute/boinc/plan_class_spec.xml` defines both the container plan classes (`docker`, `docker_mt`, `docker_nvidia_cuda`) and the native `usnm_qwen` plan classes (`apple_gpu_8b`, `nvidia_cuda_8b`, `nvidia_cuda_2b`, `mt`). For native `usnm_qwen`, `ocr/boinc/qwen/llama.lock` pins the upstream `llama.cpp` release tag and per-platform archive SHA-256 digests, and the GGUF model templates use `<sticky/>` and `<no_delete/>` so volunteer clients cache models across workunits (`client/client_types.cpp:387`) and `file_deleter` (`sched/file_deleter.cpp:160-171`) never deletes shared model files from `download/`.
+`contrib-compute/boinc/plan_class_spec.xml` defines both the container plan classes (`docker`, `docker_mt`, `docker_nvidia_cuda`) and the native `usnm_qwen` plan classes (`apple_gpu_8b`, `nvidia_cuda_8b`, `nvidia_cuda_2b`, `nvidia_vulkan_2b`, `mt`). For native `usnm_qwen`, `ocr/boinc/qwen/llama.lock` pins the upstream `llama.cpp` release tag and per-platform archive SHA-256 digests, and the GGUF model templates use `<sticky/>` and `<no_delete/>` so volunteer clients cache models across workunits (`client/client_types.cpp:387`) and `file_deleter` (`sched/file_deleter.cpp:160-171`) never deletes shared model files from `download/`.
 
 The installer refuses an existing version directory. It does not alter running
 server configuration. Sign and publish its files using BOINC's normal
@@ -175,6 +175,60 @@ Deploy the updated bridge image containing both this CLI and wrapper together.
 
 A `published` bridge entry means its native output pair is in `ocr-out`, not that
 it has replaced searchable text. Continue with the existing `ocr-sync` and release.
+
+## Retiring an app
+
+To stop an app's work without losing anything, deprecate it rather than delete it.
+Save its `app` and `app_version` rows first, and coordinate a feeder-only refresh:
+the `--allapps` slot map is fixed at feeder startup, so touching `reread_db` alone
+does **not** reallocate slots after an app is deprecated or restored. Set
+`deprecated=1` on the app and its versions, then touch `reread_db` and refresh
+the feeder at the coordinated boundary described in
+[Feeder visibility](../../contrib-compute/docs/app-release.md#feeder-visibility),
+following [Feeder-only refresh](feeder-refresh.md).
+Results already sent can still be reported, and workunits and signed versions stay.
+Rollback restores the saved `deprecated` values and needs the same reload and
+coordinated feeder refresh. Before you start, check that no controller plan, timer
+or feed still stages work for the app.
+`usnm_surya` was retired this way on 2 November 2026; its
+[retirement notes](../boinc-surya.md#retirement-2-november-2026) list the steps and the
+state before and after.
+
+`usnm_assess`, `usnm_iris` and `usnm_qwen_train` were retired the same way later on
+2 November 2026 (#529), when two app names were also corrected:
+
+- Before: no result in progress. Every `usnm_iris` and `usnm_qwen_train` version was
+  already deprecated, and `usnm_assess` had none and never had a workunit. Iris's last
+  workunit was from 18 October, training's from 15 October. No timer, feed or controller
+  plan staged any of them. `usnm_qwen`'s `intel_vulkan_8b` class replaced the Iris pilot.
+- `usnm_qwen_train`'s two unsent results were cancelled with `bin/cancel_jobs --name`.
+- `deprecated=1` on the three apps (`project.xml` says the same), then `reread_db`.
+- New names for `usnm_quality` (tasks are bundles of about 200 pages that measure the scan
+  and compare texts) and `usnm_qwen` (GPU versions only, one page per task). `bin/xadd`
+  updates a changed `user_friendly_name`, so the branch's `project.xml` was copied into the
+  project and `bin/xadd` run, as the `register-apps` step does.
+- The six validator and assimilator daemons of the three apps keep running with nothing to
+  do, and so do Surya's two. They come from `config.xml`, rendered at container start (`render_config` in
+  `contrib-compute/images/server/lib.sh`), and changing the live copy would change the
+  `config.xml` SHA-256 the Qwen auto-cohort controller pins. #1449 drops all eight from
+  `render_config`. They leave the status page when the server runs an image built from it. The
+  same image also sets `maintenance_delay` to 1200 seconds ([Client retry
+  behaviour](feeder-refresh.md#client-retry-behaviour), #1462). That
+  restart changes the pin (`CONFIG_SHA256` in `/etc/usnm-boinc/qwen-cohort-auto.env`) once for both, so
+  disable `usnm-qwen-cohort-auto.timer` before it, and update the pin after it
+  ([boinc-intel-gpu.md](../boinc-intel-gpu.md)).
+
+The state before is saved under `/project/ops/app-tidy-20261102/` with the script that made
+the change. Rollback, in the server container as `boincadm`: run
+`php /project/ops/app-tidy-20261102/app_tidy.php --project /project/usnmocr --journal /project/ops/app-tidy-20261102 --project-xml /project/ops/app-tidy-20261102/project.xml.new --rollback`.
+It restores the app names and `deprecated` flags, the two workunits' `error_mask` and their
+results' state, and the previous `project.xml`, then touches `reread_db`. That trigger
+does not itself refresh the slot map; coordinate the feeder-only boundary after a rollback
+([Feeder-only refresh](feeder-refresh.md#rollback)).
+
+Retiring an app no longer leaves its daemons running. Restoring `usnm_surya`, `usnm_assess`,
+`usnm_iris` or `usnm_qwen_train` now also needs its daemons and validator links back in
+`render_config`, and a new server image.
 
 ## Moving the project share
 

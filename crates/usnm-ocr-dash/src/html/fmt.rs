@@ -1,6 +1,7 @@
 //! Escaping and display formatting shared by HTML panels.
 
 use chrono::{DateTime, Utc};
+use std::borrow::Cow;
 
 /// HTML-escape text for an element or a quoted attribute.
 pub fn esc(s: &str) -> String {
@@ -167,6 +168,16 @@ pub(super) fn short_urls(s: &str) -> String {
 /// An error cell: two lines at most, opening to the whole message (and
 /// when, if the row shows only how long ago).
 pub(super) fn msg(e: &str, at: Option<DateTime<Utc>>) -> String {
+    msg_cell(&short_urls(e), e, at)
+}
+
+/// A fetch failure's error cell: what went wrong before the address it went
+/// wrong with, which the fetcher writes first and can be most of two lines.
+pub(super) fn failure_msg(e: &str, at: Option<DateTime<Utc>>) -> String {
+    msg_cell(&short_urls(&cause_first(e)), e, at)
+}
+
+fn msg_cell(short: &str, e: &str, at: Option<DateTime<Utc>>) -> String {
     let whole = match at {
         Some(t) => format!("{}: {}", time(t), esc(e)),
         None => esc(e),
@@ -174,10 +185,20 @@ pub(super) fn msg(e: &str, at: Option<DateTime<Utc>>) -> String {
     format!(
         "<td class=\"msg\">{}</td>",
         more(
-            &format!("<span class=\"clamp\">{}</span>", esc(&short_urls(e))),
+            &format!("<span class=\"clamp\">{}</span>", esc(short)),
             &whole
         )
     )
+}
+
+/// `https://host/path: what went wrong` → `what went wrong — https://host/path`.
+fn cause_first(e: &str) -> Cow<'_, str> {
+    match e.split_once(": ") {
+        Some((url, cause)) if url.starts_with("https://") && !url.contains(char::is_whitespace) => {
+            Cow::Owned(format!("{cause} — {url}"))
+        }
+        _ => Cow::Borrowed(e),
+    }
 }
 
 /// A manifest's version: the directory it is in (`queue-ocr-…`).

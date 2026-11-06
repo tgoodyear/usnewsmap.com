@@ -17,6 +17,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 CARGO = shutil.which("cargo")
 WINDOWS_ONLY = ("windows-core", "windows-result", "windows-strings")
+# The image job's matrix on main: what `publish` pushes.
+ALL_IMAGES = ["api", "ingest", "ja-ocr"]
+# What the Qwen and Surya workflows' `publish` jobs build; a pull request builds the first alone
+# when its change reaches only the usnm-boinc build stage they share (#1585).
+QWEN_MODELS = ["2b", "8b"]
+SURYA_VARIANTS = ["cuda", "vulkan"]
 
 
 def downgrade_patch(repo: Path, *names: str) -> None:
@@ -66,9 +72,12 @@ class Dispatch(unittest.TestCase):
         result, flags = self.flags("ocr-worker")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual({key for key, value in flags.items() if value == "true"},
-                         {"rust", "ocr_worker"})
-        self.assertEqual(len(flags), 26)
+                         {"rust", "queue", "ocr_worker"})
+        self.assertEqual(len(flags), 28)
         self.assertIn("quickwit_suites=[]", result.stdout)
+        self.assertIn("images=[]", result.stdout)
+        self.assertIn("boinc_qwen_models=[]", result.stdout)
+        self.assertIn("boinc_surya_variants=[]", result.stdout)
         self.assertEqual(flags["image"], "false")
         self.assertEqual(flags["contrib"], "false")
         self.assertEqual(flags["edge"], "false")
@@ -87,6 +96,10 @@ class Dispatch(unittest.TestCase):
                 self.assertEqual(flags["quickwit_parity"], "true")
                 self.assertEqual(flags["quickwit_pipeline"], "true")
                 self.assertIn('quickwit_suites=["parity","pipeline"]', result.stdout)
+                self.assertEqual(flags["queue"], "true")
+                self.assertIn('images=["api","ingest","ja-ocr"]', result.stdout)
+                self.assertIn('boinc_qwen_models=["2b","8b"]', result.stdout)
+                self.assertIn('boinc_surya_variants=["cuda","vulkan"]', result.stdout)
 
     def test_unknown_dispatch_scope_fails_closed(self):
         result, flags = self.flags("ocr-wroker")
@@ -354,12 +367,18 @@ class OcrCatalog(unittest.TestCase):
                 self.assertTrue(o["rust"])
                 self.assertTrue(o["ocr_worker"])
 
+    def test_profile_lock_and_its_pins_run_rust(self):
+        for path in ["ocr/engines/profiles.lock", "ocr/engines/ndlocr-lite/models.lock"]:
+            with self.subTest(path=path):
+                self.change = lambda path=path: self.touch(path)
+                self.assertTrue(self.outputs()["rust"])
+
     def test_boinc_image_filter_includes_embedded_catalog(self):
         workflow = (ROOT / ".github/workflows/boinc-worker.yml").read_text()
         self.assertIn("      - ocr/engines/engines.toml\n", workflow)
 
 
-BOINC_IMAGES = {"boinc_worker", "boinc_qwen", "boinc_surya", "boinc_ndlocr"}
+BOINC_IMAGES = {"boinc_worker", "boinc_qwen", "boinc_surya", "boinc_ndlocr", "boinc_ocr_native"}
 DASHBOARD = {"ocr_dash", "ocr_dashboard"}
 NATIVE = {"boinc_native"}
 # Workflow file -> the changes.sh output that gates its pull request job.
@@ -369,6 +388,7 @@ GATED_WORKFLOWS = {
     "boinc-surya.yml": "boinc_surya",
     "boinc-ndlocr-lite.yml": "boinc_ndlocr",
     "boinc-quality-native.yml": "boinc_native",
+    "boinc-ocr-native.yml": "boinc_ocr_native",
     "ocr-dashboard.yml": "ocr_dashboard",
 }
 # What the workflows leave to the crate closure and the lock-file check.
@@ -423,6 +443,7 @@ EMBED_ROOTS = {
     "boinc-ndlocr-lite.yml": ("true", "usnm-boinc", "usnm-ocr-adapter"),
     "boinc-quality-native.yml": ("true", "usnm-quality-app", "usnm-qwen-app", "usnm-ocr-quality",
                                  "usnm-ocr-contract"),
+    "boinc-ocr-native.yml": ("true", "usnm-ocr-app"),
     "ocr-dashboard.yml": ("false", "usnm-ocr-dash"),
 }
 
@@ -434,9 +455,11 @@ class BuildInputs(unittest.TestCase):
 
     setUp, tearDown, commit = Quickwit.setUp, Quickwit.tearDown, Quickwit.commit
 
-    def select(self, *changes, env=None) -> set:
+    def select(self, *changes, env=None, event="push") -> set:
         """The outputs that are true after committing each change (a path to append to, or a
-        (path, text) pair to write), as changes.sh sees a push."""
+        (path, text) pair to write), as changes.sh sees a push, or a pull request into the
+        commit before them. self.images is the image job's matrix, self.qwen_models and
+        self.surya_variants the Qwen and Surya workflows'."""
         before = git(self.repo, "rev-parse", "HEAD")
         for change in changes:
             path, text = change if isinstance(change, tuple) else (change, None)
@@ -452,6 +475,9 @@ class BuildInputs(unittest.TestCase):
         out.write_text("")
         run_env = dict(os.environ, GITHUB_EVENT_NAME="push", BEFORE_SHA=before,
                        GITHUB_SHA=after, GITHUB_OUTPUT=str(out), **(env or {}))
+        if event == "pull_request":
+            git(self.repo, "update-ref", "refs/remotes/origin/pr-base", before)
+            run_env.update(GITHUB_EVENT_NAME="pull_request", GITHUB_BASE_REF="pr-base")
         result = subprocess.run(["scripts/ci/changes.sh"], cwd=self.repo, env=run_env,
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -462,6 +488,24 @@ class BuildInputs(unittest.TestCase):
         self.assertEqual(suites, [s for s in ("parity", "pipeline")
                                   if f"quickwit_{s}" in on])
         self.assertEqual("quickwit" in on, bool(suites))
+        def output_list(name: str) -> list:
+            found = re.search(rf"^{name}=(.*)$", output, re.M)
+            self.assertIsNotNone(found, f"changes.sh wrote no {name}")
+            return json.loads(found[1])
+
+        self.images = output_list("images")
+        self.assertEqual("image" in on, bool(self.images))
+        if event != "pull_request" and self.images:
+            # What main builds is what `publish` pushes: every image.
+            self.assertEqual(self.images, ALL_IMAGES)
+        self.qwen_models = output_list("boinc_qwen_models")
+        self.surya_variants = output_list("boinc_surya_variants")
+        for flag, built, every in [("boinc_qwen", self.qwen_models, QWEN_MODELS),
+                                   ("boinc_surya", self.surya_variants, SURYA_VARIANTS)]:
+            self.assertEqual(flag in on, bool(built))
+            self.assertIn(built, ([], every[:1], every))
+            if event != "pull_request" and built:
+                self.assertEqual(built, every)
         return on
 
     def stub_tool(self, name: str) -> dict:
@@ -586,6 +630,15 @@ class BuildInputs(unittest.TestCase):
         self.assertIn("needs: [changes, quickwit-tests]", gate)
         self.assertIn("if: always() && needs.changes.outputs.quickwit == 'true'", gate)
         self.assertIn('test "$RESULT" = success', gate)
+
+    def test_the_image_matrix_and_the_queue_job_follow_their_outputs(self):
+        # test_ci_gates.py checks the image job's matrix and its required gate.
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        changes = job_text(workflow, "changes")
+        self.assertIn("images: ${{ steps.f.outputs.images }}", changes)
+        self.assertIn("if: needs.changes.outputs.image == 'true'", job_text(workflow, "image-tests"))
+        self.assertIn("queue: ${{ steps.f.outputs.queue }}", changes)
+        self.assertIn("if: needs.changes.outputs.queue == 'true'", job_text(workflow, "queue"))
 
     def test_parity_fixture_generators_do_not_call_the_excluded_api(self):
         setup = (ROOT / "scripts/dev/quickwit-fixtures.sh").read_text()
@@ -742,6 +795,99 @@ class BuildInputs(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertIn("image", self.select(path))
 
+    def test_a_pull_request_builds_only_the_images_its_change_reaches(self):
+        api, ingest, ja_ocr = (["api"], ["ingest"], ["ja-ocr"])
+        for paths, images in [
+            # #1528: the site's no-JS fallback, its end-to-end tests and its design note.
+            (["crates/usnm-api/src/site.rs", "web/index.html", "web/e2e/seo.spec.ts",
+              "docs/design/09-operations-security-cost.md"], api),
+            (["crates/usnm-api/src/main.rs"], api),
+            (["docker/Dockerfile.api"], api),
+            (["crates/usnm-ingest/src/lib.rs"], ingest),
+            (["crates/usnm-ocr-route/src/lib.rs"], ingest),
+            (["infra/quickwit-image.json"], ingest),
+            (["docker/Dockerfile.ingest"], ingest),
+            (["ocr/ja-ocr/jaocr.py"], ja_ocr),
+            (["docker/Dockerfile.ja-ocr"], ja_ocr),
+            (["scripts/data/build-page-language-words.py"], ja_ocr),
+            (["crates/usnm-core/src/lib.rs"], ["api", "ingest"]),
+            (["ops/index-history.json"], ["api", "ingest"]),
+            # The Japanese OCR image's tests read the Rust port's word list.
+            (["crates/usnm-core/data/page-language-words.txt"], ALL_IMAGES),
+            ([".dockerignore"], ALL_IMAGES),
+            # The image job itself, and what only publishing reads: every image.
+            ([".github/actions/build-check-image/action.yml"], ALL_IMAGES),
+            (["scripts/ci/roll-api.sh"], ALL_IMAGES),
+        ]:
+            with self.subTest(paths=paths):
+                self.assertIn("image", self.select(*paths, event="pull_request"))
+                self.assertEqual(self.images, images)
+        for path in ["crates/usnm-boinc/src/lib.rs", "scripts/onprem/queue/setup.sql"]:
+            with self.subTest(path=path):
+                self.assertNotIn("image", self.select(path, event="pull_request"))
+                self.assertEqual(self.images, [])
+
+    def test_a_pull_request_builds_one_qwen_model_and_surya_variant_for_their_shared_build(self):
+        # #1585: 2b and 8b, cuda and vulkan, compile the same usnm-boinc. A change that reaches only
+        # that build stage (a crate, a file it embeds outside the images' directories, the
+        # toolchain, the build context's filter) builds the first of each on a pull request.
+        for path in ["crates/usnm-boinc/src/lib.rs", "crates/usnm-core/src/lib.rs",
+                     "ocr/boinc/usnm_qwen_benchmark_in", "fixtures/ocr-gold/bundle-v1.lock.json",
+                     "rust-toolchain.toml", ".dockerignore"]:
+            with self.subTest(path=path):
+                self.assertGreaterEqual(self.select(path, event="pull_request"), {"boinc_qwen", "boinc_surya"})
+                self.assertEqual((self.qwen_models, self.surya_variants), (["2b"], ["cuda"]))
+        # On main the same change builds every one, as publishing does.
+        self.select("crates/usnm-boinc/src/lib.rs")
+        self.assertEqual((self.qwen_models, self.surya_variants), (QWEN_MODELS, SURYA_VARIANTS))
+
+    def test_a_pull_request_builds_every_model_or_variant_for_what_sets_them_apart(self):
+        for paths, models, variants in [
+            (["ocr/boinc/qwen/Containerfile"], QWEN_MODELS, []),
+            (["scripts/boinc/qwen_disk.py"], QWEN_MODELS, []),
+            (["scripts/boinc/qwen_cold_cache.py"], QWEN_MODELS, []),
+            # usnm-boinc embeds these pins too, so the other image builds its first.
+            (["ocr/boinc/qwen/weights.lock"], QWEN_MODELS, ["cuda"]),
+            (["ocr/boinc/qwen/disk-policy.json"], QWEN_MODELS, ["cuda"]),
+            (["ocr/boinc/surya/engine.lock"], ["2b"], SURYA_VARIANTS),
+            (["ocr/boinc/surya/Containerfile"], [], SURYA_VARIANTS),
+            (["ocr/boinc/surya/run.py"], [], SURYA_VARIANTS),
+            (["crates/usnm-boinc/src/lib.rs", "ocr/boinc/qwen/Containerfile"], QWEN_MODELS, ["cuda"]),
+            ([".github/workflows/boinc-qwen.yml"], QWEN_MODELS, []),
+            ([".github/actions/boinc-qwen-build/action.yml"], QWEN_MODELS, []),
+            ([".github/workflows/boinc-surya.yml"], [], SURYA_VARIANTS),
+            ([".github/actions/boinc-surya-build/action.yml"], [], SURYA_VARIANTS),
+            (["docs/boinc-quality.md", "docs/boinc-surya.md", "ocr/boinc/qwen/README.md"], [], []),
+        ]:
+            with self.subTest(paths=paths):
+                self.select(*paths, event="pull_request")
+                self.assertEqual((self.qwen_models, self.surya_variants), (models, variants))
+
+    def test_a_pull_request_that_runs_everything_builds_every_model_and_variant(self):
+        path = ".github/workflows/ci.yml"
+        self.select((path, "# touched\n" + (ROOT / path).read_text()), event="pull_request")
+        self.assertIn("running everything: workflow changed", self.log)
+        self.assertEqual((self.qwen_models, self.surya_variants), (QWEN_MODELS, SURYA_VARIANTS))
+
+    def test_main_builds_every_image_for_any_image_change(self):
+        # select() checks a push's matrix is every image whenever the image job runs.
+        for path in ["web/index.html", "ocr/ja-ocr/jaocr.py", "infra/quickwit-image.json"]:
+            with self.subTest(path=path):
+                self.assertIn("image", self.select(path))
+
+    def test_the_queue_job_runs_for_its_crates_and_schemas_only(self):
+        for path in ["scripts/onprem/queue/setup.sql", "scripts/onprem/queue/ci-fixture.sh",
+                     "scripts/onprem/quality/load.py", "crates/usnm-store/src/lib.rs",
+                     "crates/usnm-state/src/lib.rs", "rust-toolchain.toml"]:
+            with self.subTest(path=path):
+                self.assertIn("queue", self.select(path, event="pull_request"))
+        # The queue's scripts are no crate's input, so they don't run the Rust job.
+        self.assertNotIn("rust", self.select("scripts/onprem/quality/rank.sql", event="pull_request"))
+        for path in ["crates/usnm-api/src/main.rs", "crates/usnm-ingest/src/lib.rs",
+                     "crates/usnm-ocr-dash/src/html.rs", "web/index.html"]:
+            with self.subTest(path=path):
+                self.assertNotIn("queue", self.select(path, event="pull_request"))
+
     def test_a_workflow_or_its_action_runs_only_its_own_job(self):
         for path, job in [
             (".github/workflows/boinc-worker.yml", "boinc_worker"),
@@ -752,6 +898,7 @@ class BuildInputs(unittest.TestCase):
             (".github/actions/boinc-surya-build/action.yml", "boinc_surya"),
             (".github/workflows/boinc-ndlocr-lite.yml", "boinc_ndlocr"),
             (".github/workflows/boinc-quality-native.yml", "boinc_native"),
+            (".github/workflows/boinc-ocr-native.yml", "boinc_ocr_native"),
             (".github/workflows/ocr-dashboard.yml", "ocr_dashboard"),
         ]:
             with self.subTest(path=path):
@@ -769,6 +916,9 @@ class BuildInputs(unittest.TestCase):
             if "quickwit_suites" in flags:
                 flags.remove("quickwit_suites")
                 flags.update({"quickwit_parity", "quickwit_pipeline"})
+            if "images" in flags:
+                flags.remove("images")
+                flags.add("image")
             for action in re.findall(r"uses: \./\.github/actions/([\w-]+)", text):
                 called.setdefault(action, set()).update(flags)
         self.assertGreaterEqual(len(called), 3)
@@ -796,8 +946,11 @@ class BuildInputs(unittest.TestCase):
 
     def test_the_native_apps_run_for_the_files_they_embed_or_their_tests_read(self):
         for path in ["ocr/boinc/qwen/llama.lock", "ocr/boinc/qwen/weights.lock", "ocr/contract/v1/schema.json",
-                     "ocr/boinc/qwen/amd-device-map.cpp", "scripts/boinc/test_amd_device_map.py",
-                     "scripts/boinc/patch_amd_vulkan_identity.py", "scripts/boinc/build_amd_vulkan_runtime.ps1"]:
+                     "ocr/boinc/qwen/amd-device-map.cpp", "ocr/boinc/qwen/disk-policy.json",
+                     "scripts/boinc/test_amd_device_map.py",
+                     "scripts/boinc/patch_amd_vulkan_identity.py", "scripts/boinc/build_amd_vulkan_runtime.ps1",
+                     "scripts/boinc/qwen_vulkan_bundle.py", "scripts/boinc/test_qwen_vulkan_bundle.py",
+                     "contrib-compute/infra/boinc/releases/prod-onprem-usnm_qwen-nvidia_vulkan_6gb_8b.json"]:
             with self.subTest(path=path):
                 self.assertIn("boinc_native", self.select(path))
         # What only the images embed is not theirs.
@@ -812,11 +965,26 @@ class BuildInputs(unittest.TestCase):
         # Only src/ and tests/ are exempt: the manifest is not.
         self.assertIn("infra", self.select("crates/usnm-ocr-dash/Cargo.toml"))
 
+    def test_site_and_web_changes_skip_the_infra_stack_but_not_the_policy_scans(self):
+        for path in ["crates/usnm-api/src/site.rs", "crates/usnm-api/src/site/social.rs",
+                     "web/index.html", "web/src/main.tsx", "web/e2e/seo.spec.ts", "web/package.json"]:
+            with self.subTest(path=path):
+                on = self.select(path, event="pull_request")
+                self.assertIn("code", on)
+                self.assertNotIn("infra", on)
+        self.assertNotIn("infra", self.select("crates/usnm-api/src/site.rs", "web/index.html",
+                                               "crates/usnm-ocr-dash/src/html.rs"))
+
     def test_other_changes_run_the_infra_stack(self):
+        # web/public/ and web/src/examples.json are read by scripts the infra job tests, and
+        # test_boinc_scripts.py reads every shell script.
         for path in ["infra/main.bicep", "scripts/ci/changes.sh", "crates/usnm-api/src/status/sanitize.rs",
-                     "crates/usnm-ocr-contract/src/runs.rs", "Cargo.lock"]:
+                     "crates/usnm-api/src/lib.rs", "crates/usnm-api/src/site_shared.rs",
+                     "crates/usnm-ocr-contract/src/runs.rs", "Cargo.lock", "web/public/robots.txt",
+                     "web/src/examples.json", "web/scripts/build.sh"]:
             with self.subTest(path=path):
                 self.assertIn("infra", self.select(path))
+        self.assertIn("infra", self.select("web/index.html", "web/public/robots.txt"))
 
     def test_the_fallback_worker_runs_its_own_job_and_the_policy_scans_only(self):
         # #1098: JavaScript, a Wrangler config and a shell script under edge/, which no crate,
@@ -1042,6 +1210,31 @@ class Wiring(unittest.TestCase):
                 for job in re.findall(r"(?m)^  (publish):", text):
                     self.assertNotIn("inputs", job_text(text, job))
 
+    def test_the_qwen_and_surya_pull_request_matrices_follow_the_selector_and_publish_builds_all(self):
+        for name, output, key, every in [("boinc-qwen.yml", "boinc_qwen_models", "model", QWEN_MODELS),
+                                         ("boinc-surya.yml", "boinc_surya_variants", "variant", SURYA_VARIANTS)]:
+            text = self.workflow(name)
+            with self.subTest(workflow=name):
+                read = re.search(rf"(?m)^      (\w+): \$\{{\{{ steps\.f\.outputs\.{output} \}}\}}$",
+                                 job_text(text, "inputs"))
+                self.assertIsNotNone(read)
+                check = job_text(text, "check")
+                self.assertIn(f"        {key}: ${{{{ fromJSON(needs.inputs.outputs.{read[1]}) }}}}\n", check)
+                # An `include` adds a combination the selected list leaves out.
+                self.assertNotIn("include:", check.split("    steps:", 1)[0])
+                publish = job_text(text, "publish").split("    steps:", 1)[0]
+                # `model: [2b, 8b]`, or one `- variant: cuda` line per include entry.
+                lines = re.findall(rf"(?m)^ +(?:- )?{key}: (.+)$", publish)
+                built = [item.strip() for line in lines for item in line.strip("[]").split(",")]
+                self.assertEqual(built, every)
+        # The Surya check tags each variant as publish does.
+        text = self.workflow("boinc-surya.yml")
+        prefixes = dict(re.findall(r"- variant: (\w+)\n +tag_prefix: ([\w-]+)", job_text(text, "publish")))
+        tag = re.search(r"tag: \$\{\{ matrix\.variant == '(\w+)' && '([\w-]+)' \|\| '([\w-]+)' \}\}"
+                        r"-\$\{\{ github\.sha \}\}", job_text(text, "check"))
+        self.assertIsNotNone(tag)
+        self.assertEqual({v: tag[2] if v == tag[1] else tag[3] for v in SURYA_VARIANTS}, prefixes)
+
     def test_ci_reports_every_required_check_on_every_pull_request(self):
         # The names the "Protect main" ruleset requires. A job skipped by its `if:` reports as
         # skipped, which satisfies a required check; a workflow its `paths:` filter skips
@@ -1092,27 +1285,47 @@ class Wiring(unittest.TestCase):
                 with self.subTest(step=step.splitlines()[0]):
                     self.assertIn("if: needs.changes.outputs.infra == 'true'", step)
 
-    def test_the_dashboard_sources_are_read_by_nothing_the_infra_stack_runs(self):
-        # changes.sh skips the stack's steps for a change in the dashboard crate's src/ and
-        # tests/. The two scans in the infra job read every crate; no other script, schema or
-        # step may name this one. test_head_of_main.py only names a path of it, in a commit of a
-        # scratch clone, to see which flags changes.sh sets for it; it reads none of its sources.
+    def test_the_exempt_sources_are_read_by_nothing_the_infra_stack_runs(self):
+        # changes.sh skips the stack's steps for a change confined to the dashboard crate's src/
+        # and tests/, the API's site presentation, or web/ but for web/public/,
+        # web/src/examples.json and shell scripts. The two scans in the infra job read every crate
+        # and web/; no other script, schema or step may name these. test_head_of_main.py only
+        # names a path of them, in a commit of a scratch clone, to see which flags changes.sh sets
+        # for it; it reads none of their sources.
         scans = {"scripts/ci/changes.sh", "scripts/ci/test_changes.py", "scripts/ci/no-shared-keys.sh",
                  "scripts/ci/no-positional-args.py", "scripts/ci/test_no_positional_args.py",
                  "scripts/ci/test_head_of_main.py"}
-        tokens = ("usnm-ocr-dash", "usnm_ocr_dash")
+        areas = {
+            "dashboard": (re.compile(r"usnm-ocr-dash|usnm_ocr_dash"), set()),
+            "site": (re.compile(r"usnm-api/src/site\b|\bsite\.rs\b|join\([^)]*[\"']site[\"']"
+                                r"|/ *[\"']site[\"']"), set()),
+            "web": (re.compile(r"(?<![\w.-])web/(?!public\b|src/examples\.json)"
+                               r"|join\([^)]*[\"']web[\"']|/ *[\"']web[\"']"), {
+                # The image job's smoke test, the end-to-end job's API, and a benchmark run by hand.
+                "scripts/ci/check-api-image.sh", "scripts/ci/start-api-fixtures.sh",
+                "scripts/bench-site-lcp.mjs",
+                # A comment, and an assertion's message about web servers.
+                "scripts/ops/load-cold-searches.py", "scripts/boinc/db-tls/full.py",
+            }),
+        }
         for base in ("scripts", "infra"):
             for path in (ROOT / base).rglob("*"):
                 rel = str(path.relative_to(ROOT))
-                if not path.is_file() or rel in scans or "__pycache__" in rel:
+                if not path.is_file() or rel in scans or "__pycache__" in rel or rel.endswith(".md"):
                     continue
                 try:
                     text = path.read_text()
                 except UnicodeDecodeError:
                     continue
-                with self.subTest(path=rel):
-                    self.assertFalse(any(token in text for token in tokens))
-        self.assertFalse(any(token in job_text(self.workflow("ci.yml"), "infra") for token in tokens))
+                for area, (token, readers) in areas.items():
+                    if rel not in readers:
+                        with self.subTest(path=rel, area=area):
+                            self.assertNotRegex(text, token)
+        ci = self.workflow("ci.yml")
+        for job in ("infra-checks", "script-tests", "infra"):
+            for area, (token, _) in areas.items():
+                with self.subTest(job=job, area=area):
+                    self.assertNotRegex(job_text(ci, job), token)
 
     def test_the_dashboard_only_build_keeps_the_release_whole(self):
         ci = self.workflow("ci.yml")

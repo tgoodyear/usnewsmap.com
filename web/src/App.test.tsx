@@ -140,12 +140,12 @@ afterEach(() => {
 
 it("keeps only the server's eligible search links on the interactive homepage", () => {
   show("", [
-    { href: "/search/whigs", label: "whigs" },
+    { href: "/examples/whigs", label: "Whig Party" },
     { href: "/search/cobalt-jubilee", label: "cobalt jubilee" },
   ]);
   expect(document.querySelectorAll("ul.examples a.example")).toHaveLength(2);
   expect(screen.queryByRole("button", { name: "Show more examples" })).toBeNull();
-  expect(document.querySelector('ul.examples a.example[href="/search/whigs"]')).not.toBeNull();
+  expect(document.querySelector('ul.examples a.example[href="/examples/whigs"]')).not.toBeNull();
   expect(screen.getByRole("link", { name: /cobalt jubilee/ }).getAttribute("href")).toBe("/search/cobalt-jubilee");
 });
 

@@ -1,6 +1,8 @@
 """Offline catalog contract, replay, provenance, CLI and HTTP tests (stdlib only)."""
 
+import contextlib
 import copy
+import io
 import json
 from pathlib import Path
 import re
@@ -9,6 +11,7 @@ import sqlite3
 import subprocess
 import sys
 import threading
+import time
 import unittest
 from unittest import mock
 import urllib.error
@@ -55,9 +58,12 @@ def event(event_id="e1", kind="artifact", when=T0, **kwargs):
         payload = {"stage_id": "boinc-ready", "label": "BOINC ready", "count": 19850,
                    "state": "observed", "detail": "Public tasks; underlying cache age unknown.",
                    "coverage": "BOINC task totals"}
+    elif kind == "boinc_results":
+        payload = {"app": "usnm_ocr", "status": "valid", "count": 1200, "window_hours": 336,
+                   "reported_hours": 72}
     value = {"schema_version": 1, "batch_id": "b1", "event_id": event_id, "kind": kind,
              "source": "inventory", "observed_at": when,
-             "page_id": None if kind == "stage" else PAGE, "payload": payload}
+             "page_id": None if kind in ("stage", "boinc_results") else PAGE, "payload": payload}
     value.update(kwargs)
     return value
 
@@ -91,6 +97,354 @@ class CatalogTests(unittest.TestCase):
                                 cwd=ROOT, capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, code, result.stderr)
         return json.loads(result.stdout if code == 0 else result.stderr)
+
+    def throughput(self, reported="2026-11-01T18:52:21Z", **series):
+        """A dashboard history whose sources reported at `reported`; hours end at 18:00."""
+        first = 1793556000 - 3 * 3600  # 15:00, so the last value is the 17:00 hour.
+        history = {"schema": 1,
+                   "sources": {name: {"received": reported, "observed_at": reported, "limits": {}}
+                               for name in ("batch", "boinc", "controller", "ship")},
+                   "series": {name: {"first": first, "values": values} for name, values in series.items()}}
+        path = self.work / "throughput.json"
+        path.write_text(json.dumps(history))
+        return path
+
+    def refresh(self, path, stamp="2026-11-01T18:55:00.000000Z"):
+        evidence = self.work / "evidence"
+        evidence.mkdir(exist_ok=True)
+        out = self.work / "catalog.json"
+        with mock.patch.object(c, "now", return_value=stamp):
+            c.refresh_live(self.db, path, evidence, out)
+        return json.loads(out.read_text())
+
+    def test_refresh_turns_hourly_counts_into_dated_stage_evidence(self):
+        catalog = self.refresh(self.throughput(ocr_import_pages=[10, None, 30],
+                                               ocr_bulk_queue_pages=[700, 705, None],
+                                               ocr_pending_pages=[220, 225, 190],
+                                               ocr_collect_pages=[5, 6, 7]))
+        stages = {stage["id"]: stage for stage in catalog["stages"]}
+        self.assertEqual(stages["live_imported"]["count"], 40)
+        self.assertIn("2 reported", stages["live_imported"]["detail"])
+        self.assertEqual(stages["live_imported"]["observed_at"], "2026-11-01T18:00:00.000000000Z")
+        # The hours since the last reading are unknown, so the reading keeps its own hour.
+        self.assertEqual(stages["live_queued"]["count"], 705)
+        self.assertEqual(stages["live_queued"]["observed_at"], "2026-11-01T17:00:00.000000000Z")
+        self.assertEqual(stages["live_allocated"]["count"], 190)
+        self.assertEqual(catalog["observed_at"], "2026-11-01T18:00:00.000000000Z")
+        self.assertNotIn("missing_source", {issue["code"] for issue in catalog["issues"]
+                                            if "allocated" in issue["detail"] or "queued" in issue["detail"]})
+        self.assertIn("queued:aggregate", catalog["coverage"])
+
+    def test_refresh_never_claims_a_stage_it_has_no_evidence_for(self):
+        catalog = self.refresh(self.throughput(ocr_import_pages=[None, None, None],
+                                               ocr_collect_pages=[0, 0, 0]))
+        stages = {stage["id"]: stage for stage in catalog["stages"]}
+        self.assertNotIn("live_imported", stages)
+        self.assertEqual(stages["queued"]["state"], "unknown")
+        self.assertIn("queued: no observations imported",
+                      [issue["detail"] for issue in catalog["issues"]])
+
+    def test_refresh_leaves_out_a_source_that_never_reported(self):
+        path = self.throughput(ocr_units=[1, 2, 3], ocr_import_pages=[1, 2, 3])
+        history = json.loads(path.read_text())
+        del history["sources"]["boinc"]
+        path.write_text(json.dumps(history))
+        stages = {stage["id"] for stage in self.refresh(path)["stages"]}
+        self.assertNotIn("live_validated", stages)
+        self.assertIn("live_imported", stages)
+
+    def test_a_stage_counts_only_hours_every_series_covers(self):
+        catalog = self.refresh(self.throughput(quality_load_pages=[None, 5, None],
+                                               qwen_load_pages=[1, 2, 3]))
+        stage = next(item for item in catalog["stages"] if item["id"] == "live_quality_loaded")
+        self.assertEqual(stage["count"], 7)
+        self.assertIn("1 reported", stage["detail"])
+        self.assertEqual(stage["observed_at"], "2026-11-01T17:00:00.000000000Z")
+
+    def test_a_stage_with_one_silent_series_is_not_observed(self):
+        catalog = self.refresh(self.throughput(quality_load_pages=[None, None, None],
+                                               qwen_load_pages=[1, 2, 3],
+                                               ocr_import_pages=[1, 2, 3]))
+        self.assertNotIn("live_quality_loaded", {item["id"] for item in catalog["stages"]})
+
+    def test_refresh_does_not_age_forward_when_the_source_stops(self):
+        path = self.throughput(ocr_import_pages=[1, 2, 3])
+        first = self.refresh(path)
+        later = self.refresh(path, "2026-11-02T18:55:00.000000Z")
+        self.assertEqual(later["observed_at"], first["observed_at"])
+        self.assertNotEqual(later["generated_at"], first["generated_at"])
+
+    def test_refresh_replays_and_retains_each_batch(self):
+        path = self.throughput(ocr_import_pages=[1, 2, 3])
+        self.refresh(path)
+        self.refresh(path, "2026-11-01T19:55:00.000000Z")
+        batches = sorted((self.work / "evidence").glob("live-*.jsonl"))
+        self.assertEqual([item.name for item in batches],
+                         ["live-20261101T185500Z.jsonl", "live-20261101T195500Z.jsonl"])
+        rebuilt = self.work / "rebuilt.sqlite"
+        self.assertEqual(c.ingest(rebuilt, batches[0])["replayed"], False)
+        self.assertEqual(c.ingest(rebuilt, batches[1])["inserted"], 0)
+
+    def test_a_correction_to_the_same_hour_wins_whatever_its_digest(self):
+        for corrected in range(40, 48):  # Digests fall on both sides of the first one's.
+            path = self.throughput(ocr_import_pages=[1, 2, corrected])
+            minute = corrected - 40
+            self.refresh(path, f"2026-11-01T19:{minute:02}:00.000000Z")
+            stages = {stage["id"]: stage for stage in c.snapshot(self.db)["stages"]}
+            self.assertEqual(stages["live_imported"]["count"], 3 + corrected)
+
+    def test_an_unchanged_stage_adds_no_event(self):
+        path = self.throughput(ocr_import_pages=[1, 2, 3])
+        self.refresh(path)
+        evidence = self.work / "evidence"
+        with mock.patch.object(c, "now", return_value="2026-11-01T19:55:00.000000Z"):
+            result = c.refresh_live(self.db, path, evidence, self.work / "catalog.json")
+        self.assertEqual(result["inserted"], 0)
+
+    def many_artifacts(self, n=200):
+        """Enough rows for a statement long enough to reach SQLite's progress handler, so a deadline."""
+        self.ingest(*(event("e" + str(i), page_id=f"loc:sn123_1900-01-01_ed-1_seq-{i}") for i in range(n)))
+
+    def committed_batches(self):
+        with contextlib.closing(sqlite3.connect(self.db)) as conn:
+            return [row[0] for row in conn.execute("SELECT batch_id FROM batches ORDER BY batch_id")]
+
+    def test_refresh_has_its_own_deadline_not_the_query_one(self):
+        # The hourly run starts on a cold cache, where the snapshot outlasted QUERY_SECONDS (#1436).
+        self.many_artifacts()
+        path = self.throughput(ocr_import_pages=[1, 2, 3])
+        with mock.patch.object(c, "QUERY_SECONDS", -1):
+            with self.assertRaisesRegex(c.CatalogError, "deadline exceeded"):
+                c.snapshot(self.db)
+            catalog = self.refresh(path)
+            self.refresh(self.boinc_history(), "2026-11-01T18:56:00.000000Z")
+        self.assertEqual(catalog["artifacts"]["locations"], 200)
+        self.assertTrue(self.boinc_results())
+        with mock.patch.object(c, "REFRESH_SECONDS", -1):
+            with self.assertRaisesRegex(c.CatalogError, "deadline exceeded"):
+                self.refresh(path, "2026-11-01T19:55:00.000000Z")
+
+    def test_the_refresh_deadline_bounds_its_ingest_transaction(self):
+        self.many_artifacts()
+        before = self.committed_batches()
+        with contextlib.closing(sqlite3.connect(self.db)) as conn, conn:
+            # Recording the batch becomes one long statement, as on a cold cache.
+            conn.execute("""CREATE TRIGGER slow AFTER INSERT ON batches BEGIN SELECT count(*) FROM
+                (SELECT 1 FROM events a, events b, events c, events d LIMIT 100000000); END""")
+        with mock.patch.object(c, "REFRESH_SECONDS", 0.5):
+            with self.assertRaises(sqlite3.OperationalError) as caught:
+                self.refresh(self.throughput(ocr_import_pages=[1, 2, 3]))
+        self.assertEqual(c.failure_cause(caught.exception), "SQLITE_INTERRUPT")
+        self.assertEqual(self.committed_batches(), before)
+
+    def test_the_refresh_deadline_bounds_its_lock_waits_together(self):
+        path = self.throughput(ocr_import_pages=[1, 2, 3])
+        # A catalog's first refresh creates it, and one on a legacy catalog migrates it first.
+        for case in ("current", "legacy", "new"):
+            with self.subTest(case):
+                self.db.unlink(missing_ok=True)
+                shutil.rmtree(self.work / "evidence", ignore_errors=True)
+                if case != "new":
+                    self.refresh(path)
+                if case == "legacy":
+                    with contextlib.closing(sqlite3.connect(self.db)) as conn:
+                        conn.execute("PRAGMA user_version=0")
+                before = self.committed_batches() if case != "new" else []
+                with contextlib.closing(sqlite3.connect(self.db)) as reader, \
+                        contextlib.closing(sqlite3.connect(self.db, check_same_thread=False)) as writer:
+                    # The commit waits for this reader, and BEGIN IMMEDIATE for this writer, for 2 s.
+                    reader.execute("BEGIN")
+                    reader.execute("SELECT count(*) FROM sqlite_master").fetchone()
+                    writer.execute("BEGIN IMMEDIATE")
+                    release = threading.Timer(2, writer.rollback)
+                    release.start()
+                    started = time.monotonic()
+                    try:
+                        with mock.patch.object(c, "REFRESH_SECONDS", 3):
+                            with self.assertRaises(sqlite3.OperationalError) as caught:
+                                self.refresh(path, "2026-11-01T19:55:00.000000Z")
+                        elapsed = time.monotonic() - started
+                    finally:
+                        release.join()
+                # About 3 s in all, not 2 s for the writer and another 3 s for the reader; a second
+                # either way of slack.
+                self.assertLess(elapsed, 4)
+                self.assertEqual(c.failure_cause(caught.exception), "SQLITE_BUSY")
+                if case == "new":
+                    with contextlib.closing(sqlite3.connect(self.db)) as conn:
+                        self.assertIsNone(conn.execute("SELECT 1 FROM sqlite_master").fetchone())
+                else:
+                    self.assertEqual(self.committed_batches(), before)
+                    with contextlib.closing(sqlite3.connect(self.db)) as conn:
+                        self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0],
+                                         0 if case == "legacy" else c.INDEXED_KEY_SCOPE_VERSION)
+
+    def test_the_refresh_deadline_bounds_its_stage_lookup_after_connect(self):
+        path = self.throughput(ocr_import_pages=[1, 2, 3])
+        self.refresh(path)
+        locker = sqlite3.connect(self.db)
+        self.addCleanup(locker.close)
+        real = c.connect
+
+        def slow_connect(*args, **kwargs):
+            # Connecting took 2 s of the deadline, as a wait for a writer would, and then another
+            # writer locks the catalog before the stage lookup.
+            conn = real(*args, **kwargs)
+            time.sleep(2)
+            locker.execute("BEGIN EXCLUSIVE")
+            return conn
+
+        started = time.monotonic()
+        with mock.patch.object(c, "REFRESH_SECONDS", 3), mock.patch.object(c, "connect", slow_connect):
+            with self.assertRaises(sqlite3.OperationalError) as caught:
+                self.refresh(path, "2026-11-01T19:55:00.000000Z")
+        # About 3 s in all, not 2 s and then another 3 s; a second either way of slack.
+        self.assertLess(time.monotonic() - started, 4)
+        self.assertEqual(c.failure_cause(caught.exception), "SQLITE_BUSY")
+
+    def test_a_failed_refresh_names_its_cause_but_no_path(self):
+        path = self.throughput(ocr_import_pages=[1, 2, 3])
+        self.refresh(path)
+        args = ["--db", str(self.db), "refresh-live", "--throughput", str(path),
+                "--evidence-dir", str(self.work / "evidence"), "--out", str(self.work / "catalog.json")]
+        locker = sqlite3.connect(self.db)
+        self.addCleanup(locker.close)
+        locker.execute("BEGIN EXCLUSIVE")
+        stderr = io.StringIO()
+        with mock.patch.object(c, "REFRESH_SECONDS", 0.2), contextlib.redirect_stderr(stderr):
+            self.assertEqual(c.main(args), 2)
+        self.assertEqual(json.loads(stderr.getvalue()),
+                         {"error": "local catalog I/O or query failure", "cause": "SQLITE_BUSY"})
+        locker.rollback()
+        args[args.index(str(path))] = str(self.work / "absent.json")
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            self.assertEqual(c.main(args), 2)
+        self.assertEqual(json.loads(stderr.getvalue())["cause"], "ENOENT")
+        self.assertNotIn(str(self.work), stderr.getvalue())
+
+    def test_refresh_rejects_bad_histories(self):
+        good = self.throughput(ocr_import_pages=[1, 2, 3])
+        for change in (lambda h: h.update(schema=2), lambda h: h.pop("sources"),
+                       lambda h: h["sources"]["batch"].update(observed_at="2026-11-03T00:00:00Z"),
+                       lambda h: h["series"]["ocr_import_pages"]["values"].__setitem__(0, -1),
+                       lambda h: h["series"]["ocr_import_pages"]["values"].__setitem__(0, "1"),
+                       lambda h: h["series"]["ocr_import_pages"].update(first="now")):
+            history = json.loads(good.read_text())
+            change(history)
+            path = self.work / "bad.json"
+            path.write_text(json.dumps(history))
+            with self.assertRaises(c.CatalogError):
+                self.refresh(path)
+        (self.work / "bad.json").write_text("x" * (c.MAX_THROUGHPUT_FILE + 1))
+        with self.assertRaises(c.CatalogError):
+            self.refresh(self.work / "bad.json")
+
+    def test_refresh_requires_some_known_hour(self):
+        with self.assertRaises(c.CatalogError):
+            self.refresh(self.throughput())
+
+    def boinc_history(self):
+        path = self.work / "throughput.json"
+        shutil.copyfile(ROOT / "scripts/corpus/fixtures/data_catalog/throughput-boinc.json", path)
+        return path
+
+    def boinc_results(self):
+        items = c.query(self.db, "boinc_results", {}, 100)["items"]
+        return {(item["data"]["app"], item["data"]["status"]):
+                (item["data"]["count"], item["data"]["reported_hours"], item["observed_at"])
+                for item in items}
+
+    def test_refresh_counts_boinc_results_by_app_and_status(self):
+        catalog = self.refresh(self.boinc_history())
+        end, before = "2026-11-01T18:00:00.000000000Z", "2026-11-01T17:00:00.000000000Z"
+        # Only complete hours count, so ocr_valid's 18:00 hour doesn't. Neither does an app the
+        # collector doesn't count, nor one with no known hour.
+        self.assertEqual(self.boinc_results(), {
+            ("usnm_ocr", "valid"): (316, 3, end), ("usnm_ocr", "inconclusive"): (4, 3, end),
+            ("usnm_ocr", "invalid"): (1, 3, end), ("usnm_ocr", "waiting"): (16, 3, end),
+            ("usnm_ocr", "error"): (3, 3, end), ("usnm_quality", "valid"): (16, 2, end),
+            ("usnm_quality", "inconclusive"): (0, 2, end), ("usnm_quality", "invalid"): (1, 2, end),
+            ("usnm_quality", "waiting"): (2, 1, before), ("usnm_quality", "error"): (0, 2, end)})
+        item = c.query(self.db, "boinc_results", {"status": "waiting"})["items"][0]
+        self.assertEqual((item["source"], item["data"]["window_hours"]), ("throughput-live", 336))
+        # The dashboard's parser rejects unknown snapshot fields, so the counts stay out of it.
+        self.assertEqual(set(catalog), {"schema_version", "observed_at", "generated_at", "producer",
+                                        "coverage", "stages", "runs", "artifacts", "issues"})
+        self.assertEqual(next(stage["count"] for stage in catalog["stages"]
+                              if stage["id"] == "live_validated"), 158)
+
+    def test_an_unchanged_boinc_count_adds_no_event_and_a_recount_wins(self):
+        path = self.boinc_history()
+        self.refresh(path)
+        with mock.patch.object(c, "now", return_value="2026-11-01T19:05:00.000000Z"):
+            result = c.refresh_live(self.db, path, self.work / "evidence", self.work / "catalog.json")
+        self.assertEqual(result["inserted"], 0)
+        # The collector recounts recent hours: waiting results validate later.
+        history = json.loads(path.read_text())
+        history["series"]["ocr_waiting"]["values"][2] = 0.0
+        history["series"]["ocr_valid"]["values"][2] = 113.0
+        path.write_text(json.dumps(history))
+        self.refresh(path, "2026-11-01T19:15:00.000000Z")
+        counts = self.boinc_results()
+        self.assertEqual((counts[("usnm_ocr", "waiting")][0], counts[("usnm_ocr", "valid")][0]), (4, 328))
+        self.assertEqual(counts[("usnm_quality", "valid")][0], 16)
+
+    def test_boinc_result_counts_are_validated(self):
+        good = event("r1", "boinc_results")
+        c.validate_event(good)
+        for change in ({"page_id": PAGE}, {"payload": dict(good["payload"], status="success")},
+                       {"payload": dict(good["payload"], count=-1)},
+                       {"payload": dict(good["payload"], count=1.5)},
+                       {"payload": dict(good["payload"], app="usnm ocr")},
+                       {"payload": dict(good["payload"], reported_hours=337)},
+                       {"payload": dict(good["payload"], window_hours=0, reported_hours=0)},
+                       {"payload": dict(good["payload"], pages=10)}):
+            with self.assertRaises(c.CatalogError, msg=change):
+                c.validate_event(dict(good, **change))
+
+    def test_boinc_result_counts_are_capped(self):
+        def count(index, number=1):
+            return event(f"r{index}-{number}", "boinc_results",
+                         payload={"app": f"app_{index}", "status": "valid", "count": number,
+                                  "window_hours": 1, "reported_hours": 1})
+        self.ingest(*(count(index) for index in range(c.MAX_BOINC_RESULTS)))
+        with self.assertRaises(c.CatalogError):
+            self.ingest(count(c.MAX_BOINC_RESULTS))
+        self.ingest(count(0, 2))  # A recount of a known one still lands.
+        self.assertEqual(len(c.query(self.db, "boinc_results", {}, 100)["items"]), c.MAX_BOINC_RESULTS)
+
+    def test_query_command_lists_boinc_results(self):
+        self.ingest(event("r1", "boinc_results"))
+        result = self.cli("query", "boinc_results", "--status", "valid")
+        self.assertEqual([item["data"]["count"] for item in result["items"]], [1200])
+
+    def test_refresh_command(self):
+        path = self.throughput(ocr_import_pages=[1, 2, 3])
+        evidence = self.work / "evidence"
+        evidence.mkdir()
+        # The clock is real here, so the history must be older than it.
+        result = self.cli("refresh-live", "--throughput", str(path), "--evidence-dir", str(evidence),
+                          "--out", str(self.work / "catalog.json"))
+        self.assertEqual(result["replayed"], False)
+
+    def test_age_rule_excuses_only_declared_historical_sources(self):
+        self.assertEqual(c.stage_age([]), (None, False))
+        self.assertEqual(c.stage_age([("worker-node3-live", "2026-10-18T00:00:00Z"),
+                                      ("issue780-committed-import", "2026-10-17T00:00:00Z")]),
+                         ("2026-10-17T00:00:00Z", True))
+        # A live source decides the age, and a stopped one that isn't declared stays old.
+        self.assertEqual(c.stage_age([("worker-node3-live", "2026-10-18T00:00:00Z"),
+                                      ("live", "2026-11-01T00:00:00Z")]),
+                         ("2026-11-01T00:00:00Z", False))
+        self.assertEqual(c.stage_age([("new-source", "2026-10-18T00:00:00Z")]),
+                         ("2026-10-18T00:00:00Z", False))
+
+    def test_a_stage_fed_only_by_historical_sources_says_so(self):
+        self.ingest(event("old", kind="artifact", source="ct212-cached-stat"))
+        stages = {stage["id"]: stage for stage in c.snapshot(self.db)["stages"]}
+        self.assertIs(stages["artifacts"]["historical"], True)
+        self.assertNotIn("historical", stages["runs"])
 
     def test_actual_rust_schema_not_replacement(self):
         rust = (ROOT / "crates/usnm-ocr-contract/src/runs.rs").read_text()
@@ -626,10 +980,10 @@ class CatalogTests(unittest.TestCase):
             c.bounded_query(self.db, lambda conn: conn.execute("DELETE FROM latest"))
         original = c.QUERY_SECONDS
         try:
-            c.QUERY_SECONDS = -1
+            c.QUERY_SECONDS = 0.5  # An expired deadline fails before the query starts.
             with self.assertRaises(sqlite3.OperationalError):
                 c.bounded_query(self.db, lambda conn: conn.execute("""WITH RECURSIVE
-                  n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<100000)
+                  n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<100000000)
                   SELECT sum(x) FROM n""").fetchone()[0])
         finally:
             c.QUERY_SECONDS = original

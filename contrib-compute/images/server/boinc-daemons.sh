@@ -1,10 +1,20 @@
 #!/usr/bin/env bash
 # Run under supervisord as root; the project's own tools run as boincadm. bin/start daemonizes
 # the project daemons and returns, so this stays in the foreground, runs the periodic tasks
-# and restarts anything that stopped (what the project's cron line would do).
+# and restarts anything that stopped (what the project's cron line would do), within a bound on
+# feeder restarts.
 set -euo pipefail
 
 run() { su -s /bin/bash boincadm -c "cd '$proj' && $1"; }
+epoch() { date +%s; }
+
+proc=/proc
+# The loop restarts a feeder it finds stopped at most restart_limit times in any restart_window
+# seconds; the next time, it holds (docs/boinc/feeder-refresh.md, "The loop's restart bound").
+restart_limit=3
+restart_window=3600
+restarts=""
+hold_unwritten=""
 
 # bin/start opens pid_<host>/start.lock.<host>, marks it inheritable so every daemon it starts
 # keeps it open, and unlinks it on the way out. On the Azure Files project share a file that is
@@ -14,7 +24,7 @@ run() { su -s /bin/bash boincadm -c "cd '$proj' && $1"; }
 # the short hostname, as the status page does), so it lives on this container's own disk and is
 # linked into the project tree, where server_status.php reads it.
 local_pid_dir() {
-  local host link dir
+  local link dir
   host=$(python3 -c 'import socket; print(socket.gethostname().split(".")[0])')
   link="$proj/pid_$host"
   dir="${USNM_PID_ROOT:-/var/lib/usnm-boinc}/pid_$host"
@@ -30,6 +40,7 @@ local_pid_dir() {
   else
     ln -s "$dir" "$link"
   fi
+  hold="$dir/usnm-feeder-restart-hold"
 }
 
 # stop_maintenance in the project directory (docs/boinc/server-and-apps.md, "Moving the project share") holds
@@ -40,14 +51,93 @@ maintenance() {
   echo "usnm-boinc: $proj/stop_maintenance is present; not starting the project" >&2
 }
 
+# USNM_FEEDER_RESTART_LIMIT (0 to 9999; 0 never restarts) and USNM_FEEDER_RESTART_WINDOW
+# (1 to 999999 seconds) override the bound. Any other value is reported and the default kept.
+restart_bound() {
+  local limit=${USNM_FEEDER_RESTART_LIMIT-} window=${USNM_FEEDER_RESTART_WINDOW-}
+  if [[ $limit =~ ^[0-9]{1,4}$ ]]; then
+    restart_limit=$((10#$limit))
+  elif [ -n "$limit" ]; then
+    echo "usnm-boinc: ignoring USNM_FEEDER_RESTART_LIMIT=$limit; using $restart_limit" >&2
+  fi
+  if [[ $window =~ ^[0-9]{1,6}$ ]] && [ $((10#$window)) -gt 0 ]; then
+    restart_window=$((10#$window))
+  elif [ -n "$window" ]; then
+    echo "usnm-boinc: ignoring USNM_FEEDER_RESTART_WINDOW=$window; using $restart_window" >&2
+  fi
+}
+
+# The feeder bin/start would see as running: feeder.pid names a live process called feeder.
+feeder_running() {
+  local pid state
+  pid=$(head -c 16 "$proj/pid_$host/feeder.pid" 2>/dev/null | tr -d '[:space:]') || return 1
+  [[ $pid =~ ^[0-9]+$ ]] || return 1
+  [ "$(cat "$proc/$pid/comm" 2>/dev/null)" = feeder ] || return 1
+  state=$(cat "$proc/$pid/stat" 2>/dev/null) || return 1
+  state=${state##*) }
+  [ "${state%% *}" != Z ]
+}
+
+# The hold marker is on the container's own disk: a container start clears it, and only an
+# operator removes it otherwise. A hold whose marker couldn't be written lasts until the container
+# restarts.
+on_hold() {
+  if [ -n "$hold_unwritten" ]; then
+    echo "usnm-boinc: could not write $hold; holding the project until the container restarts" >&2
+    return 0
+  fi
+  [ -e "$hold" ] || return 1
+  echo "usnm-boinc: $hold is present; not starting the project" >&2
+}
+
+# Root writes the marker in a directory boincadm can write, so it creates a new file and never
+# opens anything already at that path, such as a link to another file.
+write_hold() {
+  HOLD="$hold" TEXT="$1" python3 -c 'import os
+fd = os.open(os.environ["HOLD"], os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+os.write(fd, (os.environ["TEXT"] + "\n").encode())
+os.close(fd)'
+}
+
+# Succeeds when this run of bin/start --cron must not happen. A disabled project (bin/stop
+# leaves stop_daemons) or a running feeder needs no restart and doesn't count.
+held() {
+  local now t kept="" count=0
+  on_hold && return 0
+  if [ -e "$proj/stop_daemons" ] || feeder_running; then
+    return 1
+  fi
+  now=$(epoch)
+  for t in $restarts; do
+    if [ $((now - t)) -lt "$restart_window" ]; then
+      kept="$kept $t"
+      count=$((count + 1))
+    fi
+  done
+  if [ "$count" -ge "$restart_limit" ]; then
+    restarts=""
+    if ! write_hold "held_at=$now restarts=$count window_s=$restart_window"; then
+      hold_unwritten=1
+      echo "usnm-boinc: the feeder is not running after $count restarts in ${restart_window}s; could not write $hold, so holding the project until the container restarts" >&2
+      return 0
+    fi
+    echo "usnm-boinc: the feeder is not running after $count restarts in ${restart_window}s; holding the project until $hold is removed" >&2
+    return 0
+  fi
+  restarts="$kept $now"
+  echo "usnm-boinc: the feeder is not running; restart $((count + 1)) of $restart_limit in ${restart_window}s" >&2
+  return 1
+}
+
 main() {
   : "${PROJECT_DIR:?}"
   proj="$PROJECT_DIR/${PROJECT:-usnmocr}"
   until [ -f "$proj/config.xml" ]; do sleep 5; done
   local_pid_dir
-  until ! maintenance; do sleep 60; done
+  restart_bound
+  while maintenance || on_hold; do sleep 60; done
   run 'bin/start'
-  while sleep 300; do maintenance || run 'bin/start --cron' || true; done
+  while sleep 300; do maintenance || held || run 'bin/start --cron' || true; done
 }
 
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then

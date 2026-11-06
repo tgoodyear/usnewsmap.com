@@ -10,8 +10,11 @@
 //!   writes the readings, a result and the diagnostics.
 //! - [`validate`] is what stock `script_validator` calls: a copy of every
 //!   result, and per-crop word-bag Dice between two hosts.
+//! - [`consensus`] is the crop-by-crop rule `compare --rule` can apply, and
+//!   [`replay`] measures any rule against the retained results.
 //! - [`summary`] reads those copies back into one table.
 //! - [`ledger`] lists each bundle page with its own pair verdicts.
+//! - [`doc_id`] maps a unit's `doc_id` to the page it names and back.
 use anyhow::ensure;
 use std::path::{Path, PathBuf};
 use usnm_ocr_contract::qwen::Model;
@@ -19,7 +22,11 @@ use usnm_ocr_contract::qwen::Model;
 pub mod benchmark;
 pub mod candidates;
 pub mod cli;
+pub mod consensus;
+pub mod doc_id;
+pub mod grounded;
 pub mod ledger;
+pub mod replay;
 pub mod retain;
 pub mod stage;
 pub mod submit;

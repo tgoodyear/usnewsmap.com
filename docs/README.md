@@ -25,3 +25,4 @@ The [technical notes](notes/README.md) are dated write-ups of work on the index,
 - [Linux BOINC quick start](boinc-linux.md): install, join, set limits and check, in five short steps, with the headless attachment helper for cluster nodes.
 - [Windows BOINC quick start](boinc-windows.md): the one-script setup for a Windows PC, in five short steps.
 - [macOS BOINC quick start](boinc-macos.md): the same five steps for an Apple Silicon or Intel Mac.
+- [LoC ALTO words](loc-alto-words.md): every word of LoC's OCR in Parquet, one file per archive, and its schema.

@@ -1,0 +1,1259 @@
+openapi: 3.0.3
+info:
+  title: US News Map API (Cloudflare Schema Validation)
+  version: '1.8'
+  description: 'OpenAPI 3.0.3 request-validation profile derived from the public 3.1 document and checked
+    against the versioned router at da930a82. Both /v1 and /api/v1 are explicit paths. Validation is partial:
+    origin checks remain authoritative for query grammar, cross-parameter rules, repeated/unknown keys,
+    and POST bodies. Responses are omitted because Cloudflare does not validate them. Root health probes,
+    static pages, implicit HEAD, and CORS OPTIONS are outside this inventory. Review Profile Analysis
+    before enforcement; do not use this as a whole-host fallthrough allowlist.'
+x-source:
+  repository: https://github.com/tgoodyear/usnewsmap.com
+  referenceRevision: da930a82aab152b0e100dcca0c6a9aea91e476ee
+  router: crates/usnm-api/src/lib.rs
+  routerSha256: c27b08b07ddcfee7c5029b6ef8aa4fcb2f1bd221a24262343b203025e92322e0
+  openapiSource: https://api.usnewsmap.com/v1/openapi.json
+  openapiCanonicalSha256: 3e0412511d2af7f02105a0fd0b2478965e2acd7eb9c10be2a042cebc132fe09f
+servers:
+- url: https://api.usnewsmap.com
+- url: https://usnewsmap.com
+paths:
+  /api/v1/aggregate:
+    get:
+      operationId: aggregateAlias1
+      summary: Counts for one search
+      parameters:
+      - name: q
+        in: query
+        required: true
+        description: The search, up to 256 characters and 12 terms. Words are all required unless `mode`
+          says otherwise; a phrase goes in double quotes, `OR` joins alternatives (up to 4), a leading
+          `-` excludes a word, `word*` matches words starting with `word` (at least 5 letters), `?` and
+          `*` inside a word match one character or any run, `word~ocr` also matches OCR's common misspellings,
+          and `2 OF (a b c)` matches pages with at least 2 of up to 6 words or phrases.
+        schema:
+          type: string
+      - name: mode
+        in: query
+        required: false
+        description: How the words of `q` combine. Without it, a quoted `q` is a phrase and any other
+          needs all its words.
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:phrase|all|any|near)?$
+      - name: near
+        in: query
+        required: false
+        description: How far apart the words may be with `mode=near`, which needs 1 to 20; ignored otherwise.
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:(?:\+|%2[Bb])?0*(?:0|1|2|3|4|5|6|7|8|9|10|11|12|13|14|15|16|17|18|19|20))?$
+      - name: fuzzy
+        in: query
+        required: false
+        description: Match single words within this many letter edits, for OCR errors; not phrases or
+          `word*`. Answers 422 unless `capabilities.fuzzy` in `/v1/meta` is true.
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:(?:\+|%2[Bb])?0*(?:0|1|2))?$
+      - name: from
+        in: query
+        required: false
+        description: The first date. Dates outside `bounds` in `/v1/meta` move to the nearest bound; `from`
+          after `to` is a 400.
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:(?:\s|\+|%20|%09)*(?:[+-]|%2[Bb])?[0-9]{1,10}-[0-9]{1,2}-[0-9]{1,2}(?:\s|\+|%20|%09)*)?$
+      - name: to
+        in: query
+        required: false
+        description: The last date. Dates outside `bounds` in `/v1/meta` move to the nearest bound; `from`
+          after `to` is a 400.
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:(?:\s|\+|%20|%09)*(?:[+-]|%2[Bb])?[0-9]{1,10}-[0-9]{1,2}-[0-9]{1,2}(?:\s|\+|%20|%09)*)?$
+      - name: state
+        in: query
+        required: false
+        description: 'USPS state codes, any case: only places in these states.'
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:\s|\+|%20|%09)*(?:(?:[A-Za-z]{2})(?:\s|\+|%20|%09)*)?(?:(?:,|%2[Cc])(?:\s|\+|%20|%09)*(?:(?:[A-Za-z]{2})(?:\s|\+|%20|%09)*)?)*$
+      - name: lccn
+        in: query
+        required: false
+        description: 'Newspapers by LCCN: only their pages.'
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:\s|\+|%20|%09)*(?:(?:[a-z0-9]{1,16})(?:\s|\+|%20|%09)*)?(?:(?:,|%2[Cc])(?:\s|\+|%20|%09)*(?:(?:[a-z0-9]{1,16})(?:\s|\+|%20|%09)*)?)*$
+      - name: lang
+        in: query
+        required: false
+        description: 'Three-letter language codes from `languages` in `/v1/meta`: pages in any of them
+          (by `language_filter`: each page''s languages, or its newspaper''s).'
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:\s|\+|%20|%09)*(?:(?:[A-Za-z]{3})(?:\s|\+|%20|%09)*)?(?:(?:,|%2[Cc])(?:\s|\+|%20|%09)*(?:(?:[A-Za-z]{3})(?:\s|\+|%20|%09)*)?)*$
+      - name: front
+        in: query
+        required: false
+        description: 'Front pages only. Newspapers only: not with `source=congress`.'
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:true|false|1|0)?$
+      - name: bucket
+        in: query
+        required: false
+        description: The time bucket. `auto` picks `year` for more than 30 years, `month` for more than
+          3, `week` for more than 4 months and `day` otherwise.
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:auto|year|month|week|day)?$
+      - name: v
+        in: query
+        required: false
+        description: The `index_version` the client expects. Another version than the one served is a
+          307 to the same request at the served one; without `v`, the response is cacheable for 5 minutes
+          only and `Content-Location` names the URL with it.
+        allowEmptyValue: true
+        schema:
+          type: string
+      - name: source
+        in: query
+        required: false
+        description: 'The corpus searched: the newspapers, the debates and documents of Congress (`congress`
+          in `/v1/meta`), or both.'
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:news|congress|all)?$
+      - name: series
+        in: query
+        required: false
+        description: Congress series; only with `source=congress` or `all`.
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:\s|\+|%20|%09)*(?:(?:annals|globe|register|serialset)(?:\s|\+|%20|%09)*)?(?:(?:,|%2[Cc])(?:\s|\+|%20|%09)*(?:(?:annals|globe|register|serialset)(?:\s|\+|%20|%09)*)?)*$
+      - name: format
+        in: query
+        required: false
+        description: Only `json`; any other is a 422.
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:json)?$
+      - name: g
+        in: query
+        required: false
+        description: The `edge_generation` from `/v1/meta`. The web app sends it so that Cloudflare can
+          keep the response; it changes no result.
+        allowEmptyValue: true
+        schema:
+          type: string
+      responses:
+        default:
+          description: See /v1/openapi.json for response schemas.
+  /api/v1/beacon:
+    post:
+      operationId: beaconAlias1
+      summary: Page-view report from the site (internal)
+      description: 'Endpoint inventory only: request body validation is left to the origin. It accepts
+        JSON as application/json or text/plain; legitimate bodies can exceed Cloudflare''s Free-plan 1
+        KiB validation limit.'
+      responses:
+        default:
+          description: No content.
+  /api/v1/coverage:
+    get:
+      operationId: coverageAlias1
+      summary: Pages published per place and bucket
+      parameters:
+      - name: from
+        in: query
+        required: false
+        description: The first date. Dates outside `bounds` in `/v1/meta` move to the nearest bound; `from`
+          after `to` is a 400.
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:(?:\s|\+|%20|%09)*(?:[+-]|%2[Bb])?[0-9]{1,10}-[0-9]{1,2}-[0-9]{1,2}(?:\s|\+|%20|%09)*)?$
+      - name: to
+        in: query
+        required: false
+        description: The last date. Dates outside `bounds` in `/v1/meta` move to the nearest bound; `from`
+          after `to` is a 400.
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:(?:\s|\+|%20|%09)*(?:[+-]|%2[Bb])?[0-9]{1,10}-[0-9]{1,2}-[0-9]{1,2}(?:\s|\+|%20|%09)*)?$
+      - name: bucket
+        in: query
+        required: false
+        description: The time bucket. `auto` picks `year` for more than 30 years, `month` for more than
+          3, `week` for more than 4 months and `day` otherwise.
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:auto|year|month|week|day)?$
+      - name: state
+        in: query
+        required: false
+        description: 'USPS state codes, any case: only places in these states.'
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:\s|\+|%20|%09)*(?:(?:[A-Za-z]{2})(?:\s|\+|%20|%09)*)?(?:(?:,|%2[Cc])(?:\s|\+|%20|%09)*(?:(?:[A-Za-z]{2})(?:\s|\+|%20|%09)*)?)*$
+      - name: lang
+        in: query
+        required: false
+        description: 'Three-letter language codes from `languages` in `/v1/meta`: pages in any of them
+          (by `language_filter`: each page''s languages, or its newspaper''s).'
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:\s|\+|%20|%09)*(?:(?:[A-Za-z]{3})(?:\s|\+|%20|%09)*)?(?:(?:,|%2[Cc])(?:\s|\+|%20|%09)*(?:(?:[A-Za-z]{3})(?:\s|\+|%20|%09)*)?)*$
+      - name: v
+        in: query
+        required: false
+        description: The `index_version` the client expects. Another version than the one served is a
+          307 to the same request at the served one; without `v`, the response is cacheable for 5 minutes
+          only and `Content-Location` names the URL with it.
+        allowEmptyValue: true
+        schema:
+          type: string
+      responses:
+        default:
+          description: See /v1/openapi.json for response schemas.
+  /api/v1/days:
+    get:
+      operationId: daysAlias1
+      summary: Matching pages per day for a few places
+      parameters:
+      - name: q
+        in: query
+        required: true
+        description: The search, up to 256 characters and 12 terms. Words are all required unless `mode`
+          says otherwise; a phrase goes in double quotes, `OR` joins alternatives (up to 4), a leading
+          `-` excludes a word, `word*` matches words starting with `word` (at least 5 letters), `?` and
+          `*` inside a word match one character or any run, `word~ocr` also matches OCR's common misspellings,
+          and `2 OF (a b c)` matches pages with at least 2 of up to 6 words or phrases.
+        schema:
+          type: string
+      - name: mode
+        in: query
+        required: false
+        description: How the words of `q` combine. Without it, a quoted `q` is a phrase and any other
+          needs all its words.
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:phrase|all|any|near)?$
+      - name: near
+        in: query
+        required: false
+        description: How far apart the words may be with `mode=near`, which needs 1 to 20; ignored otherwise.
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:(?:\+|%2[Bb])?0*(?:0|1|2|3|4|5|6|7|8|9|10|11|12|13|14|15|16|17|18|19|20))?$
+      - name: fuzzy
+        in: query
+        required: false
+        description: Match single words within this many letter edits, for OCR errors; not phrases or
+          `word*`. Answers 422 unless `capabilities.fuzzy` in `/v1/meta` is true.
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:(?:\+|%2[Bb])?0*(?:0|1|2))?$
+      - name: from
+        in: query
+        required: false
+        description: The first date. Dates outside `bounds` in `/v1/meta` move to the nearest bound; `from`
+          after `to` is a 400.
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:(?:\s|\+|%20|%09)*(?:[+-]|%2[Bb])?[0-9]{1,10}-[0-9]{1,2}-[0-9]{1,2}(?:\s|\+|%20|%09)*)?$
+      - name: to
+        in: query
+        required: false
+        description: The last date. Dates outside `bounds` in `/v1/meta` move to the nearest bound; `from`
+          after `to` is a 400.
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:(?:\s|\+|%20|%09)*(?:[+-]|%2[Bb])?[0-9]{1,10}-[0-9]{1,2}-[0-9]{1,2}(?:\s|\+|%20|%09)*)?$
+      - name: state
+        in: query
+        required: false
+        description: 'USPS state codes, any case: only places in these states.'
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:\s|\+|%20|%09)*(?:(?:[A-Za-z]{2})(?:\s|\+|%20|%09)*)?(?:(?:,|%2[Cc])(?:\s|\+|%20|%09)*(?:(?:[A-Za-z]{2})(?:\s|\+|%20|%09)*)?)*$
+      - name: lccn
+        in: query
+        required: false
+        description: 'Newspapers by LCCN: only their pages.'
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:\s|\+|%20|%09)*(?:(?:[a-z0-9]{1,16})(?:\s|\+|%20|%09)*)?(?:(?:,|%2[Cc])(?:\s|\+|%20|%09)*(?:(?:[a-z0-9]{1,16})(?:\s|\+|%20|%09)*)?)*$
+      - name: lang
+        in: query
+        required: false
+        description: 'Three-letter language codes from `languages` in `/v1/meta`: pages in any of them
+          (by `language_filter`: each page''s languages, or its newspaper''s).'
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:\s|\+|%20|%09)*(?:(?:[A-Za-z]{3})(?:\s|\+|%20|%09)*)?(?:(?:,|%2[Cc])(?:\s|\+|%20|%09)*(?:(?:[A-Za-z]{3})(?:\s|\+|%20|%09)*)?)*$
+      - name: front
+        in: query
+        required: false
+        description: 'Front pages only. Newspapers only: not with `source=congress`.'
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:true|false|1|0)?$
+      - name: bucket
+        in: query
+        required: false
+        description: Accepted as on the other search routes; the counts are always per day.
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:auto|year|month|week|day)?$
+      - name: v
+        in: query
+        required: false
+        description: The `index_version` the client expects. Another version than the one served is a
+          307 to the same request at the served one; without `v`, the response is cacheable for 5 minutes
+          only and `Content-Location` names the URL with it.
+        allowEmptyValue: true
+        schema:
+          type: string
+      - name: source
+        in: query
+        required: false
+        description: 'The corpus searched: the newspapers, the debates and documents of Congress (`congress`
+          in `/v1/meta`), or both.'
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:news|congress|all)?$
+      - name: series
+        in: query
+        required: false
+        description: Congress series; only with `source=congress` or `all`.
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:\s|\+|%20|%09)*(?:(?:annals|globe|register|serialset)(?:\s|\+|%20|%09)*)?(?:(?:,|%2[Cc])(?:\s|\+|%20|%09)*(?:(?:annals|globe|register|serialset)(?:\s|\+|%20|%09)*)?)*$
+      - name: place
+        in: query
+        required: true
+        description: 1 to 20 distinct place ids, in the order the response lists them.
+        schema:
+          type: string
+      responses:
+        default:
+          description: See /v1/openapi.json for response schemas.
+  /api/v1/hits:
+    get:
+      operationId: hitsAlias1
+      summary: Matching pages from one place or newspaper
+      parameters:
+      - name: q
+        in: query
+        required: false
+        description: The search, up to 256 characters and 12 terms. Words are all required unless `mode`
+          says otherwise; a phrase goes in double quotes, `OR` joins alternatives (up to 4), a leading
+          `-` excludes a word, `word*` matches words starting with `word` (at least 5 letters), `?` and
+          `*` inside a word match one character or any run, `word~ocr` also matches OCR's common misspellings,
+          and `2 OF (a b c)` matches pages with at least 2 of up to 6 words or phrases. Without `q`, a
+          single `lccn` lists that newspaper's pages by date; `mode`, `near`, `fuzzy`, `bucket` and `sort=relevant`
+          then need `q`.
+        allowEmptyValue: true
+        schema:
+          type: string
+      - name: mode
+        in: query
+        required: false
+        description: How the words of `q` combine. Without it, a quoted `q` is a phrase and any other
+          needs all its words.
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:phrase|all|any|near)?$
+      - name: near
+        in: query
+        required: false
+        description: How far apart the words may be with `mode=near`, which needs 1 to 20; ignored otherwise.
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:(?:\+|%2[Bb])?0*(?:0|1|2|3|4|5|6|7|8|9|10|11|12|13|14|15|16|17|18|19|20))?$
+      - name: fuzzy
+        in: query
+        required: false
+        description: Match single words within this many letter edits, for OCR errors; not phrases or
+          `word*`. Answers 422 unless `capabilities.fuzzy` in `/v1/meta` is true.
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:(?:\+|%2[Bb])?0*(?:0|1|2))?$
+      - name: from
+        in: query
+        required: false
+        description: The first date. Dates outside `bounds` in `/v1/meta` move to the nearest bound; `from`
+          after `to` is a 400.
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:(?:\s|\+|%20|%09)*(?:[+-]|%2[Bb])?[0-9]{1,10}-[0-9]{1,2}-[0-9]{1,2}(?:\s|\+|%20|%09)*)?$
+      - name: to
+        in: query
+        required: false
+        description: The last date. Dates outside `bounds` in `/v1/meta` move to the nearest bound; `from`
+          after `to` is a 400.
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:(?:\s|\+|%20|%09)*(?:[+-]|%2[Bb])?[0-9]{1,10}-[0-9]{1,2}-[0-9]{1,2}(?:\s|\+|%20|%09)*)?$
+      - name: state
+        in: query
+        required: false
+        description: 'USPS state codes, any case: only places in these states.'
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:\s|\+|%20|%09)*(?:(?:[A-Za-z]{2})(?:\s|\+|%20|%09)*)?(?:(?:,|%2[Cc])(?:\s|\+|%20|%09)*(?:(?:[A-Za-z]{2})(?:\s|\+|%20|%09)*)?)*$
+      - name: lccn
+        in: query
+        required: false
+        description: Newspapers by LCCN. Without `place`, a single LCCN selects that newspaper's pages;
+          with `place`, a filter.
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:\s|\+|%20|%09)*(?:(?:[a-z0-9]{1,16})(?:\s|\+|%20|%09)*)?(?:(?:,|%2[Cc])(?:\s|\+|%20|%09)*(?:(?:[a-z0-9]{1,16})(?:\s|\+|%20|%09)*)?)*$
+      - name: lang
+        in: query
+        required: false
+        description: 'Three-letter language codes from `languages` in `/v1/meta`: pages in any of them
+          (by `language_filter`: each page''s languages, or its newspaper''s).'
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:\s|\+|%20|%09)*(?:(?:[A-Za-z]{3})(?:\s|\+|%20|%09)*)?(?:(?:,|%2[Cc])(?:\s|\+|%20|%09)*(?:(?:[A-Za-z]{3})(?:\s|\+|%20|%09)*)?)*$
+      - name: front
+        in: query
+        required: false
+        description: 'Front pages only. Newspapers only: not with `source=congress`.'
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:true|false|1|0)?$
+      - name: bucket
+        in: query
+        required: false
+        description: The time bucket. `auto` picks `year` for more than 30 years, `month` for more than
+          3, `week` for more than 4 months and `day` otherwise.
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:auto|year|month|week|day)?$
+      - name: v
+        in: query
+        required: false
+        description: The `index_version` the client expects. Another version than the one served is a
+          307 to the same request at the served one; without `v`, the response is cacheable for 5 minutes
+          only and `Content-Location` names the URL with it.
+        allowEmptyValue: true
+        schema:
+          type: string
+      - name: source
+        in: query
+        required: false
+        description: 'The corpus searched: the newspapers, the debates and documents of Congress (`congress`
+          in `/v1/meta`), or both.'
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:news|congress|all)?$
+      - name: series
+        in: query
+        required: false
+        description: Congress series; only with `source=congress` or `all`.
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:\s|\+|%20|%09)*(?:(?:annals|globe|register|serialset)(?:\s|\+|%20|%09)*)?(?:(?:,|%2[Cc])(?:\s|\+|%20|%09)*(?:(?:annals|globe|register|serialset)(?:\s|\+|%20|%09)*)?)*$
+      - name: place
+        in: query
+        required: false
+        description: A place id from `/v1/places`. `/v1/hits` needs `place`, a single `lccn` or a single
+          `state`.
+        allowEmptyValue: true
+        schema:
+          type: string
+      - name: cursor
+        in: query
+        required: false
+        description: '`next_cursor` from the previous page, with the same other parameters. A search stops
+          at result 10000.'
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^[A-Za-z0-9_-]*$
+      - name: limit
+        in: query
+        required: false
+        description: Pages per response.
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:(?:\+|%2[Bb])?0*(?:1|2|3|4|5|6|7|8|9|10|11|12|13|14|15|16|17|18|19|20|21|22|23|24|25|26|27|28|29|30|31|32|33|34|35|36|37|38|39|40|41|42|43|44|45|46|47|48|49|50))?$
+      - name: sort
+        in: query
+        required: false
+        description: By date, or most mentions first (`relevant`, which needs `q`).
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:oldest|newest|relevant)?$
+      responses:
+        default:
+          description: See /v1/openapi.json for response schemas.
+  /api/v1/meta:
+    get:
+      operationId: metaAlias1
+      summary: The version being served
+      parameters: []
+      responses:
+        default:
+          description: See /v1/openapi.json for response schemas.
+  /api/v1/openapi.json:
+    get:
+      operationId: openapiAlias1
+      summary: This document
+      parameters: []
+      responses:
+        default:
+          description: See /v1/openapi.json for response schemas.
+  /api/v1/places:
+    get:
+      operationId: placesAlias1
+      summary: Every place, as GeoJSON
+      parameters:
+      - name: v
+        in: query
+        required: false
+        description: The `index_version` the client expects. Another version than the one served is a
+          307 to the same request at the served one; without `v`, the response is cacheable for 5 minutes
+          only and `Content-Location` names the URL with it.
+        allowEmptyValue: true
+        schema:
+          type: string
+      responses:
+        default:
+          description: See /v1/openapi.json for response schemas.
+  /api/v1/search-report:
+    post:
+      operationId: searchReportAlias1
+      summary: Edge-served search report from the site (internal)
+      description: 'Endpoint inventory only: request body validation is left to the origin. It accepts
+        JSON as application/json or text/plain; legitimate bodies can exceed Cloudflare''s Free-plan 1
+        KiB validation limit.'
+      responses:
+        default:
+          description: No content.
+  /api/v1/status:
+    get:
+      operationId: statusAlias1
+      summary: The dataset and the ingest pipeline
+      parameters: []
+      responses:
+        default:
+          description: See /v1/openapi.json for response schemas.
+  /api/v1/titles:
+    get:
+      operationId: titlesAlias1
+      summary: Every newspaper
+      parameters:
+      - name: v
+        in: query
+        required: false
+        description: The `index_version` the client expects. Another version than the one served is a
+          307 to the same request at the served one; without `v`, the response is cacheable for 5 minutes
+          only and `Content-Location` names the URL with it.
+        allowEmptyValue: true
+        schema:
+          type: string
+      responses:
+        default:
+          description: See /v1/openapi.json for response schemas.
+  /api/v1/titles/{lccn}:
+    get:
+      operationId: titleAlias1
+      summary: One newspaper
+      parameters:
+      - name: lccn
+        in: path
+        required: true
+        description: The newspaper's LCCN; anything else is a 404.
+        schema:
+          type: string
+          pattern: ^[a-z0-9]{1,16}$
+      - name: v
+        in: query
+        required: false
+        description: The `index_version` the client expects. Another version than the one served is a
+          307 to the same request at the served one; without `v`, the response is cacheable for 5 minutes
+          only and `Content-Location` names the URL with it.
+        allowEmptyValue: true
+        schema:
+          type: string
+      responses:
+        default:
+          description: See /v1/openapi.json for response schemas.
+  /api/v1/versions:
+    get:
+      operationId: versionsAlias1
+      summary: Every index version
+      parameters: []
+      responses:
+        default:
+          description: See /v1/openapi.json for response schemas.
+  /v1/aggregate:
+    get:
+      operationId: aggregate
+      summary: Counts for one search
+      parameters:
+      - name: q
+        in: query
+        required: true
+        description: The search, up to 256 characters and 12 terms. Words are all required unless `mode`
+          says otherwise; a phrase goes in double quotes, `OR` joins alternatives (up to 4), a leading
+          `-` excludes a word, `word*` matches words starting with `word` (at least 5 letters), `?` and
+          `*` inside a word match one character or any run, `word~ocr` also matches OCR's common misspellings,
+          and `2 OF (a b c)` matches pages with at least 2 of up to 6 words or phrases.
+        schema:
+          type: string
+      - name: mode
+        in: query
+        required: false
+        description: How the words of `q` combine. Without it, a quoted `q` is a phrase and any other
+          needs all its words.
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:phrase|all|any|near)?$
+      - name: near
+        in: query
+        required: false
+        description: How far apart the words may be with `mode=near`, which needs 1 to 20; ignored otherwise.
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:(?:\+|%2[Bb])?0*(?:0|1|2|3|4|5|6|7|8|9|10|11|12|13|14|15|16|17|18|19|20))?$
+      - name: fuzzy
+        in: query
+        required: false
+        description: Match single words within this many letter edits, for OCR errors; not phrases or
+          `word*`. Answers 422 unless `capabilities.fuzzy` in `/v1/meta` is true.
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:(?:\+|%2[Bb])?0*(?:0|1|2))?$
+      - name: from
+        in: query
+        required: false
+        description: The first date. Dates outside `bounds` in `/v1/meta` move to the nearest bound; `from`
+          after `to` is a 400.
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:(?:\s|\+|%20|%09)*(?:[+-]|%2[Bb])?[0-9]{1,10}-[0-9]{1,2}-[0-9]{1,2}(?:\s|\+|%20|%09)*)?$
+      - name: to
+        in: query
+        required: false
+        description: The last date. Dates outside `bounds` in `/v1/meta` move to the nearest bound; `from`
+          after `to` is a 400.
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:(?:\s|\+|%20|%09)*(?:[+-]|%2[Bb])?[0-9]{1,10}-[0-9]{1,2}-[0-9]{1,2}(?:\s|\+|%20|%09)*)?$
+      - name: state
+        in: query
+        required: false
+        description: 'USPS state codes, any case: only places in these states.'
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:\s|\+|%20|%09)*(?:(?:[A-Za-z]{2})(?:\s|\+|%20|%09)*)?(?:(?:,|%2[Cc])(?:\s|\+|%20|%09)*(?:(?:[A-Za-z]{2})(?:\s|\+|%20|%09)*)?)*$
+      - name: lccn
+        in: query
+        required: false
+        description: 'Newspapers by LCCN: only their pages.'
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:\s|\+|%20|%09)*(?:(?:[a-z0-9]{1,16})(?:\s|\+|%20|%09)*)?(?:(?:,|%2[Cc])(?:\s|\+|%20|%09)*(?:(?:[a-z0-9]{1,16})(?:\s|\+|%20|%09)*)?)*$
+      - name: lang
+        in: query
+        required: false
+        description: 'Three-letter language codes from `languages` in `/v1/meta`: pages in any of them
+          (by `language_filter`: each page''s languages, or its newspaper''s).'
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:\s|\+|%20|%09)*(?:(?:[A-Za-z]{3})(?:\s|\+|%20|%09)*)?(?:(?:,|%2[Cc])(?:\s|\+|%20|%09)*(?:(?:[A-Za-z]{3})(?:\s|\+|%20|%09)*)?)*$
+      - name: front
+        in: query
+        required: false
+        description: 'Front pages only. Newspapers only: not with `source=congress`.'
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:true|false|1|0)?$
+      - name: bucket
+        in: query
+        required: false
+        description: The time bucket. `auto` picks `year` for more than 30 years, `month` for more than
+          3, `week` for more than 4 months and `day` otherwise.
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:auto|year|month|week|day)?$
+      - name: v
+        in: query
+        required: false
+        description: The `index_version` the client expects. Another version than the one served is a
+          307 to the same request at the served one; without `v`, the response is cacheable for 5 minutes
+          only and `Content-Location` names the URL with it.
+        allowEmptyValue: true
+        schema:
+          type: string
+      - name: source
+        in: query
+        required: false
+        description: 'The corpus searched: the newspapers, the debates and documents of Congress (`congress`
+          in `/v1/meta`), or both.'
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:news|congress|all)?$
+      - name: series
+        in: query
+        required: false
+        description: Congress series; only with `source=congress` or `all`.
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:\s|\+|%20|%09)*(?:(?:annals|globe|register|serialset)(?:\s|\+|%20|%09)*)?(?:(?:,|%2[Cc])(?:\s|\+|%20|%09)*(?:(?:annals|globe|register|serialset)(?:\s|\+|%20|%09)*)?)*$
+      - name: format
+        in: query
+        required: false
+        description: Only `json`; any other is a 422.
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:json)?$
+      - name: g
+        in: query
+        required: false
+        description: The `edge_generation` from `/v1/meta`. The web app sends it so that Cloudflare can
+          keep the response; it changes no result.
+        allowEmptyValue: true
+        schema:
+          type: string
+      responses:
+        default:
+          description: See /v1/openapi.json for response schemas.
+  /v1/beacon:
+    post:
+      operationId: beacon
+      summary: Page-view report from the site (internal)
+      description: 'Endpoint inventory only: request body validation is left to the origin. It accepts
+        JSON as application/json or text/plain; legitimate bodies can exceed Cloudflare''s Free-plan 1
+        KiB validation limit.'
+      responses:
+        default:
+          description: No content.
+  /v1/coverage:
+    get:
+      operationId: coverage
+      summary: Pages published per place and bucket
+      parameters:
+      - name: from
+        in: query
+        required: false
+        description: The first date. Dates outside `bounds` in `/v1/meta` move to the nearest bound; `from`
+          after `to` is a 400.
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:(?:\s|\+|%20|%09)*(?:[+-]|%2[Bb])?[0-9]{1,10}-[0-9]{1,2}-[0-9]{1,2}(?:\s|\+|%20|%09)*)?$
+      - name: to
+        in: query
+        required: false
+        description: The last date. Dates outside `bounds` in `/v1/meta` move to the nearest bound; `from`
+          after `to` is a 400.
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:(?:\s|\+|%20|%09)*(?:[+-]|%2[Bb])?[0-9]{1,10}-[0-9]{1,2}-[0-9]{1,2}(?:\s|\+|%20|%09)*)?$
+      - name: bucket
+        in: query
+        required: false
+        description: The time bucket. `auto` picks `year` for more than 30 years, `month` for more than
+          3, `week` for more than 4 months and `day` otherwise.
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:auto|year|month|week|day)?$
+      - name: state
+        in: query
+        required: false
+        description: 'USPS state codes, any case: only places in these states.'
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:\s|\+|%20|%09)*(?:(?:[A-Za-z]{2})(?:\s|\+|%20|%09)*)?(?:(?:,|%2[Cc])(?:\s|\+|%20|%09)*(?:(?:[A-Za-z]{2})(?:\s|\+|%20|%09)*)?)*$
+      - name: lang
+        in: query
+        required: false
+        description: 'Three-letter language codes from `languages` in `/v1/meta`: pages in any of them
+          (by `language_filter`: each page''s languages, or its newspaper''s).'
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:\s|\+|%20|%09)*(?:(?:[A-Za-z]{3})(?:\s|\+|%20|%09)*)?(?:(?:,|%2[Cc])(?:\s|\+|%20|%09)*(?:(?:[A-Za-z]{3})(?:\s|\+|%20|%09)*)?)*$
+      - name: v
+        in: query
+        required: false
+        description: The `index_version` the client expects. Another version than the one served is a
+          307 to the same request at the served one; without `v`, the response is cacheable for 5 minutes
+          only and `Content-Location` names the URL with it.
+        allowEmptyValue: true
+        schema:
+          type: string
+      responses:
+        default:
+          description: See /v1/openapi.json for response schemas.
+  /v1/days:
+    get:
+      operationId: days
+      summary: Matching pages per day for a few places
+      parameters:
+      - name: q
+        in: query
+        required: true
+        description: The search, up to 256 characters and 12 terms. Words are all required unless `mode`
+          says otherwise; a phrase goes in double quotes, `OR` joins alternatives (up to 4), a leading
+          `-` excludes a word, `word*` matches words starting with `word` (at least 5 letters), `?` and
+          `*` inside a word match one character or any run, `word~ocr` also matches OCR's common misspellings,
+          and `2 OF (a b c)` matches pages with at least 2 of up to 6 words or phrases.
+        schema:
+          type: string
+      - name: mode
+        in: query
+        required: false
+        description: How the words of `q` combine. Without it, a quoted `q` is a phrase and any other
+          needs all its words.
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:phrase|all|any|near)?$
+      - name: near
+        in: query
+        required: false
+        description: How far apart the words may be with `mode=near`, which needs 1 to 20; ignored otherwise.
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:(?:\+|%2[Bb])?0*(?:0|1|2|3|4|5|6|7|8|9|10|11|12|13|14|15|16|17|18|19|20))?$
+      - name: fuzzy
+        in: query
+        required: false
+        description: Match single words within this many letter edits, for OCR errors; not phrases or
+          `word*`. Answers 422 unless `capabilities.fuzzy` in `/v1/meta` is true.
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:(?:\+|%2[Bb])?0*(?:0|1|2))?$
+      - name: from
+        in: query
+        required: false
+        description: The first date. Dates outside `bounds` in `/v1/meta` move to the nearest bound; `from`
+          after `to` is a 400.
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:(?:\s|\+|%20|%09)*(?:[+-]|%2[Bb])?[0-9]{1,10}-[0-9]{1,2}-[0-9]{1,2}(?:\s|\+|%20|%09)*)?$
+      - name: to
+        in: query
+        required: false
+        description: The last date. Dates outside `bounds` in `/v1/meta` move to the nearest bound; `from`
+          after `to` is a 400.
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:(?:\s|\+|%20|%09)*(?:[+-]|%2[Bb])?[0-9]{1,10}-[0-9]{1,2}-[0-9]{1,2}(?:\s|\+|%20|%09)*)?$
+      - name: state
+        in: query
+        required: false
+        description: 'USPS state codes, any case: only places in these states.'
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:\s|\+|%20|%09)*(?:(?:[A-Za-z]{2})(?:\s|\+|%20|%09)*)?(?:(?:,|%2[Cc])(?:\s|\+|%20|%09)*(?:(?:[A-Za-z]{2})(?:\s|\+|%20|%09)*)?)*$
+      - name: lccn
+        in: query
+        required: false
+        description: 'Newspapers by LCCN: only their pages.'
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:\s|\+|%20|%09)*(?:(?:[a-z0-9]{1,16})(?:\s|\+|%20|%09)*)?(?:(?:,|%2[Cc])(?:\s|\+|%20|%09)*(?:(?:[a-z0-9]{1,16})(?:\s|\+|%20|%09)*)?)*$
+      - name: lang
+        in: query
+        required: false
+        description: 'Three-letter language codes from `languages` in `/v1/meta`: pages in any of them
+          (by `language_filter`: each page''s languages, or its newspaper''s).'
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:\s|\+|%20|%09)*(?:(?:[A-Za-z]{3})(?:\s|\+|%20|%09)*)?(?:(?:,|%2[Cc])(?:\s|\+|%20|%09)*(?:(?:[A-Za-z]{3})(?:\s|\+|%20|%09)*)?)*$
+      - name: front
+        in: query
+        required: false
+        description: 'Front pages only. Newspapers only: not with `source=congress`.'
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:true|false|1|0)?$
+      - name: bucket
+        in: query
+        required: false
+        description: Accepted as on the other search routes; the counts are always per day.
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:auto|year|month|week|day)?$
+      - name: v
+        in: query
+        required: false
+        description: The `index_version` the client expects. Another version than the one served is a
+          307 to the same request at the served one; without `v`, the response is cacheable for 5 minutes
+          only and `Content-Location` names the URL with it.
+        allowEmptyValue: true
+        schema:
+          type: string
+      - name: source
+        in: query
+        required: false
+        description: 'The corpus searched: the newspapers, the debates and documents of Congress (`congress`
+          in `/v1/meta`), or both.'
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:news|congress|all)?$
+      - name: series
+        in: query
+        required: false
+        description: Congress series; only with `source=congress` or `all`.
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:\s|\+|%20|%09)*(?:(?:annals|globe|register|serialset)(?:\s|\+|%20|%09)*)?(?:(?:,|%2[Cc])(?:\s|\+|%20|%09)*(?:(?:annals|globe|register|serialset)(?:\s|\+|%20|%09)*)?)*$
+      - name: place
+        in: query
+        required: true
+        description: 1 to 20 distinct place ids, in the order the response lists them.
+        schema:
+          type: string
+      responses:
+        default:
+          description: See /v1/openapi.json for response schemas.
+  /v1/hits:
+    get:
+      operationId: hits
+      summary: Matching pages from one place or newspaper
+      parameters:
+      - name: q
+        in: query
+        required: false
+        description: The search, up to 256 characters and 12 terms. Words are all required unless `mode`
+          says otherwise; a phrase goes in double quotes, `OR` joins alternatives (up to 4), a leading
+          `-` excludes a word, `word*` matches words starting with `word` (at least 5 letters), `?` and
+          `*` inside a word match one character or any run, `word~ocr` also matches OCR's common misspellings,
+          and `2 OF (a b c)` matches pages with at least 2 of up to 6 words or phrases. Without `q`, a
+          single `lccn` lists that newspaper's pages by date; `mode`, `near`, `fuzzy`, `bucket` and `sort=relevant`
+          then need `q`.
+        allowEmptyValue: true
+        schema:
+          type: string
+      - name: mode
+        in: query
+        required: false
+        description: How the words of `q` combine. Without it, a quoted `q` is a phrase and any other
+          needs all its words.
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:phrase|all|any|near)?$
+      - name: near
+        in: query
+        required: false
+        description: How far apart the words may be with `mode=near`, which needs 1 to 20; ignored otherwise.
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:(?:\+|%2[Bb])?0*(?:0|1|2|3|4|5|6|7|8|9|10|11|12|13|14|15|16|17|18|19|20))?$
+      - name: fuzzy
+        in: query
+        required: false
+        description: Match single words within this many letter edits, for OCR errors; not phrases or
+          `word*`. Answers 422 unless `capabilities.fuzzy` in `/v1/meta` is true.
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:(?:\+|%2[Bb])?0*(?:0|1|2))?$
+      - name: from
+        in: query
+        required: false
+        description: The first date. Dates outside `bounds` in `/v1/meta` move to the nearest bound; `from`
+          after `to` is a 400.
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:(?:\s|\+|%20|%09)*(?:[+-]|%2[Bb])?[0-9]{1,10}-[0-9]{1,2}-[0-9]{1,2}(?:\s|\+|%20|%09)*)?$
+      - name: to
+        in: query
+        required: false
+        description: The last date. Dates outside `bounds` in `/v1/meta` move to the nearest bound; `from`
+          after `to` is a 400.
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:(?:\s|\+|%20|%09)*(?:[+-]|%2[Bb])?[0-9]{1,10}-[0-9]{1,2}-[0-9]{1,2}(?:\s|\+|%20|%09)*)?$
+      - name: state
+        in: query
+        required: false
+        description: 'USPS state codes, any case: only places in these states.'
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:\s|\+|%20|%09)*(?:(?:[A-Za-z]{2})(?:\s|\+|%20|%09)*)?(?:(?:,|%2[Cc])(?:\s|\+|%20|%09)*(?:(?:[A-Za-z]{2})(?:\s|\+|%20|%09)*)?)*$
+      - name: lccn
+        in: query
+        required: false
+        description: Newspapers by LCCN. Without `place`, a single LCCN selects that newspaper's pages;
+          with `place`, a filter.
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:\s|\+|%20|%09)*(?:(?:[a-z0-9]{1,16})(?:\s|\+|%20|%09)*)?(?:(?:,|%2[Cc])(?:\s|\+|%20|%09)*(?:(?:[a-z0-9]{1,16})(?:\s|\+|%20|%09)*)?)*$
+      - name: lang
+        in: query
+        required: false
+        description: 'Three-letter language codes from `languages` in `/v1/meta`: pages in any of them
+          (by `language_filter`: each page''s languages, or its newspaper''s).'
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:\s|\+|%20|%09)*(?:(?:[A-Za-z]{3})(?:\s|\+|%20|%09)*)?(?:(?:,|%2[Cc])(?:\s|\+|%20|%09)*(?:(?:[A-Za-z]{3})(?:\s|\+|%20|%09)*)?)*$
+      - name: front
+        in: query
+        required: false
+        description: 'Front pages only. Newspapers only: not with `source=congress`.'
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:true|false|1|0)?$
+      - name: bucket
+        in: query
+        required: false
+        description: The time bucket. `auto` picks `year` for more than 30 years, `month` for more than
+          3, `week` for more than 4 months and `day` otherwise.
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:auto|year|month|week|day)?$
+      - name: v
+        in: query
+        required: false
+        description: The `index_version` the client expects. Another version than the one served is a
+          307 to the same request at the served one; without `v`, the response is cacheable for 5 minutes
+          only and `Content-Location` names the URL with it.
+        allowEmptyValue: true
+        schema:
+          type: string
+      - name: source
+        in: query
+        required: false
+        description: 'The corpus searched: the newspapers, the debates and documents of Congress (`congress`
+          in `/v1/meta`), or both.'
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:news|congress|all)?$
+      - name: series
+        in: query
+        required: false
+        description: Congress series; only with `source=congress` or `all`.
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:\s|\+|%20|%09)*(?:(?:annals|globe|register|serialset)(?:\s|\+|%20|%09)*)?(?:(?:,|%2[Cc])(?:\s|\+|%20|%09)*(?:(?:annals|globe|register|serialset)(?:\s|\+|%20|%09)*)?)*$
+      - name: place
+        in: query
+        required: false
+        description: A place id from `/v1/places`. `/v1/hits` needs `place`, a single `lccn` or a single
+          `state`.
+        allowEmptyValue: true
+        schema:
+          type: string
+      - name: cursor
+        in: query
+        required: false
+        description: '`next_cursor` from the previous page, with the same other parameters. A search stops
+          at result 10000.'
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^[A-Za-z0-9_-]*$
+      - name: limit
+        in: query
+        required: false
+        description: Pages per response.
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:(?:\+|%2[Bb])?0*(?:1|2|3|4|5|6|7|8|9|10|11|12|13|14|15|16|17|18|19|20|21|22|23|24|25|26|27|28|29|30|31|32|33|34|35|36|37|38|39|40|41|42|43|44|45|46|47|48|49|50))?$
+      - name: sort
+        in: query
+        required: false
+        description: By date, or most mentions first (`relevant`, which needs `q`).
+        allowEmptyValue: true
+        schema:
+          type: string
+          pattern: ^(?:oldest|newest|relevant)?$
+      responses:
+        default:
+          description: See /v1/openapi.json for response schemas.
+  /v1/meta:
+    get:
+      operationId: meta
+      summary: The version being served
+      parameters: []
+      responses:
+        default:
+          description: See /v1/openapi.json for response schemas.
+  /v1/openapi.json:
+    get:
+      operationId: openapi
+      summary: This document
+      parameters: []
+      responses:
+        default:
+          description: See /v1/openapi.json for response schemas.
+  /v1/places:
+    get:
+      operationId: places
+      summary: Every place, as GeoJSON
+      parameters:
+      - name: v
+        in: query
+        required: false
+        description: The `index_version` the client expects. Another version than the one served is a
+          307 to the same request at the served one; without `v`, the response is cacheable for 5 minutes
+          only and `Content-Location` names the URL with it.
+        allowEmptyValue: true
+        schema:
+          type: string
+      responses:
+        default:
+          description: See /v1/openapi.json for response schemas.
+  /v1/search-report:
+    post:
+      operationId: searchReport
+      summary: Edge-served search report from the site (internal)
+      description: 'Endpoint inventory only: request body validation is left to the origin. It accepts
+        JSON as application/json or text/plain; legitimate bodies can exceed Cloudflare''s Free-plan 1
+        KiB validation limit.'
+      responses:
+        default:
+          description: No content.
+  /v1/status:
+    get:
+      operationId: status
+      summary: The dataset and the ingest pipeline
+      parameters: []
+      responses:
+        default:
+          description: See /v1/openapi.json for response schemas.
+  /v1/titles:
+    get:
+      operationId: titles
+      summary: Every newspaper
+      parameters:
+      - name: v
+        in: query
+        required: false
+        description: The `index_version` the client expects. Another version than the one served is a
+          307 to the same request at the served one; without `v`, the response is cacheable for 5 minutes
+          only and `Content-Location` names the URL with it.
+        allowEmptyValue: true
+        schema:
+          type: string
+      responses:
+        default:
+          description: See /v1/openapi.json for response schemas.
+  /v1/titles/{lccn}:
+    get:
+      operationId: title
+      summary: One newspaper
+      parameters:
+      - name: lccn
+        in: path
+        required: true
+        description: The newspaper's LCCN; anything else is a 404.
+        schema:
+          type: string
+          pattern: ^[a-z0-9]{1,16}$
+      - name: v
+        in: query
+        required: false
+        description: The `index_version` the client expects. Another version than the one served is a
+          307 to the same request at the served one; without `v`, the response is cacheable for 5 minutes
+          only and `Content-Location` names the URL with it.
+        allowEmptyValue: true
+        schema:
+          type: string
+      responses:
+        default:
+          description: See /v1/openapi.json for response schemas.
+  /v1/versions:
+    get:
+      operationId: versions
+      summary: Every index version
+      parameters: []
+      responses:
+        default:
+          description: See /v1/openapi.json for response schemas.
