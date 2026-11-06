@@ -450,6 +450,21 @@ def client_resource_usage(node, default_cpu):
         raise SupplyUnknown("task_resource_usage_unavailable") from None
 
 
+def reservation_current(data_dir, result):
+    """A started task keeps the reservation it started with. Its current record is
+    that reservation unless an app_config.xml changed after the task arrived (the
+    client re-reads it at runtime). Any app_config newer than the task, or one that
+    can't be read, leaves the reservation unproven."""
+    try:
+        received = float(result.findtext("received_time", "nan"))
+        if not math.isfinite(received) or received <= 0:
+            return False
+        return all(path.stat().st_mtime < received
+                   for path in Path(data_dir).glob("projects/*/app_config.xml"))
+    except (OSError, ValueError):
+        return False
+
+
 def client(data_dir, port):
     from client_account import MASTER, RPC, flag
 
@@ -468,11 +483,16 @@ def client(data_dir, port):
         raise ValueError("project not attached uniquely")
     project = projects[0]
     host_id = int(project.findtext("hostid", "0"))
-    if host_id <= 0 or flag(project, "suspended_via_gui") or flag(project, "dont_request_more_work"):
-        raise ValueError("client is not accepting work")
-    if any(int(status.findtext(".//" + tag, "-1")) != 0
-           for tag in ("task_suspend_reason", "gpu_suspend_reason")):
-        raise ValueError("client suspended or status unavailable")
+    if host_id <= 0:
+        raise ValueError("client is not attached")
+    reasons = {tag: int(status.findtext(".//" + tag, "-1")) for tag in ("task_suspend_reason", "gpu_suspend_reason")}
+    if any(reason < 0 for reason in reasons.values()):
+        raise ValueError("client status unavailable")
+    # A client that is suspended, or set to fetch no more work, has no idle slot for
+    # the feed to fill: zero capacity, not unknown. GPU suspension alone zeroes the GPUs.
+    paused = (flag(project, "suspended_via_gui") or flag(project, "dont_request_more_work")
+              or reasons["task_suspend_reason"] != 0)
+    gpu_paused = paused or reasons["gpu_suspend_reason"] != 0
     ncpus = int(state.findtext(".//host_info/p_ncpus", "0"))
     percent = float(prefs.findtext(".//max_ncpus_pct", "100")) or 100
     cpus = max(1, math.floor(ncpus * min(percent, 100) / 100)) if ncpus else 0
@@ -496,7 +516,7 @@ def client(data_dir, port):
     # Count queued/download-pending work as occupied: it already feeds this device.
     used_cpu, used_memory, used_gpu = 0, 0, {}
     units = {(owner, w.findtext("name")): w for owner, w in scoped if w.tag == "workunit"}
-    for owner, result in scoped:
+    for owner, result in ([] if paused else scoped):
         if result.tag != "result":
             continue
         # Stock RESULT_COMPUTE_ERROR=3, FILES_UPLOADING=4: neither occupies execution.
@@ -505,7 +525,8 @@ def client(data_dir, port):
         if flag(result, "suspended_via_gui"):
             raise ValueError("suspended queued task")
         active = result.findall("active_task")
-        if active and (len(active) != 1 or active[0].findtext("active_task_state") != "0"):
+        if active and (len(active) != 1 or active[0].findtext("active_task_state") != "0") and not (
+                len(active) == 1 and reservation_current(data_dir, result)):
             # Running jobs retain old reservations after app_config/scheduler
             # updates; get_state exposes only a rounded display string for them.
             raise SupplyUnknown("active_task_resource_usage_unavailable")
@@ -560,6 +581,8 @@ def client(data_dir, port):
             }
     if any(device not in gpu_devices or gpu_devices[device] <= 0 for device in used_gpu):
         raise SupplyUnknown("task_resource_usage_unavailable")
+    if gpu_paused:
+        gpus = {vendor: 0 for vendor in gpus}
     blocked = {node.text for tag in ("no_rsc_pref", "no_rsc_apps", "no_rsc_ams", "no_rsc_config")
                for node in project.findall(tag)}
     for vendor, tag in (("NVIDIA", "no_cuda"), ("ATI", "no_ati"), ("intel_gpu", "no_intel_gpu"),
@@ -578,18 +601,19 @@ def client(data_dir, port):
     from acceptance_client import container_runtime
     monitored = [{k: value for k, value in v.items() if k != "project"} for v in versions
                  if v["project"] == MASTER.rstrip("/") and v["app"] in APP_NAMES]
-    return {"host_id": host_id, "versions": monitored,
+    available = 0 if paused else max(0, cpus - used_cpu)
+    return {"host_id": host_id, "versions": monitored, "paused": paused,
             "idle_cpu": 0 if "CPU" in blocked or flag(project, "no_cpu_pref") or flag(project, "no_cpu")
-            else max(0, cpus - used_cpu),
-            "available_cpu": max(0, cpus - used_cpu),
+            else available,
+            "available_cpu": available,
             "cpus": cpus, "idle_gpu": gpus, "gpu_memory": gpu_memory, "gpu_capabilities": capabilities,
             "gpu_devices": gpu_devices, "used_gpu": used_gpu,
             "client_version": sum(int(state.findtext(".//" + tag, "0")) * factor for tag, factor in (
                 ("core_client_major_version", 10000), ("core_client_minor_version", 100), ("core_client_release", 1))),
             "docker": container_runtime(read_command=run)
             if any(v["plan_class"].startswith("docker") for v in monitored) else False,
-            "memory_bytes": max(0, memory * fraction - used_memory),
-            "disk_bytes": max(0, min(float(free), float(allowance) - used))}
+            "memory_bytes": 0 if paused else max(0, memory * fraction - used_memory),
+            "disk_bytes": 0 if paused else max(0, min(float(free), float(allowance) - used))}
 
 
 def controller(unit):

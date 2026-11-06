@@ -738,6 +738,21 @@ class CollectionTests(unittest.TestCase):
                 with self.subTest(value=value), self.assertRaises(ValueError):
                     C.collect(config | {"feeder_allocation": value})
 
+    def test_a_paused_own_client_is_zero_idle_capacity_not_unknown(self):
+        docs = self.documents()
+        own = docs["/own"]
+        docs["/own"] = dict(own, idle_cpu=0, available_cpu=0, memory_bytes=0, disk_bytes=0, paused=True,
+                            idle_gpu={vendor: 0 for vendor in own["idle_gpu"]})
+        config = {name: "/" + name for name in ("server", "controller", "backlog")}
+        config["clients"] = ["/own"]
+        with patch.object(C.time, "time", return_value=NOW), \
+                patch.object(C, "read_source", side_effect=lambda path: docs[path]):
+            facts = C.collect(config)
+        document, _ = F.evaluate(facts, {}, NOW, 1000, "boot", "cfg")
+        checks = {c["code"]: c for c in document["checks"]}
+        for code in ("cpu_shortage", "gpu_shortage"):
+            self.assertEqual((checks[code]["state"], checks[code]["idle_slots"]), ("healthy", 0))
+
     def test_client_bindings_must_match_the_reported_host(self):
         docs = self.documents()
         config = {name: "/" + name for name in ("server", "controller", "backlog")}
@@ -1312,6 +1327,52 @@ with socket.create_connection({listener.getsockname()!r}, timeout=2) as connecti
             observed = C.client(root, port)
             self.assertEqual((observed["available_cpu"], observed["idle_gpu"]["intel_gpu"], observed["memory_bytes"]),
                              (.5, .25, 300))
+
+    def test_started_task_uses_its_record_unless_app_config_changed_after_it_arrived(self):
+        with client_rpc_fixture() as (root, port, answers, _):
+            base = answers["get_state"]
+            config = root / "projects" / "boinc.usnewsmap.com" / "app_config.xml"
+            config.parent.mkdir(parents=True)
+            config.write_text("<app_config/>")
+            os.utime(config, (1000, 1000))
+            for received, expected in (("2000", 1), ("500", None), ("", None), ("nan", None)):
+                fields = ("<active_task><active_task_state>1</active_task_state></active_task>"
+                          + (f"<received_time>{received}</received_time>" if received else ""))
+                answers["get_state"] = base.replace("</client_state>", queued_task("", fields) + "</client_state>")
+                with self.subTest(received=received):
+                    if expected is None:
+                        with self.assertRaisesRegex(C.SupplyUnknown, "active_task_resource_usage_unavailable"):
+                            C.client(root, port)
+                    else:
+                        self.assertEqual(C.client(root, port)["available_cpu"], expected)
+            fields = ("<active_task><active_task_state>1</active_task_state></active_task>"
+                      "<received_time>2000</received_time>")
+            answers["get_state"] = base.replace("</client_state>", queued_task("", fields).replace(
+                "</result>", "<active_task/></result>") + "</client_state>")
+            with self.assertRaisesRegex(C.SupplyUnknown, "active_task_resource_usage_unavailable"):
+                C.client(root, port)
+
+    def test_paused_clients_have_no_idle_capacity_rather_than_unknown(self):
+        with client_rpc_fixture() as (root, port, answers, _):
+            base_state, base_status = answers["get_state"], answers["get_cc_status"]
+            suspended_task = queued_task("", "<suspended_via_gui/>")
+            for state, status, cpu, gpu in (
+                    (base_state, base_status.replace(">0</task_suspend_reason", ">1</task_suspend_reason"), 0, 0),
+                    (base_state.replace("</hostid>", "</hostid><dont_request_more_work/>"), base_status, 0, 0),
+                    (base_state.replace("</hostid>", "</hostid><suspended_via_gui/>").replace(
+                        "</client_state>", suspended_task + "</client_state>"), base_status, 0, 0),
+                    (base_state, base_status.replace(">0</gpu_suspend_reason", ">1</gpu_suspend_reason"), 2, 0)):
+                answers["get_state"], answers["get_cc_status"] = state, status
+                with self.subTest(state=state, status=status):
+                    observed = C.client(root, port)
+                    self.assertEqual((observed["idle_cpu"], observed["available_cpu"],
+                                      observed["idle_gpu"]["intel_gpu"]), (cpu, cpu, gpu))
+                    self.assertEqual(observed["paused"], cpu == 0)
+                    self.assertEqual(observed["host_id"], 9)
+                    C.fresh(dict(observed, schema_version=1, source="client", observed_at=NOW), NOW, "client")
+            answers["get_state"], answers["get_cc_status"] = base_state, "<cc_status/>"
+            with self.assertRaisesRegex(ValueError, "client status unavailable"):
+                C.client(root, port)
 
     def test_unprovable_task_reservations_are_source_local_unknown_and_recover(self):
         with client_rpc_fixture() as (root, port, answers, _):
