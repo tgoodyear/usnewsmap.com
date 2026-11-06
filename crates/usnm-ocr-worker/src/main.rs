@@ -1665,9 +1665,10 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
                     .and_then(|d| d.map(|e| e.map(|e| e.path())).collect())
                     .with_context(|| format!("listing {}", alto.display()))?;
                 files.retain(|p| {
-                    p.extension()
-                        .and_then(|e| e.to_str())
-                        .is_some_and(|e| e.eq_ignore_ascii_case("xml"))
+                    p.is_file()
+                        && p.extension()
+                            .and_then(|e| e.to_str())
+                            .is_some_and(|e| e.eq_ignore_ascii_case("xml"))
                 });
                 files.sort();
                 files

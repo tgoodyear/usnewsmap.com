@@ -533,7 +533,11 @@ fn merge(mut found: Vec<Gutter>) -> Vec<Gutter> {
     for i in 0..n {
         for j in i + 1..n {
             let (a, b) = (&found[i], &found[j]);
-            if a.lo < b.hi && a.hi > b.lo && a.y0 < b.y1 && a.y1 > b.y0 {
+            // Sorted by `lo`: no later gutter starts before `a` ends.
+            if b.lo >= a.hi {
+                break;
+            }
+            if a.lo < b.hi && a.y0 < b.y1 && a.y1 > b.y0 {
                 let (ri, rj) = (root(&mut parent, i), root(&mut parent, j));
                 parent[ri.max(rj)] = ri.min(rj);
             }
