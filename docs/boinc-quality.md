@@ -680,8 +680,11 @@ no LoC request:
    sha256), makes the worker's grey q75 `page.jpg` as the runner does, writes an empty ALTO
    (LoC's would be a LoC request; CT211's fetcher is the only LoC client), and takes LoC's text,
    American Stories and `ocr-local` from the curated copy, mounted read-only at `/srv/curated`
-   (home-infra `scripts/lab/batch-ct-quality.sh --mounts`). It writes chunks of 200 pages to
-   its outbox and waits while `MAX_PENDING` (8) are unshipped. After a round that made chunks or
+   (home-infra `scripts/lab/batch-ct-quality.sh --mounts`). It writes chunks of 500 pages
+   (`--chunk-pages`, at most 500: a bundle's page limit) to its outbox and waits while
+   `MAX_PENDING` (8) are unshipped; the shipper stages each chunk as one 500-page bundle
+   (`--bundle-size 500`), or two when its scans pass the bundle's 1 GiB `MAX_BUNDLE_SCAN`
+   (about 13% of chunks), a few minutes of work for a host at 0.06–0.4 s a page. After a round that made chunks or
    found the outbox full it checks every 15 seconds for room, so the outbox refills as the
    shipper takes chunks; only a round with nothing to feed sleeps the full `--every-secs`.
 2. **Shipper, pve-laptop itself** (`quality-ship.sh`, `usnm-quality-ship.timer`, 3 minutes
@@ -1467,9 +1470,51 @@ Only pages our OCR has done or is about to do are left out: rows in `quality.ocr
 Two things limit how a list reaches the fetcher and the feed. `follow` takes every fetched page under its own campaign, so a page fetched from one of these manifests lands there unless `follow`'s `--staged` list names it; `plan.jsonl` still tells the bands apart. And when the scan fetcher is installed with `--no-loc-prefixes queue-quality-` (`USNM_PREFETCH_NO_LOC_PREFIXES`), a manifest named `queue-quality-*` takes JP2s only from LoC's bucket or a mirror, so pages of batches the bucket doesn't serve wait in that queue. Without it, those pages are fetched from LoC within the global LoC budget.
 
 `quality_feed.py follow` (`usnm-quality-follow.service`) gives every page the fetcher writes
-that no campaign has staged (OCR's and the pass's) a unit, in fetch order, and deletes the
-pass's buffer scans once their chunk has shipped; OCR's scans and the keep set are never
-deleted. `quality-feed-install.sh --follow` turns both on with the shipper.
+that no campaign has staged (OCR's and the pass's) a unit, in fetch order, in full chunks of
+`--chunk-pages`. It holds back a part chunk until no chunk has been written for
+`--max-wait-secs` (6 hours): it used to chunk whatever had been fetched since its last
+round, a minute or so, and in the 24 hours to 5 November 2026 the median bundle held 16
+pages and ran for seconds. Pages of a batch the curated copy has no LoC text for yet don't
+count towards a full chunk; they wait, logged, until it does. A page that can't be prepared
+(its scan can't be fetched or decoded) is replaced by the next one, from a reserve of a
+tenth of `--chunk-pages`; a chunk still short after that ("chunk came up short") is
+written only once it's overdue, so a scan server that stops answering mid-chunk doesn't
+ship a small unit. Its pages never worth a retry (no LoC text, a scan cut short at the
+source) still go to `skipped.txt`, so they don't hold the next round's chunk back.
+
+Once a chunk has shipped, the pass's buffer scans are deleted, except the most damaged
+(LoC's `damage_rate`; unscored pages last), up to `--keep-bytes` in all (1 TB from
+`quality-feed-install.sh`, about 210,000 pages at 4.7 MB a scan, half the fetcher's 2 TB
+buffer cap so OCR's own scans keep flowing). They stay on the scan server for re-OCR and are
+listed in `<state>/kept.tsv`, one list for every campaign, so a new campaign's budget counts
+what an earlier one kept. A newly shipped page more damaged than the least damaged kept
+one takes its place, and that one is deleted; if that delete fails, the kept page holds its
+place and the newcomer is deleted instead, so the list never passes the budget and no scan
+sits on the server outside it. A kept page leaves the list only once its sidecar is found
+gone and a DELETE makes sure its bytes are too (OCR's worker deletes a scan it read, best
+effort, and one of ours that marked it done but couldn't unlink it leaves just the sidecar
+gone). One OCR still wants stays listed and counted, and is neither evicted nor looked up
+while it does: `ocr_manifest.py build` records every page OCR asked for in `ocr-docs.txt`
+(every queued page whose scan is already on the scan server, its sidecar looked up before
+it's first claimed: up to 500 a run, a miss remembered until the page is fetched again in
+`claim-misses.txt`; not only its manifests' pages)
+and rewrites `ocr-active.txt` each run with those no outcome has ended yet, which the
+follower reads (`--ocr-active`; until that file exists, every page in `ocr-docs.txt`), and
+a newly shipped page in either is OCR's, neither kept nor deleted. Both files are written
+under the follower's `kept.tsv.lock` (`--claims-lock`), and the follower reads them under it,
+so no claim lands between its reading them and evicting by them. Its check time is reset,
+so it is among the first looked up once OCR is done with it, and it stays a kept page like any other if OCR's delete failed.
+`--keep-verify` (500) of the longest-unchecked are looked up a round; a lookup that fails goes to the back, and one the scan server doesn't answer ends that round's
+lookups and deletes (every campaign's) and its feeding, which the next round picks up where it left off. The follower looks
+after the list every round, before its campaign has shipped anything too, and deletes (or
+keeps) the shipped scans of every campaign it has followed (`<state>/followed.txt`), so the
+chunks a shipper takes after a campaign switch don't leave their scans behind. Its own
+campaign goes first, so room its lookups free is there for every campaign's newly shipped
+pages, and pages leaving the list are recorded in `<state>/retired.txt`, which every
+campaign reads, so one campaign never takes back a page another let go.
+Before 5 November 2026 every one was deleted, 150,000 pages, 54,000 of them with a damage
+rate of 0.1 or more. OCR's scans and the keep set are never deleted.
+`quality-feed-install.sh --follow` turns both on with the shipper.
 
 **What bounds the supply.** Each round, `follow` takes every full-resolution scan in the index
 that has no unit or staging record, isn't in `--staged` and isn't done, up to the outbox's
