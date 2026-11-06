@@ -1,6 +1,6 @@
 # Fallback Worker
 
-A Cloudflare Worker that sits in front of the `usnm-serving` tunnel during Phase 3 of the on-prem move ([#955](https://github.com/tgoodyear/usnewsmap.com/issues/955), [ADR-0027](../../docs/design/adr/0027-onprem-serving-behind-cloudflare.md) decision 10). It passes every request to the tunnel. When the tunnel cannot answer, it asks `ca-usnm-prod` at its default `azurecontainerapps.io` name once, so a home-side outage costs visitors a slower answer and not an error page. This is [#1098](https://github.com/tgoodyear/usnewsmap.com/issues/1098)'s Phase 3 work.
+A Cloudflare Worker that sits in front of the `usnm-serving` tunnel during Phase 3 of the on-prem move ([#955](https://github.com/tgoodyear/usnewsmap.com/issues/955), [ADR-0027](../../docs/design/adr/0027-onprem-serving-behind-cloudflare.md) decision 10). It passes every request to the tunnel. When the tunnel cannot answer, it asks the Azure spare's API (`usnm-api-spare-ca-prod` since #308, before that `ca-usnm-prod`) at its default `azurecontainerapps.io` name once, so a home-side outage costs visitors a slower answer and not an error page. This is [#1098](https://github.com/tgoodyear/usnewsmap.com/issues/1098)'s Phase 3 work.
 
 Deployment and drills are separate live Cloudflare operations. Production routing and the Phase 4 transition remain gated; an isolated drill does not authorize either.
 
@@ -232,7 +232,7 @@ The busiest day could grow about 18 times before it reached the limit. Most of t
 The deploy needs its own Cloudflare token (ADR-0027 decision 7): Workers scope, limited to the operator's IP address, with an expiry, kept in Key Vault under [ADR-0024](../../docs/design/adr/0024-cloudflare-tunnel-and-r2-credentials.md)'s rules and read only by `deploy.sh`. A leaked one could put a Worker in front of every page. This change does not create it. When it is created, check which permissions Wrangler needs for a Worker with routes (Workers Scripts edit on the account and Workers Routes edit on the `usnewsmap.com` zone, plus whatever Wrangler asks for) and grant no more.
 
 1. Run the tests, with Node 24: `node --test edge/fallback-worker/*.test.mjs`. (`node --test edge/fallback-worker/` fails on Node 24, which reads the directory as a module.)
-2. Read the app's default name: `az containerapp show --name ca-usnm-prod --resource-group rg-usnm-prod --query properties.configuration.ingress.fqdn -o tsv`.
+2. Read the app's default name: `az containerapp show --name usnm-api-spare-ca-prod --resource-group rg-usnm-prod --query properties.configuration.ingress.fqdn -o tsv`.
 3. Choose an exact Wrangler release, read its changelog, and look at the command first:
 
    ```bash

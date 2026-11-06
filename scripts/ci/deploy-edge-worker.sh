@@ -5,7 +5,10 @@ cd "$ROOT"
 
 VAULT=usnmtlskvprodffapzy
 ACCOUNT=$(az keyvault secret show --vault-name "$VAULT" -n usnm-prod-cloudflare-account-id --query value -o tsv)
-ORIGIN=$(az containerapp show -g rg-usnm-prod -n ca-usnm-prod --query properties.configuration.ingress.fqdn -o tsv)
+# The Azure spare's API in its VNet-less environment (#308, ADR-0008 amendment
+# "no VNet for the spare"). It was ca-usnm-prod in cae-usnm-prod until then.
+SPARE_APP=usnm-api-spare-ca-prod
+ORIGIN=$(az containerapp show -g rg-usnm-prod -n "$SPARE_APP" --query properties.configuration.ingress.fqdn -o tsv)
 [ -n "$ACCOUNT" ] && [ -n "$ORIGIN" ] || {
   echo "error: Cloudflare account or Azure standby hostname is empty" >&2
   exit 1
