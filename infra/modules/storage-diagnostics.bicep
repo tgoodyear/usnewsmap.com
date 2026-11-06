@@ -2,8 +2,8 @@
 
 param storageName string
 param workspaceId string
-@description('Where the queue service\'s logs go instead, as a workspace resource id; empty: workspaceId.')
-param queueWorkspaceId string = ''
+@description('Send the queue service\'s logs. Off for the OCR exchange account (#1441): a row per queue request.')
+param queueLogs bool = true
 param settingName string
 
 resource account 'Microsoft.Storage/storageAccounts@2023-05-01' existing = {
@@ -36,11 +36,11 @@ resource blobLogs 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
   }
 }
 
-resource queueLogs 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
+resource queueLogSetting 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = if (queueLogs) {
   scope: account::queue
   name: settingName
   properties: {
-    workspaceId: empty(queueWorkspaceId) ? workspaceId : queueWorkspaceId
+    workspaceId: workspaceId
     logs: [{ categoryGroup: 'allLogs', enabled: true }]
   }
 }

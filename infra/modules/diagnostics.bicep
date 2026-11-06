@@ -152,13 +152,15 @@ resource cosmosLogs 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' =
 }
 
 // The data account, and the OCR exchange account when there is
-// one: blob writes and deletes; the queue, table and file services log
-// everything. Only the exchange account uses queues: each node's take,
-// delete and empty poll is a StorageQueueLogs row, so the worker backs off
-// while the queues are empty, and a node decides how many there are, so
-// they go to the nodes' workspace and count under its cap. Its blob writes
-// stay here, in StorageBlobLogs on the Auxiliary plan, which no cap covers
-// (monitoring.bicep), so they can't stop the environment's logging.
+// one: blob writes and deletes; the table and file services log
+// everything, and so does the queue service, except the exchange
+// account's. Only the exchange account uses queues, and every take, delete
+// and empty poll would be a StorageQueueLogs row: about 3 MB an hour, most
+// of the nodes' workspace's 0.1 GB daily cap, which the BOINC feed alerts
+// share (#1441). Its queue logs are off; the policy audit lists that queue
+// service as non-compliant. Its blob writes stay here, in StorageBlobLogs on
+// the Auxiliary plan, which no cap covers (monitoring.bicep), so they can't
+// stop the environment's logging.
 module dataStorageLogs 'storage-diagnostics.bicep' = {
   name: 'diagnostics-${dataStorageName}'
   params: {
@@ -182,7 +184,7 @@ module exchangeStorageLogs 'storage-diagnostics.bicep' = if (!empty(exchangeStor
   params: {
     storageName: exchangeStorageName
     workspaceId: workspaceId
-    queueWorkspaceId: ocrNodeWorkspaceId
+    queueLogs: false
     settingName: name
   }
 }
