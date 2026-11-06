@@ -29,6 +29,7 @@ COPY src /opt/usnm-appver-build/appver-src
 COPY sigs /opt/usnm-appver-build/sigs
 COPY code_sign_public /opt/usnm-appver-build/code_sign_public
 COPY publish-appver.sh /usr/local/lib/usnm-boinc/publish-appver.sh
+COPY register-apps.php /usr/local/lib/usnm-boinc/register-apps.php
 COPY check_appver.py /opt/usnm-appver-build/check_appver.py
 # The release script supplies a verified Mac/Linux-arm64/Windows wrapper or native binary here;
 # only Linux x86_64 container releases use the server wrapper.

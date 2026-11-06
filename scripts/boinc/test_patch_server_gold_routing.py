@@ -125,10 +125,14 @@ int main(int argc, char** argv) {
             for platform, base in bases.items():
                 self.job["engine"]["base"] = base
                 self.assertEqual(self.run_gate(platform).returncode, 0, (image, platform))
-            self.job["engine"]["base"] = bases["arm64-apple-darwin"]
-            self.assertEqual(self.run_gate("arm64-apple-darwin").returncode, 0)
-            self.job["engine"]["base"] = bases["x86_64-pc-linux-gnu"]
-            self.assertEqual(self.run_gate("arm64-apple-darwin").returncode, 1)
+            # A native build is bound for its own platform only (x86_64 Linux for now).
+            if {"arm64-apple-darwin", "x86_64-pc-linux-gnu"} <= set(bases):
+                self.job["engine"]["base"] = bases["arm64-apple-darwin"]
+                self.assertEqual(self.run_gate("arm64-apple-darwin").returncode, 0)
+                self.job["engine"]["base"] = bases["x86_64-pc-linux-gnu"]
+                self.assertEqual(self.run_gate("arm64-apple-darwin").returncode, 1)
+            else:
+                self.assertEqual(self.run_gate("arm64-apple-darwin").returncode, 1, (image, "unbound"))
 
     def test_stale_job_and_wrong_architecture_are_refused(self):
         for base in ("sha256:" + "f" * 64, BASES["x86_64-pc-linux-gnu"]):

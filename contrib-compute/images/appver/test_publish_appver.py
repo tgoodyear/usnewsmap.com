@@ -35,6 +35,8 @@ class PublishTests(unittest.TestCase):
         script = Path(__file__).with_name('publish-appver.sh').read_text()
         script = script.replace('. /usr/local/lib/usnm-boinc/lib.sh', f'. "{lib}"')
         script = script.replace('src=/usr/local/lib/usnm-boinc/appver', f'src="{self.source}"')
+        # register-apps.php has its own tests (images/server/test_register_apps.py); here it's xadd.
+        script = script.replace('php /usr/local/lib/usnm-boinc/register-apps.php', 'bin/xadd')
         self.script = self.root / 'publish.sh'
         self.script.write_text(script)
 
@@ -47,6 +49,18 @@ class PublishTests(unittest.TestCase):
                                    'APPVER_VERSION': version, 'APPVER_PLATFORM': platform,
                                    'DB_HOST': 'db.example.org', 'DB_NAME': 'fixture', 'MASTER_HOST': 'boinc.example.org',
                                    'PATH': str(self.root) + os.pathsep + os.environ['PATH']})
+
+    def test_registration_sets_a_new_apps_declared_weight(self):
+        # Plain xadd would register an app missing from the database, such as usnm_gold_native,
+        # at weight 1. The release context carries the wrapper, so an older server image works.
+        here = Path(__file__).resolve().parent
+        script = (here / 'publish-appver.sh').read_text()
+        self.assertIn('cp "$src/project.xml" project.xml && php /usr/local/lib/usnm-boinc/register-apps.php)', script)
+        self.assertNotIn('&& bin/xadd', script)
+        self.assertIn('COPY register-apps.php /usr/local/lib/usnm-boinc/register-apps.php',
+                      (here / 'Containerfile').read_text())
+        release = (here.parents[2] / 'scripts/boinc/boinc-app-release.sh').read_text()
+        self.assertIn('git show "HEAD:contrib-compute/images/server/register-apps.php" > "$ctx/register-apps.php"', release)
 
     def test_sibling_platform_publish_and_replay_preserve_linux(self):
         self.assertEqual(self.publish('x86_64-pc-linux-gnu', 'linux').returncode, 0)
