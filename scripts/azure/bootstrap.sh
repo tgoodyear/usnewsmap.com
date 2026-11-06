@@ -220,8 +220,10 @@ run_and_wait() {
 }
 
 # Always: the registry must hold the current main, not just some earlier build.
+# roll_api: a push to main no longer rolls the API (#308); bootstrap still
+# rolls an app that exists onto main.
 step "Publishing main's images to $(aget ACR_NAME) (ci on main)"
-run_and_wait ci
+run_and_wait ci -f roll_api=true
 
 if [ "$USE_ACR" != true ]; then
   step "Switching to the private registry"

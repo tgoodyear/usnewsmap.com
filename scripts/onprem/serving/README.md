@@ -164,7 +164,7 @@ propagation time. When diagnosing a local resolver failure, verify public
 DNS and HTTPS from another resolver/client rather than changing origin DNS
 or claiming the Worker failed.
 
-CI's publish job pushes each prod image as `usnewsmap-api:main` and `usnewsmap-api:<commit>`. Its last step, after the Azure app rolls onto the image, attests it (a Phase 0 code PR adds this step), so an attested image is one prod runs.
+CI's publish job pushes each prod image as `usnewsmap-api:main` and `usnewsmap-api:<commit>`. Its last step attests it, so an attested image is one CI built and checked on `main`. Since #308 a push no longer rolls the Azure spare onto it, so the attestation no longer means the spare runs the image.
 
 Two minutes after its last run ends, `update-api.sh` reads the `main` manifest from the registry with the Arc identity's AcrPull. If that manifest is already serving, the run ends there, without asking GitHub anything. For a new manifest, the script:
 

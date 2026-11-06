@@ -17,6 +17,10 @@ on:
         type: choice
         options: [full, ocr-worker]
         default: full
+      roll_api:
+        description: "Also roll each deployed environment's Azure API onto this commit. A push to main never does: prod's Azure API is the cold spare, and each roll cold-starts it (#308)"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -1219,16 +1223,10 @@ jobs:
           tags: |
             ${{ env.ACR }}/usnewsmap-ja-ocr:main
             ${{ env.ACR }}/usnewsmap-ja-ocr:${{ github.sha }}
-      # The API app exists once the environment pulls from its registry
-      # (bootstrap's second provision); until then only the images publish.
-      - name: Roll the API onto this commit's image
-        if: steps.head.outputs.current == 'true' && env.APP != ''
-        env:
-          IMAGE: ${{ env.ACR }}/usnewsmap-api:${{ github.sha }}
-        run: scripts/ci/roll-api.sh
       # A build provenance attestation for the API image, for an origin that
       # checks it before it runs the image (#955), as hosts check the OCR
-      # worker release's. Its subject is the
+      # worker release's. On-prem serving deploys an image once it is
+      # attested (scripts/onprem/serving/update-api.sh). Its subject is the
       # digest the push returned, the one `usnewsmap-api:<sha>` names.
       - name: Attest the API image
         if: steps.head.outputs.current == 'true'
@@ -1237,11 +1235,80 @@ jobs:
           subject-name: ${{ env.ACR }}/usnewsmap-api
           subject-digest: ${{ steps.api.outputs.digest }}
 
-  indexnow:
-    name: notify changed URLs (${{ matrix.environment }})
+  # Only a dispatched run with roll_api rolls the API (bootstrap, or by hand).
+  # Prod's Azure API is the cold spare (ADR-0029): a roll on every merge
+  # cold-started it each time, about $60 a month (#308). The spare moves on an
+  # index publish or a drill (.github/workflows/spare-roll.yml), and on-prem
+  # follows main through publish's attestation. Its own job, in spare-roll's
+  # concurrency group, so two rolls never interleave a searcher config and an
+  # image, while publish keeps queueing on deploy-<environment>.
+  roll:
+    name: roll the API (${{ matrix.environment }})
     needs: publish
     if: >-
       always() && needs.publish.result == 'success'
+      && github.event_name == 'workflow_dispatch' && inputs.roll_api
+      && github.ref == 'refs/heads/main'
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: ${{ fromJSON(vars.USNM_DEPLOY_ENVIRONMENTS || '[]') }}
+    environment: ${{ matrix.environment }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    concurrency:
+      group: spare-roll-${{ matrix.environment }}
+      cancel-in-progress: false
+    outputs:
+      rolled: ${{ steps.roll.outputs.rolled }}
+    env:
+      ACR: ${{ vars.USNM_ACR_LOGIN_SERVER }}
+      APP: ${{ vars.USNM_API_APP }}
+      RG: ${{ vars.USNM_RESOURCE_GROUP }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      # Checked again once this job holds the roll slot: a rerun of an older
+      # dispatch must not roll the spare back. An older image on purpose is
+      # spare-roll's job.
+      - name: Is this still the image main's head needs?
+        id: head
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/ci/head-of-main.sh --unless-changed image
+      - if: env.APP != '' && steps.head.outputs.current == 'true'
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ vars.USNM_CI_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      # The API app exists once the environment pulls from its registry
+      # (bootstrap's second provision); until then only the images publish.
+      # publish skips an older commit than main's head, so roll only an image
+      # it pushed.
+      - name: Roll the API onto this commit's image
+        id: roll
+        if: env.APP != '' && steps.head.outputs.current == 'true'
+        env:
+          IMAGE: ${{ env.ACR }}/usnewsmap-api:${{ github.sha }}
+        run: |
+          if ! az acr repository show --name "${ACR%%.*}" --image "usnewsmap-api:$GITHUB_SHA" -o none; then
+            echo "::warning::publish pushed no image for $GITHUB_SHA; nothing to roll"
+            exit 0
+          fi
+          scripts/ci/roll-api.sh
+          echo "rolled=true" >> "$GITHUB_OUTPUT"
+
+  indexnow:
+    name: notify changed URLs (${{ matrix.environment }})
+    needs: [publish, roll]
+    if: >-
+      always() && needs.publish.result == 'success'
+      && (needs.roll.result == 'success' || needs.roll.result == 'skipped')
       && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     strategy:
       fail-fast: false
@@ -1273,9 +1340,14 @@ jobs:
       - name: Defer notification if Azure authentication fails
         if: env.APP != '' && steps.azure_login.outcome != 'success'
         run: echo "::warning::Azure authentication failed; IndexNow notification will be retried hourly"
+      # Only after a roll: reading the Azure app's sitemap wakes the cold
+      # spare. Otherwise the public sitemap is compared, as the hourly
+      # indexnow workflow does.
       - name: Find the deployed Azure sitemap
         id: deployed_sitemap
-        if: env.APP != '' && steps.azure_login.outcome == 'success'
+        if: >-
+          env.APP != '' && steps.azure_login.outcome == 'success'
+          && needs.roll.outputs.rolled == 'true'
         continue-on-error: true
         env:
           APP: ${{ vars.USNM_API_APP }}
@@ -1295,7 +1367,9 @@ jobs:
       # state only after all batches succeed, so failures are retried later.
       - name: Submit the sitemap to IndexNow
         id: indexnow
-        if: env.APP != '' && steps.deployed_sitemap.outcome == 'success'
+        if: >-
+          env.APP != '' && steps.azure_login.outcome == 'success'
+          && (steps.deployed_sitemap.outcome == 'success' || steps.deployed_sitemap.outcome == 'skipped')
         continue-on-error: true
         env:
           INDEXNOW_STATE_FILE: ${{ runner.temp }}/indexnow/sitemap.sha256

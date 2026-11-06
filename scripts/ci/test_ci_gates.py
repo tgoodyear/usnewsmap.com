@@ -150,7 +150,7 @@ class Gates(unittest.TestCase):
             )
 
         self.assertNotIn("scripts/ci/indexnow.sh", publish)
-        self.assertIn("needs: publish", notify)
+        self.assertRegex(notify, r"(?m)^    needs: \[publish, roll\]$")
         self.assertIn("needs.publish.result == 'success'", notify)
         self.assertIn("scripts/ci/indexnow.sh", notify)
         self.assertIn("scripts/ci/indexnow.sh", scheduled)
