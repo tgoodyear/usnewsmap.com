@@ -426,20 +426,18 @@ impl Fetch for Http {
     }
 }
 
-/// The longest wait before a retry, whatever the server asks.
-pub const MAX_RETRY_WAIT: Duration = Duration::from_secs(600);
+/// The longest backoff computed locally. A longer `Retry-After` is honored.
+pub const MAX_BACKOFF_WAIT: Duration = Duration::from_secs(600);
 
-/// The wait before the try after `attempt`: doubling from the pacing delay, at
-/// least what the server asked (`Retry-After`), and at most
-/// [`MAX_RETRY_WAIT`], so a long hint can't keep the job asleep past its
-/// deadline margin.
+/// The wait before the try after `attempt`: exponential backoff, capped at
+/// [`MAX_BACKOFF_WAIT`], or the longer interval the server requested.
 pub fn retry_wait(delay: Duration, attempt: u32, retry_after: Option<Duration>) -> Duration {
     let doubled = delay
         .max(Duration::from_secs(1))
         .saturating_mul(2u32.saturating_pow(attempt + 1));
     doubled
+        .min(MAX_BACKOFF_WAIT)
         .max(retry_after.unwrap_or_default())
-        .min(MAX_RETRY_WAIT)
 }
 
 /// A page the server has not (it answered 404), kept so a resumed fetch
@@ -841,6 +839,19 @@ mod tests {
         let http = Http::new(Duration::from_secs(1), "usnm-test", "test").unwrap();
         assert_eq!((http.get_timeout, http.download_timeout), (s(120), s(1800)));
         assert_eq!(http.cutoff, None);
+    }
+
+    #[test]
+    fn retry_after_is_not_capped_by_the_local_backoff_limit() {
+        let requested = Duration::from_secs(3600);
+        assert_eq!(
+            retry_wait(Duration::from_secs(1), 0, Some(requested)),
+            requested
+        );
+        assert_eq!(
+            retry_wait(Duration::from_secs(1), 10, None),
+            MAX_BACKOFF_WAIT
+        );
     }
 
     /// A server that never answers: each try stops at its timeout, and no

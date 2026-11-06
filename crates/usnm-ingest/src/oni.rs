@@ -427,7 +427,18 @@ pub async fn fetch_batch(
         done: Fetched::default(),
     };
     if let Some(m) = raw::find(store, &name, None).await? {
-        let xml = utf8(run.read("data/BATCH.xml", None).await?)?;
+        let tags = parse_manifest(&utf8(run.read("tagmanifest-md5.txt", None).await?)?)?;
+        let manifest_md5 = tags
+            .iter()
+            .find(|(path, _)| path == "manifest-md5.txt")
+            .map(|(_, md5)| md5.as_str())
+            .context("the tag manifest doesn't list manifest-md5.txt")?;
+        let manifest = utf8(run.read("manifest-md5.txt", Some(manifest_md5)).await?)?;
+        let md5s: HashMap<String, String> = parse_manifest(&manifest)?.into_iter().collect();
+        let batch_md5 = md5s
+            .get("data/BATCH.xml")
+            .context("the bag's manifest doesn't list data/BATCH.xml")?;
+        let xml = utf8(run.read("data/BATCH.xml", Some(batch_md5)).await?)?;
         let issues = batch_issues(&xml)?;
         let lccns = issues
             .iter()
@@ -438,7 +449,7 @@ pub async fn fetch_batch(
             return Ok(None);
         }
         if run.scans_root.is_some() {
-            run.materialize_stored_scans(&issues, opts.issued_before)
+            run.materialize_stored_scans(&issues, opts.issued_before, &md5s)
                 .await?;
             write_scan_catalog(run.scans_root.unwrap(), &name)?;
         }
@@ -489,7 +500,7 @@ pub async fn fetch_batch(
         }
     }
     let mut archive = Archive::new(tmp)?;
-    let (mut lccns, mut seen) = (BTreeSet::new(), HashSet::new());
+    let (mut lccns, mut seen_text) = (BTreeSet::new(), HashSet::new());
     for (i, issue) in issues.iter().enumerate() {
         if issue.date >= opts.issued_before {
             run.done.issues_later += 1;
@@ -510,10 +521,8 @@ pub async fn fetch_batch(
         for page in pages {
             let key = PageKey::new(&issue.lccn, issue.date, issue.edition, page.seq)
                 .with_context(|| issue.mets.clone())?;
-            if !seen.insert(key.clone()) {
-                continue;
-            }
-            let text = if page.has_ocr {
+            let already_has_text = seen_text.contains(&key);
+            let text = if page.has_ocr && !already_has_text {
                 run.text(&key).await?
             } else {
                 None
@@ -530,7 +539,7 @@ pub async fn fetch_batch(
                     &bag_path,
                     image_md5,
                     page.alto_file.as_deref(),
-                    text.is_some(),
+                    already_has_text || text.is_some(),
                 )
                 .await?;
             }
@@ -538,9 +547,13 @@ pub async fn fetch_batch(
                 run.done.pages_without_ocr += 1;
                 continue;
             }
+            if already_has_text {
+                continue;
+            }
             match text {
                 Some(text) => {
                     archive.add(&key, &text)?;
+                    seen_text.insert(key.clone());
                     lccns.insert(key.lccn);
                     run.done.pages += 1;
                 }
@@ -575,10 +588,7 @@ pub async fn fetch_batch(
     if let Some(root) = run.scans_root {
         write_scan_catalog(root, &name)?;
     }
-    Ok(Some((
-        listed(name, to, &path, sha256, lccns)?,
-        run.done,
-    )))
+    Ok(Some((listed(name, to, &path, sha256, lccns)?, run.done)))
 }
 
 /// One batch being fetched.
@@ -669,9 +679,8 @@ impl Run<'_> {
         &mut self,
         issues: &[Issue],
         issued_before: NaiveDate,
+        md5s: &HashMap<String, String>,
     ) -> anyhow::Result<()> {
-        let manifest = utf8(self.read("manifest-md5.txt", None).await?)?;
-        let md5s: HashMap<String, String> = parse_manifest(&manifest)?.into_iter().collect();
         for issue in issues.iter().filter(|issue| issue.date < issued_before) {
             let mets_md5 = md5s
                 .get(&issue.mets)
@@ -1089,6 +1098,38 @@ mod tests {
         }
     }
 
+    fn reseal_bag(site: &mut Site) {
+        let prefix = format!("{BAG}/");
+        let mut payloads: Vec<_> = site
+            .files
+            .iter()
+            .filter_map(|(url, bytes)| {
+                let path = url.strip_prefix(&prefix)?;
+                path.starts_with("data/")
+                    .then(|| (path.to_owned(), bytes.clone()))
+            })
+            .collect();
+        payloads.sort_by(|a, b| a.0.cmp(&b.0));
+        let manifest = payloads
+            .iter()
+            .map(|(path, bytes)| format!("{}  {path}\n", hex(&Md5::digest(bytes))))
+            .collect::<String>();
+        site.files.insert(
+            format!("{BAG}/manifest-md5.txt"),
+            manifest.as_bytes().to_vec(),
+        );
+        let bagit = site.files.get(&format!("{BAG}/bagit.txt")).unwrap();
+        let tag_manifest = format!(
+            "{}  bagit.txt\n{}  manifest-md5.txt\n",
+            hex(&Md5::digest(bagit)),
+            hex(&Md5::digest(manifest.as_bytes()))
+        );
+        site.files.insert(
+            format!("{BAG}/tagmanifest-md5.txt"),
+            tag_manifest.into_bytes(),
+        );
+    }
+
     fn opts() -> Options {
         Options {
             site: SITE.into(),
@@ -1344,6 +1385,123 @@ mod tests {
         .await
         .unwrap_err();
         assert!(format!("{error:#}").contains("MD5"));
+    }
+
+    #[tokio::test]
+    async fn verifies_stored_batch_xml_before_materializing_scans() {
+        let dir = tempfile::tempdir().unwrap();
+        let to = dir.path().join("store");
+        let to = to.to_str().unwrap();
+        let store = usnm_store::open(to).unwrap();
+        let site = site();
+        let tmp = dir.path().join("tmp");
+        fetch_batch(
+            &site,
+            store.as_ref(),
+            to,
+            &opts(),
+            "batch_pst_test_ver01",
+            &tmp,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        let batch = dir
+            .path()
+            .join("store/psu_pst_test_ver01/bag/data/BATCH.xml");
+        std::fs::write(batch, b"<different batch/>").unwrap();
+        let mut options = opts();
+        options.scans_root = Some(dir.path().join("scans"));
+        let error = fetch_batch(
+            &site,
+            store.as_ref(),
+            to,
+            &options,
+            "batch_pst_test_ver01",
+            &tmp,
+        )
+        .await
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("MD5"));
+        assert!(!options.scans_root.unwrap().exists());
+    }
+
+    #[tokio::test]
+    async fn verifies_payload_manifest_against_the_stored_tag_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        let to = dir.path().join("store");
+        let to = to.to_str().unwrap();
+        let store = usnm_store::open(to).unwrap();
+        let site = site();
+        let tmp = dir.path().join("tmp");
+        fetch_batch(
+            &site,
+            store.as_ref(),
+            to,
+            &opts(),
+            "batch_pst_test_ver01",
+            &tmp,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        std::fs::write(
+            dir.path()
+                .join("store/psu_pst_test_ver01/bag/manifest-md5.txt"),
+            b"corrupted manifest",
+        )
+        .unwrap();
+        let mut options = opts();
+        options.scans_root = Some(dir.path().join("scans"));
+        let error = fetch_batch(
+            &site,
+            store.as_ref(),
+            to,
+            &options,
+            "batch_pst_test_ver01",
+            &tmp,
+        )
+        .await
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("MD5"));
+        assert!(!options.scans_root.unwrap().exists());
+    }
+
+    #[tokio::test]
+    async fn duplicate_page_without_ocr_does_not_hide_a_later_reading() {
+        let dir = tempfile::tempdir().unwrap();
+        let to = dir.path().join("store");
+        let to = to.to_str().unwrap();
+        let store = usnm_store::open(to).unwrap();
+        let mut site = site();
+        let mets_path = format!("{BAG}/data/sn84035968/000002003/1861100801/1861100801.xml");
+        let mets = String::from_utf8(site.files.get(&mets_path).unwrap().clone()).unwrap();
+        let page_with_ocr = r#"<div TYPE="np:page" DMDID="pageModsBib1"><fptr FILEID="serviceFile1"/><fptr FILEID="otherDerivativeFile1"/><fptr FILEID="ocrFile1"/></div>"#;
+        let duplicate_without_ocr =
+            r#"<div TYPE="np:page" DMDID="pageModsBib1"><fptr FILEID="serviceFile1"/></div>"#;
+        let duplicated = mets.replace(
+            page_with_ocr,
+            &format!("{duplicate_without_ocr}{page_with_ocr}"),
+        );
+        assert_ne!(duplicated, mets);
+        site.files.insert(mets_path, duplicated.into_bytes());
+        reseal_bag(&mut site);
+
+        let (_, fetched) = fetch_batch(
+            &site,
+            store.as_ref(),
+            to,
+            &opts(),
+            "batch_pst_test_ver01",
+            &dir.path().join("tmp"),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(fetched.pages, 1);
+        assert_eq!(fetched.pages_without_ocr, 2);
     }
 
     #[tokio::test]
