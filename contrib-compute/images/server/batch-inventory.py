@@ -154,7 +154,7 @@ def inventory(root, results, counts, nonce, pending_ids=(), existing_ids=None,
     existing = list(existing_ids) + [j for b in existing_bundles for j in sorted(members.get(b, ()))]
     if len(set(pending)) != len(pending) or len(set(existing)) != len(existing):
         raise ValueError("a page is in more than one workunit")
-    if len(existing) > existing_limit:
+    if len(existing) > existing_limit or len(existing_ids) + len(existing_bundles) > existing_limit:
         raise ValueError("invalid/oversized existing workunit inventory")
     seen = {}
     locations = {}
@@ -188,6 +188,10 @@ def inventory(root, results, counts, nonce, pending_ids=(), existing_ids=None,
         # Pending OCR workunits, single-page and bundles: pending_jobs counts pages (#1059).
         "pending_ocr_workunits": len(pending_ids) + sum(bool(members.get(b)) for b in pending_bundles),
         "existing_jobs": existing,
+        # Workunit rows, single-page and bundles, before bundles become pages. Bundles whose
+        # journals are gone add no pages but still count towards the cap, so the controller warns
+        # on the larger of this and existing_jobs (#1483).
+        "existing_workunits": len(existing_ids) + len(existing_bundles),
         # Towards the existing-workunit cap, so the controller checks and warns against it (#1483).
         "existing_jobs_limit": existing_limit,
         "active_hosts": counts[1],

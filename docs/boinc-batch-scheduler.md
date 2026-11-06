@@ -1165,7 +1165,10 @@ existing native workunit cap. That cap is 50,000 by default, set by
 `USNM_MAX_EXISTING_WORKUNITS` in the BOINC host's `bridge.env` (1 to 200,000),
 and the server reports it as `existing_jobs_limit`. It is larger than the
 journal cap because BOINC keeps every workunit for `delete_delay_hours` (168)
-after it finishes, so finished rows outnumber live journals (#1483). A server
+after it finishes, so finished rows outnumber live journals (#1483). The cap
+holds for both the workunit rows, reported as `existing_workunits`, and the pages
+they expand to, `existing_jobs`; the 80% warning uses the larger, since a bundle
+whose journals are archived is still a row but adds no pages. A server
 image without this change reports no limit, and the controller then holds
 existing workunits to 10,000. Archive only drained, operator-verified history before resuming,
 with [the archive tool](#archive-drained-history-1483).

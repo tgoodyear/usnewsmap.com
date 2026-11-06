@@ -164,6 +164,25 @@ class SchedulerTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "existing workunit limit"):
                 batch.tick(self.config, copy.deepcopy(self.state), bad, lambda: None, NOW)
 
+    def test_the_raw_workunit_count_warns_when_bundles_add_no_pages(self):
+        # Bundles whose journals are gone are rows towards the cap with no pages (#1483).
+        self.tick()
+        rows = copy.deepcopy(self.fake)
+        inventory = rows.inventory
+        rows.inventory = lambda: {**inventory(), "existing_jobs_limit": 10, "existing_workunits": 9}
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            batch.tick(self.config, copy.deepcopy(self.state), rows, lambda: None, NOW)
+        warned = [json.loads(line) for line in stderr.getvalue().splitlines()]
+        self.assertIn(("existing_workunits", 9, 10),
+                      [(w["cap"], w["count"], w["limit"]) for w in warned])
+        for count in (-1, 11, "9"):
+            bad = copy.deepcopy(self.fake)
+            bad.inventory = (lambda value: lambda: {**inventory(), "existing_jobs_limit": 10,
+                                                    "existing_workunits": value})(count)
+            with self.assertRaisesRegex(ValueError, "existing workunit inventory"):
+                batch.tick(self.config, copy.deepcopy(self.state), bad, lambda: None, NOW)
+
     def test_caps_past_eighty_percent_warn_without_changing_the_tick(self):
         self.tick()
         quiet, warned = copy.deepcopy(self.fake), copy.deepcopy(self.fake)

@@ -218,7 +218,8 @@ class InventoryTests(unittest.TestCase):
         with patch.dict(inventory.os.environ, {"USNM_MAX_EXISTING_WORKUNITS": "1"}):
             with self.assertRaisesRegex(ValueError, "existing workunit inventory"):
                 self.run_main(f"2\n{rows}")
-            self.assertEqual(self.run_main(f"2\nusnm_ocrb_{1:064x}\t2\n")["existing_jobs"], [])
+            payload = self.run_main(f"2\nusnm_ocrb_{1:064x}\t2\n")
+            self.assertEqual((payload["existing_jobs"], payload["existing_workunits"]), ([], 1))
 
     def test_a_page_requeued_from_its_bundle_leaves_it(self):
         bundle, pages = "c" * 64, ["d" * 64, "e" * 64]
