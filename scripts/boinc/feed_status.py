@@ -168,14 +168,25 @@ def evaluate(facts, previous, now, monotonic, boot_id, config_id):
               reason=guard["reason"], app_ids=guard["app_ids"])
     unknown = facts.get("errors", []) or [c["code"] for c in checks if c["state"] == "unknown"]
     # Held: one failed source run (a single unknown evaluation) is not worth an email.
-    check("collection", bool(unknown) or not continuous, COLLECTION_HOLD_S, reset=not continuous)
+    # Its timer is kept apart from the condition timers a reset clears, so resets that
+    # recur (an evaluator running only every few minutes, configs changing) still fire.
+    unhealthy = bool(unknown) or not continuous
+    since = previous.get("collection_since") if unhealthy else None
+    if since is not None and (type(since) not in (int, float) or not 0 <= since <= now):
+        since = None
+    since = now if unhealthy and since is None else since
+    duration = now - since if unhealthy else 0
+    checks.append({"code": "collection", "state": ("firing" if duration >= COLLECTION_HOLD_S else "pending")
+                   if unhealthy else "healthy", "duration_s": int(duration),
+                   "threshold_s": COLLECTION_HOLD_S, "reset": not continuous})
     document = {"schema_version": 1, "event": "boinc_feed_health", "observed_at": now,
                 "max_age_s": MAX_AGE, "checks": checks,
                 "sources": facts.get("sources", {}),
                 "healthy": all(c["state"] == "healthy" for c in checks)}
     state = {"schema_version": 1, "config_id": config_id, "boot_id": boot_id,
              "time": now, "monotonic": monotonic, "conditions": conditions,
-             "last_failure_at": max(failure_at, previous.get("last_failure_at", 0))}
+             "last_failure_at": max(failure_at, previous.get("last_failure_at", 0)),
+             "collection_since": since}
     return document, state
 
 

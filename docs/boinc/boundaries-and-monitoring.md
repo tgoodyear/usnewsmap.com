@@ -203,9 +203,11 @@ Recovery or unknown evidence resets
 the affected condition. Process restarts preserve durations. Host reboot,
 configuration changes, backwards time, wall/monotonic disagreement or a gap
 over 180 seconds reset them and mark `collection` as reset. `collection` itself
-is held for 180 seconds (`COLLECTION_HOLD_S`): it fires only after three
-evaluations in a row with an unknown check, an unreadable source or a reset, so
-one failed source run stays pending and sends no email. An open backlog
+is held for 180 seconds (`COLLECTION_HOLD_S`): it fires only after 180 seconds
+of evaluations that each have an unknown check, an unreadable source or a reset,
+so one failed source run stays pending and sends no email. Its timer survives
+resets, unlike the condition timers, so resets that recur (an evaluator running
+only every few minutes, a configuration changing) still fire it. An open backlog
 with no newly observed workunit for an uninterrupted hour fires; a new workunit
 or closed backlog resets that timer. Shortage fires at exactly 30 minutes.
 Refill expiry/remaining ≤6h, controller failure, or runtime >15 minutes fire

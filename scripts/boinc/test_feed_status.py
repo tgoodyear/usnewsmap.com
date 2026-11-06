@@ -230,6 +230,22 @@ class DurationTest(unittest.TestCase):
         fired = self.tick(420)
         self.assertEqual((fired["collection"]["state"], fired["collection"]["duration_s"]), ("firing", 180))
 
+    def test_recurring_resets_fire_collection_and_a_single_reset_does_not(self):
+        self.tick(0)
+        self.assertEqual(self.tick(60)["collection"]["state"], "healthy")
+        first = self.tick(300)                                   # one gap over 180 s: a reset
+        self.assertEqual((first["collection"]["state"], first["collection"]["reset"]), ("pending", True))
+        self.assertEqual(self.tick(360)["collection"]["state"], "healthy")
+        for at, overrides in ((600, {}), (840, {}), (1080, {})):  # an evaluator running every four minutes
+            checks = self.tick(at, **overrides)
+        self.assertEqual(self.tick(1080 + 240)["collection"]["state"], "firing")
+        self.assertEqual(checks["collection"]["state"], "firing")
+        self.tick(1400)
+        self.assertEqual(self.tick(1460)["collection"]["state"], "healthy")
+        for at, config in ((1520, "a"), (1580, "b"), (1640, "c"), (1700, "d")):  # configs changing every minute
+            checks = self.tick(at, config_id=config)
+        self.assertEqual((checks["collection"]["state"], checks["collection"]["duration_s"]), ("firing", 180))
+
     def test_corrupt_duration_state_resets_instead_of_trusting_old_health(self):
         self.state = {"schema_version": 1, "time": "broken", "conditions": []}
         collection = self.tick(0)["collection"]
