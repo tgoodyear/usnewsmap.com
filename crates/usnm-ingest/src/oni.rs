@@ -849,9 +849,6 @@ impl Run<'_> {
                 let mut refreshed = record;
                 refreshed.fetched_at = old.fetched_at;
                 write_atomic(&sidecar, &serde_json::to_vec(&refreshed)?)?;
-            } else {
-                std::fs::set_permissions(&sidecar, std::fs::Permissions::from_mode(0o644))
-                    .with_context(|| sidecar.display().to_string())?;
             }
         } else {
             write_atomic(&sidecar, &serde_json::to_vec(&record)?)?;
@@ -1387,6 +1384,7 @@ mod tests {
         assert_eq!(refreshed.alto_store_path, records[0].alto_store_path);
         assert_eq!(refreshed.ocr_store_path, records[0].ocr_store_path);
         assert_eq!(refreshed.fetched_at, records[0].fetched_at);
+        std::fs::set_permissions(&sidecar, std::fs::Permissions::from_mode(0o640)).unwrap();
 
         let issue = Issue {
             lccn: "sn84035968".into(),
@@ -1418,6 +1416,10 @@ mod tests {
             serde_json::from_slice(&std::fs::read(&sidecar).unwrap()).unwrap();
         assert_eq!(preserved.alto_store_path, records[0].alto_store_path);
         assert_eq!(preserved.ocr_store_path, records[0].ocr_store_path);
+        assert_eq!(
+            std::fs::metadata(&sidecar).unwrap().permissions().mode() & 0o777,
+            0o640
+        );
 
         assert_eq!(
             std::fs::metadata(scans_root.join("catalog/psu_pst_test_ver01.jsonl"))
