@@ -260,10 +260,11 @@ impl Item {
             title: rd.titles.get(&h.lccn).map(|t| t.name.clone()),
             links: Links {
                 // LoC has no text for a page we OCR'd, so its viewer can't
-                // highlight the words: link the page without them.
+                // highlight the words: link the page without them. A page
+                // from Penn State's site links there (04 §4.12).
                 viewer: PageKey::from_doc_id(&h.doc_id)
                     .ok()
-                    .map(|k| k.viewer_url(ocr.is_none().then_some(highlight))),
+                    .map(|k| k.source_viewer_url(&h.batch, ocr.is_none().then_some(highlight))),
             },
             ocr,
             congress: None,

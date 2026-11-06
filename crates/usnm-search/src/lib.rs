@@ -474,6 +474,11 @@ pub struct Hit {
     /// [`BrowseKey`] a browse list resumes after. Not in the JSON.
     #[serde(skip)]
     pub sort_key: u64,
+    /// The batch this copy of the page came from, for its viewer link
+    /// ([`usnm_core::ids::PageKey::source_viewer_url`]); empty when the
+    /// index doesn't say. Not in the JSON.
+    #[serde(skip)]
+    pub batch: String,
     pub lccn: String,
     pub place_id: String,
     pub edition: u16,

@@ -71,7 +71,26 @@ impl PageKey {
         }
         url
     }
+
+    /// The page's viewer where its copy from `batch` came from: Penn
+    /// State's site for its batches ([`PSU_BATCH_PREFIX`]), without a
+    /// highlight (it marks only the OCR's exact words), else loc.gov's
+    /// ([`PageKey::viewer_url`]).
+    pub fn source_viewer_url(&self, batch: &str, highlight: Option<&str>) -> String {
+        if batch.starts_with(PSU_BATCH_PREFIX) {
+            format!("{PSU_SITE}/lccn/{self}/")
+        } else {
+            self.viewer_url(highlight)
+        }
+    }
 }
+
+/// How our names for batches from Penn State's Open ONI site (#1592, 04
+/// §4.12) begin: `psu_pst_bonadea_ver03` for its `batch_pst_bonaDea_ver03`.
+pub const PSU_BATCH_PREFIX: &str = "psu_";
+
+/// Penn State's Pennsylvania Newspaper Archive, an Open ONI site.
+pub const PSU_SITE: &str = "https://panewsarchive.psu.edu";
 
 fn validate_lccn(lccn: &str) -> Result<(), PageKeyError> {
     let ok = !lccn.is_empty()
@@ -184,5 +203,19 @@ mod tests {
             key.viewer_url(None),
             "https://www.loc.gov/resource/sn84031492/1896-07-10/ed-1/?sp=1"
         );
+    }
+
+    #[test]
+    fn links_penn_state_pages_to_penn_state() {
+        let key: PageKey = "sn84035968/1861-10-08/ed-1/seq-2".parse().unwrap();
+        assert_eq!(
+            key.source_viewer_url("psu_pst_bonadea_ver03", Some("Bucher")),
+            "https://panewsarchive.psu.edu/lccn/sn84035968/1861-10-08/ed-1/seq-2/"
+        );
+        assert_eq!(
+            key.source_viewer_url("pst_fenske_ver02", Some("Bucher")),
+            key.viewer_url(Some("Bucher"))
+        );
+        assert_eq!(key.source_viewer_url("", None), key.viewer_url(None));
     }
 }
