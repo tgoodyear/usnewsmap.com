@@ -33,12 +33,13 @@ TARGETS = {
 SUBSCRIPTION = "25bf257c-c94e-4d61-bba3-edc635f46602"
 ENVIRONMENT = (
     f"/subscriptions/{SUBSCRIPTION}/resourceGroups/rg-usnm-prod"
-    "/providers/Microsoft.App/managedEnvironments/cae-usnm-prod"
+    # The spare's VNet-less environment since #308 (cae-usnm-prod before).
+    "/providers/Microsoft.App/managedEnvironments/usnm-core-spare-cae-prod"
 )
 CERTIFICATE = ENVIRONMENT + "/certificates/usnm-public-dns01"
 APP = (
     f"/subscriptions/{SUBSCRIPTION}/resourceGroups/rg-usnm-prod"
-    "/providers/Microsoft.App/containerApps/ca-usnm-prod"
+    "/providers/Microsoft.App/containerApps/usnm-api-spare-ca-prod"
 )
 API_VERSION = "2025-01-01"
 

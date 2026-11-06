@@ -68,7 +68,7 @@ resource registry 'Microsoft.ContainerRegistry/registries@2023-07-01' existing =
   name: registryName
 }
 
-resource vnet 'Microsoft.Network/virtualNetworks@2024-05-01' existing = {
+resource vnet 'Microsoft.Network/virtualNetworks@2024-05-01' existing = if (!empty(vnetName)) {
   name: vnetName
 }
 
@@ -120,7 +120,7 @@ resource registryLogs 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview'
   }
 }
 
-resource vnetLogs 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
+resource vnetLogs 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = if (!empty(vnetName)) {
   scope: vnet
   name: name
   properties: {
