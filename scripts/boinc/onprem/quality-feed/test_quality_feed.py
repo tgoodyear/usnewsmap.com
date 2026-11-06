@@ -1006,37 +1006,42 @@ class FollowTest(unittest.TestCase):
                 self.assertEqual(ship(set()), 0)
                 self.assertEqual(set(feed.read_kept(str(kept))), {"q1", "q2"})
 
-                # OCR asks for q2 (its worker reads it by its sidecar and deletes it) and q1's
-                # sidecar is found gone: q2 leaves the list without a DELETE, q1 once one makes
-                # sure of its bytes, which makes room for a newly shipped q6.
+                # OCR asks for q2 and q1's sidecar is found gone: q2 stays listed and counted,
+                # unlooked-up, while q1 leaves once a DELETE makes sure of its bytes, which makes
+                # room for a newly shipped q6.
                 calls.clear()
                 gone.add("buffer/b/q1.jp2")
                 with open(done, "a") as f:
                     f.write("q6\tc2\tbuffer/b/q6.jp2\t40\t0.3\n")
                 self.assertEqual(ship({"q1", "q3", "q4", "q5", "q6"}, {"q2"}), 0)
-                self.assertEqual(calls, [("GET", "buffer/b/q2.jp2.json"), ("GET", "buffer/b/q1.jp2.json"),
-                                         ("DELETE", "buffer/b/q1.jp2")])
-                self.assertEqual(set(feed.read_kept(str(kept))), {"q6"})
-                self.assertEqual(feed.read_lines(str(deleted)), {"q1", "q2", "q3", "q4", "q5"})
+                self.assertEqual(calls, [("GET", "buffer/b/q1.jp2.json"), ("DELETE", "buffer/b/q1.jp2")])
+                self.assertEqual(set(feed.read_kept(str(kept))), {"q2", "q6"})
+                self.assertEqual(feed.read_kept(str(kept))["q2"][3], 0)
+                self.assertEqual(feed.read_lines(str(deleted)), {"q1", "q3", "q4", "q5"})
 
-                # A smaller budget evicts the least damaged; none at all evicts every one.
+                # OCR is done with q2, but its worker's best-effort DELETE failed: the lookup
+                # after finds it there, so it stays a kept scan like any other.
+                calls.clear()
+                self.assertEqual(ship({"q6"}), 0)
+                self.assertEqual(calls, [("GET", "buffer/b/q2.jp2.json"), ("GET", "buffer/b/q6.jp2.json")])
+                self.assertEqual(set(feed.read_kept(str(kept))), {"q2", "q6"})
+
+                # No budget at all evicts every one.
                 calls.clear()
                 a.keep_bytes = 0
-                self.assertEqual(ship({"q6"}), 1)
-                self.assertEqual(calls, [("DELETE", "buffer/b/q6.jp2")])
+                self.assertEqual(ship({"q6"}), 2)
+                self.assertEqual(calls, [("DELETE", "buffer/b/q2.jp2"), ("DELETE", "buffer/b/q6.jp2")])
                 self.assertEqual(feed.read_kept(str(kept)), {})
 
-    def test_a_half_deleted_kept_scan_ocr_asks_for_stays_listed_until_its_bytes_are_gone(self):
+    def test_a_kept_scan_ocr_asks_for_stays_counted_until_a_lookup_after_finds_its_bytes_gone(self):
         with tempfile.TemporaryDirectory() as d:
             camp, done, deleted, kept = Path(d, "camp"), Path(d, "done.txt"), Path(d, "deleted.txt"), Path(d, "kept.tsv")
             camp.mkdir()
             done.write_text("new\tc1\tbuffer/b/new.jp2\t40\t0.9\n")
-            # An eviction of ours marked half's sidecar done but couldn't unlink it, so OCR's
-            # worker won't read it: asking for it doesn't make its bytes go.
-            kept.write_text("half\tbuffer/b/half.jp2\t40\t0.1\t0\nother\tbuffer/b/other.jp2\t10\t0.95\t1\n")
-            # Looking half up doesn't use up the one --keep-verify lookup a round.
+            # ocr was checked later than other ever will be: only OCR asking for it puts it first.
+            kept.write_text("ocr\tbuffer/b/ocr.jp2\t40\t0.1\t4102444800\nother\tbuffer/b/other.jp2\t10\t0.95\t1\n")
             a = types.SimpleNamespace(scan_server="http://s", keep_bytes=60, keep_verify=1)
-            calls, status = [], {"buffer/b/half.jp2.json": 404, "buffer/b/half.jp2": 500}
+            calls, status = [], {}
 
             def fake(req, timeout=0):
                 path = req.full_url.removeprefix("http://s/scans/")
@@ -1045,22 +1050,32 @@ class FollowTest(unittest.TestCase):
                     raise urllib.error.HTTPError(req.full_url, status[path], "error", {}, None)
                 return io.BytesIO(b"{}")
 
-            ship = lambda: feed.delete_shipped(a, str(camp), str(done), {"new"}, str(deleted), str(kept), {"half"})
+            ship = lambda ocr=(): feed.delete_shipped(a, str(camp), str(done), {"new"}, str(deleted), str(kept),
+                                                      set(ocr))
             with mock.patch.object(feed.urllib.request, "urlopen", fake), \
                     contextlib.redirect_stdout(io.StringIO()):
-                # half stays listed and counted, and isn't evicted: new doesn't fit beside it.
-                self.assertEqual(ship(), 1)
-                self.assertEqual(calls, [("GET", "buffer/b/half.jp2.json"), ("DELETE", "buffer/b/half.jp2"),
-                                         ("GET", "buffer/b/other.jp2.json"), ("DELETE", "buffer/b/new.jp2")])
-                self.assertEqual(set(feed.read_kept(str(kept))), {"half", "other"})
+                # While OCR wants it, ocr isn't looked up or evicted and still counts: new doesn't
+                # fit beside it, though it's more damaged.
+                self.assertEqual(ship({"ocr"}), 1)
+                self.assertEqual(calls, [("GET", "buffer/b/other.jp2.json"), ("DELETE", "buffer/b/new.jp2")])
+                self.assertEqual(set(feed.read_kept(str(kept))), {"ocr", "other"})
+
+                # Once OCR is done with it, it's looked up first. OCR's worker DELETE got only as
+                # far as its sidecar, so it stays until one of ours makes sure of its bytes.
+                calls.clear()
+                status.update({"buffer/b/ocr.jp2.json": 404, "buffer/b/ocr.jp2": 500})
+                self.assertEqual(ship(), 0)
+                self.assertEqual(calls, [("GET", "buffer/b/ocr.jp2.json"), ("DELETE", "buffer/b/ocr.jp2")])
+                self.assertEqual(set(feed.read_kept(str(kept))), {"ocr", "other"})
 
                 calls.clear()
-                status["buffer/b/half.jp2"] = 0
+                a.keep_verify = 2
+                status["buffer/b/ocr.jp2"] = 0
                 self.assertEqual(ship(), 0)
-                self.assertEqual(calls, [("GET", "buffer/b/half.jp2.json"), ("DELETE", "buffer/b/half.jp2"),
-                                         ("GET", "buffer/b/other.jp2.json")])
+                self.assertEqual(sorted(calls), [("DELETE", "buffer/b/ocr.jp2"), ("GET", "buffer/b/ocr.jp2.json"),
+                                                 ("GET", "buffer/b/other.jp2.json")])
                 self.assertEqual(set(feed.read_kept(str(kept))), {"other"})
-                self.assertEqual(feed.read_lines(str(deleted)), {"new", "half"})
+                self.assertEqual(feed.read_lines(str(deleted)), {"new", "ocr"})
 
     def test_a_kept_scan_that_fails_to_go_holds_its_place_and_its_replacement_is_deleted(self):
         with tempfile.TemporaryDirectory() as d:

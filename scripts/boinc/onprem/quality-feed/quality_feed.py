@@ -838,14 +838,14 @@ def delete_shipped(a, camp_dir, done_path, quality_docs, deleted_path, kept_path
     is deleted. With both, the most damaged of the kept and newly shipped scans stay, up to
     that many bytes in all, and the rest are DELETEd.
 
-    A kept scan leaves the list, no longer counting against the budget, once OCR asks for it
-    (it's in `ocr_docs`, never inferred from `quality_docs`, which a missing list would empty)
-    and its sidecar is there, since OCR's worker reads a scan only by its sidecar and deletes
-    it after; or once its sidecar is found gone and a DELETE confirms its bytes are too. One
-    OCR asked for stays listed and counted, but is never evicted, until one of those is
-    found. With `verify` (the follower asks once a round, whatever its campaigns), each of
-    those is looked up, and --keep-verify of the other longest-unchecked; one the scan server
-    doesn't answer ends the round's lookups and deletes.
+    A kept scan leaves the list, no longer counting against the budget, only once its sidecar
+    is found gone and a DELETE confirms its bytes are too. One OCR asks for (it's in
+    `ocr_docs`, never inferred from `quality_docs`, which a missing list would empty) stays
+    listed and counted, and is neither evicted nor looked up while OCR wants it: OCR's worker
+    reads it by its sidecar and then deletes it, best effort. Its check time is reset, so it is
+    among the first looked up once OCR is done with it. With `verify` (the follower asks once
+    a round, whatever its campaigns), --keep-verify of the longest-unchecked are looked up; one
+    the scan server doesn't answer ends the round's lookups and deletes.
 
     `deleted_path` gets every page this is done with, deleted or released, so neither is
     weighed again; with `retired_path`, the kept list's pages go there instead: the list is
@@ -900,24 +900,12 @@ def delete_shipped(a, camp_dir, done_path, quality_docs, deleted_path, kept_path
             return False
         return True
 
+    # OCR's worker deletes a scan it read best effort, so one OCR wants is handed back only
+    # once a lookup after finds its bytes gone; until then it counts.
+    claimed = {doc: (*k[:3], 0) for doc, k in kept.items() if doc in ocr_docs}
+    kept.update(claimed)
     released = []
-    claimed = {doc: k for doc, k in kept.items() if doc in ocr_docs}
-    for doc, k in sorted(claimed.items()) if verify else ():
-        try:
-            there = scan_exists(a.scan_server, k[0])
-        except (urllib.error.URLError, OSError) as e:
-            log("claimed kept scan check failed; next round", doc_id=doc, error=str(e)[:200])
-            if isinstance(e, urllib.error.HTTPError):
-                continue
-            unreachable = True
-            break
-        # Without its sidecar OCR won't read it, so a DELETE makes sure its bytes are gone (one
-        # of ours that failed halfway leaves just the sidecar gone).
-        if there or delete(doc, k[0]):
-            released.append(doc)
-        if unreachable:
-            break
-    if budget and verify and not unreachable:
+    if budget and verify:
         unclaimed = ((doc, k) for doc, k in kept.items() if doc not in claimed)
         for doc, k in heapq.nsmallest(getattr(a, "keep_verify", 0), unclaimed, key=lambda kv: kv[1][3]):
             try:
@@ -940,7 +928,6 @@ def delete_shipped(a, camp_dir, done_path, quality_docs, deleted_path, kept_path
                 break
     for doc in released:
         kept.pop(doc, None)
-        claimed.pop(doc, None)
     pool = {d: k for d, k in {**kept, **shipped}.items() if d not in claimed}
     want, used = {}, sum(k[1] for k in claimed.values())
     if budget:
