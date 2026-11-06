@@ -1093,7 +1093,8 @@ with socket.create_connection({listener.getsockname()!r}, timeout=2) as connecti
             args = [sys.executable, str(Path(F.__file__)), "--config", str(config_path),
                     "--state-dir", str(root / "state")]
             first = json.loads(C.run(args))
-            self.assertEqual(next(c for c in first["checks"] if c["code"] == "collection")["state"], "firing")
+            # Held three minutes (COLLECTION_HOLD_S): the first unknown evaluation is pending.
+            self.assertEqual(next(c for c in first["checks"] if c["code"] == "collection")["state"], "pending")
             time.sleep(1.05)
             args[2:4] = [f"--config={config_path}"]
             second = json.loads(C.run(args))

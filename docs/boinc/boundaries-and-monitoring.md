@@ -202,7 +202,10 @@ Malformed source objects become unknown without suppressing unaffected checks.
 Recovery or unknown evidence resets
 the affected condition. Process restarts preserve durations. Host reboot,
 configuration changes, backwards time, wall/monotonic disagreement or a gap
-over 180 seconds reset them and emit a collection warning. An open backlog
+over 180 seconds reset them and mark `collection` as reset. `collection` itself
+is held for 180 seconds (`COLLECTION_HOLD_S`): it fires only after three
+evaluations in a row with an unknown check, an unreadable source or a reset, so
+one failed source run stays pending and sends no email. An open backlog
 with no newly observed workunit for an uninterrupted hour fires; a new workunit
 or closed backlog resets that timer. Shortage fires at exactly 30 minutes.
 Refill expiry/remaining ≤6h, controller failure, or runtime >15 minutes fire
@@ -239,7 +242,7 @@ same reason and app IDs have held for 600 seconds (`FEEDER_DRIFT_HOLD_S`), two
 runs of the guard's five-minute timer, which is the runbook's first condition
 for a [refresh](feeder-refresh.md#when-a-refresh-is-warranted); different drift
 restarts the timer. `maintenance` and `unknown` skip the comparison, so the
-check is unknown with the guard's reason and `collection` fires. That includes a
+check is unknown with the guard's reason and `collection` fires after its hold. That includes a
 deliberate `stop_maintenance`, a stopped feeder and the supervisor loop's restart
 hold. The alert is a prompt to follow the runbook; nothing here refreshes the
 feeder. Without the config key the evaluator emits the same seven checks as
@@ -403,7 +406,7 @@ and install the health units. Create `/etc/usnm-boinc/feed-monitor.json`:
 allowlist. Until the backlog source publishes, `sources.backlog` is unknown
 (`not_configured`) and both no-work checks are unknown. With no own clients,
 both shortage checks are unknown (`no_own_clients_configured`), never zero idle
-slots. Either way `collection` fires. When the backlog source publishes, set
+slots. Either way `collection` fires after its hold. When the backlog source publishes, set
 `backlog` to `/var/lib/usnm-ocrdash/feed-sources/backlog.json`.
 
 `feeder_allocation` may also be left out, and is off by default. To turn the

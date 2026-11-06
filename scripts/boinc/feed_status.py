@@ -22,6 +22,7 @@ COHORT_STALL_S = 15 * 60          # no completed run at all
 COHORT_REPORT_MAX_AGE_S = 30 * 60  # runs complete but none reports (the step lock stays busy)
 COHORT_FAILURE_RUNS = 3           # failed runs in a row since the last success, not one
 NO_WORK_HOLD_S = 3600
+COLLECTION_HOLD_S = 3 * 60        # three evaluations in a row
 # Statuses of runs that scanned candidates and measured backlog, buffers and the window.
 COHORT_SCAN_STATUSES = ("no-fresh-verified-pairs", "current-window-still-eligible",
                         "bounded-gpu-inflight-buffer-full", "refilled-finite-window")
@@ -166,7 +167,8 @@ def evaluate(facts, previous, now, monotonic, boot_id, config_id):
               generation=guard["reason"] + ":" + ",".join(map(str, guard["app_ids"])),
               reason=guard["reason"], app_ids=guard["app_ids"])
     unknown = facts.get("errors", []) or [c["code"] for c in checks if c["state"] == "unknown"]
-    check("collection", bool(unknown) or not continuous, reset=not continuous)
+    # Held: one failed source run (a single unknown evaluation) is not worth an email.
+    check("collection", bool(unknown) or not continuous, COLLECTION_HOLD_S, reset=not continuous)
     document = {"schema_version": 1, "event": "boinc_feed_health", "observed_at": now,
                 "max_age_s": MAX_AGE, "checks": checks,
                 "sources": facts.get("sources", {}),
