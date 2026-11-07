@@ -1206,7 +1206,7 @@ pub(crate) mod tests {
                 "-m",
                 "unittest",
                 "-v",
-                "scripts.boinc.onprem.quality-feed.test_qwen_feed.RustQualityBundleContractTest",
+                "boinc.scripts.onprem.quality-feed.test_qwen_feed.RustQualityBundleContractTest",
             ])
             .output()
             .unwrap();

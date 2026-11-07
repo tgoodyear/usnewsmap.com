@@ -18,9 +18,9 @@
 # mirror CLI, and it and reviewed selections also build the bridge.
 # edge: the Cloudflare fallback Worker (edge/: JavaScript, its Wrangler config and deploy
 # script), whose job runs its node:test tests and shellchecks the script (ADR-0027, #1098).
-# boinc_pages: the BOINC project's own web pages (contrib-compute/boinc/html/), which
+# boinc_pages: the BOINC project's own web pages (boinc/project/html/), which
 # only need a PHP syntax check; a change to them alone runs nothing else.
-# contrib: the hosting for the stock BOINC server (contrib-compute/: shell,
+# contrib: the hosting for the stock BOINC server (boinc/: shell,
 # XML and Bicep; ADR-0019), which no other job builds.
 # Everything runs for a default workflow_dispatch (scripts/azure/bootstrap.sh dispatches ci
 # to publish images), for a change to the workflows themselves, and whenever
@@ -136,9 +136,9 @@ echo "$files" | sed 's/^/changed: /'
 if grep -Eq '\.md$' <<< "$files"; then markdown=true; else markdown=false; fi
 # Documentation is only read, except the executable GPU-study scripts, which
 # have regression tests in scripts/ci/. No README is compiled into an image.
-files=$(awk '!/\.md$/ && ($0 !~ /^docs\// || $0 ~ /^docs\/reports\/2026-11-gpu-studies\/scripts\/.*\.(py|sh)$/)' <<< "$files")
-if grep -Eq '^contrib-compute/boinc/html/' <<< "$files"; then boinc_pages=true; else boinc_pages=false; fi
-files=$(grep -Ev '^contrib-compute/boinc/html/' <<< "$files" || true)
+files=$(awk '!/\.md$/ && ($0 !~ /^(docs|boinc\/docs)\// || $0 ~ /^docs\/reports\/2026-11-gpu-studies\/scripts\/.*\.(py|sh)$/)' <<< "$files")
+if grep -Eq '^boinc/project/html/' <<< "$files"; then boinc_pages=true; else boinc_pages=false; fi
+files=$(grep -Ev '^boinc/project/html/' <<< "$files" || true)
 matches() { [ -n "$files" ] && grep -Eq "$1" <<< "$files"; }
 # Gold fixtures are excluded from application/image rules. The embedded v1 lock
 # is considered separately for Rust below, and for BOINC's contrib checks.
@@ -245,7 +245,7 @@ image_ingest="$rust_files|^(docker/Dockerfile\.ingest$|\.dockerignore$|infra/qui
 image_ja_ocr='^(docker/Dockerfile\.ja-ocr$|\.dockerignore$|ocr/ja-ocr/|scripts/ci/check-ja-ocr-image\.sh$|scripts/data/build-page-language-words\.py$|crates/usnm-core/(data/page-language-words\.txt|tests/data/(damage|page-language)-parity\.jsonl\.zst)$)'
 # The BOINC integration tests execute this wrapper at run time. Its changes
 # need the Rust tests, but it is not an input to the serving/ingest images above.
-rust="$rust|^contrib-compute/images/server/bridge-job\.sh$|^scripts/ci/rust-test-times\.py$"
+rust="$rust|^boinc/images/server/bridge-job\.sh$|^scripts/ci/rust-test-times\.py$"
 # The queue job: usnm-store and usnm-state (by closure, below) against PostgreSQL + pgmq, with
 # the queue's schema and fixture (#967) and the OCR-quality results database's schema and
 # loader (#962). No crate reads these scripts, so they are not the rust job's.
@@ -269,30 +269,30 @@ ocr_dashboard=$ocr_dash
 # the checkout (COPY . .), so what each one adds to the crates is its own
 # Containerfile, its smoke tests and what they download or pin. The worker and
 # NDLOCR images also build usnm-boinc's examples (narrow_examples).
-boinc_worker='^(ocr/engines/tesseract/|ocr/engines/engines\.toml$|ocr/boinc/Containerfile$|scripts/boinc/smoke-worker\.py$|rust-toolchain\.toml$|\.dockerignore$)'
-boinc_qwen='^(ocr/boinc/qwen/|scripts/boinc/qwen_(disk|cold_cache)\.py$|rust-toolchain\.toml$|\.dockerignore$)'
-boinc_surya='^(ocr/boinc/surya/|rust-toolchain\.toml$|\.dockerignore$)'
+boinc_worker='^(ocr/engines/tesseract/|ocr/engines/engines\.toml$|boinc/apps/Containerfile$|boinc/scripts/smoke-worker\.py$|rust-toolchain\.toml$|\.dockerignore$)'
+boinc_qwen='^(boinc/apps/qwen/|boinc/scripts/qwen_(disk|cold_cache)\.py$|rust-toolchain\.toml$|\.dockerignore$)'
+boinc_surya='^(boinc/apps/surya/|rust-toolchain\.toml$|\.dockerignore$)'
 # What sets the second Qwen model (8b) and Surya variant (vulkan) apart from the first, so a pull
 # request builds them too (#1585): the image's own directory, whose pins usnm-boinc also embeds
 # (the Qwen weights and disk policy, the Surya engine lock with the Vulkan base), and the scripts
 # that check each Qwen payload. Crates, the files they embed elsewhere, the toolchain and
 # .dockerignore reach only the build stage and context the two share.
-boinc_qwen_8b='^(ocr/boinc/qwen/|scripts/boinc/qwen_(disk|cold_cache)\.py$)'
-boinc_surya_vulkan='^ocr/boinc/surya/'
+boinc_qwen_8b='^(boinc/apps/qwen/|boinc/scripts/qwen_(disk|cold_cache)\.py$)'
+boinc_surya_vulkan='^boinc/apps/surya/'
 # What the worker's arm64 build reads that amd64's doesn't already check: the two Containerfiles,
 # whose bases and Rust image differ by architecture, and the build context's filter (#1585).
-boinc_worker_arm64='^(ocr/boinc/Containerfile$|ocr/engines/tesseract/Containerfile$|\.dockerignore$)'
-boinc_ndlocr='^(ocr/engines/ndlocr-lite/|ocr/boinc/ndlocr-lite/|scripts/boinc/smoke-ndlocr(-worker)?\.py$|ocr/ja-ocr/(testdata/|alto\.py$|jaocr\.py$|undigitized\.py$)|rust-toolchain\.toml$|\.dockerignore$)'
+boinc_worker_arm64='^(boinc/apps/Containerfile$|ocr/engines/tesseract/Containerfile$|\.dockerignore$)'
+boinc_ndlocr='^(ocr/engines/ndlocr-lite/|boinc/apps/ndlocr-lite/|boinc/scripts/smoke-ndlocr(-worker)?\.py$|ocr/ja-ocr/(testdata/|alto\.py$|jaocr\.py$|undigitized\.py$)|rust-toolchain\.toml$|\.dockerignore$)'
 # The native apps (boinc-quality-native.yml) build usnm-quality-app and
 # usnm-qwen-app and test those and the two crates they share with the engines;
 # usnm-ocr-contract's tests read the v1 contract files. The Linux NVIDIA 2B release inputs
 # are assembled by qwen_vulkan_bundle.py within the disk policy's bundle bound and checked
 # against the 6 GB release's runtime (#1234).
-boinc_native='^(ocr/contract/|ocr/boinc/qwen/(amd-device-map\.cpp|disk-policy\.json)$|scripts/boinc/(test_amd_device_map\.py|patch_amd_vulkan_identity\.py|build_amd_vulkan_runtime\.ps1|(test_)?qwen_vulkan_bundle\.py)$|contrib-compute/infra/boinc/releases/prod-onprem-usnm_qwen-nvidia_vulkan_6gb_8b\.json$|rust-toolchain\.toml$)'
+boinc_native='^(ocr/contract/|boinc/apps/qwen/(amd-device-map\.cpp|disk-policy\.json)$|boinc/scripts/(test_amd_device_map\.py|patch_amd_vulkan_identity\.py|build_amd_vulkan_runtime\.ps1|(test_)?qwen_vulkan_bundle\.py)$|boinc/infra/boinc/releases/prod-onprem-usnm_qwen-nvidia_vulkan_6gb_8b\.json$|rust-toolchain\.toml$)'
 # The native OCR app (boinc-ocr-native.yml) builds usnm-ocr-app and the static Tesseract,
 # fetches the locked models for its smoke test, and checks and stages the build as a release
 # would, against the container engine's version.
-boinc_ocr_native='^(ocr/boinc/native/|scripts/boinc/(smoke-native-ocr\.sh|check-native-ocr-build\.py|install\.py)$|contrib-compute/images/appver/check_appver\.py$|ocr/engines/tesseract/(models\.lock|Containerfile)$|rust-toolchain\.toml$|\.dockerignore$)'
+boinc_ocr_native='^(boinc/apps/native/|boinc/scripts/(smoke-native-ocr\.sh|check-native-ocr-build\.py|install\.py)$|boinc/images/appver/check_appver\.py$|ocr/engines/tesseract/(models\.lock|Containerfile)$|rust-toolchain\.toml$|\.dockerignore$)'
 # The page-language detector's test on text of known language (05 §5.5.8):
 # the detector, its word lists and the language table it reads them by, its
 # crate's manifest and the lock file, the samples and their test, and the
@@ -300,7 +300,7 @@ boinc_ocr_native='^(ocr/boinc/native/|scripts/boinc/(smoke-native-ocr\.sh|check-
 page_language='^(crates/usnm-core/src/page_language/|crates/usnm-core/src/lang\.rs$|crates/usnm-core/data/page-language-words\.txt$|crates/usnm-core/Cargo\.toml$|Cargo\.lock$|crates/usnm-core/tests/page_language_samples\.rs$|fixtures/page-language/|scripts/data/(page-language-samples|build-page-language-words)\.py$)'
 # The BOINC server hosting: its scripts, templates and Bicep (its Markdown counts as
 # documentation, above), and the workflow, which matches earlier.
-contrib='^(contrib-compute/|web/public/\.well-known/|fixtures/ocr-gold/(selections/|bundle-v[12]\.lock\.json$)|scripts/ocr-survey/transcription\.py$|infra/workbooks/boinc\.json$|crates/usnm-boinc/|ocr/boinc/|scripts/boinc/|scripts/ci/check-boinc-server-image\.sh$)'
+contrib='^(boinc/|web/public/\.well-known/|fixtures/ocr-gold/(selections/|bundle-v[12]\.lock\.json$)|scripts/ocr-survey/transcription\.py$|infra/workbooks/boinc\.json$|crates/usnm-boinc/|scripts/ci/check-boinc-server-image\.sh$)'
 ocr_gold='^(scripts/ocr-survey/|fixtures/ocr-gold/|crates/usnm-ocr-survey/tests/golden/)'
 # The fallback Worker: its source, tests, Wrangler config and deploy script (its README counts as
 # documentation, above).

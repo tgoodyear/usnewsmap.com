@@ -1,6 +1,6 @@
 # BUDA ARM Mac evaluation and `Run_Podman` state-query fix
 
-**Status:** measured locally; `Run_Podman` `--format` quoting fix applied in `scripts/boinc/patch-mac-wrapper.py` · **Date:** 2026-10-15 · **Measured on:** BOINC `22bbebe08e2eaac5d5e88a6d93b88e800cb6341c`, macOS 26.7.1 arm64, BOINC 8.2.15, Podman 5.5.2 · **Code:** [patch-mac-wrapper.py](../../scripts/boinc/patch-mac-wrapper.py), [build-mac-wrapper.sh](../../scripts/boinc/build-mac-wrapper.sh) · **Issues:** [#476](https://github.com/tgoodyear/usnewsmap.com/issues/476), [#481](https://github.com/tgoodyear/usnewsmap.com/issues/481), [#533](https://github.com/tgoodyear/usnewsmap.com/issues/533)
+**Status:** measured locally; `Run_Podman` `--format` quoting fix applied in `boinc/scripts/patch-mac-wrapper.py` · **Date:** 2026-10-15 · **Measured on:** BOINC `22bbebe08e2eaac5d5e88a6d93b88e800cb6341c`, macOS 26.7.1 arm64, BOINC 8.2.15, Podman 5.5.2 · **Code:** [patch-mac-wrapper.py](../../boinc/scripts/patch-mac-wrapper.py), [build-mac-wrapper.sh](../../boinc/scripts/build-mac-wrapper.sh) · **Issues:** [#476](https://github.com/tgoodyear/usnewsmap.com/issues/476), [#481](https://github.com/tgoodyear/usnewsmap.com/issues/481), [#533](https://github.com/tgoodyear/usnewsmap.com/issues/533)
 
 ## The question
 
@@ -20,15 +20,15 @@ On macOS, `docker_wrapper` does not invoke `/opt/podman/bin/podman` directly. In
 
 To fix this in our signed Mac wrapper builds without asking volunteers to modify their Apple-signed `/Library/Application Support/BOINC Data/Run_Podman` helper, we:
 
-1. Added `scripts/boinc/patch-mac-wrapper.py`, which patches `samples/docker_wrapper/docker_wrapper.cpp` in the checked-out upstream BOINC tree (`22bbebe08e2eaac5d5e88a6d93b88e800cb6341c`) so the `--format` argument in `get_container_state()` is escaped and quoted for `Run_Podman`'s second shell pass and the `|` delimiter is not interpreted as a shell pipe.
-2. Updated `scripts/boinc/build-mac-wrapper.sh` to run `python3 "$root/scripts/boinc/patch-mac-wrapper.py"` against the checked-out BOINC source before invoking `make -C "$work/samples/docker_wrapper" -f Makefile_mac` for `docker_wrapper_arm64` and `docker_wrapper_x86_64`.
+1. Added `boinc/scripts/patch-mac-wrapper.py`, which patches `samples/docker_wrapper/docker_wrapper.cpp` in the checked-out upstream BOINC tree (`22bbebe08e2eaac5d5e88a6d93b88e800cb6341c`) so the `--format` argument in `get_container_state()` is escaped and quoted for `Run_Podman`'s second shell pass and the `|` delimiter is not interpreted as a shell pipe.
+2. Updated `boinc/scripts/build-mac-wrapper.sh` to run `python3 "$root/boinc/scripts/patch-mac-wrapper.py"` against the checked-out BOINC source before invoking `make -C "$work/samples/docker_wrapper" -f Makefile_mac` for `docker_wrapper_arm64` and `docker_wrapper_x86_64`.
 
 ## What we measured
 
 | Case                                                                             | `get_container_state` output     | Pause → restart behavior                                                   |
 | -------------------------------------------------------------------------------- | -------------------------------- | -------------------------------------------------------------------------- |
 | Unpatched upstream `docker_wrapper` (`22bbebe0`) via `Run_Podman`                | Empty stdout (`zsh` parse error) | Fails: attempts `create` on existing paused container name, exits 1        |
-| Patched `docker_wrapper` (`scripts/boinc/patch-mac-wrapper.py`) via `Run_Podman` | `<name>\|Paused` / `<name>\|Up`  | Passes: detects paused container and resumes (`unpause`) without re-create |
+| Patched `docker_wrapper` (`boinc/scripts/patch-mac-wrapper.py`) via `Run_Podman` | `<name>\|Paused` / `<name>\|Up`  | Passes: detects paused container and resumes (`unpause`) without re-create |
 
 ## What is left
 

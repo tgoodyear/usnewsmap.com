@@ -75,7 +75,7 @@ class Pins(unittest.TestCase):
             capture_output=True, text=True,
         )
         self.assertEqual(proc.returncode, 1)
-        self.assertIn("error: ocr/boinc/surya/engine.lock: SURYA_VERSION=v", proc.stderr)
+        self.assertIn("error: boinc/apps/surya/engine.lock: SURYA_VERSION=v", proc.stderr)
 
     # The Surya image.
 

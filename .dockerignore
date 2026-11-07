@@ -1,7 +1,7 @@
 target
 .git
 docs
-# The #456 assessment scores with the #435 report's scripts (contrib-compute/images/bridge).
+# The #456 assessment scores with the #435 report's scripts (boinc/images/bridge).
 !docs/reports/2026-10-jp2-vs-jpeg-ocr/score.py
 !docs/reports/2026-10-jp2-vs-jpeg-ocr/aggregate.py
 web/node_modules

@@ -8,7 +8,7 @@ science ledger, Temporal deployment or permission to submit more work.
 Run on an operator-owned, frozen copy of one native Qwen campaign's metadata:
 
 ```sh
-python3 scripts/boinc/qwen_shadow.py --root /path/to/copied-campaign --max-units 10000
+python3 boinc/scripts/qwen_shadow.py --root /path/to/copied-campaign --max-units 10000
 ```
 
 The copy contains `audit.json` and immediate `units/<source>/` directories with
@@ -58,7 +58,7 @@ authority or hold the shared project lock for a historical scan.
 ## Validation and next boundary
 
 ```sh
-python3 -m unittest -v scripts/boinc/test_qwen_shadow.py
+python3 -m unittest -v boinc/scripts/test_qwen_shadow.py
 ```
 
 Tests use synthetic data only and cover repeatability, non-mutation, count

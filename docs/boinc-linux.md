@@ -50,7 +50,7 @@ website in a file only you can read (mode `0600`), then from a
 [checkout of this repository](https://github.com/tgoodyear/usnewsmap.com):
 
 ```sh
-sudo python3 scripts/boinc/client_account.py \
+sudo python3 boinc/scripts/client_account.py \
   --data-dir /var/lib/boinc \
   --expected-user-id YOUR_NUMERIC_USER_ID \
   --expected-user-name 'YOUR_ACCOUNT_NAME' \

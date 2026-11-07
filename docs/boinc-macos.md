@@ -48,7 +48,7 @@ If the Mac is already attached, do not remove and re-add the project.
    would change:
 
    ```sh
-   python3 scripts/boinc/setup_mac_volunteer.py
+   python3 boinc/scripts/setup_mac_volunteer.py
    ```
 
    The first run of `python3` on a Mac may offer to install Apple's command
@@ -58,7 +58,7 @@ If the Mac is already attached, do not remove and re-add the project.
 4. Apply it:
 
    ```sh
-   python3 scripts/boinc/setup_mac_volunteer.py --apply
+   python3 boinc/scripts/setup_mac_volunteer.py --apply
    ```
 
    This writes BOINC's computing preferences so a task can hold its model in
@@ -75,7 +75,7 @@ If the Mac is already attached, do not remove and re-add the project.
 Run the preview again any time:
 
 ```sh
-python3 scripts/boinc/setup_mac_volunteer.py
+python3 boinc/scripts/setup_mac_volunteer.py
 ```
 
 `project_attached` should be `true`. In Manager's **Event Log** (Advanced

@@ -32,7 +32,7 @@ pub struct Summary {
 /// volunteers' hosts until the first units return.
 pub const FPOPS_EST: &str = "1e12";
 pub const FPOPS_BOUND: &str = "1e14";
-/// 1.5 GiB, the `docker` plan class's container (`ocr/boinc/job.toml`).
+/// 1.5 GiB, the `docker` plan class's container (`boinc/apps/job.toml`).
 pub const MEMORY_BOUND: &str = "1610612736";
 
 pub fn create_work_args(job: &Job) -> Vec<String> {

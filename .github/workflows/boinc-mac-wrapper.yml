@@ -4,10 +4,10 @@ on:
   pull_request:
     paths:
       - .github/workflows/boinc-mac-wrapper.yml
-      - scripts/boinc/build-mac-wrapper.sh
-      - scripts/boinc/patch-mac-wrapper.py
-      - scripts/boinc/check-mac-wrapper.py
-      - contrib-compute/images/base/Containerfile
+      - boinc/scripts/build-mac-wrapper.sh
+      - boinc/scripts/patch-mac-wrapper.py
+      - boinc/scripts/check-mac-wrapper.py
+      - boinc/images/base/Containerfile
 permissions:
   contents: read
 jobs:
@@ -17,14 +17,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - run: bash scripts/boinc/build-mac-wrapper.sh --out "$RUNNER_TEMP/mac-wrappers"
+      - run: bash boinc/scripts/build-mac-wrapper.sh --out "$RUNNER_TEMP/mac-wrappers"
       - name: Verify both platform artifacts
         run: |
           cd "$RUNNER_TEMP/mac-wrappers"
           shasum -a 256 -c SHA256SUMS
           for arch in arm64 x86_64; do
             sha=$(shasum -a 256 "docker_wrapper_$arch" | cut -d ' ' -f 1)
-            python3 "$GITHUB_WORKSPACE/scripts/boinc/check-mac-wrapper.py" \
+            python3 "$GITHUB_WORKSPACE/boinc/scripts/check-mac-wrapper.py" \
               --wrapper "docker_wrapper_$arch" --platform "$arch-apple-darwin" \
               --sha256 "$sha" --source-pin BOINC_COMMIT
           done

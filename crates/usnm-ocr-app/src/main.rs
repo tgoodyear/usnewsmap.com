@@ -34,7 +34,7 @@ enum Command {
         /// The `usnm_ocr` executable.
         #[arg(long)]
         worker: PathBuf,
-        /// The static Tesseract built by ocr/boinc/native/Containerfile.
+        /// The static Tesseract built by boinc/apps/native/Containerfile.
         #[arg(long)]
         tesseract: PathBuf,
         /// A directory holding every model in the Tesseract lock.

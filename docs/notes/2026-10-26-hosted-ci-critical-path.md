@@ -3,7 +3,7 @@
 **Status:** implemented on a pull request, not merged. **Date:** 26 October 2026. **Measured on:** production CI run
 [40389690376](https://github.com/tgoodyear/usnewsmap.com/actions/runs/40389690376).
 **Code:** `.github/workflows/ci.yml`, the Rust/image setup actions,
-`scripts/ci/run-unit-tests.py`, `contrib-compute/images/ci.hcl`.
+`scripts/ci/run-unit-tests.py`, `boinc/images/ci.hcl`.
 **Issue:** #1229. **Pull request:** #1232.
 
 ## The question

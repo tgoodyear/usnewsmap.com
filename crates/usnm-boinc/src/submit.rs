@@ -122,7 +122,7 @@ pub async fn submit_checked(
             std::time::Duration::from_secs(90),
             Command::new("python3")
                 .args(["-c", "import sys,types; m=types.ModuleType('retry_release_check'); exec(sys.argv[1],m.__dict__); m.verify_retry_worker(m.Path(sys.argv[2]),int(sys.argv[3]),sys.argv[4])"])
-                .arg(include_str!("../../../scripts/boinc/acceptance_server.py"))
+                .arg(include_str!("../../../boinc/scripts/acceptance_server.py"))
                 .arg(&project)
                 .arg(retry.app_version_num.to_string())
                 .arg(&job.engine.image)

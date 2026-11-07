@@ -1,6 +1,6 @@
 # What Qwen's extra replicas cost
 
-**Status:** measured; nothing changed · **Date:** 4 November 2026 · **Measured on:** the 3,481 `usnm_qwen` units created from 21 October to 3 November 2026 (the first on 26 October), read from the BOINC database at 22:20 UTC on 4 November, with each unit's language and request version from its job input · **Code:** `scripts/boinc/qwen-replica-cost.py` · **Issues:** #1420, #1477
+**Status:** measured; nothing changed · **Date:** 4 November 2026 · **Measured on:** the 3,481 `usnm_qwen` units created from 21 October to 3 November 2026 (the first on 26 October), read from the BOINC database at 22:20 UTC on 4 November, with each unit's language and request version from its job input · **Code:** `boinc/scripts/qwen-replica-cost.py` · **Issues:** #1420, #1477
 
 ## The question
 
@@ -16,7 +16,7 @@ A Qwen unit needs two replicas that agree. When the first two disagree, BOINC se
 
 ## Method
 
-`scripts/boinc/qwen-replica-cost.py collect` runs in the BOINC server container as root. It reads the window's workunits and their results in one `READ ONLY` transaction of `LIMIT`-bounded `SELECT`s, and joins each unit's language and request version from its `qwen.json`. It then prints a JSON snapshot. `report` turns the snapshot into the tables below. A unit is **disputed** when its first two successful returns, in the order the server received them, aren't both in the valid pair. The replica that **resolved** a valid unit is the received-order position of its second valid result. **Resolved nothing** covers the losing replicas and errors on units that ended valid, and every replica on units that hit the cap (`error_mask` too many total or successful results). Every valid unit in the window had exactly two valid results, and none was cancelled or ended on too many errors, so the report's columns for those cases are zero and are left out here. **GPU-hours** are the summed `elapsed_time` of successes and errors. The validator's pair log (`qwen/pairs.jsonl`) matched the database on every first pair: 1,572 agreed and 686 disagreed.
+`boinc/scripts/qwen-replica-cost.py collect` runs in the BOINC server container as root. It reads the window's workunits and their results in one `READ ONLY` transaction of `LIMIT`-bounded `SELECT`s, and joins each unit's language and request version from its `qwen.json`. It then prints a JSON snapshot. `report` turns the snapshot into the tables below. A unit is **disputed** when its first two successful returns, in the order the server received them, aren't both in the valid pair. The replica that **resolved** a valid unit is the received-order position of its second valid result. **Resolved nothing** covers the losing replicas and errors on units that ended valid, and every replica on units that hit the cap (`error_mask` too many total or successful results). Every valid unit in the window had exactly two valid results, and none was cancelled or ended on too many errors, so the report's columns for those cases are zero and are left out here. **GPU-hours** are the summed `elapsed_time` of successes and errors. The validator's pair log (`qwen/pairs.jsonl`) matched the database on every first pair: 1,572 agreed and 686 disagreed.
 
 ## Results
 

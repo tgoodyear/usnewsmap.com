@@ -34,7 +34,7 @@ use usnm_ocr_contract::{
     },
 };
 
-/// The Python runner inside the image (`ocr/boinc/surya/run.py`).
+/// The Python runner inside the image (`boinc/apps/surya/run.py`).
 const RUNNER: &str = "/opt/surya/run.py";
 /// The engine the image was built with, from its environment.
 const ENV_IMAGE_LLAMA: &str = "USNM_SURYA_LLAMA_IMAGE";

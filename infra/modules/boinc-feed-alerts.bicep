@@ -2,7 +2,7 @@
 // existing action group (monitoring.bicep). Deployed by main.bicep with
 // boincFeedAlerts (USNM_BOINC_FEED_ALERTS), ocrNodes and alert emails.
 //
-// The evaluator (scripts/boinc/feed_status.py, usnm-boinc-feed-health.service)
+// The evaluator (boinc/scripts/feed_status.py, usnm-boinc-feed-health.service)
 // prints one JSON document a minute; its unit logs it to local0 at Info as
 // usnm-boinc-feed-health. The evaluator host's Arc machine (machineName, in
 // the environment's resource group; a private setting) is associated with
@@ -19,9 +19,13 @@
 // Two stateful rules, split by Check, so Azure sends one email when a check
 // starts and a resolved one when it clears; the evaluator sends no
 // transitions of its own:
-// - condition: a check firing or unknown in the latest event of the last 3
-//   minutes, or firing in any event of the last 10 (a shortage that recovers
-//   between two evaluations still alerts). Also Check = delivery_test for a
+// - condition: a check firing in the latest event of the last 3 minutes, or
+//   firing in any event of the last 10 (a shortage that recovers between two
+//   evaluations still alerts). A check that is unknown in the latest event
+//   counts only while that event's collection check is firing, which the
+//   evaluator holds for 180 seconds of unknown evaluations: one failed source
+//   read (a single unknown minute) sends no email, a lasting one names every
+//   unknown check. Also Check = delivery_test for a
 //   boinc_feed_delivery_test line in the last 10 minutes
 //   (feed_status.py --delivery-test), the end-to-end notification check.
 //   That line never counts as a health event: it can't change the latest
@@ -110,8 +114,13 @@ var queries = [
     displayName: 'BOINC feed condition'
     query: '''
 | where Observed between (ago(3m) .. now())
+| mv-apply Held = Feed.checks on (
+    where tostring(Held.code) == 'collection'
+    | summarize CollectionFiring = countif(tostring(Held.state) == 'firing') > 0
+)
 | mv-expand Check = Feed.checks
-| where tostring(Check.state) in ('firing', 'unknown')
+| where tostring(Check.state) == 'firing'
+    or (tostring(Check.state) == 'unknown' and CollectionFiring)
 | project Check = tostring(Check.code)
 | union (
     FeedEvents
@@ -150,7 +159,7 @@ resource alerts 'Microsoft.Insights/scheduledQueryRules@2023-12-01' = [for alert
   kind: 'LogAlert'
   properties: {
     displayName: alert.displayName
-    description: 'Read-only BOINC feed health (#1441). Check names the check; delivery_test is the end-to-end notification check (docs/boinc/boundaries-and-monitoring.md). Check the OCR dashboard BOINC feed / stale data panel. Do not start a second feed owner or automatically renew admission windows.'
+    description: 'Read-only BOINC feed health (#1441). Check names the check; delivery_test is the end-to-end notification check (boinc/docs/boundaries-and-monitoring.md). Check the OCR dashboard BOINC feed / stale data panel. Do not start a second feed owner or automatically renew admission windows.'
     enabled: true
     severity: 2
     evaluationFrequency: 'PT5M'

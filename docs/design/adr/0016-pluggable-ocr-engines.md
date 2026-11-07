@@ -160,7 +160,7 @@ engine-host completion and production deployment remain separate gates.
 
 ## Optional BOINC batch transport (#438)
 
-The [BOINC pilot](../../boinc/README.md) is a separate, file-based single-page transport for trusted volunteers. It reuses the current Tesseract models and routing and the native ingestion checks, retains `contract=0`, and records its route as `boinc@r1`. It does not implement or replace the long-lived adapter protocol above. Migration to that protocol remains a later change. Only the central bridge reserves native work and publishes results; volunteers hold no Azure identity.
+The [BOINC pilot](../../../boinc/docs/README.md) is a separate, file-based single-page transport for trusted volunteers. It reuses the current Tesseract models and routing and the native ingestion checks, retains `contract=0`, and records its route as `boinc@r1`. It does not implement or replace the long-lived adapter protocol above. Migration to that protocol remains a later change. Only the central bridge reserves native work and publishes results; volunteers hold no Azure identity.
 
 ### OCR credits page (#372)
 
