@@ -346,7 +346,9 @@ calibrated policy, then collect the kept jobs again (hand-off `collect` with
 A published result clears `held`. An older `usnm-boinc` refuses a list with a
 `hold`, so the server and hand-off images must have this code before a held
 list goes live. The reviewed German hold and its deploy steps are in
-[the 5 November note](../../docs/notes/2026-11-05-german-trust-hold.md).
+[the 5 November note](../../docs/notes/2026-11-05-german-trust-hold.md). Serbian
+(`srp/srp+srp_latn`) has been held the same way since 7 November
+([note](../../docs/notes/2026-11-07-serbian-trust-hold.md)).
 
 Trust is keyed by the **full immutable worker digest**, not a tag, base image or
 engine version. In v5, server `received_time` orders eligible canonical reports
