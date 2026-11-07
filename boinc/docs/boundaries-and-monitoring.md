@@ -729,7 +729,7 @@ flowchart LR
     API[API and searcher]
   end
   subgraph AZ["Azure"]
-    HO[(boinc-handoff<br/>scans · journals · lease)]
+    HO[(boinc-handoff<br/>journals · lease)]
     Q[(ocr-priority · ocr-bulk<br/>Storage queues)]
     OUT[(ocr-out)]
     LAKE[(Curated lake)]
@@ -737,7 +737,7 @@ flowchart LR
   V[Volunteers<br/>pinned worker]
   R2[(R2 · Qwen model files)]
 
-  LOC --> FETCH -->|cached scans| HO
+  LOC --> FETCH -->|claimed pages' scans| SRV
   SYNC -->|pages to OCR| Q
   Q -->|claim| CTRL
   HO <--> CTRL
@@ -748,7 +748,7 @@ flowchart LR
   OUT --> SYNC --> LAKE --> REL --> API
 ```
 
-`collect` publishes a trusted host's result to the same `ocr-out` the retired OCR nodes used, and holds an untrusted host's result in quarantine. The hand-off state in `boinc-handoff` is moving to the BOINC host ([#1367](https://github.com/tgoodyear/usnewsmap.com/issues/1367); [local hand-off journals](../../docs/boinc-onprem.md#local-handoff-journals)).
+The controller pushes each claimed page's scan from the scan cache straight to the BOINC host, so no scan goes through Azure (#1116; [batch scheduler](../../docs/boinc-batch-scheduler.md)). `collect` publishes a trusted host's result to the same `ocr-out` the retired OCR nodes used, and holds an untrusted host's result in quarantine. The hand-off state in `boinc-handoff` is moving to the BOINC host ([#1367](https://github.com/tgoodyear/usnewsmap.com/issues/1367); [local hand-off journals](../../docs/boinc-onprem.md#local-handoff-journals)).
 
 ## Boundaries
 
