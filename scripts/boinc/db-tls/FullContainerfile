@@ -1,9 +1,0 @@
-ARG SERVER_IMAGE
-FROM ${SERVER_IMAGE}
-RUN mkdir -p /fixture /checks /opt \
- && ln -s /usr/local/boinc /opt/boinc
-COPY scripts/boinc/db-tls/ /checks/
-COPY scripts/boinc/qwen-tiebreak-policy.py /checks/qwen-tiebreak-policy.py
-WORKDIR /fixture
-ENV TMPDIR=/fixture
-ENTRYPOINT ["python3", "/checks/full.py"]

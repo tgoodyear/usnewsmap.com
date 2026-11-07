@@ -1,6 +1,6 @@
 # Whether Qwen dispatch leaves the Intel host fair work
 
-**Status:** measured; nothing changed · **Date:** 5 November 2026 · **Measured on:** the BOINC database, feeder cache, scheduler log and cohort controller journal on the on-prem server, read at 12:20 UTC on 5 November, before that day's server image roll; `usnm_qwen` replicas sent from 28 October · **Code:** `scripts/boinc/qwen-dispatch-fairness.py` · **Issues:** #786, #1420
+**Status:** measured; nothing changed · **Date:** 5 November 2026 · **Measured on:** the BOINC database, feeder cache, scheduler log and cohort controller journal on the on-prem server, read at 12:20 UTC on 5 November, before that day's server image roll; `usnm_qwen` replicas sent from 28 October · **Code:** `boinc/scripts/qwen-dispatch-fairness.py` · **Issues:** #786, #1420
 
 ## The question
 
@@ -20,7 +20,7 @@
 
 ## Method
 
-`scripts/boinc/qwen-dispatch-fairness.py collect` runs in the BOINC server container. In one `READ ONLY` transaction of `LIMIT`-bounded `SELECT`s it reads each host's Qwen results by send day, the unsent Qwen replicas in the feeder's default order (result priority, then workunit id), the hosts holding a replica of each of those units, and the last 24 hours of sends. It reads each plan class's workunit bounds from `plan_class_spec.xml` and parses `bin/show_shmem` for the feeder cache. `report` prints the tables below. A host **can take** a unit when its plan class's workunit and batch bounds include the unit and it holds no replica of it; one result per host per unit is the project's rule. A unit is **blocked** when no host that sent Qwen work in the period can take it. The **blocked head** is the run of blocked units at the front of the feeder's order. The controller counts come from `usnm-qwen-cohort-auto.service`'s journal, and the request counts from the scheduler log.
+`boinc/scripts/qwen-dispatch-fairness.py collect` runs in the BOINC server container. In one `READ ONLY` transaction of `LIMIT`-bounded `SELECT`s it reads each host's Qwen results by send day, the unsent Qwen replicas in the feeder's default order (result priority, then workunit id), the hosts holding a replica of each of those units, and the last 24 hours of sends. It reads each plan class's workunit bounds from `plan_class_spec.xml` and parses `bin/show_shmem` for the feeder cache. `report` prints the tables below. A host **can take** a unit when its plan class's workunit and batch bounds include the unit and it holds no replica of it; one result per host per unit is the project's rule. A unit is **blocked** when no host that sent Qwen work in the period can take it. The **blocked head** is the run of blocked units at the front of the feeder's order. The controller counts come from `usnm-qwen-cohort-auto.service`'s journal, and the request counts from the scheduler log.
 
 ## Results
 

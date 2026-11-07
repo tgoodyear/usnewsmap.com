@@ -2,7 +2,7 @@
 
 **The direct queue worker is retired** (#966): local OCR runs through BOINC
 only, and no node runs `usnm-ocr-worker.service`. This page is kept for the
-client setup and the retirement steps below; see the [BOINC pages](boinc/README.md)
+client setup and the retirement steps below; see the [BOINC pages](../boinc/docs/README.md)
 for the current path.
 
 Issue #472 is **not production acceptance**. Do not run provisioning, builds, or pilot work on production
@@ -15,7 +15,7 @@ prove zero throughput impact.
 The official [Linux selector](https://boinc.berkeley.edu/linux_install.php)
 currently offers stable **8.2.13**, but does **not** list RHEL. Do not substitute
 an old EPEL client or enable an unsupported Fedora repository on RHEL 10.
-`scripts/boinc/build-node-client.sh --out /absolute/new/build-dir` builds the
+`boinc/scripts/build-node-client.sh --out /absolute/new/build-dir` builds the
 actual upstream `client_release/8.2/8.2.13` peeled commit
 `ae68f3290ac82d08b4d9767acfe0daaccaeeb883`. That source contains direct Podman
 detection. The script checks the revision, builds only client and library targets,
@@ -49,9 +49,9 @@ setup.
 ## Preview and install the optional profile
 
 ```sh
-python3 scripts/boinc/setup_volunteer.py --ocr-node
+python3 boinc/scripts/setup_volunteer.py --ocr-node
 # Only in the approved dev installation, after reviewing the preview:
-sudo python3 scripts/boinc/setup_volunteer.py --ocr-node --apply
+sudo python3 boinc/scripts/setup_volunteer.py --ocr-node --apply
 ```
 
 This reuses the tested preflight for rootless Podman, SELinux, slots and pause,
@@ -118,8 +118,8 @@ dedicated UID to the dedicated-node profile:
 #    restarts what it stopped.
 sudo systemctl disable --now usnm-ocr-worker.service
 # 2. Let queued BOINC work finish and report (No new tasks), then:
-python3 scripts/boinc/setup_volunteer.py --service usnm-boinc-canary.service --dedicated-node
-sudo python3 scripts/boinc/setup_volunteer.py --service usnm-boinc-canary.service --dedicated-node --apply
+python3 boinc/scripts/setup_volunteer.py --service usnm-boinc-canary.service --dedicated-node
+sudo python3 boinc/scripts/setup_volunteer.py --service usnm-boinc-canary.service --dedicated-node --apply
 ```
 
 `--dedicated-node` refuses to run while `usnm-ocr-worker.service` is enabled

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Summarizes scripts/boinc/iris-bench.sh trials (#736) into the issue's results table.
+"""Summarizes boinc/scripts/iris-bench.sh trials (#736) into the issue's results table.
 
   iris-bench-report.py --dir DIR [--reference LABEL]
 

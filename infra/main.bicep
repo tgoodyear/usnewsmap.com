@@ -167,7 +167,7 @@ param boincControllerOnPrem bool = false
 @description('Let boincHandoffRunner, the batch controller (CT 211), delete blobs in boinc-handoff for the daily held-page archive (#835, docs/boinc-batch-scheduler.md): a custom role with blobs/delete only, assigned on that container only (modules/ocr-exchange.bicep). Needs ocrNodes, boincControllerOnPrem and boincHandoffRunner. Off removes the grant and the role.')
 param boincHeldArchive bool = false
 
-@description('The BOINC server runs on-prem (#942): its Azure stack keeps no Log Analytics workspace, so the scan fetcher gets no reader grant there (modules/boinc-handoff-logs.bicep). Set with "server": "onprem" in contrib-compute/infra/boinc/env/<env>.json.')
+@description('The BOINC server runs on-prem (#942): its Azure stack keeps no Log Analytics workspace, so the scan fetcher gets no reader grant there (modules/boinc-handoff-logs.bicep). Set with "server": "onprem" in boinc/infra/boinc/env/<env>.json.')
 param boincServerOnPrem bool = false
 
 @description('Let boincHandoffRunner, the scan fetcher (pve-big CT 211), publish its fetched-scans list (#1056): the node writer role on ocr-out (list, read, create; no delete), for `usnm-ocr-worker publish-fetched`. Needs ocrNodes and boincHandoffRunner. Off removes the grant.')
@@ -179,7 +179,7 @@ param boincHandoffOnPrem bool = false
 @description('Object id of the on-prem BOINC host\'s own Arc machine identity (usnm-boinc-arcs-<env>, with boincHandoffOnPrem), not the on-prem hosts\' group. Settings only, never in the repository.')
 param boincOnPremHost string = ''
 
-@description('The BOINC hand-off job\'s image (#469): images.bridge from contrib-compute/infra/boinc/env/<env>.json, <registry>.azurecr.io/usnm-boinc-bridge@sha256:<digest>. Empty: no hand-off job. Needs the exchange account (ocrNodes), the registry (useAcr) and the BOINC group (deployBoincGroup).')
+@description('The BOINC hand-off job\'s image (#469): images.bridge from boinc/infra/boinc/env/<env>.json, <registry>.azurecr.io/usnm-boinc-bridge@sha256:<digest>. Empty: no hand-off job. Needs the exchange account (ocrNodes), the registry (useAcr) and the BOINC group (deployBoincGroup).')
 param boincHandoffImage string = ''
 
 @description('Give the pages LoC ships without text (the Japanese pages our OCR reads, 04 §4.8) a main-index document with the Latin-script text our OCR read on them, so English searches reach their English ads and sections (#203). The next release that builds a main index adds them; clearing it drops them at the next full release (docs/operations/japanese-ocr.md, "Japanese OCR: mixed pages and English text").')
@@ -341,7 +341,7 @@ param backfillOnPrem bool = false
 @description('Alert on the on-prem OCR pickup (#1139, modules/ocr-sync-alerts.bicep): a failed run, no run through the pickup for more than 2 hours, and node output left in ocr-out over 72 hours, from the metrics it sends to the environment\'s Application Insights. With ocrSyncOnPrem and alert emails.')
 param ocrSyncAlerts bool = false
 
-@description('Alert on the live BOINC feed health (#1441, modules/boinc-feed-alerts.bicep): a data collection rule that takes the evaluator host\'s local0 lines into the OCR nodes\' workspace, and two log alerts through the action group (a check firing or unknown, the evaluator\'s events missing). With ocrNodes, alert emails and boincFeedMachine. The host\'s association with the rule is made by hand (docs/boinc/boundaries-and-monitoring.md).')
+@description('Alert on the live BOINC feed health (#1441, modules/boinc-feed-alerts.bicep): a data collection rule that takes the evaluator host\'s local0 lines into the OCR nodes\' workspace, and two log alerts through the action group (a check firing or unknown, the evaluator\'s events missing). With ocrNodes, alert emails and boincFeedMachine. The host\'s association with the rule is made by hand (boinc/docs/boundaries-and-monitoring.md).')
 param boincFeedAlerts bool = false
 
 @description('Name of the BOINC feed evaluator host\'s Arc machine in the environment\'s resource group, for boincFeedAlerts: the alerts read only its rows. Settings only, never in the repository.')
@@ -751,7 +751,7 @@ module boincHandoffJob 'modules/boinc-handoff-job.bicep' = if (boincHandoff) {
   }
 }
 
-// The BOINC bridge's identity (contrib-compute/infra/boinc, usnm-boinc-id-<env>): its
+// The BOINC bridge's identity (boinc/infra/boinc, usnm-boinc-id-<env>): its
 // hand-off steps (submit-remote, spool-out) get the node writer role on boinc-handoff. Granted
 // here, not in the BOINC stack, so that stack (the subnet's service endpoint, which the
 // exchange account's firewall rule needs) can deploy first.
@@ -776,7 +776,7 @@ module boincHandoffRunnerGrant 'modules/boinc-handoff-runner.bicep' = if (boincH
   }
 }
 
-// The workspace comes from the BOINC stack (scripts/boinc/provision-boinc.sh), a
+// The workspace comes from the BOINC stack (boinc/scripts/provision-boinc.sh), a
 // later deployment than boincRg: set boincHandoffRunner only once that stack
 // is deployed, or this assignment fails on a missing workspace.
 module boincHandoffLogs 'modules/boinc-handoff-logs.bicep' = if (deployBoincGroup && !boincServerOnPrem && !empty(trim(boincHandoffRunner))) {
@@ -1674,7 +1674,7 @@ output OCR_KEYVAULT string = ocrNodes ? ocrVault!.outputs.name : ''
 // The nodes' data collection rule; onboard.sh associates each node with it.
 output OCR_NODE_DCR_ID string = ocrNodes ? ocrNodeMonitoring!.outputs.ruleId : ''
 // The BOINC feed evaluator's data collection rule (#1441); associate the
-// evaluator host with it by hand (docs/boinc/boundaries-and-monitoring.md).
+// evaluator host with it by hand (boinc/docs/boundaries-and-monitoring.md).
 output BOINC_FEED_DCR_ID string = boincFeedOn ? boincFeedAlertRules!.outputs.ruleId : ''
 // The nodes' own Application Insights component: onboard.sh passes its
 // ingestion settings (not a credential: local auth is off) to the worker.

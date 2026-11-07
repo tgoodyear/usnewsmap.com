@@ -1,6 +1,6 @@
 # What bounds the quality feed's supply
 
-**Status:** measured; nothing changed · **Date:** 5 November 2026 · **Measured on:** CT 211's scan index and source log from 00:00 UTC on 1 November to 12:00 UTC on 5 November 2026; the image pass's manifests and their `fetched` markers; `usnm-quality-follow`'s journal in CT 215 for the 24 hours to 12:00 UTC on 5 November; `usnm-quality-ship`'s journal on pve-laptop to 13:11 UTC; `quality.unit_pages` and `quality.staging`, read in a read-only transaction; LoC's pacer file in CT 211, read at 12:28:52 and 12:59:03 UTC on 5 November · **Code:** `scripts/boinc/onprem/quality-feed/quality_feed.py` (`follow`), `scripts/boinc/onprem/ocr-feed/ocr_manifest.py` (`build-quality`), `crates/usnm-ocr-worker/src/prefetch.rs` · **Issues:** #1475, #1465, #1415
+**Status:** measured; nothing changed · **Date:** 5 November 2026 · **Measured on:** CT 211's scan index and source log from 00:00 UTC on 1 November to 12:00 UTC on 5 November 2026; the image pass's manifests and their `fetched` markers; `usnm-quality-follow`'s journal in CT 215 for the 24 hours to 12:00 UTC on 5 November; `usnm-quality-ship`'s journal on pve-laptop to 13:11 UTC; `quality.unit_pages` and `quality.staging`, read in a read-only transaction; LoC's pacer file in CT 211, read at 12:28:52 and 12:59:03 UTC on 5 November · **Code:** `boinc/scripts/onprem/quality-feed/quality_feed.py` (`follow`), `boinc/scripts/onprem/ocr-feed/ocr_manifest.py` (`build-quality`), `crates/usnm-ocr-worker/src/prefetch.rs` · **Issues:** #1475, #1465, #1415
 
 ## The question
 

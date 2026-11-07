@@ -2,7 +2,7 @@
 // existing action group (monitoring.bicep). Deployed by main.bicep with
 // boincFeedAlerts (USNM_BOINC_FEED_ALERTS), ocrNodes and alert emails.
 //
-// The evaluator (scripts/boinc/feed_status.py, usnm-boinc-feed-health.service)
+// The evaluator (boinc/scripts/feed_status.py, usnm-boinc-feed-health.service)
 // prints one JSON document a minute; its unit logs it to local0 at Info as
 // usnm-boinc-feed-health. The evaluator host's Arc machine (machineName, in
 // the environment's resource group; a private setting) is associated with
@@ -150,7 +150,7 @@ resource alerts 'Microsoft.Insights/scheduledQueryRules@2023-12-01' = [for alert
   kind: 'LogAlert'
   properties: {
     displayName: alert.displayName
-    description: 'Read-only BOINC feed health (#1441). Check names the check; delivery_test is the end-to-end notification check (docs/boinc/boundaries-and-monitoring.md). Check the OCR dashboard BOINC feed / stale data panel. Do not start a second feed owner or automatically renew admission windows.'
+    description: 'Read-only BOINC feed health (#1441). Check names the check; delivery_test is the end-to-end notification check (boinc/docs/boundaries-and-monitoring.md). Check the OCR dashboard BOINC feed / stale data panel. Do not start a second feed owner or automatically renew admission windows.'
     enabled: true
     severity: 2
     evaluationFrequency: 'PT5M'

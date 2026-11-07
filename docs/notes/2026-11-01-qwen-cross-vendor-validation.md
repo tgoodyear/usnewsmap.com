@@ -1,6 +1,6 @@
 # Why Qwen replicas come back inconclusive
 
-**Status:** measured, not shipped. The loop guard and `crop-consensus-v2` are in the code and off · **Date:** November 2026 · **Measured on:** all retained `usnm_qwen` 8B results on 1 November 2026, 1,262 replicas, 572 jobs, 824 pairs; replica accounting from a BOINC database read earlier that day, before AMD's general admission · **Code:** `crates/usnm-boinc/src/qwen/{consensus,replay}.rs`, `crates/usnm-qwen-app/src/server.rs`, `scripts/boinc/qwen-auto-cohort.py` · **Issues:** #1420, #885, #1434, #1435
+**Status:** measured, not shipped. The loop guard and `crop-consensus-v2` are in the code and off · **Date:** November 2026 · **Measured on:** all retained `usnm_qwen` 8B results on 1 November 2026, 1,262 replicas, 572 jobs, 824 pairs; replica accounting from a BOINC database read earlier that day, before AMD's general admission · **Code:** `crates/usnm-boinc/src/qwen/{consensus,replay}.rs`, `crates/usnm-qwen-app/src/server.rs`, `boinc/scripts/qwen-auto-cohort.py` · **Issues:** #1420, #885, #1434, #1435
 
 ## The question
 

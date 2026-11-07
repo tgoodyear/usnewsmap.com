@@ -92,7 +92,7 @@ override, client attachment, or retry of terminal failures.
 The controller uses a single approved execution host with Python 3.9+, Azure
 CLI, `jq`, Bash, an existing Azure login, the checkout's existing environment
 outputs, and the existing hand-off job. Its bridge steps run through
-`scripts/boinc/start-boinc-bridge.sh` (the Azure bridge job) or, with `step_command` in
+`boinc/scripts/start-boinc-bridge.sh` (the Azure bridge job) or, with `step_command` in
 the configuration, on the on-prem BOINC host through `usnm-boinc-step`, which is how
 the on-prem server's bridge steps are reached ([boinc-onprem.md](boinc-onprem.md), cutover
 step 5). The server and bridge images
@@ -191,10 +191,10 @@ the real-page receipt for #866 is recorded below.
 ### Moving the controller checkout (#1412)
 
 The service runs whatever `/opt/usnm` holds, so moving that checkout deploys the
-controller. A tick runs three things from it: `scripts/boinc/batch_scheduler.py`, the push
-command `scripts/ocr-node/push-boinc-scan.sh`, and `scripts/boinc/start-boinc-bridge.sh`
+controller. A tick runs three things from it: `boinc/scripts/batch_scheduler.py`, the push
+command `scripts/ocr-node/push-boinc-scan.sh`, and `boinc/scripts/start-boinc-bridge.sh`
 with `scripts/lib/` for any step not sent to `step_command`. That launcher also reads the
-checkout's settings, `infra/env/` and `contrib-compute/infra/boinc/env/`. The step host's
+checkout's settings, `infra/env/` and `boinc/infra/boinc/env/`. The step host's
 `usnm-boinc-step` (`onprem-step.sh`) and the server, bridge and hand-off images are
 deployed on their own; moving the checkout doesn't change them. Keep the checkout at one
 commit of main with no local edits, and move it only as below. Until #1412 is closed, the
@@ -207,9 +207,9 @@ checkout is an older commit with a hand-placed `batch_scheduler.py`.
    cd /opt/usnm
    git fetch origin
    git status --short   # anything listed is a local edit or stray file: step 3 saves it
-   git log --oneline HEAD..<commit> -- scripts/boinc/batch_scheduler.py \
-     scripts/ocr-node/push-boinc-scan.sh scripts/boinc/start-boinc-bridge.sh scripts/lib/ \
-     infra/env/ contrib-compute/infra/boinc/env/
+   git log --oneline HEAD..<commit> -- boinc/scripts/batch_scheduler.py \
+     scripts/ocr-node/push-boinc-scan.sh boinc/scripts/start-boinc-bridge.sh scripts/lib/ \
+     infra/env/ boinc/infra/boinc/env/
    ```
 
    Read each listed commit's rollout notes. If one changes what the controller sends to
@@ -224,9 +224,9 @@ checkout is an older commit with a hand-placed `batch_scheduler.py`.
    mkdir /root/usnm-pin-<commit>
    git -C /opt/usnm archive <commit> | tar -x -C /root/usnm-pin-<commit>
    cd /root/usnm-pin-<commit>
-   python3 -m unittest scripts/boinc/test_batch_scheduler.py \
-     contrib-compute/images/server/test_batch_inventory.py
-   python3 scripts/boinc/batch_scheduler.py --config /etc/usnm/boinc-priority-controller.json \
+   python3 -m unittest boinc/scripts/test_batch_scheduler.py \
+     boinc/images/server/test_batch_inventory.py
+   python3 boinc/scripts/batch_scheduler.py --config /etc/usnm/boinc-priority-controller.json \
      --state-dir /nonexistent <the drop-in's other flags, without --apply>
    ```
 
@@ -262,7 +262,7 @@ checkout is an older commit with a hand-placed `batch_scheduler.py`.
        records.append(json.loads(data))
    seen = []
    for tree in trees:
-       spec = importlib.util.spec_from_file_location("controller", f"{tree}/scripts/boinc/batch_scheduler.py")
+       spec = importlib.util.spec_from_file_location("controller", f"{tree}/boinc/scripts/batch_scheduler.py")
        controller = importlib.util.module_from_spec(spec)
        spec.loader.exec_module(controller)
        config = controller.load_config(config_path)
@@ -288,13 +288,13 @@ checkout is an older commit with a hand-placed `batch_scheduler.py`.
    systemctl is-active usnm-boinc-priority-controller.service   # repeat until neither active nor activating
    cd /opt/usnm
    git rev-parse HEAD                                            # the previous pin
-   sha256sum scripts/boinc/batch_scheduler.py                    # the previous file
+   sha256sum boinc/scripts/batch_scheduler.py                    # the previous file
    git diff --binary HEAD > /root/usnm-checkout-<date>.diff \
      && git reset -q --hard                                      # staged and unstaged edits, if any
    mkdir /root/usnm-checkout-<date>.untracked                    # move each `??` path here
    git checkout --detach <commit>
    git status --short                                            # must print nothing
-   sha256sum scripts/boinc/batch_scheduler.py
+   sha256sum boinc/scripts/batch_scheduler.py
    systemctl start usnm-boinc-priority-controller.service        # one tick by hand
    journalctl -u usnm-boinc-priority-controller.service -n 50 --no-pager
    systemctl start usnm-boinc-priority-controller.timer
@@ -318,7 +318,7 @@ checkout is an older commit with a hand-placed `batch_scheduler.py`.
    cd /opt/usnm
    git checkout --detach <previous commit>
    git apply /root/usnm-checkout-<date>.diff                     # if the previous checkout had local edits
-   sha256sum scripts/boinc/batch_scheduler.py                    # must match the recorded previous file
+   sha256sum boinc/scripts/batch_scheduler.py                    # must match the recorded previous file
    systemctl start usnm-boinc-priority-controller.timer
    ```
 
@@ -411,7 +411,7 @@ By default the hand-off steps run as the Azure hand-off job. `--onprem-handoff c
 `--onprem-handoff collect` and `--onprem-handoff export` (any of them) send them through
 `step_command` instead, to `usnm-boinc-step --target handoff` on the on-prem BOINC host
 ([boinc-onprem.md](boinc-onprem.md#hand-off-steps-on-prem)). `claim` takes its `release`
-with it. `texts-export` runs with `scripts/boinc/texts-export-onprem.sh` on the host with a local copy of curated. With `--onprem-handoff export`, the controller's push
+with it. `texts-export` runs with `boinc/scripts/texts-export-onprem.sh` on the host with a local copy of curated. With `--onprem-handoff export`, the controller's push
 sends the claimed pages' scans straight to the BOINC host (`usnm-boinc-step --target scans
 --step receive`, a tar over the step key into `/srv/usnm-boinc/project/handoff-scans`), not to
 the hand-off container. Export reads them there, and the bridge's `submit-remote` takes each
@@ -434,7 +434,7 @@ After the last reviewed controller repair/release, retain a full unit journal ex
 ```sh
 journalctl --all -u usnm-boinc-priority-controller.service --since "$START" --until "$END" \
   -o json --no-pager > controller-journal.jsonl
-python3 scripts/boinc/handoff-window.py --journal controller-journal.jsonl \
+python3 boinc/scripts/handoff-window.py --journal controller-journal.jsonl \
   --since "$START_UNIX_SECONDS" --until "$END_UNIX_SECONDS"
 ```
 
@@ -890,7 +890,7 @@ variable and claims every language.
 A language whose scope `trust.json` **holds** (#835, German until it is
 calibrated) can stay in `claim_languages`: its pages are read, and `collect`
 keeps each result without publishing it, marks the job's record `held` and
-succeeds ([gold check](boinc/gold-check.md#host-trust-for-usnm_ocr)). The
+succeeds ([gold check](../boinc/docs/gold-check.md#host-trust-for-usnm_ocr)). The
 controller counts a held job as settled, like a published one: it isn't
 collected again, isn't `collection_backlog`, and doesn't hold up the refill. The
 tick line reports how many there are as `scope_held`. The page's message stays
@@ -1015,7 +1015,7 @@ The flag is off by default, so the live service's push command is unchanged. It 
 - a hand-off image whose `dead-letter` step takes `SOURCE_TRUNCATED_DOCS`;
 - on the BOINC host, an `onprem-step.sh` that lets the controller set it;
 - the on-prem host's Message Sender role on `ocr-deadletter`, which `--dead-letter-failed` also needs;
-- `python3` and the checkout's `scripts/boinc/onprem/quality-feed/` beside the push script.
+- `python3` and the checkout's `boinc/scripts/onprem/quality-feed/` beside the push script.
 
 Without the flag, such a page is exported as before. The BOINC worker then fails it
 unread, and like any page that fails for good it needs `--dead-letter-failed`.
@@ -1298,11 +1298,11 @@ evidence that all outstanding work has completed.
 Offline validation makes no Azure or SSH calls and creates no state:
 
 ```sh
-python3 scripts/boinc/batch_scheduler.py \
+python3 boinc/scripts/batch_scheduler.py \
   --config /opt/usnm-controller/cohort.json \
   --state-dir /opt/usnm-controller/state
-python3 -m unittest -v scripts/boinc/test_batch_scheduler.py \
-  contrib-compute/images/server/test_batch_inventory.py
+python3 -m unittest -v boinc/scripts/test_batch_scheduler.py \
+  boinc/images/server/test_batch_inventory.py
 ```
 
 Only after the serialized operator has approved deployment and activation, run
@@ -1337,7 +1337,7 @@ with [the archive tool](#archive-drained-history-1483).
 
 ### Archive drained history (#1483)
 
-`scripts/boinc/archive_history.py` moves the oldest fully published pages'
+`boinc/scripts/archive_history.py` moves the oldest fully published pages'
 history out of every store that counts towards those caps, one batch at a time,
 into a retained archive. It deletes nothing that it hasn't first copied and
 checked. Every step is a read-only dry run unless `--apply` is given. The dry
@@ -1561,8 +1561,8 @@ python3 /root/usnm-archive/archive_history.py dispatch --include-held --min-age-
 
 **Daily, on a timer.** While a scope stays held, `usnm-boinc-held-archive.timer`
 on CT 211 runs this every day at 08:30 UTC
-([`held-archive.sh`](../scripts/boinc/onprem/held-archive.sh), with
-`usnm-boinc-held-archive.service` from `scripts/boinc/onprem/`). One run:
+([`held-archive.sh`](../boinc/scripts/onprem/held-archive.sh), with
+`usnm-boinc-held-archive.service` from `boinc/scripts/onprem/`). One run:
 
 1. Stops the controller's timer and waits for a running tick to end. If the
    timer is already stopped, an operator has paused the controller, and the run

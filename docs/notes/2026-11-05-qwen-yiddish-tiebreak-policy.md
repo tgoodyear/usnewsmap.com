@@ -1,6 +1,6 @@
 # Stopping Yiddish v1 tie-breakers
 
-**Status:** code merged, not enabled; measured read-only · **Date:** 5 November 2026 · **Measured on:** the 3,838 `usnm_qwen` units created from 21 October to 5 November 2026, read from the BOINC database at 12:21 UTC on 5 November · **Code:** `scripts/boinc/qwen-tiebreak-policy.py`, `scripts/boinc/qwen-replica-cost.py` · **Issues:** #1477, #1420, #1479
+**Status:** code merged, not enabled; measured read-only · **Date:** 5 November 2026 · **Measured on:** the 3,838 `usnm_qwen` units created from 21 October to 5 November 2026, read from the BOINC database at 12:21 UTC on 5 November · **Code:** `boinc/scripts/qwen-tiebreak-policy.py`, `boinc/scripts/qwen-replica-cost.py` · **Issues:** #1477, #1420, #1479
 
 ## The question
 

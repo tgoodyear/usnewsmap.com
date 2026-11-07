@@ -31,7 +31,7 @@ case "$STEP" in
     cp scripts/jobs/qwen.sh results/s5-x2/qwen2b-lora-Q8_0.gguf "$P/"
     printf 'stock2b\tQwen3-VL-2B-Instruct-Q8_0.gguf\tmmproj-Qwen3-VL-2B-Instruct-Q8_0.gguf\nlora2b\t/work/in/qwen2b-lora-Q8_0.gguf\tmmproj-Qwen3-VL-2B-Instruct-Q8_0.gguf\n' >"$P/models.tsv"
     scripts/rent.sh --study s5d2 --image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:9a5a78347ee3efa4df3eb03531dc8e356c5c45af67affe862fae4b1993a15d5e --gpu "RTX 3060" --min-gpu-ram-mb 11000 --max-dph 0.12 --max-hours 7 --cap-dollars 2 --disk 30 --push-dir "$P" --job scripts/jobs/deploy.sh --out results/s5-d2;;
-  surya6c) P=push/s6c; rm -rf "$P"; mkdir -p "$P"; cp scripts/jobs/surya_read.py repo/ocr/boinc/surya/run.py "$P/"
+  surya6c) P=push/s6c; rm -rf "$P"; mkdir -p "$P"; cp scripts/jobs/surya_read.py repo/boinc/apps/surya/run.py "$P/"
     while IFS=$'\t' read -r i r; do printf '%s %s\t%s\n' "$(printf 'gpu-studies-202611:surya-native:%s' "$i" | sha256sum | cut -d' ' -f1)" "$i" "$r"; done <push/s6/list.tsv | LC_ALL=C sort | head -50 | cut -d' ' -f2- >"$P/list.tsv"
     mkdir -p "$P/c"; cut -f2 "$P/list.tsv" | while read -r r; do ln -s "$(readlink -f "push/s6/$r")" "$P/c/"; done
     IDLE_MIN=25 scripts/rent.sh --study s6c --image vllm/vllm-openai:v0.20.1 --gpu "RTX 3060" --min-gpu-ram-mb 11000 --max-dph 0.12 --max-hours 2 --cap-dollars 1 --disk 50 --push-dir "$P" --job scripts/jobs/surya-native.sh --out results/s6c;;

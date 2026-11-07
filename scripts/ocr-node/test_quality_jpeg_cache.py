@@ -85,7 +85,7 @@ class Recipe(unittest.TestCase):
                           "--state", root, "--keyed-completions"])
 
     def test_feeder_and_cache_make_identical_page_jpegs(self):
-        path = os.path.join(HERE, "../boinc/onprem/quality-feed/quality_feed.py")
+        path = os.path.join(HERE, "../../boinc/scripts/onprem/quality-feed/quality_feed.py")
         sys.path.insert(0, os.path.dirname(path))
         self.addCleanup(sys.path.remove, os.path.dirname(path))
         spec = importlib.util.spec_from_file_location("quality_feed", path)

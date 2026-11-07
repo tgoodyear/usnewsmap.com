@@ -1,5 +1,5 @@
 name: boinc-iris
-# The usnm_iris worker image (#703, ocr/boinc/iris): Qwen3-VL-4B INT4 on OpenVINO GenAI for an Intel
+# The usnm_iris worker image (#703, boinc/apps/iris): Qwen3-VL-4B INT4 on OpenVINO GenAI for an Intel
 # Iris Xe GPU. A pull request that changes it runs the contract tests and builds the image without
 # pushing. A manual run on main also pushes ghcr.io/tgoodyear/usnm-boinc-worker:iris-<commit>,
 # attests its build provenance to the registry (GitHub OIDC, no secrets), and its summary gives the
@@ -18,12 +18,12 @@ on:
   pull_request:
     paths:
       - ".github/workflows/boinc-iris.yml"
-      - "ocr/boinc/iris/**"
-      - "scripts/boinc/test_iris_worker.py"
-      - "scripts/boinc/test_iris_bundle.py"
-      - "scripts/boinc/test_iris_cache.py"
-      - "scripts/boinc/iris-bundle-campaign.py"
-      - "scripts/boinc/iris-check.py"
+      - "boinc/apps/iris/**"
+      - "boinc/scripts/test_iris_worker.py"
+      - "boinc/scripts/test_iris_bundle.py"
+      - "boinc/scripts/test_iris_cache.py"
+      - "boinc/scripts/iris-bundle-campaign.py"
+      - "boinc/scripts/iris-check.py"
       - "!**/*.md"
 
 permissions:
@@ -48,7 +48,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Contract and worker tests (no GPU, no OpenVINO)
-        run: python3 -m unittest -v scripts/boinc/test_iris_worker.py scripts/boinc/test_iris_bundle.py scripts/boinc/test_iris_cache.py
+        run: python3 -m unittest -v boinc/scripts/test_iris_worker.py boinc/scripts/test_iris_bundle.py boinc/scripts/test_iris_cache.py
       # Disposable hosted runner only; never run this cleanup on a volunteer node.
       - name: Free disk space
         run: |
@@ -57,7 +57,7 @@ jobs:
           df -h /
       - name: Build
         run: |
-          docker build -f ocr/boinc/iris/Containerfile \
+          docker build -f boinc/apps/iris/Containerfile \
             --build-arg "BUILD_REVISION=$GITHUB_SHA" \
             --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
             --label "org.opencontainers.image.revision=$GITHUB_SHA" \

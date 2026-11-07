@@ -1,14 +1,14 @@
 # shellcheck shell=bash disable=SC2034
-# Shared by scripts/boinc/provision-boinc.sh and scripts/boinc/build-boinc-images.sh. Sourced from the
+# Shared by boinc/scripts/provision-boinc.sh and boinc/scripts/build-boinc-images.sh. Sourced from the
 # repository root after ENV_NAME and ALLOW_DIRTY are set; needs a die() function.
 #
-# The BOINC server's settings are committed in contrib-compute/infra/boinc/env/<env>.json
+# The BOINC server's settings are committed in boinc/infra/boinc/env/<env>.json
 # (schema alongside). Its resources are the deployment stack usnm-boinc-<env> in the group
 # usnm-boinc-rg-<env>, which the main stack creates (infra/main.bicep, deployBoincGroup).
 
-BOINC_DIR=contrib-compute/infra/boinc
+BOINC_DIR=boinc/infra/boinc
 BOINC_SETTINGS="$BOINC_DIR/env/$ENV_NAME.json"
-# The tests (scripts/boinc/test_boinc_provision.py) run against fixture settings with stubbed
+# The tests (boinc/scripts/test_boinc_provision.py) run against fixture settings with stubbed
 # Azure calls: USNM_BOINC_SETTINGS_FILE, honoured only with USNM_BOINC_TEST=1.
 if [ -n "${USNM_BOINC_SETTINGS_FILE:-}" ]; then
   [ "${USNM_BOINC_TEST:-}" = 1 ] || { echo "error: USNM_BOINC_SETTINGS_FILE is for the tests" >&2; exit 1; }
@@ -221,7 +221,7 @@ boinc_check_public_health() {
   curl --fail --silent --show-error --retry 12 --retry-delay 5 --retry-all-errors \
     --connect-timeout 10 --max-time 15 "${PROJECT_URL}usnmocr/get_project_config.php" > "$out" ||
     die "the public BOINC project endpoint is not healthy"
-  # BOINC_MAINTENANCE=1 (the share cutover, docs/boinc/server-and-apps.md): the scheduler is closed on purpose
+  # BOINC_MAINTENANCE=1 (the share cutover, boinc/docs/server-and-apps.md): the scheduler is closed on purpose
   # (stop_sched), so it is accepted here; check again with BOINC_MAINTENANCE unset after resuming.
   python3 - "$out" "$PROJECT_URL" "${BOINC_MAINTENANCE:-0}" <<'PY'
 import sys

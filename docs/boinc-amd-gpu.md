@@ -85,7 +85,7 @@ readings.
 
 ## Operator publication and general admission
 
-Use the unchanged `ocr/boinc/qwen/llama.lock` b8799
+Use the unchanged `boinc/apps/qwen/llama.lock` b8799
 `ubuntu-vulkan-x64` or `win-vulkan-x64` asset, verified by its pinned SHA-256.
 Do not substitute the CPU or CUDA archive. Bundle `llama-server[.exe]`, all its
 runtime shared libraries, `llama.lock`, `weights.lock`, and the matching native
@@ -96,7 +96,7 @@ baseline runtime is **not sufficient**: use the identity-only patched b8799
 Vulkan DLL described below, together with the corrected signed helper. Windows requires
 `ggml-vulkan.dll`, the common llama/ggml/mtmd DLLs,
 `ggml-cpu-x64.dll`, `libomp140.x86_64.dll`, and the Microsoft CRT enforced by
-`scripts/boinc/install.py`. Keep the complete pinned Linux library set as well.
+`boinc/scripts/install.py`. Keep the complete pinned Linux library set as well.
 Verify that the bundled server launches and lists the real AMD Vulkan device
 before admission. Retain checksums and the signed publication/readback receipt.
 
@@ -126,7 +126,7 @@ directory, not an installed BOINC slot. From this reviewed repository checkout:
 ```powershell
 git clone --config core.autocrlf=false --no-checkout https://github.com/ggml-org/llama.cpp.git amd-llama-source
 git -C amd-llama-source checkout e1a9a6dcbefccb4b864d9385ce8494f2a7f2ffcd
-.\scripts\boinc\build_amd_vulkan_runtime.ps1 `
+.\boinc\scripts\build_amd_vulkan_runtime.ps1 `
   -Source "$PWD/amd-llama-source" -Build "$PWD/amd-llama-build" `
   -Output "$PWD/amd-llama-identity"
 ```
@@ -150,7 +150,7 @@ For the next reviewed Windows AMD app version:
 2. Use the same reviewed native CI commit's app, corrected helper, app-local CRT
    and unchanged locks. Verify every artifact hash, and test the original
    `llama-server.exe` with the patched DLL before signing.
-3. Use `scripts/boinc/boinc-app-release.sh`'s existing native
+3. Use `boinc/scripts/boinc-app-release.sh`'s existing native
    `--plan-class amd_vulkan_8b --platform windows_x86_64` on-prem release path,
    signing **all** replaced and existing extra files. Include
    `--extra-file AMD_RUNTIME_BUILD.json=PATH`. Never overlay an unsigned DLL
@@ -164,7 +164,7 @@ For the next reviewed Windows AMD app version:
    ordinary independent-peer validation/collection before general reopening.
    A pre-inference failure or missing LUID leaves admission closed.
 
-Publish through the normal [reviewed app release path](../contrib-compute/docs/app-release.md)
+Publish through the normal [reviewed app release path](../boinc/docs/app-release.md)
 with `--app usnm_qwen --kind native --plan-class amd_vulkan_8b` and the matching
 platform. Stage the unchanged Qwen3-VL-8B Q4_K_M model and Q8_0 projector from
 `weights.lock` as digest-qualified sticky inputs, using `usnm_qwen_8b_in`,
@@ -175,9 +175,9 @@ Only after the required acceptance above has passed and the reopening is
 coordinated on #529, preview and explicitly promote **only AMD**:
 
 ```sh
-php scripts/boinc/native-qwen-cohort.php --project /project/usnmocr \
+php boinc/scripts/native-qwen-cohort.php --project /project/usnmocr \
   --plan-class amd_vulkan_8b --general
-php scripts/boinc/native-qwen-cohort.php --project /project/usnmocr \
+php boinc/scripts/native-qwen-cohort.php --project /project/usnmocr \
   --plan-class amd_vulkan_8b --general --apply
 ```
 
@@ -190,7 +190,7 @@ does **not** opt in: refresh restores closed bounds. An explicit AMD `--stop`
 removes the marker and restores `2/1`, which remains stopped across restarts.
 Neither general promotion nor stop changes any Intel/NVIDIA window. The deployed
 helper is also available at `/usr/local/lib/usnm-boinc/amd-885/native-qwen-cohort.php`
-(the `amd-885` and `live-overlay` server images under `contrib-compute/images/server/`
+(the `amd-885` and `live-overlay` server images under `boinc/images/server/`
 install it).
 
 ### Required bounded acceptance: stage, audit, admit, then resume the same workunit
@@ -215,7 +215,7 @@ not relax the existing app-version or distinct-host validation gates.
 While AMD is still closed, explicitly stage that fixture through the server adapter:
 
 ```sh
-python3 scripts/boinc/acceptance_server.py --project /project/usnmocr \
+python3 boinc/scripts/acceptance_server.py --project /project/usnmocr \
   --fixtures /project/acceptance --stage-fixture REVIEWED_FIXTURE
 ```
 
@@ -237,14 +237,14 @@ production promotion above is separate. For this bounded acceptance, preview and
 apply one newly staged, audited, unaccepted workunit without generic replicas:
 
 ```sh
-php scripts/boinc/native-qwen-cohort.php --project /project/usnmocr \
+php boinc/scripts/native-qwen-cohort.php --project /project/usnmocr \
   --plan-class amd_vulkan_8b --workunit ID
-php scripts/boinc/native-qwen-cohort.php --project /project/usnmocr \
+php boinc/scripts/native-qwen-cohort.php --project /project/usnmocr \
   --plan-class amd_vulkan_8b --workunit ID --apply
 ```
 
 Now run the existing-client acceptance runner with that fixture/config and exact
-release (see [release acceptance](../contrib-compute/docs/app-release.md)).
+release (see [release acceptance](../boinc/docs/app-release.md)).
 Reservation verifies the audited ID/name, input references, native bounds,
 unaccepted scientific state and targeted staging without results against the
 **exact** operator window. Dispatch rechecks those gates under database locks,
@@ -259,7 +259,7 @@ collection continue to track the reserved workunit identity. Finally:
 
 ```sh
 # Close only AMD; allow in-flight results to report.
-php scripts/boinc/native-qwen-cohort.php --project /project/usnmocr \
+php boinc/scripts/native-qwen-cohort.php --project /project/usnmocr \
   --plan-class amd_vulkan_8b --stop --apply
 ```
 
@@ -280,9 +280,9 @@ ordinary scientific workunit instead, the same way the NVIDIA/Intel bounded
 windows do:
 
 ```sh
-php scripts/boinc/native-qwen-cohort.php --project /project/usnmocr \
+php boinc/scripts/native-qwen-cohort.php --project /project/usnmocr \
   --plan-class amd_vulkan_8b --ordinary-canary --workunit ID
-php scripts/boinc/native-qwen-cohort.php --project /project/usnmocr \
+php boinc/scripts/native-qwen-cohort.php --project /project/usnmocr \
   --plan-class amd_vulkan_8b --ordinary-canary --workunit ID --apply
 ```
 
@@ -320,7 +320,7 @@ If an older app version was chosen, or any evidence is bad, close AMD with
 
 Opening AMD and NVIDIA/Intel on the same pair does **not** reserve an AMD
 replica: two faster requesters can consume both before the AMD host polls.
-`scripts/boinc/qwen-amd-reservation.py` provides a separate, operator-reviewed
+`boinc/scripts/qwen-amd-reservation.py` provides a separate, operator-reviewed
 lease for **one newest, untouched ordinary 8B pair**, currently the signed
 Windows 1.14 release. It never writes BOINC science, result or assignment rows.
 The existing two-unsent/quorum-2 gates remain mandatory, including zero host,
@@ -351,7 +351,7 @@ Run each operation under the normal **short-lived project mutex**; the helper
 also takes `.native-qwen-cohort.lock`. For example, inside the server container:
 
 ```sh
-python3 scripts/boinc/qwen-amd-reservation.py reserve \
+python3 boinc/scripts/qwen-amd-reservation.py reserve \
   --project /project/usnmocr --lease LEASE_32_HEX --workunit ID \
   --host 5 --app-version 68 --lease-seconds 5400 \
   --expected-policy-sha256 REVIEWED_POLICY_SHA \
@@ -360,9 +360,9 @@ python3 scripts/boinc/qwen-amd-reservation.py reserve \
   --evidence /path/to/independent-per-workunit-receipt.json \
   --rollback-receipt /path/to/active-rollback-readback.json
 # Add --apply only after the preview, review and live guards pass.
-python3 scripts/boinc/qwen-amd-reservation.py tick \
+python3 boinc/scripts/qwen-amd-reservation.py tick \
   --project /project/usnmocr --lease LEASE_32_HEX --apply
-python3 scripts/boinc/qwen-amd-reservation.py release \
+python3 boinc/scripts/qwen-amd-reservation.py release \
   --project /project/usnmocr --lease LEASE_32_HEX --apply
 ```
 
@@ -410,9 +410,9 @@ every other native class is closed, no host may be eligible for it. An explicit
 tiebreaker admits Intel or NVIDIA to that one workunit only:
 
 ```sh
-php scripts/boinc/native-qwen-cohort.php --project /project/usnmocr \
+php boinc/scripts/native-qwen-cohort.php --project /project/usnmocr \
   --plan-class intel_vulkan_8b --tiebreaker --workunit ID
-php scripts/boinc/native-qwen-cohort.php --project /project/usnmocr \
+php boinc/scripts/native-qwen-cohort.php --project /project/usnmocr \
   --plan-class intel_vulkan_8b --tiebreaker --workunit ID --apply
 ```
 
