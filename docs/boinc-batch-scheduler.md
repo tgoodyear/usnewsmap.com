@@ -64,7 +64,7 @@ Prod runs the queue-fed priority controller in the scan-fetch container (#866) a
 
 - `/opt/usnm`: main pinned to one commit ([Moving the controller checkout](#moving-the-controller-checkout-1412));
 - `/root/.config/usnewsmap/prod/.env`: non-secret outputs;
-- `/etc/usnm/boinc-priority-controller.json`: `claim_queues ["ocr-priority"]`, `claim_languages ["eng", "deu"]`, `lease_hours` 36;
+- `/etc/usnm/boinc-priority-controller.json`: `claim_queues ["ocr-priority"]`, `claim_languages ["eng", "deu"]` (widened to `srp` by `--claim-language srp` since 7 November), `lease_hours` 36;
 - `/var/lib/usnm-priority-controller`: state;
 - push command `/opt/usnm/scripts/ocr-node/push-boinc-scan.sh` (local).
 
@@ -296,7 +296,7 @@ ocr-bulk (and ocr-priority) --claim--> claims/<doc_id>.json in boinc-handoff
 - the ledger has the page outstanding with the same batch, reason and language;
 - the batch is published at that version, the title isn't Japanese and an installed Tesseract model covers the language;
 - the page is on the newest fetched-scans list (volunteers never fetch from LoC);
-- with `claim_languages` (`CLAIM_LANGUAGES`, `--language`), its language is listed (#866). Set it to the languages `trust.json` has a policy for, or results outside it are held all lease. Deploy a hand-off image that knows `CLAIM_LANGUAGES` first; an older one ignores it and claims every language.
+- with `claim_languages` (`CLAIM_LANGUAGES`, `--language`), its language is listed (#866). Set it to the languages `trust.json` has a policy for, or results outside it are held all lease. Deploy a hand-off image that knows `CLAIM_LANGUAGES` first; an older one ignores it and claims every language. `--claim-language LANG` (repeatable) adds a language to `claim_languages` for the claim step; as a flag it leaves the allocation digest alone, so no drain or new plan. It only widens an explicit list, refuses a code already listed, and the dry run's plan event shows the languages used. The controller runs `--claim-language srp` for the Serbian hold ([note](notes/2026-11-07-serbian-trust-hold.md)); remove the flag to stop claiming it (pages already claimed are still collected).
 
 A held scope (#835, German until calibrated) may stay listed: `collect` keeps the result unpublished, marks the record `held` and succeeds ([gold check](../boinc/docs/gold-check.md#host-trust-for-usnm_ocr)). Held jobs count as settled and are reported as `scope_held`; the message returns after its lease and a later claim keeps the job. Held journals and spool outputs count toward the caps; `dispatch --include-held` [archives them](#archive-held-pages-835). After calibration, collect them by hand (`restore-held` first if archived).
 
