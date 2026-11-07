@@ -92,6 +92,15 @@ class TextLines(unittest.TestCase):
         self.assertTrue(yl.text_like({"words": [w(x) for x in ". 3750 תמון e 1922 TAMUZ".split()], "wc": 0.96}))
 
 
+    def test_picture_hit_does_not_use_a_block(self):
+        import yiddish_lines as yl
+        def line(block, y, text, wc):
+            return {"block": block, "box": [0, y, 100, 10], "words": [{"text": t, "box": [0, y, 1, 1]} for t in text.split()], "wc": wc}
+        lines = [line(0, 0, "י י ע . א", 0.9), line(0, 10, "י י ע א", 0.9), line(1, 100, "דער מאן געקומען", 0.97),
+                 line(1, 110, "צו זיין שוועסטער", 0.97)]
+        self.assertEqual(yl.pick_blocks(lines, [(5, 5), (5, 105)], blocks=1), [2, 3])
+
+
 class Build(unittest.TestCase):
     def test_end_to_end(self):
         try:

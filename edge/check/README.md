@@ -107,7 +107,7 @@ cd edge/check
 CLOUDFLARE_ACCOUNT_ID=<account> CLOUDFLARE_API_TOKEN=<Workers token> npx wrangler@4.154.0 deploy
 ```
 
-The D1 schema is applied with `wrangler d1 execute usnm-check --remote --file schema.sql`, or through the D1 API; every statement is idempotent.
+Changes to an existing database are in `migrations/`, run once in order: `0001-answers-notext.sql` must run before a page with "Not text" is deployed. The D1 schema is applied with `wrangler d1 execute usnm-check --remote --file schema.sql`, or through the D1 API; every statement is idempotent.
 
 ### Secrets
 

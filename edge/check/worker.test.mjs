@@ -98,3 +98,18 @@ test("the dump has every table's rows", async () => {
   assert.deepEqual(lines.map((l) => l.table), ["languages", "tasks", "tasks", "answers"]);
   assert.equal(lines[3].row.choice, "a");
 });
+
+test("migration 0001 keeps every answer and allows notext", async () => {
+  const { DatabaseSync } = await import("node:sqlite");
+  const { readFileSync } = await import("node:fs");
+  const db = new DatabaseSync(":memory:");
+  db.exec("CREATE TABLE answers (task_id TEXT NOT NULL, contributor TEXT NOT NULL, choice TEXT NOT NULL CHECK (choice IN ('a', 'b', 'neither', 'unsure')), at INTEGER NOT NULL, PRIMARY KEY (task_id, contributor)); CREATE INDEX answers_by_contributor ON answers (contributor);");
+  const add = db.prepare("INSERT INTO answers (task_id, contributor, choice, at) VALUES (?, ?, ?, ?)");
+  assert.throws(() => add.run("t", "x", "notext", 0));
+  ["a", "b", "neither", "unsure"].forEach((c, i) => add.run("t" + i, "c" + i, c, i));
+  db.exec(readFileSync(new URL("./migrations/0001-answers-notext.sql", import.meta.url), "utf8"));
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM answers").get().n, 4);
+  add.run("t9", "c9", "notext", 9);
+  assert.throws(() => add.run("t9", "c9", "a", 9)); // the primary key survived
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE name = 'answers_by_contributor'").get().n, 1);
+});

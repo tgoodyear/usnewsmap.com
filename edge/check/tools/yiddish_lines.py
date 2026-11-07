@@ -120,8 +120,8 @@ def pick_blocks(lines: list, anchors: list, blocks: int = 3, per_block: int = 3)
             below = [(ln["box"][1], i) for i, ln in enumerate(lines)
                      if ln["box"][0] <= x <= ln["box"][0] + ln["box"][2] and 0 <= ln["box"][1] - y <= 1.5 * ln["box"][3]]
             hit = min(below)[1] if below else None
-        if hit is None or hit in used or not HEBREW.search(" ".join(w["text"] for w in lines[hit]["words"])):
-            continue
+        if hit is None or hit in used or not HEBREW.search(" ".join(w["text"] for w in lines[hit]["words"])) or not text_like(lines[hit]):
+            continue  # a picture or smudge doesn't use up a block: the next anchor gets the chance
         block = [i for i in range(hit, len(lines)) if lines[i]["block"] == lines[hit]["block"]][:per_block]
         block = [i for i in block if i not in used]
         used.update(block)
