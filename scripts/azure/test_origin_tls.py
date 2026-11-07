@@ -130,11 +130,28 @@ class OriginTlsTests(unittest.TestCase):
                     patch.object(tls, "state_restore", return_value=self.root), \
                     patch.object(tls, "certificate_current", return_value=True), \
                     patch.object(tls.subprocess, "run") as certbot, \
-                    patch.object(tls, "upload") as upload:
+                    patch.object(tls, "upload") as upload, \
+                    patch.object(tls, "AZURE_UPLOAD", True):
                 tls.renew("admin@example.com", no_bind=True)
                 self.assertEqual(secret.call_args_list[0].args, (tls.TOKEN_SECRET,))
                 certbot.assert_not_called()
                 upload.assert_called_once_with(self.root)
+        finally:
+            os.chdir(previous)
+
+    def test_no_azure_upload_without_custom_domains(self):
+        previous = Path.cwd()
+        os.chdir(self.root)
+        try:
+            with patch.object(tls, "secret", side_effect=["dns-token", "saved-state"]), \
+                    patch.object(tls, "state_restore", return_value=self.root), \
+                    patch.object(tls, "certificate_current", return_value=True), \
+                    patch.object(tls.subprocess, "run") as certbot, \
+                    patch.object(tls, "upload") as upload, patch.object(tls, "bind") as bind:
+                tls.renew("admin@example.com")
+                certbot.assert_not_called()
+                upload.assert_not_called()
+                bind.assert_not_called()
         finally:
             os.chdir(previous)
 

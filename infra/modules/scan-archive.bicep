@@ -17,8 +17,8 @@ param tags object
 param name string
 @description('Public IPv4 addresses or CIDR ranges of the OCR nodes. Storage rejects /31 and /32 ranges, so a /32 is written as the bare address.')
 param nodeIps array = []
-@description('The Container Apps subnet, allowed through its service endpoint.')
-param subnetId string
+@description('The Container Apps subnet, allowed through its service endpoint; empty without the VNet (#308).')
+param subnetId string = ''
 @description('The BOINC stack\'s Container Apps subnet (usnm-boinc-vnet-<env>/aca), allowed through its Microsoft.Storage.Global endpoint so the bridge\'s staging steps can read the archive (#516). Empty: none.')
 param boincSubnetId string = ''
 @description('Principals given Storage Blob Data Reader on `scans`: the BOINC bridge\'s identity (usnm-boinc-id-<env>), which stages pages from the archive before going to LoC (ADR-0018, decision 7).')
@@ -57,7 +57,7 @@ resource account 'Microsoft.Storage/storageAccounts@2023-05-01' = {
         }
       ]
       virtualNetworkRules: concat(
-        [{ id: subnetId, action: 'Allow' }],
+        empty(subnetId) ? [] : [{ id: subnetId, action: 'Allow' }],
         empty(boincSubnetId) ? [] : [{ id: boincSubnetId, action: 'Allow' }]
       )
     }

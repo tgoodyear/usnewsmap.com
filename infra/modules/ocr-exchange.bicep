@@ -15,8 +15,8 @@ param tags object
 param name string
 @description('Public IPv4 addresses or CIDR ranges of the OCR nodes (the operator\'s home IP). Storage rejects /31 and /32 ranges, so a /32 is written as the bare address.')
 param nodeIps array = []
-@description('The Container Apps subnet, allowed through its service endpoint.')
-param subnetId string
+@description('The Container Apps subnet, allowed through its service endpoint; empty without the VNet (#308).')
+param subnetId string = ''
 @description('The BOINC environment\'s `aca` subnet (contrib-compute/infra/boinc), allowed through its Microsoft.Storage.Global service endpoint, for the bridge\'s hand-off steps (#469). Empty: not allowed.')
 param boincSubnetId string = ''
 @description('Principals given the node writer role on `boinc-handoff` (#469): the hand-off job\'s identity, the BOINC bridge\'s (usnm-boinc-id-<env>) and the scan fetcher\'s Arc machine identity.')
@@ -94,7 +94,7 @@ resource account 'Microsoft.Storage/storageAccounts@2023-05-01' = {
       // BOINC stack's network.bicep). Storage refuses the rule until that endpoint exists, so
       // scripts/boinc/provision-boinc.sh goes first.
       virtualNetworkRules: concat(
-        [{ id: subnetId, action: 'Allow' }],
+        empty(subnetId) ? [] : [{ id: subnetId, action: 'Allow' }],
         empty(boincSubnetId) ? [] : [{ id: boincSubnetId, action: 'Allow' }]
       )
     }

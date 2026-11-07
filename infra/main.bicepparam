@@ -27,6 +27,7 @@ param dataPrivateEndpoints = bool(readEnvironmentVariable('USNM_DATA_PRIVATE_END
 param dataSubnetAccess = bool(readEnvironmentVariable('USNM_DATA_SUBNET_ACCESS', 'false'))
 param dataAllNetworks = bool(readEnvironmentVariable('USNM_DATA_ALL_NETWORKS', 'false'))
 param spareEnvironment = bool(readEnvironmentVariable('USNM_SPARE_ENVIRONMENT', 'false'))
+param caeVnet = bool(readEnvironmentVariable('USNM_CAE_VNET', 'true'))
 param lakeBlobSoftDeleteDays = int(readEnvironmentVariable('USNM_LAKE_BLOB_SOFT_DELETE_DAYS', '3'))
 param ingestJobs = bool(readEnvironmentVariable('USNM_INGEST_JOBS', 'false'))
 param useAcr = bool(readEnvironmentVariable('USNM_USE_ACR', 'false'))
