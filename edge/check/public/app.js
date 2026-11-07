@@ -102,7 +102,7 @@ function examples(text, diff) {
     const ex = document.createElement("span"); ex.className = "ex";
     const l = document.createElement("span"); l.className = "letter"; l.lang = lang; l.textContent = ch; ex.appendChild(l);
     const note = (cfg.notes || {})[ch];
-    if (note) { const n = document.createElement("span"); n.className = "note"; n.textContent = note; ex.appendChild(n); }
+    if (note) { const n = document.createElement("span"); n.className = "note"; n.dir = "auto"; n.textContent = note; ex.appendChild(n); }
     for (const key of ((cfg.examples || {})[ch] || []).slice(0, 3)) {
       const im = new Image(); im.src = "/clips/" + key; im.alt = "printed " + ch; im.loading = "lazy"; ex.appendChild(im);
     }
