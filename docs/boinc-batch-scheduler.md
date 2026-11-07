@@ -1,32 +1,12 @@
 # BOINC volunteer batch controller
 
-Issue [#525](https://github.com/tgoodyear/usnewsmap.com/issues/525). The opt-in
-controller connects the existing CT 211 cache push, hand-off export, bridge
-`submit-remote`, assimilator `spool-out`, and trust-checked hand-off `collect`.
-It runs **one bounded tick**, not a daemon, and does nothing remotely without
-`--apply`. Adding this code does **not** deploy it or enable a production feed.
+Issue [#525](https://github.com/tgoodyear/usnewsmap.com/issues/525). The controller chains the cache push, hand-off export, bridge `submit-remote`, assimilator `spool-out` and trust-checked hand-off `collect`. It runs one bounded tick, not a daemon, and does nothing remotely without `--apply`. Prod runs it from a pinned checkout ([below](#on-prem-controller-host-ct-211)).
 
-Failed subprocesses retain `last-command-failure.json` in the controller's
-private state directory, atomically replaced with mode `0600`. It records the
-step label, timestamp, exit code or exception class, and the final 16,384
-characters of each output stream, including partial timeout output. It does not
-record command arguments. Only the latest failed command is retained; a later
-successful command does not erase it. A receipt-write failure is reported
-explicitly. Public timing/failure telemetry still excludes subprocess output.
-Treat this file as sensitive operator evidence: inspect it on the controller
-host, not in GitHub comments, CI logs or public telemetry. Check its timestamp
-and label before attributing it to a tick. No automatic retry is added.
+A failed subprocess leaves `last-command-failure.json` (mode `0600`, replaced atomically) in the private state directory: step label, timestamp, exit code or exception class, and the last 16,384 characters of each output stream (partial timeout output included), never arguments. Only the latest failure is kept; a later success doesn't erase it, and a failure to write it is reported. Telemetry never carries subprocess output. The file is sensitive: read it on the controller host, not in GitHub, CI or telemetry, and check its timestamp and label before tying it to a tick. Nothing retries automatically.
 
 ## Recovering a contract-invalid canonical output
 
-BOINC validity alone does not establish native output integrity. Do not repair a
-checksum in `result.json`, replace scientific output with empty files, reset the
-controller journal, or release a failed page to rediscover the same workunit.
-Trust holds, missing files and transport errors are not permanent output failures.
-
-After an operator reconciles the exact job, canonical result and original
-assimilator spool, `usnm-boinc reject-output` provides an explicit, local-only
-disposition:
+BOINC validity doesn't prove native output integrity. Don't patch a checksum in `result.json`, replace output with empty files, reset the journal, or release a failed page to rediscover the same workunit. Trust holds, missing files and transport errors aren't permanent failures. Once the exact job, canonical result and assimilator spool are reconciled, the local-only disposition is:
 
 ```sh
 usnm-boinc reject-output --root "$dispatch_root" --spool "$canonical_spool" \
@@ -34,174 +14,76 @@ usnm-boinc reject-output --root "$dispatch_root" --spool "$canonical_spool" \
   --expect-text-sha256 "$text_sha256" --expect-alto-sha256 "$alto_sha256"
 ```
 
-All three hashes must come from the reviewed canonical bytes, including an empty
-file's hash. The command refuses missing/changed files, accepted snapshots,
-bundles, unsubmitted jobs and outputs with a valid native result contract.
-Only invalid result JSON or a failed native provenance/checksum/UTF-8 contract
-can be rejected. It preserves those exact bytes plus a content-free receipt in
-`quarantine/<job>/rejected/` **before** marking the job `failed`. Replaying the
-same disposition is idempotent; conflicting receipts or quarantined bytes fail.
-Ordinary collection and all trust checks are unchanged.
+Hashes come from the reviewed canonical bytes (empty files included). It rejects only invalid result JSON or a failed native provenance, checksum or UTF-8 contract; it refuses missing or changed files, accepted snapshots, bundles, unsubmitted jobs and valid outputs. It keeps the bytes and a content-free receipt in `quarantine/<job>/rejected/` before marking the job `failed`. Replays are idempotent; conflicting receipts or bytes fail.
 
-For a remote hand-off, first back up both authoritative dispatch journals and
-the canonical files under the exclusive operator/controller locks. Run the
-command on a private working copy reconciled with the existing hand-off helpers:
+For a remote hand-off, back up both dispatch journals and the canonical files under the exclusive operator and controller locks, then on a private copy:
 
-1. Read the BOINC bridge's `handoff/jobs/<job>/record.json` and the collection
-   container's `dispatch/jobs/<job>/record.json`. Remote submission can leave the
-   latter **reserved** while the bridge is **submitted**; do not manually advance
-   its stage. Require matching complete job identity, plan, stamp and native
-   ledger, a confirmed submitted canonical workunit, no bundle and no uncertain
-   submission. A mismatch requires reconciliation, not disposition.
-2. Use the verified **submitted bridge record** as the private working record.
-   Fetch the collection-side `dispatch/jobs/<job>/accepted/` into that working
-   job's `accepted/`, and check the bridge-side accepted directory too. Any
-   accepted manifest makes the command refuse; do not discard accepted data to
-   pass its guard. Preserve existing quarantine files in the working copy as
-   well, so a retry cannot overwrite conflicting evidence.
-3. After the command succeeds, persist the exact failed record to **both**
-   bridge `handoff/jobs/<job>/record.json` and collection
-   `dispatch/jobs/<job>/record.json`. Persist its quarantine to collection
-   `dispatch/quarantine/<job>/` through the existing `handoff put` workflow and
-   the bridge's corresponding local quarantine path. Verify all hashes before
-   resuming the controller. A changed local working copy alone is not recovery.
+1. Compare bridge `handoff/jobs/<job>/record.json` with collection `dispatch/jobs/<job>/record.json` (the latter can stay reserved while the bridge is submitted; don't advance it). Identity, plan, stamp and ledger must match, with a confirmed submitted workunit, no bundle and no uncertain submission; a mismatch needs reconciliation, not disposition.
+2. Use the submitted bridge record; fetch collection `dispatch/jobs/<job>/accepted/` into it and check the bridge's. Any accepted manifest makes the command refuse; never discard it. Keep existing quarantine files so a retry can't overwrite conflicting evidence.
+3. Write the failed record to both records above and the quarantine to collection `dispatch/quarantine/<job>/` (via `handoff put`) and the bridge's quarantine path; verify all hashes before resuming.
 
-With `--dead-letter-failed`, the existing controller
-then uses the failed journal's reason to send only that page to `ocr-deadletter`,
-preserving the native reservation and scientific database. Confirm message
-settlement and a clean subsequent ordinary tick; a lost queue lease still needs
-explicit reconciliation. Requeue is deliberately not automatic.
-
-Rollback before message settlement restores the backed-up journals under the
-same locks. After settlement, do not restore a submitted journal or replay work:
-retain the receipt and reconcile the existing dead letter/reservation explicitly.
+`--dead-letter-failed` then sends only that page to `ocr-deadletter` with the journal's reason, keeping the reservation and scientific database. Confirm settlement and a clean next tick; a lost lease needs reconciliation. Requeue is never automatic. Before settlement, roll back by restoring the journals under the same locks; after it, never restore a submitted journal or replay work: keep the receipt and reconcile the dead letter and reservation.
 
 ## Allocation and boundaries
 
-An operator allocates explicit page keys from one prefetch manifest snapshot,
-one base batch and one native plan to BOINC. Reserve that allocation for this
-controller; do not also dispatch it through an on-prem node plan. The native
-exporter still checks and reserves the ledger and refuses conflicting requests.
-LoC batch names are case-sensitive (`curiv_joshuaTree`, `lu_Cypher`); preserve
-their spelling and use the unversioned base batch, not its `_verNN` directory.
-Unallocated pages remain on-prem work, unless the controller is set to take pages
-off the work queues itself ([Queue-fed work](#queue-fed-work)). There is no LoC
-fetching, scanfetch change, worker-image rollover, gold issuance, trust
-override, client attachment, or retry of terminal failures.
+An explicit cohort is page keys from one prefetch manifest snapshot, one base batch and one native plan, reserved for this controller (not also an on-prem node plan); the exporter still reserves the ledger and refuses conflicts. LoC batch names are case-sensitive (`curiv_joshuaTree`, `lu_Cypher`); use the base batch, not `_verNN`. Other pages stay on-prem work unless the controller reads the queues ([Queue-fed work](#queue-fed-work)). It never fetches from LoC, changes scanfetch, rolls the worker image, issues gold outside [onboarding](#gold-onboarding-901), overrides trust, attaches clients or retries terminal failures.
 
-The controller uses a single approved execution host with Python 3.9+, Azure
-CLI, `jq`, Bash, an existing Azure login, the checkout's existing environment
-outputs, and the existing hand-off job. Its bridge steps run through
-`boinc/scripts/start-boinc-bridge.sh` (the Azure bridge job) or, with `step_command` in
-the configuration, on the on-prem BOINC host through `usnm-boinc-step`, which is how
-the on-prem server's bridge steps are reached ([boinc-onprem.md](boinc-onprem.md), cutover
-step 5). The server and bridge images
-must contain the new additive `batch-inventory` step; retain the existing
-immutable worker pin. Do not deploy server or bridge images or run the
-controller while another release owner is changing them.
+The host needs Python 3.9+, Azure CLI, `jq`, Bash, an Azure login and the checkout's environment outputs. Bridge steps run through `boinc/scripts/start-boinc-bridge.sh` or, with `step_command`, `usnm-boinc-step` on the BOINC host ([boinc-onprem.md](boinc-onprem.md), cutover step 5). Server and bridge images need `batch-inventory`; keep the immutable worker pin. Don't deploy server or bridge images, or run the controller, while another release owner is changing them.
+
+An explicit cohort's configuration is operator-owned JSON outside version control; replace the example's illustrative values and `image` digest with the approved pin. `push_command` is a trusted literal argv prefix for `scripts/ocr-node/push-boinc-scan.sh` (from another host, e.g. `ssh -o BatchMode=yes <user>@<host> pct exec <ct> -- …`); it gets `--scan`, `--manifest`, account and root options and only reads cached scans and sidecars.
+
+```json
+{
+  "schema_version": 1,
+  "env": "dev",
+  "account": "exchange123",
+  "plan": "volunteer-cohort-1",
+  "batch": "example_batch",
+  "manifest": "snapshot-1/manifest.parquet",
+  "image": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "push_command": ["/opt/usnm/scripts/ocr-node/push-boinc-scan.sh"],
+  "scans_root": "/tank/ocr/scans",
+  "manifests_root": "/tank/ocr/manifests",
+  "batch_size": 10,
+  "max_pending": 40,
+  "pages_per_host": 2,
+  "pages": [
+    {
+      "page": "sn12345678/1900-01-01/ed-1/seq-1",
+      "scan": "/tank/ocr/scans/keep/example_batch/sn12345678/1900-01-01/ed-1/seq-1.jp2"
+    }
+  ]
+}
+```
+
+Each scan must be the page's manifest scan with sidecar (the exporter checks). Up to 10,000 pages, 1 to 100 per tick. The hash pins allocation, limits and image: don't edit configuration or state mid-cohort. Finish or drain, reconcile failures and get operator approval before migrating the configuration or allocating another cohort. A page with another plan's journal is refused before any state or export; keep the original owner's journals and resolve ownership or choose other pages, historical cohorts included.
 
 ### On-prem controller host (CT 211)
 
-Production runs the queue-fed priority controller in the scan-fetch container
-(CT 211, #866), signed in as its Arc machine identity, the same
-`USNM_BOINC_HANDOFF_RUNNER` that pushes scans. `USNM_BOINC_CONTROLLER_ONPREM`
-(`infra/modules/boinc-controller.bicep`) gives that identity Reader on the
-subscription, for the stacks' outputs, and a custom role on the main and BOINC
-groups that reads, updates and starts the hand-off and bridge jobs (with the
-environment join and identity assign checks an update makes). That role can
-change those jobs, so the host can act as their identities; this was accepted
-for CT 211. CT 211 holds a checkout of main at `/opt/usnm`, pinned to one commit
-([Moving the controller checkout](#moving-the-controller-checkout-1412)), the non-secret
-outputs in `/root/.config/usnewsmap/prod/.env`, the configuration in
-`/etc/usnm/boinc-priority-controller.json` (`claim_queues ["ocr-priority"]`,
-`claim_languages ["eng", "deu"]`, `lease_hours` 36), its state in
-`/var/lib/usnm-priority-controller`, and the push command
-`/opt/usnm/scripts/ocr-node/push-boinc-scan.sh` (local, no SSH).
+Prod runs the queue-fed priority controller in the scan-fetch container (#866) as its Arc identity, the `USNM_BOINC_HANDOFF_RUNNER` that pushes scans. `USNM_BOINC_CONTROLLER_ONPREM` (`infra/modules/boinc-controller.bicep`) grants it subscription Reader and a custom role on the main and BOINC groups to read, update and start the hand-off and bridge jobs (so it can act as their identities, a risk accepted for this host). On the host:
 
-The service passes `--server-status-url
-https://boinc.usnewsmap.com/server_status.php?xml=1` and
-`--max-global-pending`, set to 3000 in the
-`usnm-boinc-priority-controller.service.d/batch.conf` drop-in since 3 November
-(2000 before; raised to relieve [#1474](https://github.com/tgoodyear/usnewsmap.com/issues/1474)).
-Without per-app status, conservative inventory
-accounting treats every application's pending work as OCR and can prevent
-priority claims while unrelated GPU queues are full.
+- `/opt/usnm`: main pinned to one commit ([Moving the controller checkout](#moving-the-controller-checkout-1412));
+- `/root/.config/usnewsmap/prod/.env`: non-secret outputs;
+- `/etc/usnm/boinc-priority-controller.json`: `claim_queues ["ocr-priority"]`, `claim_languages ["eng", "deu"]`, `lease_hours` 36;
+- `/var/lib/usnm-priority-controller`: state;
+- push command `/opt/usnm/scripts/ocr-node/push-boinc-scan.sh` (local).
 
-Raising the cap only moves the problem: `usnm_qwen` workunits whose partner
-replica no eligible host can take stay unassimilated and fill any cap, so
-`usnm_ocr` stops with `blocked_by: "global_safety_cap"` while its hosts ask for
-work (#1474). `--other-app-budget B` (a flag, so the configuration hash doesn't
-change) counts other apps' unassimilated workunits toward
-`--max-global-pending` only up to `B`, which must be below the cap, so other
-apps can't take more than `B` of it: the cohort keeps `cap - B`, less retained
-collection backlog. The cap must be set explicitly (flag or configuration).
-The flag is for OCR plans; a Surya plan refuses it.
-All work of every app, counted in full, may not pass the
-feeder's 4,096 shared-memory slots (`shmem_work_items`); at that bound the
-reason is `global_hard_cap`, which no cap setting lifts. Which work is other
-apps' comes from the inventory's per-app count of unassimilated workunits
-(`pending_workunits_by_app`), not from the residual after OCR's named
-workunits, so OCR work the inventory doesn't list by name still counts in
-full. Only server images built with this change report the count. Without it
-nothing is discounted, and the tick reports `other_app_workunits: null`.
+`usnm-boinc-priority-controller.service` runs one tick with `--apply`, `--server-status-url https://boinc.usnewsmap.com/server_status.php?xml=1` (without per-app status every app's work counts as OCR, which can block priority claims while unrelated GPU queues are full) and `--max-global-pending 3000` in drop-in `usnm-boinc-priority-controller.service.d/batch.conf` (2000 until 3 November, [#1474](https://github.com/tgoodyear/usnewsmap.com/issues/1474)). It sets `Environment=USNM_SETTINGS_HOME=/root/.config/usnewsmap`, since a system service needn't inherit `HOME` and the hand-off launcher then can't find its local environment file (the bridge launcher's stack discovery still works); verify hand-off `--what-if` under systemd, not only a shell. `usnm-boinc-priority-controller.timer` uses `OnBootSec=5min` and `OnUnitInactiveSec=5min`; events are in `journalctl -u usnm-boinc-priority-controller.service`. Stop the timer and let a tick finish before any configuration change or maintenance.
 
-Neither the commit CT 211 is pinned to nor the running server image has this.
-To use it, in either order (the flag is inert without the count):
+Keep `max_pending: 40`, `pages_per_host: 2`, `batch_size: 10` (admission `min(40, active_hosts * 2)` under the global cap). A status fetch or parse failure stops the tick. Tune with runtime flags, never by changing the configuration hash or resetting state; shorten ticks with [`--refill-cap`](#refill-cap-1447).
 
-1. Roll the on-prem server image to one built from a commit that includes it
-   ([Reviewed resumable release pipeline](boinc-onprem.md#reviewed-resumable-release-pipeline-551)),
-   so `batch-inventory` reports `pending_workunits_by_app`.
-2. Move the controller checkout past it
-   ([Moving the controller checkout](#moving-the-controller-checkout-1412)).
-3. Add the flag to the drop-in's `ExecStart`, for example
-   `--max-global-pending 3000 --other-app-budget 2500`, which leaves
-   `usnm_ocr` 500 workunits (the 300 high watermark in #1474 and a margin).
-   The budget is the operator's choice.
-4. Run the same command without `--apply` (the plan event shows
-   `other_app_budget`, and a budget the cap doesn't allow fails here), then
-   `systemctl daemon-reload` and one tick by hand. Check
-   `other_app_workunits` (not `null`), `global_pending_counted`,
-   `global_hard_cap` and `backpressure_reason` before the timer runs it.
+**Other apps' budget (#1474).** Stranded `usnm_qwen` replicas fill any cap, so `usnm_ocr` stops with `blocked_by: "global_safety_cap"`. `--other-app-budget B` counts other apps' unassimilated workunits (the inventory's `pending_workunits_by_app`) toward the cap only up to `B`, which must be below a cap set explicitly (flag or `max_global_pending` in the configuration), leaving the cohort `cap - B` less collection backlog. The count is per app, not the residual after OCR's named workunits, so unlisted OCR work counts in full. OCR plans only (Surya refuses it). Under a budget, all apps' work counted in full may not pass the feeder's 4,096 slots (`shmem_work_items`, reason `global_hard_cap`, which no cap setting lifts). Server images without the count discount nothing (`other_app_workunits: null`). Neither the pinned checkout nor the server image has it yet. To enable:
 
-Removing the flag restores the old accounting.
-
-Keep `max_pending: 40`,
-`pages_per_host: 2`, and `batch_size: 10`: OCR admission is bounded by
-`min(40, active_hosts * 2)` independently of the global safety cap. Status fetch
-or parsing failures stop the tick rather than admitting unmeasured work.
-Use these existing runtime flags rather than changing an initialized
-configuration's immutable hash; never delete or reset controller state to
-change admission settings. To shorten a tick, use [`--refill-cap`](#refill-cap-1447),
-not a smaller `batch_size`.
-
-The systemd service `usnm-boinc-priority-controller.service` runs one tick with
-`--apply` and sets `Environment=USNM_SETTINGS_HOME=/root/.config/usnewsmap`.
-Set this explicitly: a system service need not inherit `HOME`, and the
-hand-off launcher otherwise cannot resolve its local environment file even
-though the bridge launcher's stack discovery works. Verify hand-off
-`--what-if` under systemd, not only an interactive shell.
-`usnm-boinc-priority-controller.timer` is enabled with
-`OnBootSec=5min` and `OnUnitInactiveSec=5min`. Read its structured events with
-`journalctl -u usnm-boinc-priority-controller.service`; stop the timer and wait
-for any active service to finish before changing its configuration or performing
-exclusive lifecycle maintenance. Each tick takes the shared controller lease.
-Successful empty-queue ticks are not end-to-end priority-page acceptance:
-the real-page receipt for #866 is recorded below.
+1. Roll the server image past it ([release pipeline](boinc-onprem.md#reviewed-resumable-release-pipeline-551)) and [move the checkout](#moving-the-controller-checkout-1412), in either order.
+2. Add e.g. `--max-global-pending 3000 --other-app-budget 2500` to `ExecStart` (leaves `usnm_ocr` 500: the 300 high watermark in #1474 plus margin; the budget is the operator's choice).
+3. Dry-run (shows `other_app_budget`; an invalid budget fails), `systemctl daemon-reload`, run one tick.
+4. Check `other_app_workunits` (not `null`), `global_pending_counted`, `global_hard_cap`, `backpressure_reason` before starting the timer. Removing the flag reverts.
 
 ### Moving the controller checkout (#1412)
 
-The service runs whatever `/opt/usnm` holds, so moving that checkout deploys the
-controller. A tick runs three things from it: `boinc/scripts/batch_scheduler.py`, the push
-command `scripts/ocr-node/push-boinc-scan.sh`, and `boinc/scripts/start-boinc-bridge.sh`
-with `scripts/lib/` for any step not sent to `step_command`. That launcher also reads the
-checkout's settings, `infra/env/` and `boinc/infra/boinc/env/`. The step host's
-`usnm-boinc-step` (`onprem-step.sh`) and the server, bridge and hand-off images are
-deployed on their own; moving the checkout doesn't change them. Keep the checkout at one
-commit of main with no local edits, and move it only as below. Until #1412 is closed, the
-checkout is an older commit with a hand-placed `batch_scheduler.py`.
+Moving `/opt/usnm` deploys the controller (`boinc/scripts/batch_scheduler.py`, `scripts/ocr-node/push-boinc-scan.sh`, `boinc/scripts/start-boinc-bridge.sh` with `scripts/lib/`, settings in `infra/env/` and `boinc/infra/boinc/env/`). `onprem-step.sh` and the images deploy separately. Keep one commit of main, no local edits; until #1412 closes it is an older commit with a hand-placed `batch_scheduler.py`.
 
-1. **Read the range.** Fetch, which leaves the working tree alone, and list what the
-   controller would run differently:
+1. **Read the range**; deploy first anything a commit needs on `step_command` or in an image, and note changes to what `state.json` or journals hold:
 
    ```sh
    cd /opt/usnm
@@ -212,13 +94,7 @@ checkout is an older commit with a hand-placed `batch_scheduler.py`.
      infra/env/ boinc/infra/boinc/env/
    ```
 
-   Read each listed commit's rollout notes. If one changes what the controller sends to
-   `step_command`, or needs a newer image, deploy that first as the commit says. Note
-   whether any changes what `state.json` or the journals hold: that decides step 5.
-
-2. **Test with no publishing.** The timer keeps running the old checkout meanwhile.
-   Export the commit to a scratch directory, run its tests on the host's Python, and run
-   it with the drop-in's flags but without `--apply`:
+2. **Test** while the timer runs the old checkout. The dry run reads only configuration; its `config_sha256` must match `state.json`'s or it stops with "immutable allocation changed":
 
    ```sh
    mkdir /root/usnm-pin-<commit>
@@ -230,14 +106,7 @@ checkout is an older commit with a hand-placed `batch_scheduler.py`.
      --state-dir /nonexistent <the drop-in's other flags, without --apply>
    ```
 
-   Without `--apply` the controller reads only its configuration: no Azure or SSH call
-   and no state. Its `config_sha256` must equal the one in
-   `/var/lib/usnm-priority-controller/state.json`; otherwise the new commit stops with
-   "immutable allocation changed".
-
-   Then compare what the two versions make of the live state. Copy the state directory
-   between two ticks, and load both versions' `batch_scheduler.py` to read the copy. This
-   reads files only. Both must own the same jobs in the same stages:
+   Then check both versions own the same jobs in the same stages, from a state copy taken between ticks (files only, since the journal cache is the last full listing a tick made, not the container now; never run a tick against the copy, even `--drain`, since a tick acts on the live feed):
 
    ```sh
    cp -a /var/lib/usnm-priority-controller /root/usnm-pin-state-<date>
@@ -275,13 +144,7 @@ checkout is an older commit with a hand-placed `batch_scheduler.py`.
    PY
    ```
 
-   The journal cache is the last full listing a tick made, not the container now. Don't
-   run a tick against the copy, not even with `--drain`: a tick takes the hand-off
-   container's lease (`scheduler/controller.lock`), runs `batch-inventory`, and collects
-   and publishes, so it would act on the live feed from stale state.
-
-3. **Move.** Stop the timer and wait for a running tick to end. Save any local edit and
-   stray file, then check out the commit detached, so that a `git pull` can't move it:
+3. **Move** detached; start the timer only after a clean tick, otherwise roll back (step 5):
 
    ```sh
    systemctl stop usnm-boinc-priority-controller.timer
@@ -300,19 +163,13 @@ checkout is an older commit with a hand-placed `batch_scheduler.py`.
    systemctl start usnm-boinc-priority-controller.timer
    ```
 
-   Start the timer only after a clean tick; otherwise roll back (step 5).
-
-4. **Record.** On the issue for the move, post the previous and new commit, both
-   `sha256sum` lines, the saved diff's path, the empty `git status --short` and the first
-   tick's result. Add a comment line to the service's drop-in, as for its flags, then
-   `systemctl daemon-reload`:
+4. **Record** both commits, both sums, the diff path, the empty status and the first tick on the issue; add this to the drop-in and `systemctl daemon-reload`:
 
    ```ini
    # /opt/usnm at <commit> since <date> (#<issue>). Revert: <previous commit>, /root/usnm-checkout-<date>.diff.
    ```
 
-5. **Roll back.** Stop the timer and wait as in step 3, then put the previous checkout
-   back and check that the file matches the recorded sum:
+5. **Roll back**: stop the timer and wait for a running tick as in step 3. Never roll back the state directory; if step 1 showed state or journal changes, plan the reconcile before moving:
 
    ```sh
    cd /opt/usnm
@@ -322,114 +179,32 @@ checkout is an older commit with a hand-placed `batch_scheduler.py`.
    systemctl start usnm-boinc-priority-controller.timer
    ```
 
-   Never roll back the state directory: claims, journals and state move forward together
-   ([recovery](#validation-scheduling-and-recovery)). So a rollback is only a checkout
-   change when the range from step 1 changed nothing that `state.json` or the journals
-   hold. If it did, the rollback needs its own reconcile plan before the move.
-
 ### Batched steps (#932)
 
-A tick submits, spools out and collects one page per job execution unless told otherwise.
-Each execution costs one to two minutes of Container Apps start and stop, so a 10-page tick
-spends about 40 minutes on them (measured 20 October 2026, when the bridge steps were still Azure jobs; on-prem bridge steps start no Container Apps execution), whatever the volunteers' capacity.
-Runtime flags put a tick's pages into one execution per step instead. They aren't part
-of the configuration, so turning them on or off changes no hash:
+Runtime flags (no hash change) put a tick's pages in one execution per step instead of one per page (an Azure Container Apps execution cost 1 to 2 minutes, about 40 minutes per 10-page tick, 20 October 2026; on-prem steps start none):
 
-- `--batch-submit`: `submit-remote` with `JOB_IDS=<id>,...`. It stops at the first job that
-  fails, as one execution per job would; the next tick reconciles that job before any other
-  submission.
+- `--batch-submit`: `submit-remote` with `JOB_IDS=<id>,...`; stops at the first failing job, reconciled next tick before any other submission.
 - `--batch-spool-out`: `spool-out` with `HANDOFF_SPOOLS=<id>=<spool>,...`.
-- `--batch-collect`: the hand-off `collect` with `JOB_IDS=<id>,...`.
-- `--collect-parallel N`: with `--batch-collect`, that collect runs up to N jobs at once
-  (`COLLECT_PARALLEL=N`, 1 to 8, default 1, #1447). One at a time, collect takes about 2.5 s a
-  job. The jobs' `usnm-boinc` processes share one token cache, so they don't each ask the
-  identity endpoint for tokens ([boinc-onprem.md](boinc-onprem.md#hand-off-steps-on-prem)). It
-  needs the hand-off image whose collect takes `COLLECT_PARALLEL`, and on-prem a host
-  `usnm-boinc-step` that allows it.
-- `--rest-journals`: list and fetch the job journals over the storage REST API with az's token,
-  16 requests at a time, instead of one `az` process per list or file. A list of the dispatch
-  prefix (32,000 blobs in November 2026) took az 25 seconds and 20 of CPU; this takes 2. Changed
-  journals are fetched one by one up to 2,000 of them, where the `az` path takes one
-  `download-batch` of every journal past 32.
-  Each list passes the delimiter `t`, so a job's `accepted/` files and `request.json` come back
-  as one short prefix each and only `record.json` is listed whole (#308). A job id is hex and
-  `/record.json` has no `t`, so every journal is still listed with its ETag. That cut each
-  list's egress from the exchange account by about 71%: 1.08 MB to 0.31 MB for one digit on
-  6 November 2026. The consistency checks, which list again after a download and compare
-  ETags, are unchanged.
-- `--batch-export`: the hand-off `export` for pages from many base batches in one execution
-  (up to 20 batches; more go in several), with `HANDOFF_BATCHES` naming each page's batch in
-  `HANDOFF_PAGES`' order. The job exports each batch on its own. Without it, a queue-fed tick
-  runs one execution per batch, and user-requested pages come from many batches (#1055).
+- `--batch-collect`: hand-off `collect` with `JOB_IDS=<id>,...`.
+- `--collect-parallel N`: with `--batch-collect`, N jobs at once (`COLLECT_PARALLEL`, 1 to 8, default 1, #1447; serial is about 2.5 s a job), sharing one token cache ([boinc-onprem.md](boinc-onprem.md#hand-off-steps-on-prem)). Needs an image and host `usnm-boinc-step` that allow it.
+- `--rest-journals`: list and fetch journals over the storage REST API with az's token (needs an az login), 16 at a time, instead of one `az` process per call (a 32,000-blob dispatch listing: 25 s and 20 s CPU with az, 2 s this way). Changed journals are fetched singly up to 2,000 (`az` does one `download-batch` past 32). Lists use delimiter `t`, so `accepted/` and `request.json` collapse to prefixes while every hex job id's `/record.json` keeps its ETag (#308), cutting list egress about 71% (1.08 MB to 0.31 MB per digit, 6 November 2026). The re-list ETag consistency checks are unchanged.
+- `--batch-export`: hand-off `export` for up to 20 base batches per execution (more go in several; without the flag a queue-fed tick runs one execution per batch), `HANDOFF_BATCHES` giving each page's batch in `HANDOFF_PAGES` order (requested pages span many batches, #1055).
 
-Spool-out, collect and export go on past a job (or batch) that fails and fail at the end, so one held page doesn't
-hold up the others; the tick then stops as before. Each job in a batch runs the step's
-single-job path, with the same checks. A flag needs the image whose step takes the batch
-variable: the bridge image for the first two (usnm-boinc-prod), the hand-off image for the
-third and fourth (usnm-prod's `USNM_BOINC_HANDOFF_IMAGE`). Add a flag to the service's `ExecStart` only
-once that image is live, with the timer stopped.
-
-These flags batch the server-side steps; each page is still its own BOINC workunit. A plan can
-also put several pages of one queue into one workunit with `pages_per_unit` and
-`bundle_app_version` (#1059, [boinc-ocr-bundles.md](boinc-ocr-bundles.md)). Unlike the flags,
-those are configuration, so turning them on makes a new plan.
+Spool-out, collect and export carry on past a failing job and fail at the end, so one held page doesn't hold up the others; the tick then stops. Each job keeps its single-job checks. Add a flag to `ExecStart` only once the image taking its variable is live (bridge image for submit and spool-out, hand-off image for collect and export), with the timer stopped. Each page is still its own workunit: several pages per workunit is configuration (`pages_per_unit`, `bundle_app_version`; #1059, [boinc-ocr-bundles.md](boinc-ocr-bundles.md)), so turning it on makes a new plan.
 
 ### Refill cap (#1447)
 
-`--refill-cap N` (1 to 100) has a tick claim, export and submit at most N pages, never more
-than `batch_size`; without it, a tick refills up to `batch_size`. Collection still takes up to
-`batch_size`. The refill is what makes a tick long: in November 2026 a full refill took 11 to
-13 minutes on the 5-minute timer, `submit` about 3.5 seconds a job against `collect`'s 2.5.
-Lowering `batch_size` instead would shrink collection too, and the results it leaves behind are
-held, which stops the refill (`backpressure_reason: "collection_backlog"`). `batch_size` is
-also configuration, so changing it makes a new plan; the flag changes no hash.
-
-Refilling lasts until the high watermark, so a smaller refill fills the queue over more
-ticks. The tick event and the plan printed without `--apply` show the cap in use as
-`refill_cap`. To set it, stop the timer, wait for a running tick to end, add the flag to the
-service's `ExecStart` in its drop-in, then `systemctl daemon-reload`, run one tick by hand
-and start the timer. It needs a checkout with this flag
-([Moving the controller checkout](#moving-the-controller-checkout-1412)).
+`--refill-cap N` (1 to 100, at most `batch_size`) caps pages claimed, exported and submitted per tick; collection still takes `batch_size`. A full refill took 11 to 13 minutes on the 5-minute timer (November 2026; `submit` about 3.5 s a job). A smaller `batch_size` would also shrink collection, leaving results that stop the refill (`collection_backlog`), and changes the hash. Refilling still runs to the high watermark, over more ticks. Shown as `refill_cap`. It needs a checkout with the flag; set it like any flag: stop the timer, wait for a running tick to end, edit `ExecStart`, `systemctl daemon-reload`, one tick, start the timer.
 
 ### On-prem claim, collect and export (#967)
 
-Journal metadata uses an account-bound snapshot under the controller's private
-state directory. Every read still lists the complete current blob names and
-ETags. An identical snapshot can reuse validated disk records across ordinary
-fresh-process ticks; any added, removed or changed journal invalidates it.
-For up to 32 added or changed records, the next tick first validates every
-retained file against its recorded digest, removes deleted records and downloads
-only the changed metadata. Larger changes or a different account use the full
-batch refresh. Directory symlinks are rejected before incremental writes.
-Downloads invalidate the durable marker before modifying files and must match
-a second complete ETag inventory before publishing a reusable snapshot. A
-matching snapshot with missing, malformed or misidentified local records fails
-closed; recorded content digests also reject changed local bytes. The cache is derived metadata, never an authoritative claim or queue
-acknowledgement; do not restore controller state from it.
+Journal metadata is cached as an account-bound snapshot in the state directory. Every read lists all names and ETags; an identical listing reuses validated records, and up to 32 changes are fetched incrementally after retained files are rechecked by digest (more, or another account, does a full refresh). Directory symlinks are rejected. A download invalidates the marker first and must match a second ETag listing before publishing a snapshot; bad or changed local records fail closed. The cache is never a claim or acknowledgement; don't restore state from it.
 
-By default the hand-off steps run as the Azure hand-off job. `--onprem-handoff claim`,
-`--onprem-handoff collect` and `--onprem-handoff export` (any of them) send them through
-`step_command` instead, to `usnm-boinc-step --target handoff` on the on-prem BOINC host
-([boinc-onprem.md](boinc-onprem.md#hand-off-steps-on-prem)). `claim` takes its `release`
-with it. `texts-export` runs with `boinc/scripts/texts-export-onprem.sh` on the host with a local copy of curated. With `--onprem-handoff export`, the controller's push
-sends the claimed pages' scans straight to the BOINC host (`usnm-boinc-step --target scans
---step receive`, a tar over the step key into `/srv/usnm-boinc/project/handoff-scans`), not to
-the hand-off container. Export reads them there, and the bridge's `submit-remote` takes each
-job's page from them, so no scan goes through Azure (#1116). Like the batch flags, these are runtime
-flags, not configuration, so turning them on or off changes no hash. They need a plan with
-`step_command`, and the host needs `/etc/usnm-boinc/handoff.env`. A dry run prints the
-choice as `onprem_handoff`.
+The hand-off steps default to the Azure hand-off job, which prod no longer has (#308, 6 November 2026), so prod passes `--onprem-handoff claim`, `collect` and `export` (runtime flags). These send the steps via `step_command` to `usnm-boinc-step --target handoff` on the BOINC host ([boinc-onprem.md](boinc-onprem.md#hand-off-steps-on-prem)); `claim` brings `release`. They need `step_command` and the host's `/etc/usnm-boinc/handoff.env`; dry runs show `onprem_handoff`. `texts-export` runs with `boinc/scripts/texts-export-onprem.sh` on a host with a local curated copy. With `export` on-prem, the push sends scans straight to the BOINC host (`usnm-boinc-step --target scans --step receive`, a tar into `/srv/usnm-boinc/project/handoff-scans`), so no scan goes through Azure (#1116).
 
 ### Retirement evidence (#1116)
 
-Tick and failure summaries retain `timings.execution_routes`, alongside the existing
-command timings. These counters describe the launcher actually invoked (`onprem` or
-`azure`), not just the requested flags. They include failed launches and distinguish
-scan pushes from small journal/lease storage operations. A non-queue scan push still
-uses the Azure container even when export was selected on-prem. No argv, credentials,
-page text or scan paths enter these counters.
-
-After the last reviewed controller repair/release, retain a full unit journal export:
+Summaries carry `timings.execution_routes`: the launcher actually used (`onprem` or `azure`), failed launches included, scan pushes apart from journal and lease operations, with no argv, credentials, page text or scan paths. A non-queue scan push still uses the Azure container. To audit a window:
 
 ```sh
 journalctl --all -u usnm-boinc-priority-controller.service --since "$START" --until "$END" \
@@ -438,90 +213,17 @@ python3 boinc/scripts/handoff-window.py --journal controller-journal.jsonl \
   --since "$START_UNIX_SECONDS" --until "$END_UNIX_SECONDS"
 ```
 
-Use the same explicit UTC boundaries for both commands, at least 24 hours apart;
-choose quiet gaps between invocations, not a time while the unit is still running.
-Every observed systemd invocation must have its starting marker, one controller
-terminal summary and its finished marker inside the window. An invocation crossing
-either boundary, missing invocation identity or an incomplete lifecycle rejects the
-window even if nearby successful ticks are less than 20 minutes apart. Later
-out-of-window summaries cannot make an unresolved invocation acceptable.
-Never select only successful ticks. The offline audit rejects failures, held/backlog
-results, alerts, Azure launches/pushes, missing or inconsistent routing counters,
-plan changes, duplicate ticks, gaps over 20 minutes, and windows without real
-on-prem claim/collect/export/push and newly published pages. Old summaries without
-route evidence are unknown, not a clean window. Exit 0 means only that this
-**controller-routing telemetry window** passes; it never authorizes retirement.
-The export's `--all` preserves messages exceeding journald's default 4096-byte
-JSON-field limit. Native systemd failure metadata (including manager records
-associated through `UNIT`) also invalidates the window if Python died without a
-failure summary. Scan evidence requires a positive parsed pushed-page count in
-`timings.scan_pages`; an accepted missing-only push is not a transfer.
+Use the same UTC bounds, at least 24 hours apart, in quiet gaps (`--all` keeps fields over 4096 bytes). Each invocation needs a start marker, one terminal summary and a finish marker inside the window. The audit rejects failures, held or backlog results, alerts, Azure launches or pushes, missing route counters, plan changes, duplicate ticks, gaps over 20 minutes, native systemd failure records (including by `UNIT`), and windows without real on-prem claim, collect, export, push (`timings.scan_pages` > 0) and new publications. Exit 0 means only that this controller-routing telemetry window passes.
 
-Keep independent evidence of the reviewed binary/configuration/unit remaining
-unchanged throughout the window, zero Azure hand-off executions over that same
-window, local payload checksums, restart and retention behavior. Reconcile this
-with #967 before preparing retirement. The existing empty
-`USNM_BOINC_HANDOFF_IMAGE` setting already omits the Azure hand-off job, its
-identity and controller start grants; `boincOnPrem` grants and shared exchange
-storage must remain. Do not remove the setting or provision until a main-based
-what-if, live API pin comparison and serialized maintainer apply are approved.
-
-The on-prem launcher remains fail-fast on the shared project mutex by default.
-For owner-coordinated rollout only, the host can set
-`USNM_BOINC_STEP_LOCK_WAIT_SECS=120` in the controller's fixed SSH forced-command
-environment to tolerate a concurrent ordinary producer. The permitted range is
-0..300 seconds and must be shorter than `--wait-mins`. Lock waiting subtracts from
-the container's existing runtime budget; timeout still fails explicitly and never
-starts a container without the mutex. Do not stop a producer, remove the lock or
-edit an immutable plan to avoid contention. Deploy the reviewed launcher before
-enabling this host option, retain the previous launcher/forced command for rollback,
-and begin the clean-day window only after the actual rollout.
+The on-prem launcher fails fast on the project mutex. For coordinated rollouts only, `USNM_BOINC_STEP_LOCK_WAIT_SECS=120` in the controller's SSH forced-command environment waits for a concurrent producer (0 to 300 s, below `--wait-mins`, from the runtime budget; a timeout never starts a container without the mutex). Never stop a producer, remove the lock or edit a plan to avoid contention. Deploy the reviewed launcher before setting this, keep the previous launcher and forced command for rollback, and start a clean-day window only after the rollout.
 
 ### Production priority canary
 
-On 19 October 2026, cached English page
-`sn99066040_1865-08-12_ed-1_seq-2` completed the queue-fed path under plan
-`priority-feed-1`, job `a9ba35b339d479442d0efcfeefa9bbab2f31ab4989b88db569cd3c0c0f0761bb`.
-The existing ledger-aware operator command `ocr-enqueue --reason user` queued
-it at 04:36:52 UTC; this tests downstream priority handling, not browser
-request capture or the daily request batch.
-
-The normal bounded scan claimed it at 05:10:14, pushed its cached scan,
-exported it and submitted it. Host 10 finished at 05:18:33 with 29,826 text
-bytes and 181,376 ms worker elapsed time. Collection initially quarantined it
-because that host lacked exact-image English gold evidence. One normal targeted
-challenge using the existing frozen 30-crop calibration then passed: CER 0.0716
-against the unchanged 0.08734328574534386 threshold, with no skips or complete-loss
-crops. Native canonical reports and complete outcome snapshots for hosts 1, 8
-and 10 produced the v5 trust list; the image, challenge, language, model, PSM,
-DPI and threshold were unchanged. No trust override was used.
-
-The resumed normal collector published at 06:25:06, and the claim's persisted
-`ended` became `finished`. An operator-triggered execution of the unchanged
-`ocr-sync --max-runtime-secs 3000` stage recorded the page's `imported` outcome
-at 06:28:01. Enqueue-to-claim was 33 min 22 s, enqueue-to-volunteer-output
-41 min 41 s, and enqueue-to-import 1 h 51 min 9 s. Calibration bootstrap and a
-container-exec throttling wait dominate this single observation; it is not a
-steady-state latency or page-accuracy guarantee.
-
-Node 4's direct worker was active, contrary to the original issue's assumption:
-it consumed the first canary. The second used a bounded graceful pause, with an
-automatic restart armed before stopping; the worker was restored immediately
-after the BOINC claim. Both it and CT 211's timer were active afterward.
-Competing consumers and Azure queue ordering mean bounded scanning does not
-promise ownership or a fixed number of ticks. Inventory and lifecycle overhead
-also mean five minutes between inactive services is not five-minute polling.
-Language admission alone does not guarantee the returning host is calibrated;
-retain normal gold onboarding and fail-closed quarantine.
+On 19 October 2026 page `sn99066040_1865-08-12_ed-1_seq-2` (plan `priority-feed-1`, job `a9ba35b339d479442d0efcfeefa9bbab2f31ab4989b88db569cd3c0c0f0761bb`) went from `ocr-enqueue --reason user` (04:36:52 UTC) to `imported` (06:28:01): claimed 05:10:14, returned by host 10 05:18:33, published 06:25:06. Collection first held it for missing exact-image gold; one targeted challenge (CER 0.0716 against 0.08734328574534386) put hosts 1, 8 and 10 in the v5 trust list with no override. Calibration and a throttling wait dominated; it isn't a latency guarantee. Bounded scanning promises neither ownership nor a fixed tick count, and admission doesn't make the returning host calibrated, so keep gold onboarding and fail-closed quarantine.
 
 ### Gold onboarding (#901)
 
-Language admission doesn't decide which host returns a page. A result from a
-host with no gold evidence for the scope is held at collection, and since the
-hand-off `collect` step fails on a held result, the tick stops there and no new
-work goes out until the host is calibrated. On 21 October 2026 that took a
-manual targeted gold campaign. With `gold_onboarding` in the controller's
-config, the controller does this itself:
+A result from a host without gold evidence for its scope is held, and hand-off `collect` stops the tick on it. With `gold_onboarding` the controller calibrates hosts itself:
 
 ```json
 "gold_onboarding": [
@@ -531,510 +233,90 @@ config, the controller does this itself:
 ]
 ```
 
-`campaign` must be the scope's calibrated challenge: its `prepared.json` has the
-`manifest_sha256` that `gold/trust.json` records for the scope (for eng/eng with worker
-247c, `current247c-amd64-calibration-20261017`, manifest `d8cd7279…`), or `gold-promote`
-refuses it. `engine_base` is a bare `sha256:` digest, as the gold reports record it, or
-`name@sha256:`.
+`campaign` must be the scope's calibrated challenge, whose `prepared.json` `manifest_sha256` matches `gold/trust.json` (eng/eng, worker 247c: manifest `d8cd7279…`); otherwise `gold-promote` refuses it. `engine_base` is `sha256:` or `name@sha256:`. A due scope runs two bridge steps before collection:
 
-When a scope is due, the tick runs two bridge steps before it collects:
+1. `gold-onboard` gives each untrusted known host one targeted unit for the scope, challenge and `image` (one outstanding per host, `max_hosts` per pass). Units count against the global cap like the refill (uncollected journals of every plan, recovered reservations, unexported selections), shared across scopes; at zero room the pass is skipped (`gold-promote` still runs, with the configured `max_hosts`). They count as in flight for the refill, and under `--other-app-budget` count in full that tick and as other-app work in later ticks. Failed units are retried; one scored over the threshold is a verdict. Hosts no loaded gold app version can reach are skipped and printed (#1418), since such a unit logs "App version for assigned WU not found" and holds cap space until its deadline. Loaded versions are the latest per platform and plan class, or all from `min_version`. From the `host` row, a host qualifies when:
+   - OS and CPU vendor give the version's platform. A host with no platform is judged on the rest; one with no `misc` is judged without client version and Docker;
+   - the client is within `min_core_version` and `max_core_version`;
+   - the plan class is in `plan_class_spec.xml` and its bounds and `<docker/>` hold (a runtime in `misc`, on Windows in an allowed WSL distro, without `dont_use_docker` or `dont_use_wsl`);
+   - the version packages the job's engine (`Dockerfile` `FROM` its image, or a native manifest named for it) and `engine_base` is bound for the platform in `gold-engine-platforms.json`.
 
-1. `gold-onboard`: the existing host-trust onboarding pass. Every host BOINC
-   knows that isn't trusted for the scope, the calibrated challenge and the
-   worker image (`image`) gets one targeted gold unit, at most one outstanding
-   per host and at most `max_hosts` new units per pass. Gold units count
-   against the global safety cap, computed as the refill computes it (from
-   the same per-app status, and counting the same retained backlog:
-   uncollected journals of every plan, recovered reservations and selected
-   pages not yet exported). A pass issues at most what the cap leaves
-   (shared across scopes), is skipped when nothing is left (`gold-promote` still runs, with the
-   configured `max_hosts`), and the units it
-   may have issued count as in flight for the tick's OCR refill. Gold units are
-   `usnm_gold` work: under `--other-app-budget` they count in full in the tick
-   that issues them and as other apps' work, within the budget, after it. A failed unit
-   gets a fresh attempt. A unit that ran and scored over the threshold is a verdict and
-   isn't reissued.
+   `usnm_gold` is container-only, so hosts without Docker or Podman (5 and 13) get nothing; a host that installs one is picked up on its next scheduler request. Units already outstanding for skipped hosts are left as they are.
 
-   The pass skips a host that no live version of the gold app could be sent to (#1418), and
-   prints the hosts it skipped. Such a unit would never leave the server: the scheduler
-   logs "App version for assigned WU not found" on every request and the unit holds a place
-   under the cap until its deadline. A host can run a version when, from what its last request
-   left in the `host` row, all of these hold. Only the versions the scheduler loads count: the
-   latest of each platform and plan class, or, when the app sets a `min_version`, every version
-   from it on.
-   - its OS and CPU vendor give the version's platform. A host whose OS and CPU vendor give
-     no platform is judged on the rest. A host whose row has no `misc` is judged without its client version and
-     Docker.
-   - its client is within the version's `min_core_version` and `max_core_version`.
-   - the version's plan class is in `plan_class_spec.xml` and its `<docker/>` and client
-     version bounds hold. `<docker/>` needs a container runtime in the host's `misc` (on
-     Windows, in an allowed WSL distro), and a client config that doesn't set `dont_use_docker`
-     (or, on Windows, `dont_use_wsl`).
-   - as the scheduler's gold hook requires, the version packages the job's engine (its
-     `Dockerfile` is `FROM` the job's image, or its native build manifest is named for it),
-     and the job's `engine_base` is bound for the platform in `gold-engine-platforms.json`.
+2. `gold-promote` (`usnm-boinc host-trust promote`) judges each untrusted host's evidence against the scope's `max_cer` and `manifest_sha256` and adds passing hosts. It never changes a threshold or challenge or removes a host. Each promotion goes in `host-trust/promotions.jsonl` with workunit and result ID, and a recorded workunit is never reused. Records are written before the trust change and committed after; an uncommitted one is finished only if `trust.json` is unchanged and the threshold and challenge are current, and otherwise settled without adding the host, with the ledger reread under the controller lock and the list version rechecked under the trust lock.
 
-   `usnm_gold` is container-only, so hosts without Docker or Podman, such as hosts 5 and 13,
-   get no unit. A host that installs one is picked up on its next scheduler request. Units
-   already outstanding for skipped hosts are left as they are.
-
-2. `gold-promote` (`usnm-boinc host-trust promote`): collects those units with
-   the native result query, judges each untrusted host's complete evidence
-   against the scope's calibration in `gold/trust.json` (its `max_cer` and
-   `manifest_sha256`), and adds the hosts that pass to that scope. It never
-   sets or changes a threshold or challenge, refuses when the prepared campaign
-   isn't the calibrated challenge, keeps every other scope, image and host, and
-   never removes a host. Each promotion is recorded in
-   `host-trust/promotions.jsonl` with the evidence's workunit and result ID.
-   A recorded workunit is never used again, so a later trust rebuild that drops
-   the host stands. The record is written ahead of the trust change and
-   committed after it; the next pass finishes an uncommitted record only while
-   `trust.json` is still exactly as it was, and otherwise settles it without
-   adding the host. The ledger is read again under the controller lock before
-   any change. An uncommitted record is replayed only if it was judged by
-   the scope's current threshold and challenge, and the list version is
-   compared again under the trust lock as hosts are added, so a rebuild in
-   between is never undone.
-
-A host admitted this way has its held results published by the same tick's
-collection. A host that fails or hasn't returned its unit stays untrusted, and
-its results stay held, as before.
-
-A scope is due `interval_minutes` (10 to 1440, default 60) after its last run.
-While results are held it's due after 10 minutes at most. The run goes into the
-controller state before its steps start, so a crash or a failing step waits for
-the next due time instead of running every tick. A failed step adds a
-`gold_onboarding_failed` alert to the tick line and doesn't stop the tick. The
-tick line reports `gold_onboarding` (the runs this tick), `collection_held` and
-`oldest_held_seconds`. A tick that stops at a held result reports the same
-counts and the last runs on its `boinc_batch_failure` line. Drain ticks run no
-gold steps.
-
-`gold_onboarding` isn't part of the allocation digest, so turning it on needs
-no migration. Up to four scopes, one per language and profile. Over ssh,
-`onprem-step.sh` lets the controller set only the `GOLD_CAMPAIGN`,
-`GOLD_LANGUAGE`, `GOLD_PROFILE`, `GOLD_ENGINE_IMAGE`, `GOLD_ENGINE_BASE`,
-`GOLD_ENGINE_VERSION` and `GOLD_MAX_HOSTS` inputs of these two steps; never a
-threshold, a challenge hash, a target host or a spool. `gold-promote` needs a
-bridge image built from this change.
+The same tick publishes a newly trusted host's held results. A scope is due `interval_minutes` (10 to 1440, default 60) after its last run, or 10 while results are held; runs are recorded before their steps, so failures wait for the next due time. A failed step adds `gold_onboarding_failed` without stopping the tick. Tick and `boinc_batch_failure` lines report `gold_onboarding`, `collection_held` and `oldest_held_seconds`. Drain ticks skip gold. It's outside the allocation digest; up to four scopes, one per language and profile. Over ssh the controller may set only `GOLD_CAMPAIGN`, `GOLD_LANGUAGE`, `GOLD_PROFILE`, `GOLD_ENGINE_IMAGE`, `GOLD_ENGINE_BASE`, `GOLD_ENGINE_VERSION` and `GOLD_MAX_HOSTS`. `gold-promote` needs a bridge image whose `bridge-job.sh` has that step.
 
 ### Separate hand-off runtime
 
-The hand-off job is in the **main** resource group, not the BOINC runtime
-group. Updating the BOINC server and bridge pair does not update this job.
-`USNM_BOINC_HANDOFF_IMAGE` in `infra/env/prod.json` must name a reviewed bridge
-artifact containing the bounded export, exact-file reads and accepted-snapshot
-collection code. PR #888 initially pinned both lifecycle jobs to bridge digest
-`sha256:91539ee197e3de29ac5e1eb3ccbee1d25237553d25b519feabb90aef9436100d`,
-built from main `1ac92dcb91fcc0b3bc4b1c900163d427df63aed1`, including
-language-scoped claims (#867) and priority user work (#868). Both job images
-were rolled out image-only under #529; server, web, worker, and TLS settings
-were unchanged. PR #898 subsequently advanced only the hand-off job to
-`sha256:b4f2f00b2128b7eb32206f210e0673be7f9edc7017133e1684e493ed2922b877`,
-containing #897's bounded priority scan. The bridge remained at `91539ee1...`;
-the hand-off template, configuration and identity were otherwise unchanged.
-A future pin change alone is not a runtime rollout or host
-promotion; it requires a reviewed rebuild and separately coordinated deployment.
-
-After the pin PR passes review and CI and merges, serialize a hand-off-only
-update through #529. Verify the job and other lifecycle jobs are idle and retain
-the entire before-template. Update only the existing `handoff` container's image;
-verify the exact digest afterward and compare every other template,
-configuration and identity property with the before-state. Do not start a job
-or run a broad stack provision merely to update this pin. A code or image
-update is not allocation, trust promotion or permission to start a feed.
-
-The controller's existing local environment must contain
-`AZURE_SUBSCRIPTION_ID`, `AZURE_RESOURCE_GROUP` and `BOINC_HANDOFF_JOB`.
-Check the case-normalized main-stack outputs and actual job ID; older deployed
-stacks can lack the hand-off output even while the job exists. Reconcile only
-these local, nonsecret output values from the verified existing resource, in
-the approved controller's settings directory. Do not provision resources,
-change managed identities or add grants to repair local outputs.
-
-The push command is a trusted literal argv prefix reaching the **existing**
-`scripts/ocr-node/push-boinc-scan.sh` in CT 211. It receives normal `--scan`,
-`--manifest`, account and root options. It reads cached scans and sidecars only;
-it neither fetches missing scans nor modifies the fetcher's files or service.
-The SSH user below is illustrative, not a new permission requirement.
-
-Create an operator-owned JSON configuration outside version control (replace
-all illustrative values and the image digest with the already approved pin):
-
-```json
-{
-  "schema_version": 1,
-  "env": "dev",
-  "account": "exchange123",
-  "plan": "volunteer-cohort-1",
-  "batch": "example_batch",
-  "manifest": "snapshot-1/manifest.parquet",
-  "image": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-  "push_command": [
-    "ssh",
-    "-o",
-    "BatchMode=yes",
-    "operator@pve.example",
-    "pct",
-    "exec",
-    "211",
-    "--",
-    "/opt/usnm/scripts/ocr-node/push-boinc-scan.sh"
-  ],
-  "scans_root": "/tank/ocr/scans",
-  "manifests_root": "/tank/ocr/manifests",
-  "batch_size": 10,
-  "max_pending": 40,
-  "pages_per_host": 2,
-  "pages": [
-    {
-      "page": "sn12345678/1900-01-01/ed-1/seq-1",
-      "scan": "/tank/ocr/scans/keep/example_batch/sn12345678/1900-01-01/ed-1/seq-1.jp2"
-    }
-  ]
-}
-```
-
-The scan path must identify that page's actual manifest scan and sidecar; the
-existing exporter verifies them. Allocate up to 10,000 explicit pages, with
-1–100 pages per tick. Do not change configuration or delete controller state
-mid-cohort: its configuration hash pins the complete allocation, limits and
-worker image. Finish or drain, reconcile failures, and obtain operator approval
-before migrating the configuration or allocating another cohort.
-If any allocated page already has another plan's hand-off journal, the controller
-refuses the overlap before writing allocation state or exporting anything. Keep
-the original owner's journals intact; resolve ownership or choose different
-pages rather than overwriting them, including for historical cohorts.
+The Azure hand-off job (main resource group, apart from the BOINC server and bridge) ran `claim`, `export`, `collect` and `dead-letter` until 6 November 2026 (#308); no `infra/env/*.json` sets `USNM_BOINC_HANDOFF_IMAGE` now, and prod runs those steps [on the BOINC host](boinc-onprem.md#hand-off-steps-on-prem). Setting that image would bring the job back (`boincOnPrem` grants and the shared exchange storage must stay either way); its last pin was `sha256:b4f2f00b2128b7eb32206f210e0673be7f9edc7017133e1684e493ed2922b877`. Its identity had Storage Queue Data Message Processor and Message Sender on `ocr-priority` and `ocr-bulk` only (`handoffQueueIds` in `infra/modules/ocr-exchange.bicep`; no Update Message, ADR-0015). To revive it: provision through #529, set `AZURE_SUBSCRIPTION_ID`, `AZURE_RESOURCE_GROUP` and `BOINC_HANDOFF_JOB` from the main-stack outputs, and change pins image-only with the jobs idle, verifying nothing else changed.
 
 ## One tick and backpressure
 
-1. Take a local kernel lock and an infinite Azure blob lease on
-   `boinc-handoff/scheduler/controller.lock`. A second controller fails closed.
-   Manual bridge operations do not honor this lease: **one serialized operator
-   still owns the two jobs**, whose launcher rejects running executions and
-   verifies each execution's settings.
-2. Run `batch-inventory`, or wait for it. It reads the bridge journal, complete
-   assimilator outputs (or terminal markers), and, with verified database TLS,
-   the recently active hosts and each app's unassimilated workunits. Their
-   sum is `pending_workunits`, from the same read, so a submission between
-   two counts can't make other apps' share exceed the total. It writes only `scheduler/inventory.json` in the
-   hand-off container. A per-tick nonce rejects stale or concurrent snapshots.
-   Hand-off journals are downloaded as metadata only, using one Azure CLI batch
-   process rather than one CLI invocation per historical job. Each refresh
-   clears the disposable metadata cache and checks the exact listed file set.
-3. Collect up to `batch_size` previously allocated results, even with no active
-   hosts or a full queue. Never supply a host ID override or bypass `--trust`.
-   Partial output sets wait; duplicate spool directories fail closed.
-4. Separate the runnable `usnm_ocr` cohort queue (`app` / `platform` / `resource`,
-   default `usnm_ocr` / `all` / `cpu`; only `usnm_ocr`, `all`, and `cpu` are
-   accepted as cohort selectors because `Transport.submit()` and
-   `server_status` / `batch-inventory` queue accounting are application-scoped
-   CPU workunits across all platforms) from unrelated other-app queues (such as
-   `usnm_qwen`, `usnm_quality`, or `usnm_surya`), while enforcing an overall
-   global safety cap (`max_global_pending` / `--max-global-pending`, up to
-   100,000 workunits across all apps and collection backlog). When
-   `server_status.php?xml=1` (or a
-   structured status snapshot via `--server-status-url` / `--server-status-file`
-   or `inventory.json`) is supplied, `parse_server_status` reads per-app
-   `<unsent>` and `<in_progress>` counts so `usnm_ocr` admission checks
-   `usnm_ocr`'s own runnable queued/in-progress work against its cohort low/high
-   watermarks rather than letting unrelated GPU/other-app queues starve
-   CPU/native hosts. With `--other-app-budget B` (below an explicitly set
-   `max_global_pending`), other apps' unassimilated workunits, by the
-   inventory's per-app count, count toward the cap only up to
-   `B`, so a backlog no host can take, such as stranded
-   `usnm_qwen` partner replicas, can't fill the cap and starve the cohort
-   (#1474). Under a budget every app's work, counted in full, may not pass
-   the feeder's 4,096 shared-memory slots (`FEEDER_SHMEM_SLOTS`). The
-   bound is in workunits, the cap's unit, while the feeder holds results, so
-   it limits the scale rather than matching slots exactly. Global and cohort headroom (`cohort_pending`,
-   `other_app_pending`, `global_pending`) are reconciled in SQL workunit units,
-   while result-replica counts (`cohort_pending_results`,
-   `other_app_pending_results`, `global_pending_results`) are retained separately
-   for queue diagnostics.
-   Cohort watermarks (`low_watermark` / `--low-watermark` and `high_watermark` /
-   `--high-watermark`, or nested under `cohorts.<cohort>` / `cohort`) implement
-   hysteresis: when `cohort_pending <= low_watermark` (and `active_hosts > 0`),
-   the controller enters refilling mode (`refilling: true`) and refills up to
-   `high_watermark` (capped by `min(max_pending, active_hosts * pages_per_host)`
-   when `high_watermark` is not explicitly configured), then holds above
-   `low_watermark` (`backpressure_reason: "cohort_hysteresis"`) until the runnable
-   queue drains back to `low_watermark`. When the global backlog reaches
-   `max_global_pending` (counting other apps' work up to the budget, if any),
-   refilling halts with `backpressure_reason:
-"global_safety_cap"`; under a budget, all work at 4,096 halts it with
-   `"global_hard_cap"` (both distinct from `"cohort_high_watermark"`,
-   `"cohort_hysteresis"`, `"collection_backlog"`, `"no_active_hosts"`, and
-   `"draining"`). Assimilated jobs with missing or partial outputs still count
-   toward `collection_backlog`; a stalled collector cannot create unbounded
-   result backlog, and an uncertain submission blocks allocation until explicit
-   reconciliation.
-5. Persist selected pages **before** pushing or exporting. Push and export at
-   most `batch_size` cached pages, then submit at most `batch_size`
-   reservations (or fewer with [`--refill-cap`](#refill-cap-1447)). Submissions, including recovered reservations, respect both the
-   cohort high watermark and `max_global_pending` (and, under a budget, the
-   4,096 bound). Export transfers only the selected
-   scans and sidecars, their existing journal entries and the single manifest
-   snapshot; collection transfers only one journal, its optional `accepted/`
-   publication recovery snapshot and result and trust files. Accepted bytes
-   survive partial publication failures and are reused even if spool bytes
-   change. Retained scan history is never downloaded per result.
-   On rerun, authoritative hand-off and bridge records recover partial export
-   and interrupted pulls. Never replay `create_work` for a `submitting` record.
-   A submitted reservation is not submitted twice.
-   Any existing SQL workunit, including completed work, with a missing or stale
-   bridge journal also requires explicit reconciliation, even if capacity is
-   available. Submission headroom includes other plans' assimilated, uncollected
-   backlog; converting this cohort's reservations does not ignore that backlog.
-6. Emit a structured `boinc_batch_tick` JSON event: selected and published
-   counts, new publications, cumulative pages/hour, host and queue counts
-   (`cohort_pending`, `other_app_pending`, `global_pending`, `low_watermark`,
-   `high_watermark`, `max_global_pending`, `refilling`, `app_queues`), with
-   `global_pending_counted` (what the cap counts: `global_pending` unless a
-   budget leaves part of other apps' work out), `other_app_workunits` (other
-   apps' share by the inventory's per-app count, `null` from server images
-   without it), `other_app_budget` and
-   `global_hard_cap` (4,096 under a budget, otherwise `null`), oldest
-   pending age, collection backlog, `backpressure` and `backpressure_reason`,
-   plus `starvation_alert` and structured `alerts` (`cohort_starvation` when
-   active hosts face `0` unsent or `<= low_watermark` runnable `usnm_ocr` work,
-   and `zero_work_starvation` when scheduler logs or status report hosts
-   receiving zero tasks). Errors emit `boinc_batch_failure` and exit nonzero
-   without dumping command output or credentials. Past 80% of a lifetime cap
-   (`MAX_JOBS` for dispatch journals, claims and bridge journals, the server's
-   `existing_jobs_limit` for existing native workunits, and its
-   `spool_entries_limit` for spool entries)
-   each tick also writes one `boinc_batch_cap_warning` line for it to stderr
-   with `cap`, `count`, the `limit` it's measured against and the tick's `at`,
-   and otherwise runs unchanged: archive drained history before the cap stops
-   it (#1483). Only server images built with this change report
-   `spool_entries` and `spool_entries_limit`. Route stdout/stderr to the
-   controller's existing log sink; this is controller telemetry, not a claim of
-   live workbook ingestion.
+1. Take a kernel lock and an infinite blob lease on `boinc-handoff/scheduler/controller.lock`; a second controller fails closed. Manual bridge operations ignore the lease, so **one serialized operator owns the jobs**.
+2. Run or wait for `batch-inventory`: bridge journal, complete assimilator outputs, and over verified database TLS the active hosts and each app's unassimilated workunits (`pending_workunits`, one read). It writes only `scheduler/inventory.json`, with a per-tick nonce against stale snapshots. Hand-off journals come as metadata in one `az` batch or [`--rest-journals`](#batched-steps-932).
+3. Collect up to `batch_size` results even with no hosts or a full queue. Never override host IDs or bypass `--trust`. Partial outputs wait; duplicate spool directories fail closed.
+4. Admit. The cohort is runnable `usnm_ocr` work (`app` / `platform` / `resource` only `usnm_ocr` / `all` / `cpu`, matching `Transport.submit()` and the accounting), under one global cap (`max_global_pending` / `--max-global-pending`, up to 100,000 workunits including collection backlog) shared with `usnm_qwen`, `usnm_quality` and `usnm_surya`.
+   - `parse_server_status` reads each app's `<unsent>` and `<in_progress>` (`server_status.php?xml=1`, `--server-status-url`, `--server-status-file` or `inventory.json`).
+   - Headroom (`cohort_pending`, `other_app_pending`, `global_pending`) is in workunits; `*_pending_results` are diagnostics.
+   - Watermarks (`low_watermark`, `high_watermark`, flags of the same name, or under `cohorts.<cohort>` / `cohort`): at `cohort_pending <= low_watermark` with active hosts it refills (`refilling: true`) to `high_watermark` (default `min(max_pending, active_hosts * pages_per_host)`), then holds (`cohort_hysteresis`) until back at the low mark; at the high mark the reason is `cohort_high_watermark`.
+   - `backpressure_reason`: `"global_safety_cap"` (at `max_global_pending`), `"global_hard_cap"` (all work at 4,096 under a budget), `"cohort_high_watermark"`, `"cohort_hysteresis"`, `"collection_backlog"` (includes assimilated jobs with partial outputs), `"no_active_hosts"`, `"draining"`. The [budget](#on-prem-controller-host-ct-211) and the 4,096 bound (`FEEDER_SHMEM_SLOTS`) are counted in workunits while the feeder holds results. An uncertain submission blocks allocation.
+5. Persist selections before push or export, then push, export and submit at most `batch_size` (or [`--refill-cap`](#refill-cap-1447)) within all limits, recovered reservations included; headroom includes other plans' assimilated, uncollected backlog. Export moves only selected scans, sidecars, journal entries and the manifest snapshot; collection only one journal, its `accepted/` snapshot and result and trust files (accepted bytes are reused even if spool bytes change). Reruns recover from the hand-off and bridge records. Never replay `create_work` for a `submitting` record; a submitted reservation is never submitted twice. A SQL workunit with a missing or stale bridge journal needs reconciliation.
+6. Emit `boinc_batch_tick`: selected, published and newly published counts, pages/hour, `cohort_pending`, `other_app_pending`, `global_pending`, `low_watermark`, `high_watermark`, `max_global_pending`, `refilling`, `app_queues`, `global_pending_counted` (what the cap counts), `other_app_workunits`, `other_app_budget`, `global_hard_cap` (4,096 under a budget, else `null`), oldest pending age, collection backlog, `backpressure`, `backpressure_reason`, `starvation_alert` and `alerts` (`cohort_starvation` when active hosts face `0` unsent or `<= low_watermark` runnable `usnm_ocr` work; `zero_work_starvation` when scheduler logs or status show hosts getting zero tasks). Errors emit `boinc_batch_failure` and exit nonzero without command output or credentials. Past 80% of a lifetime cap (`MAX_JOBS` for dispatch journals, claims and bridge journals; the server's `existing_jobs_limit` and `spool_entries_limit`) each tick writes a `boinc_batch_cap_warning` (`cap`, `count`, `limit`, `at`) to stderr and carries on: [archive](#archive-drained-history-1483) first (#1483). Only newer server images report `spool_entries` and `spool_entries_limit`.
 
-Collection backlog consumes the next ticks before new allocation. A terminal
-failure or a failed or held collection stops that tick, leaves state intact and
-does not manufacture a replacement task. Resolve trust, calibration or output
-failures through the owning workflow, then rerun. A conservative snapshot can
-delay refilling by one tick after collection; it cannot enlarge the queue. The
-target counts page workunits rather than replicas; native quorum and deadline
-settings are unchanged.
+Collection backlog goes first. A terminal, failed or held collection stops the tick with state intact; fix it in its own workflow and rerun. Targets count page workunits, not replicas.
 
 ## Queue-fed work
 
-By default the controller works through pages an operator named. With
-`"source": "queue"` it instead takes them off the OCR exchange's Azure Storage
-queues, `ocr-bulk` and optionally `ocr-priority` (#296). Since the direct
-on-prem worker was retired (#966) it is their only consumer. The damage order
-and the user-requested pages are the queues', and there is no separate list to
-keep in step with them.
+With `"source": "queue"` the controller takes pages from the exchange's Azure Storage queues `ocr-bulk` and optionally `ocr-priority` (#296). Since the direct worker's retirement (#966) it's their only consumer.
 
 ```json
 {
   "schema_version": 1, "source": "queue", "env": "dev", "account": "exchange123",
   "plan": "queue-feed-1", "manifest": "snapshot-1/manifest.parquet", "image": "sha256:...",
-  "push_command": ["ssh", "-o", "BatchMode=yes", "operator@pve.example", "pct", "exec", "211",
-                   "--", "/opt/usnm/scripts/ocr-node/push-boinc-scan.sh"],
+  "push_command": ["/opt/usnm/scripts/ocr-node/push-boinc-scan.sh"],
   "scans_root": "/tank/ocr/scans", "manifests_root": "/tank/ocr/manifests",
   "batch_size": 10, "max_pending": 40, "pages_per_host": 2,
   "claim_queues": ["ocr-bulk"], "lease_hours": 96
 }
 ```
 
-There is no `batch` or `pages`: the pages are whatever the queue gives, from any
-number of batches. `claim_queues` is `ocr-bulk` by default. A bulk workunit's
-`delay_bound` is three days. A page someone was shown (`reason` `user`, from
-`ocr-priority`) is submitted with a one-day `delay_bound` and workunit priority 10
-(#866), so a host that sits on it hands it on within a day. Its results inherit
-the priority, and the feeder's default order (`priority desc, workunitid`) puts
-them ahead of other `usnm_ocr` work in its candidate window (no app uses
-homogeneous redundancy, which would ignore the order). A
-controller that claims `ocr-priority` should set `lease_hours` to cover that
-deadline plus a collect (36 hours), so a lost page returns to the queue sooner.
+No `batch` or `pages`; `claim_queues` defaults to `ocr-bulk`. Bulk workunits get a three-day `delay_bound`; `reason` `user` pages (`ocr-priority`) get one day and priority 10 (#866), which the feeder's `priority desc, workunitid` order serves first (no app uses homogeneous redundancy). Claiming `ocr-priority`, set `lease_hours` 36.
 
 ```
 ocr-bulk (and ocr-priority) --claim--> claims/<doc_id>.json in boinc-handoff
-  -> push the page's cached scan from CT 211 -> export --claims -> submit
+  -> push the page's cached scan -> export --claims -> submit
   -> BOINC -> spool-out -> collect (ocr-out) -> delete the queue message
 ```
 
 ### The claim
 
-The hand-off job's `claim` step (`usnm-boinc claim pull`, in the main
-environment, which reaches the queues, the ledger and `ocr-out`) receives up to
-`CLAIM_MAX` messages with a hide of `lease_hours` (96 by default: the three-day
-`delay_bound` and a day to collect; Azure allows seven days). It holds the `ocr-sync`
-lock while it reads the ledger and receives, so no producer changes a row between
-the two: every producer writes a page's row before it sends the page's message, and a
-ledger read under the lock has the row of every message already queued. It uses a
-message only when all of these hold, and otherwise puts it back:
+`claim` (`usnm-boinc claim pull`) receives up to `CLAIM_MAX` messages hidden for `lease_hours` (default 96; Azure allows seven days), holding the `ocr-sync` lock across ledger read and receive (producers write the row first). A message is used only if:
 
-- it decodes, and the ledger has the page **outstanding** with the same batch,
-  reason and language (the seeder, `ocr-enqueue` and the requests step write the
-  row before they send the message, and `ocr-sync` imports against it);
-- the batch is published at the version the row names, the title isn't Japanese
-  and the language routes to an installed Tesseract model;
-- the page is on the newest fetched-scans list for the controller's manifest
-  version, because volunteers never fetch from LoC;
-- with `claim_languages` (`CLAIM_LANGUAGES`, `--language`), the page's source
-  language is one of them (#866).
+- the ledger has the page outstanding with the same batch, reason and language;
+- the batch is published at that version, the title isn't Japanese and an installed Tesseract model covers the language;
+- the page is on the newest fetched-scans list (volunteers never fetch from LoC);
+- with `claim_languages` (`CLAIM_LANGUAGES`, `--language`), its language is listed (#866). Set it to the languages `trust.json` has a policy for, or results outside it are held all lease. Deploy a hand-off image that knows `CLAIM_LANGUAGES` first; an older one ignores it and claims every language.
 
-Set `claim_languages` to the languages `trust.json` has a policy for. Without
-it the claim takes any language the worker image can read, and `collect
---trust` holds back a result outside the calibrated scope, so that page's
-message would stay hidden for the whole lease instead of going back to a node.
-The key is optional and changes nothing when absent. Deploy a hand-off image
-that knows `CLAIM_LANGUAGES` before setting it: an older image ignores the
-variable and claims every language.
+A held scope (#835, German until calibrated) may stay listed: `collect` keeps the result unpublished, marks the record `held` and succeeds ([gold check](../boinc/docs/gold-check.md#host-trust-for-usnm_ocr)). Held jobs count as settled and are reported as `scope_held`; the message returns after its lease and a later claim keeps the job. Held journals and spool outputs count toward the caps; `dispatch --include-held` [archives them](#archive-held-pages-835). After calibration, collect them by hand (`restore-held` first if archived).
 
-A language whose scope `trust.json` **holds** (#835, German until it is
-calibrated) can stay in `claim_languages`: its pages are read, and `collect`
-keeps each result without publishing it, marks the job's record `held` and
-succeeds ([gold check](../boinc/docs/gold-check.md#host-trust-for-usnm_ocr)). The
-controller counts a held job as settled, like a published one: it isn't
-collected again, isn't `collection_backlog`, and doesn't hold up the refill. The
-tick line reports how many there are as `scope_held`. The page's message stays
-hidden until its lease runs out, then comes back: a later claim keeps the same
-job, but a node can read the page first, and the trust list doesn't govern what
-the nodes publish. Held journals count toward the `MAX_JOBS` caps (dispatch
-journals, claims and bridge journals) and their spool outputs toward the
-inventory's spool limit, like published ones. `archive_history.py dispatch
---include-held` archives them with their kept result
-([below](#archive-held-pages-835)). Once a calibration lifts the hold, collect
-the held jobs again by hand to publish them, after `restore-held` for any that
-were archived.
-
-A page whose ledger row is already answered is **deleted** from the queue. Any
-other message it can't use is **sent back** (a copy is sent, then the original is
-deleted), so it starts again at a dequeue count of zero for the node to read.
-The queues are read in `claim_queues` order, and `CLAIM_MAX` is one limit
-across them: the first queue fills what it can and the next fills the rest.
-Bulk queues are peeked first, and one whose front holds nothing usable isn't
-touched. Priority queues instead scan past an unusable front, sending unusable
-messages back. This lets later cached, trusted pages progress across ticks when
-the front contains only uncached or untrusted pages. Each queue has its own
-receive budget (`--max-receives`, three times the claim limit by default), so
-unusable messages on one queue can't use up the next queue's reads (#1057). A
-tick therefore receives at most the budget times the number of queues. A
-repeated sent-back message stops that queue's scan. No eligibility check is
-relaxed, and an unusable message is never deliberately left hidden. The step's
-log gives the claimed, sent-back and deleted counts for each queue.
-
-Each usable message becomes `claims/<doc_id>.json`, holding the message text, its
-pop receipt, the lease end and the ledger row. The files go up **before** the
-summary (`scheduler/claims.json`, with the run's nonce), even when the run then
-fails, because the pop receipts exist nowhere else. A message whose claim file
-could not be written comes back when its hide runs out.
+Answered pages are deleted; other unusable messages are sent back (copied, original deleted). Queues are read in `claim_queues` order sharing one `CLAIM_MAX`. Bulk queues are peeked and skipped if the front is unusable; priority queues scan past it. Each queue has its own receive budget (`--max-receives`, default 3 × the claim limit, #1057); so a tick receives at most the budget times the number of queues; a repeated sent-back message ends that queue's scan. The step logs claimed, sent-back and deleted counts per queue. Each used message becomes `claims/<doc_id>.json` (text, pop receipt, lease end, ledger row), uploaded before the summary `scheduler/claims.json` even if the run fails, because the pop receipts exist nowhere else; a message whose claim file couldn't be written returns when its hide ends; `claims/` expires after 30 days.
 
 ### The rest of the tick
 
-The tick claims only what it can start: `min(batch_size, target - pending)` (or the
-[refill cap](#refill-cap-1447) in place of `batch_size`) less
-the pages already claimed and not yet started, so backpressure holds back claims
-and the messages stay visible to the node. Every claim is saved to the
-controller's state before its scan is pushed. The controller then pushes each
-page with `push-boinc-scan.sh --keep-page <batch>/<lccn>/<date>/<edition>/<seq>`,
-which finds the scan's format (`.jp2` or `.jpg`) on the scan server, in the fetcher's
-keep set and then its buffer set, where a queued OCR request's scan is (#1055). A
-buffer scan is copied up under its keep name, so the export reads it like any other,
-and evicting it from the buffer later doesn't affect the hand-off. A page with no
-cached scan, despite the list, is given back with the `release` step and dropped.
-With `--skip-truncated-scans`, a page whose JP2 is cut short at LoC is
-[dead-lettered instead](#a-page-whose-jp2-loc-holds-cut-short-1457).
-Export runs once per batch with `HANDOFF_CLAIMS=1`.
-
-With claims, `export` builds each job from the page's claim, not from the
-manifest, so a page someone asked for (#1055), which no prefetch manifest lists,
-is exported like any other. The batch version is the claimed ledger row's, the
-language the message's, and the scan, in the fetcher's keep or buffer set, must
-match its sidecar's doc id, batch and batch version. A cohort export still takes
-its pages from the manifest.
-
-With claims, `export` does not write a ledger row. The job's message is the
-queue's own (reason, score, `queued_at`), the journal records the claimed ledger
-row, and the export checks under the `ocr-sync` lock that the row is still the
-outstanding one (`ocr_local::boinc::adopt`). `collect` then imports against that
-row exactly as it does for the node's pages.
+The tick claims `min(batch_size, target - pending)` (or the [refill cap](#refill-cap-1447)) less unstarted claims, saving each to state before `push-boinc-scan.sh --keep-page <batch>/<lccn>/<date>/<edition>/<seq>`, which finds `.jp2` or `.jpg` in the fetcher's keep set, then its buffer set (requested pages, #1055), uploading a buffer scan under its keep name. A page without a scan is released and dropped; with `--skip-truncated-scans` a cut-short JP2 is [dead-lettered](#a-page-whose-jp2-loc-holds-cut-short-1457). Export runs per batch with `HANDOFF_CLAIMS=1`, building each job from the claim (batch version from the row, language from the message, scan matching its sidecar), writing no ledger row and checking under the `ocr-sync` lock that the row is still outstanding (`ocr_local::boinc::adopt`). `collect` imports against that row.
 
 ### A page that fails for good
 
-Each job gives the volunteer's Tesseract a page deadline (`engine.timeout_secs`, export's
-`--timeout-secs`, 1800 s by default and at most 3600). Before 25 Oct it was 600 s, and two dense
-1860s pages ran past it on every host they were sent to (#1159). The deadline is part of the job's
-identity, so the same page exported with another deadline is a new job and workunit.
-
-When a queue-fed page's workunit fails for good (BOINC's error mask is set: too many error
-results, or no output), `collect` marks its journal `failed`. It can't simply go back to its
-queue: the copy would be the same job, with the same workunit name, which BOINC already has.
-By default the tick stops and names the page and its job. With `--dead-letter-failed` (#1154)
-the controller runs the hand-off `dead-letter` step instead (`JOB_IDS`). That step puts a v2 `permanent`
-dead letter on `ocr-deadletter`, keeping the message and taking its `error` from the job's journal (the workunit's error mask and the page deadline, #1159), deletes the message with the claim's pop
-receipt, and marks the claim `ended: dead_lettered`. The controller records the job in its
-state and passes over its journal after that; the journal stays in `dispatch/`. `ocr-sync`
-drains the dead letter into the ledger. The flag needs the on-prem host's Message Sender role
-on `ocr-deadletter`.
+The Tesseract page deadline (`engine.timeout_secs`, export `--timeout-secs`) defaults to 1800 s, max 3600; it was 600 s before 25 October (#1159). It's part of the job identity. When a workunit's error mask is set, `collect` marks the journal `failed` and the tick stops. With `--dead-letter-failed` (#1154) the controller runs hand-off `dead-letter` (`JOB_IDS`): a v2 `permanent` letter on `ocr-deadletter` with the journal's `error`, message deleted, claim `ended: dead_lettered`. The controller records the job in its state and passes over its journal, which stays in `dispatch/`, and `ocr-sync` drains the letter. Needs the on-prem host's Message Sender role on `ocr-deadletter`.
 
 ### A page whose JP2 LoC holds cut short (#1457)
 
-Some of LoC's JP2s are cut short at the source: a box or tile-part runs past the end of
-the file, or the codestream stops before its EOC marker. The bytes match LoC's own
-checksums, so fetching the scan again won't help, and OCR can't: a failed decode wastes a
-volunteer's work, and a partial one could replace LoC's complete text with part of a page.
-The scan fetcher no longer files such a scan, and both OCR workers fail one unread
-([boinc-quality.md](boinc-quality.md#undecodable-source-scans)). Scans cached before then
-still reach the push.
-
-With `--skip-truncated-scans`, the controller pushes with
-`push-boinc-scan.sh --skip-truncated`. Before pushing a claimed `.jp2`, the script checks
-its box, marker-segment and tile-part headers (`quality_feed.py jp2-check`; no pixels, no
-network). A scan that is cut short isn't pushed. The script names it as
-`truncated <page> <reason>` and exits 3, as for a missing page.
-
-Only a scan that matches its sidecar is checked: a JP2, with the size, sha256 and bag md5 the
-fetcher recorded. A copy damaged on the scan server says nothing about LoC's file. The script pushes
-it as before, with a warning, and export's own check against the sidecar stops it.
-
-The controller keeps the reason on the page's claim. It then runs the hand-off
-`dead-letter` step with `SOURCE_TRUNCATED_DOCS`, each entry `<doc_id>:<message sha256>`
-(`usnm-boinc claim dead-letter --source-truncated <doc_id>:<message sha256>`). The sha256 is
-`claim pull`'s for the message claimed. The step refuses a page whose claim is now another
-message, so a late retry can't take a newer claim off its queue. Otherwise it puts a v2
-`permanent` dead letter on `ocr-deadletter`, with the error
-`source_truncated: LoC's JP2 is cut short at its source; not OCRed (#1457)`, and deletes
-the message. The page is never exported or claimed again, and it keeps LoC's text.
-
-The controller then drops the claim and lists the page in its state's `source_truncated`
-(`jq .source_truncated <state dir>/state.json`): doc id, batch, scan, reason and time.
-That list is the one to report to LoC. If the step fails, the next tick retries it before
-anything else, without pushing the page again. It retries even while draining or out of room,
-so the claim is settled before its lease runs out. A page pushed before the check was on is
-not checked when export re-pushes it to another destination.
-
-The flag is off by default, so the live service's push command is unchanged. It needs:
-
-- a hand-off image whose `dead-letter` step takes `SOURCE_TRUNCATED_DOCS`;
-- on the BOINC host, an `onprem-step.sh` that lets the controller set it;
-- the on-prem host's Message Sender role on `ocr-deadletter`, which `--dead-letter-failed` also needs;
-- `python3` and the checkout's `boinc/scripts/onprem/quality-feed/` beside the push script.
-
-Without the flag, such a page is exported as before. The BOINC worker then fails it
-unread, and like any page that fails for good it needs `--dead-letter-failed`.
+Some LoC JP2s are truncated at the source (a box or tile-part past the end, or no EOC marker) yet match LoC's checksums. The fetcher no longer files them and workers fail them unread ([boinc-quality.md](boinc-quality.md#undecodable-source-scans)), but older cached ones reach the push. `--skip-truncated-scans` (off by default) pushes with `push-boinc-scan.sh --skip-truncated`, which checks headers of a `.jp2` matching its sidecar (`quality_feed.py jp2-check`) and on truncation prints `truncated <page> <reason>` and exits 3. A scan that doesn't match its sidecar isn't checked: it's pushed with a warning and export's sidecar check stops it. The controller then runs `dead-letter` with `SOURCE_TRUNCATED_DOCS=<doc_id>:<message sha256>` (`usnm-boinc claim dead-letter --source-truncated …`), which refuses if the claim is now another message and otherwise sends `source_truncated: LoC's JP2 is cut short at its source; not OCRed (#1457)` and deletes the message. The page is listed in `jq .source_truncated <state dir>/state.json` for reporting to LoC. A failed step is retried first next tick, even while draining or out of room. A page pushed before the flag was on isn't checked when export re-pushes it. Without the flag such a page is exported, the worker fails it unread, and it needs `--dead-letter-failed`. It needs a hand-off image and host `onprem-step.sh` that take `SOURCE_TRUNCATED_DOCS`, the Message Sender role, and `python3` with `boinc/scripts/onprem/quality-feed/` beside the push script.
 
 ### A retried page claimed after its dead letter
 
-Once a page's dead letter is in the ledger, the page can be queued again as its next attempt,
-with a new `queued_at` (#1417). `claim pull` takes that message and its claim replaces the
-dead-lettered one in `claims/`. But the controller still holds the old claim for the page, so it
-stops the tick ("claimed a page already in this plan with a different message"). The new message
-stays hidden for its lease, then comes back and stops another tick. None of the usual tools
-settle it:
-
-- `JOB_IDS` refuses it, because the claim isn't the failed job's message.
-- `usnm-boinc retry` needs the failed job's own claim, which was replaced.
-- `release` would only put the message back.
-
-An operator settles it as root on the BOINC host, with the hand-off `dead-letter` step's
-`SUPERSEDES_FAILED_JOB` (the controller's ssh key can't set it):
+A dead-lettered page can be queued again with a new `queued_at` (#1417). Its new claim conflicts with the old one and stops every tick ("claimed a page already in this plan with a different message"); `JOB_IDS`, `usnm-boinc retry` and `release` can't settle it. As root on the BOINC host (the controller's ssh key can't set `SUPERSEDES_FAILED_JOB`):
 
 ```sh
 # Dry run: checks, prints the newer message's sha256 and changes nothing.
@@ -1046,48 +328,11 @@ usnm-boinc-step --env prod --target handoff --step dead-letter \
   --var CONFIRM_MESSAGE_SHA256=<the newer message's sha256> --wait-mins 10
 ```
 
-(`usnm-boinc claim dead-letter --supersedes-failed-job <id> --curated-url <curated>
-[--confirm-message-sha256 <sha256>]`.) Before it changes anything, it checks all of these:
-
-- The failed job's journal in `dispatch/` is a failed, queue-fed, non-retry job.
-- The claim is that job's page, batch and language, with a later `queued_at`.
-- The claim is still live, and it's the page's outstanding ledger row.
-- The ledger's latest outcome for the page is the failed job's own `permanent` dead letter,
-  bound to that job's message digest. After an earlier run of this step for the same job has
-  been drained into the ledger, it can instead be that run's dead letter, found by its receipt.
-- The confirmation is the claim's message sha256.
-
-When all of them pass, it does four things:
-
-1. Writes the dead letter as a receipt at
-   `dispatch/jobs/<failed job>/superseding/<message digest>.json`. The digest is the sha256
-   of the message's JSON, as the ledger records the dead letter.
-2. Sends the dead letter once, as a v2 `permanent` letter that names the failed job and keeps
-   its error. A `.sent` marker beside the receipt records the send.
-3. Deletes the message with the claim's pop receipt.
-4. Marks the claim `ended: dead_lettered`.
-
-A rerun prints `already ended` and sends nothing. If the message's lease had already run out,
-the dead letter still goes, the step fails, and the claim is marked `dead_letter_lease_lost`.
-Run it again after the next tick's claim pull has taken the message back. That rerun deletes the
-message without a second dead letter. If `ocr-sync` has drained the dead letter first, the pull
-deletes the message as answered. If the dead letter went but its `.sent` marker wasn't written,
-the step fails. Run it again. If `ocr-sync` has drained the letter by then, the ledger names the
-message, and the rerun writes the marker and deletes the message without sending again. If it
-hasn't, the rerun can't tell whether the letter went, so it sends it again. Both copies settle the
-same attempt.
-
-Once the message is gone, no pull returns the page, and the next tick goes on. Nothing on the
-controller changes. A later attempt of the page is a new message and needs the same step again,
-with the same `SUPERSEDES_FAILED_JOB`. This settles the newer attempt as failed without running
-it. To run it instead, use a deadline retry, below.
+(`usnm-boinc claim dead-letter --supersedes-failed-job <id> --curated-url <curated> [--confirm-message-sha256 <sha256>]`.) It checks the failed job is queue-fed and not a retry, the claim is live, outstanding and for the same page, batch and language with a later `queued_at`, and the ledger's latest outcome is that job's `permanent` letter. It writes `dispatch/jobs/<failed job>/superseding/<message digest>.json`, sends one v2 `permanent` letter (`.sent` marker), deletes the message and marks the claim `ended: dead_lettered` (a rerun prints `already ended`). If the lease had lapsed (`dead_letter_lease_lost`) or the marker wasn't written, rerun after the next claim pull. A rerun never resends a letter `ocr-sync` has drained, but an undrained letter with no `.sent` marker is sent again; both copies settle the same attempt. Each later attempt needs the same step.
 
 #### Retrying it with another page deadline
 
-The other choice is to run the newer message, with a longer page deadline. For a page that ran out
-of time on every host, the same deadline would only fail again, and it would be the same job and
-workunit. An operator records the retry as root on the BOINC host, with the hand-off
-`deadline-retry` step. The controller's ssh key can't run it.
+To run the attempt instead, record a longer deadline as root on the BOINC host (the controller's ssh key can't run `deadline-retry`):
 
 ```sh
 # Dry run: checks, prints the newer message's sha256 and changes nothing.
@@ -1099,123 +344,32 @@ usnm-boinc-step --env prod --target handoff --step deadline-retry \
   --var CONFIRM_MESSAGE_SHA256=<the newer message's sha256> --wait-mins 10
 ```
 
-(`usnm-boinc claim deadline-retry --supersedes-failed-job <id> --timeout-secs <s> --curated-url
-<curated> [--confirm-message-sha256 <sha256>]`.) The step makes the superseding dead letter's
-checks. It also checks that the deadline is 1 to 3600 s and isn't the failed job's own, and that
-no superseding dead letter has been started for the message. A job's identity holds its deadline
-but not its message's `queued_at`, so the step also refuses a deadline that would build one of the
-page's earlier jobs again (600 s, then 3600 s, then 600 s): choose another. Then it writes one
-record, `dispatch/jobs/<failed job>/deadline-retry/<message sha256>.json`, holding:
-
-- the failed job;
-- the page's doc id;
-- the message's sha256 and `queued_at`;
-- the deadline.
-
-A rerun prints `already recorded`. Nothing else changes: the claim stays live and its message
-hidden. While the record exists, the superseding dead letter refuses the same job and message.
-Until the controller takes the claim, deleting the record undoes it.
-
-The controller takes the claim when a claim pull returns the message again. That happens when its
-lease runs out, or after the hand-off `release` step with `HANDOFF_DOCS=<doc id>`. On that
-conflict only, and only for a page whose job the controller dead-lettered, the tick looks for the
-record for that job and message:
-
-- With no record, the tick stops as before.
-- If the record can't be read or isn't valid, the tick keeps the pull's other claims first, then
-  stops.
-- With the record, the claim takes the old one's place, naming the job it `supersedes`. The
-  controller records the retry in its state (`deadline_retries`: the page, message, `queued_at`
-  and deadline) and logs a `boinc_batch_deadline_retry` event.
-
-The next export pushes the page's scan again, wherever export reads it: the host prunes its staged
-copy after four days, and the hand-off container's `scans/` expire after 30. It names the failed
-job in `HANDOFF_DEADLINE_RETRIES`. `usnm-boinc export --deadline-retry
-<failed job>` checks the record again against the failed journal and the claim, then builds the
-page's job with the recorded deadline. That is a new job id and workunit beside the failed one,
-which stays as it was. An export that would build an earlier job of the page instead is refused.
-If the export fails, the next tick exports the page again. After that the controller takes the
-new job as the page's: its state names the job's `queued_at` and deadline, so it never picks one
-of two jobs any other way. The new job is submitted, collected and finished like any other. If it
-fails for good too, `--dead-letter-failed` dead-letters it as usual. A later attempt of the page
-is then settled or retried again, naming the new job.
-
-Without a record, nothing in a tick changes. Roll out the hand-off image (its `deadline-retry`
-step and export's `--deadline-retry`), the host's `onprem-step.sh` and the controller from one
-revision before recording a retry:
-
-- An older controller never looks for a record.
-- An older host script refuses `HANDOFF_DEADLINE_RETRIES`, so the export fails closed.
-- `archive_history.py` doesn't archive a page with two root jobs
-  (`unresolved_retry_lineage`), so a retried page's jobs stay in place.
+(`usnm-boinc claim deadline-retry --supersedes-failed-job <id> --timeout-secs <s> --curated-url <curated> [--confirm-message-sha256 <sha256>]`.) The deadline must be 1 to 3600 s, not the failed job's own, and must not rebuild an earlier job of the page (e.g. 600, 3600, 600 s), and no superseding dead letter may have been started for the message. While the record exists, the superseding dead letter refuses the same job and message. It writes `dispatch/jobs/<failed job>/deadline-retry/<message sha256>.json`; a rerun prints `already recorded`, and deleting it undoes the retry until the controller takes the claim. When a pull next returns the message (lease lapse, or `release` with `HANDOFF_DOCS=<doc id>`), the tick replaces the claim (with no record it stops as before; with an unreadable or invalid one it keeps the pull's other claims, then stops), records `deadline_retries`, logs `boinc_batch_deadline_retry`, and export (`HANDOFF_DEADLINE_RETRIES`, `usnm-boinc export --deadline-retry <failed job>`) builds a new job with the recorded deadline, re-pushing the scan (the host prunes staged copies after four days; the hand-off container's `scans/` expire after 30). Roll out the hand-off image, host `onprem-step.sh` and controller from one revision first: an older host script refuses `HANDOFF_DEADLINE_RETRIES`, so export fails closed; `archive_history.py` leaves such pages (`unresolved_retry_lineage`).
 
 ### The queue message's life
 
-| What happens                                               | The message                                                                                                                                                                                                                                 |
-| ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Claimed                                                    | Hidden for the lease; a node doesn't see it                                                                                                                                                                                                 |
-| `collect` published the page                               | Deleted, by `collect` itself (`usnm-boinc claim finish`)                                                                                                                                                                                    |
-| `collect`'s delete failed, or the lease ended first        | Visible again. A claim finds the page answered and deletes the message; a node would read the page again, and the newest row per page wins                                                                                                  |
-| The job failed, or was never collected                     | Visible again when the lease ends, for a node or a later claim. The controller still stops on a terminal failure for an operator, as before                                                                                                 |
-| Its JP2 is cut short at LoC (`--skip-truncated-scans`)     | Dead-lettered and deleted before export, by the `dead-letter` step (`SOURCE_TRUNCATED_DOCS`, #1457)                                                                                                                                         |
-| The same message again after its lease (job still pending) | Kept as the same claim: the summary carries the message's hash, the controller recognizes it and keeps its scan, selection and job, and the new delivery is hidden for a fresh lease. A different message for a claimed page stops the feed |
-| A second delivery of a page within one pull                | Deleted; the first claim covers the page and keeps its pop receipt                                                                                                                                                                          |
+| What happens                                    | The message                                                                     |
+| ----------------------------------------------- | ------------------------------------------------------------------------------- |
+| Claimed                                         | Hidden for the lease                                                            |
+| `collect` published the page                    | Deleted by `collect` (`usnm-boinc claim finish`)                                |
+| Delete failed, or the lease ended first         | Visible; a claim deletes it as answered, or a node rereads it (newest row wins) |
+| The job failed or was never collected           | Visible after the lease; the controller stops on terminal failures              |
+| JP2 cut short at LoC (`--skip-truncated-scans`) | Dead-lettered and deleted before export (`SOURCE_TRUNCATED_DOCS`)               |
+| Same message after its lease, job pending       | Same claim, hidden again; a different message stops the feed                    |
+| Second delivery within one pull                 | Deleted; the first claim keeps its pop receipt                                  |
 
-This is at-least-once, like a node's. `ocr-sync`'s import and the ledger already
-tolerate the same page being read twice. Nothing in a claim carries search text:
-the message is the same page-id-only message the nodes read.
-
-### Access
-
-The hand-off job's identity gets Storage Queue Data Message Processor and
-Message Sender on `ocr-priority` and `ocr-bulk` only (`handoffQueueIds` in
-`infra/modules/ocr-exchange.bicep`). That is the nodes' roles plus the ability to
-put a message back; it has no Update Message (ADR-0015) and nothing on
-`ocr-deadletter`. The job's `QUEUE_URL` setting is optional for the launcher, so a
-job deployed before this change still runs export and collect until it is
-provisioned. `claims/` expires after 30 days.
+Delivery is at-least-once; `ocr-sync` and the ledger tolerate a page read twice. Claims carry no search text.
 
 ### Rollout order and edge cases
 
-- A queue-fed job's journal record carries one more field, the claimed ledger row, which
-  the BOINC bridge reads when it pulls the job. Deploy the hand-off and bridge images
-  built from the same revision (#529) before the first claim; explicit cohorts' records
-  are unchanged, so nothing changes for them meanwhile.
-- A message queued again after its claim lapsed (the seeder re-queues a page outstanding
-  for 14 days) is a different message and so a different job. The controller then sees two
-  jobs on one page and stops for an operator to reconcile, as it does for any two. A page
-  queued again after its job was dead-lettered stops it the same way; settle it, or retry it
-  with another deadline, as [above](#a-retried-page-claimed-after-its-dead-letter).
-- A claim can lapse while the job is pending, and a node can then import the page. When
-  the BOINC result arrives, `collect` finds the page answered by another producer and marks
-  the job `published` with a `superseded` note, without publishing anything, so the feed
-  goes on. This applies only to queue-fed jobs; an explicit cohort's page is not read by a
-  node, so the same finding there remains an error.
-- A claim that failed after taking messages leaves their claim files in the container.
-  The controller records those it finds in the summary and stops the tick; any other
-  message comes back when its lease runs out.
-
-### Not changed
-
-A page that fails on a volunteer is not dead-lettered by BOINC; the node and
-`ocr-sync` own that path. Gold issuance, host trust, the worker pin and
-operator approval are as above. Merging this is not a deployment: provision the
-hand-off job and its roles, reconcile, and approve a first tick with `--apply`
-before scheduling it.
+- Queue-fed journal records carry the claimed ledger row; deploy hand-off and bridge images from one revision (#529).
+- A page re-queued after a lapse (the seeder re-queues after 14 days) or a dead letter is a new job; two jobs for one page stop the controller ([settle it](#a-retried-page-claimed-after-its-dead-letter)).
+- If a node imports a page whose claim lapsed, `collect` marks the BOINC job `published` with a `superseded` note and publishes nothing (an error for explicit cohorts).
+- A claim that fails after taking messages leaves claim files, which the controller records before stopping.
 
 ## Surya waves
 
-A plan with `"app": "usnm_surya"` keeps a Surya campaign's queue topped up
-([#968](https://github.com/tgoodyear/usnewsmap.com/issues/968),
-[boinc-surya.md](boinc-surya.md)) so a wave needs no hand-staging. It is a
-separate kind of plan: it has no `manifest`, `batch`, `pages`, `source`, `account`
-or scan push, takes nothing off the OCR queues, and uses no hand-off job, inventory
-or journal. Stage the quality campaign's pages first (`quality-stage`); the plan
-cuts the crops from them.
-
-`usnm_surya` was retired on 2 November 2026
-([boinc-surya.md](boinc-surya.md#retirement-2-november-2026)), and no controller
-runs this plan. The plan kind stays so a wave can be rerun.
+A plan with `"app": "usnm_surya"` keeps a Surya campaign's queue topped up ([#968](https://github.com/tgoodyear/usnewsmap.com/issues/968), [boinc-surya.md](boinc-surya.md)), with no manifest, scan push, OCR queue, hand-off job or journal; stage the quality campaign's pages first (`quality-stage`). `usnm_surya` was retired on 2 November 2026 ([boinc-surya.md](boinc-surya.md#retirement-2-november-2026)); the plan kind stays for reruns.
 
 ```json
 {
@@ -1240,62 +394,17 @@ runs this plan. The plan kind stays so a wave can be rerun.
 }
 ```
 
-`campaign` and `quality_campaign` are `[a-z0-9-]` names (the `SURYA_CAMPAIGN` and
-`QUALITY_CAMPAIGN` of the bridge steps). `timeout_secs` (60 to 14400, default 600),
-`stage_pages` (1 to 500, default 50) and `submit_units` (1 to 2000, default 200) are
-optional. Both watermarks are required.
-
-One tick reads `usnm_surya`'s unsent count from the server status
-(`server_status_url`, `--server-status-url` or `--server-status-file`; a status
-without the app stops the tick). When it is above `low_watermark` the tick does
-nothing. At or below it, the tick runs `surya-stage-crops` (`QUALITY_CAMPAIGN`, the
-three engine pins, `SURYA_MAX=stage_pages`, `SURYA_TIMEOUT_SECS`) and then
-`surya-submit` with `SURYA_MAX` the smaller of `submit_units` and half of
-`high_watermark` minus the unsent count (the count is results, and every unit makes
-two), so the queue never goes past the high mark; with less than two results of
-room it runs nothing. A failed step stops the tick. The state file records the last
-check and the steps of the last run, with the time. `--drain` runs nothing.
-
-Without `--apply` the controller reads and runs nothing and prints the steps a tick
-would run at an empty queue. The host lock and `state.json` are as for the OCR plan,
-but a Surya plan takes no Azure lease and its state is not tied to the
-configuration's hash, so a later tick may change the watermarks and caps. The engine
-pins are held to the campaign, persisted before staging even if the step fails:
-staged units keep the pins they were cut with, so a
-tick whose pins differ from the campaign's recorded ones refuses to run, and a new
-engine goes under a new `campaign` name. Collecting results (`surya-collect`, which needs the assimilator's spool) is still an
-operator step. Over ssh the controller's key may set only `SURYA_CAMPAIGN`,
-`QUALITY_CAMPAIGN`, the three `SURYA_ENGINE_*` pins, `SURYA_MAX` and
-`SURYA_TIMEOUT_SECS` on `surya-stage-crops`, and only `SURYA_CAMPAIGN` and
-`SURYA_MAX` on `surya-submit`.
+Names are `[a-z0-9-]` (`SURYA_CAMPAIGN`, `QUALITY_CAMPAIGN`). Optional: `timeout_secs` (60 to 14400, default 600), `stage_pages` (1 to 500, default 50), `submit_units` (1 to 2000, default 200); watermarks are required. At or below `low_watermark` unsent, a tick runs `surya-stage-crops` (`SURYA_MAX=stage_pages`, `SURYA_TIMEOUT_SECS`, three engine pins) then `surya-submit` with `SURYA_MAX` = min(`submit_units`, (`high_watermark` − unsent) / 2), each unit being two results; with under two results of room it runs nothing. `--drain` runs nothing, and without `--apply` it prints the steps a tick would run at an empty queue. A status without the app or a failed step stops it. There's no Azure lease and state isn't hash-bound, but engine pins are bound to the campaign; a new engine needs a new `campaign`. `surya-collect` stays manual. Over ssh the key may set only `SURYA_CAMPAIGN`, `QUALITY_CAMPAIGN`, the `SURYA_ENGINE_*` pins, `SURYA_MAX` and `SURYA_TIMEOUT_SECS` on `surya-stage-crops`, and `SURYA_CAMPAIGN` and `SURYA_MAX` on `surya-submit`.
 
 ## Validation, scheduling and recovery
 
 ### Drain without changing the allocation
 
-For a controlled feed handoff or rollback ([#833](https://github.com/tgoodyear/usnewsmap.com/issues/833)),
-add `--drain --apply` to the existing invocation. The controller still takes both
-locks, checks inventory and collects existing results through the normal trust
-gates, but selects no new pages, pushes no scans, exports no jobs and submits no
-reservations, including reservations recovered from an interrupted tick.
-Existing allocations and journals remain intact. Tick telemetry reports
-`draining: true`; omit `--apply` to validate offline without remote calls.
-Remove `--drain` to resume the same immutable allocation and state directory.
-Uncertain submissions and terminal failures still require explicit reconciliation.
-Drain mode does not cancel outstanding BOINC work or release reservations.
+`--drain --apply` ([#833](https://github.com/tgoodyear/usnewsmap.com/issues/833)) still locks, inventories and collects through the trust gates, but selects, pushes, exports and submits nothing (`draining: true`). Remove it to resume. It cancels no BOINC work and releases no reservations.
 
-This switch controls only this BOINC controller. To drain the **direct OCR**
-bulk feed, first preserve the configured `USNM_OCR_SEED_*` values and disable
-seeding by clearing `USNM_OCR_SEED_PLAN` on the sync job through the normal
-reviewed settings/deployment path. Keep `ocr-sync` running for imports and
-dead-letter handling. Its user-hit priority feed is separate and remains enabled;
-manual enqueue/requeue commands must also be coordinated. Do not transfer or
-purge queue messages. Before assigning drained pages to BOINC, reconcile their
-native ledger state and prove the selected worker image, German/Fraktur model
-and calibrated trust scope match the intended cohort. Disabling a feed is not
-evidence that all outstanding work has completed.
+To stop bulk seeding as well, first save the `USNM_OCR_SEED_*` values, then clear `USNM_OCR_SEED_PLAN` (now `fetched-eng-20261106`) in `infra/env/<env>.json`: `scripts/azure/settings.sh --env prod --key USNM_OCR_SEED_PLAN --unset`; `scripts/onprem/ingest-env.sh` passes it to the on-prem pickup. Keep `ocr-sync` running (imports, dead letters, the user priority feed) and coordinate manual enqueue or requeue commands. Don't move or purge queue messages. Before giving drained pages to BOINC, reconcile their ledger state and match image, model and trust scope.
 
-Offline validation makes no Azure or SSH calls and creates no state:
+Offline validation (no Azure or SSH calls, no state):
 
 ```sh
 python3 boinc/scripts/batch_scheduler.py \
@@ -1305,163 +414,42 @@ python3 -m unittest -v boinc/scripts/test_batch_scheduler.py \
   boinc/images/server/test_batch_inventory.py
 ```
 
-Only after the serialized operator has approved deployment and activation, run
-one actual tick with the same command plus `--apply`. Verify its execution
-status, native ledger reservations, canonical host IDs, trust decision,
-published ALTO and Parquet, and normal `ocr-sync` behavior. Verify that a second
-identical tick creates no duplicate work or publications. Then an operator may
-schedule that exact command, for example every five minutes in the execution
-host's existing scheduler, with stdout/stderr retained. The local lock rejects
-overlapping ticks. No cron or systemd resource is installed by this change.
+For a new plan: run one approved `--apply` tick, check reservations, host IDs, trust, published ALTO and Parquet and `ocr-sync`, confirm a second tick duplicates nothing, then schedule it like prod's [timer](#on-prem-controller-host-ct-211).
 
-The state directory and the hand-off and bridge journals are durable recovery
-state, not disposable scratch. If a controller crashes, its infinite blob lease
-stays held deliberately: stop the execution host's schedule, inspect both Azure
-job executions and the journals, and reconcile any `submitting` jobs using the
-existing explicit reconcile procedure. Only the serialized operator may break
-the stale `scheduler/controller.lock` blob lease once the former owner is
-confirmed stopped. Do not delete journals, reset state, or break a live lease. A
-missing reply is not evidence that `create_work` failed. The inventory fails
-closed above 10,000 journals, above 100,000 spool entries, or above the
-existing native workunit cap. That cap is 50,000 by default, set by
-`USNM_MAX_EXISTING_WORKUNITS` in the BOINC host's `bridge.env` (1 to 200,000),
-and the server reports it as `existing_jobs_limit`. It is larger than the
-journal cap because BOINC keeps every workunit for `delete_delay_hours` (168)
-after it finishes, so finished rows outnumber live journals (#1483). The cap
-holds for both the workunit rows, reported as `existing_workunits`, and the pages
-they expand to, `existing_jobs`; the 80% warning uses the larger, since a bundle
-whose journals are archived is still a row but adds no pages. A server
-image without this change reports no limit, and the controller then holds
-existing workunits to 10,000. Archive only drained, operator-verified history before resuming,
-with [the archive tool](#archive-drained-history-1483).
+State and journals are durable recovery state. After a crash the lease stays held: stop the schedule, inspect executions and journals, reconcile `submitting` jobs, and only once the former owner is confirmed stopped may the serialized operator break the stale `scheduler/controller.lock` lease. Never delete journals, reset state or break a live lease. A missing reply doesn't mean `create_work` failed.
+
+The inventory fails closed above 10,000 journals, 100,000 spool entries or the workunit cap (default 50,000, `USNM_MAX_EXISTING_WORKUNITS` in the BOINC host's `bridge.env`, 1 to 200,000, reported as `existing_jobs_limit`; older server images: 10,000). BOINC keeps workunits `delete_delay_hours` (168) after they finish (#1483). The cap covers rows (`existing_workunits`) and pages (`existing_jobs`); the 80% warning uses the larger.
 
 ### Archive drained history (#1483)
 
-`boinc/scripts/archive_history.py` moves the oldest fully published pages'
-history out of every store that counts towards those caps, one batch at a time,
-into a retained archive. It deletes nothing that it hasn't first copied and
-checked. Every step is a read-only dry run unless `--apply` is given. The dry
-run takes no lease or lock and writes nothing, beyond the token cache `az` keeps
-as it does for every tick. The tool has three steps, each
-run on the host that holds its stores, in this order for every batch:
+`boinc/scripts/archive_history.py` moves the oldest fully published pages' history out of every capped store into a retained archive, a batch at a time, deleting nothing it hasn't copied and checked. Without `--apply` each step is a dry run with no lock and no writes. Run in order per batch:
 
-| Step       | Host                                      | Stores                                                                                                                                                                              |
-| ---------- | ----------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `dispatch` | the controller host (CT 211)              | the controller state's `claims`, `selected`, `held_since` and `dead_lettered` entries, then the hand-off blobs `dispatch/jobs/<id>/`, `dispatch/quarantine/<id>/` and `spool/<id>/` |
-| `bridge`   | the BOINC host (CT 230)                   | the bridge journals `$HANDOFF_DIR/jobs/<id>/` and their spool outputs under the project's `results/`                                                                                |
-| `db`       | where a mysql client reaches the database | the batch's finished `workunit` rows and their `result` rows                                                                                                                        |
+| Step       | Host                       | Stores                                                                                                                                       |
+| ---------- | -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `dispatch` | controller host            | state's `claims`, `selected`, `held_since`, `dead_lettered`, then blobs `dispatch/jobs/<id>/`, `dispatch/quarantine/<id>/` and `spool/<id>/` |
+| `bridge`   | BOINC host                 | bridge journals `$HANDOFF_DIR/jobs/<id>/` and spool outputs under `results/`                                                                 |
+| `db`       | where mysql reaches the DB | finished `workunit` rows and their `result` rows                                                                                             |
 
-A page qualifies only when all of its journals form one retry chain that ends
-`published`, the last write of that journal is at least `--min-age-hours` (24)
-old, and the controller state agrees. A page of the current plan must be
-claimed for the batch its journal names. A page of an older plan must not be
-claimed, selected or in a fixed plan's page list. Pages are taken oldest
-published first, `--pages` (1,000) at a time. A fixed page list is never
-archived, because its pages would be selected and exported again. Pages that
-are prepared, reserved, submitting, submitted or failed (including
-dead-lettered) stay.
+A page qualifies when its journals form one retry chain ending `published`, last written at least `--min-age-hours` (24) ago, and state agrees (claimed for that batch in the current plan; in an older plan not claimed, selected or in a fixed plan's page list). Oldest first, `--pages` (1,000) per batch; fixed page lists never. Prepared, reserved, submitting, submitted and failed (including dead-lettered) pages stay. State goes before blobs. Each blob is copied, its sha256 kept in `handoff-sha256/`, and deleted only if unchanged. `claims/<doc_id>.json` and the `ocr-out` ledger stay. The state's `published` count drops by the pages archived, so `newly_published` stays right while `pages_per_hour` falls. Each step writes its plan (`manifest.json`, `bridge-plan.json`, `db-plan.json`) first and a receipt in `receipts/` last, and resumes when rerun with the same arguments; a changed blob stops it. Dry run and apply check that the same pages need work before and after the batch, and the apply refuses otherwise. The `dispatch` apply holds the controller's lock file (refusing if missing: wrong `--state-dir`) and lease; a killed apply leaves the lease held, broken as for a crashed controller once the process is confirmed gone.
 
-The controller state goes before the blobs. A journal whose claim is gone fails
-the tick closed in `owned_records`, but a claim whose journal is gone would be
-exported again. Each blob is copied, its sha256 is kept in `handoff-sha256/`,
-and only then is the blob deleted, and only while it's still the version
-copied. A resumed step checks every copy against that sha256, so a blob without
-a Content-MD5 is checked too. The dry run and the apply both check that the same pages need
-work before and after the batch. The apply refuses if they don't. The bridge
-and database steps can lag behind safely: a tick reads only the journals of
-pages it owns. `claims/<doc_id>.json` and the `ocr-out` ledger are kept, so a
-redelivered queue message is still answered. The tool lowers the state's
-`published` count by the pages it archives, so `newly_published` stays right.
-`pages_per_hour` drops, because it counts what is left.
-
-Each step writes its plan (`manifest.json`, `bridge-plan.json`, `db-plan.json`)
-before it changes anything, and a receipt in `receipts/` when it's done. The
-receipt holds the counts and hashes from before and after, and a digest of the
-archived files. A step that stops half way, from a crash, a failed request or a
-changed blob, resumes when it's run again with the same arguments. It finishes
-the planned batch and doesn't plan another one. A blob or file that changed
-since the plan stops the step: reconcile it by hand. The `dispatch` apply holds
-the controller's lock file and its `scheduler/controller.lock` blob lease
-throughout. It refuses if the lock file is missing, since the controller
-creates it on its first tick, so a missing one means a wrong `--state-dir`. A killed apply leaves that lease held, like a crashed controller.
-Once the process is confirmed gone, the operator breaks it as above.
-
-The `dispatch` apply deletes hand-off blobs, so it needs `blobs/delete` on
-`boinc-handoff`. The controller's own identity (`boincHandoffRunner`, CT 211's
-Arc machine identity) has it only through the hand-off archiver role
-(`USNM_BOINC_HELD_ARCHIVE`, on in prod since #835's daily archive): a custom
-role with that one data action, assigned on the `boinc-handoff` container and
-nowhere else (`infra/modules/ocr-exchange.bicep`). Its node writer role there
-reads and writes but doesn't delete. With the archiver role, the controller's
-own `az` sign-in runs the apply, and no operator token is needed: the daily
-timer below uses it. Without it, the apply stops at its first delete with HTTP
-403 `AuthorizationPermissionMismatch`, and the batch is left resumable; run the
-apply under an operator identity that may delete instead. The narrowest
-built-in role that does is Storage Blob Data Contributor assigned at the
-container's own scope,
-`<account resource ID>/blobServices/default/containers/boinc-handoff`. A
-broader role an operator already holds also works, such as Storage Blob Data
-Owner on the account's resource group, but don't grant one for this.
-
-The tool takes its token from the first `az` on its `PATH`. It runs:
+Deleting blobs needs `blobs/delete` on `boinc-handoff`: the controller identity (`boincHandoffRunner`) has it via the archiver role (`USNM_BOINC_HELD_ARCHIVE`, `infra/modules/ocr-exchange.bicep`). Otherwise the apply stops with HTTP 403 `AuthorizationPermissionMismatch`; rerun as an operator with at least Storage Blob Data Contributor on `<account resource ID>/blobServices/default/containers/boinc-handoff`. A broader role an operator already holds (e.g. Storage Blob Data Owner) also works, but don't grant one for this. The tool's only `az` call, to the first `az` on its `PATH`, is:
 
 ```sh
 az account get-access-token --resource https://storage.azure.com/ \
   --query '{token:accessToken,expires:expires_on}' -o json
 ```
 
-It reads only the `token` and `expires` keys of that JSON object. `expires` must
-be a whole number of seconds since the epoch, so check that `expires_on` is one:
-`az account get-access-token --resource https://storage.azure.com/ --query
-'type(expires_on)' -o tsv` prints `number` (and no token). If it doesn't,
-upgrade the CLI rather than converting: `expires_on` was added in Azure CLI
-2.54.0, and older versions give only `expiresOn`, a local time string; don't
-project that instead. The tool converts `expires` with `int()`, which fails on a
-date string and stops the step. The tool asks again 10 minutes before expiry,
-and makes no other `az` call. To use an operator identity:
+`expires_on` must be a number: `az account get-access-token --resource https://storage.azure.com/ --query 'type(expires_on)' -o tsv` prints `number` from Azure CLI 2.54.0 on. If not, upgrade the CLI rather than substitute `expiresOn`: the tool parses `expires` with `int()`, so a date string stops the step. It asks again 10 minutes before expiry, so rewrite the token file before then. For an operator token:
 
-- On CT 211, make a root-owned 0700 directory for the run, such as
-  `/root/usnm-archive`. In it, put a 0700 wrapper `azshim/az` that answers only
-  that one call, from a 0600 token file at a fixed path there, such as
-  `/root/usnm-archive/.maint-token.json`. Fail closed: the wrapper compares its
-  whole argument list with the command above, `--query` and `-o` included, and
-  prints the file only on an exact match. For any other arguments it prints
-  nothing to stdout and exits non-zero. It never calls the real `az`, so the
-  token can't reach any other command.
-- Put the wrapper's directory first on `PATH` for the archive tool's command
-  alone (`PATH=/root/usnm-archive/azshim:$PATH python3 archive_history.py …`).
-  Never change `PATH` in a profile or for the service.
-- On the operator's workstation, mint a short-lived storage-audience token with
-  the same command, including the `--query` projection, so that the file holds
-  the `token`/`expires` object. Pipe it over `ssh` into that file, never
-  printing it.
-- Rewrite the file before the token expires. Write the new token to a 0600
-  temporary file in the same directory, then `mv` it over the old one, so the
-  tool never reads a partial file. Only root can write to that directory, so
-  nothing else can swap the file or plant a link there.
-- Delete the token file and the wrapper after the run, and any copy left on the
-  way (for example on the Proxmox host).
+1. On the controller host, create root-owned 0700 `/root/usnm-archive` with a 0700 `azshim/az` that prints a 0600 `/root/usnm-archive/.maint-token.json` only for exactly the call above and otherwise exits non-zero; it never calls the real `az`.
+2. Mint the token on a workstation with the same command and pipe it over `ssh` into that file, unprinted; refresh it by `mv` from a 0600 temp file.
+3. Run with `PATH=/root/usnm-archive/azshim:$PATH python3 archive_history.py …` only; never change `PATH` in a profile or for the service.
+4. Delete the token, the wrapper and any copies afterwards (e.g. on any jump host).
 
-The dry run and the controller's own ticks keep the controller's identity.
+The maintainer approves each live run:
 
-The maintainer approves each live run. To archive:
-
-1. Pause the controller on CT 211, and wait for any running tick to end:
-
-   ```sh
-   systemctl stop usnm-boinc-priority-controller.timer
-   systemctl is-active usnm-boinc-priority-controller.service   # until inactive or failed
-   ```
-
-2. Copy `archive_history.py` and the controller's own `batch_scheduler.py` into
-   one working directory, such as `/root/usnm-archive`. The tool imports the
-   scheduler beside it, and the state names that scheduler's config digest.
-   Dry-run the `dispatch` step there. Read `journals`, `pages.eligible`,
-   `pages.skipped`, `batch` (pages, jobs, blobs, bytes), `after_batch` and
-   `outstanding_pages.unchanged`. The `--archive-dir` needs room for the
-   batch's bytes, and the apply checks this. Each job's blobs hold its page,
-   so a page takes about 7 MB and 1,000 pages about 7 GB. CT 211's root
-   filesystem is too small for that: give the archive a dataset of its own.
+1. `systemctl stop usnm-boinc-priority-controller.timer`; wait until `systemctl is-active usnm-boinc-priority-controller.service` is inactive or failed.
+2. Put `archive_history.py` beside the controller's `batch_scheduler.py` (e.g. `/root/usnm-archive`) and dry-run `dispatch`; read `pages.eligible`, `batch` and `outstanding_pages.unchanged`. Allow about 7 MB a page on an archive dataset off the root filesystem.
 
    ```sh
    python3 /root/usnm-archive/archive_history.py dispatch \
@@ -1470,18 +458,8 @@ The maintainer approves each live run. To archive:
      --archive-dir <archive dir>
    ```
 
-3. Apply it under an operator identity that may delete (above): the same
-   command plus `--apply --confirm-controller-paused`. It prints the batch's
-   receipt, which is also kept in
-   `<archive dir>/batches/<NNNN>/receipts/dispatch.json`.
-4. Copy that batch's `manifest.json` and `receipts/dispatch.json`, unchanged, to
-   `/srv/usnm-boinc/project/archive/batches/<NNNN>/` on the BOINC host, and
-   `archive_history.py` from the same checkout to `/srv/usnm-boinc/project/archive/`.
-   Use the same `<NNNN>`: the step refuses a receipt for another batch, and a
-   `bridge-plan.json` made from another manifest. Then dry-run and apply the
-   `bridge` step there as root. The apply holds the bridge step locks
-   (`/run/usnm-boinc-step.lock`, `/run/usnm-boinc-handoff.lock` and
-   `$HANDOFF_DIR/.lock`), so other bridge steps fail while it runs.
+3. Apply with `--apply --confirm-controller-paused` (receipt in `<archive dir>/batches/<NNNN>/receipts/dispatch.json`).
+4. Copy `manifest.json` and `receipts/dispatch.json` unchanged to `/srv/usnm-boinc/project/archive/batches/<NNNN>/` on the BOINC host, using the same `<NNNN>` (the step refuses another batch's receipt or a `bridge-plan.json` from another manifest), and `archive_history.py` from the same checkout to `/srv/usnm-boinc/project/archive/`. Run `bridge` as root; it holds `/run/usnm-boinc-step.lock`, `/run/usnm-boinc-handoff.lock` and `$HANDOFF_DIR/.lock`, so other bridge steps fail meanwhile, and archives a bundle's output only when none of its pages remain. It refuses a `--handoff-dir` or `--results` that is a symlink: name the directory it points to.
 
    ```sh
    python3 /srv/usnm-boinc/project/archive/archive_history.py bridge \
@@ -1491,24 +469,7 @@ The maintainer approves each live run. To archive:
    # then the same with --apply --confirm-controller-paused
    ```
 
-   A spool output of an OCR bundle is archived only once none of the bundle's
-   pages is left on the server. The step refuses a `--handoff-dir` or
-   `--results` that is itself a symlink: name the directory it points to.
-
-5. Dry-run and apply the `db` step in `usnm-boinc-server`, where the batch is
-   `/project/archive/batches/<NNNN>`. Give it a 0600 mysql defaults file for a
-   user that can delete from `workunit` and `result`, and remove the file
-   afterwards. The bridge receipt must name the batch's manifest. The step
-   works in chunks of 500 workunits, each in one transaction in one client
-   session. It locks the chunk's rows (`SELECT ... FOR UPDATE`), checks them
-   again and exports them to `db/chunk-<NNNN>-attempt-<N>/`, and only then
-   deletes them. It deletes only workunits that are assimilated (2) with their
-   input files deleted (2), and whose every result is over (5) with its output
-   files deleted (2). It leaves the others for BOINC's `db_purge` and counts
-   them as `deferred`. Those still count towards the existing-workunit
-   cap. A stop before a chunk's `COMMIT` rolls it back, and the resumed step
-   exports the rows again beside the first attempt. A stop after it leaves the
-   export, which the resumed step counts as deleted.
+5. Run `db` in `usnm-boinc-server` with a 0600 mysql defaults file for a user that can delete from `workunit` and `result` (remove it afterwards); the bridge receipt must name the batch's manifest. In 500-workunit transactions it locks (`SELECT ... FOR UPDATE`), exports to `db/chunk-<NNNN>-attempt-<N>/` and deletes only workunits assimilated (2) with inputs deleted (2) whose results are over (5) with outputs deleted (2); the rest are `deferred` to `db_purge` and still count toward the workunit cap. A stop before `COMMIT` rolls the chunk back and the resume exports it again; after `COMMIT` the export counts as deleted.
 
    ```sh
    podman exec usnm-boinc-server python3 /project/archive/archive_history.py db \
@@ -1517,40 +478,13 @@ The maintainer approves each live run. To archive:
    # then the same with --apply --confirm-controller-paused
    ```
 
-6. Repeat from step 2 until the journals are well under the cap. Then resume
-   with `systemctl start usnm-boinc-priority-controller.timer`, and watch one
-   tick end without `dispatch inventory limit/consistency failure`.
+6. Repeat until well under the cap, start the timer, and watch a tick end without `dispatch inventory limit/consistency failure`.
 
-The archive is the only copy of the moved history. Keep it, and back it up
-with the controller state.
+The archive is the only copy; back it up with the controller state.
 
 #### Archive held pages (#835)
 
-While a trust scope is held, its pages' jobs stay `reserved` with `held` set,
-and their journals, claims, bridge journals and spool outputs pile up toward
-the same caps. `dispatch --include-held` archives them too, in the same batches
-and with the same steps. A held page qualifies when its journal chain ends in
-the held job, it belongs to the current plan, its claim carries a message
-sha256, and both `dispatch/quarantine/<job>/` (what `collect` kept) and
-`spool/<job>/` (what `collect` reads again) are in the container. The manifest
-marks it `"held": true`, and its `published_at` is when it was held. Held
-pages don't lower the state's `published` count.
-
-Archiving moves the page's claim and selection out like a published page's,
-and leaves an `archived_held` entry in the controller state: its job, its
-message sha256, when it was held and when it was archived. The page's queue
-message isn't deleted, because the page isn't published. When its lease runs
-out and the claim step takes the same message again, the controller keeps it
-hidden for the archived job, as it does for a held claim that is still in the
-state. A different message for the page stops the tick, like a different
-message for a claimed page. The tick line reports `scope_held_archived`, and
-the controller warns at 80% of `MAX_ARCHIVED_HELD` (200,000).
-
-The bridge and db steps need nothing different. A held job's bridge journal is
-`submitted`, and its workunit is finished.
-
-The held pages' minimum age is the same `--min-age-hours`, counted from the
-held write. Nothing writes a held journal again, so an hour is enough:
+`dispatch --include-held` also archives held jobs (`reserved` with `held`) whose chain ends in the held job, in the current plan, with a message sha256 on the claim and both `dispatch/quarantine/<job>/` and `spool/<job>/` present. The manifest marks them `"held": true`; they leave an `archived_held` entry, don't lower `published`, and keep their queue message hidden on redelivery (a different message stops the tick). Ticks report `scope_held_archived` and warn at 80% of `MAX_ARCHIVED_HELD` (200,000). One hour is enough age:
 
 ```sh
 python3 /root/usnm-archive/archive_history.py dispatch --include-held --min-age-hours 1 \
@@ -1559,48 +493,16 @@ python3 /root/usnm-archive/archive_history.py dispatch --include-held --min-age-
   --archive-dir /srv/usnm-archive
 ```
 
-**Daily, on a timer.** While a scope stays held, `usnm-boinc-held-archive.timer`
-on CT 211 runs this every day at 08:30 UTC
-([`held-archive.sh`](../boinc/scripts/onprem/held-archive.sh), with
-`usnm-boinc-held-archive.service` from `boinc/scripts/onprem/`). One run:
+`usnm-boinc-held-archive.timer` on the controller host runs this daily at 08:30 UTC ([`held-archive.sh`](../boinc/scripts/onprem/held-archive.sh), unit files in `boinc/scripts/onprem/`):
 
-1. Stops the controller's timer and waits for a running tick to end. If the
-   timer is already stopped, an operator has paused the controller, and the run
-   does nothing.
-2. Bridges any earlier batch that has a dispatch receipt but no
-   `receipts/bridge.json` (a run that stopped between the two steps).
-3. Runs the `dispatch` apply into `/srv/usnm-archive`, with
-   `--include-held`, `--min-age-hours 1` and `--pages 1000`, under the
-   controller's own identity, at most 10 batches. After each batch it sends the
-   batch's `manifest.json` and `receipts/dispatch.json` over the controller's
-   ssh step command to the BOINC host, where
-   `usnm-boinc-step --target archive --step bridge --var ARCHIVE_BATCH=<NNNN>`
-   puts them in `/srv/usnm-boinc/project/archive/batches/<NNNN>/` and runs that
-   directory's `archive_history.py bridge`, a dry run and then the apply, under
-   the bridge step locks. The bridge receipt comes back and is kept on CT 211
-   as `receipts/bridge.json`. A batch already bridged answers with its receipt
-   and changes nothing.
-4. Starts the controller's timer again, and a tick at once, however the run
-   ended.
+1. Stop the controller timer and wait for a tick (exit if it was already stopped).
+2. Bridge any batch with a dispatch receipt but no `receipts/bridge.json`.
+3. Apply up to 10 batches (`--include-held --min-age-hours 1 --pages 1000`) into `/srv/usnm-archive`, each bridged via `usnm-boinc-step --target archive --step bridge --var ARCHIVE_BATCH=<NNNN>`.
+4. Restart the controller timer and a tick, however it ended.
 
-No db step (#1587). The run ends with one `boinc_held_archive` JSON line in
-its journal (`journalctl -u usnm-boinc-held-archive`): the batches, pages and
-held pages archived, the journals left, and the state's claims and
-`archived_held` counts. A failure fails the unit. The controller's feed source
-reads this unit too (`--maintenance-unit usnm-boinc-held-archive.service`), so
-the feed-health evaluator reports a failed run as a controller failure
-(`controller_tick`, #1441), and while the archive runs, or for 15 minutes after,
-the paused controller isn't a missing tick. The BOINC host needs the
-`archive_history.py` from the same checkout as CT 211's in
-`/srv/usnm-boinc/project/archive/`: install it again when the tool changes.
+No db step (#1587). It logs one `boinc_held_archive` line (`journalctl -u usnm-boinc-held-archive`), and feed health watches it (`--maintenance-unit usnm-boinc-held-archive.service`; failures as `controller_tick`, #1441; no missed-tick alarm until 15 minutes after). Keep the BOINC host's `archive_history.py` in step. A failure fails the unit. 1,000 pages take about 15 minutes, with no refill meanwhile; pause with `systemctl stop usnm-boinc-held-archive.timer`, and a run stopped half way resumes on the next one.
 
-A batch of 1,000 pages takes about 15 minutes, and the controller refills
-nothing meanwhile. To pause the archive, `systemctl stop
-usnm-boinc-held-archive.timer`; a run stopped half way resumes on the next one.
-
-To publish held pages once their scope is calibrated, first put them back with
-`restore-held`, on the controller host with the controller paused. It needs
-`blobs/write` only, which the controller's identity has.
+To publish held pages after calibration, restore them with the controller paused (`blobs/write` only):
 
 ```sh
 python3 /root/usnm-archive/archive_history.py restore-held --batch <NNNN> \
@@ -1610,37 +512,4 @@ python3 /root/usnm-archive/archive_history.py restore-held --batch <NNNN> \
 # then the same with --apply --confirm-controller-paused; --page <page> restores one page
 ```
 
-It checks every archived copy against its sha256, and uploads each blob only
-where none is (`If-None-Match: *`), with its archived Content-MD5. The journal
-goes last. It refuses before writing anything if the restored claims or
-journals would pass `MAX_JOBS`; the dry run shows `claims_after`,
-`journals_after` and `fits`, and `--page` restores fewer. A blob already in the
-container counts as restored only when its size and Content-MD5 match, or,
-without an MD5, its bytes match the archived sha256. Once every blob checks out
-that way, it puts back the page's claim, selection and job entries and drops its `archived_held`
-entry. It writes `receipts/restore-held-<time>.json`. A rerun skips pages
-already back. The bridge journal and the workunit row stay archived:
-`collect` reads only the hand-off container. A restored held job has no
-bridge journal and may still have its row, and the controller never submits a
-held job, so neither stops the tick. Then collect the jobs again with the
-hand-off `collect` step and `JOB_IDS`.
-
-### Production acceptance remains separate
-
-Merging code and tests is not a live deployment result. Production still
-requires:
-
-- release-owner approval and reviewed immutable server and bridge images
-  containing `batch-inventory`, without overwriting another release or its
-  image pins;
-- existing private hand-off reachability, identities and native plan and ledger
-  access on the approved controller (no new grants or paid infrastructure);
-- explicitly allocated cached pages, an approved worker pin, compatible
-  attached hosts and the existing calibrated gold trust workflow;
-- one serialized approved push, export, submit and collect run, observed
-  backpressure, telemetry delivery and rerun evidence;
-- operator-controlled scheduling and rollback (disable feeding first; retain
-  collection and recovery state).
-
-Until these are independently authorized and verified, leave the issue open
-for operational acceptance and do not claim a continuous production feed.
+It verifies sha256, uploads with `If-None-Match: *` and the archived Content-MD5 (journal last), refuses if `MAX_JOBS` would be passed (`claims_after`, `journals_after`, `fits`), restores state entries and writes `receipts/restore-held-<time>.json`. Then collect with hand-off `collect` and `JOB_IDS`.
