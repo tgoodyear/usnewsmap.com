@@ -153,6 +153,7 @@ var nameTypes = {
   boincFeedConditionAlert: 'alert'
   boincFeedDcr: 'dcr'
   boincFeedMissingAlert: 'alert'
+  boincHandoffArchiverRole: 'role'
   boincHandoffIdentity: 'id'
   boincHandoffJob: 'caj'
   boincLedgerRole: 'role'
@@ -271,6 +272,7 @@ type Names = {
   boincFeedConditionAlert: string
   boincFeedDcr: string
   boincFeedMissingAlert: string
+  boincHandoffArchiverRole: string
   boincHandoffIdentity: string
   @description('A Container Apps job name is under 32 characters.')
   boincHandoffJob: string
@@ -381,6 +383,7 @@ func names(env string, sfx string, pinned bool) Names => {
   boincFeedConditionAlert: usnmName('boinc-feed-condition', 'alert', env)
   boincFeedDcr: usnmName('boinc-feed', 'dcr', env)
   boincFeedMissingAlert: usnmName('boinc-feed-missing', 'alert', env)
+  boincHandoffArchiverRole: usnmName('boinc-handoff-archiver', 'role', env)
   boincHandoffIdentity: usnmName('boinc-handoff', 'id', env)
   boincHandoffJob: usnmName('boinc-handoff', 'caj', env)
   boincLedgerRole: usnmName('boinc-ledger', 'role', env)

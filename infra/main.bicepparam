@@ -57,6 +57,7 @@ param ocrLocalCopy = bool(readEnvironmentVariable('USNM_OCR_LOCAL_COPY', 'false'
 param boincHandoffRunner = readEnvironmentVariable('USNM_BOINC_HANDOFF_RUNNER', '')
 param boincControllerOnPrem = bool(readEnvironmentVariable('USNM_BOINC_CONTROLLER_ONPREM', 'false'))
 param boincServerOnPrem = bool(readEnvironmentVariable('USNM_BOINC_SERVER_ONPREM', 'false'))
+param boincHeldArchive = bool(readEnvironmentVariable('USNM_BOINC_HELD_ARCHIVE', 'false'))
 param boincHandoffOnPrem = bool(readEnvironmentVariable('USNM_BOINC_HANDOFF_ONPREM', 'false'))
 param scanFetchPublishFetched = bool(readEnvironmentVariable('USNM_SCAN_FETCH_PUBLISH_FETCHED', 'false'))
 param boincOnPremHost = readEnvironmentVariable('USNM_BOINC_ONPREM_HOST', '')

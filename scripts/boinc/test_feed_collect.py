@@ -622,6 +622,79 @@ class ControllerTests(unittest.TestCase):
                         previous = json.loads(json.dumps(previous))
 
 
+class MaintenanceTests(unittest.TestCase):
+    """The held-page archive (#835) pauses the controller daily; its failures are the controller's."""
+
+    ARCHIVE = "usnm-boinc-held-archive.service"
+
+    def observe(self, events=(), native=(), archive=None, **status):
+        properties = {"LoadState": "loaded", "SubState": "dead", "Result": "success",
+                      "ExecMainStartTimestampMonotonic": 100000000,
+                      "ExecMainExitTimestampMonotonic": 120000000}
+        properties.update(status)
+        entries = [{"__REALTIME_TIMESTAMP": str(at * 1000000), **entry} for at, entry in native]
+        entries.extend({"__REALTIME_TIMESTAMP": str(at * 1000000), "MESSAGE": json.dumps(event),
+                        "_SYSTEMD_UNIT": unit} for at, unit, event in events)
+        journal = "\n".join(json.dumps(entry) for entry in
+                            sorted(entries, key=lambda e: int(e["__REALTIME_TIMESTAMP"]))).encode()
+        outputs = [journal, "\n".join(f"{k}={v}" for k, v in properties.items()).encode()]
+        if archive is not None:
+            outputs.append("\n".join(f"{k}={v}" for k, v in archive.items()).encode())
+        with patch.object(C, "run", side_effect=outputs) as run, \
+                patch.object(C.time, "time", return_value=NOW), \
+                patch.object(C.time, "clock_gettime", return_value=5000):
+            tick = C.controller("usnm-boinc-priority-controller.service", (self.ARCHIVE,))
+        return tick, run
+
+    def test_both_journals_are_read_and_an_archive_failure_is_the_controllers(self):
+        tick_line = (NOW - 5, "usnm-boinc-priority-controller.service",
+                     {"event": "boinc_batch_tick", "timings": {"tick_seconds": 3}})
+        failure = {"MESSAGE_ID": "d9b373ed55a64feb8242e02dbe79a49c", "UNIT": self.ARCHIVE,
+                   "UNIT_RESULT": "exit-code", "MESSAGE": "Failed with result 'exit-code'."}
+        tick, run = self.observe([tick_line], native=[(NOW - 60, failure)])
+        argv = run.call_args_list[0].args[0]
+        self.assertEqual([argv[i + 1] for i, a in enumerate(argv) if a == "-u"],
+                         ["usnm-boinc-priority-controller.service", self.ARCHIVE])
+        self.assertEqual((tick["ok"], tick["seconds"], tick["last_failure_at"]), (True, 3, NOW - 60))
+        document, _ = F.evaluate({"tick": tick}, {}, NOW, 1000, "boot", "cfg")
+        self.assertEqual(next(c for c in document["checks"] if c["code"] == "controller_tick")["state"], "firing")
+
+    def test_the_archives_own_lines_are_not_ticks(self):
+        lines = [(NOW - 5, self.ARCHIVE, {"event": "boinc_batch_failure", "error": "not the controller's"}),
+                 (NOW - 4, "usnm-boinc-priority-controller.service",
+                  {"event": "boinc_batch_tick", "timings": {"tick_seconds": 2}})]
+        tick, _ = self.observe(lines)
+        self.assertEqual((tick["ok"], tick["last_failure_at"]), (True, 0))
+
+    def test_an_overdue_tick_is_paused_while_the_archive_runs_and_for_15_minutes_after(self):
+        old = [(NOW - 3600, "usnm-boinc-priority-controller.service",
+                {"event": "boinc_batch_tick", "timings": {"tick_seconds": 2}})]
+        for archive, paused in (
+                ({"LoadState": "loaded", "SubState": "start", "ExecMainStartTimestampMonotonic": 1000000000,
+                  "ExecMainExitTimestampMonotonic": 0}, True),
+                ({"LoadState": "loaded", "SubState": "dead", "ExecMainStartTimestampMonotonic": 1000000000,
+                  "ExecMainExitTimestampMonotonic": 4200000000}, True),
+                ({"LoadState": "loaded", "SubState": "dead", "ExecMainStartTimestampMonotonic": 1000000000,
+                  "ExecMainExitTimestampMonotonic": 4000000000}, False),
+                ({"LoadState": "not-found"}, False)):
+            with self.subTest(archive=archive):
+                if paused:
+                    tick, _ = self.observe(old, archive=archive)
+                    self.assertEqual(tick, {"ok": None, "seconds": 0, "finished_at": NOW, "last_failure_at": 0,
+                                            "paused_by": self.ARCHIVE})
+                    document, _ = F.evaluate({"tick": tick}, {}, NOW, 1000, "boot", "cfg")
+                    self.assertEqual(next(c for c in document["checks"]
+                                          if c["code"] == "controller_tick")["state"], "healthy")
+                else:
+                    with self.assertRaisesRegex(ValueError, "no recent completed controller tick"):
+                        self.observe(old, archive=archive)
+
+    def test_a_maintenance_unit_must_be_another_service(self):
+        for maintenance in (("usnm-boinc-priority-controller.service",), ("bad unit",), ("x.timer",)):
+            with self.subTest(maintenance=maintenance), self.assertRaisesRegex(ValueError, "invalid unit"):
+                C.controller("usnm-boinc-priority-controller.service", maintenance)
+
+
 class CollectionTests(unittest.TestCase):
     def documents(self):
         def doc(source, **fields):

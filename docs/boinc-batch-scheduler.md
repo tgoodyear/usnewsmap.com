@@ -1388,17 +1388,20 @@ Once the process is confirmed gone, the operator breaks it as above.
 
 The `dispatch` apply deletes hand-off blobs, so it needs `blobs/delete` on
 `boinc-handoff`. The controller's own identity (`boincHandoffRunner`, CT 211's
-Arc machine identity) deliberately lacks it: its node writer role there reads
-and writes but doesn't delete (`infra/modules/ocr-exchange.bicep`). Under that
-identity, the apply stops at its first delete with HTTP 403
-`AuthorizationPermissionMismatch`, and the batch is left resumable. Don't widen
-the controller's role. Run the apply under an operator identity that may
-delete. The narrowest built-in role that does is Storage Blob Data Contributor
-assigned at the container's own scope,
-`<account resource ID>/blobServices/default/containers/boinc-handoff`. Azure
-accepts data-plane role assignments at that scope. A broader role an operator
-already holds also works, such as Storage Blob Data Owner on the account's
-resource group, but don't grant one for this.
+Arc machine identity) has it only through the hand-off archiver role
+(`USNM_BOINC_HELD_ARCHIVE`, on in prod since #835's daily archive): a custom
+role with that one data action, assigned on the `boinc-handoff` container and
+nowhere else (`infra/modules/ocr-exchange.bicep`). Its node writer role there
+reads and writes but doesn't delete. With the archiver role, the controller's
+own `az` sign-in runs the apply, and no operator token is needed: the daily
+timer below uses it. Without it, the apply stops at its first delete with HTTP
+403 `AuthorizationPermissionMismatch`, and the batch is left resumable; run the
+apply under an operator identity that may delete instead. The narrowest
+built-in role that does is Storage Blob Data Contributor assigned at the
+container's own scope,
+`<account resource ID>/blobServices/default/containers/boinc-handoff`. A
+broader role an operator already holds also works, such as Storage Blob Data
+Owner on the account's resource group, but don't grant one for this.
 
 The tool takes its token from the first `az` on its `PATH`. It runs:
 
@@ -1555,6 +1558,45 @@ python3 /root/usnm-archive/archive_history.py dispatch --include-held --min-age-
   --state-dir /var/lib/usnm-priority-controller \
   --archive-dir /srv/usnm-archive
 ```
+
+**Daily, on a timer.** While a scope stays held, `usnm-boinc-held-archive.timer`
+on CT 211 runs this every day at 08:30 UTC
+([`held-archive.sh`](../scripts/boinc/onprem/held-archive.sh), with
+`usnm-boinc-held-archive.service` from `scripts/boinc/onprem/`). One run:
+
+1. Stops the controller's timer and waits for a running tick to end. If the
+   timer is already stopped, an operator has paused the controller, and the run
+   does nothing.
+2. Bridges any earlier batch that has a dispatch receipt but no
+   `receipts/bridge.json` (a run that stopped between the two steps).
+3. Runs the `dispatch` apply into `/srv/usnm-archive`, with
+   `--include-held`, `--min-age-hours 1` and `--pages 1000`, under the
+   controller's own identity, at most 10 batches. After each batch it sends the
+   batch's `manifest.json` and `receipts/dispatch.json` over the controller's
+   ssh step command to the BOINC host, where
+   `usnm-boinc-step --target archive --step bridge --var ARCHIVE_BATCH=<NNNN>`
+   puts them in `/srv/usnm-boinc/project/archive/batches/<NNNN>/` and runs that
+   directory's `archive_history.py bridge`, a dry run and then the apply, under
+   the bridge step locks. The bridge receipt comes back and is kept on CT 211
+   as `receipts/bridge.json`. A batch already bridged answers with its receipt
+   and changes nothing.
+4. Starts the controller's timer again, and a tick at once, however the run
+   ended.
+
+No db step (#1587). The run ends with one `boinc_held_archive` JSON line in
+its journal (`journalctl -u usnm-boinc-held-archive`): the batches, pages and
+held pages archived, the journals left, and the state's claims and
+`archived_held` counts. A failure fails the unit. The controller's feed source
+reads this unit too (`--maintenance-unit usnm-boinc-held-archive.service`), so
+the feed-health evaluator reports a failed run as a controller failure
+(`controller_tick`, #1441), and while the archive runs, or for 15 minutes after,
+the paused controller isn't a missing tick. The BOINC host needs the
+`archive_history.py` from the same checkout as CT 211's in
+`/srv/usnm-boinc/project/archive/`: install it again when the tool changes.
+
+A batch of 1,000 pages takes about 15 minutes, and the controller refills
+nothing meanwhile. To pause the archive, `systemctl stop
+usnm-boinc-held-archive.timer`; a run stopped half way resumes on the next one.
 
 To publish held pages once their scope is calibrated, first put them back with
 `restore-held`, on the controller host with the controller paused. It needs
