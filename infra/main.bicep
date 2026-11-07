@@ -511,8 +511,11 @@ var spareEnvOn = spareEnvironment && (!dataEveryNetwork || searcherApp)
   ? bool(int('USNM_SPARE_ENVIRONMENT needs USNM_DATA_ALL_NETWORKS and USNM_SEARCHER_APP=false'))
   : spareEnvironment
 // Without the VNet, the one environment is the spare's (#308).
-var vnetOn = !caeVnet && (!dataEveryNetwork || !empty(archiveAccountId) || (ingestJobs && useAcr && ingestScratchGiB > 0) || (searchClusterOn && searchLocalMode == 'nfs'))
-  ? bool(int('USNM_CAE_VNET=false needs USNM_DATA_ALL_NETWORKS, and no USNM_ARCHIVE_ACCOUNT or NFS scratch, which need the VNet'))
+// The Azure jobs that reach the exchange account (ingest's OCR pickup, the hand-off job) need
+// snet-cae through its deny-by-default firewall, and the lake searcher app can't move
+// environments, so none of them may run without the VNet; their on-prem replacements can.
+var vnetOn = !caeVnet && (!dataEveryNetwork || !empty(archiveAccountId) || (ingestJobs && useAcr) || boincHandoff || searcherApp || (searchClusterOn && searchLocalMode == 'nfs'))
+  ? bool(int('USNM_CAE_VNET=false needs USNM_DATA_ALL_NETWORKS, and no USNM_ARCHIVE_ACCOUNT, Azure ingest jobs, BOINC hand-off job, lake searcher app or NFS scratch, which need the VNet'))
   : caeVnet
 
 module network 'modules/network.bicep' = if (vnetOn) {
