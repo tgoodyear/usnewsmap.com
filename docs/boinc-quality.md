@@ -1,19 +1,12 @@
 # OCR quality on BOINC
 
-The [transcription post-training pilot](notes/2026-10-16-boinc-transcription.md) reuses `usnm_qwen`
-for held-out public-gold inference. Its references stay on the server; central
-training is separate from volunteer work.
+Issues: [#522](https://github.com/tgoodyear/usnewsmap.com/issues/522), [#533](https://github.com/tgoodyear/usnewsmap.com/issues/533), [#559](https://github.com/tgoodyear/usnewsmap.com/issues/559). Two apps estimate, for every page and with no transcription, how accurate and complete each of our texts is and what the scan looks like. `usnm_quality` (CPU) compares the texts; `usnm_qwen` (GPU, with a CPU fallback) adds a vision-language reading of sampled crops as one more reader. Both ship as native executables (no container runtime needed) and as container versions; see [App versions and plan classes](#app-versions-and-plan-classes). The [transcription post-training pilot](notes/2026-10-16-boinc-transcription.md) reuses `usnm_qwen` for held-out public-gold inference. Other apps: [boinc/README.md](../boinc/docs/README.md), [boinc-assessment.md](notes/2026-10-16-boinc-assessment.md), [boinc-surya.md](boinc-surya.md).
 
-Issues: [#522](https://github.com/tgoodyear/usnewsmap.com/issues/522), [#533](https://github.com/tgoodyear/usnewsmap.com/issues/533), [#559](https://github.com/tgoodyear/usnewsmap.com/issues/559). Two apps estimate, for every page and without anyone transcribing it, how accurate and how complete each text we hold of it is, how much a careful reader could recover, and what the scan looks like. `usnm_quality` (CPU) compares the texts; `usnm_qwen` (Apple Silicon Metal and NVIDIA CUDA GPUs, with a multi-thread CPU fallback) adds a vision-language reading of a sample of crops, as one more reader. Both apps support **dual native and container distribution**: native platform executables across Linux (`x86_64-pc-linux-gnu`, `aarch64-unknown-linux-gnu`), macOS (`arm64-apple-darwin`, `x86_64-apple-darwin`) and Windows (`windows_x86_64`) that require no container runtime on volunteer hosts, alongside the container app versions (`docker`, `docker_mt_2b`, `docker_nvidia_cuda_8b`). The other apps are described in [boinc/README.md](../boinc/docs/README.md), [boinc-assessment.md](notes/2026-10-16-boinc-assessment.md) and [boinc-surya.md](boinc-surya.md).
-
-Status: implemented in code and tested locally; new split-payload releases remain UNVERIFIED on the live BOINC server and volunteer hosts. Disk metadata observations below are distinguished from conservative limits and live acceptance.
+Status: implemented and tested locally; new split-payload releases are UNVERIFIED on the live server and volunteer hosts.
 
 ## Repeatable German comparison report (#926)
 
-`boinc/scripts/german-quality-report.py` replaces the external experiment's
-`perpage.py`, `order.py` and reporting part of `crops.py`. It uses the collector's
-existing comparison metrics, not another implementation of normalization or edit
-distance. It needs only Python's standard library and runs offline:
+`boinc/scripts/german-quality-report.py` replaces the external experiment's `perpage.py`, `order.py` and the reporting part of `crops.py`, reusing the collector's metrics. Standard-library Python, offline:
 
 ```bash
 python3 boinc/scripts/german-quality-report.py \
@@ -23,282 +16,150 @@ python3 boinc/scripts/german-quality-report.py \
   --max-crops-per-page 12 --out german-report.json
 ```
 
-Keep the frozen `quality sample` JSONL, with `doc_id` and `lang=deu`, separately
-from the results. For an explicitly labelled retrospective reproduction, a list
-of those fields from the original **input** cohort also works; deriving it from
-successful result rows would hide missing pages. Export the collector's page
-and crop tables to JSONL without changing their field names or values. The
-historical experiment already has these two JSONL exports. `--max-crops-per-page`
-must match the staging plan's `k_crops` upper bound, and every expected OCR reader
-must be named, including `loc` or `loc-hist` for reference character/word counts.
+`--sample` is the frozen `quality sample` JSONL (`doc_id`, `lang=deu`), kept apart from results (a labelled retrospective run may use the original **input** cohort; deriving it from result rows hides missing pages). `--pages` and `--crops` are the collector's tables exported to JSONL unchanged. `--max-crops-per-page` must match the plan's `k_crops`, which is only an upper bound: unused crop capacity is **not missing work**, and unobserved staged crops stay unknown without the staging manifests. Name every expected reader, including `loc` or `loc-hist` for reference counts; use `--crop-reader surya` for a crop-only reader.
 
-The create-only JSON report binds the sample, both exports and reporter source
-by SHA-256. It emits source-qualified page IDs, per-title/year and per-page
-comparisons, whole-page word-bag Dice alongside order-sensitive CER/WER, and
-crop CER/Dice against the reported VLM model. These are **model agreement, not
-human CER or calibrated accuracy**. Crop scores retain the collector's
-normalization; they are not the old `crops.py` script's separately normalized
-scores. Distinct comparator model identifiers with comparable nonempty references
-cannot be pooled; attempted models without usable references remain metadata.
-Different reported sources for one reader have separate `by_source` summaries,
-with null pooled metrics, including different Tesseract profiles hidden behind
-`ours-tesseract`. Full per-page Surya sources contain page-specific job IDs;
-these are retained, not rejected or stripped to invent a shared model
-configuration. Cross-job pooling needs independently verified stable configuration
-identities that these exports do not provide. Source identities
-and known job IDs remain in each reader summary; conflicting page job IDs are
-rejected before joining LoC reference rows. Both job IDs may be absent in older
-exports, but one known and one unknown are not treated as the same job. Identifiers
-such as `qwen3-vl-8b-q4km` are metadata, **not immutable model-file digests**.
+The create-only report binds sample, exports and reporter source by SHA-256 and gives per-title/year and per-page word-bag Dice, CER/WER and crop CER/Dice against the VLM. These are **model agreement, not human CER or calibrated accuracy**, and crop scores keep the collector's normalization, not old `crops.py`'s. Rules:
 
-Absent reader rows have **unknown outcomes**, not inferred failures or timeouts:
-the collector emits no reader rows for failed, timed-out or given-up units.
-Keep an independent unit-outcome inventory to distinguish these from pending work.
-Reported reader-row outcomes, missing metrics, absent VLM references and empty
-readings remain explicit. The collector preserves completed whitespace-only
-readings and exports `vlm_reading_present`; they are not used in scoring or hats.
-Legacy null text without this flag is **ambiguous**, not a known missing reading.
-`k_crops` is only an upper bound: unused crop capacity
-is **not missing work**, and actual unobserved staged crops remain unknown without
-the staging manifests. Crop joins require identical exported rectangles, strata
-and VLM reference metadata. An absent crop does not identify a timeout.
-Native crop rows also export the quality `job_id` and reader `source`.
-Known crop jobs and sources must match the corresponding page metadata.
-Crop-only readers retain their own source and bind to the page's known quality
-job. Missing crop provenance, unknown page jobs, or absent page rows are
-**unverified** and excluded from crop score pools, not silently upgraded using
-another row's metadata. Different crop sources have separate score groups too.
-Means and medians use only successful pages with nonempty, known LoC reference
-counts, or crops with known nonempty normalized VLM references. Page CER/WER
-require normalized reference characters; page Dice requires reference words.
-`loc-hist` self-scores are excluded as ambiguous when a distinct `loc` reader
-is present, rather than mislabelled as comparisons against it.
-Crop CER requires `vlm_reference_chars` and crop Dice `vlm_reference_words`,
-exported by the native collector using its canonical normalization and Dice
-word bags. Older exports without these counts have **unknown denominators**;
-raw non-whitespace text is not proof of a nonempty normalized reference.
-The nullable count columns retain an Int64 Parquet schema even without readings.
-The derived row-cache format is advanced without deleting previous parts.
-Empty/unknown reference exclusions and
-observed/missing metric denominators are separate. Summaries are unweighted. Reader
-`total_ms` is kept as reported, not summed into a fictitious campaign duration.
-Layout and hat-derived accuracy metrics are deliberately omitted.
-Scorer languages retain page/reader attribution and explicitly labelled
-**reader-row** histograms, separately from the sample's declared German cohort:
-a historical `und` score must not be relabelled as a German-configured run.
-Use `--crop-reader surya` for an additional crop-only reader, not `--reader surya`.
-Unselected native Surya crop rows are counted as ignored, not expected page work.
+- Distinct comparator models and distinct sources of one reader (`by_source`) are never pooled; model IDs like `qwen3-vl-8b-q4km` are metadata, **not file digests**.
+- Conflicting page job IDs are rejected; both may be absent in older exports, but one known and one unknown are not the same job. Crop rows must match the page's job, source, rectangles and strata, or they are **unverified** and excluded.
+- Absent reader rows are **unknown outcomes** (failed and timed-out units emit none), so keep a separate unit-outcome inventory. The collector keeps completed whitespace-only readings and exports `vlm_reading_present` (not used in scoring or hats); legacy null text without it is **ambiguous**.
+- Means use only rows with known nonempty reference counts (`vlm_reference_chars`/`vlm_reference_words` for crops, nullable Int64); older exports have **unknown denominators**. Summaries are unweighted; reader `total_ms` is kept as reported, not summed into a campaign duration; `loc-hist` self-scores are dropped when `loc` is present. Layout and hat-derived accuracy metrics are omitted.
+- Languages are reported per reader row; a historical `und` score is not relabelled German.
 
-This extracts reporting, **not `build_units.py` or a completed 100-page
-benchmark**. Continue to use the native `quality sample`, `texts-export`,
-`stage` and `collect` helpers. In particular, do not copy our ALTO to
-`loc.xml` and label it LoC's layout, as the external staging script did.
-Curated LoC text and verified local master staging need an explicitly
-provenanced native path when original LoC ALTO is unavailable.
+This is reporting only, **not `build_units.py` or a finished 100-page benchmark**: stage with the native `quality sample`, `texts-export`, `stage` and `collect`, and never copy our ALTO to `loc.xml` as LoC's layout (the external script did); curated LoC text without original ALTO needs an explicitly provenanced native path.
 
-To close #926, freeze approximately 100 pages across titles, years and layouts,
-including #925's reading-order cases; pin native app, model and llama
-artifacts independently of Docker identities; retain source/input hashes and
-measured wall/CPU/memory costs; then rerun the report and review all missing
-or failed coverage. A 12-page, one-title historical reproduction proves only
-the reporting path. Human-labelled crops remain necessary for accuracy claims.
+To close #926: freeze about 100 pages across titles, years and layouts (with #925's reading-order cases), pin native app, model and llama artifacts independently of Docker identities, keep source and input hashes and measured wall/CPU/memory, rerun and review missing coverage. The 12-page, one-title reproduction proves only the reporting path; accuracy claims need human-labelled crops.
 
 ## What a unit is
 
 ### usnm_quality
 
-One page per workunit. Inputs, in template order: `page.jpg` (the full-size IIIF JPEG), `loc.xml` (LoC's ALTO), `texts.json`, `places.txt` and `quality.json`. `places.txt` is the campaign's, the same physical file for every unit (its name is its checksum: `usnm_quality_places_<sha256>`), marked sticky in the input template so a host downloads it once.
+One page per workunit. The host checks every input's checksum before running, and the unit always writes all three outputs. Floats are rounded to six decimals and the computation is single-threaded over ordered maps, so two hosts' records are identical bytes.
 
-`quality.json` is `usnm_ocr_contract::quality::Job`: `v` (1), `id` (the sha256 of the job's fields), `doc_id`, `language`, `group`, `inputs` (`page`, `alto`, `texts`, `places`, each `{bytes, sha256, source}`), `engine {image}`, `readers` (`[{name, source}]`, in report order), `function_words`, `crop_seed` and `k_crops`. The host checks every input against its checksum before anything runs.
+| File                    | Contents                                                                                                                                                                                                                                                                                                                               |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `page.jpg` (in)         | full-size IIIF JPEG                                                                                                                                                                                                                                                                                                                    |
+| `loc.xml` (in)          | LoC's ALTO; used for features and crops                                                                                                                                                                                                                                                                                                |
+| `texts.json` (in)       | `quality::Texts`: `{"page": {"width", "height"}, "readers": [{"name", "source", "text", "regions": [{"box": [x0, y0, x1, y1], "kind", "legibility"}], "alto": false}]}`; every reader the job names once, same source; every reader's text (LoC's too) comes from here                                                                 |
+| `places.txt` (in)       | the campaign's, one sticky file for all units, `usnm_quality_places_<sha256>`                                                                                                                                                                                                                                                          |
+| `quality.json` (in)     | `usnm_ocr_contract::quality::Job`: `v` (1), `id` (sha256 of the fields), `doc_id`, `language`, `group`, `inputs` (`page`, `alto`, `texts`, `places`, each `{bytes, sha256, source}`), `engine {image}`, `readers` (`[{name, source}]`, report order), `function_words`, `crop_seed`, `k_crops`                                         |
+| `result.json` (out)     | `quality::ResultManifest`, <= 256 KiB: `v`, `job_id`, `engine`, `outcome` (`ok`, `timeout`, `failed`, `unit_error`), `unit_error`, `page {image, layout}`, `readers`, `hat`, `legibility`, `timings {decode_ms, features_ms, text_ms, total_ms, cpu_ms, peak_rss_kib}`, `host`, the other outputs' checksums and sizes, `completed_at` |
+| `confusions.json` (out) | reader name to its top 50 confusion pairs, <= 256 KiB                                                                                                                                                                                                                                                                                  |
+| `diag.txt` (out)        | <= 64 KiB                                                                                                                                                                                                                                                                                                                              |
 
-`texts.json` is `quality::Texts`: `{"page": {"width", "height"}, "readers": [{"name", "source", "text", "regions": [{"box": [x0, y0, x1, y1], "kind", "legibility"}], "alto": false}]}`. Every reader the job names must be in it once with the same source. LoC's text is carried here too, for one code path; LoC's words with boxes come from `loc.xml`.
-
-Outputs, in template order: `result.json` (`quality::ResultManifest`, at most 256 KiB), `confusions.json` (a map from reader name to its top 50 confusion pairs, at most 256 KiB) and `diag.txt` (at most 64 KiB). The unit always writes all three. `result.json` holds `v`, `job_id`, `engine`, `outcome` (`ok`, `timeout`, `failed`, `unit_error`), `unit_error`, `page {image, layout}`, `readers`, `hat`, `legibility`, `timings {decode_ms, features_ms, text_ms, total_ms, cpu_ms, peak_rss_kib}`, `host`, the checksums and sizes of the other two files, and `completed_at`.
-
-Per reader: `name`, `source`, `chars`, `words`, `est_cer` (the hat's estimate, clipped at 0), `est_cer_raw`, `est_cer_low_bound_note`, `completeness`, `precision`, `findable_content`, `findable_places` (with the counts `content_found`, `content_total`, `places_found`, `places_total`), and `pairs`: against every other reader by name, `cer_a` (this reader as the hypothesis), `cer_b`, `cer_sym` (character edits over the mean length), `char_edits`, `chars_a`, `chars_b`, `wer_a`, `wer_b`, `word_edits`, `words_a`, `words_b` and `dice`. Rates that have no denominator (an empty consensus, an empty reader) are null.
-
-Every float in the record is rounded to six decimals; the computation is single-threaded and uses ordered maps throughout, so two hosts' records are the same bytes.
+Per reader in `result.json`: `name`, `source`, `chars`, `words`, `est_cer` (clipped at 0), `est_cer_raw`, `est_cer_low_bound_note`, `completeness`, `precision`, `findable_content`, `findable_places` (`content_found`, `content_total`, `places_found`, `places_total`), and `pairs` against every other reader: `cer_a` (this reader as hypothesis), `cer_b`, `cer_sym` (edits over mean length), `char_edits`, `chars_a`, `chars_b`, `wer_a`, `wer_b`, `word_edits`, `words_a`, `words_b`, `dice`. Rates without a denominator are null.
 
 ### usnm_qwen
 
-One page per workunit. Inputs: `page.jpg` and `qwen.json` (`usnm_ocr_contract::qwen::Job`): `v`, `id`, `doc_id`, `language`, `group`, `input` (the page), `crops` (`[{id, box, stratum, loc_text}]`, at most 64), `engine {image, llama, models: [{name, file, mmproj, min_gpu_mb}], weights}`, `prompt_version` (1 or 2; below), `gpu_timeout_secs`, `cpu_timeout_secs` and `max_tokens_per_1000px2`. The crops are the same ones the quality unit of the page names (the same `crop_seed` and `k_crops`), with LoC's words in each box in visual line order.
+One page per workunit.
 
-Outputs: `readings.json` (`qwen::Readings`: `v`, `job_id`, `outcome`, `device`, `model`, `prompt_version`, `readings: [{id, text, tokens, ms}]`, `diag`), `result.json` (`qwen::ResultManifest`: the outcome, device, model, times, crops read, host, and the checksums of the other two) and `diag.txt`. Outcomes: `ok` (every crop read), `timeout` (the crops read so far are in the readings), `failed`, `no_gpu` (the GPU version ran without a visible GPU) and `unit_error`.
+- `qwen.json` (`usnm_ocr_contract::qwen::Job`): `v`, `id`, `doc_id`, `language`, `group`, `input`, `crops` (`[{id, box, stratum, loc_text}]`, <= 64; the quality unit's crops, LoC's words in visual line order), `engine {image, llama, models: [{name, file, mmproj, min_gpu_mb}], weights}`, `prompt_version`, `gpu_timeout_secs`, `cpu_timeout_secs`, `max_tokens_per_1000px2`. Plus `page.jpg`.
+- `readings.json` (`qwen::Readings`): `v`, `job_id`, `outcome`, `device`, `model`, `prompt_version`, `readings: [{id, text, tokens, ms}]`, `diag`.
+- `result.json` (`qwen::ResultManifest`): outcome, device, model, times, crops read, host, checksums of the other two. Plus `diag.txt`.
+- Outcomes: `ok`, `timeout` (crops read so far kept), `failed`, `no_gpu` (GPU version, no visible GPU), `unit_error`.
 
-`prompt_version` fixes the whole request a reading is made with, so two readings of a job always used the same one. Version 1 sends the prompt with llama.cpp's default image encoding: a crop at its native resolution, one token per 32x32 pixels, about 200-400 tokens for a newspaper crop. Version 2 sends the same prompt and starts `llama-server` with `--image-min-tokens 1024`, the minimum llama.cpp gives for Qwen-VL; the crop is upscaled to it. On the #529 benchmark (39 crops, one GPU, equal token budgets) version 2 took the words of the six image-checked Yiddish crops from 23% to 59%, cut the loops on crops whose 1.14 reading looped from 14 of 14 to 5 of 14, and left the English, Serbian and repeated-print crops as they were. Version 3 is version 1's encoding and version 4 is version 2's, each with the loop guard: Study 5's `stop` rule. The request streams, generation stops when `tail_repetition` fires, checked every eight tokens from the twelfth, and the reading keeps the text before the repeated run plus one period. Closing the connection is what stops llama-server. A reading that repeats at its natural end is cut the same way, so a printed repeat loses its copies too; its generation record keeps the raw text's digest and length and says `repetition_loop_guard_cut`. A stopped reply never reaches its usage event, so its `tokens` is the count of text events, recorded as `loop_guard.stream_deltas` with `completion_tokens_reported` empty. `qwen stage --prompt-version` and `qwen_submit.py --prompt-version` choose the version, default 1. Versions 3 and 4 need app version 1.17, and older versions refuse them. `qwen_submit.py` defers a chunk (exit 75, READY kept) while any dispatchable app version can't read the version asked for, and refuses to add a second version to a root. The feed stages version 3, and version 4 for Yiddish; see [Request versions on the feed](#request-versions-on-the-feed). The refill reads `qwen-nonenglish-v1` unless `CAMPAIGN_ARGS` in its env names other roots: `--campaign NAME:VERSION`, repeated, each root staged at one request version. A named root needs an `audit.json`, which can start as `{}`. A root staged with bundles (`qwen stage --bundle-size` above 1) is bound the same way, one bundle at a time: the bundle unit the producer submitted, its `membership.json`, and each page's staged job, slice of the bundled `page.jpg`, quality record, provenance and sample. A bundle is admitted only if every page's language is, so one page outside the cohort passes the whole bundle over. `--max-admissions` and `--max-inflight-per-host` count units, and a bundle is one unit however many pages it holds. The refill admits Yiddish and Serbian. `--cohort-language LANG` (repeatable) admits another language too. It admits only what the feed staged, so the feed's budget for that language caps it. A unit passed over for its language is bound again once that language is admitted.
+`prompt_version` fixes the whole request:
 
-Under versions 1 and 2, readings are kept as read. `diag.txt` has each crop's generation record (`generation_v1/<crop>`, schema 2, or 3 with a `loop_guard` section under the guard), with `tail_periodic_repetition` when the raw output ends in a run repeated at least three times over at least 30 characters, and `repetition_loop_at_token_budget` when that run also used up the token budget. Printed text can repeat (a shelf of book spines); a model that loops runs out of tokens. The readings' `diag` says `loop_guard` (`stop` or `none`), names the looped crops, cut ones included, in `repetition_loop_crops` (a count if the names do not fit) and, always complete, `repetition_loop_crop_bits` (hex; bit `i % 8` of byte `i / 8` is the job's crop `i`), and the request's `image_min_tokens`.
+| Version | Encoding                                                                                   | Loop guard |
+| ------- | ------------------------------------------------------------------------------------------ | ---------- |
+| 1       | llama.cpp default: native resolution, one token per 32x32 px (about 200-400 tokens a crop) | none       |
+| 2       | `llama-server --image-min-tokens 1024` (Qwen-VL's minimum); crop upscaled to it            | none       |
+| 3       | as 1                                                                                       | `stop`     |
+| 4       | as 2                                                                                       | `stop`     |
+
+On #529 version 2 raised image-checked Yiddish words from 23% to 59% and left English, Serbian and repeated-print crops as they were. The loop guard (Study 5's `stop` rule) streams the request, checks `tail_repetition` every eight tokens from the twelfth, and on a hit closes the connection (which stops llama-server), keeping the text before the repeated run plus one period. Cut readings, including printed repeats at a natural end, record the raw digest and length and `repetition_loop_guard_cut`; `tokens` is then the count of text events (`loop_guard.stream_deltas`, `completion_tokens_reported` empty). Versions 3 and 4 need app version 1.17; older versions refuse them.
+
+`qwen stage --prompt-version` and `qwen_submit.py --prompt-version` choose it (default 1). `qwen_submit.py` defers a chunk (exit 75, READY kept) while any dispatchable app version can't read the version, and refuses a second version in one root. The feed stages 3, and 4 for Yiddish ([Request versions on the feed](#request-versions-on-the-feed)).
+
+The refill reads `qwen-nonenglish-v1` unless `CAMPAIGN_ARGS` in its env names roots as `--campaign NAME:VERSION` (repeatable; each needs an `audit.json`, which can start as `{}`). Bundled roots (`qwen stage --bundle-size` above 1) are bound a bundle at a time (unit, `membership.json`, each page's job, image slice, quality record, provenance, sample) and only if every page's language is admitted. `--max-admissions` and `--max-inflight-per-host` count units. A unit passed over for its language is bound once that language is admitted. Admitted languages: Yiddish and Serbian, plus repeatable `--cohort-language LANG`, capped by the feed's budget.
+
+Under versions 1 and 2 readings are kept as read. `diag.txt` holds each crop's generation record (`generation_v1/<crop>`, schema 2, or 3 with `loop_guard`) with `tail_periodic_repetition` (output ends in a run repeated three or more times over at least 30 characters) and `repetition_loop_at_token_budget` (that run also hit the budget; printed text can repeat, a looping model runs out of tokens). The readings' `diag` gives `loop_guard` (`stop`/`none`), `repetition_loop_crops` (names, or a count if they don't fit), `repetition_loop_crop_bits` (hex, always complete; bit `i % 8` of byte `i / 8` is crop `i`) and `image_min_tokens`.
 
 ## The estimator
 
 Everything is in `crates/usnm-ocr-quality`, a library with no BOINC in it.
 
-- `align`: the edit script between two sequences with a backtrace, in linear space (Hirschberg over the last-row computation, a full table under 2^18 cells), with ties broken in a fixed order. The pairwise metrics normalise both texts as the gold set does (`usnm_ocr_survey::text::normalize`), count character edits with the bit-parallel distance, word edits over whitespace-split words, and word-bag Dice over lower-case alphanumeric tokens.
-- `agreement`: two readers with no third (#962): the pair the hat takes, word-bag cover each way and the length ratio, versioned. `usnm-ingest ocr-agreement` runs it for LoC against American Stories on every page that has both; see [Text agreement](ocr-text-agreement.md).
-- `hat`: `d_ij = e_i + e_j` solved by least squares over the pairs (normal equations, Gaussian elimination with partial pivoting). Three readers with all three pairs give the exact solution `e_A = (d_AB + d_AC - d_BC) / 2` and a zero residual. Estimates are clipped at 0 with the raw value kept; the residual is the root mean square of `d_ij - e_i - e_j`; fewer than three readers, or too few pairs, leaves the system undetermined and every estimate null. The unit solves on whole-page `cer_sym` (hat version 1, in `result.json`); `collect` re-solves the page hat on the passage-matched disagreement (version 2, below) and writes that into `pages.parquet`.
-- `consensus`: readers' texts as tokens (normalised, split on whitespace, leading and trailing punctuation stripped, matched case-folded). Every pair of readers is aligned at word level; matches link occurrences; the connected components with members from at least two readers are the consensus words. Completeness is the share of consensus words a reader has; precision the share of its tokens that are consensus occurrences. A reader's token aligned as a substitution against a consensus word it lacks is kept for the confusion counts.
-- `findability`: content words are tokens with at least four letters that are not in the job's function-word list; place names are `places.txt` tokenised the same way and matched as consecutive token sequences. Each reader's rate is the share of the consensus sequence's distinct content words, and separately its place names, that the reader's tokens contain.
-- `confusion`: the character alignment of each disagreeing word pair, consecutive non-matching steps merged into one pair (`rn` for `m` is one substitution), counted per reader, the top 50 by count.
-- `features`: on a grey copy downscaled by an integer factor to a long side of at most 1,024 px: skew (the angle in -3 to 3 degrees, 0.1 degree steps, at which the ink's horizontal projection profile has the highest variance; positive when lines descend to the right), blur (variance of the 3x3 Laplacian), contrast (95th less 5th percentile of grey), noise (mean absolute 3x3 median residual), bleed-through (share of pixels in the middle third of grey between the ink and background modes), ink density (share below the Otsu threshold). From the ALTO: text blocks, lines, words, median line height, columns (blocks clustered by x-centre with a gap of half the median block width), mean word confidence.
-- `crops`: the gold set's recipe (`scripts/ocr-survey/crops.py`): a line with at least 4 words whose word boxes span at least 600 px; the box is the line's left and top less 15 px, to its right (at most 1,600 px from the left) plus 15 px, down to 6% of the page height below the line's top. Six strata (terciles of the block's mean word confidence by top or bottom half of the page); `k` crops (12 by default) round-robin over the strata, each stratum shuffled by SplitMix64 from the seed.
-- `report`: the record above, its JSON Schema (`report::schema()`), and the rounding.
+- `align`: edit script with backtrace in linear space (Hirschberg; a full table under 2^18 cells), fixed tie order. Texts are normalised as the gold set does (`usnm_ocr_survey::text::normalize`); character edits use the bit-parallel distance, word edits whitespace-split words, word-bag Dice lower-case alphanumeric tokens.
+- `agreement`: two readers with no third (#962): the hat's pair, word-bag cover each way and length ratio, versioned. `usnm-ingest ocr-agreement` runs it for LoC against American Stories ([Text agreement](ocr-text-agreement.md)).
+- `hat`: `d_ij = e_i + e_j` by least squares (normal equations, Gaussian elimination with partial pivoting); with three readers `e_A = (d_AB + d_AC - d_BC) / 2`. Estimates clipped at 0 (raw kept), residual is the RMS of `d_ij - e_i - e_j`, fewer than three readers or too few pairs gives nulls. The unit solves on whole-page `cer_sym` (hat version 1); `collect` re-solves as [version 2](#the-page-hat-version-2-962) and writes that into `pages.parquet`.
+- `consensus`: tokens normalised, whitespace-split, edge punctuation stripped, case-folded; word-level alignment of every reader pair links occurrences, and components spanning at least two readers are consensus words. Completeness: share of consensus words a reader has. Precision: share of its tokens that are consensus occurrences. Substitutions against a missing consensus word feed the confusion counts.
+- `findability`: content words have four or more letters and are not function words; places are `places.txt` tokenised the same way, matched as consecutive sequences. Rate: share of the consensus's distinct content words (and places) the reader contains.
+- `confusion`: per disagreeing word pair, consecutive non-matching alignment steps merged (`rn` for `m` is one), top 50 per reader.
+- `features`: on a grey copy downscaled by an integer factor to <= 1,024 px long side: skew (-3 to 3 degrees in 0.1 steps, maximising projection-profile variance; positive descends right), blur (3x3 Laplacian variance), contrast (95th less 5th percentile), noise (mean absolute 3x3 median residual), bleed-through (share in the middle third of grey between ink and background modes), ink density (share below Otsu). From ALTO: blocks, lines, words, median line height, columns (x-centre clustering with a gap of half the median block width), mean word confidence.
+- `crops`: the gold set's recipe (`scripts/ocr-survey/crops.py`): a line of >= 4 words spanning >= 600 px; box from its left and top less 15 px to its right (<= 1,600 px from the left) plus 15 px, down to 6% of page height below the line's top. Six strata (block word-confidence terciles by top/bottom half); `k` crops (12 by default) round-robin over strata, each shuffled by SplitMix64 from the seed.
+- `report`: the record, its JSON Schema (`report::schema()`), the rounding.
 
-Legibility in the unit is `1 - min est_cer` over the page's readers (`basis: page-hat`). The crop-level estimate with the vision-language reader, and the join with `usnm_qwen`'s readings, is done on the server by `quality collect`, not in the unit: the two apps run on different hosts. UNVERIFIED: how far the page-level and the crop-level estimates agree.
-
-Text from `texts.json` is used as the readers' text for every reader, LoC included; `loc.xml` is used for the features and the crops.
+Unit legibility is `1 - min est_cer` (`basis: page-hat`). The crop-level estimate and the join with `usnm_qwen` readings happen in `quality collect`, since the apps run on different hosts. UNVERIFIED: how far page- and crop-level estimates agree.
 
 ## Dual native and container distribution
 
 ### The `boinc_finish_called` contract for native binaries
 
-Stock BOINC does not accept a plain executable that writes its output files and exits `0`. In `client/app_control.cpp:533-546` (and the Windows branch at `475-480`), a task process that exits `0` without the file `boinc_finish_called` in the slot directory is treated as a premature exit (`handle_premature_exit`), restarted from scratch, and after 100 such exits aborted with `ERR_TOO_MANY_EXITS` ("too many exit(0)s"). Linking `boinc_finish(0)` in `api/boinc_api.cpp:864-872` (`lib/app_ipc.h:240`) writes `boinc_finish_called` containing `0\n`.
+Stock BOINC restarts a task that exits `0` without `boinc_finish_called` in its slot and aborts it after 100 such exits with `ERR_TOO_MANY_EXITS` (`client/app_control.cpp:533-546`). Our Rust binaries (`crates/usnm-quality-app`, the native `usnm_qwen` driver) meet the contract without the C++ API or `samples/wrapper`:
 
-Rather than linking the C++ BOINC API across five targets or adding `samples/wrapper`, our native Rust binaries (`crates/usnm-quality-app` and the native `usnm_qwen` driver) satisfy the slot contract directly:
-
-- Page and control inputs and outputs carry `<copy_file/>`, so the BOINC client places real files in the slot directory (`client/file_names.cpp:47-56`). Native Qwen's sticky GGUF inputs are the deliberate exception: their slot `<soft_link>` aliases resolve to shared project-cache files, not another model copy.
-- During execution, the binary writes `fraction_done` (`0o644`) in the current directory.
-- After flushing all output files (`result.json`, `confusions.json` or `readings.json`, and `diag.txt`) and setting `fraction_done` to `1.000000\n`, the binary atomically writes `boinc_finish_called` containing `0\n` as its final step before exiting `0`.
+- Page and control files carry `<copy_file/>`, so the slot holds real files. Native Qwen's sticky GGUFs are the exception: slot `<soft_link>` aliases to the shared project cache.
+- The binary writes `fraction_done` (`0o644`) while running.
+- After flushing all outputs and setting `fraction_done` to `1.000000\n`, it atomically writes `boinc_finish_called` (`0\n`) and exits `0`.
 
 ### Native `usnm_quality` (`crates/usnm-quality-app`)
 
-`crates/usnm-quality-app` is a dependency-light native binary crate that depends only on `usnm-ocr-quality` and the pure contract types in `usnm-ocr-contract` (without `tokio`, `reqwest`, `arrow`/`parquet`, `rustix`, or `usnm-store`). `.github/workflows/boinc-quality-native.yml` builds it with `--locked` across all five BOINC platforms:
-
-- `x86_64-pc-linux-gnu` (`x86_64-unknown-linux-musl`, static binary with no glibc floor)
-- `aarch64-unknown-linux-gnu` (`aarch64-unknown-linux-musl`, static binary)
-- `arm64-apple-darwin` (`aarch64-apple-darwin`)
-- `x86_64-apple-darwin` (`x86_64-apple-darwin`)
-- `windows_x86_64` (`x86_64-pc-windows-msvc`, `.exe`)
-
-The workflow runs the cross-platform golden determinism test on every target and uploads `usnm_quality_<ver>_<platform>[.exe]` plus `SHA256SUMS`. On container hosts (`x86_64-pc-linux-gnu__docker`), `usnm_quality` also runs inside the standard worker image (`boinc/apps/Containerfile`) under `boinc/apps/job.toml` (1 CPU, 1.5 GiB).
+Depends only on `usnm-ocr-quality` and the contract types in `usnm-ocr-contract` (no `tokio`, `reqwest`, `arrow`/`parquet`, `rustix`, `usnm-store`). `.github/workflows/boinc-quality-native.yml` builds it `--locked` for `x86_64-pc-linux-gnu` (`x86_64-unknown-linux-musl`, static), `aarch64-unknown-linux-gnu` (`aarch64-unknown-linux-musl`, static), `arm64-apple-darwin` (`aarch64-apple-darwin`), `x86_64-apple-darwin` and `windows_x86_64` (`x86_64-pc-windows-msvc`), runs the golden determinism test on each, and uploads `usnm_quality_<ver>_<platform>[.exe]` plus `SHA256SUMS`. On container hosts (`x86_64-pc-linux-gnu__docker`) it runs in the worker image (`boinc/apps/Containerfile`) under `boinc/apps/job.toml` (1 CPU, 1.5 GiB).
 
 ### Native and container `usnm_qwen` (`boinc/apps/qwen/llama.lock` and `<sticky/><no_delete/>` models)
 
-`usnm_qwen` ships in two forms:
-
-1. **Native driver + `boinc/apps/qwen/llama.lock` + `<sticky/><no_delete/>` GGUF models**:
-   - The native driver starts `llama-server` as a child process bound to `127.0.0.1` on an ephemeral port (`--no-webui --ctx-size 4096 --seed 522 --temp 0`, with `--n-gpu-layers 99` on Apple Metal and NVIDIA CUDA and `0` on `mt` CPU), polls `/health`, posts each crop as a PNG data URL to `/v1/chat/completions`, and writes `readings.json`, `result.json`, `diag.txt`, `fraction_done`, and `boinc_finish_called`.
-   - `boinc/apps/qwen/llama.lock` pins the upstream `llama.cpp` release tag (e.g. `b11630`) and the per-platform release archive URLs and SHA-256 digests (`macos-arm64`, `macos-x64`, `win-cuda-12.4-x64`, `ubuntu-x64`, `ubuntu-arm64`), verified before staging and signed as part of the BOINC app version.
-   - Instead of baking multi-gigabyte weights into every native app version update, GGUF model and multimodal projector files (`Qwen3VL-8B-Instruct-Q4_K_M.gguf` 4.68 GiB + `mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf` 0.70 GiB for 8B; `Qwen3-VL-2B-Instruct-Q8_0.gguf` 1.71 GiB + `mmproj-Qwen3-VL-2B-Instruct-Q8_0.gguf` 0.41 GiB for 2B) are staged in the project's `download/` hierarchy as `usnm_qwen_model_<sha256>` alongside Apache-2.0 `LICENSE` and `NOTICE`. Their input templates (`boinc/apps/usnm_qwen_8b_in`, `boinc/apps/usnm_qwen_2b_in`) mark every weight file with **both `<sticky/>` and `<no_delete/>`**:
-     - `<sticky/>` (`client/client_types.cpp:387, 652-668`, `sched/sched_send.cpp:76-118`) instructs the volunteer's BOINC client to retain the downloaded model file across workunits and merge existing file metadata (`cs_scheduler.cpp:878`) so each host downloads its model set only once.
-     - `<no_delete/>` (`sched/file_deleter.cpp:22, 160-171`) instructs the server's `file_deleter` daemon never to unlink the shared model files from `download/` when the first workunit referencing them is assimilated and purged.
-   - Serving sticky models from the Azure server's Container App and Azure Files share incurred Azure internet egress after the first 100 GB/month free tier (~$0.087/GB in North America: ~$0.50 per new 8B volunteer and ~$0.20 per new 2B volunteer). The on-prem server (prod since 21 October 2026) serves them from the host's project tree, outside Azure.
-2. **Container image (`boinc/apps/qwen/Containerfile`, `boinc/apps/qwen/weights.lock`, `boinc/apps/qwen/NOTICE`)**:
-   - Built on `ghcr.io/ggml-org/llama.cpp:server-cuda` at digest `sha256:b0baccbe2e00b5d74e63f85f9f023c93d61d0f329475269e1e7002e87eb875ea` (llama.cpp build 11610, `0.6.0-dev`), with no Python stack. **Separate payloads**: `QWEN_MODEL=2b` (the build default) includes only the 2B Q8_0 model and projector; `QWEN_MODEL=8b` includes only the 8B Q4_K_M model and projector. Both retain the pinned CUDA base (including CPU backends), immutable Hugging Face revisions, SHA-256 checks, full `weights.lock` identity, Apache-2.0 `LICENSE` and `NOTICE`. A full lock identifies the allowed artifacts, not a claim that every model in it is installed. `USNM_QWEN_MODEL` and the image's model label identify the actual payload. CPU execution cannot pick 8B; the 8B image refuses an insufficient or missing GPU instead of silently falling back. Smaller NVIDIA GPUs can use the native 2B class.
-   - `.github/workflows/boinc-qwen.yml` builds and checks both payloads separately; a pull request that changes only the crates or the files they embed outside `boinc/apps/qwen/` builds 2b alone, since 8b shares its `usnm-boinc` build (#1585). Only a manually authorized run on `main` publishes `ghcr.io/tgoodyear/usnm-boinc-worker:qwen-2b-<commit>` and `:qwen-8b-<commit>`. Each gets a **different digest** in the step summary. Releases continue to use anonymous digest-pinned pulls and signed wrapper, Dockerfile and job files; the release preflight now checks anonymous config metadata against the plan class's model, pinned base and weights identity and compressed-size envelope.
+1. **Native driver.** Starts `llama-server` on `127.0.0.1`, ephemeral port (`--no-webui --ctx-size 4096 --seed 42 --temp 0`; `--n-gpu-layers 99` on Metal and CUDA, `0` on `mt`), polls `/health`, posts each crop as a PNG data URL to `/v1/chat/completions`. `boinc/apps/qwen/llama.lock` pins the `llama.cpp` tag (e.g. `b11630`) and per-platform archive URLs and SHA-256s (`macos-arm64`, `macos-x64`, `win-cuda-12.4-x64`, `ubuntu-x64`, `ubuntu-arm64`), verified before staging and signed with the version.
+   - Weights are not in app versions. Model and projector (8B: `Qwen3VL-8B-Instruct-Q4_K_M.gguf` 4.68 GiB + `mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf` 0.70 GiB; 2B: `Qwen3-VL-2B-Instruct-Q8_0.gguf` 1.71 GiB + `mmproj-Qwen3-VL-2B-Instruct-Q8_0.gguf` 0.41 GiB) are staged in `download/` as `usnm_qwen_model_<sha256>` with Apache-2.0 `LICENSE` and `NOTICE`. The templates (`boinc/apps/usnm_qwen_8b_in`, `boinc/apps/usnm_qwen_2b_in`) mark them **`<sticky/>`** (a host downloads them once) and **`<no_delete/>`** (`file_deleter` never unlinks them).
+   - The on-prem server serves them outside Azure, with the four Qwen model files redirected to R2 at `models.usnewsmap.com` ([Qwen model files on R2](boinc-onprem.md#qwen-model-files-on-r2)); from Azure they cost about $0.50 of egress per new 8B volunteer.
+2. **Container image** (`boinc/apps/qwen/Containerfile`, `weights.lock`, `NOTICE`): on `ghcr.io/ggml-org/llama.cpp:server-cuda` at `sha256:b0baccbe2e00b5d74e63f85f9f023c93d61d0f329475269e1e7002e87eb875ea` (build 11610, `0.6.0-dev`), no Python. **Separate payloads**: `QWEN_MODEL=2b` (default) holds only the 2B Q8_0 pair, `QWEN_MODEL=8b` only the 8B Q4_K_M pair; `USNM_QWEN_MODEL` and the image label name the payload (the full `weights.lock` lists what is allowed, not installed). Both keep the pinned CUDA base (with CPU backends), immutable Hugging Face revisions and SHA-256 checks. The 8B image refuses a missing or too-small GPU rather than fall back to CPU; smaller NVIDIA GPUs can use the native 2B class.
+   - `.github/workflows/boinc-qwen.yml` builds and checks both; a PR touching only the crates or their embedded files outside `boinc/apps/qwen/` builds 2b alone, since 8b shares its `usnm-boinc` build (#1585). Only a manually authorized run on `main` publishes `ghcr.io/tgoodyear/usnm-boinc-worker:qwen-2b-<commit>` and `:qwen-8b-<commit>`, each a **different digest**. Releases use anonymous digest-pinned pulls and signed wrapper, Dockerfile and job files; release preflight checks the anonymous config metadata against the plan class's model, base, weights identity and compressed-size envelope.
 
 ## App versions and plan classes
 
-Plan classes are defined in `boinc/project/plan_class_spec.xml`. Not all of them have a
-live version: since 2 November 2026 the live `usnm_qwen` versions are GPU only (`nvidia_vulkan_8b`,
-`nvidia_vulkan_6gb_8b`, `amd_vulkan_8b`, `intel_vulkan_8b` and `apple_gpu_8b`), with no CPU version.
+Plan classes are in `boinc/project/plan_class_spec.xml`. Since 2 November 2026 the live `usnm_qwen` versions are GPU only (`nvidia_vulkan_8b`, `nvidia_vulkan_6gb_8b`, `amd_vulkan_8b`, `intel_vulkan_8b`, `apple_gpu_8b`). "All five" platforms: `x86_64-pc-linux-gnu`, `aarch64-unknown-linux-gnu`, `arm64-apple-darwin`, `x86_64-apple-darwin`, `windows_x86_64`. Every 8B class runs `Q4_K_M`, every 2B class `Q8_0`; GPU classes take 2 host CPUs unless noted.
 
-| App            | Kind        | Plan class              | Platforms                                                                                                         | Runtime / resource requirements                                                                                                                                                                                                                                         |
-| -------------- | ----------- | ----------------------- | ----------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `usnm_quality` | `native`    | _(default CPU)_         | `x86_64-pc-linux-gnu`, `aarch64-unknown-linux-gnu`, `arm64-apple-darwin`, `x86_64-apple-darwin`, `windows_x86_64` | Native binary (`crates/usnm-quality-app`), 1 CPU, writes `boinc_finish_called`                                                                                                                                                                                          |
-| `usnm_quality` | `container` | `docker`                | `x86_64-pc-linux-gnu`, `aarch64-unknown-linux-gnu`, `arm64-apple-darwin`, `x86_64-apple-darwin`, `windows_x86_64` | `boinc/apps/job.toml`: 1 CPU, 1.5 GiB, no swap                                                                                                                                                                                                                          |
-| `usnm_qwen`    | `native`    | `apple_gpu_8b`          | `arm64-apple-darwin`                                                                                              | `<gpu_type>apple</gpu_type>`, Metal support (`min_metal_support` 1), >= 7,000 MB available unified RAM (~8 GiB Mac), 8B `Q4_K_M`                                                                                                                                        |
-| `usnm_qwen`    | `native`    | `nvidia_cuda_8b`        | `x86_64-pc-linux-gnu`, `windows_x86_64`                                                                           | `<gpu_type>nvidia</gpu_type><cuda/>`, CUDA 12+, compute capability >= 5.0, >= 7,000 MB GPU RAM, 2 host CPUs, 8B `Q4_K_M`                                                                                                                                                |
-| `usnm_qwen`    | `native`    | `intel_vulkan_8b`       | `x86_64-pc-linux-gnu`, `windows_x86_64`                                                                           | `<gpu_type>intel</gpu_type><opencl/>`, llama.cpp Vulkan, >= 7,000 MB GPU RAM and 7,000 MiB free Vulkan memory, 8B `Q4_K_M`; integrated GPUs use about 8.6 GB of host RAM ([Intel GPUs](boinc-intel-gpu.md))                                                             |
-| `usnm_qwen`    | `native`    | `nvidia_vulkan_8b`      | `x86_64-pc-linux-gnu`                                                                                             | NVIDIA detection/assignment through BOINC CUDA; execution through the same pinned Vulkan runtime as Intel, >= 7,000 MB GPU RAM and 7,000 MiB free Vulkan memory, 2 host CPUs, 8B `Q4_K_M`                                                                               |
-| `usnm_qwen`    | `native`    | `nvidia_vulkan_6gb_8b`  | `x86_64-pc-linux-gnu`                                                                                             | Closed qualification profile: >= 5,500 MB GPU RAM and 5,120 MiB free Vulkan memory, 24 GPU layers, CPU vision projector, 2 host CPUs; same locked 8B `Q4_K_M`, no CPU-only or smaller-model fallback                                                                    |
-| `usnm_qwen`    | `native`    | `amd_vulkan_8b`         | `x86_64-pc-linux-gnu`, `windows_x86_64`                                                                           | AMD/ATI OpenCL detection/assignment, pinned native Vulkan execution, >= 7,000 MB GPU RAM and 7,000 MiB free, 2 host CPUs, 8B `Q4_K_M`; [automatic eligible-host admission](boinc-amd-gpu.md) after signed publication/promotion, initial hardware use unverified (#885) |
-| `usnm_qwen`    | `native`    | `nvidia_vulkan_2b`      | `x86_64-pc-linux-gnu`                                                                                             | Closed profile for NVIDIA cards too small for 8B (#1234): >= 4,500 MB GPU RAM and 4,096 MiB free Vulkan memory (estimates), BOINC >= 8.2.9, same pinned Vulkan runtime, 2B `Q8_0` and projector fully on the GPU, 2 host CPUs                                           |
-| `usnm_qwen`    | `native`    | `nvidia_cuda_2b`        | `x86_64-pc-linux-gnu`, `windows_x86_64`                                                                           | `<gpu_type>nvidia</gpu_type><cuda/>`, CUDA 12+, compute capability >= 5.0, >= 3,000 MB GPU RAM, 2 host CPUs, 2B `Q8_0`                                                                                                                                                  |
-| `usnm_qwen`    | `native`    | `mt`                    | `x86_64-pc-linux-gnu`, `aarch64-unknown-linux-gnu`, `arm64-apple-darwin`, `x86_64-apple-darwin`, `windows_x86_64` | Multi-thread CPU (`min_ncpus` 4, `max_threads` 8), 2B `Q8_0` fallback                                                                                                                                                                                                   |
-| `usnm_qwen`    | `container` | `docker_mt_2b`          | `x86_64-pc-linux-gnu`                                                                                             | `boinc/apps/qwen/job-cpu.toml`: 2B only, `--cpus` from the thread count (4–8), 6 GiB, no swap                                                                                                                                                                           |
-| `usnm_qwen`    | `container` | `docker_nvidia_cuda_8b` | `x86_64-pc-linux-gnu`                                                                                             | `boinc/apps/qwen/job-gpu.toml`: 8B only, `--gpus all`, 2 CPUs, >= 7,000 MB GPU RAM, compute capability >= 6.0, 6 GiB, no swap                                                                                                                                           |
+| App            | Kind        | Plan class              | Platforms             | Requirements                                                                                                                                                                 |
+| -------------- | ----------- | ----------------------- | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `usnm_quality` | `native`    | _(default CPU)_         | all five              | `crates/usnm-quality-app`, 1 CPU                                                                                                                                             |
+| `usnm_quality` | `container` | `docker`                | all five              | `boinc/apps/job.toml`: 1 CPU, 1.5 GiB, no swap                                                                                                                               |
+| `usnm_qwen`    | `native`    | `apple_gpu_8b`          | `arm64-apple-darwin`  | `<gpu_type>apple</gpu_type>`, `min_metal_support` 1, >= 7,000 MB unified RAM (~8 GiB Mac)                                                                                    |
+| `usnm_qwen`    | `native`    | `nvidia_cuda_8b`        | Linux x86_64, Windows | `<gpu_type>nvidia</gpu_type><cuda/>`, CUDA 12+, compute capability >= 5.0, >= 7,000 MB GPU RAM                                                                               |
+| `usnm_qwen`    | `native`    | `intel_vulkan_8b`       | Linux x86_64, Windows | `<gpu_type>intel</gpu_type><opencl/>`, Vulkan, >= 7,000 MB GPU RAM and 7,000 MiB free; integrated GPUs use about 8.6 GB host RAM ([Intel GPUs](boinc-intel-gpu.md))          |
+| `usnm_qwen`    | `native`    | `nvidia_vulkan_8b`      | Linux x86_64          | BOINC CUDA detection, Intel's pinned Vulkan runtime, >= 7,000 MB GPU RAM and 7,000 MiB free                                                                                  |
+| `usnm_qwen`    | `native`    | `nvidia_vulkan_6gb_8b`  | Linux x86_64          | Closed: >= 5,500 MB GPU RAM and 5,120 MiB free, 24 GPU layers, CPU projector, no fallback                                                                                    |
+| `usnm_qwen`    | `native`    | `amd_vulkan_8b`         | Linux x86_64, Windows | AMD/ATI OpenCL detection, Vulkan, >= 7,000 MB and 7,000 MiB free; [automatic admission](boinc-amd-gpu.md) after signed publication and promotion, hardware unverified (#885) |
+| `usnm_qwen`    | `native`    | `nvidia_vulkan_2b`      | Linux x86_64          | Closed (#1234): >= 4,500 MB GPU RAM and 4,096 MiB free (estimates), BOINC >= 8.2.9, 2B fully on GPU                                                                          |
+| `usnm_qwen`    | `native`    | `nvidia_cuda_2b`        | Linux x86_64, Windows | `<gpu_type>nvidia</gpu_type><cuda/>`, CUDA 12+, compute capability >= 5.0, >= 3,000 MB GPU RAM                                                                               |
+| `usnm_qwen`    | `native`    | `mt`                    | all five              | CPU, `min_ncpus` 4, `max_threads` 8, 2B                                                                                                                                      |
+| `usnm_qwen`    | `container` | `docker_mt_2b`          | Linux x86_64          | `boinc/apps/qwen/job-cpu.toml`: 2B, `--cpus` from the thread count (4–8), 6 GiB, no swap                                                                                     |
+| `usnm_qwen`    | `container` | `docker_nvidia_cuda_8b` | Linux x86_64          | `boinc/apps/qwen/job-gpu.toml`: 8B, `--gpus all`, 2 CPUs, >= 7,000 MB GPU RAM, compute capability >= 6.0, 6 GiB, no swap                                                     |
 
-For an existing NVIDIA-equipped Debian/Ubuntu LXC, Docker is **not** a native-app
-prerequisite. Run `python3 boinc/scripts/setup_nvidia_lxc.py` inside the container
-to inspect the userspace-only package plan, then run
-`sudo python3 boinc/scripts/setup_nvidia_lxc.py --apply` to install it.
-The script reads the loaded **host kernel driver** from `/proc/driver/nvidia/version`
-and requires matching userspace packages down to the patch version. It supports
-Ubuntu's branch-suffixed packages, NVIDIA's unversioned Ubuntu 590+ packages,
-and Debian's separate Vulkan/EGL ICD packages. It installs the Vulkan loader,
-diagnostic tools and runtime libraries, pins the NVIDIA packages to the matching
-version, and verifies `nvidia-smi`, `libcuda.so.1` initialization and a hardware
-NVIDIA Vulkan device **as `boinc`**. The CUDA version printed by `nvidia-smi`
-describes driver compatibility, not an installed toolkit; `nvcc` is not required.
-Use `--boinc-user NAME` only if the service uses a different non-root account.
-For diagnostics without APT changes (including existing NVIDIA `.run`
-installations), use `sudo python3 boinc/scripts/setup_nvidia_lxc.py --check-only`.
-The installer refuses to mix runfile and package-managed NVIDIA installations.
+### NVIDIA userspace in an LXC
 
-Run this in the LXC, **not on Proxmox**. The host operator must already have passed
-the NVIDIA character devices through; the script never installs DKMS/kernel
-drivers, creates devices, changes their permissions, adds a package repository,
-or changes BOINC preferences. If an exact driver package set is unavailable, it
-stops rather than mixing versions or downloading an unverified driver installer.
-Use the container distribution's packages or the
-[official NVIDIA repository](https://docs.nvidia.com/datacenter/tesla/driver-installation-guide/ubuntu.html#network-repository-enablement-amd64),
-not a repository for a different distribution. After a host driver update, rerun
-the script to update `/etc/apt/preferences.d/usnm-nvidia-lxc`. After current work
-has checkpointed, restart `boinc-client` to load the repaired libraries and group
-membership. Passing these checks establishes userspace readiness only: signed
-app publication, client-version admission, model memory limits and successful
-GPU results are separate requirements.
+Native apps need no Docker. Prerequisite: the host operator has already passed the NVIDIA character devices through to an NVIDIA-equipped Debian/Ubuntu LXC. Run inside the LXC, **not on Proxmox**:
 
-The native Intel and NVIDIA Vulkan classes share batch-8 inputs, not the container batch-18
-queue. Publish signed Linux versions with the same locked Vulkan bundle first. To open a
-shared dispatch window, use `boinc/scripts/native-qwen-cohort.php --project PATH
---plan-class shared_8b --workunit FIRST --workunit-end LAST` (preview, then `--apply`).
-The helper requires at most ten contiguous Qwen native-8B workunits, each unaccepted with
-two unsent replicas and quorum two; it closes the other classes in its shared scope and pauses the
-separate NVIDIA container batch-18 queue, without changing its input format or aborting
-already assigned work. This keeps NVIDIA fetching from the same bounded native pool as
-Intel, rather than selecting the older container app version. `--stop --apply`
-closes that shared scope, leaving independent AMD and 6 GB windows alone. This changes
-eligibility only, not distinct-host validation.
-When DB credentials are rendered into a separate tmpfs project, pass `--db-project PATH`
-with its `config.xml` and private `html/inc` copy. The policy and journal stay under
-`--project`; credentials must not be copied to the shared project filesystem.
-Run one-off queue operators with the committed single-replica bridge configuration,
-not replica settings left by a parallel assessment submission.
+```sh
+python3 boinc/scripts/setup_nvidia_lxc.py                 # show the userspace package plan
+sudo python3 boinc/scripts/setup_nvidia_lxc.py --apply    # install it
+sudo python3 boinc/scripts/setup_nvidia_lxc.py --check-only  # diagnose without APT changes (also .run installs)
+```
 
-The **6 GB profile is not generally admitted or hardware-qualified** merely by installing
-this policy. It starts closed and permits BOINC >= 8.2.9 **only for this profile**.
-A [real 8.2.9 native run](https://github.com/tgoodyear/usnewsmap.com/issues/1234#issuecomment-6537940240)
-produced all 12 crop readings with the locked 8B model, 24 GPU layers and a CPU projector:
-3,725 MiB observed peak GPU memory and about 5.32 GiB aggregate process RSS. That offline
-run used a managed 8 GB RTX 2060 SUPER; it does not prove server reporting, independent
-validation, or the remote 6 GB card's compatibility. Other native class floors remain
-8.2.11. Before admission, publish a signed native version with the pinned Vulkan bundle,
-verify the volunteer's CUDA/Vulkan access and measure its successful output. The
-5,120 MiB minimum is a free-memory guard, not a claim that every card or driver works.
+It matches userspace packages to the **host kernel driver** in `/proc/driver/nvidia/version` down to the patch version (Ubuntu's branch-suffixed packages, NVIDIA's unversioned Ubuntu 590+ packages, Debian's separate Vulkan/EGL ICD packages), installs the Vulkan loader, diagnostics and runtime libraries, pins them, and verifies `nvidia-smi`, `libcuda.so.1` and a hardware Vulkan device **as `boinc`** (`--boinc-user NAME` for another non-root account). `nvidia-smi`'s CUDA version is driver compatibility, not an installed toolkit; `nvcc` is not needed.
 
-For a one-workunit qualification, preview `native-qwen-cohort.php --project PATH
---plan-class nvidia_vulkan_6gb_8b --workunit ID --fresh-pair --admit-until UNIX`,
-then apply against the preview's `--expected-policy-sha256`. This requires a pristine,
-ordinary quorum-two pair, enforces distinct-host validation and rechecks it under the
-policy lock. Arrange its independent peer in a reviewed shared window; opening only
-the low-memory class does not guarantee that peer. The deadline prevents late admission,
-not automatic closure: the operator must schedule `--plan-class nvidia_vulkan_6gb_8b
---stop --apply` at the deadline. Shared refills and server restarts preserve this
-independent window, and its stop leaves the other classes untouched. Do not enable
-general admission or change quorum/result state to force a successful qualification.
+It never installs kernel drivers, creates devices or changes their permissions, adds repositories or changes BOINC preferences; it refuses to mix runfile and package installs and stops if no exact package set exists. Use the container distribution's packages or the [official NVIDIA repository](https://docs.nvidia.com/datacenter/tesla/driver-installation-guide/ubuntu.html#network-repository-enablement-amd64), never a repository for another distribution. After a host driver update rerun it (it updates `/etc/apt/preferences.d/usnm-nvidia-lxc`), then restart `boinc-client` at a checkpoint to load the repaired libraries and group membership. Passing proves userspace readiness only; signed app publication, client-version admission, model memory limits and successful GPU results are separate.
 
-The **2B Linux NVIDIA profile** (`nvidia_vulkan_2b`, #1234) is the native route for such
-cards that remains after Surya's retirement. It also starts closed, permits BOINC >= 8.2.9,
-and has its own one-workunit window (`--plan-class nvidia_vulkan_2b --workunit ID`, then
-`--stop`) for batch-2 work from `usnm-boinc qwen submit --target native-2b`. The app puts the
-2B model and projector fully on the GPU and refuses less than 4,096 MiB of free Vulkan
-memory; neither that floor nor the scheduler's 4,500 MB is measured yet. It has no signed
-version until a maintainer releases one
-([app release](../boinc/docs/app-release.md#linux-nvidia-2b-nvidia_vulkan_2b)).
+### Native 8B dispatch windows
 
-The server patch disables app-ID-only version memoization when plan classes have
-workunit restrictions. Otherwise an earlier incompatible/paused batch can cache
-either its payload or a null selection and prevent later eligible native work
-from dispatching. A no-work reply mentioning 15,360 MB can refer to the separate
-training app; it does not change the native 8B classes' 7,000 MB requirement.
-Server startup preserves existing bounded Qwen admission fields, including a
-paused container pool, while refreshing image-owned batch, resource and client
-requirements. Use the cohort operator, not a server restart, to change those windows.
+Native Intel and NVIDIA Vulkan classes share batch-8 inputs; publish signed Linux versions with the same locked Vulkan bundle first. `boinc/scripts/native-qwen-cohort.php --project PATH --plan-class shared_8b --workunit FIRST --workunit-end LAST` (preview, then `--apply`) opens a shared window over at most ten contiguous native-8B workunits, each unaccepted with two unsent replicas and quorum two. It closes other classes in its scope and pauses the NVIDIA container batch-18 queue without changing its input format or aborting assigned work, so NVIDIA fetches from the same bounded native pool as Intel instead of the older container version. `--stop --apply` closes it, leaving AMD and 6 GB windows alone. It changes eligibility only. With DB credentials in a separate tmpfs project, pass `--db-project PATH` with its `config.xml` and private `html/inc` copy; policy and journal stay under `--project`, and credentials never go on the shared filesystem. Run one-off queue operators with the committed single-replica bridge configuration.
 
-`boinc/scripts/install.py` supports both `--kind container` (the default) and `--kind native --binary <FILE>`. `create_work` bounds: `usnm_quality` 1e12 flops estimated, 1e14 bound, 1.5 GiB; `usnm_qwen` 1e13 estimated, 1e16 bound, 6 GiB. UNVERIFIED until the first units return.
+**6 GB profile** (`nvidia_vulkan_6gb_8b`): closed, and the only 8B class allowing BOINC 8.2.9 (others 8.2.11). One [8.2.9 run](https://github.com/tgoodyear/usnewsmap.com/issues/1234#issuecomment-6537940240) read all 12 crops at 3,725 MiB peak GPU memory; a real 6 GB card is unproven. Before admission, publish a signed native version with the pinned Vulkan bundle, verify the volunteer's CUDA/Vulkan access and measure a successful output. Then qualify one workunit: preview `native-qwen-cohort.php --project PATH --plan-class nvidia_vulkan_6gb_8b --workunit ID --fresh-pair --admit-until UNIX` and apply with its `--expected-policy-sha256`. This needs a pristine ordinary quorum-two pair and enforces distinct-host validation, rechecked under the policy lock. Arrange the peer in a reviewed shared window, since opening only the low-memory class does not guarantee one. The deadline does not close the window: schedule `--plan-class nvidia_vulkan_6gb_8b --stop --apply` for it. Shared refills and server restarts keep this window, and its stop leaves other classes alone. Do not enable general admission or alter quorum or result state to force a pass.
 
-Register the apps and platforms on the server (`boinc/scripts/onprem-step.sh --env prod --target bridge --step register-apps --wait-mins 15` on the on-prem host), then release the container or native versions with `boinc/scripts/boinc-app-release.sh` (see [boinc/docs/app-release.md](../boinc/docs/app-release.md)). Prod's server is on-prem, so add `--onprem-host HOST --onprem-ct ID` to each release command below:
+**2B NVIDIA profile** (`nvidia_vulkan_2b`, #1234): closed, BOINC >= 8.2.9, own window (`--plan-class nvidia_vulkan_2b --workunit ID`, then `--stop`) for batch-2 work from `usnm-boinc qwen submit --target native-2b`. No signed version until a maintainer releases one ([app release](../boinc/docs/app-release.md#linux-nvidia-2b-nvidia_vulkan_2b)).
+
+The server patch disables app-ID-only version memoization when plan classes have workunit restrictions, so a paused batch can't block later eligible work. A no-work reply mentioning 15,360 MB can come from the separate training app; the native 8B classes still need 7,000 MB. Server startup keeps existing Qwen admission fields (including a paused container pool) while refreshing image-owned batch, resource and client requirements; change windows with the cohort operator, not a restart.
+
+### Registering and releasing
+
+`boinc/scripts/install.py` takes `--kind container` (default) or `--kind native --binary <FILE>`. `create_work` bounds (UNVERIFIED): `usnm_quality` 1e12 flops estimated, 1e14 bound, 1.5 GiB; `usnm_qwen` 1e13, 1e16, 6 GiB. Register apps and platforms on the on-prem host (`boinc/scripts/onprem-step.sh --env prod --target bridge --step register-apps --wait-mins 15`), then release with `boinc/scripts/boinc-app-release.sh` ([boinc/docs/app-release.md](../boinc/docs/app-release.md)), adding `--onprem-host HOST --onprem-ct ID` for prod:
 
 ```sh
 # Container versions:
@@ -316,11 +177,7 @@ boinc/scripts/boinc-app-release.sh --env prod --app usnm_quality --version 1.1 -
 
 ## Qwen disk admission and cold-cache acceptance (#559)
 
-[`boinc/apps/qwen/disk-policy.json`](../boinc/apps/qwen/disk-policy.json) is the
-versioned policy used by submission, release checks, host preflight and tests.
-**GiB = 1,073,741,824 bytes.** The scheduler always advertises the cold bound,
-even for warm caches; presence of an image or tag is not proof that every shared
-layer is complete. This intentionally over-reserves per concurrent unit.
+[`boinc/apps/qwen/disk-policy.json`](../boinc/apps/qwen/disk-policy.json) is the versioned policy for submission, release checks, host preflight and tests. **GiB = 1,073,741,824 bytes.** The scheduler always advertises the cold bound, since a present image or tag does not prove every shared layer is complete; this deliberately over-reserves per concurrent unit.
 
 | Target (`qwen submit --target`) | Payload                         | Cold `rsc_disk_bound`, bytes (GiB) | Warm incremental disk envelope                |
 | ------------------------------- | ------------------------------- | ---------------------------------- | --------------------------------------------- |
@@ -329,128 +186,58 @@ layer is complete. This intentionally over-reserves per concurrent unit.
 | `native-2b`                     | sticky 2B model + native bundle | 12,884,901,888 (12)                | up to 4 GiB: app bundle slot copy + workspace |
 | `native-8b`                     | sticky 8B model + native bundle | 19,327,352,832 (18)                | up to 4 GiB: app bundle slot copy + workspace |
 
-Warm numbers assume the **exact digest-qualified payload is already resident**,
-are incremental rather than total retained cache, and exclude a further 2 GiB
-free-space reserve. They are not the scheduler admission threshold: warm hosts
-still need the full cold bound free. Multiple retained image or model revisions
-consume additional disk; nothing prunes volunteers' caches.
+Warm figures assume the **exact digest-qualified payload is resident**, are incremental and exclude a 2 GiB free-space reserve; warm hosts still need the cold bound free. Nothing prunes volunteers' caches, so extra retained revisions use more disk.
 
-Read-only metadata retrieved 2026-10-15 (sources in the policy):
+Model bytes (LFS metadata matching `weights.lock`): 2B **2,279,480,352** (model 1,834,427,296 + projector 445,053,056), 8B **5,780,074,528** (5,027,784,800 + 752,289,728); the pinned CUDA base's compressed layers are **2,592,304,104 bytes** (manifest `sha256:cb7f872937c65952258e5670d8c1da7bae7394aef50c1c90a8bb251bde46c32e`). Native and container paths share model bytes, not filesystem overhead. [Measured image sizes](#split-image-disposable-docker-acceptance) are below.
 
-- The pinned CUDA index's Linux/amd64 manifest is
-  `sha256:cb7f872937c65952258e5670d8c1da7bae7394aef50c1c90a8bb251bde46c32e`:
-  its compressed layer descriptors sum to **2,592,304,104 bytes**.
-  This is the base only, not a new worker-image measurement.
-- Pinned Hugging Face LFS metadata, whose SHA-256 OIDs match `weights.lock`:
-  2B model **1,834,427,296** + projector **445,053,056** =
-  **2,279,480,352 bytes**; 8B model **5,027,784,800** + projector
-  **752,289,728** = **5,780,074,528 bytes**. Native and container paths use the
-  same model bytes, not the same filesystem overhead.
-- These observations fetch manifests, configs and LFS metadata only, not layer
-  or model bodies. No local Docker daemon or cache was available; disposable CI
-  measurements are recorded separately below. #559's historical ~27 GiB
-  shared-layer `du` and ~20 GiB filesystem observation lacks exact artifact and
-  node provenance in the issue, so it is **not** treated as a measured size of
-  either new split image.
+Envelopes (conservative, **not measured**): compressed image <= base compressed + selected GGUF bytes + 512 MiB overhead; unpacked <= 8 GiB base + GGUF bytes + 512 MiB. Cold container admission covers compressed storage **plus two unpacked copies** (extraction and copy overlap), 2 GiB workspace and 2 GiB reserve, rounded to 32 and 48 GiB; CI fails rather than publish an image over it. Native cold admission covers one model set, **two copies of a native app bundle bounded at 2 GiB** (cache plus slot; `install.py` rejects larger), 2 GiB workspace and 2 GiB reserve. Native templates soft-link GGUFs from the shared project cache instead of copying them into slots; revisit the bounds if that changes.
 
-Conservative, **not measured**, envelopes: compressed image <= base compressed
-bytes + selected uncompressed GGUF bytes + 512 MiB app and licence overhead;
-unpacked image <= 8 GiB base + selected GGUF bytes + 512 MiB overhead. Cold
-container admission covers compressed storage **plus two unpacked copies**
-(extraction and copy overlap), 2 GiB workspace and 2 GiB reserve, rounded up to
-32 GiB and 48 GiB. CI must fail rather than publish if the actual image exceeds
-these envelopes. Native cold admission covers one shared model set, **two copies
-of a native app bundle bounded at 2 GiB** (project cache plus slot), 2 GiB
-workspace and 2 GiB reserve. `install.py` rejects larger native bundles. The
-native model templates deliberately do **not** copy GGUFs into slots: BOINC
-soft-link files resolve to the shared project model cache. Native bounds must be
-reconsidered if this layout changes.
-
-Before dispatch, stock BOINC's pinned `sched/sched_check.cpp::check_disk`
-rejects `rsc_disk_bound > disk_available`; `sched_send.cpp` subtracts the bound
-for each dispatched unit. Thus the old 2 GiB selection criterion is gone. BOINC
-disk preferences and quota must permit the new bound as well as filesystem free
-space. The managed rootless-Podman preflight checks free disk **before even
-hello-world or a model-image pull**, on BOINC slots, image graph storage and
-extraction scratch. Qwen requires these to share BOINC's filesystem so
-subsequent scheduler reports reflect runtime consumption. The managed profile
-puts graph storage and image-copy scratch under the BOINC data directory; a
-separate mounted store or scratch directory is rejected, not optimistically
-admitted. A cached image does not bypass this check. Startup pull budget is 30
-minutes within a 40-minute service startup budget, not an inference deadline.
-Manual Docker installations must provide equivalent co-location and free-disk
-checks before enabling work; a server cannot inspect a remote Docker store.
+The scheduler rejects `rsc_disk_bound > disk_available` (`sched/sched_check.cpp::check_disk`) and subtracts the bound per dispatched unit; the old 2 GiB selection criterion is gone, and BOINC disk preferences and quota must allow the bound. The managed rootless-Podman preflight checks free disk on slots, image graph storage and extraction scratch **before any pull**, and requires all three on BOINC's filesystem so scheduler reports reflect runtime use: the managed profile puts graph storage and image-copy scratch under the BOINC data directory and rejects a separate mount. A cached image does not bypass the check. Startup pull budget: 30 minutes inside a 40-minute service startup, not an inference deadline. Manual Docker installs need equivalent co-location and free-disk checks before enabling work; the server cannot inspect a remote Docker store.
 
 ### Activation and acceptance (operator authorization required)
 
-1. Build and publish **both** split images via the reviewed manual workflow on
-   `main`; retain the anonymous manifest and config check and signed app release
-   procedure. Release CPU with the 2B digest and `docker_mt_2b`, GPU with the 8B
-   digest and **new** `docker_nvidia_cuda_8b`. Legacy dual-model images and old
-   GPU plan classes are refused by the release script. Do not reuse one digest.
-2. Roll out the server base's updated batch routing, plan-class XML, bridge and
-   templates **before** submitting new units. Batch 12 is the CPU container,
-   batch 18 the GPU container, batch 2 native 2B and batch 8 native 8B. Other
-   apps and legacy work retain batch 1's `docker_mt` or `docker_nvidia_cuda`;
-   those old app versions cannot receive new batch 12 or 18 units. Retire
-   superseded Qwen app versions through the normal reviewed release process; do
-   not reset nodes or rewrite queued workunits. Previously submitted workunits
-   keep their old bounds and must drain or be handled explicitly by the
-   operator.
-3. Stage separate CPU and GPU campaigns using each actual image digest, the
-   pinned base digest and the full lock's weights identity from the build
-   summary. Submit GPU with `--target container-8b` (bridge:
-   `--var QWEN_TARGET=container-8b`); default `container` submits CPU. Native
-   targets retain their model-specific sticky input templates. The workunit
-   engine/identity continues to carry the immutable campaign image digest.
-   Benchmark NOTICE inputs preserve the selected container target's batch and
-   disk bound; native benchmark targets fail explicitly before submission
-   because native NOTICE and model templates are not yet installed.
-4. On a **disposable acceptance runner**, `qwen_cold_cache.py` streams a locally
-   built, cached image into a new isolated Docker daemon, store and network
-   namespace, without pulling, pruning, or changing the existing daemon's
-   bridge. Each model's CI artifact `qwen-disk-2b` or `qwen-disk-8b` records
-   image ID, local gzip archive bytes (not registry compressed bytes), logical
-   unpacked size, graph `du`, filesystem delta and peak, second-load warm
-   increment and load wall time. It asserts bounds and exact GGUF membership. Do
-   not sum shared-layer `du` as unique filesystem usage. The build action checks
-   all three error outputs for both payloads and runs the synthetic 2B CPU
-   reading under the released memory, swap, PID and isolation limits. Native
-   fake-model and loopback tests cover shared aliases and outputs.
-5. Live acceptance still needs authorized publication, signing and rollout plus
-   an eligible >=7 GB NVIDIA host: anonymous cold pull, all three output files,
-   upload and validation, a warm repeat and a deliberately insufficient-disk
-   host rejected before selection or pull. Record the exact digest, platform,
-   runtime and storage driver; the free bytes on each filesystem before, after
-   and at peak; transfer and extraction time; model load time; and inference
-   time, each **separately**. No live reset or deletion, cloud build or
-   deployment, or volunteer mutation is part of this code change.
+1. Build and publish **both** split images with the reviewed manual workflow on `main`, keeping the anonymous manifest and config check and the signed release procedure. Release CPU with the 2B digest and `docker_mt_2b`, GPU with the 8B digest and **new** `docker_nvidia_cuda_8b`; never reuse one digest. The release script refuses legacy dual-model images and old GPU plan classes.
+2. Roll out the server's batch routing, plan-class XML, bridge and templates **before** submitting: batch 12 CPU container, 18 GPU container, 2 native 2B, 8 native 8B. Legacy work keeps batch 1's `docker_mt`/`docker_nvidia_cuda`, which cannot get batch 12 or 18 units. Retire old Qwen versions through the reviewed release process; do not reset nodes or rewrite queued workunits, which keep their old bounds and must drain or be handled explicitly by the operator.
+3. Stage separate CPU and GPU campaigns with each image digest, the base digest and the lock's weights identity from the build summary. GPU submits with `--target container-8b` (bridge `--var QWEN_TARGET=container-8b`); `container` is CPU. Native targets keep their model-specific sticky templates, and the workunit engine identity carries the campaign image digest. Benchmark NOTICE inputs keep the container target's batch and bound; native benchmark targets fail before submission (no native NOTICE/model templates yet).
+4. On a **disposable runner**, `qwen_cold_cache.py` streams a locally built image into a new isolated Docker daemon, store and network namespace, without pulling, pruning or touching the existing daemon. CI artifacts `qwen-disk-2b`/`qwen-disk-8b` record image ID, local gzip bytes (not registry compressed bytes), unpacked size, graph `du`, filesystem delta and peak, warm increment and load time, and assert bounds and exact GGUF membership (do not sum shared-layer `du`). The build also checks all three error outputs and runs the synthetic 2B CPU reading under the released memory, swap, PID and isolation limits. Native fake-model and loopback tests cover shared aliases and outputs.
+5. Live acceptance needs authorized publication and rollout plus an eligible >=7 GB NVIDIA host: anonymous cold pull, all three outputs, upload and validation, a warm repeat, and an insufficient-disk host rejected before selection or pull. Record digest, platform, runtime, storage driver, free bytes per filesystem before/after/peak, and transfer/extraction, model load and inference times **separately**.
 
-Cold image transfer and extraction is shared startup overhead, not model
-inference. The historical ~513-second elapsed acceptance must not calibrate
-per-crop inference or FLOPS. Existing `load_ms`, `engine_ms` and per-crop timing
-semantics are unchanged.
+Cold transfer and extraction are startup overhead; the historical ~513-second acceptance must not calibrate per-crop inference or FLOPS. `load_ms`, `engine_ms` and per-crop timings keep their meaning.
 
 ## Diagnostics
 
-Both runners write `diag.txt` as the Surya worker does: from `init_data.xml` only the client version, app version, plan class, GPU type and device number, CPU count and memory bound (never the account key or host name); the container runtime and whether it is rootless; the cgroup limits and memory. `usnm_qwen` adds the NVIDIA device nodes, variables, driver and `nvidia-smi`'s output, the model chosen and llama-server's lines. `usnm_quality` adds the job's readers and the timings. A unit that cannot run (a checksum that does not match, a missing or different engine build) returns `unit_error` with the reason and no record.
+Both runners write `diag.txt` as the Surya worker does: from `init_data.xml` only client version, app version, plan class, GPU type and device number, CPU count and memory bound (never the account key or host name); container runtime and whether rootless; cgroup limits and memory. `usnm_qwen` adds NVIDIA device nodes, variables, driver, `nvidia-smi` output, the chosen model and llama-server's lines; `usnm_quality` adds the job's readers and timings. A unit that cannot run (checksum mismatch, missing or different engine build) returns `unit_error` with the reason and no record.
 
 ## Redundancy and validation
 
-Both apps: `min_quorum` 2, `target_nresults` 2, at most 4 results. `script_validator` runs:
+Both apps: `min_quorum` 2, `target_nresults` 2, at most 4 results. Daemons are in `boinc/apps/daemons.xml` and `boinc/images/server/lib.sh`, wrappers in `boinc/images/bridge/`. `script_validator` runs:
 
-- `usnm_quality_check` (`usnm-boinc quality check`): shape, sizes, UTF-8, the checksums of `confusions.json` and `diag.txt`, the record's consistency with its outcome. Every result is copied to `<project>/quality/seen/<result>/`.
-- `usnm_quality_compare` (`usnm-boinc quality compare`): the same job and engine, the same outcome, and the canonical records equal: keys sorted, floats to six decimals, without the host, the timings, the time and the diagnostics. Every pair is appended to `<project>/quality/pairs.jsonl` with the verdict and, when they differ, which part differs.
-- `usnm_qwen_check` (`usnm-boinc qwen check`): shape, sizes, the checksums of `readings.json` and `diag.txt`, the readings against the result (count, device, model, outcome). Every checked result, not only the eventual canonical, is retained in `<project>/qwen/seen/<uploaded-result-manifest-name>/` before validation succeeds. New captures commit a complete fsynced directory; `capture-v1.json` binds original upload names, byte counts and SHA-256 hashes, including exact `result.raw.json` serialization and versioned generation sections in `diag.txt`. `readings-metrics-v1.json` records per-reading uncertainty/repetition/token metrics, not accuracy; source-image/damage measurements remain explicitly unavailable until the offline `candidates` join below. Legacy normalized `result.json` files are preserved and completed with the raw manifest and receipt. Replay checks existing evidence rather than overwriting mismatches. Capture/storage conflicts return stock `script_validator` transient exit **3**, deferring validation and cleanup instead of marking a volunteer invalid; malformed science retains its existing non-transient failure behavior. This does not change quorum, agreement thresholds, canonical selection, or deletion policy, and cannot recover original JSON formatting already normalized by an older validator.
-- `usnm_qwen_compare` (`usnm-boinc qwen compare`): the same job and engine, both read the page or neither, and per crop both read or neither and a word-bag Dice of at least the threshold. Until the probe has measured it, the threshold is 0.5 (`PROBE_MIN_DICE`), which only rejects unrelated text. Every pair is appended to `<project>/qwen/pairs.jsonl` with the Dice per crop and both hosts' devices and models. The line's `wordless` lists every crop both hosts read where neither reading has a letter or digit: both word bags are empty, so its Dice is 1.0 whatever the two readings say. Each entry has the crop's `id`, whether the readings are the same once whitespace is collapsed (`identical`), and whether each side looped (`looped`, the loop-guard bit or a repeated run at the end, as `crop-consensus-v2` marks it). It is for measurement only; no verdict reads it ([#1463 note](notes/2026-11-04-qwen-wordless-crops.md)). For a bundle unit, the same rule is also applied to each page on its own (`<doc_id>:` crop prefix), but only when both results ran to the end (`ok`): the pair line gains `pages` (verdict per page), and with `--pages` (`<project>/qwen/pages` in the bridge wrapper) each page's verdict and both hosts' readings of it are written once to `<pages>/<job_id>/<doc_id>/<pair>.json` (`page_agreed` or `page_disagreed`, `accuracy_established: false`). A page whose every crop is blank in both is not agreed. The unit's verdict still needs every page, so a bundle with one disagreeing page stays inconclusive in BOINC while the pages two hosts agreed on are kept; the BOINC database is not changed. `quality collect --qwen-pages` joins the kept pages (#1435).
+- `usnm_quality_check` (`usnm-boinc quality check`): shape, sizes, UTF-8, checksums of `confusions.json` and `diag.txt`, record consistent with outcome. Every result is copied to `<project>/quality/seen/<result>/`.
+- `usnm_quality_compare` (`usnm-boinc quality compare`): same job, engine and outcome, and equal canonical records (keys sorted, floats to six decimals, without host, timings, time and diagnostics). Every pair goes to `<project>/quality/pairs.jsonl` with the verdict and, if different, which part differs.
+- `usnm_qwen_check` (`usnm-boinc qwen check`): shape, sizes, checksums of `readings.json` and `diag.txt`, readings against the result (count, device, model, outcome). Every checked result, not only the canonical one, is kept in `<project>/qwen/seen/<uploaded-result-manifest-name>/` before validation succeeds, as a complete fsynced directory: `capture-v1.json` binds upload names, byte counts and SHA-256s (including exact `result.raw.json` and versioned generation sections in `diag.txt`), and `readings-metrics-v1.json` holds per-reading uncertainty/repetition/token metrics, not accuracy. Legacy normalized `result.json` files are completed with the raw manifest and receipt; replay never overwrites mismatches. Capture/storage conflicts return transient exit **3** (deferred, volunteer not marked invalid); malformed science fails non-transiently. Source-image/damage measurements are unavailable until the offline `candidates` join. Quorum, thresholds, canonical selection and deletion are unchanged, and JSON formatting an older validator already normalized can't be recovered.
+- `usnm_qwen_compare` (`usnm-boinc qwen compare`): same job and engine, both read the page or neither, and per crop both read or neither with word-bag Dice at least the threshold: 0.5 (`PROBE_MIN_DICE`) until the probe measures it, which rejects only unrelated text. Every pair goes to `<project>/qwen/pairs.jsonl` with per-crop Dice and both hosts' devices and models. The line's `wordless` lists crops neither reading has a letter or digit in (Dice 1.0 regardless), with `id`, `identical` (equal once whitespace is collapsed) and `looped` (loop-guard bit or a trailing repeated run, as `crop-consensus-v2` marks it), for measurement only ([#1463 note](notes/2026-11-04-qwen-wordless-crops.md)).
 
-`usnm-boinc qwen compare --rule crop-consensus-v2` applies the crop-by-crop rule. `--rule` defaults to `strict-v1`; the wrapper passes `crop-consensus-v2` only while `<project>/qwen/validator-rule` holds that name (see "Turning the crop rule on and off" below). Per crop, a side that loops makes the crop `looped`, two sides with no letter or digit make it `no_text`, and a crop with text on one side only is `disagree`, and otherwise the crop is `agree` when character similarity (`1 - edits / longer length`, whitespace collapsed and Hebrew points left out for every vendor, the readings unchanged) is at least 0.7, else `disagree`. A pair agrees when no crop disagrees and `agree` crops are more than half of the crops with text and hold at least 100 characters. A page where no crop has text agrees, as it does under the strict rule. Results that did not both finish keep the strict verdict. The pair log gains `rule`, `basis`, `strict_reason` and `crop_states`. The rule needs `--crop-states <dir>`, which keeps each pair's states at `<dir>/<job_id>/<pair>.json` (record version 2: `basis` is `crop-consensus-v2`, or `strict-v1` for a pair that kept the strict verdict, and `readings_sha256` names both results). A record that can't be written leaves the strict verdict in force for that pair, so a result accepted without a record was accepted crop for crop. A pair vouches for its `agree` crops only, and `quality collect --qwen-crop-states <dir>` joins only those (#1434). The measurements are in the [validation note](notes/2026-11-01-qwen-cross-vendor-validation.md) and the [floor check against human transcriptions](notes/2026-11-04-crop-consensus-floor-check.md); `usnm-boinc qwen grounded` reproduces the second.
+### Bundle pages
 
-**Turning the crop rule on and off.** The wrapper reads `<project>/qwen/validator-rule`: `crop-consensus-v2` turns the rule on for the next pair compared, and removing the file (or writing `strict-v1`) turns it off. No daemon restarts. A `usnm-boinc` next to the wrapper's target is used in place of the image's, so a build newer than the server image can validate: install the wrapper and binary together in one directory and point `bin/usnm_qwen_compare` at that wrapper. A server restart relinks `bin/` to the image's wrapper. Order matters: first every Qwen collector runs with `--qwen-crop-states <project>/qwen/crop-states` (`CROP_STATES_ARGS` on `usnm-qwen-results.service`, `QWEN_CROP_STATES` on the bridge's `quality-collect`), then the rule file goes in. A collector without the flag joins every crop of a canonical result, as under the strict rule. Turning the rule off keeps the records: results accepted under it still join only their vouched crops.
+For a bundle unit the rule also runs per page (`<doc_id>:` crop prefix) when both results finished (`ok`): the pair line gains `pages`, and with `--pages` (`<project>/qwen/pages` in the bridge wrapper) each page's verdict and readings go to `<pages>/<job_id>/<doc_id>/<pair>.json` (`page_agreed` or `page_disagreed`, `accuracy_established: false`). An all-blank page is not agreed. The unit still needs every page, so a bundle with one disagreeing page stays inconclusive in BOINC (its database is not changed) while its agreed pages are kept for `quality collect --qwen-pages` (#1435).
 
-**Stopping tie-breakers by language and request version (#1477).** When a Qwen first pair disagrees, the validator raises `target_nresults` and the transitioner sends a tie-breaker, up to `max_total_results` 4. For Yiddish request version 1 a tie-breaker rarely settles the unit (see the [replica cost note](notes/2026-11-04-qwen-replica-cost.md)). `boinc/scripts/qwen-tiebreak-policy.py` stops them for the groups a policy names. The policy is `<project>/qwen/tiebreak-policy.json`, `{"schema": 1, "stop_tiebreakers": [{"language": "yid", "request_version": 1}]}`, or `--stop-tiebreakers yid:1` (repeatable) in its place. With neither, the policy is empty and nothing changes. The language is the unit's language set as `qwen-replica-cost.py` labels it, matched exactly, so `yid` doesn't match a `heb+yid` bundle. A unit in a named group is settled once its first pair has disagreed: it has no canonical result and no error, at least two returns the validator found inconclusive, no replica running, nothing waiting for the validator, and it isn't due for the transitioner. Settling one unit is one transaction under row locks (`SELECT … FOR UPDATE` on the workunit and its results, then a recheck). Its unsent replicas become OVER/DIDNT_NEED, as BOINC's `cancel_job` does. The unit gets `max_total_results` equal to its result count, `error_mask |= 8` (too many total results) and `transition_time` now. The transitioner then marks the inconclusive returns NO_CHECK and hands the unit to the assimilator with no canonical result, as for a unit that reaches its cap. The page keeps its Tesseract readings, and the router reads Yiddish with `yid` as before. A unit with a replica running, or one that can't be locked within 5 s, is left for a later pass. It doesn't apply at `create_work`, so it needs no image change. No new Yiddish v1 units are made, so the backlog is finite, and runs repeated until `plan` reports nothing to settle cover it. Settled units count as error workunits in `qwen_submit.py`'s source status, as capped units do. They also leave the feed's `unresolved_native` count, so the feed can admit that many more pages under `--max-unresolved`. A settled unit can't be reopened: re-reading its page needs a new unit. CI's full-project fixture (`boinc/scripts/db-tls/full.py`) runs it against the server image's BOINC daemons and a MariaDB database. It runs `plan`, then `settle --apply` while another session holds one unit's row lock, then `settle --apply` again. It checks that the locked unit is skipped unchanged and then settled by the second run, that units outside the policy or with a replica running are untouched, and that the real transitioner then marks the settled units' returns NO_CHECK and makes them ready to assimilate. CI's MySQL 8.4 fixture (`boinc/scripts/db-tls/mysql84.py`) loads BOINC's schema into the MySQL release production runs. It runs `settle --apply` while one unit's row is locked, and while a session has run the scheduler's `mark_as_sent` on another unit's unsent tie-breaker and not yet committed. It commits that dispatch while the tool waits for the row. It checks that the tool skips both units, settles the locked one on the next run, and leaves the dispatched one alone. It also checks that `mark_as_sent` then matches no row for a cancelled replica, so a scheduler that still has one in its feeder cache can't send it. That fixture runs no BOINC daemons, so the first production run is still bounded to one unit. The steps are below. Run them as root on the BOINC host, after the server-image roll for #1449 is finished.
+### The crop-consensus rule
 
-1. Count what it would settle. This step is read-only: one `READ ONLY` transaction of `LIMIT`-bounded `SELECT`s over the units created in the window.
+`usnm-boinc qwen compare --rule crop-consensus-v2` judges crop by crop (default `strict-v1`). A crop is `looped` if either side loops, `no_text` if neither side has a letter or digit, `disagree` if only one side has text, else `agree` when character similarity (`1 - edits / longer length`, whitespace collapsed, Hebrew points ignored, readings unchanged) is at least 0.7. A pair agrees when no crop disagrees and `agree` crops are over half of the crops with text and hold at least 100 characters; a page with no text agrees, as under the strict rule. Results that did not both finish keep the strict verdict. The pair log gains `rule`, `basis`, `strict_reason`, `crop_states`. `--crop-states <dir>` (required) keeps each pair's states at `<dir>/<job_id>/<pair>.json` (record version 2, `basis` `crop-consensus-v2` or `strict-v1`, `readings_sha256` naming both results); if the record can't be written the strict verdict stands, so a result accepted without a record was accepted crop for crop. A pair vouches only for its `agree` crops, and `quality collect --qwen-crop-states <dir>` joins only those (#1434). Evidence: [validation note](notes/2026-11-01-qwen-cross-vendor-validation.md), [floor check against human transcriptions](notes/2026-11-04-crop-consensus-floor-check.md) (reproduced by `usnm-boinc qwen grounded`).
+
+**Turning the crop rule on and off.** The wrapper reads `<project>/qwen/validator-rule`: `crop-consensus-v2` turns the rule on for the next pair; removing the file or writing `strict-v1` turns it off, with no restart. A `usnm-boinc` beside the wrapper's target overrides the image's, so a build newer than the server image can validate: install wrapper and binary in one directory and point `bin/usnm_qwen_compare` at it; a server restart relinks `bin/` to the image's wrapper. Order: run every Qwen collector with `--qwen-crop-states <project>/qwen/crop-states` first (`CROP_STATES_ARGS` on `usnm-qwen-results.service`, `QWEN_CROP_STATES` on the bridge's `quality-collect`), then add the rule file; a collector without it joins every crop of a canonical result. Turning the rule off keeps the records, and results accepted under it still join only their vouched crops.
+
+### Stopping tie-breakers by language and request version (#1477)
+
+When a Qwen first pair disagrees, the validator raises `target_nresults` and the transitioner sends a tie-breaker, up to `max_total_results` 4. For Yiddish request version 1 a tie-breaker rarely settles the unit ([replica cost note](notes/2026-11-04-qwen-replica-cost.md), [tie-breaker policy note](notes/2026-11-05-qwen-yiddish-tiebreak-policy.md)), so `boinc/scripts/qwen-tiebreak-policy.py` stops them for named groups: `<project>/qwen/tiebreak-policy.json` (`{"schema": 1, "stop_tiebreakers": [{"language": "yid", "request_version": 1}]}`) or `--stop-tiebreakers yid:1` (repeatable). With neither, nothing changes. The language is the unit's language set as `qwen-replica-cost.py` labels it, matched exactly (`yid` does not match `heb+yid`).
+
+A unit is settled once its first pair has disagreed: no canonical result or error, at least two inconclusive returns, no replica running, nothing waiting for the validator, not due for the transitioner. Settling is one transaction under row locks (`SELECT … FOR UPDATE`, then a recheck): unsent replicas become OVER/DIDNT_NEED (as `cancel_job` does), `max_total_results` = result count, `error_mask |= 8` (too many total results), `transition_time` now. The transitioner then marks the returns NO_CHECK and assimilates with no canonical result, as for a capped unit; the page keeps its Tesseract readings and the router still reads Yiddish with `yid`. Units with a running replica, or not lockable within 5 s, wait for a later pass. No image change is needed. No new Yiddish v1 units are made, so repeat until `plan` reports nothing. Settled units count as error workunits in `qwen_submit.py`'s source status and leave the feed's `unresolved_native` count (freeing room under `--max-unresolved`). A settled unit can't be reopened; re-reading its page needs a new unit.
+
+CI fixtures `boinc/scripts/db-tls/full.py` (server daemons, MariaDB) and `boinc/scripts/db-tls/mysql84.py` (production's MySQL, no daemons) cover row-locked units, running replicas and a concurrent `mark_as_sent`, and check that `mark_as_sent` then matches no row for a cancelled replica, so a stale feeder cache can't send it; with no daemons in the second, the first production run is bounded to one unit.
+
+Run as root on the BOINC host after the #1449 server-image roll:
+
+1. `plan` (read-only: one `READ ONLY` transaction of `LIMIT`-bounded `SELECT`s):
 
    ```sh
    pct exec 230 -- podman exec -i usnm-boinc-server python3 - plan \
@@ -458,8 +245,8 @@ Both apps: `min_quorum` 2, `target_nresults` 2, at most 4 results. `script_valid
      < boinc/scripts/qwen-tiebreak-policy.py
    ```
 
-2. Run `settle` with the same arguments to preview each unit and the replicas it would cancel. `settle` with no `--apply` changes nothing.
-3. Apply it under the project mutex, with a bound on units and an append-only journal. The journal records each unit's state before the change, and every unit settled or skipped. Start with `--max-units 1`. After the transitioner's next pass, check that unit: its inconclusive returns are NO_CHECK (`validate_state` 3) and its `assimilate_state` is 1 or later. Then run it again with a larger bound, for example `--max-units 500`.
+2. `settle` with the same arguments and no `--apply` previews units and replicas to cancel.
+3. Apply under the project mutex with an append-only journal (prior state, every unit settled or skipped), starting with `--max-units 1`. After the transitioner's next pass, check its returns are NO_CHECK (`validate_state` 3) and `assimilate_state` is 1 or later, then raise the bound (for example `--max-units 500`).
 
    ```sh
    pct exec 230 -- flock -x -w 120 /run/usnm-boinc-step.lock podman exec -i usnm-boinc-server python3 - settle \
@@ -468,114 +255,63 @@ Both apps: `min_quorum` 2, `target_nresults` 2, at most 4 results. `script_valid
      < boinc/scripts/qwen-tiebreak-policy.py
    ```
 
-The measurements behind it are in the [tie-breaker policy note](notes/2026-11-05-qwen-yiddish-tiebreak-policy.md).
-
-The daemons are in `boinc/apps/daemons.xml` and `boinc/images/server/lib.sh`; the wrappers in `boinc/images/bridge/`.
-
 ## CLI subcommands
 
 ### usnm-boinc quality
 
-- `sample`: draws the campaign's stratified sample (`sample.jsonl`) from the prefetch manifest (`--manifest`, `--out`, `--pages` default 500, `--min-per-stratum` default 2, `--seed`, optional `--title-languages` JSON mapping LCCN to MARC language codes, optional `--with-as` listing doc ids with American Stories text, optional `--pages-file` restricting the draw to specific doc ids).
-- `function-words`: writes `<out-dir>/<lang>.txt` with the top `N` (default 100) alphabetic words of at least four letters from the embedded wordfreq word list (`usnm_core::lang::wordlist`) for each `--lang` (`--lang` repeatable, `--top`, `--out-dir`).
-- `texts-export`: reads the American Stories page Parquet shards (`curated/american-stories/pages/<lccn>/<year>-<nnn>.parquet`) and the newest published (`curated/ocr-local`) or pending (`--out-url`) overlay for each selected page (`--pages`/`--doc-id` or `--sample`), and writes `<out-dir>/<doc_id>.json` (`texts.json` without LoC's text, which `stage` fills from `loc.xml`) and `<out-dir>/<doc_id>.ours.xml` when our ALTO overlay exists (`--curated-url`, optional `--out-url`, `--out-dir`).
-- `stage`: stages `usnm_quality` units under `<root>/units/<doc_id>/` (or `<root>/pages/<doc_id>/` packed into `<root>/units/bundle-<idx>-<first_doc_id>/` when `--bundle-size > 1`) and `<root>/places.txt`. Takes repeatable `--page group:lang:doc_id:batch[+batch...]` or `--sample` (a `sample.jsonl` from `quality sample`, with `--group` defaulting to `sample`), `--root`, `--engine-image`, `--texts-dir`, optional `--scans-dir`, `--places` (either a line-per-entry `.txt` or the catalog `places.json`, deduplicated into `<root>/places.txt`), `--function-words` or `--function-words-dir`, `--readers` (comma-separated, default `loc,as`), optional `--surya-texts` (`surya collect`'s export: the page's Surya text joins the unit as `ours-surya` when `--readers` names it, #968), `--crop-seed` (default 522), `--k-crops` (default 12), `--gap-secs` (at least 3, default 5), `--max-pages` (default 20), `--bundle-size` (1 to 500 pages per workunit; default `1` on CLI, `300` in `bridge-job.sh` to target ~10–15 minute workunits), optional `--batch-cache`, and optional `--scan-archive`. When `--scans-dir` has `<doc_id>.jpg` and `<doc_id>.xml` from the hand-off container, `stage` reads those local files without touching the network. Otherwise it uses `crates/usnm-boinc/src/scans.rs`: it checks the scan archive first when `--scan-archive` is set (`keep/<batch>/<lccn>/<date>/<edition>/<seq>.jpg`, verified against its stored `sha256`), and falls back to `tile.loc.gov` through the page's batch (`--batch-cache` caches the batch manifest and issue METS on the storage service), paced at one request at a time with at least `--gap-secs` between requests, and inside the host's shared LoC budget when `USNM_LOC_GLOBAL_PACER` names the scan fetcher's state file (20 requests a minute in all, 12 for 24 hours after a push-back). It never calls `www.loc.gov`'s item API. It parses `loc.xml` for the page dimensions and LoC's text, merges `<texts-dir>/<doc_id>.json` (normalizing reader `source` strings and region `"box"`/`"rect"` coordinates, and copying `<doc_id>.ours.xml` when present), and writes `page.jpg`, `loc.xml`, `texts.json`, and `quality.json`.
-- `submit`: hands staged units in `<root>/units/` to `create_work` (`--root`, `--project`, `--max-units` default 100), copying `places.txt` once to `download/usnm_quality_places_<sha256>` and each unit's inputs into the project's download hierarchy with write-ahead `submitting` and `submitted` markers.
-- `local-unit`: writes a unit directory from local files (`--page`, `--alto`, `--texts`, `--places`, `--function-words`, `--dir`, `--engine-image`, `--crop-seed` default 522, `--k-crops` default 12) so `usnm-boinc work --dir <dir>` can run without LoC or BOINC.
-- `check`: `script_validator`'s `--init_script` (`--files <result.json> <confusions.json> <diag.txt>`, optional `--keep <dir>`).
-- `compare`: `script_validator`'s `--compare_script` (`--files <r1...> --files2 <r2...>`, optional `--log <pairs.jsonl>`).
-- `collect`: joins the assimilated canonical results of `usnm_quality` (`--root`, `--spool`), `usnm_qwen` (`--qwen-root`, `--qwen-spool`, and optionally `--qwen-crop-states` and `--qwen-pages`, below) and, optionally, `usnm_surya`'s crop units (`--surya-root`, `--surya-spool`; their texts are the reader `surya` in `crops.parquet`, #968) for `--campaign`. Recomputes the crop-level three-cornered hat per page when a `usnm_qwen` reading is present (`legibility.basis` becomes `crop-hat+qwen`), and writes `pages.parquet`, `crops.parquet`, and `summary.md` either to `--out-dir` or to `--curated-url` under `audit/quality/<campaign>/`.
-  - `--qwen-crop-states`: only the crops an agreeing `crop-consensus-v2` pair vouched for join; the others keep their rows without the reading and `crops.parquet`'s `vlm_crop_state` says why: `strict-v1`, `agree`, `looped`, `no_text` or `unjudged`. The records are part of the row-cache keys.
-  - `--qwen-pages` (#1435): the `compare --pages` directory, `/project/usnmocr/qwen/pages`. A bundle with no canonical result joins each page `page-ledger` calls `accepted`, with `vlm_crop_state` `page-strict-v1`. The reading is from the page's first agreeing record (by file name), on the side whose result name sorts first (the two names must differ), and that side must have run to the end and name its device. The bundle's other pages keep their rows without a reading. A canonical result, once there is one, is joined instead. The flag changes only bundles' row-cache keys, through their membership, page units and records, so a root of single pages needn't warm again.
-- `rehat`: recomputes the page hat, version 1 and version 2, from a staging root's texts (`--root`, `--out` JSON lines, `--min-readers` 3, `--threads`), with no results or scans, to compare the two versions on a campaign whose units are still staged.
-- `rescore`: computes the text part of single-page units again from corrected LoC texts, with no new volunteer work (#1079). Takes `--campaign`, `--root` (the staging root), `--spool` (the canonical results), `--loc-texts` (JSON lines `{"doc_id", "text"}`, LoC's curated text, which replaces the `loc-hist` reader's), `--places`, `--out-dir` (new, outside the root) and `--threads`. The text part is everything in a unit's result except the scan's features: it is `slot::text_analysis`, the function the unit itself runs with no image and no ALTO, so a rescored page gets the numbers a unit would give it. The result's image and layout features are kept. Writes the re-staged units (`<out-dir>/units/<doc_id>/{quality.json, texts.json}`, which `rehat` reads) and `pages.parquet` and `summary.md` as `collect` writes them, with hat version 2. Bundles, units with no result, and pages with no LoC text are counted and skipped.
+- `sample`: stratified `sample.jsonl` from the prefetch manifest (`--manifest`, `--out`, `--pages` 500, `--min-per-stratum` 2, `--seed`, optional `--title-languages` JSON of LCCN to MARC codes, `--with-as` doc ids with American Stories text, `--pages-file` restricting the draw to listed doc ids).
+- `function-words`: `<out-dir>/<lang>.txt`, the top `N` (100) alphabetic words of four or more letters from the embedded wordfreq list (`usnm_core::lang::wordlist`) per repeatable `--lang` (`--top`, `--out-dir`).
+- `texts-export`: reads American Stories Parquet (`curated/american-stories/pages/<lccn>/<year>-<nnn>.parquet`) and the newest published (`curated/ocr-local`) or pending (`--out-url`) overlay per page (`--pages`/`--doc-id` or `--sample`), writing `<out-dir>/<doc_id>.json` (`texts.json` minus LoC's text, which `stage` fills from `loc.xml`) and `<out-dir>/<doc_id>.ours.xml` when our ALTO exists (`--curated-url`, `--out-url`, `--out-dir`).
+- `stage`: units under `<root>/units/<doc_id>/` (or `<root>/pages/<doc_id>/` packed into `<root>/units/bundle-<idx>-<first_doc_id>/` when `--bundle-size > 1`) plus `<root>/places.txt`. Flags: repeatable `--page group:lang:doc_id:batch[+batch...]` or `--sample` (`--group` default `sample`), `--root`, `--engine-image`, `--texts-dir`, `--scans-dir`, `--places` (`.txt` or catalog `places.json`, deduplicated), `--function-words` or `--function-words-dir`, `--readers` (`loc,as`), `--surya-texts` (`surya collect` export, joins as `ours-surya` when named, #968), `--crop-seed` 522, `--k-crops` 12, `--gap-secs` (min 3, default 5), `--max-pages` 20, `--bundle-size` (1 to 500; `1` on CLI, `300` in `bridge-job.sh` for ~10–15 minute workunits), `--batch-cache`, `--scan-archive`. Scans: `<doc_id>.jpg`/`.xml` in `--scans-dir` with no network; else `crates/usnm-boinc/src/scans.rs` tries the scan archive when `--scan-archive` is set (`keep/<batch>/<lccn>/<date>/<edition>/<seq>.jpg`, checked against its `sha256`) and then `tile.loc.gov` through the page's batch (`--batch-cache` caches batch manifest and issue METS on the storage service), one request at a time `--gap-secs` apart, inside the host pacer when `USNM_LOC_GLOBAL_PACER` names the scan fetcher's state file ([LoC budgets](#ocrs-prefetch-manifests-1055)). Never `www.loc.gov`'s item API. It parses `loc.xml` for page dimensions and LoC's text, merges `<texts-dir>/<doc_id>.json` (normalizing reader `source` and region `"box"`/`"rect"`, copying `.ours.xml`) and writes `page.jpg`, `loc.xml`, `texts.json`, `quality.json`.
+- `submit`: `<root>/units/` to `create_work` (`--root`, `--project`, `--max-units` 100), copying `places.txt` once to `download/usnm_quality_places_<sha256>` and each unit's inputs into the download hierarchy, with write-ahead `submitting`/`submitted` markers.
+- `local-unit`: a unit from local files (`--page`, `--alto`, `--texts`, `--places`, `--function-words`, `--dir`, `--engine-image`, `--crop-seed` 522, `--k-crops` 12) for `usnm-boinc work --dir <dir>`.
+- `check`: `--init_script` (`--files <result.json> <confusions.json> <diag.txt>`, optional `--keep <dir>`).
+- `compare`: `--compare_script` (`--files <r1...> --files2 <r2...>`, optional `--log <pairs.jsonl>`).
+- `collect`: joins canonical `usnm_quality` (`--root`, `--spool`), `usnm_qwen` (`--qwen-root`, `--qwen-spool`, `--qwen-crop-states`, `--qwen-pages`) and optional `usnm_surya` crop results (`--surya-root`, `--surya-spool`; reader `surya`, #968) for `--campaign`. With a Qwen reading it recomputes the crop-level hat (`legibility.basis` `crop-hat+qwen`). Writes `pages.parquet`, `crops.parquet`, `summary.md` to `--out-dir` or `--curated-url` under `audit/quality/<campaign>/`.
+  - `--qwen-crop-states`: only vouched crops join; others keep rows without the reading, with `vlm_crop_state` `strict-v1`, `agree`, `looped`, `no_text` or `unjudged`. Records are part of the row-cache keys.
+  - `--qwen-pages` (#1435, `/project/usnmocr/qwen/pages`): a bundle with no canonical result joins each page `page-ledger` calls `accepted` (`vlm_crop_state` `page-strict-v1`), using the first agreeing record by file name and the side whose result name sorts first, which must have finished and name its device (the two names must differ). The bundle's other pages keep rows without a reading. A canonical result, once present, wins. Only bundles' cache keys change.
+- `rehat`: recomputes page hat versions 1 and 2 from a staging root's texts (`--root`, `--out` JSON lines, `--min-readers` 3, `--threads`) with no results or scans, to compare the versions on a still-staged campaign.
+- `rescore` (#1079): reruns the text part of single-page units (`slot::text_analysis`, what the unit runs minus image and ALTO) from corrected LoC texts, no volunteer work. Flags: `--campaign`, `--root` (staging root), `--spool` (canonical results), `--loc-texts` (JSON lines `{"doc_id", "text"}` replacing `loc-hist`), `--places`, `--out-dir` (new, outside the root), `--threads`. Keeps image/layout features; writes `<out-dir>/units/<doc_id>/{quality.json, texts.json}` (which `rehat` reads) plus `pages.parquet` and `summary.md` with hat version 2. Bundles, units without results and pages without LoC text are counted and skipped.
+- `calibrate`: see [Calibration](#calibration).
+- `estimate`: offline over a page directory (`--dir`, `--out`, `--places`, `--function-words`, `--crop-seed` 522, `--k-crops` 12, repeatable `--reader NAME=PATTERN` for `<dir>/sample/{images,alto,loctext}`); with `readings.json` it verifies the originating `qwen.json` (or `readings/<page>.qwen.json`) and joins its crops. Writes per-page `result.json`, `confusions.json`, `crops.jsonl` and aggregate `pages.jsonl`, `crops.jsonl`.
+- `summary`: reads `<root>/units/`, `--seen` (`<project>/quality/seen`) and `--pairs` (`<project>/quality/pairs.jsonl`) and prints a Markdown table.
 
-`stage` refuses an exported `loc` or `loc-hist` text that is one of ocr-local's reason labels (`bulk`, `user`, `priority`, `missing`, `empty`, `short`, `garbled`, `mixed`): it stops at the page and writes `HOLD`. Merged `ocr-local/pages` schema v2 names the queue reason `ocr_reason`; `loc_text` and `reason` are deprecated, equal compatibility aliases, never LoC's text. Readers validate the schema version and reject conflicting labels, including on historical parts. Node exchange and Japanese schemas are unchanged. Export LoC's text from the original curated LoC page's `text`, never from a reason column. v1-wave6's hand-off texts were built outside the repo from that legacy column, so all 10,000 of its pages were staged with `loc-hist` as `bulk`. #1079 has the repair.
+`stage` stops with `HOLD` on an exported `loc` or `loc-hist` text equal to an ocr-local reason label (`bulk`, `user`, `priority`, `missing`, `empty`, `short`, `garbled`, `mixed`). Merged `ocr-local/pages` schema v2 calls the queue reason `ocr_reason`; `loc_text` and `reason` are deprecated aliases, never LoC's text, and readers validate the schema version and reject conflicting labels, historical parts included; node exchange and Japanese schemas are unchanged. Export LoC's text from the curated LoC page's `text`. v1-wave6's 10,000 pages were staged with `loc-hist` as `bulk` from the legacy column; #1079 has the repair.
 
 ### The page hat, version 2 (#962)
 
-The whole-page `cer_sym` between two readers counts reading order and text one reader lacks as edits. LoC's text is in ALTO block order, American Stories' in article order and Tesseract's in its own segmentation order, so on real pages most of the whole-page distance is order and coverage, and the version 1 hat charges it to the readers. Version 2 (`usnm_ocr_quality::page_hat`, `VERSION` 2) solves the same `d_ij = e_i + e_j` on `local_cer_sym` from [agreement v1](ocr-text-agreement.md) for every pair of readers: edits over the characters the local alignment placed, whatever the order. A pair falls back to the whole-page `cer_sym` (basis `page`) when nothing placed or neither reader has half its characters placed in the other (`MIN_MATCHED` 0.5): garbage on one side or different text. What placed is coverage, not error: each reader's `matched` is the mean share of its characters placed in the other readers' texts.
+Whole-page `cer_sym` counts reading order and missing text as edits, and LoC (ALTO block order), American Stories (article order) and Tesseract (its own segmentation) differ mostly in order and coverage. Version 2 (`usnm_ocr_quality::page_hat`, `VERSION` 2) solves the same `d_ij = e_i + e_j` on `local_cer_sym` from [agreement v1](ocr-text-agreement.md): edits over the characters the local alignment placed, in any order. A pair falls back to whole-page `cer_sym` (basis `page`) when nothing placed or neither reader has half its characters placed in the other (`MIN_MATCHED` 0.5). Each reader's `matched` is the mean share of its characters placed in the others' texts (coverage, not error).
 
-The unit and its record don't change, so no app version is needed: `collect` reads each unit's `texts.json` (with LoC's ALTO text for an empty LoC text, as the unit does, through `slot::reader_inputs`) and solves version 2. In `pages.parquet`, `hat_version` says which hat `est_cer`, `est_cer_raw`, `hat_determined`, `hat_residual` and `legibility_ceiling` are; the unit's own values stay in `est_cer_v1`, `est_cer_raw_v1`, `hat_determined_v1`, `hat_residual_v1` and `legibility_ceiling_v1`; `matched` and `hat_pairs_json` (per pair: `a`, `b`, `basis`, `d`, `cer_sym`, `local_cer_sym`, `matched_a`, `matched_b`) are new. A table without `hat_version` is version 1. A page keeps version 1 (`hat_version` 1, counted in `collect`'s `hat_v1_kept`) when its `texts.json` can't be read, or when its LoC text is empty or `none` and the staged `loc.xml` is missing, empty or doesn't parse, since the texts the unit read can't be rebuilt then; `rehat` skips and counts those pages (`no_alto`). The `usnm_quality` database keeps the same split ([scripts/onprem/quality/README.md](../scripts/onprem/quality/README.md)): `unit_pages` carries `hat_version` (1 for rows loaded before version 2), the page's `_v1` values and `hat_pairs`, `reader_scores` each reader's `est_cer_v1`, `est_cer_raw_v1` and `matched`, and `page_summary` adds `hat_version`. `build-quality-assessment-db.py` reports one version: the newest present. Rows of an older version keep their unit's estimate in `est_cer_v1` and have their hat columns cleared, so no mean blends the two; `page_quality_joined` carries `hat_version`. The crop-level hat stays on `cer_sym`: in a crop box every reader with boxes is in line order.
+No app version is needed: `collect` rebuilds the unit's inputs from `texts.json` (`slot::reader_inputs`, LoC's ALTO text for an empty LoC text) and solves version 2. In `pages.parquet`, `hat_version` says which hat `est_cer`, `est_cer_raw`, `hat_determined`, `hat_residual` and `legibility_ceiling` hold; the unit's values are in the `_v1` columns; `matched` and `hat_pairs_json` (per pair `a`, `b`, `basis`, `d`, `cer_sym`, `local_cer_sym`, `matched_a`, `matched_b`) are new. No `hat_version` column means version 1. A page keeps version 1 (counted as `hat_v1_kept`; `rehat` counts `no_alto`) when `texts.json` is unreadable, or its LoC text is empty or `none` and `loc.xml` is missing, empty or unparseable.
 
-- `calibrate`: runs the estimator on gold crops with human transcriptions (`--crops <crops.jsonl>`, repeatable `--hyp ENGINE=FILE.jsonl`, optional `--readings <readings.jsonl>`, `--out <dir>`) and writes `calibration.csv`, `calibration.md`, and `by-crop.csv`.
-- `estimate`: runs the quality computation offline over a directory of pages (`--dir`, `--out`, `--places`, `--function-words`, `--crop-seed` default 522, `--k-crops` default 12, repeatable `--reader NAME=PATTERN` for the OCR survey layout `<dir>/sample/{images,alto,loctext}`), verifying the originating `qwen.json` (or `readings/<page>.qwen.json`) and joining on its recorded crops when `readings.json` is present, and writing per-page `result.json`, `confusions.json`, and `crops.jsonl` plus aggregate `pages.jsonl` and `crops.jsonl`.
-- `summary`: reads `<root>/units/`, `<project>/quality/seen` (`--seen`), and `<project>/quality/pairs.jsonl` (`--pairs`) and prints a Markdown summary table of kept results and compared pairs.
+The `usnm_quality` database ([scripts/onprem/quality/README.md](../scripts/onprem/quality/README.md)) keeps the same split: `unit_pages` (`hat_version`, 1 for older rows, `_v1` values, `hat_pairs`), `reader_scores` (`est_cer_v1`, `est_cer_raw_v1`, `matched`), `page_summary` and `page_quality_joined` (`hat_version`). `build-quality-assessment-db.py` reports only the newest version present; older rows keep the unit's estimate in `est_cer_v1` with hat columns cleared, so no mean blends versions. The crop-level hat stays on `cer_sym`, since a crop box is in line order for every reader.
 
 ### usnm-boinc qwen
 
-- `stage`: reads staged `usnm_quality` units from `--quality-root` (`--root`, `--engine-image`, `--engine-llama`, `--engine-weights`, `--gpu-timeout-secs` default 14400, `--cpu-timeout-secs` default 7200, `--max-tokens-per-1000px2` default 4, `--max-pages` default 20, `--bundle-size` default 1 on CLI and `16` in `bridge-job.sh`, at most 32 pages and 256 crops per bundle), cuts the same deterministic crops from each unit's `page.jpg` and `loc.xml` (`crop_seed` and `k_crops` from `quality.json`) without contacting LoC again, and writes `<root>/units/<doc_id>/{page.jpg, qwen.json}` (or `<root>/pages/<doc_id>/` packed into `<root>/units/bundle-<idx>-<first_doc_id>/` when `--bundle-size > 1`). A bundle unit also gets `membership.json`, written before its `qwen.json` and never changed: for each page, in order, the page unit it came from, that unit's job id and `qwen.json` sha256, the page sha256 and its slice of the bundled `page.jpg`. A bundling run holds `<root>/.bundle-lock` from staging pages to publishing its last bundle and claims each bundle directory, so a concurrent run fails rather than rewriting a page unit or bundling the same pages twice. A bundle's deadlines are each page's deadline times its pages, at most 14,400 s, and `submit` scales `rsc_fpops_est`/`rsc_fpops_bound` by its pages (`1e13`/`1e16` a page). `stage` closes a bundle before its `qwen.json` would pass 512 KiB, the limit submit and the workers read it with, or before its longest possible `readings.json` would pass 2 MiB, the output upload limit (every crop read at 8 KiB of text that all escapes to two bytes, about 16 KiB a crop). That holds a bundle to about 125 crops: 10 pages at 12 crops a page. A page whose `qwen.json`, alone or as a one-page bundle, would pass 512 KiB gets a `too_large` marker and is not published. Its job is kept beside the marker as evidence, which the feed reads as the page's disposition: as `rejected-qwen.json` when the page's own `qwen.json` is too large, and as the page unit's `qwen.json` under `pages/` when only its one-page bundle is. Pages staged with different engine, deadline or token settings go in separate bundles. A root staged with `--bundle-size` above 1 refuses `--bundle-size 1`, which would stage its pages again as single-page units. The container worker and `usnm-qwen-app` check every bundle page before the model loads, then decode one page at a time, so a bundle needs the memory of its largest page, not of all its pages.
+- `stage`: cuts the same crops from each staged `usnm_quality` unit in `--quality-root` (its `page.jpg`, `loc.xml`, `crop_seed`, `k_crops`) with no LoC request, writing `<root>/units/<doc_id>/{page.jpg, qwen.json}`, or `<root>/pages/<doc_id>/` packed into `<root>/units/bundle-<idx>-<first_doc_id>/` when `--bundle-size > 1`. Flags: `--root`, `--engine-image`, `--engine-llama`, `--engine-weights`, `--gpu-timeout-secs` (14400), `--cpu-timeout-secs` (7200), `--max-tokens-per-1000px2` (4), `--max-pages` (20), `--bundle-size` (1 on CLI, `16` in `bridge-job.sh`; at most 32 pages and 256 crops). Bundles:
+  - `membership.json`, written before `qwen.json` and never changed, lists per page its page unit, job id, `qwen.json` sha256, page sha256 and slice of the bundled `page.jpg`.
+  - A run holds `<root>/.bundle-lock` from staging to its last bundle and claims each bundle directory, so a concurrent run fails.
+  - Deadlines are per-page deadline times pages, at most 14,400 s; `submit` scales `rsc_fpops_est`/`rsc_fpops_bound` by pages (`1e13`/`1e16` a page).
+  - A bundle closes before `qwen.json` would pass 512 KiB (the read limit) or the longest possible `readings.json` would pass 2 MiB (the upload limit, at about 16 KiB a crop), so about 125 crops: 10 pages of 12.
+  - A page too large alone gets a `too_large` marker and is not published; its job stays beside the marker as its disposition (`rejected-qwen.json` if its own `qwen.json` is too large, the page unit's `qwen.json` under `pages/` if only its one-page bundle is).
+  - Different engine, deadline or token settings go in separate bundles. A bundled root refuses `--bundle-size 1`.
+  - Workers check every page before loading the model, then decode one page at a time, so a bundle needs only its largest page's memory.
+- `submit`: hands `<root>/units/` to `create_work` (`--root`, `--project`, `--max-units` default 20) with write-ahead `submitting`/`submitted` markers.
+- `local-unit`: a unit from `--image` and `--alto` (or `--synthetic`, a built-in two-line block-capitals page) into `--dir` (`--engine-image`, `--engine-llama` default `USNM_QWEN_LLAMA_IMAGE`, `--engine-weights` default `USNM_QWEN_WEIGHTS`, `--crop-seed` 522, `--k-crops` 12, `--timeout-secs` 1800, `--max-tokens-per-1000px2` 4).
+- `probe`: runs `/app/llama-server --version` and checks each model and projector in `usnm_boinc::qwen::default_models()` exists under `/opt/qwen/models`, printing sizes without loading.
+- `check`: `--init_script` (`--files <readings.json> <result.json> <diag.txt>`, optional `--keep <dir>`).
+- `compare`: `--compare_script` (`--files <r1...> --files2 <r2...>`, `--min-dice` 0.5, `--log <pairs.jsonl>`, `--rule strict-v1|crop-consensus-v2`, `--crop-states <dir>` required with `crop-consensus-v2`, `--pages <dir>`).
+- `grounded`: measures `crop-consensus-v2`'s floor offline against human transcriptions (`--refs` JSON Lines `{id, source, lang, ref}`, repeatable `--reader NAME=PATH` and `--pair A:B`, `--legibility <reader>`, `--good-cer` 0.10, `--bad-cer` 0.50, `--floor` (default the rule's), `--seed`, `--out`, `--crops`): crops under the floor, crop states, treatment of pairs where both or one reading match, and a shuffled control. CER leaves Hebrew points out of both sides.
+- `replay`: measures validator rules offline on retained results (`--seen <project>/qwen/seen`, `--model` `qwen3-vl-8b-q4km`, `--seed` 1420, `--controls` 2000, `--out <report.json>`): every rule on every replica pair, pairs that must fail, a third replica's check of what a pair vouched for, and each crop metric's separation of true from shuffled pairs.
+- `page-ledger`: `--root`, `--pages`; one JSON line per bundle page with its job id and checksum from `membership.json` and a status: `accepted` (some pair agreed), `disagreed` (every pair so far differed), `pending` (no pair yet) or `membership_invalid` (`membership.json` missing, mismatched, or naming a page unit whose `qwen.json` changed; no page kept). Records not naming that job and page, or not holding exactly the page's staged crops once on each side, are ignored. `accepted` means two hosts agree, not that the reading is right.
+- `summary`: reads `<root>/units/`, `--seen` and `--pairs` and prints a Markdown table.
+- `candidates --job <qwen.json> --page <page.jpg> --candidate <seen/result-a> <seen/result-b> ... --out <report.json>`: offline audit of up to 16 retained results of one single-page job. After verifying input hash, job/engine/prompt identity, model membership and crop IDs, it reports per candidate the text, manifest, host metadata and hashes, with per-crop pixel features, pairwise CER/WER/Dice, LoC comparisons, damage counts, uncertainty and repetition markers and token-budget saturation. Missing and empty readings stay distinct. Pair metrics use NFC, joined line-end hyphens and collapsed whitespace; `validator_dice` uses the validator's unmodified word bags. Unsupported language models and zero denominators stay null, not zero damage; LoC is another fallible reader. Output is **noncanonical**: not an input to `quality collect`, and it changes neither validation nor admission. Keep the original `seen` files; selected results don't prove database completeness.
 
-The GPU budget is four hours of application runtime for the entire page,
-not a BOINC task-duration limit. It accommodates slower volunteer GPUs without
-discarding a nearly complete page at the former 30-minute default. Explicit
-shorter budgets remain available for bounded experiments; the job contract accepts
-60–14,400 seconds. This is separate from BOINC's report deadline and resource bounds.
-Timeouts are part of the immutable job identity: never edit staged inputs already
-submitted to volunteers. To retry an affected page with a longer budget, stage a
-new job identity and preserve the original attempt and validation evidence.
+The GPU budget (`--gpu-timeout-secs`, four hours) is application runtime for the whole page, not a BOINC task limit; the old 30-minute default discarded nearly finished pages on slow GPUs. The contract accepts 60–14,400 s (shorter budgets stay available for bounded experiments), separate from BOINC's report deadline and resource bounds. Timeouts are part of the job identity: never edit submitted inputs; stage a new identity to retry and keep the original evidence.
 
-The GPU workers (the `usnm_qwen` and `usnm_surya` container workers in
-`usnm-boinc`, and `usnm-qwen-app`) set `CUDA_CACHE_PATH` and
-`MESA_SHADER_CACHE_DIR` to `/var/tmp/usnm-gpu-cache-<uid>`, which they create
-with mode 0700. If a directory already at that path is not a private directory
-owned by the user the worker runs as, the workers try the same name in the temp
-directory, then a directory under the task's scratch or slot directory. On
-native hosts the compiled kernels are kept from one workunit to the next. The
-containers have a read-only root and a `/tmp` tmpfs of their own, so there the
-cache lasts one workunit.
+GPU workers (`usnm_qwen` and `usnm_surya` container workers, `usnm-qwen-app`) set `CUDA_CACHE_PATH` and `MESA_SHADER_CACHE_DIR` to `/var/tmp/usnm-gpu-cache-<uid>` (mode 0700), falling back to the temp directory and then the task's scratch or slot directory if that path is not a private directory of the worker's user. Native hosts keep compiled kernels between workunits; containers (read-only root, own `/tmp` tmpfs) for one.
 
-- `submit`: hands staged `usnm_qwen` units in `<root>/units/` to `create_work` (`--root`, `--project`, `--max-units` default 20) with write-ahead `submitting` and `submitted` markers.
-- `local-unit`: writes a unit directory from `--image` and `--alto` (or `--synthetic`, which generates a built-in two-line block-capitals page and ALTO) into `--dir` (`--engine-image`, `--engine-llama` defaulting to `USNM_QWEN_LLAMA_IMAGE`, `--engine-weights` defaulting to `USNM_QWEN_WEIGHTS`, `--crop-seed` default 522, `--k-crops` default 12, `--timeout-secs` default 1800, `--max-tokens-per-1000px2` default 4).
-- `probe`: runs `/app/llama-server --version` and checks that every model and multimodal projector in `usnm_boinc::qwen::default_models()` exists under `/opt/qwen/models`, printing their sizes without loading weights into memory.
-- `check`: `script_validator`'s `--init_script` (`--files <readings.json> <result.json> <diag.txt>`, optional `--keep <dir>`).
-- `compare`: `script_validator`'s `--compare_script` (`--files <r1...> --files2 <r2...>`, `--min-dice` default `0.5`, optional `--log <pairs.jsonl>`, `--rule` `strict-v1` or `crop-consensus-v2`, `--crop-states <dir>`, required with `crop-consensus-v2`).
-- `grounded`: measures `crop-consensus-v2`'s floor on crops with human transcriptions, offline (`--refs` JSON Lines of `{id, source, lang, ref}`, `--reader NAME=PATH` and `--pair A:B` repeatable, optional `--legibility <reader>`, `--good-cer` default 0.10, `--bad-cer` default 0.50, `--floor` default the rule's, `--seed`, `--out`, optional `--crops`): per pair and group, crops under the floor, crop states, how the rule treats pairs whose readings both match the transcription or one doesn't, and a shuffled control. A reading's error is the quality tables' CER with Hebrew points left out of both sides, as the rule compares readings, so a Yiddish reading that differs from its transcription only in points counts as good.
-- `replay`: measures validator rules on retained results, offline (`--seen <project>/qwen/seen`, `--model` default `qwen3-vl-8b-q4km`, `--seed` default 1420, `--controls` default 2000, `--out <report.json>`): every rule on every pair of replicas of a job, pairs that must fail, a third replica's check on what a pair vouched for, and how well each crop metric separates true pairs from shuffled ones.
-- `compare --pages <dir>`: also keeps each bundle page's verdict, as above.
-- `page-ledger`: `--root` and `--pages`; prints one JSON line per bundle page under `<root>/units/` with its page unit's job id and checksum from `membership.json` and a status: `accepted` (some pair agreed on the page), `disagreed` (every pair so far differed), `pending` (no pair yet) or `membership_invalid` (the bundle's `membership.json` is missing, does not match its job, or names a page unit whose `qwen.json` no longer has the recorded checksum, id and page, so no page of it is kept). A record not naming that job and page, or whose crop verdicts and two sides' readings do not each hold exactly the page's staged crops once, is ignored. `accepted` means two hosts agree, not that the reading is right.
-- `summary`: reads `<root>/units/`, `<project>/qwen/seen` (`--seen`), and `<project>/qwen/pairs.jsonl` (`--pairs`) and prints a Markdown summary table of kept results and compared pairs.
-- `candidates --job <qwen.json> --page <page.jpg> --candidate <seen/result-a> <seen/result-b> ... --out <report.json>`:
-  a bounded offline audit of up to 16 explicitly selected retained results from
-  one single-page job. It verifies the input hash, job/engine/prompt identity,
-  model membership and crop IDs before publishing. The report retains every
-  candidate's text, manifest, client-reported host metadata, diagnostics and
-  hashes, with per-crop pixel features, pairwise CER/WER/Dice, comparisons to
-  LoC, forced-language damage counts, uncertainty markers, repetition indicators
-  and token-budget saturation. Missing readings remain distinct from empty
-  readings. Quality pair metrics use NFC, joined line-end hyphens and collapsed
-  whitespace; the separate `validator_dice` uses the validator's unmodified
-  word-bag computation. These are **noncanonical observations**, not replacements for the
-  canonical spool or inputs to `quality collect`. Keep the original `seen`
-  files; supplying selected results is not proof of database completeness.
-
-  Damage estimates with few head/near words are weak evidence; unsupported
-  language models and zero denominators remain null, not zero damage. A
-  mixed-language crop may not fit the job language. LoC is another fallible
-  reader; pixel blur/contrast are not annotated physical damage. Exact text
-  equality is not required by the existing validator, which already uses
-  per-crop Dice. Do not lower that floor to accept token-limit repetition,
-  shared hallucinations or agreed `[?]` as accurate transcription. Calibrate
-  any new acceptance margin on independent, image-grounded transcriptions
-  stratified by language and legibility; this command changes neither BOINC
-  validation nor class admission.
-
-  **Generation failure investigation (WU21128).** All three platforms consumed
-  the full 1,304-token budget on c07. AMD and Intel repeated a word over many
-  lines; Apple emitted 643 `[?]` markers. Their raw readings remain retained.
-  The report labels token-budget exhaustion, consecutive duplicate lines,
-  uncertainty-only and empty readings independently of pair agreement, and
-  records the longest identical-token run. No unflagged output is labeled
-  scientifically accepted. These flags describe observations, not calibrated
-  failure probabilities; repeated lines can also exist in the source.
-
-  The native request uses prompt v1, temperature 0, seed 42, `top_p=1` and
-  an area-derived completion budget (4 tokens per 1,000 crop pixels). There
-  is no repetition penalty, and request versions 1 and 2 have no stop rule.
-  A successful request is not proof of an accurate crop. Increasing the budget
-  could prolong a loop. Treat length-limited or degenerating generations as
-  uncertain observations, preserve their raw text, and require independent legible transcription for
-  accuracy—not a lower Dice floor or another agreeing repetitive replica.
+**WU21128.** All three platforms used the full 1,304-token budget on one crop (AMD and Intel looping a word, Apple emitting 643 `[?]`). `candidates` flags token-budget exhaustion, duplicate lines, uncertainty-only and empty readings regardless of agreement, and records the longest identical-token run; no unflagged output is labelled accepted, and the source itself can repeat lines. The native request (`crates/usnm-qwen-app`) uses temperature 0, seed 42, `top_p=1` and 4 tokens per 1,000 crop pixels, with no repetition penalty, and versions 1 and 2 have no stop rule. A larger budget could prolong a loop. Do not lower the Dice floor to accept repetition, shared hallucinations or agreed `[?]`; accuracy needs independent image-grounded transcriptions stratified by language and legibility.
 
 ## Running a campaign
 
@@ -595,20 +331,18 @@ usnm-boinc qwen local-unit --image page.jpg --alto loc.xml --dir q --engine-llam
 
 ### Server campaign through handoff-job.sh and bridge-job.sh
 
-On the server (`boinc/images/server/bridge-job.sh`) and the hand-off job in the main Container Apps environment (`boinc/images/bridge/handoff-job.sh`), a quality campaign lives under `$SHARE_DIR/quality/<QUALITY_CAMPAIGN>` and a Qwen campaign under `$SHARE_DIR/qwen/<QWEN_CAMPAIGN>` (each campaign name is 1 to 41 characters of `[a-z0-9-]`). UNVERIFIED against a live server.
+A quality campaign lives under `$SHARE_DIR/quality/<QUALITY_CAMPAIGN>` and a Qwen campaign under `$SHARE_DIR/qwen/<QWEN_CAMPAIGN>` (names 1 to 41 characters of `[a-z0-9-]`) for both `boinc/images/server/bridge-job.sh` and the hand-off steps (`boinc/images/bridge/handoff-job.sh`, on the on-prem host since prod's Azure hand-off job was retired on 6 November 2026). UNVERIFIED against a live server. Prod's bridge steps have run on the on-prem host since 21 October 2026: run each `boinc/scripts/start-boinc-bridge.sh --env prod --step <step>` below as `boinc/scripts/onprem-step.sh --env prod --target bridge --step <step>` with the same `--var` and `--wait-mins` (required) arguments ([boinc-onprem.md](boinc-onprem.md)).
 
-Prod's bridge steps run on the on-prem host since 21 October 2026. Run each `boinc/scripts/start-boinc-bridge.sh --env prod --step <step>` below there as `boinc/scripts/onprem-step.sh --env prod --target bridge --step <step>`, with the same `--var` and `--wait-mins` arguments (`--wait-mins` is required). Step 1 runs on-prem too ([boinc-onprem.md](boinc-onprem.md)).
-
-1. **Export page texts (`handoff-job.sh`, `HANDOFF_STEP=texts-export`).** It runs on an on-prem host that holds a local copy of `curated` (the ocr-sync host, `/srv/curated`, mounted from pve-big's `tank/usnm-release`), with `boinc/scripts/texts-export-onprem.sh`. The American Stories page shards, which don't change, are read from that copy. Only the `ocr-local` overlays and their ALTO are read from `CURATED_URL`, and the step logs those bytes as `curated_bytes`. It runs `usnm-boinc quality texts-export` for `--doc-id` pages or a `--sample` file under `quality-samples/` in `HANDOFF_URL`, and uploads `<doc_id>.json` (and `<doc_id>.ours.xml` when present) to `HANDOFF_URL` under `texts/`:
+1. **Export page texts (`handoff-job.sh`, `HANDOFF_STEP=texts-export`).** Runs `boinc/scripts/texts-export-onprem.sh` on an on-prem host with `curated` at `/srv/curated`; only `ocr-local` overlays and their ALTO come from `CURATED_URL` (logged as `curated_bytes`). It runs `usnm-boinc quality texts-export` for `--doc-id` pages or a `--sample` under `quality-samples/` in `HANDOFF_URL` and uploads `<doc_id>.json` (and `.ours.xml`) under `texts/`:
 
    ```sh
    boinc/scripts/texts-export-onprem.sh --settings /etc/usnm/texts-export.env \
      --usnm-boinc /usr/local/bin/usnm-boinc --american-stories-root /srv/curated --sample v1.jsonl
    ```
 
-   `--settings` holds `HANDOFF_URL`, `CURATED_URL`, `COSMOS_ENDPOINT`, `REFERENCE_URL` and `OUT_URL` (the hand-off job's values) and the host's Arc identity endpoints. The host's identity needs read on curated's `ocr-local/` and the writer role on the hand-off container. `usnm-boinc` is a release build of the crate (`cargo build --release -p usnm-boinc --locked`).
+   `--settings` holds `HANDOFF_URL`, `CURATED_URL`, `COSMOS_ENDPOINT`, `REFERENCE_URL`, `OUT_URL` and the host's Arc identity endpoints; that identity needs read on curated's `ocr-local/` and the writer role on the hand-off container. Build `usnm-boinc` with `cargo build --release -p usnm-boinc --locked`.
 
-2. **Stage quality units (`bridge-job.sh`, `BRIDGE_STEP=quality-stage`).** When `HANDOFF_URL` is set, pulls `texts/` into `$SHARE_DIR/quality/<QUALITY_CAMPAIGN>/texts` and, if `QUALITY_SAMPLE` is a relative sample filename, pulls `quality-samples/` into `<campaign>/samples/`; when `QUALITY_LANGS` is set (comma-separated ISO 639-3 codes), writes `<campaign>/function-words` with `usnm-boinc quality function-words`. Runs `usnm-boinc quality stage` for `QUALITY_PAGES` (`group:lang:doc_id:batch[+batch...],...`) or `QUALITY_SAMPLE` (default `<campaign>/sample.jsonl`, with `QUALITY_GROUP` default `sample`), `QUALITY_READERS` (default `loc,as,ours-tesseract`), `QUALITY_PLACES` (default `<campaign>/places.txt`), `QUALITY_ENGINE_IMAGE` (`sha256:<worker-digest>`), `QUALITY_MAX` (default 100), and `QUALITY_BUNDLE_SIZE` (default `300`, up to `500` pages per bundle; at ~1.2–2.0s/page a 300–500 page bundle runs for **10–15 minutes (`0.17–0.25 hours`)** with per-page checkpointing and packs `5,000` pages into `10–17` bundled workunits), reading scans from `SCAN_ARCHIVE_URL` (`--scan-archive`) first and then `tile.loc.gov` through the batch (`--batch-cache`):
+2. **Stage quality units (`BRIDGE_STEP=quality-stage`).** When `HANDOFF_URL` is set, pulls `texts/` into `$SHARE_DIR/quality/<QUALITY_CAMPAIGN>/texts` and, for a relative `QUALITY_SAMPLE`, `quality-samples/` into `<campaign>/samples/`; writes `<campaign>/function-words` for `QUALITY_LANGS` (ISO 639-3, comma-separated), then runs `quality stage`. Variables: `QUALITY_PAGES` (`group:lang:doc_id:batch[+batch...],...`) or `QUALITY_SAMPLE` (default `<campaign>/sample.jsonl`, `QUALITY_GROUP` default `sample`), `QUALITY_READERS` (`loc,as,ours-tesseract`), `QUALITY_PLACES` (`<campaign>/places.txt`), `QUALITY_ENGINE_IMAGE` (`sha256:<worker-digest>`), `QUALITY_MAX` (100), `QUALITY_BUNDLE_SIZE` (`300`, max `500`; a 300–500 page bundle runs 10–15 minutes with per-page checkpointing). Scans come from `SCAN_ARCHIVE_URL` (`--scan-archive`) first, then `tile.loc.gov` (`--batch-cache`):
 
    ```sh
    boinc/scripts/start-boinc-bridge.sh --env prod --step quality-stage \
@@ -620,7 +354,7 @@ Prod's bridge steps run on the on-prem host since 21 October 2026. Run each `boi
      --var QUALITY_MAX=5000 --wait-mins 45
    ```
 
-3. **Stage Qwen units (`bridge-job.sh`, `BRIDGE_STEP=qwen-stage`).** Cuts the deterministic crops from the staged `usnm_quality` units in `$SHARE_DIR/quality/<QUALITY_CAMPAIGN>` into `$SHARE_DIR/qwen/<QWEN_CAMPAIGN>` without fetching from LoC again:
+3. **Stage Qwen units (`BRIDGE_STEP=qwen-stage`).** Cuts the crops from `$SHARE_DIR/quality/<QUALITY_CAMPAIGN>` into `$SHARE_DIR/qwen/<QWEN_CAMPAIGN>` with no LoC fetch:
 
    ```sh
    boinc/scripts/start-boinc-bridge.sh --env prod --step qwen-stage \
@@ -631,11 +365,11 @@ Prod's bridge steps run on the on-prem host since 21 October 2026. Run each `boi
      --var QWEN_MAX=20 --wait-mins 15
    ```
 
-   Crop source text has a separate, unchanged 8192-byte UTF-8 limit. If any selected crop exceeds it, staging retains the complete candidate as `rejected-qwen.json`, the original `loc.xml`, `quality.json`, `page.jpg` and available `sample.json`, then writes the existing `too_large` terminal marker. Its reason names every oversized crop, box, byte count, text hash and source hashes. No `qwen.json` is published, no text is truncated, and other pages continue within `--max-pages`. Repeats preserve that evidence; feed inventory remembers rejected documents without counting them as submitted work. Other schema errors still fail closed.
+   A crop whose source text passes 8192 UTF-8 bytes is never truncated: the page gets the `too_large` terminal marker naming each oversized crop, with the candidate kept as `rejected-qwen.json` beside its `loc.xml`, `quality.json`, `page.jpg` and `sample.json`; no `qwen.json` is published, and other pages continue within `--max-pages`. Repeats keep that evidence, and the feed remembers rejected documents without counting them as submitted. Other schema errors fail closed.
 
-   For an isolated reviewed staging-binary rollout, `qwen_submit.py` uses a sibling `usnm-boinc-stage` executable when installed, otherwise the existing `usnm-boinc`; `--stage-binary` can select an explicit executable. By default, requests at version 1 submit with the existing `usnm-boinc`, and requests at versions 3 and 4 with the staging binary, because a server image built before #1437 has a `qwen submit` that refuses them. `--submit-binary` names one submit executable for every version (`--qwen-submit-binary` on `quality-ship.sh`, set in `QWEN_SHIP_ARGS`). After the image is rebuilt, the operator switches by configuration alone (see [One submit binary and one collector](#one-submit-binary-and-one-collector-1449)). Transactions (`--transaction`) always submit with the staging binary and refuse `--submit-binary`. `--bundle-size` (1 to 32, default 1) sets the pages a native unit holds (see [Bundled native units](#bundled-native-units-1435)). Install only an approved hash-bound artifact at an idle boundary under the normal project lock. Shared shipper helpers, service units and timers need no changes.
+   `qwen_submit.py` stages with a sibling `usnm-boinc-stage` when installed (`--stage-binary` to choose) and by default submits version 1 with `usnm-boinc` and versions 3 and 4 with the staging binary, since a pre-#1437 server image refuses them; `--submit-binary` (`--qwen-submit-binary` on `quality-ship.sh`) sets one for all ([One submit binary and one collector](#one-submit-binary-and-one-collector-1449)). `--transaction` always uses the staging binary and refuses `--submit-binary`. `--bundle-size` (1 to 32, default 1) sets pages per native unit ([Bundled native units](#bundled-native-units-1435)). Install only approved hash-bound artifacts, at an idle boundary under the normal project lock.
 
-4. **Submit both apps' workunits (`bridge-job.sh`, `BRIDGE_STEP=quality-submit` and `BRIDGE_STEP=qwen-submit`).** Hands the staged units to `create_work` with two results per workunit (`QUALITY_MAX` default 500, `QWEN_MAX` default 20) and invalidates `$PROJ/html/cache/f2/server_status.php_job_status` so `https://boinc.usnewsmap.com/server_status.php` reflects the new queue immediately (live uncached counts are also always available at `https://boinc.usnewsmap.com/server_status.php?counts=1`):
+4. **Submit (`BRIDGE_STEP=quality-submit`, `qwen-submit`).** Two results per workunit (`QUALITY_MAX` 500, `QWEN_MAX` 20); invalidates `$PROJ/html/cache/f2/server_status.php_job_status` so `https://boinc.usnewsmap.com/server_status.php` shows the new queue (uncached: `?counts=1`):
 
    ```sh
    boinc/scripts/start-boinc-bridge.sh --env prod --step quality-submit \
@@ -644,14 +378,14 @@ Prod's bridge steps run on the on-prem host since 21 October 2026. Run each `boi
      --var QWEN_CAMPAIGN=v1-probe --var QWEN_MAX=20 --wait-mins 15
    ```
 
-5. **Inspect validator summaries (`bridge-job.sh`, `BRIDGE_STEP=quality-summary` and `BRIDGE_STEP=qwen-summary`).** Reads `<project>/quality/{seen,pairs.jsonl}` and `<project>/qwen/{seen,pairs.jsonl}` and writes `<campaign>/summary.md`:
+5. **Validator summaries (`BRIDGE_STEP=quality-summary`, `qwen-summary`).** Read `<project>/quality/{seen,pairs.jsonl}` and `<project>/qwen/{seen,pairs.jsonl}` and write `<campaign>/summary.md`:
 
    ```sh
    boinc/scripts/start-boinc-bridge.sh --env prod --step quality-summary --var QUALITY_CAMPAIGN=v1-probe
    boinc/scripts/start-boinc-bridge.sh --env prod --step qwen-summary --var QWEN_CAMPAIGN=v1-probe
    ```
 
-6. **Collect canonical results (`bridge-job.sh`, `BRIDGE_STEP=quality-collect`).** Joins the assimilated `usnm_quality` (`QUALITY_SPOOL`), optional `usnm_qwen` (`QWEN_CAMPAIGN` and `QWEN_SPOOL`) and optional `usnm_surya` crop (`SURYA_CAMPAIGN` and `SURYA_SPOOL`, #968) results into `<campaign>/out/{pages.parquet,crops.parquet,summary.md}`, or uploads them to `QUALITY_CURATED_URL` under `audit/quality/<QUALITY_CAMPAIGN>/`:
+6. **Collect (`BRIDGE_STEP=quality-collect`).** Joins assimilated `usnm_quality` (`QUALITY_SPOOL`), optional `usnm_qwen` (`QWEN_CAMPAIGN`, `QWEN_SPOOL`) and optional `usnm_surya` crop (`SURYA_CAMPAIGN`, `SURYA_SPOOL`, #968) results into `<campaign>/out/{pages.parquet,crops.parquet,summary.md}`, or uploads to `QUALITY_CURATED_URL` under `audit/quality/<QUALITY_CAMPAIGN>/`:
 
    ```sh
    boinc/scripts/start-boinc-bridge.sh --env prod --step quality-collect \
@@ -659,7 +393,7 @@ Prod's bridge steps run on the on-prem host since 21 October 2026. Run each `boi
      --var QWEN_CAMPAIGN=v1-probe --var QWEN_SPOOL=/project/usnmocr/results/0 --wait-mins 15
    ```
 
-7. **Monitor or manage multi-shard campaigns (`boinc/scripts/boinc-quality-campaign.py`).** For 5,000–10,000+ workunit campaigns sharded across parallel Container Apps executions (`v1-wave5`, `v1-wave6`), use the campaign CLI to split non-overlapping manifests into shard archives, inspect live shard + server queue progress, and restore the bridge job specification after completion. The CLI drives the Azure bridge job and the quality wave job, which `"server": "onprem"` removes, and the quality wave does not run on-prem yet ([boinc-onprem.md](boinc-onprem.md)), so this applies to a server with `"server": "azure"`:
+7. **Multi-shard campaigns (`boinc/scripts/boinc-quality-campaign.py`).** Splits large campaigns into shard archives for parallel Container Apps executions, reports progress and restores the bridge job. Azure server only (`"server": "azure"`); on-prem has no wave job:
 
    ```sh
    python3 boinc/scripts/boinc-quality-campaign.py prepare --campaign v1-wave6 --manifest sample.jsonl --out-dir /tmp/wave6 --count 10000 --shards 20
@@ -669,278 +403,22 @@ Prod's bridge steps run on the on-prem host since 21 October 2026. Run each `boi
 
 ### On-prem feeder (v1-wave10 on)
 
-The wave runner (`boinc/scripts/quality_corpus_runner.py`) read the scan archive and curated
-in Azure. On-prem, quality units are fed from pve-laptop instead (#962), with no Azure call and
-no LoC request:
+On-prem, quality units are fed from the feeder container's Proxmox host with no Azure call and no LoC request (#962; the Azure wave runner was `boinc/scripts/quality_corpus_runner.py`).
 
-1. **Feeder, CT215 `usnm-batch` on pve-laptop** (`boinc/scripts/onprem/quality-feed/quality_feed.py`,
-   `usnm-quality-feed.service`). `select` picks pages from the scan server's index
-   (`/index/full.jsonl` on pve-big's CT211) that no campaign has staged, worst damage first.
-   `run` reads each scan from the scan server (checked against its index line's size and
-   sha256), makes the worker's grey q75 `page.jpg` as the runner does, writes an empty ALTO
-   (LoC's would be a LoC request; CT211's fetcher is the only LoC client), and takes LoC's text,
-   American Stories and `ocr-local` from the curated copy, mounted read-only at `/srv/curated`
-   (home-infra `scripts/lab/batch-ct-quality.sh --mounts`). It writes chunks of 500 pages
-   (`--chunk-pages`, at most 500: a bundle's page limit) to its outbox and waits while
-   `MAX_PENDING` (8) are unshipped; the shipper stages each chunk as one 500-page bundle
-   (`--bundle-size 500`), or two when its scans pass the bundle's 1 GiB `MAX_BUNDLE_SCAN`
-   (about 13% of chunks), a few minutes of work for a host at 0.06–0.4 s a page. After a round that made chunks or
-   found the outbox full it checks every 15 seconds for room, so the outbox refills as the
-   shipper takes chunks; only a round with nothing to feed sleeps the full `--every-secs`.
-2. **Shipper, pve-laptop itself** (`quality-ship.sh`, `usnm-quality-ship.timer`, 3 minutes
-   after the last run ends; a run ships every `READY` chunk up to `MAX_CHUNKS`, 30). Over the host trust pve-laptop → pve (home-infra `scripts/host-ssh-trust.sh`) it
-   copies a chunk into CT230's `/project/quality/<campaign>/incoming/`, runs
-   `quality_receive.py` there (every file against `SHA256SUMS`, and every page's scan present,
-   so `quality stage` never falls back to tile.loc.gov from the server), then runs
-   `usnm-boinc-step` `quality-stage` with `QUALITY_SCANS_DIR`, then `usnm-boinc quality submit`
-   in the server container. It ships
-   nothing while the server has more than 300 results unsent. `quality-stage` holds its own
-   lock on the host, so one stage runs at a time while the controller's steps go on: it uses no
-   database or project files, and later steps ignore a unit until its `quality.json`, written
-   last, or its `submitted` marker exists. Submitting waits its turn on the step lock for up to
-   30 minutes; if the lock stays held, the run exits 75 and the chunk stays `READY`. It skips
-   the `quality-submit` bridge step, whose walk of the NFS download tree held the lock for up
-   to 8 minutes: submit sets each file's mode and the export fixes its owner.
-
-   The next chunk is copied and received while the current one stages, outside both locks,
-   and that receive ends before the current chunk's submit takes the step lock, so the lock is
-   held no longer than before. `--after-submit` keeps the scans of any page the chunk received
-   ahead also holds. On 2 November 2026 (#529) a 200-page chunk took 30 to 45 minutes end to
-   end: receive 11 to 16, stage 14 to 24, submit 1 to 4. Nearly all of it was synchronous
-   writes on the NFS share, `tank/boinc-bulk` on pve-big's HDD mirror: an fsynced 64 KB write
-   took 925 ms, a plain one 618 ms and a chown 278 ms. With `sync=disabled` on that dataset
-   they take 7, 4 and 1 ms, and a chunk takes about 3 minutes: receive about 1 (hidden behind
-   the stage), stage about 2 (0.4 s a page, then packing), submit and freeing under a minute.
-
-   **`tank/boinc-bulk` runs with `sync=disabled`** (set 2 November 2026, approved by the
-   maintainer; it was `sync=standard`, the default). A power cut or crash of pve-big can lose
-   the last few seconds of writes that the share had already acknowledged. ZFS still commits
-   whole transaction groups in order, so what survives is a consistent earlier state. Nothing
-   half-written is submitted: receiving copies and checks the whole chunk against
-   `SHA256SUMS` on every try; staging checks each page unit it staged before, and each bundle
-   not yet `submitted` or `submitting`, against the hashes in its `quality.json`, and stages or
-   packs again whatever doesn't match or has no `quality.json`; `quality submit` checks every
-   input against those hashes before `create_work`. A unit already `submitting` stays for the
-   existing uncertain-submit check. Revert with `zfs set sync=standard tank/boinc-bulk` on
-   pve-big. Only this dataset changed.
-
-   Packing reads only the run's own pages and the bundles named after them (a bundle is
-   `bundle-<n>-<first page>`), not the whole `pages/` tree: at 39,000 pages that listing took
-   four minutes cold over NFS. A page found staged already that none of those bundles holds
-   makes it read every bundle once, as before.
-
-3. **Results** go to `usnm_quality` ([scripts/onprem/quality/README.md](../scripts/onprem/quality/README.md)).
-   On the preparation host, `usnm-quality-results.timer` runs two minutes after
-   the previous pass finishes, with up to 15 seconds of jitter:
-   `quality_results_partial.py` collects **one submitted unit** under CT230's normal
-   nonblocking bridge lock. Collection is bounded to 120 seconds, with a 180-second
-   remote phase bound including metadata enumeration. It writes immutable per-pass
-   `out/{pages.parquet,crops.parquet,summary.md}` and `coverage.json` under
-   `/project/ops/quality-results/scoped/<campaign>/<unit-key>/snapshots/<snapshot>/`.
-   It never replaces `<campaign>/out` or claims a whole campaign is current.
-   Coverage explicitly says `campaign_complete=false`, identifies the selected job
-   and documents, and counts submitted and unvisited units for **this pass only**.
-   Table schemas and the existing complete-snapshot consumer contract are unchanged.
-   All three files are checksum-verified in preparation CT215; Parquet documents
-   and job identity must match coverage before the existing certificate-authenticated
-   `load.py results` is allowed to upsert. Missing or unvisited rows are never deleted.
-   A pending unit yields zero rows, not a loaded result. The host pass lock also
-   serializes collection, transfer and loading. A busy bridge retries next tick;
-   no active producer is preempted. The shorter interval avoids a structural
-   backlog: one unit per 15 minutes cannot match the shipper's maximum two units
-   per 15-minute interval even without contention. Actual throughput still depends
-   on collection time and free lock windows; verify cursor and load receipts,
-   rather than treating the timer frequency as proof of campaign coverage.
-   Source and preparation snapshots, coverage and host load receipts are retained.
-   The host cursor advances only after successful verification and loading. Failure
-   after a database commit but before cursor update safely repeats the same upserts.
-   The ordinary service explicitly enables `--completion-frontier`: three of every
-   four successful collections prioritize canonical-present units whose dependency
-   fingerprint has not been acknowledged by a verified, nonempty certificate load.
-   The fourth visit fairly revisits all submitted units, including pending, failed
-   and unchanged units. With no priority work, every visit is fair. Each lane fixes
-   an upper-name fence for its finite cycle; continuous arrivals cannot postpone
-   wrapping to earlier units. Thus a pending unit becoming canonical is immediately
-   priority-eligible rather than waiting for its fair visit. Priority selection is
-   cyclic, not newest-only. None of these scheduling hints constitutes scientific
-   validation, independent truth, quorum, or campaign completeness.
-   `usnm-boinc quality collect --inventory-only --cache ...` produces these hints
-   using a **separate scheduling namespace**, covering the binary, staged inputs,
-   canonical QUALITY outputs and late/changed Qwen dependencies. Fine-resolution
-   Unix staged PAGE/ALTO/TEXTS identities use device/inode/size/mtime/ctime hints,
-   rechecking both the descriptor and reopened path before publication. Coarse
-   timestamps and non-Unix inputs retain content hashing. Canonical outputs,
-   sidecars and reading dependencies remain content-checked; selected collection
-   still uses full content-validated row-cache keys. Scheduling hints cannot be
-   used as row keys or scientific acceptance.
-   It computes no rows and publishes no Parquet. It examines only the configured
-   campaign and its reading dependencies, with at most 10,000 QUALITY directory
-   entries; larger campaigns fail explicitly. The selected scheduling key is
-   rechecked after collection (`--inventory-unit`); inventory errors, missing
-   configured roots, corrupt metadata, or changed selected inputs fail closed,
-   without silently falling back to an old cursor. All inventory and collection
-   remain inside the unchanged nonblocking bridge lock and 180-second remote bound.
-   On filesystems requiring content fallback, cold digest warming can still time
-   out; completed digest receipts survive the retry.
-   No pass verifies/loads more than one scope.
-
-   **Migration:** install the matching collector binary before this driver/service;
-   old binaries reject inventory flags. Without `--completion-frontier`, the driver
-   retains its original frozen-prefix cursor behavior, including programmatic
-   `host_pass(Namespace(...))` reconciliation callers. Do not enable the flag for
-   explicit isolated prefix reconciliation. Existing host `after`/`through` fields
-   remain compatible; frontier progress is separate schema-1
-   `scoped/<campaign>/frontier.json`, bounded by the campaign limit. A host receipt
-   carries the selected fingerprint; only after successful nonempty load does the
-   host cursor carry `frontier_ack`, applied idempotently next admission. A crash
-   before acknowledgement repeats safe upserts. Remote lane progress alone never
-   marks a scope loaded; zero-row visits remain pending/failed, not success.
-   Collector validation failures and collector timeouts persist scheduling-only
-   progress before failing the pass, so a poison canonical result cannot pin the
-   priority lane or suppress fair revisits. Its fingerprint remains unacknowledged
-   and is retried in later cycles. Inventory and selected-dependency recheck errors
-   still abort without advancing either lane.
-   Frontier inventory, collection and selected-key recheck share a 160-second
-   monotonic work budget inside the existing 180-second remote limit. Each native
-   invocation gets at most 120 seconds and at most the remaining budget, reserving
-   20 seconds for subprocess teardown and durable scheduling progress. A slow
-   inventory therefore reduces the collector's timeout rather than allowing outer
-   termination to interrupt its failure-progress write. This reserve is not a
-   guarantee against unavailable storage, process kill, or host failure.
-   No prior cursor, DB count, or output timestamp proves an exact dependency key
-   was loaded: the first opt-in conservatively re-verifies canonical-present units
-   once. Do not seed acknowledgements from guessed historical coverage.
-   Each visit invokes the collector's current dependency and content-addressed cache
-   checks; old parts are never published just because a receipt exists.
-   This is independent per-page science, not a globally consistent campaign snapshot
-   or a database-wide freshness guarantee. Old science stays queryable; consult
-   coverage/load receipts for what was freshly observed. Whole-campaign collectors
-   still refuse incomplete publication and must not consume these partial directories
-   as complete snapshots.
-
-   **Read-only native inventory measurement (2026-10-28):** candidate source
-   `2a77f08223b21acd1623154456cf54c5ef0e18fc`, binary SHA256
-   `fefad24a826370e57f0c1e9f8fa4bc2976f4b0adf973cb2317605334d5936108`,
-   inventoried all 136 submitted native units in **10.093 seconds**, with 130
-   canonical-present and six pending. This used an initially empty private cache,
-   the real project mounted read-only, no network, one CPU and 2 GiB; its disposable
-   container was removed. It neither took the production bridge lock nor activated
-   the candidate; the installed collector and ordinary timer remained unchanged.
-   This passes the isolated 120-second inventory timing gate, **not** the real
-   collection/load or sustained priority/fair/late-reader acceptance below.
-   A scheduling namespace change conservatively invalidates old acknowledgements;
-   never rewrite them to claim historical coverage.
-
-   **Native acceptance (not demonstrated by offline tests):** record installed
-   driver/binary hashes, timer settings, lock admissions/busy exits, inventory and
-   collection durations (including cold digest warming), and receipt/ack progression.
-   After conservative bootstrap, observe at least two hours spanning ordinary
-   two-chunk/15-minute arrivals and real competing producers; compare exact submitted
-   job/page IDs with certificate DB coverage and measure completion-to-verified-load
-   lag, not just cursor position. Observe a previously pending completion and a
-   genuine late independent-reading change reaching a new verified key, and show
-   unchanged jobs no longer consume priority slots while fair visits continue.
-   With a frozen fair fence of N units, revisitation takes at most N+1 fair visits
-   (at most four times that many successful collections), not a wall-clock guarantee.
-   Sustainability requires usable lock windows for arrivals plus the reserved fair
-   share: roughly eight arriving jobs/hour require at least 10.7 successful scopes/hour
-   under continuous priority demand. This selector cannot repair insufficient lock
-   availability; do not close #962 until measured lag stays bounded. No producer,
-   source budget, timer, quorum, floor, or shared lock should be weakened for acceptance.
-   The installer records its selected preparation container in
-   `/etc/usnm/quality-results.env` (`CTID`, default 215), never pve-big's CT215.
-   Collection does not submit work or alter quorum. Repeated loads upsert the same
-   campaign/page/reader keys. The existing six-hour summary refresh timer updates
-   ranking views; a successful BOINC result is not a loaded result until the loader
-   succeeds. The installer enables collection once the loader DSN exists.
-
-   Native Qwen requires a separate scheduled join, not just the image-pass campaign:
-   install and enable `usnm-qwen-results.{service,timer}` on the preparation host.
-   It continues using the complete-snapshot `quality_results.py` driver with one
-   `--native-campaign NAME[=COLLECTOR]` per root, joining QUALITY canonical outputs from
-   batch 0 with `/project/qwen/<campaign>` and native batch-8 canonical readings from
-   `/project/usnmocr/results/8`. Set `NATIVE_QWEN_ARGS` (and, if needed, the
-   QUALITY scorer's `ENGINE_IMAGE`) in `/etc/usnm/quality-results-qwen.env`, never by
-   modifying feeder settings. A collector older than #1437 can't read version 3 or 4
-   jobs, so those roots name a newer one, and `qwen-nonenglish-v1` keeps its own so its
-   cached rows stay as they are. [One submit binary and one collector](#one-submit-binary-and-one-collector-1449)
-   moves all three roots to one collector without a cold pass. A root must exist before it is listed. A root that
-   fails doesn't stop the next; the service fails at the end and names it. Each pass archives fresh `pages.parquet`, `crops.parquet`
-   and summary on the server, then certificate-loads page/reader scores. Readings
-   pending quorum remain pending and join on a later pass; they are not reported as
-   loaded Qwen science. The two collectors share the host pass lock and server bridge
-   lock. Neither changes work identities, submission, source selection or quorum.
-   The native service waits at most 60 seconds for the ordinary bridge lock
-   (`--step-lock-wait-secs 60`); the waiter holds no bridge lock until admitted.
-   Acquisition is explicitly logged, and only collection runs under that lock,
-   never transfer or loading. Exhausted admission remains a failed invocation
-   without pulling or loading; genuine collection errors are not retried as
-   contention. Collection stays bounded to 20 minutes and the service to 40 minutes.
-   The SSH phase allows only the configured admission budget in addition to its
-   existing collection bound; the maximum sequential phase budgets remain below
-   the service limit. Other callers retain nonblocking admission by default.
-
-   Both services use native content-addressed row parts; the partial driver passes
-   a single-unit root and its persistent isolated cache. Deploy the matching
-   `usnm-boinc` collector binary at the
-   dedicated persistent `/project/ops/quality-results/usnm-boinc` path **before**
-   installing these service units. Only collectors use this binary; do not
-   replace the server's shared executable or restart the BOINC server container.
-   `QUALITY_COLLECTOR` in the results environment selects a different path if
-   needed (`--collector` on the driver). A missing or old binary rejects the cache flags and
-   safely prevents pulling or loading a stale snapshot. Each campaign retains
-   immutable JSON row parts (complete campaigns under `collected-parts/`, partial
-   unit scopes under `ops/quality-results/scoped/`). Keys include the collector
-   executable and format version, staged scientific inputs and optional OCR
-   sidecars, canonical QUALITY outputs, and the relevant Qwen jobs/canonical
-   outputs (including missing-to-present transitions). Surya dependencies
-   conservatively invalidate all parts. A late reading therefore recomputes
-   affected crop joins/hat rows instead of treating a previously loaded page as
-   permanently complete. Dependency changes during computation abort publication.
-
-   `--max-dirty-units` (default 8, positive) bounds expensive recomputation per pass.
-   Cold caches or upgrades may need multiple ticks to warm: completed parts are
-   fsynced, but any deferred unit makes collection exit nonzero **before** replacing
-   campaign outputs or starting pull/load. The prior scientific snapshot and all
-   database rows remain intact. A subsequent tick resumes from those parts; a
-   clean pass assembles the complete current campaign and uses the existing
-   idempotent certificate loader. Corrupt parts fail closed and remain available
-   for operator diagnosis. No scientific inputs, historical parts or database rows
-   are deleted. Large staged `page.jpg`, `loc.xml`, and `texts.json` blobs
-   additionally have immutable checksum-protected SHA-256 receipts under
-   `collected-parts/input-digests/`. On Unix, unchanged opened-file device,
-   inode, size, nanosecond mtime and ctime allow reuse of the digest; identity
-   is checked again after hashing or lookup and against a freshly opened path.
-   Rewrites (even same-size with restored mtime) and replacements invalidate it.
-   This requires normal filesystem change-time and close-to-open coherence
-   (including the production NFS mount); coarse whole-second ctime or non-Unix
-   filesystems fall back to content hashing. Job descriptors, canonical outputs,
-   optional sidecars, and collector versions remain content-hashed each pass.
-   Corrupt digest receipts fail closed and are retained, never silently rebuilt.
-   Once the dirty-unit limit is reached, a warming pass stops before reading or
-   hashing any further unit. It does not hash another cold bundle merely to
-   discover that it must defer it. Even cached or pending trailing units require
-   a subsequent pass; an all-clean pass can publish the complete campaign.
-   Cold digest warming can still require multiple bounded passes; successful
-   publication still requires a complete current campaign and final dependency
-   revalidation. File enumeration, metadata checks, table assembly, transfer and
-   loading remain linear; measure end-to-end pass duration after warming before
-   claiming capacity for a larger campaign.
-   Before deploying digest reuse on another filesystem, retain an isolated
-   fixture receipt from the actual mount/client: verify nonzero nanosecond ctime,
-   same-size rewrites with restored mtime, atomic replacement, and fresh-open
-   visibility. Mount version alone is not acceptance. Then verify cold progress,
-   a complete ordinary publication/load, clean-pass idempotence and late canonical
-   reading invalidation before restoring any paused results timer.
+1. **Feeder** (`boinc/scripts/onprem/quality-feed/quality_feed.py`, `usnm-quality-feed.service`, in the `usnm-batch` container). `select` picks unstaged pages from the scan server's `/index/full.jsonl`, worst damage first. `run` reads each scan (checked against the index size and sha256), makes the worker's grey q75 `page.jpg`, writes an empty ALTO (the scan fetcher is the only LoC client), and takes LoC's text, American Stories and `ocr-local` from the read-only `/srv/curated` mount (home-infra `scripts/lab/batch-ct-quality.sh --mounts`). It writes 500-page chunks (`--chunk-pages`, max 500) and waits while `MAX_PENDING` (8) are unshipped; a chunk becomes one bundle, or two past the 1 GiB `MAX_BUNDLE_SCAN`. Busy rounds recheck every 15 s, idle ones sleep `--every-secs`.
+2. **Shipper** (`quality-ship.sh`, `usnm-quality-ship.timer`, 3 minutes after the last run, up to `MAX_CHUNKS` 30 `READY` chunks a run). Over the host trust (home-infra `scripts/host-ssh-trust.sh`) it copies a chunk to the server's `/project/quality/<campaign>/incoming/`, runs `quality_receive.py` (files against `SHA256SUMS`, every scan present, so staging never falls back to tile.loc.gov), `usnm-boinc-step quality-stage` with `QUALITY_SCANS_DIR`, then `usnm-boinc quality submit` in the server container. Nothing ships while the server has more than 300 results unsent.
+   - Staging holds its own host lock; later steps ignore a unit until its `quality.json` (written last) or `submitted` marker exists. Submit waits up to 30 minutes for the step lock, else exits 75 with the chunk still `READY`. It skips the `quality-submit` bridge step (whose NFS walk held the lock up to 8 minutes): submit sets file modes and the export fixes owners. The next chunk is received while the current one stages, and that receive ends before the current submit takes the step lock. `--after-submit` keeps scans the next chunk also holds. Packing reads only the run's own pages and bundles (`bundle-<n>-<first page>`); a page already staged in none of them makes it read every bundle once.
+   - **`tank/boinc-bulk` runs with `sync=disabled`** (2 November 2026, maintainer-approved; a 200-page chunk dropped from 30–45 minutes to about 3, #529). Only this dataset changed. A storage-host crash can lose the last seconds of acknowledged writes; ZFS commits transaction groups in order, so what survives is a consistent earlier state. Nothing half-written is submitted: receive rechecks `SHA256SUMS`, staging rechecks earlier units against `quality.json` hashes and restages mismatches, `quality submit` checks every input before `create_work`, and a unit already `submitting` goes to the uncertain-submit check. Revert on the storage host with `zfs set sync=standard tank/boinc-bulk`.
+3. **Results** go to `usnm_quality` ([scripts/onprem/quality/README.md](../scripts/onprem/quality/README.md)); see [Result collection](#result-collection).
 
 ```sh
-# On pve-laptop, once: the trust and the mounts (home-infra).
-scripts/host-ssh-trust.sh --from pve-laptop.tjg.fyi --to pve.tjg.fyi
+# On the feeder's Proxmox host, once: the trust and the mounts (home-infra).
+scripts/host-ssh-trust.sh --from <feeder-proxmox-host> --to <server-proxmox-host>
 bash scripts/lab/batch-ct-quality.sh --mounts
 # From a checkout: the code and units.
 boinc/scripts/onprem/quality-feed/quality-feed-install.sh --campaign v1-wave10 \
   --engine-image sha256:<worker digest>
-# In CT215: the campaign's page list (the staged list: every doc_id in the share's
+# In the feeder container: the campaign's page list (the staged list: every doc_id in the share's
 # quality/*/units/*/quality.json), then start.
 quality_feed.py select --index index-full.jsonl --staged staged-docs.txt --curated /srv/curated \
   --count 500 --out /var/lib/usnm-quality-feed/v1-wave10/pages.jsonl
@@ -948,411 +426,104 @@ boinc/scripts/onprem/quality-feed/quality-feed-install.sh --campaign v1-wave10 \
   --engine-image sha256:<worker digest> --enable
 ```
 
+#### Result collection
+
+`usnm-quality-results.timer` on the preparation host runs `quality_results_partial.py` two minutes after each pass, with up to 15 s jitter. A pass collects **one submitted unit** under the server's nonblocking bridge lock (collection 120 s, remote phase 180 s) into immutable `out/{pages.parquet,crops.parquet,summary.md}` plus `coverage.json` (`campaign_complete=false`) under `/project/ops/quality-results/scoped/<campaign>/<unit-key>/snapshots/<snapshot>/`, verifies checksums and job identity, and loads with certificate-authenticated `load.py results`. No pass loads more than one scope, and the host pass lock serializes collection, transfer and loading. Guarantees: `<campaign>/out` is never replaced, rows are never deleted, a pending unit loads zero rows, and the cursor advances only after a verified load, so a failure in between repeats the same upserts. A busy bridge retries next tick; no producer is preempted. Collection never submits work or alters quorum, and a successful BOINC result isn't loaded until the loader succeeds. Judge coverage from cursor and load receipts, not timer frequency.
+
+**Frontier.** `--completion-frontier` (on for the ordinary service) spends three of four collections on canonical-present units whose dependency fingerprint has no verified nonempty load and the fourth on a fair visit over all submitted units. `usnm-boinc quality collect --inventory-only --cache ...` computes the fingerprints in a separate scheduling namespace and fails closed past 10,000 QUALITY entries or on any inventory error; `--inventory-unit` rechecks the selected key after collection. Inventory, collection and recheck share a 160 s budget inside the 180 s remote limit; each native call gets at most 120 s, keeping 20 s for teardown and writing progress. A collector failure or timeout records scheduling progress first, so one poison result can't pin the priority lane, and its fingerprint stays unacknowledged for a later retry. Inventory and recheck errors abort without advancing either lane. Cold digest warming can still time out; finished digest receipts survive the retry. These hints are not validation or completeness.
+
+Operator notes:
+
+- Install the matching collector before the driver; old binaries reject the inventory and cache flags, which blocks loading a stale snapshot. Without `--completion-frontier` the driver keeps its frozen-prefix cursor; don't use the flag for isolated prefix reconciliation. Host `after`/`through` fields stay compatible; frontier state is `scoped/<campaign>/frontier.json`. Never seed or rewrite acknowledgements (`frontier_ack`) by hand; a scheduling namespace change invalidates them, and the first opt-in re-verifies canonical-present units once. Zero-row visits stay pending or failed, not success.
+- Whole-campaign collectors must not read these partial directories.
+- Acceptance (not shown by offline tests): record installed driver/binary hashes, timer settings, lock admissions and busy exits, inventory and collection durations (with cold warming) and receipt/ack progress. Over at least two hours of ordinary arrivals with real competing producers, measured completion-to-load lag must stay bounded, pending or late-changed units must reach a new verified key, and unchanged jobs must leave the priority lane while fair visits continue. With a fence of N units, revisiting takes at most N+1 fair visits. About eight arriving jobs/hour needs at least 10.7 successful scopes/hour. Keep #962 open until then, and weaken no producer, budget, timer, quorum, floor or lock to pass. (A read-only inventory of 136 units took 10.093 s on 2026-10-28, inside the 120 s gate.)
+- The installer records the preparation container in `/etc/usnm/quality-results.env` (`CTID`, default 215; the preparation container, not the storage host's container with the same ID) and enables collection once the loader DSN exists. The six-hour summary timer refreshes ranking views.
+
+**Native Qwen join.** Enable `usnm-qwen-results.{service,timer}` on the preparation host: complete-snapshot `quality_results.py` with one `--native-campaign NAME[=COLLECTOR]` per root, joining batch-0 QUALITY outputs, `/project/qwen/<campaign>` and batch-8 readings in `/project/usnmocr/results/8`. Set `NATIVE_QWEN_ARGS` (and if needed `ENGINE_IMAGE`) in `/etc/usnm/quality-results-qwen.env`, never in feeder settings. Collectors older than #1437 can't read version 3 or 4 jobs, so those roots name a newer one and `qwen-nonenglish-v1` keeps its own so its cached rows stay ([One submit binary and one collector](#one-submit-binary-and-one-collector-1449)). List a root only once it exists; a failing root doesn't stop the others and the service fails at the end naming it. Readings pending quorum join on a later pass. It waits up to 60 s for the bridge lock (`--step-lock-wait-secs 60`), holding nothing while it waits, and runs only collection under it, never transfer or loading. Exhausted admission is a failed run with no pull or load; real collection errors are not retried as contention. Collection is bounded to 20 minutes, the service to 40.
+
+**Collector binary and row cache.** Deploy the collector at `/project/ops/quality-results/usnm-boinc` **before** these units (`QUALITY_COLLECTOR` or `--collector` for another path); do not replace the server's executable or restart the BOINC server container. Row parts are content-addressed (`collected-parts/`, partial scopes under `ops/quality-results/scoped/`), keyed on the collector, staged inputs, canonical outputs and Qwen jobs, so a late reading recomputes the affected rows and Surya changes invalidate all parts. Dependency changes during computation abort publication. `--max-dirty-units` (default 8) bounds recomputation: a pass with deferred units exits nonzero **before** publishing or loading, leaving the previous snapshot intact, so a cold cache takes several ticks. Corrupt parts or digest receipts fail closed and are kept. Large staged inputs get SHA-256 receipts under `collected-parts/input-digests/`, reused when device, inode, size, nanosecond mtime and ctime are unchanged; this needs close-to-open coherence and nanosecond ctime (true of the production NFS mount), and other filesystems fall back to hashing. Measure pass duration after warming before claiming capacity for a larger campaign.
+
+Before relying on digest reuse on a new filesystem, test on that mount (its version alone is not enough) nonzero nanosecond ctime, same-size rewrites with restored mtime, atomic replacement and fresh-open visibility; then verify cold progress, a full publication and load, clean-pass idempotence and late-reading invalidation **before restoring any paused results timer**.
+
 ### Sustained non-English Qwen crop feed
 
-The existing **Temporal singleton is the sole Qwen prepare/ship owner**. The retained
-`usnm-qwen-feed.timer` and `usnm-qwen-ship.timer` units are intentionally disabled;
-do not enable them alongside Temporal. Preparation and shipping remain separate
-activities, so archive extraction or preparation failure does not hold already-READY
-work behind preparation. A campaign-local ship lock prevents concurrent consumers
-from copying/cleaning one parent chunk; normal project mutexes serialize publication.
-This does not replace the ordinary quality feeder.
-Install `qwen_feed.py`, `quality-ship.sh` and `quality_receive.py` into a Qwen-owned
-`/opt/usnm-quality-feed/qwen-throughput/` directory, leaving other campaigns'
-installed shared helpers unchanged. Install `scan_quarantine.py` in the preparation CT's
-`/opt/usnm-quality-feed/` **before** the matching `quality_feed.py` and `ocr_manifest.py`.
-Install `archive_alto.py` on the archive
-host at `/opt/usnm-quality-feed/`, and both `qwen_submit.py` and `qwen_provenance.py` inside the server container at
-`/project/ops/qwen-feed/`. The existing pinned preparation venv suffices; no new
-packages or LoC clients are needed. Both SSH destinations must have verified host keys
-and the existing host trust, never `StrictHostKeyChecking=no`.
+The **Temporal singleton is the only Qwen prepare/ship owner**; `usnm-qwen-feed.timer` and `usnm-qwen-ship.timer` stay disabled. Preparation and shipping are separate activities, so a preparation failure never holds READY work. A campaign-local ship lock and the project mutexes serialize consumers and publication. The ordinary quality feeder is unaffected.
 
-Configure `/etc/usnm/qwen-feed.env` on the shipper host with `CAMPAIGN` (a new campaign),
-`SERVER_HOST`, `ARCHIVE_HOST`, `SCAN_SERVER`, the existing quality `ENGINE_IMAGE`,
-`QWEN_ENGINE_PLAN` (a reviewed `/project/.../plan.json` containing the pinned `engine`),
-and `QWEN_MODELS` (the existing checksum-pinned shared-model directory, not another
-model copy). `QWEN_MAX_READY` defaults to 1000 **fresh original replicas** (500
-untouched native pairs); it is not the global unsent-replica headline. Install the
-helpers from `boinc/scripts/onprem/quality-feed/` at the Temporal activity's idle
-boundary. Do not start a competing consumer while an old shipper is active, and keep
-the systemd feed/ship timers disabled. Verify the singleton's genuine ordinary run
-and authoritative native audit. Source/archive budgets are unchanged.
-Phase JSON distinguishes inventory, selection, original ALTO and
-READY preparation; native shipping logs normal mutex acquisition.
+Install the helpers from `boinc/scripts/onprem/quality-feed/` at the activity's idle boundary, never alongside a running old shipper:
 
-Each tick excludes all retained Qwen single-page/bundle documents and the campaign's
-completed source chunks, selects explicitly non-English **available** scans by descending
-individual-page damage, and prepares at most 100 pages. The live indexed
-`quality.page_summary` supplies language/damage (`select --damage-dsn-file`); the
-standalone selector retains its Parquet mode. Original ALTO is read from the
-retained bulk archives into `/tank/locstats/qwen-alto`, exposed through the preparation
-CT's existing read-only `/srv/locstats` mount. Each XML has a SHA256 receipt naming its
-archive, member and archive signature; receipts travel in the checksummed source chunks.
-Absent original ALTO is explicitly deferred for a day, not replaced with synthetic boxes.
-Archive extraction yields between archives after a 30-minute budget (finishing at
-least one archive), returning unvisited pages as `pending`, not `missing`. Cached
-XML and provenance are verified on subsequent ticks, so large first-time selections
-make incremental progress rather than repeatedly exceeding the SSH timeout. Pending
-pages remain eligible immediately; only confirmed missing sources get the daily deferral.
+- `qwen_feed.py`, `quality-ship.sh`, `quality_receive.py` in `/opt/usnm-quality-feed/qwen-throughput/` (other campaigns' helpers untouched).
+- `scan_quarantine.py` in the preparation container's `/opt/usnm-quality-feed/` **before** the matching `quality_feed.py` and `ocr_manifest.py`.
+- `archive_alto.py` on the archive host at `/opt/usnm-quality-feed/`.
+- `qwen_submit.py` and `qwen_provenance.py` in the server container at `/project/ops/qwen-feed/`.
+
+The pinned preparation venv suffices; no new packages or LoC clients. SSH destinations need verified host keys, never `StrictHostKeyChecking=no`. `/etc/usnm/qwen-feed.env` on the shipper: `CAMPAIGN` (a new campaign), `SERVER_HOST`, `ARCHIVE_HOST`, `SCAN_SERVER`, `ENGINE_IMAGE`, `QWEN_ENGINE_PLAN` (a reviewed `/project/.../plan.json` containing the pinned `engine`), `QWEN_MODELS` (the checksum-pinned shared-model directory, not another copy), `QWEN_MAX_READY` (default 1000 **fresh original replicas**, 500 untouched pairs; not the global unsent count). After installing, verify the singleton's real ordinary run and native audit.
+
+Each tick skips documents already in Qwen roots and completed source chunks, picks non-English **available** scans by descending page damage from `quality.page_summary` (`select --damage-dsn-file`), and prepares at most 100 pages. Original ALTO is extracted from the retained bulk archives into `/tank/locstats/qwen-alto` (read-only `/srv/locstats` in the preparation container), each XML with a SHA256 receipt naming archive, member and signature, carried in the checksummed source chunks; cached XML and provenance are re-verified on later ticks. Missing ALTO is deferred a day, never synthesised. Extraction yields after 30 minutes per tick (finishing at least one archive); unvisited pages return as `pending` and stay eligible.
 
 #### Undecodable source scans
 
-Preparation forwards the feeder's captured stdout to the journal even when the child
-exits unsuccessfully or times out; its stderr remains inherited. READY counts report
-pages actually written, not merely selected. A scan must match its indexed byte count
-and SHA256 before decoding. The fetcher computes both from the bytes it downloaded (a
-batch JP2 is first MD5-checked against LoC's bag manifest), so they prove the scan
-server returned what was fetched, not that the image is complete: LoC's own copy of a
-JP2 can lack its codestream end and still match. With Qwen's `--quarantine-decode`,
-only a known Pillow unidentified/truncated/broken-stream error, with the expected codec
-available, counts toward quarantine. Missing codecs, format disagreements, network
-errors, scan/index mismatches and other errors remain visible, retryable failures and
-do not increment the decoder-failure count. A buffer scan the scan server answers 404
-for (an OCR worker read and deleted it after selection; the original-ALTO phase can
-take an hour) is logged and left out without failing the run. It stays out of
-`done.txt` and, with `--quarantine-decode`, is recorded as retryable, so selection
-takes it again once its scan is back. A missing keep scan remains a failure. A
-successfully prepared page resets earlier, pre-quarantine failures. Three decoder
-failures of the same
-`(doc_id, batch, batch_version, bytes, sha256)` record quarantine it; the ordinary
-selector excludes that fingerprint, not every future version of the document. Other
-successfully prepared pages keep their READY chunks.
-The updated CPU `usnm-quality-follow.service` opts `quality_feed.py follow` into the
-same verification and three-failure threshold. It filters quarantined fingerprints
-before filling its bounded outbox, so an unchanged bad scan neither retries nor crowds
-out other pages. A changed fingerprint remains eligible; network, integrity and unknown
-decoder errors continue to retry. CPU and Qwen quarantines are recorded as
-`manual_review` and never queue a re-fetch. These changes do not alter BOINC work requests.
+A scan must match its indexed bytes and SHA256 before decoding (batch JP2s are also MD5-checked against LoC's bag manifest). That proves the scan server returned what was fetched, not that LoC's file is whole, so a re-fetch can return the same broken bytes. Preparation logs the feeder's stdout even on failure; READY counts are pages written.
 
-Before decoding, every verified `.jp2` gets a cheap completeness check that reads only
-its box, marker-segment and tile-part headers (no pixels). A box or tile-part that
-declares bytes past the end of the file, or a codestream that stops without its EOC
-marker, means the image was cut short. The bag MD5 shows that LoC's copy holds the same
-bytes, so neither a retry nor a re-fetch can fix it. Such a scan is never decoded or
-retried and does not count as a decoder failure. With `--quarantine-decode` (the CPU
-follower and Qwen), it is recorded at once as `source_truncated` for that exact
-fingerprint in the same database. It is then excluded like a quarantine, including by
-the manifest builder's non-English acquisition. A changed fingerprint is eligible
-again. Without that option (`usnm-quality-feed.service`), the page goes to
-`skipped.txt` with a `source_truncated: <reason>` line. Each chunk logs
-`source-truncated scans found`. `run` at start and `follow` whenever the total changes log
-`source-truncated scans in campaign`, giving page counts per `<batch>_verNN`.
-A JP2 that reaches EOC but is malformed in some other way still goes to the decoder
-and the three-failure rule. An existing `manual_review` record is left unchanged.
-The same check now keeps such scans out of all OCR too (#1457). It runs as
-`usnm_ocr_contract::jp2`, a Rust port tested against the same vectors
-([`fixtures/jp2-truncation-vectors.json`](../fixtures/README.md)). The page keeps LoC's
-text, and nothing retries it:
+**Decoder quarantine** (`--quarantine-decode`, used by Qwen and the CPU `usnm-quality-follow.service`): three known Pillow decode failures (unidentified, truncated, broken stream, with the codec present) on one `(doc_id, batch, batch_version, bytes, sha256)` quarantine that fingerprint as `manual_review`; it is excluded and never re-fetched, while a changed fingerprint is eligible again and a successful preparation resets earlier failures. Network, codec, format and index errors stay retryable. A buffer scan answering 404 (an OCR worker read and deleted it) is skipped as retryable; a missing keep scan is a failure.
 
-- The scan fetcher (`usnm-ocr-worker prefetch`) checks each JP2 once its bytes are
-  verified. It doesn't write or index one that is cut short. Instead it lists it in
-  `<out>/source-truncated.jsonl` (doc id, batch and version, LoC URL, checksums, size,
-  reason, time) and logs a `source_truncated` failure. The status counts it as
-  `source_truncated`. LoC isn't asked for that batch version of the page again, and the
-  dashboard counts it among the dead pages.
-- The on-prem node worker dead-letters such a page as `permanent`
-  (`source_truncated: LoC's JP2 is cut short: <reason>`), without decoding it or trying
-  the JPEG.
-- The BOINC worker (`usnm_ocr`, one page or a bundle) fails such a page before its engine
-  runs. A bundle's other pages still run.
-- With `--skip-truncated-scans`, the queue-fed controller checks each claimed JP2 before
-  pushing it. It dead-letters one that is cut short, never exports it, and lists it in its
-  state
-  ([A page whose JP2 LoC holds cut short](boinc-batch-scheduler.md#a-page-whose-jp2-loc-holds-cut-short-1457)).
+**Truncated JP2s.** A header-only check finds a box or tile-part claiming bytes past end of file, or no EOC marker. Such a scan is never decoded or retried and is not a decoder failure: with `--quarantine-decode` it is recorded at once as `source_truncated` (a changed fingerprint is eligible again); without it (`usnm-quality-feed.service`) it goes to `skipped.txt` as `source_truncated: <reason>`. Logs: `source-truncated scans found` per chunk, `source-truncated scans in campaign` with counts per `<batch>_verNN`. A JP2 that reaches EOC but is otherwise malformed still goes to the decoder and the three-failure rule. Existing `manual_review` records are left unchanged. The same check (`usnm_ocr_contract::jp2`, vectors in [`fixtures/jp2-truncation-vectors.json`](../fixtures/README.md), #1457) keeps such scans out of all OCR, and the page keeps LoC's text:
 
-The preparation CT stores this evidence, decoder versions, failure counts/timestamps
-and review state in the campaign's
-`/var/lib/usnm-quality-feed/<campaign>/decode-quarantine.sqlite3`, separate from
-`skipped.txt`. For example, inspect quarantined records without changing them:
+- `usnm-ocr-worker prefetch` lists it in `<out>/source-truncated.jsonl` instead of writing it and never asks LoC for that batch version again.
+- The on-prem node worker dead-letters it as `permanent` (`source_truncated: LoC's JP2 is cut short: <reason>`).
+- The BOINC worker (`usnm_ocr`) fails that page before its engine runs; a bundle's other pages still run.
+- The queue-fed controller with `--skip-truncated-scans` dead-letters it before pushing ([A page whose JP2 LoC holds cut short](boinc-batch-scheduler.md#a-page-whose-jp2-loc-holds-cut-short-1457)).
+
+State is in `/var/lib/usnm-quality-feed/<campaign>/decode-quarantine.sqlite3`. Inspect read-only:
 
 ```sh
 pct exec 215 -- /opt/usnm-quality-feed/venv/bin/python -c \
   'import json,sys; from pathlib import Path; sys.path.insert(0,"/opt/usnm-quality-feed"); from scan_quarantine import quarantined; print(json.dumps([{k:v for k,v in r.items() if k != "manifest_body"} for r in quarantined(Path("/var/lib/usnm-quality-feed/qwen-nonenglish-v1"))], indent=2))'
 ```
 
-This change adds no repair/re-fetch producer or new queue format. The existing fetcher and
-dashboard continue to consume ordinary `usnm-prefetch-manifest/1` manifests. The Qwen
-manifest builder reads `QWEN_QUARANTINE_ROOT` (default `/var/lib/usnm-quality-feed`)
-and excludes quarantined documents from new ordinary non-English acquisition. A missing
-or unreadable root or helper is an error. Already queued manifests and independent OCR
-acquisition are not rewritten or blocked; recovery needs a separately reviewed plan.
-Quarantine writers and the manifest builder must use the same root: they serialize
-quarantine transitions with the builder's final exclusion check and ordinary manifest PUT.
-Keep its `.decode-quarantine.lock` file in place while either service runs; replacing it
-would break that coordination. A failed PUT releases the lock and remains an error.
+The manifest builder reads `QWEN_QUARANTINE_ROOT` (default `/var/lib/usnm-quality-feed`, an error if missing) and excludes quarantined documents from new non-English acquisition, serialising with quarantine writers through `.decode-quarantine.lock`; keep that file in place while either service runs. A failed PUT releases the lock and is an error. Already queued manifests and independent OCR acquisition are not rewritten or blocked; recovery needs a separately reviewed plan.
 
-At an idle boundary, install the quarantine helper and matching manifest builder/service
-first, then the shared `quality_feed.py` before the updated CPU follower service and
-matching `qwen_source.py` and `qwen_feed.py`. Restart the follower only at a safe
-boundary, preserving its outbox and state. To roll back, preserve quarantine state,
-READY chunks and queued work. Restore the previous CPU follower unit before an older
-shared feeder, which cannot parse `--quarantine-decode`; it will resume retrying bad
-scans. Keep the new helper and manifest exclusion while quarantines need protection.
-A `scan_quarantine.py` older than the `source_truncated` state rejects such a record
-as invalid. The feeder, Qwen and the manifest builder then stop with an error rather
-than retry, so keep the new helper when rolling back `quality_feed.py`.
-If the old manifest builder must be restored, pause that producer at an idle boundary
-and obtain a reviewed recovery plan. An old Qwen controller ignores quarantine.
+**Install and rollback.** At an idle boundary install the quarantine helper and manifest builder first, then `quality_feed.py`, then the CPU follower with matching `qwen_source.py` and `qwen_feed.py`, restarting the follower at a safe boundary and keeping its outbox and state. On rollback keep quarantine state, READY chunks and queued work, and restore the old follower unit before an older feeder (which can't parse `--quarantine-decode` and would retry bad scans again). Keep the new `scan_quarantine.py`: an older one rejects `source_truncated` records and stops the feeders with an error. Restoring the old manifest builder needs that producer paused at an idle boundary and a reviewed recovery plan. An old Qwen controller ignores quarantine.
 
-Language-budget reservations are still made before preparation; an already-reserved
-failed fingerprint can be retried without spending another page. A reserved page
-found `source_truncated` is refunded (#1457): at the start of each tick the feed takes it
-out of `<name>-budget.json` (logged as `<name>_budget_refund`), and the tick can select
-another page in its place. It is refunded only if its current scan, the last full one in
-the retained index as `select` reads it, has that quarantine record (same doc, batch,
-version, size and SHA256), and it is not in `done.txt` or `skipped.txt`. A page whose scan
-LoC has replaced stays spent, because it can still be prepared. A changed
-fingerprint after quarantine, or a failure before a retry record is persisted or
-after decoding but before writing READY, can still require budget review. The refund reads
-the quarantine with the existing `quarantined()` helper, so it needs no new
-`scan_quarantine.py`.
+**Language budget.** Pages are reserved before preparation; a reserved failed fingerprint retries without spending another page. A reserved page later found `source_truncated` is refunded at the next tick (`<name>_budget_refund` in `<name>-budget.json`) if its current scan has that exact quarantine record and it isn't in `done.txt` or `skipped.txt`. A page whose scan LoC replaced stays spent. A fingerprint change after quarantine, or a failure before a retry record persists or between decoding and READY, can still need budget review.
 
-Matching size, SHA256 and (for batch JP2s) the advertised bag MD5 proves the retained
-bytes match those recorded checksums, **not** that the bytes are decodable or whether
-damage originated upstream. A re-fetch may return identical source bytes; resolving
-source versus decoder problems requires separate evidence rather than a retry loop.
+#### Native admission and shipping
 
-The shipper stages native 8B work **before** freeing source inputs, reusing normal Rust
-staging/submission, 12 crops/page, shared models, quorum two and distinct-host validation.
-It refuses submission uncertainty, cross-campaign duplicate documents, changed hashes,
-incorrect database routing/quorum, the configured fresh-original-replica target
-(including a per-chunk reservation), or more than 2000 unresolved native workunits
-(including retries, counted separately). A fresh pair is batch 8, quorum/target two,
-canonical/error zero, exactly two total results, both unsent/host zero/outcome zero/
-unvalidated, and no assignment row. Retry replicas and unrelated applications never
-masquerade as useful fresh supply or block it via a global ready headline. The
-ordinary non-Qwen shipper's global unsent ceiling is unchanged.
+The shipper stages native 8B work (12 crops a page, shared models, quorum two, distinct hosts) **before** freeing source inputs. It refuses uncertain submissions, documents duplicated across campaigns, changed hashes, wrong routing or quorum, going past the fresh-replica target (including a per-chunk reservation), or more than 2000 unresolved native workunits (retries counted separately). A fresh pair is batch 8, quorum and target two, exactly two unsent, unassigned, unvalidated results; retries and other apps never count as fresh. The ordinary non-Qwen shipper's global unsent ceiling is unchanged.
 
-Before transferring or staging a native READY chunk, the shipper calls the same
-read-only admission helper with `--preflight` and reserves its **whole** page count.
-Normal capacity pressure emits JSON `status=deferred` with the phase, reason,
-fresh-pair count, reservation, limits and existing audit SHA256, then exits 75
-(already a normal deferred exit for `usnm-qwen-ship.service`). Preflight deferral
-transfers zero pages; it neither acknowledges READY nor reports a publication.
-Unchanged full-watermark ticks only recheck admission, not recopy the sources.
-Admission is always checked again under the normal project mutex before native
-publication: a capacity race also defers with JSON/exit 75 and retains READY and
-staged partials. Uncertain `submitting` markers or changes to previously audited
-job bytes remain hard errors, not normal backpressure. No audit is rewritten by a
-deferred decision; the logged SHA256 binds the existing immutable receipt.
-
-The 50 GiB project/bulk/thin-pool floors remain; native admission additionally
-reserves at least 64 MiB **per candidate page** before staging on the least-free
-backing filesystem. Preparation uses the same conservative per-page reservation to
-bound its selection. Up to three unshipped chunks are buffered. Failures retain READY
-chunks and submission journals; never delete `submitting` to replay work.
-The filesystem floor uses the minimum available space across the project root,
-`quality/`, and `usnmocr/download/`, so a separate bulk-data mount or NFS quota
-cannot be hidden by free space on the local root filesystem.
-Successful native workunit audits are retained in `audit.json`, bound to the exact job
-SHA256. Historical jobs need not still exist in BOINC's periodically purged database;
-new jobs always require a fresh authoritative audit; changed previously audited
-job bytes require explicit reconciliation, never automatic replay.
+Before transfer it runs the read-only admission helper with `--preflight` and reserves the whole chunk. Under capacity pressure it logs JSON `status=deferred` (phase, reason, counts, limits, audit SHA256) and exits 75, a normal deferral that transfers nothing; admission is checked again under the project mutex before publication. A deferral rewrites no audit. Uncertain `submitting` markers are hard errors (never delete `submitting` to replay work), and changed audited job bytes need explicit reconciliation, never automatic replay. Storage floors: 50 GiB on project, bulk and thin pool, plus 64 MiB per candidate page on the least-free of the project root, `quality/` and `usnmocr/download/`, so a separate bulk mount or NFS quota can't hide behind local free space. Preparation uses the same reservation to bound its selection. Up to three unshipped chunks are buffered. Native audits stay in `audit.json`, bound to job SHA256.
 
 #### Transactional subset shipment (#1466, opt-in)
 
-The legacy invocation above still reserves a whole chunk. The existing Temporal
-ship activity may explicitly select `quality-ship.sh --qwen-subsets` **only after
-the matching helpers and binary are installed**. No timer, scheduler, language
-budget, routing policy, or queue ceiling is changed by this switch. The limits
-remain 1,000 fresh-original replicas (500 pairs), 2,000 unresolved native units,
-three READY parents, 50 GiB storage floors, and 64 MiB reserved per selected source.
+`quality-ship.sh --qwen-subsets` (from the Temporal activity, **only after the matching helpers and binary are installed**) ships part of a parent chunk instead of reserving it whole: the oldest parent's remaining sources in sample order, up to the headroom. Limits are unchanged (1,000 fresh replicas, 2,000 unresolved units, three READY parents, 50 GiB floors, 64 MiB a source).
 
-The transaction takes the oldest parent's remaining sources in their original
-sample order. Thus a 96-source parent with 54 slots of headroom ships exactly 54,
-not the entire parent with a smaller `--max-pages`. The immutable manifest binds
-the parent's checksum inventory, ordered original-source fingerprints
-(`doc_id,batch,batch_version,bytes,sha256`), selected sample rows, every selected
-input's size/SHA256, and the staging recipe. It is persisted before transfer;
-retries reuse its content-addressed identity and never silently shrink or replace
-its membership. Changed parent bytes, membership, recipe, or retained provenance
-fail closed. Legacy source chunks without image provenance require explicit
-reconciliation; a marker alone cannot acknowledge a member.
-Before transfer, the existing server helper's read-only `--recipe-inputs` also
-binds the full native engine/model plan, staging-binary checksum, and exact
-campaign places bytes into that parent recipe. Every subset uses those same
-pins; the server rechecks them before staging, including after a storage deferral.
-Incomplete older recipes require reconciliation, not automatic pin adoption.
-The pinned binary determines the generated function words and staging defaults;
-retained jobs must match the full engine, native runtime parameters, places, and
-bound source-job crop/function-word parameters, not just reader and image hashes.
-Bundled pages inherit the bundle's function-word list when their serialized list
-is absent or empty, exactly as the Rust contract and quality worker specify.
-Explicit nonempty overrides still must match the retained source job; crop seed
-and crop-count checks remain strict. A Rust staging regression feeds actual
-default-size bundles through both initial and retained-acknowledgement checks.
+What it guarantees:
 
-Only the selected scans/texts and generated selected sample travel over the
-existing LAN transport. Each transfer uses a unique upload directory; the server
-verifies it and atomically adopts it under the existing host bridge mutex, never
-overwriting inputs an earlier invocation may still be using. Native
-`qwen stage --members FILE`, `qwen submit --members FILE`, and
-`quality submit --members FILE` use an ordered JSON array of document IDs.
-Unrelated pending units are never drained. Native subset staging requires
-single-page units. Quality staging uses the selected sample and the existing
-bundle recipe. An unsubmitted pre-existing bundle crossing the selection boundary
-is refused before staging/publication; reconcile that legacy partial explicitly
-rather than silently publishing its extra members.
-Every retained native job in the root, including unselected and submitted jobs,
-must use the requested version. Subset selection never bypasses this root-wide
-cohort invariant.
+- An immutable manifest, written before transfer, fixes the members (`doc_id,batch,batch_version,bytes,sha256`), input hashes and staging recipe, including the engine/model plan, staging-binary checksum and places bytes (`--recipe-inputs`). Retries reuse it, and the server rechecks the pins before staging, including after a storage deferral; any change to parent bytes, membership, recipe or provenance fails closed.
+- `qwen stage`, `qwen submit` and `quality submit` take `--members FILE` (ordered JSON array of doc IDs) and never drain unrelated units. Each transfer uses a unique upload directory that the server verifies and adopts atomically under the host bridge mutex, never overwriting inputs another invocation may use. Every retained native job in the root, selected or not, must use the requested version. The archive receipt must bind both original and prepared ALTO; do not rewrite the receipt. Staged jobs without these bindings are not adopted and, like a quality-stage crash before bindings persist, need explicit reconciliation. LoC provenance is frozen at `quality/<campaign>/texts/<doc_id>.loc-provenance.json` and source bindings at `quality/<campaign>/shipment-quality/<doc_id>.json`.
+- Capacity and the `pve/data` thin pool (bounded `lvs`, 64 MiB a page above 50 GiB) are checked under the container mutex, held through publication; `phase=locked_thin_pool` defers.
+- An interrupted publication is reconciled against BOINC by workunit identity; missing, duplicate or conflicting history keeps the journal and parent and never clears `submitting`.
+- Parent and copies stay until a complete disjoint set of members is acknowledged by native and quality publication; retirement then moves the parent to `retired-parent` and deletes it (`cleaned.json`). A new directory reusing a retired name is kept and rejected; legacy retirement records without incarnation evidence need reconciliation. A parent with a transaction journal is refused by the legacy whole-chunk path, so rollback must drain or reconcile it, not bypass the journal.
 
-New quality source jobs also acquire a retained
-`quality/<campaign>/shipment-quality/<doc_id>.json` binding to the exact frozen
-exported-text bytes, requested reader recipe, and resulting source-job checksum.
-The binding also retains the complete frozen staging recipe.
-Bundle reader lists and prepared-text checksums must match that bound source job.
-Previously staged jobs without this evidence are not adopted, even when their
-JPEG/ALTO match. They require explicit reconciliation, as does a quality-stage
-crash that leaves jobs before their bindings are persisted; sources stay retained
-and no publication is attempted.
+Receipts: journals at `<outbox>/.qwen-transactions/<campaign>/<chunk>/`, server evidence at `/project/qwen-shipments/<native-campaign>/<transaction-id>/`. `shipment_invocation` reports `publication_attempted`, `native_acknowledged` and `quality_acknowledged`. **Exit 75 is not a zero-publication receipt**: native success then quality failure is `status=partial`, and `publication_attempted=null` means unknown. Monitor receipts, not exit status. Anything the tool can't reconcile automatically (legacy chunks without provenance, older recipes, crossing bundles) needs an explicit operator reconciliation.
 
-The exact supplied `texts/<doc_id>.loc-provenance.json` bytes are frozen at
-`quality/<campaign>/texts/<doc_id>.loc-provenance.json` before staging/publication
-and remain after retirement. Replay and retirement recheck their frozen hashes.
-Missing or conflicting archive provenance requires explicit reconciliation.
-The archive receipt must bind both original and prepared ALTO: if namespace
-normalization changes its hash, publication fails closed because the existing
-cohort binder requires that same hash. Do not rewrite the supplied receipt or
-silently change the cohort controller's contract.
+Before enabling (offline tests don't cover these):
 
-Storage is rechecked under the bridge mutex before staging, and authoritative
-native capacity is rechecked again immediately before publication. Reservation
-counts the **entire selected subset**, including eventual `no_crops`/`too_large`
-dispositions; new native capacity counts only still-unpublished native jobs.
-Requests, pinned engines, scientific identities, batch 8, quorum two, and
-distinct-host scheduling are unchanged. The native and quality submits both run
-under that same existing mutex. The scheduler's short database publication
-read-lock interval may briefly delay their INSERTs.
-The host-side gate first acquires that same CT mutex, then probes `pve/data`
-with a bounded `lvs` call and reserves the full selected count at 64 MiB/page
-above the 50 GiB floor. Only a passing probe releases the waiting command into
-the server container; the mutex remains held through publication. A failed
-probe or EOF cannot start staging. `phase=locked_thin_pool` deferrals preserve
-earlier positive/uncertain publication evidence.
+- Install reviewed `qwen_shipment.py` beside `qwen_feed.py` and `qwen_submit.py`, the matching `quality-ship.sh`, and a hash-verified `usnm-boinc-stage` with the `--members` options; every transaction Rust command uses it, not an older server-image `quality submit`.
+- At an idle boundary confirm writable transaction storage, canonical `places.txt` (or its `v1-wave9` source), guarded app versions, shared pinned models, no conflicting legacy partials, unbound receipts or retirement ownership records, and that each archive receipt satisfies the downstream cohort binder. Keep both feed/ship timers disabled.
+- Verify host Python, `pct exec` pipe forwarding, `flock` and `pve/data` under the real mutex (the Linux CI rehearsal is not a production Proxmox proof).
+- Run one bounded transaction and check identities, quorum, one-result-per-host, receipts after an interrupted response and all floors; review mutex duration and retirement before expanding.
 
-Per-application publication intents bind job checksums before submission. An
-interrupted publication is reconciled against BOINC by exact workunit identity,
-application, input name, routing, and quorum. Positive evidence completes the
-marker; missing/duplicate/conflicting history retains the journal and parent,
-never clears `submitting` to replay. Native audit rows additionally bind the exact
-source/JPEG. A fully acknowledged durable transaction can replay without requiring
-already-purged BOINC history, but its retained jobs, intents, markers, and source
-audits must still agree.
-Both Rust submitters fsync the unit directory after the submission-marker rename.
-Positive reconciliation also syncs already-present submitted markers before
-acknowledgement; matching interrupted duplicate markers are completed, never
-replayed. Acknowledgement validation uses one campaign-audit snapshot per
-transaction, rather than reopening the entire audit for every member.
-Campaign places are installed with the frozen-byte atomic-copy helper; a partial
-`.pending` copy cannot become an accepted campaign vocabulary on retry.
+Ramp from 200 fresh replicas to 1000 only after measured runs show new app-6/batch-8 original jobs, zero uncertain submissions, immutable inputs, phase/rate receipts and post-cleanup floors; 2000 replicas is still 1000 pairs and must fit the unresolved ceiling with existing jobs. The indexed scan ceiling (262,920 pages) is not a count of eligible pages. Report a zero-job hour as zero.
 
-Producer journals live outside the removable parent:
-`<outbox>/.qwen-transactions/<campaign>/<chunk>/`, with `parent.json`, `recipe.json`,
-`owner.json`, and `<transaction-id>/{manifest,transfer,receipt,invocation}.json`.
-Server evidence lives at `/project/qwen-shipments/<native-campaign>/<transaction-id>/`.
-The emitted `shipment_invocation` includes transaction/parent IDs, reservation and
-transferred counts, phase, exit code, `publication_attempted`,
-`native_acknowledged`, and `quality_acknowledged`. **Exit 75 is not itself a
-zero-publication receipt**: native success followed by quality failure is
-`status=partial`; a lost response is uncertain until replay/reconciliation.
-Storage and step-window deferrals combine positive/uncertain evidence from both
-local journals, never prefer an older zero-publication receipt or erase an
-unreconciled attempt. With the ship mutex unavailable, publication state is
-unknown (`publication_attempted=null`), not a zero-publication claim.
-Use these receipts, not only process status, for monitoring.
+#### Manifest timer
 
-The original parent and all subset input copies remain until a disjoint, complete
-cover of the parent's members has both native disposition and quality publication
-acknowledgements. Server retirement verifies retained evidence again and persists
-its retirement record before freeing transferred input copies. Only then may the
-producer remove the parent. Manifests, intents, audits, source bindings, and
-receipts stay retained. Before reading a READY parent's files, cleanup retries
-validate its durable `retired.json`, frozen parent/recipe, and a complete,
-disjoint set of exact transaction acknowledgements. The original directory also
-has a unique `.qwen-shipment-owner.json` bound to the retained `owner.json`.
-Cleanup persists a `retirement-move.json` intent, checks that incarnation, then
-atomically moves the directory to the journal's `retired-parent` and fsyncs both
-directories before recursive deletion. Retries discover unfinished tombstones
-even without a READY directory, including after scans, READY, or the ownership
-marker were removed; `cleaned.json` records completion. A new directory reusing a
-retired name is retained and rejected, never deleted using the old receipts.
-Legacy retirement records without incarnation evidence require explicit
-reconciliation. Once a parent has a transaction journal, the legacy whole-chunk
-path refuses it; rollback must drain or reconcile it, not bypass the journal.
+`usnm-qwen-manifest.timer` (preparation container, from `boinc/scripts/onprem/ocr-feed/`) runs `build-quality --non-english` ten minutes after each run, using `SCAN_SERVER` from `/etc/usnm/quality-build.env`, the certificate-authenticated DSN and state in `/var/lib/usnm-ocr-manifest/qwen-nonenglish`; its service lock prevents concurrent runs. When upgrading, let the old feed's inline manifest finish first so two versions never write the checkpoint at once, verify one pass, then enable the timer independently of `usnm-qwen-feed.timer`. It requests missing non-English scans by descending damage with their real language, excluding retained or requested pages; consumed fetch-history entries are re-requested as keep pages, buffer-only `.done` markers are untouched, and confirmed keep scans are cached a day. Only the scan fetcher downloads, under its budget; user OCR keeps priority.
 
-Deployment/integration gates (offline tests do not satisfy these):
-
-- Install reviewed `qwen_shipment.py` beside `qwen_feed.py` on the shipper and beside
-  `qwen_submit.py` in the server container. Install the matching `quality-ship.sh`.
-  The existing preparation/archive helpers need no new dependency or network access.
-- Install a hash-verified matching `usnm-boinc-stage` with all three `--members`
-  options and quality staging/function-word commands. All transaction Rust commands
-  use this binary, not an older server-image `quality submit`.
-- At an idle singleton boundary, confirm writable durable transaction storage,
-  canonical quality `places.txt` (or its existing `v1-wave9` source), compatible
-  guarded app versions, shared pinned models, and no conflicting legacy partial
-  bundles/unbound source receipts or retirement ownership records. Confirm each
-  selected archive receipt satisfies the actual downstream cohort binder.
-  Keep both feed/ship timers disabled.
-- Verify host Python, `pct exec` pipe forwarding, `flock`, and the `pve/data`
-  inventory under the real bridge mutex. The Linux CI rehearsal uses real `flock`
-  with disposable `pct`/LVM stand-ins; it is not a production Proxmox proof.
-- Enable the activity's explicit flag, then verify one real bounded transaction,
-  exact native/quality database identities, audit/quorum and one-result-per-host
-  configuration, receipts after an interrupted response, and all backing-store
-  floors. Review observed mutex duration and retirement before expanding use.
-  No production invocation, database mutation, deployment, or SSH rehearsal is
-  implied by the mocked offline process tests.
-
-Ramp the configured target only after measured automatic runs, not to manufacture
-10,000 via a number change. For example, start at 200 fresh replicas (100 pairs),
-verify new app-6/batch-8 original jobs, zero uncertain submissions, immutable inputs,
-phase/rate receipts and post-cleanup floors, then use 1000 replicas (500 pairs).
-A later 2000-replica stage is still only 1000 fresh pairs and must fit the unresolved
-ceiling plus the existing jobs. At the 28 October measurement, 189 unique READY
-sources occupied 523,298,131 bytes, worst page 4,708,052 bytes; 19 native download
-page/job inputs occupied 42,208,871 bytes and the two shared models 5,780,074,528 bytes
-once. This supports a conservative 64-MiB/page incremental budget, not an assertion
-that all source candidates are input-valid or scientifically accepted.
-The indexed scan ceiling was 262,920 unique pages, **not** a count of non-English,
-original-ALTO-available, crop-valid pages. Language/source/crop checks still decide
-eligibility. A measured 19-job arrival is not 10,000 useful jobs, and a trailing
-zero-job hour must be reported as zero even when old replicas remain ready.
-
-The separate `usnm-qwen-manifest.timer` in the preparation CT runs
-`build-quality --non-english` every ten minutes after its previous execution finishes.
-Install its service/timer from `boinc/scripts/onprem/ocr-feed/`; it reuses
-`SCAN_SERVER` from `/etc/usnm/quality-build.env`, the existing certificate-authenticated
-database DSN, and `/var/lib/usnm-ocr-manifest/qwen-nonenglish` state. When upgrading,
-let the old Qwen feed's inline manifest finish before starting this timer, so the two
-versions never write that checkpoint concurrently. Verify one manifest pass, then
-enable its timer independently of `usnm-qwen-feed.timer`.
-Manifest or source-preparation failure/slowness cannot prevent the separate ship
-timer from shipping already-ready native work. Its separate service lock prevents concurrent
-manifest runs.
-
-This checkpoint requests missing
-non-English corpus scans in descending page-damage order, retaining the real language
-(and therefore the keep set). Already-retained or already-requested pages are excluded
-through a temporary SQL table, not a command-line-sized `IN` list. Consumed fetch-history
-entries are not evidence of retained scans: they are re-requested as true-language keep
-pages through the normal fetcher. Its buffer-only `.done` markers remain untouched.
-Confirmed keep scans are cached for a day; manifest completion checks actual keep-side
-availability. Only the normal scan
-fetcher performs these downloads, under its existing global budget, holds and failure
-limits. User OCR keeps its existing priority.
-
-`waiting_for_crop_sources` is **not corpus completion**. Deferred archives, inaccessible
-scans, failed validation and storage backpressure remain outstanding. Canonical outputs
-still need the normal `quality-collect` join (`QWEN_SPOOL` is the native batch-8 result
-directory) and archival before any input-retention cleanup. This automation does not
-delete scientific inputs/results, qualify GPUs, reopen broken plan classes, or replace
-whole-page searchable OCR with sampled crop readings.
+`waiting_for_crop_sources` is **not corpus completion**: deferred archives, inaccessible scans, failed validation and storage backpressure remain. Outputs still need the `quality-collect` join (`QWEN_SPOOL` = native batch-8 results) and archival before any input cleanup.
 
 ### Request versions on the feed
 
-The outbox, `done.txt` and source requests stay under `CAMPAIGN`. The shipper chooses where each chunk goes, from `QWEN_SHIP_ARGS` in `/etc/usnm/qwen-feed.env`:
+The outbox, `done.txt` and source requests stay under `CAMPAIGN`. The shipper routes each chunk from `QWEN_SHIP_ARGS` in `/etc/usnm/qwen-feed.env`:
 
 ```
 QWEN_SHIP_ARGS="--prompt-version 3 --qwen-root NAME --qwen-yiddish-root NAME --yiddish-prompt-version 4"
@@ -1360,62 +531,41 @@ QWEN_FEED_ARGS="--yiddish-budget 40"
 ```
 
 - Chunks with no Yiddish go to `--qwen-root` at `--prompt-version`.
-- Chunks of only Yiddish go to `--qwen-yiddish-root` at version 4.
-- At version 3 or 4, a chunk that mixes Yiddish with another language stays READY, as does Yiddish with no root to go to. `qwen_submit.py` refuses both a second time.
+- Only-Yiddish chunks go to `--qwen-yiddish-root` at version 4.
+- At version 3 or 4, a chunk mixing Yiddish with another language stays READY, as does Yiddish with no root; `qwen_submit.py` also refuses both.
 
-`--yiddish-budget N` caps the Yiddish pages the feed will ever prepare, recorded in `yiddish-budget.json` in its state directory. The normal order then leaves Yiddish out, so the budget can't turn into a reread: pages already read at version 1 stay excluded as they always were, and raising the budget is a decision made in the env file. Without the flag Yiddish keeps its place in the normal order. Language filters on `quality_feed.py select` are `--language` and `--exclude-language`.
+`--yiddish-budget N` caps the Yiddish pages the feed will ever prepare (`yiddish-budget.json` in its state directory) and removes Yiddish from the normal order, so the budget can't become a reread: pages read at version 1 stay excluded, and raising the budget is an env-file decision. Without it Yiddish keeps its place in the order. `--german-budget N` does the same for German (`deu`) during calibration (`german-budget.json`): German comes as its own chunk after any Yiddish budget and goes to `--qwen-root` at `--prompt-version`. `--german-pages FILE` (doc_ids, one per line) limits it to a frozen sample, worst damage first; the November calibration used 50 of Study 1's pilot pages from #1428, which already have `frak2021` and `deu_latf` readings. `quality_feed.py select` filters with `--language` and `--exclude-language` (repeatable). `--serbian-budget N` and `--serbian-pages FILE` do the same for Serbian (`srp`), whose BOINC OCR is held for the comparison with LoC's text ([note](notes/2026-11-07-serbian-trust-hold.md)): Serbian chunks come after any Yiddish and German budgets, are recorded in `serbian-budget.json` and go to `--qwen-root` at `--prompt-version`; the refill already admits Serbian. The live feed has `--serbian-budget 500 --serbian-pages /etc/usnm/serbian-compare-pages.txt` (500 of the first Tesseract batch's pages, 71 or 72 per decade).
 
-`--german-budget N` does the same for German (`deu`) while it is being calibrated, recorded in `german-budget.json`. German pages come as a chunk of their own after any Yiddish budget, and the normal order leaves German out. A German chunk goes to `--qwen-root` at `--prompt-version`. `--german-pages FILE` (doc_ids, one a line) limits the German budget to a frozen sample, worst damage first. The November calibration used 50 of Study 1's pilot pages from #1428, which already have `frak2021` and `deu_latf` readings. `--exclude-language` on `quality_feed.py select` may repeat.
-
-`--serbian-budget N` and `--serbian-pages FILE` do the same for Serbian (`srp`), whose BOINC OCR is held for the comparison with LoC's text ([note](notes/2026-11-07-serbian-trust-hold.md)). Serbian chunks come after any Yiddish and German budgets, are recorded in `serbian-budget.json` and go to `--qwen-root` at `--prompt-version`. The refill already admits Serbian, so no refill change is needed. The live feed has `--serbian-budget 500 --serbian-pages /etc/usnm/serbian-compare-pages.txt`: 500 of the first Tesseract batch's pages, 71 or 72 from each decade.
-
-A new root needs the refill and the collector told about it: add the root to `CAMPAIGN_ARGS` in the refill's env, and to `NATIVE_QWEN_ARGS` once its quality root exists. The version 1 root stays out of the refill, so its backlog goes only to the classes open to it.
+A new root must be added to `CAMPAIGN_ARGS` in the refill's env and to `NATIVE_QWEN_ARGS` once its quality root exists. The version 1 root stays out of the refill, so its backlog goes only to the classes open to it.
 
 ### Bundled native units (#1435)
 
-By default each native unit is one page, so `llama-server` starts and loads the model once a page. `--qwen-bundle-size N` (2 to 32) in `QWEN_SHIP_ARGS` has `qwen_submit.py --bundle-size N` stage up to N pages a unit in `--qwen-root` (`qwen stage --bundle-size`). The crop and size limits under `qwen stage` above still close a bundle early: at 12 crops a page that's about 10 pages, so `--qwen-bundle-size 10` is the useful setting. Without the flag nothing changes: neither native call names a bundle size, and `qwen_submit.py` stages one page a unit, as before. `--transaction` refuses any size but 1.
+`--qwen-bundle-size N` (2 to 32) in `QWEN_SHIP_ARGS` makes `qwen_submit.py --bundle-size N` stage up to N pages a native unit in `--qwen-root`, so `llama-server` loads the model once per bundle. The `qwen stage` limits close a bundle at about 10 pages of 12 crops, so use `--qwen-bundle-size 10`. Without the flag units stay one page; `--transaction` refuses any size but 1. Gains (#1435): about a third of task time on an RX 9070 XT, a fifth on NVIDIA, little on Apple and Intel. The loop guard saves more: repeated loop text is 57% of generated tokens on every vendor.
 
-Who gains, from the per-task numbers in #1435. A bundle pays the model load, and the gap before the next task, once rather than once a page:
+To turn it on:
 
-- **RX 9070 XT**: a task takes 32 s, of which 3.5 s is the load and 25 s is reading, and the GPU sits about 10 s idle between tasks. A bundle saves up to 13.5 s of every 42 s a page, about a third.
-- **NVIDIA**: 22 s loading against 80 s reading. A bundle saves up to 22 s of every 102 s, about a fifth.
-- **Apple and Intel**: loading is under 1% of a unit, so they gain little. They read bundles all the same.
+1. **A new root.** `qwen_submit.py` won't bundle a root holding single-page units, and a bundled root refuses `--bundle-size 1`. Only-Yiddish chunks stay single-page in `--qwen-yiddish-root`.
+2. **The collector first.** An inconclusive bundle's agreed pages reach the rows only through `quality collect --qwen-pages` (`QWEN_PAGES_ARGS`, #1572); without it they are lost. Before the first bundle ships, deploy #1572, give every native-root collector a build from it on, set `QWEN_PAGES_ARGS` in `usnm-qwen-results.service`'s env, and add the root to `NATIVE_QWEN_ARGS`.
+3. **The refill.** Add the root to `CAMPAIGN_ARGS` once `qwen-auto-cohort.py` binds bundles (#1561); before that it stops at a bundled root's first unit.
+4. **The apps.** `usnm-qwen-app` reads bundles since #887, so no new app version or signing is expected; check one bundle completes on each plan class first.
 
-The loop guard saves more: repeated loop text is 57% of generated tokens on every vendor. Bundling comes after it.
-
-Turning it on:
-
-1. **A new root.** `qwen_submit.py` refuses to bundle a root that already holds single-page units, and refuses `--bundle-size 1` for a root staged with bundles (`qwen stage` refuses that too). Name a new `--qwen-root` with the flag. Chunks of only Yiddish keep single pages in `--qwen-yiddish-root`, which already holds single-page units and where only 12% of strict pairs agree.
-2. **The collector, first.** A bundle is canonical only when every page agrees, so an inconclusive bundle's agreed pages reach the rows only through `quality collect --qwen-pages`. That flag, `quality_results.py --qwen-pages` and the service's `QWEN_PAGES_ARGS` come with #1572, not with this change: until #1572 is merged and deployed, setting `QWEN_PAGES_ARGS` does nothing and an inconclusive bundle loses all its pages. Deploy it, give every collector named for a native root a build from #1572 on, set `QWEN_PAGES_ARGS` in the collector's env (`usnm-qwen-results.service`), and add the new root to `NATIVE_QWEN_ARGS`, all before the first bundle ships.
-3. **The refill.** Add the root to `CAMPAIGN_ARGS` in the refill's env once `qwen-auto-cohort.py` binds bundles (#1561) and is deployed. Before that, the refill stops at a bundled root's first unit.
-4. **The apps.** `usnm-qwen-app` has read bundles since #887, so no new app version or signing is expected. Before the whole feed moves, check that one bundle completes on each plan class.
-
-Admission stays conservative: the watermarks reserve one fresh pair per page, while a bundle is one pair for up to 10 pages. `--qwen-max-ready` still counts replicas, so the same 1,000 holds more pages.
-
-What is still open: the quorum. A bundle still needs every page to agree to be canonical, so an inconclusive bundle goes out to a third and fourth replica for its disagreeing pages. Whether crop-consensus or a page-level verdict decides the unit, with its credit and retry, is a maintainer decision.
+The watermarks still reserve one pair per page while a bundle is one pair for up to 10 pages, and `--qwen-max-ready` counts replicas, so the same 1,000 holds more pages. Still open: a bundle needs every page to agree, so disagreeing pages send the whole unit to third and fourth replicas. Whether crop-consensus or a page-level verdict decides the unit, with its credit and retry, is a maintainer decision.
 
 ### One submit binary and one collector (#1449)
 
-The roots at versions 3 and 4 depend on the static build `/project/ops/qwen-feed/request-guard-44465088/usnm-boinc` (#1437) twice:
+The version 3 and 4 roots use the static build `/project/ops/qwen-feed/request-guard-44465088/usnm-boinc` (#1437) to submit (as `usnm-boinc-stage`, since a pre-#1437 image refuses them) and to collect (the collector at `/project/ops/quality-results/usnm-boinc` can't read them; `qwen-nonenglish-v1` keeps it). Both are settings, undone by removing what was set.
 
-- `qwen_submit.py` submits them with it, as `usnm-boinc-stage`, because a server image built before #1437 has a `qwen submit` that refuses them.
-- `usnm-qwen-results` collects them with it, because the collector at `/project/ops/quality-results/usnm-boinc` can't read them. `qwen-nonenglish-v1` keeps that older collector.
-
-Both are settings, so neither move needs a code change. Each is undone by removing what it set.
-
-**Submission, after the server image is rebuilt.** Once the server runs an image built from #1437 or later, add `--qwen-submit-binary usnm-boinc` to `QWEN_SHIP_ARGS` in `/etc/usnm/qwen-feed.env` on the shipping host. The flag needs the `quality-ship.sh` and `qwen_submit.py` from #1449 or later.
+**Submission**, once the server image is built from #1437 or later: add `--qwen-submit-binary usnm-boinc` to `QWEN_SHIP_ARGS` in `/etc/usnm/qwen-feed.env` (needs `quality-ship.sh` and `qwen_submit.py` from #1449). If the image still refuses a version, the tick fails and the chunk stays READY; remove the flag to revert.
 
 ```
 QWEN_SHIP_ARGS="--prompt-version 3 --qwen-root NAME --qwen-yiddish-root NAME --yiddish-prompt-version 4 --qwen-submit-binary usnm-boinc"
 ```
 
-Every version then submits with the image's `usnm-boinc`. Staging keeps `usnm-boinc-stage`, and so does transactional submission. Watch the next tick that ships a chunk. If the image still refuses a version, the submit fails, the tick fails, and the chunk stays READY. Removing the flag goes back to the static build.
+**The collector.** The row-cache key (`Cache::new` in `crates/usnm-boinc/src/quality/collect_cache.rs`) includes the collector's path and bytes, the `--qwen-crop-states` directory and, for bundles, `--qwen-pages`. Changing a root's collector makes every unit dirty, so `qwen-nonenglish-v1` (about 90 units at 8 per pass) would fail about 12 ticks with no new rows. Old parts stay, so switching back is free while they exist. No single collector keeps every key, since the older one can't read versions 3 and 4, so move it once, warmed first:
 
-**The collector.** The row cache's key (`Cache::new` in `crates/usnm-boinc/src/quality/collect_cache.rs`) includes the collector's resolved path and its bytes, the `--qwen-crop-states` directory, and for bundles only the `--qwen-pages` directory. A root whose collector changes has every unit dirty. A pass recomputes at most `--max-dirty-units` (8) of them and exits nonzero before publishing, so `qwen-nonenglish-v1` (about 90 units) would fail about 12 ticks, three hours, with no new rows. The old parts stay, so switching back costs nothing while they're there. No single collector keeps every key, because the older one can't read versions 3 and 4. `qwen-nonenglish-v1` moves once, warmed first:
-
-1. Never name the image's `usnm-boinc`, or anything a rebuild replaces, as a collector. Every image rebuild would then rewarm every root. The rebuild for #1449 doesn't change a collector.
-2. Use the static build that versions 3 and 4 already collect with. The versions 3 and 4 keys stay the same (same resolved path, same bytes), and only `qwen-nonenglish-v1` changes. This doesn't depend on the image rebuild. Keep `request-guard-44465088/` in place while it is named.
-3. Warm `qwen-nonenglish-v1` with that build before the switch, so no tick fails. This is the service's own collection with the static build, written to a scratch output directory: the cache is the real one, and the published snapshot isn't touched. Run it on the BOINC host, as root. A pass that still has cold units writes 8 of them, then fails with `collection cache warmed 8 dirty units; at least N deferred`. Repeat it until it exits 0.
+1. Never name the image's `usnm-boinc` as a collector, or every rebuild rewarms every root.
+2. Use the static build versions 3 and 4 already use, so only `qwen-nonenglish-v1`'s keys change, independent of the image rebuild. Keep `request-guard-44465088/` while it is named.
+3. Warm it as root on the BOINC host into a scratch output (the real cache; the published snapshot isn't touched); repeat until it exits 0 instead of `collection cache warmed 8 dirty units; at least N deferred`:
 
    ```sh
    pct exec 230 -- flock -w 60 /run/usnm-boinc-step.lock podman exec usnm-boinc-server \
@@ -1426,48 +576,38 @@ Every version then submits with the image's `usnm-boinc`. Staging keeps `usnm-bo
      --cache /project/quality/qwen-nonenglish-v1/collected-parts --max-dirty-units 8
    ```
 
-4. In `/etc/usnm/quality-results-qwen.env` on the preparation host, name the build once and drop the per-root `=COLLECTOR`:
+4. In `/etc/usnm/quality-results-qwen.env` only (`usnm-quality-results` reads `quality-results.env` and the `/project/ops/quality-results/usnm-boinc` link, and keeps its collector), name the build once and drop per-root `=COLLECTOR`. The next tick should print `loaded_at` for all three roots and exit 0; then delete `/project/ops/quality-results/prewarm/`.
 
    ```
    QUALITY_COLLECTOR=/project/ops/qwen-feed/request-guard-44465088/usnm-boinc
    NATIVE_QWEN_ARGS="--native-campaign qwen-nonenglish-v1 --native-campaign qwen-guard-v3-20261102 --native-campaign qwen-guard-v4-20261102"
    ```
 
-   Set it in this file only. `usnm-quality-results` reads `quality-results.env` and the `/project/ops/quality-results/usnm-boinc` link, and keeps its collector. The next tick should print a `loaded_at` line for each of the three roots and exit 0. Then delete `/project/ops/quality-results/prewarm/`.
-
-Turning on the crop rule changes every root's key anyway, through `CROP_STATES_ARGS`, and needs a collector from #1434 (#1490) on, which `request-guard-44465088` predates. If the crop rule is coming soon, make one move instead of two. Install one such build at a new path of its own, warm all three roots with it and `--qwen-crop-states /project/usnmocr/qwen/crop-states`, as in step 3, and then set `QUALITY_COLLECTOR` and `CROP_STATES_ARGS` together.
+The crop rule changes every root's key anyway (`CROP_STATES_ARGS`) and needs a collector from #1434 (#1490) on, which `request-guard-44465088` predates. If it is close, make one move: install such a build at a new path, warm all three roots with it and `--qwen-crop-states /project/usnmocr/qwen/crop-states`, then set `QUALITY_COLLECTOR` and `CROP_STATES_ARGS` together.
 
 ### OCR's prefetch manifests (#1055)
 
-The scan fetcher (home-infra `usnm-loc-fetch`) takes OCR's manifests before the quality
-pass's, all inside the host's 45-a-minute LoC budget. `boinc/scripts/onprem/ocr-feed/ocr_manifest.py`
-makes OCR's in CT215, hourly (`usnm-ocr-manifest.timer`): the pages queued for OCR
-(curated `ocr-local/queued/`, read live with the container's Arc identity) that have no
-outcome since (`ocr-local/outcomes/`) and no scan on pve-big's scan server, users' requests
-first, at most 1,000 a manifest, PUT through the scan server as
-`/manifests/queue-ocr-<stamp>/manifest.parquet`. It makes the next one only once the last
-is mostly fetched (90% on the scan server) or a day old.
+The scan fetcher (home-infra `usnm-loc-fetch`) serves OCR's manifests before the quality pass's. `boinc/scripts/onprem/ocr-feed/ocr_manifest.py` builds OCR's hourly (`usnm-ocr-manifest.timer`): pages queued in curated `ocr-local/queued/` (read live with the container's Arc identity) with no outcome in `ocr-local/outcomes/` and no scan on the scan server, users' requests first, at most 1,000 per manifest, PUT through the scan server as `/manifests/queue-ocr-<stamp>/manifest.parquet`. The next one waits until the last is 90% fetched or a day old.
+
+LoC budgets (code: `crates/usnm-ocr-worker/src/loc/global.rs`, `crates/usnm-boinc/src/scans.rs`, `crates/usnm-ocr-worker/src/loc/bucket.rs`):
+
+| Component                                                                        | Rate                                                                                                                                                |
+| -------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Host-wide LoC pacer (all LoC requests on the host, via the fetcher's state file) | 20 a minute (3 s gap); 12 a minute (5 s) for 24 hours after a 429, 403 or challenge page; reset with `usnm-ocr-worker loc-pacer --file <f> --reset` |
+| `quality stage` / other staging (`--gap-secs`)                                   | default 5 s (12 a minute), minimum 3 s; also inside the host pacer when `USNM_LOC_GLOBAL_PACER` is set                                              |
+| LoC's `ndnp-batches` bucket (`--loc-bucket-gap-ms`)                              | default 2 s, minimum 1 s; separate from the host pacer                                                                                              |
 
 ### The full image pass and the piggyback (#962)
 
-`ocr_manifest.py build-quality` (`usnm-quality-build.timer`, every 2 hours in CT215) takes
-the next issues from `usnm_quality`'s stored summary: pages with no image features yet, not
-staged, grouped by issue, the issues ranked round-robin over (title, decade) with the worst
-first by their worst page (the mean of the damage score and LoC's own doubt, `1 - wc_mean`),
-the first `--strata` issues of each, every page of an issue. Whole issues let the fetcher
-ask for an issue's METS, and its batch's manifest, once for all its pages: about one request
-a page. The first stratum-1 manifest (25 October), one page per (title, decade), cost about
-three bucket requests a page. `--batches` (`--pass-batches` to the installer) limits the pass
-to the batches a file names, such as LoC's bucket's public ones. It queues the pages through
-the scan server as `queue-quality-<stamp>`, which the fetcher runs behind OCR's manifests in
-one-hour slices, inside the host's global LoC budget. Rows are marked `eng`, so the scans go
-to the fetcher's buffer set.
+`ocr_manifest.py build-quality` (`usnm-quality-build.timer`, every 2 hours) takes the next issues from `usnm_quality`'s stored summary: pages with no image features yet, not staged, grouped by issue, issues ranked round-robin over (title, decade), worst first by their worst page (mean of the damage score and LoC's doubt, `1 - wc_mean`), the first `--strata` issues of each, every page of an issue. Whole issues let the fetcher request an issue's METS and batch manifest once for all its pages, about one request a page (the first stratum-1 manifest on 25 October, one page per (title, decade), cost about three bucket requests a page). `--batches` (`--pass-batches` to the installer) limits the pass to the batches a file names, such as LoC's bucket's public ones. Pages are queued through the scan server as `queue-quality-<stamp>`, run behind OCR's manifests in one-hour slices inside the global LoC budget. Rows are marked `eng`, so scans go to the fetcher's buffer set.
 
-`quality_campaign.py` builds a worst-first re-OCR list from the stored summary ([#1415](https://github.com/tgoodyear/usnewsmap.com/issues/1415)): every page the [damage ranking report](https://github.com/tgoodyear/usnewsmap.com/pull/1401) calls worth re-OCRing, and an OCR-then-compare sample of the moderate band as its own campaign, `<campaign>-moderate`. It reads the database in a read-only transaction and writes only to its `--out-dir`, so it stages, queues and ships nothing. Each campaign gets `plan.jsonl` (every page in order), `pages.jsonl` (the ones `--index` has a scan for, which `quality_feed.py run` reads) and prefetch manifests for the rest (`manifests/m00001.parquet`, marked `eng` like the image pass's). The file's header has the ordering and sampling rules.
+#### Worst-first re-OCR lists (#1415)
 
-The bands are named arguments whose defaults are the report's: `--worst-above 0.25` (the re-OCR list), `--moderate-above 0.1` (the sample's band, up to `--worst-above`) and `--min-occurrences 50` (word occurrences, `head + near`, for both). The export cuts at the last two in SQL; each row is tested again as it is read, with the rate rounded to a `real` first, so a page Postgres stores as 0.1 is over 0.1 as it is in the report. `--dsn-file` keeps the export as `input.csv` with its cut in `input.json`; `--input` replays it, and can narrow the cut but not widen it. `--cell-pages` (default 400) caps each language and decade cell of the sample: a paired test in one cell then detects a mean drop of 0.02 in damage rate at 80% power and two-sided 5%, from the SD of 0.138 measured on 353 paired English pages ([#1416](https://github.com/tgoodyear/usnewsmap.com/pull/1416)). `summary.json`, also printed, has the filters and the counts by band, language and decade.
+`quality_campaign.py` ([#1415](https://github.com/tgoodyear/usnewsmap.com/issues/1415)) builds a worst-first re-OCR list from the stored summary: every page the [damage ranking report](https://github.com/tgoodyear/usnewsmap.com/pull/1401) calls worth re-OCRing, plus an OCR-then-compare sample of the moderate band as `<campaign>-moderate`. It reads the database read-only and writes only to `--out-dir` (it stages and ships nothing): `plan.jsonl` (every page in order), `pages.jsonl` (pages `--index` has a scan for, for `quality_feed.py run`), `manifests/m00001.parquet` for the rest (marked `eng`), and `summary.json` (filters and counts by band, language and decade). The file header has the ordering and sampling rules.
 
-To build the lists in CT 215 (`usnm-batch`) on pve-laptop, with copies of the OCR state and the scan index kept beside them for a rebuild:
+Bands default to the report's: `--worst-above 0.25`, `--moderate-above 0.1`, `--min-occurrences 50` (`head + near`). Rates are rounded to `real` before the cut, matching the report. `--dsn-file` keeps the export as `input.csv` (cut in `input.json`); `--input` replays it and can only narrow the cut. `--cell-pages` (400) caps each language and decade cell of the sample, enough to detect a 0.02 drop in damage rate at 80% power ([#1416](https://github.com/tgoodyear/usnewsmap.com/pull/1416)).
+
+Build in the `usnm-batch` container, keeping copies of OCR state and the scan index for a rebuild:
 
 ```sh
 set -a; . /etc/usnm/quality-feed.env; set +a
@@ -1480,123 +620,48 @@ curl -fsS "$SCAN_SERVER/index/full.jsonl" -o "$out.in/index.jsonl"
   --dsn-file /etc/usnm/quality-db/dsn --ocr-state "$out.in/ocr-state" --index "$out.in/index.jsonl"
 ```
 
-A rebuild from the same export takes `--input "$out/input.csv"` in place of `--dsn-file`, and a new `--out-dir`.
+A rebuild takes `--input "$out/input.csv"` instead of `--dsn-file`, and a new `--out-dir`.
 
-Only pages our OCR has done or is about to do are left out: rows in `quality.ocr_outputs`, and pages `--ocr-state` shows outstanding or imported. Pages in a quality campaign stay in, because a `usnm_quality` unit compares the texts a page already has and doesn't read the page. `--campaign-exclusions` (off by default) leaves those out too, and enables `--exclude-list`.
+Excluded: pages in `quality.ocr_outputs` or outstanding/imported in `--ocr-state`. Pages already in a quality campaign stay in, because a `usnm_quality` unit compares existing texts and doesn't read the page, unless `--campaign-exclusions` (off by default; enables `--exclude-list`). **The moderate sample shows nothing until its pages are OCRed**: a gain needs a `quality.ocr_outputs` row to compare with LoC's damage score.
 
-**The moderate sample shows nothing until its pages are OCRed.** A quality unit on a page our OCR hasn't read gives image features and LoC's agreement with American Stories. A gain needs a `quality.ocr_outputs` row for the page, compared with LoC's damage score.
+`follow` takes every fetched page under its own campaign, so pages from these manifests land there unless `follow`'s `--staged` names them. With the fetcher's `--no-loc-prefixes queue-quality-` (`USNM_PREFETCH_NO_LOC_PREFIXES`), `queue-quality-*` manifests take JP2s only from LoC's bucket or a mirror, so pages of batches the bucket doesn't serve wait; without it they are fetched from LoC within the global budget.
 
-Two things limit how a list reaches the fetcher and the feed. `follow` takes every fetched page under its own campaign, so a page fetched from one of these manifests lands there unless `follow`'s `--staged` list names it; `plan.jsonl` still tells the bands apart. And when the scan fetcher is installed with `--no-loc-prefixes queue-quality-` (`USNM_PREFETCH_NO_LOC_PREFIXES`), a manifest named `queue-quality-*` takes JP2s only from LoC's bucket or a mirror, so pages of batches the bucket doesn't serve wait in that queue. Without it, those pages are fetched from LoC within the global LoC budget.
+#### The follower
 
-`quality_feed.py follow` (`usnm-quality-follow.service`) gives every page the fetcher writes
-that no campaign has staged (OCR's and the pass's) a unit, in fetch order, in full chunks of
-`--chunk-pages`. It holds back a part chunk until no chunk has been written for
-`--max-wait-secs` (6 hours): it used to chunk whatever had been fetched since its last
-round, a minute or so, and in the 24 hours to 5 November 2026 the median bundle held 16
-pages and ran for seconds. Pages of a batch the curated copy has no LoC text for yet don't
-count towards a full chunk; they wait, logged, until it does. A page that can't be prepared
-(its scan can't be fetched or decoded) is replaced by the next one, from a reserve of a
-tenth of `--chunk-pages`; a chunk still short after that ("chunk came up short") is
-written only once it's overdue, so a scan server that stops answering mid-chunk doesn't
-ship a small unit. Its pages never worth a retry (no LoC text, a scan cut short at the
-source) still go to `skipped.txt`, so they don't hold the next round's chunk back.
+`quality_feed.py follow` (`usnm-quality-follow.service`) gives a unit to every fetched page no campaign has staged, in fetch order, in full chunks of `--chunk-pages`. A part chunk waits until no chunk has been written for `--max-wait-secs` (6 hours), so bundles aren't tiny (median 16 pages before 5 November 2026). Pages with no curated LoC text yet wait; unpreparable pages are replaced from a reserve of a tenth of `--chunk-pages`, and a short chunk ("chunk came up short") is written only once overdue. Pages never worth retrying go to `skipped.txt`.
 
-Once a chunk has shipped, the pass's buffer scans are deleted, except the most damaged
-(LoC's `damage_rate`; unscored pages last), up to `--keep-bytes` in all (1 TB from
-`quality-feed-install.sh`, about 210,000 pages at 4.7 MB a scan, half the fetcher's 2 TB
-buffer cap so OCR's own scans keep flowing). They stay on the scan server for re-OCR and are
-listed in `<state>/kept.tsv`, one list for every campaign, so a new campaign's budget counts
-what an earlier one kept. A newly shipped page more damaged than the least damaged kept
-one takes its place, and that one is deleted; if that delete fails, the kept page holds its
-place and the newcomer is deleted instead, so the list never passes the budget and no scan
-sits on the server outside it. A kept page leaves the list only once its sidecar is found
-gone and a DELETE makes sure its bytes are too (OCR's worker deletes a scan it read, best
-effort, and one of ours that marked it done but couldn't unlink it leaves just the sidecar
-gone). One OCR still wants stays listed and counted, and is neither evicted nor looked up
-while it does: `ocr_manifest.py build` records every page OCR asked for in `ocr-docs.txt`
-(every queued page whose scan is already on the scan server, its sidecar looked up before
-it's first claimed: up to 500 a run, a miss remembered until the page is fetched again in
-`claim-misses.txt`; not only its manifests' pages)
-and rewrites `ocr-active.txt` each run with those no outcome has ended yet, which the
-follower reads (`--ocr-active`; until that file exists, every page in `ocr-docs.txt`), and
-a newly shipped page in either is OCR's, neither kept nor deleted. Both files are written
-under the follower's `kept.tsv.lock` (`--claims-lock`), and the follower reads them under it,
-so no claim lands between its reading them and evicting by them. Its check time is reset,
-so it is among the first looked up once OCR is done with it, and it stays a kept page like any other if OCR's delete failed.
-`--keep-verify` (500) of the longest-unchecked are looked up a round; a lookup that fails goes to the back, and one the scan server doesn't answer ends that round's
-lookups and deletes (every campaign's) and its feeding, which the next round picks up where it left off. The follower looks
-after the list every round, before its campaign has shipped anything too, and deletes (or
-keeps) the shipped scans of every campaign it has followed (`<state>/followed.txt`), so the
-chunks a shipper takes after a campaign switch don't leave their scans behind. Its own
-campaign goes first, so room its lookups free is there for every campaign's newly shipped
-pages, and pages leaving the list are recorded in `<state>/retired.txt`, which every
-campaign reads, so one campaign never takes back a page another let go.
-Before 5 November 2026 every one was deleted, 150,000 pages, 54,000 of them with a damage
-rate of 0.1 or more. OCR's scans and the keep set are never deleted.
-`quality-feed-install.sh --follow` turns both on with the shipper.
+**Keeping damaged scans.** After a chunk ships, the pass's buffer scans are deleted except the most damaged (LoC's `damage_rate`, unscored last), up to `--keep-bytes` (1 TB from `quality-feed-install.sh`, about 210,000 pages, half the fetcher's 2 TB buffer cap). Kept scans stay on the scan server for re-OCR, listed in `<state>/kept.tsv` for all campaigns; a more damaged newcomer replaces the least damaged, and if that delete fails the newcomer goes instead, so the list never exceeds the budget. OCR's scans and the keep set are never deleted. `quality-feed-install.sh --follow` enables it with the shipper.
 
-**What bounds the supply.** Each round, `follow` takes every full-resolution scan in the index
-that has no unit or staging record, isn't in `--staged` and isn't done, up to the outbox's
-room. While the shipper keeps up, it holds no backlog, so the pages it feeds in an hour are the
-pages the fetcher wrote in that hour. Those come from the pass's manifests (`--pass-pages` a
-run, with the timer's 2 hours between the end of one run and the start of the next) and from
-whatever OCR's and the other manifests fetch. The pass's size and the bucket bound the first.
-The rest depends on which batches the other manifests reach, how many of their pages are
-already held, and LoC's budget. A held scan that a campaign staged before isn't fed again.
-Raising the supply therefore needs more bucket or LoC requests, or feeding staged pages again,
-and each of those is the maintainer's choice. The [measurements of 5 November
-2026](notes/2026-11-05-quality-supply.md) split the supply by source.
+- A kept page leaves the list only when its sidecar is gone and a DELETE confirms the bytes are too.
+- Pages OCR still wants are left alone. `ocr_manifest.py build` records them in `ocr-docs.txt` (up to 500 sidecar lookups a run, misses in `claim-misses.txt`) and rewrites `ocr-active.txt` with those not yet ended; the follower reads it (`--ocr-active`; until it exists, all of `ocr-docs.txt`). Both files are written and read under `kept.tsv.lock` (`--claims-lock`). A newly shipped page in either is OCR's, neither kept nor deleted.
+- `--keep-verify` (500) longest-unchecked pages are looked up per round; a failed lookup goes to the back, and an unresponsive scan server ends that round's lookups, deletes and feeding, which the next round resumes.
+- Every round, even before its campaign has shipped, the follower handles the list for every campaign it has followed (`<state>/followed.txt`), so chunks shipped after a campaign switch don't leave scans behind; pages leaving it go to `<state>/retired.txt` so no campaign takes back a page another let go.
+
+**What bounds the supply.** Each round `follow` takes every indexed full-resolution scan with no unit, not in `--staged` and not done, up to the outbox's room, so while the shipper keeps up the feed rate equals the fetch rate: the pass's manifests (`--pass-pages` a run, 2 hours apart) plus OCR's and others. Raising it needs more bucket or LoC requests or refeeding staged pages, each a maintainer choice ([5 November 2026 measurements](notes/2026-11-05-quality-supply.md)).
 
 ## Calibration
 
-`usnm-boinc quality calibrate` runs the three-cornered hat per gold crop over `--crops <crops.jsonl>` (gold crops with human transcriptions), two or more `--hyp ENGINE=FILE.jsonl` OCR hypothesis files, and optional `--readings <readings.jsonl>` vision-language readings, and writes `calibration.csv`, `calibration.md` and `by-crop.csv` to `--out`: per reader, true CER, estimated CER, bias, MAE, Pearson and Spearman, both without (`three-ocr`) and with (`three-ocr+vlm`) the vision-language reader. UNVERIFIED on the full multi-engine gold crop campaign.
+`usnm-boinc quality calibrate` runs the three-cornered hat per gold crop over `--crops <crops.jsonl>` (gold crops with human transcriptions), two or more `--hyp ENGINE=FILE.jsonl` hypothesis files and optional `--readings <readings.jsonl>`, writing `calibration.csv`, `calibration.md` and `by-crop.csv` to `--out`: per reader, true CER, estimated CER, bias, MAE, Pearson and Spearman, without (`three-ocr`) and with (`three-ocr+vlm`) the vision-language reader. UNVERIFIED on the full multi-engine gold crop campaign.
 
 ## Measured
 
 ### Split-image disposable Docker acceptance
 
-[Run
-38787485639](https://github.com/tgoodyear/usnewsmap.com/actions/runs/38787485639)
-measured both payloads on Linux/amd64, Docker 28.0.4, overlay2. [Committed
-evidence](../boinc/apps/qwen/measurements/ci-38787485639.json) records exact
-image IDs, source, head and base revisions, artifact links and archive SHA-256
-digests. Both measurement steps passed; the **overall jobs failed later** at a
-separate default-network probe because the second daemon removed the host
-bridge. The harness now uses a separate network namespace and an offline probe.
+[Run 38787485639](https://github.com/tgoodyear/usnewsmap.com/actions/runs/38787485639) ([evidence](../boinc/apps/qwen/measurements/ci-38787485639.json); Linux/amd64, Docker 28.0.4, overlay2) measured both payloads; the jobs later failed at a default-network probe because the second daemon removed the host bridge, and the harness now uses a separate network namespace and an offline probe.
 
 | Observed bytes                   | 2B CPU         | 8B GPU payload |
 | -------------------------------- | -------------- | -------------- |
 | Local gzip save/load stream      | 4,861,064,470  | 8,286,566,549  |
 | Logical unpacked image           | 6,670,088,145  | 10,170,682,321 |
-| Retained graph `du`              | 6,726,541,312  | 10,227,142,656 |
 | Cold filesystem increase         | 6,725,922,816  | 10,226,704,384 |
 | Sampled peak filesystem increase | 20,098,748,416 | 30,602,686,464 |
-| Warm reimport increase           | 40,960         | 61,440         |
 
-The sampled peaks plus 2 GiB workspace and 2 GiB reserve pass the existing 32
-GiB and 48 GiB admission bounds; no threshold increase or skipped acceptance is
-needed. Peaks are sampled at 100 ms and include other runner filesystem
-activity, so these observations are not exact upper bounds. Retained image size
-is not the cold extraction requirement.
-
-Cold import took 248.29 seconds for 2B and 538.52 seconds for 8B; warm archive
-reimport took 235.93 and 450.69 seconds. These are **local gzip Docker save and
-load** times, not registry transfer, normal warm task startup, or inference
-latency. Exact selected model membership, all three error outputs, and the
-actual limits of 6 GiB memory, no swap and 1024 PIDs passed for both payloads
-(CPU quotas 4 and 2 respectively). The synthetic 2B CPU reading passed
-separately: model load 1,002 ms, engine 12,573 ms, child peak RSS 2,948,436 KiB.
-No NVIDIA inference ran on these non-GPU runners.
-
-Anonymous published-image pulls, managed Podman extraction, native
-cross-platform staging, live scheduler rejection, and the full live and
-calibration campaign still require the authorized acceptance described above.
-These measurements do not claim those checks passed.
+Sampled peaks plus 2 GiB workspace and 2 GiB reserve fit the 32 and 48 GiB bounds. Peaks are sampled at 100 ms and include other runner activity, so they are not exact upper bounds, and retained image size is not the cold extraction requirement. Limits of 6 GiB memory, no swap and 1024 PIDs (CPU quotas 4 and 2) passed for both; the synthetic 2B CPU reading peaked at 2,948,436 KiB child RSS. No NVIDIA inference ran. Pulls of published images, Podman extraction, native staging and live scheduler rejection still need the [authorized acceptance](#activation-and-acceptance-operator-authorization-required).
 
 ## Unconfirmed
 
-- How much the hat's estimates are biased low on real pages, where readers fail on the same smudges (the calibration's question).
-- How far the version 2 hat's `local_cer_sym` underestimates a badly garbled reader, whose worst chunks don't place (they show as low `matched`, not as error). No page-level transcription of a three-reader page exists yet to measure it.
+- How far the hat's estimates are biased low on real pages, where readers fail on the same smudges (the calibration's question).
+- How far the version 2 hat's `local_cer_sym` underestimates a badly garbled reader whose worst chunks don't place (they show as low `matched`, not error). No page-level transcription of a three-reader page exists yet.
 - The crop-level estimate's agreement with the page-level one.
 - Time and memory per unit on volunteers' hosts, and so the `create_work` bounds and the Qwen containers' limits.
 - The Dice threshold for `usnm_qwen`, to be measured from the logged pairs.
