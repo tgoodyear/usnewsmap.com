@@ -29,9 +29,16 @@ async function session() {
     const { turnstile_site_key } = await getJSON("/api/config");
     while (!window.turnstile) await new Promise((r) => setTimeout(r, 100));
     status("Starting… if a check box appears below, tick it to begin.");
-    const token = await new Promise((resolve, reject) => {
-      window.turnstile.render("#turnstile", { sitekey: turnstile_site_key, appearance: "interaction-only", callback: resolve, "error-callback": () => reject(new Error("browser check failed")) });
-    });
+    // Each attempt gets its own widget, removed afterwards whether it worked or not, so a retry
+    // (or a new sign-in after a 401) starts a fresh check instead of waiting on a spent one.
+    let widget = null, token;
+    try {
+      token = await new Promise((resolve, reject) => {
+        widget = window.turnstile.render("#turnstile", { sitekey: turnstile_site_key, appearance: "interaction-only", callback: resolve, "error-callback": () => reject(new Error("browser check failed")) });
+      });
+    } finally {
+      if (widget !== null) { try { window.turnstile.remove(widget); } catch { /* already gone */ } }
+    }
     const { session: tok } = await getJSON("/api/session", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ turnstile: token }) });
     store(SESSION, tok);
     status("");
