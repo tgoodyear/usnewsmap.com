@@ -182,12 +182,19 @@ scripts/azure/logs.sh --env dev --query-name titles-archive --span 1h
 
 **Stand-up cost and time:** a few cents of builds; reading the 1% from Cold about $0.71 plus $0.24 endpoint processing; 40 to 60 minutes to running images; data from minutes (set, title seed) to an hour (1% curation) or 8 hours (titles-sync with no usable copy).
 
-**Tear it down** after saving `qw-bench/runs/` reports, logs and the archive's titles copy. Save the titles copy first; the `&&` stops the teardown unless it exits 0:
+**Tear it down** after saving `qw-bench/runs/` reports and logs. If titles-sync ran with the archival account, save its titles copy first; the `&&` stops the teardown unless it exits 0:
 
 ```sh
 scripts/azure/start-job.sh --env dev --job INGEST_JOB --wait-mins 20 -- titles-archive &&
   scripts/azure/teardown.sh --env dev &&
   scripts/azure/dev-status.sh                                # expect: dev holds nothing
+```
+
+Without an ingest job or `USNM_ARCHIVE_ACCOUNT` there is no titles copy to save, so tear down directly:
+
+```sh
+scripts/azure/teardown.sh --env dev
+scripts/azure/dev-status.sh                                  # expect: dev holds nothing
 ```
 
 Exit 1 means `Failed`, `Stopped`, `Degraded` or still running after 20 minutes. Check `scripts/azure/logs.sh --env dev --query-name job-executions` (without the archive it fails with `titles-archive needs USNM_RAW_URL`), fix it and run it again; it is create-only, so a rerun costs one short execution. Without `--wait-mins` it returns before the copy exists.
