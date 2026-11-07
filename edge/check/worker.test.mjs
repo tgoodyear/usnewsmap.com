@@ -56,3 +56,26 @@ test("clip keys can't escape the bucket", async () => {
 test("other paths are the page", async () => {
   assert.equal(await (await call("/chr")).text(), "page");
 });
+
+test("the SQL settling rule matches settle()", async () => {
+  const { DatabaseSync } = await import("node:sqlite");
+  const { SETTLE_SQL } = await import("./worker.mjs");
+  const { readFileSync } = await import("node:fs");
+  const db = new DatabaseSync(":memory:");
+  db.exec(readFileSync(new URL("./schema.sql", import.meta.url), "utf8"));
+  db.prepare("INSERT INTO tasks (id, lang, set_name, body) VALUES ('t', 'chr', 's', '{}')").run();
+  const add = db.prepare("INSERT INTO answers (task_id, contributor, choice, at) VALUES ('t', ?, ?, 0)");
+  const upd = db.prepare(SETTLE_SQL);
+  const get = db.prepare("SELECT n, settled, outcome FROM tasks WHERE id = 't'");
+  const kinds = ["a", "b", "neither", "unsure"];
+  for (let code = 0; code < 6 ** 4; code++) {
+    const counts = {};
+    let rest = code;
+    for (const k of kinds) { counts[k] = rest % 6; rest = Math.floor(rest / 6); }
+    db.exec("DELETE FROM answers");
+    let i = 0;
+    for (const k of kinds) for (let j = 0; j < counts[k]; j++) add.run("c" + i++, k);
+    upd.run("t");
+    assert.deepEqual({ ...get.get() }, settle(counts), JSON.stringify(counts));
+  }
+});

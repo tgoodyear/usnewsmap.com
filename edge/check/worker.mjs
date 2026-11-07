@@ -95,11 +95,11 @@ export async function verifySession(secret, token, now = Date.now()) {
   return body.c;
 }
 
-async function contributorOf(request, env) {
+async function contributorOf(request, env, { limited = false } = {}) {
   const auth = request.headers.get("authorization") || "";
   const c = auth.startsWith("Bearer ") ? await verifySession(env.SESSION_KEY, auth.slice(7)) : null;
   if (!c) throw new HttpError(401, "session required");
-  if (env.ANSWER_LIMIT) {
+  if (limited && env.ANSWER_LIMIT) {
     const { success } = await env.ANSWER_LIMIT.limit({ key: c });
     if (!success) throw new HttpError(429, "too many answers; slow down");
   }
@@ -177,7 +177,7 @@ async function api(request, env, url) {
     return json({ task: row ? { id: row.id, ...JSON.parse(row.body) } : null, answered: mine.k });
   }
   if (p === "/api/answers" && request.method === "POST") {
-    const c = await contributorOf(request, env);
+    const c = await contributorOf(request, env, { limited: true });
     const b = await body(request);
     if (typeof b.task !== "string" || b.task.length > 300 || !CHOICES.has(b.choice)) throw new HttpError(400, "task and choice required");
     const t = await env.DB.prepare("SELECT id FROM tasks WHERE id = ?").bind(b.task).first();
@@ -228,17 +228,33 @@ async function api(request, env, url) {
   throw new HttpError(404, "not found");
 }
 
+// Recounts a word's answers and applies settle()'s rule in SQL, so the upsert and the recount run
+// in one D1 batch (one transaction) and a slower request can't write back stale counts.
+// worker.test.mjs checks it against settle() on SQLite.
+export const SETTLE_SQL = `
+WITH c AS (
+  SELECT COUNT(*) AS n,
+    COALESCE(SUM(choice = 'a'), 0) AS a, COALESCE(SUM(choice = 'b'), 0) AS b,
+    COALESCE(SUM(choice = 'neither'), 0) AS ne, COALESCE(SUM(choice = 'unsure'), 0) AS u
+  FROM answers WHERE task_id = ?1
+), t AS (
+  SELECT n, MAX(a, b, ne, u) AS top,
+    CASE WHEN a >= b AND a >= ne AND a >= u THEN 'a' WHEN b >= ne AND b >= u THEN 'b' WHEN ne >= u THEN 'neither' ELSE 'unsure' END AS pick
+  FROM c
+)
+UPDATE tasks SET
+  n = (SELECT n FROM t),
+  settled = (SELECT CASE WHEN (n >= ${SETTLE_MIN} AND top * 3 >= n * 2) OR n >= ${DISPUTE_AT} THEN 1 ELSE 0 END FROM t),
+  outcome = (SELECT CASE WHEN n >= ${SETTLE_MIN} AND top * 3 >= n * 2 THEN pick WHEN n >= ${DISPUTE_AT} THEN 'disputed' END FROM t)
+WHERE id = ?1`;
+
 export async function record(env, task, contributor, choice, at = Date.now()) {
-  await env.DB.prepare(
-    "INSERT INTO answers (task_id, contributor, choice, at) VALUES (?, ?, ?, ?) ON CONFLICT (task_id, contributor) DO UPDATE SET choice = excluded.choice, at = excluded.at",
-  )
-    .bind(task, contributor, choice, at)
-    .run();
-  const rows = await env.DB.prepare("SELECT choice, COUNT(*) AS k FROM answers WHERE task_id = ? GROUP BY choice").bind(task).all();
-  const counts = { a: 0, b: 0, neither: 0, unsure: 0 };
-  for (const r of rows.results) counts[r.choice] = r.k;
-  const s = settle(counts);
-  await env.DB.prepare("UPDATE tasks SET n = ?, settled = ?, outcome = ? WHERE id = ?").bind(s.n, s.settled, s.outcome, task).run();
+  await env.DB.batch([
+    env.DB.prepare(
+      "INSERT INTO answers (task_id, contributor, choice, at) VALUES (?1, ?2, ?3, ?4) ON CONFLICT (task_id, contributor) DO UPDATE SET choice = excluded.choice, at = excluded.at",
+    ).bind(task, contributor, choice, at),
+    env.DB.prepare(SETTLE_SQL).bind(task),
+  ]);
 }
 
 // ---------- clips ----------

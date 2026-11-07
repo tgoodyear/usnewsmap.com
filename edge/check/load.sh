@@ -32,7 +32,8 @@ TOKEN=$(az keyvault secret show --vault-name "$VAULT" -n usnm-prod-check-admin-t
   cat <<'REMOTE'
 set -euo pipefail
 BASE=https://check.usnewsmap.com
-hdr=$(mktemp); chmod 600 "$hdr"; trap 'rm -f "$hdr"' EXIT
+work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
+hdr=$work/header; (umask 077; : > "$hdr")
 printf 'authorization: Bearer %s\n' "$TOKEN" > "$hdr"; unset TOKEN
 auth=(-H "@$hdr" --max-time 60 --retry 3 --retry-all-errors)
 cd "$DIR"
@@ -47,9 +48,8 @@ echo "clips: $n"
 curl -fsS -X PUT "${auth[@]}" -H "content-type: application/json" --data-binary @language.json "$BASE/admin/languages/$LANG_CODE"; echo
 curl -fsS -X POST "${auth[@]}" --data-binary @tasks.jsonl "$BASE/admin/tasks"; echo
 if [ -n "$SEED" ]; then
-  split -l 15 "$SEED" /tmp/check-seed.
-  for part in /tmp/check-seed.*; do curl -fsS -X POST "${auth[@]}" --data-binary "@$part" "$BASE/admin/answers"; echo; done
-  rm -f /tmp/check-seed.*
+  split -l 15 "$SEED" "$work/seed."
+  for part in "$work"/seed.*; do curl -fsS -X POST "${auth[@]}" --data-binary "@$part" "$BASE/admin/answers"; echo; done
 fi
 REMOTE
 } | ssh "$HOST" bash -s

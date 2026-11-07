@@ -3,9 +3,11 @@ const $ = (id) => document.getElementById(id);
 const SESSION = "usnm-check-session";
 let lang = null, cfg = null, task = null, answered = 0, history = [], skipped = [], busy = false, loaded = false;
 
+let memory = {};
 function store(k, v) {
-  try { if (v === undefined) return localStorage.getItem(k); if (v === null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch { /* private mode */ }
-  return null;
+  if (v === null) delete memory[k]; else if (v !== undefined) memory[k] = v;
+  try { if (v === undefined) return localStorage.getItem(k) || memory[k] || null; if (v === null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch { /* private mode: memory only */ }
+  return v === undefined ? memory[k] || null : null;
 }
 
 function status(msg, err = false) { const s = $("status"); s.textContent = msg; s.classList.toggle("err", err); }
@@ -149,7 +151,16 @@ function render(prev) {
   }
 }
 
-async function next() {
+// Keyboard users keep their place: when an answer control had focus, the next word's first reading gets it.
+function keepFocus(had) {
+  if (!had) return;
+  const b = $("opt1") || $("back");
+  if (b && !b.disabled) b.focus({ preventScroll: true });
+}
+
+function controlFocused() { const a = document.activeElement; return !!a && a.tagName === "BUTTON"; }
+
+async function next(had = controlFocused()) {
   busy = true; render();
   try {
     const q = new URLSearchParams({ lang });
@@ -158,31 +169,33 @@ async function next() {
     task = r.task; answered = r.answered; loaded = true; status("");
   } catch (e) {
     status(e.status === 429 ? "Slow down a little, then try again." : "The next word didn't load. " + e.message, true);
-  } finally { busy = false; render(); }
+  } finally { busy = false; render(); keepFocus(had); }
 }
 
 async function choose(choice) {
   if (!task || busy) return;
+  const had = controlFocused();
   busy = true; render();
   try {
     await authed("/api/answers", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ task: task.id, choice }) });
     history.push({ task, choice });
     if (history.length > 50) history.shift();
     busy = false;
-    await next();
+    await next(had);
   } catch (e) {
-    busy = false; render();
+    busy = false; render(); keepFocus(had);
     status(e.status === 429 ? "Too fast. Wait a few seconds, then answer again." : "That answer wasn't saved: " + e.message, true);
   }
 }
 
 function back() {
   if (!history.length || busy) return;
-  const h = history.pop(); task = h.task; render(h.choice);
+  const had = controlFocused();
+  const h = history.pop(); task = h.task; render(h.choice); keepFocus(had);
   status("Change your answer, or pick the same one to keep it.");
 }
 
-function skip() { if (!task || busy) return; skipped.push(task.id); next(); }
+function skip() { if (!task || busy) return; skipped.push(task.id); next(controlFocused()); }
 
 async function work(code) {
   lang = code;

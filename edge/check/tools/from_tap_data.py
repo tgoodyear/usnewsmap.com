@@ -42,6 +42,7 @@ def main() -> None:
     a = ap.parse_args()
 
     data = json.load(open(a.data, encoding="utf-8"))
+    os.makedirs(a.out_dir, exist_ok=True)
     cfg = json.load(open(a.language_config, encoding="utf-8"))
     root = os.path.join(a.out_dir, "clips")
     prefix = f"{a.lang}/{a.set}"
