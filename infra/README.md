@@ -139,7 +139,7 @@ ADR-0017 Phase 1 (#309) dropped `rg-usnm-{env}-spot` and `policy-assignments-spo
    ```
 
 2. From merged main, `scripts/azure/provision.sh --env prod` (or the dev or experiment environment) deletes the assignments and detaches the group (`--action-on-unmanage deleteResources`; a plain what-if doesn't show this).
-3. When `az stack sub show -n usnm-prod --query 'resources[].id' -o tsv` and both lists are clear, run `az group delete -n rg-usnm-prod-spot` and check `az group exists -n rg-usnm-prod-spot` is `false`.
+3. When `az stack sub show -n usnm-prod --query 'resources[].id' -o tsv` lists neither the Spot group nor its assignments, and the resource and assignment lists from step 1 are empty, run `az group delete -n rg-usnm-prod-spot` and check `az group exists -n rg-usnm-prod-spot` is `false`.
 
 Repeat for any dev or experiment Spot group. `dev-status.sh` and the dev budget keep counting such groups until deleted. The ACI Spot alternative (08 §8.4) is not deployed.
 
