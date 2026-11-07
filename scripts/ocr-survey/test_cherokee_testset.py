@@ -85,6 +85,19 @@ class Alignment(unittest.TestCase):
         self.assertEqual(self.align([line("ᏣᎳᎩ ᏧᎴᎯᏌᏅᎯ " * 4, "L1")]), [])
 
 
+class Score(unittest.TestCase):
+    def test_an_empty_tier_scores_none(self):
+        import contextlib, io, json, os, tempfile, types
+        with tempfile.TemporaryDirectory() as d:
+            lines = os.path.join(d, "lines.jsonl")
+            with open(lines, "w", encoding="utf-8") as f:
+                f.write(json.dumps({"crop": "c.png", "tier": "silver", "reference": "ᎠᎴ", "loc_text": "ᎠᎴ"}) + "\n")
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                ts.cmd_score(types.SimpleNamespace(lines=lines, pred=["loc"], tier="dropped-wording"))
+            self.assertEqual(json.loads(out.getvalue())["loc"], {"cer": None, "letters": 0, "missing": 0})
+
+
 class Pieces(unittest.TestCase):
     def test_image_url(self):
         self.assertEqual(

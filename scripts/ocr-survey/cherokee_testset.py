@@ -394,7 +394,7 @@ def cmd_score(a) -> None:
             missing += hyp is None
             err += letter_edit_distance(gold, "".join(SYLLABARY.findall(hyp or "")))
             ref += len(gold)
-        result[name] = {"cer": round(err / ref, 4), "letters": ref, "missing": missing}
+        result[name] = {"cer": round(err / ref, 4) if ref else None, "letters": ref, "missing": missing}
     print(json.dumps(result, ensure_ascii=False))
 
 
