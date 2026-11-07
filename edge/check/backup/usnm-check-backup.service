@@ -1,0 +1,9 @@
+[Unit]
+Description=Back up check.usnewsmap.com's database (usnewsmap edge/check/backup)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/usnm-check-backup/backup.sh --token-file /etc/usnm-check-backup/admin-token --out-dir /tank/backups/usnm-check
+Nice=10
