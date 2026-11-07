@@ -4,7 +4,7 @@
 
 ## The question
 
-The corpus has 43,258 Serbian (`srp`) pages, all from one title, LCCN sn85055101 (*Amerikanski Srbobran*, 1906–1963). None of them had a reading of ours: no Tesseract page OCR and no Qwen crop reading. LoC's text for them is Cyrillic. To compare LoC's reading with ours on check.usnewsmap.com, the pages need our readings, but nothing calibrates Serbian OCR yet, so those readings mustn't reach search.
+The corpus has 43,258 Serbian (`srp`) pages, all from one title, LCCN sn85055101 (_Amerikanski Srbobran_, 1906–1963). None of them had a reading of ours: no Tesseract page OCR and no Qwen crop reading. LoC's text for them is Cyrillic. To compare LoC's reading with ours on check.usnewsmap.com, the pages need our readings, but nothing calibrates Serbian OCR yet, so those readings mustn't reach search.
 
 The maintainer decided on 7 November: hold Serbian the way German is held, add `srp` to the BOINC claim, queue the pages for Tesseract, and give the Qwen feed a capped Serbian budget.
 
@@ -23,15 +23,15 @@ Pages are queued in a fixed order that takes them round-robin across decades (wi
 
 ## Rollout, 7 November (ET)
 
-| Time | Step | Evidence |
-| --- | --- | --- |
-| before | Checked the hold code is live | Server image `sha256:a877ccf1…` (source `94b19d0b`, after #1574) has the hold string; its trust and routing code equals main's. CT 211 was at `8bdf1da1`, after #1574. |
-| 1:59 PM | Swapped `gold/trust.json` under the gold lock | `53bc508e…` → `442270d7a84112e2a9aed68b7edbd42e33b3b58b4461c8e5ce89a18cb5c496c5` (1,783 bytes). Backup `trust.json.pre-serbian-20261107`. |
-| 2:00 PM | Next tick | 17 English pages published, `collection_backlog` 0. |
+| Time    | Step                                                      | Evidence                                                                                                                                                                                                         |
+| ------- | --------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| before  | Checked the hold code is live                             | Server image `sha256:a877ccf1…` (source `94b19d0b`, after #1574) has the hold string; its trust and routing code equals main's. CT 211 was at `8bdf1da1`, after #1574.                                           |
+| 1:59 PM | Swapped `gold/trust.json` under the gold lock             | `53bc508e…` → `442270d7a84112e2a9aed68b7edbd42e33b3b58b4461c8e5ce89a18cb5c496c5` (1,783 bytes). Backup `trust.json.pre-serbian-20261107`.                                                                        |
+| 2:00 PM | Next tick                                                 | 17 English pages published, `collection_backlog` 0.                                                                                                                                                              |
 | 2:05 PM | Moved CT 211's checkout to this branch and added the flag | Owned-record check on a state copy: 1,148 journals, same under both versions; dry run digest `163f3d51…` unchanged, `claim_languages` `["eng","deu","srp"]`. Backup `/etc/usnm/batch.conf.pre-serbian-20261107`. |
-| 2:09 PM | One tick by hand | 13 English pages published. Timer restarted. |
-| 2:11 PM | Queued 5,000 pages, plan `serbian-compare-20261107` | Dry run: 5,000 would queue, no skips. Ledger `ocr-local/queued/2026-11-07/20261107T190955815445Z-3f44bb74.parquet`. |
-| 2:12 PM | Qwen feed Serbian budget | Feed backup `qwen_feed.py.pre-serbian-20261107`, env backup `qwen-feed.env.pre-serbian-20261107`. |
+| 2:09 PM | One tick by hand                                          | 13 English pages published. Timer restarted.                                                                                                                                                                     |
+| 2:11 PM | Queued 5,000 pages, plan `serbian-compare-20261107`       | Dry run: 5,000 would queue, no skips. Ledger `ocr-local/queued/2026-11-07/20261107T190955815445Z-3f44bb74.parquet`.                                                                                              |
+| 2:12 PM | Qwen feed Serbian budget                                  | Feed backup `qwen_feed.py.pre-serbian-20261107`, env backup `qwen-feed.env.pre-serbian-20261107`.                                                                                                                |
 
 ## Rollback
 
