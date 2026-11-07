@@ -1,0 +1,11 @@
+{
+  "name": "Cherokee",
+  "title": "Cherokee Phoenix",
+  "intro": "These words come from the Cherokee Phoenix (1828–1834), the first Native American newspaper, printed in Sequoyah's syllabary. The box marks one word in a line. Tap the reading whose letters match the printed word. Highlighted letters are where the two readings differ, and the small pictures show how this paper printed them. You don't need to read Cherokee: match the shapes. If the readings differ in more than one place, pick a reading only if all its highlighted letters match; otherwise pick Neither.",
+  "notes": {
+    "Ꮩ": "this paper prints it as Λ: an A with no crossbar",
+    "Ꭺ": "has a crossbar"
+  },
+  "drop_examples": "ᎿᏇᏋ",
+  "min_examples": 3
+}

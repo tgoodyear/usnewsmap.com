@@ -1,0 +1,58 @@
+// node --test edge/check/*.test.mjs
+import test from "node:test";
+import assert from "node:assert/strict";
+import worker, { settle, signSession, verifySession } from "./worker.mjs";
+
+test("a word settles at three answers with two thirds agreeing", () => {
+  assert.deepEqual(settle({ a: 2, b: 0, neither: 0, unsure: 0 }), { n: 2, settled: 0, outcome: null });
+  assert.deepEqual(settle({ a: 3, b: 0, neither: 0, unsure: 0 }), { n: 3, settled: 1, outcome: "a" });
+  assert.deepEqual(settle({ a: 2, b: 1, neither: 0, unsure: 0 }), { n: 3, settled: 1, outcome: "a" });
+  assert.deepEqual(settle({ a: 2, b: 1, neither: 1, unsure: 0 }), { n: 4, settled: 0, outcome: null });
+  assert.deepEqual(settle({ a: 4, b: 2, neither: 0, unsure: 0 }), { n: 6, settled: 1, outcome: "a" });
+});
+
+test("a word that never agrees closes as disputed", () => {
+  assert.deepEqual(settle({ a: 3, b: 3, neither: 1, unsure: 0 }), { n: 7, settled: 1, outcome: "disputed" });
+});
+
+test("a session round-trips and rejects tampering, other keys and expiry", async () => {
+  const tok = await signSession("k1", "abc", 1000);
+  assert.equal(await verifySession("k1", tok, 2000), "abc");
+  assert.equal(await verifySession("k2", tok, 2000), null);
+  assert.equal(await verifySession("k1", tok, 1000 + 31 * 86400e3), null);
+  const [p, s] = tok.split(".");
+  const forged = Buffer.from(JSON.stringify({ c: "other", e: 9e15 })).toString("base64url");
+  assert.equal(await verifySession("k1", forged + "." + s, 2000), null);
+  assert.equal(await verifySession("k1", p, 2000), null);
+  assert.equal(await verifySession("k1", "x".repeat(500), 2000), null);
+});
+
+const env = { ADMIN_TOKEN: "secret-admin", SESSION_KEY: "sk", ASSETS: { fetch: () => new Response("page") } };
+const call = (path, init = {}) => worker.fetch(new Request("https://check.usnewsmap.com" + path, init), env, {});
+
+test("admin paths need the admin token", async () => {
+  assert.equal((await call("/admin/tasks", { method: "POST", body: "" })).status, 401);
+  assert.equal((await call("/admin/tasks", { method: "POST", body: "", headers: { authorization: "Bearer wrong" } })).status, 401);
+  assert.equal((await call("/admin/tasks", { method: "POST", body: "", headers: { authorization: "Bearer secret-admin-x" } })).status, 401);
+});
+
+test("answers and next need a session", async () => {
+  assert.equal((await call("/api/next?lang=chr")).status, 401);
+  assert.equal((await call("/api/answers", { method: "POST", body: "{}" })).status, 401);
+  const forged = await signSession("not-the-key", "abc");
+  assert.equal((await call("/api/next?lang=chr", { headers: { authorization: "Bearer " + forged } })).status, 401);
+});
+
+test("clip keys can't escape the bucket", async () => {
+  const seen = [];
+  const e2 = { ...env, CLIPS: { get: async (k) => (seen.push(k), null) } };
+  for (const p of ["/clips/a%2F..%2Fb", "/clips/" + "a".repeat(301), "/clips/a b"]) {
+    const r = await worker.fetch(new Request("https://check.usnewsmap.com" + p), e2, {});
+    assert.equal(r.status, 404, p);
+  }
+  assert.deepEqual(seen, []);
+});
+
+test("other paths are the page", async () => {
+  assert.equal(await (await call("/chr")).text(), "page");
+});
