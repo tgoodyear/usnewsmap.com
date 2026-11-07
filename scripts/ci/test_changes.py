@@ -1330,8 +1330,10 @@ class Wiring(unittest.TestCase):
         found = sorted(p.relative_to(ROOT).as_posix() for p in (ROOT / "edge").rglob("*")
                        if p.is_file() and re.search(r"\.test\.(mjs|js|cjs)$", p.name))
         self.assertTrue(found)
-        for file in found:
-            self.assertRegex(file, r"^edge/fallback-worker/[^/]+\.test\.mjs$")
+        for file in found:  # each test file runs, by the fallback worker's glob or by name
+            if not re.fullmatch(r"edge/fallback-worker/[^/]+\.test\.mjs", file):
+                self.assertIn(f"      - run: node --test {file}\n", job)
+        self.assertIn("python3 -m unittest discover -s edge/check/tools", job)
 
     def test_the_infra_jobs_stack_steps_follow_the_infra_output(self):
         job = job_text(self.workflow("ci.yml"), "infra-checks")
