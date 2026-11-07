@@ -27,13 +27,24 @@ export CLOUDFLARE_ACCOUNT_ID=$ACCOUNT
 CLOUDFLARE_API_TOKEN=$(az keyvault secret show --vault-name "$VAULT" -n "$TOKEN_SECRET" --query value -o tsv)
 export CLOUDFLARE_API_TOKEN
 
-vault_get() { az keyvault secret show --vault-name "$VAULT" -n "$1" --query value -o tsv 2>/dev/null || true; }
+# A secret that doesn't exist reads as empty. Any other failure (network, sign-in, throttling)
+# stops the script, so a failed read can never lead to a new value replacing a good one.
+vault_get() {
+  local out err
+  err=$(mktemp)
+  if out=$(az keyvault secret show --vault-name "$VAULT" -n "$1" --query value -o tsv 2>"$err"); then
+    rm -f "$err"; printf %s "$out"; return 0
+  fi
+  if grep -q SecretNotFound "$err"; then rm -f "$err"; return 0; fi
+  echo "error: reading $1 from $VAULT failed:" >&2; cat "$err" >&2; rm -f "$err"
+  exit 1
+}
 put() { printf %s "$2" | npx --yes wrangler@4.154.0 secret put "$1" >/dev/null && echo "set $1"; }
 
 for pair in SESSION_KEY:usnm-prod-check-session-key ADMIN_TOKEN:usnm-prod-check-admin-token; do
   name=${pair%%:*} secret=${pair#*:}
   value=""
-  $ROTATE || value=$(vault_get "$secret")
+  if ! $ROTATE; then value=$(vault_get "$secret") || exit 1; fi
   if [ -z "$value" ]; then
     value=$(openssl rand -base64 36 | tr '+/' '-_' | tr -d '=')
     az keyvault secret set --vault-name "$VAULT" -n "$secret" --value "$value" -o none
@@ -41,7 +52,7 @@ for pair in SESSION_KEY:usnm-prod-check-session-key ADMIN_TOKEN:usnm-prod-check-
   put "$name" "$value"
 done
 
-value=$(vault_get usnm-prod-check-turnstile-secret)
+value=$(vault_get usnm-prod-check-turnstile-secret) || exit 1
 if [ -z "$value" ]; then
   read -r -s -p "Turnstile secret key for widget usnm-check: " value; echo
   [ -n "$value" ] || { echo "no Turnstile secret given" >&2; exit 1; }

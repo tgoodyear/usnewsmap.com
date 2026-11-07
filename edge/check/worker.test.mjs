@@ -93,3 +93,19 @@ test("the dump has every table's rows", async () => {
   assert.deepEqual(lines.map((l) => l.table), ["languages", "tasks", "tasks", "answers"]);
   assert.equal(lines[3].row.choice, "a");
 });
+
+test("an oversized body is refused while streaming, before it is buffered", async () => {
+  const { readLimited } = await import("./worker.mjs");
+  let pulled = 0;
+  const stream = new ReadableStream({
+    pull(c) { pulled++; c.enqueue(new Uint8Array(1024)); if (pulled > 100) c.close(); },
+  });
+  const req = new Request("https://check.usnewsmap.com/api/session", { method: "POST", body: stream, duplex: "half" });
+  await assert.rejects(readLimited(req, 4096), (e) => e.status === 413);
+  assert.ok(pulled <= 6, `read ${pulled} chunks`);
+  const declared = new Request("https://check.usnewsmap.com/api/session", { method: "POST", body: "x", headers: { "content-length": "999999" } });
+  await assert.rejects(readLimited(declared, 4096), (e) => e.status === 413);
+  assert.equal(await readLimited(new Request("https://x/", { method: "POST", body: '{"a":1}' }), 4096), '{"a":1}');
+  const r = await call("/api/session", { method: "POST", body: "x".repeat(5000) });
+  assert.equal(r.status, 413);
+});
