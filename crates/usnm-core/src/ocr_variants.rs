@@ -7,6 +7,9 @@
 //! short, so the same word always has the same spellings (and a search one
 //! cache key), and the set stays small: a word of the English list has at
 //! most 16.
+//!
+//! Cherokee syllabary has a table of its own, [`CHEROKEE_CONFUSIONS`], from
+//! LoC's OCR of the *Cherokee Phoenix* (#1619).
 
 use std::collections::BTreeSet;
 
@@ -26,41 +29,71 @@ pub const CONFUSIONS: [(&str, &str); 9] = [
     ("w", "vv"),
 ];
 
+/// Pairs of Cherokee syllabary letters LoC's OCR of the *Cherokee Phoenix*
+/// (1828–1834) reads one as the other, each applied both ways, in folded
+/// (lowercase) form: a word folds to lowercase syllabary, so `ᎾᏍᎩ` is
+/// `ꮎꮝꭹ`. They are the pairs with at least 50 occurrences among the OCR's
+/// one-letter misreadings of the New Testament's 5,000 most frequent words,
+/// counted on all 324 pages by
+/// `docs/reports/2026-11-cherokee/scripts/chr_letter_pairs.py`. The press
+/// printed Ꮩ (do) as an inverted V, which OCR reads as Ꭺ (go).
+pub const CHEROKEE_CONFUSIONS: [(&str, &str); 13] = [
+    ("ꮅ", "ꮲ"), // Ꮅ li, Ꮲ tlv: 1,008
+    ("ꮧ", "ꮨ"), // Ꮧ di, Ꮨ ti: 473
+    ("ꮩ", "ꭺ"), // Ꮩ do, Ꭺ go: 430
+    ("ꮎ", "ᏻ"), // Ꮎ na, Ᏻ yu: 145
+    ("ꮎ", "ꮹ"), // Ꮎ na, Ꮹ wa: 138
+    ("ꮎ", "ꭷ"), // Ꮎ na, Ꭷ ka: 119
+    ("ꮎ", "ꮾ"), // Ꮎ na, Ꮾ wo: 110
+    ("ꮎ", "ꮳ"), // Ꮎ na, Ꮳ tsa: 101
+    ("ꮈ", "ꮔ"), // Ꮈ lv, Ꮔ nu: 92
+    ("ꮣ", "ꮦ"), // Ꮣ da, Ꮦ te: 78
+    ("ꮓ", "ꭲ"), // Ꮓ no, Ꭲ i: 62
+    ("ᏻ", "ꮕ"), // Ᏻ yu, Ꮕ nv: 61
+    ("ꮯ", "ꮆ"), // Ꮯ tli, Ꮆ lo: 52
+];
+
+/// Both tables' pairs, each in both directions.
+fn pairs() -> impl Iterator<Item = (&'static str, &'static str)> {
+    CONFUSIONS
+        .iter()
+        .chain(CHEROKEE_CONFUSIONS.iter())
+        .flat_map(|&(a, b)| [(a, b), (b, a)])
+}
+
 /// The most spellings a `~ocr` word may have, itself included. No word of
 /// the English word list has more than 16; a longer one is refused.
 pub const MAX_OCR_VARIANTS: usize = 32;
 
 /// `word` and each spelling one confusion away from it, sorted: one
-/// occurrence of one side of a pair in [`CONFUSIONS`] replaced by the
-/// other side. Two misreadings in one word aren't covered; that would
-/// square the set's size.
+/// occurrence of one side of a pair in [`CONFUSIONS`] or
+/// [`CHEROKEE_CONFUSIONS`] replaced by the other side. Two misreadings in
+/// one word aren't covered; that would square the set's size.
 pub fn variants(word: &str) -> Vec<String> {
     let mut out = BTreeSet::from([word.to_owned()]);
-    for (a, b) in CONFUSIONS {
-        for (from, to) in [(a, b), (b, a)] {
-            for (i, _) in word.match_indices(from) {
-                out.insert(format!("{}{to}{}", &word[..i], &word[i + from.len()..]));
-            }
+    for (from, to) in pairs() {
+        for (i, _) in word.match_indices(from) {
+            out.insert(format!("{}{to}{}", &word[..i], &word[i + from.len()..]));
         }
     }
     out.into_iter().collect()
 }
 
 /// Whether `token` is one of `word`'s [`variants`]: `word` itself, or
-/// `word` with one occurrence of one side of a pair in [`CONFUSIONS`]
-/// replaced by the other. Checked in place, without building the variants:
+/// `word` with one occurrence of one side of a pair in [`CONFUSIONS`] or
+/// [`CHEROKEE_CONFUSIONS`] replaced by the other. Checked in place, without building the variants:
 /// it runs on every word of every page a `~ocr` search reads.
 pub fn is_variant(word: &str, token: &str) -> bool {
     if token == word {
         return true;
     }
+    // A Latin pair changes the length by at most one byte; a Cherokee pair
+    // swaps two letters of three bytes each.
     if token.len().abs_diff(word.len()) > 1 {
         return false;
     }
     let (w, t) = (word.as_bytes(), token.as_bytes());
-    CONFUSIONS
-        .iter()
-        .flat_map(|&(a, b)| [(a, b), (b, a)])
+    pairs()
         .filter(|(from, to)| w.len() + to.len() == t.len() + from.len())
         .any(|(from, to)| {
             word.match_indices(from).any(|(i, _)| {
@@ -76,7 +109,7 @@ pub fn is_variant(word: &str, token: &str) -> bool {
 /// can fold one word into several (`ﷺ` into four Arabic words) or into
 /// text with a separator (`½` into `1⁄2`), which the engine would split
 /// into several words, and no page token equals.
-/// Its [`variants`] only swap ASCII letters, so they are one token too.
+/// Its [`variants`] only swap letters for letters, so they are one token too.
 pub fn is_one_token(word: &str) -> bool {
     !word.is_empty() && word.chars().all(char::is_alphanumeric)
 }
@@ -209,6 +242,87 @@ mod tests {
         use crate::text::{fold, Analyzer};
         assert!(!is_one_token(&fold("ﷺ", Analyzer::V1)));
         assert!(is_one_token(&fold("ﷺ", Analyzer::V2)));
+    }
+
+    fn folded(word: &str) -> String {
+        crate::text::fold(word, crate::text::Analyzer::LATEST)
+    }
+
+    /// The New Testament's 5,000 most frequent Cherokee words, folded.
+    fn cherokee_words() -> Vec<String> {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../ocr/ja-ocr/wordlists/chr.txt"
+        );
+        std::fs::read_to_string(path)
+            .expect("ocr/ja-ocr/wordlists/chr.txt")
+            .lines()
+            .filter(|w| !w.is_empty())
+            .map(folded)
+            .collect()
+    }
+
+    #[test]
+    fn cherokee_pairs_are_folded_syllabary() {
+        let readings = [
+            ("Ꮅ", "Ꮲ"),
+            ("Ꮧ", "Ꮨ"),
+            ("Ꮩ", "Ꭺ"),
+            ("Ꮎ", "Ᏻ"),
+            ("Ꮎ", "Ꮹ"),
+            ("Ꮎ", "Ꭷ"),
+            ("Ꮎ", "Ꮾ"),
+            ("Ꮎ", "Ꮳ"),
+            ("Ꮈ", "Ꮔ"),
+            ("Ꮣ", "Ꮦ"),
+            ("Ꮓ", "Ꭲ"),
+            ("Ᏻ", "Ꮕ"),
+            ("Ꮯ", "Ꮆ"),
+        ];
+        assert_eq!(readings.len(), CHEROKEE_CONFUSIONS.len());
+        for ((a, b), (fa, fb)) in readings.iter().zip(CHEROKEE_CONFUSIONS) {
+            assert_eq!(
+                (folded(a).as_str(), folded(b).as_str()),
+                (fa, fb),
+                "{a} {b}"
+            );
+        }
+    }
+
+    #[test]
+    fn cherokee_misreadings_of_nasgi() {
+        // ᎾᏍᎩ "that": LoC reads it as ᏩᏍᎩ, ᏣᏍᎩ and ᏳᏍᎩ far more often than right.
+        let set = variants(&folded("ᎾᏍᎩ"));
+        for v in ["ᎾᏍᎩ", "ᏩᏍᎩ", "ᏣᏍᎩ", "ᏳᏍᎩ", "ᎧᏍᎩ", "ᏮᏍᎩ"] {
+            assert!(set.contains(&folded(v)), "{v}");
+        }
+        assert_eq!(set.len(), 6);
+        // Back the other way, and one misreading at a time.
+        assert!(is_variant(&folded("ᏩᏍᎩ"), &folded("ᎾᏍᎩ")));
+        assert!(!is_variant(&folded("ᎾᎾ"), &folded("ᏩᏩ")));
+        // Ꮅ read as Ꮲ, the commonest misreading.
+        assert!(is_variant(&folded("ᎢᎦᎵᎢ"), &folded("ᎢᎦᏢᎢ")));
+        assert!(is_one_token(&folded("ᏩᏍᎩ")));
+    }
+
+    #[test]
+    fn cherokee_variants_are_exactly_the_variant_set() {
+        for w in cherokee_words().iter().take(1000) {
+            let set = variants(w);
+            for v in set.iter().flat_map(|v| variants(v)) {
+                assert_eq!(is_variant(w, &v), set.contains(&v), "{w} {v}");
+            }
+        }
+    }
+
+    #[test]
+    fn cherokee_words_stay_under_the_limit() {
+        let most = cherokee_words()
+            .iter()
+            .map(|w| variants(w).len())
+            .max()
+            .unwrap();
+        assert!(most <= MAX_OCR_VARIANTS, "{most}");
     }
 
     #[test]
