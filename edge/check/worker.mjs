@@ -119,9 +119,33 @@ async function turnstileOk(env, token, ip) {
 
 // ---------- public API ----------
 
+// Reads at most `max` bytes: a declared or streamed body past that is refused before it is
+// buffered, so an anonymous request can't make the Worker hold a large body in memory.
+export async function readLimited(request, max) {
+  const declared = Number(request.headers.get("content-length"));
+  if (declared > max) throw new HttpError(413, "body too large");
+  if (!request.body) return "";
+  const reader = request.body.getReader();
+  const chunks = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > max) {
+      await reader.cancel();
+      throw new HttpError(413, "body too large");
+    }
+    chunks.push(value);
+  }
+  const all = new Uint8Array(size);
+  let at = 0;
+  for (const c of chunks) { all.set(c, at); at += c.byteLength; }
+  return new TextDecoder().decode(all);
+}
+
 async function body(request, max = 4096) {
-  const text = await request.text();
-  if (text.length > max) throw new HttpError(413, "body too large");
+  const text = await readLimited(request, max);
   try {
     return JSON.parse(text);
   } catch {

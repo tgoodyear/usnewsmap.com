@@ -1,7 +1,7 @@
 // The letter-check page. "/" lists languages; "/<lang>" shows one word at a time.
 const $ = (id) => document.getElementById(id);
 const SESSION = "usnm-check-session";
-let lang = null, cfg = null, task = null, answered = 0, history = [], skipped = [], busy = false, loaded = false;
+let lang = null, cfg = null, task = null, answered = 0, history = [], skipped = [], busy = false, loaded = false, failed = false;
 
 let memory = {};
 function store(k, v) {
@@ -126,8 +126,12 @@ function render(prev) {
   const live = !!task && !busy;
   $("neither").disabled = $("unsure").disabled = $("notext").disabled = $("skip").disabled = !live;
   if (!task && !loaded) {
-    const d = document.createElement("div"); d.className = "done"; d.textContent = "Loading the next word…";
-    card.appendChild(d); return;
+    const d = document.createElement("div"); d.className = "done";
+    if (busy || !failed) { d.textContent = "Loading the next word…"; card.appendChild(d); return; }
+    d.textContent = "The first word didn't load. ";
+    const again = document.createElement("button"); again.type = "button"; again.className = "small"; again.id = "retry";
+    again.textContent = "Try again"; again.addEventListener("click", () => next(true));
+    d.appendChild(again); card.appendChild(d); return;
   }
   if (!task) {
     const d = document.createElement("div"); d.className = "done";
@@ -165,7 +169,7 @@ function render(prev) {
 // Keyboard users keep their place: when an answer control had focus, the next word's first reading gets it.
 function keepFocus(had) {
   if (!had) return;
-  const b = $("opt1") || $("back");
+  const b = $("opt1") || $("retry") || $("back");
   if (b && !b.disabled) b.focus({ preventScroll: true });
 }
 
@@ -177,8 +181,9 @@ async function next(had = controlFocused()) {
     const q = new URLSearchParams({ lang });
     if (skipped.length) q.set("skip", skipped.slice(-50).join(","));
     const r = await authed("/api/next?" + q);
-    task = r.task; answered = r.answered; loaded = true; status("");
+    task = r.task; answered = r.answered; loaded = true; failed = false; status("");
   } catch (e) {
+    failed = true;
     status(e.status === 429 ? "Slow down a little, then try again." : "The next word didn't load. " + e.message, true);
   } finally { busy = false; render(); keepFocus(had); }
 }

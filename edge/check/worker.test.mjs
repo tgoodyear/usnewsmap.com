@@ -113,3 +113,19 @@ test("migration 0001 keeps every answer and allows notext", async () => {
   assert.throws(() => add.run("t9", "c9", "a", 9)); // the primary key survived
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE name = 'answers_by_contributor'").get().n, 1);
 });
+
+test("an oversized body is refused while streaming, before it is buffered", async () => {
+  const { readLimited } = await import("./worker.mjs");
+  let pulled = 0;
+  const stream = new ReadableStream({
+    pull(c) { pulled++; c.enqueue(new Uint8Array(1024)); if (pulled > 100) c.close(); },
+  });
+  const req = new Request("https://check.usnewsmap.com/api/session", { method: "POST", body: stream, duplex: "half" });
+  await assert.rejects(readLimited(req, 4096), (e) => e.status === 413);
+  assert.ok(pulled <= 6, `read ${pulled} chunks`);
+  const declared = new Request("https://check.usnewsmap.com/api/session", { method: "POST", body: "x", headers: { "content-length": "999999" } });
+  await assert.rejects(readLimited(declared, 4096), (e) => e.status === 413);
+  assert.equal(await readLimited(new Request("https://x/", { method: "POST", body: '{"a":1}' }), 4096), '{"a":1}');
+  const r = await call("/api/session", { method: "POST", body: "x".repeat(5000) });
+  assert.equal(r.status, 413);
+});
