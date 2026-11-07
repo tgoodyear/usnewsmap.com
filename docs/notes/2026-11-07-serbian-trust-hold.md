@@ -41,7 +41,7 @@ Pages are queued in a fixed order that takes them round-robin across decades (wi
 
 ## What is left
 
-- **Queue the other 38,258 pages** in batches of up to 10,000 from the same order, after the first batch's held count rises as expected. Scans arrive through the normal fetcher, at most 1,000 an hour.
+- **Queue the other 38,258 pages** in batches of up to 10,000 from the same order, once the first batch's Serbian jobs show up as `scope_held` while English keeps publishing. Scans arrive through the normal fetcher, at most 1,000 an hour.
 - **The held backlog.** Held journals count toward the `MAX_JOBS` caps, as German's did. Archive them with `archive_history.py` (#1483, #1606) as for German.
-- **Nodes.** `trust.json` governs BOINC results only. A held page's queue message returns when its 36-hour lease ends, and an on-prem OCR node would publish it. No node reads the queues now (OCR runs only through BOINC); that has to stay so while Serbian is held.
+- **Nodes.** `trust.json` governs BOINC results only. A held page's queue message returns when its 36-hour lease ends, and an on-prem OCR node would publish it. No node reads the queues now (OCR runs only through BOINC), and none may while Serbian is held.
 - **Calibration** needs a Serbian gold set (Cyrillic and Latin script), host reports for the image, and `gold trust` at or below 0.179.
