@@ -16,6 +16,10 @@ class Letters(unittest.TestCase):
     def test_marks_stay_with_their_letter(self):
         self.assertEqual(bt.graphemes("פּאַ"), ["פּ", "אַ"])
 
+    def test_spacing_marks_join_their_letter(self):
+        self.assertEqual(bt.graphemes("काम"), ["का", "म"])  # U+093E has combining class 0 but is a mark
+        self.assertEqual(bt.letter_diff("कात", "काम", {}), ([1], [1]))
+
     def test_presentation_forms_and_bidi_marks(self):
         self.assertEqual(bt.clean("אַ‏"), "אַ")  # אַ as one presentation form, then RLM
 
@@ -49,6 +53,14 @@ class Pairing(unittest.TestCase):
         self.assertEqual(bt.pair_words(["של", "ום"], ["שלום"], {}, 0.34), ([], 2))
         self.assertEqual(bt.pair_words(["זאָגט", "של", "ום"], ["זאגט", "שלום"], {}, 0.34), ([(0, "זאגט")], 2))
 
+    def test_matched_neighbour_is_not_a_split(self):
+        self.assertEqual(bt.pair_words(["איז", "זי"], ["אי", "זי"], {}, 0.34), ([(0, "אי")], 0))
+
+    def test_stray_marks(self):
+        self.assertTrue(bt.stray_marks("י", "ע", YI))
+        self.assertFalse(bt.stray_marks("ײ", "י", YI))  # shares י; yiddish_lines.py drops such picture lines
+        self.assertFalse(bt.stray_marks("אי", "אין", YI))
+
     def test_unlike_words_are_left_out(self):
         self.assertEqual(bt.pair_words(["ניבן"], ["ף"], YI, 0.34), ([], 1))
 
@@ -69,6 +81,15 @@ class Alto(unittest.TestCase):
             os.unlink(f.name)
         self.assertEqual((w, h), (1000, 2000))
         self.assertEqual(lines[0]["words"], [{"text": "דער", "box": [300, 55, 200, 30]}, {"text": "פאר-", "box": [100, 52, 170, 35]}])
+
+
+class TextLines(unittest.TestCase):
+    def test_picture_lines_are_not_text(self):
+        import yiddish_lines as yl
+        w = lambda t: {"text": t, "box": [0, 0, 1, 1]}
+        self.assertFalse(yl.text_like({"words": [w(x) for x in "י י ע א . ייע SR י".split()], "wc": 0.9}))
+        self.assertTrue(yl.text_like({"words": [w(x) for x in "צודרינגליך, ער SR מיר דא ערקלע-!".split()], "wc": 0.97}))
+        self.assertTrue(yl.text_like({"words": [w(x) for x in ". 3750 תמון e 1922 TAMUZ".split()], "wc": 0.96}))
 
 
 class Build(unittest.TestCase):

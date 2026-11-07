@@ -10,7 +10,8 @@ Input (--lines) is JSON lines, one printed line each:
 layout files (ALTO, hOCR) give them. Reading b only needs its text: its words are paired with a's by
 aligning the two word sequences, so each task uses a's box. Paired words that differ become tasks; a word
 with no partner at least --min-similarity alike (one reading split, joined, dropped or garbled it) is left
-out, and so is a word with no letter or digit in either reading.
+out, and so is a word with no letter or digit in either reading, or a pair of one- or two-letter readings
+with no letter in common (specks, picture texture).
 
 Writes OUT_DIR/clips/<lang>/<set>/{lines,words}/..., OUT_DIR/tasks.jsonl and OUT_DIR/language.json (the
 --language-config without its build-only fields, and no example letters). Needs Pillow.
@@ -38,7 +39,7 @@ def graphemes(text: str) -> list:
     """Letters as the page highlights them: a base character with the marks that follow it (e.g. פּ, אַ)."""
     out = []
     for ch in clean(text):
-        if out and unicodedata.combining(ch):
+        if out and unicodedata.category(ch).startswith("M"):  # as app.js: \p{M} joins the letter before
             out[-1] += ch
         else:
             out.append(ch)
@@ -108,7 +109,8 @@ def pair_words(a_words: list, b_words: list, equivalents: dict, min_similarity: 
         if op == "equal":
             continue
         pairs = [(i1 + i, j1 + j) for i, j in best_pairs(a_words[i1:i2], b_words[j1:j2], equivalents, min_similarity)]
-        pairs = [(i, j) for i, j in pairs if not split_or_joined(fa, fb, i, j)]
+        # only words in this unmatched span count as neighbours: a word that matched exactly isn't part of a split
+        pairs = [(i, j) for i, j in pairs if not split_or_joined(fa[i1:i2], fb[j1:j2], i - i1, j - j1)]
         left += (i2 - i1) - len(pairs)
         out.extend((i, b_words[j]) for i, j in pairs if fa[i] != fb[j])
     return out, left
@@ -128,6 +130,12 @@ def split_or_joined(fa: list, fb: list, i: int, j: int) -> bool:
 
 def has_letter(word: str) -> bool:
     return any(c.isalnum() for c in word)
+
+
+def stray_marks(a: str, b: str, equivalents: dict) -> bool:
+    """Both readings are one or two letters with none in common: usually specks or picture texture."""
+    ua, ub = {u for u, _ in units(a, equivalents)}, {u for u, _ in units(b, equivalents)}
+    return len(graphemes(a)) <= 2 and len(graphemes(b)) <= 2 and not ua & ub
 
 
 def parse_equivalents(items: list) -> dict:
@@ -181,7 +189,8 @@ def main() -> None:
             a_words = [clean(w["text"]) for w in ln["a_words"]]
             b_words = clean(ln["b"]).split()
             pairs, left = pair_words(a_words, b_words, equivalents, a.min_similarity)
-            kept = [(k, wb) for k, wb in pairs if has_letter(a_words[k]) and has_letter(wb)]
+            kept = [(k, wb) for k, wb in pairs
+                    if has_letter(a_words[k]) and has_letter(wb) and not stray_marks(a_words[k], wb, equivalents)]
             unpaired += left + len(pairs) - len(kept)
             pairs = kept
             if not pairs:

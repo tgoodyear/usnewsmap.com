@@ -1,6 +1,6 @@
 # check.usnewsmap.com
 
-A public page where anyone can help check OCR text ([#1620](https://github.com/tgoodyear/usnewsmap.com/issues/1620)). Two readings of a printed word disagree, for example LoC's OCR and an aligned reference text. The page shows the printed word and both readings, and asks which one matches the print, or neither, or "can't tell". Readers don't need to know the language: they compare letter shapes.
+A public page where anyone can help check OCR text ([#1620](https://github.com/tgoodyear/usnewsmap.com/issues/1620)). Two readings of a printed word disagree, for example LoC's OCR and an aligned reference text. The page shows the printed word and both readings, and asks which one matches the print, or neither, or "can't tell", or "not text" when the box holds no letters (a picture or a smudge). Readers don't need to know the language: they compare letter shapes.
 
 Cherokee (the _Cherokee Phoenix_, 1828–34) was the first language and Yiddish (New York dailies, 1910–53) the second. The data model assumes neither: a language is a configuration plus a set of tasks.
 
@@ -23,7 +23,7 @@ Cherokee (the _Cherokee Phoenix_, 1828–34) was the first language and Yiddish 
 
 No account is needed. The first answer from a browser runs a Turnstile check, and the Worker issues a signed session holding a random id (30 days, `localStorage`). Answers are stored against that id, so one browser's answer to a word counts once. A later answer replaces it. Nothing else about the person is kept. One id may send at most 30 answers in 10 seconds.
 
-A word **settles** once at least 3 answers are in and one choice has two thirds of them. That choice becomes its outcome: `a`, `b`, `neither` or `unsure`. After 7 answers without that agreement, it closes as `disputed`. Settled words leave the queue. `/api/next` gives a person a word they haven't answered, choosing words nearest to settling first, so checked words come in steadily.
+A word **settles** once at least 3 answers are in and one choice has two thirds of them. That choice becomes its outcome: `a`, `b`, `neither`, `unsure` or `notext`; a tie goes to the first in that order. After 7 answers without that agreement, it closes as `disputed`. Settled words leave the queue. `/api/next` gives a person a word they haven't answered, choosing words nearest to settling first, so checked words come in steadily.
 
 Seed answers (from `load.sh --seed`) are stored as contributor `seed:<name>` and count as one person.
 
@@ -38,7 +38,7 @@ Answers are published under CC0. `GET /api/export?lang=chr` returns one JSON lin
 | `GET /api/languages/<code>`               | anyone      | A language's configuration.                                           |
 | `POST /api/session`                       | anyone      | `{turnstile}` → `{session}`.                                          |
 | `GET /api/next?lang=<code>[&skip=id,...]` | session     | `{task, answered}`; `task` is null when none is left for this person. |
-| `POST /api/answers`                       | session     | `{task, choice}`, choice one of `a`, `b`, `neither`, `unsure`.        |
+| `POST /api/answers`                       | session     | `{task, choice}`: `a`, `b`, `neither`, `unsure` or `notext`.          |
 | `GET /api/stats?lang=<code>`              | anyone      | Tasks, settled, answers, people.                                      |
 | `GET /api/export?lang=<code>`             | anyone      | CC0 JSON lines (above).                                               |
 | `PUT /admin/clips/<key>`                  | admin token | An image (JPEG, PNG or WebP).                                         |
@@ -52,13 +52,13 @@ A task, as loaded: `id` (`<lang>/<set>/<word id>`), `lang`, `set`, then what the
 
 `languages/<code>.json` is served at `/api/languages/<code>`, except for the build options, which the build tools remove:
 
-| Field                           | What it is                                                                                          |
-| ------------------------------- | --------------------------------------------------------------------------------------------------- |
-| `name`, `title`, `intro`        | Shown on the page.                                                                                  |
-| `dir`                           | `rtl` for right-to-left scripts (Hebrew letters); the readings are then set right to left.          |
-| `notes`                         | A short note per letter, shown under a reading when that letter is highlighted.                     |
-| `drop_examples`, `min_examples` | Build options for `from_tap_data.py`'s example letter pictures.                                     |
-| `equivalents`                   | Build option for `build_tasks.py`: letters that print alike (`"װ": "וו"`), compared as equal.       |
+| Field                           | What it is                                                                                    |
+| ------------------------------- | --------------------------------------------------------------------------------------------- |
+| `name`, `title`, `intro`        | Shown on the page.                                                                            |
+| `dir`                           | `rtl` for right-to-left scripts (Hebrew letters); the readings are then set right to left.    |
+| `notes`                         | A short note per letter, shown under a reading when that letter is highlighted.               |
+| `drop_examples`, `min_examples` | Build options for `from_tap_data.py`'s example letter pictures.                               |
+| `equivalents`                   | Build option for `build_tasks.py`: letters that print alike (`"װ": "וו"`), compared as equal. |
 
 The page highlights letters as `a_diff` and `b_diff` count them: a base character with the marks that follow it (פּ, אַ) is one letter.
 
@@ -66,7 +66,7 @@ The page highlights letters as `a_diff` and `b_diff` count them: a base characte
 
 `tools/build_tasks.py` takes JSON lines, one printed line each: its image, reading a with each word's box in the line image (as ALTO or hOCR gives them), and reading b's text. It pairs b's words with a's by aligning them, and writes a task for each paired word that differs, with a word clip cut from the line. A word one reading split, joined or garbled (less alike than `--min-similarity`) is left out, and so is a pair with no letter or digit. Its docstring has the input format. Tests: `python3 -m unittest discover -s edge/check/tools` (the clip test needs Pillow).
 
-Yiddish uses the pages drawn for the newspaper line set ([`ocr/bench/yiddish-newspaper/`](../../ocr/bench/yiddish-newspaper/README.md)). `tools/yiddish_lines.py` fetches each page's ALTO and scan from loc.gov, takes the lines at the page's anchors as the set's protocol does (three blocks of three lines), and reads each line with `yidj2` ([`ocr/models/yidj2/`](../../ocr/models/yidj2/README.md)). Reading a is LoC's OCR and reading b is `yidj2`'s. `tools/Containerfile` has Tesseract and Pillow. On the build host:
+Yiddish uses the pages drawn for the newspaper line set ([`ocr/bench/yiddish-newspaper/`](../../ocr/bench/yiddish-newspaper/README.md)). `tools/yiddish_lines.py` fetches each page's ALTO and scan from loc.gov, takes the lines at the page's anchors as the set's protocol does (three blocks of three lines), leaves out lines LoC's OCR didn't read as text (photos, halftones and smudges, by `text_like`), and reads each line with `yidj2` ([`ocr/models/yidj2/`](../../ocr/models/yidj2/README.md)). Reading a is LoC's OCR and reading b is `yidj2`'s. `tools/Containerfile` has Tesseract and Pillow. On the build host:
 
 ```sh
 podman build -t usnm-check-tools tools

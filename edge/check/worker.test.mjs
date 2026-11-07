@@ -11,6 +11,11 @@ test("a word settles at three answers with two thirds agreeing", () => {
   assert.deepEqual(settle({ a: 4, b: 2, neither: 0, unsure: 0 }), { n: 6, settled: 1, outcome: "a" });
 });
 
+test("not text settles like any answer, and ties go to the earlier choice", () => {
+  assert.deepEqual(settle({ a: 1, b: 0, neither: 0, unsure: 0, notext: 2 }), { n: 3, settled: 1, outcome: "notext" });
+  assert.deepEqual(settle({ a: 0, b: 0, neither: 0, unsure: 3, notext: 3 }), { n: 6, settled: 0, outcome: null });
+});
+
 test("a word that never agrees closes as disputed", () => {
   assert.deepEqual(settle({ a: 3, b: 3, neither: 1, unsure: 0 }), { n: 7, settled: 1, outcome: "disputed" });
 });
@@ -67,8 +72,8 @@ test("the SQL settling rule matches settle()", async () => {
   const add = db.prepare("INSERT INTO answers (task_id, contributor, choice, at) VALUES ('t', ?, ?, 0)");
   const upd = db.prepare(SETTLE_SQL);
   const get = db.prepare("SELECT n, settled, outcome FROM tasks WHERE id = 't'");
-  const kinds = ["a", "b", "neither", "unsure"];
-  for (let code = 0; code < 6 ** 4; code++) {
+  const kinds = ["a", "b", "neither", "unsure", "notext"];
+  for (let code = 0; code < 6 ** kinds.length; code++) {
     const counts = {};
     let rest = code;
     for (const k of kinds) { counts[k] = rest % 6; rest = Math.floor(rest / 6); }

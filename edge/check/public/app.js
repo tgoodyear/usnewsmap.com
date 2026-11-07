@@ -124,7 +124,7 @@ function render(prev) {
   $("progress").textContent = answered ? `${answered} answered` : "";
   $("back").disabled = history.length === 0 || busy;
   const live = !!task && !busy;
-  $("neither").disabled = $("unsure").disabled = $("skip").disabled = !live;
+  $("neither").disabled = $("unsure").disabled = $("notext").disabled = $("skip").disabled = !live;
   if (!task && !loaded) {
     const d = document.createElement("div"); d.className = "done"; d.textContent = "Loading the next word…";
     card.appendChild(d); return;
@@ -217,6 +217,7 @@ async function work(code) {
   $("intro").textContent = cfg.intro || "";
   $("neither").addEventListener("click", () => choose("neither"));
   $("unsure").addEventListener("click", () => choose("unsure"));
+  $("notext").addEventListener("click", () => choose("notext"));
   $("back").addEventListener("click", back);
   $("skip").addEventListener("click", skip);
   document.addEventListener("keydown", (e) => {
@@ -224,6 +225,7 @@ async function work(code) {
     if (e.key === "1" || e.key === "2") { const b = $("opt" + e.key); if (b) b.click(); }
     else if (e.key === "3") choose("neither");
     else if (e.key === "4") choose("unsure");
+    else if (e.key === "5") choose("notext");
     else if (e.key === "s" || e.key === "S") skip();
     else if (e.key === "ArrowLeft" || e.key === "Backspace") back();
   });

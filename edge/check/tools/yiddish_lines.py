@@ -24,6 +24,12 @@ import xml.etree.ElementTree as ET
 
 MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
 HEBREW = re.compile(r"[֐-׿יִ-ﭏ]")
+LETTER = re.compile(r"[\u05D0-\u05EA\u05F0-\u05F2\uFB1D-\uFB4F]")
+# A line LoC read as text: at least this share of its words have 3+ Hebrew letters, or its mean word
+# confidence (ALTO WC) is at least MIN_TEXT_WC. Lines over photos, halftones and smudges come out as
+# runs of 1-2 letter "words" with WC under 0.95, and their word clips aren't text.
+MIN_TEXT_SHARE = 0.4
+MIN_TEXT_WC = 0.95
 UA = "usnewsmap-check/1.0 (+https://check.usnewsmap.com)"
 
 
@@ -68,7 +74,7 @@ def alto_lines(path: str) -> tuple:
     out = []
     for b, block in enumerate(root.iter(f"{ns}TextBlock")):
         for tl in block.iter(f"{ns}TextLine"):
-            words = []
+            words, wcs = [], []
             for s in tl:
                 kind = s.tag[len(ns):]
                 if kind not in ("String", "HYP") or s.get("HPOS") is None:
@@ -76,13 +82,21 @@ def alto_lines(path: str) -> tuple:
                 box = [int(float(s.get(k, 0))) for k in ("HPOS", "VPOS", "WIDTH", "HEIGHT")]  # LoC's HYP has no HEIGHT
                 if kind == "String":
                     words.append({"text": s.get("CONTENT", ""), "box": box})
+                    wcs.append(float(s.get("WC", 0)))
                 elif words:  # a line-end hyphen belongs to the word before it, as printed
                     prev = words[-1]["box"]
                     box = [box[0], prev[1], box[2], prev[3]]  # within the word's own height
                     words[-1] = {"text": words[-1]["text"] + s.get("CONTENT", "-"), "box": union(prev, box)}
             box = [int(float(tl.get(k))) for k in ("HPOS", "VPOS", "WIDTH", "HEIGHT")]
-            out.append({"block": b, "box": box, "words": words})
+            out.append({"block": b, "box": box, "words": words, "wc": sum(wcs) / len(wcs) if wcs else 0.0})
     return int(float(page.get("WIDTH"))), int(float(page.get("HEIGHT"))), out
+
+
+def text_like(line: dict) -> bool:
+    """Whether LoC's ALTO reads the line as text rather than a picture or smudge (MIN_TEXT_SHARE)."""
+    words = line["words"]
+    share = sum(1 for w in words if len(LETTER.findall(w["text"])) >= 3) / max(1, len(words))
+    return share >= MIN_TEXT_SHARE or line["wc"] >= MIN_TEXT_WC
 
 
 def union(p: list, q: list) -> list:
@@ -151,6 +165,10 @@ def main() -> None:
             aw, ah, lines = alto_lines(os.path.join(a.work, "loc", doc + ".xml"))
             sx, sy = aw / p["width"], ah / p["height"]  # anchors are in pixels of the held (smaller) scan
             picked = pick_blocks(lines, [(x * sx, y * sy) for x, y in p["anchors"]])
+            not_text = [i for i in picked if not text_like(lines[i])]
+            picked = [i for i in picked if i not in not_text]
+            if not_text:
+                print(f"{doc}: {len(not_text)} lines that aren't text left out", flush=True)
             if not picked:
                 print(f"{doc}: no Yiddish lines at the anchors")
                 continue

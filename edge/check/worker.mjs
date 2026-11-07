@@ -2,7 +2,7 @@
 // matches (#1620). The page is static (public/); this Worker answers /api/*, /clips/* and
 // /admin/*. README.md describes the data, the settling rule and how tasks are loaded.
 
-const CHOICES = new Set(["a", "b", "neither", "unsure"]);
+const CHOICES = new Set(["a", "b", "neither", "unsure", "notext"]);
 const SESSION_DAYS = 30;
 const SETTLE_MIN = 3; // answers before a word can settle
 const DISPUTE_AT = 7; // answers after which a word that never agreed is closed as disputed
@@ -40,7 +40,7 @@ export function json(body, status = 200, headers = {}) {
 
 // ---------- the settling rule ----------
 
-// counts: {a, b, neither, unsure}. A word settles once at least SETTLE_MIN people answered and
+// counts: {a, b, neither, unsure, notext}, in that order: a tie goes to the first. A word settles once at least SETTLE_MIN people answered and
 // one answer has two thirds of them. After DISPUTE_AT answers without that, it closes as disputed.
 export function settle(counts) {
   const n = Object.values(counts).reduce((s, v) => s + v, 0);
@@ -203,7 +203,8 @@ async function api(request, env, url) {
     const l = lang(url);
     const rows = await env.DB.prepare(
       `SELECT t.id, t.set_name, t.body, t.outcome, t.settled,
-         SUM(a.choice = 'a') AS a, SUM(a.choice = 'b') AS b, SUM(a.choice = 'neither') AS neither, SUM(a.choice = 'unsure') AS unsure
+         SUM(a.choice = 'a') AS a, SUM(a.choice = 'b') AS b, SUM(a.choice = 'neither') AS neither, SUM(a.choice = 'unsure') AS unsure,
+         SUM(a.choice = 'notext') AS notext
        FROM tasks t LEFT JOIN answers a ON a.task_id = t.id WHERE t.lang = ? GROUP BY t.id ORDER BY t.id`,
     )
       .bind(l)
@@ -212,7 +213,7 @@ async function api(request, env, url) {
       const t = JSON.parse(r.body);
       return JSON.stringify({
         id: r.id, set: r.set_name, page: t.page, source: t.source, a: t.a, b: t.b, a_is: t.a_is, b_is: t.b_is,
-        counts: { a: r.a || 0, b: r.b || 0, neither: r.neither || 0, unsure: r.unsure || 0 },
+        counts: { a: r.a || 0, b: r.b || 0, neither: r.neither || 0, unsure: r.unsure || 0, notext: r.notext || 0 },
         settled: !!r.settled, outcome: r.outcome,
       });
     });
@@ -235,11 +236,13 @@ export const SETTLE_SQL = `
 WITH c AS (
   SELECT COUNT(*) AS n,
     COALESCE(SUM(choice = 'a'), 0) AS a, COALESCE(SUM(choice = 'b'), 0) AS b,
-    COALESCE(SUM(choice = 'neither'), 0) AS ne, COALESCE(SUM(choice = 'unsure'), 0) AS u
+    COALESCE(SUM(choice = 'neither'), 0) AS ne, COALESCE(SUM(choice = 'unsure'), 0) AS u,
+    COALESCE(SUM(choice = 'notext'), 0) AS nt
   FROM answers WHERE task_id = ?1
 ), t AS (
-  SELECT n, MAX(a, b, ne, u) AS top,
-    CASE WHEN a >= b AND a >= ne AND a >= u THEN 'a' WHEN b >= ne AND b >= u THEN 'b' WHEN ne >= u THEN 'neither' ELSE 'unsure' END AS pick
+  SELECT n, MAX(a, b, ne, u, nt) AS top,
+    CASE WHEN a >= b AND a >= ne AND a >= u AND a >= nt THEN 'a' WHEN b >= ne AND b >= u AND b >= nt THEN 'b'
+      WHEN ne >= u AND ne >= nt THEN 'neither' WHEN u >= nt THEN 'unsure' ELSE 'notext' END AS pick
   FROM c
 )
 UPDATE tasks SET
