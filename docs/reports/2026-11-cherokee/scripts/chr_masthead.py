@@ -7,7 +7,8 @@ for t in a.tar:
         for m in tf:
             if not m.name.endswith("ocr.txt"): continue
             txt = tf.extractfile(m).read().decode("utf-8", "replace")
-            toks = re.findall(r"[Ꭰ-Ᏽ]+", txt)
+            # Whole index tokens (runs of letters and digits), keeping the all-syllabary ones.
+            toks = [t for t in re.findall(r"[^\W_]+", txt) if re.fullmatch("[\u13A0-\u13F5]+", t)]
             words.update(toks)
             if "/seq-1/" in m.name:
                 res["front_pages"] += 1
