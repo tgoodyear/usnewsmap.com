@@ -101,7 +101,9 @@ Each step has a measure that can be recomputed from its output, and steps 1 and 
 
 ### Step 1. Confusion-tolerant Cherokee search (quick, no OCR) ([#1619](https://github.com/tgoodyear/usnewsmap.com/issues/1619))
 
-Expand a syllabary query to the letter pairs above: ᎾᏍᎩ also matches ᏩᏍᎩ, ᏣᏍᎩ and ᏳᏍᎩ, with a ranking penalty for the variants. Build the confusion table from the measured disagreements, limited to pairs both readings support. **Measure:** pages found for the 200 most common New Testament words, before and after, and how many added hits are a known word one confusion away (precision proxy). Romanized queries (_tsalagi_ → ᏣᎳᎩ, the follow-up noted in #1581) can share the same expansion code.
+Search `word~ocr` with a Cherokee table of letter pairs, so ᎾᏍᎩ~ocr also finds ᏩᏍᎩ, ᏣᏍᎩ and ᏳᏍᎩ. Romanized queries (_tsalagi_ → ᏣᎳᎩ, the follow-up noted in #1581) can share the same expansion code later.
+
+**Done in [#1624](https://github.com/tgoodyear/usnewsmap.com/pull/1624).** The table holds the 13 pairs with at least 50 occurrences among LoC's one-letter misreadings of the New Testament's 5,000 most frequent words, out of 7,888 such misreadings in 85,450 tokens ([`scripts/chr_letter_pairs.py`](scripts/chr_letter_pairs.py)). The commonest are Ꮅ read as Ꮲ (1,008), Ꮧ as Ꮨ (473) and Ꮩ as Ꭺ (430, the inverted-V do). Ꮎ goes to five letters: Ᏻ, Ꮹ, Ꭷ, Ꮾ and Ꮳ (101 to 145 each). For the 200 most frequent New Testament words, the 324 pages give 5,500 page hits exactly and 1,102 more with `~ocr` ([`scripts/chr_ocr_variant_recall.py`](scripts/chr_ocr_variant_recall.py)). Of the added hits, 980 match only non-words, and 122 match another New Testament form, so they may be false hits. ᎾᏍᎩ goes from 35 pages to 109. ᎦᏙᎯ ("earth") goes from 0 to 52, because its Ꮩ is always read as Ꭺ. `~ocr` is opt-in, so a ranking penalty for variants isn't needed yet; making it the default for syllabary queries is a separate decision.
 
 ### Step 2. Ground truth without new transcription ([#1620](https://github.com/tgoodyear/usnewsmap.com/issues/1620))
 
@@ -133,12 +135,14 @@ Made on 6 November 2026:
 
 ## Reproducing
 
-The three scripts in [`scripts/`](scripts/) take only named arguments and read LoC's batch tars and the earlier evaluation outputs; they write JSON to standard output.
+The scripts in [`scripts/`](scripts/) take only named arguments and read LoC's batch tars and the earlier evaluation outputs; they write JSON to standard output.
 
 ```sh
 python3 scripts/chr_alto_stats.py --tar dlc_misctopsn83020866_ver03.tar.bz2 --tar dlc_misctopsn83020874_ver02.tar.bz2
 python3 scripts/chr_masthead.py --tar dlc_misctopsn83020866_ver03.tar.bz2 --tar dlc_misctopsn83020874_ver02.tar.bz2
 python3 scripts/chr_confusions.py --eval-dir EVAL_DIR
+python3 scripts/chr_letter_pairs.py --tar dlc_misctopsn83020866_ver03.tar.bz2 --tar dlc_misctopsn83020874_ver02.tar.bz2 --wordlists ocr/ja-ocr/wordlists
+python3 scripts/chr_ocr_variant_recall.py --tar dlc_misctopsn83020866_ver03.tar.bz2 --tar dlc_misctopsn83020874_ver02.tar.bz2 --wordlists ocr/ja-ocr/wordlists
 ```
 
 `EVAL_DIR` holds the #1581 evaluation outputs (`nt-reference/`, `region-aware/out/hybrid/`); they are not in the repository. The search counts are from `https://api.usnewsmap.com/v1/aggregate?q=…` on 6 November 2026.
