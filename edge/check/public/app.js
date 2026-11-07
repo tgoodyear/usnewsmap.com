@@ -1,7 +1,7 @@
 // The letter-check page. "/" lists languages; "/<lang>" shows one word at a time.
 const $ = (id) => document.getElementById(id);
 const SESSION = "usnm-check-session";
-let lang = null, cfg = null, task = null, answered = 0, history = [], skipped = [], busy = false;
+let lang = null, cfg = null, task = null, answered = 0, history = [], skipped = [], busy = false, loaded = false;
 
 function store(k, v) {
   try { if (v === undefined) return localStorage.getItem(k); if (v === null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch { /* private mode */ }
@@ -26,11 +26,13 @@ async function session() {
   sessionWaiters = (async () => {
     const { turnstile_site_key } = await getJSON("/api/config");
     while (!window.turnstile) await new Promise((r) => setTimeout(r, 100));
+    status("Starting… if a check box appears below, tick it to begin.");
     const token = await new Promise((resolve, reject) => {
       window.turnstile.render("#turnstile", { sitekey: turnstile_site_key, appearance: "interaction-only", callback: resolve, "error-callback": () => reject(new Error("browser check failed")) });
     });
     const { session: tok } = await getJSON("/api/session", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ turnstile: token }) });
     store(SESSION, tok);
+    status("");
     return tok;
   })();
   try { return await sessionWaiters; } finally { sessionWaiters = null; }
@@ -110,6 +112,10 @@ function render(prev) {
   $("back").disabled = history.length === 0 || busy;
   const live = !!task && !busy;
   $("neither").disabled = $("unsure").disabled = $("skip").disabled = !live;
+  if (!task && !loaded) {
+    const d = document.createElement("div"); d.className = "done"; d.textContent = "Loading the next word…";
+    card.appendChild(d); return;
+  }
   if (!task) {
     const d = document.createElement("div"); d.className = "done";
     const s = document.createElement("strong"); s.textContent = "No words left for you";
@@ -149,7 +155,7 @@ async function next() {
     const q = new URLSearchParams({ lang });
     if (skipped.length) q.set("skip", skipped.slice(-50).join(","));
     const r = await authed("/api/next?" + q);
-    task = r.task; answered = r.answered; status("");
+    task = r.task; answered = r.answered; loaded = true; status("");
   } catch (e) {
     status(e.status === 429 ? "Slow down a little, then try again." : "The next word didn't load. " + e.message, true);
   } finally { busy = false; render(); }
