@@ -77,7 +77,12 @@ async function home() {
 
 // Letters as the tasks count them (a_diff, b_diff): a base character with its marks, e.g. פּ or אַ.
 const segmenter = typeof Intl !== "undefined" && Intl.Segmenter ? new Intl.Segmenter(undefined, { granularity: "grapheme" }) : null;
-function letters(text) { return segmenter ? Array.from(segmenter.segment(text), (s) => s.segment) : Array.from(text); }
+function letters(text) {
+  if (segmenter) return Array.from(segmenter.segment(text), (s) => s.segment);
+  const out = []; // without Intl.Segmenter: marks (dagesh, patah…) stay with the letter before them
+  for (const ch of text) { if (out.length && /\p{M}/u.test(ch)) out[out.length - 1] += ch; else out.push(ch); }
+  return out;
+}
 
 function flip(id) { let h = 0; for (const c of id) h = (h * 31 + c.codePointAt(0)) >>> 0; return (h & 1) === 1; }
 

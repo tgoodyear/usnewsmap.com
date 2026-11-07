@@ -107,10 +107,23 @@ def pair_words(a_words: list, b_words: list, equivalents: dict, min_similarity: 
     for op, i1, i2, j1, j2 in sm.get_opcodes():
         if op == "equal":
             continue
-        pairs = best_pairs(a_words[i1:i2], b_words[j1:j2], equivalents, min_similarity)
+        pairs = [(i1 + i, j1 + j) for i, j in best_pairs(a_words[i1:i2], b_words[j1:j2], equivalents, min_similarity)]
+        pairs = [(i, j) for i, j in pairs if not split_or_joined(fa, fb, i, j)]
         left += (i2 - i1) - len(pairs)
-        out.extend((i1 + i, b_words[j1 + j]) for i, j in pairs if fa[i1 + i] != fb[j1 + j])
+        out.extend((i, b_words[j]) for i, j in pairs if fa[i] != fb[j])
     return out, left
+
+
+def split_or_joined(fa: list, fb: list, i: int, j: int) -> bool:
+    """True when a's word i matches b's word j joined with a neighbour better than b's word j alone, or
+    the other way round: then the two readings cover different stretches of print and the pair would
+    compare a whole word with part of it."""
+    def ratio(x, y):
+        return difflib.SequenceMatcher(None, x, y, autojunk=False).ratio()
+    alone = ratio(fa[i], fb[j])
+    joined_b = [fb[k] + fb[k + 1] for k in (j - 1, j) if 0 <= k and k + 1 < len(fb)]
+    joined_a = [fa[k] + fa[k + 1] for k in (i - 1, i) if 0 <= k and k + 1 < len(fa)]
+    return any(ratio(fa[i], x) > alone for x in joined_b) or any(ratio(x, fb[j]) > alone for x in joined_a)
 
 
 def has_letter(word: str) -> bool:

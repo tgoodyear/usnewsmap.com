@@ -69,12 +69,25 @@ def alto_lines(path: str) -> tuple:
     for b, block in enumerate(root.iter(f"{ns}TextBlock")):
         for tl in block.iter(f"{ns}TextLine"):
             words = []
-            for s in tl.iter(f"{ns}String"):
-                box = [int(float(s.get(k))) for k in ("HPOS", "VPOS", "WIDTH", "HEIGHT")]
-                words.append({"text": s.get("CONTENT", ""), "box": box})
+            for s in tl:
+                kind = s.tag[len(ns):]
+                if kind not in ("String", "HYP") or s.get("HPOS") is None:
+                    continue
+                box = [int(float(s.get(k, 0))) for k in ("HPOS", "VPOS", "WIDTH", "HEIGHT")]  # LoC's HYP has no HEIGHT
+                if kind == "String":
+                    words.append({"text": s.get("CONTENT", ""), "box": box})
+                elif words:  # a line-end hyphen belongs to the word before it, as printed
+                    prev = words[-1]["box"]
+                    box = [box[0], prev[1], box[2], prev[3]]  # within the word's own height
+                    words[-1] = {"text": words[-1]["text"] + s.get("CONTENT", "-"), "box": union(prev, box)}
             box = [int(float(tl.get(k))) for k in ("HPOS", "VPOS", "WIDTH", "HEIGHT")]
             out.append({"block": b, "box": box, "words": words})
     return int(float(page.get("WIDTH"))), int(float(page.get("HEIGHT"))), out
+
+
+def union(p: list, q: list) -> list:
+    x0, y0 = min(p[0], q[0]), min(p[1], q[1])
+    return [x0, y0, max(p[0] + p[2], q[0] + q[2]) - x0, max(p[1] + p[3], q[1] + q[3]) - y0]
 
 
 def pick_blocks(lines: list, anchors: list, blocks: int = 3, per_block: int = 3) -> list:
@@ -155,9 +168,11 @@ def main() -> None:
                 scan.crop((x0, y0, x1, y1)).save(os.path.join(a.work, rel))
                 r = subprocess.run(["tesseract", os.path.join(a.work, rel), "-", "--psm", "7", "-l", a.model, "--tessdata-dir", a.tessdata],
                                    capture_output=True, text=True)
-                if r.returncode != 0:  # Tesseract 5.5 can die on a line (SIGFPE); leave that line out
-                    print(f"{line_id}: tesseract exited {r.returncode}, line left out", flush=True)
+                if r.returncode < 0:  # Tesseract 5.5 can die on a line (SIGFPE); leave that line out
+                    print(f"{line_id}: tesseract died (signal {-r.returncode}), line left out", flush=True)
                     continue
+                if r.returncode != 0:  # a setup error (no model, bad --tessdata) would fail every line
+                    raise SystemExit(f"{line_id}: tesseract exited {r.returncode}: {r.stderr.strip()}")
                 words = [{"text": wd["text"], "box": [round(wd["box"][0] * kx) - x0, round(wd["box"][1] * ky) - y0,
                                                       round(wd["box"][2] * kx), round(wd["box"][3] * ky)]}
                          for wd in ln["words"]]

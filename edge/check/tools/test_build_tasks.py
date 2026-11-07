@@ -44,8 +44,31 @@ class Pairing(unittest.TestCase):
     def test_equal_after_folding_is_no_task(self):
         self.assertEqual(bt.pair_words(["װעט"], ["וועט"], YI, 0.34), ([], 0))
 
+    def test_split_and_joined_words_are_left_out(self):
+        self.assertEqual(bt.pair_words(["שלום"], ["של", "ום"], {}, 0.34), ([], 1))
+        self.assertEqual(bt.pair_words(["של", "ום"], ["שלום"], {}, 0.34), ([], 2))
+        self.assertEqual(bt.pair_words(["זאָגט", "של", "ום"], ["זאגט", "שלום"], {}, 0.34), ([(0, "זאגט")], 2))
+
     def test_unlike_words_are_left_out(self):
         self.assertEqual(bt.pair_words(["ניבן"], ["ף"], YI, 0.34), ([], 1))
+
+
+class Alto(unittest.TestCase):
+    def test_line_end_hyphen_joins_its_word(self):
+        import yiddish_lines as yl
+        xml = """<alto xmlns="http://www.loc.gov/standards/alto/ns-v2#"><Layout><Page WIDTH="1000" HEIGHT="2000"><PrintSpace>
+<TextBlock><TextLine HPOS="100" VPOS="50" WIDTH="400" HEIGHT="40">
+<String HPOS="300" VPOS="55" WIDTH="200" HEIGHT="30" CONTENT="דער"/><SP/>
+<String HPOS="120" VPOS="52" WIDTH="150" HEIGHT="35" CONTENT="פאר"/><HYP HPOS="100" VPOS="60" WIDTH="14" CONTENT="-"/>
+</TextLine></TextBlock></PrintSpace></Page></Layout></alto>"""
+        with tempfile.NamedTemporaryFile("w", suffix=".xml", delete=False, encoding="utf-8") as f:
+            f.write(xml)
+        try:
+            w, h, lines = yl.alto_lines(f.name)
+        finally:
+            os.unlink(f.name)
+        self.assertEqual((w, h), (1000, 2000))
+        self.assertEqual(lines[0]["words"], [{"text": "דער", "box": [300, 55, 200, 30]}, {"text": "פאר-", "box": [100, 52, 170, 35]}])
 
 
 class Build(unittest.TestCase):
