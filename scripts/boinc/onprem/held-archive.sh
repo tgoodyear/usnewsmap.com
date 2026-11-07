@@ -101,6 +101,8 @@ resume() {
 child=""
 on_stop() {
   if [ -n "$child" ]; then
+    # The job and what it runs (the tool's wrapper, or the bridge's tar and ssh).
+    pkill -TERM -P "$child" 2> /dev/null || true
     kill -TERM "$child" 2> /dev/null || true
     wait "$child" 2> /dev/null || true
   fi
@@ -132,10 +134,19 @@ print("null" if v is None else json.dumps(v) if not isinstance(v, str) else v)
 # Sends one dispatched batch to the BOINC host's bridge step and keeps its receipt.
 bridge() {
   local n=$1 dir=$ARCHIVE/batches/$1 out
+  local status=0
   out=$(mktemp)
-  tar -C "$dir" -cf - manifest.json receipts/dispatch.json |
-    "${STEP[@]}" --env "$ENV_NAME" --target archive --step bridge --var "ARCHIVE_BATCH=$n" \
-      --wait-mins "$WAIT_MINS" > "$out" || { cat "$out"; rm -f "$out"; die "batch $n's bridge step failed"; }
+  # In the background too, so a stop ends the ssh at once (the BOINC host's bridge step
+  # resumes on the next run) and the controller is started again within the stop grace.
+  {
+    tar -C "$dir" -cf - manifest.json receipts/dispatch.json |
+      "${STEP[@]}" --env "$ENV_NAME" --target archive --step bridge --var "ARCHIVE_BATCH=$n" \
+        --wait-mins "$WAIT_MINS" > "$out"
+  } &
+  child=$!
+  wait "$child" || status=$?
+  child=""
+  [ "$status" -eq 0 ] || { cat "$out"; rm -f "$out"; die "batch $n's bridge step failed"; }
   cat "$out"
   [ "$(field "$out" event)" = boinc_archive_bridge ] && [ "$(field "$out" complete)" = true ] &&
     [ "$(field "$out" manifest_sha256)" = "$(sha256 "$dir/manifest.json")" ] ||

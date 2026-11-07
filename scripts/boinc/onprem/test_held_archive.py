@@ -220,6 +220,31 @@ class HeldArchive(unittest.TestCase):
         self.assertLess(released, log.index("systemctl start usnm-boinc-priority-controller.timer"))
         self.assertEqual((root / "timer").read_text().strip(), "active")
 
+    def test_a_stop_during_the_bridge_ends_it_and_resumes(self):
+        import signal
+        import time
+        (self.root / "step.py").write_text(
+            "import os, sys, time\n"
+            "open(os.environ['FAKE_LOG'], 'a').write('step started\\n')\n"
+            "time.sleep(30)\n")
+        root = self.root
+        env = {**os.environ, "PATH": f"{root / 'bin'}{os.pathsep}{os.environ['PATH']}",
+               "FAKE_LOG": str(root / "log"), "FAKE_TIMER": str(root / "timer"),
+               "FAKE_LEFT": str(root / "left"), "USNM_HELD_ARCHIVE_LOCK": str(root / "lock")}
+        start = time.time()
+        proc = subprocess.Popen(
+            ["bash", str(SCRIPT), "--config", str(root / "config.json"), "--state-dir", str(root / "state"),
+             "--archive-dir", str(root / "archive"), "--tool", str(root / "tool.py"), "--wait-mins", "1"],
+            env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        log = root / "log"
+        while time.time() - start < 20 and not (log.exists() and "step started" in log.read_text()):
+            time.sleep(0.1)
+        proc.send_signal(signal.SIGTERM)
+        proc.communicate(timeout=30)
+        self.assertEqual(proc.returncode, 143)
+        self.assertLess(time.time() - start, 20)
+        self.assertEqual((root / "timer").read_text().strip(), "active")
+
     def test_max_batches(self):
         (self.root / "left").write_text("5")
         done = self.run_archive("--max-batches", "2")
