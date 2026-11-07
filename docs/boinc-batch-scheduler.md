@@ -114,7 +114,8 @@ for CT 211. CT 211 holds a checkout of main at `/opt/usnm`, pinned to one commit
 ([Moving the controller checkout](#moving-the-controller-checkout-1412)), the non-secret
 outputs in `/root/.config/usnewsmap/prod/.env`, the configuration in
 `/etc/usnm/boinc-priority-controller.json` (`claim_queues ["ocr-priority"]`,
-`claim_languages ["eng", "deu"]`, `lease_hours` 36), its state in
+`claim_languages ["eng", "deu"]`, widened to `srp` by the `--claim-language srp` flag
+since 7 November, `lease_hours` 36), its state in
 `/var/lib/usnm-priority-controller`, and the push command
 `/opt/usnm/scripts/ocr-node/push-boinc-scan.sh` (local, no SSH).
 
@@ -878,6 +879,14 @@ message only when all of these hold, and otherwise puts it back:
   version, because volunteers never fetch from LoC;
 - with `claim_languages` (`CLAIM_LANGUAGES`, `--language`), the page's source
   language is one of them (#866).
+
+`--claim-language LANG` (repeatable) adds a language to the configuration's
+`claim_languages` for the claim step. It's a flag, so the allocation digest
+doesn't change and the controller needs no drain or new plan. It only widens an
+explicit list, and refuses a code the list already has; the dry run's plan event
+shows the languages the claim will use. CT 211 runs `--claim-language srp`, for
+the Serbian hold ([note](notes/2026-11-07-serbian-trust-hold.md)). Remove the
+flag to stop claiming that language; pages already claimed are still collected.
 
 Set `claim_languages` to the languages `trust.json` has a policy for. Without
 it the claim takes any language the worker image can read, and `collect

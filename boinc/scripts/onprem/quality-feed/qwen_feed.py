@@ -21,6 +21,7 @@ import uuid
 
 YIDDISH = "yid"
 GERMAN = "deu"
+SERBIAN = "srp"
 
 
 def command(args, data=None):
@@ -116,12 +117,19 @@ def truncated_reservations(index, reserved, truncated, finished):
 def budgets(a):
     """(language, name, budget) for each language the feed prepares only under a budget."""
     return [(language, name, budget) for language, name, budget in (
-        (YIDDISH, "yiddish", a.yiddish_budget), (GERMAN, "german", a.german_budget))
+        (YIDDISH, "yiddish", a.yiddish_budget), (GERMAN, "german", a.german_budget),
+        (SERBIAN, "serbian", a.serbian_budget))
         if budget is not None]
 
 
+def page_list(a, language):
+    """The --german-pages or --serbian-pages file that limits `language`'s budget, if any."""
+    return {GERMAN: a.german_pages, SERBIAN: a.serbian_pages}.get(language)
+
+
 def listed_pages(index, path):
-    """The index rows for the pages a --german-pages file names, one doc_id a line."""
+    """The index rows for the pages a --german-pages or --serbian-pages file names, one doc_id
+    a line."""
     wanted = {line.strip() for line in path.read_text().splitlines() if line.strip()}
     return b"".join(line + b"\n" for line in index.splitlines() if json.loads(line)["doc_id"] in wanted)
 
@@ -578,7 +586,8 @@ def _tick(a):
 
     # A budgeted language comes as a chunk of its own, ahead of any source request and only up
     # to its budget: Yiddish because it reads at another request version, German while it is
-    # being calibrated. Every other page keeps the normal order without them.
+    # being calibrated, Serbian for the comparison with LoC's text while its BOINC OCR is held.
+    # Every other page keeps the normal order without them.
     budgeted = budgets(a)
     # The budgeted pass is the only way in for these languages, whatever a source request names.
     filters = tuple(arg for language, _, _ in budgeted for arg in ("--exclude-language", language))
@@ -609,8 +618,8 @@ def _tick(a):
             phase(name + "_budget_refund", refunded=len(reservations[name]) - len(spent), spent=len(spent),
                   budget=budget)
         own = index
-        if language == GERMAN and a.german_pages is not None:
-            own = listed_pages(index, a.german_pages)
+        if page_list(a, language) is not None:
+            own = listed_pages(index, page_list(a, language))
         if spent and len(spent) <= budget:
             if retryable is None:
                 retryable = set(json.loads(command(python + ["-c", (
@@ -725,13 +734,21 @@ def main():
     ap.add_argument("--german-pages", type=Path,
                     help="With --german-budget: a file of doc_ids, one a line; the German budget "
                          "takes only these pages, worst damage first")
+    ap.add_argument("--serbian-budget", type=int,
+                    help="Total Serbian pages to prepare, as chunks of their own after any Yiddish and "
+                         "German budgets; the normal order leaves Serbian out")
+    ap.add_argument("--serbian-pages", type=Path,
+                    help="With --serbian-budget: a file of doc_ids, one a line; the Serbian budget "
+                         "takes only these pages, worst damage first")
     a = ap.parse_args()
     if (not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,40}", a.campaign)
             or not 1 <= a.chunk_pages <= 490 or a.min_free_gb < 1 or a.max_ready < 2 or a.max_pending < 1
             or not 1 <= a.max_unresolved <= 10000 or a.reserve_mib < 64
             or (a.yiddish_budget is not None and a.yiddish_budget < 0)
             or (a.german_budget is not None and a.german_budget < 0)
-            or (a.german_pages is not None and (a.german_budget is None or not a.german_pages.is_file()))):
+            or (a.german_pages is not None and (a.german_budget is None or not a.german_pages.is_file()))
+            or (a.serbian_budget is not None and a.serbian_budget < 0)
+            or (a.serbian_pages is not None and (a.serbian_budget is None or not a.serbian_pages.is_file()))):
         ap.error("invalid campaign or non-positive/out-of-range limits")
     tick(a)
 

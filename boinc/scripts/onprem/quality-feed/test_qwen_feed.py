@@ -1345,7 +1345,8 @@ class SourceRequestTest(unittest.TestCase):
                     server_host="server", archive_host="archive", scan_server="http://scan",
                     archives="/archives", alto_export="/cache", min_free_gb=50, max_ready=1000,
                     max_unresolved=2000, max_pending=3, chunk_pages=100, reserve_mib=64,
-                    yiddish_budget=None, german_budget=None, german_pages=None)
+                    yiddish_budget=None, german_budget=None, german_pages=None,
+                    serbian_budget=None, serbian_pages=None)
                 index = b"".join((json.dumps(p) + "\n").encode() for p in (old, fresh))
                 attempts = []
                 selected = b""
@@ -2164,7 +2165,8 @@ class SourceTest(unittest.TestCase):
                                       alto_export="/cache", scan_server="http://scan.example",
                                       outbox=Path(folder), min_free_gb=50, max_ready=1000,
                                       max_pending=3, chunk_pages=100, max_unresolved=2000, reserve_mib=64,
-                                      yiddish_budget=None, german_budget=None, german_pages=None)
+                                      yiddish_budget=None, german_budget=None, german_pages=None,
+                    serbian_budget=None, serbian_pages=None)
             page = {"doc_id": DOC, "damage_rate": 0.9}
             inv = {"ready": 4000, "fresh_pairs": 0, "unresolved_native": 100,
                    "documents": [], "free_bytes": 100 * 1024**3}
@@ -2334,7 +2336,7 @@ class SourceTest(unittest.TestCase):
         transaction.assert_not_called()
 
     def budget_tick(self, root, budget, yiddish, others, german_budget=None, german_pages=None, retryable=(),
-                    quarantine=None, finished=(), older=(), newer=()):
+                    quarantine=None, finished=(), older=(), newer=(), serbian_budget=None, serbian_pages=None):
         """One feed tick with a stub corpus; returns the filters each select used and the
         pages it sent to `run`. A filter's refused languages are one string when one is refused.
         With `quarantine`, the campaign's quarantine is real and kept from selection there.
@@ -2343,7 +2345,8 @@ class SourceTest(unittest.TestCase):
             state=root, outbox=root, campaign="test", prep_ct=215, server_ct=230, server_host="server",
             archive_host="archive", scan_server="http://scan", archives="/archives", alto_export="/cache",
             min_free_gb=50, max_ready=1000, max_unresolved=2000, max_pending=3, chunk_pages=100,
-            reserve_mib=64, yiddish_budget=budget, german_budget=german_budget, german_pages=german_pages)
+            reserve_mib=64, yiddish_budget=budget, german_budget=german_budget, german_pages=german_pages,
+            serbian_budget=serbian_budget, serbian_pages=serbian_pages)
         filters, prepared = [], []
         selected = b""
         index = b""
@@ -2549,6 +2552,39 @@ class SourceTest(unittest.TestCase):
             filters, pages = self.budget_tick(root, None, [], german, german_budget=50, german_pages=listed)
             self.assertEqual(filters, [("deu", None, 50)])
             self.assertEqual(pages, [p["doc_id"] for p in german[4:6]])
+
+    def test_serbian_budget_comes_after_german_and_never_more(self):
+        serbian = [{"doc_id": f"sn4_1930-01-02_ed-1_seq-{n}", "lang": "srp", "damage_rate": .9}
+                   for n in range(1, 9)]
+        others = [{"doc_id": f"sn2_1900-01-02_ed-1_seq-{n}", "lang": "pol", "damage_rate": .8}
+                  for n in range(1, 4)]
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "yiddish-budget.json").write_text(json.dumps(["spent"]))
+            (root / "german-budget.json").write_text(json.dumps(["spent"]))
+            filters, pages = self.budget_tick(root, 1, [], serbian + others, german_budget=1,
+                                              serbian_budget=5)
+            self.assertEqual(filters, [("srp", None, 5)])
+            self.assertEqual(pages, [p["doc_id"] for p in serbian[:5]])
+            self.assertEqual(json.loads((root / "serbian-budget.json").read_text()),
+                             sorted(p["doc_id"] for p in serbian[:5]))
+            # Spent: the normal order carries on without Yiddish, German or Serbian.
+            filters, pages = self.budget_tick(root, 1, [], serbian[5:] + others, german_budget=1,
+                                              serbian_budget=5)
+            self.assertEqual(filters, [(None, ("yid", "deu", "srp"), 100)])
+            self.assertEqual(pages, [p["doc_id"] for p in others])
+
+    def test_serbian_pages_limit_the_serbian_budget_to_a_list(self):
+        serbian = [{"doc_id": f"sn4_1930-01-02_ed-1_seq-{n}", "lang": "srp", "damage_rate": .9}
+                   for n in range(1, 9)]
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            listed = root / "serbian-pages.txt"
+            listed.write_text("".join(p["doc_id"] + "\n" for p in serbian[2:5]))
+            filters, pages = self.budget_tick(root, None, [], serbian, serbian_budget=50,
+                                              serbian_pages=listed)
+            self.assertEqual(filters, [("srp", None, 50)])
+            self.assertEqual(pages, [p["doc_id"] for p in serbian[2:5]])
 
     def test_without_a_budget_yiddish_keeps_its_place_in_the_normal_order(self):
         pages = [{"doc_id": f"sn{n}_1900-01-02_ed-1_seq-1", "lang": lang, "damage_rate": .8}
