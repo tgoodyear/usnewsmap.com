@@ -11,7 +11,7 @@
   --ok: #2e7d4f;
   --err: #b3261e;
   --font-ui: system-ui, -apple-system, "Segoe UI", sans-serif;
-  --font-script: "Noto Sans Cherokee", "Plantagenet Cherokee", "Noto Sans", system-ui, sans-serif;
+  --font-script: "Noto Sans Cherokee", "Plantagenet Cherokee", "Noto Serif Hebrew", "Times New Roman", "Noto Sans", system-ui, sans-serif;
   color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
@@ -58,6 +58,7 @@ h2 { font-size: 1rem; margin: 8px 0 0; }
 .opt.chosen { border-color: var(--ok); }
 .opt .key { font-size: .8rem; color: var(--muted); }
 .script { font-family: var(--font-script); font-size: 2rem; line-height: 1.2; overflow-wrap: anywhere; }
+.script[dir="rtl"], .examples[dir="rtl"] { text-align: right; }
 .script mark { background: var(--mark); color: var(--mark-ink); border-radius: 3px; padding: 0 1px; }
 .script .gap { display: inline-block; width: .6em; border-bottom: 3px solid var(--mark); margin: 0 1px; }
 .examples { display: flex; flex-wrap: wrap; gap: 10px; }

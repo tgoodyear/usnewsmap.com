@@ -75,13 +75,18 @@ async function home() {
 
 // ---------- one word ----------
 
+// Letters as the tasks count them (a_diff, b_diff): a base character with its marks, e.g. פּ or אַ.
+const segmenter = typeof Intl !== "undefined" && Intl.Segmenter ? new Intl.Segmenter(undefined, { granularity: "grapheme" }) : null;
+function letters(text) { return segmenter ? Array.from(segmenter.segment(text), (s) => s.segment) : Array.from(text); }
+
 function flip(id) { let h = 0; for (const c of id) h = (h * 31 + c.codePointAt(0)) >>> 0; return (h & 1) === 1; }
 
 function scriptText(text, diff) {
   const span = document.createElement("span"); span.className = "script"; span.lang = lang;
-  const marked = new Set(diff), letters = Array.from(text);
-  if (!letters.length) { const g = document.createElement("span"); g.className = "gap"; g.title = "nothing printed here"; span.appendChild(g); return span; }
-  letters.forEach((ch, i) => {
+  if (cfg.dir) span.dir = cfg.dir;
+  const marked = new Set(diff), ls = letters(text);
+  if (!ls.length) { const g = document.createElement("span"); g.className = "gap"; g.title = "nothing printed here"; span.appendChild(g); return span; }
+  ls.forEach((ch, i) => {
     if (marked.has(i)) { const m = document.createElement("mark"); m.textContent = ch; span.appendChild(m); }
     else span.appendChild(document.createTextNode(ch));
   });
@@ -90,8 +95,9 @@ function scriptText(text, diff) {
 
 function examples(text, diff) {
   const box = document.createElement("div"); box.className = "examples";
+  if (cfg.dir) box.dir = cfg.dir;
   const seen = new Set();
-  Array.from(text).forEach((ch, i) => {
+  letters(text).forEach((ch, i) => {
     if (!diff.includes(i) || seen.has(ch)) return; seen.add(ch);
     const ex = document.createElement("span"); ex.className = "ex";
     const l = document.createElement("span"); l.className = "letter"; l.lang = lang; l.textContent = ch; ex.appendChild(l);
@@ -102,7 +108,7 @@ function examples(text, diff) {
     }
     box.appendChild(ex);
   });
-  if (Array.from(text).length === 0) {
+  if (letters(text).length === 0) {
     const n = document.createElement("span"); n.className = "note"; n.textContent = "Pick this if nothing is printed in the box."; box.appendChild(n);
   }
   return box;
