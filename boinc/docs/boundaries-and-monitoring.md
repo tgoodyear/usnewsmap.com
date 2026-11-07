@@ -478,9 +478,12 @@ The route, from the evaluator to an email:
 3. Two stateful scheduled-query rules (`infra/modules/boinc-feed-alerts.bicep`)
    run every five minutes on that machine's rows only (`_ResourceId`, which a
    node can't set) and email through the existing action group:
-   - `usnm-boinc-feed-condition-alert-<env>`: a check that is firing or unknown
-     in the latest line of the last three minutes, or firing in any line of the
-     last ten. A `boinc_feed_delivery_test` line of the last ten minutes fires
+   - `usnm-boinc-feed-condition-alert-<env>`: a check that is firing in the
+     latest line of the last three minutes, or firing in any line of the last
+     ten. A check that is unknown in the latest line counts only while that
+     line's `collection` check is firing, so one failed source read (a single
+     unknown minute, which leaves `collection` pending) sends no email, and an
+     unknown that lasts past `COLLECTION_HOLD_S` emails once per unknown check. A `boinc_feed_delivery_test` line of the last ten minutes fires
      it with `Check=delivery_test` (below); that line never counts as health.
    - `usnm-boinc-feed-missing-alert-<env>`: no health line observed in the last
      five minutes (`Check=collector_heartbeat`): the evaluator, its timer, the

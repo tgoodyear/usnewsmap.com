@@ -96,6 +96,17 @@ class MainTest(unittest.TestCase):
         self.assertNotIn("FeedLines", missing.split("]", 1)[0])
         self.assertNotIn("delivery", missing.split("]", 1)[0])
 
+    def test_condition_alert_holds_unknown_behind_collection(self):
+        # One failed source read must not email every check it turned unknown:
+        # unknown counts only once the evaluator's held collection check fires.
+        module = (ROOT / "infra/modules/boinc-feed-alerts.bicep").read_text()
+        condition = module.split("var queries = [", 1)[1].split("name: alertNames.missing", 1)[0]
+        latest = condition.split("| union (", 1)[0]
+        self.assertNotIn("in ('firing', 'unknown')", latest)
+        self.assertIn("where tostring(Held.code) == 'collection'", latest)
+        self.assertIn("(tostring(Check.state) == 'unknown' and CollectionFiring)", latest)
+        self.assertEqual(F.COLLECTION_HOLD_S, 180)
+
 
 class DurationTest(unittest.TestCase):
     def setUp(self):
