@@ -11,8 +11,12 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import cherokee_hybrid  # noqa: E402
 import gold  # noqa: E402
+
+try:  # needs Pillow; the selection, validation and CER tests don't
+    import cherokee_hybrid  # noqa: E402
+except ImportError:
+    cherokee_hybrid = None
 
 
 def pages(n: int, group: str = "g") -> list[dict]:
@@ -70,6 +74,7 @@ CHEROKEE_HYBRID_ALTO = """<?xml version="1.0"?>
 </PrintSpace></Page></Layout></alto>"""
 
 
+@unittest.skipIf(cherokee_hybrid is None, "cherokee_hybrid needs Pillow")
 class CherokeeHybrid(unittest.TestCase):
     def test_only_cherokee_blocks_are_reread_and_other_text_is_preserved(self):
         from PIL import Image
