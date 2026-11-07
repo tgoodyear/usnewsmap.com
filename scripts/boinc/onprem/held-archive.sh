@@ -197,9 +197,14 @@ print(sum(1 for p in json.load(open(sys.argv[1]))["pages"] if p.get("held")))
   bridge "$n"
 done
 # The counts after: a dry run for the journals and what is left, and the state file.
+# In the background as well, so a stop doesn't wait for it.
 python3 "$TOOL" dispatch --include-held --min-age-hours "$MIN_AGE" --pages "$PAGES" \
-  --config "$CONFIG" --state-dir "$STATE_DIR" --archive-dir "$ARCHIVE" --controller-unit "$UNIT" > "$out" ||
-  die "the closing dry run failed"
+  --config "$CONFIG" --state-dir "$STATE_DIR" --archive-dir "$ARCHIVE" --controller-unit "$UNIT" > "$out" &
+child=$!
+status=0
+wait "$child" || status=$?
+child=""
+[ "$status" -eq 0 ] || die "the closing dry run failed"
 python3 -c '
 import json, sys
 d = [json.loads(l) for l in open(sys.argv[1]) if l.startswith("{")][-1]
