@@ -31,6 +31,7 @@ on:
       # Files the crates it builds embed (scripts/ci/changes.sh finds them).
       - "boinc/scripts/acceptance_server.py"
       - "docs/notes/2026-11-05-german-trust-hold.json"
+      - "docs/notes/2026-11-07-serbian-trust-hold.json"
       - "fixtures/ocr-gold/bundle-v1.lock.json"
       - "boinc/apps/qwen/disk-policy.json"
       - "boinc/apps/qwen/weights.lock"

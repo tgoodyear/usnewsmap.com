@@ -2837,6 +2837,71 @@ class QueueTransportTests(unittest.TestCase):
             self.assertEqual(self.transport.claim(2), [])
         self.assertEqual(sent["CLAIM_LANGUAGES"], "eng,fra")
 
+    def test_claim_language_flag_widens_claim_languages_without_changing_the_digest(self):
+        cfg = queue_config()
+        del cfg["pages"]
+        cfg["claim_languages"] = ["eng", "deu"]
+        with tempfile.NamedTemporaryFile("w", suffix=".json") as f, \
+                tempfile.TemporaryDirectory() as state:
+            json.dump(cfg, f); f.flush()
+            shown = []
+            for flags in ([], ["--claim-language", "srp"]):
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    self.assertEqual(batch.main(["--config", f.name, "--state-dir", state, *flags]), 0)
+                shown.append(json.loads(out.getvalue()))
+            self.assertEqual(shown[0]["claim_languages"], ["eng", "deu"])
+            self.assertEqual(shown[1]["claim_languages"], ["eng", "deu", "srp"])
+            self.assertEqual(shown[0]["config_sha256"], shown[1]["config_sha256"])
+            for bad in (["--claim-language", "deu"], ["--claim-language", "sr"],
+                        ["--claim-language", "srp", "--claim-language", "srp"]):
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err):
+                    self.assertEqual(batch.main(["--config", f.name, "--state-dir", state, *bad]), 1)
+                self.assertIn("--claim-language", err.getvalue())
+            seen = {}
+            fake = Fake()
+            fake.lock = contextlib.nullcontext
+            with patch.object(batch, "Transport", return_value=fake) as transport, \
+                    patch.object(batch, "tick", side_effect=lambda *a, **k: {}), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(batch.main(["--config", f.name, "--state-dir", state, "--apply",
+                                             "--claim-language", "srp"]), 0)
+            self.assertEqual(transport.call_args.kwargs["extra_claim_languages"], ("srp",))
+        # A plan without claim_languages already takes every language: the flag can't narrow it.
+        del cfg["claim_languages"]
+        with tempfile.NamedTemporaryFile("w", suffix=".json") as f, \
+                tempfile.TemporaryDirectory() as state:
+            json.dump(cfg, f); f.flush()
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                self.assertEqual(batch.main(["--config", f.name, "--state-dir", state,
+                                             "--claim-language", "srp"]), 1)
+            self.assertIn("needs a queue plan with claim_languages", err.getvalue())
+
+    def test_extra_claim_languages_reach_the_claim_step(self):
+        sent = {}
+        self.config["claim_languages"] = ["eng", "deu"]
+        transport = batch.Transport(self.config, Path("."), extra_claim_languages=("srp",))
+
+        def step(target, name, **variables):
+            sent.update(variables)
+
+        def blob(name):
+            return {"schema_version": 1, "nonce": sent["CLAIM_NONCE"], "claims": []}
+
+        with patch.object(transport, "step", side_effect=step), \
+                patch.object(transport, "blob", side_effect=blob):
+            self.assertEqual(transport.claim(2), [])
+        self.assertEqual(sent["CLAIM_LANGUAGES"], "eng,deu,srp")
+        self.assertEqual(self.config["claim_languages"], ["eng", "deu"])
+        for bad in (("deu",), ("srp", "srp"), ("SRP",)):
+            with self.assertRaisesRegex(ValueError, "--claim-language"):
+                batch.Transport(self.config, Path("."), extra_claim_languages=bad)
+        del self.config["claim_languages"]
+        with self.assertRaisesRegex(ValueError, "--claim-language"):
+            batch.Transport(self.config, Path("."), extra_claim_languages=("srp",))
+
     def test_a_failed_claim_step_still_returns_the_claims_it_made(self):
         def step(*args, **kwargs):
             raise RuntimeError("handoff/claim failed")
