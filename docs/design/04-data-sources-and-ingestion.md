@@ -1,5 +1,7 @@
 # 04: Data Sources & Ingestion
 
+**Status:** describes the Azure design the system was built on. Serving, ingest and OCR now run on-prem, with Azure as shared state and a cold spare: see [03 §3.3](03-architecture-overview.md#33-deployment-today-november-2026) for how it runs today. The sources, the lake layout and the pipeline's steps still hold; prod has no Container Apps jobs, and the steps run as commands on on-prem hosts ([environments and deploys](../operations/environments-and-deploys.md)).
+
 ## 4.1 Source landscape (as of September 2026)
 
 The legacy crawler targeted `chroniclingamerica.loc.gov` JSON endpoints (`/batches/…json`, `/lccn/{sn}/{date}/ed-{n}.json`, `/…/ocr.txt`, `/lccn/{sn}.json`). **Those endpoints are gone.** On **4 August 2025** the Library of Congress moved Chronicling America onto loc.gov. The legacy domain now permanently redirects there, and the collection is reachable **only through the loc.gov API**. Since then LoC has launched a **Chronicling America Datasets portal** with batch data and **bulk OCR downloads for 3,000+ batches and 23M+ pages**. It is also re-OCRing pre-2012 content with its open-source **NDNP-Open-OCR** pipeline (Tesseract with layout detection; 425k+ pages reprocessed as of August 2026).

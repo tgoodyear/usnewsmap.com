@@ -12,11 +12,11 @@ Volunteers should start with [docs/boinc-volunteer.md](../docs/boinc-volunteer.m
 
 ## Contents
 
-- `infra/boinc/`: Bicep for the stock server: a Container App (Apache, PHP and the stock daemons, one replica, no scale to zero), a MySQL flexible server, an Azure Files share, Key Vault, Log Analytics, a static site for the human pages, and a manual-trigger Container Apps Job that runs `usnm-boinc submit`. Lint and compile only.
+- `infra/boinc/`: the Azure fallback Bicep for the stock server (prod runs it on-prem and deploys only the identities, Key Vault, VNet and static site): a Container App (Apache, PHP and the stock daemons, one replica, no scale to zero), a MySQL flexible server, an Azure Files share, Key Vault, Log Analytics, a static site for the human pages, and a manual-trigger Container Apps Job that runs `usnm-boinc submit`. Lint and compile only.
 - `project/`: `config.xml.template` (daemons come from `apps/daemons.xml`), `project.xml` and `plan_class_spec.xml` (the `docker` plan class).
 - `apps/`: container recipes, app templates, engine locks and native app support.
 - `images/`: the server image (stock BOINC, Apache, PHP and the daemons in one container) and the bridge job image; see [docs/images.md](docs/images.md).
-- `boinc/scripts/provision-boinc.sh` and `boinc/scripts/build-boinc-images.sh`: provision the stack and build and pin its server and bridge images. Secrets and project initialization run as in-VNet Container Apps Jobs. The signing and app-version release workflow remains in `boinc/scripts/boinc-app-release.sh`; its private signing key stays offline.
+- `boinc/scripts/provision-boinc.sh` and `boinc/scripts/build-boinc-images.sh`: provision the stack and build and pin its server and bridge images. For an Azure-hosted server, secrets and project initialization run as in-VNet Container Apps Jobs. The signing and app-version release workflow remains in `boinc/scripts/boinc-app-release.sh`; its private signing key stays offline.
 - `docs/`: [design](docs/design.md), [interface](docs/interface.md) (what is assumed of #441), and [verified facts](docs/verified-facts.md) (each with its source and fetch date), and [images and deployment steps](docs/images.md).
 
 The Rust apps and work generator remain in the workspace crates. Later options for anonymous volunteers, and a deferred fetch idea, are one short section each in the design.

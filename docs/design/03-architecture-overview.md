@@ -32,7 +32,79 @@ flowchart TB
   W -->|deep links| LOCV
 ```
 
-## 3.3 Container view (target, lean profile)
+## 3.3 Deployment today (November 2026)
+
+Serving moved on-prem on 31 October 2026 ([ADR-0027](adr/0027-onprem-serving-behind-cloudflare.md), [ADR-0029](adr/0029-onprem-primary-azure-failover.md)). The ingest commands, the OCR pickup and the index releases run on on-prem hosts too, and OCR runs only through BOINC. Azure keeps the state the system shares, a cold spare of the API and searcher, and the monitoring. Sections 3.4 to 3.6 record the Azure design the system started from; the spare still follows it.
+
+```mermaid
+flowchart LR
+  B[Browser · React SPA<br/>MapLibre GL + deck.gl]
+  LOC[(Library of Congress<br/>batches · scans · IIIF)]
+  V[BOINC volunteers]
+  subgraph CF["Cloudflare"]
+    EDGE[Edge cache · DNS · TLS]
+    W[Health-check Worker<br/>readiness every minute]
+    R2[(R2 · Qwen model files)]
+  end
+  subgraph OP["On-prem"]
+    subgraph SRV["Serving container · tunnel usnm-serving"]
+      CADDY[Caddy]
+      API[Rust API · blue/green<br/>serves /v1 and the site]
+      QW[Quickwit searcher<br/>local read-only index]
+    end
+    PIPE[Ingest commands · hourly OCR pickup<br/>release builds]
+    SCAN[Scan fetcher + scan cache]
+    BOINC[BOINC server · controller]
+    PG[(PostgreSQL<br/>OCR quality results)]
+  end
+  subgraph AZ["Azure"]
+    LAKE[(Blob lake<br/>curated · reference · cache<br/>searches · ocr-requests)]
+    IDX[(Index account<br/>spare's copy of the release)]
+    EXCH[(OCR exchange<br/>ocr-priority · ocr-bulk · ocr-out)]
+    COS[(Cosmos DB<br/>pipeline state · index runs)]
+    ACR[(Container registry)]
+    MON[App Insights · Log Analytics<br/>alert rules]
+    SPARE[Spare API + searcher<br/>Container Apps · zero replicas]
+  end
+
+  B --> EDGE --> W
+  W -->|while /readyz is ready| CADDY --> API --> QW
+  W -.->|only when on-prem is down| SPARE
+  SPARE -.-> IDX
+  API & SPARE --> LAKE
+  API & SPARE --> COS
+  API & SPARE --> MON
+  ACR -->|attested images| API
+  LOC --> PIPE
+  LOC --> SCAN
+  PIPE --> LAKE
+  PIPE --> COS
+  PIPE -->|release| QW
+  PIPE -->|release| IDX
+  PIPE -->|pages to OCR| EXCH
+  SCAN --> BOINC
+  BOINC <-->|claim · collect| EXCH
+  BOINC <--> V
+  V --> R2
+  BOINC --> PG
+  EXCH -->|ocr-out| PIPE
+  B -. page images and links .-> LOC
+```
+
+| Piece                 | Where it runs today                                                                                                                                                                                                                                                         |
+| --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Edge                  | Cloudflare: DNS, TLS, the cache rules and the health-check Worker in [`edge/fallback-worker/`](../../edge/fallback-worker/README.md), which sends each request to on-prem while its `/readyz` answers and to the Azure spare when it doesn't                                |
+| API, site and search  | One on-prem container behind the Cloudflare Tunnel `usnm-serving`: Caddy, the API image CI builds and attests, in blue/green colors, and the pinned Quickwit binary reading the index from local disk ([`scripts/onprem/serving/`](../../scripts/onprem/serving/README.md)) |
+| Azure spare           | The same API image and Quickwit in a Container Apps environment without a VNet, at zero replicas until the Worker wakes them, with its own copy of the current release ([search serving](../operations/search-serving.md#the-azure-cold-spare))                             |
+| Ingest and releases   | On-prem hosts with their own Azure Arc identities. Prod has no Container Apps ingest jobs (`USNM_INGEST_JOBS` is `false`; [environments and deploys](../operations/environments-and-deploys.md))                                                                            |
+| OCR                   | BOINC only: the BOINC server and its controller run on-prem ([BOINC server on-prem](../boinc-onprem.md)); work and results pass through the Azure exchange account's Storage queues and `ocr-out`                                                                           |
+| Shared state          | Azure: the Blob lake, Cosmos DB, the index account, the registry and Key Vault. Both serving origins read and write the same stores (ADR-0029 decision 7)                                                                                                                   |
+| OCR quality results   | On-prem PostgreSQL ([`scripts/onprem/quality/`](../../scripts/onprem/quality/README.md))                                                                                                                                                                                    |
+| Monitoring and alerts | Azure Monitor: Application Insights, Log Analytics and the alert rules in `infra/modules/`, with the on-prem hosts reporting through Arc                                                                                                                                    |
+
+## 3.4 Container view as first designed (Azure lean profile)
+
+This is the Azure deployment the system was built for, and the one the spare still follows. Since #917 prod has no Container Apps jobs, and since #308 the environment has no VNet or private endpoints ([ADR-0008](adr/0008-private-networking.md)).
 
 ```mermaid
 flowchart LR
@@ -72,7 +144,7 @@ flowchart LR
 
 The **growth profile** adds Azure Front Door in front of both origins (edge cache, WAF), splits the API and search into separate apps with a 4 vCPU / 8 GiB searcher, and can swap Quickwit for Azure AI Search. All of these are Bicep parameters ([ADR-0006](adr/0006-lean-hosting-profile.md)).
 
-### 3.3.1 Component responsibilities
+### 3.4.1 Component responsibilities
 
 | Component                              | Tech                                                                                                        | Responsibility                                                                                                                                                                                                                  | Scales by                           |
 | -------------------------------------- | ----------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------- |
@@ -97,9 +169,9 @@ until cutover ([ADR-0021](adr/0021-separate-index-storage.md),
 [operations](../operations/rebuild-and-index-storage.md#index-storage-cutover)). Curated data and
 reference snapshots remain in the protected lake.
 
-## 3.4 Key runtime flows
+## 3.5 Key runtime flows
 
-### 3.4.1 Search → map → playback (the main flow)
+### 3.5.1 Search → map → playback (the main flow)
 
 ```mermaid
 sequenceDiagram
@@ -126,9 +198,9 @@ sequenceDiagram
 
 **Why this fixes the legacy problems:** there is one request per search instead of one per animation frame; there is no server session; responses can be cached by URL; and the counts are complete.
 
-### 3.4.2 Ingestion (weekly and on demand)
+### 3.5.2 Ingestion (weekly and on demand)
 
-The OCR pipeline, including the BOINC volunteer branch, is drawn in [pipeline-boinc.svg](../images/pipeline-boinc.svg).
+The flow below is the one first designed, with Container Apps jobs and Spot backfills. The steps are the same today, but they run as commands on on-prem hosts; [the full rebuild on-prem](../operations/rebuild-and-index-storage.md) covers releases. The OCR flow through BOINC is drawn in 3.3 and described in the [BOINC pages](../../boinc/docs/README.md).
 
 ```mermaid
 sequenceDiagram
@@ -156,7 +228,7 @@ sequenceDiagram
   Note over SE,L: The API reads index_version and reference data on startup and every 10 minutes
 ```
 
-## 3.5 Cross-cutting design decisions
+## 3.6 Cross-cutting design decisions
 
 | Decision              | Choice                                                                                                                                                                                                   | ADR                                                                                  |
 | --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
@@ -173,7 +245,7 @@ sequenceDiagram
 | Identity              | Entra identities and RBAC only: managed identities for workloads, OIDC federation for CI; local (key) auth off on every service and denied by policy; no shared keys, SAS or connection strings anywhere | [0009](adr/0009-entra-identity-only.md)                                              |
 | Private networking    | VNet-integrated Container Apps env; private endpoints for Blob and Cosmos; public access disabled except during a guarded Spot-backfill window                                                           | [0008](adr/0008-private-networking.md)                                               |
 
-## 3.6 Repository layout (proposed for `usnewsmap.com`)
+## 3.7 Repository layout (proposed for `usnewsmap.com`)
 
 ```
 usnewsmap.com/

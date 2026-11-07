@@ -1,6 +1,8 @@
 # Infrastructure (Bicep, one deployment stack per environment)
 
-The lean hosting profile from [design doc 08](../docs/design/08-azure-infrastructure.md). It uses only PaaS: there are no VMs, scale sets, AKS clusters or Batch accounts, and an assigned policy denies them.
+The lean hosting profile from [design doc 08](../docs/design/08-azure-infrastructure.md). In Azure it uses only PaaS: there are no VMs, scale sets, AKS clusters or Batch accounts, and an assigned policy denies them.
+
+**What prod runs today (November 2026).** Public traffic is served on-prem behind Cloudflare ([`scripts/onprem/serving/`](../scripts/onprem/serving/README.md), [ADR-0029](../docs/design/adr/0029-onprem-primary-azure-failover.md)). In Azure, prod keeps the shared state (the data lake, the index account, Cosmos DB, the OCR exchange account and the scan archive), the registry, the Key Vaults, the monitoring and alerts, and the API and searcher as a cold spare at zero replicas, `usnm-api-spare-ca-prod` and `usnm-qw-spare-ca-prod`, in an environment without a VNet. With `USNM_CAE_VNET`, `USNM_DATA_PRIVATE_ENDPOINTS` and `USNM_INGEST_JOBS` all `false`, prod deploys no `network`, `private-endpoints` or `ingestjobs` module. The on-prem hosts are Azure Arc machines, and the stack grants their identities the roles they need (`onprem-serving`, `onprem-release`, `ocr-sync-runner`, `boinc-controller`, `searchlog-copy` and others in the settings table below).
 
 ## Separate index account (#283)
 

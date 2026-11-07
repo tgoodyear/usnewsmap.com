@@ -17,7 +17,7 @@ boinc/scripts/onprem-step.sh --env prod --target bridge --step <step> [--var NAM
 (`boinc/infra/boinc/modules/bridge-job.bicep`) of a `"server": "azure"`
 environment and the hand-off job (`--target handoff`). The hand-off job's `claim`, `release`
 and `collect` can also run on the on-prem host as `onprem-step.sh --target handoff`
-([boinc-onprem.md](../../docs/boinc-onprem.md#hand-off-steps-on-prem)); its other steps stay in Azure:
+([boinc-onprem.md](../../docs/boinc-onprem.md#hand-off-steps-on-prem)). Since 6 November 2026 prod has no Azure hand-off job (#308): `USNM_BOINC_HANDOFF_IMAGE` is out of prod's settings, and the on-prem controller runs `claim`, `collect` and `export` on the BOINC host ([hand-off steps on-prem](../../docs/boinc-onprem.md#hand-off-steps-on-prem)). What follows about the job applies only to an environment whose settings still name its image. Where the job exists, its other steps run in Azure:
 
 ```sh
 boinc/scripts/start-boinc-bridge.sh --env <env> --step <step> [--var NAME=VALUE ...] [--wait-mins N] [--what-if]

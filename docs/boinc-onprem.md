@@ -1,7 +1,7 @@
 # BOINC server on-prem
 
-The BOINC server, its database and the bridge steps move from Azure Container Apps to an on-prem
-container host (#942, part of #917). This page covers what runs there and the cutover order.
+The BOINC server, its database and the bridge steps moved from Azure Container Apps to an on-prem
+container host on 21 October 2026 (#942, part of #917), and the hand-off steps followed when the Azure hand-off job was retired on 6 November 2026 (#308). This page covers what runs there and the cutover order.
 The scripts are in `boinc/scripts/onprem/`, and the step runner is `boinc/scripts/onprem-step.sh`.
 
 ## Reviewed resumable release pipeline (#551)
@@ -390,8 +390,8 @@ the on-prem group needs a role there before step 5.
 
 ## Hand-off steps on-prem
 
-`claim`, `release` and `collect` can run on the host instead of the Azure hand-off job (#967
-phase 3). `dead-letter` runs here too, and as root on the host it also takes an operator's
+`claim`, `release` and `collect` run on the host (#967
+phase 3); prod's Azure hand-off job was retired on 6 November 2026 (#308). `dead-letter` runs here too, and as root on the host it also takes an operator's
 `SUPERSEDES_FAILED_JOB` and `CONFIRM_MESSAGE_SHA256`
 ([boinc-batch-scheduler.md](boinc-batch-scheduler.md#a-retried-page-claimed-after-its-dead-letter)).
 `deadline-retry` (#1417, the same section) runs as root on the host only, never over ssh;

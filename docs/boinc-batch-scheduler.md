@@ -407,7 +407,7 @@ matching snapshot with missing, malformed or misidentified local records fails
 closed; recorded content digests also reject changed local bytes. The cache is derived metadata, never an authoritative claim or queue
 acknowledgement; do not restore controller state from it.
 
-By default the hand-off steps run as the Azure hand-off job. `--onprem-handoff claim`,
+By default the hand-off steps run as the Azure hand-off job, which prod no longer has (#308, 6 November 2026), so prod's controller passes the on-prem options below. `--onprem-handoff claim`,
 `--onprem-handoff collect` and `--onprem-handoff export` (any of them) send them through
 `step_command` instead, to `usnm-boinc-step --target handoff` on the on-prem BOINC host
 ([boinc-onprem.md](boinc-onprem.md#hand-off-steps-on-prem)). `claim` takes its `release`
@@ -619,6 +619,8 @@ threshold, a challenge hash, a target host or a spool. `gold-promote` needs a
 bridge image built from this change.
 
 ### Separate hand-off runtime
+
+**Since 6 November 2026 prod has no Azure hand-off job** (#308): `USNM_BOINC_HANDOFF_IMAGE` is out of prod's settings, and the on-prem controller runs `claim`, `collect` and `export` on the BOINC host ([hand-off steps on-prem](boinc-onprem.md#hand-off-steps-on-prem)). What follows about the job applies only to an environment whose settings still name its image.
 
 The hand-off job is in the **main** resource group, not the BOINC runtime
 group. Updating the BOINC server and bridge pair does not update this job.

@@ -360,10 +360,9 @@ add it to the zone's `http_request_cache_settings` entrypoint without
 replacing existing rules. It respects origin TTLs and `no-store` errors,
 does not ignore query strings, and never matches searches or API calls.
 The archive alone requires no custom rule. Edge caching also requires proxied
-DNS. Production currently points directly to Azure; do not enable its proxy
-before the ADR-0027 serving cutover, because that would break Container Apps'
-managed-certificate renewal. Browser caching works independently of that
-cutover; no Cloudflare cache HIT or production CDN speedup is implied.
+DNS, which production has had since the on-prem cutover of 31 October 2026
+(ADR-0029). Check `CF-Cache-Status` before claiming a cache HIT; browser
+caching works independently of the edge.
 
 To publish an update, use the pinned `go-pmtiles` CLI and
 `scripts/basemap/build.py --out OUTPUT --name VERSION --style STYLE_URL
@@ -382,7 +381,7 @@ checks byte-range responses; `e2e/share.spec.ts` requires rendered, cached
 screenshots rather than accepting the static timeout image. `check-api-image.sh`
 also checks the archive's range/cache/compression contract.
 
-The standalone Azure API allocates **1 vCPU / 2 GiB** for the two Chromium
+The Azure spare's API app allocates **1 vCPU / 2 GiB** for the two Chromium
 slots. A local production-limit test at the previous 0.25 vCPU / 0.5 GiB
 failed its deadline even with local assets; two simultaneous captures at the
 new allocation completed in about 10 seconds each with populated maps and

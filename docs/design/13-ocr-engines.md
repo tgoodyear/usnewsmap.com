@@ -1,5 +1,7 @@
 # 13: OCR Engines
 
+**Current state (November 2026):** the node worker this contract was written for is retired (#966); local OCR runs through BOINC only, and BOINC's apps pin their engines in [`boinc/apps/`](../../boinc/apps). The contract, the engine catalog and the provenance rules below still describe those engines.
+
 **Status:** Proposed with [ADR-0016](adr/0016-pluggable-ocr-engines.md). Nothing here is built yet unless it says main has it · **Date:** October 2026 · **Contract:** `usnm-ocr-engine/1` · **Code today:** `crates/usnm-ocr-worker` (Tesseract only, #298) · **Pipeline:** [12: On-prem OCR pipeline](12-onprem-ocr-pipeline.md)
 
 **Direct worker retired (#966).** Local OCR runs through BOINC only; see the [BOINC pages](../../boinc/docs/README.md). The worker's node unit, `scripts/ocr-node/usnm-ocr-worker.service`, and `engine-spike.sh` are removed; where this document describes the worker's unit or its runtime on a node, it is history. The engine code it describes stays in `crates/usnm-ocr-worker`, which `usnm-boinc` uses.

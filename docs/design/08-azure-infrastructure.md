@@ -1,5 +1,7 @@
 # 08: Azure Infrastructure & Delivery
 
+**Status:** describes the Azure design the system was built on. Serving, ingest and OCR now run on-prem, with Azure as shared state and a cold spare: see [03 §3.3](03-architecture-overview.md#33-deployment-today-november-2026) for how it runs today. Since November 2026 the main environment has no VNet or private endpoints ([ADR-0008](adr/0008-private-networking.md)), prod has no Container Apps jobs, and the API and searcher apps are the spare, `usnm-api-spare-ca-prod` and `usnm-qw-spare-ca-prod`, in `usnm-core-spare-cae-prod`.
+
 ## 8.1 Resource inventory (production, lean profile)
 
 > **No IaaS.** Every resource below is PaaS or SaaS. The inventory has no Virtual Machines, VM Scale Sets, AKS clusters or always-on Batch pools, and none may be added ([ADR-0005](adr/0005-sustainability-constraints.md)). Offline backfill and re-index work runs as **Container Apps Jobs inside the VNet** (§8.4), which exist only while a job runs. ACI Spot containers (preview) remain a documented alternative, with an Azure Batch Spot pool that scales to zero as its fallback ([ADR-0006](adr/0006-lean-hosting-profile.md)).
@@ -151,9 +153,9 @@ and the [cutover/rollback/prune sequence](../operations/rebuild-and-index-storag
 ## 8.3 Networking
 
 - **Public entry points:**
-  - `usnewsmap.com`, `www.usnewsmap.com` and `api.usnewsmap.com` → Container Apps ingress, which forwards to the `api` container. It serves `/v1` and the built site ([ADR-0010](adr/0010-site-served-by-the-api.md)).
+  - Today, `usnewsmap.com`, `www.usnewsmap.com` and `api.usnewsmap.com` → Cloudflare, whose health-check Worker sends each request through the `usnm-serving` tunnel to the on-prem API, or to the Azure spare's default hostname when on-prem is down ([ADR-0029](adr/0029-onprem-primary-azure-failover.md)). As first built: → Container Apps ingress, which forwards to the `api` container. It serves `/v1` and the built site ([ADR-0010](adr/0010-site-served-by-the-api.md)).
   - Quickwit binds to `127.0.0.1` inside the replica and has no ingress.
-- **DNS:** the `usnewsmap.com` zone is hosted at Cloudflare (delegated 20 October 2026, #944). `usnewsmap.com`, `www` and `api` are DNS-only records that point at Container Apps, which issues their certificates. `boinc.usnewsmap.com` is a proxied CNAME to the on-prem BOINC server's Cloudflare Tunnel ([ADR-0024](adr/0024-cloudflare-tunnel-and-r2-credentials.md)). The Azure DNS zone that held the records before was deleted on 24 October 2026 (#944, §8.8). DNS changes are made in Cloudflare, not Bicep.
+- **DNS:** the `usnewsmap.com` zone is hosted at Cloudflare (delegated 20 October 2026, #944). `usnewsmap.com`, `www` and `api` are proxied through Cloudflare, and the Worker on their routes picks the origin (ADR-0029). Before the 31 October 2026 cutover they were DNS-only records that pointed at Container Apps, which issued their certificates. `boinc.usnewsmap.com` is a proxied CNAME to the on-prem BOINC server's Cloudflare Tunnel ([ADR-0024](adr/0024-cloudflare-tunnel-and-r2-credentials.md)). The Azure DNS zone that held the records before was deleted on 24 October 2026 (#944, §8.8). DNS changes are made in Cloudflare, not Bicep.
 - **CORS:** the site calls the API on its own origin, so it needs none. The API still allows the domain, `www`, the app's own hostname and any `allowedOrigins`, GET only, no credentials. Researchers call the API directly; CORS doesn't restrict them.
 - **Abuse protection without a WAF:** the per-client token bucket in the API (salted-hash keys, in memory), request timeouts, a query-complexity budget, and `maxReplicas: 2`. The replica cap turns abuse into slower responses instead of a larger bill.
 - **Every path from an app or job to the data uses both a managed identity and a private endpoint** ([ADR-0008](adr/0008-private-networking.md)):
@@ -320,7 +322,7 @@ flowchart LR
 ## 8.8 Domain and DNS
 
 - Move the `usnewsmap.com` registration to an account the project controls, with auto-renew and at least 2 admins. This was one of the legacy single points of failure.
-- DNS is hosted at **Cloudflare** (delegated 20 October 2026, #944), and its records are kept there by hand, not in Bicep. All three names point at the one container app, which serves the site and the API ([ADR-0010](adr/0010-site-served-by-the-api.md)):
+- DNS is hosted at **Cloudflare** (delegated 20 October 2026, #944), and its records are kept there by hand, not in Bicep. Since the on-prem cutover of 31 October 2026 the three names are proxied, and the Worker sends them to on-prem or to the spare (ADR-0029); no Azure app binds the custom domains any more ([origin TLS](../operations/origin-tls.md)). Before the cutover all three names pointed at the one container app, which serves the site and the API ([ADR-0010](adr/0010-site-served-by-the-api.md)):
   - the apex `usnewsmap.com` is an A record to the environment's static IP;
   - `www` and `api` are CNAMEs to the app;
   - each name has an `asuid` TXT record, which Container Apps checks before binding it;
@@ -331,7 +333,7 @@ flowchart LR
 
   **As built:** `dnsZoneName` (`USNM_DNS_ZONE`) is the site's domain. The custom domains, managed certificates, CORS origins and availability tests follow it. `dnsZoneHosted` (`USNM_DNS_ZONE_HOSTED`, default true) decides only whether Azure DNS hosts the domain (`infra/modules/dns.bicep`, and the `NAME_SERVERS` output). Prod sets it to false, so prod's stack has no zone. Prod's old Azure DNS zone was deleted on 24 October 2026 (#944) without touching serving. `scripts/azure/bootstrap.sh` binds each name to the app with a free managed certificate: the apex by HTTP validation, `www` and `api` by CNAME. It records each certificate so Bicep keeps the binding (§8.9). Where Azure DNS hosts the zone, `bootstrap.sh` binds nothing until the domain is delegated to Azure DNS.
 
-- **On-prem serving (#955).** At the public cutover (Phase 3), the apex, `www` and `api` become proxied records to the `usnm-serving` tunnel ([ADR-0027](adr/0027-onprem-serving-behind-cloudflare.md) decision 3), and a day ahead their TTLs drop to 60 seconds. While they are proxied, Container Apps can't renew their certificates, which all expire on 28 March 2027, so Phase 3 ends before Azure would start renewing them. `dnsZoneName` stays set and the bindings stay in place through Phase 3: clearing it would drop the bindings and the availability test. Phase 4's Bicep decouples the test's URL from `dnsZoneName` and the certificates (#955, architecture comment).
+- **On-prem serving (#955).** Done on 31 October 2026 (ADR-0029, which replaced Phase 4 with the cold spare). The plan was: at the public cutover (Phase 3), the apex, `www` and `api` become proxied records to the `usnm-serving` tunnel ([ADR-0027](adr/0027-onprem-serving-behind-cloudflare.md) decision 3), and a day ahead their TTLs drop to 60 seconds. While they are proxied, Container Apps can't renew their certificates, which all expire on 28 March 2027, so Phase 3 ends before Azure would start renewing them. `dnsZoneName` stays set and the bindings stay in place through Phase 3: clearing it would drop the bindings and the availability test. Phase 4's Bicep decouples the test's URL from `dnsZoneName` and the certificates (#955, architecture comment).
 
 - The legacy `/loc_api` endpoints aren't kept: the old site has been offline for years.
 

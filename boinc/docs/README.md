@@ -1,7 +1,9 @@
 # BOINC batch pilot
 
-A volunteer worker pool alongside the on-prem OCR nodes
-([#438](https://github.com/tgoodyear/usnewsmap.com/issues/438)).
+The volunteer worker pool. Since the direct queue worker was retired (#966), it is the only way
+the project runs OCR ([#438](https://github.com/tgoodyear/usnewsmap.com/issues/438)). The server,
+its database, the bridge steps and the controller run on an on-prem host
+([BOINC server on-prem](../../docs/boinc-onprem.md)).
 Production and experimental tasks, including Qwen, share the same account,
 CPU and GPU choices and resource limits. No per-experiment profile update is
 required. Operators bound campaigns with the [native NVIDIA workunit window

@@ -1,5 +1,7 @@
 # 06: API Design (Rust)
 
+**Status:** describes the Azure design the system was built on. Serving, ingest and OCR now run on-prem, with Azure as shared state and a cold spare: see [03 §3.3](03-architecture-overview.md#33-deployment-today-november-2026) for how it runs today. The API contract and code are unchanged; the same image runs on-prem with an Azure Arc identity and in the Azure spare.
+
 ## 6.1 Should the API be written in Rust?
 
 ### What the API actually does

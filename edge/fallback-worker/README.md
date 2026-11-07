@@ -2,7 +2,9 @@
 
 A Cloudflare Worker that sits in front of the `usnm-serving` tunnel during Phase 3 of the on-prem move ([#955](https://github.com/tgoodyear/usnewsmap.com/issues/955), [ADR-0027](../../docs/design/adr/0027-onprem-serving-behind-cloudflare.md) decision 10). It passes every request to the tunnel. When the tunnel cannot answer, it asks the Azure spare's API (`usnm-api-spare-ca-prod` since #308, before that `ca-usnm-prod`) at its default `azurecontainerapps.io` name once, so a home-side outage costs visitors a slower answer and not an error page. This is [#1098](https://github.com/tgoodyear/usnewsmap.com/issues/1098)'s Phase 3 work.
 
-Deployment and drills are separate live Cloudflare operations. Production routing and the Phase 4 transition remain gated; an isolated drill does not authorize either.
+**In production since 31 October 2026** it runs in the [health-driven mode](#opt-in-health-driven-production-failover) ([ADR-0029](../../docs/design/adr/0029-onprem-primary-azure-failover.md)): it sends each request on-prem while on-prem's `/readyz` answers, and to the Azure spare only when on-prem is down. `healthcheck.usnewsmap.com` shows which origin it selects, and `edge-worker-deploy` deploys it after CI on `main`. ADR-0029 replaced the Phase 4 deletion of the Azure apps with that spare. The legacy behavior below is the default for a Worker deployed without health mode, such as a drill Worker.
+
+Deployment and drills are separate live Cloudflare operations; an isolated drill does not authorize a production change.
 
 The Worker has no dependencies and no `package.json`. Its code is `worker.mjs`, its production configuration `wrangler.jsonc`, its hand-deploy script `deploy.sh`.
 

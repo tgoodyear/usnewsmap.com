@@ -715,10 +715,40 @@ Its receipt is retained in a separate private `.boinc-work-*` directory beneath
 the checkout (path printed to stderr), outside the deployment scratch cleanup.
 Remove that directory manually after inspecting the receipt.
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="../images/pipeline-boinc-dark.svg">
-  <img alt="OCR and search pipeline with BOINC: LoC scans go through the on-prem scan fetcher and OCR nodes to ocr-out, ocr-sync, the curated lake, release, index and API. The scan fetcher pushes cached scans to a hand-off container; a hand-off job in the main environment reserves pages and later collects results; the BOINC bridge pulls each job from the container, volunteers run the pinned worker, and the result spool and gold trust list go back through the container, so collect publishes to the same ocr-out as the OCR nodes for trusted hosts and holds an untrusted host's result in quarantine." src="../images/pipeline-boinc.svg" width="960">
-</picture>
+The OCR and search pipeline with BOINC, as it has run since 6 November 2026:
+
+```mermaid
+flowchart LR
+  LOC[(Library of Congress<br/>scans)]
+  subgraph OP["On-prem"]
+    FETCH[Scan fetcher<br/>and scan cache]
+    CTRL[Priority controller<br/>claim · export · collect]
+    SRV[BOINC server<br/>boinc.usnewsmap.com]
+    SYNC[ocr-sync pickup<br/>hourly]
+    REL[Release build]
+    API[API and searcher]
+  end
+  subgraph AZ["Azure"]
+    HO[(boinc-handoff<br/>scans · journals · lease)]
+    Q[(ocr-priority · ocr-bulk<br/>Storage queues)]
+    OUT[(ocr-out)]
+    LAKE[(Curated lake)]
+  end
+  V[Volunteers<br/>pinned worker]
+  R2[(R2 · Qwen model files)]
+
+  LOC --> FETCH -->|cached scans| HO
+  SYNC -->|pages to OCR| Q
+  Q -->|claim| CTRL
+  HO <--> CTRL
+  CTRL -->|submit| SRV <--> V
+  V --> R2
+  SRV -->|returned results| CTRL
+  CTRL -->|collect: trusted hosts| OUT
+  OUT --> SYNC --> LAKE --> REL --> API
+```
+
+`collect` publishes a trusted host's result to the same `ocr-out` the retired OCR nodes used, and holds an untrusted host's result in quarantine. The hand-off state in `boinc-handoff` is moving to the BOINC host ([#1367](https://github.com/tgoodyear/usnewsmap.com/issues/1367); [local hand-off journals](../../docs/boinc-onprem.md#local-handoff-journals)).
 
 ## Boundaries
 

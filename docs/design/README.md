@@ -1,6 +1,6 @@
 # US News Map Revival: Design Document
 
-**Status:** Living design record, kept current with the code · **First draft:** September 2026 · **Scope:** Architecture and design for bringing back [usnewsmap.com](https://usnewsmap.com) on Azure with a modern stack.
+**Status:** Living design record, kept current with the code · **First draft:** September 2026 · **Scope:** Architecture and design for bringing back [usnewsmap.com](https://usnewsmap.com), first built on Azure with a modern stack and served on-prem behind Cloudflare since 31 October 2026.
 
 US News Map (2015–2016, Georgia Tech Research Institute and eHistory.org at the University of Georgia) let anyone search the Library of Congress's _Chronicling America_ newspaper collection and watch where and when a word or phrase appeared across the United States. You typed a term, a map lit up with cities whose newspapers printed it, and a playback control showed coverage spreading over time. The site won a prize in the NEH _Chronicling America Data Challenge_, and the Washington Post, UGA/Newswise, the Library of Virginia and genealogy societies all wrote about it. It later went offline because no organization was left to support it.
 
@@ -34,6 +34,8 @@ Documents 15 and 16, the on-prem cold-storage plan and the `tank` disk replaceme
 ## Executive summary
 
 **What failed before.** The legacy system was a Python 2 / Flask API in front of a self-managed Solr cluster on university-internal hosts. It kept per-user session state in MongoDB and needed hand-run Python scripts to ingest data. Every part depended on one institution's servers and on individual people. When that support went away, nothing could keep it running. It also showed only a **random sample of 500 hits per request**, so the map was a sample rather than a full count. See [01](01-background-and-legacy-analysis.md).
+
+**How it runs today.** Since 31 October 2026 the API, the site and the searcher run on-prem behind Cloudflare, with a copy in Azure Container Apps kept at zero replicas for failover. The ingest commands and index releases run on on-prem hosts, and OCR runs only through BOINC, whose server is on-prem. Azure keeps the shared state (the Blob lake, Cosmos DB, the OCR queues), the registry, Key Vault and the monitoring. [03 §3.3](03-architecture-overview.md#33-deployment-today-november-2026) draws it, and ADRs [0027](adr/0027-onprem-serving-behind-cloudflare.md) and [0029](adr/0029-onprem-primary-azure-failover.md) record the decisions. The summary below is the Azure design the system was built on.
 
 **What we will build.**
 
