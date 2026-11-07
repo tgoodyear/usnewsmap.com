@@ -113,7 +113,7 @@ function render(prev) {
   if (!task) {
     const d = document.createElement("div"); d.className = "done";
     const s = document.createElement("strong"); s.textContent = "No words left for you";
-    d.append(s, document.createTextNode("Every open word has your answer, or enough answers already. Thank you. Check back later for more."));
+    d.append(s, document.createTextNode("You've answered every open word, or the rest have enough answers. Thank you. Check back later for more."));
     card.appendChild(d); return;
   }
   const t = task;
@@ -166,7 +166,7 @@ async function choose(choice) {
     await next();
   } catch (e) {
     busy = false; render();
-    status(e.status === 429 ? "That's fast: wait a few seconds, then answer again." : "That answer wasn't saved: " + e.message, true);
+    status(e.status === 429 ? "Too fast. Wait a few seconds, then answer again." : "That answer wasn't saved: " + e.message, true);
   }
 }
 
@@ -182,7 +182,7 @@ async function work(code) {
   lang = code;
   $("work").hidden = false;
   try { cfg = await getJSON("/api/languages/" + code); }
-  catch { $("card").textContent = "This language isn't here. "; const a = document.createElement("a"); a.href = "/"; a.textContent = "See the list"; $("card").appendChild(a); return; }
+  catch { $("card").textContent = "We don't have this language. "; const a = document.createElement("a"); a.href = "/"; a.textContent = "See the list"; $("card").appendChild(a); return; }
   document.title = `${cfg.name}: USNewsMap letter check`;
   $("intro").textContent = cfg.intro || "";
   $("neither").addEventListener("click", () => choose("neither"));
