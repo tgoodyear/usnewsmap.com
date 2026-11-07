@@ -99,11 +99,11 @@ The New Testament results show Tesseract can read Cherokee type, and the _Phoeni
 
 Each step has a measure that can be recomputed from its output, and steps 1 and 2 need no new transcription.
 
-### Step 1. Confusion-tolerant Cherokee search (quick, no OCR)
+### Step 1. Confusion-tolerant Cherokee search (quick, no OCR) ([#1619](https://github.com/tgoodyear/usnewsmap.com/issues/1619))
 
 Expand a syllabary query to the letter pairs above: ᎾᏍᎩ also matches ᏩᏍᎩ, ᏣᏍᎩ and ᏳᏍᎩ, with a ranking penalty for the variants. Build the confusion table from the measured disagreements, limited to pairs both readings support. **Measure:** pages found for the 200 most common New Testament words, before and after, and how many added hits are a known word one confusion away (precision proxy). Romanized queries (_tsalagi_ → ᏣᎳᎩ, the follow-up noted in #1581) can share the same expansion code.
 
-### Step 2. Ground truth without new transcription
+### Step 2. Ground truth without new transcription ([#1620](https://github.com/tgoodyear/usnewsmap.com/issues/1620))
 
 1. **Synthetic _Phoenix_ lines.** Render New Testament and ChrEn sentences in a font with the period glyphs (Plantagenet Cherokee has the Λ do; Digohweli has it as a historic alternate). Add microfilm noise, blur and ink spread, tuned so the letter confusions on synthetic lines match the ones measured above. These give exact references for training and a first error rate.
 2. **Text the paper reprinted.** The _Phoenix_ printed scripture (ᏥᏌ, Jesus, is on 38 pages) and laws later collected in the 1852 _Laws_. Align its OCR lines against the 1860 New Testament and the Wikisource laws; lines that match a known passage closely give near-ground truth on real scans. Wording may differ from the later editions, so only close alignments count, and every letter that differs is reported as a disagreement, not an error.
@@ -111,22 +111,25 @@ Expand a syllabary query to the letter pairs above: ᎾᏍᎩ also matches Ꮹ�
 
 **Measure:** the number of real _Phoenix_ lines with a reference, and the error of LoC and Tesseract on them. That would be the first real accuracy figure for the index's Cherokee text.
 
-### Step 3. A _Phoenix_ model
+### Step 3. A _Phoenix_ model ([#1621](https://github.com/tgoodyear/usnewsmap.com/issues/1621))
 
 Fine-tune Tesseract's `chr` model with `tesstrain` on the synthetic lines plus the aligned real lines, holding out aligned lines and mastheads for testing. Try Kraken as a second engine if Tesseract stalls. **Measure:** character error on the held-out lines, the ᎾᏍᎩ share, masthead exact reads, and the word-list proxies, against LoC and stock `chr`. Go on to step 4 only if it beats LoC on the held-out real lines.
 
-### Step 4. OCR the 699 missing pages and re-read the 324
+### Step 4. OCR the 699 missing pages and re-read the 324 ([#1622](https://github.com/tgoodyear/usnewsmap.com/issues/1622))
 
 The GHN-only pages have no layout. Find text lines with a layout model, classify each line's script (syllabary against Latin) on the crop, and read Cherokee lines with the step-3 model and English lines with the engine we use for English. On LoC's pages, keep LoC's English and replace Cherokee lines only where the new reading is better by the step-3 measures (the `cherokee_hybrid.py` path). The production run goes through BOINC, like all OCR; at about 1,000 pages it is one small campaign. **Measure:** Cherokee words searchable (from about 85,000 to an estimated 250,000 or more, if the GHN pages carry the same share), and the proxies on the new text.
 
-### Step 5. The _Cherokee Advocate_
+### Step 5. The _Cherokee Advocate_ ([#1623](https://github.com/tgoodyear/usnewsmap.com/issues/1623))
 
 895 issues, 1844–1906, the largest Cherokee newspaper online and absent from Chronicling America. Its host's robots.txt bars ClaudeBot by name and asks other crawlers for one request every 3 seconds. Start from its OAI-PMH metadata to count pages and issues; whether to fetch images at all is a decision for the maintainer (below). The _Advocate_ was printed decades after the _Phoenix_, so step 3's model may need a second round of fine-tuning on it.
 
-### Decisions this plan needs
+### Decisions
 
-- **Real transcriptions.** Steps 2 and 3 avoid asking anyone to transcribe. A small set of _Phoenix_ lines transcribed by a Cherokee reader would still be the only fully trustworthy test. Whether to arrange that, and how, is outside what this plan does.
-- **The _Advocate_.** Whether a fetch of the Gateway's images by our pipeline is acceptable given its robots.txt.
+Made on 6 November 2026:
+
+- **Ground truth.** Synthetic and aligned references only (step 2). A set transcribed by a Cherokee reader would still be the only fully trustworthy test; no one is being asked for one. Results from steps 2 and 3 are reported with that limit.
+- **The _Advocate_.** Metadata only for now, through the Gateway's OAI-PMH interface. Whether to fetch images is decided after the step-3 model works.
+- **Order.** Step 1 (confusion-tolerant search) first.
 
 ## Reproducing
 
