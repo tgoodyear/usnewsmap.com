@@ -1,0 +1,24 @@
+{
+  "dir": "rtl",
+  "equivalents": {
+    "װ": "וו",
+    "ױ": "וי",
+    "ײ": "יי",
+    "ײַ": "ייַ"
+  },
+  "intro": "These words come from Yiddish daily newspapers printed in New York between 1910 and 1953 and held by the Library of Congress: Der Morgen Zshurnal, the Yidishes Tageblatt and Der Tog. Yiddish is written in Hebrew letters, right to left. The box marks one word in a line. Pick the reading whose letters match the printed word. Highlighted letters are where the two readings differ. Small marks on a letter count, so אַ and א are different letters here. The joined letter װ prints the same as two separate letters וו, so they count as the same and are never highlighted (likewise ײ and ױ). You don't need to read Yiddish, only to match shapes. These pages were picked from ones our quality check rated as heavily damaged, so many are worn or badly printed. If you can't make out the highlighted letters, pick Can't tell. If the readings differ in more than one place, pick a reading only if all its highlighted letters match. Otherwise pick Neither.",
+  "name": "Yiddish",
+  "notes": {
+    "ב": "the bottom line sticks out past the right side; כ is rounded with no tail",
+    "ד": "a sharp corner that sticks out at the top right; ר is rounded",
+    "ה": "the left leg doesn't touch the top bar; in ח it does",
+    "ו": "stops at the line; ן goes below it",
+    "ח": "the left leg joins the top bar; in ה there's a gap",
+    "כ": "rounded, with no tail at the bottom right; ב has one",
+    "ם": "square at the bottom; ס is round",
+    "ן": "a long stroke that goes below the line; ו stops at the line",
+    "ס": "round at the bottom; ם is square",
+    "ר": "rounded at the top right; ד has a sharp corner"
+  },
+  "title": "Yiddish newspapers"
+}

@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>USNewsMap letter check</title>
+<meta name="description" content="Help check old newspaper text. Compare a printed word with two machine readings and pick the one that matches.">
+<link rel="stylesheet" href="/style.css">
+<script src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit" async defer></script>
+</head>
+<body>
+<main>
+  <header>
+    <h1><a href="/">USNewsMap letter check</a></h1>
+    <span class="progress" id="progress"></span>
+  </header>
+
+  <section id="home" hidden>
+    <p class="lead">Machines (OCR) read these old newspapers, and they get letters wrong. Here you compare one printed word with two machine readings and pick the one whose letters match the print. You don't need to know the language, only to match letter shapes.</p>
+    <p class="lead">Each word goes to several people. Once it has 3 or more answers and two thirds of them agree, it becomes checked text, which we use to measure and improve OCR for <a href="https://usnewsmap.com" target="_blank" rel="noopener">usnewsmap.com</a>.</p>
+    <h2>Pick a language</h2>
+    <ul class="langs" id="langs"><li class="muted">Loading…</li></ul>
+  </section>
+
+  <section id="work" hidden>
+    <p class="how" id="intro"></p>
+    <div class="card" id="card" aria-live="polite"></div>
+    <div class="row">
+      <button class="small" id="neither" type="button" disabled>Neither matches (3)</button>
+      <button class="small" id="unsure" type="button" disabled>Can't tell (4)</button>
+      <button class="small" id="notext" type="button" disabled>Not text (5)</button>
+      <button class="small" id="back" type="button" disabled>Back (←)</button>
+      <button class="small" id="skip" type="button" disabled>Skip (S)</button>
+    </div>
+    <div class="status" id="status"></div>
+  </section>
+
+  <div id="turnstile"></div>
+
+  <footer>
+    <p>Answers are published under <a href="https://creativecommons.org/publicdomain/zero/1.0/" target="_blank" rel="noopener">CC0</a>. We keep a random id per browser so each browser's answer to a word counts once. We keep nothing else about you. Page images: Library of Congress, Chronicling America. Code: <a href="https://github.com/tgoodyear/usnewsmap.com/tree/main/edge/check" target="_blank" rel="noopener">GitHub</a>.</p>
+  </footer>
+</main>
+<script src="/app.js" type="module"></script>
+</body>
+</html>
