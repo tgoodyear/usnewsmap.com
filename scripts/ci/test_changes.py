@@ -1323,15 +1323,17 @@ class Wiring(unittest.TestCase):
         self.assertIn("    needs: changes\n", job)
         self.assertIn("    if: needs.changes.outputs.edge == 'true'\n", job)
         self.assertIn("shellcheck -x -S warning edge/fallback-worker/deploy.sh", job)
-        # `node --test edge/fallback-worker/` is an error on Node 24, so the job names the test
-        # files with a glob, and only that directory's files match it.
+        # `node --test <directory>/` is an error on Node 24, so the job names the test files: the
+        # fallback Worker's with a glob, every other edge Worker's by path.
         self.assertIn("node-version: 24", job)
         self.assertIn("      - run: node --test edge/fallback-worker/*.test.mjs\n", job)
         found = sorted(p.relative_to(ROOT).as_posix() for p in (ROOT / "edge").rglob("*")
                        if p.is_file() and re.search(r"\.test\.(mjs|js|cjs)$", p.name))
         self.assertTrue(found)
         for file in found:
-            self.assertRegex(file, r"^edge/fallback-worker/[^/]+\.test\.mjs$")
+            if re.fullmatch(r"edge/fallback-worker/[^/]+\.test\.mjs", file):
+                continue
+            self.assertRegex(job, rf"(?m)^      - run: node --test (\S+ )*{re.escape(file)}( |$)", file)
 
     def test_the_infra_jobs_stack_steps_follow_the_infra_output(self):
         job = job_text(self.workflow("ci.yml"), "infra-checks")
