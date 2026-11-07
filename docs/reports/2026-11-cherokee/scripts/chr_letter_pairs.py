@@ -13,6 +13,15 @@ import os
 import re
 import tarfile
 
+# Tokens as the index keeps them: whole runs of letters and digits (usnm_core::text::index_tokens), so
+# `5ᏂᎥ` is one token that no syllabary word matches. Only all-syllabary tokens count.
+SYLLABARY = re.compile("[\u13A0-\u13F5]+")
+
+
+def syllabary_tokens(text):
+    return [t for t in re.findall(r"[^\W_]+", text) if SYLLABARY.fullmatch(t)]
+
+
 ap = argparse.ArgumentParser()
 ap.add_argument("--tar", action="append", required=True)
 ap.add_argument("--wordlists", required=True)
@@ -32,7 +41,7 @@ for t in a.tar:
     with tarfile.open(t, "r:bz2") as tf:
         for m in tf:
             if m.name.endswith("ocr.txt"):
-                tokens.update(re.findall(r"[Ꭰ-Ᏽ]+", tf.extractfile(m).read().decode("utf-8", "replace")))
+                tokens.update(syllabary_tokens(tf.extractfile(m).read().decode("utf-8", "replace")))
 
 pairs = collections.Counter()
 examples = collections.defaultdict(collections.Counter)

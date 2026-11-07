@@ -38,7 +38,7 @@ pub const CONFUSIONS: [(&str, &str); 9] = [
 /// `docs/reports/2026-11-cherokee/scripts/chr_letter_pairs.py`. The press
 /// printed Ꮩ (do) as an inverted V, which OCR reads as Ꭺ (go).
 pub const CHEROKEE_CONFUSIONS: [(&str, &str); 13] = [
-    ("ꮅ", "ꮲ"), // Ꮅ li, Ꮲ tlv: 1,008
+    ("ꮅ", "ꮲ"), // Ꮅ li, Ꮲ tlv: 1,007
     ("ꮧ", "ꮨ"), // Ꮧ di, Ꮨ ti: 473
     ("ꮩ", "ꭺ"), // Ꮩ do, Ꭺ go: 430
     ("ꮎ", "ᏻ"), // Ꮎ na, Ᏻ yu: 145
