@@ -56,6 +56,31 @@ class Alignment(unittest.TestCase):
         by_id = {r["line_id"]: r for r in rows}
         self.assertIsNotNone(by_id["L2"]["drop"])
 
+    def test_a_word_missing_at_a_line_break_is_counted(self):
+        rows = self.align([
+            # The printing lacks ᏤᎦᏈ at the end of the first line.
+            line("ᎡᏆᎭᎻ ᎡᏏᎩ ᎤᏕᏁᎴᎢ: ᎡᏏᎩᏃ", "L1"),
+            line("ᎤᏕᏁᎴᎢ, ᏤᎦᏈᏃ ᏧᏓ ᎠᎴ ᎾᏍᎩ ᏧᏓ ᏧᏂᏙ-", "L2"),
+            line("ᎵᏍᏗ ᎤᏕᏁᎴᎢ; ᏧᏓᏃ ᏇᎵᏏ ᎠᎴ ᏎᎳ", "L3"),
+        ])
+        by_id = {r["line_id"]: r for r in rows}
+        self.assertEqual(by_id["L1"]["deletions"], 3)
+        self.assertTrue(by_id["L1"]["reference"].endswith("ᏤᎦᏈ"))
+        self.assertIsNotNone(by_id["L1"]["drop"])
+        self.assertIsNone(by_id["L2"]["drop"])
+
+    def test_a_misread_letter_in_a_split_word_is_not_a_wording_difference(self):
+        rows = self.align([
+            line("ᎡᏆᎭᎻ ᎡᏏᎩ ᎤᏕᏁᎴᎢ: ᎡᏏᎩᏃ ᏤᎦᏈ", "L1"),
+            # ᏧᏂᏙᎵᏍᏗ split after its first letter, which is misread as Ꮪ.
+            line("ᎤᏕᏁᎴᎢ, ᏤᎦᏈᏃ ᏧᏓ ᎠᎴ ᎾᏍᎩ ᏧᏓ Ꮪ-", "L2"),
+            line("ᏂᏙᎵᏍᏗ ᎤᏕᏁᎴᎢ; ᏧᏓᏃ ᏇᎵᏏ ᎠᎴ ᏎᎳ", "L3"),
+        ])
+        by_id = {r["line_id"]: r for r in rows}
+        self.assertIsNone(by_id["L2"]["drop"])
+        self.assertEqual(by_id["L2"]["substitutions"], 1)
+        self.assertIsNone(by_id["L3"]["drop"])
+
     def test_text_that_isnt_scripture_aligns_nothing(self):
         self.assertEqual(self.align([line("ᏣᎳᎩ ᏧᎴᎯᏌᏅᎯ " * 4, "L1")]), [])
 

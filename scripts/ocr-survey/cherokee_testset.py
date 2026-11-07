@@ -30,6 +30,7 @@ are not part of a reference.
 from __future__ import annotations
 
 import argparse
+import bisect
 import collections
 import hashlib
 import json
@@ -186,6 +187,13 @@ def align_block(lines, nt, starts, index):
         if not targets:
             continue
         a, b = targets[0], targets[-1] + 1
+        # NT letters deleted between this line and the next belong to this line's reference, so a
+        # word the printing lacks at a line break is counted and checked, not lost from both lines.
+        after = next((mapped[i] for i in range(e, len(q)) if mapped.get(i) is not None), None)
+        if after is not None and after > b:
+            dels += after - b
+            longest = max(longest, after - b)
+            b = after
         if longest > MAX_GAP_RUN:
             drop = "gap_run"
         elif (subs + ins + dels) / len(letters) > MAX_LINE_DIFF:
@@ -202,18 +210,34 @@ def align_block(lines, nt, starts, index):
     return out
 
 
+_ORDERED: dict[int, list[int]] = {}
+
+
+def _sorted_starts(starts: set[int]) -> list[int]:
+    if id(starts) not in _ORDERED:
+        _ORDERED.clear()
+        _ORDERED[id(starts)] = sorted(starts)
+    return _ORDERED[id(starts)]
+
+
 def wording_differs(nt, starts, status, a, b) -> bool:
-    """Whether an NT word inside [a, b) looks like a different wording rather than misread letters:
-    missing entirely, mostly unmatched, or without its final letter."""
-    bounds = sorted({a, b} | {i for i in starts if a < i < b})
-    for ws, we in zip(bounds, bounds[1:]):
-        st = [status.get(i, "del") for i in range(ws, we)]
+    """Whether an NT word overlapping [a, b) looks like a different wording rather than misread letters:
+    missing entirely, mostly unmatched, or without its final letter. A word split by a line break is
+    judged whole, from the letters the block alignment covers, so a misread letter in a short
+    fragment doesn't count as a wording difference."""
+    ordered = _sorted_starts(starts)
+    i = a
+    while i < b:
+        k = bisect.bisect_right(ordered, i) - 1
+        ws = ordered[k] if k >= 0 else 0
+        we = ordered[k + 1] if k + 1 < len(ordered) else len(nt)
+        st = [status[j] for j in range(ws, we) if j in status]
         matched = sum(x == "match" for x in st)
         if matched == 0 or matched / len(st) < MIN_WORD_MATCH:
             return True
-        word_ends = we in starts or we == b and (b in starts or b == len(nt))
-        if word_ends and len(st) > 1 and st[-1] == "del":
+        if we - 1 in status and len(st) > 1 and st[-1] == "del":
             return True
+        i = we
     return False
 
 
