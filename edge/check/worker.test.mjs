@@ -11,6 +11,11 @@ test("a word settles at three answers with two thirds agreeing", () => {
   assert.deepEqual(settle({ a: 4, b: 2, neither: 0, unsure: 0 }), { n: 6, settled: 1, outcome: "a" });
 });
 
+test("not text settles like any answer, and ties go to the earlier choice", () => {
+  assert.deepEqual(settle({ a: 1, b: 0, neither: 0, unsure: 0, notext: 2 }), { n: 3, settled: 1, outcome: "notext" });
+  assert.deepEqual(settle({ a: 0, b: 0, neither: 0, unsure: 3, notext: 3 }), { n: 6, settled: 0, outcome: null });
+});
+
 test("a word that never agrees closes as disputed", () => {
   assert.deepEqual(settle({ a: 3, b: 3, neither: 1, unsure: 0 }), { n: 7, settled: 1, outcome: "disputed" });
 });
@@ -68,8 +73,8 @@ test("the SQL settling rule matches settle()", async () => {
   const add = db.prepare("INSERT INTO answers (task_id, contributor, choice, at) VALUES ('t', ?, ?, 0)");
   const upd = db.prepare(SETTLE_SQL);
   const get = db.prepare("SELECT n, settled, outcome FROM tasks WHERE id = 't'");
-  const kinds = ["a", "b", "neither", "unsure"];
-  for (let code = 0; code < 6 ** 4; code++) {
+  const kinds = ["a", "b", "neither", "unsure", "notext"];
+  for (let code = 0; code < 6 ** kinds.length; code++) {
     const counts = {};
     let rest = code;
     for (const k of kinds) { counts[k] = rest % 6; rest = Math.floor(rest / 6); }
@@ -92,6 +97,21 @@ test("the dump has every table's rows", async () => {
   const lines = (await r.text()).trim().split("\n").map((l) => JSON.parse(l));
   assert.deepEqual(lines.map((l) => l.table), ["languages", "tasks", "tasks", "answers"]);
   assert.equal(lines[3].row.choice, "a");
+});
+
+test("migration 0001 keeps every answer and allows notext", async () => {
+  const { DatabaseSync } = await import("node:sqlite");
+  const { readFileSync } = await import("node:fs");
+  const db = new DatabaseSync(":memory:");
+  db.exec("CREATE TABLE answers (task_id TEXT NOT NULL, contributor TEXT NOT NULL, choice TEXT NOT NULL CHECK (choice IN ('a', 'b', 'neither', 'unsure')), at INTEGER NOT NULL, PRIMARY KEY (task_id, contributor)); CREATE INDEX answers_by_contributor ON answers (contributor);");
+  const add = db.prepare("INSERT INTO answers (task_id, contributor, choice, at) VALUES (?, ?, ?, ?)");
+  assert.throws(() => add.run("t", "x", "notext", 0));
+  ["a", "b", "neither", "unsure"].forEach((c, i) => add.run("t" + i, "c" + i, c, i));
+  db.exec(readFileSync(new URL("./migrations/0001-answers-notext.sql", import.meta.url), "utf8"));
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM answers").get().n, 4);
+  add.run("t9", "c9", "notext", 9);
+  assert.throws(() => add.run("t9", "c9", "a", 9)); // the primary key survived
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE name = 'answers_by_contributor'").get().n, 1);
 });
 
 test("an oversized body is refused while streaming, before it is buffered", async () => {

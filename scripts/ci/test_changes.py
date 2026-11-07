@@ -1334,6 +1334,7 @@ class Wiring(unittest.TestCase):
             if re.fullmatch(r"edge/fallback-worker/[^/]+\.test\.mjs", file):
                 continue
             self.assertRegex(job, rf"(?m)^      - run: node --test (\S+ )*{re.escape(file)}( |$)", file)
+        self.assertIn("python3 -m unittest discover -s edge/check/tools", job)
 
     def test_the_infra_jobs_stack_steps_follow_the_infra_output(self):
         job = job_text(self.workflow("ci.yml"), "infra-checks")

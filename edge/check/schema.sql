@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   set_name TEXT NOT NULL,         -- e.g. "phoenix-nt-v1"
   body TEXT NOT NULL,             -- JSON shown to people: page, source, clips, box, a, b, diffs
   n INTEGER NOT NULL DEFAULT 0,   -- answers so far
-  outcome TEXT,                   -- a, b, neither or unsure once settled; "disputed" if never agreed
+  outcome TEXT,                   -- a, b, neither, unsure or notext once settled; "disputed" if never agreed
   settled INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS tasks_open ON tasks (lang, settled, n);
@@ -20,7 +20,7 @@ CREATE INDEX IF NOT EXISTS tasks_open ON tasks (lang, settled, n);
 CREATE TABLE IF NOT EXISTS answers (
   task_id TEXT NOT NULL,
   contributor TEXT NOT NULL,      -- random id from a session, or "seed:<name>" for imported answers
-  choice TEXT NOT NULL CHECK (choice IN ('a', 'b', 'neither', 'unsure')),
+  choice TEXT NOT NULL CHECK (choice IN ('a', 'b', 'neither', 'unsure', 'notext')),
   at INTEGER NOT NULL,            -- unix milliseconds
   PRIMARY KEY (task_id, contributor)
 );

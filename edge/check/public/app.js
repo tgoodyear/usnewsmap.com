@@ -75,13 +75,23 @@ async function home() {
 
 // ---------- one word ----------
 
+// Letters as the tasks count them (a_diff, b_diff): a base character with its marks, e.g. פּ or אַ.
+const segmenter = typeof Intl !== "undefined" && Intl.Segmenter ? new Intl.Segmenter(undefined, { granularity: "grapheme" }) : null;
+function letters(text) {
+  if (segmenter) return Array.from(segmenter.segment(text), (s) => s.segment);
+  const out = []; // without Intl.Segmenter: marks (dagesh, patah…) stay with the letter before them
+  for (const ch of text) { if (out.length && /\p{M}/u.test(ch)) out[out.length - 1] += ch; else out.push(ch); }
+  return out;
+}
+
 function flip(id) { let h = 0; for (const c of id) h = (h * 31 + c.codePointAt(0)) >>> 0; return (h & 1) === 1; }
 
 function scriptText(text, diff) {
   const span = document.createElement("span"); span.className = "script"; span.lang = lang;
-  const marked = new Set(diff), letters = Array.from(text);
-  if (!letters.length) { const g = document.createElement("span"); g.className = "gap"; g.title = "nothing printed here"; span.appendChild(g); return span; }
-  letters.forEach((ch, i) => {
+  if (cfg.dir) span.dir = cfg.dir;
+  const marked = new Set(diff), ls = letters(text);
+  if (!ls.length) { const g = document.createElement("span"); g.className = "gap"; g.title = "nothing printed here"; span.appendChild(g); return span; }
+  ls.forEach((ch, i) => {
     if (marked.has(i)) { const m = document.createElement("mark"); m.textContent = ch; span.appendChild(m); }
     else span.appendChild(document.createTextNode(ch));
   });
@@ -90,19 +100,20 @@ function scriptText(text, diff) {
 
 function examples(text, diff) {
   const box = document.createElement("div"); box.className = "examples";
+  if (cfg.dir) box.dir = cfg.dir;
   const seen = new Set();
-  Array.from(text).forEach((ch, i) => {
+  letters(text).forEach((ch, i) => {
     if (!diff.includes(i) || seen.has(ch)) return; seen.add(ch);
     const ex = document.createElement("span"); ex.className = "ex";
     const l = document.createElement("span"); l.className = "letter"; l.lang = lang; l.textContent = ch; ex.appendChild(l);
     const note = (cfg.notes || {})[ch];
-    if (note) { const n = document.createElement("span"); n.className = "note"; n.textContent = note; ex.appendChild(n); }
+    if (note) { const n = document.createElement("span"); n.className = "note"; n.dir = "auto"; n.textContent = note; ex.appendChild(n); }
     for (const key of ((cfg.examples || {})[ch] || []).slice(0, 3)) {
       const im = new Image(); im.src = "/clips/" + key; im.alt = "printed " + ch; im.loading = "lazy"; ex.appendChild(im);
     }
     box.appendChild(ex);
   });
-  if (Array.from(text).length === 0) {
+  if (letters(text).length === 0) {
     const n = document.createElement("span"); n.className = "note"; n.textContent = "Pick this if nothing is printed in the box."; box.appendChild(n);
   }
   return box;
@@ -113,7 +124,7 @@ function render(prev) {
   $("progress").textContent = answered ? `${answered} answered` : "";
   $("back").disabled = history.length === 0 || busy;
   const live = !!task && !busy;
-  $("neither").disabled = $("unsure").disabled = $("skip").disabled = !live;
+  $("neither").disabled = $("unsure").disabled = $("notext").disabled = $("skip").disabled = !live;
   if (!task && !loaded) {
     const d = document.createElement("div"); d.className = "done";
     if (busy || !failed) { d.textContent = "Loading the next word…"; card.appendChild(d); return; }
@@ -211,6 +222,7 @@ async function work(code) {
   $("intro").textContent = cfg.intro || "";
   $("neither").addEventListener("click", () => choose("neither"));
   $("unsure").addEventListener("click", () => choose("unsure"));
+  $("notext").addEventListener("click", () => choose("notext"));
   $("back").addEventListener("click", back);
   $("skip").addEventListener("click", skip);
   document.addEventListener("keydown", (e) => {
@@ -218,6 +230,7 @@ async function work(code) {
     if (e.key === "1" || e.key === "2") { const b = $("opt" + e.key); if (b) b.click(); }
     else if (e.key === "3") choose("neither");
     else if (e.key === "4") choose("unsure");
+    else if (e.key === "5") choose("notext");
     else if (e.key === "s" || e.key === "S") skip();
     else if (e.key === "ArrowLeft" || e.key === "Backspace") back();
   });

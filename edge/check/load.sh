@@ -6,7 +6,7 @@
 #
 #   edge/check/load.sh --vault NAME --host USER@HOST --dir DIR --lang CODE [--seed FILE] [--no-clips]
 #
-# DIR (on HOST) holds tasks.jsonl, language.json and clips/ from tools/from_tap_data.py.
+# DIR (on HOST) holds tasks.jsonl, language.json and clips/ from tools/build_tasks.py or tools/from_tap_data.py.
 # --seed: a JSON-lines file on HOST of {task, contributor: "seed:<name>", choice, at}.
 # --no-clips: skip the images (when only the configuration or tasks changed).
 set -euo pipefail
