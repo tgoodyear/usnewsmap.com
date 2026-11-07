@@ -410,7 +410,7 @@ jobs:
           WRANGLER_SEND_METRICS: "false"
       - run: shellcheck -x -S warning edge/fallback-worker/deploy.sh edge/fallback-worker/drift.sh
       - run: node --test edge/check/worker.test.mjs
-      - run: shellcheck -x -S warning edge/check/load.sh edge/check/set-secrets.sh
+      - run: shellcheck -x -S warning edge/check/load.sh edge/check/set-secrets.sh edge/check/backup/backup.sh
       - run: python3 -m py_compile edge/check/tools/from_tap_data.py
 
   quickwit-tests:

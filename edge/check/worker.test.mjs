@@ -34,6 +34,7 @@ test("admin paths need the admin token", async () => {
   assert.equal((await call("/admin/tasks", { method: "POST", body: "" })).status, 401);
   assert.equal((await call("/admin/tasks", { method: "POST", body: "", headers: { authorization: "Bearer wrong" } })).status, 401);
   assert.equal((await call("/admin/tasks", { method: "POST", body: "", headers: { authorization: "Bearer secret-admin-x" } })).status, 401);
+  assert.equal((await call("/admin/dump")).status, 401);
 });
 
 test("answers and next need a session", async () => {
@@ -78,4 +79,17 @@ test("the SQL settling rule matches settle()", async () => {
     upd.run("t");
     assert.deepEqual({ ...get.get() }, settle(counts), JSON.stringify(counts));
   }
+});
+
+test("the dump has every table's rows", async () => {
+  const data = { languages: [{ code: "chr", config: "{}" }], tasks: [{ id: "t1" }, { id: "t2" }], answers: [{ task_id: "t1", contributor: "c", choice: "a", at: 1 }] };
+  const DB = { prepare: (sql) => ({ bind: (offset) => ({ all: async () => {
+    const table = sql.match(/FROM (\w+)/)[1];
+    return { results: offset === 0 ? data[table] : [] };
+  } }) }) };
+  const r = await worker.fetch(new Request("https://check.usnewsmap.com/admin/dump", { headers: { authorization: "Bearer secret-admin" } }), { ...env, DB }, {});
+  assert.equal(r.status, 200);
+  const lines = (await r.text()).trim().split("\n").map((l) => JSON.parse(l));
+  assert.deepEqual(lines.map((l) => l.table), ["languages", "tasks", "tasks", "answers"]);
+  assert.equal(lines[3].row.choice, "a");
 });

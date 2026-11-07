@@ -321,6 +321,20 @@ async function admin(request, env, url) {
     for (let i = 0; i < stmts.length; i += 50) await env.DB.batch(stmts.slice(i, i + 50));
     return json({ ok: true, tasks: stmts.length });
   }
+  if (p === "/admin/dump" && request.method === "GET") {
+    // Everything in D1 as JSON lines, one {"table", "row"} per line, for the nightly backup
+    // (backup/README.md). Read in pages so a large answers table stays inside D1's result limits.
+    const tables = [["languages", "code"], ["tasks", "id"], ["answers", "task_id, contributor"]];
+    const out = [];
+    for (const [table, order] of tables) {
+      for (let offset = 0; ; offset += 5000) {
+        const rows = await env.DB.prepare(`SELECT * FROM ${table} ORDER BY ${order} LIMIT 5000 OFFSET ?`).bind(offset).all();
+        for (const row of rows.results) out.push(JSON.stringify({ table, row }));
+        if (rows.results.length < 5000) break;
+      }
+    }
+    return new Response(out.join("\n") + "\n", { headers: { "content-type": "application/x-ndjson; charset=utf-8", "cache-control": "no-store" } });
+  }
   if (p === "/admin/answers" && request.method === "POST") {
     // JSON lines: {task, contributor ("seed:<name>"), choice, at}. Imported answers count like any other.
     const text = await request.text();
