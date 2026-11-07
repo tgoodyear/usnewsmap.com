@@ -10,7 +10,7 @@ generated table (`summary.md`). Regenerate the table with
 - Host `pve-laptop.tjg.fyi` (Computer 9): i7-1185G7 (4C/8T), 15.8 GiB, Proxmox kernel 7.0.14-24-pve,
   Iris Xe, `intel-opencl-icd` 25.18.33578.6, OpenVINO / GenAI 2026.4.1, CPU governor `performance`.
 - The pinned pilot worker image (`1322b6f92481`, the one BOINC was running) executed `bench.py` inside CT 110
-  with the worker's limits (`ocr/boinc/iris/job.toml`: read-only root, no network, 9 GiB, tmpfs
+  with the worker's limits (`boinc/apps/iris/job.toml`: read-only root, no network, 9 GiB, tmpfs
   `/tmp`, plus `--cpus=2`). `bench.py` and `contract.py`/`worker.py` were bind-mounted; the image was not rebuilt.
 - BOINC was stopped for the whole session (the single paused task finished first); no other workload
   ran. BOINC was restarted afterwards (`systemctl start boinc-client`, run mode `auto`).

@@ -10,16 +10,16 @@ on:
       - rust-toolchain.toml
       # What its tests read and its crates embed (scripts/ci/changes.sh finds the embedded files).
       - ocr/contract/**
-      - ocr/boinc/qwen/llama.lock
-      - ocr/boinc/qwen/weights.lock
-      - ocr/boinc/qwen/amd-device-map.cpp
-      - ocr/boinc/qwen/disk-policy.json
-      - scripts/boinc/test_amd_device_map.py
-      - scripts/boinc/patch_amd_vulkan_identity.py
-      - scripts/boinc/build_amd_vulkan_runtime.ps1
-      - scripts/boinc/qwen_vulkan_bundle.py
-      - scripts/boinc/test_qwen_vulkan_bundle.py
-      - contrib-compute/infra/boinc/releases/prod-onprem-usnm_qwen-nvidia_vulkan_6gb_8b.json
+      - boinc/apps/qwen/llama.lock
+      - boinc/apps/qwen/weights.lock
+      - boinc/apps/qwen/amd-device-map.cpp
+      - boinc/apps/qwen/disk-policy.json
+      - boinc/scripts/test_amd_device_map.py
+      - boinc/scripts/patch_amd_vulkan_identity.py
+      - boinc/scripts/build_amd_vulkan_runtime.ps1
+      - boinc/scripts/qwen_vulkan_bundle.py
+      - boinc/scripts/test_qwen_vulkan_bundle.py
+      - boinc/infra/boinc/releases/prod-onprem-usnm_qwen-nvidia_vulkan_6gb_8b.json
       - "!**/*.md"
 
 permissions:
@@ -131,9 +131,9 @@ jobs:
         shell: bash
         run: |
           out=boinc-native-x86_64-pc-linux-gnu
-          g++ -std=c++17 -O2 -Wall -Wextra -Werror ocr/boinc/qwen/amd-device-map.cpp -ldl -o "$out/usnm-amd-device-map"
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror boinc/apps/qwen/amd-device-map.cpp -ldl -o "$out/usnm-amd-device-map"
           "$out/usnm-amd-device-map" --self-test
-          python3 -m unittest scripts.boinc.test_amd_device_map
+          python3 -m unittest boinc.scripts.test_amd_device_map
           (cd "$out" && sha256sum usnm-amd-device-map >> SHA256SUMS)
       - name: Verify pinned AMD runtime library split (Linux x86-64)
         if: matrix.boinc_platform == 'x86_64-pc-linux-gnu'
@@ -151,28 +151,28 @@ jobs:
             -H 'Accept: application/vnd.github.raw+json' > .amd-pinned-archives/ggml-vulkan.cpp
           AMD_PINNED_LLAMA_ARCHIVES="$PWD/.amd-pinned-archives" \
             AMD_PINNED_VULKAN_SOURCE="$PWD/.amd-pinned-archives/ggml-vulkan.cpp" \
-            python3 -m unittest scripts.boinc.test_amd_device_map
+            python3 -m unittest boinc.scripts.test_amd_device_map
       # #1234: the Linux NVIDIA 2B release's inputs, rebuilt from this commit's binary and the
       # llama.lock-pinned runtime. Its runtime must be byte for byte the one already reviewed and
-      # signed for nvidia_vulkan_6gb_8b. Nothing here signs or publishes (contrib-compute/docs/app-release.md).
+      # signed for nvidia_vulkan_6gb_8b. Nothing here signs or publishes (boinc/docs/app-release.md).
       - name: Assemble native Qwen nvidia_vulkan_2b release inputs (Linux x86-64)
         if: matrix.boinc_platform == 'x86_64-pc-linux-gnu'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          python3 -m unittest scripts.boinc.test_qwen_vulkan_bundle
+          python3 -m unittest boinc.scripts.test_qwen_vulkan_bundle
           mkdir .qwen-pinned-archive
           trap 'rm -rf .qwen-pinned-archive' EXIT
           gh release download b8799 --repo ggml-org/llama.cpp \
             --pattern '*bin-ubuntu-vulkan-x64.tar.gz' --dir .qwen-pinned-archive
-          python3 scripts/boinc/qwen_vulkan_bundle.py build \
+          python3 boinc/scripts/qwen_vulkan_bundle.py build \
             --archive .qwen-pinned-archive/llama-b8799-bin-ubuntu-vulkan-x64.tar.gz \
             --binary boinc-native-x86_64-pc-linux-gnu/usnm_qwen_x86_64-pc-linux-gnu \
             --source-commit "$(git rev-parse HEAD)" --plan-class nvidia_vulkan_2b \
             --out boinc-native-qwen-nvidia_vulkan_2b
-          python3 scripts/boinc/qwen_vulkan_bundle.py verify --bundle boinc-native-qwen-nvidia_vulkan_2b \
-            --same-runtime-as contrib-compute/infra/boinc/releases/prod-onprem-usnm_qwen-nvidia_vulkan_6gb_8b.json
+          python3 boinc/scripts/qwen_vulkan_bundle.py verify --bundle boinc-native-qwen-nvidia_vulkan_2b \
+            --same-runtime-as boinc/infra/boinc/releases/prod-onprem-usnm_qwen-nvidia_vulkan_6gb_8b.json
           cat boinc-native-qwen-nvidia_vulkan_2b/SHA256SUMS
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: matrix.boinc_platform == 'x86_64-pc-linux-gnu'
@@ -189,7 +189,7 @@ jobs:
           $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
           if (!$vs) { throw 'MSVC installation not found' }
           $vcvars = Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
-          cmd /c "`"$vcvars`" && cl /nologo /std:c++17 /EHsc /W4 /WX /O2 /D_CRT_SECURE_NO_WARNINGS ocr\boinc\qwen\amd-device-map.cpp /Fo:boinc-native-windows_x86_64\amd-device-map.obj /Fe:boinc-native-windows_x86_64\usnm-amd-device-map.exe"
+          cmd /c "`"$vcvars`" && cl /nologo /std:c++17 /EHsc /W4 /WX /O2 /D_CRT_SECURE_NO_WARNINGS boinc\apps\qwen\amd-device-map.cpp /Fo:boinc-native-windows_x86_64\amd-device-map.obj /Fe:boinc-native-windows_x86_64\usnm-amd-device-map.exe"
           if ($LASTEXITCODE -ne 0) { throw 'AMD identity helper build failed' }
           & .\boinc-native-windows_x86_64\usnm-amd-device-map.exe --self-test
           if ($LASTEXITCODE -ne 0) { throw 'AMD identity helper tests failed' }

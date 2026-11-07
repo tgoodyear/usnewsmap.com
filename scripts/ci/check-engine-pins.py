@@ -3,7 +3,7 @@
 
     scripts/ci/check-engine-pins.py [--root DIR]    (default: the repository)
 
-The Surya worker image (#516). ocr/boinc/surya/engine.lock is the one place its pins are
+The Surya worker image (#516). boinc/apps/surya/engine.lock is the one place its pins are
 written: surya-ocr's version, the two llama.cpp image digests and the weights digest, as the
 Containerfile's build arguments. Consumers read it: .github/actions/boinc-surya-build passes the
 lines to `docker build`, and usnm-boinc compiles the version in (include_str!). What cannot read
@@ -33,7 +33,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 
-SURYA = "ocr/boinc/surya"
+SURYA = "boinc/apps/surya"
 SURYA_KEYS = {
     "SURYA_VERSION": r"\d+\.\d+\.\d+",
     "LLAMA_DIGEST": r"sha256:[0-9a-f]{64}",

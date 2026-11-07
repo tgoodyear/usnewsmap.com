@@ -11,7 +11,7 @@ on:
     paths:
       - ".github/workflows/boinc-train.yml"
       - ".github/actions/boinc-train-build/**"
-      - "ocr/boinc/train/**"
+      - "boinc/apps/train/**"
       - "scripts/ocr-survey/transcription.py"
       - ".dockerignore"
       - "!**/*.md"

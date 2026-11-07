@@ -69,7 +69,7 @@ The test split never supplies training conversations.
 
 ## Volunteer GPU adaptation
 
-The [training worker](../../ocr/boinc/train/worker.py) starts from
+The [training worker](../../boinc/apps/train/worker.py) starts from
 `Qwen/Qwen3-VL-2B-Instruct@89644892e4d85e24eaac8bacfd4f463576704203`.
 It freezes the base and vision encoder, trains language-attention Q/V LoRA only,
 masks image and prompt tokens, and refuses target truncation, non-finite losses

@@ -116,10 +116,10 @@ Claim each production step on #529 first, and release the claim afterwards. Time
 Eastern.
 
 1. **Merge and build.** After this PR merges (crate changes roll the prod API), build
-   the worker image from `ocr/boinc/Containerfile` and the bridge image from
-   `contrib-compute/images/bridge/Containerfile` at the merge commit. Record the worker
+   the worker image from `boinc/apps/Containerfile` and the bridge image from
+   `boinc/images/bridge/Containerfile` at the merge commit. Record the worker
    image's full digest.
-2. **Release the worker as a new `usnm_ocr` app version** (contrib-compute/docs/app-release.md):
+2. **Release the worker as a new `usnm_ocr` app version** (boinc/docs/app-release.md):
    for every platform the current version 105 has (`x86_64-pc-linux-gnu`,
    `arm64-apple-darwin`, `x86_64-apple-darwin`), with the signing host, `--what-if` first.
    Use the next version number (106 unless one is already taken; check the `app_version`

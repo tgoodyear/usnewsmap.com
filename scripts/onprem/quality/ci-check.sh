@@ -108,7 +108,7 @@ PY
 } | psql_admin -d usnm_quality > /dev/null
 # The builder's export runs as the reader, so its columns and grants are checked, and the bands
 # it gives the rows are the report's.
-qc="$here/../../boinc/onprem/quality-feed/quality_campaign.py"
+qc="$here/../../../boinc/scripts/onprem/quality-feed/quality_campaign.py"
 export_csv=$({
   echo "SET ROLE quality_reader;"
   python3 - "$qc" <<'PY'

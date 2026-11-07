@@ -1,6 +1,6 @@
 # Rootless BOINC volunteer readiness on an SELinux host
 
-**Status:** measured, contribution proposed · **Date:** October 2026 · **Measured on:** Linux x86-64, RHEL 10.2, SELinux enforcing, BOINC 8.2.13, Podman 5.8.2, cgroup v2 · **Code:** `scripts/boinc/setup_volunteer.py`, `scripts/boinc/volunteer_preflight.py`, [volunteer guide](../boinc-volunteer.md) · **Issues:** [#504](https://github.com/tgoodyear/usnewsmap.com/issues/504), [#469](https://github.com/tgoodyear/usnewsmap.com/issues/469), [#484](https://github.com/tgoodyear/usnewsmap.com/issues/484)
+**Status:** measured, contribution proposed · **Date:** October 2026 · **Measured on:** Linux x86-64, RHEL 10.2, SELinux enforcing, BOINC 8.2.13, Podman 5.8.2, cgroup v2 · **Code:** `boinc/scripts/setup_volunteer.py`, `boinc/scripts/volunteer_preflight.py`, [volunteer guide](../boinc-volunteer.md) · **Issues:** [#504](https://github.com/tgoodyear/usnewsmap.com/issues/504), [#469](https://github.com/tgoodyear/usnewsmap.com/issues/469), [#484](https://github.com/tgoodyear/usnewsmap.com/issues/484)
 
 ## The question
 
@@ -12,7 +12,7 @@ The stock wrapper binds the BOINC slot without a `:z`/`:Z` relabel option. On th
 
 Podman also accepted the configured resource arguments without a usable container cgroup. Inspecting the OCI resource configuration initially overstated enforcement: actual kernel readings were unbounded, and pause failed with “cannot pause the container without a cgroup”. A BOINC user systemd session, Podman's systemd cgroup manager, and writable cgroups in the service restored limits and pause. The container remains rootless; no Docker socket or root-equivalent group is required.
 
-The profile preserves runtime files through a service restart and places Podman's monitors with their containers. The client keeps apps in memory during suspension. The preflight runs in `ExecStartPre` as the service user and exercises the same task runtime policy against a disposable real slot. It adds no mount relabel option, reads the kernel cgroup files, checks read-only and no-network behavior, tests pause and resume, and removes only its own probe. A regression keeps its resource flags aligned with `ocr/boinc/job.toml`.
+The profile preserves runtime files through a service restart and places Podman's monitors with their containers. The client keeps apps in memory during suspension. The preflight runs in `ExecStartPre` as the service user and exercises the same task runtime policy against a disposable real slot. It adds no mount relabel option, reads the kernel cgroup files, checks read-only and no-network behavior, tests pause and resume, and removes only its own probe. A regression keeps its resource flags aligned with `boinc/apps/job.toml`.
 
 The installation helper was exercised with a separate stock BOINC service and empty, account-free data on the same host. A deliberate wrong slots label caused `ExecStartPre` to fail with no main-client start timestamp. Restoring the label allowed startup. Unit tests also simulate a runtime accepting flags while reporting unbounded limits; that cannot pass the gate.
 

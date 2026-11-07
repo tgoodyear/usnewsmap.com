@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Push scans the fetcher already holds to the BOINC hand-off container (#469,
-# docs/boinc/scan-cache-handoff.md#one-page-from-the-scan-cache), for the hand-off job's export. Runs in the
+# boinc/docs/scan-cache-handoff.md#one-page-from-the-scan-cache), for the hand-off job's export. Runs in the
 # scan-fetch container (CT 211), signed in as its Arc machine identity
 # (az login --identity --allow-no-subscriptions), which has the hand-off writer role on the
 # container and nothing else there. It reads /tank/ocr and asks LoC for nothing.
@@ -22,7 +22,7 @@
 # message back to the queue. It may be given with --scan.
 #
 # --skip-truncated (#1457) checks each --keep-page JP2's headers first
-# (scripts/boinc/onprem/quality-feed/quality_feed.py jp2-check; Python 3, no network): one cut
+# (boinc/scripts/onprem/quality-feed/quality_feed.py jp2-check; Python 3, no network): one cut
 # short at its source, which LoC holds as it is, is not pushed, and is named as `truncated <page>
 # <reason>` instead, with exit 3 as for a missing page, so the caller can keep it from OCR. Only
 # a JP2 that is what its sidecar records (size, sha256, the bag's md5) is judged: a copy damaged
@@ -95,7 +95,7 @@ if $SKIP_TRUNCATED; then
     [[ ${found_pages[i]} == *.jp2 ]] && jp2s+=(--scan "${found_pages[i]}")
   done
   if [ ${#jp2s[@]} -gt 0 ]; then
-    feed="$(cd "$(dirname "${BASH_SOURCE[0]}")/../boinc/onprem/quality-feed" && pwd)/quality_feed.py"
+    feed="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../boinc/scripts/onprem/quality-feed" && pwd)/quality_feed.py"
     out=$(python3 "$feed" jp2-check --verify-sidecar "${jp2s[@]}") || die "can't check the JP2s' headers"
     while IFS= read -r line; do checks+=("$line"); done <<< "$out"
     [ ${#checks[@]} -eq $((${#jp2s[@]} / 2)) ] || die "the JP2 check did not answer for every scan"

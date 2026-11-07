@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The BOINC server image (--image, contrib-compute/images/server) has the stock daemons PR #441
+# The BOINC server image (--image, boinc/images/server) has the stock daemons PR #441
 # runs, the project tools, the wrapper, Apache with PHP, and can make an upload key pair. It does
 # not start the project: that needs MySQL, Key Vault and a share (UNVERIFIED, docs/images.md).
 set -euo pipefail

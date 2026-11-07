@@ -25,7 +25,7 @@ The job writes to the curated store under `ocr-ja/`: the page list (`targets-v3.
 | `wordlists/`                | Word lists for languages wordfreq lacks (Hawaiian, Yiddish). [README](wordlists/README.md).                                                                                              | yes          |
 | `requirements.txt`          | The job's own pinned dependencies                                                                                                                                                        | read by pip  |
 | `bench_quality.py`          | Times `quality.py`'s per-page scoring on synthetic pages, to compare changes to it                                                                                                       | no           |
-| `testdata/`                 | One Rocky Shimpo headline (1945-01-01, page 4), used by `scripts/ci/check-ja-ocr-image.sh` and `scripts/boinc/smoke-ndlocr.py`                                                           | no           |
+| `testdata/`                 | One Rocky Shimpo headline (1945-01-01, page 4), used by `scripts/ci/check-ja-ocr-image.sh` and `boinc/scripts/smoke-ndlocr.py`                                                           | no           |
 | `tools/`                    | Tools that work on the job from outside: the engine-choice scripts, `build-wordlists.py`, and the two operator scripts `start-quality.sh` and `quality-rows.sh`. [Below](#related-code). | no           |
 | `test_*.py`                 | Unit tests of the modules above                                                                                                                                                          | no           |
 

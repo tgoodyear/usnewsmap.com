@@ -3,7 +3,7 @@
 # them in the BOINC hand-off container as quality-jpeg/<recipe>/<blob name>.jpg, as
 # the container's Arc machine identity. It reads /tank/ocr/scans and asks LoC for
 # nothing. Its settings are in /etc/usnm/quality-jpeg-cache.env (ACCOUNT, LIST,
-# WORKERS); docs/boinc/scan-cache-handoff.md#the-quality-waves-page-jpeg-cache has the runbook. It ends
+# WORKERS); boinc/docs/scan-cache-handoff.md#the-quality-waves-page-jpeg-cache has the runbook. It ends
 # when the list is done; a restart skips the pages in its recipe-specific ledger.
 [Unit]
 Description=usnewsmap quality wave page JPEG cache

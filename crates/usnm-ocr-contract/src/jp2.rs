@@ -8,7 +8,7 @@
 //! it from OCR instead.
 //!
 //! This is the quality feed's check (`jp2_truncation` in
-//! `scripts/boinc/onprem/quality-feed/quality_feed.py`, #1551), with the
+//! `boinc/scripts/onprem/quality-feed/quality_feed.py`, #1551), with the
 //! same reasons word for word. `fixtures/jp2-truncation-vectors.json`, which
 //! that feed's tests write, holds the cases both must agree on.
 
