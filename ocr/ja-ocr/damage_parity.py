@@ -20,8 +20,8 @@ After a change to damage_v2.py, --rescore scores a file's pages again from the t
 loc.gov requests; with --synthetic it adds the made-up pages the file doesn't have yet.
 
 Each file is JSON lines, zstd-compressed. The first line is {"header": {...}} with the sha256 of
-damage_v2.py and of our own word lists (wordlists/chr.txt, haw.txt and yi.txt), the wordfreq and Unicode versions and
-the page count. Each other line is a page: doc_id, the title's
+damage_v2.py and of our own word lists (wordlists/chr.txt, chr-attested.txt, haw.txt and yi.txt), the wordfreq and
+Unicode versions and the page count. Each other line is a page: doc_id, the title's
 languages, the text, score_v2's output ("score", rates at full precision), detect()'s damage counts
 ("damage": words, function, head, near; score_v2 doesn't return them) and the forced-language score of each
 of the title's languages and English ("forced", by MARC code; null without a word list).
@@ -53,9 +53,10 @@ def damage_v2_sha256() -> str:
 
 
 def wordlists_sha256() -> dict[str, str]:
-    """sha256 of our own word lists (damage_v2.LOCAL_WORDLISTS), which the models read besides wordfreq's."""
+    """sha256 of our local lists, including Cherokee's extra attested forms."""
     out = {}
-    for code in sorted(damage_v2.LOCAL_WORDLISTS.values()):
+    codes = set(damage_v2.LOCAL_WORDLISTS.values()) | set(damage_v2.LOCAL_ATTESTED_WORDLISTS.values())
+    for code in sorted(codes):
         with open(os.path.join(damage_v2.WORDLIST_DIR, f"{code}.txt"), "rb") as f:
             out[code] = hashlib.sha256(f.read()).hexdigest()
     return out
@@ -252,6 +253,7 @@ def synthetic() -> list[tuple[str, str, tuple]]:
         ("synthetic-numbers", ("½ ² ³ Ⅻ 1905 ١٢٣ " + ENGLISH) * 3, ("eng",)),
         ("synthetic-greek", "Ο ΣΙΣΥΦΟΣ και η πόλις της Ελλάδος. " * 12, ("gre", "eng")),
         ("synthetic-cherokee", CHEROKEE * 4, ("chr", "eng")),
+        ("synthetic-cherokee-attested", (CHEROKEE + "ᎠᎴᏃ ") * 4, ("chr", "eng")),
         ("synthetic-cherokee-mixed", (CHEROKEE + ENGLISH) * 3, ("chr", "eng")),
         # Cherokee's small letters casefold to its capitals (the other way round from Latin).
         ("synthetic-cherokee-small", CHEROKEE.lower() * 4, ("chr",)),

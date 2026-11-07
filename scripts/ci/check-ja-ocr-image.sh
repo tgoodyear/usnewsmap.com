@@ -37,7 +37,7 @@ for lang in sorted(quality.WORDFREQ):
 assert models.get("eng").near.get("tbe") == "the" and "she" not in models.get("eng").near
 for lang in sorted(quality.LOCAL_WORDLISTS):  # our own lists, wordlists/<code>.txt
     m = models.get(lang)
-    assert m and len(m.real) == 5000 and len(m.top) >= 100 and m.near, lang
+    assert m and len(m.real - m.attested) == 5000 and len(m.top) >= 100 and m.near, lang
 print("word lists ok")'
 work=$(mktemp -d)
 mkdir -p "$work/img" "$work/out"

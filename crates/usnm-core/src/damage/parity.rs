@@ -3,7 +3,8 @@
 //!
 //! A parity file is JSON lines, zstd-compressed by its writer
 //! (`ocr/ja-ocr/damage_parity.py`). The first line is `{"header": {...}}`,
-//! which holds the sha256 of `damage_v2.py` and of the local word lists;
+//! which holds the sha256 of `damage_v2.py` and of the local word lists,
+//! including Cherokee's extra attested forms;
 //! each other line is one page
 //! ([`Record`]): its text, its title's languages, `score_v2`'s output, the
 //! damage counts `detect` keeps, and the forced-language score for each of

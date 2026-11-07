@@ -30,6 +30,7 @@ WORDFREQ = {
 # v2 only: languages wordfreq has no list for, with a top-5,000 list of our
 # own in wordlists/<code>.txt, built from open corpora (wordlists/README.md).
 LOCAL_WORDLISTS = {"chr": "chr", "haw": "haw", "yid": "yi"}
+LOCAL_ATTESTED_WORDLISTS = {"chr": "chr-attested"}
 WORDLIST_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wordlists")
 # Serbian pages in Cyrillic are scored by the Latin-script list, letter for
 # letter (Vuk's Cyrillic and Gaj's Latin match one to one).
@@ -146,7 +147,8 @@ class LangModel:
     top: frozenset
     head: tuple
     near: dict  # near-miss -> the top-20 word it is one edit from
-    real: frozenset  # the top 5,000: real words, never near-misses
+    real: frozenset  # the top 5,000 plus attested additions: never near-misses
+    attested: frozenset  # additional corpus-attested forms, not frequency-ranked
     script: str = "latin"  # of its words
 
 
@@ -175,10 +177,13 @@ def _edits(word: str, kind: int, letters: str, inserted: str, split: str):
                 yield word[:i] + c + word[i:]
 
 
-def build_model(code: str, ranked: list[str], also_real=()) -> LangModel:
+def build_model(code: str, ranked: list[str], also_real=(), attested=()) -> LangModel:
     """A LangModel from a language's most frequent words, most frequent first (wordfreq's top 5,000).
-    `also_real`: more words that aren't near-misses (a closely related language's)."""
-    real = set(ranked[:TOP_REAL]) | set(also_real)
+    `also_real`: more words that aren't near-misses (a closely related language's).
+    `attested`: additional corpus-attested forms, not used for frequency ranking."""
+    ranked_real = frozenset(ranked[:TOP_REAL])
+    attested = frozenset(w for w in attested if w not in ranked_real)
+    real = set(ranked_real) | set(also_real) | set(attested)
     words = [w for w in ranked if len(w) >= 2 and w.isalpha()]
     top, head = words[:TOP_FUNCTION], words[:TOP_HEAD]
     if code in AA_SPELLING:  # "paa" for "på", as Danish and Norwegian were printed until the 1900s
@@ -198,7 +203,8 @@ def build_model(code: str, ranked: list[str], also_real=()) -> LangModel:
             for v in _edits(base, kind, letters, inserted, split):
                 if len(v) >= 2 and v not in real and v not in near:
                     near[v] = base
-    return LangModel(code=code, top=frozenset(top), head=head, near=near, real=real, script=script(top[0]))
+    return LangModel(code=code, top=frozenset(top), head=head, near=near, real=frozenset(real), attested=attested,
+                     script=script(top[0]))
 
 
 def wordfreq_ranked(code: str) -> list[str] | None:
@@ -231,7 +237,12 @@ class Models:
         if code not in self.by_code:
             ranked = self.loader(code)
             also = [w for c in RELATED.get(code, ()) for w in (self.loader(c) or ())[:TOP_REAL]]
-            self.by_code[code] = build_model(code, ranked, also) if ranked else None
+            attested = []
+            if code in LOCAL_ATTESTED_WORDLISTS:
+                path = os.path.join(WORDLIST_DIR, f"{LOCAL_ATTESTED_WORDLISTS[code]}.txt")
+                with open(path, encoding="utf-8") as f:
+                    attested = [w for w in f.read().splitlines() if w]
+            self.by_code[code] = build_model(code, ranked, also, attested) if ranked else None
         return self.by_code[code]
 
 

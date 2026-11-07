@@ -165,6 +165,18 @@ pub fn wordlist(code: &str) -> Option<&'static str> {
     )
 }
 
+/// Additional corpus-attested forms, not frequency-ranked, for damage scoring.
+#[cfg(feature = "damage")]
+pub fn attested_wordlist(marc: &str) -> Option<&'static str> {
+    match marc {
+        "chr" => Some(include_str!(concat!(
+            env!("OUT_DIR"),
+            "/data/damage-words/chr-attested.txt"
+        ))),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -277,8 +289,12 @@ mod tests {
             .filter_map(|e| e.unwrap().file_name().into_string().ok())
             .filter_map(|n| n.strip_suffix(".txt").map(str::to_owned))
             .collect();
-        let codes: BTreeSet<String> = wordlist_codes().into_iter().map(str::to_owned).collect();
+        let mut codes: BTreeSet<String> = wordlist_codes().into_iter().map(str::to_owned).collect();
+        codes.insert("chr-attested".to_owned());
         assert_eq!(files, codes);
+        let attested = attested_wordlist("chr").unwrap();
+        assert!(attested.lines().any(|w| w == "ᎠᎴᏃ"));
+        assert_eq!(attested_wordlist("haw"), None);
     }
 
     #[cfg(feature = "damage")]

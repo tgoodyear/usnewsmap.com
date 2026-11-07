@@ -68,6 +68,13 @@ def write(code: str, counts: collections.Counter) -> None:
     print(f"wrote {code}.txt: {len(ranked)} of {len(counts)} words; top: {' '.join(ranked[:20])}")
 
 
+def write_attested(words: set[str]) -> None:
+    attested = sorted(words)
+    with open(os.path.join(OUT, "chr-attested.txt"), "w", encoding="utf-8") as f:
+        f.write("\n".join(attested) + "\n")
+    print(f"wrote chr-attested.txt: {len(attested)} forms")
+
+
 def hawaiian(tmp: str) -> None:
     # Native Hawaiian words are (consonant)-vowel syllables; loan letters too. This drops English noise.
     cv = re.compile(r"^(?:[hklmnpwbdfgrstvz]?[aeiou])+$")
@@ -152,6 +159,12 @@ def cherokee(tmp: str, pdfs: list[str]) -> None:
     # in different places, so with both, a word counts as often as it does in the one it is fewest in.
     counts = collections.Counter({w: min(e[w] for e in editions) for w in editions[0]
                                   if all(w in e for e in editions)})
+    if len(editions) >= 2:
+        write_attested(set(counts))
+    else:
+        # One edition's line-break and verse-number fragments would become known spellings and hide
+        # damage, so the attested set is only rebuilt from both.
+        print("kept chr-attested.txt: it needs both editions (cntl.pdf and cnts.pdf)")
     top = sum(c for _, c in counts.most_common(TOP))
     print(f"the top {TOP:,} are {top / sum(counts.values()):.1%} of the words")
     write("chr", counts)
@@ -181,9 +194,7 @@ def ocr_texts(path: str):
 
 
 def cherokee_check(paths: list[str]) -> None:
-    """How OCR of Cherokee pages reads against wordlists/chr.txt: the share of its words in the list; the
-    letters it has where the list has another, from words one letter from one list word only; and the
-    near-misses of the top 20 it has most (the damage the audit counts)."""
+    """How OCR of Cherokee pages reads against the top-5,000 list and the extra attested forms."""
     damage_v2 = ja_ocr()
     try:
         m = damage_v2.Models().get("chr")
@@ -212,9 +223,11 @@ def cherokee_check(paths: list[str]) -> None:
                 (r,) = hits
                 i = next(i for i, (a, b) in enumerate(zip(r, w)) if a != b)
                 letters[r[i], w[i]] += c
-    known = sum(c for w, c in counts.items() if w in m.real)
-    print(f"{total:,} Cherokee words in {pages:,} files; {known / total:.1%} in the list, "
-          f"{letters.total() / total:.1%} one letter from one list word")
+    in_list = sum(c for w, c in counts.items() if w in m.real and w not in m.attested)
+    attested = sum(c for w, c in counts.items() if w in m.attested)
+    print(f"{total:,} Cherokee words in {pages:,} files; {in_list / total:.1%} in the top 5,000, "
+          f"{attested / total:.1%} in the NT outside the top 5,000, "
+          f"{letters.total() / total:.1%} one letter from one known form")
     print("list letter -> OCR letter, words")
     for (a, b), c in letters.most_common(25):
         print(f"{a} U+{ord(a):04X} -> {b} U+{ord(b):04X}\t{c}")

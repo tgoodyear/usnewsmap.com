@@ -486,6 +486,14 @@ class Detection(unittest.TestCase):
         # The Cherokee Phoenix's OCR reads ᎾᏍᎩ ("that") as ᏩᏍᎩ.
         self.assertGreater(self.detect(CHEROKEE_TEXT.replace("ᎾᏍᎩ", "ᏩᏍᎩ"), ("chr", "eng"))["damage_rate"], 0.1)
 
+    def test_attested_cherokee_forms_are_known_not_near_misses(self):
+        chr_model = self.models.get("chr")
+        self.assertIn("ᎠᎴᏃ", chr_model.attested)
+        self.assertNotIn("ᎠᎴᏃ", chr_model.near)
+        self.assertIn("ᏩᏍᎩ", chr_model.near)
+        got = quality.forced("ᎠᎴᏃ", "chr", self.models)
+        self.assertEqual((got["near"], got["known_words"], got["damage_rate"]), (0, 1, None))
+
     def test_too_short_is_und(self):
         got = self.detect("The council met on Tuesday and voted for the new school.", ("eng",))
         self.assertEqual((got["decision"], got["lang"]), ("und", "und"))

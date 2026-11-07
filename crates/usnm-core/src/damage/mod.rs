@@ -8,9 +8,10 @@
 //! near-misses / (near-misses + occurrences of the language's 20 most
 //! frequent words), where a near-miss is one OCR edit from one of those 20
 //! and not a real word (in the top 5,000 of the language, or of the other
-//! candidate languages). `quality.py`'s docstring and the language report
-//! (`docs/reports/2026-10-language-analysis/report.md`) define the metric
-//! in full. `parity` checks this port against `damage_v2.py`'s numbers.
+//! candidate languages). Cherokee also uses the exact forms attested in both
+//! editions of the 1860 New Testament, without frequency weight. `quality.py`'s
+//! docstring and the language report (`docs/reports/2026-10-language-analysis/report.md`)
+//! define the metric in full. `parity` checks this port against `damage_v2.py`'s numbers.
 //!
 //! Language codes in and out are the catalog's MARC codes, as in
 //! `quality.py`; [`score_forced`] takes ISO 639-3 (`usnm_core::lang`).
@@ -563,7 +564,7 @@ pub struct ForcedScore {
     pub function_share: Option<f64>,
     pub damage_rate: Option<f64>,
     pub fraktur_score: Option<f64>,
-    /// Word tokens in the language's top 5,000.
+    /// Word tokens in the language's known vocabulary (top 5,000, plus Cherokee attested forms).
     pub known_words: u64,
 }
 

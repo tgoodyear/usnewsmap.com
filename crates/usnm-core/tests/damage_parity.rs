@@ -40,7 +40,7 @@ fn fixture_was_scored_by_this_damage_v2_py() {
         .map(String::as_str)
         .collect::<Vec<_>>();
     codes.sort_unstable();
-    assert_eq!(codes, ["chr", "haw", "yi"]);
+    assert_eq!(codes, ["chr", "chr-attested", "haw", "yi"]);
     for (code, want) in &header.wordlists_sha256 {
         assert_eq!(
             want,
