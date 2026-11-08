@@ -219,6 +219,11 @@ def main() -> None:
 
     language = {k: v for k, v in cfg.items() if k not in BUILD_ONLY}
     language.setdefault("examples", {})
+    # The page sets these spellings with no gap inside, so it gets the mapping the comparison used,
+    # --equivalent additions included.
+    language.pop("equivalents", None)
+    if equivalents:
+        language["equivalents"] = {k: "".join(v) for k, v in sorted(equivalents.items())}
     with open(os.path.join(a.out_dir, "language.json"), "w", encoding="utf-8") as f:
         json.dump(language, f, ensure_ascii=False, indent=1)
     print(f"{lines} lines, {tasks} tasks, {unpaired} words of reading a left out (no partner alike enough, or no letters)")

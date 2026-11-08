@@ -130,7 +130,7 @@ class Build(unittest.TestCase):
             self.assertTrue(os.path.exists(os.path.join(out, "clips", t["line"])))
             self.assertEqual(Image.open(os.path.join(out, "clips", t["word"])).size, (80 + 2 * 7, 40))
             lang = json.load(open(os.path.join(out, "language.json"), encoding="utf-8"))
-            self.assertEqual(lang, {"name": "Yiddish", "dir": "rtl", "examples": {}})
+            self.assertEqual(lang, {"name": "Yiddish", "dir": "rtl", "examples": {}, "equivalents": {"װ": "וו"}})
 
 
 if __name__ == "__main__":

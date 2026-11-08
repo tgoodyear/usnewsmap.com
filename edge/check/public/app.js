@@ -93,16 +93,17 @@ function letters(text) {
 
 function flip(id) { let h = 0; for (const c of id) h = (h * 31 + c.codePointAt(0)) >>> 0; return (h & 1) === 1; }
 
-// Indexes of letters that start (or continue) a spelling the language counts as one letter, e.g. וו for װ:
-// no space goes after them, so וו and װ look alike as the comparison treats them.
+// Indexes of letters followed by no space: inside a spelling the language counts as one letter (וו for װ),
+// so וו and װ look alike as the comparison treats them. Matched left to right without overlap, longest
+// first, so ייי is יי plus י, set the way ײי is.
 function tightAfter(ls) {
   const out = new Set();
-  for (const v of Object.values(cfg.equivalents || {})) {
-    const lv = letters(v);
-    if (lv.length < 2) continue;
-    for (let i = 0; i + lv.length <= ls.length; i++) {
-      if (ls.slice(i, i + lv.length).join("") === v) for (let k = i; k < i + lv.length - 1; k++) out.add(k);
-    }
+  const forms = Object.values(cfg.equivalents || {}).map(letters).filter((f) => f.length > 1).sort((x, y) => y.length - x.length);
+  for (let i = 0; i < ls.length;) {
+    const f = forms.find((f) => f.every((ch, k) => ls[i + k] === ch));
+    if (!f) { i++; continue; }
+    for (let k = i; k < i + f.length - 1; k++) out.add(k);
+    i += f.length;
   }
   return out;
 }
