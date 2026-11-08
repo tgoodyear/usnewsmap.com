@@ -841,7 +841,9 @@ async fn legacy_searches_redirect_and_curated_results_render_without_javascript(
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(header_str(&headers, header::LOCATION), "");
     assert_eq!(header_str(&headers, header::CACHE_CONTROL), "no-cache");
-    assert!(body.contains("<title>Cross of Gold, 1896 · US News Map</title>"));
+    assert!(
+        body.contains("<title>Cross of Gold, 1896, in American newspapers · US News Map</title>")
+    );
     assert!(body.contains(
         r#"<link rel="canonical" href="https://usnewsmap.com/examples/cross-of-gold" />"#
     ));
@@ -908,7 +910,7 @@ async fn legacy_searches_redirect_and_curated_results_render_without_javascript(
         ));
         assert!(body.contains("<h1>Newspaper coverage of &quot;cross of gold&quot;</h1>"));
         assert!(body.contains("<p>Search results for &quot;cross of gold&quot;"));
-        assert!(!body.contains("<h1>Cross of Gold, 1896</h1>"));
+        assert!(!body.contains("<h1>Cross of Gold, 1896, in American newspapers</h1>"));
     }
     let resp = app(s.clone())
         .oneshot(

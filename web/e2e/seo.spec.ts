@@ -448,7 +448,7 @@ test.describe("what the API tells crawlers", () => {
     for (let load = 0; load < 2; load++) {
       await expect(page.getByRole("searchbox", { name: "Word or phrase" })).toHaveValue('"cross of gold"');
       await expect(page).toHaveURL(/\/examples\/cross-of-gold(?:\?|$)/);
-      await expect(page).toHaveTitle("Cross of Gold, 1896 · US News Map");
+      await expect(page).toHaveTitle("Cross of Gold, 1896, in American newspapers · US News Map");
       await expect(page.locator('link[rel="canonical"]')).toHaveAttribute("href", `${SITE}${path}`);
       await expect.poll(() => searches.length).toBeGreaterThan(0);
       for (const url of searches) {

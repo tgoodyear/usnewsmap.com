@@ -46,10 +46,12 @@ describe("index.html", () => {
     expect(JSON.stringify(site)).not.toContain("SearchAction");
   });
 
-  it("has text in the root for clients that don't run the app, and no h1", () => {
+  it("has text and one h1 in the root for clients that don't run the app", () => {
     const root = doc.getElementById("root")!;
     expect(root.textContent).toContain("Chronicling America");
     expect(root.querySelector("a[href='https://goodyeartechnical.com/']")).not.toBeNull();
-    expect(root.querySelector("h1")).toBeNull();
+    // The API swaps this heading for a page's own (crates/usnm-api/src/site.rs, HOME_H1).
+    expect(root.querySelectorAll("h1")).toHaveLength(1);
+    expect(root.querySelector("h1")!.textContent).toBe("Where and when did America's newspapers print it?");
   });
 });

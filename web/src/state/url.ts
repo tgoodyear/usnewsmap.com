@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useSyncExternalStore } from "react";
 import type { SearchParams } from "../api/client";
 import type { BucketUnit, HitSort, Mode } from "../api/types";
-import { exampleForPath, examplePath, EXAMPLES } from "../examples";
+import { exampleForPath, examplePath, EXAMPLES, type Example } from "../examples";
 import { MAX_ZOOM, MIN_ZOOM } from "../lib/mapLimits";
 import { queryForPath, searchPath, TITLES } from "../route";
 
@@ -299,6 +299,34 @@ function shorten(text: string, limit: number): string {
 }
 
 /**
+ * A curated example's page title: its name with what the page holds, the
+ * first form that fits TITLE_LIMIT. example_title in
+ * crates/usnm-api/src/site/head.rs builds the same title; see its comment.
+ */
+export function exampleTitle(example: Example): string {
+  const name = example.title;
+  const from = example.view.from?.slice(0, 4);
+  const to = example.view.to?.slice(0, 4);
+  const years = from && to ? (from === to ? from : `${from}–${to}`) : undefined;
+  const forms: string[] = [];
+  const language = /^(.+) in ([\p{L}\p{N}]+) papers(, .+)?$/u.exec(name);
+  if (language) {
+    const papers = `${language[1]} in ${language[2]}-language papers`;
+    if (language[3]) forms.push(`${papers}${language[3]}`);
+    else if (years) forms.push(`${papers}, ${years}`);
+    forms.push(papers);
+  } else if (/[0-9]{4}/.test(name)) {
+    // "Fort Sumter, 1861, in …", but "Panic of 1873 in …".
+    const comma = /, [0-9]{4}(-[0-9]{4})?$/.test(name) ? "," : "";
+    forms.push(`${name}${comma} in American newspapers`, `${name}${comma} in newspapers`);
+  } else if (years) {
+    forms.push(`${name} in American newspapers, ${years}`, `${name} in newspapers, ${years}`, `${name}, ${years}`);
+  }
+  const fits = forms.map((form) => `${form}${TITLE_SUFFIX}`).find((title) => [...title].length <= TITLE_LIMIT);
+  return fits ?? `${name}${TITLE_SUFFIX}`;
+}
+
+/**
  * The document title of a view, as the API writes it into the page
  * (crates/usnm-api/src/site/head.rs). fixtures/page-titles.json holds the two
  * to the same results, so a page keeps its title when the app starts.
@@ -311,7 +339,7 @@ export function searchTitle(view: ViewState, path = ""): string {
     // Only legacy search paths keep example titles without the preset filters.
     const plain = !preset && FILTERS.every((key) => same(view[key], DEFAULTS[key]));
     const matches = FILTERS.every((key) => same(view[key], example.view[key] ?? DEFAULTS[key]));
-    if (plain || matches) return `${example.title}${TITLE_SUFFIX}`;
+    if (plain || matches) return exampleTitle(example);
   }
   const terms = view.q
     .replace(/\p{Cc}/gu, " ")

@@ -174,8 +174,87 @@ fn for_example(example: &Example) -> Head {
         _ => "Newspaper pages on a map and timeline.".to_owned(),
     };
     Head {
-        title: format!("{}{SUFFIX}", example.title),
+        title: example_title(example),
         description: shorten(&format!("{} {sentence}", example.blurb), DESCRIPTION_LIMIT),
+    }
+}
+
+/// A curated example's page title: its name with what the page holds, so the
+/// title says more than a topic (search engines flag one that short). The
+/// first form that fits `TITLE_LIMIT` wins:
+///
+/// - a name about papers in a language says they are US papers in that
+///   language: "Sucre in French-language papers, 1840–1860", else without
+///   the years;
+/// - a name with a year in it: "Fort Sumter, 1861, in American newspapers",
+///   else "… in newspapers";
+/// - any other: "Cholera in American newspapers, 1830–1856", else
+///   "Cholera in newspapers, 1830–1856", else "Cholera, 1830–1856".
+///
+/// `exampleTitle` in web/src/state/url.ts builds the same title.
+pub(super) fn example_title(example: &Example) -> String {
+    let name = example.title.as_str();
+    let year = |key| Some(example.view.get(key)?.as_str()?.get(..4)?.to_owned());
+    let years = match (year("from"), year("to")) {
+        (Some(from), Some(to)) if from == to => Some(from),
+        (Some(from), Some(to)) => Some(format!("{from}–{to}")),
+        _ => None,
+    };
+    let mut forms = Vec::new();
+    if let Some((topic, language, rest)) = language_papers(name) {
+        let papers = format!("{topic} in {language}-language papers");
+        match (rest, &years) {
+            (Some(rest), _) => forms.push(format!("{papers}{rest}")),
+            (None, Some(years)) => forms.push(format!("{papers}, {years}")),
+            (None, None) => {}
+        }
+        forms.push(papers);
+    } else if has_year(name) {
+        // "Fort Sumter, 1861, in …", but "Panic of 1873 in …".
+        let comma = if ends_with_comma_year(name) { "," } else { "" };
+        forms.push(format!("{name}{comma} in American newspapers"));
+        forms.push(format!("{name}{comma} in newspapers"));
+    } else if let Some(years) = years {
+        forms.push(format!("{name} in American newspapers, {years}"));
+        forms.push(format!("{name} in newspapers, {years}"));
+        forms.push(format!("{name}, {years}"));
+    }
+    forms
+        .into_iter()
+        .map(|form| format!("{form}{SUFFIX}"))
+        .find(|title| title.chars().count() <= TITLE_LIMIT)
+        .unwrap_or_else(|| format!("{name}{SUFFIX}"))
+}
+
+/// "Krieg in German papers, 1870" → ("Krieg", "German", Some(", 1870")).
+fn language_papers(name: &str) -> Option<(&str, &str, Option<&str>)> {
+    let at = name.find(" papers")?;
+    let (head, rest) = (&name[..at], &name[at + " papers".len()..]);
+    let rest = match rest {
+        "" => None,
+        r if r.starts_with(", ") => Some(r),
+        _ => return None,
+    };
+    let (topic, language) = head.rsplit_once(" in ")?;
+    (!topic.is_empty() && !language.is_empty() && language.chars().all(char::is_alphanumeric))
+        .then_some((topic, language, rest))
+}
+
+fn has_year(name: &str) -> bool {
+    name.as_bytes()
+        .windows(4)
+        .any(|w| w.iter().all(u8::is_ascii_digit))
+}
+
+/// Ends in ", 1861" or ", 1918-1920".
+fn ends_with_comma_year(name: &str) -> bool {
+    let Some((_, tail)) = name.rsplit_once(", ") else {
+        return false;
+    };
+    let digits = |s: &str| s.len() == 4 && s.bytes().all(|b| b.is_ascii_digit());
+    match tail.split_once('-') {
+        Some((a, b)) => digits(a) && digits(b),
+        None => digits(tail),
     }
 }
 
@@ -368,7 +447,10 @@ mod tests {
     fn an_example_page_uses_the_examples_own_words() {
         let war = example("mexican-war");
         let head = for_page(&path_of(war), "").unwrap();
-        assert_eq!(head.title, "Mexican-American War · US News Map");
+        assert_eq!(
+            head.title,
+            "Mexican-American War in newspapers, 1846–1849 · US News Map"
+        );
         assert_eq!(
             head.description,
             "The war of 1846 to 1848, which ended with Mexico ceding the Southwest. \
@@ -401,13 +483,13 @@ mod tests {
         let path = path_of(krieg);
         assert_eq!(
             for_page(&path, &view_query(krieg)).unwrap().title,
-            format!("{} · US News Map", krieg.title)
+            example_title(krieg)
         );
         assert_eq!(
             for_page(&path, "from=1870-01-01&to=1871-12-31&lang=GER,ger")
                 .unwrap()
                 .title,
-            format!("{} · US News Map", krieg.title)
+            example_title(krieg)
         );
         assert_eq!(
             for_page(&path, "lang=fre").unwrap().title,
@@ -428,7 +510,10 @@ mod tests {
             "mode=near&near=3",
         ] {
             let head = for_page(&path, query).unwrap();
-            assert_ne!(head.title, "Mexican-American War · US News Map", "{query}");
+            assert_ne!(
+                head.title, "Mexican-American War in newspapers, 1846–1849 · US News Map",
+                "{query}"
+            );
         }
         // Filters the app would ignore or normalize are the same search.
         for query in [
@@ -439,12 +524,15 @@ mod tests {
             "from=1846-01-01&to=1849-12-31&state=",
         ] {
             let head = for_page(&path, query).unwrap();
-            assert_eq!(head.title, "Mexican-American War · US News Map", "{query}");
+            assert_eq!(
+                head.title, "Mexican-American War in newspapers, 1846–1849 · US News Map",
+                "{query}"
+            );
         }
         // Naming the default match type is the same search.
         assert_eq!(
             for_page(&path, "mode=phrase").unwrap().title,
-            "Mexican-American War · US News Map"
+            "Mexican-American War in newspapers, 1846–1849 · US News Map"
         );
     }
 
