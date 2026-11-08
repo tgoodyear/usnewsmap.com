@@ -14,6 +14,7 @@ the tesseract command.
 """
 import argparse
 import datetime
+import http.client
 import json
 import os
 import re
@@ -44,7 +45,7 @@ def fetch(url: str, path: str, delay: float) -> str:
             with urllib.request.urlopen(urllib.request.Request(url, headers={"user-agent": UA}), timeout=120) as r:
                 data, final = r.read(), r.geturl()
             break
-        except OSError:
+        except (OSError, http.client.HTTPException):  # a dropped connection, or a body cut short
             if attempt == 3:
                 raise
             time.sleep(10 * (attempt + 1))

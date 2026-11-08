@@ -18,7 +18,7 @@ Writes OUT_DIR/clips/<lang>/<set>/{lines,words}/..., OUT_DIR/tasks.jsonl and OUT
 
   python3 build_tasks.py --lines lines.jsonl --images DIR --lang yi --set loc-yidj2-v1 \
     --a-is loc --b-is yidj2 --language-config languages/yi.json --out-dir OUT \
-    [--equivalent װ=וו ...] [--min-similarity 0.34]
+    [--equivalent װ=וו ...] [--min-similarity 0.34] [--skip-punctuation-only]
 """
 import argparse
 import difflib
@@ -132,6 +132,11 @@ def has_letter(word: str) -> bool:
     return any(c.isalnum() for c in word)
 
 
+def letters_only(word: str, equivalents: dict) -> str:
+    """The word's letters and digits, folded: what's left once punctuation is taken out."""
+    return "".join(u for u, _ in units(word, equivalents) if any(c.isalnum() for c in u))
+
+
 def stray_marks(a: str, b: str, equivalents: dict) -> bool:
     """Both readings are one or two letters with none in common: usually specks or picture texture."""
     ua, ub = {u for u, _ in units(a, equivalents)}, {u for u, _ in units(b, equivalents)}
@@ -168,6 +173,8 @@ def main() -> None:
                     "Added to the config's `equivalents`")
     ap.add_argument("--min-similarity", type=float, default=0.34, help="leave out pairs less alike than this (0-1)")
     ap.add_argument("--quality", type=int, default=85, help="JPEG quality of the clips")
+    ap.add_argument("--skip-punctuation-only", action="store_true",
+                    help="leave out pairs whose letters and digits are the same (they differ only in punctuation)")
     a = ap.parse_args()
 
     from PIL import Image  # only the clip cutting needs Pillow
@@ -190,7 +197,9 @@ def main() -> None:
             b_words = clean(ln["b"]).split()
             pairs, left = pair_words(a_words, b_words, equivalents, a.min_similarity)
             kept = [(k, wb) for k, wb in pairs
-                    if has_letter(a_words[k]) and has_letter(wb) and not stray_marks(a_words[k], wb, equivalents)]
+                    if has_letter(a_words[k]) and has_letter(wb) and not stray_marks(a_words[k], wb, equivalents)
+                    and not (a.skip_punctuation_only
+                             and letters_only(a_words[k], equivalents) == letters_only(wb, equivalents))]
             unpaired += left + len(pairs) - len(kept)
             pairs = kept
             if not pairs:
