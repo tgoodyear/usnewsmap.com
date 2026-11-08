@@ -305,8 +305,10 @@ function shorten(text: string, limit: number): string {
  */
 export function exampleTitle(example: Example): string {
   const name = example.title;
-  const from = example.view.from?.slice(0, 4);
-  const to = example.view.to?.slice(0, 4);
+  // Only a date that starts with four digits gives a year, as in the API.
+  const year = (date?: string) => (/^[0-9]{4}/.test(date ?? "") ? date!.slice(0, 4) : undefined);
+  const from = year(example.view.from);
+  const to = year(example.view.to);
   const years = from && to ? (from === to ? from : `${from}–${to}`) : undefined;
   const forms: string[] = [];
   const language = /^(.+) in ([\p{L}\p{N}]+) papers(, .+)?$/u.exec(name);

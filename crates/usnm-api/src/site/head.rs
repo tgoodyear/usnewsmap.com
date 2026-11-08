@@ -194,7 +194,11 @@ fn for_example(example: &Example) -> Head {
 /// `exampleTitle` in web/src/state/url.ts builds the same title.
 pub(super) fn example_title(example: &Example) -> String {
     let name = example.title.as_str();
-    let year = |key| Some(example.view.get(key)?.as_str()?.get(..4)?.to_owned());
+    // Only a date that starts with four digits gives a year.
+    let year = |key| {
+        let y = example.view.get(key)?.as_str()?.get(..4)?;
+        y.bytes().all(|b| b.is_ascii_digit()).then(|| y.to_owned())
+    };
     let years = match (year("from"), year("to")) {
         (Some(from), Some(to)) if from == to => Some(from),
         (Some(from), Some(to)) => Some(format!("{from}–{to}")),
@@ -475,6 +479,24 @@ mod tests {
         assert!(head.description.ends_with(&format!(
             "Newspaper pages from {year} on a map and timeline."
         )));
+    }
+
+    #[test]
+    fn example_titles_take_years_only_from_four_digits() {
+        let krieg = example("krieg-1870");
+        let mut view = krieg.view.clone();
+        view.insert("from".to_owned(), "not-a-date".into());
+        view.insert("to".to_owned(), "also-bad".into());
+        let bad = Example {
+            id: "bad".to_owned(),
+            aggregate: krieg.aggregate.clone(),
+            title: "Some topic".to_owned(),
+            blurb: krieg.blurb.clone(),
+            view,
+            era: krieg.era.clone(),
+        };
+        let title = example_title(&bad);
+        assert_eq!(title, "Some topic · US News Map");
     }
 
     #[test]

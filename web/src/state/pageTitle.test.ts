@@ -34,6 +34,13 @@ describe("searchTitle", () => {
     }
   });
 
+  it("takes years only from dates that start with four digits", () => {
+    const ex = EXAMPLES.find((e) => !/[0-9]{4}/.test(e.title) && !/ papers/.test(e.title))!;
+    const bad = { ...ex, view: { ...ex.view, from: "not-a-date", to: "also-bad" } };
+    expect(exampleTitle(bad)).not.toMatch(/not-|also/);
+    expect(exampleTitle(bad)).toBe(exampleTitle({ ...ex, view: { ...ex.view, from: undefined, to: undefined } }));
+  });
+
   it("keeps the home title when there are no search terms", () => {
     expect(searchTitle({ ...DEFAULTS, from: "1900-01-01" })).toBe(TITLES.search);
   });
