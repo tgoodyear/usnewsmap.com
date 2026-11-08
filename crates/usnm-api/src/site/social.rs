@@ -27,6 +27,14 @@ const RESPONSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 /// refusal leaves the map broken; a screenshot takes seconds, so a short queue
 /// clears. Bounded so a burst cannot leave renders queued without end.
 const STATIC_MAP_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
+/// The longest a screenshot may run once it holds a slot.
+const SCREENSHOT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(40);
+/// How long a script-free map request waits for its image: the queue for a slot,
+/// then the render, with the 5 s margin the render has always had. The queue must
+/// not come out of the render's time, or a request that queued for a while and then
+/// rendered normally would be answered 503 just before its image was ready.
+const STATIC_MAP_BUDGET: std::time::Duration =
+    std::time::Duration::from_secs(STATIC_MAP_WAIT.as_secs() + SCREENSHOT_TIMEOUT.as_secs() + 5);
 const VIEW_KEYS: &[&str] = &[
     "q", "source", "mode", "near", "from", "to", "state", "lang", "lccn", "series", "t", "win",
     "bucket", "layer", "norm", "place", "sort", "tab", "z", "c",
@@ -440,7 +448,7 @@ async fn screenshot(card: &Card) -> Result<Vec<u8>, String> {
         .arg("--url")
         .arg(url)
         .kill_on_drop(true);
-    let output = tokio::time::timeout(std::time::Duration::from_secs(40), command.output())
+    let output = tokio::time::timeout(SCREENSHOT_TIMEOUT, command.output())
         .await
         .map_err(|_| "share screenshot timed out")?
         .map_err(|_| "could not start share screenshot browser")?;
@@ -649,7 +657,7 @@ pub(super) async fn search_preview(
 async fn map_body(
     render: tokio::task::JoinHandle<Result<Rendered, Arc<RenderError>>>,
 ) -> Option<Vec<u8>> {
-    match tokio::time::timeout(std::time::Duration::from_secs(45), render).await {
+    match tokio::time::timeout(STATIC_MAP_BUDGET, render).await {
         Ok(Ok(Ok(image))) => Some(image.body),
         _ => {
             tracing::warn!("static search map unavailable");
