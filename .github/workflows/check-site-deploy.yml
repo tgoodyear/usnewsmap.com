@@ -69,7 +69,7 @@ jobs:
           node-version: 24
       # ci skips the edge job when a push doesn't touch edge/, so its success alone doesn't
       # show that this tree's site passed its tests: run them on the commit being deployed.
-      - run: node --test edge/check/worker.test.mjs
+      - run: node --test edge/check/worker.test.mjs edge/check/layout.test.mjs
       - run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends python3-pil
       # Fails if Pillow is missing rather than skipping the end-to-end build test.
       - run: /usr/bin/python3 -c 'import PIL' && /usr/bin/python3 -m unittest discover -s edge/check/tools

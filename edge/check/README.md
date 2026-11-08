@@ -133,5 +133,7 @@ Changing `SESSION_KEY` (`--rotate`) signs everyone out; their earlier answers st
 ## Tests
 
 ```sh
-node --test edge/check/worker.test.mjs
+node --test edge/check/worker.test.mjs edge/check/layout.test.mjs
 ```
+
+`layout.test.mjs` renders every language's sample words in headless Chrome, one highlighted letter at a time, and fails if a highlight box overlaps another character. It skips when no Chrome is found (set `CHROME=/path/to/chrome`) unless `CI` is set.
