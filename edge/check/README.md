@@ -2,7 +2,7 @@
 
 A public page where anyone can help check OCR text ([#1620](https://github.com/tgoodyear/usnewsmap.com/issues/1620)). Two readings of a printed word disagree, for example LoC's OCR and an aligned reference text. The page shows the printed word and both readings, and asks which one matches the print, or neither, or "can't tell", or "not text" when the box holds no letters (a picture or a smudge). Readers don't need to know the language: they compare letter shapes.
 
-Cherokee (the _Cherokee Phoenix_, 1828–34) was the first language, Yiddish (New York dailies, 1910–53) the second and Serbian (_Amerikanski Srbobran_, Pittsburgh, 1906–63) the third. The data model assumes neither: a language is a configuration plus a set of tasks.
+Cherokee (the _Cherokee Phoenix_, 1828–34) was the first language, Yiddish (New York dailies, 1910–53) the second and Serbian (_Amerikanski Srbobran_, Pittsburgh, 1906–63) the third. The data model assumes none of them: a language is a configuration plus a set of tasks.
 
 ## Pieces
 
@@ -80,7 +80,7 @@ podman run --rm -v "$PWD:/work" usnm-check-tools python3 tools/build_tasks.py --
 
 `tessdata/` holds `yidj2.traineddata` from its release (check its sha256 against `ocr/models/yidj2/README.md`).
 
-Serbian uses pages BOINC OCR'd and held from publication (#835): the hand-off keeps each held job's ALTO at `dispatch/quarantine/<job>/layout.xml`. Fetch those for a sample of held pages into one folder (`<doc id>.xml`), and list the pages in a JSON-lines file with LoC's ALTO URL and, when the scan is on the build host, its path under `/tank/ocr/scans/keep` (`tools/serbian_lines.py` has the format). `tools/serbian_lines.py` picks Cyrillic lines from LoC's ALTO and takes our words in each line's box. `--skip-punctuation-only` leaves out words whose readings differ only in punctuation. On the build host:
+Serbian uses pages BOINC OCR'd and held from publication (#835). The hand-off keeps each held job's ALTO at `dispatch/quarantine/<job>/layout.xml`. Fetch those for a sample of held pages into one folder (`<doc id>.xml`), and list the pages in a JSON-lines file with LoC's ALTO URL and, when the scan is on the build host, its path under `/tank/ocr/scans/keep` (the format is in `tools/serbian_lines.py`'s docstring). The script picks Cyrillic lines from LoC's ALTO and takes our words inside each line's box. `--skip-punctuation-only` leaves out words whose readings differ only in punctuation. On the build host:
 
 ```sh
 podman run --rm -v "$PWD:/work" -v /tank/ocr/scans/keep:/scans:ro usnm-check-tools python3 tools/serbian_lines.py \
@@ -90,7 +90,7 @@ podman run --rm -v "$PWD:/work" usnm-check-tools python3 tools/build_tasks.py --
   --language-config languages/sr.json --out-dir sr/check-out --skip-punctuation-only
 ```
 
-The first set (8 November 2026) is 140 pages, 20 per decade, 4 lines each: 488 lines and 939 words.
+The first set (8 November 2026) is 140 pages, 20 per decade, up to 4 lines each: 488 lines and 939 words.
 
 ## Loading a language
 
