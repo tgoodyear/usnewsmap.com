@@ -61,7 +61,9 @@ h2 { font-size: 1rem; margin: 8px 0 0; }
    a joined script (Arabic) would need it off. */
 .script { font-family: var(--font-script); font-size: 2rem; line-height: 1.2; letter-spacing: .18em; overflow-wrap: anywhere; }
 .script[dir="rtl"], .examples[dir="rtl"] { text-align: right; }
-.script mark { background: var(--mark); color: var(--mark-ink); border-radius: 3px; padding: 0 0 0 .09em; margin-left: -.09em; }
+.script mark { background: var(--mark); color: var(--mark-ink); border-radius: 3px; padding: 0; padding-inline-start: .09em; margin-inline-start: -.09em; }
+/* Letters a language counts as one (וו for װ) keep no gap between them, so equal spellings look equal. */
+.script .tight { letter-spacing: 0; }
 .script .gap { display: inline-block; width: .6em; border-bottom: 3px solid var(--mark); margin: 0 1px; }
 .examples { display: flex; flex-wrap: wrap; gap: 10px; }
 .ex { display: flex; align-items: center; gap: 6px; min-width: 0; flex-wrap: wrap; }

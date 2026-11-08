@@ -93,14 +93,32 @@ function letters(text) {
 
 function flip(id) { let h = 0; for (const c of id) h = (h * 31 + c.codePointAt(0)) >>> 0; return (h & 1) === 1; }
 
+// Indexes of letters that start (or continue) a spelling the language counts as one letter, e.g. וו for װ:
+// no space goes after them, so וו and װ look alike as the comparison treats them.
+function tightAfter(ls) {
+  const out = new Set();
+  for (const v of Object.values(cfg.equivalents || {})) {
+    const lv = letters(v);
+    if (lv.length < 2) continue;
+    for (let i = 0; i + lv.length <= ls.length; i++) {
+      if (ls.slice(i, i + lv.length).join("") === v) for (let k = i; k < i + lv.length - 1; k++) out.add(k);
+    }
+  }
+  return out;
+}
+
 function scriptText(text, diff) {
   const span = document.createElement("span"); span.className = "script"; span.lang = lang;
   if (cfg.dir) span.dir = cfg.dir;
-  const marked = new Set(diff), ls = letters(text);
+  const marked = new Set(diff), ls = letters(text), tight = tightAfter(ls);
   if (!ls.length) { const g = document.createElement("span"); g.className = "gap"; g.title = "nothing printed here"; span.appendChild(g); return span; }
   ls.forEach((ch, i) => {
-    if (marked.has(i)) { const m = document.createElement("mark"); m.textContent = ch; span.appendChild(m); }
-    else span.appendChild(document.createTextNode(ch));
+    let el;
+    if (marked.has(i)) { el = document.createElement("mark"); el.textContent = ch; }
+    else if (tight.has(i)) { el = document.createElement("span"); el.textContent = ch; }
+    else { span.appendChild(document.createTextNode(ch)); return; }
+    if (tight.has(i)) el.className = "tight";
+    span.appendChild(el);
   });
   return span;
 }

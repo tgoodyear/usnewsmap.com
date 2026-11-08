@@ -13,7 +13,7 @@ export default {
     const url = new URL(request.url);
     try {
       if (url.pathname.startsWith("/api/")) return await api(request, env, url);
-      if (url.pathname.startsWith("/clips/")) return await clip(request, env, url);
+      if (url.pathname.startsWith("/clips/")) return await clip(request, env, url, ctx);
       if (url.pathname.startsWith("/admin/")) return await admin(request, env, url);
       return env.ASSETS.fetch(request);
     } catch (e) {
@@ -286,19 +286,28 @@ export async function record(env, task, contributor, choice, at = Date.now()) {
 
 // ---------- clips ----------
 
-async function clip(request, env, url) {
+// Clips never change once loaded (a new set gets new keys), so each one is kept in Cloudflare's edge cache
+// for a year: a Worker's response isn't cached on its own, so without this every view is an R2 read.
+async function clip(request, env, url, ctx) {
   if (request.method !== "GET" && request.method !== "HEAD") throw new HttpError(405, "method not allowed");
   const key = decodeURIComponent(url.pathname.slice("/clips/".length));
   if (!/^[A-Za-z0-9._\-/]{1,300}$/.test(key) || key.includes("..")) throw new HttpError(404, "not found");
-  const obj = await env.CLIPS.get(key);
-  if (!obj) throw new HttpError(404, "not found");
-  return new Response(obj.body, {
-    headers: {
-      "content-type": obj.httpMetadata?.contentType || "image/jpeg",
-      "cache-control": "public, max-age=31536000, immutable",
-      etag: obj.httpEtag,
-    },
-  });
+  const cache = typeof caches !== "undefined" ? caches.default : null;
+  const cacheKey = new Request(url.origin + url.pathname, { method: "GET" });
+  let res = cache ? await cache.match(cacheKey) : undefined;
+  if (!res) {
+    const obj = await env.CLIPS.get(key);
+    if (!obj) throw new HttpError(404, "not found");
+    res = new Response(obj.body, {
+      headers: {
+        "content-type": obj.httpMetadata?.contentType || "image/jpeg",
+        "cache-control": "public, max-age=31536000, immutable",
+        etag: obj.httpEtag,
+      },
+    });
+    if (cache && ctx) ctx.waitUntil(cache.put(cacheKey, res.clone()));
+  }
+  return request.method === "HEAD" ? new Response(null, { status: res.status, headers: res.headers }) : res;
 }
 
 // ---------- loading tasks (README.md, "Loading a language") ----------

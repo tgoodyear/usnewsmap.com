@@ -57,8 +57,8 @@ A task, as loaded: `id` (`<lang>/<set>/<word id>`), `lang`, `set`, then what the
 | `name`, `title`, `intro`        | Shown on the page.                                                                            |
 | `dir`                           | `rtl` for right-to-left scripts (Hebrew letters); the readings are then set right to left.    |
 | `notes`                         | A short note per letter, shown under a reading when that letter is highlighted.               |
-| `drop_examples`, `min_examples` | Build options for `from_tap_data.py`'s example letter pictures.                               |
-| `equivalents`                   | Build option for `build_tasks.py`: letters that print alike (`"װ": "וו"`), compared as equal. |
+| `drop_examples`, `min_examples` | Build options for `from_tap_data.py`'s example letter pictures (not served).                  |
+| `equivalents`                   | Letters that print alike (`"װ": "וו"`): `build_tasks.py` compares them as equal, and the page sets the two-letter spelling with no space inside it. |
 
 The page highlights letters as `a_diff` and `b_diff` count them: a base character with the marks that follow it (פּ, אַ) is one letter.
 
