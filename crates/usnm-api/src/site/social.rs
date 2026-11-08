@@ -22,6 +22,11 @@ pub(super) const PREVIEW: &str = "/search-preview/";
 const REVISION_LEN: usize = 16;
 const FALLBACK: &[u8] = include_bytes!("../../../../web/public/og-image.png");
 const RESPONSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+/// How long a script-free page's map render waits for one of the two render
+/// slots before the request is answered 503. An `<img>` cannot retry, so a
+/// refusal leaves the map broken; a screenshot takes seconds, so a short queue
+/// clears. Bounded so a burst cannot leave renders queued without end.
+const STATIC_MAP_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
 const VIEW_KEYS: &[&str] = &[
     "q", "source", "mode", "near", "from", "to", "state", "lang", "lccn", "series", "t", "win",
     "bucket", "layer", "norm", "place", "sort", "tab", "z", "c",
@@ -466,7 +471,8 @@ pub(super) async fn image(OriginalUri(uri): OriginalUri, state: Arc<AppState>) -
             .into_response();
     };
     // Continue warming if the crawler stops waiting, as before.
-    let render = tokio::spawn(async move { cached(&state, card, false).await });
+    let render =
+        tokio::spawn(async move { cached(&state, card, false, std::time::Duration::ZERO).await });
     render_response(render).await
 }
 
@@ -626,7 +632,7 @@ pub(super) async fn search_preview(
     }
     let render = {
         let (state, card) = (state.clone(), card.clone());
-        tokio::spawn(async move { cached(&state, card, false).await })
+        tokio::spawn(async move { cached(&state, card, false, STATIC_MAP_WAIT).await })
     };
     let Some(body) = map_body(render).await else {
         return map_unavailable();
@@ -757,6 +763,7 @@ async fn cached(
     state: &AppState,
     card: Card,
     background: bool,
+    patience: std::time::Duration,
 ) -> Result<Rendered, Arc<RenderError>> {
     if !card.is_search() {
         let body = state
@@ -783,15 +790,21 @@ async fn cached(
     let key = preview_path(&render_key(&identity, &normalized), &card);
     let body = state
         .previews
-        .get(key.clone(), stored_at(state, &key), background, async {
-            let body = screenshot(&card).await.map_err(RenderError::Failed)?;
-            if self::identity(state).await? != identity {
-                return Err(RenderError::Failed(
-                    "share snapshot changed during capture".to_owned(),
-                ));
-            }
-            Ok(body)
-        })
+        .get_within(
+            key.clone(),
+            stored_at(state, &key),
+            background,
+            patience,
+            async {
+                let body = screenshot(&card).await.map_err(RenderError::Failed)?;
+                if self::identity(state).await? != identity {
+                    return Err(RenderError::Failed(
+                        "share snapshot changed during capture".to_owned(),
+                    ));
+                }
+                Ok(body)
+            },
+        )
         .await?;
     let preview = state
         .previews
@@ -847,7 +860,7 @@ pub(crate) fn spawn(state: Arc<AppState>) {
                 cursor = 0;
                 continue;
             };
-            match cached(&state, card, true).await {
+            match cached(&state, card, true, std::time::Duration::ZERO).await {
                 Ok(_) => tracing::info!("search screenshot warmed"),
                 Err(error) => {
                     tracing::warn!(%error, "search screenshot warm-up deferred")

@@ -166,6 +166,26 @@ impl Service {
         background: bool,
         render: impl Future<Output = Result<Vec<u8>, RenderError>>,
     ) -> Result<Vec<u8>, Arc<RenderError>> {
+        self.get_within(key, persistent, background, Duration::ZERO, render)
+            .await
+    }
+
+    /// [`get`](Self::get), where a visitor's render may wait up to `patience`
+    /// for a free slot instead of being refused at once. Two slots are shared
+    /// by every distinct image, so three overlapping requests would otherwise
+    /// leave one with `Busy`; a page that cannot retry (a script-free `<img>`)
+    /// then keeps a broken image. Waiters queue first-come-first-served, and
+    /// background work, which needs both slots free, does not start while one
+    /// waits. Past `patience` the request is `Busy` as before, so a burst
+    /// cannot leave renders queued without bound. Background renders never wait.
+    pub(super) async fn get_within(
+        &self,
+        key: String,
+        persistent: Persistent,
+        background: bool,
+        patience: Duration,
+        render: impl Future<Output = Result<Vec<u8>, RenderError>>,
+    ) -> Result<Vec<u8>, Arc<RenderError>> {
         if !background {
             if let Some(image) = self.images.get(&key).await {
                 self.refresh(&image, &persistent);
@@ -182,11 +202,16 @@ impl Service {
                 }
                 // One background worker starts only with both slots free,
                 // leaving the second slot for Share/crawler requests.
-                let mut permit = self
-                    .renders
-                    .clone()
-                    .try_acquire_many_owned(if background { 2 } else { 1 })
-                    .map_err(|_| RenderError::Busy)?;
+                let permits = self.renders.clone();
+                let mut permit = if background || patience.is_zero() {
+                    permits.try_acquire_many_owned(if background { 2 } else { 1 })
+                } else {
+                    match tokio::time::timeout(patience, permits.acquire_owned()).await {
+                        Ok(Ok(permit)) => Ok(permit),
+                        _ => return Err(RenderError::Busy),
+                    }
+                }
+                .map_err(|_| RenderError::Busy)?;
                 if background {
                     drop(permit.split(1));
                 }
@@ -1777,6 +1802,86 @@ mod tests {
             .get("deferred".to_owned(), None, true, async { Ok(vec![4]) })
             .await
             .is_err());
+    }
+
+    #[tokio::test]
+    async fn a_visitor_waits_for_a_slot_instead_of_being_refused() {
+        let service = Service::default();
+        let held = service.renders.clone().acquire_many_owned(2).await.unwrap();
+        // No patience: refused at once, as sharing and crawlers are.
+        assert!(service
+            .get("refused".to_owned(), None, false, async { Ok(vec![1]) })
+            .await
+            .is_err());
+        // With patience: served once a slot frees up.
+        let waiting = service.get_within(
+            "waits".to_owned(),
+            None,
+            false,
+            Duration::from_secs(5),
+            async { Ok(vec![2]) },
+        );
+        let free = async {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            drop(held);
+        };
+        let (got, ()) = tokio::join!(waiting, free);
+        assert_eq!(got.unwrap(), vec![2]);
+    }
+
+    #[tokio::test]
+    async fn a_waiting_visitor_gives_up_after_its_patience_and_holds_no_slot() {
+        let service = Service::default();
+        let _held = service.renders.clone().acquire_many_owned(2).await.unwrap();
+        let started = std::time::Instant::now();
+        let got = service
+            .get_within(
+                "gives-up".to_owned(),
+                None,
+                false,
+                Duration::from_millis(100),
+                async { Ok(vec![1]) },
+            )
+            .await;
+        assert!(got.is_err());
+        assert!(started.elapsed() >= Duration::from_millis(100));
+        // The abandoned wait left the slots as they were.
+        assert_eq!(service.renders.available_permits(), 0);
+        drop(_held);
+        assert_eq!(service.renders.available_permits(), 2);
+    }
+
+    #[tokio::test]
+    async fn background_work_does_not_start_ahead_of_a_waiting_visitor() {
+        let service = Service::default();
+        let held = service.renders.clone().acquire_many_owned(2).await.unwrap();
+        let (started, running) = tokio::sync::oneshot::channel();
+        let (finish, finished) = tokio::sync::oneshot::channel::<()>();
+        let visitor = service.get_within(
+            "visitor".to_owned(),
+            None,
+            false,
+            Duration::from_secs(5),
+            async {
+                started.send(()).unwrap();
+                finished.await.unwrap();
+                Ok(vec![1])
+            },
+        );
+        let others = async {
+            // The visitor queues; both slots then free at once, and the visitor
+            // is first in line, so it holds one while the background still needs two.
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            drop(held);
+            running.await.unwrap();
+            let background = service
+                .get("background".to_owned(), None, true, async { Ok(vec![2]) })
+                .await;
+            assert!(background.is_err(), "the visitor was served first");
+            finish.send(()).unwrap();
+        };
+        let (visitor, ()) = tokio::join!(visitor, others);
+        assert_eq!(visitor.unwrap(), vec![1]);
     }
 
     #[tokio::test]
