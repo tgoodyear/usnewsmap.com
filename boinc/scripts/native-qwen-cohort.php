@@ -17,10 +17,11 @@ const AMD_GENERAL_MARKER = "usnm-amd-general-admission-v1";
 // intel_vulkan_8b follows NVIDIA only: the refill owns Intel's window until then, and a fresh-pair
 // window found none to open after 4 November while Intel's last 104 replicas were 102 valid.
 const NVIDIA_GENERAL_MARKER = "usnm-nvidia-general-admission-v1";
+const INTEL_GENERAL_MARKER = "usnm-intel-general-admission-v1";
 const GENERAL_MARKERS = [
     "amd_vulkan_8b" => AMD_GENERAL_MARKER,
     "nvidia_vulkan_8b" => NVIDIA_GENERAL_MARKER,
-    "intel_vulkan_8b" => "usnm-intel-general-admission-v1",
+    "intel_vulkan_8b" => INTEL_GENERAL_MARKER,
 ];
 
 function native_qwen_general_xml($xml, $plan_class = "amd_vulkan_8b") {

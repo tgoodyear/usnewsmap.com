@@ -187,11 +187,12 @@ def progress(message):
 @contextlib.contextmanager
 def flocked(paths, existing=(), wait_secs=0):
     """Holds a non-blocking exclusive flock on every path: a running holder makes this refuse.
-    With wait_secs, a held lock is tried again every few seconds until then; each try takes all
-    the locks or none, so a waiting step never holds one lock while another holder needs it.
+    With wait_secs, a held lock is tried again every few seconds until then. A try that finds a
+    lock held lets go of the ones it took, so between tries a waiting step holds none of them.
     Every holder creates its lock file as it takes it, so a missing one is created, except one
     in `existing`: its absence means the path isn't the one its holder uses."""
     deadline = time.monotonic() + wait_secs
+    waited_before = False
     while True:
         with contextlib.ExitStack() as stack:
             busy = None
@@ -211,8 +212,18 @@ def flocked(paths, existing=(), wait_secs=0):
                 return
         if time.monotonic() >= deadline:
             raise Refused(f"{busy} is locked: a controller tick or bridge step is running")
-        progress(f"{busy} is locked; trying again")
+        if not waited_before:
+            progress(f"{busy} is locked; waiting up to {wait_secs / 60:g} minutes")
+            waited_before = True
         time.sleep(min(LOCK_RETRY_SECS, max(0.0, deadline - time.monotonic())))
+
+
+def minutes(text):
+    """argparse type: a whole number of minutes, zero or more."""
+    value = int(text)
+    if value < 0:
+        raise argparse.ArgumentTypeError(f"{text} is negative")
+    return value
 
 
 def unit_state(unit):
@@ -1509,7 +1520,7 @@ def main(argv=None):
     two.add_argument("--results", type=Path, required=True, help="the BOINC project's results directory")
     two.add_argument("--lock-file", action="append",
                      help=f"a bridge step lock to hold (default: {', '.join(DEFAULT_BRIDGE_LOCKS)})")
-    two.add_argument("--lock-wait-mins", type=int, default=DEFAULT_BRIDGE_LOCK_WAIT_MINS,
+    two.add_argument("--lock-wait-mins", type=minutes, default=DEFAULT_BRIDGE_LOCK_WAIT_MINS,
                      help="how long to wait for a held bridge lock before refusing "
                           f"(default: {DEFAULT_BRIDGE_LOCK_WAIT_MINS})")
     common(two)

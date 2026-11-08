@@ -1,6 +1,7 @@
 """Tests for archive_history.py (#1483), with synthetic stores only: a container in memory, a
 controller state directory, a bridge tree and a SQLite stand-in for the BOINC database."""
 
+import argparse
 import base64
 import contextlib
 import email.utils
@@ -803,6 +804,11 @@ class LockWaitTests(unittest.TestCase):
         fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
         return handle
 
+    def test_wait_minutes_must_not_be_negative(self):
+        self.assertEqual(archive.minutes("0"), 0)
+        with self.assertRaisesRegex(argparse.ArgumentTypeError, "negative"):
+            archive.minutes("-1")
+
     def test_refuses_at_once_without_a_wait(self):
         held = self.hold(self.locks[1])
         self.addCleanup(held.close)
@@ -816,15 +822,20 @@ class LockWaitTests(unittest.TestCase):
 
         def release():
             time.sleep(0.2)
-            # The waiting step must not sit on the first lock while it waits for the second.
-            probe = open(self.locks[0], "a")
-            try:
-                fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                seen.append("free")
-                fcntl.flock(probe, fcntl.LOCK_UN)
-            except BlockingIOError:
-                seen.append("held")
-            probe.close()
+            # The waiting step must not sit on the first lock while it waits for the second. A try
+            # holds it for an instant, so a probe that lands in one is retried.
+            with open(self.locks[0], "a") as probe:
+                for _ in range(20):
+                    try:
+                        fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        time.sleep(0.01)
+                        continue
+                    fcntl.flock(probe, fcntl.LOCK_UN)
+                    seen.append("free")
+                    break
+                else:
+                    seen.append("held")
             held.close()
 
         thread = threading.Thread(target=release)
