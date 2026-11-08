@@ -4,6 +4,13 @@ import { expect, test, type Page } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 import { indexSummary } from "../src/lib/indexSummary";
 
+// A route callback that calls `route.fetch()` can still be running when the test's last
+// assertion passes (a background request from the page). Wait for it, or Playwright fails
+// the test with "Test ended" / "Response has been disposed" while it runs.
+test.afterEach(async ({ page }) => {
+  await page.unrouteAll({ behavior: "wait" });
+});
+
 // SEO smoke tests: the head that search engines and link previews read, the
 // page structure once the app renders, and what the API sends crawlers.
 // Adapted from goodyeartechnical.com's tests/e2e/seo.spec.js.

@@ -1,6 +1,13 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 
+// A route callback that calls `route.fetch()` can still be running when the test's last
+// assertion passes (a background request from the page). Wait for it, or Playwright fails
+// the test with "Test ended" / "Response has been disposed" while it runs.
+test.afterEach(async ({ page }) => {
+  await page.unrouteAll({ behavior: "wait" });
+});
+
 test.beforeEach(async ({ page }) => {
   await page.route(/tiles\.openfreemap\.org\/|\/basemap\/[^/]+\/style\.json$/, (route) =>
     route.fulfill({
