@@ -12,6 +12,14 @@ import build_tasks as bt  # noqa: E402
 YI = bt.parse_equivalents(["װ=וו", "ײ=יי"])
 
 
+class Punctuation(unittest.TestCase):
+    def test_letters_only_drops_punctuation_and_folds(self):
+        eq = bt.parse_equivalents(["C=С"])
+        self.assertEqual(bt.letters_only('"помоћник,', eq), "помоћник")
+        self.assertEqual(bt.letters_only("Cе.", eq), bt.letters_only("Се", eq))
+        self.assertNotEqual(bt.letters_only("себс", eq), bt.letters_only("себе.", eq))
+
+
 class Letters(unittest.TestCase):
     def test_marks_stay_with_their_letter(self):
         self.assertEqual(bt.graphemes("פּאַ"), ["פּ", "אַ"])

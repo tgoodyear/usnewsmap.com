@@ -2,7 +2,7 @@
 
 A public page where anyone can help check OCR text ([#1620](https://github.com/tgoodyear/usnewsmap.com/issues/1620)). Two readings of a printed word disagree, for example LoC's OCR and an aligned reference text. The page shows the printed word and both readings, and asks which one matches the print, or neither, or "can't tell", or "not text" when the box holds no letters (a picture or a smudge). Readers don't need to know the language: they compare letter shapes.
 
-Cherokee (the _Cherokee Phoenix_, 1828–34) was the first language and Yiddish (New York dailies, 1910–53) the second. The data model assumes neither: a language is a configuration plus a set of tasks.
+Cherokee (the _Cherokee Phoenix_, 1828–34) was the first language, Yiddish (New York dailies, 1910–53) the second and Serbian (_Amerikanski Srbobran_, Pittsburgh, 1906–63) the third. The data model assumes neither: a language is a configuration plus a set of tasks.
 
 ## Pieces
 
@@ -15,6 +15,7 @@ Cherokee (the _Cherokee Phoenix_, 1828–34) was the first language and Yiddish 
 | Turnstile widget `usnm-check` | The browser check before a session is issued.                                       |
 | `tools/build_tasks.py`        | Turns line images with two readings per line into tasks, clips and a configuration. |
 | `tools/yiddish_lines.py`      | Makes `build_tasks.py`'s input for Yiddish: LoC's ALTO against our `yidj2` model.   |
+| `tools/serbian_lines.py`      | Makes `build_tasks.py`'s input for Serbian: LoC's ALTO against our held BOINC ALTO. |
 | `tools/from_tap_data.py`      | Turns a glyph-check data file (Cherokee) into tasks, clips and a configuration.     |
 | `languages/<code>.json`       | A language's name, intro, writing direction and letter notes, plus build options.   |
 | `load.sh`, `set-secrets.sh`   | Loading data and setting secrets, run by hand.                                      |
@@ -79,6 +80,18 @@ podman run --rm -v "$PWD:/work" usnm-check-tools python3 tools/build_tasks.py --
 
 `tessdata/` holds `yidj2.traineddata` from its release (check its sha256 against `ocr/models/yidj2/README.md`).
 
+Serbian uses pages BOINC OCR'd and held from publication (#835): the hand-off keeps each held job's ALTO at `dispatch/quarantine/<job>/layout.xml`. Fetch those for a sample of held pages into one folder (`<doc id>.xml`), and list the pages in a JSON-lines file with LoC's ALTO URL and, when the scan is on the build host, its path under `/tank/ocr/scans/keep` (`tools/serbian_lines.py` has the format). `tools/serbian_lines.py` picks Cyrillic lines from LoC's ALTO and takes our words in each line's box. `--skip-punctuation-only` leaves out words whose readings differ only in punctuation. On the build host:
+
+```sh
+podman run --rm -v "$PWD:/work" -v /tank/ocr/scans/keep:/scans:ro usnm-check-tools python3 tools/serbian_lines.py \
+  --pages /work/pages.jsonl --ours /work/ours --work /work/sr --scans /scans --lines-per-page 4
+podman run --rm -v "$PWD:/work" usnm-check-tools python3 tools/build_tasks.py --lines sr/lines.jsonl \
+  --images sr --lang sr --set loc-boinc-tess-v1 --a-is loc --b-is tesseract \
+  --language-config languages/sr.json --out-dir sr/check-out --skip-punctuation-only
+```
+
+The first set (8 November 2026) is 140 pages, 20 per decade, 4 lines each: 488 lines and 939 words.
+
 ## Loading a language
 
 On the build host (pve-big for Cherokee and Yiddish), make the files. For Cherokee:
@@ -96,7 +109,7 @@ edge/check/load.sh --vault usnmtlskvprodffapzy --host root@pve-big.tjg.fyi \
   --seed /scratch/usnm-chr/testset/glyph-check/check-out/seed.jsonl
 ```
 
-For Yiddish, `--dir` is `build_tasks.py`'s `--out-dir` ([above](#making-tasks-from-two-readings)) and `--lang yi`, with no `--seed`.
+For Yiddish and Serbian, `--dir` is `build_tasks.py`'s `--out-dir` ([above](#making-tasks-from-two-readings)) and `--lang yi` or `--lang sr`, with no `--seed`.
 
 The files go from the build host straight to the Worker; only the admin token passes through the operator's machine, on ssh's stdin.
 
