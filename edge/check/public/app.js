@@ -93,18 +93,14 @@ function letters(text) {
 
 function flip(id) { let h = 0; for (const c of id) h = (h * 31 + c.codePointAt(0)) >>> 0; return (h & 1) === 1; }
 
-// Indexes of letters followed by no space: inside a spelling the language counts as one letter (וו for װ),
-// so וו and װ look alike as the comparison treats them. Matched left to right without overlap, longest
-// first, so ייי is יי plus י, set the way ײי is.
+// Indexes of letters followed by no space. Where a language counts spellings as the same letter (װ and וו),
+// a run of the letters those spellings use (ו, י, װ, ױ, ײ…) is set with no gaps inside it, so equal spellings
+// look alike however their letters pair up (יײ and ייי). Highlights keep the original letter indexes.
 function tightAfter(ls) {
+  const set = new Set();
+  for (const [k, v] of Object.entries(cfg.equivalents || {})) { set.add(k); for (const ch of letters(v)) set.add(ch); }
   const out = new Set();
-  const forms = Object.values(cfg.equivalents || {}).map(letters).filter((f) => f.length > 1).sort((x, y) => y.length - x.length);
-  for (let i = 0; i < ls.length;) {
-    const f = forms.find((f) => f.every((ch, k) => ls[i + k] === ch));
-    if (!f) { i++; continue; }
-    for (let k = i; k < i + f.length - 1; k++) out.add(k);
-    i += f.length;
-  }
+  for (let i = 0; i + 1 < ls.length; i++) if (set.has(ls[i]) && set.has(ls[i + 1])) out.add(i);
   return out;
 }
 
