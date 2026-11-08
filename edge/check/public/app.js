@@ -96,9 +96,13 @@ function flip(id) { let h = 0; for (const c of id) h = (h * 31 + c.codePointAt(0
 // Indexes of letters followed by no space. Where a language counts spellings as the same letter (װ and וו),
 // a run of the letters those spellings use (ו, י, װ, ױ, ײ…) is set with no gaps inside it, so equal spellings
 // look alike however their letters pair up (יײ and ייי). Highlights keep the original letter indexes.
+// One-for-one equivalents (Serbian's Latin look-alikes, C and С) never pair up differently, so they stay spaced.
 function tightAfter(ls) {
   const set = new Set();
-  for (const [k, v] of Object.entries(cfg.equivalents || {})) { set.add(k); for (const ch of letters(v)) set.add(ch); }
+  for (const [k, v] of Object.entries(cfg.equivalents || {})) {
+    if (letters(k).length === letters(v).length) continue;
+    for (const ch of letters(k).concat(letters(v))) set.add(ch);
+  }
   const out = new Set();
   for (let i = 0; i + 1 < ls.length; i++) if (set.has(ls[i]) && set.has(ls[i + 1])) out.add(i);
   return out;
@@ -111,10 +115,10 @@ function scriptText(text, diff) {
   if (!ls.length) { const g = document.createElement("span"); g.className = "gap"; g.title = "nothing printed here"; span.appendChild(g); return span; }
   ls.forEach((ch, i) => {
     let el;
-    if (marked.has(i)) { el = document.createElement("mark"); el.textContent = ch; }
+    if (marked.has(i)) { el = document.createElement("mark"); el.textContent = ch; if (i === 0) el.classList.add("first"); }
     else if (tight.has(i)) { el = document.createElement("span"); el.textContent = ch; }
     else { span.appendChild(document.createTextNode(ch)); return; }
-    if (tight.has(i)) el.className = "tight";
+    if (tight.has(i)) el.classList.add("tight");
     span.appendChild(el);
   });
   return span;
