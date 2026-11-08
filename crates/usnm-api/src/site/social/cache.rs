@@ -38,6 +38,9 @@ type Persistent = Option<(Arc<dyn ObjectStore>, String)>;
 pub(crate) struct Service {
     images: moka::future::Cache<String, Arc<Image>>,
     renders: Arc<tokio::sync::Semaphore>,
+    /// How many renders have started, so a caller can tell a request that rendered
+    /// from one served from memory or storage.
+    renders_started: AtomicU64,
     quota: Arc<Quota>,
     pub(super) frontend: tokio::sync::OnceCell<String>,
 }
@@ -114,6 +117,7 @@ impl Default for Service {
                 .time_to_live(LIFETIME)
                 .build(),
             renders: Arc::new(tokio::sync::Semaphore::new(2)),
+            renders_started: AtomicU64::new(0),
             quota: Arc::default(),
             frontend: tokio::sync::OnceCell::new(),
         }
@@ -123,6 +127,11 @@ impl Default for Service {
 impl Service {
     pub(super) fn idle(&self) -> bool {
         self.renders.available_permits() == 2
+    }
+
+    /// How many renders have started since this process did.
+    pub(super) fn renders_started(&self) -> u64 {
+        self.renders_started.load(Ordering::Relaxed)
     }
 
     /// Metadata discovery never waits for storage or advertises a local-only
@@ -222,6 +231,7 @@ impl Service {
                     if background {
                         drop(permit.split(1));
                     }
+                    self.renders_started.fetch_add(1, Ordering::Relaxed);
                     let body = render.as_mut().await?;
                     drop(permit);
                     Ok(Image::new(body, false))
@@ -1820,6 +1830,34 @@ mod tests {
             .get("deferred".to_owned(), None, true, async { Ok(vec![4]) })
             .await
             .is_err());
+    }
+
+    #[tokio::test]
+    async fn only_a_request_that_renders_is_counted_as_a_render() {
+        let service = Service::default();
+        assert_eq!(service.renders_started(), 0);
+        service
+            .get("image".to_owned(), None, false, async { Ok(vec![1]) })
+            .await
+            .unwrap();
+        assert_eq!(service.renders_started(), 1);
+        // Served from memory, and by a background request joining the cached image.
+        for background in [false, true] {
+            service
+                .get("image".to_owned(), None, background, async {
+                    panic!("must not render")
+                })
+                .await
+                .unwrap();
+        }
+        assert_eq!(service.renders_started(), 1);
+        // A refused request did not start one.
+        let _held = service.renders.clone().acquire_many_owned(2).await.unwrap();
+        assert!(service
+            .get("busy".to_owned(), None, false, async { Ok(vec![2]) })
+            .await
+            .is_err());
+        assert_eq!(service.renders_started(), 1);
     }
 
     #[tokio::test]

@@ -829,6 +829,23 @@ fn can_warm(state: &AppState) -> bool {
         && state.previews.idle()
 }
 
+/// Pause before the next warm-up step after one that found its preview already there: it cost a
+/// read, not a render, so the walk does not wait for the renderer's sake.
+const WARM_PRESENT_PAUSE: std::time::Duration = std::time::Duration::from_millis(250);
+/// Rest after a full pass over the examples, which only keeps them from expiring.
+const WARM_CYCLE_REST: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+
+/// How long the warm-up waits before its next step. A step that rendered held both of the
+/// renderer's slots, so it waits the configured `interval`; one that found its preview already
+/// stored did not (a restart, or an example seen twice in a pass), so the walk moves on at once.
+fn warm_pause(interval: std::time::Duration, rendered: bool, ok: bool) -> std::time::Duration {
+    if ok && !rendered {
+        WARM_PRESENT_PAUSE.min(interval)
+    } else {
+        interval
+    }
+}
+
 pub(crate) fn spawn(state: Arc<AppState>) {
     if state.config.site_dir.is_none() {
         return;
@@ -838,10 +855,13 @@ pub(crate) fn spawn(state: Arc<AppState>) {
         return;
     }
     tokio::spawn(async move {
+        let interval = state.config.preview_warm_interval;
+        let mut pause = interval;
         let mut cursor = 0;
         let mut previous = String::new();
         loop {
-            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+            tokio::time::sleep(pause).await;
+            pause = interval;
             if !can_warm(&state) {
                 continue;
             }
@@ -866,14 +886,18 @@ pub(crate) fn spawn(state: Arc<AppState>) {
             };
             let Some(card) = card else {
                 cursor = 0;
+                pause = WARM_CYCLE_REST.max(interval);
                 continue;
             };
-            match cached(&state, card, true, std::time::Duration::ZERO).await {
-                Ok(_) => tracing::info!("search screenshot warmed"),
-                Err(error) => {
-                    tracing::warn!(%error, "search screenshot warm-up deferred")
-                }
+            let before = state.previews.renders_started();
+            let result = cached(&state, card, true, std::time::Duration::ZERO).await;
+            let rendered = state.previews.renders_started() != before;
+            match &result {
+                Ok(_) if rendered => tracing::info!("search screenshot warmed"),
+                Ok(_) => tracing::debug!("search screenshot already warm"),
+                Err(error) => tracing::warn!(%error, "search screenshot warm-up deferred"),
             }
+            pause = warm_pause(interval, rendered, result.is_ok());
             cursor += 1;
         }
     });
@@ -935,6 +959,20 @@ mod tests {
 
     static IMAGES: LazyLock<moka::future::Cache<String, Vec<u8>>> =
         LazyLock::new(|| moka::future::Cache::new(1024));
+
+    #[test]
+    fn the_warm_up_waits_only_after_work_that_held_the_renderer() {
+        let interval = std::time::Duration::from_secs(10);
+        // A render, or a refusal or failure: the configured interval.
+        assert_eq!(warm_pause(interval, true, true), interval);
+        assert_eq!(warm_pause(interval, false, false), interval);
+        assert_eq!(warm_pause(interval, true, false), interval);
+        // A preview that was already there: on to the next almost at once.
+        assert_eq!(warm_pause(interval, false, true), WARM_PRESENT_PAUSE);
+        // Never longer than the interval itself.
+        let short = std::time::Duration::from_millis(100);
+        assert_eq!(warm_pause(short, false, true), short);
+    }
 
     #[tokio::test]
     async fn static_maps_never_return_generic_images_when_capture_fails_or_is_busy() {

@@ -51,6 +51,11 @@ pub struct Config {
     pub response_cache_url: Option<String>,
     /// Responses that took at least this long to compute are persisted.
     pub persist_after: Duration,
+    /// How long the example-preview warm-up waits after a step that rendered one,
+    /// before the next. Each render holds both of the renderer's slots for a couple
+    /// of seconds, so this sets how much of the time the warm-up keeps visitors'
+    /// map images waiting. Steps that find a preview already stored do not wait for it.
+    pub preview_warm_interval: Duration,
     pub allowed_origins: Vec<String>,
     /// How long a visitor's request waits for a search before the API
     /// answers `202 Accepted` and the search carries on without it.
@@ -262,6 +267,10 @@ impl Config {
             data_dir: PathBuf::from(data_dir),
             response_cache_url: var("USNM_RESPONSE_CACHE_URL"),
             persist_after: Duration::from_millis(num("USNM_PERSIST_AFTER_MS", 500)?),
+            preview_warm_interval: match num("USNM_PREVIEW_WARM_INTERVAL_SECS", 10)? {
+                s @ 1..=3600 => Duration::from_secs(s),
+                _ => return Err("USNM_PREVIEW_WARM_INTERVAL_SECS must be from 1 to 3600".into()),
+            },
             allowed_origins: var("USNM_ALLOWED_ORIGINS")
                 .unwrap_or_else(|| "https://usnewsmap.com".to_owned())
                 .split(',')
@@ -370,6 +379,15 @@ mod tests {
         assert_eq!(c.reference_url, "fixtures/data");
         assert_eq!(c.rate_limit.unwrap().per_minute.get(), 120);
         assert_eq!(c.persist_after, Duration::from_millis(500));
+        assert_eq!(c.preview_warm_interval, Duration::from_secs(10));
+        let warm = |v: &str| {
+            Config::from_lookup(|k| (k == "USNM_PREVIEW_WARM_INTERVAL_SECS").then(|| v.to_owned()))
+        };
+        assert_eq!(
+            warm("3").unwrap().preview_warm_interval,
+            Duration::from_secs(3)
+        );
+        assert!(warm("0").is_err() && warm("3601").is_err() && warm("x").is_err());
         assert_eq!(c.prewarm_query_timeout, Duration::from_secs(60));
         assert_eq!(c.prewarm_budget, Duration::from_secs(900));
         assert_eq!(c.prewarm_startup_budget, Duration::from_secs(300));
