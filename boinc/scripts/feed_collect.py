@@ -22,7 +22,7 @@ import urllib.request
 import urllib.error
 import xml.etree.ElementTree as ET
 
-from feed_status import APP_NAMES, MAX_AGE, TICK_LIMIT_S, atomic_json
+from feed_status import APP_NAMES, MAX_AGE, TICK_FAILURE_SAME_S, TICK_LIMIT_S, atomic_json
 
 MAX_BYTES = 8 * 1024 * 1024
 MAX_ROWS = 8000
@@ -204,6 +204,8 @@ def fresh(document, now, kind):
         if any(natural(tick.get(key, 0)) > now for key in (
                 "last_failure_at", "controller_failure_at", "maintenance_failure_at")):
             raise ValueError("future controller failure")
+        if "failed_in_a_row" in tick:
+            natural(tick["failed_in_a_row"])
     if kind == "backlog":
         if not isinstance(document["backlogs"], dict):
             raise ValueError("invalid backlogs")
@@ -851,6 +853,23 @@ def controller(unit, maintenance=()):
     # The controller's own failures and its maintenance units' are kept apart: one failed tick
     # waits for a second (feed_status), a maintenance failure doesn't.
     latest, controller_failure, maintenance_failure = None, 0, 0
+    # The controller's finished runs, each one's lines grouped by invocation: key -> [time, failed].
+    # A run's JSON line and systemd's failure lines for it are one run. Each JSON line ends a
+    # run; a systemd line without an invocation id joins the run that ended under a minute before.
+    runs = {}
+
+    def record(at, failed, invocation, joins=False):
+        key = invocation
+        if not key and not joins:
+            key = "at-%d" % at
+            while key in runs:
+                key += "+"
+        elif not key:
+            near = [k for k, (t, _) in runs.items() if 0 <= at - t <= TICK_FAILURE_SAME_S]
+            key = max(near, key=lambda k: runs[k][0]) if near else "at-%d" % at
+        t, was = runs.get(key, (at, False))
+        runs[key] = [max(t, at), was or failed]
+
     for line in raw.splitlines():
         entry = json.loads(line)
         if not isinstance(entry, dict):
@@ -864,6 +883,7 @@ def controller(unit, maintenance=()):
             at = int(entry["__REALTIME_TIMESTAMP"]) // 1000000
             if entry["UNIT"] == unit:
                 controller_failure = max(controller_failure, at)
+                record(at, True, entry.get("INVOCATION_ID") or entry.get("_SYSTEMD_INVOCATION_ID"), joins=True)
             else:
                 maintenance_failure = max(maintenance_failure, at)
             continue
@@ -878,8 +898,10 @@ def controller(unit, maintenance=()):
             continue
         finished = int(entry["__REALTIME_TIMESTAMP"]) // 1000000
         ok = event["event"] == "boinc_batch_tick"
+        invocation = entry.get("_SYSTEMD_INVOCATION_ID") or entry.get("INVOCATION_ID")
         if not ok:
             controller_failure = max(controller_failure, finished)
+            record(finished, True, invocation)
         timings = event.get("timings")
         if not isinstance(timings, dict):
             continue
@@ -891,9 +913,18 @@ def controller(unit, maintenance=()):
             continue
         if seconds > TICK_LIMIT_S:
             controller_failure = max(controller_failure, finished)
+        if ok:  # a failure's line was recorded above
+            record(finished, seconds > TICK_LIMIT_S, invocation)
         latest = {"ok": ok, "seconds": seconds, "finished_at": finished}
+    # Failed or slow runs since the last good one, newest first: feed_status fires on two.
+    streak = 0
+    for _, failed in sorted(runs.values(), reverse=True):
+        if not failed:
+            break
+        streak += 1
     failures = {"last_failure_at": max(controller_failure, maintenance_failure),
-                "controller_failure_at": controller_failure, "maintenance_failure_at": maintenance_failure}
+                "controller_failure_at": controller_failure, "maintenance_failure_at": maintenance_failure,
+                "failed_in_a_row": streak}
     status = dict(line.split("=", 1) for line in run([
         "systemctl", "show", unit, "-p", "LoadState", "-p", "SubState", "-p", "Result",
         "-p", "ExecMainStartTimestampMonotonic", "-p", "ExecMainExitTimestampMonotonic",
