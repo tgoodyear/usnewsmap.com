@@ -224,14 +224,16 @@ try {
   // 429, or a count off the limit) count it again from another /64 in a fresh window.
   const windowMs = normal.period * 1000;
   let statuses;
+  let burst; // the /64 of the burst that was kept
   for (let attempt = 0; ; attempt++) {
+    burst = `2001:db8:1:${(0x20 + attempt).toString(16)}:`;
     const intoWindow = Date.now() % windowMs;
     if (intoWindow > windowMs / 4) await delay(windowMs - intoWindow + 50);
     const before = origins;
     statuses = [];
     for (let n = 0; n < normal.limit + 10; n++) {
       const answer = await limitInstance.dispatchFetch("https://usnewsmap.com/v1/hits?q=gold", {
-        headers: { "cf-connecting-ip": `2001:db8:1:${(0x20 + attempt).toString(16)}::${(n % 7 + 1).toString(16)}` },
+        headers: { "cf-connecting-ip": `${burst}:${(n % 7 + 1).toString(16)}` },
       });
       statuses.push(answer.status);
       await answer.text();
@@ -245,12 +247,12 @@ try {
   assert.deepEqual(statuses.slice(normal.limit), new Array(10).fill(429));
   assert.equal(origins, normal.limit);
   const limited = await limitInstance.dispatchFetch("https://usnewsmap.com/mcp", {
-    method: "POST", headers: { "cf-connecting-ip": "2001:db8:1:2::ff" }, body: "{}",
+    method: "POST", headers: { "cf-connecting-ip": `${burst}:ff` }, body: "{}",
   });
   assert.equal(limited.status, 429);
   assert.equal(limited.headers.get("retry-after"), "10");
   assert.equal((await limited.json()).type, "/errors/rate-limited");
-  for (const [path, ip] of [["/v1/hits?q=gold", "2001:db8:1:3::1"], ["/v1/datasets", "2001:db8:1:2::1"]]) {
+  for (const [path, ip] of [["/v1/hits?q=gold", "2001:db8:1:3::1"], ["/v1/datasets", `${burst}:1`]]) {
     const other = await limitInstance.dispatchFetch(`https://usnewsmap.com${path}`, { headers: { "cf-connecting-ip": ip } });
     assert.equal(other.status, 200, path);
     await other.text();
