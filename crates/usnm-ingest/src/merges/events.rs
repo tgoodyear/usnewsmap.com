@@ -152,6 +152,16 @@ impl NodeEvents {
         e.exited = None;
     }
 
+    /// Forget the ingest v1 merge pipeline failures seen so far. A writer
+    /// stopped for a restart logs "merge pipeline failed" with every actor
+    /// unhealthy as its pipelines go down with it; those lines are the old
+    /// process ending, not a failed merge. The restarted writer's own
+    /// failures are recorded afresh.
+    pub fn clear_v1_failures(&self) {
+        let mut e = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        e.v1_failed.clear();
+    }
+
     /// Why the writer process ended, if it has.
     pub fn exit(&self) -> Option<String> {
         let e = self.0.lock().unwrap_or_else(|e| e.into_inner());
@@ -408,6 +418,12 @@ mod tests {
             "{err}"
         );
         assert!(err.contains("half-merged"), "{err}");
+        // The failure logged by a writer that was stopped for a restart is
+        // forgotten; one the restarted writer logs is not.
+        e.clear_v1_failures();
+        assert!(e.check_v1(id).is_ok());
+        e.observe(&failed(id, "_ingest-api-source"));
+        assert!(e.check_v1(id).is_err());
     }
 
     #[test]

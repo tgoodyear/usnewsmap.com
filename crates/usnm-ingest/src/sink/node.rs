@@ -573,6 +573,7 @@ impl WriterProcess {
             .context("stopping the Quickwit writer to restart it; not restarting")?;
         // The exit was asked for.
         self.events.clear_exit();
+        self.events.clear_v1_failures();
         self.spawn()?;
         self.ready().await?;
         tracing::info!(pid = self.pid(), "the Quickwit writer restarted");
