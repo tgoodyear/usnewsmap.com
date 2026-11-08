@@ -1,4 +1,4 @@
-// check.usnewsmap.com (README.md). deploy.sh is how it is deployed.
+// check.usnewsmap.com (README.md). CI deploys it with deploy.sh.
 {
   "name": "usnm-check",
   "main": "worker.mjs",
