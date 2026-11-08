@@ -172,7 +172,7 @@ test("sitemap searches remain readable when an extension blocks scripts", async 
   await page.goto("/examples/cross-of-gold");
   const landing = page.locator("#search-landing");
   await expect(landing).toBeVisible();
-  await expect(landing.getByRole("heading", { level: 1 })).toHaveText("Cross of Gold, 1896");
+  await expect(landing.getByRole("heading", { level: 1 })).toHaveText("Cross of Gold, 1896, in American newspapers");
   await expect(landing.getByRole("region", { name: "Sample results" }).locator("ol > li")).toHaveCount(10);
 });
 
@@ -186,7 +186,7 @@ test("sitemap searches remain readable with JavaScript enabled and API access bl
   await page.goto("/examples/cross-of-gold");
   const landing = page.locator("#search-landing");
   const samples = landing.getByRole("region", { name: "Sample results" });
-  await expect(landing.getByRole("heading", { level: 1 })).toHaveText("Cross of Gold, 1896");
+  await expect(landing.getByRole("heading", { level: 1 })).toHaveText("Cross of Gold, 1896, in American newspapers");
   await expect(samples).toBeVisible();
   await expect(samples.locator("ol > li")).toHaveCount(10);
   await expect(samples).toContainText("1896-07-18");
@@ -448,7 +448,7 @@ test.describe("what the API tells crawlers", () => {
     for (let load = 0; load < 2; load++) {
       await expect(page.getByRole("searchbox", { name: "Word or phrase" })).toHaveValue('"cross of gold"');
       await expect(page).toHaveURL(/\/examples\/cross-of-gold(?:\?|$)/);
-      await expect(page).toHaveTitle("Cross of Gold, 1896 · US News Map");
+      await expect(page).toHaveTitle("Cross of Gold, 1896, in American newspapers · US News Map");
       await expect(page.locator('link[rel="canonical"]')).toHaveAttribute("href", `${SITE}${path}`);
       await expect.poll(() => searches.length).toBeGreaterThan(0);
       for (const url of searches) {
