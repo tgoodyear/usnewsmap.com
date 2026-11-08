@@ -61,11 +61,15 @@ h2 { font-size: 1rem; margin: 8px 0 0; }
    a joined script (Arabic) would need it off. */
 .script { font-family: var(--font-script); font-size: 2rem; line-height: 1.2; letter-spacing: .18em; overflow-wrap: anywhere; }
 .script[dir="rtl"], .examples[dir="rtl"] { text-align: right; }
-/* A highlighted letter gets a box of exactly one letter-advance: the glyph plus half its spacing on each side, with the
-   spacing it would normally trail turned off. No negative margins: in a right-to-left line a digit or bracket is a
-   left-to-right run whose spacing trails on the other side, so there is no gap to borrow and a pulled-back box
-   lands on the neighbouring glyph. */
-.script mark { background: var(--mark); color: var(--mark-ink); border-radius: 3px; letter-spacing: 0; padding: 0 .09em; margin: 0 .09em; }
+/* A highlighted letter keeps the advance it has unmarked: its spacing moves inside the box as padding (half each side), so
+   highlighting never changes the width of a word or where it wraps. No negative margins: in a right-to-left line a digit or
+   bracket is a left-to-right run whose spacing trails on the other side, so there is no gap to borrow and a pulled-back box
+   lands on the neighbouring glyph. Letters in an unspaced run (.tight: none after; .tight-before: none before) get no padding on those sides, and the
+   spacing they would have lost stays outside the box as margin, so the run is as tight as unmarked. */
+.script mark { background: var(--mark); color: var(--mark-ink); border-radius: 3px; letter-spacing: 0; padding: 0 .09em; margin: 0; }
+.script mark.tight { padding: 0; }
+.script mark.tight-before { padding-inline-start: 0; margin-inline-end: .09em; }
+.script mark.tight-before.tight { margin: 0; }
 /* Letters a language counts as one (וו for װ) keep no gap between them, so equal spellings look equal. */
 .script .tight { letter-spacing: 0; }
 .script .gap { display: inline-block; width: .6em; border-bottom: 3px solid var(--mark); margin: 0 1px; }

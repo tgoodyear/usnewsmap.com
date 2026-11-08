@@ -105,6 +105,14 @@ function check(code, text, diff) {
       if (w > 0.5 && h > 0.5) found.push({ code, text, diff, overlap: +w.toFixed(2) });
     }
   }
+  // highlighting only paints: the word must be exactly as wide as unmarked, so spacing stays even, unspaced runs stay
+  // unspaced and nothing wraps earlier (a pair split across the box loses its kerning: ~1px)
+  const plain = scriptText(text, []);
+  stage.replaceChildren(plain);
+  const base = plain.getBoundingClientRect().width;
+  stage.replaceChildren(el);
+  const wide = el.getBoundingClientRect().width;
+  if (Math.abs(wide - base) > 1.5) found.push({ code, text, diff, overlap: "width " + base.toFixed(2) + " -> " + wide.toFixed(2) });
   // the highlight must also not sit over another highlight or run outside the line
   for (let i = 0; i < marks.length; i++) for (let j = i + 1; j < marks.length; j++) {
     const a = marks[i].getBoundingClientRect(), b = marks[j].getBoundingClientRect();

@@ -119,6 +119,7 @@ function scriptText(text, diff) {
     else if (tight.has(i)) { el = document.createElement("span"); el.textContent = ch; }
     else { span.appendChild(document.createTextNode(ch)); return; }
     if (tight.has(i)) el.classList.add("tight");
+    if (marked.has(i) && i > 0 && tight.has(i - 1)) el.classList.add("tight-before");
     span.appendChild(el);
   });
   return span;
