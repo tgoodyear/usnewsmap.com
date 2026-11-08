@@ -83,7 +83,7 @@ fn patterns(query: &Node) -> Vec<Pattern> {
         // A fraction read with a slash is marked as a whole, as the phrase it
         // is (`611/2` for `61½`, #1067).
         out.extend(
-            usnm_core::fractions::slash_phrases(node)
+            usnm_core::query::also_phrases(node)
                 .into_iter()
                 .map(Pattern::Phrase),
         );

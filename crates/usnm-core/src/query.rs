@@ -597,6 +597,19 @@ impl Parser {
     }
 }
 
+/// The phrases a search for a term or phrase also looks for, besides the
+/// leaf itself, in an `OR` with it: a number and a fraction glyph as OCR
+/// reads them with a slash ([`crate::fractions::slash_phrases`], #1067), and
+/// a Cherokee word as OCR misreads the first Cherokee type
+/// ([`crate::cherokee_type::query_phrases`], #1620). Done when a search is
+/// run, so a version needs no rebuild; the engine, the memory backend and
+/// the snippets all read a query this way.
+pub fn also_phrases(node: &Node) -> Vec<Vec<String>> {
+    let mut out = crate::fractions::slash_phrases(node);
+    out.extend(crate::cherokee_type::query_phrases(node));
+    out
+}
+
 const AT_LEAST_ITEMS: &str =
     "N OF (...) takes words and phrases, without operators, groups or punctuation splitting them";
 
