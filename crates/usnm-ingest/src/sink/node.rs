@@ -343,7 +343,16 @@ fn supervise(
             }
         };
         for r in readers.iter_mut() {
-            let _ = tokio::time::timeout(Duration::from_secs(2), r).await;
+            if tokio::time::timeout(Duration::from_secs(2), &mut *r)
+                .await
+                .is_err()
+            {
+                // Dropping the handle would leave the reader running: a late
+                // line from this process must not reach `events` once the
+                // supervisor is done (`restart` clears the failures then).
+                r.abort();
+                let _ = r.await;
+            }
         }
         let mut why = match status {
             Ok(s) => describe_exit(s, progress::cgroup_memory()),
@@ -573,6 +582,7 @@ impl WriterProcess {
             .context("stopping the Quickwit writer to restart it; not restarting")?;
         // The exit was asked for.
         self.events.clear_exit();
+        self.events.clear_v1_failures();
         self.spawn()?;
         self.ready().await?;
         tracing::info!(pid = self.pid(), "the Quickwit writer restarted");

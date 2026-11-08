@@ -333,8 +333,14 @@ async fn visit_examples(state: &Arc<AppState>, backend: &Counting, version: &str
 }
 
 fn persisted(dir: &Path, version: &str) -> usize {
+    // `LocalStore` writes `.tmp-*` files beside the final one and renames or
+    // links them into place; a write in flight must not count as persisted.
     std::fs::read_dir(dir.join(version).join("f8"))
-        .map(|d| d.count())
+        .map(|d| {
+            d.filter_map(Result::ok)
+                .filter(|e| !e.file_name().to_string_lossy().starts_with(".tmp-"))
+                .count()
+        })
         .unwrap_or(0)
 }
 

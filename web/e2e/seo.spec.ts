@@ -146,10 +146,21 @@ test("curated searches expose top-city results and homepage links without JavaSc
     await expect(samples).toContainText("1896-07-18");
     const map = page.getByRole("img", { name: "Map and timeline of newspaper matches for Cross of Gold, 1896" });
     await expect(map).toBeVisible();
+    // The image is lazy and the page has no script: the browser fetches it only near the
+    // viewport, and `toBeVisible` does not scroll. A fetch that failed (the API renders the
+    // map on demand) stays complete with no width, so ask for it again rather than wait on it.
+    await map.scrollIntoViewIfNeeded();
     await expect
-      .poll(() => map.evaluate((image: HTMLImageElement) => image.complete && image.naturalWidth === 1200), {
-        timeout: 50_000,
-      })
+      .poll(
+        () =>
+          map.evaluate((image: HTMLImageElement) => {
+            if (image.complete && image.naturalWidth === 1200) return true;
+            // Same URL: the endpoint rejects parameters it does not know.
+            if (image.complete) image.src = image.getAttribute("src") ?? "";
+            return false;
+          }),
+        { timeout: 50_000, intervals: [500, 1_000, 2_000, 5_000] },
+      )
       .toBe(true);
   } finally {
     await context.close();
