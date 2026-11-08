@@ -93,14 +93,29 @@ function letters(text) {
 
 function flip(id) { let h = 0; for (const c of id) h = (h * 31 + c.codePointAt(0)) >>> 0; return (h & 1) === 1; }
 
+// Indexes of letters followed by no space. Where a language counts spellings as the same letter (װ and וו),
+// a run of the letters those spellings use (ו, י, װ, ױ, ײ…) is set with no gaps inside it, so equal spellings
+// look alike however their letters pair up (יײ and ייי). Highlights keep the original letter indexes.
+function tightAfter(ls) {
+  const set = new Set();
+  for (const [k, v] of Object.entries(cfg.equivalents || {})) { set.add(k); for (const ch of letters(v)) set.add(ch); }
+  const out = new Set();
+  for (let i = 0; i + 1 < ls.length; i++) if (set.has(ls[i]) && set.has(ls[i + 1])) out.add(i);
+  return out;
+}
+
 function scriptText(text, diff) {
   const span = document.createElement("span"); span.className = "script"; span.lang = lang;
   if (cfg.dir) span.dir = cfg.dir;
-  const marked = new Set(diff), ls = letters(text);
+  const marked = new Set(diff), ls = letters(text), tight = tightAfter(ls);
   if (!ls.length) { const g = document.createElement("span"); g.className = "gap"; g.title = "nothing printed here"; span.appendChild(g); return span; }
   ls.forEach((ch, i) => {
-    if (marked.has(i)) { const m = document.createElement("mark"); m.textContent = ch; span.appendChild(m); }
-    else span.appendChild(document.createTextNode(ch));
+    let el;
+    if (marked.has(i)) { el = document.createElement("mark"); el.textContent = ch; }
+    else if (tight.has(i)) { el = document.createElement("span"); el.textContent = ch; }
+    else { span.appendChild(document.createTextNode(ch)); return; }
+    if (tight.has(i)) el.className = "tight";
+    span.appendChild(el);
   });
   return span;
 }

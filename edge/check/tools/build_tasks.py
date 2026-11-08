@@ -26,7 +26,7 @@ import json
 import os
 import unicodedata
 
-BUILD_ONLY = ("drop_examples", "min_examples", "equivalents")
+BUILD_ONLY = ("drop_examples", "min_examples")
 BIDI_CONTROLS = dict.fromkeys(map(ord, "\u200e\u200f\u061c\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069"))
 
 
@@ -219,6 +219,11 @@ def main() -> None:
 
     language = {k: v for k, v in cfg.items() if k not in BUILD_ONLY}
     language.setdefault("examples", {})
+    # The page sets these spellings with no gap inside, so it gets the mapping the comparison used,
+    # --equivalent additions included.
+    language.pop("equivalents", None)
+    if equivalents:
+        language["equivalents"] = {k: "".join(v) for k, v in sorted(equivalents.items())}
     with open(os.path.join(a.out_dir, "language.json"), "w", encoding="utf-8") as f:
         json.dump(language, f, ensure_ascii=False, indent=1)
     print(f"{lines} lines, {tasks} tasks, {unpaired} words of reading a left out (no partner alike enough, or no letters)")
