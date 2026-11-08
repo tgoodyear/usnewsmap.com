@@ -59,7 +59,13 @@ test("a missing, a moved and an extra route are drift", () => {
 });
 
 test("a missing or extra custom domain is drift", () => {
-  const s = live((x) => ({ ...x, domains: [{ hostname: "drill.usnewsmap.com", service: "usnm-fallback" }] }));
+  const s = live((x) => ({
+    ...x,
+    domains: [
+      ...x.domains.filter((d) => d.hostname !== "healthcheck.usnewsmap.com"),
+      { hostname: "drill.usnewsmap.com", service: "usnm-fallback" },
+    ],
+  }));
   assert.deepEqual(compare(expected, s), [
     "custom domain healthcheck.usnewsmap.com: expected usnm-fallback, found nothing",
     "custom domain drill.usnewsmap.com: not in zone-expected.json",
