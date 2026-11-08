@@ -37,11 +37,11 @@ function native_qwen_general_xml($xml, $plan_class = "amd_vulkan_8b") {
     $markers = $xpath->query("comment()[normalize-space(.)='$marker']", $node);
     $low = $xpath->query("min_wu_id", $node);
     $high = $xpath->query("max_wu_id", $node);
-    if ($markers->length === 1 && $low->length === 0 && $high->length === 0) return $xml;
     if ($plan_class === "intel_vulkan_8b"
         && !in_array("nvidia_vulkan_8b", native_qwen_general_admitted($xml), true)) {
         throw new RuntimeException("Intel general admission needs NVIDIA general admission first");
     }
+    if ($markers->length === 1 && $low->length === 0 && $high->length === 0) return $xml;
     if ($markers->length !== 0 || $low->length !== 1 || $high->length !== 1
         || !preg_match('/^[1-9][0-9]*$/D', $low->item(0)->nodeValue)
         || !preg_match('/^[1-9][0-9]*$/D', $high->item(0)->nodeValue)
