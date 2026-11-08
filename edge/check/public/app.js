@@ -115,10 +115,11 @@ function scriptText(text, diff) {
   if (!ls.length) { const g = document.createElement("span"); g.className = "gap"; g.title = "nothing printed here"; span.appendChild(g); return span; }
   ls.forEach((ch, i) => {
     let el;
-    if (marked.has(i)) { el = document.createElement("mark"); el.textContent = ch; if (i === 0) el.classList.add("first"); }
+    if (marked.has(i)) { el = document.createElement("mark"); el.textContent = ch; }
     else if (tight.has(i)) { el = document.createElement("span"); el.textContent = ch; }
     else { span.appendChild(document.createTextNode(ch)); return; }
     if (tight.has(i)) el.classList.add("tight");
+    if (marked.has(i) && i > 0 && tight.has(i - 1)) el.classList.add("tight-before");
     span.appendChild(el);
   });
   return span;

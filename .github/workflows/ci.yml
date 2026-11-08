@@ -409,7 +409,7 @@ jobs:
         env:
           WRANGLER_SEND_METRICS: "false"
       - run: shellcheck -x -S warning edge/fallback-worker/deploy.sh edge/fallback-worker/drift.sh
-      - run: node --test edge/check/worker.test.mjs
+      - run: node --test edge/check/worker.test.mjs edge/check/layout.test.mjs
       - run: shellcheck -x -S warning edge/check/load.sh edge/check/set-secrets.sh edge/check/backup/backup.sh edge/check/deploy.sh
       - run: python3 -m py_compile edge/check/tools/from_tap_data.py edge/check/tools/yiddish_lines.py
       - run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends python3-pil
