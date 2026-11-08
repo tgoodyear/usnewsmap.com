@@ -4,6 +4,7 @@
 - **Date:** 2026-09
 - **Supersedes:** the $500/month ceiling originally set in ADR-0005
 - **Amended by:** [ADR-0027](0027-onprem-serving-behind-cloudflare.md) (the availability trade-off: the 99.0% target's SLI comes from the availability test and the count of fallback answers, since one host doesn't restart in seconds)
+- **Current state (November 2026):** the single container app is no longer the origin. Public traffic is served on-prem behind Cloudflare, and the Azure app is a cold spare at zero replicas ([ADR-0029](0029-onprem-primary-azure-failover.md)).
 
 ## Context
 

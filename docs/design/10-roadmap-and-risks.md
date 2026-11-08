@@ -1,5 +1,7 @@
 # 10: Roadmap, Risks & Open Questions
 
+**Status:** the roadmap and risk register as written for the Azure design. Risks tied to Container Apps jobs and ACI Spot (R-12, R-14, R-16) no longer apply to prod, which has no ingest jobs; serving moved on-prem on 31 October 2026 ([03 §3.3](03-architecture-overview.md#33-deployment-today-november-2026)).
+
 ## 10.1 Phased delivery
 
 ```mermaid

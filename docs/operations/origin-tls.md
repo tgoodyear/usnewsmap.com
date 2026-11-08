@@ -1,8 +1,12 @@
 # Production origin TLS
 
-The apex, `www` and `api` use one public Let's Encrypt DNS-01 certificate in
-`cae-usnm-prod`, named `usnm-public-dns01`. Its resource ID is stable across
-renewal. Cloudflare must use **Full (strict)**. DNS-01 works with proxied DNS;
+The apex, `www` and `api` have one public Let's Encrypt DNS-01 certificate,
+`usnm-public-dns01`. The weekly `origin-tls` workflow renews it in Key Vault.
+Since #308 it isn't uploaded to Azure (`AZURE_UPLOAD` in
+`scripts/azure/origin_tls.py`), because on-prem serves through the Cloudflare
+Tunnel and the spare is reached by its default hostname; the
+[spare runbook](search-serving.md#the-spares-environment-without-a-vnet) has the steps to bind the domains to Azure
+again. When it is bound, its resource ID is stable across renewal. Cloudflare must use **Full (strict)**. DNS-01 works with proxied DNS;
 Azure managed-certificate direct-DNS renewal does not. Keep `letsencrypt.org`
 authorized in the zone's CAA records (retain DigiCert until migration completes).
 
