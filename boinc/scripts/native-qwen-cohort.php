@@ -128,7 +128,14 @@ function native_qwen_cohort_xml($xml, $plan_class, $workunit_id, $last_id = null
                 : ($tag === "min_wu_id" ? 2 : 1);
         }
     }
-    return $doc->saveXML();
+    $out = $doc->saveXML();
+    // Intel's general admission rides on NVIDIA's: a window that ends NVIDIA's alone would leave
+    // a policy every later tick rejects, so it must close or narrow Intel's too (#1645).
+    $admitted = native_qwen_general_admitted($out);
+    if (in_array("intel_vulkan_8b", $admitted, true) && !in_array("nvidia_vulkan_8b", $admitted, true)) {
+        throw new RuntimeException("Intel general admission needs NVIDIA's: open a shared_8b window or --stop instead");
+    }
+    return $out;
 }
 
 // Whether every class in this operation's scope, other than the ones it opens, is closed

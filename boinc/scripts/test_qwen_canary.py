@@ -198,6 +198,12 @@ class PlanPolicyRefresh(unittest.TestCase):
         node = ET.parse(self.target).find("plan_class[name='intel_vulkan_8b']")
         self.assertIsNone(node.find("min_wu_id"))
         self.assertIsNone(node.find("max_wu_id"))
+        # An NVIDIA-only window would end NVIDIA's admission under Intel's, so it is refused.
+        code = ("$_SERVER['SCRIPT_FILENAME'] = ''; require " + json.dumps(str(helper)) + "; "
+                "native_qwen_cohort_xml(" + json.dumps(self.target.read_text()) + ", 'nvidia_vulkan_8b', 17300);")
+        narrowed = subprocess.run(["php", "-r", code], text=True, capture_output=True)
+        self.assertNotEqual(narrowed.returncode, 0)
+        self.assertIn("Intel general admission needs NVIDIA's", narrowed.stderr + narrowed.stdout)
         # A restart keeps both; --stop --keep-general keeps both; --stop closes both.
         POLICY.refresh(self.source, self.target)
         self.assertFalse(POLICY.refresh(self.source, self.target))
