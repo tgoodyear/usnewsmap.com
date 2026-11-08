@@ -336,32 +336,45 @@ fn shell_for(path: &str, query: &str, index: Vec<u8>) -> Vec<u8> {
     };
     head::apply(&mut html, &head);
     head::set_meta(&mut html, "property", "og:url", &canonical);
-    let mut html = html.replacen(
+    let html = html.replacen(
         r#"<link rel="canonical" href="https://usnewsmap.com/" />"#,
         &format!(r#"<link rel="canonical" href="{canonical}" />"#),
         1,
     );
-    if example.is_some() {
-        html = html.replacen(
-            r#"<main class="empty">"#,
-            &format!(
-                r#"<main class="empty"><h1>{}</h1><p>{}</p>"#,
-                escape_html(head.title.trim_end_matches(head::SUFFIX)),
-                escape_html(&head.description)
-            ),
-            1,
-        );
+    let heading = if example.is_some() {
+        format!(
+            "<h1>{}</h1><p>{}</p>",
+            escape_html(head.title.trim_end_matches(head::SUFFIX)),
+            escape_html(&head.description)
+        )
     } else if let Some(q) = search {
-        html = html.replacen(
+        format!("<h1>Newspaper results for {}</h1>", escape_html(&q))
+    } else {
+        // A fixed page (privacy, datasets, credits) is named by its title.
+        format!(
+            "<h1>{}</h1>",
+            escape_html(head.title.trim_end_matches(head::SUFFIX))
+        )
+    };
+    set_heading(html, &heading).into_bytes()
+}
+
+/// The home page's heading in `index.html`'s static content, which crawlers read
+/// before (or without) the app. Another page swaps it for its own.
+const HOME_H1: &str = "<h1>Where and when did America's newspapers print it?</h1>";
+
+/// Puts `heading` where `index.html`'s home heading is, or at the top of its
+/// static `<main>` when it has none, so each page has exactly one `<h1>`.
+fn set_heading(html: String, heading: &str) -> String {
+    if html.contains(HOME_H1) {
+        html.replacen(HOME_H1, heading, 1)
+    } else {
+        html.replacen(
             r#"<main class="empty">"#,
-            &format!(
-                r#"<main class="empty"><h1>Newspaper results for {}</h1>"#,
-                escape_html(&q)
-            ),
+            &format!(r#"<main class="empty">{heading}"#),
             1,
-        );
+        )
     }
-    html.into_bytes()
 }
 
 fn escape_html(text: &str) -> String {
@@ -1146,6 +1159,39 @@ mod tests {
         assert!(privacy
             .contains(r#"<meta property="og:url" content="https://usnewsmap.com/privacy" />"#));
         assert!(!privacy.contains(r#"href="https://usnewsmap.com/" />"#));
+    }
+
+    #[test]
+    fn every_shell_has_exactly_one_h1() {
+        let index = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../web/index.html"),
+        )
+        .unwrap();
+        assert_eq!(
+            index.matches(HOME_H1).count(),
+            1,
+            "index.html's home heading"
+        );
+        for (path, h1) in [
+            ("/", HOME_H1.to_owned()),
+            ("/privacy", "<h1>Privacy and data handling</h1>".to_owned()),
+            (
+                "/datasets",
+                "<h1>Dataset details and index status</h1>".to_owned(),
+            ),
+            (
+                "/credits",
+                "<h1>OCR engine and model credits</h1>".to_owned(),
+            ),
+            (
+                &search_path("whigs"),
+                "<h1>Newspaper results for whigs</h1>".to_owned(),
+            ),
+        ] {
+            let html = String::from_utf8(shell_for(path, "", index.clone().into_bytes())).unwrap();
+            assert_eq!(html.matches("<h1").count(), 1, "{path}");
+            assert!(html.contains(&h1), "{path}");
+        }
     }
 
     #[test]
