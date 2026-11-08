@@ -74,7 +74,8 @@ def main() -> None:
 
     from PIL import Image
 
-    Image.MAX_IMAGE_PIXELS = None
+    # The largest scan in the first set is 43 million pixels; allow well above that, not unlimited.
+    Image.MAX_IMAGE_PIXELS = 200_000_000
     os.makedirs(os.path.join(a.work, "lines"), exist_ok=True)
     n = 0
     with open(a.pages, encoding="utf-8") as pages, open(os.path.join(a.work, "lines.jsonl"), "w", encoding="utf-8") as out:
@@ -100,11 +101,11 @@ def main() -> None:
                 print(f"{doc}: no Serbian lines to check", flush=True)
                 continue
             local = os.path.join(a.scans, p["scan"]) if a.scans and p.get("scan") else None
-            if local and os.path.exists(local):
-                scan = Image.open(local).convert("L")
-            else:
-                fetch(iiif_full(tile), os.path.join(a.work, "loc", doc + ".jpg"), a.delay)
-                scan = Image.open(os.path.join(a.work, "loc", doc + ".jpg")).convert("L")
+            if not (local and os.path.exists(local)):
+                local = os.path.join(a.work, "loc", doc + ".jpg")
+                fetch(iiif_full(tile), local, a.delay)
+            with Image.open(local) as im:
+                scan = im.convert("L")
             kx, ky = scan.width / aw, scan.height / ah
             date, seq = page.split("/")[1], int(page.split("seq-")[1])
             for li, b in chosen:

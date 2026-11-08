@@ -53,7 +53,8 @@ class Lines(unittest.TestCase):
     def test_our_words_scale_to_loc_units(self):
         with tempfile.TemporaryDirectory() as tmp:
             ours = os.path.join(tmp, "ours.xml")
-            open(ours, "w", encoding="utf-8").write(alto(2000, 4000, [((0, 0, 400, 40), [("Стубенвил", (100, 20, 200, 40))])]))
+            with open(ours, "w", encoding="utf-8") as f:
+                f.write(alto(2000, 4000, [((0, 0, 400, 40), [("Стубенвил", (100, 20, 200, 40))])]))
             ow, oh, lines = sl.alto_lines(ours)
             words = sl.scaled_words(lines, 1000 / ow, 2000 / oh)
         self.assertEqual(words, [{"text": "Стубенвил", "box": [50.0, 10.0, 100.0, 20.0]}])
@@ -61,7 +62,8 @@ class Lines(unittest.TestCase):
 
 class Config(unittest.TestCase):
     def test_latin_lookalikes_compare_equal_to_cyrillic(self):
-        config = json.load(open(os.path.join(HERE, "..", "languages", "sr.json"), encoding="utf-8"))
+        with open(os.path.join(HERE, "..", "languages", "sr.json"), encoding="utf-8") as f:
+            config = json.load(f)
         eq = {k: list(v) for k, v in config["equivalents"].items()}
         for k, v in config["equivalents"].items():
             self.assertEqual(len(v), 1, k)
