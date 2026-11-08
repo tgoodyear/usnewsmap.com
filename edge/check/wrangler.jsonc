@@ -1,4 +1,4 @@
-// check.usnewsmap.com (README.md). CI deploys it: scripts/ci/deploy-check-site.sh.
+// check.usnewsmap.com (README.md). CI deploys it with deploy.sh.
 {
   "name": "usnm-check",
   "main": "worker.mjs",

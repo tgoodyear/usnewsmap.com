@@ -115,7 +115,7 @@ The files go from the build host straight to the Worker; only the admin token pa
 
 ## Deploying
 
-CI deploys the site: after `ci` passes on main, `.github/workflows/check-site-deploy.yml` runs `scripts/ci/deploy-check-site.sh`, which deploys when `edge/check` differs from what is live. The site serves `/build.txt`, the git tree hash of `edge/check` it was built from, so `curl https://check.usnewsmap.com/build.txt` against `git rev-parse origin/main:edge/check` shows whether main is live. To deploy again without a change, run the workflow by hand with "force". The script also runs from a clean checkout with `az` signed in to the vault (`scripts/ci/deploy-check-site.sh --force`).
+CI deploys the site: after `ci` passes on main, `.github/workflows/check-site-deploy.yml` runs `edge/check/deploy.sh`, which deploys when `edge/check` differs from what is live. The site serves `/build.txt`, the git tree hash of `edge/check` it was built from, so `curl https://check.usnewsmap.com/build.txt` against `git rev-parse origin/main:edge/check` shows whether main is live. To deploy again without a change, run the workflow by hand with "force". The script also runs from a clean checkout with `az` signed in to the vault (`edge/check/deploy.sh --force`).
 
 Changes to an existing database are in `migrations/`, run once in order: `0001-answers-notext.sql` must run before a page with "Not text" is deployed. The D1 schema is applied with `wrangler d1 execute usnm-check --remote --file schema.sql`, or through the D1 API; every statement is idempotent.
 

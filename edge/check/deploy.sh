@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Deploys check.usnewsmap.com (edge/check) when its files differ from what is live.
 #
-#   scripts/ci/deploy-check-site.sh [--vault usnmtlskvprodffapzy] [--force]
+#   edge/check/deploy.sh [--vault usnmtlskvprodffapzy] [--force]
 #
 # The deployed site serves /build.txt: the git tree hash of edge/check it was built from. A
 # run whose tree matches it does nothing, so main's other merges don't make new Worker
@@ -10,7 +10,7 @@
 # commit's run compares its own tree and deploys any check change an older run skipped.
 # Needs az signed in with read access to the vault's secrets, git, node and curl. Secrets
 # (SESSION_KEY, ADMIN_TOKEN, TURNSTILE_SECRET) and D1 migrations are not touched here: see
-# edge/check/README.md.
+# README.md. Like edge/fallback-worker/deploy.sh, it lives with the Worker it deploys.
 set -euo pipefail
 die() { echo "error: $*" >&2; exit 1; }
 VAULT=usnmtlskvprodffapzy FORCE=false
