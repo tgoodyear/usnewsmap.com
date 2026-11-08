@@ -164,7 +164,7 @@ the real JPEG and geometry were fetched once beforehand at normal pace.
 
 ## Japanese OCR: mixed pages and English text
 
-**Mixed pages** (#204, 04 §4.8). The OCR job's targets (`targets-v3`) include the Japanese titles' pages whose LoC text is from 0.35 to under 0.65 word-like (`loc_text = mixed`, about 2,000 pages). List them once on the one-replica job, then start the OCR job as usual. In prod the OCR job is off (`USNM_JA_OCR_JOB` is `false`) and the OCR runs on-prem instead ([The Japanese OCR on-prem](#the-japanese-ocr-on-prem)); the commands below apply where the Azure job exists:
+**Mixed pages** (#204, 04 §4.8). The OCR job's targets (`targets-v3`) include the Japanese titles' pages whose LoC text is from 0.35 to under 0.65 word-like (`loc_text = mixed`, about 2,000 pages). List them once on the one-replica job, then start the OCR job as usual. In prod the OCR job is off (`USNM_JA_OCR_JOB` is `false`) and the OCR runs on-prem instead, on the [native batch host](#native-batch-host-runtime); the commands below apply where the Azure job exists:
 
 ```sh
 RG=$(scripts/azure/settings.sh --env prod --key AZURE_RESOURCE_GROUP)
