@@ -41,9 +41,11 @@ EXTRA_LANGUAGES = ()
 REQUEST_MIN_APP = {1: 0, 2: 115, 3: 117, 4: 117}
 # Classes this controller does not open: with no workunit bounds they take any unsent replica.
 # nvidia_vulkan_8b is one only while generally admitted; bounded, it has min_wu_id.
-UNBOUNDED_READERS = ("amd_vulkan_8b", "apple_gpu_8b", "nvidia_vulkan_8b")
+UNBOUNDED_READERS = ("amd_vulkan_8b", "apple_gpu_8b", "nvidia_vulkan_8b", "intel_vulkan_8b")
 # The helper's explicit marker: NVIDIA takes any Qwen work and this controller refills Intel alone.
 NVIDIA_GENERAL_MARKER = "usnm-nvidia-general-admission-v1"
+# With Intel's marker too (the helper requires NVIDIA's first), this controller owns no window.
+INTEL_GENERAL_MARKER = "usnm-intel-general-admission-v1"
 DEFAULT_CAMPAIGN = "qwen-nonenglish-v1"
 
 
@@ -64,6 +66,13 @@ def policy_window(payload):
     if general:
         require(len(general) == 1 and nvidia.find("min_wu_id") is None and nvidia.find("max_wu_id") is None,
                 "Invalid explicit NVIDIA general admission")
+    intel = classes["intel_vulkan_8b"]
+    intel_general = [child for child in intel if child.tag is ET.Comment
+                     and (child.text or "").strip() == INTEL_GENERAL_MARKER]
+    if intel_general:
+        require(general and len(intel_general) == 1 and intel.find("min_wu_id") is None
+                and intel.find("max_wu_id") is None, "Invalid explicit Intel general admission")
+        return None, None, ()
     owned = ("intel_vulkan_8b",) if general else CLASSES
     ranges = []
     for name in owned:
@@ -499,6 +508,10 @@ def run(args):
     require(not policy_path.is_symlink(), "Symlinked policy")
     policy = policy_path.read_bytes()
     window, reserved, owned = policy_window(policy)
+    if not owned:
+        # Every class this controller refills takes any Qwen work: there is no window to own.
+        return {"status": "no-owned-window", "nvidia_general_admission": True,
+                "intel_general_admission": True, "apply": args.apply}
     nvidia_general = owned != CLASSES
     # A generally admitted NVIDIA host fills its own queue: only Intel's window is refilled here.
     hosts = (args.intel_host,) if nvidia_general else (args.intel_host, args.nvidia_host)

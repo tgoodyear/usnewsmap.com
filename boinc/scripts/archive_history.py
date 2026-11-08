@@ -80,6 +80,10 @@ UNIT = "usnm-boinc-priority-controller"
 FREE_LEASE_STATES = ("available", "expired", "broken")
 # The bridge steps' locks on the BOINC host (boinc/scripts/onprem-step.sh).
 DEFAULT_BRIDGE_LOCKS = ("/run/usnm-boinc-step.lock", "/run/usnm-boinc-handoff.lock")
+# Other steps (the quality feed's collector and submit, a controller tick) hold the bridge locks
+# for minutes; the bridge step waits this long for them (#835), well inside its 60-minute step.
+DEFAULT_BRIDGE_LOCK_WAIT_MINS = 30
+LOCK_RETRY_SECS = 5
 SPOOL_FILE = re.compile(
     r"usnm_([0-9a-f]{64})(__file_(result\.json|text\.txt|layout\.xml)|_error|_no_output_files)")
 BUNDLE_SPOOL_FILE = re.compile(
@@ -181,22 +185,45 @@ def progress(message):
 
 
 @contextlib.contextmanager
-def flocked(paths, existing=()):
+def flocked(paths, existing=(), wait_secs=0):
     """Holds a non-blocking exclusive flock on every path: a running holder makes this refuse.
+    With wait_secs, a held lock is tried again every few seconds until then. A try that finds a
+    lock held lets go of the ones it took, so between tries a waiting step holds none of them.
     Every holder creates its lock file as it takes it, so a missing one is created, except one
     in `existing`: its absence means the path isn't the one its holder uses."""
-    with contextlib.ExitStack() as stack:
-        for path in paths:
-            require(path.parent.is_dir(), f"{path.parent} is missing: is {path} the right lock?")
-            require(path not in existing or path.is_file(),
-                    f"{path} is missing: its holder would have created it; is the path right?")
-            handle = stack.enter_context(open(path, "a"))
-            try:
-                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                raise Refused(f"{path} is locked: a controller tick or bridge step is running") from None
-            stack.callback(fcntl.flock, handle, fcntl.LOCK_UN)
-        yield
+    deadline = time.monotonic() + wait_secs
+    waited_before = False
+    while True:
+        with contextlib.ExitStack() as stack:
+            busy = None
+            for path in paths:
+                require(path.parent.is_dir(), f"{path.parent} is missing: is {path} the right lock?")
+                require(path not in existing or path.is_file(),
+                        f"{path} is missing: its holder would have created it; is the path right?")
+                handle = stack.enter_context(open(path, "a"))
+                try:
+                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    busy = path
+                    break
+                stack.callback(fcntl.flock, handle, fcntl.LOCK_UN)
+            if busy is None:
+                yield
+                return
+        if time.monotonic() >= deadline:
+            raise Refused(f"{busy} is locked: a controller tick or bridge step is running")
+        if not waited_before:
+            progress(f"{busy} is locked; waiting up to {wait_secs / 60:g} minutes")
+            waited_before = True
+        time.sleep(min(LOCK_RETRY_SECS, max(0.0, deadline - time.monotonic())))
+
+
+def minutes(text):
+    """argparse type: a whole number of minutes, zero or more."""
+    value = int(text)
+    if value < 0:
+        raise argparse.ArgumentTypeError(f"{text} is negative")
+    return value
 
 
 def unit_state(unit):
@@ -1169,7 +1196,7 @@ def bridge(args):
     require_apply(args)
     locks = [Path(path) for path in (args.lock_file or DEFAULT_BRIDGE_LOCKS)] + [handoff_dir / ".lock"]
     # /run is emptied at boot, but the bridge has created its state directory's lock.
-    with flocked(locks, existing=[handoff_dir / ".lock"]):
+    with flocked(locks, existing=[handoff_dir / ".lock"], wait_secs=args.lock_wait_mins * 60):
         if plan_path.is_file():
             plan = planned()
             progress(f"resuming bridge step of batch {batch.name}")
@@ -1493,6 +1520,9 @@ def main(argv=None):
     two.add_argument("--results", type=Path, required=True, help="the BOINC project's results directory")
     two.add_argument("--lock-file", action="append",
                      help=f"a bridge step lock to hold (default: {', '.join(DEFAULT_BRIDGE_LOCKS)})")
+    two.add_argument("--lock-wait-mins", type=minutes, default=DEFAULT_BRIDGE_LOCK_WAIT_MINS,
+                     help="how long to wait for a held bridge lock before refusing "
+                          f"(default: {DEFAULT_BRIDGE_LOCK_WAIT_MINS})")
     common(two)
     three = steps.add_parser("db", help="the BOINC database's workunit and result rows")
     three.add_argument("--batch-dir", type=Path, required=True,

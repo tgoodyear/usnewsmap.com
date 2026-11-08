@@ -17,7 +17,9 @@ COHORT_CLASSES = (
 AMD_GENERAL_MARKER = "usnm-amd-general-admission-v1"
 NVIDIA_GENERAL_MARKER = "usnm-nvidia-general-admission-v1"
 # Classes an operator can open to all of the app's work (native-qwen-cohort.php --general).
-GENERAL_MARKERS = {"amd_vulkan_8b": AMD_GENERAL_MARKER, "nvidia_vulkan_8b": NVIDIA_GENERAL_MARKER}
+INTEL_GENERAL_MARKER = "usnm-intel-general-admission-v1"
+GENERAL_MARKERS = {"amd_vulkan_8b": AMD_GENERAL_MARKER, "nvidia_vulkan_8b": NVIDIA_GENERAL_MARKER,
+                   "intel_vulkan_8b": INTEL_GENERAL_MARKER}
 AMD_FIRST_MARKER = "usnm-amd-first-reservation-v1"
 
 
@@ -48,7 +50,7 @@ def merge_policy(source: bytes, current: bytes) -> bytes:
                        and (node.text or "").strip() == marker]
             if markers:
                 if len(markers) != 1 or any(fields) or name not in reviewed:
-                    label = "AMD" if name == "amd_vulkan_8b" else "NVIDIA"
+                    label = {"amd_vulkan_8b": "AMD", "intel_vulkan_8b": "Intel"}.get(name, "NVIDIA")
                     raise ValueError(f"Invalid explicit {label} general admission")
                 for node in list(reviewed[name]):
                     if node.tag in ("min_wu_id", "max_wu_id") or (
@@ -71,6 +73,19 @@ def merge_policy(source: bytes, current: bytes) -> bytes:
                 raise ValueError(f"Duplicate reviewed cohort field for {name}")
             field = targets[0] if targets else ET.SubElement(reviewed[name], tag)
             field.text = str(value)
+    # Intel's general admission rides on NVIDIA's. Without NVIDIA's, Intel closes (2/1) rather
+    # than keep a policy the refill controller rejects; a restart must not fail over it.
+    def general(name):
+        return name in reviewed and any(node.tag is ET.Comment and (node.text or "").strip() == GENERAL_MARKERS[name]
+                                        for node in reviewed[name])
+    if general("intel_vulkan_8b") and not general("nvidia_vulkan_8b"):
+        intel = reviewed["intel_vulkan_8b"]
+        for node in list(intel):
+            if node.tag in ("min_wu_id", "max_wu_id") or (
+                    node.tag is ET.Comment and (node.text or "").strip() == INTEL_GENERAL_MARKER):
+                intel.remove(node)
+        ET.SubElement(intel, "min_wu_id").text = "2"
+        ET.SubElement(intel, "max_wu_id").text = "1"
     markers = [node for node in old_root.iter() if node.tag is ET.Comment
                and AMD_FIRST_MARKER in (node.text or "")]
     if markers:

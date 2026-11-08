@@ -182,6 +182,70 @@ class PlanPolicyRefresh(unittest.TestCase):
         self.assertNotIn(POLICY.NVIDIA_GENERAL_MARKER, self.target.read_text())
 
     @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_intel_general_admission_without_nvidia_is_refused_again_and_closed_on_restart(self):
+        helper = ROOT / "boinc/scripts/native-qwen-cohort.php"
+        def php(expr):
+            code = "$_SERVER['SCRIPT_FILENAME'] = ''; require " + json.dumps(str(helper)) + "; echo " + expr + ";"
+            return subprocess.run(["php", "-r", code], text=True, capture_output=True)
+        both = php("native_qwen_general_xml(native_qwen_general_xml(" + json.dumps(self.source.read_text())
+                   + ", 'nvidia_vulkan_8b'), 'intel_vulkan_8b')").stdout
+        self.assertIn(POLICY.INTEL_GENERAL_MARKER, both)
+        # A hand-edited policy that keeps Intel's marker and has lost NVIDIA's.
+        root = ET.fromstring(both.encode(), parser=ET.XMLParser(target=ET.TreeBuilder(insert_comments=True)))
+        nvidia = root.find("plan_class[name='nvidia_vulkan_8b']")
+        for node in list(nvidia):
+            if node.tag is ET.Comment:
+                nvidia.remove(node)
+        ET.SubElement(nvidia, "min_wu_id").text = "2"
+        ET.SubElement(nvidia, "max_wu_id").text = "1"
+        orphan = ET.tostring(root, encoding="unicode")
+        self.assertIn(POLICY.INTEL_GENERAL_MARKER, orphan)
+        self.assertNotIn(POLICY.NVIDIA_GENERAL_MARKER, orphan)
+        again = php("native_qwen_general_xml(" + json.dumps(orphan) + ", 'intel_vulkan_8b')")
+        self.assertNotEqual(again.returncode, 0)
+        self.assertIn("needs NVIDIA general admission first", again.stderr + again.stdout)
+        merged = POLICY.merge_policy(self.source.read_bytes(), orphan.encode())
+        self.assertNotIn(POLICY.INTEL_GENERAL_MARKER, merged.decode())
+        intel = ET.fromstring(merged).find("plan_class[name='intel_vulkan_8b']")
+        self.assertEqual((intel.findtext("min_wu_id"), intel.findtext("max_wu_id")), ("2", "1"))
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_intel_general_admission_follows_nvidia_survives_restart_and_stop_closes_it(self):
+        (self.root / "config.xml").write_text("<boinc/>")
+        helper = ROOT / "boinc/scripts/native-qwen-cohort.php"
+        base = ["php", str(helper), "--project", str(self.root)]
+        intel = base + ["--plan-class", "intel_vulkan_8b", "--general", "--apply"]
+        refused = subprocess.run(intel, text=True, capture_output=True)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("needs NVIDIA general admission first", refused.stderr + refused.stdout)
+        subprocess.run(base + ["--plan-class", "nvidia_vulkan_8b", "--general", "--apply"],
+                       text=True, capture_output=True, check=True)
+        result = subprocess.run(intel, text=True, capture_output=True, check=True)
+        self.assertEqual(sorted(json.loads(result.stdout)["general_admission"]),
+                         ["intel_vulkan_8b", "nvidia_vulkan_8b"])
+        node = ET.parse(self.target).find("plan_class[name='intel_vulkan_8b']")
+        self.assertIsNone(node.find("min_wu_id"))
+        self.assertIsNone(node.find("max_wu_id"))
+        # An NVIDIA-only window would end NVIDIA's admission under Intel's, so it is refused.
+        code = ("$_SERVER['SCRIPT_FILENAME'] = ''; require " + json.dumps(str(helper)) + "; "
+                "native_qwen_cohort_xml(" + json.dumps(self.target.read_text()) + ", 'nvidia_vulkan_8b', 17300);")
+        narrowed = subprocess.run(["php", "-r", code], text=True, capture_output=True)
+        self.assertNotEqual(narrowed.returncode, 0)
+        self.assertIn("Intel general admission needs NVIDIA's", narrowed.stderr + narrowed.stdout)
+        # A restart keeps both; --stop --keep-general keeps both; --stop closes both.
+        POLICY.refresh(self.source, self.target)
+        self.assertFalse(POLICY.refresh(self.source, self.target))
+        self.assertIn(POLICY.INTEL_GENERAL_MARKER, self.target.read_text())
+        subprocess.run(base + ["--stop", "--keep-general", "--apply"], text=True, capture_output=True, check=True)
+        self.assertIn(POLICY.INTEL_GENERAL_MARKER, self.target.read_text())
+        self.assertIn(POLICY.NVIDIA_GENERAL_MARKER, self.target.read_text())
+        subprocess.run(base + ["--stop", "--apply"], text=True, capture_output=True, check=True)
+        POLICY.refresh(self.source, self.target)
+        stopped = ET.parse(self.target).find("plan_class[name='intel_vulkan_8b']")
+        self.assertEqual((stopped.findtext("min_wu_id"), stopped.findtext("max_wu_id")), ("2", "1"))
+        self.assertNotIn(POLICY.INTEL_GENERAL_MARKER, self.target.read_text())
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
     def test_other_windows_keep_nvidia_general_admission_and_its_own_window_replaces_it(self):
         helper = ROOT / "boinc/scripts/native-qwen-cohort.php"
         def run(xml_fn):
@@ -261,7 +325,6 @@ class PlanPolicyRefresh(unittest.TestCase):
         (self.root / "config.xml").write_text("<boinc/>")
         helper = ROOT / "boinc/scripts/native-qwen-cohort.php"
         for arguments in (
-            ["--plan-class", "intel_vulkan_8b", "--general"],
             ["--plan-class", "nvidia_cuda_8b", "--general"],
             ["--plan-class", "nvidia_vulkan_8b", "--general", "--workunit", "300"],
             ["--plan-class", "shared_8b", "--general"],

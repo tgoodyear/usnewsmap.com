@@ -217,6 +217,14 @@ that stop without closing general admission: it bounds-closes the same classes
 with `--plan-class shared_8b`). Neither stop touches the independent `amd_vulkan_8b`,
 `nvidia_vulkan_6gb_8b` or `nvidia_vulkan_2b` windows; close those with their own
 `--plan-class` and `--stop`.
+`intel_vulkan_8b` can take general admission too, but only after `nvidia_vulkan_8b` has it:
+`--plan-class intel_vulkan_8b --general` refuses otherwise. Its marker is
+`usnm-intel-general-admission-v1`, and a policy refresh keeps it. With both markers the refill
+controller owns no window: each tick reports `no-owned-window` and changes nothing. `--stop
+--keep-general` keeps both; `--stop` closes both. Intel went to general admission on
+8 November 2026, after the fresh-pair window had found nothing to open since 4 November and
+Intel's last 104 replicas were 102 valid and 2 inconclusive.
+
 `intel_vulkan_8b`, like `shared_8b`, takes a range of up to ten workunits (`--workunit-end`).
 With both, the automatic refill keeps an Intel-only window beside NVIDIA's general admission
 ([Intel GPU](../../docs/boinc-intel-gpu.md#persistent-finite-nvidiaintel-refill)).

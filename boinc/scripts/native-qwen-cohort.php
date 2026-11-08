@@ -14,9 +14,14 @@ const AMD_GENERAL_MARKER = "usnm-amd-general-admission-v1";
 // General admission: the class takes any of the app's work, with no workunit bounds. The
 // marker records the operator's choice, so a plan-policy refresh keeps it (refresh-plan-policy.py).
 // nvidia_vulkan_8b qualified on usnm-rtx-compute's 17 audited units (13 valid, none failed).
+// intel_vulkan_8b follows NVIDIA only: the refill owns Intel's window until then, and a fresh-pair
+// window found none to open after 4 November while Intel's last 104 replicas were 102 valid.
+const NVIDIA_GENERAL_MARKER = "usnm-nvidia-general-admission-v1";
+const INTEL_GENERAL_MARKER = "usnm-intel-general-admission-v1";
 const GENERAL_MARKERS = [
     "amd_vulkan_8b" => AMD_GENERAL_MARKER,
-    "nvidia_vulkan_8b" => "usnm-nvidia-general-admission-v1",
+    "nvidia_vulkan_8b" => NVIDIA_GENERAL_MARKER,
+    "intel_vulkan_8b" => INTEL_GENERAL_MARKER,
 ];
 
 function native_qwen_general_xml($xml, $plan_class = "amd_vulkan_8b") {
@@ -32,6 +37,10 @@ function native_qwen_general_xml($xml, $plan_class = "amd_vulkan_8b") {
     $markers = $xpath->query("comment()[normalize-space(.)='$marker']", $node);
     $low = $xpath->query("min_wu_id", $node);
     $high = $xpath->query("max_wu_id", $node);
+    if ($plan_class === "intel_vulkan_8b"
+        && !in_array("nvidia_vulkan_8b", native_qwen_general_admitted($xml), true)) {
+        throw new RuntimeException("Intel general admission needs NVIDIA general admission first");
+    }
     if ($markers->length === 1 && $low->length === 0 && $high->length === 0) return $xml;
     if ($markers->length !== 0 || $low->length !== 1 || $high->length !== 1
         || !preg_match('/^[1-9][0-9]*$/D', $low->item(0)->nodeValue)
@@ -119,7 +128,14 @@ function native_qwen_cohort_xml($xml, $plan_class, $workunit_id, $last_id = null
                 : ($tag === "min_wu_id" ? 2 : 1);
         }
     }
-    return $doc->saveXML();
+    $out = $doc->saveXML();
+    // Intel's general admission rides on NVIDIA's: a window that ends NVIDIA's alone would leave
+    // a policy every later tick rejects, so it must close or narrow Intel's too (#1645).
+    $admitted = native_qwen_general_admitted($out);
+    if (in_array("intel_vulkan_8b", $admitted, true) && !in_array("nvidia_vulkan_8b", $admitted, true)) {
+        throw new RuntimeException("Intel general admission needs NVIDIA's: open a shared_8b window or --stop instead");
+    }
+    return $out;
 }
 
 // Whether every class in this operation's scope, other than the ones it opens, is closed
@@ -441,7 +457,7 @@ function native_qwen_cohort_main() {
         || (!$stop && $plan_class === "nvidia_vulkan_6gb_8b" && (!$fresh_pair || $admit_until === null))
         || ($expected_sha256 !== null && !preg_match('/^[a-f0-9]{64}$/D', $expected_sha256))
         || ($admit_until !== null && ($stop || $general || !preg_match('/^[1-9][0-9]*$/D', $admit_until)))) {
-        throw new RuntimeException("usage: --project PATH [--db-project PATH] [--stop [--keep-general] | --plan-class amd_vulkan_8b|nvidia_vulkan_8b --general | --plan-class amd_vulkan_8b --ordinary-canary --workunit ID | --plan-class intel_vulkan_8b|nvidia_vulkan_8b|shared_8b --tiebreaker --workunit ID | --plan-class ".implode("|", NATIVE_QWEN_CLASSES)."|shared_8b --workunit ID [--workunit-end ID (".implode("|", RANGE_QWEN_CLASSES).")]] [--fresh-pair] [--expected-policy-sha256 SHA256] [--admit-until UNIX] [--apply]");
+        throw new RuntimeException("usage: --project PATH [--db-project PATH] [--stop [--keep-general] | --plan-class amd_vulkan_8b|nvidia_vulkan_8b|intel_vulkan_8b --general | --plan-class amd_vulkan_8b --ordinary-canary --workunit ID | --plan-class intel_vulkan_8b|nvidia_vulkan_8b|shared_8b --tiebreaker --workunit ID | --plan-class ".implode("|", NATIVE_QWEN_CLASSES)."|shared_8b --workunit ID [--workunit-end ID (".implode("|", RANGE_QWEN_CLASSES).")]] [--fresh-pair] [--expected-policy-sha256 SHA256] [--admit-until UNIX] [--apply]");
     }
     $id = ($stop || $general) ? 0 : intval($options["workunit"]);
     $last_id = isset($options["workunit-end"]) ? intval($options["workunit-end"]) : $id;

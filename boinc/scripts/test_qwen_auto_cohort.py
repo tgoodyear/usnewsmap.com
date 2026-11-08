@@ -731,6 +731,34 @@ class BoincDb {
         self.assertIn(R.NVIDIA_GENERAL_MARKER, self.policy.read_text())
 
     @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_intel_general_admission_leaves_no_window_to_own(self):
+        self.rows[:] = [self.input(number) for number in range(100, 104)]
+        (self.root / "qwen/qwen-nonenglish-v1/audit.json").write_text(json.dumps(self.audit))
+        (self.project / "database.json").write_text(json.dumps(self.rows))
+        def tick():
+            with patch.object(R, "read_database", return_value=self.database):
+                return R.run(self.args)
+        self.assertEqual(tick()["status"], "refilled-finite-window")
+        for plan_class in ("nvidia_vulkan_8b", "intel_vulkan_8b"):
+            subprocess.run(["php", str(HELPER), "--project", str(self.project), "--plan-class", plan_class,
+                            "--general", "--apply"], check=True, capture_output=True)
+        policy = self.policy.read_bytes()
+        self.assertEqual(R.policy_window(policy), (None, None, ()))
+        # The tick changes nothing, even past its deadline.
+        self.args.enabled_until = 1
+        self.assertEqual(tick()["status"], "no-owned-window")
+        self.assertEqual(self.policy.read_bytes(), policy)
+        # An open Intel release that can't read the request version is named like the others.
+        self.assertEqual(R.unreadable_by_open_classes(policy, [
+            {"id": 73, "version_num": 115, "platformid": 1, "plan_class": "intel_vulkan_8b"}], 0, 3),
+            [["intel_vulkan_8b", 1, 115]])
+        # A malformed Intel marker (bounds beside it, or without NVIDIA's) fails closed.
+        root = ET.fromstring(policy, parser=ET.XMLParser(target=ET.TreeBuilder(insert_comments=True)))
+        ET.SubElement(root.find("plan_class[name='intel_vulkan_8b']"), "min_wu_id").text = "2"
+        with self.assertRaisesRegex(Exception, "Invalid explicit Intel general"):
+            R.policy_window(ET.tostring(root))
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
     def test_intel_only_window_needs_an_open_peer_release_that_reads_the_request(self):
         subprocess.run(["php", str(HELPER), "--project", str(self.project), "--plan-class", "nvidia_vulkan_8b",
                         "--general", "--apply"], check=True, capture_output=True)

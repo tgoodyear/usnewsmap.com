@@ -1,6 +1,7 @@
 """Tests for archive_history.py (#1483), with synthetic stores only: a container in memory, a
 controller state directory, a bridge tree and a SQLite stand-in for the BOINC database."""
 
+import argparse
 import base64
 import contextlib
 import email.utils
@@ -785,6 +786,75 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("belongs to another batch", errors[-1]["error"])
         self.assertEqual(before, self.snapshot())
+
+
+class LockWaitTests(unittest.TestCase):
+    """The bridge step waits for a lock another step holds, then takes all of them (#835)."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.locks = [Path(tmp.name) / "step.lock", Path(tmp.name) / "handoff.lock"]
+        retry = mock.patch.object(archive, "LOCK_RETRY_SECS", 0.05)
+        retry.start()
+        self.addCleanup(retry.stop)
+
+    def hold(self, path):
+        handle = open(path, "a")
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return handle
+
+    def test_wait_minutes_must_not_be_negative(self):
+        self.assertEqual(archive.minutes("0"), 0)
+        with self.assertRaisesRegex(argparse.ArgumentTypeError, "negative"):
+            archive.minutes("-1")
+
+    def test_refuses_at_once_without_a_wait(self):
+        held = self.hold(self.locks[1])
+        self.addCleanup(held.close)
+        with self.assertRaisesRegex(archive.Refused, "handoff.lock is locked"):
+            with archive.flocked(self.locks):
+                self.fail("took a held lock")
+
+    def test_waits_for_a_held_lock_and_holds_none_meanwhile(self):
+        held = self.hold(self.locks[1])
+        seen = []
+
+        def release():
+            time.sleep(0.2)
+            # The waiting step must not sit on the first lock while it waits for the second. A try
+            # holds it for an instant, so a probe that lands in one is retried.
+            with open(self.locks[0], "a") as probe:
+                for _ in range(20):
+                    try:
+                        fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        time.sleep(0.01)
+                        continue
+                    fcntl.flock(probe, fcntl.LOCK_UN)
+                    seen.append("free")
+                    break
+                else:
+                    seen.append("held")
+            held.close()
+
+        thread = threading.Thread(target=release)
+        thread.start()
+        with archive.flocked(self.locks, wait_secs=5):
+            for path in self.locks:
+                with open(path, "a") as other, self.assertRaises(BlockingIOError):
+                    fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        thread.join()
+        self.assertEqual(seen, ["free"])
+
+    def test_refuses_when_the_wait_runs_out(self):
+        held = self.hold(self.locks[0])
+        self.addCleanup(held.close)
+        started = time.monotonic()
+        with self.assertRaisesRegex(archive.Refused, "step.lock is locked"):
+            with archive.flocked(self.locks, wait_secs=0.3):
+                self.fail("took a held lock")
+        self.assertGreaterEqual(time.monotonic() - started, 0.3)
 
 
 class FakeMysql:
