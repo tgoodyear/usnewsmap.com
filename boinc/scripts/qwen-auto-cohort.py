@@ -510,8 +510,13 @@ def run(args):
     window, reserved, owned = policy_window(policy)
     if not owned:
         # Every class this controller refills takes any Qwen work: there is no window to own.
+        # A complete report with no budget, so feed health (#1441) reads a closed window,
+        # not a silent controller.
         return {"status": "no-owned-window", "nvidia_general_admission": True,
-                "intel_general_admission": True, "apply": args.apply}
+                "intel_general_admission": True, "apply": args.apply,
+                "admitted_unique": 0, "limit": 0, "fresh_pairs_in_scan": None,
+                "currently_eligible_unsent_replicas": None, "native_gpu_inflight": None,
+                "per_host_buffer_limit": None}
     nvidia_general = owned != CLASSES
     # A generally admitted NVIDIA host fills its own queue: only Intel's window is refilled here.
     hosts = (args.intel_host,) if nvidia_general else (args.intel_host, args.nvidia_host)

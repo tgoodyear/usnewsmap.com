@@ -746,7 +746,10 @@ class BoincDb {
         self.assertEqual(R.policy_window(policy), (None, None, ()))
         # The tick changes nothing, even past its deadline.
         self.args.enabled_until = 1
-        self.assertEqual(tick()["status"], "no-owned-window")
+        report = tick()
+        self.assertEqual(report["status"], "no-owned-window")
+        # A complete report with no budget: feed health reads it, not a silent controller.
+        self.assertEqual((report["admitted_unique"], report["limit"]), (0, 0))
         self.assertEqual(self.policy.read_bytes(), policy)
         # An open Intel release that can't read the request version is named like the others.
         self.assertEqual(R.unreadable_by_open_classes(policy, [

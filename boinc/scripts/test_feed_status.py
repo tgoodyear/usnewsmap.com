@@ -318,6 +318,10 @@ class QwenAdmissionTest(unittest.TestCase):
                         "native_gpu_inflight": None, "per_host_buffer_limit": None,
                         "currently_eligible_unsent_replicas": None},
                        {"currently_eligible_unsent_replicas": 3}, {"admitted_unique": 700},
+                       # General admission everywhere: the refill owns no window and reports no budget.
+                       {"status": "no-owned-window", "admitted_unique": 0, "limit": 0, "fresh_pairs_in_scan": None,
+                        "admissible_backlog": None, "native_gpu_inflight": None, "per_host_buffer_limit": None,
+                        "currently_eligible_unsent_replicas": None},
                        {"status": "closed-expired-budget-or-release-change"}):
             with self.subTest(change=change):
                 self.setUp()
