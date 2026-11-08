@@ -1,0 +1,58 @@
+name: feed-monitor-release
+
+# The BOINC feed monitor's scripts (#1441), as one attested bundle that the
+# feed source and evaluator hosts install by pulling it
+# (boinc/scripts/onprem/feed-monitor/update.sh). Every main commit that
+# changes what the bundle holds or how it's built publishes one; a dispatch
+# from main publishes main's head.
+on:
+  push:
+    branches: [main]
+    paths:
+      - boinc/scripts/feed_collect.py
+      - boinc/scripts/feed_status.py
+      - boinc/scripts/client_account.py
+      - boinc/scripts/acceptance_client.py
+      - boinc/scripts/onprem/feed-monitor/bundle.sh
+      - scripts/ci/feed-monitor-release.sh
+      - .github/workflows/feed-monitor-release.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One at a time, in the order main got them; a newer push replaces one still
+# waiting. feed-monitor-release.sh never moves feed-monitor-latest back.
+concurrency:
+  group: feed-monitor-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: feed monitor bundle
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: The feed monitor's tests pass
+        run: |
+          python3 -m unittest -v boinc/scripts/test_feed_status.py boinc/scripts/test_feed_collect.py
+          python3 -m unittest -v boinc/scripts/onprem/feed-monitor/test_feed_monitor.py
+      - name: Build the bundle
+        run: boinc/scripts/onprem/feed-monitor/bundle.sh --out dist --commit "$GITHUB_SHA"
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/usnm-feed-monitor.tar.gz
+            dist/SHA256SUMS
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/ci/feed-monitor-release.sh --dist dist

@@ -1,0 +1,15 @@
+# Follows the feed monitor bundle CI attests from main (#1441): update.sh,
+# installed by install.sh as /usr/local/sbin/usnm-feed-monitor-update and
+# run by usnm-feed-monitor-update.timer. A run that installs takes a few
+# seconds, plus up to 120 s waiting for feed runs to end.
+[Unit]
+Description=usnewsmap BOINC feed monitor: follow the attested bundle on main (#1441)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/usnm-feed-monitor-update
+SyslogIdentifier=usnm-feed-monitor-update
+TimeoutStartSec=10min
+Nice=10
