@@ -544,8 +544,10 @@ class ControllerTests(unittest.TestCase):
                     with patch.object(C.time, "clock_gettime", return_value=1001):
                         tick = self.observe(events, native=[(NOW - 10, entry)], **status)
                     self.assertEqual(tick["last_failure_at"], NOW - 10)
+                    self.assertEqual(tick["controller_failure_at"], NOW - 10)
+                    # Counted once, as the first of two (test_feed_status): not firing on its own.
                     previous = {}
-                    for elapsed, expected in ((0, "firing"), (60, "healthy")):
+                    for elapsed, expected in ((0, "healthy"), (60, "healthy")):
                         document, previous = F.evaluate({"tick": tick}, previous, NOW + elapsed,
                                                         1000 + elapsed, "boot", "cfg")
                         self.assertEqual(next(c for c in document["checks"]
@@ -582,15 +584,16 @@ class ControllerTests(unittest.TestCase):
         events = [(NOW - 10, {"event": "boinc_batch_failure", "schema_version": 1,
                              "at": NOW - 10, "error": "fixture early failure"})]
         failed = self.observe(events, SubState="failed", Result="exit-code")
-        self.assertEqual(failed, {"ok": False, "seconds": 20, "finished_at": NOW,
-                                  "last_failure_at": NOW - 10})
+        self.assertEqual(failed, {"ok": False, "seconds": 20, "finished_at": NOW, "last_failure_at": NOW - 10,
+                                  "controller_failure_at": NOW - 10, "maintenance_failure_at": 0})
         events.append((NOW - 5, {"event": "boinc_batch_tick", "schema_version": 1,
                                 "at": NOW - 5, "timings": {"tick_seconds": 12}}))
         recovered = self.observe(events)
-        self.assertEqual(recovered, {"ok": True, "seconds": 12, "finished_at": NOW - 5,
-                                     "last_failure_at": NOW - 10})
+        self.assertEqual(recovered, {"ok": True, "seconds": 12, "finished_at": NOW - 5, "last_failure_at": NOW - 10,
+                                     "controller_failure_at": NOW - 10, "maintenance_failure_at": 0})
+        # One failed tick that the next recovers doesn't fire (two in a row do: test_feed_status).
         previous = {}
-        for elapsed, expected in ((0, "firing"), (60, "healthy")):
+        for elapsed, expected in ((0, "healthy"), (60, "healthy")):
             document, previous = F.evaluate({"tick": recovered}, previous, NOW + elapsed,
                                             1000 + elapsed, "boot", "cfg")
             self.assertEqual(next(c for c in document["checks"]
@@ -616,10 +619,13 @@ class ControllerTests(unittest.TestCase):
                     for elapsed in (0, 60):
                         document, previous = F.evaluate({"tick": tick}, previous, NOW + elapsed,
                                                         1000 + elapsed, "boot", "cfg")
-                        expected = "firing" if seconds > 900 and elapsed == 0 else "healthy"
-                        self.assertEqual(next(c for c in document["checks"]
-                                              if c["code"] == "controller_tick")["state"], expected)
+                        # A slow tick is one failure; it fires as the second in a row (test_feed_status).
+                        expected = "healthy"
+                        checked = next(c for c in document["checks"] if c["code"] == "controller_tick")
+                        self.assertEqual(checked["state"], expected)
                         previous = json.loads(json.dumps(previous))
+                    if seconds > 900:
+                        self.assertEqual(previous["tick_failures"], 0 if not running else 1)
 
 
 class MaintenanceTests(unittest.TestCase):
@@ -656,6 +662,7 @@ class MaintenanceTests(unittest.TestCase):
         self.assertEqual([argv[i + 1] for i, a in enumerate(argv) if a == "-u"],
                          ["usnm-boinc-priority-controller.service", self.ARCHIVE])
         self.assertEqual((tick["ok"], tick["seconds"], tick["last_failure_at"]), (True, 3, NOW - 60))
+        self.assertEqual((tick["controller_failure_at"], tick["maintenance_failure_at"]), (0, NOW - 60))
         document, _ = F.evaluate({"tick": tick}, {}, NOW, 1000, "boot", "cfg")
         self.assertEqual(next(c for c in document["checks"] if c["code"] == "controller_tick")["state"], "firing")
 
@@ -681,6 +688,7 @@ class MaintenanceTests(unittest.TestCase):
                 if paused:
                     tick, _ = self.observe(old, archive=archive)
                     self.assertEqual(tick, {"ok": None, "seconds": 0, "finished_at": NOW, "last_failure_at": 0,
+                                            "controller_failure_at": 0, "maintenance_failure_at": 0,
                                             "paused_by": self.ARCHIVE})
                     document, _ = F.evaluate({"tick": tick}, {}, NOW, 1000, "boot", "cfg")
                     self.assertEqual(next(c for c in document["checks"]

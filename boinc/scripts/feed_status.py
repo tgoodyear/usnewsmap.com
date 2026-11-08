@@ -15,6 +15,9 @@ import time
 
 REFILL_WARN_S = 6 * 3600
 TICK_LIMIT_S = 15 * 60
+# Failed or slow controller ticks in a row before controller_tick fires.
+TICK_FAILURES_TO_FIRE = 2
+TICK_FAILURE_SAME_S = 60
 # The same drift across two five-minute guard runs: the refresh runbook's first condition (#1462).
 FEEDER_DRIFT_HOLD_S = 10 * 60
 # The native Qwen cohort controller (#1441): its timer runs every minute.
@@ -102,9 +105,14 @@ def evaluate(facts, previous, now, monotonic, boot_id, config_id):
             or type(previous.get("time", 0)) not in (int, float)
             or type(previous.get("monotonic", 0)) not in (int, float)
             or type(previous.get("last_failure_at", 0)) not in (int, float)
+            or any(type(previous.get(key, 0)) not in (int, float)
+                   for key in ("controller_failure_at", "maintenance_failure_at"))
+            or type(previous.get("tick_failures", 0)) is not int
+            or not 0 <= previous.get("tick_failures", 0) <= 10 ** 6
             or not isinstance(previous.get("conditions", {}), dict)):
         previous = {}
-    if not 0 <= previous.get("last_failure_at", 0) <= previous.get("time", now):
+    if not all(0 <= previous.get(key, 0) <= previous.get("time", now) for key in (
+            "last_failure_at", "controller_failure_at", "maintenance_failure_at")):
         previous = {}
     continuous = (previous.get("schema_version") == 1
                   and previous.get("config_id") == config_id
@@ -156,9 +164,32 @@ def evaluate(facts, previous, now, monotonic, boot_id, config_id):
     tick = facts.get("tick")
     failure_at = tick.get("last_failure_at", 0) if tick else 0
     new_failure = failure_at > previous.get("last_failure_at", 0)
-    check("controller_tick", None if tick is None else (
-        new_failure or tick["ok"] is False or tick["seconds"] > TICK_LIMIT_S),
-        seconds=None if tick is None else tick["seconds"])
+    controller_at = previous.get("controller_failure_at", 0)
+    maintenance_at = previous.get("maintenance_failure_at", 0)
+    streak = previous.get("tick_failures", 0)
+    if tick is None:
+        tick_condition = None
+    elif "controller_failure_at" not in tick:
+        # A collector from before the streak: any failure fires, as it always did.
+        tick_condition = new_failure or tick["ok"] is False or tick["seconds"] > TICK_LIMIT_S
+    else:
+        # One failed or slow tick is often a blip (a hand-off upload timing out, the step lock
+        # busy) that the next tick recovers, so the check fires on the second in a row. Ticks are
+        # minutes apart: a newer failure within a minute is the same tick's systemd line.
+        if tick["controller_failure_at"] > controller_at + TICK_FAILURE_SAME_S:
+            streak += 1
+        controller_at = max(controller_at, tick["controller_failure_at"])
+        if tick["ok"] is True and tick["finished_at"] > controller_at:
+            streak = 0
+        # A tick still running past the limit may never finish, and a maintenance unit runs
+        # once a day: neither waits for a second.
+        new_maintenance = tick["maintenance_failure_at"] > maintenance_at
+        maintenance_at = max(maintenance_at, tick["maintenance_failure_at"])
+        tick_condition = (streak >= TICK_FAILURES_TO_FIRE or new_maintenance
+                          or (tick["ok"] is None and tick["seconds"] > TICK_LIMIT_S))
+    check("controller_tick", tick_condition,
+          seconds=None if tick is None else tick["seconds"],
+          failed_in_a_row=None if tick is None or "controller_failure_at" not in tick else streak)
     guard = facts.get("feeder_allocation")
     if guard is not None:
         # Opt-in (#1462). Maintenance skips the comparison, so it is unknown, like any unproven allocation.
@@ -188,6 +219,8 @@ def evaluate(facts, previous, now, monotonic, boot_id, config_id):
     state = {"schema_version": 1, "config_id": config_id, "boot_id": boot_id,
              "time": now, "monotonic": monotonic, "conditions": conditions,
              "last_failure_at": max(failure_at, previous.get("last_failure_at", 0)),
+             "controller_failure_at": controller_at, "maintenance_failure_at": maintenance_at,
+             "tick_failures": streak,
              "collection_elapsed": elapsed}
     return document, state
 
