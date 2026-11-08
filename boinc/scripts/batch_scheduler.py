@@ -625,8 +625,18 @@ class Transport:
     def __init__(self, config, directory, *, status_url=None, status_file=None,
                  batch_submit=False, batch_spool_out=False, batch_collect=False, batch_export=False,
                  onprem_handoff=(), timings=None, rest_journals=False, collect_parallel=1,
-                 skip_truncated=False):
+                 skip_truncated=False, extra_claim_languages=()):
         self.config = config
+        # Languages the claim takes beside the configuration's claim_languages (--claim-language):
+        # a flag, so adding one doesn't change the allocation digest. It can only widen an
+        # explicit list; without claim_languages the claim takes every routable language anyway.
+        extra = list(extra_claim_languages)
+        listed = config.get("claim_languages")
+        require(not extra or (
+            listed and len(set(extra)) == len(extra) and not set(extra) & set(listed)
+            and all(isinstance(l, str) and re.fullmatch(r"[a-z]{3}", l) for l in extra)),
+            "--claim-language adds new three-letter codes to the configuration's claim_languages")
+        self.extra_claim_languages = extra
         self.directory = directory
         self.status_url = status_url
         self.status_file = status_file
@@ -1171,12 +1181,13 @@ class Transport:
         """Take up to `count` usable pages off the work queues (the hand-off job's claim step)."""
         nonce = uuid.uuid4().hex
         failure = None
+        languages = self.config.get("claim_languages")
+        languages = list(languages) + self.extra_claim_languages if languages else None
         try:
             self.step("handoff", "claim", HANDOFF_MANIFEST=self.config["manifest"], CLAIM_NONCE=nonce,
                       CLAIM_MAX=count, CLAIM_QUEUES=",".join(self.config["claim_queues"]),
                       CLAIM_LEASE_HOURS=self.config["lease_hours"],
-                      **({"CLAIM_LANGUAGES": ",".join(self.config["claim_languages"])}
-                         if self.config.get("claim_languages") else {}))
+                      **({"CLAIM_LANGUAGES": ",".join(languages)} if languages else {}))
         except RuntimeError as error:
             # Messages taken before the failure are hidden now and their claims are written:
             # record them if the job got as far as its summary, then stop the tick.
@@ -2477,6 +2488,10 @@ def main(argv=None):
     parser.add_argument("--batch-export", action="store_true",
                         help="export a tick's pages from all their batches in one hand-off execution "
                              "(needs a hand-off image whose export takes HANDOFF_BATCHES)")
+    parser.add_argument("--claim-language", action="append", default=[], metavar="LANG",
+                        help="claim pages in this source language too, beside the configuration's "
+                             "claim_languages, without changing the allocation digest; repeat for more. "
+                             "Use it for a language whose scope trust.json holds or trusts")
     parser.add_argument("--rest-journals", action="store_true",
                         help="list and fetch journals over the storage REST API with az's token")
     parser.add_argument("--onprem-handoff", action="append", choices=sorted(ONPREM_HANDOFF), default=[],
@@ -2508,6 +2523,13 @@ def main(argv=None):
                     "invalid other_app_budget")
         if args.server_status_url is not None:
             _validate_status_url(args.server_status_url)
+        if args.claim_language:
+            require(config.get("source") == "queue" and config.get("claim_languages"),
+                    "--claim-language needs a queue plan with claim_languages")
+            require(len(set(args.claim_language)) == len(args.claim_language)
+                    and not set(args.claim_language) & set(config["claim_languages"])
+                    and all(re.fullmatch(r"[a-z]{3}", l) for l in args.claim_language),
+                    "--claim-language adds new three-letter codes to the configuration's claim_languages")
         require(1 <= args.collect_parallel <= MAX_COLLECT_PARALLEL, "invalid --collect-parallel")
         require(args.collect_parallel == 1 or args.batch_collect, "--collect-parallel needs --batch-collect")
         surya = config.get("app") == SURYA_APP_NAME
@@ -2552,6 +2574,8 @@ def main(argv=None):
                 )
             if args.other_app_budget is not None:
                 plan_event["other_app_budget"] = args.other_app_budget
+            if config.get("claim_languages"):
+                plan_event["claim_languages"] = config["claim_languages"] + args.claim_language
             print(json.dumps(plan_event))
             return 0
         args.state_dir = args.state_dir.resolve()
@@ -2576,6 +2600,7 @@ def main(argv=None):
                 onprem_handoff=tuple(args.onprem_handoff), rest_journals=args.rest_journals,
                 collect_parallel=args.collect_parallel, timings=timings,
                 skip_truncated=args.skip_truncated_scans,
+                extra_claim_languages=tuple(args.claim_language),
             )
             tick_kwargs = {"drain": args.drain, "dead_letter_failed": args.dead_letter_failed}
             if args.low_watermark is not None:

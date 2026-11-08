@@ -4,9 +4,7 @@ Part of the [operations guide](README.md).
 
 ## Offline reading-order reconstruction
 
-`scripts/ocr-node/repair-reading-order.py` addresses retained multi-column ALTO
-whose **lines**, not merely blocks, mix columns (#925). It requires the exact
-retained scan, its stored pixel ALTO, and an explicitly ordered region annotation:
+`scripts/ocr-node/repair-reading-order.py` repairs retained multi-column ALTO whose **lines**, not only blocks, mix columns (#925). It needs the exact retained scan, its stored pixel ALTO and an explicitly ordered region annotation:
 
 ```sh
 python3 scripts/ocr-node/repair-reading-order.py \
@@ -15,74 +13,30 @@ python3 scripts/ocr-node/repair-reading-order.py \
   --out /private/new-reconstruction
 ```
 
-The three annotations freeze the original 1910 regression input hashes and
-scan-inspected candidate physical regions. They are **not** accepted article-order
-transcriptions. Review boundaries against the full scan before using them;
-headlines, portraits and advertisements can span columns. Never apply this layout
-to another page or derive a global seven-column default from it.
+The three annotations freeze the 1910 regression inputs' hashes and scan-inspected candidate regions; they are **not** accepted article-order transcriptions. Review boundaries against the full scan (headlines, portraits and ads can span columns), and never reuse a layout on another page or derive a global seven-column default from it.
 
-The tool rejects mismatched image/ALTO hashes, ambiguous source image identifiers,
-overlapping/out-of-page regions, uncovered word centres, non-pixel or multi-page
-ALTO, explicit reading-order references and existing cross-line substitutions.
-Nonzero rotation, composed-block style inheritance and line-level language/style
-overrides also require separate review rather than silently losing their meaning
-when flattening or rebuilding lines.
-Regions use half-open pixel rectangles `[x0,y0,x1,y1]`, in reading order;
-word centres determine membership. Wide or already fused recognized words are
-**not** split or corrected. Within a region, line fragments use visual rows
-(half the median word height, as in survey crop inspection) and left-to-right
-order. Region geometry does not itself establish a correct editorial order.
-The annotation must also supply named `order_checks`, each with a `word_ids`
-sequence checked against the scan. Every sequence must be recovered consecutively;
-the receipt records whether it was consecutive in the original. These are bounded
-ordering checks, not corrected spellings, reference CER, or whole-page acceptance.
+It rejects mismatched image/ALTO hashes, ambiguous source image identifiers, overlapping or out-of-page regions, uncovered word centres, non-pixel or multi-page ALTO, explicit reading-order references and existing cross-line substitutions. Nonzero rotation, composed-block style inheritance and line-level language/style overrides need separate review.
 
-The output is a **new private directory**, never an overwritten source. It holds
-derived `page.alto.xml`, literal unnormalized `page.txt`, and a last-written
-`receipt.json` binding exact input/output hashes and preservation counts.
-Original word attributes (including content, coordinates, confidence and IDs),
-hyphen ownership, illustrations and original recognition provenance are retained.
-Line/block IDs and bounds are rebuilt; stale line-level layout attributes and
-spacing elements are not copied. The appended post-processing record binds the
-parent ALTO and canonical JSON layout; the receipt also hashes the exact layout
-file bytes. No new recognition or accuracy measurement is claimed.
+Regions are half-open pixel rectangles `[x0,y0,x1,y1]` in reading order; word centres decide membership. Wide or already fused recognized words are not split or corrected. Within a region, fragments go by visual row (half the median word height), then left to right; region geometry does not by itself establish editorial order. The annotation must supply named `order_checks`, each a `word_ids` sequence checked against the scan; each must come out consecutive, and the receipt records whether it was consecutive in the original. These are ordering checks, not spelling, CER or page acceptance.
 
-This command never runs a worker, submits BOINC work, replaces curated output,
-publishes search text or changes layout3's retained-source separation. A successful
-receipt proves mechanical preservation, **not scientific or publication
-acceptance**. Fused cross-column tokens require a separately recorded segmented
-recognition pass. Before shipping any ordering change, verify scan-supported
-phrase adjacency and snippet/source attribution on the named originals and
-the broader multi-title German cohort (#926); do not treat agreement with another
-OCR system as human-reference accuracy.
+Output goes to a **new private directory**: `page.alto.xml`, literal unnormalized `page.txt`, and a last-written `receipt.json` binding input/output hashes (including the exact layout file bytes) and preservation counts. Word attributes (content, coordinates, confidence, IDs), hyphen ownership, illustrations and recognition provenance are kept; line/block IDs and bounds are rebuilt, and stale line-level layout attributes and spacing elements dropped. A post-processing record binds the parent ALTO and canonical JSON layout. No new recognition or accuracy measurement is claimed.
+
+The command never runs a worker, submits BOINC work, replaces curated output, publishes search text or changes layout3's retained-source separation. A receipt proves mechanical preservation, not scientific or publication acceptance. Fused cross-column tokens need a separately recorded segmented recognition pass. Before shipping any ordering change, verify scan-supported phrase adjacency and snippet/source attribution on the named originals and the multi-title German cohort (#926); agreement with another OCR system is not human-reference accuracy.
 
 ### Column repair without regions
 
-`usnm-ocr-worker column-text` finds narrow gutters that Tesseract read lines
-across from the ALTO's geometry alone, cuts those lines at the gutter and
-writes the text the worker would store, read column by column
-([note](../notes/2026-11-05-column-reading-order.md)):
+`usnm-ocr-worker column-text` uses only ALTO geometry to find narrow gutters Tesseract read across, cuts those lines and writes the text column by column ([note](../notes/2026-11-05-column-reading-order.md)):
 
 ```sh
 usnm-ocr-worker column-text --alto /private/stored-alto/ --language deu \
   --ocr-engine tesseract/5.5.0 --out /private/column-text/
 ```
 
-`--alto` is one ALTO file or a directory of `*.xml` (any case); each page's
-text goes to `<stem>.txt` in `--out`, and one JSON line per page reports
-`changed` and the gutters, lines and blocks it cut. Stored ALTO is in pixels;
-engine ALTO in `inch1200` or `mm10` also needs the scans' `--dpi`. Given the
-language and engine the worker used, a page with no such gutter is written as
-the worker wrote it. Words fused across a gutter stay whole, on the side of
-their centre. It reads only local files and changes no ALTO. Like the region
-tool above, its output is not accepted for publication until #926's cohort
-check.
+`--alto` is a file or a directory of `*.xml` (any case); each page goes to `<stem>.txt` in `--out`, with one JSON line reporting `changed` and the gutters, lines and blocks cut. Stored ALTO is in pixels; engine ALTO in `inch1200` or `mm10` also needs the scans' `--dpi`. With the worker's language and engine, a page without such a gutter comes out as the worker wrote it. Words fused across a gutter stay whole on their centre's side. The command reads only local files and changes no ALTO, and its output is not accepted for publication until #926's cohort check.
 
 ## Rebuilding the dashboard data-flow observer and catalog
 
-The read-only observer/catalog scripts and their five systemd units are installed
-separately from OCR workers. On the operator's checkout, select a reviewed full
-commit SHA, then stage an immutable Git archive (not dirty working-tree files):
+The observer/catalog scripts and their five units install separately from the dashboard binary. Pick a reviewed full commit SHA and stage an immutable Git archive:
 
 ```sh
 COMMIT=<reviewed-40-character-commit>
@@ -97,90 +51,66 @@ git show "${COMMIT}:scripts/ocr-node/install-data-flow.py" > install-data-flow.p
 shasum -a 256 data-flow.tar
 ```
 
-Transfer the archive and installer to the dashboard host, and independently record
-that digest. With Python 3.11+, validate before a maintenance window:
+Copy both to the dashboard host, record the digest independently, and validate (Python 3.11+, on a systemd host) before a read-only dashboard maintenance window:
 
 ```sh
 python3 install-data-flow.py --archive data-flow.tar --commit FULL_SHA --sha256 ARCHIVE_SHA256
 ```
 
-`--apply` requires root, the existing `ocrdash` account, and the catalog service,
-observer service, observer timer, refresh service and refresh timer all inactive. Coordinate a read-only dashboard
-maintenance window: stop only those units, wait for an in-flight observer to finish,
-and record their original active/enabled states. The installer does not stop, start
-or enable units. On first installation only, supply `--ocr-url` with the
-credential-free dashboard JSON endpoint (for example
-`http://127.0.0.1:8090/api/view.json`), not its HTML base URL; subsequent installations preserve the entire
-existing environment and reject an overwrite.
+It checks the digest, the archive's commit header (not a signature), the exact file set, Python syntax and units. `--apply` needs root, the `ocrdash` account, and the catalog service, observer service and timer, and refresh service and timer all stopped: stop only those, wait for an in-flight observer, and note their active/enabled states, since the installer never starts or stops units. Pass `--ocr-url` with the credential-free JSON endpoint (for example `http://127.0.0.1:8090/api/view.json`), not its HTML base URL, on first install only; later installs keep the environment and reject an overwrite.
 
-Validation-only mode also stages and verifies the systemd units, so run it on a
-systemd host. The installer checks the archive digest, Git archive commit header,
-exact regular file set, Python syntax and systemd units. The header records the operator's
-selected source; it is not a signature or substitute for reviewing that commit.
-It atomically replaces code/units, records `COMMIT`, retains private rollback
-copies under `/var/lib/usnm-data-flow-install`, and restores old files if
-verification or daemon reload fails. Same-directory recovery hard links retain
-the original inodes, ownership and modes without allocating replacement file
-contents if the disk fills. If an individual restoration fails, the installer
-still attempts every remaining restoration and daemon reload, reports all errors
-and retains the needed recovery links. Restore the original unit activation after
-success or failure; enable the observer timer explicitly for a new installation.
-The refresh timer is new, so after a dashboard that accepts `historical` and
-`max_age_secs` is running, run `systemctl enable --now usnm-data-catalog-refresh.timer`
-once on each host. Installing these units does not start it.
-The catalog listener remains loopback-only (`127.0.0.1:8764`).
-
-No SQLite database, pipeline/catalog snapshot, retained evidence, producer timer,
-queue backend or source budget is migrated, deleted or reset. Restore/migrate a
-catalog copy through its separately reviewed procedure before starting the catalog
-on a rebuilt host; this installer never initializes or migrates it.
+It replaces code and units atomically, records `COMMIT`, keeps rollback copies under `/var/lib/usnm-data-flow-install` (hard links, so a full disk can't block recovery) and restores them if verification or daemon reload fails, attempting every restoration, reporting all errors and keeping the needed recovery links. After success or failure, restore the original activation; on a new install enable the observer timer. Installing does not start the new refresh timer: once a dashboard accepting `historical` and `max_age_secs` runs, run `systemctl enable --now usnm-data-catalog-refresh.timer` once per host. The catalog listens on `127.0.0.1:8764` only. Nothing (SQLite database, snapshots, evidence, producer timers, queue backend, source budgets) is migrated, deleted or reset; on a rebuilt host restore the catalog through its own procedure first.
 
 ## On-prem OCR nodes
 
-**Local OCR runs through BOINC only** (#917, #942, #966): see the [BOINC pages](../../boinc/docs/README.md). No node runs `usnm-ocr-worker` as a direct queue worker any more, and the worker's systemd unit, its installers (`install-worker.sh`, `install-worker-node.sh`) and its nightly update (`update-worker.sh`) are removed. This section keeps what is still in use: the exchange account, whose queues and `ocr-out` container BOINC's hand-off uses, and the nodes' Arc lifecycle and monitoring, which offboarding the remaining nodes needs.
+**Local OCR runs through BOINC only** (#917, #942, #966; [BOINC pages](../../boinc/docs/README.md)). The direct queue worker's unit, installers (`install-worker.sh`, `install-worker-node.sh`) and nightly update (`update-worker.sh`) are removed, and `ocr-bulk` and `ocr-priority` are read by BOINC's [queue-fed work](../boinc-batch-scheduler.md#queue-fed-work). Node 4 (`usnm-ocr-node4-arcs-prod`, worker off since 16 October 2026) is shut down and node 3 (`usnm-ocr-node3-arcs-prod`, off since 18 October, #833) is off; both wait to be offboarded and deleted (#966). Nodes were Arc-enabled RHEL 10 / AlmaLinux 9 servers with a managed identity and no stored secret ([ADR-0015](../design/adr/0015-onprem-ocr-workers.md)). Host provisioning, OS subscriptions and lab credentials live outside this repository. Leave the legacy `OCR_KEYVAULT` in its stack until a reviewed ownership transfer.
 
-Each node is an Azure Arc-enabled server running RHEL 10 (AlmaLinux 9 is also accepted), with a managed identity and no stored secret ([ADR-0015](../design/adr/0015-onprem-ocr-workers.md)). The exchange account is `stusnmo<suffix>`; a cloud job copies what lands in its `ocr-out` container into `curated`. This section sets up the account, and connects, monitors and removes a node.
+### Exchange account and nodes' group
 
-**The exchange account.** Set the node IPs (the home connection's public IPv4 address; a comma-separated list or CIDR ranges also work) and turn it on. The IP is a private setting, in the settings store, never in the repository ([Settings](environments-and-deploys.md#settings)). The provision also adds a Microsoft.Storage service endpoint to `snet-cae`, which closes open connections from the subnet to storage public endpoints (the data lake is reached through its private endpoint and isn't affected), so run it while no ingest job is running.
+The exchange account `stusnmo<suffix>` holds the OCR queues and `ocr-out`, which [`ocr-sync`](#ocr-pickup-ocr-sync-296) copies into `curated`. Its firewall allows `USNM_OCR_NODE_IPS` (the nodes' public IP; a list or CIDR ranges also work), kept private in the settings store and never in the repository ([Settings](environments-and-deploys.md#settings)). The provision adds a Microsoft.Storage service endpoint to `snet-cae`, which drops open connections from the subnet to storage public endpoints (not the lake's private endpoint), so run it while no ingest job runs.
 
 ```sh
-scripts/azure/settings.sh --env prod --key USNM_OCR_NODE_IPS --value 203.0.113.7   # the home IP, private: the settings store
+scripts/azure/settings.sh --env prod --key USNM_OCR_NODE_IPS --value 203.0.113.7   # the nodes' public IP, private: the settings store
 scripts/azure/settings.sh --env prod --key USNM_OCR_NODES --value true   # committed: pull request, merge, then provision from main
 scripts/ocr-node/group.sh --env prod --dry-run
 scripts/ocr-node/group.sh --env prod   # writes USNM_OCR_NODE_GROUP to the settings store (the local file until the store exists)
 scripts/azure/provision.sh --env prod        # writes OCR_EXCHANGE_ACCOUNT, OCR_NODE_DCR_ID and OCR_NODE_APPINSIGHTS, grants the group
 ```
 
-**Host infrastructure.** Provisioning, OS subscriptions and lab credentials are managed outside this application repository. The legacy `OCR_KEYVAULT` resource remains in its existing deployment stack until a separately reviewed ownership transfer; do not delete it during the source migration.
-
-**The nodes' group.** The nodes get their roles through the Entra security group `usnm-ocr-nodes-grp-<env>` (`usnm-ocr-nodes-<env>` before the operator rename). The provision grants it Message Processor on `ocr-priority` and `ocr-bulk`, Message Sender on `ocr-deadletter`, the no-delete writer role on `ocr-out`, and Monitoring Metrics Publisher on the nodes' own component `usnm-ocr-appi-<env>`, not the main component. Each node's Arc identity is a member. `group.sh` creates a group once, saves its object ID in `USNM_OCR_NODE_GROUP` and makes you an owner. On rerun it uses that same ID, lists owners and updates `displayName`/`mailNickname` in place: no identity, member or grant changes. `--dry-run` only describes the rename. It never adopts a group by name or creates a duplicate of an unsaved legacy group: check its members and owners (`az ad group member list --group <id>`; `az ad group owner list --group <id>`) and save the verified ID by hand. Every member gets node roles, and owners can add members. Creating it needs the right to create security groups (default user setting or Groups Administrator); renaming requires rights to update the saved group. Deployment stacks cannot manage it (ADR-0015), and teardown leaves it. Delete by the saved object ID (`az ad group delete --group <id>`), never by display name.
-
-**Prepared-host prerequisites.** Supply an AlmaLinux 9 or RHEL 10 host with key-based SSH and passwordless sudo. RHEL must already be registered, with BaseOS, AppStream and CodeReady Builder enabled. VM creation, OS registration, hardware and hypervisor configuration belong to the infrastructure operator, not application onboarding. Use a new node ID after rebuilding a host so provenance cannot mix the old and new machine.
-
-**Publication monitoring.** `usnm-ocrdash --publish-status /existing/publish-fetched.json` (`USNM_OCRDASH_PUBLISH_STATUS`) reads a bounded native JSON record or fresh status-mirror envelope. The home-infra v2 status transport obtains only five named systemd properties from the real `usnm-loc-publish-fetched.service`, using individual typed D-Bus reads (`busctl get-property`), not `GetAll` or `systemctl show`. It never invokes the publisher or reads its environment/journal. Completion timestamps retain systemd's actual UTC microseconds; intervening state/completion changes are rejected as unknown. Operational details show the last completion time, result and exit status, independently of fetched markers. Missing/expired/unreadable metadata is unknown, never successful empty output; source observation time is not the run time. A successful run does not establish that it published new pages. Retained metadata can disappear across a manager/host restart, in which case wait for the next ordinary run rather than forcing publication. Install a compatible reviewed release before adding the optional setting, and preserve existing access controls and source budgets.
-
-The transport contract is `Unit.LoadState` and `Unit.ActiveState` (signature `s`), `Service.Result` (`s`), `Service.ExecMainStatus` (`i`), and `Service.ExecMainExitTimestamp` (`t`). `busctl --json=short get-property` returns scalar `data`, not an array: a native Debian 12 observation returned `{"type":"t","data":1793191480159818}` for the completion timestamp. Interpret that integer as UTC microseconds since the epoch, not seconds; zero means no retained completion. Read the completion timestamp before the other properties and again afterward, then recheck active state; reject disagreement rather than mixing runs. The [collector](https://github.com/tgoodyear/home-infra/blob/d14176e9ba9798930244dfd2716e1fb7d2ff3d51/scripts/lab/ocrdash-source-status-v2.py) and [focused tests](https://github.com/tgoodyear/home-infra/blob/d14176e9ba9798930244dfd2716e1fb7d2ff3d51/scripts/lab/test_ocrdash_sources.py) pin the implementation used for this contract.
-
-**Verification boundary:** those companion links require home-infra repository access. The dashboard validates the received record and its freshness; it cannot establish which systemd calls an external collector made. Before deployment, the operator must inspect the exact reviewed collector, run its tests, and confirm the typed API on the source host. An inaccessible companion repository is not evidence that these collection guarantees have been verified.
-
-**Connect a node.** The node needs AlmaLinux 9 or RHEL 10 and an admin account with key-based SSH and passwordless sudo. Its name (`--name`) must be `usnm-ocr-node<digits>-arcs-<env>`, match `--env` and be at most 32 characters (ADR-0017). A legacy node must first be drained and offboarded, renamed in the VM, its hostname and DNS, and onboarded again; changing only `--name` is not a migration. Run from your machine with rights to create app registrations (Application Developer or the default user setting), assign roles and write Arc machines, extensions and DCR associations (Owner, or User Access Administrator plus Contributor, or plus Azure Connected Machine Resource Administrator and Monitoring Contributor), and add group members (its owner, as `group.sh` makes you). Automatic agent upgrade requires `Microsoft.HybridCompute/machines/write`. The first onboarding also registers three providers, a subscription-level action (Contributor or Owner); with only resource-group rights, have them registered first:
+When the nodes' public IP changes, the nodes (and the scan archive uploader, which shares this firewall list) lose access until the firewall has the new address. Set it and provision; hidden messages reappear when their timeout ends:
 
 ```sh
-scripts/ocr-node/onboard.sh --env prod --host claude@node1.example.org --name usnm-ocr-node1-arcs-prod --reboot-day Tue --dry-run
-scripts/ocr-node/onboard.sh --env prod --host claude@node1.example.org --name usnm-ocr-node1-arcs-prod --reboot-day Tue
+scripts/azure/settings.sh --env prod --key USNM_OCR_NODE_IPS --value <new IP>
+scripts/azure/provision.sh --env prod
 ```
 
-`onboard.sh` registers the `Microsoft.HybridCompute`, `Microsoft.GuestConfiguration` and `Microsoft.HybridConnectivity` providers. Unless the node is already connected, it then creates a throwaway app registration and service principal, `usnm-arc-onboard-<name>-<UTC time>`, with a client secret valid for 2 hours and only Azure Connected Machine Onboarding on the environment's resource group, and waits for the role assignment to show up. Then it runs `scripts/ocr-node/node-setup.sh` on the node with sudo. RHEL registration is checked before onboarding changes any resources; the application never reads OS subscription credentials. That script installs python3, podman, chrony, cron (for the agent's automatic upgrades), rsyslog and which, and initscripts where the distribution has it (the monitoring agent's prerequisites), the QEMU guest agent on a VM if the image lacks it, plus htop, iftop and screen from EPEL for watching the node. It installs no OCR engine: EL9 has only Tesseract 4.1.1 and EPEL 9 none, so the engines come as pinned container images. It creates the `usnm` user. It sets up the engine runtime of [ADR-0016](../design/adr/0016-pluggable-ocr-engines.md) ([13 §13.3](../design/13-ocr-engines.md#133-component-view)): a second system user, `usnmeng`, with its own subordinate ids, lingering and the cpu, memory and pids cgroup controllers delegated to its user manager, not in `himds`; its Podman API socket at `/run/usnm-ocr/podman.sock` (mode 0660, group `usnmocr`, which `usnm` shares), through which the worker runs engine containers with `podman --remote`; and the engines' scratch, a tmpfs at `/run/usnm-ocr/scratch` capped at `--scratch-size` (default 2G) and owned by `usnm`, so an engine's files count against its own memory limit. It installs the Connected Machine agent. It sets the agent's extension allow list to the Azure Monitor Linux Agent alone (with extensions off while a different list is replaced), reads it back, stops if any other extension is installed in `/var/lib/waagent` (the allow list doesn't remove one installed before it, and turning the extension manager on would run it again), and only then turns the extension manager on (an empty list allows every extension); it turns off guest configuration and incoming connections. It keeps the journal on disk (`/etc/systemd/journald.conf.d/50-usnm.conf`: `Storage=persistent`, `SystemMaxUse=1G`; the cloud image keeps it in memory only, so a reboot lost the logs). It sets sshd to offer post-quantum key exchange first where its OpenSSH supports it (a drop-in, `/etc/ssh/sshd_config.d/40-pq-kex.conf`; AlmaLinux 9.8's default crypto policy leaves it out). It connects with that service principal (the tenant, app id and secret go over ssh's stdin, never on a command line; the secret waits in a root-only file under `/run` while `azcmagent connect --config` reads it, and a refused connect is retried for a few minutes while the new principal propagates). Last, under the maintenance lock, it removes what an earlier install of the retired worker left: the nightly update's timer and scripts, then `usnm-ocr-worker.service` (stopped, disabled and its unit file deleted) and its line in the reboot window's resume list. It installs no worker unit or settings. It ends by checking that `usnm` can get a token (for Resource Manager, not storage: see below), and prints `azcmagent show` and `azcmagent config list`. Run again, it skips what's done and applies the lockdown as it is now. `onboard.sh` then waits for the machine's system-assigned identity and adds it to the nodes' group unless it's already a member, which gives the node its roles; no provision is needed. The machine identity's private key can live in the node's TPM (`--identity-key-store tpm`, the agent's TPM-backed identity, in preview; provision a vTPM 2.0 separately), so it can't be copied off the disk. Azure accepts that only once the subscription's `Microsoft.HybridCompute/HybridComputePreview` feature is Registered, which needs Microsoft's approval: `az feature register --namespace Microsoft.HybridCompute --name HybridComputePreview` leaves it Pending until then (requested 2026-10-10). `onboard.sh` checks the feature and asks `node-setup.sh` for the TPM only when it's Registered; otherwise the key stays in the agent's default store on disk. The key store is fixed at connect: moving an existing node to the TPM means `offboard.sh` and `onboard.sh` again, which makes a new machine and identity. A vTPM's state is a file on the Proxmox host, so this protects against the VM's disk or a backup of it, not against the host. `onboard.sh` also turns on Microsoft's automatic agent upgrade for the machine (in preview: the agent upgrades itself to within one version of the latest, in batches at off-peak hours, scheduled with cron), which `node-setup.sh` already asks for at connect with `--enable-automatic-upgrade`; the property is checked so a machine connected earlier gets it too. Last, it stops if the machine has any extension in Azure other than the Azure Monitor Linux Agent (delete it, then run again), associates the machine with the nodes' data collection rule (`OCR_NODE_DCR_ID`), waits until the machine reports the allow list to Azure (a few minutes after a change), and installs the Azure Monitor Linux Agent extension with automatic upgrades on, waiting until it's installed (an agent already installed with automatic upgrades off gets them turned on). As soon as `node-setup.sh` has finished, since the connect was its only use, or when `onboard.sh` stops before that, on failure or Ctrl-C too, it deletes the role assignment, the service principal and the app registration, purges them from Entra's deleted items and prints what it deleted; a warning names anything it couldn't delete, to remove by hand.
+**The nodes' group**, Entra security group `usnm-ocr-nodes-grp-<env>` (formerly `usnm-ocr-nodes-<env>`), gets Message Processor on `ocr-priority` and `ocr-bulk`, Message Sender on `ocr-deadletter`, the no-delete writer role on `ocr-out`, and Monitoring Metrics Publisher on `usnm-ocr-appi-<env>` only. Node Arc identities are members. Every member gets node roles, and owners can add members.
 
-**A node connected before monitoring** (connected with extensions off): provision once, so the nodes' workspace, component and rule exist and the group has Monitoring Metrics Publisher, then run `onboard.sh` again. It needs no onboarding credential for a connected node, re-runs `node-setup.sh` (which applies the allow list) and installs the agent.
+- `group.sh` creates it once (needs Groups Administrator or the default user right), saves its ID in `USNM_OCR_NODE_GROUP` and makes you owner. A rerun only renames in place (`displayName`/`mailNickname`), which needs rights to update the saved group; `--dry-run` only describes the rename.
+- It never adopts a group by name or creates a duplicate of an unsaved legacy group: verify one with `az ad group member list --group <id>` and `az ad group owner list --group <id>` and save its ID by hand.
+- Deployment stacks can't manage it (ADR-0015), so teardown leaves it. Delete it by ID (`az ad group delete --group <id>`), never by name.
 
-**Monitoring.** The nodes have a workspace of their own, `usnm-ocr-log-<env>`, with its own daily cap of 0.1 GB, and an Application Insights component on it, `usnm-ocr-appi-<env>` (`infra/modules/ocr-node-monitoring.bicep`). The nodes' group can write telemetry to that component only, so a node, or anyone with a node's token, can neither write rows the API alerts read nor fill the environment's 1 GB cap; at worst it fills the nodes' cap, which stops the nodes' monitoring until the reset (ADR-0015). The rule, `usnm-ocr-dcr-<env>`, collects into the nodes' workspace: syslog at Warning and above from the system's facilities (kernel OOM kills, systemd, sshd, chronyd, podman containers' stderr); the worker's own lines at Info and above, from `local0` (its unit's `SyslogFacility`), since journald records every line the worker writes at info, warnings and errors included; and every 60 s, CPU per core, memory used, free space and read and write bytes per file system, and network bytes per interface; and every 60 s, VM insights' log-based metrics (`InsightsMetrics`), which make the Arc machine's **Insights** pane show as configured and fill its **Performance** tab (no Map: no Dependency agent). The agent also sends a heartbeat a minute (free). The worker's traces and metrics go to the nodes' component as role `usnm-ocr-worker`, instance the node name (see the worker's README). The rule's errors (`DCRLogErrors`) go to the nodes' workspace too. The exchange account's queue logs (`StorageQueueLogs`, a row for every queue request, about 3 MB an hour) are off, so they don't use up the cap the BOINC feed alerts share (#1441); the diagnostic settings audit lists that queue service as non-compliant. The estimate is 20 to 45 MB a day per node before the worker's telemetry, which isn't measured yet (Perf measured 7 to 10 MB; VM insights estimated 10 to 20 MB, `InsightsMB` in `ocr-node-health`), so two working nodes come close to the cap; measure it after a day and raise the cap if needed (`ocrNodeDailyCapGb` in `infra/main.bicep`, and `cap_gb` in `ops/queries/ocr-node-health.kql`, then provision). With alert emails set:
+Membership is a token claim, and managed identity tokens are cached about 24 hours with no forced refresh ([Microsoft](https://learn.microsoft.com/en-us/entra/identity/managed-identities-azure-resources/managed-identity-best-practice-recommendations#limitation-of-using-managed-identities-for-authorization)): a node that got a storage token before joining is refused until it expires, and a removed node keeps access for up to a day.
 
-- _OCR node log volume high_ (severity 2) fires when a node sends more than a tenth of the cap (10 MB) in an hour, through the agent (Syslog, Perf and InsightsMetrics) and its Application Insights telemetry together, so a crash loop or debug logging is caught before one node fills the cap.
-- _OCR node: loc.gov asked to wait over an hour_ (severity 2, hourly) fires when a node's worker counts a `Retry-After` over its one-hour cap (`ocr.loc_slowdowns` with `capped`). The worker holds that server for the hour and takes no pages meanwhile; if loc.gov keeps asking, stop the workers and raise their gaps.
-- _OCR nodes' daily cap reached_ (severity 2) fires on the nodes' workspace's `OverQuota` event, as the environment's cap alert does (#279). Until the reset, the node alerts and queries see nothing. In the nodes' workspace, `Usage | where IsBillable | summarize sum(Quantity) by DataType, bin(TimeGenerated, 1h)` shows what filled it.
+### Connecting a node
 
-`scripts/azure/logs.sh` runs the `ocr-node-*` queries against the nodes' workspace (`OCR_NODE_LOG_ANALYTICS_WORKSPACE_ID`):
+With the direct worker retired, `onboard.sh` is mainly for rerunning against a connected node:
+
+```sh
+scripts/ocr-node/onboard.sh --env prod --host admin@node1.example.org --name usnm-ocr-node1-arcs-prod --reboot-day Tue --dry-run
+scripts/ocr-node/onboard.sh --env prod --host admin@node1.example.org --name usnm-ocr-node1-arcs-prod --reboot-day Tue
+```
+
+- **Requirements.** AlmaLinux 9 or RHEL 10 (registered, with BaseOS, AppStream and CodeReady Builder), key-based SSH, passwordless sudo. `--name` is `usnm-ocr-node<digits>-arcs-<env>`, at most 32 characters (ADR-0017); renaming a node means offboard, rename VM/hostname/DNS, onboard. You need rights to create app registrations, assign roles, write Arc machines, extensions and DCR associations, and own the group; the first run registers `Microsoft.HybridCompute`, `Microsoft.GuestConfiguration` and `Microsoft.HybridConnectivity` (subscription Contributor or Owner).
+- **`onboard.sh`** creates a throwaway service principal `usnm-arc-onboard-<name>-<UTC time>` (2-hour secret, Azure Connected Machine Onboarding only; deleted and purged as soon as setup ends or fails), runs `scripts/ocr-node/node-setup.sh`, adds the machine identity to the group, turns on automatic agent upgrade, refuses any Azure extension other than the Azure Monitor Linux Agent, associates `OCR_NODE_DCR_ID` and installs that agent. A node connected before monitoring existed needs a provision, then a rerun (no credential needed for a connected node).
+- **`node-setup.sh`** (idempotent) installs the Connected Machine agent, with an extension allow list holding only the monitoring agent, and turns guest configuration and incoming connections off. It also sets up a persistent journal (`/etc/systemd/journald.conf.d/50-usnm.conf`, `SystemMaxUse=1G`); post-quantum-first sshd key exchange (`/etc/ssh/sshd_config.d/40-pq-kex.conf`); users `usnm` and `usnmeng` with the [ADR-0016](../design/adr/0016-pluggable-ocr-engines.md) engine runtime ([13 §13.3](../design/13-ocr-engines.md#133-component-view): Podman socket `/run/usnm-ocr/podman.sock`, tmpfs scratch `/run/usnm-ocr/scratch` sized by `--scratch-size`, default 2G); and removes the retired worker's unit and nightly update. It checks that `usnm` can get a Resource Manager token (not storage, because of the token caching above).
+- **TPM key store** (`--identity-key-store tpm`) needs the subscription feature `Microsoft.HybridCompute/HybridComputePreview` Registered; `az feature register --namespace Microsoft.HybridCompute --name HybridComputePreview` stays Pending until Microsoft approves (requested 2026-10-10); until then `onboard.sh` leaves the key in the agent's on-disk store. The store is fixed at connect.
+
+### Node monitoring
+
+The nodes have their own workspace `usnm-ocr-log-<env>` (0.1 GB daily cap) and component `usnm-ocr-appi-<env>` (`infra/modules/ocr-node-monitoring.bicep`), so a node can't write rows the API alerts read or fill the environment's 1 GB cap; at worst it fills the nodes' cap, which stops node monitoring until the reset. Rule `usnm-ocr-dcr-<env>` collects Warning+ syslog, worker `local0` lines at Info+, 60 s performance counters and `InsightsMetrics`, plus a heartbeat a minute; `DCRLogErrors` land in the same workspace. `StorageQueueLogs` on the exchange account (a row per queue request, about 3 MB an hour) are off so they don't eat the cap the BOINC feed alerts share (#1441); the diagnostic settings audit lists that queue service as non-compliant. Raise the cap with `ocrNodeDailyCapGb` in `infra/main.bicep` and `cap_gb` in `ops/queries/ocr-node-health.kql`, then provision.
+
+Alerts, with alert emails set (severity 2): _OCR node log volume high_ (over 10 MB from one node in an hour), _OCR node: loc.gov asked to wait over an hour_ (hourly; `ocr.loc_slowdowns` with `capped`), and _OCR nodes' daily cap reached_ (`OverQuota`, as #279). Until the reset, node alerts and queries see nothing; `Usage | where IsBillable | summarize sum(Quantity) by DataType, bin(TimeGenerated, 1h)` in the nodes' workspace shows what filled it.
 
 ```sh
 scripts/azure/logs.sh --env prod --query-name ocr-node-health             # per node: heartbeat, counters, CPU, memory, free space on /, worker lines, PerfMB, SyslogMB, InsightsMB and WorkerMB; DayMB and CapPct for the workspace
@@ -188,29 +118,22 @@ scripts/azure/logs.sh --env prod --query-name ocr-node-errors --span 2d   # work
 scripts/azure/logs.sh --env prod --query-name ocr-node-updates --span 7d  # reboots, and the retired nightly worker update's history (#471)
 ```
 
-The same as charts: the "usnm OCR nodes (<env>)" workbook under Application Insights `usnm-ocr-appi-<env>` → Workbooks, with a time range and a node picker: CPU, memory, free disk space by mount, disk and network bytes per second, heartbeat gaps over 5 minutes (a table and a chart), the worker's warnings and errors (from Syslog and, once it sends telemetry, `AppTraces` and `AppExceptions`), pages done, failed and abandoned per hour (from its metrics; empty until it sends them), and the workspace's billed MB a day against its cap.
+These run against `OCR_NODE_LOG_ANALYTICS_WORKSPACE_ID`; the "usnm OCR nodes (<env>)" workbook on `usnm-ocr-appi-<env>` charts the same. `no heartbeat` means the node is down or lost its agent or rule association (rerun `onboard.sh`); `no counters` with heartbeats means check the rule and `/var/opt/microsoft/azuremonitoragent/log`. The BOINC feed evaluator's host (#1441, [boundaries and monitoring](../../boinc/docs/boundaries-and-monitoring.md#existing-alert-route-and-deployment-gate)) shows `no counters` too, which is expected. A node silent for the whole span isn't listed: use `--span 7d` or check the Arc machine.
 
-`no heartbeat` means the node is down or off the network, or has lost its agent or its association with the rule (run `onboard.sh` again): the agent sends heartbeats only to the workspaces of the rules it's associated with. `no counters` with heartbeats means the agent is associated but its counters aren't arriving: check the rule's counters and the agent's logs under `/var/opt/microsoft/azuremonitoragent/log`. The BOINC feed evaluator's host, once associated with its own rule (#1441, [boundaries and monitoring](../../boinc/docs/boundaries-and-monitoring.md#existing-alert-route-and-deployment-gate)), is listed with `no counters` too; that is expected. A node with no heartbeat in the whole span isn't listed at all, so widen the span (`scripts/azure/logs.sh --env prod --query-name ocr-node-health --span 7d`) or check the Arc machine's status.
+### Updates and reboots (#296)
 
-**Worker publication catch-up.** The `ocr-worker-*` release still carries the binary that the scan archive and scan-fetch hosts install, and the LAN dashboard. The release job publishes for the commit `main` points at, or for an older commit when none of the commits `main` has gained since change the worker or the dashboard build (`scripts/ci/head-of-main.sh --unless-changed ocr_worker,ocr_dash`, #1074), so a worker change followed by an unrelated merge is still released. A release can still be missing when a newer commit that changes either build has no release: its run failed or was cancelled, and the older commit's run skipped because the newer one would release. To publish current main without the default full CI dispatch's API rollout, use the explicit worker-only scope:
+A record for the two shut-down nodes. `dnf-automatic` (`/etc/dnf/automatic.conf`) installs every update daily at 06:00 UTC (plus up to an hour) with `reboot = never`, excluding the Connected Machine agent. `usnm-ocr-reboot.timer` runs `/usr/local/sbin/usnm-ocr-reboot-if-needed` (`scripts/ocr-node/reboot-if-needed.sh`) at 04:00 US Eastern on the node's `--reboot-day` (without the flag a node keeps its day).
 
-```sh
-gh workflow run ci.yml --repo tgoodyear/usnewsmap.com --ref main \
-  -f scope=ocr-worker -f correlation=ocr-worker-catch-up
-```
-
-This runs only the Rust checks, the worker's EL9 build, the RHEL and engine smoke checks and the existing attested release publication (plus the always-on private-address check). It does not select API images or rollouts, the BOINC server and bridge builds, infrastructure provisioning or host installation. `scope=full` (the default, preserving bootstrap behavior) is **not** publication-only. Worker-only scope refuses a non-main ref or unknown scope. The existing main-only/current-main guard, build checks, checksums and provenance attestation remain mandatory. If main advances to a commit that changes either build before publication, the guard still skips; verify the actual publication steps and rerun the same scoped dispatch against new main after checking its source. A successful run with skipped publication is not a release. Verify that the release tag's source includes the required fix, and verify the provenance of its binary and checksums, before any separately authorized installation. Publishing is not installed-source acceptance; separately managed host installation still applies.
-
-**Updates and reboots** (#296). `node-setup.sh` turns on `dnf-automatic` (`/etc/dnf/automatic.conf`): every update, not only security ones, installed once a day at 06:00 UTC plus up to an hour, with `reboot = never` and the Connected Machine agent left out (it upgrades itself). A reboot waits for the node's weekly window: `usnm-ocr-reboot.timer` starts `usnm-ocr-reboot.service` at 04:00 US Eastern on the node's day (`--reboot-day`, passed through by `onboard.sh`; without it a node keeps the day it has, and a new node must have one no other node has). The service runs `/usr/local/sbin/usnm-ocr-reboot-if-needed` (`scripts/ocr-node/reboot-if-needed.sh`), which reboots only when `dnf needs-restarting -r` says an update needs it (the kernel, glibc, systemd, dbus and the like). It waits for a `dnf-automatic` run still going (up to 30 minutes, else no reboot that week), then stops the [Serial Set fetch](congress-pages.md#the-serial-set-on-prem) (`usnm-sset`) where it is running, and a worker unit an earlier install left (never started again afterwards), and waits for them to exit (at most 1,320 s), then reboots. The Serial Set fetch is enabled and starts at boot by itself until it has finished (`/var/lib/usnm-sset/done`). The fetch resumes from its raw store and takes over its own lock from before the reboot at once. A stopped unit that isn't enabled (an older install of the fetch's unit) is listed in `/var/lib/usnm-ocr-reboot/resume`, and `usnm-ocr-reboot-resume.service` starts it again at boot. Updates that only need a service restarted (`dnf needs-restarting -s`) wait for the next reboot.
+- It reboots only if `dnf needs-restarting -r` says so. Updates that need only a service restart (`dnf needs-restarting -s`) wait for the next reboot.
+- It waits up to 30 minutes for a running `dnf-automatic`, else skips that week's reboot.
+- It stops the [Serial Set fetch](congress-pages.md#the-serial-set-on-prem) (`usnm-sset`) and waits up to 1,320 s. The fetch starts again at boot until it has finished (`/var/lib/usnm-sset/done`) and takes over its own lock.
+- Non-enabled units it stopped are listed in `/var/lib/usnm-ocr-reboot/resume` and restarted by `usnm-ocr-reboot-resume.service`.
+- It logs to the journal under `usnm-ocr-reboot`; the reboot and any problem are at Warning, so they reach the nodes' workspace.
 
 | Node                               | Reboot window                |
 | ---------------------------------- | ---------------------------- |
 | Node 4, `usnm-ocr-node4-arcs-prod` | Sundays, 04:00 US Eastern    |
 | Node 3, `usnm-ocr-node3-arcs-prod` | Wednesdays, 04:00 US Eastern |
-
-Neither node runs OCR: node 4's worker has been disabled since 16 October 2026 and node 4 is shut down; node 3's since 18 October 2026 (#833), and node 3 is off. Both wait to be offboarded and deleted (#966). Direct bulk OCR is not coming back; the `ocr-bulk` and `ocr-priority` queues are read through BOINC's queue-fed work ([batch scheduler](../boinc-batch-scheduler.md#queue-fed-work)).
-
-The window's lines are in the journal under `usnm-ocr-reboot`; the reboot itself and any problem are logged at Warning, so they reach the nodes' workspace too. On the node:
 
 ```sh
 systemctl list-timers dnf-automatic.timer usnm-ocr-reboot.timer
@@ -219,36 +142,44 @@ dnf needs-restarting -r                                  # would the next window
 sudo /usr/local/sbin/usnm-ocr-reboot-if-needed --dry-run # what it would do now
 ```
 
-To patch by hand, one node at a time: `sudo systemctl stop usnm-sset`, `sudo dnf -y upgrade --exclude=azcmagent`, `sudo systemctl reboot` (the fetch starts again by itself at boot until it has finished); then check the kernel (`uname -r`) and `getenforce` (Enforcing) before doing the other node. `offboard.sh` turns the timers off first and stops a window already running before removing the window's units and script.
+By hand, one node at a time: `sudo systemctl stop usnm-sset`, `sudo dnf -y upgrade --exclude=azcmagent`, `sudo systemctl reboot` (the fetch restarts by itself), then check `uname -r` and `getenforce` (Enforcing) before doing the other node.
 
-**When the home IP changes,** the nodes lose the exchange account until the firewall has the new address. Hidden messages come back on their own once their time runs out.
-
-```sh
-scripts/azure/settings.sh --env prod --key USNM_OCR_NODE_IPS --value <new IP>
-scripts/azure/provision.sh --env prod
-```
-
-**Group changes take a while.** Membership is a claim in the identity's access token, and managed identity tokens are cached per resource for around 24 hours; Microsoft says a membership change can take several hours to apply, and a refresh can't be forced ([Microsoft](https://learn.microsoft.com/en-us/entra/identity/managed-identities-azure-resources/managed-identity-best-practice-recommendations#limitation-of-using-managed-identities-for-authorization)). So a node that fetched a storage token before it joined the group is refused by the exchange account until that token expires (that's why `node-setup.sh` checks with a Resource Manager token), and a removed node keeps its access for up to about a day on a token it already holds.
-
-**Remove a node** with no provision:
+### Remove a node
 
 ```sh
-scripts/ocr-node/offboard.sh --env prod --name usnm-ocr-node1 --host claude@node1.example.org --dry-run
-scripts/ocr-node/offboard.sh --env prod --name usnm-ocr-node1 --host claude@node1.example.org
+scripts/ocr-node/offboard.sh --env prod --name usnm-ocr-node1 --host admin@node1.example.org --dry-run
+scripts/ocr-node/offboard.sh --env prod --name usnm-ocr-node1 --host admin@node1.example.org
 ```
 
-It removes the machine's identity from the nodes' group and deletes its data collection rule associations. With `--host`, it deletes the Azure Monitor Agent extension and waits while the node uninstalls it, then on the node stops and disables `usnm-ocr-worker.service`, removes any extension left (`azcmagent extension remove --all`) and runs `azcmagent disconnect --force-local-only`, which clears the agent's local state without an Azure sign-in, so no onboarding credential is needed. OS registration and Lightspeed reporting are left unchanged; their lifecycle belongs to the infrastructure operator. It turns off `dnf-automatic.timer` and the weekly reboot window before it stops the worker. It leaves the [Serial Set fetch](congress-pages.md#the-serial-set-on-prem) alone (`usnm-sset.service`, `usnm-sset-status.timer`, `/etc/usnm/sset.env` and `/var/lib/usnm-sset`): on a node that runs it, stop and disable it first (`sudo systemctl disable --now usnm-sset usnm-sset-status.timer`), since without the Arc identity it can only fail and retry every 15 minutes. Last, it deletes the Arc machine with your `az` sign-in, which deletes its identity so it can get no new token. Without `--host` (a node that's gone or unreachable) it leaves the extension to go with the machine and prints the node commands to run later. It needs ownership of the nodes' group and the right to delete resources in the environment's resource group. To cut a node off at once, rather than when its tokens expire, also take its address out of `USNM_OCR_NODE_IPS` and provision; with both nodes behind the same home IP, that cuts off every node. Offboard every node before turning `USNM_OCR_NODES` off. The provision then deletes the exchange account with its queues and `ocr-out`, and the nodes' monitoring: their workspace with its data, their Application Insights component with the group's Monitoring Metrics Publisher grant, the data collection rule and the three node alerts. Azure won't delete a data collection rule that still has associations: with a node still associated, the provision fails until its association is gone. `offboard.sh` deletes the machine's associations. The provision stops before it starts if the rule in `OCR_NODE_DCR_ID` still has any. The Arc machines stay in the resource group, and their identities in the nodes' group, until offboarded.
+No provision is needed. It removes the identity from the group and deletes the machine's DCR associations. With `--host` it deletes the monitoring extension and waits while the node uninstalls it, then on the node turns off `dnf-automatic.timer` and the reboot window (stopping a running window before removing its units and script), stops and disables `usnm-ocr-worker.service`, and runs `azcmagent extension remove --all` and `azcmagent disconnect --force-local-only` (no Azure sign-in needed). Without `--host`, for a node that's gone or unreachable (as both shut-down nodes are), the extension goes with the machine and it prints the node commands for later. Last it deletes the Arc machine, and with it the identity. It needs group ownership and delete rights in the resource group. OS registration and Lightspeed reporting are left to the infrastructure operator. It leaves the [Serial Set fetch](congress-pages.md#the-serial-set-on-prem) alone: first run `sudo systemctl disable --now usnm-sset usnm-sset-status.timer`, or it retries every 15 minutes without an identity.
+
+To cut a node off before its token expires, also remove its address from `USNM_OCR_NODE_IPS` and provision (with every node behind one IP, that cuts off all of them).
+
+Offboard every node before turning `USNM_OCR_NODES` off; the provision stops before starting if `OCR_NODE_DCR_ID` still has associations. Turning it off deletes the exchange account with its queues and `ocr-out`, and the nodes' workspace with its data, component, rule and three alerts. Arc machines stay in the resource group, and their identities in the group, until offboarded. **Do not turn `USNM_OCR_NODES` off while BOINC runs:** `infra/main.bicep` gates the exchange account, the scan archive, the OCR Key Vault, the on-prem `ocr-sync` grants and BOINC's on-prem claim/collect grants on it, so BOINC's queue-fed work would lose `ocr-priority`, `ocr-bulk` and `ocr-out`.
+
+### Worker publication catch-up
+
+The `ocr-worker-*` release still carries the binary the scan archive and scan-fetch hosts install, and the LAN dashboard. The release job publishes for `main`, or an older commit if nothing since changes either build (`scripts/ci/head-of-main.sh --unless-changed ocr_worker,ocr_dash`, #1074). A release can still be missing: a newer build-changing commit's run failed or was cancelled, and the older commit's run skipped because the newer one would release. To publish current main without the API rollout:
+
+```sh
+gh workflow run ci.yml --repo tgoodyear/usnewsmap.com --ref main \
+  -f scope=ocr-worker -f correlation=ocr-worker-catch-up
+```
+
+This runs only the Rust checks, the EL9 build, RHEL and engine smoke checks, the private-address check and the attested publication. It does not select API images or rollouts, the BOINC server and bridge builds, infrastructure provisioning or host installation; `scope=full` (the default) does, so it is not publication-only. Worker-only scope refuses a non-main ref or unknown scope, and keeps the main-only guard, build checks, checksums and attestation. If main gains a build-changing commit first the guard skips, and a successful run with skipped publication is not a release: check the publication steps and rerun against new main. Before any separately authorized installation, verify that the tag's source includes the required fix, and the provenance of its binary and checksums. Publishing is not installed-source acceptance; host installation is managed separately.
 
 ### Prefetched scans (#368)
 
-Deploy the scan service and storage using infrastructure tooling. The application's `ocr-prefetch-manifest` command builds the manifest; `scripts/ocr-node/pull-manifest.sh` verifies and submits it to the configured scan-server URL. BOINC takes cached scans through the [scan-cache hand-off](../../boinc/docs/scan-cache-handoff.md); the direct workers that read the service with `--scan-cache-url` are retired. The scan-fetch service's `status-full.json`, `failures-full.jsonl` and journal explain buffer capacity, source cooldown and failures.
+`ocr-prefetch-manifest` builds the manifest and `scripts/ocr-node/pull-manifest.sh` verifies and submits it to the scan server. BOINC takes cached scans through the [scan-cache hand-off](../../boinc/docs/scan-cache-handoff.md) (the `--scan-cache-url` workers are retired). The scan-fetch service's `status-full.json`, `failures-full.jsonl` and journal explain capacity, cooldown and failures.
 
 ### The scan archive (#442)
 
-The keep-set scans have been copied to a Cold-tier container, `scans` in the storage account `SCAN_ARCHIVE_ACCOUNT` (a deployment output) ([ADR-0018](../design/adr/0018-scan-archive.md)): an off-site copy, and the source the contributor-compute bridge reads before LoC. The uploader runs on pve-big, as its Arc identity, never through a laptop. Production has Cold default tier, shared keys and public blob access disabled, and firewall default Deny. The archive-only identity grant and host installation were applied through #641; the JPEG compatibility fix (#644) was deployed in attested release `ocr-worker-20261016-00fbdd9`. **The 16 October 2026 11:26:03 UTC recovery point is fully verified: 148,127 scans present; no missing scans, mismatches, invalid local files, conflicts or request errors; and no verification skips.** Acceptance used a temporary ZFS snapshot so upload and full property verification covered exactly the same immutable cohort while the source fetcher kept running. Its final top-up uploaded 5,203 scans (17,530,564,063 bytes); the temporary snapshot was destroyed afterward. **On 17 October, daily top-up and monthly verification timers were disabled under the local-first cost decision (#783); existing bytes and manual units remain intact.** That verification covers a dated off-site copy; it says nothing about whether a later fetch manifest is complete or whether scans fetched since then lag the archive. Read the current reports instead of assuming later coverage. Direct-client API and tickets remain deferred in #649. See [local BOINC download hosting](../boinc-file-host.md) for the revised cost and serving boundaries.
+Keep-set scans are copied to Cold container `scans` in `SCAN_ARCHIVE_ACCOUNT` ([ADR-0018](../design/adr/0018-scan-archive.md)): the off-site copy, and the source the contributor-compute bridge reads before LoC. The uploader runs on the host holding the scans as its Arc identity, not through a workstation. The account has shared keys and public access off and firewall default Deny. The buffer set is not archived (ADR-0018, decision 11; `--set buffer` is for tests).
 
-1. **Provision.** The account is part of the stack with `ocrNodes`, and takes its firewall from `USNM_OCR_NODE_IPS` like the exchange account. `scripts/azure/provision.sh --env prod --what-if`, then without `--what-if`: the policy step adds the exemption first, the stack adds the account, the writer role and the grant to the nodes' group (`USNM_OCR_NODE_GROUP`). `SCAN_ARCHIVE_BLOB_ENDPOINT` in the deployment outputs is the account's URL.
-2. **The identity.** Keep pve-big out of the OCR nodes' group: that group grants queue permissions and is counted for node pacing. Save its Arc principal as the archive-only uploader, then provision to grant the existing archive role (create and read, no delete) on `scans`:
+**State.** Installed through #641; JPEG fix #644 in release `ocr-worker-20261016-00fbdd9`. The 16 October 2026 11:26:03 UTC recovery point is fully verified: 148,127 scans, none missing, mismatched, invalid, conflicting, errored or skipped. It was verified against a temporary ZFS snapshot (final top-up 5,203 scans, 17,530,564,063 bytes). Since 17 October the top-up and verify timers are disabled under the local-first cost decision (#783); existing bytes and manual units remain. Scans fetched later aren't covered; read current reports. Direct-client API and tickets: #649. Costs: [local BOINC download hosting](../boinc-file-host.md).
+
+1. **Provision.** The account is in the stack with `ocrNodes` and uses `USNM_OCR_NODE_IPS` for its firewall. `scripts/azure/provision.sh --env prod --what-if`, then without it: the policy step adds the exemption first, then the stack adds the account, the writer role and its grant to the nodes' group (`USNM_OCR_NODE_GROUP`). `SCAN_ARCHIVE_BLOB_ENDPOINT` is the account URL.
+2. **Identity.** Keep the scan host out of the nodes' group (queue permissions, node pacing). Grant its Arc principal the archive role (create and read, no delete) on `scans`:
 
    ```sh
    az resource show -g <Arc resource group> -n <Arc machine name> --resource-type Microsoft.HybridCompute/machines --query identity.principalId -o tsv
@@ -257,11 +188,9 @@ The keep-set scans have been copied to a Cold-tier container, `scans` in the sto
    scripts/azure/provision.sh --env prod
    ```
 
-   If the full-stack preview includes unrelated active-job changes, do not apply it just to grant archive access. `bash scripts/ocr-node/grant-archive-uploader.sh --env prod --dry-run` previews only the same deterministic archive role assignment, and the command without `--dry-run` applies only that assignment. It validates the existing Arc principal and the archive role (read and write, no delete), adds no OCR group membership, and preserves the main template's resource identity for subsequent full provisions.
+   If the preview has unrelated active-job changes, use `bash scripts/ocr-node/grant-archive-uploader.sh --env prod --dry-run`, then without `--dry-run`: it applies only that assignment, consistent with later full provisions.
 
-3. **The unit.** Install the worker binary of a release on pve-big (the scan-fetch container has it; the host needs its own copy at `/usr/local/bin/usnm-ocr-worker`), the user `usnm` in the `himds` group (as for the Serial Set unit), and the units:
-
-   For repeatable host installation, first download `usnm-ocr-worker` and `SHA256SUMS` from the selected release and verify both with `gh attestation verify --repo tgoodyear/usnewsmap.com --signer-workflow tgoodyear/usnewsmap.com/.github/workflows/ci.yml --source-ref refs/heads/main`. Verify the binary digest against the attested checksum file. Stage that binary and the four archive units, `usnm-scan-archive.conf` and `check-scan-archive.sh` from reviewed main in a root-controlled directory on the host. Run `bash scripts/ocr-node/install-archive-host.sh --dir <staged-directory> --release <release> --binary-sha256 <verified-sha256> --archive-url <archive-container-url> --dry-run`, then without `--dry-run`. It checks the digest again, installs the service identity (Arc and scan-read groups), missing `jq`, binary, environment, tmpfiles and units, and validates systemd configuration. It refuses a conflicting environment or an active archive or OCR service, and never starts uploads or timers. The equivalent unit installation is:
+3. **Host install.** Download `usnm-ocr-worker` and `SHA256SUMS` from the release, verify both with `gh attestation verify --repo tgoodyear/usnewsmap.com --signer-workflow tgoodyear/usnewsmap.com/.github/workflows/ci.yml --source-ref refs/heads/main` and check the digest. Stage them with the four archive units, `usnm-scan-archive.conf` and `check-scan-archive.sh` from reviewed main in a root-owned directory, then run `bash scripts/ocr-node/install-archive-host.sh --dir <staged-directory> --release <release> --binary-sha256 <verified-sha256> --archive-url <archive-container-url> --dry-run`, then without `--dry-run`. It installs the binary at `/usr/local/bin/usnm-ocr-worker`, `usnm` in `himds` and the scan-read group, `jq`, environment, tmpfiles and units; refuses a conflicting environment or an active archive or OCR service; and starts nothing. By hand:
 
    ```sh
    sudo install -m 0644 scripts/ocr-node/usnm-scan-archive.service scripts/ocr-node/usnm-scan-archive.timer \
@@ -272,7 +201,7 @@ The keep-set scans have been copied to a Cold-tier container, `scans` in the sto
    sudo systemctl daemon-reload
    ```
 
-4. **Bounded acceptance.** On the host holding the scans, run the automated dry-run, sample upload and verify sequence:
+4. **Bounded acceptance.** On the host holding the scans, run the dry run, sample upload and verify:
 
    ```sh
    sudo bash scripts/ocr-node/check-scan-archive.sh --limit 100
@@ -281,13 +210,13 @@ The keep-set scans have been copied to a Cold-tier container, `scans` in the sto
      --sample-from /var/lib/usnm-scan-archive/archived.tsv --deadline 1800 --max-load 20
    ```
 
-   The helper requires the installed binary, service user, Arc group, tmpfiles configuration and environment file. It runs each phase as `usnm` with the unit's Arc environment and supplementary group, and holds the same lock as the upload and verify services throughout all phases. The lock lives in root-controlled `/run/lock/usnm-scan-archive`, not the service-writable state directory, so the service account cannot replace it with a symlink. A concurrent upload, verify or acceptance check makes it fail before starting a sample. It never enables timers or starts a full upload. The dry run writes nothing; the upload creates at most the requested number of missing scans; verify compares size, md5, tier and stored sha256 from properties without downloading Cold bytes. Limits are 1–1,000 scans (default 100), and acceptance requires a nonempty sample with clean reports in which every sampled scan is reported, and present at verification. The transient units remove `USNM_ARCHIVE_STATE` and set `RUST_LOG=off`, overriding the environment file: acceptance never touches the service state file, and progress logs cannot contaminate the single JSON report.
+   It requires the installed binary, service user, Arc group, tmpfiles configuration and environment file, and never enables timers or starts a full upload. Each phase runs as `usnm` in a transient unit with the Arc environment, under the shared lock in root-owned `/run/lock/usnm-scan-archive` (so the service account can't swap it for a symlink). A concurrent upload, verify or check makes the helper fail before sampling. The dry run writes nothing, the upload creates at most `--limit` (1–1,000, default 100) missing scans, and verify compares size, md5, tier and stored sha256 from properties without downloading. Acceptance needs a nonempty sample, every scan reported and present, and clean reports. The units drop `USNM_ARCHIVE_STATE` and set `RUST_LOG=off`, so the state file is untouched and the JSON report clean.
 
-   **The sample is fixed before any phase runs, and the worker never sees the real keep set (#895).** The worker lists every scan under its `--scans` root before it applies `--limit`, so the earlier helper paid for a metadata walk of the whole keep set (about 190,000 scans and their sidecars on `tank`) before reading one scan; on 28 October 2026 that walk sat in filesystem wait for about 8 minutes with host load near 25 and was stopped. The helper now picks the sample itself: with `--sample-from FILE` it reads the first tab-separated field of each line (the upload's `archived.tsv` as it is) and takes `--limit` names spread evenly from first line to last; without it, it takes the first scans in name order, walking depth first and returning as soon as the sample is full, and prints how many directories it read. Each name must be a plain `keep/…/<name>.jp2` or `.jpg` path, and the scan and its sidecar must be regular files here. Each phase's transient unit gets a read-only tmpfs as its `--scans` root holding read-only bind mounts of only those files, with `ProtectSystem=strict` and `ProtectHome=yes`, so its walk is the sample and nothing else. The helper prints the sample's size and a digest of its names, which identifies the same sample in later reports without listing blob names.
+   The helper fixes the sample itself (#895): the worker lists all of `--scans` before applying `--limit`, and on 28 October 2026 that walk of about 190,000 scans sat in filesystem wait for 8 minutes at load 25. With `--sample-from FILE` it spreads `--limit` names evenly over the file's first column; otherwise it takes the first names depth first. Names must be plain `keep/…/<name>.jp2` or `.jpg` with regular-file scan and sidecar. Each phase sees only those files, bind-mounted read-only on a tmpfs `--scans` root with `ProtectSystem=strict` and `ProtectHome=yes`. Output shows the sample size and a digest, never names.
 
-   It and its units run at idle I/O class and nice 19, one scan at a time (`--concurrency 1`). The I/O class matters little on ZFS, which issues reads from its own threads; the bound comes from not walking. Each phase has a deadline (`--deadline`, 60–86,400 seconds, default 1,800), enforced as the unit's `RuntimeMaxSec`; a phase that reaches it is stopped and not accepted. Every `--progress` seconds (default 30) it prints the elapsed time, the bytes the worker has read against the sample's size, and the host load. With `--max-load`, a load average above it stops the helper's own unit, never anything else, and the check fails. Run it as a transient unit with its own time limit if the shell may go away, for example `sudo systemd-run --unit=usnm-archive-check-manual --pipe --wait --collect -p RuntimeMaxSec=3600 -p IOSchedulingClass=idle -p Nice=19 bash <reviewed copy>/check-scan-archive.sh …`.
+   It runs at idle I/O, nice 19, `--concurrency 1`. `--deadline` (60–86,400 s, default 1,800) becomes `RuntimeMaxSec`, and a phase that hits it fails. Every `--progress` seconds (default 30) it prints elapsed time, bytes read and load; above `--max-load` it stops its own unit and fails. If the shell may close: `sudo systemd-run --unit=usnm-archive-check-manual --pipe --wait --collect -p RuntimeMaxSec=3600 -p IOSchedulingClass=idle -p Nice=19 bash <reviewed copy>/check-scan-archive.sh …`.
 
-   **Restore drill (#895, maintainer approval each time).** `scripts/ocr-node/restore-drill.sh` restores a small spread sample from the Cold archive and from a ZFS snapshot of the scans, and checks every copy. Run it only with approval for the scratch dataset and the Cold read, and only while `tank` is quiet: no #1483 archive copy writing, so `zfs get written` on its dataset is unchanged over a minute.
+   **Restore drill (#895, maintainer approval each time).** `scripts/ocr-node/restore-drill.sh` restores a sample from Cold and from a ZFS snapshot and checks every copy. Run it only with approval for the scratch dataset and Cold read, while `tank` is quiet (no #1483 copy writing: `zfs get written` unchanged over a minute).
 
    ```sh
    sudo zfs create -o quota=2G tank/usnm-restore-drill-<date>   # never mounted into a CT
@@ -300,80 +229,77 @@ The keep-set scans have been copied to a Cold-tier container, `scans` in the sto
    sudo umount /tank/ocr/scans/.zfs/snapshot/<snapshot-name>   # if the automount outlives zfs_expire_snapshot
    ```
 
-   `<snapshot-name>` is the part after `@` of a recent daily snapshot in `zfs list -t snapshot -o name tank/ocr/scans`, for example `autosnap_2026-11-05_00:00:03_daily`; the drill reads it under `/tank/ocr/scans/.zfs/snapshot/<snapshot-name>`.
+   `<snapshot-name>` is the part after `@` of a recent daily snapshot from `zfs list -t snapshot -o name tank/ocr/scans` (for example `autosnap_2026-11-05_00:00:03_daily`).
+   - It takes `--count` (1–99) distinct names spread over `archived.tsv`, half a step off the acceptance sample, and HEADs them, stopping before `--budget-bytes` (at most 100,000,000) would be exceeded.
+   - It GETs each (capped at its HEAD length) and copies the same scans from the snapshot; scans newer than the snapshot are skipped there, and the drill fails if no sampled scan is in the snapshot.
+   - Each Cold copy's length, sha256 and md5 must match the HEAD length, the sidecar (format `jp2`/`jpeg` matching the extension, `full` resolution), the blob's `sha256` metadata and Content-MD5, tier `Cold`, and the live and snapshot copies. Only JP2 sidecars carry an md5; one without it fails.
+   - It writes only into `--dir` (the empty mountpoint of `--dataset`) and prints timings and a digest, never names or the token; missing files are reported by index.
+   - It asks the Arc agent on 127.0.0.1, not `localhost`: curl tries `::1` first, where himds accepted on `[::1]:40342` and never answered. Token requests time out after 30 s.
 
-   **What the drill does.**
-   - **Sample.** It takes `--count` distinct names (1–99) spread over `archived.tsv`, half a step off `check-scan-archive.sh`'s sample. A scan recorded again after its stamp changed counts once, so the sample never reads the same blob twice.
-   - **Budget.** It HEADs them in order and stops before the first one that would take the GETs past `--budget-bytes` (at most 100,000,000).
-   - **Cold restore.** It GETs the sample one by one, each capped at its HEAD length, then copies the same scans from `.zfs/snapshot/<snapshot-name>`. A scan archived after the snapshot is skipped there, but the drill fails if none of the sample is in the snapshot.
-   - **Checks.** It compares each Cold copy's length, sha256 and md5 with:
-     - the HEAD length;
-     - the sidecar, which must also give the name's format (`jp2` for `.jp2`, `jpeg` for `.jpg`) at `full` resolution, as the archive upload requires;
-     - the blob's `sha256` metadata and Content-MD5;
-     - the tier (`Cold`);
-     - the live scan and the snapshot copy.
+   **5 Nov 2026 result ([#895](https://github.com/tgoodyear/usnewsmap.com/issues/895#issuecomment-6667800874)):** 20 scans (16 JP2, 4 JPEG), 88.3 MB from Cold in 9.3 s (9.5 MB/s) and 1.3 s from the snapshot, all byte-identical. The 870.6 GB keep set would take about 25 hours from Cold on one stream.
 
-     A sidecar records an md5 only for a JP2 (the bag's); a JPEG's has none, so the md5 is checked against the blob's Content-MD5 only, and a JP2 sidecar without one fails.
-
-   - **Safety and output.** It writes only into `--dir`, which must be the empty mountpoint of `--dataset`. It prints timings, a digest of the sample's names and never the names or the token, not even in an error: a missing live scan or sidecar is reported by its index in the sample.
-   - **Token.** It asks the Arc agent on 127.0.0.1, never `localhost`. curl tries `::1` first for `localhost`, and on pve-big himds accepted connections on `[::1]:40342` without answering, which hung the first drill attempt. The token requests time out after 30 s.
-
-   **Result of 5 Nov 2026 ([#895](https://github.com/tgoodyear/usnewsmap.com/issues/895#issuecomment-6667800874)).**
-   - 20 scans (16 JP2, 4 JPEG), 88.3 MB from Cold in 9.3 s (9.5 MB/s, sequential). The same scans from the snapshot took 1.3 s.
-   - Every Cold copy was byte-identical to the live scan and the snapshot copy.
-   - At that rate, the 870.6 GB keep set would take about 25 hours from Cold on one stream.
-
-5. **The first upload (manual, cost-approved only).** `sudo systemctl start usnm-scan-archive` uploads the whole keep set, 1.16 TB when the fetcher is done (about 26 hours at 100 Mbps, UNVERIFIED for this uplink); `journalctl -u usnm-scan-archive` shows progress every 1000 scans and the report at the end. It can be stopped and started: it skips what is there. The unit keeps `/var/lib/usnm-scan-archive/archived.tsv`, one line per scan it has archived (name, size, modification time in nanoseconds, inode, change time); an older three-field line is ignored, so that scan is checked once more; on later runs a listed, unchanged scan is not read and gets no request, so a day with nothing new makes none. Delete that file to make the next run look every scan up again. **Do not automatically enable the timers under the current local-first policy.** Their explicit rollback commands are documented in [local BOINC download hosting](../boinc-file-host.md). The verify unit reads and hashes every local scan and makes one properties request per blob; run it by hand only after cost approval with `sudo systemctl start usnm-scan-archive-verify`. The upload, verify and bounded acceptance helper hold one `flock` on `/run/lock/usnm-scan-archive/lock`, so a verify that starts during an upload waits for it (and the other way round) instead of reporting scans not yet uploaded as missing. A blob with no stored MD5 is never counted as present, in any mode (`conflicts` in an upload or dry run, `mismatched` in verify), and is never written to the state file.
-6. **What a report means.** `bad_local` is a scan whose sidecar is missing or doesn't match its bytes, full resolution or format (not uploaded: investigate before fetching it again). JPEG sidecars use `format="jpeg"` for `.jpg` files; old sidecars without a format default to JPEG. Releases through `ocr-worker-20261016-c66d480` incorrectly rejected valid JPEGs by comparing the sidecar name with the file extension; retry these with a corrected release rather than changing sidecars or re-fetching good bytes. `conflicts` is a blob of that name that differs from the local file (never overwritten: look before doing anything). `errors` are failed requests: run it again. `skipped` (upload runs with the state file) are scans recorded as archived and unchanged; they are not counted in `scanned`. In `--verify`, `mismatched` includes a blob with no stored sha256 metadata or one that differs. Progress logs include failure counters; the final JSON report includes up to 20 problem paths. The command exits non-zero unless all are zero.
-
-The buffer set is not archived (ADR-0018, decision 11): `--set buffer` exists for a test only.
+5. **Full upload (manual, cost-approved only).** `sudo systemctl start usnm-scan-archive` uploads the keep set (1.16 TB when the fetcher is done; about 26 hours at 100 Mbps, UNVERIFIED for this uplink); `journalctl -u usnm-scan-archive` shows progress every 1000 scans. It can be stopped and started, and skips what's there. `/var/lib/usnm-scan-archive/archived.tsv` lists archived scans (name, size, mtime ns, inode, ctime; older three-field lines are rechecked), and unchanged listed scans get no request; delete it to recheck all. Don't enable the timers under the local-first policy (rollback in [local BOINC download hosting](../boinc-file-host.md)). Verify (`sudo systemctl start usnm-scan-archive-verify`) hashes every local scan and makes a properties request per blob, so get cost approval first. Upload, verify and acceptance share the `flock` on `/run/lock/usnm-scan-archive/lock`: the upload and verify services wait for each other instead of reporting not-yet-uploaded scans as missing, while the acceptance helper fails on contention. A blob without stored MD5 never counts as present (`conflicts` on upload or dry run, `mismatched` on verify) and isn't recorded.
+6. **Report fields.** Exit is non-zero unless all are zero; the final JSON lists up to 20 problem paths.
+   - `bad_local`: sidecar missing or not matching bytes, resolution or format; not uploaded, so investigate before fetching it again. JPEG sidecars use `format="jpeg"` (old ones without a format default to JPEG). Releases through `ocr-worker-20261016-c66d480` wrongly rejected valid JPEGs: rerun with a fixed release, don't edit sidecars or refetch.
+   - `conflicts`: the blob differs from the local file; never overwritten, investigate.
+   - `errors`: failed requests; rerun.
+   - `skipped`: recorded and unchanged, not in `scanned`.
+   - `mismatched` (`--verify`): includes missing or different sha256 metadata.
 
 ## OCR pickup: ocr-sync (#296)
 
-`usnm-ingest ocr-sync` takes the nodes' output into the lake ([12 §12.5 Step 8](../design/12-onprem-ocr-pipeline.md)). It runs hourly at minute 17 (`USNM_OCR_SYNC_CRON`; `manual` turns the schedule off) as `usnm-ocrs-caj-<env>` (saved as `OCR_SYNC_JOB`; `usnm-ocrsync-caj-<env>` before the October 2026 rename, #309), on the ingest image as `id-usnm-ingest`, 0.5 vCPU and 1 GiB. The provision creates the job only when `USNM_OCR_NODES` and the ingest jobs are on, together with the exchange account's `ocr-quarantine` container, the identity's grant on it and two alerts. Runs take the Cosmos lock `ops/ocr-sync`, so two never overlap. Logs carry page ids, paths and reason codes, never text.
+`usnm-ingest ocr-sync` imports OCR output from `ocr-out` into the lake ([12 §12.5 Step 8](../design/12-onprem-ocr-pipeline.md)). Runs hold the Cosmos lock `ops/ocr-sync` (holder `usnm-batch-<pid>-<nanos>` on-prem, #1133). Logs carry page ids, paths and reason codes, never text.
 
-**On-prem (#917).** With `USNM_OCR_SYNC_ONPREM` (on in prod), the pickup runs on pve-laptop CT 215 (`usnm-batch`) as that container's own Arc machine identity (`USNM_BATCH_HOST`), and `USNM_OCR_SYNC_CRON=manual` stops the Azure job's schedule in the same provision. The container's `usnm-ocr-sync.timer` (home-infra `scripts/lab/batch-ct-ingest.sh`) runs `usnm-ingest ocr-sync --max-runtime-secs 3000` at minute 17, from a released ingest image's binary pinned by commit, with the job's settings in `/etc/usnm/ingest.env`. Its grants (`infra/modules/ocr-sync-runner.bicep`) are narrower than `id-usnm-ingest`'s:
+**Where it runs (#917).** With `USNM_OCR_SYNC_ONPREM` (prod), in the batch container, CT 215 on its Proxmox host, as the container's Arc identity (`USNM_BATCH_HOST`). Its `usnm-ocr-sync.timer` (home-infra `scripts/lab/batch-ct-ingest.sh`) runs `usnm-ingest ocr-sync --max-runtime-secs 3000` at minute 17 from a commit-pinned released binary, reading `/etc/usnm/ingest.env`, not the stack. After changing any setting below with `scripts/azure/settings.sh` and provisioning, rewrite that file with `scripts/onprem/ingest-env.sh` (shown under seeding). Journal: `journalctl -u usnm-ocr-sync`; metrics go to the environment's Application Insights. Grants (`infra/modules/ocr-sync-runner.bicep`):
 
-- the lake role (read, write, create; no delete) on `curated`, writing only under `ocr-local/`; on `reference`, writing only `status/ocr-local.json`; and on `ocr-requests`;
-- the exchange role (read, write, create, delete; no container actions) on `ocr-out` and `ocr-quarantine`;
-- Message Processor on `ocr-deadletter`, Message Sender and Queue Data Reader on all three (`--from-quarantine` puts dead letters back on `ocr-deadletter`);
-- Cosmos Data Contributor on `ops` only, Monitoring Metrics Publisher, and AcrPull to install the binary.
+- lake read/write/create (no delete) on `curated` (under `ocr-local/`), `reference` (`status/ocr-local.json` only) and `ocr-requests`;
+- exchange read/write/create/delete on `ocr-out` and `ocr-quarantine`;
+- Message Processor on `ocr-deadletter`, Message Sender and Queue Data Reader on all three queues (`--from-quarantine` puts dead letters back on `ocr-deadletter`);
+- Cosmos Data Contributor on `ops`, Monitoring Metrics Publisher, AcrPull.
 
-The lock holder then reads `usnm-batch-<pid>-<nanos>` (#1133). Its log is the container's journal (`journalctl -u usnm-ocr-sync` in CT 215); metrics go to the environment's Application Insights as before, and the alerts below read them.
+The Azure job `usnm-ocrs-caj-<env>` (`OCR_SYNC_JOB`; `usnm-ocrsync-caj-<env>` before #309) exists only when `USNM_OCR_NODES` and the ingest jobs are on, runs as `id-usnm-ingest` (0.5 vCPU, 1 GiB) on `USNM_OCR_SYNC_CRON`: hourly at minute 17 by default, while `manual` (as in prod) turns the schedule off. The same condition creates `ocr-quarantine` and the job's two alerts.
 
 Each run:
 
-1. Deletes sources that an earlier run imported or quarantined but stopped before deleting. Its import record (`curated/ocr-local/import/<run>.json`) lists them with their ETags.
-2. Drains `ocr-deadletter`. Valid dead letters are written to `curated/ocr-local/deadletter/<day>/<run>.jsonl`, re-encoded from their checked fields, with a `dead_lettered` outcome for each page. The rest go to quarantine. A run that stops between writing and deleting them drains them again after 10 minutes, so a dead letter can appear twice.
-3. Checks each part in `ocr-out`, oldest first, at most `--max-parts` (2,000) per run in imports of `--chunk` (200). A part passes when its name and size are right, the strict reader takes it, the page is outstanding in the ledger with the same batch and reason, its text matches its hash and length, the engine, batch, title and image check out, and its ALTO passes the bounded reader. Its ALTO goes to `curated/ocr-local/alto/`, its row to one merged part per title, `curated/ocr-local/pages/<lccn>/<run>.parquet`, with both texts' scores, and an `imported` outcome goes to the ledger. A part that fails moves to `ocr-quarantine` with its ALTO. Then the sources are deleted with If-Match.
-4. When configured, consumes at most one oldest incomplete closed UTC day from the API's `ocr-requests` container and checks at most 10,000 shuffled IDs, retaining at most one matched score per requested ID. Only qualifying `/v1/hits` responses contribute page IDs; requests with DNT or GPC, crawler requests and requests from outside the site are excluded. No query text or request metadata is stored. Eligible pages with LoC damage scores of at least 0.1 are queued to `ocr-priority`, with the message's `queued_at` rounded to midnight UTC of the request day. The ledger retains the actual enqueue time for ordering and stores only the rounded request day for the cap. Already imported, outstanding, Japanese or undamaged pages are skipped. A failed send or runtime deadline leaves the day incomplete for retry; already-sent and ambiguous sends remain charged, while confirmed-unsent attempts do not. Unattempted messages get `not_sent` outcomes when pausing. The daily distinct-page maximum is `USNM_OCR_USER_DAILY_MAX` (default 1,000); set it in the environment settings and provision to change it. After processing, `ocr-sync` writes a durable `completed/<day>.json` marker before emptying the day payload, retaining an empty tombstone to prevent concurrent closes from recreating it. An interrupted cleanup resumes without spending the next run's one-day slot. Do not delete the completion markers or tombstones: they prevent replay. Status rereads the ledger after request processing even without bulk seeding.
-5. With a seed plan, tops `ocr-bulk` up (below).
-6. Writes `status/ocr-local.json` to the reference container: the last run's and the running totals of imports, rejects by reason and dead letters by cause, the queue depths, pages outstanding, the parts left with the oldest one's age, and the run's seeding.
+1. Deletes sources a previous run imported or quarantined but didn't delete (listed with ETags in `curated/ocr-local/import/<run>.json`).
+2. Drains `ocr-deadletter`: valid dead letters to `curated/ocr-local/deadletter/<day>/<run>.jsonl` with a `dead_lettered` outcome, the rest to quarantine. An interrupted drain repeats after 10 minutes, so a dead letter can appear twice.
+3. Checks up to `--max-parts` (2,000) parts, oldest first, in imports of `--chunk` (200): name and size, strict reader, page outstanding with the same batch and reason, text hash and length, engine, batch, title and image, and the bounded ALTO reader. Passing ALTO goes to `curated/ocr-local/alto/` and the row (with both texts' scores) to `curated/ocr-local/pages/<lccn>/<run>.parquet`, with an `imported` outcome; failures go to `ocr-quarantine` with their ALTO. Sources are deleted with If-Match.
+4. Processes user requests, when configured.
+5. Tops up `ocr-bulk` with a seed plan.
+6. Writes `status/ocr-local.json` to `reference`: last-run and running totals of imports, rejects by reason, dead letters by cause, queue depths, pages outstanding, parts left and oldest age, and seeding.
 
-Request lookups scan each relevant damage table once in published batch order, retaining only matches for the day's bounded set of IDs, and send messages in the original shuffled order. `curated/ocr-local/requests/<day>/lookup.json` checkpoints the published version, requested IDs, completed batch cursor, and resolved scores after each batch. A deadline pause resumes that checkpoint rather than repeating completed lookups or losing resolved candidates; a changed published version resets it. The checkpoint contains no query or request time. Completion empties both the checkpoint and daily payload; interrupted cleanup retries even if the payload is already empty, without spending the next day's processing slot. Their historical versions expire after one day under the lake lifecycle policy (plus configured soft-delete retention). Retries skip every page still charged to that request day, including terminal dead letters; confirmed-unsent attempts remain eligible. Request-step failures are returned after publishing status for completed imports and successful request sends, including successes before a later send or completion write failed; bulk seeding still runs when its deadline allows.
+**User requests.** One oldest incomplete closed UTC day from the API's `ocr-requests` per run, at most 10,000 shuffled IDs, one score each. Only qualifying `/v1/hits` responses count; DNT, GPC, crawler and off-site requests are excluded, and no query text or request metadata is stored. Pages with LoC damage at least 0.1 go to `ocr-priority` with `queued_at` rounded to midnight UTC; the ledger keeps the real time for ordering and the day for the cap, `USNM_OCR_USER_DAILY_MAX` (default 1,000 distinct pages). Imported, outstanding, Japanese and undamaged pages are skipped.
 
-**Queue pages for the pilot.** Only the pickup's identity can add messages, so `ocr-enqueue` runs in CT 215 with the pickup's settings (`usnm-ingest-run`, run as root on pve-laptop; home-infra `docs/lab.md`, "Ingest commands"). It finds each page in the published version (Step 6's damage tables, or the curated text where they lack the batch). It then writes a ledger row, `curated/ocr-local/queued/<day>/<run>.parquet`, and puts the message: the base batch, the page's detected language in ISO 639-3 (its title's first language for `und`), and LoC's damage rate as the score. It skips pages already outstanding and Japanese titles. `--dry-run` only counts. The ledger rows are written before the messages. If a send fails, the pages after it get a `not_sent` outcome, so running the same command again queues them; the page whose send failed may have gone out, and `--include-outstanding` queues it again. Outside a dry run, `ocr-enqueue` and `ocr-requeue` hold the `ops/ocr-sync` lock, so they fail while a pickup run is going; start them again once it ends.
+- Lookups scan each damage table once in batch order; `curated/ocr-local/requests/<day>/lookup.json` checkpoints version, IDs, cursor and scores (no query or time). A deadline pause resumes it; a new published version resets it.
+- A failed send or runtime deadline leaves the day incomplete for retry. Sent and ambiguous sends stay charged; confirmed-unsent ones and unattempted ones (`not_sent`) stay eligible. Retries skip pages charged to the day, terminal dead letters included.
+- On completion it writes `completed/<day>.json` before emptying the payload and checkpoint, and leaves an empty tombstone so concurrent closes can't recreate the day. **Do not delete markers or tombstones: they prevent replay.** Interrupted cleanup doesn't spend the next day's slot. Old versions expire after a day (plus soft-delete retention).
+- Request failures are returned after status is published; seeding still runs if time allows.
+
+**Queue pages by hand.** Only the pickup identity can enqueue, so `ocr-enqueue` runs in the batch container through `usnm-ingest-run`, run as root on its Proxmox host (home-infra `docs/lab.md`, "Ingest commands"). It finds each page in the published version (Step 6's damage tables, or the curated text where they lack the batch) and writes a ledger row (`curated/ocr-local/queued/<day>/<run>.parquet`) before each message (base batch, ISO 639-3 language, title's first for `und`, LoC damage as score), skipping outstanding pages and Japanese titles; `--dry-run` only counts. After a failed send the rest get `not_sent`, so rerun; `--include-outstanding` resends the one that may have gone. `ocr-enqueue` and `ocr-requeue` hold `ops/ocr-sync` outside `--dry-run`, so they fail during a pickup run.
 
 ```sh
 pct exec 215 -- /usr/local/bin/usnm-ingest-run --command ocr-enqueue -- --pages sn83045462_1890-05-03_ed-1_seq-7,... \
   --reason bulk --plan pilot-german [--batch nbu_gage] [--dry-run]
 ```
 
-**Queue dead-lettered pages again,** by cause (`dequeue_count`, `invalid`, `permanent`, `unroutable`) and, for `invalid`, kind. Pages queued since their dead letter, imported since, or whose latest dead letter has another cause, are skipped.
+`ocr-requeue` requeues dead letters by cause (`dequeue_count`, `invalid` with kind, `permanent`, `unroutable`), skipping pages queued or imported since, or whose latest dead letter has another cause:
 
 ```sh
 pct exec 215 -- /usr/local/bin/usnm-ingest-run --command ocr-requeue -- --cause dequeue_count [--since 2026-10-20] [--dry-run]
 ```
 
-**Seeding** ([12 §12.5 Step 10](../design/12-onprem-ocr-pipeline.md)) is off while `USNM_OCR_SEED_PLAN` is empty. With a plan, each run ranks (batch, title) units by their summed damage over 0.1 from Step 6's tables for the published version, and queues the pages at or above the minimum damage (`USNM_OCR_SEED_MIN_DAMAGE`, default 0.25), unit by unit in issue order. Run `ocr-damage` on the version first: the seeder refuses to run without its tables. It keeps at most `USNM_OCR_BULK_WINDOW` bulk pages outstanding: pages in the ledger with no result yet, or the queue's message count if that is larger. It tops up only when `ocr-bulk` holds fewer than `USNM_OCR_BULK_REFILL_BELOW` messages (default half the window). A window of 0 (the default) is two days of pages at the rate `ocr-sync` imported them over the last week, at least 500. Bulk pages that `ocr-enqueue` and `ocr-requeue` queue count toward the window, but the window doesn't limit them. Other settings: `USNM_OCR_SEED_LANGUAGES` (ISO 639-3, default the Tesseract pilot's `ces,deu,eng,pol,rus,srp`), `USNM_OCR_SEED_BATCHES`, `USNM_OCR_SEED_YEARS` (`1890` or `1850-1919`), `USNM_OCR_SEED_MAX_PAGES` (the plan's budget), `USNM_OCR_SEED_PILOT` (one language or a batch list, and a budget of at most 10,000) and `USNM_OCR_SEED_SKIP_AMERICAN_STORIES` (off; also skips pages whose American Stories text scores under the minimum). Set them with `scripts/azure/settings.sh` and provision, then write CT 215's settings file again (`scripts/onprem/ingest-env.sh`, as below): the pickup there reads `/etc/usnm/ingest.env`, not the stack.
+**Seeding** ([12 §12.5 Step 10](../design/12-onprem-ocr-pipeline.md)) is off while `USNM_OCR_SEED_PLAN` is empty. Each run ranks (batch, title) units by damage over 0.1 from Step 6's tables (run `ocr-damage` first; it refuses without them) and queues pages at or above `USNM_OCR_SEED_MIN_DAMAGE` (default 0.25) in issue order.
 
-It skips Japanese titles and pages already in the ledger, and copies of a page that another batch's copy wins (the release's duplicate rule). A page of the plan outstanding for 14 days, or dead-lettered with cause `dequeue_count`, is queued again at most 3 times. One dead-lettered as `unroutable` is queued again after 6 hours, doubling per cycle up to 48. A page whose message a failed run never sent (`not_sent`) goes out in the next run. Each batch's ranked units are stored under `curated/ocr-local/seed/rank/`, and the units a plan has finished under `curated/ocr-local/seed/plans/<plan>/done/`. A run that reaches its time limit before every batch is ranked queues no new pages; the next run continues from there.
+- **Window.** At most `USNM_OCR_BULK_WINDOW` bulk pages outstanding (ledger or queue count, whichever is larger), topped up when `ocr-bulk` falls below `USNM_OCR_BULK_REFILL_BELOW` (default half). Window 0 (default) is two days at last week's import rate, at least 500. Manual enqueues count toward it but aren't limited.
+- **Filters.** `USNM_OCR_SEED_LANGUAGES` (ISO 639-3, default `ces,deu,eng,pol,rus,srp`; MARC `ger` reads as `deu`), `USNM_OCR_SEED_BATCHES`, `USNM_OCR_SEED_YEARS` (`1890` or `1850-1919`), `USNM_OCR_SEED_MAX_PAGES` (budget), `USNM_OCR_SEED_PILOT` (one language or batch list, budget at most 10,000), `USNM_OCR_SEED_SKIP_AMERICAN_STORIES` (off; skips pages whose American Stories text scores under the minimum).
+- **Skips and retries.** Japanese titles, ledger pages and duplicate copies another batch wins are skipped. A page outstanding 14 days or dead-lettered `dequeue_count` is requeued at most 3 times; `unroutable` after 6 hours, doubling to 48; `not_sent` next run.
+- **State.** `curated/ocr-local/seed/rank/` and `curated/ocr-local/seed/plans/<plan>/done/`. A run that times out before ranking every batch queues nothing new; the next run continues the ranking.
 
-**Seeding from fetched scans** (Step 11, #368). With `USNM_OCR_SEED_SOURCE=fetched` the plan's new pages come from the prefetch manifest instead of the ranked units: the keep set of `audit/damage/v2/prefetch/<version>/manifest.parquet` in the curated store (`USNM_OCR_SEED_MANIFEST`, default the published version), in the order the fetcher takes it (German before the 1920s first, each issue together), in the languages, years and damage asked for, and only pages on the newest fetched list in `ocr-out/fetched/<version>/`. A node publishes that list from the scan server's index (`usnm-ocr-worker publish-fetched`), because the job can't reach the LAN. The list only narrows the manifest's pages, so a node can't add a page. The window, budget, ledger, retries and skips are the same as above. A MARC code in `USNM_OCR_SEED_LANGUAGES` (`ger`) is read as its ISO code (`deu`).
+**From fetched scans** (Step 11, #368). `USNM_OCR_SEED_SOURCE=fetched` takes new pages from the keep set of `audit/damage/v2/prefetch/<version>/manifest.parquet` (`USNM_OCR_SEED_MANIFEST`, default the published version) in fetcher order (German before the 1920s first, each issue together), filtered by the plan's languages, years and damage, and limited to the newest list in `ocr-out/fetched/<version>/`. The scan fetcher's host publishes that list from the scan server's index with `usnm-ocr-worker publish-fetched` (#1056); the list only narrows the manifest, so it can't add a page. Window, budget, ledger, retries and skips are as above.
 
-**Superseding by verified third-party OCR** (#811). `USNM_OCR_SEED_SUPERSESSION` is empty, and so off, by default. To leave out new bulk pages whose LoC OCR has a selected, verified replacement, store the reviewed list with `usnm-ingest ocr-alternate-supersession --list list.json`. It checks every entry's selection and prints the list's SHA-256. Then pin that hash with a settings PR, and write the on-prem settings file again, as above. Each seeding run rechecks a listed page's selection before leaving it out (`superseded_alternate` in the report's skips, and the `supersession` section). A missing list or one whose bytes don't match the hash fails the run. A revoked, baseline or unverifiable selection queues the page normally. Retries, `ocr-enqueue`, `ocr-requeue` and queued work are untouched. See [the note](../notes/2026-11-05-loc-alternate-supersession.md). `usnm-ingest ocr-alternate-accounting --supersession <sha256>` reports, read-only, which listed pages are avoidable new work, already imported, in flight, settled or unverified, with recognition cost `unknown` ([accounting note](../notes/2026-11-05-loc-supersession-accounting.md)).
+**Superseding by verified third-party OCR** (#811). Off while `USNM_OCR_SEED_SUPERSESSION` is empty. Store a reviewed list with `usnm-ingest ocr-alternate-supersession --list list.json` (checks entries, prints its SHA-256), pin the hash in a settings PR and rewrite the on-prem settings file. Seeding then rechecks each listed page and skips it as `superseded_alternate`; a missing list or hash mismatch fails the run, and revoked, baseline or unverifiable selections queue normally. Manual enqueues and retries are unaffected ([note](../notes/2026-11-05-loc-alternate-supersession.md)). `usnm-ingest ocr-alternate-accounting --supersession <sha256>` reports read-only which listed pages are avoidable, imported, in flight, settled or unverified ([accounting note](../notes/2026-11-05-loc-supersession-accounting.md)).
 
-`ocr-seed` is the same step on its own. Use `--dry-run` to print what it would queue as JSON, page ids per unit included, without writing anything. Its flags override the settings. For the pilot (Step 11), preview it, then set the plan:
+`ocr-seed` runs seeding alone; flags override settings and `--dry-run` prints the JSON plan. For a pilot, preview then set:
 
 ```sh
 pct exec 215 -- /usr/local/bin/usnm-ingest-run --command ocr-seed -- --dry-run --seed-plan pilot-deu --seed-pilot \
@@ -385,11 +311,11 @@ scripts/azure/settings.sh --env prod --key USNM_OCR_SEED_YEARS --value 1850-1919
 scripts/azure/settings.sh --env prod --key USNM_OCR_SEED_MAX_PAGES --value 3000
 scripts/azure/settings.sh --env prod --key USNM_OCR_BULK_WINDOW --value 1000
 scripts/azure/provision.sh --env prod
-# CT 215 reads its own copy of the settings: write it again.
-scripts/onprem/ingest-env.sh --env prod | ssh root@pve-laptop.tjg.fyi /root/batch-ct-ingest.sh --env-file -
+# The batch container reads its own copy of the settings: write it again.
+scripts/onprem/ingest-env.sh --env prod | ssh root@<proxmox-host> /root/batch-ct-ingest.sh --env-file -
 ```
 
-**Quarantine.** Rejects are kept for 30 days as `rejects/<run>/<source path>` (a dead letter as `rejects/<run>/deadletter/<message id>.txt`), each with a `.reason.json` record: the reason code, the source, its ETag, size and creation time, never its content. A source over its size limit isn't read, so it has a record only. Read them with your own sign-in from home (the firewall allows the node IPs and the subnet). After a fix, put one reason's rejects back where they came from; the same run checks them again:
+**Quarantine.** Rejects stay 30 days as `rejects/<run>/<source path>` (dead letters `rejects/<run>/deadletter/<message id>.txt`) with a `.reason.json` (reason, source, ETag, size, creation time; never content; oversized sources get only the record). Read them with an operator's own sign-in from an allowed IP (the firewall allows the node IPs and the subnet). After a fix, put one reason's rejects back where they came from; the same run checks them again:
 
 ```sh
 pct exec 215 -- /usr/local/bin/usnm-ingest-run --command ocr-sync -- --from-quarantine --reason not_requested
@@ -397,79 +323,86 @@ pct exec 215 -- /usr/local/bin/usnm-ingest-run --command ocr-sync -- --from-quar
 
 Reason codes: `name`, `part_too_large`, `part_unreadable`, `rows`, `issue_mismatch`, `alto_missing`, `alto_too_large` (checks 1 and 2); `not_requested`, `batch_mismatch`, `reason_mismatch` (3); `text_null`, `text_too_large`, `text_control`, `text_mismatch` (4); `engine`, `engine_tag` (an `ocr_engine` with `image=local`, or not printable), `reason`, `batch_unpublished`, `title_unknown`, `title_japanese`, `image_url` (5); `alto_*` from the ALTO reader (6); `deadletter_*` for dead letters.
 
-**The gain estimate.** `ocr-sync --report` applies rule v1 (Step 9) to the scores stored in every merged part, without picking anything up. It writes `curated/ocr-local/report/<run>.json` with pages considered and replaced, the reasons LoC's text stays, and counts by language and by engine.
+**Gain estimate.** `ocr-sync --report` applies rule v1 (Step 9) to stored scores without importing and writes `curated/ocr-local/report/<run>.json` (considered, replaced, reasons LoC's text stays, by language and engine):
 
 ```sh
 pct exec 215 -- /usr/local/bin/usnm-ingest-run --command ocr-sync -- --report
 ```
 
-**Alerts** (with alert emails). For the Azure job, a failed execution is reported by the pipeline's job-failed rule, `usnm-ingest-job-failed-alert-<env>` (severity 2, its `Execution` names the job; #308), and `usnm-ocrs-backlog-alert-<env>` (severity 3) fires when the last run left a part in `ocr-out` older than 72 hours. `ocr-out` deletes blobs 30 days after their last change, so a backlog left that long is lost.
+**Alerts** (with alert emails). `USNM_OCR_SYNC_ALERTS` (on in prod with `USNM_OCR_SYNC_ONPREM`; #1139) deploys three log alerts on the environment's workspace from the run's Application Insights metrics (`infra/modules/ocr-sync-alerts.bicep`), so the batch container needs no agent. Each costs $0.50 a month, and each email's `Detail` gives the relevant time or day:
 
-For the on-prem pickup, `USNM_OCR_SYNC_ALERTS` (on in prod, with `USNM_OCR_SYNC_ONPREM`; #1139) deploys three log alerts on the environment's workspace (`infra/modules/ocr-sync-alerts.bicep`). They read the metrics the run sends to Application Insights, so CT 215 needs no agent:
+- `usnm-ocrs-failed-alert-<env>` (severity 2, every 15 min): `ingest.command_failures` for `ocr-sync` in 30 minutes; the error is in the journal. Needs `usnm-ingest` from #1139 or later (`batch-ct-ingest.sh --install`); the other two work with any release.
+- `usnm-ocrs-stale-alert-<env>` (severity 2, every 15 min): no `ocr.out.oldest_age_s` for over 2 hours (2 h 20 min): a stopped timer, down container, killed run or lost telemetry.
+- `usnm-ocrs-backlog-alert-<env>` (severity 3, hourly): oldest part over 72 hours (`ocr.out.parts_left` has the count). `ocr-out` deletes blobs 30 days after last change, so an old backlog is lost.
 
-- `usnm-ocrs-failed-alert-<env>` (severity 2): a run recorded `ingest.command_failures` (command `ocr-sync`) in the last 30 minutes. Every `usnm-ingest` that ends in error records it before it exits. The error itself is in the journal.
-- `usnm-ocrs-stale-alert-<env>` (severity 2): no `ocr.out.oldest_age_s` for more than 2 hours (2 h 20 min). Only a run that gets through the pickup records it, so this rule catches a stopped timer, a container that is down, a run killed before it could record a failure, and telemetry that no longer arrives.
-- `usnm-ocrs-backlog-alert-<env>` (severity 3): the last run's `ocr.out.oldest_age_s` is over 72 hours. `ocr.out.parts_left` has how many parts wait.
-
-Each email names, in `Detail`, the last failure's time, the last good run's time or the oldest part's day. Each costs $0.50 a month (checked every 15 minutes, the backlog rule hourly). The failure count needs a `usnm-ingest` from #1139 or later in CT 215 (`batch-ct-ingest.sh --install`); the other two work with any release.
+The Azure job instead uses `usnm-ingest-job-failed-alert-<env>` (severity 2; #308) and the backlog alert.
 
 ## Our OCR in releases (#296)
 
-With `USNM_OCR_LOCAL` (the ingest job's `--ocr-local`), a release weighs the text `ocr-sync` took into `curated/ocr-local/` against LoC's on the pages of the batches it indexes, and uses ours where rule v1 prefers it ([12 §12.5 Step 9](../design/12-onprem-ocr-pipeline.md)). It is off by default, and with it off a release reads nothing from `ocr-local` and its documents and snapshot files don't change. `id-usnm-ingest` already has Blob Data Contributor on `curated`, so the setting needs no new grant.
+With `USNM_OCR_LOCAL` (`--ocr-local`), a release compares `curated/ocr-local/` text with LoC's on the batches it indexes and uses ours where rule v1 prefers it ([12 §12.5 Step 9](../design/12-onprem-ocr-pipeline.md)). Off by default, and then nothing in `ocr-local` is read. No new grant is needed.
 
 ```sh
 scripts/azure/settings.sh --env prod --key USNM_OCR_LOCAL --value true
 scripts/azure/provision.sh --env prod
 ```
 
-- The weekly delta applies it to the batches it indexes. Published batches take it only at a [full rebuild](rebuild-and-index-storage.md#full-rebuild) with the setting on. Each release that builds a main index logs `our OCR in ocr-local` (parts, titles, revocations) and, when the version has published batches, `pages of ocr-local that would replace LoC's text in published batches`, an estimate from the scores `ocr-sync` stored. A release of only the Japanese overlay reads nothing from `ocr-local` and logs neither line. `ocr-sync --report` ([above](#ocr-pickup-ocr-sync-296)) gives the same kind of estimate without a release.
-- Records: `reference/<version>/ocr_local.json` (the rule and metric versions, a parts summary, pages considered, replaced and kept by reason, language and engine, and the revocations applied), `ocr_local_pages.bin` (the pages that hold our text), the manifest's `built_from.ocr_local` and the build record's `features.ocr_local`. The API marks hits on those pages "Our OCR", with a viewer link that has no highlight. On a page the Japanese overlay also has, the Japanese overlay wins.
-- New releases retain sorted `inputs` in `ocr_local.json`: each consumed part's relative path, byte length and SHA-256 of the bytes actually decoded. The manifest hashes this receipt; its existing parts summary stays unchanged. These are this run's inputs, not evidence for pages carried from a previous version. Retain the referenced immutable parts to reconstruct candidate selection; neither an engine label nor a directory's current contents proves an exact run. Changed bytes for the same path across batches stop the release. Finishing also compares the per-batch input digest in the original JSON log: use the original binary for an older interrupted run whose log lacks that digest, rather than relabeling its inputs with this version.
-- To take a node's or engine's output out, write a create-only `curated/ocr-local/revoked/<stamp>.json` with `reason`, `reference` and at least one of `node`, `engine`, `run`, `from` and `to`; every field given must match. Matching rows are left out from the next release that indexes their batches, so text already published stays until a full rebuild. A file the release can't read stops the release.
-- Clearing the setting stops new replacements. A delta carries the published version's `ocr_local_pages.bin` forward either way; the next full rebuild without the setting goes back to LoC's text everywhere.
+- **Scope.** The weekly delta applies it to batches it indexes; published batches only at a [full rebuild](rebuild-and-index-storage.md#full-rebuild). Main-index releases log `our OCR in ocr-local` and, with published batches, `pages of ocr-local that would replace LoC's text in published batches`. Japanese-overlay-only releases read nothing. `ocr-sync --report` ([above](#ocr-pickup-ocr-sync-296)) estimates without a release.
+- **Records.** `reference/<version>/ocr_local.json` (rule and metric versions, parts, pages considered/replaced/kept by reason, language and engine, revocations), `ocr_local_pages.bin`, the manifest's `built_from.ocr_local` and the build record's `features.ocr_local`. Hits on those pages show "Our OCR" with an unhighlighted viewer link; the Japanese overlay wins where both apply.
+- **Inputs.** `ocr_local.json` keeps sorted `inputs` (each part's path, length and SHA-256 of decoded bytes), hashed by the manifest. They cover this run only; keep the immutable parts to reconstruct selection. Different bytes at the same path across batches stop the release. Finishing checks the per-batch input digest in the original JSON log; for an older interrupted run without it, finish with the original binary.
+- **Revocation.** A create-only `curated/ocr-local/revoked/<stamp>.json` with `reason`, `reference` and at least one of `node`, `engine`, `run`, `from`, `to` (every field given must match) drops matching rows from the next release of their batches; published text stays until a full rebuild. An unreadable file stops the release.
+- **Off.** Clearing the setting stops new replacements; deltas still carry `ocr_local_pages.bin` forward, and the next full rebuild without it restores LoC's text.
 
 ## The OCR dashboard on the LAN (#296)
 
-`usnm-ocrdash` summarizes source acquisition, local OCR, volunteer compute, evaluation and publication on an access-controlled internal endpoint ([12 §12.2.5](../design/12-onprem-ocr-pipeline.md#1225-the-lan-dashboard)). Pipelines opens directly beneath the summaries, independently of Operational details. On phones, diagrams become readable step cards with the same descriptions and live rates, and Step throughput puts each step on a card, its counts under their column names and its week of bars the width of the screen; wider screens retain the SVG maps and the table. Operational details (workers, batches, pages, queues, host stats and provenance) remain collapsed by default. The same data is at `/api/view.json`, and per panel at `/api/hosts.json`, `/api/fetch.json`, `/api/nodes.json`, `/api/next.json`, `/api/ocred.json` and `/api/throughput.json`. DNS, certificates, container provisioning and access rules are infrastructure concerns.
+`usnm-ocrdash` summarizes acquisition, local OCR, volunteer compute, evaluation and publication on an access-controlled internal endpoint ([12 §12.2.5](../design/12-onprem-ocr-pipeline.md#1225-the-lan-dashboard)). Pipelines sit under the summaries; Operational details (workers, batches, pages, queues, hosts, provenance) start collapsed. Phones get step cards instead of SVG maps and tables. Data: `/api/view.json`, and per panel `/api/hosts.json`, `/api/fetch.json`, `/api/nodes.json`, `/api/next.json`, `/api/ocred.json`, `/api/throughput.json`. DNS, TLS, containers, access rules, source URLs, mounts and host-stat collectors belong to infrastructure tooling.
 
-Summaries use fresh reports, not a shared pipeline percentage. Local completions are worker output; BOINC counts are assigned/unsent result replicas, not unique pages or actively computing devices. The evaluation card groups observed assignments by purpose, but campaign readiness, paired results and acceptance decisions are not connected. Catalog counts cover imported evidence only. Missing publication evidence stays unknown, never zero or inferred success. Snapshot generation time is shown separately from evidence age, so old historical observations do not label all live lanes stale.
+**Counts.** Summaries use fresh reports, not one pipeline percentage. BOINC counts are assigned or unsent replicas, not pages or devices. The evaluation card groups assignments by purpose; campaign readiness and acceptance aren't connected to it. Catalog counts cover imported evidence only. Missing evidence is unknown, never zero, and snapshot time is shown apart from evidence age.
 
-**Pipelines.** The collapsed reference section draws the original LoC text, keep-set OCR, buffer-set OCR, Serial Set and volunteer/experiment flows, as inline SVG in `crates/usnm-ocr-dash/src/diagrams/`. Storage lanes and the tables below them identify sources, OCR requirements and publication gates. The volunteer lane is independent of local OCR; queued/assigned replicas do not establish active computation, experiment success or acceptance. Worker boxes describe configured workers, not fixed machine assignments. Imported OCR can be considered by an enabled release indexing that batch; previously published batches need a full rebuild.
+**Rates.** Every active box shows a rate or "rate unknown".
 
-Active boxes include a rate or "rate unknown". Fetch rates are last-hour completions shared across keep/buffer and the fetch/store boxes; worker rates are last-hour successful completions from fresh reporting workers across both sets. Do not add repeated rates or interpret them as per-dataset measurements. Serial Set volume throughput is the collector's run-to-date average, including empty/incomplete volumes, not an upload rate. An active-step table below each diagram gives the measurement window and scope. Queue stock and BOINC assignments are stock. The queue, `usnm_ocr`, assigned and validation boxes take their rate from the step throughput counters when those are connected; a box without one says rate unknown, and missing rates are not zero. Separate upload, import, acceptance and publication rates are not inferred from worker completions. Stale/error sources do not animate as live work.
+- Fetch rates are last-hour completions shared across keep and buffer.
+- Worker rates are last-hour successes across both sets.
+- Serial Set throughput is a run-to-date average, not an upload rate.
+- The queue, `usnm_ocr`, assigned and validation boxes use the step throughput counters.
 
-States come from the operational view; steps without telemetry show "not tracked here". The dashboard does not directly query Azure ingest, release or search, and user-driven priority queueing is still marked "not built". Counts are not hard-coded. When the pipeline changes, edit the SVG and the answers in `diagrams.rs`; tests check XML, marker substitution, unique ids, source freshness, rate units/scope and the absence of private addresses or internal host names.
+Don't add repeated rates together. Queue stock and BOINC assignments are stock, not rates. Steps without telemetry say "not tracked here", and user-driven priority queueing is marked "not built". The dashboard doesn't query Azure ingest, release or search.
 
-**Step throughput (#704).** The panel under the summaries shows, for each pipeline step, its count in the last full hour and the last 24 full hours, seconds per page where they can be measured, the step's limit where it is known, and a week of history in 4-hour bars. Below it are valid, inconclusive, invalid, error and waiting results for `usnm_ocr`, `usnm_quality` and `usnm_qwen` (replicas, not pages; #1420) and the controller's phases. The same data is at `/api/throughput.json` on the LAN and as `throughput` in `/api/view.json`.
+**Diagrams** are inline SVG in `crates/usnm-ocr-dash/src/diagrams/`. When the pipeline changes, edit the SVG and the answers in `diagrams.rs`; tests check XML, markers, unique ids, freshness, rate units/scope and that no private addresses or internal host names appear.
 
-The numbers come from what each step already records. The scan fetch is read from the fetch index here. Everything else comes from `scripts/ocr-node/throughput-collect.py`, one run a source on the host that has the data, which PUTs hourly counts to `/api/throughput/<source>`. The dashboard takes a push only from the address given for that source (`--throughput-push <source>=<host>` / `USNM_OCRDASH_THROUGHPUT_PUSH`).
+### Step throughput (#704)
 
-| Source       | Runs on                        | Reads                                                                                                                           | Gives                                                                                        |
-| ------------ | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| `controller` | the priority controller's host | its journal                                                                                                                     | ticks passed and failed, tick and phase seconds, pages claimed and collected                 |
-| `ship`       | the quality shipper's host     | the shippers' and result loaders' journals                                                                                      | pages shipped, staged, submitted and loaded                                                  |
-| `boinc`      | the BOINC server               | two bounded aggregate queries on the `result` and `workunit` tables, and podman's start and died events for the step containers | results by outcome, workunits with a canonical result, device seconds, bridge lock hold time |
-| `batch`      | the host that runs `ocr-sync`  | `usnm-ocr-sync.service`'s journal                                                                                               | pages in committed imports, rejected parts, dead letters, `ocr-bulk`'s depth at each run     |
+Per step: the last full hour, last 24 hours, seconds per page, known limit and a week of 4-hour bars; then valid, inconclusive, invalid, error and waiting results for `usnm_ocr`, `usnm_quality` and `usnm_qwen` (replicas; #1420) and controller phases. At `/api/throughput.json` and `throughput` in `/api/view.json`. The scan fetch comes from the fetch index; other sources run `scripts/ocr-node/throughput-collect.py` and PUT hourly counts to `/api/throughput/<source>`, accepted only from the configured address (`--throughput-push <source>=<host>` / `USNM_OCRDASH_THROUGHPUT_PUSH`).
 
-Each collector recomputes complete hours, so a repeated run corrects a bucket and never adds to it, and a source that stops leaves unknown hours rather than a short one. The `boinc` queries run in a read-only session, stop after five seconds, return aggregates only and take well under a second on a table of some 30,000 rows; the dashboard asks the server nothing, and page views cost the server nothing. Validation states change while a quorum completes, so run the `boinc` source with a longer window (`USNM_THROUGHPUT_HOURS=72`) than the journal sources (3). To fill the history once, run each source with `--hours 336`; `boinc` is good for that too, since `db_purge` keeps results for 30 days.
+| Source       | Runs on                        | Reads                                                                                                      | Gives                                                                                        |
+| ------------ | ------------------------------ | ---------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| `controller` | the priority controller's host | its journal                                                                                                | ticks passed and failed, tick and phase seconds, pages claimed and collected                 |
+| `ship`       | the quality shipper's host     | the shippers' and result loaders' journals                                                                 | pages shipped, staged, submitted and loaded                                                  |
+| `boinc`      | the BOINC server               | two bounded aggregate queries on `result` and `workunit`, and podman start/died events for step containers | results by outcome, workunits with a canonical result, device seconds, bridge lock hold time |
+| `batch`      | the host that runs `ocr-sync`  | `usnm-ocr-sync.service`'s journal                                                                          | pages in committed imports, rejected parts, dead letters, `ocr-bulk`'s depth at each run     |
 
-The history is `throughput.json` in the state directory: two weeks of hours, a few hundred KB, read at start. An hour no source covered has no value and shows as unknown, never zero. A source that has not reported for 45 minutes is marked stale, and its rates turn unknown as the hours pass. Assigned replicas and queue lengths stay stock, not throughput: `usnm_quality` and `usnm_qwen` are counted in workunits, since one can hold several pages and the database doesn't say how many; their load rows count pages. Lock hold time covers step containers, so it is a minimum: the result loaders and native Qwen submission hold the lock without a container. The loaders' own seconds are whole runs, not lock time.
+Collectors recompute whole hours, so reruns correct rather than add. The `boinc` queries are read-only, aggregate-only and stop at five seconds; run it with `USNM_THROUGHPUT_HOURS=72` (quorums settle late) and journal sources with 3. Backfill once with `--hours 336` (`db_purge` keeps results 30 days). History is `throughput.json` in the state directory (two weeks, a few hundred KB). Uncovered hours are unknown. A source silent 45 minutes is stale, and its rates turn unknown as the hours pass. `usnm_quality` and `usnm_qwen` count workunits, not pages, while their load rows count pages. Lock hold time covers step containers only, so it is a minimum: the result loaders and native Qwen submission hold the lock without a container.
 
-**Deployment.** Use infrastructure tooling to install the released dashboard binary, configure its source URLs, mounts and TLS, and install host-stat collectors. The application repository provides the binary, API schemas and service definitions, not lab provisioning.
+### Corpus data flow snapshot (#704)
 
-**Corpus data flow snapshot (#704).** The optional "Corpus data flow" panel reads a local metadata-only `corpus-catalog` JSON file at the usual file polling cadence (15 seconds by default). It appears at `/api/pipeline.json` and as `pipeline` in `/api/view.json`, under the same LAN access controls. It never queries a database or cloud service and needs no credentials. Its current counts come hourly from this page's throughput history ([14: Current evidence](../design/14-corpus-data-flow.md#current-evidence)). Cataloged stage, run and artifact counts are separate from local worker journal totals, not whole-corpus totals: zero can mean no catalog loaded. The producer must include coverage and issues for absent sources and must not include OCR text or storage URIs.
+The optional "Corpus data flow" panel polls a local metadata-only `corpus-catalog` JSON file (15 s default), served at `/api/pipeline.json` and as `pipeline` in `/api/view.json`. No database, cloud or credentials. Counts come hourly from the throughput history ([14: Current evidence](../design/14-corpus-data-flow.md#current-evidence)) and are not whole-corpus totals; zero can mean no catalog. The producer publishes atomically, covers absent sources with coverage and issues, and never includes OCR text or storage URIs. Set `--pipeline-snapshot` / `USNM_OCRDASH_PIPELINE_SNAPSHOT`, and `--pipeline-max-age-secs` / `USNM_OCRDASH_PIPELINE_MAX_AGE_SECS` (default 900; 1–604800). Open panels and scroll positions survive refresh.
 
-The panel spans the operational-details section below "At a glance". Its stage list scrolls independently; expand a stage for provenance, or "Coverage, provenance and issues" for source limits and diagnostics. Open details and list positions survive automatic refresh. Closed operational details retain their existing panels and refresh on reopening, preserving list positions while summaries continue to update.
+**Input limits.** 1 MiB, schema version 1, producer `corpus-catalog`. Rejected: unknown fields, invalid UTC RFC3339 times, times over 60 s ahead, negative, fractional or over-trillion counts, `verified + missing > locations`. At most 32 coverage strings (128 chars), 64 stages (id 256, label 128, detail 512), 128 issues (code 64, detail 512); no control characters; unique stage ids; unknown counts null.
 
-Have the producer atomically publish a readable snapshot file and configure `--pipeline-snapshot` / `USNM_OCRDASH_PIPELINE_SNAPSHOT` through the deployment's infrastructure tooling. Preserve existing source, TLS and access settings. `USNM_OCRDASH_PIPELINE_MAX_AGE_SECS` / `--pipeline-max-age-secs` sets evidence freshness (default 900 seconds; allowed 1–604800).
+**Freshness.** The wrapper reports `retrieved_at`, `last_error`, `age_secs`, `stale`, optional `snapshot` and `stage_freshness`. Source `observed_at` sets freshness, not `generated_at` or retrieval time (null is unknown); per-stage `observed_at` overrides it (explicit null unknown, omitted inherits). Stale stage evidence stays visible even when another source was just observed. A bad or missing file keeps the last valid snapshot with an error and hides its live counts; with none, the panel says unavailable and never falls back to worker totals. The diagnostic heading reads "Some evidence old or unknown".
 
-**Public view.** `--public-listen` / `USNM_OCRDASH_PUBLIC_LISTEN` (an address and port, unset by default) starts a second, plain-HTTP listener for a Cloudflare Tunnel. It serves GET and HEAD of `/`, `/healthz`, `/api/view.json`, `/api/pipeline.json` and `/api/fetch.json` only, redacted (no workbook link, host, node or guest names, container numbers, paths, addresses or seed plan), with `Cache-Control: public, max-age=60`. Pushes and every other route are not on it. It has no `--allow` check: bind it to loopback or an address only cloudflared can reach. See [12 §12.2.5](../design/12-onprem-ocr-pipeline.md#1225-the-lan-dashboard).
+### Publication monitoring
 
-Input is limited to 1 MiB and schema version 1, producer `corpus-catalog`; unknown fields, invalid UTC RFC3339 times, times more than 60 seconds ahead, negative/fractional or over-trillion counts, and `verified + missing > locations` are rejected. Bounds: 32 coverage strings (128 characters), 64 stages (id 256, label 128, detail 512), 128 issues (code 64, detail 512). No control characters; stage ids must be unique; unknown stage counts must be null. The wrapper reports `retrieved_at`, `last_error`, `age_secs`, `stale`, optional `snapshot`, and `stage_freshness`. Source `observed_at`, not `generated_at` or retrieval time, determines freshness; null means unknown/unavailable. Optional stage `observed_at` supplies independent evidence times (explicit null is unknown; omission uses the snapshot evidence time). Stale stage evidence remains visible even when another source was just observed. Missing, oversized or malformed files retain the last valid snapshot with an explicit error indication and suppress its live summary counts; no valid snapshot shows unavailable, never a silent fallback to worker totals. The API's aggregate `stale` flag remains unchanged; the diagnostic heading says "Some evidence old or unknown", with actual read errors shown beneath it.
+`--publish-status /existing/publish-fetched.json` (`USNM_OCRDASH_PUBLISH_STATUS`) reads a bounded native record or fresh status-mirror envelope for `usnm-loc-publish-fetched.service` and shows its last completion time, result and exit status. Missing, expired or unreadable metadata is unknown, source observation time is not run time, and a successful run doesn't mean new pages. Metadata can vanish across a restart: wait for the next run rather than forcing one. Install a compatible release before adding the setting.
 
-**Physical cache stock (#368).** The index-driven inventory below does not
-enumerate unindexed files or establish unique disk occupancy. For that separate
-question, run the read-only stock walker on the POSIX cache host:
+The home-infra v2 transport reads five properties by typed `busctl get-property` (not `GetAll` or `systemctl show`), never invoking the publisher or reading its environment or journal: `Unit.LoadState`, `Unit.ActiveState` (`s`), `Service.Result` (`s`), `Service.ExecMainStatus` (`i`), `Service.ExecMainExitTimestamp` (`t`). `busctl --json=short` returns scalar `data` (Debian 12: `{"type":"t","data":1793191480159818}`), UTC microseconds, zero for none. The timestamp is read before and after the others and active state rechecked; disagreement is unknown. The [collector](https://github.com/tgoodyear/home-infra/blob/d14176e9ba9798930244dfd2716e1fb7d2ff3d51/scripts/lab/ocrdash-source-status-v2.py) and [tests](https://github.com/tgoodyear/home-infra/blob/d14176e9ba9798930244dfd2716e1fb7d2ff3d51/scripts/lab/test_ocrdash_sources.py) need home-infra access; the dashboard checks only the record, so review the collector, run its tests and confirm the API on the source host before deploying.
+
+### Public view
+
+`--public-listen` / `USNM_OCRDASH_PUBLIC_LISTEN` (unset by default) adds a plain-HTTP listener for a Cloudflare Tunnel serving only GET and HEAD of `/`, `/healthz`, `/api/view.json`, `/api/pipeline.json` and `/api/fetch.json`, redacted (no workbook link, host, node or guest names, container numbers, paths, addresses or seed plan), with `Cache-Control: public, max-age=60`. No pushes, no `--allow` check: bind it to loopback or an address only cloudflared reaches.
+
+### Physical cache stock (#368)
+
+For unindexed files and real disk occupancy, run the read-only stock walker on the cache host, repeating with the same work directory until `finished` is true:
 
 ```bash
 nice -n 19 ionice -c 3 python3 scripts/corpus/scan_stock_inventory.py \
@@ -477,38 +410,13 @@ nice -n 19 ionice -c 3 python3 scripts/corpus/scan_stock_inventory.py \
   --cache-set keep --cache-set buffer --max-entries 1000 --max-seconds 20
 ```
 
-Repeat with the same work directory until `finished` is true. SQLite checkpoints
-and `report.json` are private outputs outside the cache; no service, scan,
-sidecar, source budget or fetch index is changed. An existing work directory
-must be owned by the invoking user and deny all group/other access (mode 0700).
-The root descriptor is identity-checked and pinned for the whole invocation;
-renaming its path cannot redirect the traversal. Each invocation limits newly
-observed directory entries and cooperatively checks elapsed time. Filesystem
-metadata calls can still block: use an external process deadline, admit only
-quiet I/O windows, and stop rather than compete with a rebuild. A killed slice
-rolls back; the next invocation resumes without duplicate observations.
+- Outputs (SQLite checkpoints, `report.json`) are private and outside the cache; nothing in the cache or fetch index changes. The work directory must be yours with mode 0700. The root is identity-checked and pinned. Metadata calls can still block: use an external deadline and quiet I/O windows, and stop rather than compete with a rebuild. A killed slice rolls back.
+- Each directory's names go once into a pending queue (at most 10,000; larger fails). Resumes don't replay; a changed pending directory or root fails. An unchanged resume keeps `observed_until`. Schema changes need a new work directory.
+- The report splits keep/buffer bytes, distinct page paths, unplaced paths and other entries; inode counts dedupe hardlinks; sizes are logical, not ZFS blocks; symlinks aren't followed. Errors fail explicitly. Counts span an interval, not a snapshot: finished directories aren't rescanned for later arrivals or removals, so use a new work directory for a fresh observation. No checksum, coverage or acceptance is implied.
 
-Each directory's names-only listing is captured once into a durable pending
-queue, capped at 10,000 names (an oversized directory fails explicitly).
-Resumes consume that queue without replaying an already observed prefix. A
-partial pending-directory index and transactional incremental counters keep
-selection and reporting independent of completed history. An unchanged resume
-retains `observed_until`; `generated_at` is only the report-generation time.
-Checkpoint schema changes require a new work directory; retain old evidence.
+### Resumable local scan-cache inventory (#704)
 
-The report separates KEEP/buffer scan-file bytes, distinct page paths across
-formats/resolutions, unplaced paths and other entry kinds. Distinct device/inode
-counts deduplicate hardlinks across both sets; maximum observed inode sizes are
-logical bytes, not allocated ZFS blocks. Symlinks are reported, not traversed.
-Errors fail explicitly. Counts describe an interval, not an atomic snapshot:
-finished directories are not rescanned for later arrivals or removals. Resume
-checks the root identity/configuration; a changed pending directory fails.
-Use a new work directory for a fresh observation. No image checksum, complete
-manifest coverage, native import, reclamation or corpus acceptance is implied.
-
-**Resumable local scan-cache inventory (#704).** For indexes larger than the
-single-batch adapter's 10,000-row/16 MiB limits, run the stdlib orchestrator
-**on the POSIX machine holding the scan files**:
+For indexes over the single-batch adapter's 10,000-row/16 MiB limits, run on the machine holding the scans, repeating until `finished` is true:
 
 ```bash
 python3 scripts/corpus/scan_cache_inventory.py \
@@ -517,43 +425,12 @@ python3 scripts/corpus/scan_cache_inventory.py \
   --cache-set keep --cache-set buffer --max-batches 10
 ```
 
-Repeat the identical command until `finished` is true. Select only cache sets
-that this operator intends to observe; the index does not encode membership.
-No scans are downloaded, hashed, modified or deleted. A regular file with the
-expected size is `present`, **not checksum-verified**. Missing/wrong-size copies
-are observations, not deletion requests; absent rows are not deletions either.
-This does not change workers, cloud archives, acceptance, publication or indexing.
+- Choose cache sets deliberately; the index doesn't encode membership. Nothing is downloaded, hashed or changed. A file of the right size is `present`, **not checksum-verified**; missing or wrong-size copies are observations, not deletion requests. Counts are index rows, **not unique pages or corpus completeness**.
+- The first run fixes the index prefix (bytes, inode, SHA-256, protecting **metadata**, not images); resumes re-stream it in reads of at most 1 MiB and fail on any change. The index must stay append-only during a run, and appends are excluded (use a new directory for a later prefix); a final line without newline stays uncovered.
+- Slices are at most 256 rows/1 MiB (64 KiB lines), statted per set and ingested transactionally. `--max-batches` limits new slices per run, not the prefix integrity scan. Output reports covered, captured, uncovered and appended bytes, rows, batches and sets.
+- Keep the directory on durable storage: raw slices, immutable `batch-*/keep.jsonl` / `batch-*/buffer.jsonl` evidence and atomic `state.json`. Checkpoints advance after every set commits; crashes replay idempotently, and unpublished builds remain as `.interrupted` scratch. A lock prevents concurrent use; don't share the catalog with another inventory job at once.
 
-The first invocation fixes an input byte prefix, inode, and prefix SHA-256.
-That hash protects the **index metadata**, not image bytes. Each resume checks
-the captured prefix by streaming it with at most 1 MiB reads; replacement,
-truncation, or edits fail closed. The index must remain append-only during an
-invocation. Appends are deliberately excluded; use a new inventory directory
-to observe a later prefix (overlapping observations are allowed). A trailing
-record without a newline is excluded and remains explicitly uncovered.
-
-Each slice is limited to 256 rows/1 MiB and the existing 64 KiB line limit.
-It is statted separately for each selected set and imported through the existing
-transactional catalog ingestion. `--max-batches` limits newly completed slices
-per invocation, not the prefix integrity scan. Output reports covered/captured
-bytes, uncovered bytes, rows, completed batches, selected sets, and later
-appended bytes. Counts are index rows/observations, **not unique pages or corpus
-completeness**. Even `finished: true` means only that the fixed prefix's complete
-records were processed; LAN dashboard coverage remains partial.
-
-Keep the private inventory directory on durable local storage. It contains
-bounded raw index slices (including original discarded metadata), immutable
-`batch-*/keep.jsonl` / `batch-*/buffer.jsonl` evidence and atomic `state.json`
-checkpoints. Published evidence is reused without re-statting after interruption.
-Checkpoints advance only after all selected sets commit. A crash after a commit
-is recovered by idempotent replay, while an interrupted unpublished build is
-retained as replaceable `.interrupted` scratch. A filesystem lock prevents
-concurrent use of one inventory directory; do not share its catalog with a
-different inventory job concurrently. State/evidence storage grows with the
-observed prefix; working memory is bounded to one slice/adapter batch.
-
-To rebuild a lost catalog, replay only the retained evidence, not `index.jsonl`
-slices or scratch files, into the **same database pathname**:
+To rebuild a lost catalog, replay only the evidence into the **same database path**, then resume (resume refuses a missing catalog checkpoint):
 
 ```bash
 for batch in inventory-20261017/batch-*/keep.jsonl inventory-20261017/batch-*/buffer.jsonl; do
@@ -562,9 +439,8 @@ for batch in inventory-20261017/batch-*/keep.jsonl inventory-20261017/batch-*/bu
 done
 ```
 
-The normal resume command refuses a missing catalog checkpoint; after evidence
-replay it can resume. Evidence is independent of the original scan files and can
-also rebuild a different database for inspection. Do not hand-edit checkpoints
-or evidence. Input transport, scheduling and retention policy are separate work.
+Don't hand-edit checkpoints or evidence.
 
-**Binary updates.** Build with `cargo build --locked --release -p usnm-ocr-dash --bin usnm-ocrdash`. Deploy the reviewed artifact with infrastructure tooling, retaining rollback and preserving existing settings. Verify `/healthz`, `/api/pipeline.json`, `/api/nodes.json` and the UI; health alone does not prove fresh evidence. After a restart the dashboard answers at once but reads the fetcher's files for some minutes (about six and a half with 1,983 queued manifests); meanwhile `/readyz` on the LAN listener answers 503 `warming`, the view's `warming` is set and the queue totals are partial. Wait for `/readyz` to answer 200 `ready` before checking counts. The data-flow observer records `local-ocr-warming` for a warm-up under 30 minutes, leaves the scan stages unknown and doesn't fail its run; a longer one is `local-ocr-unavailable`.
+### Binary updates
+
+Build with `cargo build --locked --release -p usnm-ocr-dash --bin usnm-ocrdash`; deploy with infrastructure tooling, keeping rollback and settings. Check `/healthz`, `/api/pipeline.json`, `/api/nodes.json` and the UI (health alone doesn't prove fresh evidence). After a restart it reads the fetcher's files for a few minutes (about six and a half with 1,983 queued manifests): `/readyz` on the LAN listener answers 503 `warming`, the view's `warming` is set and queue totals are partial. Wait for 200 `ready`. The data-flow observer records `local-ocr-warming` for warm-ups under 30 minutes (scan stages unknown, run not failed) and `local-ocr-unavailable` beyond.
