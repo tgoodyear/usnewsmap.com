@@ -17,7 +17,9 @@ COHORT_CLASSES = (
 AMD_GENERAL_MARKER = "usnm-amd-general-admission-v1"
 NVIDIA_GENERAL_MARKER = "usnm-nvidia-general-admission-v1"
 # Classes an operator can open to all of the app's work (native-qwen-cohort.php --general).
-GENERAL_MARKERS = {"amd_vulkan_8b": AMD_GENERAL_MARKER, "nvidia_vulkan_8b": NVIDIA_GENERAL_MARKER}
+INTEL_GENERAL_MARKER = "usnm-intel-general-admission-v1"
+GENERAL_MARKERS = {"amd_vulkan_8b": AMD_GENERAL_MARKER, "nvidia_vulkan_8b": NVIDIA_GENERAL_MARKER,
+                   "intel_vulkan_8b": INTEL_GENERAL_MARKER}
 AMD_FIRST_MARKER = "usnm-amd-first-reservation-v1"
 
 
@@ -48,7 +50,7 @@ def merge_policy(source: bytes, current: bytes) -> bytes:
                        and (node.text or "").strip() == marker]
             if markers:
                 if len(markers) != 1 or any(fields) or name not in reviewed:
-                    label = "AMD" if name == "amd_vulkan_8b" else "NVIDIA"
+                    label = {"amd_vulkan_8b": "AMD", "intel_vulkan_8b": "Intel"}.get(name, "NVIDIA")
                     raise ValueError(f"Invalid explicit {label} general admission")
                 for node in list(reviewed[name]):
                     if node.tag in ("min_wu_id", "max_wu_id") or (

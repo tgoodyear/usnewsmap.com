@@ -787,6 +787,65 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(before, self.snapshot())
 
 
+class LockWaitTests(unittest.TestCase):
+    """The bridge step waits for a lock another step holds, then takes all of them (#835)."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.locks = [Path(tmp.name) / "step.lock", Path(tmp.name) / "handoff.lock"]
+        retry = mock.patch.object(archive, "LOCK_RETRY_SECS", 0.05)
+        retry.start()
+        self.addCleanup(retry.stop)
+
+    def hold(self, path):
+        handle = open(path, "a")
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return handle
+
+    def test_refuses_at_once_without_a_wait(self):
+        held = self.hold(self.locks[1])
+        self.addCleanup(held.close)
+        with self.assertRaisesRegex(archive.Refused, "handoff.lock is locked"):
+            with archive.flocked(self.locks):
+                self.fail("took a held lock")
+
+    def test_waits_for_a_held_lock_and_holds_none_meanwhile(self):
+        held = self.hold(self.locks[1])
+        seen = []
+
+        def release():
+            time.sleep(0.2)
+            # The waiting step must not sit on the first lock while it waits for the second.
+            probe = open(self.locks[0], "a")
+            try:
+                fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                seen.append("free")
+                fcntl.flock(probe, fcntl.LOCK_UN)
+            except BlockingIOError:
+                seen.append("held")
+            probe.close()
+            held.close()
+
+        thread = threading.Thread(target=release)
+        thread.start()
+        with archive.flocked(self.locks, wait_secs=5):
+            for path in self.locks:
+                with open(path, "a") as other, self.assertRaises(BlockingIOError):
+                    fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        thread.join()
+        self.assertEqual(seen, ["free"])
+
+    def test_refuses_when_the_wait_runs_out(self):
+        held = self.hold(self.locks[0])
+        self.addCleanup(held.close)
+        started = time.monotonic()
+        with self.assertRaisesRegex(archive.Refused, "step.lock is locked"):
+            with archive.flocked(self.locks, wait_secs=0.3):
+                self.fail("took a held lock")
+        self.assertGreaterEqual(time.monotonic() - started, 0.3)
+
+
 class FakeMysql:
     """The mysql client over SQLite, with BOINC's two tables as far as the step reads them."""
 
