@@ -332,9 +332,11 @@ async fn visit_examples(state: &Arc<AppState>, backend: &Counting, version: &str
     load_examples(state, backend, version).await.0
 }
 
+/// How many responses are stored under `version`. `put_new` writes a `.tmp-*` file in the
+/// same directory, hard-links it to the final name and only then removes it, so a raw
+/// directory listing counts a response in flight (and, between the link and the unlink,
+/// counts one twice). Count the final names only.
 fn persisted(dir: &Path, version: &str) -> usize {
-    // `LocalStore` writes `.tmp-*` files beside the final one and renames or
-    // links them into place; a write in flight must not count as persisted.
     std::fs::read_dir(dir.join(version).join("f8"))
         .map(|d| {
             d.filter_map(Result::ok)
