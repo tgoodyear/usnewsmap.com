@@ -337,7 +337,7 @@ async fn visit_examples(state: &Arc<AppState>, backend: &Counting, version: &str
 /// directory listing counts a response in flight (and, between the link and the unlink,
 /// counts one twice). Count the final names only.
 fn persisted(dir: &Path, version: &str) -> usize {
-    std::fs::read_dir(dir.join(version).join("f8"))
+    std::fs::read_dir(dir.join(version).join("f9"))
         .map(|d| {
             d.filter_map(Result::ok)
                 .filter(|e| !e.file_name().to_string_lossy().starts_with(".tmp-"))
