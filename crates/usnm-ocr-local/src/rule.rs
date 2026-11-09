@@ -177,7 +177,8 @@ pub mod line_merge {
     }
 
     /// Whether the page is admitted, with its counts either way. A Cherokee line took the
-    /// model's reading when ours is that reading and not LoC's text.
+    /// model's reading when ours is that reading and it isn't empty, even when it is LoC's text
+    /// too: a model that agrees with LoC is still the model's reading.
     pub fn verdict(lines: &[Line<'_>]) -> (Counts, Result<(), Keep>) {
         let mut counts = Counts::default();
         let mut changed = false;
@@ -187,7 +188,7 @@ pub mod line_merge {
                 Some(read) => {
                     counts.cherokee += 1;
                     let read = read.trim();
-                    counts.model += usize::from(line.ours == read && line.ours != line.loc);
+                    counts.model += usize::from(!read.is_empty() && line.ours == read);
                 }
             }
         }
@@ -401,6 +402,30 @@ mod tests {
                 model: 1
             }
         );
+    }
+
+    #[test]
+    fn line_merge_counts_model_readings_that_agree_with_loc() {
+        // Nine lines the model read as LoC did, and one it corrected: all ten are the model's.
+        let mut lines = vec![line("ᎠᎴ", "ᎠᎴ", Some("ᎠᎴ")); 9];
+        lines.push(line("ᎦᎪᎯ", "ᎦᏙᎯ", Some("ᎦᏙᎯ")));
+        let (counts, v) = line_merge::verdict(&lines);
+        assert_eq!(
+            counts,
+            line_merge::Counts {
+                cherokee: 10,
+                model: 10
+            }
+        );
+        assert_eq!(v, Ok(()));
+        // An empty reading, or a fallback to LoC's text, is not the model's.
+        let lines = [
+            line("ᎠᎴ", "ᎠᎴ", Some(" ")),
+            line("ᎦᏙᎯ", "ᎦᏙᎯ", Some("ᎦᎪᎯ")),
+            line("ᎦᎪᎯ", "ᎦᏙᎯ", Some("ᎦᏙᎯ")),
+        ];
+        let (counts, v) = line_merge::verdict(&lines);
+        assert_eq!((counts.model, v), (1, Err(Keep::ModelShare)));
     }
 
     #[test]
