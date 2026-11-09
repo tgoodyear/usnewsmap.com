@@ -39,6 +39,7 @@ def main() -> None:
     ap.add_argument("--set", required=True)
     ap.add_argument("--language-config", required=True, help="name, intro, notes, title, drop_examples")
     ap.add_argument("--out-dir", required=True)
+    ap.add_argument("--examples-set", help="where the example pictures go (default: --set); a new name keeps cached old pictures from being served")
     a = ap.parse_args()
 
     data = json.load(open(a.data, encoding="utf-8"))
@@ -72,7 +73,7 @@ def main() -> None:
         if ch in drop or len(uris) < cfg.get("min_examples", 3):
             continue
         for i, u in enumerate(uris[:3]):
-            examples[ch].append(rel(save(u, os.path.join(root, prefix, "examples", f"{ord(ch):04x}_{i}"))))
+            examples[ch].append(rel(save(u, os.path.join(root, a.lang, a.examples_set or a.set, "examples", f"{ord(ch):04x}_{i}"))))
     language = {k: v for k, v in cfg.items() if k not in ("drop_examples", "min_examples")}
     language["examples"] = examples
     json.dump(language, open(os.path.join(a.out_dir, "language.json"), "w", encoding="utf-8"), ensure_ascii=False, indent=1)

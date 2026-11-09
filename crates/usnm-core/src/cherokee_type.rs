@@ -109,6 +109,13 @@ fn known(letters: &[char]) -> bool {
     vocabulary().contains(letters.iter().collect::<String>().as_str())
 }
 
+/// Whether `word`, wholly of syllabary letters in either case, is a form of
+/// the 1860 New Testament: a word [`fix_word`] leaves as it is because it is
+/// already right.
+pub fn is_known(word: &str) -> bool {
+    capitals(word).is_some_and(|(letters, _)| known(&letters))
+}
+
 /// Every reading of `letters` with one or more of its Ꭺ as Ꮩ, or none
 /// when it has more than [`MAX_GO_LETTERS`].
 fn go_as_do(letters: &[char]) -> Vec<Vec<char>> {
@@ -257,6 +264,12 @@ mod tests {
         for misread in ["ᏩᏍᎩ", "ᏣᏍᎩ", "ᏳᏍᎩ", "ᏀᏍᎩ"] {
             assert_eq!(fix_word(misread).as_deref(), Some("ᎾᏍᎩ"), "{misread}");
         }
+    }
+
+    #[test]
+    fn known_words_are_known_in_either_case() {
+        assert!(is_known("ᎾᏍᎩ") && is_known("ꮎꮝꭹ"));
+        assert!(!is_known("ᏩᏍᎩ") && !is_known("gold") && !is_known(""));
     }
 
     #[test]

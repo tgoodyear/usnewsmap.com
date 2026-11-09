@@ -6,6 +6,7 @@ members = [
     "crates/usnm-congress",
     "crates/usnm-core",
     "crates/usnm-corpus-signals",
+    "crates/usnm-glyphs",
     "crates/usnm-search",
     "crates/usnm-store",
     "crates/usnm-api",
@@ -37,6 +38,7 @@ repository = "https://github.com/tgoodyear/usnewsmap.com"
 usnm-alto = { path = "crates/usnm-alto" }
 usnm-congress = { path = "crates/usnm-congress" }
 usnm-core = { path = "crates/usnm-core" }
+usnm-glyphs = { path = "crates/usnm-glyphs" }
 usnm-test-support = { path = "crates/usnm-test-support" }
 usnm-corpus-signals = { path = "crates/usnm-corpus-signals" }
 usnm-ocr-contract = { path = "crates/usnm-ocr-contract", default-features = false }
