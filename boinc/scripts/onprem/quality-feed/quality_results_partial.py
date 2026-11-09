@@ -21,7 +21,7 @@ LOCK_ACQUIRED = "USNM_QUALITY_PARTIAL_STEP_LOCK_ACQUIRED"
 FRONTIER_LIMIT = 10_000
 REMOTE_WORK_SECONDS = 160  # Leave 20 seconds before the outer TERM for durable failure progress.
 INVENTORY_FILE = "inventory.json"
-# The full scheduling inventory reads every unit over NFS, which took over 10 minutes for about
+# The full scheduling inventory reads every unit over NFS, which took over 15 minutes for about
 # 2,800 wave10 units (#1655). It runs outside the step lock with its own budget; passes reuse it.
 INVENTORY_BUDGET_SECONDS = 1500
 INVENTORY_REFRESH_SECONDS = 3600
