@@ -278,13 +278,13 @@ Test-Case 'AMD GPU without the Vulkan loader is not eligible' {
     Assert-True ($null -eq $ready.Gpu -and $ready.DiskGiB -eq 12) 'unusable GPU does not raise the disk reserve'
 }
 
-Test-Case 'NVIDIA and Intel GPUs are pointed at Linux and need explicit CPU participation' {
+Test-Case 'NVIDIA and Intel GPUs are told no Windows version exists yet and need explicit CPU participation' {
     Set-ReadinessMocks
     Set-Gpus @(
         [pscustomobject]@{ Name = 'NVIDIA big'; Vendor = 'NVIDIA'; Driver = '1'; TotalMiB = 24564 },
         [pscustomobject]@{ Name = 'Intel Arc'; Vendor = 'Intel'; Driver = '1'; TotalMiB = 16384 }
     )
-    Assert-Throws { Get-WindowsReadiness $PSScriptRoot $false } 'NVIDIA and Intel GPU work runs on Linux only'
+    Assert-Throws { Get-WindowsReadiness $PSScriptRoot $false } 'No Windows version has been released for NVIDIA or Intel'
     $ready = Get-WindowsReadiness $PSScriptRoot $true
     Assert-True ($null -eq $ready.Gpu -and $ready.DiskGiB -eq 12) 'CPU-only reserve; no GPU claimed'
 }

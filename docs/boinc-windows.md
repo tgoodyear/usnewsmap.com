@@ -13,9 +13,9 @@ joined PC can sit idle for a while. That is normal.
 - Windows 11, or Windows 10 22H2 with current updates, on an Intel or AMD
   64-bit PC. Windows on ARM and Windows Server are not supported.
 - For GPU work, an AMD GPU with at least 7 GB of video memory and a current
-  AMD graphics driver, which provides Vulkan ([AMD](boinc-amd-gpu.md)). NVIDIA
-  and Intel GPU work runs on Linux only
-  ([app versions](boinc-quality.md#app-versions-and-plan-classes)). On a PC
+  AMD graphics driver, which provides Vulkan ([AMD](boinc-amd-gpu.md)). No
+  Windows version has been released for NVIDIA or Intel GPUs yet; both get GPU
+  work on Linux ([app versions](boinc-quality.md#app-versions-and-plan-classes)). On a PC
   without an eligible AMD GPU, add `-AllowCpuOnly` to the preview and apply
   commands below (not to `-Status`) to offer CPU time instead. CPU work is
   optional and not always available.
