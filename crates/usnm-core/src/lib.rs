@@ -13,6 +13,7 @@
 //! - [`ja`]: Japanese tokens and folding for our own OCR (04 §4.8, #139)
 //! - [`ocr_variants`]: the spellings OCR commonly gives a word, for `word~ocr` (06 §6.4, #124)
 //! - [`fractions`]: a number and a fraction glyph, also searched as OCR reads them with a slash (06 §6.4, #1067)
+//! - [`cherokee_type`]: two misreadings of the first Cherokee type, undone on a word and searched for (#1620)
 //! - [`lang`]: MARC, ISO 639-3 and word-list language codes; with feature `damage`, the word lists (12 §12.5, #296)
 //! - [`query`]: the user query language and its limits (06 §6.4)
 //! - [`query_language`]: the language of a query's words, for its baseline (06 §6.3.3, #237)
@@ -27,6 +28,7 @@
 
 pub mod american_stories;
 pub mod catalog;
+pub mod cherokee_type;
 pub mod common_grams;
 pub mod cube;
 #[cfg(feature = "damage")]
