@@ -3167,7 +3167,7 @@ class QueueTransportTests(unittest.TestCase):
                 with contextlib.redirect_stdout(out):
                     self.assertEqual(batch.main(["--config", f.name, "--state-dir", state, *flags]), 0)
                 self.assertEqual(json.loads(out.getvalue())["refill_cap"], shown)
-            for bad in ("0", "101"):
+            for bad in ("0", "501"):
                 err = io.StringIO()
                 with contextlib.redirect_stderr(err):
                     self.assertEqual(batch.main(["--config", f.name, "--state-dir", state,
@@ -4208,6 +4208,113 @@ class SuryaPlanTests(unittest.TestCase):
         event = batch.tick(config(), {}, fake, lambda: None, NOW)
         self.assertEqual(event["event"], "boinc_batch_tick")
         self.assertEqual([action[0] for action in fake.actions], ["export", "submit", "submit"])
+
+
+class StepChunkingTests(unittest.TestCase):
+    """A tick may handle up to MAX_TICK_PAGES pages; each step still takes at most STEP_IDS."""
+
+    def ids(self, n):
+        return [f"{i:064x}" for i in range(1, n + 1)]
+
+    def steps(self, transport, call):
+        sent = []
+        with patch.object(transport, "step", side_effect=lambda t, n, **v: sent.append((t, n, v))):
+            call()
+        return sent
+
+    def test_batch_size_goes_up_to_500(self):
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        path = directory / "plan.json"
+        path.write_text(json.dumps(dict(config(), batch_size=500)))
+        self.assertEqual(batch.load_config(path)["batch_size"], 500)
+        path.write_text(json.dumps(dict(config(), batch_size=501)))
+        with self.assertRaisesRegex((ValueError, RuntimeError), "batch_size"):
+            batch.load_config(path)
+
+    def test_submit_and_collect_split_into_steps_of_100(self):
+        jobs = self.ids(250)
+        t = batch.Transport(queue_config(), Path("."), batch_submit=True, batch_spool_out=True,
+                            batch_collect=True)
+        sent = self.steps(t, lambda: t.submit_batch(jobs))
+        self.assertEqual([len(v["JOB_IDS"].split(",")) for _, _, v in sent], [100, 100, 50])
+        self.assertEqual(",".join(v["JOB_IDS"] for _, _, v in sent), ",".join(jobs))
+        pairs = [(j, f"/project/usnmocr/results/{i}") for i, j in enumerate(jobs)]
+        sent = self.steps(t, lambda: t.collect_batch(pairs))
+        self.assertEqual([(n, len((v.get("HANDOFF_SPOOLS") or v["JOB_IDS"]).split(","))) for _, n, v in sent],
+                         [("spool-out", 100), ("spool-out", 100), ("spool-out", 50),
+                          ("collect", 100), ("collect", 100), ("collect", 50)])
+
+    def test_a_failed_chunk_still_tries_the_rest_then_raises(self):
+        jobs = self.ids(150)
+        pairs = [(j, f"/project/usnmocr/results/{i}") for i, j in enumerate(jobs)]
+        t = batch.Transport(queue_config(), Path("."), batch_spool_out=True, batch_collect=True)
+        sent = []
+
+        def step(target, name, **v):
+            sent.append(name)
+            if name == "spool-out" and not sent.count("spool-out") - 1:
+                raise RuntimeError("bridge/spool-out failed")
+
+        with patch.object(t, "step", side_effect=step), self.assertRaisesRegex(RuntimeError, "spool-out"):
+            t.collect_batch(pairs)
+        self.assertEqual(sent, ["spool-out", "spool-out", "collect", "collect"])
+
+    def test_bundles_are_never_split_across_submit_steps(self):
+        ids = self.ids(120)
+        units = [ids[i:i + 10] for i in range(0, 120, 10)]
+        cfg = dict(queue_config(), pages_per_unit={"ocr-bulk": 10}, bundle_app_version=106)
+        t = batch.Transport(cfg, Path("."), batch_submit=True)
+        sent = self.steps(t, lambda: t.submit_batch(ids, units))
+        groups = [v["JOB_UNITS"].split(",") for _, _, v in sent]
+        self.assertEqual([len(g) for g in groups], [10, 2])
+        self.assertTrue(all(len(u.split("+")) == 10 for g in groups for u in g))
+        self.assertEqual(batch.unit_steps([ids[:60], ids[60:110], ids[110:]]),
+                         [[ids[:60]], [ids[60:110], ids[110:]]])
+
+    def test_claim_takes_up_to_100_a_step_and_stops_when_the_queue_runs_dry(self):
+        t = batch.Transport(queue_config(), Path("."))
+        asked = []
+
+        def step_claim(count):
+            asked.append(count)
+            return [message(len(asked) * 1000 + i) for i in range(count if len(asked) < 3 else 7)]
+
+        with patch.object(t, "claim_step", side_effect=step_claim):
+            got = t.claim(350)
+        self.assertEqual(asked, [100, 100, 100])
+        self.assertEqual(len(got), 207)
+        asked.clear()
+        with patch.object(t, "claim_step", side_effect=step_claim):
+            self.assertEqual(len(t.claim(30)), 30)
+        self.assertEqual(asked, [30])
+
+    def test_a_later_claim_failure_keeps_every_earlier_claim(self):
+        t = batch.Transport(queue_config(), Path("."))
+        first = [message(i) for i in range(1, 101)]
+        for error in (batch.ClaimFailed("handoff/claim failed", [message(500)]),
+                      RuntimeError("handoff/claim failed")):
+            with self.subTest(error=type(error).__name__), \
+                    patch.object(t, "claim_step", side_effect=[first, error]), \
+                    self.assertRaises(batch.ClaimFailed) as caught:
+                t.claim(200)
+            extra = [message(500)] if isinstance(error, batch.ClaimFailed) else []
+            self.assertEqual(caught.exception.claims, first + extra)
+
+    def test_release_and_push_split_into_steps_of_100(self):
+        t = batch.Transport(queue_config(), Path("."))
+        sent = self.steps(t, lambda: t.release([f"doc{i}" for i in range(230)]))
+        self.assertEqual([len(v["HANDOFF_DOCS"].split(",")) for _, _, v in sent], [100, 100, 30])
+        bases = [f"keep/b/sn{i:08d}/1900-01-01/1/{i}" for i in range(210)]
+        calls = []
+
+        def push(group, skip):
+            calls.append(len(group))
+            return {b: b + ".jp2" for b in group[:-1]}, [group[-1]], {}
+
+        with patch.object(t, "push_page_step", side_effect=push):
+            found, missing, truncated = t.push_pages(bases)
+        self.assertEqual(calls, [100, 100, 10])
+        self.assertEqual((len(found), len(missing), truncated), (207, 3, {}))
 
 
 if __name__ == "__main__":
