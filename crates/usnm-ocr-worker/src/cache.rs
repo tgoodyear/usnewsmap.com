@@ -14,12 +14,17 @@
 //! service's JP2 for a JP2), and the bytes' size, sha256 and, where the
 //! sidecar has one, the bag's md5 match it. Then the result records that
 //! base as `image_url`, so `ocr-sync`'s check on it holds, and the ALTO
-//! records the file's URL, its sha256 and its md5. A miss, a timeout, a 5xx
-//! or a scan that doesn't check out goes to LoC at once.
+//! records the file's URL, its sha256 and its md5. A miss, or a sidecar
+//! that fails or doesn't check out, goes to LoC at once. Once a sidecar
+//! shows the scan is cached, the page is never fetched from LoC again: a
+//! 5xx or a timeout on the scan is a transient failure and the page is
+//! retried from the cache later. Only a cached scan whose bytes don't
+//! match its sidecar (a damaged copy) is fetched from LoC.
 //!
-//! A buffer-set scan is deleted (`DELETE`) once the page's output is
-//! uploaded, best effort; the server refuses to delete keep-set scans.
+//! Scans are never deleted (2026-11-08): the worker reads them and leaves
+//! them, and the server has no DELETE route.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -68,8 +73,33 @@ enum Found {
     Scan(Box<Scan>),
     /// Not in this set: try the next.
     Missing,
-    /// The server failed or the scan didn't check out: go to LoC.
+    /// The server failed before showing the page is cached, or the scan
+    /// didn't check out: go to LoC.
     GiveUp,
+    /// The sidecar says the scan is cached, but the server didn't return
+    /// it. Never LoC: the page waits for the local copy (no re-fetch).
+    Unreadable(String),
+}
+
+fn timed_out(doc_id: &str) -> FetchError {
+    tracing::warn!(
+        doc_id,
+        "the scan cache was too slow on a cached scan; not fetching it from LoC"
+    );
+    FetchError::Transient(format!(
+        "{doc_id} is in the scan cache but its read timed out"
+    ))
+}
+
+/// What a lookup across both sets came to.
+fn settle(found: Option<Found>, doc_id: &str) -> Option<Result<Scan, FetchError>> {
+    match found {
+        Some(Found::Scan(s)) => Some(Ok(*s)),
+        Some(Found::Unreadable(e)) => Some(Err(FetchError::Transient(format!(
+            "{doc_id} is in the scan cache but couldn't be read: {e}"
+        )))),
+        Some(Found::Missing | Found::GiveUp) | None => None,
+    }
 }
 
 impl CachedScans {
@@ -144,9 +174,9 @@ impl CachedScans {
     }
 
     /// The page in `set`: its JP2, else its JPEG.
-    async fn lookup(&self, set: Set, key: &PageKey, batch: &str) -> Found {
+    async fn lookup(&self, set: Set, key: &PageKey, batch: &str, seen: &AtomicBool) -> Found {
         for format in [ScanFormat::Jp2, ScanFormat::Jpeg] {
-            match self.lookup_as(set, key, batch, format).await {
+            match self.lookup_as(set, key, batch, format, seen).await {
                 Found::Missing => continue,
                 found => return found,
             }
@@ -154,7 +184,16 @@ impl CachedScans {
         Found::Missing
     }
 
-    async fn lookup_as(&self, set: Set, key: &PageKey, batch: &str, format: ScanFormat) -> Found {
+    /// The page in `set` and `format`. Sets `seen` once a sidecar shows
+    /// the scan is cached, so a timeout after that isn't sent to LoC either.
+    async fn lookup_as(
+        &self,
+        set: Set,
+        key: &PageKey,
+        batch: &str,
+        format: ScanFormat,
+        seen: &AtomicBool,
+    ) -> Found {
         let url = self.url(set, key, batch, format);
         let doc_id = key.doc_id();
         let side = match self.get(&format!("{url}.json"), MAX_SIDECAR_BYTES).await {
@@ -188,16 +227,22 @@ impl CachedScans {
             );
             return Found::GiveUp;
         }
+        seen.store(true, Ordering::SeqCst);
         let bytes = match self.get(&url, MAX_IMAGE_BYTES).await {
             Ok(Some(b)) => b,
-            Ok(None) => return Found::Missing,
+            // A sidecar without its scan: a buffer page read and deleted
+            // before 2026-11-08. No local copy, so LoC.
+            Ok(None) => {
+                seen.store(false, Ordering::SeqCst);
+                return Found::Missing;
+            }
             Err(e) => {
                 tracing::warn!(
                     doc_id,
                     error = e,
-                    "the scan cache failed; fetching from LoC"
+                    "the scan cache failed on a cached scan; not fetching it from LoC"
                 );
-                return Found::GiveUp;
+                return Found::Unreadable(e);
             }
         };
         if !matches_sidecar(&bytes, &side) {
@@ -215,7 +260,6 @@ impl CachedScans {
             md5: side.md5,
             download: Duration::ZERO,
             from_cache: true,
-            evict: (set == Set::Buffer).then_some(url),
         }))
     }
 }
@@ -224,22 +268,29 @@ impl CachedScans {
 impl ScanSource for CachedScans {
     async fn scan(&self, key: &PageKey, batch: &str) -> Result<Scan, FetchError> {
         // One bound on the whole lookup (both sets' sidecars and the scan),
-        // so LoC is never more than REQUEST_TIMEOUT away.
+        // so LoC is never more than REQUEST_TIMEOUT away for a page that
+        // isn't cached. A cached page is never fetched from LoC again
+        // (2026-11-08): a server failure or timeout on it is transient.
+        let seen = AtomicBool::new(false);
         let lookup = async {
             for set in [Set::Keep, Set::Buffer] {
-                match self.lookup(set, key, batch).await {
-                    Found::Scan(s) => return Some(*s),
+                match self.lookup(set, key, batch, &seen).await {
                     Found::Missing => continue,
-                    Found::GiveUp => break,
+                    found => return Some(found),
                 }
             }
             None
         };
+        let doc_id = key.doc_id();
         match tokio::time::timeout(REQUEST_TIMEOUT, lookup).await {
-            Ok(Some(s)) => return Ok(s),
-            Ok(None) => {}
+            Ok(found) => {
+                if let Some(r) = settle(found, &doc_id) {
+                    return r;
+                }
+            }
+            Err(_) if seen.load(Ordering::SeqCst) => return Err(timed_out(&doc_id)),
             Err(_) => {
-                tracing::warn!(doc_id = %key.doc_id(), "the scan cache was too slow; fetching from LoC")
+                tracing::warn!(doc_id, "the scan cache was too slow; fetching from LoC")
             }
         }
         self.inner.scan(key, batch).await
@@ -247,18 +298,28 @@ impl ScanSource for CachedScans {
 
     /// The cache's JPEG of the page, keep set then buffer set, else LoC's.
     async fn jpeg(&self, key: &PageKey, batch: &str, iiif_base: &str) -> Result<Scan, FetchError> {
+        let seen = AtomicBool::new(false);
         let lookup = async {
             for set in [Set::Keep, Set::Buffer] {
-                match self.lookup_as(set, key, batch, ScanFormat::Jpeg).await {
-                    Found::Scan(s) => return Some(*s),
+                match self
+                    .lookup_as(set, key, batch, ScanFormat::Jpeg, &seen)
+                    .await
+                {
                     Found::Missing => continue,
-                    Found::GiveUp => break,
+                    found => return Some(found),
                 }
             }
             None
         };
-        if let Ok(Some(s)) = tokio::time::timeout(REQUEST_TIMEOUT, lookup).await {
-            return Ok(s);
+        let doc_id = key.doc_id();
+        match tokio::time::timeout(REQUEST_TIMEOUT, lookup).await {
+            Ok(found) => {
+                if let Some(r) = settle(found, &doc_id) {
+                    return r;
+                }
+            }
+            Err(_) if seen.load(Ordering::SeqCst) => return Err(timed_out(&doc_id)),
+            Err(_) => {}
         }
         self.inner.jpeg(key, batch, iiif_base).await
     }
@@ -269,20 +330,6 @@ impl ScanSource for CachedScans {
     /// outlasts its budget, as a page did before the hold check.
     fn held_until(&self) -> Option<tokio::time::Instant> {
         None
-    }
-
-    async fn evict(&self, url: &str) {
-        match self.http.delete(url).send().await {
-            Ok(r) if r.status().is_success() || r.status() == reqwest::StatusCode::NOT_FOUND => {}
-            Ok(r) => tracing::warn!(
-                url,
-                status = r.status().as_u16(),
-                "couldn't delete a buffer scan"
-            ),
-            Err(e) => {
-                tracing::warn!(url, error = %e.without_url(), "couldn't delete a buffer scan")
-            }
-        }
     }
 }
 
@@ -314,7 +361,6 @@ mod tests {
                 md5: None,
                 download: Duration::ZERO,
                 from_cache: false,
-                evict: None,
             })
         }
 
@@ -395,21 +441,24 @@ mod tests {
         // Nothing cached: LoC.
         assert!(!cache.scan(&key, "batch_x").await.unwrap().from_cache);
         assert_eq!(loc.0.load(Ordering::SeqCst), 1);
-        // In the buffer: read, and marked for eviction.
+        // In the buffer: read, and read again from the cache, never LoC:
+        // a read scan stays (2026-11-08).
         put(dir.path(), "buffer", &key, "batch_x", b"jpeg bytes", |_| {});
-        let s = cache.scan(&key, "batch_x").await.unwrap();
-        assert!(s.from_cache);
-        assert_eq!(&s.bytes[..], b"jpeg bytes");
-        let url = s.evict.clone().unwrap();
-        assert!(url.ends_with("/scans/buffer/batch_x/sn1/1890-05-03/1/1.jpg"));
+        for _ in 0..2 {
+            let s = cache.scan(&key, "batch_x").await.unwrap();
+            assert!(s.from_cache);
+            assert_eq!(&s.bytes[..], b"jpeg bytes");
+        }
+        assert!(dir
+            .path()
+            .join("buffer/batch_x/sn1/1890-05-03/1/1.jpg")
+            .exists());
         assert_eq!(loc.0.load(Ordering::SeqCst), 1);
-        // Evicting removes it; the next read goes to LoC.
-        cache.evict(&url).await;
-        assert!(!cache.scan(&key, "batch_x").await.unwrap().from_cache);
-        // In the keep set: read, never evicted.
+        // In the keep set: read first.
         put(dir.path(), "keep", &key, "batch_x", b"keep bytes", |_| {});
         let s = cache.scan(&key, "batch_x").await.unwrap();
-        assert!(s.from_cache && s.evict.is_none());
+        assert!(s.from_cache);
+        assert_eq!(&s.bytes[..], b"keep bytes");
         // Another batch's copy isn't this one's.
         assert!(!cache.scan(&key, "batch_y").await.unwrap().from_cache);
         // A sidecar off the image server, a wrong sha256, a scaled scan or
@@ -501,14 +550,11 @@ mod tests {
             cache.scan(&p1, "batch_x").await.unwrap().format,
             ScanFormat::Jp2
         );
-        // A buffer JP2 is evicted by its own URL.
+        // A buffer JP2 is read from the cache.
         let p3: PageKey = "sn1/1890-05-03/ed-1/seq-3".parse().unwrap();
         put_jp2(dir.path(), "buffer", &p3, b"buffer jp2", |_| {});
         let s3 = cache.scan(&p3, "batch_x").await.unwrap();
-        assert!(s3
-            .evict
-            .unwrap()
-            .ends_with("/scans/buffer/batch_x/sn1/1890-05-03/1/3.jp2"));
+        assert!(s3.from_cache && s3.format == ScanFormat::Jp2);
         // A JP2 whose md5, URL or format doesn't check out: LoC.
         for edit in [
             Box::new(|s: &mut Sidecar| s.md5 = Some(crate::batch::md5_hex(b"other")))
@@ -525,6 +571,35 @@ mod tests {
             assert!(!cache.scan(&p2, "batch_x").await.unwrap().from_cache);
             assert_eq!(loc.0.load(Ordering::SeqCst), before + 1);
         }
+    }
+
+    /// A page whose sidecar is on the server is never fetched from LoC
+    /// again, even when the scan itself can't be read (2026-11-08).
+    #[tokio::test]
+    async fn a_cached_scan_the_server_cant_read_is_not_fetched_from_loc() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = server(dir.path()).await;
+        let loc = Arc::new(Loc::default());
+        let cache = CachedScans::new(&base, ROOT.into(), STORAGE.into(), loc.clone()).unwrap();
+        let key: PageKey = "sn1/1890-05-03/ed-1/seq-1".parse().unwrap();
+        put(dir.path(), "buffer", &key, "batch_x", b"jpeg bytes", |_| {});
+        // The scan becomes unreadable (a directory where the file was): the
+        // server answers 500.
+        let scan = dir.path().join("buffer/batch_x/sn1/1890-05-03/1/1.jpg");
+        std::fs::remove_file(&scan).unwrap();
+        std::fs::create_dir(&scan).unwrap();
+        for r in [
+            cache.scan(&key, "batch_x").await,
+            cache.jpeg(&key, "batch_x", "unused").await,
+        ] {
+            assert!(matches!(r, Err(FetchError::Transient(_))), "{r:?}");
+        }
+        assert_eq!(loc.0.load(Ordering::SeqCst), 0);
+        // Readable again: read from the cache, still never LoC.
+        std::fs::remove_dir(&scan).unwrap();
+        std::fs::write(&scan, b"jpeg bytes").unwrap();
+        assert!(cache.scan(&key, "batch_x").await.unwrap().from_cache);
+        assert_eq!(loc.0.load(Ordering::SeqCst), 0);
     }
 
     #[test]

@@ -334,7 +334,6 @@ fn jpeg(base: String, url: String, got: Got) -> Scan {
         md5: None,
         download: got.took,
         from_cache: false,
-        evict: None,
     }
 }
 

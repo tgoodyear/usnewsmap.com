@@ -127,7 +127,7 @@ mod layout;
 mod select;
 
 use cooling::{Check, Cooling};
-use layout::{last_fetched, lock, there, write_atomic, Lines};
+use layout::{last_fetched, lock, there, write_atomic, Elsewhere, Lines};
 
 pub use cooling::ItemError;
 pub use estimate::{estimate, Estimate};
@@ -338,6 +338,11 @@ pub struct Status {
     /// Counted in `finished`, not as failures.
     #[serde(default)]
     pub source_truncated: u64,
+    /// Pages with a scan file on disk that doesn't check out against its
+    /// sidecar: kept as it is and not fetched again (2026-11-08). Counted
+    /// in `finished`, not as failures.
+    #[serde(default)]
+    pub kept_unverified: u64,
     pub bytes_fetched: u64,
     /// This run's pages on disk: already there plus fetched.
     pub bytes_on_disk: u64,
@@ -392,8 +397,8 @@ struct Counts {
     /// The keep set's scans of this run on disk: found there or fetched.
     keep_bytes: AtomicU64,
     /// The buffer set's scans on disk, all of them: the last count plus
-    /// fetches since. Workers delete buffer scans, so it is counted again
-    /// while waiting. It is what the cap is checked against.
+    /// fetches since. Nothing deletes buffer scans since 2026-11-08; it is
+    /// still counted again while waiting. It is what the cap is checked against.
     buffer_bytes: AtomicU64,
     /// This run's buffer pages found on disk or fetched (for the status and
     /// `--max-total-bytes`; consumed scans aren't taken off).
@@ -403,6 +408,7 @@ struct Counts {
     buffer_written: AtomicU64,
     failed_item_error: AtomicU64,
     deferred_needs_loc: AtomicU64,
+    kept_unverified: AtomicU64,
     source_truncated: AtomicU64,
 }
 
@@ -473,6 +479,7 @@ impl Run {
         s.failed_item_error = c.failed_item_error.load(Ordering::SeqCst);
         s.deferred_needs_loc = c.deferred_needs_loc.load(Ordering::SeqCst);
         s.source_truncated = c.source_truncated.load(Ordering::SeqCst);
+        s.kept_unverified = c.kept_unverified.load(Ordering::SeqCst);
         (s.issues_cooling, s.issues_item_permanent) = self.cooling.counts();
         s.bytes_fetched = c.bytes_fetched.load(Ordering::SeqCst);
         s.fetched_jp2 = c.fetched_jp2.load(Ordering::SeqCst);
@@ -547,6 +554,7 @@ impl Run {
             failed_item_error = s.failed_item_error,
             deferred_needs_loc = s.deferred_needs_loc,
             source_truncated = s.source_truncated,
+            kept_unverified = s.kept_unverified,
             issues_cooling = s.issues_cooling,
             bytes_fetched = s.bytes_fetched,
             bytes_on_disk = s.bytes_on_disk,
@@ -820,15 +828,31 @@ impl Run {
             self.streak_ok();
             return Ok(Outcome::Done);
         }
-        // A buffer page a worker has read and the scan server deleted.
-        if set == Set::Buffer {
-            for f in formats(size) {
-                let done = consumed_path(&scan_path(&self.opts.out, &row, size, *f));
-                if tokio::fs::try_exists(done).await.unwrap_or(false) {
-                    c.already_there.fetch_add(1, Ordering::SeqCst);
-                    self.streak_ok();
-                    return Ok(Outcome::Done);
-                }
+        // Any other local copy: never fetched from LoC again (2026-11-08).
+        match layout::elsewhere(&self.opts.out, &row, size).await {
+            Elsewhere::Nothing => {}
+            Elsewhere::OtherSet(n) => {
+                c.already_there.fetch_add(1, Ordering::SeqCst);
+                match set {
+                    Set::Keep => c.keep_bytes.fetch_add(n, Ordering::SeqCst),
+                    Set::Buffer => c.run_buffer_bytes.fetch_add(n, Ordering::SeqCst),
+                };
+                self.streak_ok();
+                return Ok(Outcome::Done);
+            }
+            Elsewhere::Consumed => {
+                c.already_there.fetch_add(1, Ordering::SeqCst);
+                self.streak_ok();
+                return Ok(Outcome::Done);
+            }
+            Elsewhere::Unverified(path) => {
+                c.kept_unverified.fetch_add(1, Ordering::SeqCst);
+                tracing::warn!(
+                    doc_id = row.doc_id,
+                    path = %path.display(),
+                    "a scan on disk doesn't check out; kept, not fetched again"
+                );
+                return Ok(Outcome::Done);
             }
         }
         let t = tag(size);
@@ -1244,7 +1268,8 @@ pub async fn run(
     // The buffer walk reads every file in it (over 300 GB on tank took about
     // ten minutes a run). The last run's count, when recent and well under
     // the cap, stands in while the walk runs alongside the fetching; scans
-    // are only ever deleted from the buffer by others, so it can only be high.
+    // are never deleted from the buffer (2026-11-08), so it is short only by
+    // what something else wrote there since.
     match previous_buffer_bytes(&run.status_path, run.opts.buffer_cap) {
         Some(n) => {
             run.counts.buffer_bytes.store(n, Ordering::SeqCst);

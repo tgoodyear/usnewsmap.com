@@ -260,6 +260,16 @@ impl GhnJobs {
             if sidecar.exists() && image.exists() {
                 continue;
             }
+            // An image on disk is never fetched again or written over
+            // (2026-11-08), even without its sidecar (a run stopped between
+            // the two): it is reported for a person to look at.
+            if image.exists() {
+                self.problem(
+                    &page.key.doc_id(),
+                    "an image on disk without its sidecar; kept, not fetched again",
+                );
+                continue;
+            }
             // A sidecar describes the bytes it was written for: none may outlive them, or a
             // replacement interrupted before its own sidecar would look done.
             match std::fs::remove_file(&sidecar) {
@@ -302,8 +312,20 @@ impl GhnJobs {
             .await
             .context("checking a page image")?;
         if let Err(why) = whole {
-            let _ = std::fs::remove_file(&job.dest);
-            self.problem(&job.name, &format!("not a whole JPEG ({why}); removed"));
+            // Kept beside the page, never deleted (2026-11-08); the page's
+            // own name is free, so a later run fetches it whole.
+            let kept = crate::fetcher::set_aside(&job.dest)
+                .and_then(|aside| std::fs::remove_file(&job.dest).map(|()| aside));
+            match kept {
+                Ok(aside) => self.problem(
+                    &job.name,
+                    &format!("not a whole JPEG ({why}); moved to {}", aside.display()),
+                ),
+                Err(e) => self.problem(
+                    &job.name,
+                    &format!("not a whole JPEG ({why}); left in place: {e}"),
+                ),
+            }
             return Ok(());
         }
         let (manifest_url, manifest_sha256) = manifest;

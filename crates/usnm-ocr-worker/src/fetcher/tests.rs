@@ -802,7 +802,7 @@ async fn a_partial_from_an_earlier_loc_run_is_not_resumed() {
 }
 
 #[tokio::test]
-async fn a_wrong_sized_file_is_replaced_and_a_good_one_never() {
+async fn a_wrong_sized_file_is_set_aside_and_a_good_one_never_replaced() {
     let mut r = Rig::new().await;
     r.archive("a", b"whole body");
     r.write_list();
@@ -812,6 +812,14 @@ async fn a_wrong_sized_file_is_replaced_and_a_good_one_never() {
         std::fs::read(r.out().join("a.tar.bz2")).unwrap(),
         b"whole body"
     );
+    // The old bytes are kept beside it, never deleted (2026-11-08).
+    let aside: Vec<_> = std::fs::read_dir(r.out())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .filter(|n| n.starts_with("a.tar.bz2.replaced-"))
+        .collect();
+    assert_eq!(aside.len(), 1, "{aside:?}");
+    assert_eq!(std::fs::read(r.out().join(&aside[0])).unwrap(), b"short");
     let job = Job {
         name: "a".into(),
         size: 10,
@@ -824,6 +832,30 @@ async fn a_wrong_sized_file_is_replaced_and_a_good_one_never() {
     assert!(!super::engine::publish(&part, &job).unwrap());
     assert!(!part.exists());
     assert_eq!(std::fs::read(&job.dest).unwrap(), b"whole body");
+}
+
+#[test]
+fn an_unlisted_file_fetched_again_keeps_the_old_copy() {
+    let dir = tempfile::tempdir().unwrap();
+    let job = Job {
+        name: "m".into(),
+        size: 100,
+        sha256: None,
+        dest: dir.path().join("m.json"),
+        sources: Vec::new(),
+    };
+    std::fs::write(&job.dest, b"old").unwrap();
+    let part = dir.path().join("m.part");
+    std::fs::write(&part, b"new").unwrap();
+    assert!(super::engine::publish(&part, &job).unwrap());
+    assert_eq!(std::fs::read(&job.dest).unwrap(), b"new");
+    let kept: Vec<_> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p != &job.dest)
+        .collect();
+    assert_eq!(kept.len(), 1, "{kept:?}");
+    assert_eq!(std::fs::read(&kept[0]).unwrap(), b"old");
 }
 
 // ---- the mirror ----

@@ -206,3 +206,26 @@ class DaemonConfig(unittest.TestCase):
         # that asks during a feeder restart to wait an hour.
         root = ET.parse(Path(__file__).with_name("config.xml.template"))
         self.assertEqual(root.findtext("./config/maintenance_delay"), "1200")
+
+
+class NoScanDeletion(unittest.TestCase):
+    """Scans in download/ are never deleted (2026-11-08)."""
+
+    def test_file_deleter_never_removes_input_files(self):
+        root = ET.parse(Path(__file__).with_name("config.xml.template"))
+        commands = [shlex.split(cmd.text) for cmd in root.findall("./daemons/daemon/cmd")]
+        deleters = [cmd for cmd in commands if cmd[0] == "file_deleter"]
+        self.assertEqual(deleters, [["file_deleter", "-d", "2", "--preserve_wu_files"]])
+        for task in root.findall("./tasks/task"):
+            if task.findtext("cmd", "").split()[0] == "antique_file_deleter":
+                self.assertEqual(task.findtext("disabled"), "1")
+
+    def test_every_input_template_marks_every_file_no_delete(self):
+        templates = sorted((Path(__file__).parents[1] / "apps").glob("*_in"))
+        self.assertGreater(len(templates), 10)
+        for path in templates:
+            infos = ET.parse(path).findall("./file_info")
+            self.assertTrue(infos, path.name)
+            for info in infos:
+                with self.subTest(template=path.name, number=info.findtext("number")):
+                    self.assertIsNotNone(info.find("no_delete"))

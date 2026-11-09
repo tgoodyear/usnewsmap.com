@@ -39,7 +39,7 @@ in a limited set of regions.
 
 One Container Apps app, one container, `minReplicas = maxReplicas = 1`. The container runs
 what `boinc-server-docker`'s `apache` image runs: `supervisord` starting cron, Apache with
-PHP, and `bin/start`, which starts the feeder, transitioner, file_deleter, db_purge and the two app daemons from #441's `boinc/apps/daemons.xml` (`sample_trivial_validator` and `batch_collect_assimilator`). Reasons:
+PHP, and `bin/start`, which starts the feeder, transitioner, file_deleter (`--preserve_wu_files`: scans in `download/` are never deleted), db_purge and the two app daemons from #441's `boinc/apps/daemons.xml` (`sample_trivial_validator` and `batch_collect_assimilator`). Reasons:
 
 - The feeder and the scheduler share a System V shared-memory segment (at least 32 MB), so
   they must share a host. Two containers in one replica share the network namespace, but

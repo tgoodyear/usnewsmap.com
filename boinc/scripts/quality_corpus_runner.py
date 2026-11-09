@@ -413,7 +413,8 @@ def purge_unit_downloads(jid):
         """)
     except Exception:
         pass
-    for suffix in ("_page_jpg", "_loc_xml", "_texts_json", "_quality_json"):
+    # Never the page image: scans in download/ are never deleted (2026-11-08).
+    for suffix in ("_loc_xml", "_texts_json", "_quality_json"):
         try:
             p = dir_hier_path(f"{jid}{suffix}")
             if os.path.exists(p):
@@ -459,7 +460,8 @@ def free_assimilated_downloads():
                 """)
             except Exception:
                 pass
-            for suffix in ("_page_jpg", "_loc_xml"):
+            # Never the page image (2026-11-08); only the copied LoC ALTO.
+            for suffix in ("_loc_xml",):
                 try:
                     p = dir_hier_path(f"{jid}{suffix}")
                     if os.path.exists(p):

@@ -1,6 +1,6 @@
 # The scan server (#368, ADR-0015 decision 9), deployed by infrastructure tooling:
 # `usnm-ocr-worker serve-scans` gives the OCR nodes the prefetched scans over
-# HTTP, deletes buffer-set scans the nodes have read, and takes manifests
+# HTTP (read only: it deletes no scan, 2026-11-08) and takes manifests
 # from them. Only the --allow hosts (the nodes, by name, resolved again
 # every 5 minutes) are served; the container's nftables rule lets in only
 # its LAN. Settings in /etc/usnm/scanserve.env.
@@ -25,8 +25,9 @@ NoNewPrivileges=yes
 CapabilityBoundingSet=
 ProtectSystem=strict
 ProtectHome=yes
-# Deletes only under buffer/; writes only manifests.
-ReadWritePaths=/tank/ocr/scans/buffer /tank/ocr/manifests
+# Scans are read only; it writes only manifests.
+ReadOnlyPaths=/tank/ocr/scans
+ReadWritePaths=/tank/ocr/manifests
 PrivateTmp=yes
 RestrictSUIDSGID=yes
 LockPersonality=yes

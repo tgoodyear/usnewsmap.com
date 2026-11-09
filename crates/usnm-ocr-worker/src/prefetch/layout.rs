@@ -105,9 +105,9 @@ pub fn dir_scan_bytes(dir: &Path) -> std::io::Result<u64> {
     Ok(total)
 }
 
-/// The marker a consumed buffer scan leaves (`<scan>.done`, its sidecar
-/// renamed by the scan server's delete), so a later run doesn't fetch it
-/// again.
+/// The marker a consumed buffer scan left (`<scan>.done`, its sidecar
+/// renamed by the scan server's delete, which is gone since 2026-11-08),
+/// so a later run doesn't fetch it again.
 pub fn consumed_path(scan: &Path) -> PathBuf {
     let mut p = scan.as_os_str().to_owned();
     p.push(".done");
@@ -196,6 +196,69 @@ pub(super) async fn there(out: &Path, row: &ManifestRow, size: ImageSize) -> Opt
         }
     }
     None
+}
+
+/// What else is on disk for a page that isn't [`there`] in its own set.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum Elsewhere {
+    /// A copy that checks out in the other set (a page whose set changed
+    /// between manifests): the worker reads either set.
+    OtherSet(u64),
+    /// A scan file at one of the page's paths, in either set, that doesn't
+    /// check out against a sidecar (none, or a different one). It is kept
+    /// and never overwritten: scans are never deleted (2026-11-08), and a
+    /// fetch would write over it.
+    Unverified(PathBuf),
+    /// A buffer page a worker read and the scan server deleted before
+    /// 2026-11-08 (its `.done` marker): fetched once already.
+    Consumed,
+    Nothing,
+}
+
+/// Looks past [`there`] for any local copy of the page, so it is never
+/// fetched from LoC again while one exists.
+pub(super) async fn elsewhere(out: &Path, row: &ManifestRow, size: ImageSize) -> Elsewhere {
+    let own = super::set_of(row);
+    let other = match own {
+        super::Set::Keep => super::Set::Buffer,
+        super::Set::Buffer => super::Set::Keep,
+    };
+    let path = |set: super::Set, f: ScanFormat| {
+        page_path(
+            &out.join(set.dir()),
+            &row.batch,
+            &row.lccn,
+            row.date,
+            row.edition,
+            row.seq,
+            size,
+            f,
+        )
+    };
+    for f in formats(size) {
+        if let Some(n) = verified(&path(other, *f), row, size, *f).await {
+            return Elsewhere::OtherSet(n);
+        }
+    }
+    for set in [own, other] {
+        for f in formats(size) {
+            let scan = path(set, *f);
+            if tokio::fs::try_exists(&scan).await.unwrap_or(true) {
+                return Elsewhere::Unverified(scan);
+            }
+        }
+    }
+    for set in [own, other] {
+        for f in formats(size) {
+            if tokio::fs::try_exists(consumed_path(&path(set, *f)))
+                .await
+                .unwrap_or(false)
+            {
+                return Elsewhere::Consumed;
+            }
+        }
+    }
+    Elsewhere::Nothing
 }
 
 /// Write `body` to `path` through a synced `.part` file and a rename.

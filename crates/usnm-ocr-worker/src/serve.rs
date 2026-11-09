@@ -6,18 +6,16 @@
 //! - `GET /scans/<set>/<batch>/<lccn>/<date>/<ed>/<seq>.<jp2|jpg>` and
 //!   the sidecar `<…>.json`, from the scan root, read-only. A `.jp2` is
 //!   the batch's original JP2, a `.jpg` the IIIF JPEG.
-//! - `DELETE /scans/buffer/<…>.<jp2|jpg>` removes a buffer-set scan: its
-//!   sidecar is renamed `<…>.done` first (so a half-done delete never
-//!   leaves a scan that looks valid, and the fetcher knows not to fetch the
-//!   page again), then the scan goes. A worker sends it once its output for
-//!   the page is uploaded. A keep-set path is refused with 403.
+//!   No route deletes a scan (2026-11-08): DELETE on any set gets 405, and
+//!   the files a worker has read stay where they are.
 //! - `GET /index/<tag>.jsonl` (`full`, or `pct<n>`): the fetcher's index,
 //!   one JSON line per fetched scan (its sidecar: doc_id, batch,
 //!   batch_version, loc_url, iiif_base, resolution, fetched_at, bytes,
 //!   sha256, download_ms, user_agent, format and, for a JP2, md5),
 //!   appended as scans land. It is how a
 //!   seeder learns which pages are cached: a line means the scan was
-//!   written; a buffer scan may since have been read and deleted.
+//!   written. Older buffer scans may be gone: before 2026-11-08 a worker
+//!   deleted them after OCR, leaving a `<…>.done` marker.
 //! - `PUT /manifests/<version>/{manifest.parquet,summary.json}` writes a
 //!   prefetch manifest from a node (`pull-manifest.sh`), through a temporary
 //!   file and a rename.
@@ -189,12 +187,6 @@ fn under_manifests(root: &Path, version: &str) -> Option<PathBuf> {
     (dir.parent() == Some(root)).then_some(dir)
 }
 
-fn sidecar(scan: &Path) -> PathBuf {
-    let mut p = scan.as_os_str().to_owned();
-    p.push(".json");
-    PathBuf::from(p)
-}
-
 async fn allow_only(
     State(opts): State<Arc<ServeOptions>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -243,47 +235,6 @@ async fn get_scan(
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => StatusCode::NOT_FOUND.into_response(),
         Err(e) => {
             tracing::warn!(path, error = %e, "can't read a scan");
-            StatusCode::INTERNAL_SERVER_ERROR.into_response()
-        }
-    }
-}
-
-async fn delete_scan(
-    State(opts): State<Arc<ServeOptions>>,
-    UrlPath(path): UrlPath<String>,
-) -> Response {
-    match scan_rel(&path) {
-        Some("buffer") if is_scan(&path) => {}
-        Some("keep") => return StatusCode::FORBIDDEN.into_response(),
-        _ => return StatusCode::BAD_REQUEST.into_response(),
-    }
-    let Some(scan) = under(&opts.scans, &path) else {
-        return StatusCode::BAD_REQUEST.into_response();
-    };
-    let mut done = scan.as_os_str().to_owned();
-    done.push(".done");
-    let done = PathBuf::from(done);
-    // The marker first: the scan goes only once the page is marked done
-    // (now, or by an earlier delete), so it is never fetched again.
-    match tokio::fs::rename(sidecar(&scan), &done).await {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            if !tokio::fs::try_exists(&done).await.unwrap_or(false) {
-                return StatusCode::NOT_FOUND.into_response();
-            }
-        }
-        Err(e) => {
-            tracing::warn!(path, error = %e, "can't mark a buffer scan done");
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-        }
-    }
-    match tokio::fs::remove_file(&scan).await {
-        Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            StatusCode::NO_CONTENT.into_response()
-        }
-        Err(e) => {
-            tracing::warn!(path, error = %e, "can't delete a buffer scan");
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
@@ -348,7 +299,8 @@ async fn put_manifest(
 pub fn router(opts: ServeOptions) -> Router {
     let opts = Arc::new(opts);
     Router::new()
-        .route("/scans/{*path}", get(get_scan).delete(delete_scan))
+        // GET only: no method deletes a scan (2026-11-08); DELETE gets 405.
+        .route("/scans/{*path}", get(get_scan))
         .route("/index/{name}", get(get_index))
         .route(
             "/manifests/{version}/{file}",
@@ -463,7 +415,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn serves_scans_deletes_only_buffer_and_takes_manifests() {
+    async fn serves_scans_never_deletes_and_takes_manifests() {
         let (dir, root) = server(&["127.0.0.1"]).await;
         let http = reqwest::Client::new();
         let url = |p: &str| format!("{root}{p}");
@@ -480,65 +432,33 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(missing.status(), 404);
-        // Keep scans can't be deleted; buffer scans can, sidecar and all.
-        let keep = http
-            .delete(url("/scans/keep/b/sn1/1890-05-03/1/1.jpg"))
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(keep.status(), 403);
-        assert!(dir
-            .path()
-            .join("scans/keep/b/sn1/1890-05-03/1/1.jpg")
-            .exists());
-        let buf = http
-            .delete(url("/scans/buffer/b/sn1/1890-05-03/1/1.jpg"))
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(buf.status(), 204);
-        let gone = dir.path().join("scans/buffer/b/sn1/1890-05-03/1");
-        assert!(!gone.join("1.jpg").exists() && !gone.join("1.jpg.json").exists());
-        // The sidecar stays as the page's consumed marker.
-        assert!(gone.join("1.jpg.done").exists());
-        let again = http
-            .delete(url("/scans/buffer/b/sn1/1890-05-03/1/1.jpg"))
-            .send()
-            .await
-            .unwrap();
-        // A repeat (a worker's retry) succeeds: the page is marked done.
-        assert_eq!(again.status(), 204);
-        let never = http
-            .delete(url("/scans/buffer/b/sn1/1890-05-03/1/9.jpg"))
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(never.status(), 404);
-        // The scan stays if the page can't be marked done.
-        let d = dir.path().join("scans/buffer/b/sn1/1890-05-03/2");
-        std::fs::create_dir_all(&d).unwrap();
-        std::fs::write(d.join("1.jpg"), b"jpeg").unwrap();
-        std::fs::create_dir_all(d.join("1.jpg.json")).unwrap();
-        std::fs::create_dir_all(d.join("1.jpg.done/x")).unwrap();
-        let blocked = http
-            .delete(url("/scans/buffer/b/sn1/1890-05-03/2/1.jpg"))
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(blocked.status(), 500);
-        assert!(d.join("1.jpg").exists());
-        // A path out of the tree, and a sidecar delete, are refused.
+        // No set's scans can be deleted: DELETE is not a route, so the file and its
+        // sidecar stay and no `.done` marker is written.
+        for set in ["keep", "buffer"] {
+            let r = http
+                .delete(url(&format!("/scans/{set}/b/sn1/1890-05-03/1/1.jpg")))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(r.status(), 405, "{set}");
+            let d = dir
+                .path()
+                .join("scans")
+                .join(set)
+                .join("b/sn1/1890-05-03/1");
+            assert!(
+                d.join("1.jpg").exists() && d.join("1.jpg.json").exists(),
+                "{set}"
+            );
+            assert!(!d.join("1.jpg.done").exists(), "{set}");
+        }
         for p in [
             "/scans/buffer/../keep/b/1.jpg",
             "/scans/buffer/b/1.jpg.json",
+            "/scans/buffer/b/sn1/1890-05-03/1/9.jpg",
         ] {
             let r = http.delete(url(p)).send().await.unwrap();
-            // The client resolves `..` to a keep path, refused too.
-            assert!(
-                [400, 403, 404].contains(&r.status().as_u16()),
-                "{p}: {}",
-                r.status()
-            );
+            assert_eq!(r.status(), 405, "{p}");
         }
         // The index, by tag.
         std::fs::write(dir.path().join("scans/index-full.jsonl"), b"{}\n").unwrap();
@@ -579,7 +499,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn serves_and_deletes_jp2s_beside_jpegs() {
+    async fn serves_jp2s_beside_jpegs_and_keeps_them() {
         let (dir, root) = server(&["127.0.0.1"]).await;
         let issue = dir.path().join("scans/buffer/b/sn1/1890-05-03/1");
         std::fs::write(issue.join("2.jp2"), b"jp2").unwrap();
@@ -595,9 +515,8 @@ mod tests {
         let side = http.get(url("2.jp2.json")).send().await.unwrap();
         assert_eq!(side.headers()["content-type"], "application/json");
         let del = http.delete(url("2.jp2")).send().await.unwrap();
-        assert_eq!(del.status(), 204);
-        assert!(!issue.join("2.jp2").exists() && issue.join("2.jp2.done").exists());
-        // The JPEG beside it is untouched.
+        assert_eq!(del.status(), 405);
+        assert!(issue.join("2.jp2").exists() && !issue.join("2.jp2.done").exists());
         assert!(issue.join("1.jpg").exists());
     }
 

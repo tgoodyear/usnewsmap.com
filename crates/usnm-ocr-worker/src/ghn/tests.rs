@@ -697,21 +697,25 @@ async fn pages_come_after_their_manifest_with_ids_provenance_and_checksums() {
         serde_json::from_slice(&std::fs::read(r.out().join("ghn-status.json")).unwrap()).unwrap();
     assert_eq!(status["state"], "done");
 
-    // A rerun asks nothing; a page without its sidecar is asked for again.
+    // A rerun asks nothing. A page whose image is on disk without its
+    // sidecar isn't asked for again either (2026-11-08): it is reported.
     let s = fetch_all(r.opts()).await.unwrap();
     assert_eq!((s.state.as_str(), s.fetched_this_run), ("done", 0));
     assert_eq!(images_asked(&r), 2);
     std::fs::remove_file(r.page(&i, 1).1).unwrap();
     let s = fetch_all(r.opts()).await.unwrap();
-    assert_eq!((s.state.as_str(), s.fetched_this_run), ("done", 1));
-    assert_eq!(images_asked(&r), 3);
+    assert_eq!(s.fetched_this_run, 0);
+    assert_eq!(images_asked(&r), 2);
+    assert_eq!(std::fs::read(r.page(&i, 1).0).unwrap(), p1);
+    let problems = std::fs::read_to_string(r.out().join("ghn-problems.tsv")).unwrap();
+    assert!(problems.contains("without its sidecar; kept"), "{problems}");
     assert_eq!(r.s.hits(".json"), 1, "the manifest kept on disk is used");
 }
 
 /// Only a JPEG that decodes whole gets a sidecar. Anything else, a bare signature or a
-/// cut-off image included, is removed and asked for again on the next run.
+/// cut-off image included, is moved aside (never deleted) and asked for again on the next run.
 #[tokio::test]
-async fn an_image_that_isnt_a_whole_jpeg_is_removed_and_left_to_do() {
+async fn an_image_that_isnt_a_whole_jpeg_is_set_aside_and_left_to_do() {
     let mut r = Rig::new().await;
     let i = issue(LACK, "1929-05-01", 1);
     let whole = jpeg(10);
@@ -724,6 +728,19 @@ async fn an_image_that_isnt_a_whole_jpeg_is_removed_and_left_to_do() {
     for seq in 1..=3 {
         let (jpg, json) = r.page(&i, seq);
         assert!(!jpg.exists() && !json.exists(), "page {seq}");
+        let name = jpg.file_name().unwrap().to_str().unwrap().to_owned();
+        let aside = std::fs::read_dir(jpg.parent().unwrap())
+            .unwrap()
+            .filter(|e| {
+                e.as_ref()
+                    .unwrap()
+                    .file_name()
+                    .to_str()
+                    .unwrap()
+                    .starts_with(&format!("{name}.replaced-"))
+            })
+            .count();
+        assert_eq!(aside, 1, "page {seq}");
     }
     let problems = std::fs::read_to_string(r.out().join("ghn-problems.tsv")).unwrap();
     assert_eq!(
