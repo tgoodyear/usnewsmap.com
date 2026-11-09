@@ -208,19 +208,8 @@ mod tests {
         std::fs::create_dir_all(&download).unwrap();
         std::fs::create_dir_all(root.join("cache")).unwrap();
         let helper = project.join("bin/dir_hier_path");
-        std::fs::write(&helper, "#!/bin/sh\nprintf 'download/%s\\n' \"$1\"\n").unwrap();
-        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755)).unwrap();
-        // Another test's child, forked while we held the file open for writing, can keep that
-        // handle until it execs, and until then executing the helper fails with ETXTBSY (26).
-        // Run it once, retrying only that error, so the staging below never meets it.
-        let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while matches!(
-            std::process::Command::new(&helper).arg("ready").output(),
-            Err(e) if e.raw_os_error() == Some(rustix::io::Errno::TXTBSY.raw_os_error())
-                && std::time::Instant::now() < until
-        ) {
-            std::thread::sleep(std::time::Duration::from_millis(2));
-        }
+        usnm_test_support::write_executable(&helper, "#!/bin/sh\nprintf 'download/%s\\n' \"$1\"\n")
+            .unwrap();
         let mut files = Vec::new();
         for body in [b"first".as_slice(), b"second".as_slice()] {
             let input = root.join("input");

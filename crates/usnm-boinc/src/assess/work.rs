@@ -269,10 +269,8 @@ pub(crate) mod tests {
     /// A stand-in engine script: the arguments decide how it ends.
     #[cfg(unix)]
     fn fake(dir: &Path, body: &str) -> std::path::PathBuf {
-        use std::os::unix::fs::PermissionsExt;
         let p = dir.join("tesseract");
-        std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
-        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        usnm_test_support::write_executable(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
         p
     }
 

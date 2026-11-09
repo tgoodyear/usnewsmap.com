@@ -1,0 +1,14 @@
+[package]
+name = "usnm-test-support"
+version = "0.1.0"
+description = "Helpers shared by the workspace's tests (a dev-dependency only)"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

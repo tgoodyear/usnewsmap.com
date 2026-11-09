@@ -736,8 +736,6 @@ mod tests {
     #[tokio::test]
     #[cfg(unix)]
     async fn stage_shared_models_stages_verified_gguf_and_rejects_mismatch() {
-        use std::os::unix::fs::PermissionsExt;
-
         let tmp = tempfile::tempdir().unwrap();
         let project = tmp.path().join("project");
         let bin_dir = project.join("bin");
@@ -748,8 +746,8 @@ mod tests {
         std::fs::create_dir_all(&model_dir).unwrap();
 
         let dir_hier = bin_dir.join("dir_hier_path");
-        std::fs::write(&dir_hier, "#!/bin/sh\necho \"download/$1\"\n").unwrap();
-        std::fs::set_permissions(&dir_hier, std::fs::Permissions::from_mode(0o755)).unwrap();
+        usnm_test_support::write_executable(&dir_hier, "#!/bin/sh\necho \"download/$1\"\n")
+            .unwrap();
 
         let gguf_8b = b"synthetic-8b-gguf";
         let mmproj_8b = b"synthetic-8b-mmproj";

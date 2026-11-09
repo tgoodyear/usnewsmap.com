@@ -871,7 +871,6 @@ mod tests {
     #[test]
     fn slot_preserves_probe_retry_budget_and_finishes_only_after_fourth_timeout() {
         use crate::boinc::{MAX_PROBE_POSTPONES, PROBE_TIMEOUTS_FILE};
-        use std::os::unix::fs::PermissionsExt;
 
         let tmp = tempfile::tempdir().unwrap();
         let slot = tmp.path();
@@ -881,8 +880,7 @@ mod tests {
             "<app_init_data><plan_class>nvidia_vulkan_8b</plan_class><gpu_type>NVIDIA</gpu_type><gpu_device_num>0</gpu_device_num></app_init_data>",
         ).unwrap();
         let server = slot.join("llama-server");
-        std::fs::write(&server, "#!/bin/sh\nexec sleep 1\n").unwrap();
-        std::fs::set_permissions(&server, std::fs::Permissions::from_mode(0o755)).unwrap();
+        usnm_test_support::write_executable(&server, "#!/bin/sh\nexec sleep 1\n").unwrap();
         gpu::TEST_PROBE_DEADLINE.with(|deadline| {
             let previous = deadline.replace(Some(Duration::ZERO));
             for attempt in 1..=MAX_PROBE_POSTPONES {

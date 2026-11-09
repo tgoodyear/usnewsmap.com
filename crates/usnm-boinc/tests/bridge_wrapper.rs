@@ -6,7 +6,6 @@ use std::path::Path;
 /// bridge-job.sh's submit-remote: pull, then submit only a job that is still reserved.
 #[test]
 fn bridge_submit_remote_submits_only_a_reserved_job() {
-    use std::os::unix::fs::PermissionsExt;
     let id = "b".repeat(64);
     for (step, state, submits, url, native) in [
         (
@@ -64,15 +63,10 @@ fn bridge_submit_remote_submits_only_a_reserved_job() {
         )
         .unwrap();
         let stub = bin.join("usnm-boinc");
-        std::fs::write(
-            &stub,
-            format!(
+        usnm_test_support::write_executable(&stub, format!(
                 "#!/bin/sh\necho \"$*\" >> '{}'\ncase \"$1 $2\" in 'handoff pull') echo {state} ;; esac\n",
                 calls.display()
-            ),
-        )
-        .unwrap();
-        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+            )).unwrap();
         let source =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../../boinc/images/server/bridge-job.sh");
         let script = std::fs::read_to_string(source)
@@ -134,7 +128,7 @@ fn bridge_submit_remote_submits_only_a_reserved_job() {
 
 #[test]
 fn gold_mirror_loc_dispatch_never_fetches_secrets_or_submits_work() {
-    use std::os::unix::fs::{symlink, PermissionsExt};
+    use std::os::unix::fs::symlink;
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().canonicalize().unwrap();
     let bin = root.join("bin");
@@ -170,12 +164,11 @@ fn gold_mirror_loc_dispatch_never_fetches_secrets_or_submits_work() {
     )
     .unwrap();
     let stub = bin.join("usnm-boinc");
-    std::fs::write(
+    usnm_test_support::write_executable(
         &stub,
         format!("#!/bin/sh\nprintf '%s\\n' \"$*\" > '{}'\n", calls.display()),
     )
     .unwrap();
-    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
     let script = std::fs::read_to_string(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../boinc/images/server/bridge-job.sh"),
     )

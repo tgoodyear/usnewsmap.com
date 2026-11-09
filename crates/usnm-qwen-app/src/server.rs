@@ -848,17 +848,15 @@ mod completion_tests {
     #[cfg(unix)]
     #[test]
     fn server_launch_uses_partial_layers_and_cpu_projector_only_for_the_explicit_profile() {
-        use std::os::unix::fs::PermissionsExt as _;
         let tmp = tempfile::tempdir().unwrap();
         let work = tmp.path();
         let bin = work.join("llama-server");
-        std::fs::write(
+        usnm_test_support::write_executable(
             &bin,
             "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$0.args\"\n\
              printf '%s' \"${MTMD_BACKEND_DEVICE-unset}\" > \"$0.device\"\nexit 23\n",
         )
         .unwrap();
-        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
         let control = BoincControl::start(work);
         for partial in [false, true] {
             let gpu = GpuState {

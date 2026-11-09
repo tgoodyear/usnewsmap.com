@@ -561,20 +561,21 @@ mod tests {
 
     #[cfg(unix)]
     fn fake_llama_server(slot: &Path, listing: &str) {
-        use std::os::unix::fs::PermissionsExt as _;
         let bin = slot.join("llama-server");
-        std::fs::write(&bin, format!("#!/bin/sh\nprintf '%s\\n' '{listing}'\n")).unwrap();
-        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        usnm_test_support::write_executable(
+            &bin,
+            format!("#!/bin/sh\nprintf '%s\\n' '{listing}'\n"),
+        )
+        .unwrap();
     }
 
     #[cfg(unix)]
     #[test]
     fn device_probe_waits_for_slow_enumeration_but_kills_a_hung_one() {
-        use std::os::unix::fs::PermissionsExt as _;
         let tmp = tempfile::tempdir().unwrap();
         let bin = tmp.path().join("llama-server");
-        std::fs::write(&bin, "#!/bin/sh\nsleep \"$1\"\necho Vulkan0\n").unwrap();
-        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        usnm_test_support::write_executable(&bin, "#!/bin/sh\nsleep \"$1\"\necho Vulkan0\n")
+            .unwrap();
         let out = device_probe_within(Command::new(&bin).arg("1"), &bin, Duration::from_secs(10))
             .unwrap();
         assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "Vulkan0");
@@ -606,14 +607,12 @@ mod tests {
   Vulkan3: Intel Arc A770 (16384 MiB, 16000 MiB free)
   Vulkan4: Advanced Micro Devices, Inc. [RADV NAVI48] (16384 MiB, 6000 MiB free)";
         fake_llama_server(&slot, listing);
-        use std::os::unix::fs::PermissionsExt as _;
         let helper = slot.join("usnm-amd-device-map");
-        std::fs::write(
+        usnm_test_support::write_executable(
             &helper,
             "#!/bin/sh\ncase \"$2\" in 0) echo Vulkan2;; 1) echo Vulkan4;; *) exit 1;; esac\n",
         )
         .unwrap();
-        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755)).unwrap();
         for (physical, opencl, expected) in [
             (12, 0, Some(2)),
             (0, 1, Some(4)),
@@ -657,8 +656,7 @@ mod tests {
         }
         std::fs::remove_file(&helper).unwrap();
         assert!(!detect_gpu(&slot, &mut host, &mut diag).use_gpu);
-        std::fs::write(&helper, "#!/bin/sh\necho Vulkan2\n").unwrap();
-        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755)).unwrap();
+        usnm_test_support::write_executable(&helper, "#!/bin/sh\necho Vulkan2\n").unwrap();
         for name in [
             "AMD Radeon RX 9070 XT",
             "Radeon RX 9070 XT (RADV NAVI48)",

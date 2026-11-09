@@ -82,12 +82,10 @@ fn model_identity_is_stable_and_wrong_models_fail_startup() {
 
 #[cfg(unix)]
 fn standin(body: &str) -> (tempfile::TempDir, ndlocr::Ndlocr, std::path::PathBuf) {
-    use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir(dir.path().join("src")).unwrap();
     let python = dir.path().join("python");
-    std::fs::write(&python, format!("#!/bin/sh\n{body}\n")).unwrap();
-    std::fs::set_permissions(&python, std::fs::Permissions::from_mode(0o755)).unwrap();
+    usnm_test_support::write_executable(&python, format!("#!/bin/sh\n{body}\n")).unwrap();
     let image = dir.path().join("input");
     std::fs::write(&image, b"\xff\xd8\xfffake JPEG").unwrap();
     let engine = ndlocr::Ndlocr {
@@ -238,7 +236,6 @@ printf '新聞' > "$5/page.txt"
 #[cfg(unix)]
 #[tokio::test]
 async fn worker_preserves_line_granularity_in_storage_and_provenance() {
-    use std::os::unix::fs::PermissionsExt;
     use std::time::Duration;
     use usnm_ocr_worker::contract::{ContractEngine, ContractOptions, Launch};
     use usnm_ocr_worker::engine::Engine;
@@ -263,7 +260,7 @@ async fn worker_preserves_line_granularity_in_storage_and_provenance() {
                      "models":models.iter().map(|m|m["name"].clone()).collect::<Vec<_>>()}]
     });
     let script = dir.path().join("adapter");
-    std::fs::write(&script, format!("#!/bin/sh\nprintf '%s\n' '{hello}'\n{}", r#"
+    usnm_test_support::write_executable(&script, format!("#!/bin/sh\nprintf '%s\n' '{hello}'\n{}", r#"
 while IFS= read -r line; do
   out=$(printf '%s' "$line" | sed -n 's/.*"out":"\([^"]*\)".*/\1/p')
   run=$(printf '%s' "$line" | sed -n 's/.*"run_id":"\([^"]*\)".*/\1/p')
@@ -271,7 +268,6 @@ while IFS= read -r line; do
   printf '{"type":"result","status":"ok","run_id":"%s","layout":{"kind":"alto","path":"%slayout.xml","alto_dpi":300}}\n' "$run" "$out"
 done
 "#)).unwrap();
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
     let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/ndlocr/page.alto.xml");
     let inferred = usnm_alto::parse(
