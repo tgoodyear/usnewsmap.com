@@ -549,6 +549,24 @@ class ControllerTests(unittest.TestCase):
                 tick = self.observe(native=self.run_lines(*runs))
                 self.assertEqual(tick["failed_in_a_row"], expected)
 
+    def test_a_failed_controller_whose_runs_left_the_window_is_unknown(self):
+        # Failed twice, then stopped: those runs aged out, so its count can't be trusted.
+        with self.assertRaisesRegex(ValueError, "no recent completed controller tick"):
+            self.observe(native=self.run_lines((NOW - 3000, "a", "failed")), SubState="failed", Result="exit-code")
+        with self.assertRaisesRegex(ValueError, "no recent completed controller tick"):
+            self.observe(SubState="failed", Result="exit-code")
+        tick = self.observe(native=self.run_lines((NOW - 900, "a", "failed"), (NOW - 300, "b", "failed")),
+                            SubState="failed", Result="exit-code")
+        self.assertEqual((tick["ok"], tick["failed_in_a_row"]), (False, 2))
+
+    def test_a_streak_without_the_maintenance_time_is_rejected(self):
+        document = {"schema_version": 1, "source": "controller", "observed_at": NOW,
+                    "tick": {"ok": True, "seconds": 1, "finished_at": NOW, "failed_in_a_row": 0}}
+        with self.assertRaisesRegex(ValueError, "invalid integer"):
+            C.fresh(document, NOW, "controller")
+        document["tick"]["maintenance_failure_at"] = 0
+        C.fresh(document, NOW, "controller")
+
     def test_two_failures_between_observations_fire_and_a_recovery_clears(self):
         previous, states = {}, []
         for elapsed, runs in ((0, [(NOW - 900, "a", "ok")]),

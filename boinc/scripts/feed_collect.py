@@ -205,7 +205,9 @@ def fresh(document, now, kind):
                 "last_failure_at", "controller_failure_at", "maintenance_failure_at")):
             raise ValueError("future controller failure")
         if "failed_in_a_row" in tick:
+            # The evaluator reads both together.
             natural(tick["failed_in_a_row"])
+            natural(tick.get("maintenance_failure_at"))
     if kind == "backlog":
         if not isinstance(document["backlogs"], dict):
             raise ValueError("invalid backlogs")
@@ -938,9 +940,13 @@ def controller(unit, maintenance=()):
     if running:
         return {"ok": None, "seconds": max(0, time.clock_gettime(time.CLOCK_MONOTONIC) - start),
                 "finished_at": int(time.time())} | failures
-    if status.get("Result") != "success":
+    # A failed unit counts only from fresh runs: a controller that failed and stopped would see its
+    # failures leave the journal window and its count fall, so stale history is unknown, not healthy.
+    last_run = max((t for t, _ in runs.values()), default=None)
+    failed = status.get("Result") != "success"
+    if failed and last_run is not None and time.time() - last_run <= 900:
         return {"ok": False, "seconds": max(0, end - start), "finished_at": int(time.time())} | failures
-    if latest is None or time.time() - latest["finished_at"] > 900:
+    if failed or latest is None or time.time() - latest["finished_at"] > 900:
         paused = paused_by(maintenance)
         if paused:
             # Paused on purpose: nothing ran, so nothing ran long or failed.
