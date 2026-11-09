@@ -1,0 +1,5 @@
+# Tesseract 5.5 and Pillow, for yiddish_lines.py and build_tasks.py on the build host.
+FROM docker.io/library/debian:trixie-slim
+RUN apt-get update && apt-get install -y --no-install-recommends tesseract-ocr python3-pil ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+WORKDIR /work

@@ -12,12 +12,14 @@ joined PC can sit idle for a while. That is normal.
 
 - Windows 11, or Windows 10 22H2 with current updates, on an Intel or AMD
   64-bit PC. Windows on ARM and Windows Server are not supported.
-- For GPU work, an NVIDIA GPU with the official NVIDIA driver 551.61 or newer
-  and at least 3 GB of free video memory. A PC without one (AMD or Intel
-  graphics, or no GPU) can only offer CPU time: add `-AllowCpuOnly` to both
-  helper commands below. CPU work is optional and not always available.
-- 6 GB of RAM and 12 GiB of free disk, or 18 GiB if your GPU has 7 GB or more
-  of video memory (binary gigabytes: about 13 and 20 GB as most disk tools
+- For GPU work, an AMD GPU with at least 7 GB of video memory and a current
+  AMD graphics driver, which provides Vulkan ([AMD](boinc-amd-gpu.md)). No
+  Windows version has been released for NVIDIA or Intel GPUs yet; both get GPU
+  work on Linux ([app versions](boinc-quality.md#app-versions-and-plan-classes)). On a PC
+  without an eligible AMD GPU, add `-AllowCpuOnly` to the preview and apply
+  commands below (not to `-Status`) to offer CPU time instead. CPU work is
+  optional and not always available.
+- 6 GB of RAM and 12 GiB of free disk, or 18 GiB with an eligible AMD GPU (binary gigabytes: about 13 and 19 GB as most disk tools
   show them).
 
 ## 2. Run the helper
@@ -31,7 +33,7 @@ joined PC can sit idle for a while. That is normal.
    and does not use the network:
 
    ```powershell
-   .\scripts\boinc\setup_windows_volunteer.ps1
+   .\boinc\scripts\setup_windows_volunteer.ps1
    ```
 
    If Windows refuses to run the script, run `Get-ExecutionPolicy -List`.
@@ -46,20 +48,21 @@ joined PC can sit idle for a while. That is normal.
    Any other policy was set on purpose: do not lower it; ask whoever manages
    the PC. If the script is still blocked because the ZIP came from the
    internet, unblock that one file:
-   `Unblock-File .\scripts\boinc\setup_windows_volunteer.ps1`.
+   `Unblock-File .\boinc\scripts\setup_windows_volunteer.ps1`.
 
 4. Run it for real:
 
    ```powershell
-   .\scripts\boinc\setup_windows_volunteer.ps1 -Apply -InstallBoinc
+   .\boinc\scripts\setup_windows_volunteer.ps1 -Apply -InstallBoinc
    ```
 
    The helper asks you to type `YES` before it downloads the official BOINC
    installer and again before it runs it. It verifies the installer's checksum
    and signature first. In the installer, open **Advanced** and keep **Service
    install** off (a service cannot use the GPU), and at **Finish** leave
-   **Launch BOINC Manager** unchecked. If BOINC is already installed, the
-   helper skips this and reuses it.
+   **Launch BOINC Manager** unchecked. If BOINC 8.2.11 or newer is already
+   installed, the helper skips this and reuses it; an older one is upgraded,
+   after you exit it.
 
 5. The helper then asks before opening **BOINC Manager** and prints the steps
    to follow there (next section). When you have done them, press Enter and it
@@ -83,7 +86,7 @@ If the PC is already attached, do not remove and re-add the project.
 Any time later, from the same folder:
 
 ```powershell
-.\scripts\boinc\setup_windows_volunteer.ps1 -Status
+.\boinc\scripts\setup_windows_volunteer.ps1 -Status
 ```
 
 It reports whether the PC is attached and how many usnewsmap tasks it holds,
@@ -92,7 +95,7 @@ by state. "No tasks" with a **Scheduler request completed** line in Manager's
 task that downloads, runs and uploads is a success; its validation shows under
 **Tasks** on your account page.
 
-If the GPU is not listed in the Event Log at startup, update the NVIDIA driver
+If the GPU is not listed in the Event Log at startup, update the GPU driver
 and check that BOINC was not installed as a service.
 
 ## 5. Pause, stop or leave

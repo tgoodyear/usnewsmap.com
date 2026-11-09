@@ -13,7 +13,7 @@ use usnm_ocr_contract::{
     qwen::{Job, MAX_JOB_JSON},
 };
 
-const EMBEDDED_WEIGHTS_LOCK: &str = include_str!("../../../../ocr/boinc/qwen/weights.lock");
+const EMBEDDED_WEIGHTS_LOCK: &str = include_str!("../../../../boinc/apps/qwen/weights.lock");
 
 /// Execution target and input template routing for `usnm_qwen` workunits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
@@ -99,7 +99,7 @@ impl Target {
     /// shared payload, slot workspace and reserve. Never discounts unproven caches.
     pub fn disk_bound(self) -> u64 {
         let policy: serde_json::Value =
-            serde_json::from_str(include_str!("../../../../ocr/boinc/qwen/disk-policy.json"))
+            serde_json::from_str(include_str!("../../../../boinc/apps/qwen/disk-policy.json"))
                 .expect("valid embedded Qwen disk policy");
         let (model, kind) = match self {
             Self::Container => ("2b", "container_cold_bytes"),
@@ -143,7 +143,7 @@ pub fn fpops(job: &Job) -> (String, String) {
     (format!("{pages}e13"), format!("{pages}e16"))
 }
 /// 6 GiB: the 8B model at Q4 needs about 7 GB of GPU memory and 4 GiB of
-/// RAM; the 2B model at Q8 about 3 GiB of RAM (`ocr/boinc/qwen/`).
+/// RAM; the 2B model at Q8 about 3 GiB of RAM (`boinc/apps/qwen/`).
 pub const MEMORY_BOUND: &str = "6442450944";
 
 pub fn create_work_args(job: &Job) -> Vec<String> {
@@ -481,7 +481,7 @@ async fn run_selected_with_lock(
             ));
             atomic(
                 &project.join("templates/usnm_qwen_benchmark_in"),
-                include_bytes!("../../../../ocr/boinc/usnm_qwen_benchmark_in"),
+                include_bytes!("../../../../boinc/apps/usnm_qwen_benchmark_in"),
             )?;
         }
         if !models_staged {
@@ -736,8 +736,6 @@ mod tests {
     #[tokio::test]
     #[cfg(unix)]
     async fn stage_shared_models_stages_verified_gguf_and_rejects_mismatch() {
-        use std::os::unix::fs::PermissionsExt;
-
         let tmp = tempfile::tempdir().unwrap();
         let project = tmp.path().join("project");
         let bin_dir = project.join("bin");
@@ -748,8 +746,8 @@ mod tests {
         std::fs::create_dir_all(&model_dir).unwrap();
 
         let dir_hier = bin_dir.join("dir_hier_path");
-        std::fs::write(&dir_hier, "#!/bin/sh\necho \"download/$1\"\n").unwrap();
-        std::fs::set_permissions(&dir_hier, std::fs::Permissions::from_mode(0o755)).unwrap();
+        usnm_test_support::write_executable(&dir_hier, "#!/bin/sh\necho \"download/$1\"\n")
+            .unwrap();
 
         let gguf_8b = b"synthetic-8b-gguf";
         let mmproj_8b = b"synthetic-8b-mmproj";

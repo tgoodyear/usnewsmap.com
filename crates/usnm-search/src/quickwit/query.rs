@@ -149,9 +149,11 @@ const BOTH: TextFields = TextFields {
 /// term set (`IN [...]`, see `~ocr` below). The glyph's own clause comes
 /// first, as it is the search as typed. These are in the string only: the
 /// AST, its canonical form and the limits on what is typed are the query's
-/// as the visitor wrote it.
+/// as the visitor wrote it. A Cherokee word is also looked for as OCR
+/// misreads the first Cherokee type (#1620), each misreading a phrase of
+/// one word: `(text:ꮎꮝꭹ OR text:"ꮹꮝꭹ" OR …)`.
 fn leaf_string(node: &Node, grams: bool, f: &TextFields) -> Result<String, SearchError> {
-    let slash = usnm_core::fractions::slash_phrases(node);
+    let slash = usnm_core::query::also_phrases(node);
     if slash.is_empty() {
         return plain_leaf_string(node, grams, f);
     }
@@ -562,6 +564,32 @@ mod tests {
         )
         .unwrap();
         assert!(r["query"].as_str().unwrap().starts_with("(text_cg:"), "{r}");
+    }
+
+    /// A Cherokee word is also looked for as OCR misreads the first
+    /// Cherokee type (#1620): ᎾᏍᎩ with its word-initial Ꮎ as each G-shaped
+    /// letter, `OR`ed, each a one-word phrase.
+    #[test]
+    fn a_cherokee_word_is_also_searched_as_misread() {
+        let q = query_string(&parse("ᎾᏍᎩ").unwrap(), true, false).unwrap();
+        assert_eq!(
+            q,
+            r#"(text:ꮎꮝꭹ OR text:"ᏻꮝꭹ" OR text:"ꮐꮝꭹ" OR text:"ꮳꮝꭹ" OR text:"ꮹꮝꭹ")"#
+        );
+        // ᎦᏙᎯ also as ᎦᎪᎯ, its Ꮩ read as Ꭺ.
+        assert_eq!(
+            query_string(&parse("ᎦᏙᎯ").unwrap(), true, false).unwrap(),
+            r#"(text:ꭶꮩꭿ OR text:"ꭶꭺꭿ")"#
+        );
+        // `~ocr` keeps its own table, and a word the vocabulary has as it
+        // is misread has nothing added.
+        assert!(!query_string(&parse("ᎾᏍᎩ~ocr").unwrap(), true, false)
+            .unwrap()
+            .contains('"'));
+        assert_eq!(
+            query_string(&parse("ᎠᎴ").unwrap(), true, false).unwrap(),
+            "text:ꭰꮄ"
+        );
     }
 
     /// A fraction joined to a number is also looked for as OCR reads it with

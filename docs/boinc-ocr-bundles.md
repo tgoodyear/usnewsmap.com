@@ -116,15 +116,30 @@ Claim each production step on #529 first, and release the claim afterwards. Time
 Eastern.
 
 1. **Merge and build.** After this PR merges (crate changes roll the prod API), build
-   the worker image from `ocr/boinc/Containerfile` and the bridge image from
-   `contrib-compute/images/bridge/Containerfile` at the merge commit. Record the worker
+   the worker image from `boinc/apps/Containerfile` and the bridge image from
+   `boinc/images/bridge/Containerfile` at the merge commit. Record the worker
    image's full digest.
-2. **Release the worker as a new `usnm_ocr` app version** (contrib-compute/docs/app-release.md):
+2. **Release the worker as a new `usnm_ocr` app version** (boinc/docs/app-release.md):
    for every platform the current version 105 has (`x86_64-pc-linux-gnu`,
    `arm64-apple-darwin`, `x86_64-apple-darwin`), with the signing host, `--what-if` first.
    Use the next version number (106 unless one is already taken; check the `app_version`
    table). Then check the feeder sends 106 for a single-page unit. The new worker runs
    single-page units exactly as 105 did, so nothing else changes yet.
+
+   **Host trust starts over with the new worker image.** `gold/trust.json` lists trusted hosts
+   under the full worker digest ([gold-check.md](../boinc/docs/gold-check.md)), so until a host
+   passes gold on the new image, `collect` holds its results. Before the server image is built,
+   add the new digest to `boinc/project/gold-engine-platforms.json` with each architecture's
+   `USNM_TESSERACT_IMAGE` (read from the published image configs). Release a `usnm_gold`
+   version whose Dockerfile pins the same worker. The English threshold carries over only if a
+   project host scores challenge `d8cd7279…` with the same per-crop edit counts on both images
+   ([boinc-native-ocr.md](boinc-native-ocr.md), "Threshold carry-over"). Then point the plan's
+   `gold_onboarding` at a campaign prepared for the new image, with `engine_base` set to its
+   amd64 engine. Gold onboarding matches hosts by the campaign's exact engine base, and the
+   controller takes one scope per language and profile, so it never reaches arm64 hosts.
+   Calibrate those with a separate campaign on the arm64 engine, submitted and promoted by
+   hand, as `current247c-arm-calibration-20261017` was for `247c`.
+
 3. **Server.** Stop CT 211's controller timer and wait for any running tick to finish. Move
    CT 230 to the new bridge image, as in the 24 October image switch on #529 (stop the server,
    `refresh-project-code.py apply` with a backup, point `SERVER_IMAGE` at it, start, check
@@ -137,7 +152,9 @@ Eastern.
      (`submit-remote` copies them).
 4. **Hand-off image.** `collect` must understand `get-spool`'s `requeued` before any bundle can
    fail. With `--onprem-handoff collect` (#967), collect runs from CT 230's `SERVER_IMAGE`, so
-   step 3 covers it. Otherwise, update `USNM_BOINC_HANDOFF_IMAGE` to the new bridge image.
+   step 3 covers it. Prod has had no Azure hand-off job since 6 November 2026 (#308); only an
+   environment whose settings still name `USNM_BOINC_HANDOFF_IMAGE` needs it set to the new
+   bridge image.
 5. **Canary plan.** Start a new plan on CT 211, `queue-feed-<n+1>`, once the old plan has
    drained or is left to drain under its own state. Only the plan name, image and the fields
    below change; keep everything else as in the live config:

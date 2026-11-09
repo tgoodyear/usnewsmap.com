@@ -43,7 +43,7 @@ pub struct StageOptions {
     pub release: PathBuf,
     pub subset: String,
     pub engine: Engine,
-    /// The app's `ocr/boinc/qwen/weights.lock`, copied into every slot unchanged.
+    /// The app's `boinc/apps/qwen/weights.lock`, copied into every slot unchanged.
     pub weights_lock: PathBuf,
     pub pages_per_slot: usize,
     pub timeout_secs: u32,

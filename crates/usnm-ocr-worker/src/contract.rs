@@ -930,16 +930,11 @@ mod tests {
     pub(super) async fn script_engine_with(dir: &Path, before: &str, body: &str) -> ContractEngine {
         let hello = r#"{"adapter":{"lang":"sh","name":"silent","version":"0"},"cancel":"kill","contract":1,"deterministic":true,"engine":{"family":"tesseract","id":"silent","version":"1"},"granularity":"page","layout":"boxes","models":[{"name":"test-model","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}],"models_loaded":"at_start","profiles":[{"id":"eng","languages":["eng"],"models":["test-model"],"tunable":[]}],"type":"hello"}"#;
         let script = dir.join("adapter");
-        std::fs::write(
+        usnm_test_support::write_executable(
             &script,
             format!("#!/bin/sh\n{before}\necho '{hello}'\n{body}"),
         )
         .unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
         let mut catalog = usnm_ocr_route::ENGINES.clone();
         let mut engine = catalog.engine[0].clone();
         engine.id = "silent".into();

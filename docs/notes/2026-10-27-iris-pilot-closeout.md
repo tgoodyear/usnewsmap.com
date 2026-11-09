@@ -50,7 +50,7 @@ These are newly recomputed scores over **all allocated crops**, not the stale
 108-English/zero-German intermediate paired reports. Normalization collapses
 whitespace but preserves case and punctuation. Edit distance is the existing
 sequential character Levenshtein implementation in
-`scripts/boinc/iris-campaign.py`; CER is total edits divided by total reference
+`boinc/scripts/iris-campaign.py`; CER is total edits divided by total reference
 characters, not the mean of per-crop CERs.
 
 Every failed Iris job is scored as an empty prediction: all its reference
@@ -177,7 +177,7 @@ against `/project/usnmocr/keys/code_sign_public`. That check passed; Dockerfile
 SHA-256 is `860d657a52b8cf4fd5c73d8a1575be29132c627a883472676440dcf1e529dd81`.
 See `retrye-iris-registered-binding.json` in the verification/binding release.
 
-Validate retained jobs/results with `ocr/boinc/iris/contract.py`. Collapse
+Validate retained jobs/results with `boinc/apps/iris/contract.py`. Collapse
 reference/prediction whitespace; use an empty prediction for each of the
 three terminal failures. Sum `edit_distance(reference, prediction)` and
 reference lengths separately for the 300-English and 700-German allocations.

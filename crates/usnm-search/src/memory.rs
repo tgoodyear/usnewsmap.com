@@ -5,12 +5,12 @@
 use std::collections::{BTreeMap, HashMap};
 
 use async_trait::async_trait;
+use usnm_core::ocr_variants;
 use usnm_core::params::Filters;
 use usnm_core::query::{wildcard_matches, Node, Term};
 use usnm_core::text::{fold, index_tokens, tokenize, Analyzer, MAX_TOKEN_CHARS, USNM_TEXT};
 use usnm_core::text_layout::TextLayout;
 use usnm_core::time::BucketSpec;
-use usnm_core::{fractions, ocr_variants};
 
 use crate::snippet::{matched_in, opening_snippet, page_snippets};
 
@@ -620,11 +620,13 @@ pub fn eval_scored<T: Position>(node: &Node, texts: &[&[T]], scoring: Scoring) -
 }
 
 /// Whether a term or phrase matches in any text as OCR reads a fraction in
-/// it with a slash ([`fractions::slash_phrases`], #1067): `61½` as the
+/// it with a slash, or as a Cherokee word misread in the first Cherokee type
+/// ([`usnm_core::query::also_phrases`], #1067, #1620): `61½` as the
 /// phrases "61 1 2" and "611 2", which the engine is sent `OR`ed with the
-/// glyph. These are exact phrases of digits, so they match as they are.
+/// glyph, and ᎾᏍᎩ as the words ᏩᏍᎩ, ᏣᏍᎩ, ᏳᏍᎩ and ᏀᏍᎩ. These are exact
+/// phrases of folded words, so they match as they are.
 fn slash_matches<T: Position>(node: &Node, texts: &[&[T]], scoring: Scoring) -> bool {
-    fractions::slash_phrases(node).iter().any(|phrase| {
+    usnm_core::query::also_phrases(node).iter().any(|phrase| {
         texts
             .iter()
             .any(|tokens| phrase_count(phrase, 0, tokens, scoring) > 0)
@@ -732,7 +734,7 @@ fn mentions<T: Position>(node: &Node, tokens: &[T]) -> usize {
     // A fraction read with a slash counts as its own mentions (#1067), as
     // the engine scores the `OR`ed phrases.
     let slash = || -> usize {
-        fractions::slash_phrases(node)
+        usnm_core::query::also_phrases(node)
             .iter()
             .map(|phrase| phrase_count(phrase, 0, tokens, Scoring::On) as usize)
             .sum()
@@ -1274,6 +1276,51 @@ mod shard_tests {
             hits.hits[0].snippets,
             ["Wheat closed <mark>½</mark> higher"]
         );
+    }
+
+    /// A Cherokee word is also found as OCR misread the first Cherokee type
+    /// (#1620): ᎾᏍᎩ on a page whose text has ᏩᏍᎩ, ᎦᏙᎯ where it has ᎦᎪᎯ.
+    #[tokio::test]
+    async fn a_cherokee_word_is_also_found_as_misread() {
+        let texts = ["ᏩᏍᎩ ᎠᎴ", "ᎾᏍᎩ ᎦᎪᎯ", "ᎠᎴ ᎪᎱᏍᏗ"];
+        let docs: Vec<PageDoc> = (1..)
+            .zip(texts)
+            .map(|(i, t)| PageDoc {
+                text: t.into(),
+                ..doc(i, 1)
+            })
+            .collect();
+        let ids = |pages: &[u32]| pages.iter().map(|&i| doc(i, 1).doc_id).collect::<Vec<_>>();
+        let mut b = MemoryBackend::new();
+        b.add_index("i", docs);
+        let f = Filters {
+            from: usnm_core::time::date_from_day(71_000),
+            to: usnm_core::time::date_from_day(71_300),
+            states: vec![],
+            lccns: vec![],
+            langs: vec![],
+            front_only: false,
+            series: Vec::new(),
+        };
+        let page = HitsQuery {
+            limit: 20,
+            ..HitsQuery::default()
+        };
+        let set = IndexSet::new(vec!["i".into()]);
+        let found = |q: &str| {
+            let (b, f, page, set) = (&b, &f, &page, &set);
+            let q = usnm_core::query::parse(q).unwrap();
+            async move {
+                let hits = b.hits(set, &q, f, page).await.unwrap();
+                hits.hits.into_iter().map(|h| h.doc_id).collect::<Vec<_>>()
+            }
+        };
+        assert_eq!(found("ᎾᏍᎩ").await, ids(&[1, 2]));
+        assert_eq!(found("ᎦᏙᎯ").await, ids(&[2]));
+        // A misreading is searched as typed: ᏩᏍᎩ finds only its page.
+        assert_eq!(found("ᏩᏍᎩ").await, ids(&[1]));
+        // Ꭺ in a word that is right stays Ꭺ: ᎪᎱᏍᏗ is not ᏙᎱᏍᏗ.
+        assert_eq!(found("ᏙᎱᏍᏗ").await, ids(&[]));
     }
 
     /// A fraction joined to a number is also found as OCR prints it with a

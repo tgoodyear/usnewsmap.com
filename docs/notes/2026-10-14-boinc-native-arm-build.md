@@ -4,8 +4,8 @@
 **Measured on:** synthetic `pilot_fixture`, repository worker Containerfile SHA-256
 `c2290fa7894870ae494d5fdbdaeea4994af23af1c9268ce0404af3b3103790e7`; Rust and model sources unchanged from `df3ddc2` ·
 **Code:** [worker workflow](../../.github/workflows/boinc-worker.yml),
-[native smoke](../../scripts/boinc/smoke-worker.py),
-[Mac wrapper build](../../scripts/boinc/build-mac-wrapper.sh) ·
+[native smoke](../../boinc/scripts/smoke-worker.py),
+[Mac wrapper build](../../boinc/scripts/build-mac-wrapper.sh) ·
 **Issues:** [#476](https://github.com/tgoodyear/usnewsmap.com/issues/476),
 [#481](https://github.com/tgoodyear/usnewsmap.com/issues/481)
 
@@ -29,7 +29,7 @@ Tesseract 5.5.0 and the repository's model lock were unchanged.
 The repeatable round trip was:
 
 ```sh
-python3 scripts/boinc/smoke-worker.py --runtime /opt/podman/bin/podman \
+python3 boinc/scripts/smoke-worker.py --runtime /opt/podman/bin/podman \
   --image localhost/usnm-boinc-worker:arm64-pr \
   --build-image localhost/usnm-boinc-build:arm64-pr \
   --arch arm64 --dir /tmp/usnm-native-arm-pr/smoke
@@ -69,7 +69,7 @@ was used. No published settings were changed.
 ## What is left
 
 The maintainer must merge the build tooling, publish the tested worker index,
-commit public digest settings, and use the [offline-signing release procedure](../../contrib-compute/docs/app-release.md#mac-app-versions).
+commit public digest settings, and use the [offline-signing release procedure](../../boinc/docs/app-release.md#mac-app-versions).
 Then verify a reserved native Mac `usnm_ocr` job end to end, fix and retest
 Podman pause and restart, test client restart and reboot, and establish native
 gold-page agreement before closing #476. Gold and assessment expectations

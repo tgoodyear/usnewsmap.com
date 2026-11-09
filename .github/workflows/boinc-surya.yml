@@ -4,7 +4,7 @@ name: boinc-surya
 # ghcr.io/tgoodyear/usnm-boinc-worker under the tag surya-<commit>, and its summary gives the
 # registry digest and the two values a campaign is staged with. A pull request that changes what
 # it is built from builds it without pushing: both variants when the change reaches what sets them
-# apart (ocr/boinc/surya/, this workflow or its action), and only cuda when it reaches just the
+# apart (boinc/apps/surya/, this workflow or its action), and only cuda when it reaches just the
 # usnm-boinc build stage the two share (crates, the files they embed elsewhere; #1585).
 #
 # It shares the worker's package, which is already public, so volunteers' Docker or Podman can
@@ -21,7 +21,7 @@ on:
     paths: &paths
       - ".github/workflows/boinc-surya.yml"
       - ".github/actions/boinc-surya-build/**"
-      - "ocr/boinc/surya/**"
+      - "boinc/apps/surya/**"
       # The image builds usnm-boinc from this checkout.
       - "crates/**"
       - "Cargo.toml"
@@ -29,17 +29,18 @@ on:
       - "rust-toolchain.toml"
       - ".dockerignore"
       # Files the crates it builds embed (scripts/ci/changes.sh finds them).
-      - "scripts/boinc/acceptance_server.py"
+      - "boinc/scripts/acceptance_server.py"
       - "docs/notes/2026-11-05-german-trust-hold.json"
+      - "docs/notes/2026-11-07-serbian-trust-hold.json"
       - "fixtures/ocr-gold/bundle-v1.lock.json"
-      - "ocr/boinc/qwen/disk-policy.json"
-      - "ocr/boinc/qwen/weights.lock"
-      - "ocr/boinc/usnm_qwen_benchmark_in"
+      - "boinc/apps/qwen/disk-policy.json"
+      - "boinc/apps/qwen/weights.lock"
+      - "boinc/apps/usnm_qwen_benchmark_in"
       - "ocr/engines/engines.toml"
       - "ocr/engines/ndlocr-lite/models.lock"
       - "ocr/engines/tesseract/models.lock"
       - "ocr/routing/routes.toml"
-      - "contrib-compute/boinc/plan_class_spec.xml"
+      - "boinc/project/plan_class_spec.xml"
       - "!**/*.md"
   # After a merge, for what pull requests leave to main (#1585): see scripts/ci/changes.sh.
   push:

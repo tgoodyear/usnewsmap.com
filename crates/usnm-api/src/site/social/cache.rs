@@ -38,6 +38,9 @@ type Persistent = Option<(Arc<dyn ObjectStore>, String)>;
 pub(crate) struct Service {
     images: moka::future::Cache<String, Arc<Image>>,
     renders: Arc<tokio::sync::Semaphore>,
+    /// How many renders have started, so a caller can tell a request that rendered
+    /// from one served from memory or storage.
+    renders_started: AtomicU64,
     quota: Arc<Quota>,
     pub(super) frontend: tokio::sync::OnceCell<String>,
 }
@@ -114,6 +117,7 @@ impl Default for Service {
                 .time_to_live(LIFETIME)
                 .build(),
             renders: Arc::new(tokio::sync::Semaphore::new(2)),
+            renders_started: AtomicU64::new(0),
             quota: Arc::default(),
             frontend: tokio::sync::OnceCell::new(),
         }
@@ -123,6 +127,11 @@ impl Default for Service {
 impl Service {
     pub(super) fn idle(&self) -> bool {
         self.renders.available_permits() == 2
+    }
+
+    /// How many renders have started since this process did.
+    pub(super) fn renders_started(&self) -> u64 {
+        self.renders_started.load(Ordering::Relaxed)
     }
 
     /// Metadata discovery never waits for storage or advertises a local-only
@@ -166,35 +175,79 @@ impl Service {
         background: bool,
         render: impl Future<Output = Result<Vec<u8>, RenderError>>,
     ) -> Result<Vec<u8>, Arc<RenderError>> {
+        self.get_within(key, persistent, background, Duration::ZERO, render)
+            .await
+    }
+
+    /// [`get`](Self::get), where a visitor's render may wait up to `patience`
+    /// for a free slot instead of being refused at once. Two slots are shared
+    /// by every distinct image, so three overlapping requests would otherwise
+    /// leave one with `Busy`; a page that cannot retry (a script-free `<img>`)
+    /// then keeps a broken image. Waiters queue first-come-first-served, and
+    /// background work, which needs both slots free, does not start while one
+    /// waits. Past `patience` the request is `Busy` as before, so a burst
+    /// cannot leave renders queued without bound. Background renders never wait.
+    pub(super) async fn get_within(
+        &self,
+        key: String,
+        persistent: Persistent,
+        background: bool,
+        patience: Duration,
+        render: impl Future<Output = Result<Vec<u8>, RenderError>>,
+    ) -> Result<Vec<u8>, Arc<RenderError>> {
         if !background {
             if let Some(image) = self.images.get(&key).await {
                 self.refresh(&image, &persistent);
                 return Ok(image.body.clone());
             }
         }
-        let image = self
-            .images
-            .try_get_with(key, async {
-                if let Some((store, path)) = &persistent {
-                    if let Some(body) = read(store.as_ref(), path).await {
-                        return Ok(Image::new(body, true));
+        // A refusal can come from another caller's initializer for this key (one with
+        // less patience, which `try_get_with` hands to everyone waiting on it). It says
+        // nothing about this caller's wait, so go round again until its own patience is
+        // spent. The render is polled only once a slot is held, never on a refusal.
+        let deadline = tokio::time::Instant::now() + patience;
+        let mut render = std::pin::pin!(render);
+        let image = loop {
+            let attempt = self
+                .images
+                .try_get_with(key.clone(), async {
+                    if let Some((store, path)) = &persistent {
+                        if let Some(body) = read(store.as_ref(), path).await {
+                            return Ok(Image::new(body, true));
+                        }
                     }
-                }
-                // One background worker starts only with both slots free,
-                // leaving the second slot for Share/crawler requests.
-                let mut permit = self
-                    .renders
-                    .clone()
-                    .try_acquire_many_owned(if background { 2 } else { 1 })
+                    // One background worker starts only with both slots free,
+                    // leaving the second slot for Share/crawler requests.
+                    let permits = self.renders.clone();
+                    let mut permit = if background || patience.is_zero() {
+                        permits.try_acquire_many_owned(if background { 2 } else { 1 })
+                    } else {
+                        match tokio::time::timeout(patience, permits.acquire_owned()).await {
+                            Ok(Ok(permit)) => Ok(permit),
+                            _ => return Err(RenderError::Busy),
+                        }
+                    }
                     .map_err(|_| RenderError::Busy)?;
-                if background {
-                    drop(permit.split(1));
+                    if background {
+                        drop(permit.split(1));
+                    }
+                    self.renders_started.fetch_add(1, Ordering::Relaxed);
+                    let body = render.as_mut().await?;
+                    drop(permit);
+                    Ok(Image::new(body, false))
+                })
+                .await;
+            match attempt {
+                Err(error)
+                    if !background
+                        && matches!(*error, RenderError::Busy)
+                        && tokio::time::Instant::now() < deadline =>
+                {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
                 }
-                let body = render.await?;
-                drop(permit);
-                Ok(Image::new(body, false))
-            })
-            .await?;
+                other => break other?,
+            }
+        };
         persist(&image, persistent.clone(), self.quota.clone()).await;
         if image.stored.load(Ordering::Acquire) {
             self.schedule_quota_check(&persistent);
@@ -1777,6 +1830,186 @@ mod tests {
             .get("deferred".to_owned(), None, true, async { Ok(vec![4]) })
             .await
             .is_err());
+    }
+
+    #[tokio::test]
+    async fn only_a_request_that_renders_is_counted_as_a_render() {
+        let service = Service::default();
+        assert_eq!(service.renders_started(), 0);
+        service
+            .get("image".to_owned(), None, false, async { Ok(vec![1]) })
+            .await
+            .unwrap();
+        assert_eq!(service.renders_started(), 1);
+        // Served from memory, and by a background request joining the cached image.
+        for background in [false, true] {
+            service
+                .get("image".to_owned(), None, background, async {
+                    panic!("must not render")
+                })
+                .await
+                .unwrap();
+        }
+        assert_eq!(service.renders_started(), 1);
+        // A refused request did not start one.
+        let _held = service.renders.clone().acquire_many_owned(2).await.unwrap();
+        assert!(service
+            .get("busy".to_owned(), None, false, async { Ok(vec![2]) })
+            .await
+            .is_err());
+        assert_eq!(service.renders_started(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_visitor_waits_for_a_slot_instead_of_being_refused() {
+        let service = Service::default();
+        let held = service.renders.clone().acquire_many_owned(2).await.unwrap();
+        // No patience: refused at once, as sharing and crawlers are.
+        assert!(service
+            .get("refused".to_owned(), None, false, async { Ok(vec![1]) })
+            .await
+            .is_err());
+        // With patience: served once a slot frees up.
+        let waiting = service.get_within(
+            "waits".to_owned(),
+            None,
+            false,
+            Duration::from_secs(5),
+            async { Ok(vec![2]) },
+        );
+        let free = async {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            drop(held);
+        };
+        let (got, ()) = tokio::join!(waiting, free);
+        assert_eq!(got.unwrap(), vec![2]);
+    }
+
+    #[tokio::test]
+    async fn a_waiting_visitor_gives_up_after_its_patience_and_holds_no_slot() {
+        let service = Service::default();
+        let _held = service.renders.clone().acquire_many_owned(2).await.unwrap();
+        let started = std::time::Instant::now();
+        let got = service
+            .get_within(
+                "gives-up".to_owned(),
+                None,
+                false,
+                Duration::from_millis(100),
+                async { Ok(vec![1]) },
+            )
+            .await;
+        assert!(got.is_err());
+        assert!(started.elapsed() >= Duration::from_millis(100));
+        // The abandoned wait left the slots as they were.
+        assert_eq!(service.renders.available_permits(), 0);
+        drop(_held);
+        assert_eq!(service.renders.available_permits(), 2);
+    }
+
+    #[tokio::test]
+    async fn background_work_does_not_start_ahead_of_a_waiting_visitor() {
+        let service = Service::default();
+        let held = service.renders.clone().acquire_many_owned(2).await.unwrap();
+        let (started, running) = tokio::sync::oneshot::channel();
+        let (finish, finished) = tokio::sync::oneshot::channel::<()>();
+        let visitor = service.get_within(
+            "visitor".to_owned(),
+            None,
+            false,
+            Duration::from_secs(5),
+            async {
+                started.send(()).unwrap();
+                finished.await.unwrap();
+                Ok(vec![1])
+            },
+        );
+        let others = async {
+            // The visitor queues; both slots then free at once, and the visitor
+            // is first in line, so it holds one while the background still needs two.
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            drop(held);
+            running.await.unwrap();
+            let background = service
+                .get("background".to_owned(), None, true, async { Ok(vec![2]) })
+                .await;
+            assert!(background.is_err(), "the visitor was served first");
+            finish.send(()).unwrap();
+        };
+        let (visitor, ()) = tokio::join!(visitor, others);
+        assert_eq!(visitor.unwrap(), vec![1]);
+    }
+
+    /// A store whose reads wait for `gate`, so a caller can be held inside the
+    /// cache's initializer while another joins it.
+    #[derive(Debug)]
+    struct GatedStore {
+        inner: usnm_store::LocalStore,
+        gate: tokio::sync::Notify,
+    }
+
+    #[async_trait::async_trait]
+    impl ObjectStore for GatedStore {
+        async fn get(&self, path: &str) -> Result<Option<Vec<u8>>, usnm_store::StoreError> {
+            self.gate.notified().await;
+            self.inner.get(path).await
+        }
+        async fn put_new(
+            &self,
+            path: &str,
+            body: Vec<u8>,
+            content_type: &str,
+        ) -> Result<bool, usnm_store::StoreError> {
+            self.inner.put_new(path, body, content_type).await
+        }
+        async fn put(
+            &self,
+            path: &str,
+            body: Vec<u8>,
+            content_type: &str,
+        ) -> Result<(), usnm_store::StoreError> {
+            self.inner.put(path, body, content_type).await
+        }
+        async fn list(&self, prefix: &str) -> Result<Vec<String>, usnm_store::StoreError> {
+            self.inner.list(prefix).await
+        }
+    }
+
+    #[tokio::test]
+    async fn a_patient_visitor_joining_an_impatient_request_still_gets_its_wait() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(GatedStore {
+            inner: usnm_store::LocalStore::new(dir.path()),
+            gate: tokio::sync::Notify::new(),
+        });
+        let path = "search-preview/0123456789abcdef/shared.png";
+        let persistent = || Some((store.clone() as Arc<dyn ObjectStore>, path.to_owned()));
+        let service = Service::default();
+        let held = service.renders.clone().acquire_many_owned(2).await.unwrap();
+        // A sharing request (no patience) enters the initializer first and waits on storage;
+        // the script-free page's request for the same image joins it.
+        let sharing = service.get(path.to_owned(), persistent(), false, async { Ok(vec![1]) });
+        let page = service.get_within(
+            path.to_owned(),
+            persistent(),
+            false,
+            Duration::from_secs(5),
+            async { Ok(vec![2]) },
+        );
+        let driver = async {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            // Storage answers: the sharing request finds both slots taken and is refused.
+            store.gate.notify_one();
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            // A slot frees up while the page's request is still within its patience.
+            drop(held);
+        };
+        let (sharing, page, ()) = tokio::join!(sharing, page, driver);
+        assert!(sharing.is_err(), "no patience: refused as before");
+        assert!(
+            page.is_ok(),
+            "the patient request is not handed the impatient one's refusal"
+        );
     }
 
     #[tokio::test]

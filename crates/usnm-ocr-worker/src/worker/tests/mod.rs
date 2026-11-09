@@ -55,7 +55,6 @@ impl ScanSource for FakeScans {
                 md5: Some("0123".into()),
                 download: std::time::Duration::ZERO,
                 from_cache: false,
-                evict: None,
             });
         }
         Ok(Scan {
@@ -66,7 +65,6 @@ impl ScanSource for FakeScans {
             md5: None,
             download: std::time::Duration::ZERO,
             from_cache: false,
-            evict: None,
         })
     }
 
@@ -86,7 +84,6 @@ impl ScanSource for FakeScans {
             md5: None,
             download: std::time::Duration::ZERO,
             from_cache: false,
-            evict: None,
         })
     }
 }

@@ -802,10 +802,8 @@ mod tests {
 
     #[cfg(unix)]
     fn executable_script(root: &Path, name: &str, body: &str) -> PathBuf {
-        use std::os::unix::fs::PermissionsExt;
         let path = root.join(name);
-        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        usnm_test_support::write_executable(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
         path
     }
 

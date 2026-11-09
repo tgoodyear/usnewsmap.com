@@ -18,8 +18,8 @@ pub const ENV_LLAMA_IMAGE: &str = "USNM_QWEN_LLAMA_IMAGE";
 pub const ENV_WEIGHTS: &str = "USNM_QWEN_WEIGHTS";
 pub const ENV_MODEL_DIR: &str = "USNM_QWEN_MODEL_DIR";
 pub const DEFAULT_MODEL_DIR: &str = "/opt/qwen/models";
-pub const EMBEDDED_LLAMA_LOCK: &[u8] = include_bytes!("../../../ocr/boinc/qwen/llama.lock");
-pub const EMBEDDED_WEIGHTS_LOCK: &[u8] = include_bytes!("../../../ocr/boinc/qwen/weights.lock");
+pub const EMBEDDED_LLAMA_LOCK: &[u8] = include_bytes!("../../../boinc/apps/qwen/llama.lock");
+pub const EMBEDDED_WEIGHTS_LOCK: &[u8] = include_bytes!("../../../boinc/apps/qwen/weights.lock");
 
 /// Whether `bytes` holds a carriage return. A CRLF checkout (Windows CI's default) would embed
 /// locks that never match the LF copies shipped in the slot (.gitattributes pins them to LF).

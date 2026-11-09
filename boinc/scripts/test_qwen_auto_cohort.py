@@ -1,0 +1,1213 @@
+import copy
+import fcntl
+import os
+import configparser
+import importlib.util
+import json
+from pathlib import Path
+import shutil
+import shlex
+import subprocess
+import time
+from types import SimpleNamespace
+import unittest
+import uuid
+import xml.etree.ElementTree as ET
+from unittest.mock import patch
+
+ROOT = Path(__file__).resolve().parents[2]
+SPEC = importlib.util.spec_from_file_location("auto_cohort", ROOT / "boinc/scripts/qwen-auto-cohort.py")
+R = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(R)
+HELPER = ROOT / "boinc/scripts/native-qwen-cohort.php"
+
+
+class AutomaticCohort(unittest.TestCase):
+    def setUp(self):
+        self.root = ROOT / (".local-auto-cohort-tests-" + uuid.uuid4().hex)
+        self.project = self.root / "usnmocr"
+        self.project.mkdir(parents=True)
+        self.addCleanup(shutil.rmtree, self.root)
+        self.config = self.project / "config.xml"
+        self.config.write_text("<boinc><config><one_result_per_host_per_wu/></config></boinc>")
+        root = ET.fromstring((ROOT / "boinc/project/plan_class_spec.xml").read_bytes())
+        docker = root.find("plan_class[name='docker_nvidia_cuda_8b']")
+        for tag, value in (("min_wu_id", "2"), ("max_wu_id", "1")):
+            ET.SubElement(docker, tag).text = value
+        self.policy = self.project / "plan_class_spec.xml"
+        self.policy.write_bytes(ET.tostring(root))
+        self.audit = {}
+        self.rows = [self.input(100), self.input(101)]
+        audit_path = self.root / "qwen/qwen-nonenglish-v1/audit.json"
+        audit_path.write_text(json.dumps(self.audit))
+        self.database = {"rows": self.rows, "app": {"name": "usnm_qwen", "homogeneous_redundancy": 0},
+                         "gpu_inflight": [],
+                         "versions": [{"id": 66, "version_num": 114, "platformid": 1,
+                                       "plan_class": "nvidia_vulkan_8b"},
+                                      {"id": 67, "version_num": 114, "platformid": 1,
+                                       "plan_class": "intel_vulkan_8b"}]}
+        inc = self.project / "html/inc"
+        inc.mkdir(parents=True)
+        (self.project / "database.json").write_text(json.dumps(self.rows))
+        (inc / "boinc_db.inc").write_text("""<?php
+$GLOBALS['fixture']=json_decode(file_get_contents(__DIR__.'/../../database.json'));
+class BoincWorkunit {
+ static function lookup_id($id) {foreach($GLOBALS['fixture'] as $r)if($r->unit->id==$id)return $r->unit;return null;}
+ static function enum_fields($fields,$where){preg_match('/id IN \\(([^)]*)\\)/',$where,$m);
+  $ids=array_map('intval',explode(',',$m[1]));$o=[];
+  foreach($GLOBALS['fixture'] as $r){$unsent=false;foreach($r->results as $x)$unsent=$unsent||$x->server_state==2;
+   if(in_array((int)$r->unit->id,$ids)&&($r->unit->priority??0)>0&&!$r->unit->canonical_resultid&&$unsent)
+    $o[]=(object)['id'=>$r->unit->id,'priority'=>$r->unit->priority];}
+  return $o;}
+}
+class BoincApp {static function lookup_id($id){return (object)['name'=>'usnm_qwen'];}}
+class BoincResult {static function enum($where){if(getenv('FIXTURE_DB_DELAY'))sleep((int)getenv('FIXTURE_DB_DELAY'));
+ preg_match('/workunitid=(\\d+)/',$where,$m);
+ foreach($GLOBALS['fixture'] as $r)if($r->unit->id==$m[1])return $r->results;return [];}}
+class BoincDb {
+ static function get(){return new self();}function count($table,$where){return 0;}
+ function do_query($sql){
+  file_put_contents(__DIR__.'/../../guard-queries.jsonl',json_encode($sql)."\\n",FILE_APPEND);
+  if(getenv('FIXTURE_LOCK_FAILURE')&&str_starts_with($sql,'LOCK TABLES'))
+   throw new RuntimeException('fixture database lock refused');
+  return true;
+ }
+}
+""")
+        self.args = SimpleNamespace(
+            project=self.project, helper=HELPER, helper_sha256=R.sha(HELPER.read_bytes()),
+            config_sha256=R.sha(self.config.read_bytes()), initial_policy_sha256=R.sha(self.policy.read_bytes()),
+            controller="a" * 32, minimum_workunit=100, max_admissions=500, max_inflight_per_host=10,
+            enabled_until=10000000000,
+            intel_host=9, nvidia_host=10, app_version_num=114, nvidia_app_version=66, intel_app_version=67,
+            prompt_version=1, campaigns=[("qwen-nonenglish-v1", 1)], rotate_after_seconds=1800, apply=True,
+        )
+
+    def input(self, number, language="yid", campaign="qwen-nonenglish-v1", prompt_version=1):
+        doc, job_id = "ordinary-page-" + str(number), f"{number:064x}"
+        page = b"immutable JPEG fixture bytes-" + str(number).encode()
+        job = {"doc_id": doc, "id": job_id, "v": 1, "prompt_version": prompt_version,
+               "max_tokens_per_1000px2": 4, "group": campaign, "language": language,
+               "engine": dict(R.ENGINE, models=R.MODELS),
+               "input": {"bytes": len(page), "sha256": R.sha(page)},
+               "crops": [{"id": "c01", "loc_text": "א" * 4096}]}
+        raw = json.dumps(job).encode()
+        download = self.project / "download"
+        download.mkdir(exist_ok=True)
+        job_name, page_name = str(number) + "_qwen_json", str(number) + "_page_jpg"
+        (download / job_name).write_bytes(raw)
+        (download / page_name).write_bytes(page)
+        unit = self.root / "qwen" / campaign / "units" / doc
+        unit.mkdir(parents=True, exist_ok=True)
+        for name, value in (("qwen.json", raw), ("page.jpg", page),
+                            ("submitted", ("usnm_qwen_" + job_id).encode()),
+                            ("sample.json", json.dumps({"doc_id": doc, "lang": language,
+                                                       "damage_rate": 0.9, "damage": "high"}).encode())):
+            (unit / name).write_bytes(value)
+        quality = self.root / "quality" / campaign / "pages" / doc
+        quality.mkdir(parents=True, exist_ok=True)
+        (quality / "quality.json").write_text(json.dumps(
+            {"doc_id": doc, "language": language, "inputs": {
+                "page": job["input"], "alto": {"sha256": "c" * 64}}}))
+        texts = self.root / "quality" / campaign / "texts"
+        texts.mkdir(exist_ok=True)
+        (texts / (doc + ".loc-provenance.json")).write_text(json.dumps({
+            "doc_id": doc, "archive": "ordinary-source.tar.bz2", "member": doc + "/ocr.xml",
+            "archive_bytes": 1000000, "sha256": "c" * 64}))
+        self.audit[job_id] = {"workunit_id": number, "job_sha256": R.sha(raw),
+                              "batch": 8, "min_quorum": 2, "target_nresults": 2}
+        return {
+            "unit": {"id": number, "name": "usnm_qwen_" + job_id, "appid": 6, "batch": 8,
+                     "min_quorum": 2, "target_nresults": 2, "rsc_disk_bound": 19327352832,
+                     "canonical_resultid": 0, "error_mask": 0, "transitioner_flags": 0,
+                     "need_validate": 0, "app_version_num": 0, "hr_class": 0,
+                     "xml_doc": "".join("<file_info><name>" + name + "</name><url>"
+                                        "https://example.test/usnmocr_download/" + name
+                                        + "</url></file_info>" for name in (job_name, page_name))},
+            "results": [dict(id=number * 2 + i, server_state=2, sent_time=0, hostid=0, outcome=0,
+                             validate_state=0, app_version_id=0, received_time=0) for i in range(2)],
+            "assignments": 0,
+        }
+
+    def bundle(self, number, languages, campaign="qwen-nonenglish-v1"):
+        """A unit as `qwen stage --bundle-size` stages it: each page's own unit under pages/<doc>,
+        the bundle under units/bundle-<n>-<first doc> with its pages end to end in page.jpg."""
+        root = self.root / "qwen" / campaign
+        pages, blob, members = [], b"", []
+        for i, language in enumerate(languages):
+            doc = f"bundled-page-{number}-{i}"
+            page = b"immutable JPEG fixture bytes-" + doc.encode()
+            crops = [{"id": "c01", "loc_text": "א" * 4096, "rect": [0, 0, 8, 8], "stratum": "body"},
+                     {"id": "c02", "loc_text": "line", "rect": [0, 8, 8, 16], "stratum": "body"}]
+            single = {"doc_id": doc, "id": f"{number:032x}{i:032x}", "v": 1, "prompt_version": 1,
+                      "max_tokens_per_1000px2": 4, "group": campaign, "language": language,
+                      "engine": dict(R.ENGINE, models=R.MODELS),
+                      "input": {"bytes": len(page), "sha256": R.sha(page), "source": "page.jpg"}, "crops": crops}
+            raw = json.dumps(single).encode()
+            staged = root / "pages" / doc
+            staged.mkdir(parents=True)
+            (staged / "qwen.json").write_bytes(raw)
+            (staged / "page.jpg").write_bytes(page)
+            (staged / "sample.json").write_text(json.dumps({"doc_id": doc, "lang": language, "damage_rate": 0.5}))
+            quality = self.root / "quality" / campaign / "pages" / doc
+            quality.mkdir(parents=True)
+            (quality / "quality.json").write_text(json.dumps(
+                {"doc_id": doc, "language": language, "inputs": {
+                    "page": {"bytes": len(page), "sha256": R.sha(page)}, "alto": {"sha256": "c" * 64}}}))
+            texts = self.root / "quality" / campaign / "texts"
+            texts.mkdir(parents=True, exist_ok=True)
+            (texts / (doc + ".loc-provenance.json")).write_text(json.dumps({
+                "doc_id": doc, "archive": "ordinary-source.tar.bz2", "member": doc + "/ocr.xml",
+                "archive_bytes": 1000000, "sha256": "c" * 64}))
+            pages.append({"crops": crops, "doc_id": doc, "group": campaign, "language": language,
+                          "input": {"bytes": len(page), "offset": len(blob), "sha256": R.sha(page),
+                                    "source": "page.jpg"}})
+            members.append({"doc_id": doc, "unit": doc, "job_id": single["id"], "job_sha256": R.sha(raw),
+                            "page_sha256": R.sha(page), "offset": len(blob), "bytes": len(page)})
+            blob += page
+        job_id = f"{number:064x}"
+        job = {"doc_id": pages[0]["doc_id"], "id": job_id, "v": 1, "prompt_version": 1,
+               "max_tokens_per_1000px2": 4, "group": campaign, "language": languages[0],
+               "engine": dict(R.ENGINE, models=R.MODELS),
+               "input": {"bytes": len(blob), "sha256": R.sha(blob), "source": "bundle:page.jpg"},
+               "crops": [dict(crop, id=page["doc_id"] + ":" + crop["id"]) for page in pages for crop in page["crops"]],
+               "pages": pages}
+        raw = json.dumps(job).encode()
+        unit = root / "units" / f"bundle-{number:05}-{job['doc_id']}"
+        unit.mkdir(parents=True)
+        (unit / "membership.json").write_text(json.dumps(
+            {"v": 1, "job_id": job_id, "page_sha256": R.sha(blob), "pages": members}))
+        for name, value in (("qwen.json", raw), ("page.jpg", blob), ("submitted", ("usnm_qwen_" + job_id).encode())):
+            (unit / name).write_bytes(value)
+        download = self.project / "download"
+        download.mkdir(exist_ok=True)
+        job_name, page_name = str(number) + "_qwen_json", str(number) + "_page_jpg"
+        (download / job_name).write_bytes(raw)
+        (download / page_name).write_bytes(blob)
+        self.audit[job_id] = {"workunit_id": number, "job_sha256": R.sha(raw),
+                              "batch": 8, "min_quorum": 2, "target_nresults": 2}
+        row = copy.deepcopy(self.rows[0])
+        row["unit"].update(id=number, name="usnm_qwen_" + job_id, xml_doc="".join(
+            "<file_info><name>" + name + "</name><url>https://example.test/usnmocr_download/" + name
+            + "</url></file_info>" for name in (job_name, page_name)))
+        row["results"] = [dict(result, id=number * 2 + i) for i, result in enumerate(row["results"])]
+        return row
+
+    def test_a_bundle_binds_every_page_to_its_slice_and_source_evidence(self):
+        row = self.bundle(200, ["yid", "srp", "yid"])
+        key = row["unit"]["name"].removeprefix("usnm_qwen_")
+        # A crashed staging run's partial bundle of the same first page is no second binding.
+        unit = next((self.root / "qwen/qwen-nonenglish-v1/units").glob("bundle-*"))
+        (unit.parent / ("bundle-00201-" + unit.name.split("-", 2)[2])).mkdir()
+        proof = R.bind_inputs(self.project, row, key, self.audit[key])
+        self.assertEqual((proof["doc_id"], proof["crops"], proof["accuracy_established"]),
+                         ("bundled-page-200-0", 6, False))
+        self.assertEqual([page["doc_id"] for page in proof["pages"]],
+                         ["bundled-page-200-0", "bundled-page-200-1", "bundled-page-200-2"])
+        self.assertEqual(proof["pages"][1]["page_sha256"], R.sha(b"immutable JPEG fixture bytes-bundled-page-200-1"))
+        self.assertEqual(proof["pages"][2]["source_quality"]["damage_rate"], 0.5)
+        self.assertIsNotNone(R.exclusion_key(self.project, row, key, self.audit[key], "qwen-nonenglish-v1", 1))
+        pages = self.root / "qwen/qwen-nonenglish-v1/pages"
+        provenance = self.root / "quality/qwen-nonenglish-v1/texts/bundled-page-200-2.loc-provenance.json"
+        membership = unit / "membership.json"
+
+        def swap_slices(path):
+            record = json.loads(path.read_bytes())
+            record["pages"][0]["offset"], record["pages"][1]["offset"] = (
+                record["pages"][1]["offset"], record["pages"][0]["offset"])
+            path.write_text(json.dumps(record))
+
+        for path, damage, message in (
+            (provenance, lambda path: path.write_text(json.dumps(json.loads(path.read_bytes()) | {"sha256": "d" * 64})),
+             "archive-provenance"),
+            (pages / "bundled-page-200-1/qwen.json", lambda path: path.write_bytes(path.read_bytes() + b"\n"),
+             "differs from its staged job"),
+            (membership, swap_slices, "membership mismatch"),
+            (unit / "submitted", lambda path: path.write_text("usnm_qwen_other"), "submission mismatch"),
+        ):
+            original = path.read_bytes()
+            damage(path)
+            with self.assertRaisesRegex(ValueError, message) as caught:
+                R.bind_inputs(self.project, row, key, self.audit[key])
+            self.assertNotIsInstance(caught.exception, R.OutOfCohort)
+            path.write_bytes(original)
+        # Two complete bundles of one job leave no single producer unit to bind.
+        twin = unit.parent / ("bundle-00202-" + unit.name.split("-", 2)[2])
+        shutil.copytree(unit, twin)
+        with self.assertRaisesRegex(ValueError, "ambiguous"):
+            R.bind_inputs(self.project, row, key, self.audit[key])
+        shutil.rmtree(twin)
+        self.assertEqual(R.bind_inputs(self.project, row, key, self.audit[key]), proof)
+
+    def test_a_bundle_page_with_an_empty_crop_id_is_refused_not_passed_over(self):
+        row = self.bundle(210, ["yid", "spa"])
+        key = row["unit"]["name"].removeprefix("usnm_qwen_")
+        download = self.project / "download" / "210_qwen_json"
+        job = json.loads(download.read_bytes())
+        # Prefixed, the empty id would read "<doc>:", which is not empty.
+        job["pages"][1]["crops"][0]["id"] = ""
+        job["crops"] = [dict(crop, id=page["doc_id"] + ":" + crop["id"]) for page in job["pages"]
+                        for crop in page["crops"]]
+        # The page's own staged job and the membership agree, so only the crop check stops it.
+        staged = self.root / "qwen/qwen-nonenglish-v1/pages/bundled-page-210-1/qwen.json"
+        single = json.loads(staged.read_bytes())
+        single["crops"] = job["pages"][1]["crops"]
+        staged.write_text(json.dumps(single))
+        unit = next((self.root / "qwen/qwen-nonenglish-v1/units").glob("bundle-00210-*"))
+        membership = json.loads((unit / "membership.json").read_bytes())
+        membership["pages"][1]["job_sha256"] = R.sha(staged.read_bytes())
+        (unit / "membership.json").write_text(json.dumps(membership))
+        raw = json.dumps(job).encode()
+        for path in (download, unit / "qwen.json"):
+            path.write_bytes(raw)
+        self.audit[key]["job_sha256"] = R.sha(raw)
+        with self.assertRaisesRegex(ValueError, "Bad crop contract") as caught:
+            R.bind_inputs(self.project, row, key, self.audit[key])
+        self.assertNotIsInstance(caught.exception, R.OutOfCohort)
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_a_bundle_with_a_page_outside_the_cohort_is_passed_over_whole(self):
+        self.audit.clear()
+        self.rows[:] = [self.bundle(100, ["yid", "spa"]), self.bundle(101, ["srp", "yid"])]
+        (self.root / "qwen/qwen-nonenglish-v1/audit.json").write_text(json.dumps(self.audit))
+        (self.project / "database.json").write_text(json.dumps(self.rows))
+        scans, listing = [], os.scandir
+
+        def scandir(path):
+            scans.append(Path(path).name)
+            return listing(path)
+
+        with patch.object(R, "read_database", return_value=self.database), \
+                patch.object(R.os, "scandir", side_effect=scandir):
+            receipt = R.run(self.args)
+        self.assertEqual((receipt["status"], receipt["target"], receipt["out_of_cohort_skipped"]),
+                         ("refilled-finite-window", [101, 101], [100]))
+        # units/ is listed once to bind both bundles and once more before apply, not once a bundle.
+        self.assertEqual(scans.count("units"), 2)
+        self.assertEqual([page["doc_id"] for page in receipt["inputs"][0]["pages"]],
+                         ["bundled-page-101-0", "bundled-page-101-1"])
+        state = json.loads((self.project / "ops-issue-559/qwen-auto-cohort/state.json").read_bytes())
+        self.assertEqual((state["admitted"], list(state["out_of_cohort"])), ([101], ["100"]))
+
+    def test_selects_oldest_contiguous_pristine_prefix_without_crossing_reservation(self):
+        rows = [self.input(i) for i in range(100, 115)]
+        self.assertEqual(len(R.choose(rows, 100, None, 500)), 10)
+        self.assertEqual([r["unit"]["id"] for r in R.choose(rows, 100, 105, 500)], list(range(100, 105)))
+        self.assertEqual([r["unit"]["id"] for r in R.choose(rows, 105, 105, 2)], [106, 107])
+        rows[0]["results"][0]["hostid"] = 1
+        self.assertFalse(R.fresh(rows[0]))
+        self.assertEqual(R.choose(rows, 100, None, 0), [])
+
+    def raised_fixture(self, specs):
+        """Fixture rows for (id, priority, fresh) specs, written where the PHP fixture reads them."""
+        for number, priority, is_fresh in specs:
+            row = self.input(number)
+            row["unit"]["priority"] = priority
+            if not is_fresh:
+                for result in row["results"]:
+                    result["server_state"] = 5
+            self.rows.append(row)
+        (self.project / "database.json").write_text(json.dumps(self.rows))
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_raised_lookup_ranks_by_priority_and_skips_stale_units(self):
+        self.raised_fixture([(n, 10, False) for n in range(300, 310)]
+                            + [(400, 1, True), (500, 10, True), (501, 10, True), (600, 5, True)])
+        candidates = list(range(300, 310)) + [400, 500, 501, 600]
+        snapshot = lambda project, ids, hosts: {"rows": [r for r in self.rows if int(r["unit"]["id"]) in ids]}
+        with patch.object(R, "read_database", side_effect=snapshot):
+            self.assertEqual(R.raised_workunits(self.project, candidates), [500, 501, 600, 400])
+            self.assertEqual(R.raised_workunits(self.project, candidates, limit=2), [500, 501])
+            self.assertEqual(R.raised_workunits(self.project, []), [])
+            # A partly dispatched pair is not fresh, so it never takes a place on the shortlist.
+            for row in self.rows:
+                if int(row["unit"]["id"]) in (500, 501):
+                    row["results"][0].update(server_state=4, hostid=5, sent_time=1)
+            (self.project / "database.json").write_text(json.dumps(self.rows))
+            self.assertEqual(R.raised_workunits(self.project, candidates, limit=2), [600, 400])
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_raised_work_past_the_first_page_is_scanned_and_the_cursor_stays_ordinary(self):
+        self.raised_fixture([(2000, 10, True)])
+        audit = json.loads(json.dumps(self.audit))
+        for number in range(200, 1300):
+            audit["filler-%d" % number] = {"workunit_id": number}
+        (self.root / "qwen/qwen-nonenglish-v1/audit.json").write_text(json.dumps(audit))
+        stale = [row for row in self.rows if int(row["unit"]["id"]) != 2000]
+        for row in stale:
+            for result in row["results"]:
+                result["server_state"] = 5
+        seen = []
+
+        def snapshot(project, ids, hosts):
+            seen.append(list(ids))
+            return {**self.database, "rows": self.rows}
+
+        with patch.object(R, "read_database", side_effect=snapshot):
+            try:
+                R.run(self.args)
+            except ValueError:
+                pass  # the filler units have no inputs; the scan and the cursor are what matter
+        self.assertIn(2000, seen[-1])
+        self.assertLessEqual(len(seen[-1]), 1010)
+        state = json.loads((self.project / "ops-issue-559/qwen-auto-cohort/state.json").read_bytes())
+        # The ordinary page ends before 2000, so the cursor never jumps past unscanned work.
+        self.assertLess(state.get("scan_after", 0), 2000)
+        self.assertEqual(state.get("scan_after"), max(u for u in seen[-1] if u != 2000))
+
+    def test_raised_priority_units_are_chosen_first_as_one_run(self):
+        rows = [self.input(i) for i in range(100, 115)]
+        for row in rows:
+            row["unit"]["priority"] = 10 if int(row["unit"]["id"]) in (105, 106, 108) else 0
+        self.assertEqual([int(r["unit"]["id"]) for r in R.choose(rows, 100, None, 500)], [105, 106])
+        for row in rows:
+            row["unit"]["priority"] = 0
+        self.assertEqual([int(r["unit"]["id"]) for r in R.choose(rows, 100, None, 3)], [100, 101, 102])
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_out_of_cohort_language_is_passed_over_and_never_inside_the_window(self):
+        languages = ["spa", "yid", "yid", "deu", "yid", "srp"]
+        self.rows[:] = [self.input(100 + i, language) for i, language in enumerate(languages)]
+        (self.root / "qwen/qwen-nonenglish-v1/audit.json").write_text(json.dumps(self.audit))
+        (self.project / "database.json").write_text(json.dumps(self.rows))
+        with patch.object(R, "read_database", return_value=self.database):
+            receipt = R.run(self.args)
+        self.assertEqual((receipt["status"], receipt["target"]), ("refilled-finite-window", [101, 102]))
+        self.assertEqual(receipt["out_of_cohort_skipped"], [100, 103])
+        self.assertEqual([proof["workunit"] for proof in receipt["inputs"]], [101, 102])
+        state = json.loads((self.project / "ops-issue-559/qwen-auto-cohort/state.json").read_bytes())
+        self.assertEqual(state["admitted"], [101, 102])
+        # An out-of-cohort job is checked like any other before it is passed over.
+        bad = self.input(300, "spa")
+        bad_key = bad["unit"]["name"].removeprefix("usnm_qwen_")
+        provenance = self.root / "quality/qwen-nonenglish-v1/texts" / (
+            json.loads((self.project / "download/300_qwen_json").read_bytes())["doc_id"] + ".loc-provenance.json")
+        provenance.write_text(json.dumps(json.loads(provenance.read_bytes()) | {"sha256": "d" * 64}))
+        with self.assertRaises(ValueError) as caught:
+            R.bind_inputs(self.project, bad, bad_key, self.audit[bad_key])
+        self.assertNotIsInstance(caught.exception, R.OutOfCohort)
+        # Integrity failures still stop the tick rather than being passed over.
+        row = self.input(200, "yid")
+        key = row["unit"]["name"].removeprefix("usnm_qwen_")
+        (self.project / "download/200_page_jpg").write_bytes(b"changed")
+        with self.assertRaisesRegex(ValueError, "page identity"):
+            R.choose([row], 100, None, 10,
+                     lambda r: R.bind_inputs(self.project, r, key, self.audit[key]) is not None)
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_a_scan_page_of_only_out_of_cohort_work_advances_the_cursor(self):
+        self.audit.clear()
+        self.rows[:] = [self.input(100 + i, "spa") for i in range(3)]
+        audit = self.root / "qwen/qwen-nonenglish-v1/audit.json"
+        audit.write_text(json.dumps(self.audit))
+        # The first page holds only out-of-cohort work: nothing opens, the cursor moves on.
+        with patch.object(R, "read_database", return_value=self.database):
+            receipt = R.run(self.args)
+        self.assertEqual(receipt["status"], "no-fresh-verified-pairs")
+        self.assertEqual(receipt["out_of_cohort_skipped"], [100, 101, 102])
+        state = json.loads((self.project / "ops-issue-559/qwen-auto-cohort/state.json").read_bytes())
+        self.assertEqual(state["scan_after"], 102)
+        self.assertEqual(state["admitted"], [])
+        self.rows.append(self.input(103, "yid"))
+        audit.write_text(json.dumps(self.audit))
+        (self.project / "database.json").write_text(json.dumps(self.rows))
+        with patch.object(R, "read_database", return_value=self.database):
+            receipt = R.run(self.args)
+        self.assertEqual((receipt["status"], receipt["target"]), ("refilled-finite-window", [103, 103]))
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_verified_out_of_cohort_units_are_not_rebound_every_tick(self):
+        self.rows[:] = [self.input(100, "spa"), self.input(101, "deu"), self.input(102, "yid")]
+        audit = self.root / "qwen/qwen-nonenglish-v1/audit.json"
+        audit.write_text(json.dumps(self.audit))
+        database = self.project / "database.json"
+        database.write_text(json.dumps(self.rows))
+        state_path = self.project / "ops-issue-559/qwen-auto-cohort/state.json"
+        bound, original = [], R.bind_inputs
+
+        def counting(project, row, *rest):
+            bound.append(int(row["unit"]["id"]))
+            if bound[-1] == interrupt_at:
+                raise TimeoutError
+            return original(project, row, *rest)
+
+        def tick():
+            bound.clear()
+            with patch.object(R, "read_database", return_value=self.database), \
+                    patch.object(R, "bind_inputs", side_effect=counting):
+                return R.run(self.args)
+
+        # A tick cut short by its timeout keeps the exclusions it had already verified.
+        interrupt_at = 101
+        with self.assertRaises(TimeoutError):
+            tick()
+        self.assertEqual(list(json.loads(state_path.read_bytes())["out_of_cohort"]), ["100"])
+        interrupt_at = None
+        receipt = tick()
+        self.assertEqual((receipt["target"], receipt["out_of_cohort_skipped"], receipt["out_of_cohort_remembered"]),
+                         ([102, 102], [100, 101], [100]))
+        self.assertEqual(sorted(json.loads(state_path.read_bytes())["out_of_cohort"]), ["100", "101"])
+
+        def drain(row):
+            row["results"][0].update(hostid=9, server_state=4, sent_time=1)
+            row["results"][1].update(hostid=10, server_state=4, sent_time=1)
+            database.write_text(json.dumps(self.rows))
+
+        drain(self.rows[2])
+        self.rows.append(self.input(103, "yid"))
+        audit.write_text(json.dumps(self.audit))
+        database.write_text(json.dumps(self.rows))
+        receipt = tick()
+        self.assertEqual((receipt["target"], receipt["out_of_cohort_remembered"]), ([103, 103], [100, 101]))
+        self.assertEqual(set(bound), {103})
+        # Any change to the audit record or a bound file misses the cache, so the unit is bound
+        # again from scratch and a non-language failure still stops the tick.
+        drain(self.rows[3])
+        with patch.object(self.args, "campaigns", [("qwen-nonenglish-v1", 2)]), \
+                self.assertRaisesRegex(ValueError, "Unreviewed prompt/budget/cohort"):
+            tick()
+        spa, deu = (row["unit"]["name"].removeprefix("usnm_qwen_") for row in self.rows[:2])
+        provenance = next((self.root / "quality/qwen-nonenglish-v1/texts").glob("ordinary-page-101.*"))
+        for change, error in (
+                (lambda: self.audit[spa].update(batch=9), "Audit/WU identity mismatch"),
+                (lambda: self.audit[spa].update(job_sha256="e" * 64), "differs from producer audit"),
+                (lambda: provenance.write_text(json.dumps(json.loads(provenance.read_bytes()) | {"sha256": "d" * 64})),
+                 "archive-provenance binding mismatch")):
+            saved, original_provenance = json.loads(json.dumps(self.audit)), provenance.read_bytes()
+            change()
+            audit.write_text(json.dumps(self.audit))
+            with self.assertRaisesRegex(ValueError, error):
+                tick()
+            self.audit.clear()
+            self.audit.update(saved)
+            audit.write_text(json.dumps(self.audit))
+            provenance.write_bytes(original_provenance)
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_cached_download_directory_cannot_escape_through_a_symlink(self):
+        self.rows[0] = self.input(100, "spa")
+        download = self.project / "download"
+        partition = download / "partition"
+        partition.mkdir()
+        for path in list(download.iterdir()):
+            if path.is_file():
+                path.rename(partition / path.name)
+        for row in self.rows:
+            row["unit"]["xml_doc"] = row["unit"]["xml_doc"].replace(
+                "/usnmocr_download/", "/usnmocr_download/partition/")
+        (self.root / "qwen/qwen-nonenglish-v1/audit.json").write_text(json.dumps(self.audit))
+        (self.project / "database.json").write_text(json.dumps(self.rows))
+        with patch.object(R, "read_database", return_value=self.database):
+            R.run(self.args)
+        for host, result in zip((9, 10), self.rows[1]["results"]):
+            result.update(server_state=4, hostid=host, sent_time=1)
+        escaped = self.root / "escaped-download"
+        partition.rename(escaped)
+        partition.symlink_to(escaped, target_is_directory=True)
+        original = Path.read_bytes
+
+        def guarded_read(path):
+            self.assertFalse(path.resolve().is_relative_to(escaped), "Read outside download before validation")
+            return original(path)
+
+        with patch.object(R, "read_database", return_value=self.database), \
+                patch.object(Path, "read_bytes", guarded_read), \
+                self.assertRaisesRegex(ValueError, "Input escaped download tree"):
+            R.run(self.args)
+
+    def test_a_cohort_language_admits_german_and_rebinds_units_passed_over(self):
+        row = self.input(200, "deu")
+        key = row["unit"]["name"].removeprefix("usnm_qwen_")
+        with self.assertRaises(R.OutOfCohort):
+            R.bind_inputs(self.project, row, key, self.audit[key])
+        before = R.exclusion_key(self.project, row, key, self.audit[key], "qwen-nonenglish-v1", 1)
+        self.addCleanup(setattr, R, "EXTRA_LANGUAGES", R.EXTRA_LANGUAGES)
+        R.EXTRA_LANGUAGES = ("deu",)
+        self.assertEqual(R.bind_inputs(self.project, row, key, self.audit[key])["doc_id"],
+                         json.loads((self.project / "download/200_qwen_json").read_bytes())["doc_id"])
+        self.assertNotEqual(R.exclusion_key(self.project, row, key, self.audit[key], "qwen-nonenglish-v1", 1),
+                            before)
+        # Only the language named joins.
+        spanish = self.input(201, "spa")
+        spanish_key = spanish["unit"]["name"].removeprefix("usnm_qwen_")
+        with self.assertRaises(R.OutOfCohort):
+            R.bind_inputs(self.project, spanish, spanish_key, self.audit[spanish_key])
+
+    def test_cohort_language_takes_a_three_letter_code(self):
+        with patch.object(R, "run", return_value={}), self.assertRaisesRegex(ValueError, "ISO 639-3"):
+            R.main(["--project", "p", "--helper", "h", "--helper-sha256", "a" * 64, "--config-sha256", "a" * 64,
+                    "--initial-policy-sha256", "a" * 64, "--controller", "a" * 32, "--minimum-workunit", "2",
+                    "--enabled-until", "1", "--cohort-language", "German"])
+
+    def test_source_hash_archive_binding_damage_and_multibyte_contract(self):
+        for language in ("yid", "srp"):
+            row = self.input(200, language)
+            key = row["unit"]["name"].removeprefix("usnm_qwen_")
+            proof = R.bind_inputs(self.project, row, key, self.audit[key])
+            self.assertEqual(proof["source_quality"]["damage_rate"], 0.9)
+            self.assertFalse(proof["accuracy_established"])
+        raw = self.project / "download/200_page_jpg"
+        raw.write_bytes(b"changed")
+        with self.assertRaisesRegex(ValueError, "page identity"):
+            R.bind_inputs(self.project, row, key, self.audit[key])
+
+    def test_remaining_ordinary_peer_not_headline_controls_window_drain(self):
+        rows = copy.deepcopy(self.rows)
+        self.assertEqual(R.available_in_window(rows, [100, 101], (9, 10)), 4)
+        for row in rows:
+            row["results"][0].update(hostid=9, server_state=5, validate_state=4)
+            row["results"][1].update(hostid=10, server_state=5, validate_state=4)
+            row["results"].append(dict(id=999, hostid=0, server_state=2))
+        self.assertEqual(R.available_in_window(rows, [100, 101], (9, 10)), 0)
+        rows[0]["results"][0]["hostid"] = 1
+        self.assertEqual(R.available_in_window(rows, [100, 101], (9, 10)), 1)
+        # A replacement leaves two unsent replicas, but host 10 can receive only one of them.
+        rows[1]["results"] = [dict(id=1, hostid=9, server_state=5), dict(id=2, hostid=0, server_state=2),
+                              dict(id=3, hostid=0, server_state=2)]
+        self.assertEqual(R.available_in_window(rows[1:], [100, 101], (9, 10)), 2)
+        self.assertEqual((R.assignable_units(rows[1:], [100, 101], 10),
+                          R.assignable_units(rows[1:], [100, 101], 9)), (1, 0))
+
+    def test_existing_two_model_metadata_does_not_admit_new_models_or_oversize_utf8(self):
+        for mutation in (
+            lambda job: job["engine"]["models"].append(dict(R.MODEL, name="unreviewed")),
+            lambda job: job["crops"][0].update(loc_text="א" * 4097),
+        ):
+            row = self.input(200)
+            path = self.project / "download/200_qwen_json"
+            job = json.loads(path.read_bytes())
+            mutation(job)
+            raw = json.dumps(job).encode()
+            path.write_bytes(raw)
+            unit = self.root / "qwen/qwen-nonenglish-v1/units/ordinary-page-200/qwen.json"
+            unit.write_bytes(raw)
+            key = row["unit"]["name"].removeprefix("usnm_qwen_")
+            self.audit[key]["job_sha256"] = R.sha(raw)
+            with self.assertRaises(ValueError):
+                R.bind_inputs(self.project, row, key, self.audit[key])
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_real_helper_revalidates_fresh_pair_and_publishes_one_owned_window(self):
+        with patch.object(R, "read_database", return_value=self.database):
+            receipt = R.run(self.args)
+        self.assertEqual(receipt["status"], "refilled-finite-window")
+        self.assertEqual(R.policy_window(self.policy.read_bytes())[0], [100, 101])
+        state = json.loads((self.project / "ops-issue-559/qwen-auto-cohort/state.json").read_bytes())
+        self.assertEqual(state["admitted"], [100, 101])
+        self.assertNotIn("pending", state)
+        queries = [json.loads(line) for line in (self.project / "guard-queries.jsonl").read_text().splitlines()]
+        self.assertEqual(queries, [
+            "SET SESSION lock_wait_timeout=5",
+            "LOCK TABLES DBNAME.app READ, DBNAME.workunit READ, DBNAME.result READ, DBNAME.assignment READ",
+            "UNLOCK TABLES",
+        ])
+        # A second ordinary tick must not overwrite/advance a still-eligible window.
+        with patch.object(R, "read_database", return_value=self.database):
+            self.assertEqual(R.run(self.args)["status"], "current-window-still-eligible")
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_refused_database_guard_cannot_publish_or_create_a_journal(self):
+        before = self.policy.read_bytes()
+        command = ["php", str(HELPER), "--project", str(self.project), "--plan-class", "shared_8b",
+                   "--fresh-pair", "--workunit", "100", "--apply"]
+        result = subprocess.run(command, env=os.environ | {"FIXTURE_LOCK_FAILURE": "1"},
+                                capture_output=True, text=True, timeout=10)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("database lock refused", result.stderr)
+        self.assertEqual(self.policy.read_bytes(), before)
+        self.assertFalse((self.project / "ops-issue-559").exists())
+        (self.project / "guard-queries.jsonl").unlink()
+        preview = subprocess.run(command[:-1], capture_output=True, text=True, timeout=10)
+        self.assertEqual(preview.returncode, 0, preview.stderr)
+        self.assertFalse((self.project / "guard-queries.jsonl").exists())
+        self.assertEqual(self.policy.read_bytes(), before)
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_drained_window_advances_with_cumulative_budget_then_closes(self):
+        self.rows[:] = [self.input(number) for number in range(100, 113)]
+        (self.root / "qwen/qwen-nonenglish-v1/audit.json").write_text(json.dumps(self.audit))
+        (self.project / "database.json").write_text(json.dumps(self.rows))
+        self.args.max_admissions = 12
+        def tick():
+            with patch.object(R, "read_database", return_value=self.database):
+                return R.run(self.args)
+        first = tick()
+        self.assertEqual((first["status"], first["target"]), ("refilled-finite-window", [100, 109]))
+        self.assertEqual(tick()["status"], "current-window-still-eligible")
+        for row in self.rows[:10]:
+            for result, host in zip(row["results"], (9, 10)):
+                result.update(server_state=5, hostid=host, sent_time=1, received_time=2, outcome=1)
+        (self.project / "database.json").write_text(json.dumps(self.rows))
+        second = tick()
+        self.assertEqual((second["status"], second["target"], second["admitted_unique"]),
+                         ("refilled-finite-window", [110, 111], 10))
+        state = json.loads((self.project / "ops-issue-559/qwen-auto-cohort/state.json").read_bytes())
+        self.assertEqual(state["admitted"], list(range(100, 112)))
+        for row in self.rows[10:12]:
+            for result, host in zip(row["results"], (9, 10)):
+                result.update(server_state=5, hostid=host, sent_time=1, received_time=2, outcome=1)
+        third = tick()
+        self.assertEqual(third["status"], "closed-expired-budget-or-release-change")
+        self.assertEqual(R.policy_window(self.policy.read_bytes())[0], [2, 1])
+        self.assertTrue(R.fresh(self.rows[12]))
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_host_starved_behind_a_stalled_peer_rotates_only_after_the_hold_bound(self):
+        self.rows[:] = [self.input(number) for number in range(100, 104)]
+        (self.root / "qwen/qwen-nonenglish-v1/audit.json").write_text(json.dumps(self.audit))
+        (self.project / "database.json").write_text(json.dumps(self.rows))
+        self.args.max_inflight_per_host = 2
+        state_path = self.project / "ops-issue-559/qwen-auto-cohort/state.json"
+        def tick(age=0):
+            state = json.loads(state_path.read_bytes())
+            state["window_since"] -= age
+            state_path.write_text(json.dumps(state))
+            with patch.object(R, "read_database", return_value=self.database):
+                return R.run(self.args)
+        with patch.object(R, "read_database", return_value=self.database):
+            self.assertEqual(R.run(self.args)["target"], [100, 101])
+        # Intel returned both of its replicas; NVIDIA took one and stalled on it.
+        for row in self.rows[:2]:
+            row["results"][0].update(server_state=5, hostid=9, sent_time=1, received_time=2, outcome=1)
+        self.rows[0]["results"][1].update(server_state=4, hostid=10, sent_time=1)
+        self.database["gpu_inflight"] = [{"hostid": 10}]
+        self.assertEqual(tick()["status"], "current-window-still-eligible")
+        self.assertEqual(tick()["starved_hosts"], [9])
+        # NVIDIA's one task plus the old replica it could still receive fill a two-task buffer:
+        # no rotation is reported or published.
+        held = tick(age=1800)
+        self.assertEqual(held["status"], "bounded-gpu-inflight-buffer-full")
+        self.assertNotIn("rotated_past_window", held)
+        self.assertEqual(R.policy_window(self.policy.read_bytes())[0], [100, 101])
+        self.args.max_inflight_per_host = 3
+        receipt = tick()
+        self.assertEqual((receipt["status"], receipt["target"], receipt["rotated_past_window"],
+                          receipt["left_unsent_replicas"]), ("refilled-finite-window", [102, 102], [100, 101], 1))
+        state = json.loads(state_path.read_bytes())
+        self.assertEqual(state["admitted"], [100, 101, 102])
+        self.assertLessEqual(int(time.time()) - state["window_since"], 5)
+        # The left-behind replica is untouched, and a host that still has native work never rotates.
+        self.assertEqual(self.rows[1]["results"][1]["server_state"], 2)
+        for row in self.rows[2:3]:
+            row["results"][0].update(server_state=5, hostid=9, sent_time=1, received_time=2, outcome=1)
+        self.database["gpu_inflight"] = [{"hostid": 10}, {"hostid": 9}]
+        self.assertEqual(tick(age=7200)["status"], "current-window-still-eligible")
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_nvidia_general_admission_leaves_an_intel_only_window_that_survives_release(self):
+        self.rows[:] = [self.input(number) for number in range(100, 104)]
+        (self.root / "qwen/qwen-nonenglish-v1/audit.json").write_text(json.dumps(self.audit))
+        (self.project / "database.json").write_text(json.dumps(self.rows))
+        self.args.max_inflight_per_host = 2
+        def tick():
+            with patch.object(R, "read_database", return_value=self.database):
+                return R.run(self.args)
+        self.assertEqual(tick()["target"], [100, 101])
+        # The operator admits NVIDIA generally while the shared window is open: the refill keeps
+        # its state and owns Intel's window alone.
+        subprocess.run(["php", str(HELPER), "--project", str(self.project), "--plan-class", "nvidia_vulkan_8b",
+                        "--general", "--apply"], check=True, capture_output=True)
+        self.assertEqual(R.policy_window(self.policy.read_bytes()), ([100, 101], None, ("intel_vulkan_8b",)))
+        self.assertEqual(R.unreadable_by_open_classes(self.policy.read_bytes(), [
+            {"id": 72, "version_num": 115, "platformid": 1, "plan_class": "nvidia_vulkan_8b"}], 0, 3),
+            [["nvidia_vulkan_8b", 1, 115]])
+        # NVIDIA's own full queue neither fills the buffer nor holds the window.
+        self.database["gpu_inflight"] = [{"hostid": 10}] * 10
+        for row in self.rows[:2]:
+            row["results"][1].update(server_state=4, hostid=10, sent_time=1)
+        self.assertEqual(tick()["status"], "current-window-still-eligible")
+        for row in self.rows[:2]:
+            row["results"][0].update(server_state=5, hostid=9, sent_time=1, received_time=2, outcome=1)
+        (self.project / "database.json").write_text(json.dumps(self.rows))
+        receipt = tick()
+        self.assertEqual((receipt["status"], receipt["target"], receipt["preview"]["plan_class"]),
+                         ("refilled-finite-window", [102, 103], "intel_vulkan_8b"))
+        self.assertTrue(receipt["nvidia_general_admission"])
+        self.assertEqual(R.policy_window(self.policy.read_bytes()), ([102, 103], None, ("intel_vulkan_8b",)))
+        self.assertIsNone(ET.fromstring(self.policy.read_bytes()).find("plan_class[name='nvidia_vulkan_8b']/min_wu_id"))
+        self.args.enabled_until = 1
+        self.assertEqual(tick()["status"], "closed-expired-budget-or-release-change")
+        self.assertEqual(R.policy_window(self.policy.read_bytes()), ([2, 1], None, ("intel_vulkan_8b",)))
+        self.assertIn(R.NVIDIA_GENERAL_MARKER, self.policy.read_text())
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_intel_general_admission_leaves_no_window_to_own(self):
+        self.rows[:] = [self.input(number) for number in range(100, 104)]
+        (self.root / "qwen/qwen-nonenglish-v1/audit.json").write_text(json.dumps(self.audit))
+        (self.project / "database.json").write_text(json.dumps(self.rows))
+        def tick():
+            with patch.object(R, "read_database", return_value=self.database):
+                return R.run(self.args)
+        self.assertEqual(tick()["status"], "refilled-finite-window")
+        for plan_class in ("nvidia_vulkan_8b", "intel_vulkan_8b"):
+            subprocess.run(["php", str(HELPER), "--project", str(self.project), "--plan-class", plan_class,
+                            "--general", "--apply"], check=True, capture_output=True)
+        policy = self.policy.read_bytes()
+        self.assertEqual(R.policy_window(policy), (None, None, ()))
+        # The tick changes nothing, even past its deadline.
+        self.args.enabled_until = 1
+        report = tick()
+        self.assertEqual(report["status"], "no-owned-window")
+        # A complete report with no budget: feed health reads it, not a silent controller.
+        self.assertEqual((report["admitted_unique"], report["limit"]), (0, 0))
+        self.assertEqual(self.policy.read_bytes(), policy)
+        # An open Intel release that can't read the request version is named like the others.
+        self.assertEqual(R.unreadable_by_open_classes(policy, [
+            {"id": 73, "version_num": 115, "platformid": 1, "plan_class": "intel_vulkan_8b"}], 0, 3),
+            [["intel_vulkan_8b", 1, 115]])
+        # A malformed Intel marker (bounds beside it, or without NVIDIA's) fails closed.
+        root = ET.fromstring(policy, parser=ET.XMLParser(target=ET.TreeBuilder(insert_comments=True)))
+        ET.SubElement(root.find("plan_class[name='intel_vulkan_8b']"), "min_wu_id").text = "2"
+        with self.assertRaisesRegex(Exception, "Invalid explicit Intel general"):
+            R.policy_window(ET.tostring(root))
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_intel_only_window_needs_an_open_peer_release_that_reads_the_request(self):
+        subprocess.run(["php", str(HELPER), "--project", str(self.project), "--plan-class", "nvidia_vulkan_8b",
+                        "--general", "--apply"], check=True, capture_output=True)
+        self.args.initial_policy_sha256 = R.sha(self.policy.read_bytes())
+        everything = self.database["versions"]
+        # No NVIDIA release left and AMD/Apple closed: nothing could run the second replica.
+        self.database["versions"] = [row for row in everything if row["plan_class"] == "intel_vulkan_8b"]
+        with patch.object(R, "read_database", return_value=self.database):
+            receipt = R.run(self.args)
+        self.assertEqual((receipt["status"], receipt["open_peer_readers"]),
+                         ("closed-expired-budget-or-release-change", []))
+        self.database["versions"] = everything
+        with patch.object(R, "read_database", return_value=self.database):
+            receipt = R.run(self.args)
+        self.assertEqual((receipt["status"], receipt["open_peer_readers"]),
+                         ("refilled-finite-window", [["nvidia_vulkan_8b", 1, 114]]))
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_only_stop_keeps_general_admission_and_only_intel_or_shared_take_ranges(self):
+        before = self.policy.read_bytes()
+        for extra, error in ((["--plan-class", "intel_vulkan_8b", "--keep-general", "--workunit", "100"], "usage:"),
+                             (["--plan-class", "amd_vulkan_8b", "--stop", "--keep-general"], "usage:"),
+                             (["--plan-class", "nvidia_vulkan_8b", "--workunit", "100", "--workunit-end", "101"],
+                              "contiguous range")):
+            proc = subprocess.run(["php", str(HELPER), "--project", str(self.project), *extra, "--apply"],
+                                  capture_output=True, text=True)
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn(error, proc.stderr)
+        self.assertEqual(self.policy.read_bytes(), before)
+        root = ET.fromstring(before)
+        root.find("plan_class[name='nvidia_vulkan_8b']").append(ET.Comment(R.NVIDIA_GENERAL_MARKER))
+        with self.assertRaisesRegex(ValueError, "Invalid explicit NVIDIA general"):
+            R.policy_window(ET.tostring(root))
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_uncertain_publication_reconciles_exact_intent_without_double_admission(self):
+        original_persist = R.persist
+        def interrupt(path, value, **kw):
+            if path.name == "state.json" and value["window"] == [100, 101] and "pending" not in value:
+                raise OSError("observer lost after atomic policy publication")
+            original_persist(path, value, **kw)
+        with patch.object(R, "read_database", return_value=self.database), patch.object(R, "persist", side_effect=interrupt):
+            with self.assertRaises(OSError):
+                R.run(self.args)
+        # A separate AMD canary must not turn a known NVIDIA/Intel publication into
+        # an unknown owner merely because the whole policy SHA changed.
+        root = ET.fromstring(self.policy.read_bytes())
+        amd = root.find("plan_class[name='amd_vulkan_8b']")
+        amd.find("min_wu_id").text = amd.find("max_wu_id").text = "200"
+        self.policy.write_bytes(ET.tostring(root))
+        with patch.object(R, "read_database", side_effect=AssertionError("must not replay DB/publication")):
+            recovered = R.run(self.args)
+        self.assertEqual(recovered["status"], "reconciled-exact-published-intent")
+        self.assertEqual(recovered["admitted_unique"], 2)
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_external_resource_gate_change_is_not_silently_adopted(self):
+        with patch.object(R, "read_database", return_value=self.database):
+            R.run(self.args)
+        root = ET.fromstring(self.policy.read_bytes())
+        root.find("plan_class[name='intel_vulkan_8b']/min_gpu_ram_mb").text = "1"
+        self.policy.write_bytes(ET.tostring(root))
+        with self.assertRaisesRegex(ValueError, "resource gates changed"):
+            R.run(self.args)
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_expiry_closes_own_window_without_database_or_source_audit(self):
+        with patch.object(R, "read_database", return_value=self.database):
+            R.run(self.args)
+        (self.root / "qwen/qwen-nonenglish-v1/audit.json").unlink()
+        self.args.enabled_until = 1
+        with patch.object(R, "read_database", side_effect=AssertionError("DB unavailable")):
+            receipt = R.run(self.args)
+        self.assertEqual(receipt["status"], "closed-expired-budget-or-release-change")
+        self.assertEqual(R.policy_window(self.policy.read_bytes())[0], [2, 1])
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_atomic_expected_policy_gate_and_fresh_replica_refusal(self):
+        before = self.policy.read_bytes()
+        bad = subprocess.run(
+            ["php", str(HELPER), "--project", str(self.project), "--plan-class", "shared_8b",
+             "--stop", "--expected-policy-sha256", "0" * 64, "--apply"], capture_output=True)
+        self.assertNotEqual(bad.returncode, 0)
+        self.assertEqual(self.policy.read_bytes(), before)
+        clean_snapshot = copy.deepcopy(self.database)
+        self.rows[0]["results"][0]["outcome"] = 1
+        (self.project / "database.json").write_text(json.dumps(self.rows))
+        with patch.object(R, "read_database", return_value=clean_snapshot):
+            with self.assertRaises(subprocess.CalledProcessError):
+                R.run(self.args)
+        self.assertEqual(self.policy.read_bytes(), before)
+
+    def test_immutable_receipt_collision_never_overwrites_existing_evidence(self):
+        path = self.root / "immutable.json"
+        R.persist(path, {"original": True}, exclusive=True)
+        with self.assertRaises(FileExistsError):
+            R.persist(path, {"wrong": True}, exclusive=True)
+        self.assertEqual(json.loads(path.read_bytes()), {"original": True})
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_refill_does_not_accumulate_a_500_task_unvalidated_gpu_backlog(self):
+        self.database["gpu_inflight"] = [{"hostid": 9} for _ in range(10)]
+        before = self.policy.read_bytes()
+        with patch.object(R, "read_database", return_value=self.database):
+            self.assertEqual(R.run(self.args)["status"], "bounded-gpu-inflight-buffer-full")
+            self.assertEqual(self.policy.read_bytes(), before)
+            self.database["gpu_inflight"].pop()
+            receipt = R.run(self.args)
+        self.assertEqual(receipt["target"], [100, 100])
+        self.assertEqual(receipt["native_gpu_inflight"][9], 9)
+
+    def test_in_container_deadline_precedes_host_mutex_release_deadline(self):
+        config = configparser.ConfigParser(interpolation=None)
+        config.read(ROOT / "boinc/scripts/usnm-qwen-cohort-auto.service")
+        command = shlex.split(config["Service"]["ExecStart"])
+        podman, timeout = command.index("/usr/bin/podman"), command.index("/usr/bin/timeout")
+        self.assertEqual(timeout, podman + 3)
+        self.assertEqual(command[podman + 1], "exec")
+        inner = float(command[timeout + 3].removesuffix("s"))
+        grace = float(command[timeout + 2].split("=", 1)[1].removesuffix("s"))
+        self.assertLess(inner + grace, float(config["Service"]["TimeoutStartSec"]))
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_recovered_expired_publication_is_closed_in_same_tick_without_db(self):
+        original_persist = R.persist
+        def interrupt(path, value, **kw):
+            if path.name == "state.json" and value["window"] == [100, 101] and "pending" not in value:
+                raise OSError("observer lost after publication")
+            original_persist(path, value, **kw)
+        with patch.object(R, "read_database", return_value=self.database), patch.object(R, "persist", side_effect=interrupt):
+            with self.assertRaises(OSError):
+                R.run(self.args)
+        self.args.enabled_until = 1
+        (self.root / "qwen/qwen-nonenglish-v1/audit.json").unlink()
+        with patch.object(R, "read_database", side_effect=AssertionError("DB unavailable")):
+            receipt = R.run(self.args)
+        self.assertEqual(receipt["status"], "closed-expired-budget-or-release-change")
+        self.assertEqual(R.policy_window(self.policy.read_bytes())[0], [2, 1])
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_stale_thousand_unit_prefix_cannot_starve_later_fresh_input(self):
+        self.assert_stale_prefix_progresses()
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_pristine_amd_reservation_cannot_pin_the_stale_scan_cursor(self):
+        self.assert_stale_prefix_progresses(reserved=500)
+
+    def assert_stale_prefix_progresses(self, reserved=None):
+        if reserved:
+            policy = ET.fromstring(self.policy.read_bytes())
+            policy.append(ET.Comment("usnm-amd-first-reservation-v1:" + "f" * 32 + f":{reserved}:9999999999"))
+            node = policy.find("plan_class[name='amd_vulkan_8b']")
+            node.find("min_wu_id").text = node.find("max_wu_id").text = str(reserved)
+            self.policy.write_bytes(ET.tostring(policy))
+            self.args.initial_policy_sha256 = R.sha(self.policy.read_bytes())
+        all_rows = {}
+        for number in [100, 101, *range(200, 1200)]:
+            row = copy.deepcopy(self.rows[0])
+            row["unit"]["id"] = number
+            if number != reserved:
+                row["results"][0].update(hostid=1, server_state=4)
+            all_rows[number] = row
+            self.audit[f"{number:064x}"] = {"workunit_id": number}
+        new = self.input(1300)
+        all_rows[1300] = new
+        (self.root / "qwen/qwen-nonenglish-v1/audit.json").write_text(json.dumps(self.audit))
+        (self.project / "database.json").write_text(json.dumps([new]))
+        seen = []
+        def scan(project, ids, *hosts):
+            seen.append(ids)
+            return self.database | {"rows": [all_rows[i] for i in ids]}
+        with patch.object(R, "read_database", side_effect=scan):
+            self.assertEqual(R.run(self.args)["status"], "no-fresh-verified-pairs")
+            receipt = R.run(self.args)
+        self.assertEqual(len(seen[0]), 1000)
+        self.assertIn(1300, seen[1])
+        self.assertEqual(receipt["target"], [1300, 1300])
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_database_read_crossing_deadline_closes_existing_window(self):
+        with patch.object(R, "read_database", return_value=self.database):
+            R.run(self.args)
+        def delayed(*unused):
+            self.args.enabled_until = 1
+            return self.database
+        with patch.object(R, "read_database", side_effect=delayed):
+            receipt = R.run(self.args)
+        self.assertEqual(receipt["status"], "closed-expired-budget-or-release-change")
+        self.assertEqual(R.policy_window(self.policy.read_bytes())[0], [2, 1])
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_source_read_crossing_deadline_never_publishes_new_window(self):
+        before, original = self.policy.read_bytes(), R.bind_inputs
+        calls = 0
+        def delayed(*args):
+            nonlocal calls
+            calls += 1
+            # Two admissibility reads and two proofs precede the apply-time re-read.
+            if calls == 5:
+                self.args.enabled_until = 1
+            return original(*args)
+        with patch.object(R, "read_database", return_value=self.database), patch.object(R, "bind_inputs", side_effect=delayed):
+            with self.assertRaisesRegex(ValueError, "deadline passed"):
+                R.run(self.args)
+        self.assertEqual(self.policy.read_bytes(), before)
+        with patch.object(R, "read_database", side_effect=AssertionError("DB unavailable")):
+            self.assertEqual(R.run(self.args)["status"], "closed-expired-budget-or-release-change")
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_helper_lock_wait_or_db_revalidation_crossing_deadline_never_publishes(self):
+        before = self.policy.read_bytes()
+        command = ["php", str(HELPER), "--project", str(self.project), "--plan-class", "shared_8b",
+                   "--fresh-pair", "--workunit", "100", "--workunit-end", "101", "--apply"]
+        with (self.project / ".native-qwen-cohort.lock").open("a") as held:
+            fcntl.flock(held, fcntl.LOCK_EX)
+            waiting = subprocess.Popen(command + ["--admit-until", str(int(time.time()) + 2)],
+                                       stderr=subprocess.PIPE, text=True)
+            time.sleep(3)
+        stderr = waiting.communicate(timeout=10)[1]
+        self.assertNotEqual(waiting.returncode, 0)
+        self.assertIn("deadline passed", stderr)
+        self.assertEqual(self.policy.read_bytes(), before)
+        slow = subprocess.run(command + ["--admit-until", str(int(time.time()) + 2)], capture_output=True,
+                              text=True, env=os.environ | {"FIXTURE_DB_DELAY": "1"}, timeout=20)
+        self.assertNotEqual(slow.returncode, 0)
+        self.assertIn("deadline passed", slow.stderr)
+        self.assertEqual(self.policy.read_bytes(), before)
+        closed = subprocess.run(["php", str(HELPER), "--project", str(self.project), "--plan-class", "shared_8b",
+                                 "--stop", "--apply"], capture_output=True, text=True)
+        self.assertEqual(closed.returncode, 0, closed.stderr)
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_database_scan_reads_assignments_in_one_bounded_query(self):
+        (self.project / "html/inc/boinc_db.inc").write_text("""<?php
+function row($v){return (object)$v;}
+class BoincResult {static function enum_fields($f,$w){$o=[];foreach(range(100,1099) as $id)
+ foreach([0,1] as $i)$o[]=row(['workunitid'=>$id,'server_state'=>2]);return $o;}}
+class BoincApp {static function lookup_id($id){return row(['name'=>'usnm_qwen']);}}
+class BoincAppVersion {static function enum($w){return [];}}
+class BoincWorkunit {static function enum_fields($f,$w){return array_map(fn($id)=>row(['id'=>$id]),range(100,1099));}}
+class BoincDb {static $q=0;static function get(){return new self();}
+ function count($t,$w){throw new Exception('per-workunit query');}
+ function enum_fields($t,$c,$f,$w,$o){if(++self::$q>1||$t!=='assignment'||!str_contains($w,'IN ('))throw new Exception('unbounded');
+  return [row(['workunitid'=>100]),row(['workunitid'=>100]),row(['workunitid'=>205])];}}
+""")
+        snapshot = R.read_database(self.project, list(range(100, 1100)))
+        counts = {int(row["unit"]["id"]): row["assignments"] for row in snapshot["rows"]}
+        self.assertEqual((len(counts), counts[100], counts[205], counts[101]), (1000, 2, 1, 0))
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_first_idle_tick_persists_baseline_before_unrelated_amd_change(self):
+        self.args.minimum_workunit = 1000
+        self.assertEqual(R.run(self.args)["status"], "no-audited-fresh-inputs")
+        root = ET.fromstring(self.policy.read_bytes())
+        amd = root.find("plan_class[name='amd_vulkan_8b']")
+        amd.find("min_wu_id").text = amd.find("max_wu_id").text = "200"
+        self.policy.write_bytes(ET.tostring(root))
+        self.args.minimum_workunit = 100
+        with patch.object(R, "read_database", return_value=self.database):
+            self.assertEqual(R.run(self.args)["status"], "refilled-finite-window")
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_older_linux_release_closes_admission_only_when_feeder_would_dispatch_it(self):
+        self.database["versions"].append({"id": 46, "version_num": 106, "platformid": 1,
+                                          "plan_class": "intel_vulkan_8b"})
+        with patch.object(R, "read_database", return_value=self.database):
+            self.assertEqual(R.run(self.args)["status"], "refilled-finite-window")
+        self.database["app"]["min_version"] = 100
+        for row in self.rows:
+            row["results"][0].update(server_state=4, hostid=9)
+        with patch.object(R, "read_database", return_value=self.database):
+            receipt = R.run(self.args)
+        self.assertEqual(receipt["status"], "closed-expired-budget-or-release-change")
+        self.assertEqual(R.policy_window(self.policy.read_bytes())[0], [2, 1])
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_policy_directory_is_durable_before_state_records_window(self):
+        events, opened = [], {}
+        original_open, original_fsync, original_persist = os.open, os.fsync, R.persist
+        def open_(path, *a, **kw):
+            fd = original_open(path, *a, **kw)
+            opened[fd] = Path(path)
+            return fd
+        def fsync(fd):
+            if opened.get(fd) == self.project.resolve():
+                events.append(("dir", R.policy_window(self.policy.read_bytes())[0]))
+            return original_fsync(fd)
+        def persist(path, value, **kw):
+            if path.name == "state.json":
+                events.append(("state", value["window"], "pending" in value))
+            return original_persist(path, value, **kw)
+        with patch.object(R, "read_database", return_value=self.database), \
+                patch.object(R.os, "fsync", side_effect=fsync), patch.object(R.os, "open", side_effect=open_), \
+                patch.object(R, "persist", side_effect=persist):
+            R.run(self.args)
+        final = events.index(("state", [100, 101], False))
+        self.assertIn(("dir", [100, 101]), events[:final])
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_unpinned_non_linux_release_of_opened_class_closes_admission(self):
+        with patch.object(R, "read_database", return_value=self.database):
+            R.run(self.args)
+        self.database["versions"].append({"id": 69, "version_num": 100, "platformid": 5,
+                                          "plan_class": "intel_vulkan_8b"})
+        with patch.object(R, "read_database", return_value=self.database):
+            receipt = R.run(self.args)
+        self.assertEqual(receipt["status"], "closed-expired-budget-or-release-change")
+        self.assertEqual(R.policy_window(self.policy.read_bytes())[0], [2, 1])
+
+    def open_amd(self):
+        root = ET.fromstring(self.policy.read_bytes())
+        amd = root.find("plan_class[name='amd_vulkan_8b']")
+        for tag in ("min_wu_id", "max_wu_id"):
+            if (node := amd.find(tag)) is not None:
+                amd.remove(node)
+        return ET.tostring(root)
+
+    def test_open_amd_or_apple_version_that_cannot_read_the_request_is_named(self):
+        amd = {"id": 68, "version_num": 114, "platformid": 7, "plan_class": "amd_vulkan_8b"}
+        old = {"id": 61, "version_num": 109, "platformid": 1, "plan_class": "amd_vulkan_8b"}
+        apple = {"id": 71, "version_num": 115, "platformid": 3, "plan_class": "apple_gpu_8b"}
+        versions = [old, amd, apple, *self.database["versions"]]
+        payload = self.open_amd()
+        # Request version 1 is read by everything, so a general AMD class changes nothing.
+        self.assertEqual(R.unreadable_by_open_classes(payload, versions, 0, 1), [])
+        self.assertEqual(R.unreadable_by_open_classes(payload, versions, 0, 2),
+                         [["amd_vulkan_8b", 1, 109], ["amd_vulkan_8b", 7, 114]])
+        self.assertEqual(R.unreadable_by_open_classes(payload, versions, 0, 3),
+                         [["amd_vulkan_8b", 1, 109], ["amd_vulkan_8b", 7, 114],
+                          ["apple_gpu_8b", 3, 115]])
+        # The feeder's newest-version rule: a superseded row is not dispatched.
+        newer = {**amd, "id": 80, "version_num": 117}
+        self.assertEqual(R.unreadable_by_open_classes(payload, [amd, newer], 0, 3), [])
+        self.assertEqual(R.unreadable_by_open_classes(payload, [amd, newer], 114, 3),
+                         [["amd_vulkan_8b", 7, 114]])
+        # A closed class takes nothing, whatever its version.
+        self.assertEqual(R.unreadable_by_open_classes(self.policy.read_bytes(), [amd], 0, 2), [])
+
+    def campaign_rows(self, *specs):
+        rows, audits = [], {}
+        for number, language, campaign, version in specs:
+            before = set(self.audit)
+            rows.append(self.input(number, language, campaign, version))
+            audits.setdefault(campaign, {}).update(
+                {key: self.audit[key] for key in set(self.audit) - before})
+        for campaign, audit in audits.items():
+            (self.root / "qwen" / campaign / "audit.json").write_text(json.dumps(audit))
+        self.database["rows"] = rows
+        (self.project / "database.json").write_text(json.dumps(rows))
+        self.database["versions"] = [
+            {"id": 73, "version_num": 117, "platformid": 1, "plan_class": "nvidia_vulkan_8b"},
+            {"id": 74, "version_num": 117, "platformid": 1, "plan_class": "intel_vulkan_8b"}]
+        self.args.app_version_num, self.args.nvidia_app_version, self.args.intel_app_version = 117, 73, 74
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_campaign_roots_are_admitted_at_their_own_request_versions(self):
+        self.campaign_rows((200, "srp", "guard-v3", 3), (201, "yid", "guard-v4", 4))
+        self.args.campaigns = [("guard-v3", 3), ("guard-v4", 4)]
+        with patch.object(R, "read_database", return_value=copy.deepcopy(self.database)):
+            receipt = R.run(self.args)
+        self.assertEqual(receipt["status"], "refilled-finite-window")
+        self.assertEqual(receipt["target"], [200, 201])
+        self.assertEqual(R.policy_window(self.policy.read_bytes())[0], [200, 201])
+        self.assertEqual(set(receipt["producer_audit_sha256"]), {"guard-v3", "guard-v4"})
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_a_root_refuses_a_job_of_another_request_version_or_group(self):
+        self.campaign_rows((200, "srp", "guard-v3", 1), (201, "srp", "guard-v4", 3))
+        self.args.campaigns = [("guard-v3", 3)]
+        with patch.object(R, "read_database", return_value=copy.deepcopy(self.database)), \
+                self.assertRaisesRegex(ValueError, "Unreviewed prompt/budget/cohort"):
+            R.run(self.args)
+        key = self.database["rows"][1]["unit"]["name"].removeprefix("usnm_qwen_")
+        with self.assertRaisesRegex(ValueError, "Unreviewed prompt/budget/cohort"):
+            R.bind_inputs(self.project, self.database["rows"][1], key, self.audit[key], "guard-v3", 3)
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_a_root_with_an_empty_audit_adds_nothing_and_stops_nothing(self):
+        # The next root goes into the env before its first chunk, so the refill needs no edit then.
+        self.campaign_rows((200, "srp", "guard-v3", 3))
+        root = self.root / "qwen/guard-v4"
+        root.mkdir(parents=True)
+        (root / "audit.json").write_text("{}")
+        self.args.campaigns = [("guard-v3", 3), ("guard-v4", 4)]
+        with patch.object(R, "read_database", return_value=copy.deepcopy(self.database)):
+            receipt = R.run(self.args)
+        self.assertEqual(receipt["status"], "refilled-finite-window")
+        self.assertEqual(receipt["target"], [200, 200])
+        self.assertEqual(set(receipt["producer_audit_sha256"]), {"guard-v3", "guard-v4"})
+
+    def test_campaign_arguments(self):
+        self.assertEqual(R.parse_campaigns([], 1), [("qwen-nonenglish-v1", 1)])
+        self.assertEqual(R.parse_campaigns(["guard-v3", "guard-v4:4"], 3), [("guard-v3", 3), ("guard-v4", 4)])
+        for values, error in ((["../up"], "Invalid campaign name"), (["guard:5"], "Unknown campaign request"),
+                              (["guard:3", "guard:4"], "Duplicate campaign")):
+            with self.assertRaisesRegex(ValueError, error):
+                R.parse_campaigns(values, 1)
+        base = ["--project", "p", "--helper", "h", "--helper-sha256", "a" * 64, "--config-sha256", "a" * 64,
+                "--initial-policy-sha256", "a" * 64, "--controller", "a" * 32, "--minimum-workunit", "100",
+                "--enabled-until", str(int(time.time()) + 60), "--app-version-num", "116",
+                "--nvidia-app-version", "1", "--intel-app-version", "2"]
+        with self.assertRaisesRegex(ValueError, "needs app versions that read it"):
+            R.main(base + ["--campaign", "guard:4"])
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_open_class_that_cannot_read_the_request_closes_admission(self):
+        with patch.object(R, "read_database", return_value=self.database):
+            R.run(self.args)
+        with patch.object(R, "unreadable_by_open_classes", return_value=[["amd_vulkan_8b", 7, 114]]), \
+                patch.object(R, "read_database", return_value=self.database):
+            receipt = R.run(self.args)
+        self.assertEqual(receipt["status"], "closed-expired-budget-or-release-change")
+        self.assertEqual(R.policy_window(self.policy.read_bytes())[0], [2, 1])
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_reviewed_successor_release_and_request_version_are_pinned_together(self):
+        self.database["versions"] = [{"id": 70, "version_num": 115, "platformid": 1, "plan_class": "nvidia_vulkan_8b"},
+                                     {"id": 71, "version_num": 115, "platformid": 1, "plan_class": "intel_vulkan_8b"}]
+        with patch.object(R, "read_database", return_value=copy.deepcopy(self.database)):
+            self.assertEqual(R.run(self.args)["status"],
+                             "closed-expired-budget-or-release-change")
+        self.args.app_version_num, self.args.nvidia_app_version, self.args.intel_app_version = 115, 70, 71
+        with patch.object(R, "read_database", return_value=copy.deepcopy(self.database)):
+            with self.assertRaisesRegex(Exception, "Unreviewed prompt/budget/cohort"):
+                R.run(SimpleNamespace(**vars(self.args) | {"campaigns": [("qwen-nonenglish-v1", 2)]}))
+        with patch.object(R, "read_database", return_value=copy.deepcopy(self.database)):
+            self.assertEqual(R.run(self.args)["status"], "refilled-finite-window")
+        base = ["--project", "p", "--helper", "h", "--helper-sha256", "a" * 64, "--config-sha256", "a" * 64,
+                "--initial-policy-sha256", "a" * 64, "--controller", "a" * 32, "--minimum-workunit", "100",
+                "--enabled-until", str(int(time.time()) + 60)]
+        for version in ("2", "3", "4"):
+            with self.assertRaisesRegex(Exception, "needs app versions that read it"):
+                R.main(base + ["--prompt-version", version])
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_standalone_fresh_pair_helper_also_requires_distinct_host_gate(self):
+        self.config.write_text("<boinc><config/></boinc>")
+        before = self.policy.read_bytes()
+        proc = subprocess.run(
+            ["php", str(HELPER), "--project", str(self.project), "--plan-class", "shared_8b",
+             "--fresh-pair", "--workunit", "100", "--workunit-end", "101", "--apply"],
+            capture_output=True, text=True)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("requires one_result_per_host", proc.stderr)
+        self.assertEqual(self.policy.read_bytes(), before)
+
+
+if __name__ == "__main__":
+    unittest.main()

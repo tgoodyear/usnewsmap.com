@@ -1,0 +1,34 @@
+// check.usnewsmap.com (README.md). CI deploys it with deploy.sh.
+{
+  "name": "usnm-check",
+  "main": "worker.mjs",
+  "compatibility_date": "2025-10-01",
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [{ "pattern": "check.usnewsmap.com", "custom_domain": true }],
+
+  // The page. /api/*, /clips/* and /admin/* go to the Worker; any other path that isn't a file
+  // gets index.html, which reads the language from the path.
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*", "/clips/*", "/admin/*"]
+  },
+
+  "d1_databases": [{ "binding": "DB", "database_name": "usnm-check", "database_id": "69bd3620-a435-4741-9f7f-7b49384ea08b" }],
+  "r2_buckets": [{ "binding": "CLIPS", "bucket_name": "usnm-check-clips" }],
+
+  // One contributor may send 30 answers in 10 seconds: far above a person's pace, low enough
+  // that a script can't flood a language's votes. Counted per Cloudflare location.
+  "ratelimits": [{ "name": "ANSWER_LIMIT", "namespace_id": "1620101", "simple": { "limit": 30, "period": 10 } }],
+
+  // Request logs carry no answers or tokens; errors are logged with their stack only.
+  "observability": { "enabled": true, "head_sampling_rate": 1 },
+
+  "vars": {
+    // Turnstile's public site key for check.usnewsmap.com (not a secret).
+    "TURNSTILE_SITE_KEY": "0x4AAAAAAF3o7hf69c7OTAmp"
+  }
+  // Secrets, set with deploy.sh: SESSION_KEY, ADMIN_TOKEN, TURNSTILE_SECRET.
+}

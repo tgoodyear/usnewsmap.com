@@ -11,7 +11,7 @@ A build is a set of files, and each is a BOINC app version file:
 | File                     | What it is                                                                                 |
 | ------------------------ | ------------------------------------------------------------------------------------------ |
 | `usnm_ocr`               | The worker, `crates/usnm-ocr-app`. Static, `x86_64-unknown-linux-musl`.                    |
-| `usnm_tesseract`         | Tesseract, `ocr/boinc/native/Containerfile`. Static, against glibc 2.41.                   |
+| `usnm_tesseract`         | Tesseract, `boinc/apps/native/Containerfile`. Static, against glibc 2.41.                  |
 | `tessdata_<model>`       | The 22 models in `ocr/engines/tesseract/models.lock`.                                      |
 | `usnm_native_build.json` | The manifest: the size and sha256 of every other file. Its sha256 is the build's identity. |
 
@@ -19,7 +19,7 @@ It comes to 202 MB, the same models as the worker image.
 
 **Tesseract.** The Containerfile takes the engine image's Debian snapshot and links Debian's own static libraries: `libtesseract.a`, `libleptonica.a`, OpenJPEG, libjpeg-turbo and the rest, at the versions in the worker image. Debian's `-dev` packages don't ship the command-line `main()`, so that one file is compiled from Debian's source package. The code that reads a page is therefore the code in the container, not a rebuild of it. There are two differences:
 
-- libcurl and libarchive are replaced by `ocr/boinc/native/stubs.c`. Tesseract uses curl only for a URL input and libarchive only for a model packed as an archive, and neither happens here.
+- libcurl and libarchive are replaced by `boinc/apps/native/stubs.c`. Tesseract uses curl only for a URL input and libarchive only for a model packed as an archive, and neither happens here.
 - `main()` is compiled without `HAVE_FEENABLEEXCEPT`. The container reaches the same state with `fpshim.c`, an `LD_PRELOAD` no-op, so floating-point traps are off in both.
 
 **The worker.** A task is three processes:
@@ -34,16 +34,16 @@ The models stay in the project directory. They're hard-linked into the slot, or 
 
 ### Limits
 
-| Container (`ocr/boinc/job.toml`) | Native                                                                                                                |
-| -------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| `--memory=1536m`, no swap        | `RLIMIT_AS` of 1536 MiB on the engine. Address space, so stricter. The client also enforces `rsc_memory_bound`.       |
-| `--cpus=1`                       | `OMP_THREAD_LIMIT=1`, one BOINC CPU, and BOINC's own priority.                                                        |
-| Page deadline by the clock       | `RLIMIT_CPU` of the job's `timeout_secs` on the engine. It stops counting while the task is suspended.                |
-| `--tmpfs=/tmp`, 512 MiB          | `TMPDIR` in the slot, `RLIMIT_FSIZE` of 512 MiB, and the client's `rsc_disk_bound`.                                   |
-| `--pids-limit=64`                | No equivalent. `RLIMIT_NPROC` counts every process of the user, so it would break the host. The engine is one thread. |
-| `--network=none`                 | No equivalent without privileges. Neither the worker path nor the static engine has network code it uses.             |
-| `--read-only`, `--cap-drop=ALL`  | No equivalent beyond `no_new_privs`. The task runs as the BOINC user, as `usnm_quality` does.                         |
-| `core`: default                  | `RLIMIT_CORE` of 0 and 256 open files.                                                                                |
+| Container (`boinc/apps/job.toml`) | Native                                                                                                                |
+| --------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `--memory=1536m`, no swap         | `RLIMIT_AS` of 1536 MiB on the engine. Address space, so stricter. The client also enforces `rsc_memory_bound`.       |
+| `--cpus=1`                        | `OMP_THREAD_LIMIT=1`, one BOINC CPU, and BOINC's own priority.                                                        |
+| Page deadline by the clock        | `RLIMIT_CPU` of the job's `timeout_secs` on the engine. It stops counting while the task is suspended.                |
+| `--tmpfs=/tmp`, 512 MiB           | `TMPDIR` in the slot, `RLIMIT_FSIZE` of 512 MiB, and the client's `rsc_disk_bound`.                                   |
+| `--pids-limit=64`                 | No equivalent. `RLIMIT_NPROC` counts every process of the user, so it would break the host. The engine is one thread. |
+| `--network=none`                  | No equivalent without privileges. Neither the worker path nor the static engine has network code it uses.             |
+| `--read-only`, `--cap-drop=ALL`   | No equivalent beyond `no_new_privs`. The task runs as the BOINC user, as `usnm_quality` does.                         |
+| `core`: default                   | `RLIMIT_CORE` of 0 and 256 open files.                                                                                |
 
 The three rows with no equivalent are real differences. A native task runs under the BOINC account with no sandbox. That's the same position as native `usnm_quality`, and the difference is that this one runs a large C++ program over scans. The scans come from the project.
 
@@ -134,9 +134,9 @@ So on a loaded host a native task gets more clock time than a container task for
 
 Each step needs the one before it.
 
-1. **Merge the build and the release tooling.** Done, and nothing changed on the server. The new app names don't exist there, and `gold-engine-platforms.json` has no native entry. `boinc-app-release.sh`, `check_appver.py` and `publish-appver.sh` accept both apps on `x86_64-pc-linux-gnu` with no plan class. A release takes CI's build directory with `--build-dir` and first checks it with `check-native-ocr-build.py`: the manifest's Tesseract must be the version the container engine installs, its models exactly `models.lock`, and every file the one the manifest lists. The check prints the build's `engine.image` and `engine.base`. `contrib-compute/docs/app-release.md` has the command.
-2. **Register `usnm_gold_native` only.** Add it to `project.xml` with weight 0 and its validator and assimilator daemons, add the reviewed binding to `gold-engine-platforms.json` (the identity the check printed), rebuild the server image for the hook, then sign and publish with `boinc-app-release.sh --build-dir`. Until the app is in `project.xml`, publishing fails at registration. No workunit exists yet, so no host gets anything.
-   - **Why weight 0.** `gold-onboard` assigns every native gold unit to one host, and the scheduler sends assigned work straight from the database (`sched_assign.cpp` at BOINC 22bbebe), not from the feeder's cache. A zero weight gets one cache slot and no query budget, and leaves the other apps' budgets where they were: a weight of 1 would have made the sum 25 and cut each weight-1 app's budget to 7,864, under the 8,192 floor in `contrib-compute/docs/app-release.md`. `gold submit` only makes container units, so no unassigned native unit can be made.
+1. **Merge the build and the release tooling.** Done, and nothing changed on the server: the new app names didn't exist there yet, and `gold-engine-platforms.json` had no native entry. `boinc-app-release.sh`, `check_appver.py` and `publish-appver.sh` accept both apps on `x86_64-pc-linux-gnu` with no plan class. A release takes CI's build directory with `--build-dir` and first checks it with `check-native-ocr-build.py`: the manifest's Tesseract must be the version the container engine installs, its models exactly `models.lock`, and every file the one the manifest lists. The check prints the build's `engine.image` and `engine.base`. `boinc/docs/app-release.md` has the command.
+2. **Register `usnm_gold_native` only.** Add it to `project.xml` with weight 0 and its validator and assimilator daemons, add the reviewed binding to `gold-engine-platforms.json` (the identity the check printed), rebuild the server image for the hook, then sign and publish with `boinc-app-release.sh --build-dir`. Until the app is in `project.xml`, publishing fails at registration. No workunit exists yet, so no host gets anything. The repository side (`project.xml`, the daemons in `boinc/images/server/lib.sh`, the binding) is merged (#1607).
+   - **Why weight 0.** `gold-onboard` assigns every native gold unit to one host, and the scheduler sends assigned work straight from the database (`sched_assign.cpp` at BOINC 22bbebe), not from the feeder's cache. A zero weight gets one cache slot and no query budget, and leaves the other apps' budgets where they were: a weight of 1 would then have made the sum 25 and cut each weight-1 app's budget to 7,864, under the 8,192 floor in `boinc/docs/app-release.md`. `gold submit` only makes container units, so no unassigned native unit can be made.
    - **Binding.** The first native entry in `gold-engine-platforms.json` is the build from `boinc-ocr-native.yml` run 42290314510 on main `f2f4a9d0` (artifact `sha256:4435a4ce…`): `engine.image` `sha256:c353f7bf…`, `engine.base` `sha256:21877bc3…` on `x86_64-pc-linux-gnu`. `check-native-ocr-build.py` printed the same pair for the downloaded artifact. Any other build has another digest, so it needs its own entry, and its own trust.
    - **Feeder.** Adding an active app changes the feeder's startup slot map, and neither `xadd` nor `reread_db` rebuilds it (#1462). Run `register-apps` with the new `SERVER_IMAGE` before restarting the server on it, so the restarted feeder starts with the new app. `xadd` inserts a new app at the database's default weight of 1, so the step's `register-apps.php` then sets the weight `project.xml` declares on each app with no app version yet, and fails if it doesn't read back. Check `SELECT name, weight FROM app WHERE deprecated=0` shows `usnm_gold_native` at 0 before the restart, and that `feeder-slot-guard.py` reports `match` after it.
 3. **Check the challenge.** A project host with a container runtime runs the calibrated challenge on both builds, and the per-crop counts are compared.
@@ -163,15 +163,15 @@ The design keeps Windows and macOS open, and neither is built.
 ## Reproducing
 
 ```sh
-docker build -f ocr/boinc/native/Containerfile -t usnm-tesseract-native ocr/boinc/native
+docker build -f boinc/apps/native/Containerfile -t usnm-tesseract-native boinc/apps/native
 cargo build --release --target x86_64-unknown-linux-musl -p usnm-ocr-app --bin usnm_ocr --example native_fixture
 usnm_ocr manifest --worker usnm_ocr --tesseract "$PWD/usnm_tesseract" --tessdata tessdata --out usnm_native_build.json
-scripts/boinc/smoke-native-ocr.sh --build build --fixture native_fixture
-scripts/boinc/native_ocr_parity.py run --manifest pages.json --pages pages --build build \
+boinc/scripts/smoke-native-ocr.sh --build build --fixture native_fixture
+boinc/scripts/native_ocr_parity.py run --manifest pages.json --pages pages --build build \
   --fixture native_fixture --rootfs worker-root --container-image sha256:... \
   --container-base sha256:... --work parity --parallel 2
-scripts/boinc/native_ocr_parity.py report --work parity --references loctext --out parity.json
-scripts/boinc/native_ocr_client_test.py --boinc boinc --boinccmd boinccmd --build build \
+boinc/scripts/native_ocr_parity.py report --work parity --references loctext --out parity.json
+boinc/scripts/native_ocr_client_test.py --boinc boinc --boinccmd boinccmd --build build \
   --fixture native_fixture --scan page.jpg --language eng --scenario plain --work client
 ```
 

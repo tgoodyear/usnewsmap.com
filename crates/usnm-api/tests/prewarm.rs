@@ -332,9 +332,17 @@ async fn visit_examples(state: &Arc<AppState>, backend: &Counting, version: &str
     load_examples(state, backend, version).await.0
 }
 
+/// How many responses are stored under `version`. `put_new` writes a `.tmp-*` file in the
+/// same directory, hard-links it to the final name and only then removes it, so a raw
+/// directory listing counts a response in flight (and, between the link and the unlink,
+/// counts one twice). Count the final names only.
 fn persisted(dir: &Path, version: &str) -> usize {
-    std::fs::read_dir(dir.join(version).join("f8"))
-        .map(|d| d.count())
+    std::fs::read_dir(dir.join(version).join("f9"))
+        .map(|d| {
+            d.filter_map(Result::ok)
+                .filter(|e| !e.file_name().to_string_lossy().starts_with(".tmp-"))
+                .count()
+        })
         .unwrap_or(0)
 }
 
@@ -1215,7 +1223,10 @@ async fn a_starting_warm_up_goes_when_no_visitor_searches() {
     assert!(report.gave_way < Duration::from_secs(2), "{report:?}");
     visitor.await.unwrap();
 
-    // Nobody searching: no wait at all.
+    // Nobody searching: no wait at all. This half asserts that nothing is skipped, not that
+    // the run is fast: 400 real queries take about 3 s on a loaded 4-core runner, so the first
+    // half's 3 s budget would skip some of them whenever the machine is slow.
+    cfg.prewarm_startup_budget = Duration::from_secs(300);
     let quick = Counting::new(Duration::ZERO, false);
     let state = Arc::new(reloading_state(&dir, cfg, quick).await);
     let report = prewarm::run(&state, state.snapshot.load_full(), Trigger::Startup).await;

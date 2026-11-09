@@ -1,4 +1,5 @@
 # The ops data checks (scripts/ops/check-version-snapshots.py): pure Python, no
 # dependencies; installed with --require-hashes. Dependabot keeps it current.
-fastjsonschema==2.22.2 \
-    --hash=sha256:0fb3915616adac85ccfdd737d26be1089845d2019819505b42d39888458f74d4
+fastjsonschema==2.22.3 \
+    --hash=sha256:8330c91b027dcf941efcb7b1f0998515ff95d177ea15bbabdfe8671965620901 \
+    --hash=sha256:f670b443830b75aca3f00b75949efa20f4b2a80302ec7a21505c28dd54cffd43

@@ -4,6 +4,13 @@ import { expect, test, type Page } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 import { indexSummary } from "../src/lib/indexSummary";
 
+// A route callback that calls `route.fetch()` can still be running when the test's last
+// assertion passes (a background request from the page). Wait for it, or Playwright fails
+// the test with "Test ended" / "Response has been disposed" while it runs.
+test.afterEach(async ({ page }) => {
+  await page.unrouteAll({ behavior: "wait" });
+});
+
 // SEO smoke tests: the head that search engines and link previews read, the
 // page structure once the app renders, and what the API sends crawlers.
 // Adapted from goodyeartechnical.com's tests/e2e/seo.spec.js.
@@ -146,10 +153,19 @@ test("curated searches expose top-city results and homepage links without JavaSc
     await expect(samples).toContainText("1896-07-18");
     const map = page.getByRole("img", { name: "Map and timeline of newspaper matches for Cross of Gold, 1896" });
     await expect(map).toBeVisible();
+    // The API renders this map on demand with two render slots and answers 503 with
+    // Retry-After: 10 when both are busy (other tests share this server). A script-free
+    // page never retries, so the broken image stays broken: ask for the same URL again.
     await expect
-      .poll(() => map.evaluate((image: HTMLImageElement) => image.complete && image.naturalWidth === 1200), {
-        timeout: 50_000,
-      })
+      .poll(
+        () =>
+          map.evaluate((image: HTMLImageElement) => {
+            if (image.complete && image.naturalWidth === 1200) return true;
+            if (image.complete) image.src = image.getAttribute("src") ?? "";
+            return false;
+          }),
+        { timeout: 50_000, intervals: [500, 1_000, 2_000, 5_000] },
+      )
       .toBe(true);
   } finally {
     await context.close();
@@ -172,7 +188,7 @@ test("sitemap searches remain readable when an extension blocks scripts", async 
   await page.goto("/examples/cross-of-gold");
   const landing = page.locator("#search-landing");
   await expect(landing).toBeVisible();
-  await expect(landing.getByRole("heading", { level: 1 })).toHaveText("Cross of Gold, 1896");
+  await expect(landing.getByRole("heading", { level: 1 })).toHaveText("Cross of Gold, 1896, in American newspapers");
   await expect(landing.getByRole("region", { name: "Sample results" }).locator("ol > li")).toHaveCount(10);
 });
 
@@ -186,7 +202,7 @@ test("sitemap searches remain readable with JavaScript enabled and API access bl
   await page.goto("/examples/cross-of-gold");
   const landing = page.locator("#search-landing");
   const samples = landing.getByRole("region", { name: "Sample results" });
-  await expect(landing.getByRole("heading", { level: 1 })).toHaveText("Cross of Gold, 1896");
+  await expect(landing.getByRole("heading", { level: 1 })).toHaveText("Cross of Gold, 1896, in American newspapers");
   await expect(samples).toBeVisible();
   await expect(samples.locator("ol > li")).toHaveCount(10);
   await expect(samples).toContainText("1896-07-18");
@@ -448,7 +464,7 @@ test.describe("what the API tells crawlers", () => {
     for (let load = 0; load < 2; load++) {
       await expect(page.getByRole("searchbox", { name: "Word or phrase" })).toHaveValue('"cross of gold"');
       await expect(page).toHaveURL(/\/examples\/cross-of-gold(?:\?|$)/);
-      await expect(page).toHaveTitle("Cross of Gold, 1896 · US News Map");
+      await expect(page).toHaveTitle("Cross of Gold, 1896, in American newspapers · US News Map");
       await expect(page.locator('link[rel="canonical"]')).toHaveAttribute("href", `${SITE}${path}`);
       await expect.poll(() => searches.length).toBeGreaterThan(0);
       for (const url of searches) {

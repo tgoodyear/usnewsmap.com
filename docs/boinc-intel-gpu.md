@@ -2,16 +2,16 @@
 
 Plan class `intel_vulkan_8b` runs the same Qwen3-VL-8B Q4_K_M reading as the CUDA and Metal
 classes, through the pinned llama.cpp Vulkan build (`ubuntu-vulkan-x64` and `win-vulkan-x64` in
-`ocr/boinc/qwen/llama.lock`). It shares the batch-8 workunits of `nvidia_cuda_8b` and
+`boinc/apps/qwen/llama.lock`). It shares the batch-8 workunits of `nvidia_cuda_8b` and
 `apple_gpu_8b`, so its readings can join the same quorum
 ([#786](https://github.com/tgoodyear/usnewsmap.com/issues/786)). The class ships closed
 (`min_wu_id=2`, `max_wu_id=1`). An operator opens one audited workunit at a time with
-`scripts/boinc/native-qwen-cohort.php --plan-class intel_vulkan_8b`, as for the NVIDIA classes
-([app releases](../contrib-compute/docs/app-release.md)).
+`boinc/scripts/native-qwen-cohort.php --plan-class intel_vulkan_8b`, as for the NVIDIA classes
+([app releases](../boinc/docs/app-release.md)).
 
 ### Persistent finite NVIDIA/Intel refill
 
-`scripts/boinc/qwen-auto-cohort.py` is an operator-enabled, finite rolling pilot,
+`boinc/scripts/qwen-auto-cohort.py` is an operator-enabled, finite rolling pilot,
 not general admission. The accompanying `usnm-qwen-cohort-auto.service` and
 `.timer` run one short operation per minute under the normal **nonblocking**
 project mutex. No collector, AMD acceptance, client restart or manual feed start
@@ -62,7 +62,7 @@ normal coordinated helper-SHA update at an idle boundary. Do not combine a refil
 with database restart/failover or filesystem maintenance; this is not a distributed
 transaction across MySQL and the policy filesystem.
 
-The repeatable `scripts/boinc/test_qwen_publication_db.py` fixture uses actual
+The repeatable `boinc/scripts/test_qwen_publication_db.py` fixture uses actual
 concurrent MySQL connections and the real PHP entry point, with disposable BOINC
 table shapes and a thin database adapter. Set `USNM_QWEN_MYSQL_PORT` to a
 **disposable localhost** MySQL port with an empty-password root account, as in CI.
@@ -89,14 +89,14 @@ starved host lets the controller open the next fresh window. The left-behind
 replicas are not cancelled, reassigned or edited; they stay ordinary unsent work
 for every other eligible class, and the receipt records them
 (`rotated_past_window`, `starved_hosts`, `left_unsent_replicas`).
-The read-only `scripts/boinc/qwen-dispatch-fairness.py` shows how this plays out under
+The read-only `boinc/scripts/qwen-dispatch-fairness.py` shows how this plays out under
 ordinary work: each host's Qwen sends by day, the unsent units each host can take, the
 blocked head in feeder order, and the feeder cache. The
 [5 November reading](notes/2026-11-05-qwen-intel-dispatch.md) found the queue moving past
 its blocked head and Intel idle only because no fresh pairs were left.
 
 Once the operator gives `nvidia_vulkan_8b` general admission (the helper's
-`--general` and its marker, [app releases](../contrib-compute/docs/app-release.md)), the
+`--general` and its marker, [app releases](../boinc/docs/app-release.md)), the
 NVIDIA host takes any Qwen work on its own, and the controller owns Intel's window alone
 (#1445). It refills that window with `--plan-class intel_vulkan_8b`, and its release is
 `--stop --keep-general`, so neither ever bounds or closes NVIDIA's general admission.
@@ -162,7 +162,7 @@ assignments/returns afterwards; a policy change alone is not throughput.
 
 **Window renewal (stopgap).** Until automated renewal lands (#1441),
 `usnm-qwen-window-renew.timer` runs `/usr/local/sbin/usnm-qwen-window-renew`
-(`scripts/boinc/usnm-qwen-window-renew` and its two units) at 4:31 AM and 4:31 PM
+(`boinc/scripts/usnm-qwen-window-renew` and its two units) at 4:31 AM and 4:31 PM
 Eastern. Each run sets `ENABLED_UNTIL` 86,000 seconds ahead, keeping the previous
 file as `qwen-cohort-auto.env.pre-autorenew`, so the deadline stays about 12 hours
 or more away. It renews only while every other line of `qwen-cohort-auto.env`
@@ -211,7 +211,7 @@ replaced it.
 - **Resource type.** Stock BOINC infers an app version's resource from its plan-class name and
   knows Intel only by `intel_gpu`, so it would tell clients this project has no Intel GPU apps
   (`no_rsc_apps intel_gpu`), and they would stop asking for Intel GPU work.
-  `scripts/boinc/patch-server-intel-proc-type.py` maps every plan class naming `intel` to the
+  `boinc/scripts/patch-server-intel-proc-type.py` maps every plan class naming `intel` to the
   Intel GPU. Each such class must therefore have `gpu_type intel` (#736).
 - **App.** The app lists the Vulkan devices with its own `llama-server --list-devices` and takes
   the Intel device BOINC assigned. BOINC numbers Intel GPUs among themselves, so device 0 is the
@@ -260,7 +260,7 @@ refused by the app.
 | -------------------------------------- | --------------------------------- | --------------------------------------------------------------------------------------------------- |
 | Iris Xe (TigerLake-LP GT2), i7-1185G7  | 16 GB RAM, Debian 13, Mesa 25.0.7 | Measured (below)                                                                                    |
 | Iris Xe with 8 GB RAM                  |                                   | Not measured; likely refused if its Vulkan heap is half of RAM, as on Computer 9                    |
-| NVIDIA GeForce RTX 2060 SUPER, 8 GiB   | Proxmox host, CT 214              | CUDA and Vulkan-on-NVIDIA measured (below)                                                          |
+| NVIDIA GeForce RTX 2060 SUPER, 8 GiB   | Linux container                   | CUDA and Vulkan-on-NVIDIA measured (below)                                                          |
 | Arc A-series (A750 8 GB, A770 16 GB)   |                                   | Not measured; no Arc hardware was available for #829                                                |
 | AMD GPUs through the same Vulkan build |                                   | [Separate automatic AMD admission](boinc-amd-gpu.md); RX 9070 XT hardware acceptance pending (#885) |
 
@@ -289,7 +289,7 @@ separately. The run used llama.cpp b8799, Mesa 25.0.7 and a 12 GiB container.
 On 2026-10-18, the pinned production `usnm-boinc-worker` CUDA image and its `work` path ran
 Qwen3-VL-8B-Instruct-Q4_K_M on the 100 verified crops in release `ocr-bench-v1.0.0`, subset
 `legacy/overproof-en-100` (subset digest `e99edaf91b5493fcd3eaf309cea9f31dbbeb23438bab865638ab92889cd14d04`).
-The crops ran in four sequential 25-crop slots in a private container in CT 214; this did not
+The crops ran in four sequential 25-crop slots in a private container; this did not
 submit BOINC work or change shared BOINC, VM, or production configuration.
 
 | Measurement                                      |                                                                                                                                                                                                                                                                                                                                               Result |
@@ -319,7 +319,7 @@ parse a llama-server device line. This is the known device-label defect tracked 
 to 95% GPU utilization and 184.7 W. The NVIDIA activity, CUDA plan class, and full 100-crop
 completion are the measurement evidence; the worker's `device` string is not reliable here.
 
-The private container requested 6 GiB memory and 2 CPUs, but CT 214 did not delegate cgroup v2
+The private container requested 6 GiB memory and 2 CPUs, but its host did not delegate cgroup v2
 limits (`memory.max` and `cpu.max` read as `max`), so those limits were not enforced. The
 observed worker peak RSS was about 5.23 GiB. The production CUDA image is a different pinned
 llama.cpp build from the native Vulkan `llama.lock` route; the similar CER values do **not**
@@ -351,7 +351,7 @@ vision-projector bytes from `weights.lock`, prompt v1, context 4096, GPU layers 
 threads, parallel 1, temperature 0, top-p 1, seed 42 and four output tokens per 1,000 square
 pixels. The native plan classes were `nvidia_cuda_8b` and `nvidia_vulkan_8b`; the Intel class
 would deliberately refuse the NVIDIA device. Both server logs confirm 37/37 layers offloaded
-to the GPU. Vulkan used CT 214's existing NVIDIA ICD with no CT or driver configuration changes.
+to the GPU. Vulkan used the host's existing NVIDIA ICD with no container or driver configuration changes.
 
 | Measurement                                          |                        Native CUDA b8799 | Pinned Vulkan b8799 on NVIDIA |
 | ---------------------------------------------------- | ---------------------------------------: | ----------------------------: |
@@ -404,7 +404,7 @@ or that either ran inside the production image**. Backend binaries/source are pi
 in the receipt. Byte-identical result-manifest copies were given BOINC-safe upload filenames
 solely for validator logging; no job, engine or output metadata was rewritten.
 
-[All evidence](../ocr/bench/results/qwen-b8799-cuda-vulkan-rtx2060s-100-v1/) includes both
+[All evidence](../ocr/bench/results/qwen-b8799-cuda-vulkan-rtx2060s-100-v1) includes both
 100-row output files, both scorer rules/reports, timing/power traces, comparison summary,
 SHA-256 inventory and `raw-native-results.tar.gz` (the archive is in the `bench-assets` set: `scripts/ops/data-assets.sh --fetch --set bench-assets`). The archive preserves byte-exact native
 outputs, server logs, staged job metadata, validator-name copies, build receipts and the
@@ -419,6 +419,6 @@ This completes #829's remaining paired-comparison measurement and supplies bound
 backend-agreement evidence for #786. It is **not** cross-vendor Intel validation, an
 independent-host production quorum receipt, or permission to widen a cohort. Arc hardware was
 unavailable and remains optional for #829; Intel rollout/audited work, Arc characterization
-and integrated-GPU host-RAM reservation remain separate #786 follow-ups. The isolated CT
+and integrated-GPU host-RAM reservation remain separate #786 follow-ups. The isolated
 workspace/store/cache were removed and the GPU was explicitly released on #794 before any
 PR/review work; shared BOINC processes, preferences, caches and other sessions were untouched.

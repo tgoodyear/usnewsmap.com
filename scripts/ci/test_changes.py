@@ -316,14 +316,14 @@ class BoincPages(unittest.TestCase):
         return dict(re.findall(r"^(\w+)=(\w+)$", out.read_text(), re.M))
 
     def test_a_page_alone_runs_only_the_page_check(self):
-        self.change = lambda: self.touch("contrib-compute/boinc/html/user/about.php")
+        self.change = lambda: self.touch("boinc/project/html/user/about.php")
         on = {k for k, v in self.outputs().items() if v == "true"}
         self.assertEqual(on, {"boinc_pages"})
 
     def test_a_page_with_the_entrypoint_runs_the_contrib_jobs(self):
         def change():
-            self.touch("contrib-compute/boinc/html/user/about.php")
-            self.touch("contrib-compute/images/server/entrypoint.sh")
+            self.touch("boinc/project/html/user/about.php")
+            self.touch("boinc/images/server/entrypoint.sh")
         self.change = change
         o = self.outputs()
         self.assertEqual((o["boinc_pages"], o["contrib"], o["code"]), ("true", "true", "true"))
@@ -664,6 +664,7 @@ class BuildInputs(unittest.TestCase):
 
     def test_docs_only_change_runs_only_the_markdown_check(self):
         self.assertEqual(self.select("docs/operations/onprem-ocr.md", "README.md"), {"markdown"})
+        self.assertEqual(self.select("boinc/docs/README.md", "boinc/docs/example.json"), {"markdown"})
 
     def test_gpu_study_scripts_run_script_checks(self):
         for path in (
@@ -731,22 +732,22 @@ class BuildInputs(unittest.TestCase):
         on = self.select("fixtures/ocr-gold/bundle-v1.lock.json")
         self.assertGreaterEqual(on, BOINC_IMAGES)
         # usnm-boinc embeds the Qwen benchmark input, which no workflow's paths listed before #739.
-        on = self.select("ocr/boinc/usnm_qwen_benchmark_in")
+        on = self.select("boinc/apps/usnm_qwen_benchmark_in")
         self.assertGreaterEqual(on, BOINC_IMAGES)
         self.assertFalse(on & (DASHBOARD | {"ocr_worker"}), on)
         # usnm-boinc embeds the Surya image's pins (the default of `surya stage --engine-surya`),
-        # so it rebuilds every image that links it; the rest of ocr/boinc/surya/ is the Surya image's alone.
-        on = self.select("ocr/boinc/surya/engine.lock")
+        # so it rebuilds every image that links it; the rest of boinc/apps/surya/ is the Surya image's alone.
+        on = self.select("boinc/apps/surya/engine.lock")
         self.assertGreaterEqual(on, BOINC_IMAGES)
         self.assertFalse(on & (DASHBOARD | {"ocr_worker"}), on)
 
     def test_an_images_own_recipe_runs_that_image_only(self):
         for path, image in [
-            ("ocr/boinc/Containerfile", "boinc_worker"),
-            ("scripts/boinc/smoke-worker.py", "boinc_worker"),
-            ("ocr/boinc/qwen/Containerfile", "boinc_qwen"),
-            ("scripts/boinc/qwen_disk.py", "boinc_qwen"),
-            ("ocr/boinc/surya/run.py", "boinc_surya"),
+            ("boinc/apps/Containerfile", "boinc_worker"),
+            ("boinc/scripts/smoke-worker.py", "boinc_worker"),
+            ("boinc/apps/qwen/Containerfile", "boinc_qwen"),
+            ("boinc/scripts/qwen_disk.py", "boinc_qwen"),
+            ("boinc/apps/surya/run.py", "boinc_surya"),
             ("ocr/engines/ndlocr-lite/Containerfile", "boinc_ndlocr"),
             ("ocr/ja-ocr/jaocr.py", "boinc_ndlocr"),
         ]:
@@ -764,7 +765,7 @@ class BuildInputs(unittest.TestCase):
             ("scripts/dev/quickwit-fixtures.sh", {"quickwit", "rust", "e2e"}),
             ("scripts/data/build-page-language-words.py", {"image", "page_language"}),
             ("scripts/data/page-language-samples.py", {"page_language"}),
-            ("scripts/boinc/boinc-app-release.sh", {"contrib"}),
+            ("boinc/scripts/boinc-app-release.sh", {"contrib"}),
         ]:
             with self.subTest(path=path):
                 self.assertGreaterEqual(self.select(path), jobs)
@@ -848,7 +849,7 @@ class BuildInputs(unittest.TestCase):
         # #1585: a change that reaches the images only through the crates (a crate, a file the
         # crates embed outside the images' directories) builds them once, after the merge.
         for path in ["crates/usnm-boinc/src/lib.rs", "crates/usnm-core/src/lib.rs",
-                     "ocr/boinc/usnm_qwen_benchmark_in", "fixtures/ocr-gold/bundle-v1.lock.json",
+                     "boinc/apps/usnm_qwen_benchmark_in", "fixtures/ocr-gold/bundle-v1.lock.json",
                      "ocr/routing/routes.toml"]:
             with self.subTest(path=path):
                 on = self.select(path, event="pull_request")
@@ -864,8 +865,8 @@ class BuildInputs(unittest.TestCase):
         for paths, arches in [
             (["ocr/engines/tesseract/models.lock"], ["amd64"]),
             (["ocr/engines/engines.toml"], ["amd64"]),
-            (["scripts/boinc/smoke-worker.py"], ["amd64"]),
-            (["ocr/boinc/Containerfile"], WORKER_ARCHES),
+            (["boinc/scripts/smoke-worker.py"], ["amd64"]),
+            (["boinc/apps/Containerfile"], WORKER_ARCHES),
             (["ocr/engines/tesseract/Containerfile"], WORKER_ARCHES),
             ([".dockerignore"], WORKER_ARCHES),
             ([".github/workflows/boinc-worker.yml"], WORKER_ARCHES),
@@ -880,21 +881,21 @@ class BuildInputs(unittest.TestCase):
 
     def test_a_pull_request_builds_every_model_or_variant_for_what_sets_them_apart(self):
         for paths, models, variants in [
-            (["ocr/boinc/qwen/Containerfile"], QWEN_MODELS, []),
-            (["scripts/boinc/qwen_disk.py"], QWEN_MODELS, []),
-            (["scripts/boinc/qwen_cold_cache.py"], QWEN_MODELS, []),
+            (["boinc/apps/qwen/Containerfile"], QWEN_MODELS, []),
+            (["boinc/scripts/qwen_disk.py"], QWEN_MODELS, []),
+            (["boinc/scripts/qwen_cold_cache.py"], QWEN_MODELS, []),
             # usnm-boinc embeds these pins too, which reaches the other image on main only.
-            (["ocr/boinc/qwen/weights.lock"], QWEN_MODELS, []),
-            (["ocr/boinc/qwen/disk-policy.json"], QWEN_MODELS, []),
-            (["ocr/boinc/surya/engine.lock"], [], SURYA_VARIANTS),
-            (["ocr/boinc/surya/Containerfile"], [], SURYA_VARIANTS),
-            (["ocr/boinc/surya/run.py"], [], SURYA_VARIANTS),
-            (["crates/usnm-boinc/src/lib.rs", "ocr/boinc/qwen/Containerfile"], QWEN_MODELS, []),
+            (["boinc/apps/qwen/weights.lock"], QWEN_MODELS, []),
+            (["boinc/apps/qwen/disk-policy.json"], QWEN_MODELS, []),
+            (["boinc/apps/surya/engine.lock"], [], SURYA_VARIANTS),
+            (["boinc/apps/surya/Containerfile"], [], SURYA_VARIANTS),
+            (["boinc/apps/surya/run.py"], [], SURYA_VARIANTS),
+            (["crates/usnm-boinc/src/lib.rs", "boinc/apps/qwen/Containerfile"], QWEN_MODELS, []),
             ([".github/workflows/boinc-qwen.yml"], QWEN_MODELS, []),
             ([".github/actions/boinc-qwen-build/action.yml"], QWEN_MODELS, []),
             ([".github/workflows/boinc-surya.yml"], [], SURYA_VARIANTS),
             ([".github/actions/boinc-surya-build/action.yml"], [], SURYA_VARIANTS),
-            (["docs/boinc-quality.md", "docs/boinc-surya.md", "ocr/boinc/qwen/README.md"], [], []),
+            (["docs/boinc-quality.md", "docs/boinc-surya.md", "boinc/apps/qwen/README.md"], [], []),
         ]:
             with self.subTest(paths=paths):
                 self.select(*paths, event="pull_request")
@@ -982,12 +983,12 @@ class BuildInputs(unittest.TestCase):
                 self.assertNotIn("boinc_native", self.select(path))
 
     def test_the_native_apps_run_for_the_files_they_embed_or_their_tests_read(self):
-        for path in ["ocr/boinc/qwen/llama.lock", "ocr/boinc/qwen/weights.lock", "ocr/contract/v1/schema.json",
-                     "ocr/boinc/qwen/amd-device-map.cpp", "ocr/boinc/qwen/disk-policy.json",
-                     "scripts/boinc/test_amd_device_map.py",
-                     "scripts/boinc/patch_amd_vulkan_identity.py", "scripts/boinc/build_amd_vulkan_runtime.ps1",
-                     "scripts/boinc/qwen_vulkan_bundle.py", "scripts/boinc/test_qwen_vulkan_bundle.py",
-                     "contrib-compute/infra/boinc/releases/prod-onprem-usnm_qwen-nvidia_vulkan_6gb_8b.json"]:
+        for path in ["boinc/apps/qwen/llama.lock", "boinc/apps/qwen/weights.lock", "ocr/contract/v1/schema.json",
+                     "boinc/apps/qwen/amd-device-map.cpp", "boinc/apps/qwen/disk-policy.json",
+                     "boinc/scripts/test_amd_device_map.py",
+                     "boinc/scripts/patch_amd_vulkan_identity.py", "boinc/scripts/build_amd_vulkan_runtime.ps1",
+                     "boinc/scripts/qwen_vulkan_bundle.py", "boinc/scripts/test_qwen_vulkan_bundle.py",
+                     "boinc/infra/boinc/releases/prod-onprem-usnm_qwen-nvidia_vulkan_6gb_8b.json"]:
             with self.subTest(path=path):
                 self.assertIn("boinc_native", self.select(path))
         # What only the images embed is not theirs.
@@ -1322,15 +1323,18 @@ class Wiring(unittest.TestCase):
         self.assertIn("    needs: changes\n", job)
         self.assertIn("    if: needs.changes.outputs.edge == 'true'\n", job)
         self.assertIn("shellcheck -x -S warning edge/fallback-worker/deploy.sh", job)
-        # `node --test edge/fallback-worker/` is an error on Node 24, so the job names the test
-        # files with a glob, and only that directory's files match it.
+        # `node --test <directory>/` is an error on Node 24, so the job names the test files: the
+        # fallback Worker's with a glob, every other edge Worker's by path.
         self.assertIn("node-version: 24", job)
         self.assertIn("      - run: node --test edge/fallback-worker/*.test.mjs\n", job)
         found = sorted(p.relative_to(ROOT).as_posix() for p in (ROOT / "edge").rglob("*")
                        if p.is_file() and re.search(r"\.test\.(mjs|js|cjs)$", p.name))
         self.assertTrue(found)
         for file in found:
-            self.assertRegex(file, r"^edge/fallback-worker/[^/]+\.test\.mjs$")
+            if re.fullmatch(r"edge/fallback-worker/[^/]+\.test\.mjs", file):
+                continue
+            self.assertRegex(job, rf"(?m)^      - run: node --test (\S+ )*{re.escape(file)}( |$)", file)
+        self.assertIn("python3 -m unittest discover -s edge/check/tools", job)
 
     def test_the_infra_jobs_stack_steps_follow_the_infra_output(self):
         job = job_text(self.workflow("ci.yml"), "infra-checks")
@@ -1364,7 +1368,7 @@ class Wiring(unittest.TestCase):
                 "scripts/ci/check-api-image.sh", "scripts/ci/start-api-fixtures.sh",
                 "scripts/bench-site-lcp.mjs",
                 # A comment, and an assertion's message about web servers.
-                "scripts/ops/load-cold-searches.py", "scripts/boinc/db-tls/full.py",
+                "scripts/ops/load-cold-searches.py", "boinc/scripts/db-tls/full.py",
             }),
         }
         for base in ("scripts", "infra"):

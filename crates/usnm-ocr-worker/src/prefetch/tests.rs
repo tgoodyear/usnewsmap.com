@@ -246,6 +246,120 @@ async fn a_consumed_buffer_page_isnt_fetched_again() {
     assert_eq!((s.already_there, s.fetched, s.failed_transient), (1, 0, 0));
 }
 
+/// A page whose verified copy sits in the other set (its set changed
+/// between manifests) isn't fetched again, and neither is a page whose
+/// scan is on disk without a sidecar (2026-11-08).
+#[tokio::test]
+async fn a_page_on_disk_anywhere_isnt_fetched_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let moved = row("sn1", 1890, 1, "eng");
+    let bare = row("sn1", 1890, 2, "eng");
+    // A page promoted to the keep set while its copy sits in the buffer.
+    let promoted = row("sn1", 1890, 3, "deu");
+    assert_eq!(set_of(&moved), Set::Buffer);
+    assert_eq!(set_of(&promoted), Set::Keep);
+    let manifest = dir.path().join("m.parquet");
+    std::fs::write(
+        &manifest,
+        prefetch::encode(&[moved.clone(), bare.clone(), promoted.clone()]).unwrap(),
+    )
+    .unwrap();
+    let out = dir.path().join("scans");
+    let buffer = scan_path(&out, &moved, ImageSize::Full, ScanFormat::Jpeg);
+    let keep = out
+        .join("keep")
+        .join(buffer.strip_prefix(out.join("buffer")).unwrap());
+    std::fs::create_dir_all(keep.parent().unwrap()).unwrap();
+    std::fs::write(&keep, b"jpeg").unwrap();
+    let side = Sidecar {
+        doc_id: moved.doc_id.clone(),
+        batch: moved.batch.clone(),
+        batch_version: 1,
+        loc_url: String::new(),
+        iiif_base: String::new(),
+        resolution: "full".into(),
+        fetched_at: Utc::now(),
+        bytes: 4,
+        sha256: sha256(b"jpeg"),
+        download_ms: 0,
+        user_agent: String::new(),
+        format: "jpeg".into(),
+        md5: None,
+    };
+    std::fs::write(sidecar_path(&keep), serde_json::to_vec(&side).unwrap()).unwrap();
+    let kept = scan_path(&out, &promoted, ImageSize::Full, ScanFormat::Jpeg);
+    let buffered = out
+        .join("buffer")
+        .join(kept.strip_prefix(out.join("keep")).unwrap());
+    std::fs::create_dir_all(buffered.parent().unwrap()).unwrap();
+    std::fs::write(&buffered, b"jpeg").unwrap();
+    let side3 = Sidecar {
+        doc_id: promoted.doc_id.clone(),
+        ..side.clone()
+    };
+    std::fs::write(sidecar_path(&buffered), serde_json::to_vec(&side3).unwrap()).unwrap();
+    let no_side = scan_path(&out, &bare, ImageSize::Full, ScanFormat::Jpeg);
+    std::fs::create_dir_all(no_side.parent().unwrap()).unwrap();
+    std::fs::write(&no_side, b"jpeg without a sidecar").unwrap();
+    let opts = Options {
+        manifest,
+        out,
+        ..Options::default()
+    };
+    let (_tx, rx) = watch::channel(false);
+    // Nothing listens: a fetch would fail.
+    let s = run(
+        opts,
+        client("http://127.0.0.1:9", Duration::from_millis(1)),
+        rx,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        (
+            s.already_there,
+            s.kept_unverified,
+            s.fetched,
+            s.failed_transient
+        ),
+        (2, 1, 0, 0)
+    );
+    assert!(!buffer.exists());
+    // The promoted page's keep copy comes from the buffer's bytes, which stay.
+    assert_eq!(std::fs::read(&kept).unwrap(), b"jpeg");
+    assert!(sidecar_path(&kept).exists() && buffered.exists());
+    assert_eq!(std::fs::read(&no_side).unwrap(), b"jpeg without a sidecar");
+}
+
+/// A promotion links only into empty names: a conflicting image or an
+/// orphaned sidecar at the keep path is left as it is, and nothing is paired.
+#[tokio::test]
+async fn a_promotion_never_links_over_a_conflicting_keep_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let from = dir.path().join("buffer/1.jpg");
+    std::fs::create_dir_all(from.parent().unwrap()).unwrap();
+    std::fs::write(&from, b"buffer").unwrap();
+    std::fs::write(sidecar_path(&from), b"buffer side").unwrap();
+    // An image already at the keep path.
+    let to = dir.path().join("keep/1.jpg");
+    std::fs::create_dir_all(to.parent().unwrap()).unwrap();
+    std::fs::write(&to, b"other").unwrap();
+    assert!(!super::layout::link_into(&from, &to).await.unwrap());
+    assert_eq!(std::fs::read(&to).unwrap(), b"other");
+    assert!(!sidecar_path(&to).exists());
+    // An orphaned sidecar there instead.
+    let to2 = dir.path().join("keep/2.jpg");
+    std::fs::write(sidecar_path(&to2), b"orphan").unwrap();
+    assert!(!super::layout::link_into(&from, &to2).await.unwrap());
+    assert!(!to2.exists());
+    assert_eq!(std::fs::read(sidecar_path(&to2)).unwrap(), b"orphan");
+    // Empty names: both linked.
+    let to3 = dir.path().join("keep/3.jpg");
+    assert!(super::layout::link_into(&from, &to3).await.unwrap());
+    assert_eq!(std::fs::read(&to3).unwrap(), b"buffer");
+    assert_eq!(std::fs::read(sidecar_path(&to3)).unwrap(), b"buffer side");
+}
+
 #[test]
 fn counts_only_scans_and_a_missing_buffer_as_empty() {
     let dir = tempfile::tempdir().unwrap();
@@ -582,12 +696,16 @@ async fn fetches_paced_honours_retry_after_and_resumes() {
     assert_eq!((s.already_there, s.fetched, s.failed_permanent), (2, 0, 1));
     assert_eq!(hits.load(Ordering::SeqCst), before + 1);
 
-    // A scan that no longer matches its sidecar is fetched again.
+    // A scan that no longer matches its sidecar is kept as it is and not
+    // fetched again (2026-11-08): only page 3 is asked for.
     std::fs::write(&scan, b"changed").unwrap();
+    let before = hits.load(Ordering::SeqCst);
     let s = run(opts, client(&root, Duration::from_millis(10)), rx)
         .await
         .unwrap();
-    assert_eq!((s.already_there, s.fetched), (1, 1));
+    assert_eq!((s.already_there, s.fetched, s.kept_unverified), (1, 0, 1));
+    assert_eq!(hits.load(Ordering::SeqCst), before + 1);
+    assert_eq!(std::fs::read(&scan).unwrap(), b"changed");
 }
 
 #[tokio::test]

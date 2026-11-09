@@ -144,8 +144,7 @@ sys.exit({fail})
 }
 
 fn executable(path: &Path, bytes: &str) {
-    std::fs::write(path, bytes).unwrap();
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    usnm_test_support::write_executable(path, bytes).unwrap();
 }
 
 async fn server(status: StatusCode, bytes: Vec<u8>) -> (Url, tokio::task::JoinHandle<()>) {

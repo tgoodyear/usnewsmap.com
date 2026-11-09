@@ -1,9 +1,9 @@
-// The BOINC hand-off job (#469, docs/boinc/scan-cache-handoff.md#one-page-from-the-scan-cache): the BOINC
+// The BOINC hand-off job (#469, boinc/docs/scan-cache-handoff.md#one-page-from-the-scan-cache): the BOINC
 // bridge image running /usr/local/lib/usnm-boinc/handoff-job.sh in the main Container Apps
 // environment, which reaches Cosmos and the lake through their private endpoints and the
 // exchange account through the subnet's service endpoint. It never talks to the BOINC
 // server; the boinc-handoff container sits between them. Manual only:
-// scripts/boinc/start-boinc-bridge.sh --target handoff writes each run's settings (HANDOFF_STEP
+// boinc/scripts/start-boinc-bridge.sh --target handoff writes each run's settings (HANDOFF_STEP
 // and that step's) and starts it.
 //
 // Its own user-assigned identity, with AcrPull on the shared registry here. Its data grants
@@ -13,7 +13,7 @@
 param location string
 param tags object
 param environmentId string
-@description('The bridge image (images.bridge in contrib-compute/infra/boinc/env/<env>.json), by digest, in the shared registry.')
+@description('The bridge image (images.bridge in boinc/infra/boinc/env/<env>.json), by digest, in the shared registry.')
 param image string
 param registryName string
 @maxLength(31)
@@ -82,8 +82,8 @@ resource job 'Microsoft.App/jobs@2025-01-01' = {
           image: image
           command: ['/usr/local/lib/usnm-boinc/handoff-job.sh']
           resources: { cpu: json('0.5'), memory: '1Gi' }
-          // scripts/boinc/start-boinc-bridge.sh keeps these as they are (its base settings for
-          // --target handoff; scripts/boinc/test_boinc_scripts.py checks the two lists agree).
+          // boinc/scripts/start-boinc-bridge.sh keeps these as they are (its base settings for
+          // --target handoff; boinc/scripts/test_boinc_scripts.py checks the two lists agree).
           env: [
             { name: 'AZURE_CLIENT_ID', value: identity.properties.clientId }
             { name: 'HANDOFF_URL', value: handoffUrl }

@@ -690,7 +690,9 @@ export function App({ searchLinks }: { searchLinks?: readonly { href: string; la
           className={agg.isFetching ? "results results--loading" : "results"}
           data-share-error={
             (!!view.place && selectedPlace.isError) ||
-            (!!baselineRef && (view.tab === "table" || statesActive) && coverage.isError)
+            (!!baselineRef && (view.tab === "table" || statesActive) && coverage.isError) ||
+            // The relative rate failed for good: nothing more is coming to wait for.
+            (!!skewNotice?.settled && skewNotice.error)
           }
           data-share-ready={
             !!data &&
@@ -704,7 +706,9 @@ export function App({ searchLinks }: { searchLinks?: readonly { href: string; la
             (!baselineRef || (view.tab !== "table" && !statesActive) || !!pageSums) &&
             (!statesActive || !!statesSums) &&
             (!view.place || (selectedPlace.isSuccess && !selectedPlace.isFetching)) &&
-            !skewNotice &&
+            // Still working towards the relative rate; a settled fallback (page counts with a
+            // notice) is the view to capture.
+            (!skewNotice || (skewNotice.settled && !skewNotice.error)) &&
             (norm !== "when" || medianStatus === "exact" || medianStatus === "bucket")
           }
         >
@@ -1078,34 +1082,42 @@ function WhenLegend({ from, to }: { from: string; to: string }) {
   );
 }
 
-/** Why the relative rate isn't showing yet, or can't be shown. */
+/**
+ * Why the relative rate isn't showing, and whether that is final. A settled state is the
+ * view the page stays on (page counts, with a notice); an unsettled one is still working
+ * towards the relative rate.
+ */
 function skewStatus(
   prepared: Prepared | Unavailable | null,
   status: "idle" | "computing" | "ready" | "error",
   coverageFailed: boolean,
-): { text: string; error: boolean } {
+): { text: string; error: boolean; settled: boolean } {
   if (coverageFailed)
     return {
       text: "Publication counts could not be loaded, so the relative rate isn't available. Showing page counts.",
       error: true,
+      settled: true,
     };
   if (prepared === "filters")
     return {
       text: "The relative rate isn't available with a language filter on this version of the index. Showing page counts.",
       error: false,
+      settled: true,
     };
   if (prepared === "few-places")
     return {
       text: `The relative rate needs at least ${MIN_PLACES} places with pages between these dates. Showing page counts.`,
       error: false,
+      settled: true,
     };
   if (status === "error")
-    return { text: "The relative rate could not be worked out. Showing page counts.", error: true };
+    return { text: "The relative rate could not be worked out. Showing page counts.", error: true, settled: true };
   if (prepared === "mismatch")
     return {
       text: "Publication counts don't match this search's time buckets, so the relative rate isn't available. Showing page counts.",
       error: true,
+      settled: true,
     };
-  if (prepared === null) return { text: "Loading publication counts…", error: false };
-  return { text: "Comparing places…", error: false };
+  if (prepared === null) return { text: "Loading publication counts…", error: false, settled: false };
+  return { text: "Comparing places…", error: false, settled: false };
 }

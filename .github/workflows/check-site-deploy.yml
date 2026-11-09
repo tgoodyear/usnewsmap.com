@@ -1,0 +1,86 @@
+name: check-site-deploy
+
+# check.usnewsmap.com (edge/check) after ci passes on main. edge/check/deploy.sh deploys only when
+# edge/check differs from what is live.
+on:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Deploy even when the live site was built from the same edge/check tree
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  # Outside the deploy queue: a run for a commit that is no longer main's head stops here, so it
+  # can never take the place of a pending deploy for the current head and then stand down.
+  current:
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.head_repository.full_name == github.repository &&
+        github.event.workflow_run.event == 'push'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      current: ${{ steps.head.outputs.current }}
+    env:
+      DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.DEPLOY_SHA }}
+          persist-credentials: false
+      - id: head
+        name: Still main's head
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: GITHUB_SHA="$DEPLOY_SHA" scripts/ci/head-of-main.sh
+
+  deploy:
+    needs: current
+    if: needs.current.outputs.current == 'true'
+    runs-on: ubuntu-latest
+    environment: prod
+    timeout-minutes: 15
+    concurrency:
+      group: check-site-prod
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+      WRANGLER_SEND_METRICS: "false"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.DEPLOY_SHA }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      # ci skips the edge job when a push doesn't touch edge/, so its success alone doesn't
+      # show that this tree's site passed its tests: run them on the commit being deployed.
+      - run: node --test edge/check/worker.test.mjs edge/check/layout.test.mjs
+      - run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends python3-pil
+      # Fails if Pillow is missing rather than skipping the end-to-end build test.
+      - run: /usr/bin/python3 -c 'import PIL' && /usr/bin/python3 -m unittest discover -s edge/check/tools
+      - run: shellcheck -x -S warning edge/check/deploy.sh
+      - uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ vars.USNM_CI_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Deploy check.usnewsmap.com
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCE: ${{ inputs.force && '--force' || '' }}
+        run: edge/check/deploy.sh $FORCE

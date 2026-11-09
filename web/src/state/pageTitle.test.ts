@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { EXAMPLES } from "../examples";
 import { pageFor, TITLES } from "../route";
-import { DEFAULTS, parseViewUrl, searchTitle } from "./url";
+import { DEFAULTS, exampleTitle, parseViewUrl, searchTitle } from "./url";
 
 // The cases crates/usnm-api/src/site/head.rs checks too, so a page keeps the
 // title the API wrote when the app starts.
@@ -21,14 +21,24 @@ describe("searchTitle", () => {
 
   it("gives every example its own title", () => {
     const titles = EXAMPLES.map((ex) => searchTitle({ ...DEFAULTS, q: ex.view.q ?? "" }));
-    expect(titles).toEqual(EXAMPLES.map((ex) => `${ex.title} · US News Map`));
+    expect(titles).toEqual(EXAMPLES.map(exampleTitle));
+    // Long enough that search engines don't flag them as too short, within the limit.
+    for (const title of titles) expect([...title].length, title).toBeGreaterThanOrEqual(40);
+    for (const title of titles) expect([...title].length, title).toBeLessThanOrEqual(60);
     expect(new Set(titles).size).toBe(EXAMPLES.length);
   });
 
   it("matches an example with its filters", () => {
     for (const ex of EXAMPLES) {
-      expect(searchTitle({ ...DEFAULTS, ...ex.view }), ex.id).toBe(`${ex.title} · US News Map`);
+      expect(searchTitle({ ...DEFAULTS, ...ex.view }), ex.id).toBe(exampleTitle(ex));
     }
+  });
+
+  it("takes years only from dates that start with four digits", () => {
+    const ex = EXAMPLES.find((e) => !/[0-9]{4}/.test(e.title) && !/ papers/.test(e.title))!;
+    const bad = { ...ex, view: { ...ex.view, from: "not-a-date", to: "also-bad" } };
+    expect(exampleTitle(bad)).not.toMatch(/not-|also/);
+    expect(exampleTitle(bad)).toBe(exampleTitle({ ...ex, view: { ...ex.view, from: undefined, to: undefined } }));
   });
 
   it("keeps the home title when there are no search terms", () => {

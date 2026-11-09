@@ -1,0 +1,843 @@
+#!/usr/bin/env python3
+"""One short, guarded automatic NVIDIA/Intel native-Qwen cohort refill."""
+import argparse
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import time
+import uuid
+import xml.etree.ElementTree as ET
+
+CLASSES = ("intel_vulkan_8b", "nvidia_vulkan_8b")
+MANAGED = (*CLASSES, "nvidia_cuda_2b", "nvidia_cuda_8b", "docker_nvidia_cuda_8b")
+ENGINE = {
+    "image": "sha256:a25da41a10f266e5c2d02206bf9f0e40b54d476609f85d70a72e4e11792d0efe",
+    "llama": "sha256:d962a8228c42c84583150e809d654f9ec995cdf9f4e02e37365293642210a309",
+    "weights": "sha256:969266d1c24656977e06a6efacae04deac6d5093c77227fe55ac28975035cddd",
+}
+MODEL = {"file": "Qwen3VL-8B-Instruct-Q4_K_M.gguf", "min_gpu_mb": 7000,
+         "mmproj": "mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf", "name": "qwen3-vl-8b-q4km"}
+MODELS = [MODEL, {"file": "Qwen3-VL-2B-Instruct-Q8_0.gguf", "min_gpu_mb": 0,
+                  "mmproj": "mmproj-Qwen3-VL-2B-Instruct-Q8_0.gguf", "name": "qwen3-vl-2b-q8"}]
+
+
+def require(condition, message):
+    if not condition:
+        raise ValueError(message)
+
+
+class OutOfCohort(ValueError):
+    """A sound producer job in a language this controller was not reviewed to admit."""
+
+
+COHORT_LANGUAGES = ("yid", "srp")
+# Languages admitted besides the reviewed cohort, from --cohort-language (German calibration).
+EXTRA_LANGUAGES = ()
+# The first app version that reads each request version.
+REQUEST_MIN_APP = {1: 0, 2: 115, 3: 117, 4: 117}
+# Classes this controller does not open: with no workunit bounds they take any unsent replica.
+# nvidia_vulkan_8b is one only while generally admitted; bounded, it has min_wu_id.
+UNBOUNDED_READERS = ("amd_vulkan_8b", "apple_gpu_8b", "nvidia_vulkan_8b", "intel_vulkan_8b")
+# The helper's explicit marker: NVIDIA takes any Qwen work and this controller refills Intel alone.
+NVIDIA_GENERAL_MARKER = "usnm-nvidia-general-admission-v1"
+# With Intel's marker too (the helper requires NVIDIA's first), this controller owns no window.
+INTEL_GENERAL_MARKER = "usnm-intel-general-admission-v1"
+DEFAULT_CAMPAIGN = "qwen-nonenglish-v1"
+
+
+def sha(payload):
+    return hashlib.sha256(payload).hexdigest()
+
+
+def policy_window(payload):
+    """(window, reserved AMD workunit, owned classes). Once the operator admits nvidia_vulkan_8b
+    generally (the helper's marker, no bounds), only intel_vulkan_8b's window is owned here."""
+    root = ET.fromstring(payload, parser=ET.XMLParser(target=ET.TreeBuilder(insert_comments=True)))
+    nodes = root.findall("plan_class")
+    classes = {node.findtext("name"): node for node in nodes}
+    require(root.tag == "plan_classes" and len(classes) == len(nodes), "Invalid/duplicate plan classes")
+    nvidia = classes["nvidia_vulkan_8b"]
+    general = [child for child in nvidia if child.tag is ET.Comment
+               and (child.text or "").strip() == NVIDIA_GENERAL_MARKER]
+    if general:
+        require(len(general) == 1 and nvidia.find("min_wu_id") is None and nvidia.find("max_wu_id") is None,
+                "Invalid explicit NVIDIA general admission")
+    intel = classes["intel_vulkan_8b"]
+    intel_general = [child for child in intel if child.tag is ET.Comment
+                     and (child.text or "").strip() == INTEL_GENERAL_MARKER]
+    if intel_general:
+        require(general and len(intel_general) == 1 and intel.find("min_wu_id") is None
+                and intel.find("max_wu_id") is None, "Invalid explicit Intel general admission")
+        return None, None, ()
+    owned = ("intel_vulkan_8b",) if general else CLASSES
+    ranges = []
+    for name in owned:
+        node = classes[name]
+        fields = [node.findall(tag) for tag in ("min_wu_id", "max_wu_id")]
+        require(all(len(value) == 1 for value in fields), "General admission is not owned by this controller")
+        low, high = (int(value[0].text) for value in fields)
+        require((low, high) == (2, 1) or 2 <= low <= high and high - low < 10, "Not a finite pilot")
+        ranges.append([low, high])
+    require(all(value == ranges[0] for value in ranges), "Different NVIDIA/Intel windows: another operator owns admission")
+    for name in ("nvidia_cuda_2b", "nvidia_cuda_8b", "docker_nvidia_cuda_8b"):
+        node = classes[name]
+        require(node.findtext("min_wu_id") == "2" and node.findtext("max_wu_id") == "1",
+                "Another managed GPU pilot is active")
+    markers = [node for node in root.iter() if node.tag is ET.Comment
+               and "usnm-amd-first-reservation-v1" in (node.text or "")]
+    reserved = None
+    if markers:
+        require(len(markers) == 1 and markers[0] in list(root), "Invalid AMD reservation")
+        match = re.fullmatch(r"usnm-amd-first-reservation-v1:[a-f0-9]{32}:([1-9][0-9]*):[1-9][0-9]*",
+                             (markers[0].text or "").strip())
+        require(match is not None, "Malformed AMD reservation")
+        # The helper refuses an AMD-first lease beside any unbounded native class.
+        require(owned == CLASSES, "AMD-first reservation requires bounded NVIDIA admission")
+        reserved = int(match[1])
+    return ranges[0], reserved, owned
+
+
+def dispatchable(versions, minimum):
+    """The (plan class, platform, version) rows the feeder would load. With app.min_version 0 it
+    loads only the newest per platform and plan class; otherwise everything from min_version up."""
+    newest = {}
+    for row in versions:
+        key = (row["plan_class"], int(row["platformid"]))
+        newest[key] = max(newest.get(key, 0), int(row["version_num"]))
+    return sorted((row["plan_class"], int(row["platformid"]), int(row["version_num"])) for row in versions
+                  if (int(row["version_num"]) >= minimum if minimum
+                      else int(row["version_num"]) == newest[(row["plan_class"], int(row["platformid"]))]))
+
+
+def open_reader_versions(payload, versions, minimum):
+    """Dispatchable versions of the unbounded classes that are open: each takes any unsent replica."""
+    classes = {node.findtext("name"): node for node in ET.fromstring(payload).findall("plan_class")}
+    is_open = [name for name in UNBOUNDED_READERS
+               if name in classes and classes[name].find("min_wu_id") is None]
+    return [list(row) for row in dispatchable(versions, minimum) if row[0] in is_open]
+
+
+def unreadable_by_open_classes(payload, versions, minimum, prompt_version):
+    """Open AMD/Apple/NVIDIA-general versions that cannot read the request version. Such a host would
+    take a replica this controller admitted and return a unit error, so admission closes first."""
+    return [row for row in open_reader_versions(payload, versions, minimum)
+            if row[2] < REQUEST_MIN_APP[prompt_version]]
+
+
+def class_scope(payload, without_bounds=False):
+    root = ET.fromstring(payload)
+    classes = {node.findtext("name"): node for node in root.findall("plan_class")}
+    fingerprints = {}
+    for name in MANAGED:
+        node = classes[name]
+        node.tail = None
+        if without_bounds:
+            for child in list(node):
+                if child.tag in ("min_wu_id", "max_wu_id"):
+                    node.remove(child)
+        canonical = ET.canonicalize(ET.tostring(node, encoding="unicode"), strip_text=True)
+        fingerprints[name] = sha(canonical.encode())
+    return fingerprints
+
+
+def target_scope(payload, target, owned=CLASSES):
+    root = ET.fromstring(payload)
+    for name in owned:
+        node = root.find(f"plan_class[name='{name}']")
+        node.find("min_wu_id").text, node.find("max_wu_id").text = map(str, target)
+    return class_scope(ET.tostring(root))
+
+
+def fresh(row):
+    wu, results = row["unit"], row["results"]
+    expected = {"appid": 6, "batch": 8, "min_quorum": 2, "target_nresults": 2,
+                "rsc_disk_bound": 19327352832, "canonical_resultid": 0, "error_mask": 0,
+                "transitioner_flags": 0, "need_validate": 0, "app_version_num": 0, "hr_class": 0}
+    if not all(int(wu[key]) == value for key, value in expected.items()) or len(results) != 2:
+        return False
+    return int(row["assignments"]) == 0 and all(
+        all(int(result[key]) == value for key, value in {
+            "server_state": 2, "sent_time": 0, "hostid": 0, "outcome": 0, "validate_state": 0,
+            "app_version_id": 0, "received_time": 0,
+        }.items()) for result in results)
+
+
+def available_in_window(rows, window, hosts):
+    return sum(
+        1 for row in rows if window[0] <= int(row["unit"]["id"]) <= window[1]
+        and int(row["unit"]["canonical_resultid"]) == 0 and int(row["unit"]["error_mask"]) == 0
+        for result in row["results"] if int(result["server_state"]) == 2
+        and any(host not in {int(r["hostid"]) for r in row["results"]} for host in hosts)
+    )
+
+
+def assignable_units(rows, window, host):
+    # One result per host per workunit: a host can receive at most one replica of each unit.
+    return sum(
+        1 for row in rows if window[0] <= int(row["unit"]["id"]) <= window[1]
+        and int(row["unit"]["canonical_resultid"]) == 0 and int(row["unit"]["error_mask"]) == 0
+        and any(int(result["server_state"]) == 2 for result in row["results"])
+        and host not in {int(result["hostid"]) for result in row["results"]}
+    )
+
+
+def choose(rows, floor, reserved, remaining, admissible=lambda row: True):
+    if remaining <= 0:
+        return []
+    # Highest workunit priority first, as the feeder orders (a calibration batch is raised to 10),
+    # then by id; the run stays a contiguous id range of one priority.
+    candidates = sorted((row for row in rows if int(row["unit"]["id"]) >= floor
+                         and int(row["unit"]["id"]) != reserved and fresh(row)),
+                        key=lambda row: (-int(row["unit"].get("priority") or 0), int(row["unit"]["id"])))
+    result = []
+    for row in candidates:
+        current = int(row["unit"]["id"])
+        if result and (current != int(result[-1]["unit"]["id"]) + 1
+                       or int(row["unit"].get("priority") or 0) != int(result[-1]["unit"].get("priority") or 0)):
+            break
+        # The window is a workunit id range: an inadmissible unit ends the run rather than
+        # being opened inside it, and one before the run is passed over.
+        if not admissible(row):
+            if result:
+                break
+            continue
+        result.append(row)
+        if len(result) >= min(10, remaining):
+            break
+    return result
+
+
+def producer_paths(project, doc, campaign):
+    base = project.parent
+    unit = base / "qwen" / campaign / "units" / doc
+    return [unit / "qwen.json", unit / "page.jpg", unit / "submitted", unit / "sample.json",
+            base / "quality" / campaign / "pages" / doc / "quality.json",
+            base / "quality" / campaign / "texts" / (doc + ".loc-provenance.json")]
+
+
+def safe_doc(doc):
+    return isinstance(doc, str) and re.fullmatch("[a-zA-Z0-9][a-zA-Z0-9_.-]*", doc) is not None
+
+
+class BundleUnits:
+    """Each producer root's units/bundle-<n>-<first doc> directories by first doc, from one scan
+    of its units/ per pass rather than one per bundle looked up. A pass that must see units staged
+    since (the check before apply) takes a new one."""
+
+    def __init__(self):
+        self.roots = {}
+
+    def named(self, units, doc):
+        if units not in self.roots:
+            index = {}
+            try:
+                with os.scandir(units) as entries:
+                    for entry in entries:
+                        match = re.fullmatch("bundle-[0-9]{5,}-(.+)", entry.name)
+                        if match:
+                            index.setdefault(match.group(1), []).append(units / entry.name)
+            except FileNotFoundError:
+                pass
+            self.roots[units] = index
+        return self.roots[units].get(doc, [])
+
+
+def bundle_unit(project, campaign, job_raw, doc, bundles=None):
+    """The one bundle unit the producer staged the job in: `qwen stage --bundle-size` names it
+    units/bundle-<n>-<first doc>, and a crash may leave a partial one of the same first doc."""
+    units = project.parent / "qwen" / campaign / "units"
+    found = [unit for unit in (BundleUnits() if bundles is None else bundles).named(units, doc)
+             if (unit / "qwen.json").is_file() and (unit / "qwen.json").read_bytes() == job_raw]
+    require(len(found) == 1, "Producer bundle unit missing or ambiguous")
+    return found[0]
+
+
+def bundle_paths(project, campaign, unit, docs):
+    """Every producer file a bundle's binding reads: the bundle unit, then each page's own
+    staged unit (pages/<doc>) and source evidence."""
+    paths = [unit / "qwen.json", unit / "page.jpg", unit / "submitted", unit / "membership.json"]
+    for doc in docs:
+        staged = project.parent / "qwen" / campaign / "pages" / doc
+        paths += [staged / "qwen.json", staged / "sample.json", *producer_paths(project, doc, campaign)[-2:]]
+    return paths
+
+
+def input_paths(project, row):
+    download = (project / "download").resolve()
+    files = {}
+    for node in ET.fromstring("<root>" + row["unit"]["xml_doc"] + "</root>").findall("file_info"):
+        name, url = node.findtext("name", ""), node.findtext("url", "")
+        kind = "job" if name.endswith("_qwen_json") else "page" if name.endswith("_page_jpg") else None
+        if kind:
+            require(kind not in files and "/usnmocr_download/" in url, "Ambiguous input binding")
+            path = download / url.split("/usnmocr_download/", 1)[1]
+            require(path.resolve().is_relative_to(download), "Input escaped download tree")
+            files[kind] = path
+    require(set(files) == {"job", "page"}, "Missing job/page")
+    return files
+
+
+def exclusion_key(project, row, job_id, audit, campaign, prompt_version, bundles=None):
+    # Everything a cached out-of-cohort decision rests on, without reading page bytes: the
+    # audit record, the WU binding, the job bytes and the identity of every file bind_inputs
+    # reads. Any change misses the cache, so the unit is bound again from scratch and
+    # non-language failures still stop the tick.
+    wu = row["unit"]
+    try:
+        paths = input_paths(project, row)
+        job = paths["job"].read_bytes()
+        parsed = json.loads(job)
+        doc = parsed["doc_id"]
+        if not safe_doc(doc):
+            return None
+        if parsed.get("pages"):
+            docs = [page["doc_id"] for page in parsed["pages"]]
+            if not all(map(safe_doc, docs)):
+                return None
+            producer = bundle_paths(project, campaign, bundle_unit(project, campaign, job, doc, bundles), docs)
+        else:
+            producer = producer_paths(project, doc, campaign)
+        stats = [[str(path), info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns]
+                 for path in list(paths.values()) + producer for info in [path.stat()]]
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, ET.ParseError):
+        return None
+    key = [job_id, audit, wu["name"], int(wu["id"]), wu["xml_doc"], sha(job), stats, campaign, prompt_version]
+    # A unit passed over for its language is bound again once another language is admitted.
+    if EXTRA_LANGUAGES:
+        key.append(sorted(EXTRA_LANGUAGES))
+    return sha(json.dumps(key, sort_keys=True).encode())
+
+
+def bind_source(project, doc, campaign, page, language, sample_path):
+    """The source evidence the producer staged a page from: its quality record, the archive
+    provenance of its ALTO and its sample row, each bound to the page bytes the hosts read."""
+    quality_path, provenance_path = producer_paths(project, doc, campaign)[-2:]
+    quality_raw, provenance_raw, sample_raw = (quality_path.read_bytes(), provenance_path.read_bytes(),
+                                             sample_path.read_bytes())
+    quality, provenance, sample = map(json.loads, (quality_raw, provenance_raw, sample_raw))
+    require(quality["doc_id"] == provenance["doc_id"] == sample["doc_id"] == doc
+            and quality["language"] == sample["lang"] == language,
+            "Source-quality/provenance identity mismatch")
+    require(quality["inputs"]["page"]["sha256"] == sha(page)
+            and quality["inputs"]["page"]["bytes"] == len(page)
+            and quality["inputs"]["alto"]["sha256"] == provenance["sha256"]
+            and re.fullmatch("[a-f0-9]{64}", provenance["sha256"])
+            and provenance["archive"] and provenance["member"] and int(provenance["archive_bytes"]) > 0,
+            "Source-quality/archive-provenance binding mismatch")
+    return {"quality_sha256": sha(quality_raw), "provenance_sha256": sha(provenance_raw),
+            "sample_sha256": sha(sample_raw), "source_quality": sample, "provenance": provenance}
+
+
+def bind_bundle(project, wu, job, files, campaign, bundles=None):
+    """bind_inputs for a multi-page unit (qwen stage --bundle-size): the bundle unit the producer
+    submitted, its membership, and each page's own staged job and source evidence, bound to that
+    page's slice of the bundled page.jpg."""
+    pages = job["pages"]
+    docs = [page["doc_id"] for page in pages]
+    require(1 <= len(pages) <= 32 and all(map(safe_doc, docs)) and len(set(docs)) == len(docs)
+            and docs[0] == job["doc_id"] and pages[0]["language"] == job["language"],
+            "Bad bundle page contract")
+    require(all(page["group"] == campaign for page in pages), "Unreviewed prompt/budget/cohort")
+    # Each page's own crop ids, before the bundle prefixes them with its doc id.
+    require(all(1 <= len(page["crops"]) <= 12
+                and all(isinstance(crop["id"], str) and crop["id"] for crop in page["crops"])
+                and len({crop["id"] for crop in page["crops"]}) == len(page["crops"]) for page in pages),
+            "Bad crop contract")
+    flat = [dict(crop, id=page["doc_id"] + ":" + crop["id"]) for page in pages for crop in page["crops"]]
+    require(1 <= len(job["crops"]) <= 256 and job["crops"] == flat
+            and all(len(crop["loc_text"].encode("utf-8")) <= 8192 for crop in flat), "Bad crop contract")
+    unit = bundle_unit(project, campaign, files["job"], job["doc_id"], bundles)
+    require((unit / "page.jpg").read_bytes() == files["page"]
+            and (unit / "submitted").read_text().strip() == wu["name"], "Producer input/submission mismatch")
+    membership_raw = (unit / "membership.json").read_bytes()
+    membership = json.loads(membership_raw)
+    members = membership["pages"]
+    require(membership["v"] == 1 and membership["job_id"] == job["id"]
+            and membership["page_sha256"] == sha(files["page"]) and len(members) == len(pages),
+            "Bundle membership mismatch")
+    bound, offset = [], 0
+    for member, page in zip(members, pages):
+        doc, size = page["doc_id"], page["input"]["bytes"]
+        piece = files["page"][offset:offset + size]
+        # The slices lie end to end in bundle order, as qwen stage packs them.
+        require(member["doc_id"] == member["unit"] == doc and member["offset"] == page["input"]["offset"] == offset
+                and member["bytes"] == size == len(piece) > 0
+                and member["page_sha256"] == page["input"]["sha256"] == sha(piece), "Bundle membership mismatch")
+        offset += size
+        staged = project.parent / "qwen" / campaign / "pages" / doc
+        raw = (staged / "qwen.json").read_bytes()
+        single = json.loads(raw)
+        require(sha(raw) == member["job_sha256"] and single["id"] == member["job_id"] and single["doc_id"] == doc
+                and not single.get("pages") and single["crops"] == page["crops"]
+                and single["group"] == page["group"] and single["language"] == page["language"]
+                and single["input"]["sha256"] == sha(piece) and single["input"]["bytes"] == len(piece),
+                "Bundle page differs from its staged job")
+        bound.append({"doc_id": doc, "crops": len(page["crops"]), "job_sha256": sha(raw), "page_sha256": sha(piece),
+                      **bind_source(project, doc, campaign, piece, page["language"], staged / "sample.json")})
+    require(offset == len(files["page"]), "Bundle membership mismatch")
+    # Checked last, as for one page: a bundle with a page outside the cohort is passed over whole.
+    outside = [page["language"] for page in pages if page["language"] not in COHORT_LANGUAGES + EXTRA_LANGUAGES]
+    if outside:
+        raise OutOfCohort("Unreviewed prompt/budget/cohort: language " + repr(outside[0]))
+    return {"workunit": int(wu["id"]), "job_id": job["id"], "doc_id": job["doc_id"], "crops": len(job["crops"]),
+            "job_sha256": sha(files["job"]), "page_sha256": sha(files["page"]),
+            "membership_sha256": sha(membership_raw), "pages": bound, "accuracy_established": False}
+
+
+def bind_inputs(project, row, job_id, audit, campaign=DEFAULT_CAMPAIGN, prompt_version=1, bundles=None):
+    wu = row["unit"]
+    require(re.fullmatch("[a-f0-9]{64}", job_id) is not None, "Bad native audit identity")
+    require(wu["name"] == "usnm_qwen_" + job_id and int(audit["workunit_id"]) == int(wu["id"])
+            and all(int(audit[key]) == value for key, value in
+                    {"batch": 8, "min_quorum": 2, "target_nresults": 2}.items()), "Audit/WU identity mismatch")
+    files = {kind: path.read_bytes() for kind, path in input_paths(project, row).items()}
+    job = json.loads(files["job"])
+    doc = job["doc_id"]
+    require(safe_doc(doc), "Unsafe doc identity")
+    require(sha(files["job"]) == audit["job_sha256"] and job["id"] == job_id,
+            "Actual job differs from producer audit")
+    require(job["input"]["sha256"] == sha(files["page"]) and job["input"]["bytes"] == len(files["page"]),
+            "Actual page identity changed")
+    require(all(job["engine"][key] == value for key, value in ENGINE.items())
+            and job["engine"]["models"] == MODELS, "Unreviewed engine/models")
+    require(type(job["v"]) is int and job["v"] == 1 and type(job["prompt_version"]) is int
+            and job["prompt_version"] == prompt_version and job["max_tokens_per_1000px2"] == 4
+            and job["group"] == campaign, "Unreviewed prompt/budget/cohort")
+    if job.get("pages"):
+        return bind_bundle(project, wu, job, files, campaign, bundles)
+    crops = job["crops"]
+    require(1 <= len(crops) <= 12 and len({crop["id"] for crop in crops}) == len(crops)
+            and all(isinstance(crop["id"], str) and crop["id"] and
+                    len(crop["loc_text"].encode("utf-8")) <= 8192 for crop in crops), "Bad crop contract")
+    base = project.parent
+    unit = base / "qwen" / campaign / "units" / doc
+    require((unit / "qwen.json").read_bytes() == files["job"]
+            and (unit / "page.jpg").read_bytes() == files["page"]
+            and (unit / "submitted").read_text().strip() == wu["name"], "Producer input/submission mismatch")
+    source = bind_source(project, doc, campaign, files["page"], job["language"], unit / "sample.json")
+    # Checked last: an out-of-cohort job is only passed over once every integrity check holds.
+    if job["language"] not in COHORT_LANGUAGES + EXTRA_LANGUAGES:
+        raise OutOfCohort("Unreviewed prompt/budget/cohort: language " + repr(job["language"]))
+    return {"workunit": int(wu["id"]), "job_id": job_id, "doc_id": doc, "crops": len(crops),
+            "job_sha256": sha(files["job"]), "page_sha256": sha(files["page"]), **source,
+            "accuracy_established": False}
+
+
+def raised_workunits(project, ids, hosts=(9, 10), limit=10, shortlist=100):
+    """Up to `limit` pristine fresh pairs among the candidates with a raised workunit priority,
+    highest priority first and then by id. Units that are not fresh() never take a place."""
+    if not ids:
+        return []
+    code = """
+require_once 'boinc_db.inc'; $ids=json_decode($argv[1],true); $out=[];
+foreach(array_chunk(array_map('intval',$ids),5000) as $chunk)
+ foreach(BoincWorkunit::enum_fields('id,priority',"appid=6 AND priority>0 AND canonical_resultid=0 AND "
+   ."id IN (".implode(',',$chunk).") AND id IN (SELECT workunitid FROM result WHERE appid=6 AND server_state=2)") as $w)
+  $out[]=[intval($w->id),intval($w->priority)];
+echo json_encode($out);
+"""
+    proc = subprocess.run(["php", "-r", code, json.dumps(ids)], cwd=project / "html/inc",
+                          text=True, capture_output=True, check=True, timeout=15)
+    found = json.loads(proc.stdout)
+    require(isinstance(found, list) and {unit for unit, _ in found} <= set(ids),
+            "Raised-priority lookup out of range")
+    ranked = sorted(found, key=lambda row: (-row[1], row[0]))[:shortlist]
+    if not ranked:
+        return []
+    rows = {int(row["unit"]["id"]): row for row in read_database(project, [unit for unit, _ in ranked], hosts)["rows"]}
+    return [unit for unit, _ in ranked if unit in rows and fresh(rows[unit])][:limit]
+
+
+def read_database(project, ids, hosts=(9, 10)):
+    require(ids and len(ids) <= 1010, "Bounded snapshot requires 1..1010 workunits")
+    code = """
+require_once 'boinc_db.inc'; $ids=json_decode($argv[1],true);$clause=implode(',',array_map('intval',$ids));
+$hosts=implode(',',array_map('intval',json_decode($argv[2],true)));
+$all=BoincResult::enum_fields('id,workunitid,hostid,server_state,sent_time,received_time,outcome,validate_state,app_version_id',
+ "workunitid IN ($clause)"); $group=[];foreach($all as $r)$group[$r->workunitid][]=$r;
+$out=['rows'=>[],'app'=>BoincApp::lookup_id(6),'versions'=>BoincAppVersion::enum('appid=6 AND deprecated=0'),
+ 'gpu_inflight'=>BoincResult::enum_fields('id,hostid,workunitid,app_version_id',
+ "appid=6 AND server_state=4 AND hostid IN ($hosts) AND workunitid IN "
+ ."(SELECT id FROM workunit WHERE appid=6 AND batch=8 AND rsc_disk_bound=19327352832)")];
+$assigned=[];foreach(BoincDb::get()->enum_fields('assignment','StdClass','workunitid',"workunitid IN ($clause)",'') as $a)
+ $assigned[$a->workunitid]=($assigned[$a->workunitid]??0)+1;
+foreach(BoincWorkunit::enum_fields('id,name,appid,batch,priority,min_quorum,target_nresults,rsc_disk_bound,canonical_resultid,error_mask,'
+ .'transitioner_flags,need_validate,app_version_num,hr_class,xml_doc', "id IN ($clause)") as $w) {
+ $out['rows'][]=['unit'=>$w,'results'=>$group[$w->id]??[],'assignments'=>$assigned[$w->id]??0];
+} echo json_encode($out);
+"""
+    proc = subprocess.run(["php", "-r", code, json.dumps(ids), json.dumps(hosts)], cwd=project / "html/inc",
+                          text=True, capture_output=True, check=True, timeout=15)
+    return json.loads(proc.stdout)
+
+
+def persist(path, value, exclusive=False):
+    staged = path.with_name("." + path.name + "-" + uuid.uuid4().hex)
+    created = False
+    try:
+        with staged.open("x") as stream:
+            created = True
+            json.dump(value, stream, indent=2)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        if exclusive:
+            os.link(staged, path)
+            staged.unlink()
+        else:
+            os.replace(staged, path)
+        fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    finally:
+        if created:
+            staged.unlink(missing_ok=True)
+
+
+def run(args):
+    project = args.project.resolve(strict=True)
+    require(sha(args.helper.read_bytes()) == args.helper_sha256, "Reviewed helper changed")
+    config_changed = sha((project / "config.xml").read_bytes()) != args.config_sha256
+    policy_path = project / "plan_class_spec.xml"
+    require(not policy_path.is_symlink(), "Symlinked policy")
+    policy = policy_path.read_bytes()
+    window, reserved, owned = policy_window(policy)
+    if not owned:
+        # Every class this controller refills takes any Qwen work: there is no window to own.
+        # A complete report with no budget, so feed health (#1441) reads a closed window,
+        # not a silent controller.
+        return {"status": "no-owned-window", "nvidia_general_admission": True,
+                "intel_general_admission": True, "apply": args.apply,
+                "admitted_unique": 0, "limit": 0, "fresh_pairs_in_scan": None,
+                "currently_eligible_unsent_replicas": None, "native_gpu_inflight": None,
+                "per_host_buffer_limit": None}
+    nvidia_general = owned != CLASSES
+    # A generally admitted NVIDIA host fills its own queue: only Intel's window is refilled here.
+    hosts = (args.intel_host,) if nvidia_general else (args.intel_host, args.nvidia_host)
+    root = project / "ops-issue-559/qwen-auto-cohort"
+    require(not root.is_symlink() and not root.parent.is_symlink(), "Symlinked state directory")
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    for folder in (root, root.parent, project):
+        fd = os.open(folder, os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    with (root / "controller.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        state_path = root / "state.json"
+        require(not state_path.is_symlink(), "Symlinked state")
+        if state_path.exists():
+            state = json.loads(state_path.read_bytes())
+            require(state["controller"] == args.controller, "Another controller owns state")
+            require(state["resource_gates"] == class_scope(policy, without_bounds=True),
+                    "Reviewed GPU resource gates changed: refuse automatic adoption")
+            pending = state.get("pending")
+            if pending:
+                if window == pending["target"] and class_scope(policy) == pending["after_scope"]:
+                    state["window"] = window
+                    state["window_since"] = int(time.time())
+                    state["admitted"] += pending["selected"]
+                    del state["pending"]
+                    if args.apply:
+                        persist(state_path, state)
+                    if (int(time.time()) < args.enabled_until and len(state["admitted"]) < args.max_admissions
+                            and not config_changed):
+                        return {"status": "reconciled-exact-published-intent", "window": window,
+                                "admitted_unique": len(state["admitted"]), "apply": args.apply}
+                else:
+                    require(window == state["window"] and class_scope(policy) == pending["before_scope"],
+                            "Uncertain publication differs from its owned intent: refuse overwrite")
+                    del state["pending"]
+            require(state["window"] == window, "Another operator changed the owned cohort: refuse overwrite")
+            if "window_since" not in state:
+                # State from before this field: start the hold clock now, never backdate it.
+                state["window_since"] = int(time.time())
+                if args.apply:
+                    persist(state_path, state)
+        else:
+            require(sha(policy) == args.initial_policy_sha256, "Initial operator policy changed")
+            state = {"controller": args.controller, "window": window, "admitted": [],
+                     "resource_gates": class_scope(policy, without_bounds=True), "window_since": int(time.time())}
+            if args.apply:
+                # Persist the validated baseline before any early return so later ticks use the
+                # scope-aware ownership checks rather than the whole-policy SHA.
+                persist(state_path, state)
+        output = {"at": int(time.time()), "window": window, "reserved_amd": reserved,
+                  "nvidia_general_admission": nvidia_general,
+                  "admitted_unique": len(state["admitted"]), "limit": args.max_admissions,
+                  "apply": args.apply, "accuracy_established": False}
+        expired = int(time.time()) >= args.enabled_until
+        remaining = args.max_admissions - len(state["admitted"])
+        by_wu = {}
+        release = expired or remaining <= 0 or config_changed
+        if not release:
+            subprocess.run(
+                ["php", "-r", "require $argv[1]; exit(native_qwen_one_result_per_host($argv[2])?0:1);",
+                 str(args.helper.resolve()), str(project / "config.xml")],
+                check=True, timeout=10, capture_output=True,
+            )
+            audit_hashes = {}
+            for campaign, prompt_version in args.campaigns:
+                audit_path = project.parent / "qwen" / campaign / "audit.json"
+                audit_raw = audit_path.read_bytes()
+                require(len(audit_raw) <= 16 * 1024 * 1024, "Producer audit exceeds bounded parser size")
+                audit_hashes[campaign] = sha(audit_raw)
+                for key, value in json.loads(audit_raw).items():
+                    workunit = int(value["workunit_id"])
+                    require(workunit not in by_wu, "Duplicate native producer workunit binding")
+                    by_wu[workunit] = (key, value, campaign, prompt_version)
+            candidates = sorted(workunit for workunit in by_wu
+                                if workunit >= args.minimum_workunit and workunit not in state["admitted"]
+                                and workunit != reserved)
+            later = [workunit for workunit in candidates if workunit > state.get("scan_after", 0)]
+            # Raised-priority units join the page wherever they sit, so choose() can take them first.
+            # The cursor still follows the ordinary page alone, so no ordinary unit is skipped.
+            raised = raised_workunits(project, candidates, hosts)
+            page = [unit for unit in (later or candidates) if unit not in raised][:1000 - len(raised)]
+            ids = sorted(set(page) | set(raised))
+            current_ids = list(range(window[0], window[1] + 1)) if window != [2, 1] else []
+            wanted = sorted(set(ids + current_ids))
+            if not wanted:
+                return output | {"status": "no-audited-fresh-inputs", "fresh_pairs_in_scan": 0}
+            database = read_database(project, wanted, hosts)
+            rows = database["rows"]
+            require(database["app"]["name"] == "usnm_qwen"
+                    and int(database["app"]["homogeneous_redundancy"]) == 0, "Qwen app/HR changed")
+            allowed = {}
+            pinned = {"intel_vulkan_8b": args.intel_app_version, "nvidia_vulkan_8b": args.nvidia_app_version}
+            for plan in owned:
+                expected = pinned[plan]
+                # A window opens its classes on every platform: any non-Linux release closes admission.
+                # The feeder loads only the newest version per platform/plan class unless app.min_version
+                # is set, in which case every version >= min_version is dispatchable.
+                versions = [row for row in database["versions"] if row["plan_class"] == plan]
+                minimum = int(database["app"].get("min_version") or 0)
+                newest = max((int(row["version_num"]) for row in versions), default=None)
+                dispatchable = sorted((int(row["platformid"]), int(row["version_num"]), int(row["id"]))
+                                      for row in versions if (int(row["version_num"]) >= minimum if minimum
+                                                              else int(row["version_num"]) == newest))
+                allowed[plan] = all(int(row["platformid"]) == 1 for row in versions) \
+                    and dispatchable == [(1, args.app_version_num, expected)]
+            minimum = int(database["app"].get("min_version") or 0)
+            request = max((version for _, version in args.campaigns), key=REQUEST_MIN_APP.__getitem__)
+            unreadable = unreadable_by_open_classes(policy, database["versions"], minimum, request)
+            output["open_classes_that_cannot_read_request"] = unreadable
+            release = int(time.time()) >= args.enabled_until or not all(allowed.values()) or bool(unreadable)
+            if nvidia_general:
+                # One result per host: the Intel host's window reaches quorum only through a peer
+                # class that is open and can read the request.
+                peers = [row for row in open_reader_versions(policy, database["versions"], minimum)
+                         if row[2] >= REQUEST_MIN_APP[request]]
+                output["open_peer_readers"] = peers
+                release = release or not peers
+        if release:
+            command = ["--stop", "--keep-general"] if nvidia_general else ["--stop"]
+            selected, proof = [], []
+            status = "closed-expired-budget-or-release-change"
+            target = [2, 1]
+        else:
+            inflight = {host: sum(int(row["hostid"]) == host for row in database["gpu_inflight"])
+                        for host in hosts}
+            # Old-window replicas stay dispatchable until the new policy is published, so each host's
+            # headroom also reserves every one it could still receive.
+            capacity = max(0, min(args.max_inflight_per_host - inflight[host]
+                                  - assignable_units(rows, window, host) for host in inflight))
+            available = available_in_window(rows, window, hosts)
+            scanned = set(ids)
+            fresh_count = sum(fresh(row) for row in rows if int(row["unit"]["id"]) in scanned)
+            if not sum(fresh(row) for row in rows if int(row["unit"]["id"]) in set(page)) and page:
+                state["scan_after"] = page[-1]
+                if args.apply:
+                    persist(state_path, state)
+            output |= {"currently_eligible_unsent_replicas": available, "fresh_pairs_in_scan": fresh_count,
+                       "audited_candidates_total": len(candidates), "scanned_candidates": len(ids),
+                       "producer_audit_sha256": audit_hashes, "native_gpu_inflight": inflight,
+                       "per_host_buffer_limit": args.max_inflight_per_host}
+            # A host holding a replica of every remaining window unit can never take the rest: if it
+            # has no native work left while the peer holds the window, it starves behind the peer.
+            starved = [host for host in hosts if not inflight[host]
+                       and not assignable_units(rows, window, host)]
+            held = int(time.time()) - int(state["window_since"])
+            if available and not (starved and held >= args.rotate_after_seconds):
+                return output | {"status": "current-window-still-eligible", "starved_hosts": starved,
+                                 "window_held_seconds": held}
+            if available:
+                output |= {"starved_hosts": starved, "window_held_seconds": held}
+            if not capacity:
+                return output | {"status": "bounded-gpu-inflight-buffer-full"}
+            skipped, remembered = [], []
+            # Workunit -> exclusion_key of units already fully bound and found out of cohort.
+            # Later ticks pass them over without re-reading every page while that key holds.
+            known = {key: value for key, value in state.get("out_of_cohort", {}).items()
+                     if int(key) in scanned}
+            bundles = BundleUnits()
+
+            def admissible(row):
+                # Only a language outside the reviewed cohort is passed over; every other
+                # binding failure still stops the tick.
+                unit = int(row["unit"]["id"])
+                key = exclusion_key(project, row, *by_wu[unit], bundles)
+                if key is not None and known.get(str(unit)) == key:
+                    skipped.append(unit)
+                    remembered.append(unit)
+                    return False
+                try:
+                    bind_inputs(project, row, *by_wu[unit], bundles)
+                except OutOfCohort:
+                    skipped.append(unit)
+                    if key is not None:
+                        known[str(unit)] = key
+                        # Durable per unit, so a tick cut short by its timeout still keeps
+                        # the exclusions it has verified.
+                        state["out_of_cohort"] = dict(known)
+                        if args.apply:
+                            persist(state_path, state)
+                    return False
+                return True
+
+            selected = choose([row for row in rows if int(row["unit"]["id"]) in scanned],
+                              args.minimum_workunit, reserved, min(remaining, capacity), admissible)
+            if known != state.get("out_of_cohort", {}):
+                state["out_of_cohort"] = dict(known)
+                if args.apply:
+                    persist(state_path, state)
+            if skipped:
+                output |= {"out_of_cohort_skipped": skipped, "out_of_cohort_remembered": remembered}
+            if not selected:
+                if skipped and page:
+                    # Every fresh unit in this page is out of cohort and never becomes admissible:
+                    # move past it so later in-cohort work is reached.
+                    state["scan_after"] = page[-1]
+                    if args.apply:
+                        persist(state_path, state)
+                return output | {"status": "no-fresh-verified-pairs"}
+            if available:
+                # The left-behind replicas stay ordinary unsent work for every other eligible class;
+                # nothing is cancelled, reassigned or edited.
+                output |= {"rotated_past_window": window, "left_unsent_replicas": available}
+            proof = [bind_inputs(project, row, *by_wu[int(row["unit"]["id"])], bundles)
+                     for row in selected]
+            target = [int(selected[0]["unit"]["id"]), int(selected[-1]["unit"]["id"])]
+            command = ["--workunit", str(target[0]), "--workunit-end", str(target[1]), "--fresh-pair",
+                       "--admit-until", str(args.enabled_until)]
+            status = "refilled-finite-window"
+        if target == window:
+            return output | {"status": status, "changed": False}
+        command = ["php", str(args.helper), "--project", str(project),
+                   "--plan-class", "intel_vulkan_8b" if nvidia_general else "shared_8b",
+                   "--expected-policy-sha256", sha(policy), *command]
+        preview = json.loads(subprocess.check_output(command, timeout=15))
+        require(not nvidia_general or "nvidia_vulkan_8b" in preview["general_admission"],
+                "Helper would end NVIDIA general admission")
+        receipt = output | {"status": status, "target": target, "inputs": proof, "preview": preview}
+        if args.apply:
+            # Intent survives interruption. A mismatching state/window on the next tick stops
+            # rather than replaying an uncertain publication or clobbering another owner.
+            receipt_path = root / ("intent-" + uuid.uuid4().hex + ".json")
+            persist(receipt_path, receipt, exclusive=True)
+            state["pending"] = {
+                "target": target, "before_sha256": sha(policy), "after_sha256": preview["after_sha256"],
+                "before_scope": class_scope(policy), "after_scope": target_scope(policy, target, owned),
+                "selected": [int(row["unit"]["id"]) for row in selected], "intent": str(receipt_path),
+            }
+            persist(state_path, state)
+            if selected:
+                # Scanned again, so a bundle staged twice since is seen.
+                bundles = BundleUnits()
+                require([bind_inputs(project, row, *by_wu[int(row["unit"]["id"])], bundles)
+                         for row in selected] == proof,
+                        "Input/source provenance changed before apply")
+                require(int(time.time()) < args.enabled_until, "Admission deadline passed before publication")
+            applied = json.loads(subprocess.check_output(command + ["--apply"], timeout=15))
+            require(applied["before_sha256"] == sha(policy), "Atomic policy precondition failed")
+            # The helper's rename is durable only once the directory entry is; never record a
+            # window in state that power loss could still revert.
+            fd = os.open(project, os.O_RDONLY)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+            require(sha(policy_path.read_bytes()) == applied["after_sha256"], "Published policy readback mismatch")
+            state["window"] = target
+            state["window_since"] = int(time.time())
+            state["admitted"] += [int(row["unit"]["id"]) for row in selected]
+            state["last_intent"] = str(receipt_path)
+            del state["pending"]
+            persist(state_path, state)
+            receipt["applied"] = applied
+        return receipt
+
+
+def parse_campaigns(values, prompt_version):
+    campaigns = []
+    for value in values or [DEFAULT_CAMPAIGN]:
+        name, _, version = value.partition(":")
+        require(re.fullmatch("[a-z0-9][a-z0-9-]{0,40}", name) is not None, "Invalid campaign name")
+        require(version == "" or version in map(str, REQUEST_MIN_APP), "Unknown campaign request version")
+        campaigns.append((name, int(version) if version else prompt_version))
+    require(len({name for name, _ in campaigns}) == len(campaigns), "Duplicate campaign")
+    return campaigns
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--project", type=Path, required=True)
+    parser.add_argument("--helper", type=Path, required=True)
+    parser.add_argument("--helper-sha256", required=True)
+    parser.add_argument("--config-sha256", required=True)
+    parser.add_argument("--initial-policy-sha256", required=True)
+    parser.add_argument("--controller", required=True)
+    parser.add_argument("--minimum-workunit", type=int, required=True)
+    parser.add_argument("--max-admissions", type=int, default=500)
+    parser.add_argument("--max-inflight-per-host", type=int, default=10)
+    # Several native task times: a host that is merely slow keeps its window.
+    parser.add_argument("--rotate-after-seconds", type=int, default=1800)
+    parser.add_argument("--enabled-until", type=int, required=True)
+    parser.add_argument("--intel-host", type=int, default=9)
+    parser.add_argument("--nvidia-host", type=int, default=10)
+    # The one reviewed Linux release per opened class; any other dispatchable version closes admission.
+    parser.add_argument("--app-version-num", type=int, default=114)
+    parser.add_argument("--nvidia-app-version", type=int, default=66)
+    parser.add_argument("--intel-app-version", type=int, default=67)
+    # Request version 2 (--image-min-tokens 1024) is read only by app versions 1.15 and later,
+    # and versions 3 and 4 (the loop guard) only by 1.17 and later.
+    parser.add_argument("--prompt-version", type=int, choices=sorted(REQUEST_MIN_APP), default=1)
+    # Repeatable NAME or NAME:VERSION: a producer root whose audited jobs may be admitted, each
+    # root staged at one request version (--prompt-version unless named).
+    parser.add_argument("--campaign", action="append", default=[], metavar="NAME[:VERSION]")
+    # Repeatable: a language admitted besides the reviewed cohort. Only what the feed staged in
+    # the roots above is admitted, so the feed's budget for the language bounds it.
+    parser.add_argument("--cohort-language", action="append", default=[], metavar="LANG")
+    parser.add_argument("--apply", action="store_true")
+    args = parser.parse_args(argv)
+    require(all(re.fullmatch("[a-z]{3}", language) for language in args.cohort_language),
+            "--cohort-language takes an ISO 639-3 code")
+    global EXTRA_LANGUAGES
+    EXTRA_LANGUAGES = tuple(sorted(set(args.cohort_language) - set(COHORT_LANGUAGES)))
+    args.campaigns = parse_campaigns(args.campaign, args.prompt_version)
+    require(args.app_version_num >= 114 and args.nvidia_app_version > 0 and args.intel_app_version > 0
+            and args.nvidia_app_version != args.intel_app_version, "Expected reviewed app versions")
+    require(all(args.app_version_num >= REQUEST_MIN_APP[version] for _, version in args.campaigns),
+            "This request version needs app versions that read it")
+    require(re.fullmatch("[a-f0-9]{32}", args.controller) is not None, "Expected controller identity")
+    require(all(re.fullmatch("[a-f0-9]{64}", value) for value in
+                (args.helper_sha256, args.config_sha256, args.initial_policy_sha256)), "Expected SHA256 guards")
+    require(1 <= args.max_admissions <= 10000 and args.minimum_workunit > 1, "Invalid finite budget/floor")
+    require(1 <= args.max_inflight_per_host <= 10, "Keep at most ten native GPU tasks buffered per pilot host")
+    require(args.rotate_after_seconds >= 600, "Rotate a held window only after several native task times")
+    require(args.intel_host > 0 and args.nvidia_host > 0 and args.intel_host != args.nvidia_host,
+            "Independent distinct GPU hosts required")
+    require(args.enabled_until <= int(time.time()) + 86400, "Enable at most 24 hours per reviewed ramp")
+    print(json.dumps(run(args), indent=2))
+
+
+if __name__ == "__main__":
+    os.umask(0o077)
+    main()

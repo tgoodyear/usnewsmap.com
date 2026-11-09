@@ -4,18 +4,18 @@ on:
   pull_request:
     paths:
       - .github/workflows/amd-vulkan-runtime.yml
-      - ocr/boinc/qwen/amd-device-map.cpp
-      - ocr/boinc/qwen/llama.lock
-      - scripts/boinc/patch_amd_vulkan_identity.py
-      - scripts/boinc/build_amd_vulkan_runtime.ps1
+      - boinc/apps/qwen/amd-device-map.cpp
+      - boinc/apps/qwen/llama.lock
+      - boinc/scripts/patch_amd_vulkan_identity.py
+      - boinc/scripts/build_amd_vulkan_runtime.ps1
   push:
     branches: [main]
     paths:
       - .github/workflows/amd-vulkan-runtime.yml
-      - ocr/boinc/qwen/amd-device-map.cpp
-      - ocr/boinc/qwen/llama.lock
-      - scripts/boinc/patch_amd_vulkan_identity.py
-      - scripts/boinc/build_amd_vulkan_runtime.ps1
+      - boinc/apps/qwen/amd-device-map.cpp
+      - boinc/apps/qwen/llama.lock
+      - boinc/scripts/patch_amd_vulkan_identity.py
+      - boinc/scripts/build_amd_vulkan_runtime.ps1
 
 permissions:
   contents: read
@@ -59,7 +59,7 @@ jobs:
           $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
           $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
           $vcvars = Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
-          cmd /c "`"$vcvars`" && pwsh -NoProfile -File scripts\boinc\build_amd_vulkan_runtime.ps1 -Source amd-llama-source -Build amd-llama-build -Output amd-vulkan-runtime"
+          cmd /c "`"$vcvars`" && pwsh -NoProfile -File boinc\scripts\build_amd_vulkan_runtime.ps1 -Source amd-llama-source -Build amd-llama-build -Output amd-vulkan-runtime"
           if ($LASTEXITCODE -ne 0) { throw 'Patched runtime build failed' }
       - name: Compare loading against the pinned release registry
         shell: pwsh
@@ -67,7 +67,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $asset = (Get-Content ocr\boinc\qwen\llama.lock -Raw | ConvertFrom-Json).assets.'win-vulkan-x64'
+          $asset = (Get-Content boinc\apps\qwen\llama.lock -Raw | ConvertFrom-Json).assets.'win-vulkan-x64'
           gh release download b8799 --repo ggml-org/llama.cpp --pattern $asset.file --dir amd-pinned
           if ($LASTEXITCODE -ne 0) { throw 'Pinned release download failed' }
           $zip = Join-Path amd-pinned $asset.file
@@ -76,7 +76,7 @@ jobs:
           New-Item -ItemType Directory amd-patched | Out-Null
           Copy-Item amd-baseline\* amd-patched -Recurse
           Copy-Item amd-vulkan-runtime\ggml-vulkan.dll amd-patched\ggml-vulkan.dll -Force
-          $source = Join-Path $PWD 'ocr\boinc\qwen\amd-device-map.cpp'
+          $source = Join-Path $PWD 'boinc\apps\qwen\amd-device-map.cpp'
           @"
           #define main helper_main
           #include "$($source.Replace('\','/'))"

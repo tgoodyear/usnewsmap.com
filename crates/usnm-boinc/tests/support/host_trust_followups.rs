@@ -19,8 +19,8 @@ fn write(path: &Path, bytes: impl AsRef<[u8]>) {
 }
 
 fn script(path: &Path, contents: &str) {
-    write(path, contents);
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    usnm_test_support::write_executable_with_mode(path, contents, 0o700).unwrap();
 }
 
 impl Controller {

@@ -1,0 +1,216 @@
+# shellcheck shell=bash
+# shellcheck disable=SC2034
+# Shared by entrypoint.sh and bridge-job.sh. Sourced, not run.
+# Secrets come from Key Vault with the container's managed identity and are written only
+# under /dev/shm (tmpfs), mode 0600; nothing is printed and nothing goes into an image layer.
+
+: "${KEY_VAULT_NAME:?}" "${DB_HOST:?}" "${DB_NAME:?}" "${MASTER_HOST:?}" "${PROJECT_DIR:?}"
+PROJECT="${PROJECT:-usnmocr}"
+DB_RUNTIME_USER="${DB_RUNTIME_USER:-usnmboincrun}"
+DB_ADMIN_USER="${DB_ADMIN_USER:-usnmboincadmin}"
+export PROJECT DB_RUNTIME_USER
+BOINC_SRC=/usr/local/boinc
+SHARE_DIR="$PROJECT_DIR"
+PROJ="$PROJECT_DIR/$PROJECT"
+SECRETS=/dev/shm/boinc
+TEMPLATES=/usr/local/lib/usnm-boinc
+
+log() { echo "usnm-boinc: $*" >&2; }
+fail() { log "$*"; exit 1; }
+
+# kv_token: a Key Vault access token for this host's identity, on stdout.
+# - Container Apps (IDENTITY_ENDPOINT and IDENTITY_HEADER): the user-assigned identity
+#   AZURE_CLIENT_ID.
+# - Azure Arc (IDENTITY_ENDPOINT and IMDS_ENDPOINT, no header; the on-prem server, #942): the
+#   machine identity. himds answers the first request with a 401 whose Basic realm names a key
+#   file under /var/opt/azcmagent/tokens; the retry carries that file's contents. The key goes to
+#   curl in a header file (process substitution), never on its command line.
+kv_token() {
+  local url realm
+  if [ -n "${IDENTITY_ENDPOINT:-}" ] && [ -n "${IDENTITY_HEADER:-}" ]; then
+    curl -fsS -H "X-IDENTITY-HEADER: $IDENTITY_HEADER" \
+      "$IDENTITY_ENDPOINT?api-version=2019-08-01&resource=https://vault.azure.net&client_id=${AZURE_CLIENT_ID:?}" |
+      jq -er .access_token
+  elif [ -n "${IDENTITY_ENDPOINT:-}" ] && [ -n "${IMDS_ENDPOINT:-}" ]; then
+    # The agent's key goes only to a loopback http endpoint, as ArcIdentity::check_endpoint
+    # (crates/usnm-store/src/credential.rs) requires: never to a host named by the environment.
+    [[ $IDENTITY_ENDPOINT =~ ^http://(localhost|127\.[0-9]+\.[0-9]+\.[0-9]+|\[::1\])(:[0-9]{1,5})?/[^[:space:]?#]*$ ]] ||
+      fail "the Arc identity endpoint must be http on loopback"
+    url="$IDENTITY_ENDPOINT?api-version=2020-06-01&resource=https://vault.azure.net"
+    # The identity endpoint is local: never through a proxy, which would also see the key.
+    realm="$(curl --noproxy '*' -sS -o /dev/null -D - -H "Metadata: true" "$url" | tr -d '\r' |
+      sed -n 's/^[Ww][Ww][Ww]-[Aa]uthenticate: *Basic realm=\([^[:space:]]*\).*/\1/p')"
+    # The realm may be quoted (realm="/var/opt/azcmagent/tokens/<id>.key").
+    realm=${realm#\"}; realm=${realm%\"}
+    case "$realm" in
+      /var/opt/azcmagent/tokens/*.key) [[ $realm != *..* ]] && [ -f "$realm" ] || fail "unexpected Arc challenge file" ;;
+      *) fail "no Arc challenge from $IDENTITY_ENDPOINT" ;;
+    esac
+    curl --noproxy '*' -fsS -H "Metadata: true" -H @<(printf 'Authorization: Basic %s\n' "$(cat "$realm")") "$url" |
+      jq -er .access_token
+  else
+    fail "no managed identity endpoint in the environment"
+  fi
+}
+
+# KV_TRIES attempts, KV_BACKOFF seconds apart (doubling): one TLS timeout to Key Vault from the
+# on-prem host stopped a whole batch (#958).
+KV_TRIES="${KV_TRIES:-3}"
+KV_BACKOFF="${KV_BACKOFF:-2}"
+
+# kv_get NAME FILE: writes the secret value to FILE (mode 0600). Never prints it.
+kv_get() {
+  local name=$1 out=$2 token try=1 wait=$KV_BACKOFF
+  while :; do
+    if token="$(kv_token)" && (umask 077; curl -fsS --max-time 30 -H @<(printf 'Authorization: Bearer %s\n' "$token") \
+        "https://$KEY_VAULT_NAME.vault.azure.net/secrets/$name?api-version=7.4" | jq -er .value > "$out"); then
+      return 0
+    fi
+    [ "$try" -lt "$KV_TRIES" ] || fail "cannot read Key Vault secret $name"
+    log "Key Vault read of $name failed (try $try of $KV_TRIES); retrying in ${wait}s"
+    sleep "$wait"; try=$((try + 1)); wait=$((wait * 2))
+  done
+}
+
+# kv_get_optional NAME FILE: as kv_get, but a secret that does not exist (404) is skipped with
+# a log line and returns 1; any other failure stops, as kv_get does.
+kv_get_optional() {
+  local name=$1 out=$2 token code try=1 wait=$KV_BACKOFF
+  while :; do
+    code=000
+    if token="$(kv_token)"; then
+      code="$(umask 077; curl -sS --max-time 30 -o "$out.json" -w '%{http_code}' -H @<(printf 'Authorization: Bearer %s\n' "$token") \
+        "https://$KEY_VAULT_NAME.vault.azure.net/secrets/$name?api-version=7.4")" || code=000
+    fi
+    # Retry what may be transient (no answer, throttling, a server error); a 200 or 404 is final.
+    case "$code" in 000 | 429 | 5??) ;; *) break ;; esac
+    rm -f "$out.json"
+    [ "$try" -lt "$KV_TRIES" ] || fail "cannot read Key Vault secret $name"
+    log "Key Vault read of $name failed (try $try of $KV_TRIES); retrying in ${wait}s"
+    sleep "$wait"; try=$((try + 1)); wait=$((wait * 2))
+  done
+  case "$code" in
+    200) (umask 077; jq -er .value "$out.json" > "$out") || { rm -f "$out.json"; fail "cannot read Key Vault secret $name"; } ;;
+    404) rm -f "$out.json"; log "no $name in Key Vault yet"; return 1 ;;
+    *) rm -f "$out.json"; fail "cannot read Key Vault secret $name (HTTP $code)" ;;
+  esac
+  rm -f "$out.json"
+}
+
+# secrets_present: true when an earlier fetch_secrets in this container left every required file.
+secrets_present() {
+  [ -s "$SECRETS/db-runtime" ] && [ -s "$SECRETS/keys/upload_private" ] && [ -s "$SECRETS/keys/upload_public" ]
+}
+
+fetch_secrets() {
+  mkdir -p "$SECRETS/keys"
+  chmod 700 "$SECRETS" "$SECRETS/keys"
+  kv_get mysql-runtime-password "$SECRETS/db-runtime"
+  kv_get upload-private-key "$SECRETS/keys/upload_private"
+  kv_get upload-public-key "$SECRETS/keys/upload_public"
+  # The public half of the offline code-signing key arrives with the first signed app version
+  # (provision-boinc.sh, step 4); until then the project serves without it.
+  kv_get_optional code-sign-public-key "$SECRETS/keys/code_sign_public" || true
+  chmod 640 "$SECRETS"/keys/*
+  chown -R root:boincadm "$SECRETS"
+  chmod 750 "$SECRETS" "$SECRETS/keys"
+}
+
+# lock_code_trees: www-data runs the public PHP and is in group boincadm for upload/, the logs and
+# the page cache, so group write must not reach the code. The project root and html/ are included
+# because write access to a parent lets a directory be renamed aside and replaced. boincadm owns
+# these trees and root deploys them, so neither loses access. upload_private stays group-readable:
+# the scheduler reads it as www-data to send assigned jobs.
+lock_code_trees() {
+  local tree
+  # An SMB share's mount options fix the modes, so chmod can't lock anything there.
+  case "$(stat -f -c %T "$PROJ" 2>/dev/null)" in
+    smb2 | cifs) log "error: $PROJ is on an SMB share, so www-data can still write the code"; return 0 ;;
+  esac
+  chmod g-w "$PROJ" "$PROJ/html" || log "could not lock $PROJ"
+  for tree in apps bin cgi-bin py html/inc html/languages html/ops html/project html/user; do
+    if [ -e "$PROJ/$tree" ]; then
+      chmod -R g-w "$PROJ/$tree" || log "could not lock $tree"
+    fi
+  done
+  # Logged, not fatal: stopping the server here would turn a hardening gap into an outage.
+  if su -s /bin/sh www-data -c "test -w '$PROJ' || test -w '$PROJ/bin' || test -w '$PROJ/cgi-bin'"; then
+    log "error: www-data can still write the BOINC code trees"
+  fi
+}
+
+# render_config: fills config.xml.template from the environment and the fetched runtime
+# password into tmpfs, and links it into the project tree. The code-signing PRIVATE key is not
+# fetched, rendered or linked anywhere.
+# <host> is the container's own short hostname, not the public name: sched/start (at the pinned
+# BOINC commit, lines 662-663 and 787) starts a daemon only when its host equals
+# socket.gethostname().split('.')[0]. config.xml is rendered on every start, so a replaced replica
+# gets its new name. The public URL stays in <master_url>. UNVERIFIED: that a Container Apps
+# replica's hostname is stable for the life of its process (it is re-rendered at each start).
+render_config() {
+  local daemons
+  daemons='<daemon><cmd>sample_trivial_validator --app usnm_ocr</cmd><output>sample_trivial_validator_usnm_ocr.log</output><pid_file>sample_trivial_validator_usnm_ocr.pid</pid_file></daemon>
+        <daemon><cmd>batch_collect_assimilator --app usnm_ocr</cmd><output>batch_collect_assimilator_usnm_ocr.log</output><pid_file>batch_collect_assimilator_usnm_ocr.pid</pid_file></daemon>'
+  # The gold check (#462, and its native app usnm_gold_native, #1418), NDL OCR, QUALITY and Qwen validate with usnm-boinc, which only the bridge image carries.
+  # A server run from that image adds their daemons and links the validator scripts into bin/.
+  # The retired usnm_assess, usnm_surya, usnm_iris and usnm_qwen_train have none (#1449): see
+  # "Retiring an app" in boinc/docs/server-and-apps.md. Links an older image made stay in bin/.
+  # Script names only: script_validator then adds "files" (and "files2") itself. Spelled out,
+  # the macros never expand at BOINC 22bbebe0, whose split() keeps the delimiter on each token.
+  if command -v usnm-boinc >/dev/null 2>&1; then
+    daemons="$daemons
+        <daemon><cmd>script_validator --app usnm_gold --init_script usnm_gold_check</cmd><output>script_validator_usnm_gold.log</output><pid_file>script_validator_usnm_gold.pid</pid_file></daemon>
+        <daemon><cmd>batch_collect_assimilator --app usnm_gold</cmd><output>batch_collect_assimilator_usnm_gold.log</output><pid_file>batch_collect_assimilator_usnm_gold.pid</pid_file></daemon>
+        <daemon><cmd>script_validator --app usnm_gold_native --init_script usnm_gold_check</cmd><output>script_validator_usnm_gold_native.log</output><pid_file>script_validator_usnm_gold_native.pid</pid_file></daemon>
+        <daemon><cmd>batch_collect_assimilator --app usnm_gold_native</cmd><output>batch_collect_assimilator_usnm_gold_native.log</output><pid_file>batch_collect_assimilator_usnm_gold_native.pid</pid_file></daemon>
+        <daemon><cmd>script_validator --app usnm_ndlocr --init_script usnm_ndlocr_check --compare_script usnm_ndlocr_compare</cmd><output>script_validator_usnm_ndlocr.log</output><pid_file>script_validator_usnm_ndlocr.pid</pid_file></daemon>
+        <daemon><cmd>batch_collect_assimilator --app usnm_ndlocr</cmd><output>batch_collect_assimilator_usnm_ndlocr.log</output><pid_file>batch_collect_assimilator_usnm_ndlocr.pid</pid_file></daemon>
+        <daemon><cmd>script_validator --app usnm_quality --init_script usnm_quality_check --compare_script usnm_quality_compare</cmd><output>script_validator_usnm_quality.log</output><pid_file>script_validator_usnm_quality.pid</pid_file></daemon>
+        <daemon><cmd>batch_collect_assimilator --app usnm_quality</cmd><output>batch_collect_assimilator_usnm_quality.log</output><pid_file>batch_collect_assimilator_usnm_quality.pid</pid_file></daemon>
+        <daemon><cmd>script_validator --app usnm_qwen --init_script usnm_qwen_check --compare_script usnm_qwen_compare</cmd><output>script_validator_usnm_qwen.log</output><pid_file>script_validator_usnm_qwen.pid</pid_file></daemon>
+        <daemon><cmd>batch_collect_assimilator --app usnm_qwen</cmd><output>batch_collect_assimilator_usnm_qwen.log</output><pid_file>batch_collect_assimilator_usnm_qwen.pid</pid_file></daemon>"
+    if [ -d "$PROJ/bin" ]; then
+      ln -sfn "$TEMPLATES/usnm_gold_check" "$PROJ/bin/usnm_gold_check"
+      ln -sfn "$TEMPLATES/usnm_ndlocr_check" "$PROJ/bin/usnm_ndlocr_check"
+      ln -sfn "$TEMPLATES/usnm_ndlocr_compare" "$PROJ/bin/usnm_ndlocr_compare"
+      ln -sfn "$TEMPLATES/usnm_quality_check" "$PROJ/bin/usnm_quality_check"
+      ln -sfn "$TEMPLATES/usnm_quality_compare" "$PROJ/bin/usnm_quality_compare"
+      ln -sfn "$TEMPLATES/usnm_qwen_check" "$PROJ/bin/usnm_qwen_check"
+      ln -sfn "$TEMPLATES/usnm_qwen_compare" "$PROJ/bin/usnm_qwen_compare"
+    fi
+  fi
+  DB_PASSWD="$(cat "$SECRETS/db-runtime")" python3 - "$TEMPLATES/config.xml.template" "$SECRETS/config.xml" "$daemons" <<'PY'
+import glob, os, socket, sys
+from xml.sax.saxutils import escape
+src, dst, daemons = sys.argv[1:4]
+project_dir = os.path.join(os.environ["PROJECT_DIR"], os.environ["PROJECT"])
+project_host = os.environ.get("PROJECT_HOST_OVERRIDE") or socket.gethostname().split(".")[0]
+if os.environ.get("BRIDGE_STEP") and not os.environ.get("PROJECT_HOST_OVERRIDE"):
+    logs = sorted(glob.glob(os.path.join(project_dir, "log_*", "scheduler.log")), key=os.path.getmtime)
+    if logs:
+        candidate = os.path.basename(os.path.dirname(logs[-1])).removeprefix("log_")
+        if candidate:
+            project_host = candidate
+v = {
+    "DB_HOST": os.environ["DB_HOST"], "DB_NAME": os.environ["DB_NAME"],
+    "DB_USER": os.environ["DB_RUNTIME_USER"], "DB_PASSWD": os.environ["DB_PASSWD"],
+    "MASTER_URL": "https://%s/" % os.environ["MASTER_HOST"], "PROJECT_HOST": project_host,
+    "PROJECT_DIR": project_dir, "PROJECT": os.environ["PROJECT"],
+}
+t = open(src).read()
+for k, x in v.items():
+    t = t.replace("@%s@" % k, escape(x))
+t = t.replace("@APP_DAEMONS@", daemons)
+fd = os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o640)
+with os.fdopen(fd, "w") as f:
+    f.write(t)
+PY
+  chown root:boincadm "$SECRETS/config.xml"
+  if [ "$(readlink "$PROJ/config.xml" 2>/dev/null || true)" != "$SECRETS/config.xml" ]; then
+    ln -sfn "$SECRETS/config.xml" "$PROJ/config.xml"
+  fi
+  if [ "$(readlink "$PROJ/keys" 2>/dev/null || true)" != "$SECRETS/keys" ]; then
+    rm -rf "${PROJ:?}/keys"
+    ln -sfn "$SECRETS/keys" "$PROJ/keys"
+  fi
+}

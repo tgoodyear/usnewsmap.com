@@ -2,7 +2,7 @@
 
 Run OCR and quality checks on historical newspapers with BOINC on Linux, macOS or Windows. Tasks process page images, extracted text or word crops. The project checks returned outputs before using them in search or quality audits.
 
-Status: a pilot for trusted friends. The project server is up and work goes out only in small hand-picked cohorts. Every step below that has not been tried on a real host is marked UNVERIFIED. Operator docs: [boinc/README.md](boinc/README.md) and [boinc-quality.md](boinc-quality.md).
+Status: a pilot for trusted friends. The project server is up and work goes out only in small hand-picked cohorts. Every step below that has not been tried on a real host is marked UNVERIFIED. Operator docs: [boinc/docs/README.md](../boinc/docs/README.md) and [boinc-quality.md](boinc-quality.md).
 
 ## Why volunteer?
 
@@ -46,12 +46,12 @@ then review [resources, network and privacy](#4-resources-network-and-privacy).
 
 Every platform has a single onboarding script that validates prerequisites, configures BOINC preferences (`leave_apps_in_memory=1`, RAM/CPU limits), and attaches or updates the project (`https://boinc.usnewsmap.com/`):
 
-| Platform                          | Onboarding Script                                          | Preview (Read-Only)                                                                                   | Apply & Attach                                                                              |
-| --------------------------------- | ---------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| **Linux** (`x86_64` / `aarch64`)  | `scripts/boinc/setup_volunteer.py`                         | `python3 scripts/boinc/setup_volunteer.py`                                                            | `sudo python3 scripts/boinc/setup_volunteer.py --apply`                                     |
-| **Proxmox VE LXC** (Debian 12 CT) | `contrib-compute/infra/proxmox/provision-pve-boinc-lxc.sh` | `DRY_RUN=1 ./contrib-compute/infra/proxmox/provision-pve-boinc-lxc.sh 100 usnm-boinc-1 <ACCOUNT_KEY>` | `./contrib-compute/infra/proxmox/provision-pve-boinc-lxc.sh 100 usnm-boinc-1 <ACCOUNT_KEY>` |
-| **macOS** (Apple Silicon & Intel) | `scripts/boinc/setup_mac_volunteer.py`                     | `python3 scripts/boinc/setup_mac_volunteer.py`                                                        | `python3 scripts/boinc/setup_mac_volunteer.py --apply --authenticator <AUTHENTICATOR>`      |
-| **Windows** (`windows_x86_64`)    | `scripts/boinc/setup_windows_volunteer.ps1`                | `.\scripts\boinc\setup_windows_volunteer.ps1`                                                         | `.\scripts\boinc\setup_windows_volunteer.ps1 -Apply -InstallBoinc`                          |
+| Platform                          | Onboarding Script                           | Preview (Read-Only)                                                           | Apply & Attach                                                                                  |
+| --------------------------------- | ------------------------------------------- | ----------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| **Linux** (`x86_64` / `aarch64`)  | `boinc/scripts/setup_volunteer.py`          | `python3 boinc/scripts/setup_volunteer.py`                                    | `sudo python3 boinc/scripts/setup_volunteer.py --apply`                                         |
+| **Proxmox VE LXC** (Debian 13 CT) | `boinc/scripts/pve-boinc-ct.sh`             | `boinc/scripts/pve-boinc-ct.sh --ctid 101 --name boinc-volunteer-2 --what-if` | `boinc/scripts/pve-boinc-ct.sh --ctid 101 --name boinc-volunteer-2 --authenticator-file <PATH>` |
+| **macOS** (Apple Silicon & Intel) | `boinc/scripts/setup_mac_volunteer.py`      | `python3 boinc/scripts/setup_mac_volunteer.py`                                | `python3 boinc/scripts/setup_mac_volunteer.py --apply --authenticator <AUTHENTICATOR>`          |
+| **Windows** (`windows_x86_64`)    | `boinc/scripts/setup_windows_volunteer.ps1` | `.\boinc\scripts\setup_windows_volunteer.ps1`                                 | `.\boinc\scripts\setup_windows_volunteer.ps1 -Apply -InstallBoinc`                              |
 
 ### Workunit Sizing & Per-Page / Per-Crop Checkpointing
 
@@ -83,8 +83,8 @@ the full reference. Linux supports both `x86_64-pc-linux-gnu` (AMD/Intel 64-bit)
 
 `usnm_qwen` runs `llama-server` directly on the host to transcribe deterministic word crops with Qwen3-VL:
 
-- **NVIDIA CUDA (`nvidia_cuda_8b` and `nvidia_cuda_2b`, on `x86_64-pc-linux-gnu`)**: requires a proprietary or open NVIDIA Linux driver supporting CUDA 12+. Hosts with at least 7,000 MB of free VRAM receive `nvidia_cuda_8b` (Qwen3-VL-8B-Instruct at `Q4_K_M`, ~5.38 GiB total with projector); hosts with at least 3,000 MB of free VRAM receive `nvidia_cuda_2b` (Qwen3-VL-2B-Instruct at `Q8_0`, ~2.12 GiB total).
-- **Multi-thread CPU (`mt`, on `x86_64-pc-linux-gnu` and `aarch64-unknown-linux-gnu`)**: runs on hosts with 4 to 8 usable CPUs without a supported GPU, using the 2B `Q8_0` model.
+- **NVIDIA CUDA (`nvidia_cuda_8b` and `nvidia_cuda_2b`, on `x86_64-pc-linux-gnu`)**: requires a proprietary or open NVIDIA Linux driver supporting CUDA 12.4+. Neither class has had a live version since 2 November 2026; Linux NVIDIA work now uses `nvidia_vulkan_8b` ([app versions](boinc-quality.md#app-versions-and-plan-classes)). Hosts with at least 7,000 MB of free VRAM receive `nvidia_cuda_8b` (Qwen3-VL-8B-Instruct at `Q4_K_M`, ~5.38 GiB total with projector); hosts with at least 3,000 MB of free VRAM receive `nvidia_cuda_2b` (Qwen3-VL-2B-Instruct at `Q8_0`, ~2.12 GiB total).
+- **Multi-thread CPU (`mt`, on `x86_64-pc-linux-gnu` and `aarch64-unknown-linux-gnu`)**: runs on hosts with at least 4 usable CPUs (using up to 8 threads) without a supported GPU, using the 2B `Q8_0` model. It has had no live version since 2 November 2026.
 - **Sticky model caching (`<sticky/><no_delete/>`)**: the GGUF model and multimodal projector files (`usnm_qwen_model_<sha256>`) are marked `<sticky/>` and `<no_delete/>` in the workunit input templates. Your BOINC client downloads the model weights once into the project directory (`projects/boinc.usnewsmap.com/`) and reuses them across subsequent tasks without re-downloading.
 
 #### Container apps (`usnm_ocr`, `usnm_assess`, `usnm_gold`, `usnm_surya`, and `usnm_qwen` container fallback)
@@ -116,13 +116,13 @@ The official BOINC package must give its unprivileged service user a non-overlap
 From a current checkout of this repository, preview the setup and then install it:
 
 ```sh
-python3 scripts/boinc/setup_volunteer.py
+python3 boinc/scripts/setup_volunteer.py
 
 # After reviewing the preview:
-sudo python3 scripts/boinc/setup_volunteer.py --apply
+sudo python3 boinc/scripts/setup_volunteer.py --apply
 ```
 
-The helper accepts both `x86_64` and `aarch64` Linux hosts, detects the service's existing data directory, and uses the published worker digest in this checkout's `contrib-compute/infra/boinc/env/prod.json` (`images.worker`). It does not move data. The default service is `boinc-client.service`; use `--service` if the installed package names it differently. `--data-dir` and `--image` can override the detected directory and released image, but the directory must still be the service's existing working directory and the image must use its full immutable digest.
+The helper accepts both `x86_64` and `aarch64` Linux hosts, detects the service's existing data directory, and uses the published worker digest in this checkout's `boinc/infra/boinc/env/prod.json` (`images.worker`). It does not move data. The default service is `boinc-client.service`; use `--service` if the installed package names it differently. `--data-dir` and `--image` can override the detected directory and released image, but the directory must still be the service's existing working directory and the image must use its full immutable digest.
 
 The helper preserves account data and unrelated settings, backs up the preference and configuration XML it changes, and sets a conservative pilot profile: one BOINC CPU, no GPUs (see the `--gpu` section below), idle-only processing after five minutes, no battery use, 50% memory allowance, and no extra work buffer. Apps stay in memory while suspended so the wrapper can pause their container. CPU-load suspension is disabled because the client can count whole-machine load against its simulated single CPU; the idle policy and actual per-container CPU limit remain active.
 
@@ -131,8 +131,8 @@ The helper preserves account data and unrelated settings, backs up the preferenc
 GPUs stay off unless you pass `--gpu`. It also needs a GPU job profile, so that every start of the service checks that a container can see the GPU:
 
 ```sh
-sudo python3 scripts/boinc/setup_volunteer.py --apply --gpu \
-  --job-toml "$PWD/ocr/boinc/job.toml" --job-toml "$PWD/ocr/boinc/qwen/job-gpu.toml"
+sudo python3 boinc/scripts/setup_volunteer.py --apply --gpu \
+  --job-toml "$PWD/boinc/apps/job.toml" --job-toml "$PWD/boinc/apps/qwen/job-gpu.toml"
 ```
 
 Before you run it:
@@ -147,7 +147,7 @@ The scheduler sends GPU work by plan class:
 | `usnm_qwen` container work                                                          | `docker_nvidia_cuda`  | at least 3,000 MB of VRAM, compute capability 5.0+, CUDA 12                                                                |                                                                                                                                             |
 | LoRA training trials (`usnm_qwen_train`, retired on 2 November 2026; sends no work) | `docker_nvidia_train` | compute capability **8.0+** (Ampere or newer, for hardware BF16), at least **15 GiB of VRAM**, a driver with **CUDA 12.8** | `x86_64` Linux; BOINC's memory allowance must cover the 16 GiB container (a 32 GiB host with the default 50%, or `--dedicated-node` at 85%) |
 
-`usnm_qwen_train` was retired on 2 November 2026 and sends no work. To run the training profile's preflight check anyway, add `--job-toml "$PWD/ocr/boinc/train/job.toml"`.
+`usnm_qwen_train` was retired on 2 November 2026 and sends no work. To run the training profile's preflight check anyway, add `--job-toml "$PWD/boinc/apps/train/job.toml"`.
 
 Installation enables the BOINC user's systemd session at boot and configures Podman to use that session for cgroups. It makes the service's cgroups writable (`ProtectControlGroups=false`); the unprivileged UID still limits which cgroups it can modify. It allows read-only home-directory traversal while keeping the data directory writable and retaining the service's other restrictions. The service unsets `INVOCATION_ID`, so Podman starts each container's monitor (conmon) in its own scope in the BOINC user's session rather than in the service's cgroup. A BOINC restart then pauses and later resumes running tasks instead of killing their monitors and losing the exit status (seen on node 4 on 16 October 2026). Runtime files survive service restarts. Only the slots directory receives a persistent `container_file_t` label when SELinux is enabled; SELinux remains enabled and the account and configuration files outside slots retain their labels. The helper does not grant Docker access or change other users' Podman settings. If this dedicated account already belongs to `docker`, an administrator can remove that unused access.
 
@@ -159,20 +159,20 @@ capability probe. No AppArmor policy change or rootful runtime is required.
 Older profiles used `/run/usnm-boinc-*`; drain and report all work before
 rerunning setup to change paths. Never switch a running task's runtime path.
 
-The preflight (`scripts/boinc/volunteer_preflight.py`) runs in `ExecStartPre` as the service user, with the same service restrictions the client will have. It uses a disposable slot, the pinned worker image, and the task's `job.toml` runtime options (`ocr/boinc/job.toml` by default, or any app's job file via `--job-toml`) to check:
+The preflight (`boinc/scripts/volunteer_preflight.py`) runs in `ExecStartPre` as the service user, with the same service restrictions the client will have. It uses a disposable slot, the pinned worker image, and the task's `job.toml` runtime options (`boinc/apps/job.toml` by default, or any app's job file via `--job-toml`) to check:
 
 - a mode-0600 input can be read through the same mount the wrapper uses, and a mode-0644 output is readable by the host;
-- the **kernel** cgroup v2 files (`cpu.max`, `memory.max`, `memory.swap.max`, `pids.max`) match the limits requested by the selected `job.toml` (1 CPU, 1536 MiB memory, no extra swap, and 64 processes for `ocr/boinc/job.toml`; multi-CPU `--cpus`, 6 GiB memory, no extra swap, 1024 PIDs, and `--gpus all` device visibility when testing `ocr/boinc/surya/job-*.toml` or `ocr/boinc/qwen/job-*.toml` with `--job-toml`);
+- the **kernel** cgroup v2 files (`cpu.max`, `memory.max`, `memory.swap.max`, `pids.max`) match the limits requested by the selected `job.toml` (1 CPU, 1536 MiB memory, no extra swap, and 64 processes for `boinc/apps/job.toml`; multi-CPU `--cpus`, 6 GiB memory, no extra swap, 1024 PIDs, and `--gpus all` device visibility when testing `boinc/apps/surya/job-*.toml` or `boinc/apps/qwen/job-*.toml` with `--job-toml`);
 - the root filesystem is read-only and the container has no network routes;
 - Podman actually enters paused and running states, and its probe can be removed.
 
 To run the preflight manually against a multi-CPU (6 GiB) or GPU `job.toml` profile (`usnm_surya` or `usnm_qwen` container fallback):
 
 ```sh
-sudo -u boinc python3 scripts/boinc/volunteer_preflight.py \
+sudo -u boinc python3 boinc/scripts/volunteer_preflight.py \
   --data-dir /var/lib/boinc \
   --image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:FULL_DIGEST \
-  --job-toml ocr/boinc/qwen/job-cpu.toml
+  --job-toml boinc/apps/qwen/job-cpu.toml
 ```
 
 It does not add `:z` or `:Z` to hide a broken slots label. The installer also rejects conflicting service overrides. Each restart repeats the checks; a failure prevents BOINC startup. The initial run may pull the worker image and the upstream hello-world image used by stock BOINC runtime detection. No account key is required by setup or preflight.
@@ -210,16 +210,16 @@ Do not install a development client just to volunteer. Upstream 8.2.12 and
 `arm64-apple-darwin` as their primary platform; Intel Macs report
 `x86_64-apple-darwin`.
 
-#### Single-script macOS onboarding (`scripts/boinc/setup_mac_volunteer.py`)
+#### Single-script macOS onboarding (`boinc/scripts/setup_mac_volunteer.py`)
 
 After installing BOINC Manager and launching it once so `/Library/Application Support/BOINC Data` exists, run the macOS onboarding script to check hardware eligibility (Apple Silicon Metal GPU vs CPU), configure `global_prefs_override.xml` (`leave_apps_in_memory=1` and 75%/85% RAM limits so 6 GiB `usnm_qwen` tasks can run), reload preferences, and attach or update the project:
 
 ```sh
 # 1. Preview detected hardware, eligible native apps, and preference changes:
-python3 scripts/boinc/setup_mac_volunteer.py
+python3 boinc/scripts/setup_mac_volunteer.py
 
 # 2. Apply preferences and attach (or update if already attached):
-python3 scripts/boinc/setup_mac_volunteer.py --apply --authenticator <YOUR_ACCOUNT_KEY>
+python3 boinc/scripts/setup_mac_volunteer.py --apply --authenticator <YOUR_ACCOUNT_KEY>
 ```
 
 #### Native CPU app (`usnm_quality`)
@@ -229,7 +229,7 @@ python3 scripts/boinc/setup_mac_volunteer.py --apply --authenticator <YOUR_ACCOU
 #### Native GPU and CPU app (`usnm_qwen`)
 
 - **Apple Silicon Metal GPU (`apple_gpu_8b` on `arm64-apple-darwin`)**: Macs with Apple Silicon (`<gpu_type>apple</gpu_type>`, Metal support) and at least **8 GiB of unified memory** (~7,000 MB reported available by BOINC) receive the native `apple_gpu_8b` app version. It runs a Metal-enabled `llama-server` directly on macOS and caches the 8B `Q4_K_M` GGUF model and multimodal projector (~5.38 GiB) in the BOINC project directory via `<sticky/><no_delete/>`.
-- **Multi-thread CPU fallback (`mt` on `arm64-apple-darwin` and `x86_64-apple-darwin`)**: Macs with 4–8 CPU threads that do not use the Metal GPU class run the native `mt` version with the 2B `Q8_0` model (~2.12 GiB sticky download).
+- **Multi-thread CPU fallback (`mt` on `arm64-apple-darwin` and `x86_64-apple-darwin`)**: Macs with at least 4 CPU threads (up to 8 used) that do not use the Metal GPU class run the native `mt` version (no live version since 2 November 2026) with the 2B `Q8_0` model (~2.12 GiB sticky download).
 - Because Podman Machine on macOS does not pass the Apple Metal GPU into its Linux guest VM, Mac GPU work is always routed to the native `apple_gpu_8b` app rather than a container.
 
 #### Container apps (`usnm_ocr`, `usnm_assess`, `usnm_gold`, `usnm_surya`)
@@ -277,13 +277,13 @@ documented Linux multi-CPU and GPU pilot requirements or task resource limits.
    requires **12 GiB**, so the previous 8 GiB example was insufficient. Separate
    multi-CPU and GPU admission and publication requirements still apply.
 
-3. **Verify `Run_Podman` pause and resume**: upstream `docker_wrapper` release 22 failed to resume paused containers on macOS because `Run_Podman` re-joins its arguments into a second shell command, so the unquoted `|` in `--format "{{.Names}}|{{.Status}}"` was parsed as a shell pipe (`client/Run_Podman.cpp`, `docker_wrapper.cpp` `get_container_state`). Our Mac app versions build `docker_wrapper` from the pinned BOINC commit with `scripts/boinc/patch-mac-wrapper.py` applied so `--format` pipe quoting survives `Run_Podman` and pause and resume work ([details](notes/2026-10-15-boinc-cross-platform-distribution.md)). This is a project application fix, not a replacement for the installed BOINC client or helper. After attaching, verify in Activity Monitor and the helper's `podman ps` output that suspending and resuming a task in BOINC Manager pauses and unpauses the container cleanly without duplicate-name errors.
+3. **Verify `Run_Podman` pause and resume**: upstream `docker_wrapper` release 22 failed to resume paused containers on macOS because `Run_Podman` re-joins its arguments into a second shell command, so the unquoted `|` in `--format "{{.Names}}|{{.Status}}"` was parsed as a shell pipe (`client/Run_Podman.cpp`, `docker_wrapper.cpp` `get_container_state`). Our Mac app versions build `docker_wrapper` from the pinned BOINC commit with `boinc/scripts/patch-mac-wrapper.py` applied so `--format` pipe quoting survives `Run_Podman` and pause and resume work ([details](notes/2026-10-15-boinc-cross-platform-distribution.md)). This is a project application fix, not a replacement for the installed BOINC client or helper. After attaching, verify in Activity Monitor and the helper's `podman ps` output that suspending and resuming a task in BOINC Manager pauses and unpauses the container cleanly without duplicate-name errors.
 4. **Status**: runtime readiness was measured on Computer 1 (M1/16 GiB) with the unmodified stable **BOINC 8.2.11**, Homebrew **Podman 6.1.4**, and the BOINC-owned ARM VM above. Live client RPC reported that runtime after an idle-client restart. The pinned ARM OCR worker enforced `cpu.max=100000 100000`, `memory.max=1610612736`, `memory.swap.max=0`, `pids.max=64`, `NoNewPrivs=1`, and only `DAC_OVERRIDE`. This is **not** end-to-end acceptance: a reserved server cohort must still complete signed download, execution, client-controlled pause and resume, upload, validation, and bridge collection; Intel Mac acceptance remains unverified.
 
 ### 1.3 Windows (`windows_x86_64`)
 
 The short version is the [Windows quick start](boinc-windows.md); this section
-is the full reference. **Start here for native NVIDIA GPU volunteering.** Use the same one-time setup
+is the full reference. **Start here for native Windows GPU volunteering.** Use the same one-time setup
 for experimental Qwen and production work: one official BOINC client, one
 account, one project attachment, and the usual BOINC Manager controls.
 Participation includes both experimental and production work under your normal
@@ -299,16 +299,16 @@ your regular user**, and change to its root directory. Windows PowerShell 5.1
 (included with Windows) or PowerShell 7 is supported. First preview:
 
 ```powershell
-.\scripts\boinc\setup_windows_volunteer.ps1
+.\boinc\scripts\setup_windows_volunteer.ps1
 ```
 
-The default only reads local host and client information (including `nvidia-smi`
-if installed). It does not contact the project, download software, start BOINC,
+The default only reads local host and client information (including the display
+adapters in the registry). It does not contact the project, download software, start BOINC,
 edit preferences, or attach a project. After reviewing the preview:
 
 ```powershell
 # Same command whether BOINC already exists or needs installing:
-.\scripts\boinc\setup_windows_volunteer.ps1 -Apply -InstallBoinc
+.\boinc\scripts\setup_windows_volunteer.ps1 -Apply -InstallBoinc
 ```
 
 Later, `-Status` is a read-only local check: it reports whether the PC is
@@ -374,26 +374,24 @@ or work around an enforced Group Policy; ask your administrator instead.
 - Use Intel/AMD **x64 Windows 11**, or Windows 10 22H2 with current ESU security
   updates. This helper does not support Windows ARM, 32-bit Windows, older desktop
   Windows, or Windows Server.
-- Install or update the **official NVIDIA Windows driver**, not a CUDA toolkit.
-  The native CUDA 12.4 runtime is delivered with the signed BOINC app; the
-  helper conservatively requires driver **551.61 or newer** and at least **3,000
-  MiB currently free VRAM**. Close GPU-heavy applications if needed. AMD/Intel
-  GPUs are not supported by the native NVIDIA CUDA classes. Hardware checks are
-  not a guarantee that a particular older GPU and runtime combination can
-  execute work.
-- Have at least **6 GiB host RAM** and allow **12 GiB disk** for a cold 2B model
-  run, or **18 GiB** if any supported NVIDIA GPU has at least 7,000 MiB total
-  VRAM and could later qualify for an 8B task. The preview uses total memory
-  across all driver-supported NVIDIA GPUs for disk headroom, not just whichever
-  adapter currently has free VRAM; GPU memory use can change after onboarding.
-  The data volume must have the reported free space, and BOINC's own disk
-  allowance must also permit it. Prefer a desktop with comfortable spare RAM and
-  VRAM rather than using your last available resources.
-- Intended classes: `nvidia_cuda_8b` with at least 7,000 MB GPU RAM, or
-  `nvidia_cuda_2b` with at least 3,000 MB; actual scheduling also depends on
-  BOINC's GPU and memory report and resource preferences. CPU participation is
-  **optional**. GPU-only volunteers disable **Use CPU** in normal project
-  preferences. To knowingly onboard a CPU-only or unsupported-GPU host use
+- For GPU work, use an AMD GPU with at least **7,000 MB** of video memory and a
+  current AMD graphics driver, which provides Vulkan (`amd_vulkan_8b`,
+  [AMD](boinc-amd-gpu.md)). It is the only Windows GPU class with a live version
+  ([app versions](boinc-quality.md#app-versions-and-plan-classes)); no Windows
+  version has been released for NVIDIA or Intel GPUs yet, though both get GPU
+  work on Linux. The helper reads each display adapter's
+  vendor and memory size from the Windows registry and checks for the driver's
+  `vulkan-1.dll`. It cannot see free video memory; the app needs 7,000 MiB free
+  when a task starts, so close GPU-heavy applications. Hardware checks are not a
+  guarantee that a particular GPU and driver can execute work.
+- Have at least **6 GiB host RAM** and allow **12 GiB disk**, or **18 GiB** with
+  an eligible AMD GPU for the 8B model. The data volume must have the reported
+  free space, and BOINC's own disk allowance must also permit it. Prefer a
+  desktop with comfortable spare RAM and VRAM rather than using your last
+  available resources.
+- Scheduling also depends on BOINC's GPU and memory report and your resource
+  preferences. CPU participation is **optional**. GPU-only volunteers disable
+  **Use CPU** in normal project preferences. To knowingly onboard a CPU-only or unsupported-GPU host use
   `-AllowCpuOnly` with the same command; this only relaxes the local GPU check,
   does not enable CPU work, and does not promise a published CPU app. Ask the
   operator about `usnm_quality` or the multi-threaded Qwen CPU class before
@@ -440,7 +438,7 @@ normal Manager flow used for production:
    For local-client or authorization errors, open Manager on the local computer
    or repair the official installation or user access; do not expose RPC to the
    network or weaken data-directory permissions.
-5. In Manager's **Event Log**, confirm the NVIDIA GPU is detected and look for
+5. In Manager's **Event Log**, confirm the AMD GPU is detected and look for
    **Scheduler request completed**. Use normal project **Update** after changing
    account preferences. No work can mean unpublished apps, a closed cohort, or
    resource or preference limits; it does not mean you need WSL. For connection
@@ -515,13 +513,13 @@ To view your task history, log in to the project website with the same account a
 
 ## 3. What you will run
 
-Work goes out in explicit cohorts of 1 to 100 pages that the project selects by hand ([boinc/boundaries-and-monitoring.md](boinc/boundaries-and-monitoring.md#boundaries)), so it's normal to see no tasks for a while. Container apps pull a pinned OCI worker image named in the app version; native apps (`usnm_quality` and `usnm_qwen`) run directly on the host without a container runtime.
+Work goes out in explicit cohorts of 1 to 100 pages that the project selects by hand ([boinc/boundaries-and-monitoring.md](../boinc/docs/boundaries-and-monitoring.md#boundaries)), so it's normal to see no tasks for a while. Container apps pull a pinned OCI worker image named in the app version; native apps (`usnm_quality` and `usnm_qwen`) run directly on the host without a container runtime.
 
 | App            | Runtime                                                                                                                  | What a task does                                                                                                                                                                                        | Downloads                                                                                              | Returns                                                                                                         |
 | -------------- | ------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------- |
 | `usnm_ocr`     | Container (`docker`)                                                                                                     | OCR of one newspaper page with Tesseract 5.5.0 and the project's model lock                                                                                                                             | the page image and a job file, from the project server                                                 | the page's text (`text.txt`), its layout as ALTO XML (`layout.xml`) and `result.json` (checksums, engine, time) |
 | `usnm_assess`  | Container (`docker`)                                                                                                     | Retired on 2 November 2026; never sent work. It read one page twice, as JP2 and as JPEG ([boinc-assessment.md](notes/2026-10-16-boinc-assessment.md))                                                   | the JP2, the JPEG (OCR units) and a job file, from the project server                                  | both texts and `result.json` (outcome, exit code, time, memory per format)                                      |
-| `usnm_gold`    | Container (`docker`)                                                                                                     | scores your engine on public hand-transcribed text ([gold check](boinc/gold-check.md#gold-check))                                                                                                       | see below                                                                                              | `gold-result.json`: counts only                                                                                 |
+| `usnm_gold`    | Container (`docker`)                                                                                                     | scores your engine on public hand-transcribed text ([gold check](../boinc/docs/gold-check.md#gold-check))                                                                                               | see below                                                                                              | `gold-result.json`: counts only                                                                                 |
 | `usnm_surya`   | Container (`docker_mt`, `docker_nvidia_cuda`)                                                                            | Retired on 2 November 2026; sends no work. It read one newspaper page with Surya 2 ([boinc-surya.md](boinc-surya.md))                                                                                   | the page image and `surya.json`, from the project server                                               | `text.txt`, `lines.json`, `result.json` and `diag.txt`                                                          |
 | `usnm_quality` | Native CPU (all 5 platforms) or Container (`docker`)                                                                     | measures the scans and compares the existing readings of about 200 pages per task: OCR accuracy, completeness, findability and scan features ([boinc-quality.md](boinc-quality.md))                     | `page.jpg`, `loc.xml`, `texts.json`, sticky `places.txt` and `quality.json`                            | `result.json`, `confusions.json` and `diag.txt`                                                                 |
 | `usnm_qwen`    | Native (`apple_gpu_8b`, `nvidia_cuda_8b`, `nvidia_cuda_2b`, `mt`) or Container (`docker_mt_2b`, `docker_nvidia_cuda_8b`) | transcribes deterministic word crops of one page with Qwen3-VL via `llama-server`; since November 2026 only GPU versions are live (NVIDIA, AMD, Intel and Apple) ([boinc-quality.md](boinc-quality.md)) | `page.jpg`, `qwen.json`, and (native only) sticky `<sticky/><no_delete/>` GGUF model + projector files | `readings.json`, `result.json` and `diag.txt`                                                                   |
@@ -533,13 +531,13 @@ The OCR text from `usnm_ocr` is what the project uses. It is published as ALTO a
 - `bundle.tar`, 9.6 MB, from the project server: crops and transcriptions the licences allow us to share, with their licence files.
 - The BLN600 zip, 68 MB, and 18 page images, served by the BOINC project from its verified mirror. Your client checks each file and keeps it as a sticky input.
 
-The input template marks all of these `<sticky/>` and `<no_delete/>` (written by `usnm-boinc gold submit`). On 14 October 2026, production hosts returned multiple valid Gold tasks, but no client transfer log was retained to confirm that a later task reused each file without downloading it again; see the [live acceptance record](boinc/gold-check.md#live-acceptance-record-and-remaining-checks). By taking gold tasks you use these datasets under their licences: BLN600 under CC BY-NC-ND 4.0; Overproof transcriptions under CC BY-NC-SA 4.0, with Library of Congress page images; NewsEye under CC BY 4.0; NZZ under the licence in `licenses/nzz/` in the bundle. Each source's licence and attribution files are in `licenses/<source>/` in the bundle. The NC licences allow non-commercial use only. Nothing derived from BLN600 is shared: your host cuts the crops itself, and nothing it cuts leaves the machine.
+The input template marks all of these `<sticky/>` and `<no_delete/>` (written by `usnm-boinc gold submit`). On 14 October 2026, production hosts returned multiple valid Gold tasks, but no client transfer log was retained to confirm that a later task reused each file without downloading it again; see the [live acceptance record](../boinc/docs/gold-check.md#live-acceptance-record-and-remaining-checks). By taking gold tasks you use these datasets under their licences: BLN600 under CC BY-NC-ND 4.0; Overproof transcriptions under CC BY-NC-SA 4.0, with Library of Congress page images; NewsEye under CC BY 4.0; NZZ under the licence in `licenses/nzz/` in the bundle. Each source's licence and attribution files are in `licenses/<source>/` in the bundle. The NC licences allow non-commercial use only. Nothing derived from BLN600 is shared: your host cuts the crops itself, and nothing it cuts leaves the machine.
 
 `gold-result.json` holds, per crop: reference characters, character edits, reference words, word edits, the model profile and the time; then a summary per source, the crops it skipped and why, the engine version, the bundle version and manifest checksum, the job id and your BOINC host id. It holds no page text and no transcription. Counts are enough to compare engines across hosts, and the licences (BLN600's No-Derivatives terms in particular) rule out sending anything else. Crops in a language the worker image has no model for are listed as skipped.
 
 **How gold results are used.** The OCR app's stock validator accepts any
 well-formed result; it does not establish text agreement. The central
-[host-trust collector](boinc/gold-check.md#host-trust-for-usnm_ocr) gates production OCR
+[host-trust collector](../boinc/docs/gold-check.md#host-trust-for-usnm_ocr) gates production OCR
 publication on a calibrated Gold policy for the host's exact worker image,
 source language, model profile, PSM and DPI. Unsupported jobs are held in
 quarantine rather than inheriting another language's calibration. Main's v5
@@ -553,7 +551,7 @@ trusted volunteers, not identity verification or malicious-host protection.
 
 ## 4. Resources, network and privacy
 
-Per container task, from `ocr/boinc/job.toml` (`usnm_ocr`, `usnm_assess`, `usnm_gold`, and container `usnm_quality`): one CPU, 1536 MiB of memory with no extra swap, at most 64 processes, a read-only root filesystem, a 512 MiB `/tmp`, all capabilities dropped except `DAC_OVERRIDE`, and `--network=none`. `usnm_surya` and container `usnm_qwen` (`ocr/boinc/surya/job-*.toml`, `ocr/boinc/qwen/job-*.toml`) use 6 GiB of memory with no extra swap, at most 1024 processes, `--cpus` from the plan class (`4`–`8` for `docker_mt`, `2` plus `--gpus all` for `docker_nvidia_cuda`), a read-only root filesystem, and `--network=none`. Every container sees only the task's slot directory. Native `usnm_quality` runs single-threaded on the slot's files with no network calls; native `usnm_qwen` spawns `llama-server` bound exclusively to `127.0.0.1` on an ephemeral loopback port.
+Per container task, from `boinc/apps/job.toml` (`usnm_ocr`, `usnm_assess`, `usnm_gold`, and container `usnm_quality`): one CPU, 1536 MiB of memory with no extra swap, at most 64 processes, a read-only root filesystem, a 512 MiB `/tmp`, all capabilities dropped except `DAC_OVERRIDE`, and `--network=none`. `usnm_surya` and container `usnm_qwen` (`boinc/apps/surya/job-*.toml`, `boinc/apps/qwen/job-*.toml`) use 6 GiB of memory with no extra swap, at most 1024 processes, `--cpus` from the plan class (`4`–`8` for `docker_mt`, `2` plus `--gpus all` for `docker_nvidia_cuda`), a read-only root filesystem, and `--network=none`. Every container sees only the task's slot directory. Native `usnm_quality` runs single-threaded on the slot's files with no network calls; native `usnm_qwen` spawns `llama-server` bound exclusively to `127.0.0.1` on an ephemeral loopback port.
 
 Network, step by step:
 
@@ -564,7 +562,7 @@ Network, step by step:
 | gold originals                                              | the BOINC client                           | the BOINC project's download server               |
 | the task itself                                             | nobody                                     | no network inside containers; loopback-only local |
 
-What leaves your machine: the result files in the table in section 3, and what any stock BOINC client sends its project (host description, account details). The project stores your email address, name, IP address and account key. Privacy is on by default, and you can delete your account ([design](../contrib-compute/docs/design.md), Privacy). Web server and scheduler logs keep IP addresses for 30 days.
+What leaves your machine: the result files in the table in section 3, and what any stock BOINC client sends its project (host description, account details). The project stores your email address, name, IP address and account key. Privacy is on by default, and you can delete your account ([design](../boinc/docs/design.md), Privacy). Web server and scheduler logs keep IP addresses for 30 days.
 
 Disk: the gold check keeps about 78 MB of sticky files plus the 18 page images for as long as you stay attached, and each running gold task copies them into its slot. `usnm_quality` keeps the campaign's sticky `places.txt` (`usnm_quality_places_<sha256>`). Native `usnm_qwen` keeps the sticky `<sticky/><no_delete/>` GGUF model and multimodal projector files (`usnm_qwen_model_<sha256>`) in the project directory: 5.38 GiB for the 8B `Q4_K_M` set (`apple_gpu_8b` and `nvidia_cuda_8b`) or 2.12 GiB for the 2B `Q8_0` set (`nvidia_cuda_2b` and `mt`).
 
@@ -583,8 +581,8 @@ Success: a task moves from downloading to running to uploaded, and the event log
 - **Client will not start.** Read `journalctl -u boinc-client.service`. A slot or SELinux error needs the slots-only label; missing limits need a working user systemd session, cgroup v2 and writable delegated cgroups. Re-run the setup preview and fix its diagnostic. Do not disable the preflight to accept work.
 - **Tasks fail at once.** Check the event log for a runtime or slot error. A hello-world check alone is insufficient; the startup preflight exercises the real task limits and mount.
 - **Upload fails.** An upload error is not a completed acceptance test even if the scheduler receives a completion report. Preserve a local result when diagnosing, stop requesting new tasks, and report the upload-server message to the project operator.
-- **Tasks fail after a while.** A page may need more than 1536 MiB, or the engine may have crashed. Either is a failed task, which the project sees ([boinc/allocation-and-recovery.md](boinc/allocation-and-recovery.md#allocation-and-recovery)). If every task fails, detach and report it.
-- **Gold downloads fail.** Make sure your network allows the BOINC project's download server. The 14 October production reports predate the project mirror and only establish that publisher-sourced inputs passed the worker's hash checks; they do not establish mirror or sticky-cache acceptance. See the [live acceptance record](boinc/gold-check.md#live-acceptance-record-and-remaining-checks).
+- **Tasks fail after a while.** A page may need more than 1536 MiB, or the engine may have crashed. Either is a failed task, which the project sees ([boinc/allocation-and-recovery.md](../boinc/docs/allocation-and-recovery.md#allocation-and-recovery)). If every task fails, detach and report it.
+- **Gold downloads fail.** Make sure your network allows the BOINC project's download server. The 14 October production reports predate the project mirror and only establish that publisher-sourced inputs passed the worker's hash checks; they do not establish mirror or sticky-cache acceptance. See the [live acceptance record](../boinc/docs/gold-check.md#live-acceptance-record-and-remaining-checks).
 
 ## Detach
 
@@ -596,11 +594,11 @@ The client stops its tasks for this project and deletes the project's files, sti
 
 ## Proxmox VE (PVE) LXC client template
 
-To provision an unprivileged Debian 13 (`trixie`) LXC container as a BOINC volunteer client on a Proxmox VE host, run `scripts/boinc/pve-boinc-ct.sh` on the Proxmox host as `root`:
+To provision an unprivileged Debian 13 (`trixie`) LXC container as a BOINC volunteer client on a Proxmox VE host, run `boinc/scripts/pve-boinc-ct.sh` on the Proxmox host as `root`:
 
 ```sh
-scripts/boinc/pve-boinc-ct.sh --ctid 101 --name boinc-volunteer-2 --what-if
-scripts/boinc/pve-boinc-ct.sh --ctid 101 --name boinc-volunteer-2
+boinc/scripts/pve-boinc-ct.sh --ctid 101 --name boinc-volunteer-2 --what-if
+boinc/scripts/pve-boinc-ct.sh --ctid 101 --name boinc-volunteer-2
 ```
 
 The script creates an unprivileged LXC container with `--features nesting=1,keyctl=1`, installs Docker and `boinc-client >= 8.2.13` from Berkeley's official Debian `trixie` repository, configures `global_prefs_override.xml`, and attaches to `https://boinc.usnewsmap.com/` using either `--authenticator-file <path>` or a newly created account named after `--account-name` (defaulting to `--name`). Because the BOINC server sets `<one_result_per_user_per_wu/>` with `--min_quorum 2`, each PVE container intended to validate a second replica of the same workunit should use a distinct BOINC account.

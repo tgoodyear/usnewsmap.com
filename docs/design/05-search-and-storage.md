@@ -1,5 +1,7 @@
 # 05: Search & Document Storage
 
+**Status:** describes the Azure design the system was built on. Serving, ingest and OCR now run on-prem, with Azure as shared state and a cold spare: see [03 §3.3](03-architecture-overview.md#33-deployment-today-november-2026) for how it runs today. The engine choice, schemas and query semantics still hold; the searcher that serves runs on-prem from a local copy of the index, and the Container Apps searcher is the spare.
+
 This is the most consequential decision in the design. The legacy system's single Solr core did two jobs: it was the document store and it was the aggregation engine. Here we separate **storage** (Azure Blob Storage, see [04](04-data-sources-and-ingestion.md)) from **retrieval** (a full-text engine whose index can be rebuilt from the lake), and evaluate the retrieval options.
 
 ## 5.1 Workload characterization

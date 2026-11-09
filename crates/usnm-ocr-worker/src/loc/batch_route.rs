@@ -804,7 +804,6 @@ impl LocClient {
             md5: Some(batch::hex(&md5)),
             download: got.took,
             from_cache: false,
-            evict: None,
         }))
     }
 }

@@ -49,8 +49,8 @@ pub enum Mode {
 pub struct Options {
     /// The scans root, holding `keep/`.
     pub scans: PathBuf,
-    /// The set to archive: `keep` (the buffer set is deleted after OCR and
-    /// would only pay the Cold early-delete charge).
+    /// The set to archive: `keep` (the buffer set was deleted after OCR
+    /// until 2026-11-08, so it was never archived).
     pub set: String,
     /// `https://<account>.blob.core.windows.net/<container>`.
     pub container_url: String,

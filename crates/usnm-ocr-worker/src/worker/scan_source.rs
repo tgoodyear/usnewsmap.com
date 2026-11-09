@@ -17,8 +17,6 @@ pub trait ScanSource: Send + Sync + std::fmt::Debug {
     /// The page's full-size IIIF JPEG (`<iiif_base>/full/full/0/default.jpg`),
     /// read when the engine crashes on its JP2 (#454).
     async fn jpeg(&self, key: &PageKey, batch: &str, iiif_base: &str) -> Result<Scan, FetchError>;
-    /// Delete a buffer-set scan the page no longer needs (best effort).
-    async fn evict(&self, _url: &str) {}
 }
 
 #[async_trait]

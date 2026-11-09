@@ -339,7 +339,7 @@ pub async fn dead_letter(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{os::unix::fs::PermissionsExt, sync::Arc};
+    use std::sync::Arc;
     use usnm_ocr_contract::boinc::Job;
     use usnm_ocr_local::ledger;
     use usnm_state::docs::MemoryDocs;
@@ -607,8 +607,7 @@ mod tests {
             ),
         ] {
             let path = project.join("bin").join(name);
-            atomic(&path, body.as_bytes()).unwrap();
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            usnm_test_support::write_executable(&path, body).unwrap();
         }
         assert!(crate::submit::submit(&root, &project, &id).await.is_err());
         assert_eq!(load(&root, &id).unwrap().stage, Stage::Reserved);

@@ -167,9 +167,6 @@ pub struct Scan {
     pub download: Duration,
     /// Read from the prefetch cache, not fetched.
     pub from_cache: bool,
-    /// A buffer-set scan's URL on the scan server, to delete once the
-    /// page's output is uploaded.
-    pub evict: Option<String>,
 }
 
 #[derive(Debug, Clone)]

@@ -12,9 +12,10 @@ joined Mac can sit idle for a while. That is normal.
 ## 1. What you need
 
 - An Apple Silicon Mac (M1 or later) or an Intel Mac, on a current macOS.
-- Free disk that BOINC is allowed to use: 2 GiB for the quality app, 12 GiB
-  for the Qwen CPU app, and 18 GiB for the Qwen GPU app (those are binary
-  gigabytes, so about 2.2, 13 and 20 GB as Finder shows them). BOINC's own
+- Free disk that BOINC is allowed to use: 2 GiB for the quality app and
+  18 GiB for the Qwen GPU app (those are binary gigabytes, so about 2.2 and
+  19 GB as Finder shows them). The Qwen CPU app has had no live version since
+  2 November 2026. BOINC's own
   disk limit (**Options → Computing preferences → Disk**) must allow it as
   well.
 - The GPU app needs an Apple Silicon Mac with at least 8 GB of memory. It
@@ -48,7 +49,7 @@ If the Mac is already attached, do not remove and re-add the project.
    would change:
 
    ```sh
-   python3 scripts/boinc/setup_mac_volunteer.py
+   python3 boinc/scripts/setup_mac_volunteer.py
    ```
 
    The first run of `python3` on a Mac may offer to install Apple's command
@@ -58,7 +59,7 @@ If the Mac is already attached, do not remove and re-add the project.
 4. Apply it:
 
    ```sh
-   python3 scripts/boinc/setup_mac_volunteer.py --apply
+   python3 boinc/scripts/setup_mac_volunteer.py --apply
    ```
 
    This writes BOINC's computing preferences so a task can hold its model in
@@ -75,7 +76,7 @@ If the Mac is already attached, do not remove and re-add the project.
 Run the preview again any time:
 
 ```sh
-python3 scripts/boinc/setup_mac_volunteer.py
+python3 boinc/scripts/setup_mac_volunteer.py
 ```
 
 `project_attached` should be `true`. In Manager's **Event Log** (Advanced

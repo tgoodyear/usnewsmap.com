@@ -5,6 +5,7 @@
 - **Extends:** ADR-0008 (private networking) and ADR-0009 (Entra identity only)
 - **Amends:** ADR-0009 §2, with one exception: a client secret for Arc onboarding, on a service principal made for one run (decision 1)
 - **Amended by:** [ADR-0027](0027-onprem-serving-behind-cloudflare.md) (the serving container has its own Arc identity, with decision 2's lockdown, outside the OCR nodes' group)
+- **Current state (November 2026):** the direct queue worker is retired (#966), and local OCR runs through BOINC only. The Arc identities, the exchange account, its Storage queues and `ocr-out` are still in use, now by the on-prem BOINC controller ([BOINC pages](../../../boinc/docs/README.md)).
 
 ## Context
 

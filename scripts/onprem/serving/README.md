@@ -1,6 +1,6 @@
 # On-prem serving
 
-These files run usnewsmap.com from one unprivileged container on an on-prem Proxmox host, behind a Cloudflare Tunnel ([#955](https://github.com/tgoodyear/usnewsmap.com/issues/955); the plan is in [its architecture comment](https://github.com/tgoodyear/usnewsmap.com/issues/955#issuecomment-6331553520)). They follow the BOINC server's pattern ([`scripts/boinc/onprem/`](../../boinc/onprem/), [docs/boinc-onprem.md](../../../docs/boinc-onprem.md)).
+These files run usnewsmap.com from one unprivileged container on an on-prem Proxmox host, behind a Cloudflare Tunnel ([#955](https://github.com/tgoodyear/usnewsmap.com/issues/955); the plan is in [its architecture comment](https://github.com/tgoodyear/usnewsmap.com/issues/955#issuecomment-6331553520)). They follow the BOINC server's pattern ([`boinc/scripts/onprem/`](../../../boinc/scripts/onprem), [docs/boinc-onprem.md](../../../docs/boinc-onprem.md)).
 
 Production cutover and automatic Azure fallback follow
 [ADR-0029](../../../docs/design/adr/0029-onprem-primary-azure-failover.md).

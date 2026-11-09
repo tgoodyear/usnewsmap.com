@@ -343,7 +343,16 @@ fn supervise(
             }
         };
         for r in readers.iter_mut() {
-            let _ = tokio::time::timeout(Duration::from_secs(2), r).await;
+            if tokio::time::timeout(Duration::from_secs(2), &mut *r)
+                .await
+                .is_err()
+            {
+                // Dropping the handle would leave the reader running: a late
+                // line from this process must not reach `events` once the
+                // supervisor is done (`restart` clears the failures then).
+                r.abort();
+                let _ = r.await;
+            }
         }
         let mut why = match status {
             Ok(s) => describe_exit(s, progress::cgroup_memory()),
@@ -573,6 +582,7 @@ impl WriterProcess {
             .context("stopping the Quickwit writer to restart it; not restarting")?;
         // The exit was asked for.
         self.events.clear_exit();
+        self.events.clear_v1_failures();
         self.spawn()?;
         self.ready().await?;
         tracing::info!(pid = self.pid(), "the Quickwit writer restarted");
@@ -956,18 +966,12 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn a_writer_that_exits_explains_why() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let bin = dir.path().join("quickwit");
-        std::fs::write(
-            &bin,
-            "#!/bin/sh\n\
+        usnm_test_support::write_executable(&bin, "#!/bin/sh\n\
              printf '\\033[2m2026-09-29T00:20:17Z\\033[0m \\033[33m WARN\\033[0m quickwit_config: peer seeds are empty\\n'\n\
              echo 'Error: data dir volume too small' >&2\n\
-             exit 1\n",
-        )
-        .unwrap();
-        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+             exit 1\n").unwrap();
         let err = QuickwitNode::start(&bin, dir.path(), 7399, "file:///m", "file:///i")
             .await
             .err()
@@ -987,11 +991,10 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn a_cancelled_stop_still_leaves_the_writer_to_kill() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let bin = dir.path().join("quickwit");
         let trapped = dir.path().join("trapped");
-        std::fs::write(
+        usnm_test_support::write_executable(
             &bin,
             format!(
                 "#!/bin/sh\ntrap '' TERM\ntouch '{}'\nwhile :; do sleep 1; done\n",
@@ -999,7 +1002,6 @@ mod tests {
             ),
         )
         .unwrap();
-        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
         let writer = WriterProcess {
             bin,
             config_path: dir.path().join("node.yaml"),
@@ -1046,10 +1048,9 @@ mod tests {
         dir: &Path,
         kill_wait: Duration,
     ) -> (WriterProcess, PathBuf, tokio::task::JoinHandle<()>) {
-        use std::os::unix::fs::PermissionsExt;
         let bin = dir.join("quickwit");
         let trapped = dir.join("trapped");
-        std::fs::write(
+        usnm_test_support::write_executable(
             &bin,
             format!(
                 "#!/bin/sh\ntrap '' TERM\ntouch '{}'\nwhile :; do sleep 1; done\n",
@@ -1057,7 +1058,6 @@ mod tests {
             ),
         )
         .unwrap();
-        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         let health = tokio::spawn(async move {

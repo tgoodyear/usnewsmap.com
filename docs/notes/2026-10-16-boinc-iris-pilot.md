@@ -71,11 +71,11 @@ attribution, and `for_scoring: true`. Use the cleaned, geometry-corrected corpus
 do not score older stretched-box crops.
 
 ```sh
-python3 scripts/boinc/iris-campaign.py prepare --dataset DATASET \
+python3 boinc/scripts/iris-campaign.py prepare --dataset DATASET \
   --out CAMPAIGN --worker-image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:WORKER_DIGEST
-python3 scripts/boinc/iris-campaign.py submit --root CAMPAIGN --project PROJECT
-python3 scripts/boinc/iris-campaign.py submit --root CAMPAIGN --project PROJECT --apply
-python3 scripts/boinc/iris-campaign.py collect --root CAMPAIGN --seen PROJECT/iris/seen
+python3 boinc/scripts/iris-campaign.py submit --root CAMPAIGN --project PROJECT
+python3 boinc/scripts/iris-campaign.py submit --root CAMPAIGN --project PROJECT --apply
+python3 boinc/scripts/iris-campaign.py collect --root CAMPAIGN --seen PROJECT/iris/seen
 ```
 
 For final acceptance, also pass `--terminal-results SNAPSHOT.json`. Export a
@@ -139,7 +139,7 @@ Staging is not permission to dispatch all 20,000 jobs automatically.
 For a source-only snapshot from the existing full-resolution JPEG cache:
 
 ```sh
-python3 scripts/boinc/iris-stage-pages.py \
+python3 boinc/scripts/iris-stage-pages.py \
   --cache /tank/ocr/scans/keep --index /tank/ocr/scans/index-full.jsonl \
   --acceptance inspected-pilot-acceptance.json --out iris-20000-pages \
   --worker-image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:WORKER_DIGEST
@@ -177,7 +177,7 @@ these two images do not establish corpus accuracy or sustained performance.
 
 ## Throughput experiment (#736)
 
-`ocr/boinc/iris/bench.py` and `scripts/boinc/iris-bench.sh` measure one resident `VLMPipeline`
+`boinc/apps/iris/bench.py` and `boinc/scripts/iris-bench.sh` measure one resident `VLMPipeline`
 for N sequential crops and an optional persistent `CACHE_DIR`, with the worker's device checks, prompt,
 f16 hint and container limits. They are experiment tools, not shipped in the worker image, and change no
 BOINC behavior. On Computer 9 pipeline construction was about 70% of each task; N=8 gave 3.8x and
@@ -189,7 +189,7 @@ single-crop app version is unchanged. To rerun, stop BOINC on the host first
 
 ### Multi-crop bundles (app version 1.1)
 
-`ocr/boinc/iris/bundle.py` defines the v2 unit: `iris.json` (`"v": 2`) plus `pages.pack` (the crops' JPEGs
+`boinc/apps/iris/bundle.py` defines the v2 unit: `iris.json` (`"v": 2`) plus `pages.pack` (the crops' JPEGs
 concatenated). The worker loads the model once and runs the crops in order. Each crop has its own v1-shaped
 result bound to a derived v1 job (id, crop id, page checksum), so a bundle cannot hide a failed crop.
 The bundle status is `ok`, `partial` or `error`; a partial bundle exits 0 so its finished crops upload, and
@@ -218,13 +218,13 @@ bundle took 136–146 s, of which 22–24 s was model load, so about 6.8 crops/m
 That is slower than the 98 s benchmark run; the load is paid once per bundle because 1.1 has no compile
 cache (version 1.2 below). All 100 crops finished in 18 minutes of wall time, run one bundle at a time.
 Dispatch first needed the server to map `docker_intel_opencl_4b` to the Intel GPU
-(`scripts/boinc/patch-server-intel-proc-type.py`) and the feeder on the share refreshed from the image.
+(`boinc/scripts/patch-server-intel-proc-type.py`) and the feeder on the share refreshed from the image.
 The 20,000-page set stays gated by its own `campaign.json`; this release does not dispatch it.
 
 ### Persistent compile cache (app version 1.2)
 
 `job.toml` mounts the named volume `usnm-iris-compile-cache` at `/cache` (the docker_wrapper `mount`
-option; the root stays read-only). `ocr/boinc/iris/cache.py` gives OpenVINO a `CACHE_DIR` under it, keyed by
+option; the root stays read-only). `boinc/apps/iris/cache.py` gives OpenVINO a `CACHE_DIR` under it, keyed by
 the model manifest, OpenVINO and GenAI versions, the image's package list, the compile config and the GPU.
 OpenVINO's writes are not atomic, so the worker trusts only files recorded in a manifest after a clean
 run (fsynced, then the manifest replaced atomically). At start it deletes any unrecorded or changed file

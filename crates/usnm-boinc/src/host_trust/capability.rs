@@ -8,7 +8,7 @@
 //! unless the app sets a `min_version` (`sched_shmem.cpp`), and `get_app_version` sends one of
 //! those only for a platform the client reports, within the version's client bounds, and whose
 //! plan class `app_plan` passes.
-//! The gold hook (`scripts/boinc/gold-engine-routing.h`) then needs the version to package the
+//! The gold hook (`boinc/scripts/gold-engine-routing.h`) then needs the version to package the
 //! job's engine and the job's base to be the reviewed binding for the version's platform. The
 //! host row keeps what the client last reported: `os_name`, `p_vendor`, and in `misc` the
 //! client version, any container runtime and the client config's Docker and WSL refusals
@@ -773,7 +773,7 @@ mod tests {
                 max_core_client_version: 80299,
             }
         );
-        let repo = include_str!("../../../../contrib-compute/boinc/plan_class_spec.xml");
+        let repo = include_str!("../../../../boinc/project/plan_class_spec.xml");
         assert!(parse_plan_classes(repo).unwrap()["docker"].docker);
         for bad in [
             "<plan_class><name>x</name></plan_class>",

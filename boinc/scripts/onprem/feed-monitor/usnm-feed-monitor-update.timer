@@ -1,0 +1,14 @@
+# Starts usnm-feed-monitor-update.service 2 minutes after the last run ends
+# (#1441). A run that finds the bundle it has installed reads one small file
+# from github.com's release download and asks the GitHub API nothing.
+# install.sh enables it.
+[Unit]
+Description=usnewsmap BOINC feed monitor: check for a new attested bundle every 2 minutes (#1441)
+
+[Timer]
+OnBootSec=3min
+OnUnitInactiveSec=2min
+RandomizedDelaySec=20s
+
+[Install]
+WantedBy=timers.target

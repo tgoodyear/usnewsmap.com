@@ -2,10 +2,9 @@
 
 use super::super::*;
 use super::{
-    engine_runs, msg, one_page, with_engine, worker, BadAltoEngine, ColdInstanceEngine,
-    FailingEngine, FakeScans, NoParts,
+    engine_runs, one_page, with_engine, worker, BadAltoEngine, ColdInstanceEngine, FailingEngine,
+    NoParts,
 };
-use async_trait::async_trait;
 
 #[tokio::test]
 async fn a_read_that_writes_nothing_sends_an_engine_run_event() {
@@ -73,28 +72,8 @@ async fn a_read_that_writes_nothing_sends_an_engine_run_event() {
     assert_eq!(out.list("runs").await.unwrap().len(), 1);
 }
 
-/// Scans to evict, whose eviction never ends.
-#[derive(Debug, Default)]
-struct StuckEvict(FakeScans);
-
-#[async_trait]
-impl ScanSource for StuckEvict {
-    async fn scan(&self, key: &PageKey, batch: &str) -> Result<Scan, FetchError> {
-        let mut s = self.0.scan(key, batch).await?;
-        s.evict = Some(s.url.clone());
-        Ok(s)
-    }
-    async fn jpeg(&self, key: &PageKey, batch: &str, base: &str) -> Result<Scan, FetchError> {
-        self.0.jpeg(key, batch, base).await
-    }
-    async fn evict(&self, _url: &str) {
-        std::future::pending::<()>().await
-    }
-}
-
 /// Once its runs record is uploaded a read has its record: a failure
-/// after it (the part's upload, a stop while the scan is evicted)
-/// sends no `ocr_engine_run` of its own.
+/// after it (the part's upload) sends no `ocr_engine_run` of its own.
 #[tokio::test]
 async fn a_read_with_its_runs_record_sends_no_failure_event() {
     let dir = tempfile::tempdir().unwrap();
@@ -121,46 +100,6 @@ async fn a_read_with_its_runs_record_sends_no_failure_event() {
     // The page failed and is back for another try.
     let again = queue.receive(BULK, Duration::ZERO).await.unwrap().unwrap();
     assert_eq!(again.dequeue_count, 2);
-
-    let dir = tempfile::tempdir().unwrap();
-    let (w, queue, out) = worker(dir.path());
-    let w = Arc::new(Worker {
-        scans: Arc::new(StuckEvict::default()),
-        cfg: Config {
-            once: false,
-            visibility: Duration::from_secs(60),
-            shutdown_grace: Duration::from_millis(50),
-            ..w.cfg.clone()
-        },
-        out: w.out.clone(),
-        engine: w.engine.clone(),
-        queue: w.queue.clone(),
-        metrics: w.metrics.clone(),
-        tracker: w.tracker.clone(),
-    });
-    queue
-        .send(BULK, &msg("sn83045462/1890-05-03/ed-1/seq-7", "deu"))
-        .await
-        .unwrap();
-    let (tx, rx) = watch::channel(false);
-    let runs = engine_runs(async {
-        let run = tokio::spawn(w.run(rx));
-        // Stopped while the uploaded page's scan is evicted.
-        let t0 = Instant::now();
-        while out.list("pages").await.unwrap().is_empty() {
-            assert!(t0.elapsed() < Duration::from_secs(10), "no part");
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        tx.send_replace(true);
-        tokio::time::timeout(Duration::from_secs(10), run)
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
-    })
-    .await;
-    assert!(runs.is_empty(), "{runs:?}");
-    assert_eq!(out.list("runs").await.unwrap().len(), 1);
 }
 
 /// A failed read reports the instance it got, not `describe`'s guess.

@@ -20,7 +20,7 @@ fn stand_in(dir: &Path) -> PathBuf {
     std::fs::create_dir_all(&tessdata).unwrap();
     std::fs::write(tessdata.join("eng.traineddata"), b"model").unwrap();
     let script = dir.join("tesseract");
-    std::fs::write(
+    usnm_test_support::write_executable(
         &script,
         format!(
             r#"#!/bin/sh
@@ -40,11 +40,6 @@ printf 'THE EVENING GAZETTE\nThe council met on Mon-\nday.\n\n\f'
         ),
     )
     .unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
     script
 }
 
@@ -233,16 +228,11 @@ async fn an_instance_that_exits_is_replaced() {
         "type": "hello"
     });
     let script = dir.path().join("adapter");
-    std::fs::write(
+    usnm_test_support::write_executable(
         &script,
         format!("#!/bin/sh\necho '{hello}'\nread line\necho 'started on a page' >&2\nexit 3\n"),
     )
     .unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
     let e = ContractEngine::start(ContractOptions {
         launch: Launch::Local {
             program: script,

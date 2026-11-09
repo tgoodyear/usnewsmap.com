@@ -1,6 +1,6 @@
 # Holding German BOINC results until Fraktur trust is calibrated
 
-**Status:** code merged, not deployed: the reviewed policy is [`2026-11-05-german-trust-hold.json`](2026-11-05-german-trust-hold.json), and CT 230's live `trust.json` is unchanged · **Date:** November 2026 · **Measured on:** synthetic fixtures in the `usnm-boinc` trust and pilot tests and the controller tests; CT 230's `gold/trust.json` read on 5 November (sha256 `4f0787b4…`, read-only) · **Code:** `crates/usnm-boinc/src/trust.rs`, `trust/gate.rs`, `trust/promote.rs`, `claim.rs`, `scripts/boinc/batch_scheduler.py`; [gold check](../boinc/gold-check.md#host-trust-for-usnm_ocr), [the claim](../boinc-batch-scheduler.md#the-claim) · **Issues:** #835, #1415, #1428, #968
+**Status:** code merged, not deployed: the reviewed policy is [`2026-11-05-german-trust-hold.json`](2026-11-05-german-trust-hold.json), and CT 230's live `trust.json` is unchanged · **Date:** November 2026 · **Measured on:** synthetic fixtures in the `usnm-boinc` trust and pilot tests and the controller tests; CT 230's `gold/trust.json` read on 5 November (sha256 `4f0787b4…`, read-only) · **Code:** `crates/usnm-boinc/src/trust.rs`, `trust/gate.rs`, `trust/promote.rs`, `claim.rs`, `boinc/scripts/batch_scheduler.py`; [gold check](../../boinc/docs/gold-check.md#host-trust-for-usnm_ocr), [the claim](../boinc-batch-scheduler.md#the-claim) · **Issues:** #835, #1415, #1428, #968
 
 ## The question
 
@@ -47,8 +47,8 @@ The Gold check's `max_cer` is pooled CER per host report, so a pooled figure for
 | The reviewed file round-trips byte for byte, German is held for hosts 1 to 20, and English trusts exactly 1, 2, 8, 9, 10 and 12                                                                                            | passes | `trust::tests`, `include_bytes!`                        |
 | An incomplete or tampered German result fails and keeps nothing; a complete one collects as `Held` and keeps its three files and reason; nothing is published; after a calibration the same job publishes and loses `held` | passes | `tests/pilot.rs`, a `ger` fixture with synthetic stores |
 | `claim finish` on a held job answers `Held`, and the message stays hidden                                                                                                                                                  | passes | `tests/pilot.rs`, queue fixture                         |
-| The hand-off collects a held job with no host id, and writes the kept files back before the journal                                                                                                                        | passes | `scripts/boinc/test_boinc_scripts.py`                   |
-| The controller collects a held job once, then counts it settled and refills; it reports `scope_held`                                                                                                                       | passes | `scripts/boinc/test_batch_scheduler.py`                 |
+| The hand-off collects a held job with no host id, and writes the kept files back before the journal                                                                                                                        | passes | `boinc/scripts/test_boinc_scripts.py`                   |
+| The controller collects a held job once, then counts it settled and refills; it reports `scope_held`                                                                                                                       | passes | `boinc/scripts/test_batch_scheduler.py`                 |
 
 Nothing here was measured on production, and nothing was deployed.
 

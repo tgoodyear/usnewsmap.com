@@ -589,7 +589,6 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn submission_pins_notices_and_downloads_only_three_public_inputs() {
-        use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::tempdir().unwrap();
         let opts = fixture(tmp.path());
         stage(&opts).unwrap();
@@ -611,8 +610,7 @@ mod tests {
             ("create_work", "#!/bin/sh\nprintf '%s\\n' \"$@\" > args\n"),
         ] {
             let path = project.join("bin").join(name);
-            std::fs::write(&path, script).unwrap();
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            usnm_test_support::write_executable(&path, script).unwrap();
         }
         let submit = super::super::submit::Options {
             root: opts.root.clone(),

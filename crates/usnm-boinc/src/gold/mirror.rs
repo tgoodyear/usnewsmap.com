@@ -208,8 +208,8 @@ mod tests {
         std::fs::create_dir_all(&download).unwrap();
         std::fs::create_dir_all(root.join("cache")).unwrap();
         let helper = project.join("bin/dir_hier_path");
-        std::fs::write(&helper, "#!/bin/sh\nprintf 'download/%s\\n' \"$1\"\n").unwrap();
-        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755)).unwrap();
+        usnm_test_support::write_executable(&helper, "#!/bin/sh\nprintf 'download/%s\\n' \"$1\"\n")
+            .unwrap();
         let mut files = Vec::new();
         for body in [b"first".as_slice(), b"second".as_slice()] {
             let input = root.join("input");

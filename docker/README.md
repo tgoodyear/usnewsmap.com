@@ -1,6 +1,6 @@
 # Container images
 
-The Dockerfiles for the images the service runs in Azure. Every build uses the repository root as its context (`COPY` paths are relative to the root, not to this directory), so name the file with `-f`:
+The Dockerfiles for the images the service runs. The API image serves on-prem under podman and in the Azure spare; the others run where their pages say. Every build uses the repository root as its context (`COPY` paths are relative to the root, not to this directory), so name the file with `-f`:
 
 ```sh
 docker build -f docker/Dockerfile.api .

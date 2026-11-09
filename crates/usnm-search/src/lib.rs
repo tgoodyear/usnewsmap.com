@@ -717,7 +717,7 @@ pub fn ja_snippets(
     let mut stack = vec![query];
     while let Some(node) = stack.pop() {
         // A fraction read with a slash is marked as the phrase it is (#1067).
-        phrases.extend(usnm_core::fractions::slash_phrases(node));
+        phrases.extend(usnm_core::query::also_phrases(node));
         match node {
             // Prefix, wildcard and `~ocr` (a Latin word in a Japanese query)
             // and fuzzy (memory backend only) terms: mark each printed word

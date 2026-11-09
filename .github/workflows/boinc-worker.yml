@@ -15,24 +15,25 @@ on:
       - .github/actions/boinc-worker-build/**
       - ocr/engines/tesseract/**
       - ocr/engines/engines.toml
-      - ocr/boinc/Containerfile
-      - scripts/boinc/smoke-worker.py
+      - boinc/apps/Containerfile
+      - boinc/scripts/smoke-worker.py
       - crates/**
       - Cargo.toml
       - Cargo.lock
       - rust-toolchain.toml
       - .dockerignore
       # Files the crates it builds embed (scripts/ci/changes.sh finds them).
-      - "scripts/boinc/acceptance_server.py"
+      - "boinc/scripts/acceptance_server.py"
       - "docs/notes/2026-11-05-german-trust-hold.json"
+      - "docs/notes/2026-11-07-serbian-trust-hold.json"
       - "fixtures/ocr-gold/bundle-v1.lock.json"
-      - "ocr/boinc/qwen/disk-policy.json"
-      - "ocr/boinc/qwen/weights.lock"
-      - "ocr/boinc/surya/engine.lock"
-      - "ocr/boinc/usnm_qwen_benchmark_in"
+      - "boinc/apps/qwen/disk-policy.json"
+      - "boinc/apps/qwen/weights.lock"
+      - "boinc/apps/surya/engine.lock"
+      - "boinc/apps/usnm_qwen_benchmark_in"
       - "ocr/engines/ndlocr-lite/models.lock"
       - "ocr/routing/routes.toml"
-      - "contrib-compute/boinc/plan_class_spec.xml"
+      - "boinc/project/plan_class_spec.xml"
       - "!**/*.md"
   # After a merge, for what pull requests leave to main (#1585): see scripts/ci/changes.sh.
   push:

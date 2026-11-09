@@ -22,6 +22,19 @@ pub(super) const PREVIEW: &str = "/search-preview/";
 const REVISION_LEN: usize = 16;
 const FALLBACK: &[u8] = include_bytes!("../../../../web/public/og-image.png");
 const RESPONSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+/// How long a script-free page's map render waits for one of the two render
+/// slots before the request is answered 503. An `<img>` cannot retry, so a
+/// refusal leaves the map broken; a screenshot takes seconds, so a short queue
+/// clears. Bounded so a burst cannot leave renders queued without end.
+const STATIC_MAP_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
+/// The longest a screenshot may run once it holds a slot.
+const SCREENSHOT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(40);
+/// How long a script-free map request waits for its image: the queue for a slot,
+/// then the render, with the 5 s margin the render has always had. The queue must
+/// not come out of the render's time, or a request that queued for a while and then
+/// rendered normally would be answered 503 just before its image was ready.
+const STATIC_MAP_BUDGET: std::time::Duration =
+    std::time::Duration::from_secs(STATIC_MAP_WAIT.as_secs() + SCREENSHOT_TIMEOUT.as_secs() + 5);
 const VIEW_KEYS: &[&str] = &[
     "q", "source", "mode", "near", "from", "to", "state", "lang", "lccn", "series", "t", "win",
     "bucket", "layer", "norm", "place", "sort", "tab", "z", "c",
@@ -435,7 +448,7 @@ async fn screenshot(card: &Card) -> Result<Vec<u8>, String> {
         .arg("--url")
         .arg(url)
         .kill_on_drop(true);
-    let output = tokio::time::timeout(std::time::Duration::from_secs(40), command.output())
+    let output = tokio::time::timeout(SCREENSHOT_TIMEOUT, command.output())
         .await
         .map_err(|_| "share screenshot timed out")?
         .map_err(|_| "could not start share screenshot browser")?;
@@ -466,7 +479,8 @@ pub(super) async fn image(OriginalUri(uri): OriginalUri, state: Arc<AppState>) -
             .into_response();
     };
     // Continue warming if the crawler stops waiting, as before.
-    let render = tokio::spawn(async move { cached(&state, card, false).await });
+    let render =
+        tokio::spawn(async move { cached(&state, card, false, std::time::Duration::ZERO).await });
     render_response(render).await
 }
 
@@ -626,7 +640,7 @@ pub(super) async fn search_preview(
     }
     let render = {
         let (state, card) = (state.clone(), card.clone());
-        tokio::spawn(async move { cached(&state, card, false).await })
+        tokio::spawn(async move { cached(&state, card, false, STATIC_MAP_WAIT).await })
     };
     let Some(body) = map_body(render).await else {
         return map_unavailable();
@@ -643,7 +657,7 @@ pub(super) async fn search_preview(
 async fn map_body(
     render: tokio::task::JoinHandle<Result<Rendered, Arc<RenderError>>>,
 ) -> Option<Vec<u8>> {
-    match tokio::time::timeout(std::time::Duration::from_secs(45), render).await {
+    match tokio::time::timeout(STATIC_MAP_BUDGET, render).await {
         Ok(Ok(Ok(image))) => Some(image.body),
         _ => {
             tracing::warn!("static search map unavailable");
@@ -757,6 +771,7 @@ async fn cached(
     state: &AppState,
     card: Card,
     background: bool,
+    patience: std::time::Duration,
 ) -> Result<Rendered, Arc<RenderError>> {
     if !card.is_search() {
         let body = state
@@ -783,15 +798,21 @@ async fn cached(
     let key = preview_path(&render_key(&identity, &normalized), &card);
     let body = state
         .previews
-        .get(key.clone(), stored_at(state, &key), background, async {
-            let body = screenshot(&card).await.map_err(RenderError::Failed)?;
-            if self::identity(state).await? != identity {
-                return Err(RenderError::Failed(
-                    "share snapshot changed during capture".to_owned(),
-                ));
-            }
-            Ok(body)
-        })
+        .get_within(
+            key.clone(),
+            stored_at(state, &key),
+            background,
+            patience,
+            async {
+                let body = screenshot(&card).await.map_err(RenderError::Failed)?;
+                if self::identity(state).await? != identity {
+                    return Err(RenderError::Failed(
+                        "share snapshot changed during capture".to_owned(),
+                    ));
+                }
+                Ok(body)
+            },
+        )
         .await?;
     let preview = state
         .previews
@@ -808,6 +829,23 @@ fn can_warm(state: &AppState) -> bool {
         && state.previews.idle()
 }
 
+/// Pause before the next warm-up step after one that found its preview already there: it cost a
+/// read, not a render, so the walk does not wait for the renderer's sake.
+const WARM_PRESENT_PAUSE: std::time::Duration = std::time::Duration::from_millis(250);
+/// Rest after a full pass over the examples, which only keeps them from expiring.
+const WARM_CYCLE_REST: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+
+/// How long the warm-up waits before its next step. A step that rendered held both of the
+/// renderer's slots, so it waits the configured `interval`; one that found its preview already
+/// stored did not (a restart, or an example seen twice in a pass), so the walk moves on at once.
+fn warm_pause(interval: std::time::Duration, rendered: bool, ok: bool) -> std::time::Duration {
+    if ok && !rendered {
+        WARM_PRESENT_PAUSE.min(interval)
+    } else {
+        interval
+    }
+}
+
 pub(crate) fn spawn(state: Arc<AppState>) {
     if state.config.site_dir.is_none() {
         return;
@@ -817,10 +855,13 @@ pub(crate) fn spawn(state: Arc<AppState>) {
         return;
     }
     tokio::spawn(async move {
+        let interval = state.config.preview_warm_interval;
+        let mut pause = interval;
         let mut cursor = 0;
         let mut previous = String::new();
         loop {
-            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+            tokio::time::sleep(pause).await;
+            pause = interval;
             if !can_warm(&state) {
                 continue;
             }
@@ -845,14 +886,18 @@ pub(crate) fn spawn(state: Arc<AppState>) {
             };
             let Some(card) = card else {
                 cursor = 0;
+                pause = WARM_CYCLE_REST.max(interval);
                 continue;
             };
-            match cached(&state, card, true).await {
-                Ok(_) => tracing::info!("search screenshot warmed"),
-                Err(error) => {
-                    tracing::warn!(%error, "search screenshot warm-up deferred")
-                }
+            let before = state.previews.renders_started();
+            let result = cached(&state, card, true, std::time::Duration::ZERO).await;
+            let rendered = state.previews.renders_started() != before;
+            match &result {
+                Ok(_) if rendered => tracing::info!("search screenshot warmed"),
+                Ok(_) => tracing::debug!("search screenshot already warm"),
+                Err(error) => tracing::warn!(%error, "search screenshot warm-up deferred"),
             }
+            pause = warm_pause(interval, rendered, result.is_ok());
             cursor += 1;
         }
     });
@@ -914,6 +959,20 @@ mod tests {
 
     static IMAGES: LazyLock<moka::future::Cache<String, Vec<u8>>> =
         LazyLock::new(|| moka::future::Cache::new(1024));
+
+    #[test]
+    fn the_warm_up_waits_only_after_work_that_held_the_renderer() {
+        let interval = std::time::Duration::from_secs(10);
+        // A render, or a refusal or failure: the configured interval.
+        assert_eq!(warm_pause(interval, true, true), interval);
+        assert_eq!(warm_pause(interval, false, false), interval);
+        assert_eq!(warm_pause(interval, true, false), interval);
+        // A preview that was already there: on to the next almost at once.
+        assert_eq!(warm_pause(interval, false, true), WARM_PRESENT_PAUSE);
+        // Never longer than the interval itself.
+        let short = std::time::Duration::from_millis(100);
+        assert_eq!(warm_pause(short, false, true), short);
+    }
 
     #[tokio::test]
     async fn static_maps_never_return_generic_images_when_capture_fails_or_is_busy() {

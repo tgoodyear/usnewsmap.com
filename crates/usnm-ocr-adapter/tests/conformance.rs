@@ -14,12 +14,7 @@ const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../ocr/contract/
 
 fn script(dir: &Path, name: &str, body: &str) -> PathBuf {
     let path = dir.join(name);
-    std::fs::write(&path, body).unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    usnm_test_support::write_executable(&path, body).unwrap();
     path
 }
 

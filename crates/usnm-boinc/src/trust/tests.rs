@@ -1421,3 +1421,62 @@ fn the_reviewed_german_hold_keeps_english_as_it_is_live() {
         (ADMIT_MANIFEST, ADMIT_CER)
     );
 }
+
+/// The policy reviewed for CT 230 on 7 November: the live German hold plus a Serbian hold, byte
+/// for byte what `gold trust` would write back. The Serbian scope is the one a Serbian job
+/// carries: `export` routes `srp` to the first catalog profile whose models the image holds.
+#[test]
+fn the_reviewed_serbian_hold_holds_the_scope_serbian_jobs_carry() {
+    const REVIEWED: &[u8] =
+        include_bytes!("../../../../docs/notes/2026-11-07-serbian-trust-hold.json");
+    const GERMAN: &[u8] =
+        include_bytes!("../../../../docs/notes/2026-11-05-german-trust-hold.json");
+    let t = Trust::from_bytes(REVIEWED, Path::new("reviewed")).unwrap();
+    assert_eq!(serde_json::to_vec_pretty(&t).unwrap(), REVIEWED);
+    let route = usnm_ocr_worker::engine::route("srp", &crate::installed_models()).unwrap();
+    assert_eq!(route.profile, "srp+srp_latn");
+    let serbian = job(ADMIT_IMAGE, "srp", &route.profile);
+    let reason = t.scope_hold(&serbian).unwrap();
+    assert!(reason.contains("held from publication") && reason.contains("Serbian"));
+    for host in 1..=20 {
+        assert_eq!(t.refuse_job(&serbian, Some(host)).as_ref(), Some(&reason));
+    }
+    assert!(t.trusted_hosts_for_job(&serbian).is_empty());
+    let srp = t.policy_for("srp", "srp+srp_latn").unwrap();
+    assert_eq!((srp.max_cer, srp.hosts.len()), (0.179, 0));
+    // Everything else is the German hold as it is live.
+    let live = Trust::from_bytes(GERMAN, Path::new("live")).unwrap();
+    let mut without = t.clone();
+    without.policies.retain(|p| p.scope.language != "srp");
+    assert_eq!(without, live);
+    let german = job(ADMIT_IMAGE, "deu", "frak2021");
+    assert!(t.scope_hold(&german).unwrap().contains("#835"));
+    let english = job(ADMIT_IMAGE, "eng", "eng");
+    assert!(t.scope_hold(&english).is_none());
+    assert_eq!(
+        t.trusted_hosts_for_job(&english),
+        BTreeSet::from([1, 2, 8, 9, 10, 12])
+    );
+    // Lifting the hold needs a calibration at or below its limit.
+    assert!(t.merge(&calibrated_srp(0.18)).is_err());
+    let lifted = t.merge(&calibrated_srp(0.1)).unwrap();
+    assert!(lifted.scope_hold(&serbian).is_none());
+}
+
+fn calibrated_srp(max_cer: f64) -> Trust {
+    let scope = Scope {
+        language: "srp".into(),
+        profile: "srp+srp_latn".into(),
+        psm: 3,
+        dpi: 300,
+    };
+    let hosts = BTreeMap::from([(ADMIT_IMAGE.to_string(), BTreeSet::from([1]))]);
+    Trust {
+        hosts,
+        manifest_sha256: Some("7".repeat(64)),
+        scope: Some(scope),
+        max_cer,
+        policies: Vec::new(),
+        v: TRUST_VERSION,
+    }
+}

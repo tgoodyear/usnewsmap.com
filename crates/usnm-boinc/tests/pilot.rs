@@ -1186,8 +1186,7 @@ mod download_permissions {
     use std::os::unix::fs::PermissionsExt;
 
     fn executable(path: &Path, body: &str) {
-        std::fs::write(path, body).unwrap();
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        usnm_test_support::write_executable(path, body).unwrap();
     }
     fn shell_path(path: &Path) -> String {
         format!("'{}'", path.to_str().unwrap().replace('\'', "'\\''"))
@@ -1430,7 +1429,7 @@ sys.exit({exit_code})
             // Supply the dependency so this regression does not depend on host groups.
             executable(&bin.join("chgrp"), "#!/bin/sh\nexit 0\n");
             let source = Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../contrib-compute/images/server/bridge-job.sh");
+                .join("../../boinc/images/server/bridge-job.sh");
             let script = std::fs::read_to_string(source).unwrap();
             let include = ". /usr/local/lib/usnm-boinc/lib.sh";
             assert!(script.contains(include));

@@ -36,9 +36,9 @@ pub const DIAG_FILE: &str = "diag.txt";
 pub const PAGE_FILE: &str = "page.jpg";
 pub const APP: &str = "usnm_surya";
 
-/// The worker image's pins, `KEY=value` a line (`ocr/boinc/surya/engine.lock`): the one place the
+/// The worker image's pins, `KEY=value` a line (`boinc/apps/surya/engine.lock`): the one place the
 /// Containerfile's build arguments are written, compiled in so a default can read it.
-const ENGINE_LOCK: &str = include_str!("../../../../ocr/boinc/surya/engine.lock");
+const ENGINE_LOCK: &str = include_str!("../../../../boinc/apps/surya/engine.lock");
 
 /// surya-ocr's version, from the lock: what the image installs and records as `USNM_SURYA_VERSION`,
 /// and so the version a unit is staged for unless `--engine-surya` says otherwise.
