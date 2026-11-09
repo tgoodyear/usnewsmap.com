@@ -177,7 +177,7 @@ def inspect(args, record):
     quarantine_states = Counter()
     inventory = json.loads(feed.remote(args.archive_host, [
         "python3", "/opt/usnm-quality-feed/archive_alto.py",
-        "--pages", "-", "--archives", "/tank/locbulk/ocr", "--out", "/tank/locstats/qwen-alto"], b""))
+        "--pages", "-", "--archives", "/tank/locbulk/ocr", "--out", "/tank/locstats/qwen-alto"], b"", user=None))
     if not isinstance(inventory.get("available_archives"), list):
         raise ValueError("archive helper lacks retained-source inventory")
     retained = set(inventory["available_archives"])
