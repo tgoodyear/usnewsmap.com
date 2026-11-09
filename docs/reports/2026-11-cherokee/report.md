@@ -230,12 +230,15 @@ The scripts in [`scripts/`](scripts/) take only named arguments and write JSON t
 
 ```sh
 S=docs/reports/2026-11-cherokee/scripts
+D=docs/reports/2026-11-cherokee/data
+scripts/ops/data-assets.sh --fetch --set report-2026-11-cherokee
 python3 $S/chr_alto_stats.py --tar dlc_misctopsn83020866_ver03.tar.bz2 --tar dlc_misctopsn83020874_ver02.tar.bz2
 python3 $S/chr_masthead.py --tar dlc_misctopsn83020866_ver03.tar.bz2 --tar dlc_misctopsn83020874_ver02.tar.bz2
-python3 $S/chr_confusions.py --eval-dir EVAL_DIR
+python3 $S/chr_confusions.py --eval-dir $D/eval
 python3 $S/chr_letter_pairs.py --tar dlc_misctopsn83020866_ver03.tar.bz2 --tar dlc_misctopsn83020874_ver02.tar.bz2 --wordlists ocr/ja-ocr/wordlists
-python3 $S/chr_dict_compare.py --out-dir OUT_DIR --refs NT_REF_DIR --wordlists ocr/ja-ocr/wordlists --baseline A_stock
-python3 $S/chr_checked_score.py --answers glyph-check-answers.jsonl --engine loc=loc.jsonl --engine stock=tesseract-chr-stock.jsonl --out checked-v1.json
+python3 $S/chr_dict_compare.py --out-dir $D/dict-compare/out --refs $D/eval/nt-reference/nt-engine-sample/refs --wordlists ocr/ja-ocr/wordlists --baseline A_stock
+python3 $S/chr_checked_score.py --answers $D/hand-check/glyph-check-answers.jsonl --engine loc=$D/hand-check/loc.jsonl --engine stock=$D/testset-v2/baselines/tesseract-chr-stock.jsonl --out checked-v1.json
+python3 scripts/ocr-survey/cherokee_testset.py score --lines $D/testset-v2/crops/lines.jsonl --pred loc --pred chr_phoenix=$D/readings/phoenix-round2-psm13.jsonl --tier silver
 python3 $S/chr_ocr_variant_recall.py --tar dlc_misctopsn83020866_ver03.tar.bz2 --tar dlc_misctopsn83020874_ver02.tar.bz2 --wordlists ocr/ja-ocr/wordlists
 ```
 
@@ -246,4 +249,16 @@ python3 $S/chr_ocr_variant_recall.py --tar dlc_misctopsn83020866_ver03.tar.bz2 -
 | `dlc_misctopsn83020866_ver03.tar.bz2` | `32fdb37c101f552c8a58bd3461fdf969d2c1a6dd57682fa2213cee09ac82e9cc` |
 | `dlc_misctopsn83020874_ver02.tar.bz2` | `b4dbf6c3f53ec5f43ae8bdd9434e1b5ac7363d830c0dd350547c957d02d976a0` |
 
-The word lists are in the repository. Some inputs aren't published yet: the #1581 evaluation outputs (`EVAL_DIR`: `nt-reference/`, `region-aware/out/hybrid/`), the dictionary comparison's outputs, the frozen test set with its engine readings, and the hand-check answers. Publishing them as the report's own data set (`report-2026-11-cherokee`) needs a rights review first; [#1676](https://github.com/tgoodyear/usnewsmap.com/issues/1676) tracks it. Until then, the confusion, dictionary and checked error-rate figures can't be reproduced from the repository. The search counts are from `https://api.usnewsmap.com/v1/aggregate?q=…` on the dates given.
+The word lists are in the repository. The other inputs are in the release [`data-report-2026-11-cherokee-20261109-82de31f`](https://github.com/tgoodyear/usnewsmap.com/releases/tag/data-report-2026-11-cherokee-20261109-82de31f), with the source-rights notice. `scripts/ops/data-assets.sh --fetch --set report-2026-11-cherokee`, run from the repository root, checks the tarball against `ops/data-assets.json` and extracts it to `data/`, whose README describes each file:
+
+| Asset | SHA-256 |
+| --- | --- |
+| `report-2026-11-cherokee.tar.gz` | `a5cbccdc1bcad45298e64a8fa832150ba4aaebff790e5116ee35065d88b429f6` |
+| `report-2026-11-cherokee.members.txt` | `8ad10ab845529fb56f2a89335faa13fa1694a97879483ace4c44961ecc09b9ad` |
+
+- `chr_confusions.py` reads the #1581 evaluation outputs in `data/eval/` (`nt-reference/nt-engine-sample/` and `region-aware/out/hybrid/`).
+- `chr_dict_compare.py` reads the dictionary comparison's readings in `data/dict-compare/out/` and the New Testament references in `data/eval/nt-reference/nt-engine-sample/refs/`.
+- `chr_checked_score.py` reads the hand-check answers and LoC text in `data/hand-check/` and stock Tesseract's readings in `data/testset-v2/baselines/`.
+- `cherokee_testset.py score` scores the readings in `data/readings/` (`chr_phoenix` rounds one and two, `chr_phoenix+eng`, stock `chr` at PSM 13) against the test set v2 crops in `data/testset-v2/crops/`. Its `SHA256SUMS` checks the crops.
+
+The search counts are from `https://api.usnewsmap.com/v1/aggregate?q=…` on the dates given.

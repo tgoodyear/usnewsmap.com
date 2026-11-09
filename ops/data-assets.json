@@ -14,8 +14,8 @@
   "report-2026-11-cherokee": {
     "asset": "report-2026-11-cherokee.tar.gz",
     "members": "docs/reports/2026-11-cherokee/data and the source-rights notice",
-    "sha256": null,
-    "tag": null
+    "sha256": "a5cbccdc1bcad45298e64a8fa832150ba4aaebff790e5116ee35065d88b429f6",
+    "tag": "data-report-2026-11-cherokee-20261109-82de31f"
   },
   "report-2026-11-gpu-studies": {
     "asset": "report-2026-11-gpu-studies.tar.gz",
