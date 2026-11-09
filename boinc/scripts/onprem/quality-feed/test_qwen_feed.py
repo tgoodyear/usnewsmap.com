@@ -7,6 +7,7 @@ import io
 import inspect
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -314,7 +315,7 @@ class SubsetShipmentTest(unittest.TestCase):
             stage_binary=str(self.binary), engine_plan=self.plan, models=self.base / "models",
             max_ready=1000, max_unresolved=2000, reserve_mib=64, min_free_gb=50)
 
-    def remote(self, host, args, data=None):
+    def remote(self, host, args, data=None, user="root"):
         if "--recipe-inputs" in args:
             return json.dumps(submit.recipe_inputs(self.server_args())).encode()
         if "--inventory" in args:
@@ -692,7 +693,7 @@ class SubsetShipmentTest(unittest.TestCase):
         self.args.step_window_minutes = 5
         outside = types.SimpleNamespace(tm_min=30, tm_sec=0)
 
-        def no_publication(host, args, data=None):
+        def no_publication(host, args, data=None, user="root"):
             self.assertFalse(args[:2] == ["python3", "-c"])
             return self.remote(host, args, data)
 
@@ -741,7 +742,7 @@ class SubsetShipmentTest(unittest.TestCase):
         self.assertEqual(self.ship()[0], 75)
         self.server_race = False
 
-        def lost_response(host, args, data=None):
+        def lost_response(host, args, data=None, user="root"):
             if args[:2] == ["python3", "-c"]:
                 raise subprocess.TimeoutExpired(args, 7200)
             return self.remote(host, args, data)
@@ -2384,7 +2385,7 @@ class SourceTest(unittest.TestCase):
                                       capture_output=True).stdout
             return b"[]" if "-c" in argv else b""
 
-        def remote(host, argv, data=None):
+        def remote(host, argv, data=None, user="root"):
             if "--inventory" in argv:
                 return json.dumps({"fresh_pairs": 0, "unresolved_native": 0, "documents": [],
                                    "free_bytes": 10**12, "ready": 0}).encode()
@@ -2714,6 +2715,29 @@ class SourceTest(unittest.TestCase):
             self.assertEqual(published, ["a" * 64])
             self.assertEqual(json.loads((root / "audit.json").read_bytes())[job["id"]],
                              json.loads(old_audit)[job["id"]])
+
+
+class ArchiveHostUserTest(unittest.TestCase):
+    def test_server_calls_stay_root_and_archive_calls_use_the_alias_user(self):
+        with mock.patch.object(driver, "command", return_value=b"ok") as run:
+            driver.remote("server", ["true"])
+            driver.remote("usnm-qwen-archive", ["true"], b"", user=None)
+        self.assertEqual(run.call_args_list[0].args[0][-2], "root@server")
+        self.assertEqual(run.call_args_list[1].args[0][-2], "usnm-qwen-archive")
+
+    def test_every_archive_host_call_leaves_the_user_to_the_alias(self):
+        for module, host in ((driver, "a.archive_host"), (source, "args.archive_host")):
+            text = inspect.getsource(module)
+            calls = [m.start() for m in re.finditer(r"remote\(\s*" + re.escape(host) + ",", text)]
+            self.assertTrue(calls)
+            for start in calls:
+                depth, i = 0, text.index("(", start)
+                while True:
+                    depth += {"(": 1, ")": -1}.get(text[i], 0)
+                    if depth == 0:
+                        break
+                    i += 1
+                self.assertIn("user=None", text[start:i])
 
 
 if __name__ == "__main__":

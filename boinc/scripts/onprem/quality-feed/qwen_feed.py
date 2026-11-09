@@ -54,9 +54,12 @@ def prepare(args):
     return written
 
 
-def remote(host, args, data=None):
+def remote(host, args, data=None, user="root"):
+    # user=None lets the SSH alias choose the account: the archive host's
+    # forced command runs as an unprivileged user, never root.
+    target = host if user is None else f"{user}@{host}"
     return command(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15",
-                    "root@" + host, shlex.join(args)], data)
+                    target, shlex.join(args)], data)
 
 
 def available_source_index(lines, inventory):
@@ -568,7 +571,7 @@ def _tick(a):
     command(ct + ["tee", work + "/staged.txt"], ("\n".join(sorted(seen)) + "\n").encode())
     archive_inventory = json.loads(remote(
         a.archive_host, ["python3", "/opt/usnm-quality-feed/archive_alto.py",
-                         "--pages", "-", "--archives", a.archives, "--out", a.alto_export], b""))
+                         "--pages", "-", "--archives", a.archives, "--out", a.alto_export], b"", user=None))
     with urllib.request.urlopen(a.scan_server.rstrip("/") + "/index/full.jsonl", timeout=300) as r:
         index, total, retained = available_source_index(r, archive_inventory)
     from qwen_source import priority_index, source_id
@@ -670,7 +673,7 @@ def _tick(a):
         receipt = json.loads(remote(a.archive_host, ["nice", "-n", "19", "ionice", "-c", "3",
                                                     "python3", "/opt/usnm-quality-feed/archive_alto.py",
                                                     "--pages", "-", "--archives", a.archives,
-                                                    "--out", a.alto_export], raw))
+                                                    "--out", a.alto_export], raw, user=None))
         phase("original_alto", cached=len(receipt["cached"]), missing=len(receipt["missing"]),
               pending=len(receipt["pending"]))
         for doc in receipt["missing"]:
