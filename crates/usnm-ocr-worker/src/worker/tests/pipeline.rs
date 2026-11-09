@@ -14,7 +14,6 @@ fn fallback_fetch_dimensions_keep_source_and_fallback_separate() {
         md5: None,
         download: Duration::ZERO,
         from_cache: true,
-        evict: None,
     };
     assert_eq!(fetch_dimensions(&Ok(cached), true), ("ok", "cache", true));
     assert_eq!(

@@ -402,29 +402,48 @@ async fn hash_part(
 }
 
 /// Verified bytes get their final name. The name is linked rather than
-/// renamed over, so a good copy already there is never replaced; one of the
-/// wrong size is known bad and is. An unlisted file has nothing to check a
-/// copy against, so the new bytes replace it.
+/// renamed over, so a good copy already there is never replaced. Nothing
+/// already on disk is deleted (2026-11-08): a listed file of the wrong size,
+/// or an unlisted file a job fetched again, is moved aside to
+/// `<dest>.replaced-<unix nanos>` before the new bytes take its name.
 pub(super) fn publish(part: &Path, job: &Job) -> std::io::Result<bool> {
-    if job.sha256.is_none() {
-        std::fs::rename(part, &job.dest)?;
-        return Ok(true);
-    }
     match std::fs::hard_link(part, &job.dest) {
         Ok(()) => {
             std::fs::remove_file(part)?;
             Ok(true)
         }
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-            if std::fs::metadata(&job.dest)?.len() == job.size {
+            if job.sha256.is_some() && std::fs::metadata(&job.dest)?.len() == job.size {
                 std::fs::remove_file(part)?;
-                Ok(false)
-            } else {
-                std::fs::rename(part, &job.dest)?;
-                Ok(true)
+                return Ok(false);
             }
+            set_aside(&job.dest)?;
+            std::fs::rename(part, &job.dest)?;
+            Ok(true)
         }
         Err(e) => Err(e),
+    }
+}
+
+/// Moves `dest` to a free `<dest>.replaced-<unix nanos>` name, never over
+/// another file.
+pub fn set_aside(dest: &Path) -> std::io::Result<PathBuf> {
+    loop {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        let mut aside = dest.as_os_str().to_owned();
+        aside.push(format!(".replaced-{nanos}"));
+        let aside = PathBuf::from(aside);
+        match std::fs::hard_link(dest, &aside) {
+            Ok(()) => {
+                // `dest` is replaced by the caller's rename; the link keeps
+                // the old bytes.
+                return Ok(aside);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
     }
 }
 

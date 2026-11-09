@@ -202,8 +202,7 @@ impl ReadTrace {
     }
 
     /// The read's runs record is uploaded: it is the read's record now, so
-    /// a later failure (the part's upload, or a stop while the scan is
-    /// evicted) sends no event of its own.
+    /// a later failure (the part's upload) sends no event of its own.
     fn recorded(&self) {
         if let Ok(mut t) = self.state.lock() {
             t.started = None;
@@ -863,7 +862,6 @@ impl Worker {
             let first_read = Instant::now();
             let mut ocr_read_time = Duration::ZERO;
             let mut jpeg_fallback = false;
-            let mut evict_jp2 = None;
             let first = self.read_scan(&scan, m, work.path(), &run_id, trace).await;
             ocr_read_time += first_read.elapsed();
             let (scan, out) = match first {
@@ -893,8 +891,6 @@ impl Worker {
                     let retry = self.read_scan(&jpeg, m, &again, &run_id, trace).await;
                     ocr_read_time += retry_started.elapsed();
                     let out = retry.map_err(|e| engine_failure(e, &self.cfg.node_id))?;
-                    // The JP2's buffer copy goes with the JPEG's, after the upload.
-                    evict_jp2 = scan.evict.clone();
                     jpeg_fallback = true;
                     (jpeg, out)
                 }
@@ -922,26 +918,15 @@ impl Worker {
                 scan.url,
                 scan_sha256,
                 scan.md5,
-                scan.evict,
                 out,
                 jpeg_fallback,
-                evict_jp2,
                 seconds_wall,
             ))
         };
-        let (
-            iiif_base,
-            scan_url,
-            scan_sha256,
-            scan_md5,
-            evict,
-            out,
-            jpeg_fallback,
-            evict_jp2,
-            seconds_wall,
-        ) = tokio::time::timeout_at(deadline.into(), read)
-            .await
-            .map_err(|_| Failure::Abandoned)??;
+        let (iiif_base, scan_url, scan_sha256, scan_md5, out, jpeg_fallback, seconds_wall) =
+            tokio::time::timeout_at(deadline.into(), read)
+                .await
+                .map_err(|_| Failure::Abandoned)??;
         // The stored ALTO is written from the engine's parsed ALTO, and the
         // text is derived from it in reading order (13 §13.4.7), so the two
         // hold the same words. The ALTO names the file read (the IIIF JPEG
@@ -1014,13 +999,8 @@ impl Worker {
         )
         .await
         .map_err(|_| Failure::Abandoned)??;
-        // The output is uploaded: a buffer-set scan isn't needed any more.
-        // Best effort; a failure is logged, never the page's.
-        for url in evict.into_iter().chain(evict_jp2) {
-            // Within the page's deadline, so a slow server can't push the
-            // message past its hide.
-            let _ = tokio::time::timeout_at(deadline.into(), self.scans.evict(&url)).await;
-        }
+        // The scan stays in the cache after the upload: scans are never
+        // deleted (2026-11-08).
         Ok(Done {
             run_id,
             alto: paths.alto,

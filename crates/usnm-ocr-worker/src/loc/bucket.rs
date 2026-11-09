@@ -415,7 +415,6 @@ impl Bucket {
                 bytes: body,
                 download: took,
                 from_cache: false,
-                evict: None,
             },
             Hit { source: NAME, url },
         ))

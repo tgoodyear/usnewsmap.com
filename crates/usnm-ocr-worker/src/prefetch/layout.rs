@@ -105,9 +105,9 @@ pub fn dir_scan_bytes(dir: &Path) -> std::io::Result<u64> {
     Ok(total)
 }
 
-/// The marker a consumed buffer scan leaves (`<scan>.done`, its sidecar
-/// renamed by the scan server's delete), so a later run doesn't fetch it
-/// again.
+/// The marker a consumed buffer scan left (`<scan>.done`, its sidecar
+/// renamed by the scan server's delete, which is gone since 2026-11-08),
+/// so a later run doesn't fetch it again.
 pub fn consumed_path(scan: &Path) -> PathBuf {
     let mut p = scan.as_os_str().to_owned();
     p.push(".done");
@@ -196,6 +196,122 @@ pub(super) async fn there(out: &Path, row: &ManifestRow, size: ImageSize) -> Opt
         }
     }
     None
+}
+
+/// What else is on disk for a page that isn't [`there`] in its own set.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum Elsewhere {
+    /// A copy that checks out in the other set (a page whose set changed
+    /// between manifests), its size and path: the worker reads either set.
+    OtherSet(u64, PathBuf),
+    /// A scan file at one of the page's paths, in either set, that doesn't
+    /// check out against a sidecar (none, or a different one). It is kept
+    /// and never overwritten: scans are never deleted (2026-11-08), and a
+    /// fetch would write over it.
+    Unverified(PathBuf),
+    /// A buffer page a worker read and the scan server deleted before
+    /// 2026-11-08 (its `.done` marker): fetched once already.
+    Consumed,
+    Nothing,
+}
+
+/// Looks past [`there`] for any local copy of the page, so it is never
+/// fetched from LoC again while one exists.
+pub(super) async fn elsewhere(out: &Path, row: &ManifestRow, size: ImageSize) -> Elsewhere {
+    let own = super::set_of(row);
+    let other = match own {
+        super::Set::Keep => super::Set::Buffer,
+        super::Set::Buffer => super::Set::Keep,
+    };
+    let path = |set: super::Set, f: ScanFormat| {
+        page_path(
+            &out.join(set.dir()),
+            &row.batch,
+            &row.lccn,
+            row.date,
+            row.edition,
+            row.seq,
+            size,
+            f,
+        )
+    };
+    for f in formats(size) {
+        let scan = path(other, *f);
+        if let Some(n) = verified(&scan, row, size, *f).await {
+            return Elsewhere::OtherSet(n, scan);
+        }
+    }
+    for set in [own, other] {
+        for f in formats(size) {
+            let scan = path(set, *f);
+            if tokio::fs::try_exists(&scan).await.unwrap_or(true) {
+                return Elsewhere::Unverified(scan);
+            }
+        }
+    }
+    for set in [own, other] {
+        for f in formats(size) {
+            if tokio::fs::try_exists(consumed_path(&path(set, *f)))
+                .await
+                .unwrap_or(false)
+            {
+                return Elsewhere::Consumed;
+            }
+        }
+    }
+    Elsewhere::Nothing
+}
+
+/// Give `to` (and its sidecar) the bytes of `from` (and its sidecar), a
+/// verified scan in the other set: a hard link, else a copy through a
+/// `.part` file. A page promoted from the buffer to the keep set gets its
+/// keep copy (and so its archive copy) without asking LoC again.
+///
+/// Only into empty names: if the scan or its sidecar is already at `to`
+/// (a conflicting image, an orphaned sidecar), nothing is linked or
+/// written over and it returns `false`, so the caller keeps both and
+/// reports the page instead of pairing unrelated bytes and metadata.
+pub(super) async fn link_into(from: &Path, to: &Path) -> anyhow::Result<bool> {
+    let (from, to) = (from.to_owned(), to.to_owned());
+    tokio::task::spawn_blocking(move || -> anyhow::Result<bool> {
+        let pairs = [
+            (from.clone(), to.clone()),
+            (sidecar_path(&from), sidecar_path(&to)),
+        ];
+        for (_, dst) in &pairs {
+            if dst.try_exists().unwrap_or(true) {
+                return Ok(false);
+            }
+        }
+        std::fs::create_dir_all(to.parent().context("no parent directory")?)?;
+        // The scan first, then its sidecar: a sidecar never names bytes
+        // that aren't there. `link` refuses a name that is taken, unlike
+        // `rename`, so a file that appeared since the check is kept.
+        for (src, dst) in pairs {
+            match std::fs::hard_link(&src, &dst) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => return Ok(false),
+                Err(_) => {
+                    let mut part = dst.as_os_str().to_owned();
+                    part.push(".part");
+                    let part = PathBuf::from(part);
+                    std::fs::copy(&src, &part)?;
+                    std::fs::File::open(&part)?.sync_all()?;
+                    let linked = std::fs::hard_link(&part, &dst);
+                    std::fs::remove_file(&part)?;
+                    match linked {
+                        Ok(()) => {}
+                        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                            return Ok(false)
+                        }
+                        Err(e) => return Err(e.into()),
+                    }
+                }
+            }
+        }
+        Ok(true)
+    })
+    .await?
 }
 
 /// Write `body` to `path` through a synced `.part` file and a rename.

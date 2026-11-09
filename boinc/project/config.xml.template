@@ -98,8 +98,12 @@
         <daemon>
             <cmd>transitioner -d 2</cmd>
         </daemon>
+        <!-- Scans are never deleted (2026-11-08). preserve_wu_files marks a done workunit's
+             inputs deleted in the database without removing them from download/, so db_purge
+             keeps working and units created before the input templates gained no_delete are
+             safe too. Output (upload/) files are still deleted. Do not drop the flag. -->
         <daemon>
-            <cmd>file_deleter -d 2</cmd>
+            <cmd>file_deleter -d 2 --preserve_wu_files</cmd>
         </daemon>
         <daemon>
             <cmd>db_purge -d 2 --min_age_days 30</cmd>

@@ -693,7 +693,6 @@ impl Mirrors {
                 md5: Some(batch::hex(&md5)),
                 download: took,
                 from_cache: false,
-                evict: None,
             },
             Hit {
                 source: host.name,

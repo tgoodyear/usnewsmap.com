@@ -57,7 +57,8 @@ server configuration. Sign and publish its files using BOINC's normal
 code-signing process and `bin/update_versions`. Merge `boinc/apps/daemons.xml`
 into the existing `config.xml` daemons section and restart the project daemons.
 This file is a fragment, not a replacement list: retain the stock feeder,
-transitioner, file_deleter, db_purge and other standard daemons. The separate
+transitioner, file_deleter (with `--preserve_wu_files`, see "Scans are never
+deleted" below), db_purge and other standard daemons. The separate
 hosting work in [#439](https://github.com/tgoodyear/usnewsmap.com/pull/439)
 supplies server deployment and bootstrap configuration; it is not a prerequisite
 for self-hosting.
@@ -175,6 +176,42 @@ Deploy the updated bridge image containing both this CLI and wrapper together.
 
 A `published` bridge entry means its native output pair is in `ocr-out`, not that
 it has replaced searchable text. Continue with the existing `ocr-sync` and release.
+
+## Scans are never deleted
+
+From 8 November 2026 no scan in `download/` is deleted, and a file fetched from
+LoC or another external host is not fetched again while a local copy exists.
+Two settings carry this on the server:
+
+- `file_deleter` runs as `file_deleter -d 2 --preserve_wu_files`
+  (`boinc/project/config.xml.template`). For each finished workunit it sets
+  `file_delete_state` to done in the database without removing the input files
+  from `download/` (`sched/file_deleter.cpp` at 22bbebe0, the
+  `preserve_wu_files` branch). Output files under `upload/` are still deleted, and
+  `db_purge` still purges the rows. Because the flag is read by the daemon, not
+  from each workunit, it also covers workunits created before the templates
+  below changed, whose `xml_doc` has no `<no_delete/>`.
+- Every input template (`boinc/apps/*_in`) marks every `file_info`
+  `<no_delete/>`, which `file_deleter` honours per file
+  (`sched/file_deleter.cpp:160-171`). This is a second guard: a `file_deleter`
+  started without the flag still skips files of workunits created from these
+  templates. It does not change what volunteers' clients do with the files;
+  `<sticky/>` does that, and the page files stay non-sticky.
+
+`antique_file_deleter` stays disabled. `boinc/project/test_config.py`
+(`NoScanDeletion`) fails if either guard is dropped.
+
+`config.xml` is rendered from the template on every container start, so the live
+server gets the flag when its container restarts on an image built after this
+change. The input templates in `<project>/templates/` are copied there when an
+app version is installed (`boinc/scripts/install.py`) or by the bridge steps that
+copy their own templates before submitting; otherwise copy `boinc/apps/*_in` in
+by hand after backing up the old ones. Until both are in place,
+keep `file_deleter` off by hand. After the restart, `pgrep -a file_deleter` in
+the container should print the command with `--preserve_wu_files`.
+
+To free space later, delete only output files or move whole scan trees to other
+kept storage; do not remove `--preserve_wu_files`.
 
 ## Retiring an app
 

@@ -676,7 +676,7 @@ enum Command {
         reset: bool,
     },
     /// Serve the prefetched scans to the OCR nodes over HTTP (#368): GET
-    /// scans and sidecars, DELETE buffer-set scans, PUT manifests, from the
+    /// scans and sidecars and PUT manifests (never DELETE), from the
     /// --allow hosts only. Runs in the scan-fetch container on pve-big.
     ServeScans {
         /// `/tank/ocr/scans`, holding `keep/` and `buffer/`.
