@@ -21,7 +21,11 @@ function lockedRevision(url: string): string {
       url,
     );
   const frak = /^https:\/\/zenodo\.org\/records\/\d+\/files\/frak2021[-_]([0-9]+(?:\.[0-9]+)*)\.traineddata$/.exec(url);
-  const revision = best?.[1] ?? frak?.[1];
+  const ours =
+    /^https:\/\/github\.com\/tgoodyear\/usnewsmap\.com\/releases\/download\/(model-[a-z0-9-]+)\/[^/]+\.traineddata$/.exec(
+      url,
+    );
+  const revision = best?.[1] ?? frak?.[1] ?? ours?.[1];
   if (!revision) throw new Error(`Unrecognized locked model URL: ${url}`);
   return revision;
 }

@@ -57,6 +57,11 @@ pub struct Profile {
     pub id: String,
     pub models: Vec<String>,
     pub languages: Vec<String>,
+    /// Read only line by line, never a whole page: a model trained on lines of one print
+    /// (`chr_phoenix`, #1621) that would read a page's other columns as its own script. A
+    /// page route skips it; a line job's route takes it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub lines_only: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

@@ -8,6 +8,7 @@
 # `--update-lock` adds entries for new profiles only.
 ndlocr-lite default sha256:2044186d5ae7f788593f482fcf1f8fd83226e3c3b136e66ee17512fb15fa7920
 tesseract-5.5 ces sha256:4b440da3fcf7d17a1690616ec2d3da73ecdcc5f26413263368132cbda41aaf88
+tesseract-5.5 chr_phoenix sha256:843614a530832514e381d823f8567ec5e39e9b8c221bbf43e914af0167cea4f1
 tesseract-5.5 dan sha256:a7389260aefc6da202d4a8650bfceff848596df26379a4a6f7162df65d77ad58
 tesseract-5.5 deu sha256:62a3ec1ae20959c8e65e0ff98b3cb5699748934634a935848726971e1f44f3b5
 tesseract-5.5 deu_latf+deu sha256:6a02c20e94d712e8ad5c37f67d2dcb1e7735addd6cc2a572b51a62ff0e157103

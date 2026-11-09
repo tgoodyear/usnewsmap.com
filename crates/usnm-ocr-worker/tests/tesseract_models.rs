@@ -2,7 +2,8 @@ use std::collections::BTreeSet;
 
 use usnm_core::ocr_engine::{Digest, Fields, OcrEngineTag};
 use usnm_ocr_worker::engine::{
-    candidates, models_digest, models_from_lock, route, CONTRACT, MODELS_LOCK, ROUTE, ROUTE_VERSION,
+    candidates, models_digest, models_from_lock, route, route_lines, CONTRACT, MODELS_LOCK, ROUTE,
+    ROUTE_VERSION,
 };
 
 const ADDED: &[&str] = &[
@@ -212,4 +213,36 @@ fn tag_models_digest_is_the_profile_lock_digest() {
         checked += 1;
     }
     assert!(checked > 10, "{checked}");
+}
+
+/// `chr_phoenix` (#1621) is in the image but reads lines only: a whole Cherokee page stays
+/// unroutable, as before, and a line job routes to it.
+#[test]
+fn chr_phoenix_routes_line_jobs_only() {
+    let installed = installed();
+    assert!(installed.contains("chr_phoenix"));
+    assert_eq!(installed.len(), 23);
+    assert!(models_digest(MODELS_LOCK, "chr_phoenix").is_some());
+    assert_eq!(route("chr", &installed), None);
+    assert_eq!(
+        route_lines("chr", &installed)
+            .as_ref()
+            .map(|r| r.profile.as_str()),
+        Some("chr_phoenix")
+    );
+    assert_eq!(
+        candidates("chr")
+            .iter()
+            .map(|r| r.profile.as_str())
+            .collect::<Vec<_>>(),
+        ["chr_phoenix"]
+    );
+    assert_eq!(route_lines("chr", &BTreeSet::new()), None);
+    // A line route falls back to page profiles: a line job for English would read with eng.
+    assert_eq!(
+        route_lines("eng", &installed)
+            .as_ref()
+            .map(|r| r.profile.as_str()),
+        Some("eng")
+    );
 }

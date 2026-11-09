@@ -12,7 +12,7 @@ mod sandbox;
 mod tesseract;
 
 pub use sandbox::{check_image_ref, Limits, Remote, Runner, ENGINE_USER};
-pub use tesseract::{Tesseract, TesseractOptions};
+pub use tesseract::{LineReading, Tesseract, TesseractOptions};
 
 pub(crate) use sandbox::{checked, podman_command, ContainerGuard, PageDir, Sandbox};
 
@@ -311,11 +311,22 @@ pub fn candidates(language: &str) -> Vec<EngineRoute> {
 /// Other engines use `EngineKind::for_language` and their contract hello
 /// profiles, subject to the same catalog production gate.
 pub fn route(language: &str, installed: &BTreeSet<String>) -> Option<EngineRoute> {
+    route_for(language, installed, RouteFor::Page)
+}
+
+/// The route of a line job (#1621): the first cleared profile for `language`, a lines-only
+/// one included. Each line crop is read alone, at PSM 13.
+pub fn route_lines(language: &str, installed: &BTreeSet<String>) -> Option<EngineRoute> {
+    route_for(language, installed, RouteFor::Lines)
+}
+
+fn route_for(language: &str, installed: &BTreeSet<String>, read: RouteFor) -> Option<EngineRoute> {
     route_with_catalog(
         &usnm_ocr_route::ENGINES,
         "tesseract-5.5",
         language,
         installed,
+        read,
     )
     .map(|profile| EngineRoute {
         kind: EngineKind::Tesseract,
@@ -323,11 +334,20 @@ pub fn route(language: &str, installed: &BTreeSet<String>) -> Option<EngineRoute
     })
 }
 
+/// What a route reads: a whole page, or lines cut from it one at a time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RouteFor {
+    /// Skips a catalog profile marked `lines_only`.
+    Page,
+    Lines,
+}
+
 fn route_with_catalog(
     catalog: &usnm_ocr_route::Catalog,
     engine_id: &str,
     language: &str,
     installed: &BTreeSet<String>,
+    read: RouteFor,
 ) -> Option<String> {
     if EngineKind::for_language(language) != EngineKind::Tesseract {
         return None;
@@ -339,6 +359,7 @@ fn route_with_catalog(
         .iter()
         .find(|p| {
             p.languages.iter().any(|l| l == language)
+            && (read == RouteFor::Lines || !p.lines_only)
             && catalog.check_production(engine_id, &p.models).is_ok()
             && p.models.iter().all(|name| {
                 name.strip_prefix("tessdata/")
@@ -753,7 +774,7 @@ candidates = [{engine="tesseract-5.5", profile="eng"}]
                         "{code} {tier} {missing}"
                     );
                     assert_eq!(
-                        route_with_catalog(&catalog, "tesseract-5.5", "eng", &installed).is_some(),
+                        route_with_catalog(&catalog, "tesseract-5.5", "eng", &installed, RouteFor::Page).is_some(),
                         allowed,
                         "{code} {tier} {missing}"
                     );
@@ -768,7 +789,7 @@ candidates = [{engine="tesseract-5.5", profile="eng"}]
             .unwrap()
             .models = vec!["tessdata/deu.traineddata".into()];
         assert!(
-            route_with_catalog(&catalog, "tesseract-5.5", "eng", &set(&["eng", "deu"])).is_none()
+            route_with_catalog(&catalog, "tesseract-5.5", "eng", &set(&["eng", "deu"]), RouteFor::Page).is_none()
         );
     }
 

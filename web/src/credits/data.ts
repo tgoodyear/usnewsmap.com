@@ -18,6 +18,8 @@ interface Profile {
   id: string;
   models: string[];
   languages: string[];
+  /** Read line by line only, never as a whole page (#1621). */
+  lines_only?: boolean;
 }
 interface Engine extends Attribution {
   id: string;
