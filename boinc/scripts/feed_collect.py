@@ -22,7 +22,7 @@ import urllib.request
 import urllib.error
 import xml.etree.ElementTree as ET
 
-from feed_status import APP_NAMES, MAX_AGE, TICK_LIMIT_S, atomic_json
+from feed_status import APP_NAMES, MAX_AGE, TICK_FAILURE_SAME_S, TICK_LIMIT_S, atomic_json
 
 MAX_BYTES = 8 * 1024 * 1024
 MAX_ROWS = 8000
@@ -201,8 +201,13 @@ def fresh(document, now, kind):
             raise ValueError("invalid tick duration")
         if not 0 <= now - natural(tick["finished_at"]) <= 900:
             raise ValueError("stale controller evidence")
-        if natural(tick.get("last_failure_at", 0)) > now:
+        if any(natural(tick.get(key, 0)) > now for key in (
+                "last_failure_at", "controller_failure_at", "maintenance_failure_at")):
             raise ValueError("future controller failure")
+        if "failed_in_a_row" in tick:
+            # The evaluator reads both together.
+            natural(tick["failed_in_a_row"])
+            natural(tick.get("maintenance_failure_at"))
     if kind == "backlog":
         if not isinstance(document["backlogs"], dict):
             raise ValueError("invalid backlogs")
@@ -847,7 +852,31 @@ def controller(unit, maintenance=()):
     # successful tick's line (its timings) is longer, so only failures were ever seen.
     raw = run(["journalctl", "--no-pager", "--quiet", "--all", *(a for u in units for a in ("-u", u)),
                "-o", "json", "--since=-2h", "-n", "2000"])
-    latest, last_failure = None, 0
+    # The controller's own failures and its maintenance units' are kept apart: one failed tick
+    # waits for a second (feed_status), a maintenance failure doesn't.
+    latest, controller_failure, maintenance_failure = None, 0, 0
+    # The controller's finished runs, each one's lines grouped by invocation: key -> [time, failed].
+    # A run's JSON line and systemd's failure lines for it are one run. Each JSON line ends a
+    # run; a systemd line without an invocation id joins the run that ended under a minute before.
+    runs = {}
+
+    def record(at, failed, invocation, joins=False):
+        key = invocation
+        if not key and not joins:
+            key = "at-%d" % at
+            while key in runs:
+                key += "+"
+        elif not key:
+            near = [k for k, (t, _) in runs.items() if 0 <= at - t <= TICK_FAILURE_SAME_S]
+            key = max(near, key=lambda k: runs[k][0]) if near else "at-%d" % at
+        elif key not in runs:
+            # A run seen first without its id (an anonymous line under a minute before) is this one.
+            near = [k for k, (t, _) in runs.items() if k.startswith("at-") and 0 <= at - t <= TICK_FAILURE_SAME_S]
+            if near:
+                runs[key] = runs.pop(max(near, key=lambda k: runs[k][0]))
+        t, was = runs.get(key, (at, False))
+        runs[key] = [max(t, at), was or failed]
+
     for line in raw.splitlines():
         entry = json.loads(line)
         if not isinstance(entry, dict):
@@ -858,7 +887,12 @@ def controller(unit, maintenance=()):
             outcome = entry.get(field)
             if not isinstance(outcome, str) or not outcome or outcome in ("success", "done"):
                 raise ValueError("invalid native controller failure evidence")
-            last_failure = max(last_failure, int(entry["__REALTIME_TIMESTAMP"]) // 1000000)
+            at = int(entry["__REALTIME_TIMESTAMP"]) // 1000000
+            if entry["UNIT"] == unit:
+                controller_failure = max(controller_failure, at)
+                record(at, True, entry.get("INVOCATION_ID") or entry.get("_SYSTEMD_INVOCATION_ID"), joins=True)
+            else:
+                maintenance_failure = max(maintenance_failure, at)
             continue
         try:
             event = json.loads(entry.get("MESSAGE", ""))
@@ -871,8 +905,10 @@ def controller(unit, maintenance=()):
             continue
         finished = int(entry["__REALTIME_TIMESTAMP"]) // 1000000
         ok = event["event"] == "boinc_batch_tick"
+        invocation = entry.get("_SYSTEMD_INVOCATION_ID") or entry.get("INVOCATION_ID")
         if not ok:
-            last_failure = max(last_failure, finished)
+            controller_failure = max(controller_failure, finished)
+            record(finished, True, invocation)
         timings = event.get("timings")
         if not isinstance(timings, dict):
             continue
@@ -883,8 +919,19 @@ def controller(unit, maintenance=()):
         if not math.isfinite(seconds) or seconds < 0:
             continue
         if seconds > TICK_LIMIT_S:
-            last_failure = max(last_failure, finished)
+            controller_failure = max(controller_failure, finished)
+        if ok:  # a failure's line was recorded above
+            record(finished, seconds > TICK_LIMIT_S, invocation)
         latest = {"ok": ok, "seconds": seconds, "finished_at": finished}
+    # Failed or slow runs since the last good one, newest first: feed_status fires on two.
+    streak = 0
+    for _, failed in sorted(runs.values(), reverse=True):
+        if not failed:
+            break
+        streak += 1
+    failures = {"last_failure_at": max(controller_failure, maintenance_failure),
+                "controller_failure_at": controller_failure, "maintenance_failure_at": maintenance_failure,
+                "failed_in_a_row": streak}
     status = dict(line.split("=", 1) for line in run([
         "systemctl", "show", unit, "-p", "LoadState", "-p", "SubState", "-p", "Result",
         "-p", "ExecMainStartTimestampMonotonic", "-p", "ExecMainExitTimestampMonotonic",
@@ -897,18 +944,21 @@ def controller(unit, maintenance=()):
     running = status.get("SubState") in ("start", "running") and start > end
     if running:
         return {"ok": None, "seconds": max(0, time.clock_gettime(time.CLOCK_MONOTONIC) - start),
-                "finished_at": int(time.time()), "last_failure_at": last_failure}
-    if status.get("Result") != "success":
-        return {"ok": False, "seconds": max(0, end - start), "finished_at": int(time.time()),
-                "last_failure_at": last_failure}
-    if latest is None or time.time() - latest["finished_at"] > 900:
+                "finished_at": int(time.time())} | failures
+    # A failed unit counts only from fresh runs: a controller that failed and stopped would see its
+    # failures leave the journal window and its count fall, so stale history is unknown, not healthy.
+    last_run = max((t for t, _ in runs.values()), default=None)
+    failed = status.get("Result") != "success"
+    if failed and last_run is not None and time.time() - last_run <= 900:
+        return {"ok": False, "seconds": max(0, end - start), "finished_at": int(time.time())} | failures
+    if failed or latest is None or time.time() - latest["finished_at"] > 900:
         paused = paused_by(maintenance)
         if paused:
             # Paused on purpose: nothing ran, so nothing ran long or failed.
-            return {"ok": None, "seconds": 0, "finished_at": int(time.time()), "last_failure_at": last_failure,
+            return {"ok": None, "seconds": 0, "finished_at": int(time.time()), **failures,
                     "paused_by": paused}
         raise ValueError("no recent completed controller tick")
-    return latest | {"last_failure_at": last_failure}
+    return latest | failures
 
 
 def paused_by(maintenance):

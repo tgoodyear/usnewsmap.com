@@ -181,6 +181,34 @@ class DurationTest(unittest.TestCase):
         self.assertIn('boinc_feed_idle_slots{check="cpu_shortage"} 4', text)
         self.assertEqual(json.loads(json.dumps(self.document))["schema_version"], 1)
 
+    def ticks(self, *steps):
+        """Run (elapsed, tick) steps from fresh state; return each controller_tick check."""
+        self.state, out = {}, []
+        for elapsed, tick in steps:
+            self.facts["tick"] = {"ok": True, "seconds": 1, "finished_at": NOW + elapsed,
+                                  "maintenance_failure_at": 0, "failed_in_a_row": 0} | tick
+            out.append(self.tick(elapsed)["controller_tick"])
+            self.state = json.loads(json.dumps(self.state))
+        return out
+
+    def test_one_failed_tick_waits_and_two_in_a_row_fire_until_a_tick_succeeds(self):
+        checks = self.ticks((0, {"ok": False, "failed_in_a_row": 1}), (60, {"ok": False, "failed_in_a_row": 1}),
+                            (600, {"ok": False, "failed_in_a_row": 2}), (660, {"ok": None, "failed_in_a_row": 2}),
+                            (1200, {"failed_in_a_row": 0}))
+        self.assertEqual([c["state"] for c in checks], ["healthy", "healthy", "firing", "firing", "healthy"])
+        self.assertEqual([c["failed_in_a_row"] for c in checks], [1, 1, 2, 2, 0])
+
+    def test_a_maintenance_failure_or_a_tick_running_too_long_fires_at_once(self):
+        checks = self.ticks((0, {"maintenance_failure_at": NOW - 30}), (60, {"maintenance_failure_at": NOW - 30}))
+        self.assertEqual([c["state"] for c in checks], ["firing", "healthy"])
+        checks = self.ticks((0, {"ok": None, "seconds": 901}), (60, {"ok": None, "seconds": 900}))
+        self.assertEqual([c["state"] for c in checks], ["firing", "healthy"])
+
+    def test_a_collector_without_the_streak_fires_on_any_failure(self):
+        self.facts["tick"] = {"ok": False, "seconds": 1, "finished_at": NOW, "last_failure_at": NOW}
+        checked = self.tick(0)["controller_tick"]
+        self.assertEqual((checked["state"], checked["failed_in_a_row"]), ("firing", None))
+
     def test_failure_between_observations_is_not_hidden_by_success(self):
         self.tick(0)
         self.facts["tick"]["last_failure_at"] = NOW + 20
