@@ -76,11 +76,10 @@ To turn it on, add `--cohort-unit`, confirm `server.json` has a `cohort` object,
 
 Take addresses and paths from the private deployment inventory. Client sources go only on the project's own hosts (1, 2, 9, 10 and 12 today), never on volunteer hosts such as 5 and 13. Keep configs and `feed-sources/` private (0750/0640) with a shared monitoring group or read ACL: the evaluator reads `feed-sources/`, and the dashboard reads the evaluator's output.
 
-On each source host, from a reviewed checkout:
+On each source host, from a reviewed checkout, install the scripts with the updater, which keeps `/opt/usnm-feed-monitor/` on the bundle CI attests from `main` ([feed-monitor/README.md](../scripts/onprem/feed-monitor/README.md): install, rollback, pinning). Don't copy the scripts by hand; a host on hand-copied files drifts from `main`. Then install the units:
 
 ```sh
-sudo install -d -m 0755 /opt/usnm-feed-monitor
-sudo install -m 0644 boinc/scripts/{feed_collect,feed_status,client_account,acceptance_client}.py /opt/usnm-feed-monitor/
+sudo boinc/scripts/onprem/feed-monitor/install.sh
 sudo install -m 0644 boinc/scripts/onprem/usnm-boinc-feed-source@.{service,timer} /etc/systemd/system/
 sudo install -d -m 0750 /etc/usnm-boinc
 ```
@@ -116,7 +115,7 @@ sudo systemctl show usnm-boinc-feed-source@server.service \
 
 On the dashboard, set `USNM_OCRDASH_FEED_PUSH` to `server=[address],controller=[address],backlog=[address],client-[name]=[address]`; one source per own client, and the addresses must also pass its `--allow`. On macOS clients, run the same client command every minute through the host's observation runner.
 
-On the evaluator host, install the two scripts as above, create the `usnm-feed-monitor` system account, and write `/etc/usnm-boinc/feed-monitor.json`:
+On the evaluator host, run `install.sh` as above, create the `usnm-feed-monitor` system account, and write `/etc/usnm-boinc/feed-monitor.json`:
 
 ```json
 {
