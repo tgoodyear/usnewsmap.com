@@ -49,7 +49,7 @@ function Set-FlowMocks {
         $script:Calls.Add('readiness')
         return [pscustomobject]@{
             RamGiB = 16; DiskGiB = 18
-            Gpu = [pscustomobject]@{ Name = 'NVIDIA test'; Driver = '560.94'; FreeMiB = 8000 }
+            Gpu = [pscustomobject]@{ Name = 'AMD test'; Vendor = 'AMD'; Driver = '32.0.21001.9024'; TotalMiB = 16304 }
         }
     }
     Set-Mock Test-ProjectReachable { $script:Calls.Add('network') }
@@ -185,20 +185,31 @@ Test-Case 'only exact affirmative response grants consent' {
     Confirm-Consent 'Test'
 }
 
-Test-Case 'GPU selection ignores old drivers/low VRAM and selects strongest eligible GPU' {
-    $gpu = Select-NvidiaGpu @'
-NVIDIA old, 527.99, 24000, 24000
-NVIDIA busy, 560.94, 8000, 2999
-NVIDIA small, 551.61, 4000, 3000
-NVIDIA large, 560.94, 12000, 11000
-'@
-    Assert-True ($gpu.Name -eq 'NVIDIA large') 'largest usable GPU selected'
-    Assert-True ($null -eq (Select-NvidiaGpu 'NVIDIA broken, [N/A], [N/A], [N/A]')) 'driver failures do not become readiness'
-    Assert-True ($null -eq (Select-NvidiaGpu 'NVIDIA old, 527.99, 24000, 24000')) 'CUDA 12.4 capable driver required'
+function Set-AdapterKeys([object[]]$Keys) {
+    $script:AdapterKeys = $Keys
+    Set-Mock Get-DisplayAdapterKeys { return $script:AdapterKeys }
 }
 
-Test-Case 'malformed GPU output fails closed' {
-    Assert-True ($null -eq (Select-NvidiaGpu 'NVIDIA unknown, new, lots')) 'malformed CSV rejected'
+Test-Case 'display adapters are classified by PCI vendor with exact memory size' {
+    Set-AdapterKeys @(
+        [pscustomobject]@{ MatchingDeviceId = 'pci\ven_1002&dev_7550'; DriverDesc = 'AMD Radeon RX 9070 XT'
+            DriverVersion = '32.0.21001.9024'; 'HardwareInformation.qwMemorySize' = [int64]17095983104 },
+        [pscustomobject]@{ MatchingDeviceId = 'PCI\VEN_10DE&DEV_2684'; DriverDesc = 'NVIDIA GeForce RTX 4090'
+            DriverVersion = '32.0.15.6094'; 'HardwareInformation.qwMemorySize' = [int64]25757220864 },
+        [pscustomobject]@{ MatchingDeviceId = 'PCI\VEN_8086&DEV_A780'; DriverDesc = 'Intel UHD Graphics 770'
+            DriverVersion = '31.0.101.5592'; 'HardwareInformation.MemorySize' = [byte[]](0, 0, 0, 8) },
+        [pscustomobject]@{ MatchingDeviceId = 'ROOT\BasicDisplay'; DriverDesc = 'Microsoft Basic Display Adapter' }
+    )
+    $gpus = @(Get-GpuAdapters)
+    Assert-True ($gpus.Count -eq 3) 'software display adapters ignored'
+    Assert-True ($gpus[0].Vendor -eq 'AMD' -and $gpus[0].TotalMiB -eq 16304) 'AMD QWORD memory size read exactly'
+    Assert-True ($gpus[1].Vendor -eq 'NVIDIA') 'NVIDIA recognised'
+    Assert-True ($gpus[2].Vendor -eq 'Intel' -and $gpus[2].TotalMiB -eq 128) 'binary MemorySize fallback read'
+}
+
+Test-Case 'memory sizes from DWORD values at or above 2 GiB are not negative' {
+    Assert-True ((ConvertTo-MemoryBytes ([int]-1)) -eq 4294967295) 'signed DWORD read as unsigned'
+    Assert-True ((ConvertTo-MemoryBytes $null) -eq 0) 'missing value is zero'
 }
 
 Test-Case 'bounded subprocess captures both streams and actual exit code' {
@@ -216,34 +227,50 @@ function Set-ReadinessMocks {
         param($ClassName)
         return [pscustomobject]@{ BuildNumber = 22631; ProductType = 1; TotalVisibleMemorySize = 16GB / 1KB }
     }
-    Set-Mock Get-Command { param($Name, $CommandType, $ErrorAction) return $null }
+    Set-AdapterKeys @()
+    Set-Mock Test-VulkanLoader { return $true }
     Set-Mock Get-Service { param($Name, $ErrorAction) return $null }
     Set-Mock Test-Path { param($LiteralPath) return $false }
     Set-Mock Get-DataFreeBytes { param($Directory) return 50GB }
 }
 
-Test-Case 'disk headroom accounts for every supported large GPU even while busy' {
-    Set-ReadinessMocks
-    Set-Mock Get-Command {
-        param($Name, $CommandType, $ErrorAction)
-        return [pscustomobject]@{ Source = 'mock-nvidia-smi.exe' }
-    }
-    Set-Mock Invoke-BoundedProcess {
-        param($File, $Arguments, $Directory)
-        return [pscustomobject]@{
-            ExitCode = 0
-            Output = "NVIDIA big busy, 560.94, 12000, 2000`nNVIDIA small free, 560.94, 6000, 3500"
-            ErrorOutput = ''
-        }
-    }
-    $ready = Get-WindowsReadiness $PSScriptRoot $false
-    Assert-True ($ready.Gpu.Name -eq 'NVIDIA small free') 'currently eligible adapter reported'
-    Assert-True ($ready.DiskGiB -eq 18) 'busy/secondary 8 GiB adapter can later qualify for the larger model'
+function Set-Gpus([object[]]$Gpus) {
+    $script:Gpus = $Gpus
+    Set-Mock Get-GpuAdapters { return $script:Gpus }
 }
 
-Test-Case 'unsupported GPU requires explicit optional CPU participation' {
+Test-Case 'eligible AMD GPU is selected and sets the larger disk reserve' {
     Set-ReadinessMocks
-    Assert-Throws { Get-WindowsReadiness $PSScriptRoot $false } 'AMD/Intel GPUs are not supported'
+    Set-Gpus @(
+        [pscustomobject]@{ Name = 'AMD small'; Vendor = 'AMD'; Driver = '1'; TotalMiB = 4096 },
+        [pscustomobject]@{ Name = 'AMD large'; Vendor = 'AMD'; Driver = '1'; TotalMiB = 16304 }
+    )
+    $ready = Get-WindowsReadiness $PSScriptRoot $false
+    Assert-True ($ready.Gpu.Name -eq 'AMD large') 'largest eligible AMD adapter reported'
+    Assert-True ($ready.DiskGiB -eq 18) '8B model disk reserve'
+}
+
+Test-Case 'AMD GPU without the Vulkan loader is not eligible' {
+    Set-ReadinessMocks
+    Set-Gpus @([pscustomobject]@{ Name = 'AMD large'; Vendor = 'AMD'; Driver = '1'; TotalMiB = 16304 })
+    Set-Mock Test-VulkanLoader { return $false }
+    Assert-Throws { Get-WindowsReadiness $PSScriptRoot $false } 'current AMD driver with Vulkan'
+}
+
+Test-Case 'NVIDIA and Intel GPUs are pointed at Linux and need explicit CPU participation' {
+    Set-ReadinessMocks
+    Set-Gpus @(
+        [pscustomobject]@{ Name = 'NVIDIA big'; Vendor = 'NVIDIA'; Driver = '1'; TotalMiB = 24564 },
+        [pscustomobject]@{ Name = 'Intel Arc'; Vendor = 'Intel'; Driver = '1'; TotalMiB = 16384 }
+    )
+    Assert-Throws { Get-WindowsReadiness $PSScriptRoot $false } 'NVIDIA and Intel GPU work runs on Linux only'
+    $ready = Get-WindowsReadiness $PSScriptRoot $true
+    Assert-True ($null -eq $ready.Gpu -and $ready.DiskGiB -eq 12) 'CPU-only reserve; no GPU claimed'
+}
+
+Test-Case 'no GPU requires explicit optional CPU participation' {
+    Set-ReadinessMocks
+    Assert-Throws { Get-WindowsReadiness $PSScriptRoot $false } 'Found: none detected'
     $ready = Get-WindowsReadiness $PSScriptRoot $true
     Assert-True ($null -eq $ready.Gpu -and $ready.DiskGiB -eq 12) 'CPU exception only when explicitly permitted'
 }
@@ -259,14 +286,7 @@ Test-Case 'unsupported Windows has actionable error' {
 
 Test-Case 'existing service-mode client cannot claim GPU readiness' {
     Set-ReadinessMocks
-    Set-Mock Get-Command {
-        param($Name, $CommandType, $ErrorAction)
-        return [pscustomobject]@{ Source = 'mock-nvidia-smi.exe' }
-    }
-    Set-Mock Invoke-BoundedProcess {
-        param($File, $Arguments, $Directory)
-        return [pscustomobject]@{ ExitCode = 0; Output = 'NVIDIA test, 560.94, 12000, 11000'; ErrorOutput = '' }
-    }
+    Set-Gpus @([pscustomobject]@{ Name = 'AMD large'; Vendor = 'AMD'; Driver = '1'; TotalMiB = 16304 })
     Set-Mock Get-Service { param($Name, $ErrorAction) return [pscustomobject]@{ Name = 'BOINC' } }
     Assert-Throws { Get-WindowsReadiness $PSScriptRoot $false } 'Windows service'
 }

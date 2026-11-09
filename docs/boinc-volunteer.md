@@ -302,8 +302,8 @@ your regular user**, and change to its root directory. Windows PowerShell 5.1
 .\boinc\scripts\setup_windows_volunteer.ps1
 ```
 
-The default only reads local host and client information (including `nvidia-smi`
-if installed). It does not contact the project, download software, start BOINC,
+The default only reads local host and client information (including the display
+adapters in the registry). It does not contact the project, download software, start BOINC,
 edit preferences, or attach a project. After reviewing the preview:
 
 ```powershell
@@ -374,31 +374,23 @@ or work around an enforced Group Policy; ask your administrator instead.
 - Use Intel/AMD **x64 Windows 11**, or Windows 10 22H2 with current ESU security
   updates. This helper does not support Windows ARM, 32-bit Windows, older desktop
   Windows, or Windows Server.
-- Install or update the **official NVIDIA Windows driver**, not a CUDA toolkit.
-  The native CUDA 12.4 runtime is delivered with the signed BOINC app; the
-  helper conservatively requires driver **551.61 or newer** and at least **3,000
-  MiB currently free VRAM**. Close GPU-heavy applications if needed. AMD/Intel
-  GPUs are not supported by the native NVIDIA CUDA classes. Hardware checks are
-  not a guarantee that a particular older GPU and runtime combination can
-  execute work.
-- Have at least **6 GiB host RAM** and allow **12 GiB disk** for a cold 2B model
-  run, or **18 GiB** if any supported NVIDIA GPU has at least 7,000 MiB total
-  VRAM and could later qualify for an 8B task. The preview uses total memory
-  across all driver-supported NVIDIA GPUs for disk headroom, not just whichever
-  adapter currently has free VRAM; GPU memory use can change after onboarding.
-  The data volume must have the reported free space, and BOINC's own disk
-  allowance must also permit it. Prefer a desktop with comfortable spare RAM and
-  VRAM rather than using your last available resources.
-- Intended classes: `nvidia_cuda_8b` with at least 7,000 MB GPU RAM, or
-  `nvidia_cuda_2b` with at least 3,000 MB. Neither has had a live version
-  since 2 November 2026 ([app versions](boinc-quality.md#app-versions-and-plan-classes)):
-  the only live Windows GPU version is AMD's (`amd_vulkan_8b`,
-  [AMD](boinc-amd-gpu.md)). This helper does not detect AMD GPUs, so on an
-  AMD PC pass `-AllowCpuOnly` to get past its NVIDIA check. That flag only
-  skips the helper's check: BOINC still detects the AMD GPU and can send it
-  GPU work, depending on its GPU and memory report and resource preferences. CPU participation is
-  **optional**. GPU-only volunteers disable **Use CPU** in normal project
-  preferences. To knowingly onboard a CPU-only or unsupported-GPU host use
+- For GPU work, use an AMD GPU with at least **7,000 MB** of video memory and a
+  current AMD graphics driver, which provides Vulkan (`amd_vulkan_8b`,
+  [AMD](boinc-amd-gpu.md)). It is the only Windows GPU class with a live version
+  ([app versions](boinc-quality.md#app-versions-and-plan-classes)); NVIDIA and
+  Intel GPU work runs on Linux only. The helper reads each display adapter's
+  vendor and memory size from the Windows registry and checks for the driver's
+  `vulkan-1.dll`. It cannot see free video memory; the app needs 7,000 MiB free
+  when a task starts, so close GPU-heavy applications. Hardware checks are not a
+  guarantee that a particular GPU and driver can execute work.
+- Have at least **6 GiB host RAM** and allow **12 GiB disk**, or **18 GiB** with
+  an eligible AMD GPU for the 8B model. The data volume must have the reported
+  free space, and BOINC's own disk allowance must also permit it. Prefer a
+  desktop with comfortable spare RAM and VRAM rather than using your last
+  available resources.
+- Scheduling also depends on BOINC's GPU and memory report and your resource
+  preferences. CPU participation is **optional**. GPU-only volunteers disable
+  **Use CPU** in normal project preferences. To knowingly onboard a CPU-only or unsupported-GPU host use
   `-AllowCpuOnly` with the same command; this only relaxes the local GPU check,
   does not enable CPU work, and does not promise a published CPU app. Ask the
   operator about `usnm_quality` or the multi-threaded Qwen CPU class before
@@ -445,7 +437,7 @@ normal Manager flow used for production:
    For local-client or authorization errors, open Manager on the local computer
    or repair the official installation or user access; do not expose RPC to the
    network or weaken data-directory permissions.
-5. In Manager's **Event Log**, confirm the NVIDIA GPU is detected and look for
+5. In Manager's **Event Log**, confirm the AMD GPU is detected and look for
    **Scheduler request completed**. Use normal project **Update** after changing
    account preferences. No work can mean unpublished apps, a closed cohort, or
    resource or preference limits; it does not mean you need WSL. For connection
