@@ -343,6 +343,7 @@ mod tests {
         let coexisting = eng.merge(&deu).unwrap();
         let deu_job = boinc::Job {
             retry_of: None,
+            lines: None,
             attempt: 0,
             v: 1,
             id: id.clone(),
@@ -383,6 +384,7 @@ mod tests {
     fn job(language: &str, profile: &str) -> boinc::Job {
         let mut job = boinc::Job {
             retry_of: None,
+            lines: None,
             attempt: 0,
             v: 1,
             id: String::new(),

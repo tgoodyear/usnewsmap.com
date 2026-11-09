@@ -211,6 +211,23 @@ pub fn truncation(raw: &[u8]) -> Option<String> {
     }
 }
 
+/// The image's width and height in pixels, from its codestream's SIZ marker (the reference
+/// grid less its offset), with no decoding. `None` when it isn't a JP2 or a bare codestream,
+/// or its SIZ isn't where the standard puts it, right after SOC.
+pub fn dimensions(raw: &[u8]) -> Option<(u32, u32)> {
+    let (start, end) = codestream(raw)?.ok()?;
+    if end < start + 4 + 38 || u16_at(raw, start) != SOC || u16_at(raw, start + 2) != SIZ {
+        return None;
+    }
+    let pos = start + 2;
+    if usize::from(u16_at(raw, pos + 2)) < 38 {
+        return None;
+    }
+    let field = |i: usize| u32_at(raw, pos + 6 + 4 * i);
+    let (x, y, x0, y0) = (field(0), field(1), field(2), field(3));
+    (x > x0 && y > y0).then(|| (x - x0, y - y0))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -240,5 +257,24 @@ mod tests {
         for v in vectors {
             assert_eq!(truncation(&bytes(&v.hex)), v.reason, "{}", v.name);
         }
+    }
+
+    #[test]
+    fn dimensions_come_from_siz() {
+        // SOC, then SIZ: Lsiz 41, Rsiz 0, Xsiz 1210, Ysiz 1620, XOsiz 10, YOsiz 20, ...
+        let mut cs = vec![0xFF, 0x4F, 0xFF, 0x51, 0x00, 0x29, 0x00, 0x00];
+        for v in [1210u32, 1620, 10, 20, 1200, 1600, 0, 0] {
+            cs.extend(v.to_be_bytes());
+        }
+        cs.extend([0x00, 0x01, 0x07, 0x01, 0x01]);
+        cs.extend([0xFF, 0xD9]);
+        assert_eq!(dimensions(&cs), Some((1200, 1600)));
+        let mut jp2 = SIGNATURE.to_vec();
+        jp2.extend(((cs.len() + 8) as u32).to_be_bytes());
+        jp2.extend(b"jp2c");
+        jp2.extend(&cs);
+        assert_eq!(dimensions(&jp2), Some((1200, 1600)));
+        assert_eq!(dimensions(b"\xff\xd8\xff\xe0 a JPEG"), None);
+        assert_eq!(dimensions(&cs[..20]), None);
     }
 }
