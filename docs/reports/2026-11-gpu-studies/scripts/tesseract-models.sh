@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Language models use ocr/engines/tesseract/models.lock; OSD uses scripts/ocr-survey/models.lock.
 # Both locks are pinned here, not supplied by a model host.
-TESSERACT_MODEL_LOCK_SHA256=acfbd62d99fe4ff321a6f5d189445a984b90cb995f51070c72fdc931d7bfa4ad
+TESSERACT_MODEL_LOCK_SHA256=aee44addcb2af43a75b883be51c6a166550df1402911c5f1eccd4808fc72dd24
 TESSERACT_SURVEY_LOCK_SHA256=1af0fa1d73ee693a3d9ee5e792e4af6dd0a88c85e731da62f30aae9f848d520b
 
 tesseract_checksum() {

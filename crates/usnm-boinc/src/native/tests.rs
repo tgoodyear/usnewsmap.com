@@ -102,7 +102,12 @@ fn a_build_holds_chr_phoenixs_notice_and_licence() {
         ]
     );
     // The same SHA256SUMS the engine image pins by hash.
-    let containerfile = include_str!("../../../../ocr/engines/tesseract/Containerfile");
+    // Read, not embedded: the engine image's recipe isn't an input of the worker's build.
+    let containerfile = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../ocr/engines/tesseract/Containerfile"),
+    )
+    .unwrap();
     let sums = boinc::sha256(NOTICES[0].2.as_bytes());
     assert!(containerfile.contains(&format!("ARG CHR_PHOENIX_SUMS={sums}")));
     // And the files in the repository are the release's.

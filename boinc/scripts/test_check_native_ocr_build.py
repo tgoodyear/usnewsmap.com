@@ -155,10 +155,6 @@ class CheckNativeOcrBuild(unittest.TestCase):
                 module.main(argv)
             self.assertIn("--extra-file must be LOGICAL=PATH, both non-empty", err.getvalue())
 
-
-if __name__ == "__main__":
-    unittest.main()
-
     # chr_phoenix's notice and licence ship in the build, checked against its release (#1621).
     def test_a_missing_or_changed_notice_is_refused(self):
         notice = "notice_chr_phoenix_NOTICE.md"
@@ -191,3 +187,6 @@ class RepositoryNotices(unittest.TestCase):
         self.assertEqual(sorted(notices), ["notice_chr_phoenix_LICENSE-Apache-2.0.txt",
                                            "notice_chr_phoenix_NOTICE.md"])
 
+
+if __name__ == "__main__":
+    unittest.main()

@@ -39,6 +39,7 @@ RUN set -eu; mkdir -p /models; cd /models; \
         --connect-timeout 30 --max-time 600 -o "$name" "$url"; \
       echo "$sum  $name" | sha256sum --check --quiet; \
     done
+
 # chr_phoenix's notice and licence (Apache-2.0 section 4) ship beside it, from the same
 # release, each checked against the release's SHA256SUMS, itself checked by hash.
 ARG CHR_PHOENIX_RELEASE
