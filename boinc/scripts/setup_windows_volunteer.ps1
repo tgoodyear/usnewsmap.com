@@ -178,19 +178,37 @@ function Get-WindowsReadiness([string]$DataDirectory, [bool]$CpuAllowed, [bool]$
         $gpu = $null
     }
     $diskGiB = 12
-    if ($gpus | Where-Object { $_.Vendor -eq 'AMD' -and $_.TotalMiB -ge 7000 }) { $diskGiB = 18 }
+    # Only a GPU this setup will use needs the 8B model's reserve.
+    if ($gpu) { $diskGiB = 18 }
     if (-not $DeferDiskCheck -and (Get-DataFreeBytes $DataDirectory) -lt ($diskGiB * 1GB)) {
         throw "Need at least $diskGiB GiB free on the BOINC data volume (cold model download/unpacking). Free space without deleting shared sticky model files, then retry."
     }
     return [pscustomobject]@{ RamGiB = $ramGiB; Gpu = $gpu; DiskGiB = $diskGiB }
 }
 
+function Get-PresentDisplayDriverKeys {
+    # Driver keys of display devices that are connected now, such as
+    # '{4d36e968-e325-11ce-bfc1-08002be10318}\0001'. The class key also keeps
+    # entries for removed adapters (an unplugged eGPU), so only these count.
+    $devices = @(Get-PnpDevice -Class Display -PresentOnly -ErrorAction SilentlyContinue)
+    foreach ($device in $devices) {
+        $driver = Get-PnpDeviceProperty -InstanceId $device.InstanceId -KeyName 'DEVPKEY_Device_Driver' `
+            -ErrorAction SilentlyContinue
+        if ($driver -and $driver.Data) { [string]$driver.Data }
+    }
+}
+
 function Get-DisplayAdapterKeys {
-    # Display adapter driver keys (GUID_DEVCLASS_DISPLAY). Each has the vendor,
-    # name, driver version and, from WDDM drivers, the dedicated memory size.
-    $class = 'HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}'
+    # Display adapter driver keys (GUID_DEVCLASS_DISPLAY) for present devices.
+    # Each has the vendor, name, driver version and, from WDDM drivers, the
+    # dedicated memory size. No present devices means no adapters (fail closed).
+    $guid = '{4d36e968-e325-11ce-bfc1-08002be10318}'
+    $present = @(Get-PresentDisplayDriverKeys | ForEach-Object { $_.ToLowerInvariant() })
+    if (-not $present) { return @() }
+    $class = "HKLM:\SYSTEM\CurrentControlSet\Control\Class\$guid"
     return @(Get-ChildItem -LiteralPath $class -ErrorAction SilentlyContinue |
-        Where-Object { $_.PSChildName -match '^\d{4}$' } |
+        Where-Object { $_.PSChildName -match '^\d{4}$' -and
+            $present -contains ("$guid\$($_.PSChildName)").ToLowerInvariant() } |
         ForEach-Object { Get-ItemProperty -LiteralPath $_.PSPath -ErrorAction SilentlyContinue })
 }
 

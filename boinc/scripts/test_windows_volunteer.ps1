@@ -207,6 +207,25 @@ Test-Case 'display adapters are classified by PCI vendor with exact memory size'
     Assert-True ($gpus[2].Vendor -eq 'Intel' -and $gpus[2].TotalMiB -eq 128) 'binary MemorySize fallback read'
 }
 
+Test-Case 'adapters that are not present are ignored' {
+    $script:Guid = '{4d36e968-e325-11ce-bfc1-08002be10318}'
+    Set-Mock Get-PresentDisplayDriverKeys { return @("$script:Guid\0001") }
+    Set-Mock Get-ChildItem {
+        param($LiteralPath, $ErrorAction)
+        return @([pscustomobject]@{ PSChildName = '0000'; PSPath = 'gone' },
+            [pscustomobject]@{ PSChildName = '0001'; PSPath = 'here' },
+            [pscustomobject]@{ PSChildName = 'Configuration'; PSPath = 'config' })
+    }
+    Set-Mock Get-ItemProperty {
+        param($LiteralPath, $ErrorAction)
+        return [pscustomobject]@{ Key = $LiteralPath }
+    }
+    $keys = @(Get-DisplayAdapterKeys)
+    Assert-True ($keys.Count -eq 1 -and $keys[0].Key -eq 'here') 'removed eGPU driver key skipped'
+    Set-Mock Get-PresentDisplayDriverKeys { return @() }
+    Assert-True (@(Get-DisplayAdapterKeys).Count -eq 0) 'no present devices fails closed'
+}
+
 Test-Case 'memory sizes from DWORD values at or above 2 GiB are not negative' {
     Assert-True ((ConvertTo-MemoryBytes ([int]-1)) -eq 4294967295) 'signed DWORD read as unsigned'
     Assert-True ((ConvertTo-MemoryBytes $null) -eq 0) 'missing value is zero'
@@ -255,6 +274,8 @@ Test-Case 'AMD GPU without the Vulkan loader is not eligible' {
     Set-Gpus @([pscustomobject]@{ Name = 'AMD large'; Vendor = 'AMD'; Driver = '1'; TotalMiB = 16304 })
     Set-Mock Test-VulkanLoader { return $false }
     Assert-Throws { Get-WindowsReadiness $PSScriptRoot $false } 'current AMD driver with Vulkan'
+    $ready = Get-WindowsReadiness $PSScriptRoot $true
+    Assert-True ($null -eq $ready.Gpu -and $ready.DiskGiB -eq 12) 'unusable GPU does not raise the disk reserve'
 }
 
 Test-Case 'NVIDIA and Intel GPUs are pointed at Linux and need explicit CPU participation' {
@@ -289,6 +310,8 @@ Test-Case 'existing service-mode client cannot claim GPU readiness' {
     Set-Gpus @([pscustomobject]@{ Name = 'AMD large'; Vendor = 'AMD'; Driver = '1'; TotalMiB = 16304 })
     Set-Mock Get-Service { param($Name, $ErrorAction) return [pscustomobject]@{ Name = 'BOINC' } }
     Assert-Throws { Get-WindowsReadiness $PSScriptRoot $false } 'Windows service'
+    $ready = Get-WindowsReadiness $PSScriptRoot $true
+    Assert-True ($null -eq $ready.Gpu -and $ready.DiskGiB -eq 12) 'service-mode CPU setup keeps the CPU reserve'
 }
 
 Test-Case 'insufficient RAM and cold disk cannot count as ready' {
