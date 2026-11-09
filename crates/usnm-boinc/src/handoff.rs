@@ -119,8 +119,8 @@ pub async fn put(store: &dyn ObjectStore, from: &Path, prefix: &str) -> anyhow::
 /// The three files an exported job needs on the server, with their size limits.
 const JOB_FILES: [(&str, usize); 3] = [
     ("page", boinc::MAX_SCAN),
-    ("request.json", boinc::MAX_JSON),
-    ("record.json", boinc::MAX_JSON * 2),
+    ("request.json", boinc::MAX_REQUEST),
+    ("record.json", boinc::MAX_REQUEST * 2),
 ];
 
 /// What `pull` found.

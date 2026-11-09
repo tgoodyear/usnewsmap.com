@@ -161,6 +161,8 @@ impl Fixture {
             timeout_secs: 600,
             claims: None,
             deadline_retries: vec![],
+            line_read: None,
+            loc_alto: None,
         };
         Self {
             tmp,
@@ -4136,4 +4138,142 @@ mod queue_feed {
             claim::Ended::NotQueueFed
         );
     }
+}
+
+/// LoC's ALTO for the fixture page (inch1200 at 300 dpi), an early NDNP namespace: a heading in
+/// English, a block marked Cherokee, and an English line.
+const LOC_CHEROKEE_ALTO: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<alto xmlns="http://schema.ccs-gmbh.com/ALTO">
+<Description><MeasurementUnit>inch1200</MeasurementUnit></Description>
+<Layout><Page ID="P1" HEIGHT="4000" WIDTH="4000" PHYSICAL_IMG_NR="1"><PrintSpace>
+<TextBlock ID="TB1" HPOS="400" VPOS="400" WIDTH="3200" HEIGHT="400" LANGUAGE="eng">
+<TextLine ID="TL1" HPOS="400" VPOS="400" WIDTH="3200" HEIGHT="160"><String CONTENT="CHEROKEE" HPOS="400" VPOS="400" WIDTH="1200" HEIGHT="160"/><SP/><String CONTENT="PHOENIX." HPOS="1700" VPOS="400" WIDTH="1200" HEIGHT="160"/></TextLine>
+</TextBlock>
+<TextBlock ID="TB2" HPOS="400" VPOS="1200" WIDTH="3200" HEIGHT="800" LANGUAGE="chr">
+<TextLine ID="TL2" HPOS="400" VPOS="1200" WIDTH="3200" HEIGHT="160"><String CONTENT="ᎦᎪᎯ" HPOS="400" VPOS="1200" WIDTH="800" HEIGHT="160"/><SP/><String CONTENT="ᎠᎴ" HPOS="1300" VPOS="1200" WIDTH="600" HEIGHT="160"/></TextLine>
+<TextLine ID="TL3" HPOS="400" VPOS="1600" WIDTH="3200" HEIGHT="160"><String CONTENT="ᎦᏙᎯ" HPOS="400" VPOS="1600" WIDTH="800" HEIGHT="160"/></TextLine>
+</TextBlock>
+<TextBlock ID="TB3" HPOS="400" VPOS="2400" WIDTH="3200" HEIGHT="800">
+<TextLine ID="TL4" HPOS="400" VPOS="2400" WIDTH="3200" HEIGHT="160"><String CONTENT="The" HPOS="400" VPOS="2400" WIDTH="800" HEIGHT="160"/><SP/><String CONTENT="end." HPOS="1300" VPOS="2400" WIDTH="800" HEIGHT="160"/></TextLine>
+</TextBlock>
+</PrintSpace></Page></Layout></alto>"#;
+
+impl Fixture {
+    /// Line-read export (#1621) of the fixture page, with `alto` as its LoC ALTO.
+    fn line_read(&mut self, alto: &str) {
+        let key: PageKey = "sn00000001/1900-01-01/ed-1/seq-1".parse().unwrap();
+        let dir = self.tmp.path().join("loc-alto");
+        let path = usnm_boinc::lines::loc_alto_path(&dir, &key).unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, alto).unwrap();
+        self.options.line_read = Some("chr".into());
+        self.options.loc_alto = Some(dir);
+    }
+    /// A line job's returned files: `text` as its readings, its own ALTO.
+    fn line_result(&self, id: &str, text: &str) -> (PathBuf, PathBuf, PathBuf) {
+        let (manifest, txt, alto) = self.result_with_text(&self.options.root, id, text.as_bytes());
+        let mut result: ResultManifest =
+            serde_json::from_slice(&std::fs::read(&manifest).unwrap()).unwrap();
+        result.v = boinc::LINES_VERSION;
+        std::fs::write(&manifest, serde_json::to_vec(&result).unwrap()).unwrap();
+        (manifest, txt, alto)
+    }
+}
+
+#[tokio::test]
+async fn line_read_exports_cherokee_lines_and_imports_the_merged_page() {
+    let mut fx = Fixture::new("eng").await;
+    fx.line_read(LOC_CHEROKEE_ALTO);
+    let id = fx.export().await;
+    assert_eq!(fx.export().await, id);
+    let record = usnm_boinc::load(&fx.options.root, &id).unwrap();
+    let job = &record.job;
+    assert_eq!(job.v, boinc::LINES_VERSION);
+    assert_eq!(job.message.language, "eng");
+    assert_eq!(
+        (job.engine.profile.as_str(), job.engine.psm),
+        ("chr_phoenix", 13)
+    );
+    let lines = job.lines.as_ref().unwrap();
+    assert_eq!(
+        lines
+            .lines
+            .iter()
+            .map(|l| l.id.as_str())
+            .collect::<Vec<_>>(),
+        ["b1l0", "b1l1"]
+    );
+    // The boxes are in the scan's pixels.
+    let job_dir = fx.options.root.join("jobs").join(&id);
+    let scan = std::fs::read(job_dir.join("page")).unwrap();
+    let (w, _) = usnm_boinc::lines::scan_size(&scan).unwrap();
+    assert_eq!(lines.lines[0].rect[0], (f64::from(w) * 0.1).round() as u32);
+    // The model's first line replaces LoC's; its second loses a New Testament word.
+    let files = fx.line_result(&id, "ᎦᏙᎯ ᎠᎴ\nᎦᎪᎯ\n");
+    fx.import(&id, &files).await.unwrap();
+    assert_eq!(
+        imported_text(&fx).await,
+        "CHEROKEE PHOENIX.\nᎦᏙᎯ ᎠᎴ\nᎦᏙᎯ\nThe end."
+    );
+    let stats: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(job_dir.join(usnm_boinc::lines::MERGE_FILE)).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        stats,
+        serde_json::json!({"lines": 2, "model": 1, "fallback": {"fewer_known": 1}})
+    );
+    let report = usnm_boinc::lines::report(&fx.options.root, None).unwrap();
+    assert_eq!(report.len(), 1);
+    assert_eq!(report[0].stats.model, 1);
+    let status = sync::run(
+        &fx.state,
+        "test-boinc",
+        &fx.stores,
+        &sync::Options::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(status.last_run.imported, 1);
+    assert!(status.last_run.rejected.is_empty());
+}
+
+#[tokio::test]
+async fn line_read_skips_pages_without_cherokee_lines_or_alto() {
+    let mut fx = Fixture::new("eng").await;
+    let english = LOC_CHEROKEE_ALTO
+        .replace("LANGUAGE=\"chr\"", "LANGUAGE=\"eng\"")
+        .replace("ᎦᎪᎯ", "Tbe")
+        .replace("ᎠᎴ", "cify")
+        .replace("ᎦᏙᎯ", "met");
+    fx.line_read(&english);
+    let ids = usnm_boinc::export(
+        &fx.options,
+        &fx.state,
+        fx.stores.curated.as_ref(),
+        fx.stores.reference.as_ref(),
+    )
+    .await
+    .unwrap();
+    assert!(ids.is_empty());
+    fx.options.loc_alto = Some(fx.tmp.path().join("nowhere"));
+    let ids = usnm_boinc::export(
+        &fx.options,
+        &fx.state,
+        fx.stores.curated.as_ref(),
+        fx.stores.reference.as_ref(),
+    )
+    .await
+    .unwrap();
+    assert!(ids.is_empty());
+    // A line read is for cohort pages only, and needs LoC's ALTO.
+    fx.options.loc_alto = None;
+    assert!(usnm_boinc::export(
+        &fx.options,
+        &fx.state,
+        fx.stores.curated.as_ref(),
+        fx.stores.reference.as_ref(),
+    )
+    .await
+    .is_err());
 }

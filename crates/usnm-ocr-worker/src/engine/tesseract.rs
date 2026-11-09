@@ -10,8 +10,8 @@ use usnm_core::ocr_engine::{Digest, Fields, OcrEngineTag, TagError};
 
 use super::{
     check_image_ref, image_digest, invalid_output, models_digest, models_from_lock, read_output,
-    route_with_catalog, tail, RouteFor, Engine, EngineError, EngineOutput, Exited, ReadFailed, ReadInfo,
-    Runner, Sandbox, CONTRACT, MAX_ALTO, MAX_TEXT, MODELS_LOCK, ROUTE, ROUTE_VERSION,
+    route_with_catalog, tail, Engine, EngineError, EngineOutput, Exited, ReadFailed, ReadInfo,
+    RouteFor, Runner, Sandbox, CONTRACT, MAX_ALTO, MAX_TEXT, MODELS_LOCK, ROUTE, ROUTE_VERSION,
 };
 
 #[derive(Debug, Clone)]
@@ -86,7 +86,10 @@ pub(crate) fn parse_line_tsv(tsv: &str, images: usize) -> anyhow::Result<Vec<Lin
             continue;
         }
         let page: usize = fields[1].parse().context("TSV page_num")?;
-        anyhow::ensure!((1..=images).contains(&page), "TSV page {page} of {images} crops");
+        anyhow::ensure!(
+            (1..=images).contains(&page),
+            "TSV page {page} of {images} crops"
+        );
         let text = fields[11].trim();
         if text.is_empty() {
             continue;
@@ -100,7 +103,11 @@ pub(crate) fn parse_line_tsv(tsv: &str, images: usize) -> anyhow::Result<Vec<Lin
         .map(|w| {
             let confs: Vec<f64> = w.iter().filter_map(|(_, c)| *c).collect();
             LineReading {
-                text: w.iter().map(|(t, _)| t.as_str()).collect::<Vec<_>>().join(" "),
+                text: w
+                    .iter()
+                    .map(|(t, _)| t.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" "),
                 conf: (!confs.is_empty()).then(|| confs.iter().sum::<f64>() / confs.len() as f64),
             }
         })
@@ -589,12 +596,60 @@ mod line_tests {
         let got = parse_line_tsv(&tsv, 3).unwrap();
         assert_eq!(got[0].text, "ᏣᎳᎩ ᎦᏬᏂᎯᏍᏗ");
         assert!((got[0].conf.unwrap() - 0.8).abs() < 1e-9);
-        assert_eq!(got[1], LineReading { text: String::new(), conf: None });
+        assert_eq!(
+            got[1],
+            LineReading {
+                text: String::new(),
+                conf: None
+            }
+        );
         assert_eq!(got[2].text, "Ꭰ");
         assert_eq!(got[2].conf, Some(0.5));
         assert!(parse_line_tsv(&tsv, 2).is_err());
         assert!(parse_line_tsv("not a tsv", 1).is_err());
         assert!(parse_line_tsv(&format!("{HEADER}\n5\t1\t1"), 1).is_err());
         assert_eq!(parse_line_tsv(HEADER, 2).unwrap().len(), 2);
+    }
+
+    /// The host's Tesseract, when it has one with `eng`: a list of crops is read in one run,
+    /// each crop's words under its own index, and a blank crop reads as empty or as noise.
+    #[tokio::test]
+    async fn reads_a_list_of_line_crops_with_the_host_tesseract() {
+        let Ok(t) = Tesseract::detect(TesseractOptions {
+            psm: 13,
+            ..TesseractOptions::default()
+        })
+        .await
+        else {
+            eprintln!("no host Tesseract; skipped");
+            return;
+        };
+        if !t.installed().contains("eng") {
+            eprintln!("no eng model; skipped");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let mut crops = Vec::new();
+        for (i, black) in [true, false].into_iter().enumerate() {
+            // A thick bar reads as something or nothing; what matters is the shape of the result.
+            let img = image::GrayImage::from_fn(300, 60, |x, y| {
+                image::Luma([
+                    if black && (20..280).contains(&x) && (25..35).contains(&y) {
+                        0
+                    } else {
+                        255
+                    },
+                ])
+            });
+            let path = dir.path().join(format!("line-{i:04}.png"));
+            img.save(&path).unwrap();
+            crops.push(path);
+        }
+        assert_eq!(t.line_profile("eng").as_deref(), Some("eng"));
+        let got = t.read_lines(&crops, "eng", dir.path()).await.unwrap();
+        assert_eq!(got.len(), 2);
+        if !t.installed().contains("chr_phoenix") {
+            assert!(t.read_lines(&crops, "chr", dir.path()).await.is_err());
+        }
     }
 }

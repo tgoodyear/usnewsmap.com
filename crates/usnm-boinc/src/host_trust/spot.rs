@@ -180,7 +180,7 @@ pub async fn spot_submit(c: &Config, jobs: &Path, execute: bool) -> anyhow::Resu
 
 async fn stage_inputs(c: &Config, job: &boinc::Job, workunit: &str) -> anyhow::Result<()> {
     let input = crate::dir(&c.jobs_root, &job.id)?;
-    let request = read(&input.join("request.json"), boinc::MAX_JSON)?;
+    let request = read(&input.join("request.json"), boinc::MAX_REQUEST)?;
     ensure!(
         serde_json::from_slice::<boinc::Job>(&request)? == *job,
         "staged job changed"

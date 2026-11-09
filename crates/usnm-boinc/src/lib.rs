@@ -34,6 +34,7 @@ pub mod cli;
 pub mod gold;
 pub mod handoff;
 pub mod host_trust;
+pub mod lines;
 #[cfg(target_os = "linux")]
 pub mod native;
 pub mod ndlocr;
@@ -431,7 +432,7 @@ fn dir(root: &Path, id: &str) -> anyhow::Result<PathBuf> {
 pub fn load(root: &Path, id: &str) -> anyhow::Result<Record> {
     let record: Record = serde_json::from_slice(&read(
         &dir(root, id)?.join("record.json"),
-        boinc::MAX_JSON * 2,
+        boinc::MAX_REQUEST * 2,
     )?)?;
     record.job.validate()?;
     retry::validate(&record)?;
@@ -598,6 +599,11 @@ pub struct ExportOptions {
     /// for the selected page's claim, are under `root`. That page's job takes the recorded
     /// deadline. A job whose page isn't selected is passed over.
     pub deadline_retries: Vec<String>,
+    /// Read only the page's lines in this language, one LoC ALTO line box at a time, with the
+    /// language's line route (#1621): `chr`. Needs `loc_alto`; not for queue-fed pages.
+    pub line_read: Option<String>,
+    /// LoC's bulk OCR, unpacked: `<lccn>/<yyyy>/<mm>/<dd>/ed-<n>/seq-<m>/ocr.xml`.
+    pub loc_alto: Option<PathBuf>,
 }
 /// The Tesseract models the worker image holds, from the model lock.
 pub fn installed_models() -> BTreeSet<String> {
@@ -629,6 +635,17 @@ pub async fn export(
         usnm_ocr_contract::message::is_base_batch_name(&opts.batch),
         "invalid base batch"
     );
+    if let Some(language) = &opts.line_read {
+        ensure!(
+            boinc::LINE_LANGUAGES.contains(&language.as_str()),
+            "no line route for {language}"
+        );
+        ensure!(opts.loc_alto.is_some(), "a line read needs LoC's ALTO");
+        ensure!(
+            opts.claims.is_none() && opts.deadline_retries.is_empty(),
+            "a line read is for cohort pages, not queue-fed ones"
+        );
+    }
     let _lock = Lock::take(&opts.root)?;
     // A page this plan journaled already keeps the deadline it was exported with, so a resumed
     // export builds the same job, whatever --timeout-secs is now (#1159). A page journaled
@@ -752,11 +769,55 @@ pub async fn export(
             };
             (message, None)
         };
-        let selected = engine::route(&message.language, &installed)
-            .context("selected engine/profile unavailable on this Tesseract node")?;
+        // A line read: the page's Cherokee lines from LoC's ALTO, in scan pixels. A page
+        // without any is passed over.
+        let line_read = match (&opts.line_read, &opts.loc_alto) {
+            (Some(language), Some(loc_alto)) => {
+                let path = lines::loc_alto_path(loc_alto, &message.key()?)?;
+                if !path.is_file() {
+                    eprintln!(
+                        "skipped {}: no LoC ALTO at {}",
+                        message.page,
+                        path.display()
+                    );
+                    continue;
+                }
+                let alto = read(&path, boinc::MAX_ALTO)?;
+                let (scan_width, scan_height) = lines::scan_size(&scan)?;
+                let boxes = lines::select_lines(&alto, (scan_width, scan_height), language)
+                    .with_context(|| format!("LoC's ALTO for {}", message.page))?;
+                if boxes.is_empty() || boxes.len() > boinc::MAX_LINES {
+                    eprintln!(
+                        "skipped {}: {} {language} lines (1 to {} are read)",
+                        message.page,
+                        boxes.len(),
+                        boinc::MAX_LINES
+                    );
+                    continue;
+                }
+                let record = lines::LineReadRecord {
+                    loc_alto_sha256: boinc::sha256(&alto),
+                    scan_height,
+                    scan_width,
+                    title_languages: title_languages.clone(),
+                };
+                let read = boinc::LineRead {
+                    language: language.clone(),
+                    psm: boinc::LINE_PSM,
+                    lines: boxes,
+                };
+                Some((read, alto, record))
+            }
+            _ => None,
+        };
+        let selected = match &line_read {
+            Some((read, ..)) => engine::route_lines(&read.language, &installed),
+            None => engine::route(&message.language, &installed),
+        }
+        .context("selected engine/profile unavailable on this Tesseract node")?;
         let profile = selected.profile;
         let mut job = Job {
-            v: boinc::VERSION,
+            v: Job::version_for(false, line_read.is_some()),
             id: String::new(),
             attempt: 0,
             retry_of: None,
@@ -777,10 +838,15 @@ pub async fn export(
                 models: engine::models_digest(engine::MODELS_LOCK, &profile)
                     .context("unlocked model")?
                     .to_string(),
-                psm: 3,
+                psm: if line_read.is_some() {
+                    boinc::LINE_PSM
+                } else {
+                    3
+                },
                 dpi: 300,
                 timeout_secs,
             },
+            lines: line_read.as_ref().map(|(read, ..)| read.clone()),
         };
         job.id = job.identity()?;
         job.validate()?;
@@ -806,6 +872,13 @@ pub async fn export(
             }
             old
         } else {
+            if let Some((_, alto, record)) = &line_read {
+                atomic(&job_dir.join(lines::LOC_ALTO_FILE), alto)?;
+                atomic(
+                    &job_dir.join(lines::LINE_READ_FILE),
+                    &serde_json::to_vec_pretty(record)?,
+                )?;
+            }
             atomic(&job_dir.join("page"), &scan)?;
             atomic(
                 &job_dir.join("request.json"),
@@ -954,8 +1027,23 @@ pub async fn import(
     let accepted = dir(root, id)?.join("accepted");
     let key = record.job.message.key()?;
     let raw_text = text.clone();
-    let text = normalized_text(&record.job, &text)?;
     let raw_alto = alto.clone();
+    // A line job's result is its Cherokee lines: the page is LoC's, with them merged in
+    // (#1621).
+    let (text, alto) = if record.job.lines.is_some() {
+        let job_dir = dir(root, id)?;
+        let merged = lines::merge_in(&job_dir, &record.job, &text)?;
+        atomic(
+            &job_dir.join(lines::MERGE_FILE),
+            &serde_json::to_vec_pretty(&merged.stats)?,
+        )?;
+        (
+            normalized_text(&record.job, merged.text.as_bytes())?,
+            merged.alto.into_bytes(),
+        )
+    } else {
+        (normalized_text(&record.job, &text)?, alto)
+    };
     let alto = engine::set_alto_source(
         std::str::from_utf8(&alto)?,
         &record.job.scan.url,

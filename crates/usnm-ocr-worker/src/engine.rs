@@ -774,7 +774,14 @@ candidates = [{engine="tesseract-5.5", profile="eng"}]
                         "{code} {tier} {missing}"
                     );
                     assert_eq!(
-                        route_with_catalog(&catalog, "tesseract-5.5", "eng", &installed, RouteFor::Page).is_some(),
+                        route_with_catalog(
+                            &catalog,
+                            "tesseract-5.5",
+                            "eng",
+                            &installed,
+                            RouteFor::Page
+                        )
+                        .is_some(),
                         allowed,
                         "{code} {tier} {missing}"
                     );
@@ -788,9 +795,14 @@ candidates = [{engine="tesseract-5.5", profile="eng"}]
             .find(|p| p.id == "eng")
             .unwrap()
             .models = vec!["tessdata/deu.traineddata".into()];
-        assert!(
-            route_with_catalog(&catalog, "tesseract-5.5", "eng", &set(&["eng", "deu"]), RouteFor::Page).is_none()
-        );
+        assert!(route_with_catalog(
+            &catalog,
+            "tesseract-5.5",
+            "eng",
+            &set(&["eng", "deu"]),
+            RouteFor::Page
+        )
+        .is_none());
     }
 
     #[test]

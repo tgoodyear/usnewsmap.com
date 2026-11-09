@@ -40,8 +40,14 @@ pub async fn run(work: &Path) -> anyhow::Result<()> {
             std::fs::remove_file(p)?;
         }
     }
-    let job: Job = serde_json::from_slice(&read(&work.join("request.json"), boinc::MAX_JSON)?)?;
+    let request = read(&work.join("request.json"), boinc::MAX_REQUEST)?;
+    let job: Job = serde_json::from_slice(&request)?;
     job.validate()?;
+    // Only a line job's request is over the page job's limit.
+    ensure!(
+        job.lines.is_some() || request.len() <= boinc::MAX_JSON,
+        "file over size limit"
+    );
     let image = read(&work.join("page"), boinc::MAX_SCAN)?;
     ensure!(
         image.len() as u64 == job.scan.bytes && boinc::sha256(&image) == job.scan.sha256,
@@ -51,7 +57,11 @@ pub async fn run(work: &Path) -> anyhow::Result<()> {
     check_models(&job.engine)?;
     let engine = tesseract(&job.engine).await?;
     check_route(&engine, &job)?;
-    let (result, text, alto) = ocr_page(&engine, &job, &work.join("page")).await?;
+    let (result, text, alto) = if job.lines.is_some() {
+        crate::lines::ocr_lines(&engine, &job, &image).await?
+    } else {
+        ocr_page(&engine, &job, &work.join("page")).await?
+    };
     atomic(&work.join("text.txt"), text.as_bytes())?;
     atomic(&work.join("layout.xml"), &alto)?;
     atomic(
@@ -109,11 +119,16 @@ fn read_timeout(secs: u32) -> Duration {
     }
 }
 
-/// The installed engine is the job's version and routes its language to its profile.
+/// The installed engine is the job's version and routes its language to its profile: a line
+/// job's line language to its line route (#1621), whatever the page's language is.
 pub(crate) fn check_route(engine: &Tesseract, job: &Job) -> anyhow::Result<()> {
+    let route = match &job.lines {
+        Some(lines) => engine::route_lines(&lines.language, engine.installed()),
+        None => engine::route(&job.message.language, engine.installed()),
+    };
     ensure!(
         engine.version() == job.engine.version
-            && engine::route(&job.message.language, engine.installed())
+            && route
                 == Some(engine::EngineRoute {
                     kind: job.engine.kind,
                     profile: job.engine.profile.clone()

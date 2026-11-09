@@ -33,7 +33,7 @@ pub fn validate(record: &Record) -> anyhow::Result<()> {
         Some(retry) => {
             ensure!(
                 record.job.attempt > 0
-                    && record.job.v == boinc::RETRY_VERSION
+                    && record.job.v == boinc::Job::version_for(true, record.job.lines.is_some())
                     && boinc::is_sha256(&retry.previous_job)
                     && retry.previous_job != record.job.id
                     && record.job.retry_of.as_ref() == Some(&retry.previous_job)
@@ -173,7 +173,7 @@ pub async fn prepare(
     let snapshot = Snapshot::load(state, reference).await?;
     let now = Utc::now();
     let mut job = previous.job.clone();
-    job.v = boinc::RETRY_VERSION;
+    job.v = boinc::Job::version_for(true, job.lines.is_some());
     job.attempt = job.attempt.checked_add(1).context("attempt overflow")?;
     job.retry_of = Some(previous.job.id.clone());
     job.engine.image = opts.image.into();

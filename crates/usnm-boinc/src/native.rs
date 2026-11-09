@@ -242,8 +242,10 @@ fn read_unit(work: &Path) -> anyhow::Result<Unit> {
             restart_after_suspend: false,
         });
     }
-    let job: Job =
-        serde_json::from_slice(&crate::read(&work.join("request.json"), boinc::MAX_JSON)?)?;
+    let job: Job = serde_json::from_slice(&crate::read(
+        &work.join("request.json"),
+        boinc::MAX_REQUEST,
+    )?)?;
     job.validate()?;
     Ok(Unit {
         image: job.engine.image,
