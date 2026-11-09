@@ -267,23 +267,18 @@ async fn submission_stages_public_inputs_and_never_blindly_retries() {
     )
     .unwrap();
     atomic(&unit.join("page"), b"scan").unwrap();
-    atomic(
-        &project.join("bin/dir_hier_path"),
+    // `atomic` made this directory as it wrote; the executables below do not.
+    std::fs::create_dir_all(project.join("bin")).unwrap();
+    usnm_test_support::write_executable(
+        project.join("bin/dir_hier_path"),
         b"#!/bin/sh\nprintf 'download/fanout/%s\\n' \"$1\"\n",
     )
     .unwrap();
-    atomic(
-        &project.join("bin/create_work"),
+    usnm_test_support::write_executable(
+        project.join("bin/create_work"),
         b"#!/bin/sh\nprintf '%s\\n' \"$@\" > args\nexit 1\n",
     )
     .unwrap();
-    for name in ["dir_hier_path", "create_work"] {
-        std::fs::set_permissions(
-            project.join("bin").join(name),
-            std::fs::Permissions::from_mode(0o755),
-        )
-        .unwrap();
-    }
     assert!(ndlocr::submit(&root, &project, doc).await.is_err());
     assert!(unit.join("submitting").exists());
     assert!(!unit.join("submitted").exists());
@@ -308,12 +303,8 @@ async fn submission_stages_public_inputs_and_never_blindly_retries() {
     assert!(args.contains("--min_quorum\n2\n"));
     // An operator has verified absence on the server before removing the marker.
     std::fs::remove_file(unit.join("submitting")).unwrap();
-    atomic(&project.join("bin/create_work"), b"#!/bin/sh\nexit 0\n").unwrap();
-    std::fs::set_permissions(
-        project.join("bin/create_work"),
-        std::fs::Permissions::from_mode(0o755),
-    )
-    .unwrap();
+    usnm_test_support::write_executable(project.join("bin/create_work"), b"#!/bin/sh\nexit 0\n")
+        .unwrap();
     ndlocr::submit(&root, &project, doc).await.unwrap();
     assert!(unit.join("submitted").exists());
 }

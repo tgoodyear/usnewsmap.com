@@ -1186,8 +1186,7 @@ mod download_permissions {
     use std::os::unix::fs::PermissionsExt;
 
     fn executable(path: &Path, body: &str) {
-        std::fs::write(path, body).unwrap();
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        usnm_test_support::write_executable(path, body).unwrap();
     }
     fn shell_path(path: &Path) -> String {
         format!("'{}'", path.to_str().unwrap().replace('\'', "'\\''"))

@@ -40,6 +40,7 @@ tokio = { workspace = true, features = ["process"] }
 tracing-subscriber.workspace = true
 
 [dev-dependencies]
+usnm-test-support.workspace = true
 rustix = { workspace = true, features = ["event"] }
 tokio = { workspace = true, features = ["test-util"] }
 axum.workspace = true

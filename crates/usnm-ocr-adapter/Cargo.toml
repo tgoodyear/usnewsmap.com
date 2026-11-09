@@ -28,6 +28,7 @@ sha2.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+usnm-test-support.workspace = true
 usnm-ocr-worker = { path = "../usnm-ocr-worker" }
 tokio.workspace = true
 

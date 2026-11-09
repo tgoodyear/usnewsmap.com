@@ -56,6 +56,7 @@ unicode-normalization.workspace = true
 zstd.workspace = true
 
 [dev-dependencies]
+usnm-test-support.workspace = true
 usnm-api = { path = "../usnm-api" }
 usnm-telemetry = { workspace = true, features = ["testing"] }
 axum.workspace = true

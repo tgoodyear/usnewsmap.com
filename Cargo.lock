@@ -3685,6 +3685,7 @@ dependencies = [
  "usnm-overlay",
  "usnm-state",
  "usnm-store",
+ "usnm-test-support",
 ]
 
 [[package]]
@@ -3713,6 +3714,7 @@ dependencies = [
  "usnm-core",
  "usnm-state",
  "usnm-store",
+ "usnm-test-support",
  "zstd 0.14.3",
 ]
 
@@ -3792,6 +3794,7 @@ dependencies = [
  "usnm-state",
  "usnm-store",
  "usnm-telemetry",
+ "usnm-test-support",
  "zstd 0.14.3",
 ]
 
@@ -3816,6 +3819,7 @@ dependencies = [
  "usnm-ocr-contract",
  "usnm-ocr-route",
  "usnm-ocr-worker",
+ "usnm-test-support",
 ]
 
 [[package]]
@@ -4004,6 +4008,7 @@ dependencies = [
  "usnm-overlay",
  "usnm-store",
  "usnm-telemetry",
+ "usnm-test-support",
 ]
 
 [[package]]
@@ -4051,6 +4056,7 @@ dependencies = [
  "tempfile",
  "usnm-ocr-contract",
  "usnm-ocr-quality",
+ "usnm-test-support",
 ]
 
 [[package]]
@@ -4139,6 +4145,13 @@ dependencies = [
  "tracing-opentelemetry",
  "tracing-subscriber",
  "usnm-store",
+]
+
+[[package]]
+name = "usnm-test-support"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
 ]
 
 [[package]]

@@ -266,12 +266,10 @@ pub(crate) mod tests {
     use super::*;
     use crate::bundle::work::tests::{job, scan};
     use crate::Record;
-    use std::os::unix::fs::PermissionsExt;
 
     pub(crate) fn executable(path: &Path, body: &str) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(path, body).unwrap();
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        usnm_test_support::write_executable(path, body).unwrap();
     }
 
     /// A server hand-off root with reserved pages `ns`, and a project whose stock tools log

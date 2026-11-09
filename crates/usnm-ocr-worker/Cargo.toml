@@ -49,6 +49,7 @@ tracing.workspace = true
 standin = []
 
 [dev-dependencies]
+usnm-test-support.workspace = true
 opentelemetry_sdk = { workspace = true, features = ["testing"] }
 tower.workspace = true
 tracing-subscriber.workspace = true

@@ -24,6 +24,7 @@ members = [
     "crates/usnm-qwen-app",
     "crates/usnm-state",
     "crates/usnm-telemetry",
+    "crates/usnm-test-support",
 ]
 
 [workspace.package]
@@ -36,6 +37,7 @@ repository = "https://github.com/tgoodyear/usnewsmap.com"
 usnm-alto = { path = "crates/usnm-alto" }
 usnm-congress = { path = "crates/usnm-congress" }
 usnm-core = { path = "crates/usnm-core" }
+usnm-test-support = { path = "crates/usnm-test-support" }
 usnm-corpus-signals = { path = "crates/usnm-corpus-signals" }
 usnm-ocr-contract = { path = "crates/usnm-ocr-contract", default-features = false }
 usnm-ocr-local = { path = "crates/usnm-ocr-local" }

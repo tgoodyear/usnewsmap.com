@@ -33,6 +33,7 @@ tracing.workspace = true
 zstd.workspace = true
 
 [dev-dependencies]
+usnm-test-support.workspace = true
 axum.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util", "process", "sync", "time", "net", "test-util"] }
 

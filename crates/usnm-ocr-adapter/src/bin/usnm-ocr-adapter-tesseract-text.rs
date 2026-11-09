@@ -315,8 +315,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn alto_mode_derives_text_from_word_layout_and_rejects_bad_xml() {
-        use std::os::unix::fs::PermissionsExt;
-
         let dir = tempfile::tempdir().unwrap();
         let bin = dir.path().join("tesseract");
         let alto = r#"<alto xmlns="http://www.loc.gov/standards/alto/ns-v3#"><Description><MeasurementUnit>pixel</MeasurementUnit></Description><Layout><Page WIDTH="100" HEIGHT="100"><PrintSpace HPOS="0" VPOS="0" WIDTH="100" HEIGHT="100"><TextBlock HPOS="1" VPOS="2" WIDTH="80" HEIGHT="20"><TextLine HPOS="1" VPOS="2" WIDTH="80" HEIGHT="20"><String CONTENT="HELLO" HPOS="1" VPOS="2" WIDTH="30" HEIGHT="20" WC="0.9"/><String CONTENT="LOWER" HPOS="40" VPOS="2" WIDTH="40" HEIGHT="20" WC="0.8"/></TextLine></TextBlock></PrintSpace></Page></Layout></alto>"#;
@@ -326,14 +324,9 @@ mod tests {
             alto: true,
         };
         for output in [alto, "not XML"] {
-            std::fs::write(
-                &bin,
-                format!(
+            usnm_test_support::write_executable(&bin, format!(
                     "#!/bin/sh\n[ \"$OMP_THREAD_LIMIT\" = 2 ] || exit 2\ncase \"$*\" in *'--dpi 300 alto') ;; *) exit 3;; esac\nprintf '%s' '{output}'\n"
-                ),
-            )
-            .unwrap();
-            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+                )).unwrap();
             let result = engine.read(
                 &request(),
                 Path::new("fixture.png"),
