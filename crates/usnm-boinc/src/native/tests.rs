@@ -18,6 +18,9 @@ fn manifest() -> Manifest {
         .collect();
     files.insert(WORKER_FILE.into(), file(&"a".repeat(64)));
     files.insert(TESSERACT_FILE.into(), file(&"b".repeat(64)));
+    for (name, (_, sum)) in locked_notices().unwrap() {
+        files.insert(name, file(&sum));
+    }
     Manifest {
         engine_version: "5.5.0".into(),
         files,
@@ -86,6 +89,41 @@ fn a_build_holds_exactly_the_locked_models() {
     ] {
         assert!(bad.validate().is_err(), "{bad:?}");
     }
+}
+
+#[test]
+fn a_build_holds_chr_phoenixs_notice_and_licence() {
+    let notices = locked_notices().unwrap();
+    assert_eq!(
+        notices.keys().collect::<Vec<_>>(),
+        [
+            "notice_chr_phoenix_LICENSE-Apache-2.0.txt",
+            "notice_chr_phoenix_NOTICE.md"
+        ]
+    );
+    // The same SHA256SUMS the engine image pins by hash.
+    let containerfile = include_str!("../../../../ocr/engines/tesseract/Containerfile");
+    let sums = boinc::sha256(NOTICES[0].2.as_bytes());
+    assert!(containerfile.contains(&format!("ARG CHR_PHOENIX_SUMS={sums}")));
+    // And the files in the repository are the release's.
+    for (path, sum) in notices.values() {
+        let file = path.rsplit('/').next().unwrap();
+        let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../ocr/models/chr-phoenix")
+            .join(file);
+        if repo.exists() {
+            assert_eq!(&boinc::sha256(&std::fs::read(repo).unwrap()), sum);
+        }
+    }
+    for name in notices.keys() {
+        let mut missing = manifest();
+        missing.files.remove(name);
+        assert!(missing.validate().is_err(), "{name}");
+        let mut changed = manifest();
+        changed.files.get_mut(name).unwrap().sha256 = "c".repeat(64);
+        assert!(changed.validate().is_err(), "{name}");
+    }
+    manifest().validate().unwrap();
 }
 
 #[test]

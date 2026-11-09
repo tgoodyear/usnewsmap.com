@@ -8,14 +8,15 @@ Nothing here is released. No app version exists, no plan class changed, and no u
 
 A build is a set of files, and each is a BOINC app version file:
 
-| File                     | What it is                                                                                 |
-| ------------------------ | ------------------------------------------------------------------------------------------ |
-| `usnm_ocr`               | The worker, `crates/usnm-ocr-app`. Static, `x86_64-unknown-linux-musl`.                    |
-| `usnm_tesseract`         | Tesseract, `boinc/apps/native/Containerfile`. Static, against glibc 2.41.                  |
-| `tessdata_<model>`       | The 23 models in `ocr/engines/tesseract/models.lock`.                                      |
-| `usnm_native_build.json` | The manifest: the size and sha256 of every other file. Its sha256 is the build's identity. |
+| File                     | What it is                                                                                                                         |
+| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `usnm_ocr`               | The worker, `crates/usnm-ocr-app`. Static, `x86_64-unknown-linux-musl`.                                                            |
+| `usnm_tesseract`         | Tesseract, `boinc/apps/native/Containerfile`. Static, against glibc 2.41.                                                          |
+| `tessdata_<model>`       | The 23 models in `ocr/engines/tesseract/models.lock`.                                                                              |
+| `notice_<model>_<file>`  | A model's notice and licence, which ship with it: `chr_phoenix`'s `NOTICE.md` and `LICENSE-Apache-2.0.txt` (Apache-2.0 section 4). |
+| `usnm_native_build.json` | The manifest: the size and sha256 of every other file. Its sha256 is the build's identity.                                         |
 
-It comes to 202 MB, the same models as the worker image.
+It comes to 202 MB, the same models as the worker image. The notices are the image's `/opt/tessdata/notices/` too: CI fetches them from the model's release and checks them against its `SHA256SUMS`, whose hash `ocr/engines/tesseract/Containerfile` pins (`ARG CHR_PHOENIX_SUMS`). `usnm_ocr manifest` reads them from `<tessdata>/notices/<model>/`, and the worker (`native::Manifest::validate`) and `boinc/scripts/check-native-ocr-build.py` refuse a build without them or with other bytes.
 
 **Tesseract.** The Containerfile takes the engine image's Debian snapshot and links Debian's own static libraries: `libtesseract.a`, `libleptonica.a`, OpenJPEG, libjpeg-turbo and the rest, at the versions in the worker image. Debian's `-dev` packages don't ship the command-line `main()`, so that one file is compiled from Debian's source package. The code that reads a page is therefore the code in the container, not a rebuild of it. There are two differences:
 

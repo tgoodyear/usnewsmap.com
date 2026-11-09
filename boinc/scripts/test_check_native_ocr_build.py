@@ -8,6 +8,7 @@ from pathlib import Path
 import struct
 import tempfile
 import unittest
+import unittest.mock
 
 spec = importlib.util.spec_from_file_location("native_ocr_build", Path(__file__).with_name("check-native-ocr-build.py"))
 module = importlib.util.module_from_spec(spec)
@@ -28,11 +29,23 @@ class CheckNativeOcrBuild(unittest.TestCase):
         self.lock = self.root / "models.lock"
         self.lock.write_text(f"# name url sha256\ntessdata/eng.traineddata https://example.org/eng "
                              f"{hashlib.sha256(b'model').hexdigest()}\n")
+        # A model release's SHA256SUMS, pinned by the Containerfile, with its notice and licence.
+        sums = self.root / "SHA256SUMS"
+        sums.write_text(f"{hashlib.sha256(b'licence').hexdigest()}  LICENSE-Apache-2.0.txt\n"
+                        f"{hashlib.sha256(b'notice').hexdigest()}  NOTICE.md\n"
+                        f"{hashlib.sha256(b'model').hexdigest()}  m.traineddata\n")
+        notices = {"chr_phoenix": (sums, "CHR_PHOENIX_SUMS", ("NOTICE.md", "LICENSE-Apache-2.0.txt"))}
+        patcher = unittest.mock.patch.object(module, "NOTICES", notices)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.containerfile = self.root / "Containerfile"
-        self.containerfile.write_text("RUN apt-get install -y tesseract-ocr=5.5.0-1+b1 libtesseract5=5.5.0-1+b1\n")
+        self.containerfile.write_text(f"ARG CHR_PHOENIX_SUMS={hashlib.sha256(sums.read_bytes()).hexdigest()}\n"
+                                      "RUN apt-get install -y tesseract-ocr=5.5.0-1+b1 libtesseract5=5.5.0-1+b1\n")
         self.build = self.root / "build"
         self.build.mkdir()
-        self.files = {"usnm_ocr": ELF + b"worker", "usnm_tesseract": ELF + b"engine", "tessdata_eng.traineddata": b"model"}
+        self.files = {"usnm_ocr": ELF + b"worker", "usnm_tesseract": ELF + b"engine", "tessdata_eng.traineddata": b"model",
+                      "notice_chr_phoenix_NOTICE.md": b"notice",
+                      "notice_chr_phoenix_LICENSE-Apache-2.0.txt": b"licence"}
         for name, data in self.files.items():
             (self.build / name).write_bytes(data)
         self.write_manifest()
@@ -45,7 +58,8 @@ class CheckNativeOcrBuild(unittest.TestCase):
     def run_check(self, *names):
         argv = ["--binary", str(self.build / "usnm_ocr"), "--models-lock", str(self.lock),
                 "--engine-containerfile", str(self.containerfile)]
-        for name in names or ("usnm_native_build.json", "usnm_tesseract", "tessdata_eng.traineddata"):
+        for name in names or ("usnm_native_build.json", "usnm_tesseract", "tessdata_eng.traineddata",
+                              "notice_chr_phoenix_NOTICE.md", "notice_chr_phoenix_LICENSE-Apache-2.0.txt"):
             argv += ["--extra-file", f"{name}={self.build / name}"]
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
@@ -90,7 +104,8 @@ class CheckNativeOcrBuild(unittest.TestCase):
                 self.assertIn("is not a build manifest for x86_64-pc-linux-gnu", out)
 
     def test_refuses_files_that_are_not_the_manifests(self):
-        self.assertIn("missing: tessdata_eng.traineddata", self.run_check("usnm_native_build.json", "usnm_tesseract")[1])
+        self.assertRegex(self.run_check("usnm_native_build.json", "usnm_tesseract")[1],
+                         r"missing: [^;]*tessdata_eng\.traineddata")
         (self.build / "usnm_tesseract").write_bytes(ELF + b"other")
         self.assertIn("usnm_tesseract differs from the build manifest", self.run_check()[1])
         # Neither a non-ELF file nor a relocatable object or core dump runs.
@@ -143,3 +158,36 @@ class CheckNativeOcrBuild(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+    # chr_phoenix's notice and licence ship in the build, checked against its release (#1621).
+    def test_a_missing_or_changed_notice_is_refused(self):
+        notice = "notice_chr_phoenix_NOTICE.md"
+        code, out = self.run_check("usnm_native_build.json", "usnm_tesseract", "tessdata_eng.traineddata",
+                                   "notice_chr_phoenix_LICENSE-Apache-2.0.txt")
+        self.assertEqual(code, 1, out)
+        del self.files[notice]
+        self.write_manifest()
+        code, out = self.run_check("usnm_native_build.json", "usnm_tesseract", "tessdata_eng.traineddata",
+                                   "notice_chr_phoenix_LICENSE-Apache-2.0.txt")
+        self.assertIn("exactly the locked models and notices", out)
+        self.files[notice] = b"another notice"
+        (self.build / notice).write_bytes(b"another notice")
+        self.write_manifest()
+        code, out = self.run_check()
+        self.assertEqual(code, 1)
+        self.assertIn("isn't the model release's notice", out)
+
+    def test_sums_the_containerfile_does_not_pin_are_refused(self):
+        self.containerfile.write_text("ARG CHR_PHOENIX_SUMS=" + "0" * 64 + "\n"
+                                      "RUN apt-get install -y tesseract-ocr=5.5.0-1+b1\n")
+        code, out = self.run_check()
+        self.assertEqual(code, 1)
+        self.assertIn("isn't the SHA256SUMS", out)
+
+
+class RepositoryNotices(unittest.TestCase):
+    def test_the_repository_pins_chr_phoenixs_sums(self):
+        notices = module.locked_notices(module.ROOT / "ocr/engines/tesseract/Containerfile")
+        self.assertEqual(sorted(notices), ["notice_chr_phoenix_LICENSE-Apache-2.0.txt",
+                                           "notice_chr_phoenix_NOTICE.md"])
+

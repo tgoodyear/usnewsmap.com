@@ -26,6 +26,12 @@ MANIFEST = "usnm_native_build.json"
 WORKER = "usnm_ocr"
 ENGINE = "usnm_tesseract"
 MODEL_PREFIX = "tessdata_"
+NOTICE_PREFIX = "notice_"
+# The models whose releases carry a notice and licence, and their files (crates/usnm-boinc/src/
+# native.rs, NOTICES): checked against the release's SHA256SUMS, the repository's copy, which
+# ocr/engines/tesseract/Containerfile pins by hash (ARG CHR_PHOENIX_SUMS).
+NOTICES = {"chr_phoenix": (ROOT / "ocr/models/chr-phoenix/SHA256SUMS", "CHR_PHOENIX_SUMS",
+                           ("NOTICE.md", "LICENSE-Apache-2.0.txt"))}
 PLATFORM = "x86_64-pc-linux-gnu"
 EM_X86_64 = 0x3E
 ET_EXEC, ET_DYN = 2, 3
@@ -49,6 +55,24 @@ def locked_models(lock: Path) -> dict[str, str]:
     if not models:
         raise ValueError(f"no models in {lock}")
     return models
+
+
+def locked_notices(containerfile: Path) -> dict[str, str]:
+    """The locked notices by the build's names (notice_<model>_<file>), from each release's
+    SHA256SUMS, itself checked against the hash the engine's Containerfile pins."""
+    text = containerfile.read_text()
+    out = {}
+    for model, (sums, arg, files) in NOTICES.items():
+        raw = sums.read_bytes()
+        pinned = re.findall(rf"^ARG {arg}=([0-9a-f]{{64}})$", text, re.M)
+        if pinned != [hashlib.sha256(raw).hexdigest()]:
+            raise ValueError(f"{sums} isn't the SHA256SUMS {containerfile} pins")
+        listed = dict(reversed(line.split("  ", 1)) for line in raw.decode().splitlines() if "  " in line)
+        for name in files:
+            if not re.fullmatch(r"[0-9a-f]{64}", listed.get(name, "")):
+                raise ValueError(f"{sums} has no sha256 for {name}")
+            out[f"{NOTICE_PREFIX}{model}_{name}"] = listed[name]
+    return out
 
 
 def locked_engine(containerfile: Path) -> str:
@@ -117,11 +141,16 @@ def check(binary: Path, extras: dict[str, Path], lock: Path, containerfile: Path
     if version != engine:
         raise ValueError(f"the build's Tesseract is {version}, the container worker's is {engine}")
     models = locked_models(lock)
-    if set(files) != {WORKER, ENGINE, *models}:
-        raise ValueError(f"{MANIFEST} doesn't list the worker, the engine and exactly the locked models")
+    notices = locked_notices(containerfile)
+    if set(files) != {WORKER, ENGINE, *models, *notices}:
+        raise ValueError(f"{MANIFEST} doesn't list the worker, the engine and exactly the locked models"
+                         " and notices")
     for name, sha256 in models.items():
         if files[name]["sha256"] != sha256:
             raise ValueError(f"the build's {name} isn't the locked model")
+    for name, sha256 in notices.items():
+        if files[name]["sha256"] != sha256:
+            raise ValueError(f"the build's {name} isn't the model release's notice")
     given = {WORKER: binary, **{k: v for k, v in extras.items() if k != MANIFEST}}
     if set(given) != set(files):
         missing = sorted(set(files) - set(given))
