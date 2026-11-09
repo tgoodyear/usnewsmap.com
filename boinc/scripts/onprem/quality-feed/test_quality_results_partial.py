@@ -47,6 +47,12 @@ class PartialTest(unittest.TestCase):
                             + "/snapshots/" + self.snapshot,
         }
 
+    def cache_inventory(self, inventory):
+        path = self.root / "ops/quality-results/scoped/test" / partial.INVENTORY_FILE
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"schema": 1, "generated_at": 0, "units": inventory}))
+        return path
+
     def responses(self):
         loaded = {"snapshot": self.snapshot, "campaign": self.campaign,
                   "campaign_complete": False, "selected_unit": "bundle-a", "pages": 1, "reader_rows": 1}
@@ -271,6 +277,10 @@ class PartialTest(unittest.TestCase):
 
     def test_frontier_ack_is_only_persisted_after_verified_nonempty_load(self):
         self.args.completion_frontier = True
+        self.args.inventory_refresh_secs = 3600
+        refresh = mock.patch.object(partial, "host_refresh_inventory")
+        self.addCleanup(refresh.stop)
+        refresh.start()
         self.receipt["frontier"] = {
             "schema": 1, "lane": "priority", "status": "canonical-present", "fingerprint": "f" * 64,
         }
@@ -308,12 +318,16 @@ class PartialTest(unittest.TestCase):
         units.mkdir(parents=True)
         (units / "submitted").touch()
         (units / "quality.json").write_text("{}")
+        self.cache_inventory({"bundle-a": {"status": "pending", "fingerprint": None}})
+        self.args.after = self.args.through = "legacy-cursor"
         with mock.patch.object(partial, "completion_inventory",
                                side_effect=subprocess.CalledProcessError(1, ["inventory"])), \
-                mock.patch.object(partial, "select_unit") as legacy:
+                mock.patch.object(partial, "select_unit", wraps=partial.select_unit) as select:
             with self.assertRaises(subprocess.CalledProcessError):
                 partial.scoped_collect(self.args, self.root)
-        legacy.assert_not_called()
+        # Only the frontier lanes choose; the legacy cursor never does.
+        self.assertTrue(select.called)
+        self.assertFalse(any("legacy-cursor" in call.args for call in select.call_args_list))
         self.assertFalse((self.root / "ops/quality-results/scoped/test/frontier.json").exists())
 
     def test_scoped_frontier_acknowledgement_restart_and_change_guard(self):
@@ -329,6 +343,7 @@ class PartialTest(unittest.TestCase):
             (unit / "submitted").touch()
             (unit / "quality.json").write_text(json.dumps({"id": self.job, "doc_id": "doc-a"}))
         Path(self.args.collector).write_bytes(b"test collector")
+        self.cache_inventory(inventory)
 
         def collect(command, **_kwargs):
             out = Path(command[command.index("--out-dir") + 1])
@@ -372,6 +387,7 @@ class PartialTest(unittest.TestCase):
             unit.mkdir(parents=True)
             (unit / "submitted").touch()
             (unit / "quality.json").write_text(json.dumps({"id": self.job, "doc_id": "doc-a"}))
+        self.cache_inventory(inventory)
         frontier_path = self.root / "ops/quality-results/scoped/test/frontier.json"
         failures = [
             subprocess.CompletedProcess(["collector"], 1, stdout="", stderr="invalid canonical"),
@@ -404,6 +420,7 @@ class PartialTest(unittest.TestCase):
         (unit / "submitted").touch()
         (unit / "quality.json").write_text(json.dumps({"id": self.job, "doc_id": "doc-a"}))
         inventory = {"a-ready": {"status": "canonical-present", "fingerprint": "a" * 64}}
+        self.cache_inventory(inventory)
         # A 90-second inventory must not leave the collector its former 120 seconds.
         with mock.patch.object(partial.time, "monotonic", side_effect=[0, 90, 90]), \
                 mock.patch.object(partial, "completion_inventory", return_value=inventory), \
@@ -428,6 +445,108 @@ class PartialTest(unittest.TestCase):
                 mock.patch.object(partial.subprocess, "run") as run:
             with self.assertRaises(subprocess.TimeoutExpired):
                 partial.completion_inventory(self.args, self.root, self.root, deadline=160)
+        run.assert_not_called()
+
+    def test_pass_uses_cached_inventory_and_reinventories_only_the_selected_unit(self):
+        self.args.completion_frontier = True
+        inventory = {
+            "a-ready": {"status": "canonical-present", "fingerprint": "a" * 64},
+            "b-pending": {"status": "pending", "fingerprint": None},
+        }
+        for name in [*inventory, "c-new"]:
+            unit = self.root / "quality/test/units" / name
+            unit.mkdir(parents=True)
+            (unit / "submitted").touch()
+            (unit / "quality.json").write_text(json.dumps({"id": self.job, "doc_id": "doc-a"}))
+        Path(self.args.collector).write_bytes(b"test collector")
+        path = self.cache_inventory(inventory)
+        fresh = {"a-ready": {"status": "canonical-present", "fingerprint": "f" * 64}}
+
+        def collect(command, **_kwargs):
+            out = Path(command[command.index("--out-dir") + 1])
+            for name in partial.FILES:
+                (out / name).write_bytes(b"verified test output")
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+        with mock.patch.object(partial, "completion_inventory", return_value=fresh) as inventory_call, \
+                mock.patch.object(partial.subprocess, "run", side_effect=collect):
+            receipt = partial.scoped_collect(self.args, self.root)
+        # Never a full inventory under the step lock: both calls name the selected unit.
+        self.assertEqual([call.args[3] for call in inventory_call.call_args_list], ["a-ready", "a-ready"])
+        self.assertEqual(receipt["frontier"]["fingerprint"], "f" * 64)
+        # The fresh key replaces the cached entry; the unit submitted since waits for a refresh.
+        self.assertEqual(json.loads(path.read_bytes())["units"]["a-ready"], fresh["a-ready"])
+        self.assertNotIn("c-new", json.loads(path.read_bytes())["units"])
+
+    def test_pass_without_cached_inventory_or_with_vanished_unit_fails_closed(self):
+        self.args.completion_frontier = True
+        unit = self.root / "quality/test/units/a-ready"
+        unit.mkdir(parents=True)
+        (unit / "submitted").touch()
+        (unit / "quality.json").write_text("{}")
+        with mock.patch.object(partial, "completion_inventory") as inventory_call:
+            with self.assertRaisesRegex(ValueError, "no scheduling inventory"):
+                partial.scoped_collect(self.args, self.root)
+            self.cache_inventory({"a-ready": {"status": "pending", "fingerprint": None},
+                                  "gone": {"status": "pending", "fingerprint": None}})
+            with self.assertRaisesRegex(ValueError, "submitted inventory changed"):
+                partial.scoped_collect(self.args, self.root)
+        inventory_call.assert_not_called()
+        self.assertFalse((self.root / "ops/quality-results/scoped/test/frontier.json").exists())
+
+    def test_refresh_writes_validated_inventory_with_its_own_budget(self):
+        self.args.inventory_budget_secs = 1500
+        inventory = {"a-ready": {"status": "canonical-present", "fingerprint": "a" * 64},
+                     "b-pending": {"status": "pending", "fingerprint": None}}
+        with mock.patch.object(partial, "completion_inventory", return_value=inventory) as call:
+            report = partial.refresh_inventory(self.args, self.root)
+        self.assertEqual(call.call_args.kwargs["limit"], 1500)
+        self.assertIsNone(call.call_args.args[3] if len(call.call_args.args) > 3 else None)
+        written = json.loads((self.root / "ops/quality-results/scoped/test" / partial.INVENTORY_FILE).read_bytes())
+        self.assertEqual(written["units"], inventory)
+        self.assertEqual(report["statuses"], {"canonical-present": 1, "pending": 1})
+        bad = {"a-ready": {"status": "canonical-present", "fingerprint": None}}
+        with mock.patch.object(partial, "completion_inventory", return_value=bad):
+            with self.assertRaisesRegex(ValueError, "invalid canonical inventory entry"):
+                partial.refresh_inventory(self.args, self.root)
+        self.assertEqual(json.loads((self.root / "ops/quality-results/scoped/test"
+                                     / partial.INVENTORY_FILE).read_bytes())["units"], inventory)
+
+    def test_host_refresh_runs_without_step_lock_and_at_most_once_per_interval(self):
+        self.args.inventory_budget_secs = 1500
+        self.args.inventory_refresh_secs = 3600
+        report = {"campaign": "test", "phase": "inventory_refreshed", "units": 2}
+        done = subprocess.CompletedProcess(["ssh"], 0, stdout=json.dumps(report).encode(), stderr=b"")
+        with mock.patch.object(partial.subprocess, "run", return_value=done) as run:
+            self.assertEqual(partial.host_refresh_inventory(self.args), report)
+            self.assertIsNone(partial.host_refresh_inventory(self.args))
+        self.assertEqual(run.call_count, 1)
+        command = run.call_args.args[0][-1]
+        self.assertNotIn("flock", command)
+        self.assertNotIn("usnm-boinc-step.lock", command)
+        self.assertIn("--remote-inventory", command)
+        self.assertEqual(run.call_args.kwargs["timeout"], 1620)
+        marker = self.args.state_dir / "test/inventory-refresh.json"
+        state = json.loads(marker.read_bytes())
+        state["attempted_at"] -= 3601
+        marker.write_text(json.dumps(state))
+        failed = subprocess.CompletedProcess(["ssh"], 1, stdout=b"", stderr=b"boom")
+        with mock.patch.object(partial.subprocess, "run", return_value=failed):
+            self.assertIsNone(partial.host_refresh_inventory(self.args))
+        # A failed refresh keeps the last good report and is retried only after the interval.
+        self.assertEqual(json.loads(marker.read_bytes())["report"], report)
+        # The interval counts from when an attempt ends, even one that used its whole budget.
+        state = json.loads(marker.read_bytes())
+        state["attempted_at"] -= 3601
+        marker.write_text(json.dumps(state))
+        started = time.time()
+        with mock.patch.object(partial.subprocess, "run",
+                               side_effect=subprocess.TimeoutExpired(["ssh"], 1620)):
+            self.assertIsNone(partial.host_refresh_inventory(self.args))
+        self.assertGreaterEqual(json.loads(marker.read_bytes())["attempted_at"], started)
+        self.assertEqual(json.loads(marker.read_bytes())["report"], report)
+        with mock.patch.object(partial.subprocess, "run") as run:
+            self.assertIsNone(partial.host_refresh_inventory(self.args))
         run.assert_not_called()
 
     def load_fixture(self, rows):

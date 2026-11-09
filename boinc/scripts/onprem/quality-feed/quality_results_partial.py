@@ -20,6 +20,11 @@ SNAPSHOT = re.compile(r"[a-f0-9]{32}")
 LOCK_ACQUIRED = "USNM_QUALITY_PARTIAL_STEP_LOCK_ACQUIRED"
 FRONTIER_LIMIT = 10_000
 REMOTE_WORK_SECONDS = 160  # Leave 20 seconds before the outer TERM for durable failure progress.
+INVENTORY_FILE = "inventory.json"
+# The full scheduling inventory reads every unit over NFS, which took over 15 minutes for about
+# 2,800 wave10 units (#1655). It runs outside the step lock with its own budget; passes reuse it.
+INVENTORY_BUDGET_SECONDS = 3600
+INVENTORY_REFRESH_SECONDS = 3600
 
 
 def replay_collection_diagnostics(stderr):
@@ -61,17 +66,23 @@ def select_unit(units, after, through=""):
     return selected, through
 
 
-def select_frontier(inventory, state):
-    """Three changed/unloaded visits per fair visit, with finite lexical fences."""
+def validate_inventory(inventory):
     names = sorted(inventory)
     if not names or len(names) > FRONTIER_LIMIT or any(not UNIT.fullmatch(n) for n in names):
         raise ValueError("invalid or oversized completion inventory")
     for item in inventory.values():
-        if (item.get("status") not in {"pending", "failed", "canonical-present"}
+        if (not isinstance(item, dict)
+                or item.get("status") not in {"pending", "failed", "canonical-present"}
                 or (item.get("status") != "canonical-present" and item.get("fingerprint") is not None)
                 or ((item.get("status") == "canonical-present")
                     != bool(re.fullmatch(r"[a-f0-9]{64}", item.get("fingerprint") or "")))):
             raise ValueError("invalid canonical inventory entry")
+    return names
+
+
+def select_frontier(inventory, state):
+    """Three changed/unloaded visits per fair visit, with finite lexical fences."""
+    names = validate_inventory(inventory)
     loaded = state.get("loaded", {})
     if (not isinstance(loaded, dict) or len(loaded) > FRONTIER_LIMIT
             or state.get("turns", 0) not in range(4)
@@ -93,7 +104,7 @@ def select_frontier(inventory, state):
     return selected, names[-1], lane, updated
 
 
-def completion_inventory(args, project, base, selected=None, deadline=None):
+def completion_inventory(args, project, base, selected=None, deadline=None, limit=120):
     qwen_root = project / "qwen" / args.qwen_campaign if args.qwen_campaign else base / "no-qwen"
     if args.qwen_campaign:
         # An unavailable configured reading source is not an empty reading campaign.
@@ -112,7 +123,7 @@ def completion_inventory(args, project, base, selected=None, deadline=None):
     ]
     if selected:
         command += ["--inventory-unit", selected]
-    budget = min(120, deadline - time.monotonic()) if deadline is not None else 120
+    budget = min(limit, deadline - time.monotonic()) if deadline is not None else limit
     if budget <= 0:
         raise subprocess.TimeoutExpired(command, 0)
     result = subprocess.run(command, capture_output=True, text=True, timeout=budget)
@@ -120,6 +131,49 @@ def completion_inventory(args, project, base, selected=None, deadline=None):
         print(result.stderr, file=sys.stderr, end="", flush=True)
     result.check_returncode()
     return json.loads(result.stdout)
+
+
+def submitted_units(root, frontier):
+    names = []
+    for index, path in enumerate((root / "units").iterdir()):
+        if frontier and index >= FRONTIER_LIMIT:
+            raise ValueError("completion inventory exceeds 10000 unit entries")
+        if (UNIT.fullmatch(path.name) and (path / "submitted").is_file()
+                and (path / "quality.json").is_file()):
+            names.append(path.name)
+    return names
+
+
+def refresh_inventory(args, project=Path("/project")):
+    """Write the full scheduling inventory without the step lock: it only reads unit and spool
+    files, and every pass still re-inventories and validates the unit it selects under the lock."""
+    started = time.monotonic()
+    base = project / "ops/quality-results/scoped" / args.campaign
+    inventory = completion_inventory(args, project, base, deadline=started + args.inventory_budget_secs,
+                                     limit=args.inventory_budget_secs)
+    validate_inventory(inventory)
+    atomic_json(base / INVENTORY_FILE, {"schema": 1, "generated_at": time.time(), "units": inventory})
+    counts = {}
+    for item in inventory.values():
+        counts[item["status"]] = counts.get(item["status"], 0) + 1
+    return {"campaign": args.campaign, "phase": "inventory_refreshed", "units": len(inventory),
+            "statuses": counts, "inventory_seconds": round(time.monotonic() - started, 1)}
+
+
+def cached_inventory(base, names):
+    """The last full inventory, a scheduling hint only. Units submitted since it was written wait
+    for the next refresh; a unit it lists that is no longer submitted fails closed."""
+    path = base / INVENTORY_FILE
+    if not path.exists():
+        raise ValueError("no scheduling inventory yet; the next inventory refresh writes it")
+    cached = json.loads(path.read_bytes())
+    if cached.get("schema") != 1 or not isinstance(cached.get("units"), dict):
+        raise ValueError("invalid scheduling inventory")
+    inventory = cached["units"]
+    validate_inventory(inventory)
+    if not set(inventory) <= set(names):
+        raise ValueError("submitted inventory changed or unavailable")
+    return cached, inventory
 
 
 def run_loader(command, timeout=120):
@@ -148,13 +202,7 @@ def scoped_collect(args, project=Path("/project")):
     root = project / "quality" / args.campaign
     frontier = getattr(args, "completion_frontier", False)
     deadline = pass_started + REMOTE_WORK_SECONDS if frontier else None
-    names = []
-    for index, path in enumerate((root / "units").iterdir()):
-        if frontier and index >= FRONTIER_LIMIT:
-            raise ValueError("completion inventory exceeds 10000 unit entries")
-        if (UNIT.fullmatch(path.name) and (path / "submitted").is_file()
-                and (path / "quality.json").is_file()):
-            names.append(path.name)
+    names = submitted_units(root, frontier)
     base = project / "ops/quality-results/scoped" / args.campaign
     frontier_receipt = None
     if frontier:
@@ -162,9 +210,7 @@ def scoped_collect(args, project=Path("/project")):
         state = json.loads(frontier_path.read_bytes()) if frontier_path.exists() else {"schema": 1}
         if state.get("schema") != 1 or len(state.get("loaded", {})) > FRONTIER_LIMIT:
             raise ValueError("invalid completion frontier state")
-        inventory = completion_inventory(args, project, base, deadline=deadline)
-        if set(inventory) != set(names):
-            raise ValueError("submitted inventory changed or unavailable")
+        cached, inventory = cached_inventory(base, names)
         state["loaded"] = {n: v for n, v in state.get("loaded", {}).items() if n in inventory}
         ack = getattr(args, "frontier_ack", None)
         if ack:
@@ -175,6 +221,14 @@ def scoped_collect(args, project=Path("/project")):
             if ack["unit"] in inventory:
                 state["loaded"][ack["unit"]] = ack["fingerprint"]
         selected, through, lane, frontier_state = select_frontier(inventory, state)
+        # The cached entry only chose the unit. Its current dependency key, read under the lock,
+        # is the baseline the collection must match, and replaces the cached entry.
+        current = completion_inventory(args, project, base, selected, deadline=deadline)
+        if selected not in current:
+            raise ValueError("selected unit missing from its completion inventory")
+        validate_inventory({selected: current[selected]})
+        inventory[selected] = current[selected]
+        atomic_json(base / INVENTORY_FILE, {**cached, "units": inventory})
         frontier_receipt = {"schema": 1, "lane": lane, **inventory[selected],
                             "inventory_seconds": time.monotonic() - pass_started}
     else:
@@ -305,6 +359,46 @@ def verified_load(args):
             "pages": len(docs), "reader_rows": len(rows), "selected_unit": receipt["selected_unit"]}
 
 
+def host_refresh_inventory(args):
+    """Refresh the scheduling inventory at most once per interval, without CT230's step lock.
+    A failed refresh is reported and retried after the interval; passes keep the last one."""
+    marker = args.state_dir / args.campaign / "inventory-refresh.json"
+    last = json.loads(marker.read_bytes()) if marker.exists() else {}
+    if time.time() - last.get("attempted_at", 0) < args.inventory_refresh_secs:
+        return None
+    atomic_json(marker, {**last, "attempted_at": time.time()})
+    budget = args.inventory_budget_secs
+    remote = [
+        "pct", "exec", str(args.server_ct), "--", "podman", "exec", "-i", "usnm-boinc-server",
+        "timeout", "--signal=TERM", "--kill-after=10s", f"{budget + 60}s",
+        "nice", "-n", "10", "python3", "-", "--remote-inventory", "--campaign", args.campaign,
+        "--collector", args.collector, "--inventory-budget-secs", str(budget),
+    ]
+    if args.qwen_campaign:
+        remote += ["--qwen-campaign", args.qwen_campaign]
+    ssh = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", f"root@{args.server_host}"]
+    try:
+        response = subprocess.run([*ssh, shlex.join(remote)], input=Path(__file__).read_bytes(),
+                                  capture_output=True, timeout=budget + 120)
+    except subprocess.TimeoutExpired:
+        # The interval counts from the end of an attempt, so a refresh that used its whole
+        # budget doesn't start again on the next tick. The last good report stays.
+        atomic_json(marker, {**last, "attempted_at": time.time()})
+        print(json.dumps({"phase": "inventory_refresh_timeout", "budget_seconds": budget}),
+              file=sys.stderr, flush=True)
+        return None
+    if response.returncode:
+        atomic_json(marker, {**last, "attempted_at": time.time()})
+        print((response.stderr or b"").decode("utf-8", errors="replace"), file=sys.stderr, end="")
+        print(json.dumps({"phase": "inventory_refresh_failed", "exit": response.returncode}),
+              file=sys.stderr, flush=True)
+        return None
+    report = json.loads(response.stdout)
+    atomic_json(marker, {"attempted_at": time.time(), "refreshed_at": time.time(), "report": report})
+    print(json.dumps(report, sort_keys=True), file=sys.stderr, flush=True)
+    return report
+
+
 def host_pass(args):
     state_path = args.state_dir / args.campaign / "cursor.json"
     state = json.loads(state_path.read_bytes()) if state_path.exists() else {}
@@ -330,6 +424,7 @@ def host_pass(args):
         remote += ["--qwen-campaign", args.qwen_campaign]
     frontier = getattr(args, "completion_frontier", False)
     if frontier:
+        host_refresh_inventory(args)
         remote += ["--completion-frontier"]
         if state.get("frontier_ack"):
             remote += ["--frontier-ack", json.dumps(state["frontier_ack"], separators=(",", ":"))]
@@ -403,6 +498,7 @@ def main(argv=None):
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--remote", action="store_true")
     mode.add_argument("--load", action="store_true")
+    mode.add_argument("--remote-inventory", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--campaign", required=True)
     parser.add_argument("--engine-image")
     parser.add_argument("--qwen-campaign")
@@ -414,6 +510,10 @@ def main(argv=None):
     parser.add_argument("--completion-frontier", action="store_true",
                         help="opt in to canonical change priority with one fair visit every four passes")
     parser.add_argument("--frontier-ack", help=argparse.SUPPRESS)
+    parser.add_argument("--inventory-budget-secs", type=int, default=INVENTORY_BUDGET_SECONDS,
+                        help="time limit for the full scheduling inventory, run without the step lock")
+    parser.add_argument("--inventory-refresh-secs", type=int, default=INVENTORY_REFRESH_SECONDS,
+                        help="minimum seconds between full scheduling inventory refreshes")
     parser.add_argument("--server-host", default="pve.tjg.fyi")
     parser.add_argument("--server-ct", type=int, default=230)
     parser.add_argument("--ctid", type=int, default=215)
@@ -430,11 +530,16 @@ def main(argv=None):
             or ".." in Path(args.collector).parts
             or (args.snapshot and not SNAPSHOT.fullmatch(args.snapshot))
             or ((args.remote or args.load) and not args.snapshot)
-            or (not args.remote and not re.fullmatch(r"sha256:[a-f0-9]{64}", args.engine_image or ""))
+            or (not (args.remote or args.remote_inventory)
+                and not re.fullmatch(r"sha256:[a-f0-9]{64}", args.engine_image or ""))
+            or not 60 <= args.inventory_budget_secs <= 7200
+            or args.inventory_refresh_secs < 60
             or (args.load and args.snapshot_dir is None)):
         parser.error("invalid partial collection arguments")
     os.umask(0o077)
-    if args.remote:
+    if args.remote_inventory:
+        report = refresh_inventory(args)
+    elif args.remote:
         report = scoped_collect(args)
     elif args.load:
         def terminate(signum, _frame):
