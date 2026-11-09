@@ -37,9 +37,9 @@ lease; other running jobs and their **entire templates** are untouched.
 
 All live writes require the #529 claim, authoritative
 `boinc-handoff/scheduler/controller.lock` and normal per-job guard for the publish
-template/start. The supported local mutex setting is explicitly
-`USNM_BOINC_LOCK_DIR=/Users/tgoodyear/code/.usnm-boinc-prod.lock`, already used by
-the #860 transaction; no system temporary path or lease takeover is used.
+template/start. The supported local mutex setting is an explicit
+`USNM_BOINC_LOCK_DIR`, the same lock directory the #860 transaction used;
+no system temporary path or lease takeover is used.
 
 The maintainer authorized preserving MySQL `require_secure_transport=OFF`
 **as found**; this release neither resumes #464 nor toggles enforcement.

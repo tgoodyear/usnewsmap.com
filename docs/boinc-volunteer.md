@@ -2,7 +2,7 @@
 
 Run OCR and quality checks on historical newspapers with BOINC on Linux, macOS or Windows. Tasks process page images, extracted text or word crops. The project checks returned outputs before using them in search or quality audits.
 
-Status: a pilot for trusted friends. The project server is up and work goes out only in small hand-picked cohorts. Every step below that has not been tried on a real host is marked UNVERIFIED. Operator docs: [boinc/README.md](../boinc/docs/README.md) and [boinc-quality.md](boinc-quality.md).
+Status: a pilot for trusted friends. The project server is up and work goes out only in small hand-picked cohorts. Every step below that has not been tried on a real host is marked UNVERIFIED. Operator docs: [boinc/docs/README.md](../boinc/docs/README.md) and [boinc-quality.md](boinc-quality.md).
 
 ## Why volunteer?
 
@@ -46,12 +46,12 @@ then review [resources, network and privacy](#4-resources-network-and-privacy).
 
 Every platform has a single onboarding script that validates prerequisites, configures BOINC preferences (`leave_apps_in_memory=1`, RAM/CPU limits), and attaches or updates the project (`https://boinc.usnewsmap.com/`):
 
-| Platform                          | Onboarding Script                                | Preview (Read-Only)                                                                         | Apply & Attach                                                                         |
-| --------------------------------- | ------------------------------------------------ | ------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| **Linux** (`x86_64` / `aarch64`)  | `boinc/scripts/setup_volunteer.py`               | `python3 boinc/scripts/setup_volunteer.py`                                                  | `sudo python3 boinc/scripts/setup_volunteer.py --apply`                                |
-| **Proxmox VE LXC** (Debian 12 CT) | `boinc/infra/proxmox/provision-pve-boinc-lxc.sh` | `DRY_RUN=1 ./boinc/infra/proxmox/provision-pve-boinc-lxc.sh 100 usnm-boinc-1 <ACCOUNT_KEY>` | `./boinc/infra/proxmox/provision-pve-boinc-lxc.sh 100 usnm-boinc-1 <ACCOUNT_KEY>`      |
-| **macOS** (Apple Silicon & Intel) | `boinc/scripts/setup_mac_volunteer.py`           | `python3 boinc/scripts/setup_mac_volunteer.py`                                              | `python3 boinc/scripts/setup_mac_volunteer.py --apply --authenticator <AUTHENTICATOR>` |
-| **Windows** (`windows_x86_64`)    | `boinc/scripts/setup_windows_volunteer.ps1`      | `.\boinc\scripts\setup_windows_volunteer.ps1`                                               | `.\boinc\scripts\setup_windows_volunteer.ps1 -Apply -InstallBoinc`                     |
+| Platform                          | Onboarding Script                           | Preview (Read-Only)                                                           | Apply & Attach                                                                                  |
+| --------------------------------- | ------------------------------------------- | ----------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| **Linux** (`x86_64` / `aarch64`)  | `boinc/scripts/setup_volunteer.py`          | `python3 boinc/scripts/setup_volunteer.py`                                    | `sudo python3 boinc/scripts/setup_volunteer.py --apply`                                         |
+| **Proxmox VE LXC** (Debian 13 CT) | `boinc/scripts/pve-boinc-ct.sh`             | `boinc/scripts/pve-boinc-ct.sh --ctid 101 --name boinc-volunteer-2 --what-if` | `boinc/scripts/pve-boinc-ct.sh --ctid 101 --name boinc-volunteer-2 --authenticator-file <PATH>` |
+| **macOS** (Apple Silicon & Intel) | `boinc/scripts/setup_mac_volunteer.py`      | `python3 boinc/scripts/setup_mac_volunteer.py`                                | `python3 boinc/scripts/setup_mac_volunteer.py --apply --authenticator <AUTHENTICATOR>`          |
+| **Windows** (`windows_x86_64`)    | `boinc/scripts/setup_windows_volunteer.ps1` | `.\boinc\scripts\setup_windows_volunteer.ps1`                                 | `.\boinc\scripts\setup_windows_volunteer.ps1 -Apply -InstallBoinc`                              |
 
 ### Workunit Sizing & Per-Page / Per-Crop Checkpointing
 
@@ -83,8 +83,8 @@ the full reference. Linux supports both `x86_64-pc-linux-gnu` (AMD/Intel 64-bit)
 
 `usnm_qwen` runs `llama-server` directly on the host to transcribe deterministic word crops with Qwen3-VL:
 
-- **NVIDIA CUDA (`nvidia_cuda_8b` and `nvidia_cuda_2b`, on `x86_64-pc-linux-gnu`)**: requires a proprietary or open NVIDIA Linux driver supporting CUDA 12+. Hosts with at least 7,000 MB of free VRAM receive `nvidia_cuda_8b` (Qwen3-VL-8B-Instruct at `Q4_K_M`, ~5.38 GiB total with projector); hosts with at least 3,000 MB of free VRAM receive `nvidia_cuda_2b` (Qwen3-VL-2B-Instruct at `Q8_0`, ~2.12 GiB total).
-- **Multi-thread CPU (`mt`, on `x86_64-pc-linux-gnu` and `aarch64-unknown-linux-gnu`)**: runs on hosts with 4 to 8 usable CPUs without a supported GPU, using the 2B `Q8_0` model.
+- **NVIDIA CUDA (`nvidia_cuda_8b` and `nvidia_cuda_2b`, on `x86_64-pc-linux-gnu`)**: requires a proprietary or open NVIDIA Linux driver supporting CUDA 12.4+. Neither class has had a live version since 2 November 2026; Linux NVIDIA work now uses `nvidia_vulkan_8b` ([app versions](boinc-quality.md#app-versions-and-plan-classes)). Hosts with at least 7,000 MB of free VRAM receive `nvidia_cuda_8b` (Qwen3-VL-8B-Instruct at `Q4_K_M`, ~5.38 GiB total with projector); hosts with at least 3,000 MB of free VRAM receive `nvidia_cuda_2b` (Qwen3-VL-2B-Instruct at `Q8_0`, ~2.12 GiB total).
+- **Multi-thread CPU (`mt`, on `x86_64-pc-linux-gnu` and `aarch64-unknown-linux-gnu`)**: runs on hosts with at least 4 usable CPUs (using up to 8 threads) without a supported GPU, using the 2B `Q8_0` model. It has had no live version since 2 November 2026.
 - **Sticky model caching (`<sticky/><no_delete/>`)**: the GGUF model and multimodal projector files (`usnm_qwen_model_<sha256>`) are marked `<sticky/>` and `<no_delete/>` in the workunit input templates. Your BOINC client downloads the model weights once into the project directory (`projects/boinc.usnewsmap.com/`) and reuses them across subsequent tasks without re-downloading.
 
 #### Container apps (`usnm_ocr`, `usnm_assess`, `usnm_gold`, `usnm_surya`, and `usnm_qwen` container fallback)
@@ -229,7 +229,7 @@ python3 boinc/scripts/setup_mac_volunteer.py --apply --authenticator <YOUR_ACCOU
 #### Native GPU and CPU app (`usnm_qwen`)
 
 - **Apple Silicon Metal GPU (`apple_gpu_8b` on `arm64-apple-darwin`)**: Macs with Apple Silicon (`<gpu_type>apple</gpu_type>`, Metal support) and at least **8 GiB of unified memory** (~7,000 MB reported available by BOINC) receive the native `apple_gpu_8b` app version. It runs a Metal-enabled `llama-server` directly on macOS and caches the 8B `Q4_K_M` GGUF model and multimodal projector (~5.38 GiB) in the BOINC project directory via `<sticky/><no_delete/>`.
-- **Multi-thread CPU fallback (`mt` on `arm64-apple-darwin` and `x86_64-apple-darwin`)**: Macs with 4–8 CPU threads that do not use the Metal GPU class run the native `mt` version with the 2B `Q8_0` model (~2.12 GiB sticky download).
+- **Multi-thread CPU fallback (`mt` on `arm64-apple-darwin` and `x86_64-apple-darwin`)**: Macs with at least 4 CPU threads (up to 8 used) that do not use the Metal GPU class run the native `mt` version (no live version since 2 November 2026) with the 2B `Q8_0` model (~2.12 GiB sticky download).
 - Because Podman Machine on macOS does not pass the Apple Metal GPU into its Linux guest VM, Mac GPU work is always routed to the native `apple_gpu_8b` app rather than a container.
 
 #### Container apps (`usnm_ocr`, `usnm_assess`, `usnm_gold`, `usnm_surya`)
@@ -283,7 +283,7 @@ documented Linux multi-CPU and GPU pilot requirements or task resource limits.
 ### 1.3 Windows (`windows_x86_64`)
 
 The short version is the [Windows quick start](boinc-windows.md); this section
-is the full reference. **Start here for native NVIDIA GPU volunteering.** Use the same one-time setup
+is the full reference. **Start here for native Windows GPU volunteering.** Use the same one-time setup
 for experimental Qwen and production work: one official BOINC client, one
 account, one project attachment, and the usual BOINC Manager controls.
 Participation includes both experimental and production work under your normal
@@ -390,8 +390,13 @@ or work around an enforced Group Policy; ask your administrator instead.
   allowance must also permit it. Prefer a desktop with comfortable spare RAM and
   VRAM rather than using your last available resources.
 - Intended classes: `nvidia_cuda_8b` with at least 7,000 MB GPU RAM, or
-  `nvidia_cuda_2b` with at least 3,000 MB; actual scheduling also depends on
-  BOINC's GPU and memory report and resource preferences. CPU participation is
+  `nvidia_cuda_2b` with at least 3,000 MB. Neither has had a live version
+  since 2 November 2026 ([app versions](boinc-quality.md#app-versions-and-plan-classes)):
+  the only live Windows GPU version is AMD's (`amd_vulkan_8b`,
+  [AMD](boinc-amd-gpu.md)). This helper does not detect AMD GPUs, so on an
+  AMD PC pass `-AllowCpuOnly` to get past its NVIDIA check. That flag only
+  skips the helper's check: BOINC still detects the AMD GPU and can send it
+  GPU work, depending on its GPU and memory report and resource preferences. CPU participation is
   **optional**. GPU-only volunteers disable **Use CPU** in normal project
   preferences. To knowingly onboard a CPU-only or unsupported-GPU host use
   `-AllowCpuOnly` with the same command; this only relaxes the local GPU check,

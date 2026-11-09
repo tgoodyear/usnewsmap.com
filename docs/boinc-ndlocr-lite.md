@@ -6,8 +6,9 @@ conversion as `docker/Dockerfile.ja-ocr` and `ocr/ja-ocr/jaocr.py`, without the 
 Engine-level routing is tracked in [#624](https://github.com/tgoodyear/usnewsmap.com/issues/624).
 
 **Status:** the pinned contract engine and dedicated BOINC lifecycle are
-implemented. Publishing the image and the app, and running a multi-host pilot,
-remain operator steps. See [BOINC lifecycle](#boinc-lifecycle-phase-2-626)
+implemented. The image and `usnm_ndlocr` 1.1 are published (see
+[Production canonical collection](#production-canonical-collection-16-october-2026));
+a multi-host pilot on fresh pages remains an operator step. See [BOINC lifecycle](#boinc-lifecycle-phase-2-626)
 below.
 
 ## Pinned engine and contract
@@ -120,8 +121,8 @@ identity before comparing hosts or increasing the campaign.
 
 ### Two-host Linux headline check (2026-10-16 UTC)
 
-The published BOINC worker was exercised independently in Docker on pve-big
-(CT 100, i7-7700K) and pve-laptop (CT 110, i7-1185G7). Both runs used
+The published BOINC worker was exercised independently in Docker on two test
+hosts, A (i7-7700K) and B (i7-1185G7). Both runs used
 `ocr/ja-ocr/testdata/rocky-shimpo-1945-01-01-seq-4-headline.jpg`, one CPU, 4 GiB
 memory with no additional swap, no network, and a read-only container root.
 No BOINC workunit was submitted, and no curated data or trust state was changed.
@@ -137,19 +138,19 @@ No BOINC workunit was submitted, and no curated data or trust state was changed.
   the Python ALTO converter matched all 16 String contents and geometry.
   Complete ALTO/result files differ, including processing timestamps.
 
-| Measurement                       | pve-big CT 100 | pve-laptop CT 110 |
-| --------------------------------- | -------------- | ----------------- |
-| Worker-reported elapsed time      | 25.637 s       | 10.670 s          |
-| Independent Python wall time      | 25.123 s       | 10.807 s          |
-| Independent Python CPU time       | 21.781 CPU-s   | 10.806 CPU-s      |
-| Independent Python peak child RSS | 679,100 KiB    | 683,960 KiB       |
+| Measurement                       | Host A       | Host B       |
+| --------------------------------- | ------------ | ------------ |
+| Worker-reported elapsed time      | 25.637 s     | 10.670 s     |
+| Independent Python wall time      | 25.123 s     | 10.807 s     |
+| Independent Python CPU time       | 21.781 CPU-s | 10.806 CPU-s |
+| Independent Python peak child RSS | 679,100 KiB  | 683,960 KiB  |
 
 These are headline smoke measurements on two x86-64 CPUs, not full-page
 resource bounds, ARM/x86 equivalence, scheduler acceptance, canonical
 assimilation, or curated publication. The classified full-page pilot and normal
 release/search checks below remain required.
 
-An initial attempt through pve-big's host-level Podman failed before inference:
+An initial attempt through host A's host-level Podman failed before inference:
 AppArmor profile `containers-default-0.62.2` denied creation of a Unix stream
 socket required by Tokio's signal handler. A Python `socket.socketpair()`
 probe reproduced the denial, confirmed in the host kernel audit log. No
@@ -177,11 +178,11 @@ including duplicate counts, but their sequence differs: upstream text follows
 XML document order, while ALTO sorts 90 blocks and their lines by `ORDER`.
 The headline did not cover this difference.
 
-| Independent Python measurement | pve-big CT 100 | pve-laptop CT 110 |
-| ------------------------------ | -------------- | ----------------- |
-| Wall time                      | 79.431 s       | 59.724 s          |
-| CPU time                       | 79.424 CPU-s   | 59.726 CPU-s      |
-| Peak child RSS                 | 1,110,140 KiB  | 1,107,948 KiB     |
+| Independent Python measurement | Host A        | Host B        |
+| ------------------------------ | ------------- | ------------- |
+| Wall time                      | 79.431 s      | 59.724 s      |
+| CPU time                       | 79.424 CPU-s  | 59.726 CPU-s  |
+| Peak child RSS                 | 1,110,140 KiB | 1,107,948 KiB |
 
 The release blocker is tracked in [#699](https://github.com/tgoodyear/usnewsmap.com/issues/699);
 [#700](https://github.com/tgoodyear/usnewsmap.com/pull/700) preserves both output
@@ -204,7 +205,7 @@ The staging CLI generated a new job,
 `77a3a1457511db4ee342978a4307ee87715e12909487d9f20c60073172c4392c`,
 for the same actual `missing` page and unchanged scan hash above.
 
-Both CT 100 and CT 110 independently ran this **published worker**, with one
+Both hosts A and B independently ran this **published worker**, with one
 CPU, 4 GiB memory and no additional swap, no network, and a read-only root.
 Both completed and passed the shipped checker. Their genuine worker outputs
 passed the native peer comparison with character-bigram Dice **1.000000**.
@@ -214,19 +215,19 @@ normalized text, and the existing Python converter matched every String's
 content and geometry. These are actual worker results, not the earlier
 synthetic checker envelopes.
 
-| Measurement                       | pve-big CT 100 | pve-laptop CT 110 |
-| --------------------------------- | -------------- | ----------------- |
-| Worker-reported elapsed time      | 84.014 s       | 60.233 s          |
-| Independent Python wall time      | 76.749 s       | 59.071 s          |
-| Independent Python CPU time       | 76.345 CPU-s   | 59.074 CPU-s      |
-| Independent Python peak child RSS | 1,110,676 KiB  | 1,112,048 KiB     |
+| Measurement                       | Host A        | Host B        |
+| --------------------------------- | ------------- | ------------- |
+| Worker-reported elapsed time      | 84.014 s      | 60.233 s      |
+| Independent Python wall time      | 76.749 s      | 59.071 s      |
+| Independent Python CPU time       | 76.345 CPU-s  | 59.074 CPU-s  |
+| Independent Python peak child RSS | 1,110,676 KiB | 1,112,048 KiB |
 
-An ONNX Runtime affinity warning on CT 110 was nonfatal; no confinement or
+An ONNX Runtime affinity warning on host B was nonfatal; no confinement or
 affinity setting was relaxed. The full-page runtime blocker is resolved in the
 published worker. These isolated runs still do **not** prove BOINC redundant
 volunteer execution, canonical assimilation, authorized `ocr-ja` collection,
 or normal release/search acceptance. The page already has native output and
-must not be counted as the genuinely fresh-page Mac pilot.
+must not be counted as the genuinely fresh-page pilot.
 
 ### Production canonical collection, 16 October 2026
 
@@ -250,7 +251,7 @@ authenticated hand-off container, without any offline result files. The normal
 | 31036  | 6    | 26          | Success | Valid      | 0           |
 
 **Both results ran on the same host.** This proves the real redundant BOINC
-lifecycle, not independent-host volunteer consensus. The separate CT 100/110
+lifecycle, not independent-host volunteer consensus. The separate host A/B
 published-worker measurements remain the cross-host evidence. The workunit's
 canonical result is **31035**, assimilation state **2**, error mask **0**.
 The stock assimilator wrote its three canonical files under `results/0/`.
@@ -277,10 +278,10 @@ Do not reconstruct this state from volunteer files or rerun collection from
 the older pre-publication snapshot.
 
 **Normal release/search acceptance remains pending.** The prior full rebuild
-`caj-usnm-ingest-prod-pg4wqlz` failed; the #283 release owner merged the local-WAL
+`caj-usnm-ingest-prod-pg4wqlz` failed; the #283 release operator merged the local-WAL
 recovery in #753 and started replacement
 `caj-usnm-ingest-prod-si5kesp` at `2026-10-17T05:40:57Z` for
-`pages-v20261017-1`. The owner verified Running/Ready with no restart, actual
+`pages-v20261017-1`. The operator verified Running/Ready with no restart, actual
 local WAL placement and main-page progress. Public search still serves
 `pages-v20261010-2`; see [#283](https://github.com/tgoodyear/usnewsmap.com/issues/283)
 for current progress and forecasts.
@@ -314,7 +315,7 @@ exact winning part/hash and engine provenance at release acceptance.
 Do not start a competing release, change the running full-rebuild settings,
 break locks or prune old indexes to advance this gate. The original accepted
 bytes and state remain intact. This already-native page is separate from the
-genuinely fresh-page Mac pilot and current-image Gold trust.
+genuinely fresh-page pilot and current-image Gold trust.
 
 ## BOINC lifecycle (phase 2, #626)
 
@@ -339,7 +340,8 @@ per-page deadline. No network or model download occurs on a volunteer host.
 
 **Authorization prerequisite:** existing BOINC identities cannot publish this
 overlay. The server bridge deliberately has **no curated credentials**, and the
-handoff job's curated grants cover only `ocr-local/`, not `ocr-ja/`. Rebuilding
+hand-off runner's curated grants cover only `ocr-local/`, not `ocr-ja/`
+(`infra/modules/boinc-handoff-runner.bicep`). Rebuilding
 images does not change those permissions. Run collection on a **trusted
 maintainer or ingest-side host** using an Entra identity already authorized to
 list, read and create objects under curated `ocr-ja/` (for example the

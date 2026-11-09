@@ -256,7 +256,7 @@ Pillow 13.0.0 from the same pinned wheel as the bridge image
 sidecar and never replaces a blob. An existing blob must match the size and every
 provenance field (source and JPEG sha256, recipe, Pillow version, width and height);
 missing or different metadata stops the run without marking that page done. Reconcile
-the existing blob with the wave owner rather than overwriting it or retrying with
+the existing blob with the wave's maintainer rather than overwriting it or retrying with
 weaker checks. The script lists done
 pages in `/var/lib/usnm-quality-jpeg-cache/done-l-q75-r2.txt`. The exchange account's lifecycle policy deletes cached
 pages 30 days after they are written (`expire-boinc-handoff-quality-jpeg`, #915), so a wave

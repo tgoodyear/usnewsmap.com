@@ -12,9 +12,10 @@ joined Mac can sit idle for a while. That is normal.
 ## 1. What you need
 
 - An Apple Silicon Mac (M1 or later) or an Intel Mac, on a current macOS.
-- Free disk that BOINC is allowed to use: 2 GiB for the quality app, 12 GiB
-  for the Qwen CPU app, and 18 GiB for the Qwen GPU app (those are binary
-  gigabytes, so about 2.2, 13 and 20 GB as Finder shows them). BOINC's own
+- Free disk that BOINC is allowed to use: 2 GiB for the quality app and
+  18 GiB for the Qwen GPU app (those are binary gigabytes, so about 2.2 and
+  19 GB as Finder shows them). The Qwen CPU app has had no live version since
+  2 November 2026. BOINC's own
   disk limit (**Options → Computing preferences → Disk**) must allow it as
   well.
 - The GPU app needs an Apple Silicon Mac with at least 8 GB of memory. It

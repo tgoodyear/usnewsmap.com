@@ -39,7 +39,7 @@ Summary:
   `wiki:ServerIntro`.
 - The client learns of a project from its master URL. Source: `wiki:Master-URL`.
 - Account managers (BOINC Manager's "Add project" list, Science United) are optional indexes,
-  not hosts for the project. See (j).
+  not hosts for the project. See (i).
 
 ## (b) Server stack and daemons
 
@@ -93,10 +93,10 @@ CORRECTIONS and gaps, in order of how much they affect the design:
    exception: `boinc-daemons.sh` keeps it on the container disk and links it into the
    tree. `bin/start` leaves its unlinked `start.lock` open in every daemon it starts, and on
    Azure Files that file stays delete-pending, so each later `bin/start --cron` failed with
-   ENOENT and never restarted a stopped daemon. Source: `src:sched/start` lines 311-325
+   ENOENT and never restarted a stopped daemon. Source: `src:sched/start`
    and 785-819.
 3. CORRECTED, MyISAM. Most tables are InnoDB, but `post`, `thread` and `profile` are MyISAM
-   because of full-text indexes. Source: `src:db/schema.sql` lines 33 to 35. Azure Database
+   because of full-text indexes. Source: `src:db/schema.sql`. Azure Database
    for MySQL "uses the InnoDB storage engine"
    (`https://learn.microsoft.com/en-us/azure/mysql/concepts-version-policy`, ms.date 2026-05-13).
    The production project initialization recorded in #470 succeeded with forums and profiles
@@ -157,15 +157,15 @@ All read on 2026-10-13 (US Eastern): wiki commit `7e16379`, source commit `0f611
 - The server needs no Docker. A plan class named `docker` in `<project>/plan_class_spec.xml`
   makes the scheduler send the app version only to hosts that report Docker: the check reads
   the client-reported `host.docker_version` and the client version
-  (`src:sched/plan_class_spec.cpp`, lines 584 to 631). This answers the question for the
+  (`src:sched/plan_class_spec.cpp`). This answers the question for the
   Azure hosting: the Container App never runs a container itself.
 - Element names are CONFIRMED in `src:sched/plan_class_spec.xml.sample` (the `docker` class is
   `<plan_class><name>docker</name><docker/></plan_class>`) and in the parser
-  (`src:sched/plan_class_spec.cpp`, lines 1258 to 1266: `min_core_client_version`, `docker`).
-  `boinc/plan_class_spec.xml` here is that class plus
+  (`src:sched/plan_class_spec.cpp`: `min_core_client_version`, `docker`).
+  `boinc/project/plan_class_spec.xml` here is that class plus
   `<min_core_client_version>80211</min_core_client_version>` for ordinary OCR; separate
   multi-CPU and GPU container pilot classes retain their 80213 floors. The server's own Docker
-  check applies the 8.2.6 minimum to macOS clients only (line 625). The wiki asks for 9.0, but
+  check applies the 8.2.6 minimum to macOS clients only. The wiki asks for 9.0, but
   no 9.x client had been released as of 2026-10-14 (newest Linux packages: 8.2.13 stable,
   8.2.15 alpha), so a 9.0 minimum blocked every host. 8.2.13 on Debian 13 detects Docker
   (`Docker: version ...` in its event log).
@@ -218,10 +218,11 @@ All read on 2026-10-13 (US Eastern): wiki commit `7e16379`, source commit `0f611
   `--remote_file URL nbytes MD5`, and remote files get the physical name `jf_<md5>`. Source:
   `wiki:Remote-input-file-management`, `wiki:Staging-input-files`, `wiki:Input-file-handling`.
   CONFIRMED: downloads can be served from blob storage.
-- #441 does not use remote files: `usnm-boinc submit` writes each cached scan into the
+- #441 does not use remote files: by default `usnm-boinc submit` writes each cached scan into the
   project's `download/` tree with `dir_hier_path` and passes it to `create_work` as a local
-  input file. So the scans are served by Apache from the Files share, and no SAS or second
-  storage account is involved.
+  input file. So the scans are served by Apache from the project tree (on Azure, the Files
+  share), and no SAS or second storage account is involved. The opt-in
+  `--download-base-url` (#783, server-and-apps.md) later added `--remote_file` pages.
 - CORRECTED, upload: upload goes through the `file_upload_handler` CGI program, which checks
   an RSA-signed upload certificate in the job's file_info and writes to the local `upload/`
   tree. It cannot be redirected to blob storage. Source: `wiki:FileUpload`,
@@ -252,8 +253,8 @@ All read on 2026-10-13 (US Eastern): wiki commit `7e16379`, source commit `0f611
   `bsd:docker-compose.yml`, `bsd:images/*/Dockerfile`.
 - CORRECTED: the published Docker Hub tags (`boinc/server_apache`) are old (about 2019)
   (`https://hub.docker.com/v2/repositories/boinc/server_apache/tags`, read 2026-10-13). We
-  would build our own image from the Dockerfiles, pinned to the `server_release/1.6/1.6.2`
-  tag.
+  build our own image from the Dockerfiles. It is pinned to master commit `22bbebe0`, not the
+  `server_release/1.6/1.6.2` tag (`boinc/images/base/Containerfile`, `BOINC_COMMIT`).
 
 ## (i) Official list, and attaching to an unlisted project
 
@@ -262,8 +263,8 @@ All read on 2026-10-13 (US Eastern): wiki commit `7e16379`, source commit `0f611
   United is a separate service that matches volunteers to projects. Source: `wiki:Going-public`,
   `wiki:ProjectLaunch`, `wiki:Choosing and joining projects`. We do not contact anyone.
 - CONFIRMED attach by URL. BOINC Manager's "Add project" accepts a project URL; the client
-  fetches `<master URL>get_project_config.php` (`src:client/acct_setup.cpp` line 72). It
-  follows HTTP redirects (`CURLOPT_FOLLOWLOCATION` in `src:client/http_curl.cpp` line 527), but
+  fetches `<master URL>get_project_config.php` (`src:client/acct_setup.cpp`). It
+  follows HTTP redirects (`CURLOPT_FOLLOWLOCATION` in `src:client/http_curl.cpp`), but
   that redirects on `get_project_config.php` work end to end is UNVERIFIED.
 - Master URL stability: changing the master URL forces volunteers to reattach. The master
   page must carry the scheduler URLs in an HTML comment (`<scheduler>...</scheduler>`) and

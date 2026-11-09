@@ -67,7 +67,7 @@ present` (mark submitted) or `--found absent` (permit submission again).
   completion. The exporter snapshots inputs centrally and never deletes originals.
 - No in-page checkpointing: restart can repeat a page. BOINC resource estimates
   are initial bounds; calibrate them on real scans. One-hour maximum
-  configurable OCR deadline, default 600 seconds, one Tesseract thread, PSM 3,
+  configurable OCR deadline, default 1800 seconds (#1159), one Tesseract thread, PSM 3,
   DPI 300. The fixed `rsc_fpops_est=1e12` is provisional, so client ETA and
   credit are rough; use `elapsed_ms` from returned manifests across real JPEG
   and JP2 scans to calibrate it. `target_nresults=1` requests one result.

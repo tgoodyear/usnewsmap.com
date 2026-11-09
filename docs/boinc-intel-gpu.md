@@ -260,7 +260,7 @@ refused by the app.
 | -------------------------------------- | --------------------------------- | --------------------------------------------------------------------------------------------------- |
 | Iris Xe (TigerLake-LP GT2), i7-1185G7  | 16 GB RAM, Debian 13, Mesa 25.0.7 | Measured (below)                                                                                    |
 | Iris Xe with 8 GB RAM                  |                                   | Not measured; likely refused if its Vulkan heap is half of RAM, as on Computer 9                    |
-| NVIDIA GeForce RTX 2060 SUPER, 8 GiB   | Proxmox host, CT 214              | CUDA and Vulkan-on-NVIDIA measured (below)                                                          |
+| NVIDIA GeForce RTX 2060 SUPER, 8 GiB   | Linux container                   | CUDA and Vulkan-on-NVIDIA measured (below)                                                          |
 | Arc A-series (A750 8 GB, A770 16 GB)   |                                   | Not measured; no Arc hardware was available for #829                                                |
 | AMD GPUs through the same Vulkan build |                                   | [Separate automatic AMD admission](boinc-amd-gpu.md); RX 9070 XT hardware acceptance pending (#885) |
 
@@ -289,7 +289,7 @@ separately. The run used llama.cpp b8799, Mesa 25.0.7 and a 12 GiB container.
 On 2026-10-18, the pinned production `usnm-boinc-worker` CUDA image and its `work` path ran
 Qwen3-VL-8B-Instruct-Q4_K_M on the 100 verified crops in release `ocr-bench-v1.0.0`, subset
 `legacy/overproof-en-100` (subset digest `e99edaf91b5493fcd3eaf309cea9f31dbbeb23438bab865638ab92889cd14d04`).
-The crops ran in four sequential 25-crop slots in a private container in CT 214; this did not
+The crops ran in four sequential 25-crop slots in a private container; this did not
 submit BOINC work or change shared BOINC, VM, or production configuration.
 
 | Measurement                                      |                                                                                                                                                                                                                                                                                                                                               Result |
@@ -319,7 +319,7 @@ parse a llama-server device line. This is the known device-label defect tracked 
 to 95% GPU utilization and 184.7 W. The NVIDIA activity, CUDA plan class, and full 100-crop
 completion are the measurement evidence; the worker's `device` string is not reliable here.
 
-The private container requested 6 GiB memory and 2 CPUs, but CT 214 did not delegate cgroup v2
+The private container requested 6 GiB memory and 2 CPUs, but its host did not delegate cgroup v2
 limits (`memory.max` and `cpu.max` read as `max`), so those limits were not enforced. The
 observed worker peak RSS was about 5.23 GiB. The production CUDA image is a different pinned
 llama.cpp build from the native Vulkan `llama.lock` route; the similar CER values do **not**
@@ -351,7 +351,7 @@ vision-projector bytes from `weights.lock`, prompt v1, context 4096, GPU layers 
 threads, parallel 1, temperature 0, top-p 1, seed 42 and four output tokens per 1,000 square
 pixels. The native plan classes were `nvidia_cuda_8b` and `nvidia_vulkan_8b`; the Intel class
 would deliberately refuse the NVIDIA device. Both server logs confirm 37/37 layers offloaded
-to the GPU. Vulkan used CT 214's existing NVIDIA ICD with no CT or driver configuration changes.
+to the GPU. Vulkan used the host's existing NVIDIA ICD with no container or driver configuration changes.
 
 | Measurement                                          |                        Native CUDA b8799 | Pinned Vulkan b8799 on NVIDIA |
 | ---------------------------------------------------- | ---------------------------------------: | ----------------------------: |
@@ -419,6 +419,6 @@ This completes #829's remaining paired-comparison measurement and supplies bound
 backend-agreement evidence for #786. It is **not** cross-vendor Intel validation, an
 independent-host production quorum receipt, or permission to widen a cohort. Arc hardware was
 unavailable and remains optional for #829; Intel rollout/audited work, Arc characterization
-and integrated-GPU host-RAM reservation remain separate #786 follow-ups. The isolated CT
+and integrated-GPU host-RAM reservation remain separate #786 follow-ups. The isolated
 workspace/store/cache were removed and the GPU was explicitly released on #794 before any
 PR/review work; shared BOINC processes, preferences, caches and other sessions were untouched.

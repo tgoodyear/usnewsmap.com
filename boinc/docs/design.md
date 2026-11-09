@@ -20,9 +20,9 @@ bridge. This design does not change its model:
   journals each submission before `create_work`, reads the stock `batch_collect_assimilator`
   spool and publishes native ALTO and Parquet to `ocr-out` and `ocr-sync`;
 - the default validator (`sample_trivial_validator`), for trusted friends;
-- a stock, self-hosted BOINC server (provisioned separately by this directory).
+- a stock, self-hosted BOINC server (provisioned separately by `boinc/infra/boinc/`).
 
-This directory is that last item: Azure hosting for the stock server and the notes on how the
+`boinc/infra/boinc/` is that last item: Azure hosting for the stock server and the notes on how the
 bridge reaches it. Provisioning and image builds are driven by `boinc/scripts/provision-boinc.sh`
 and `boinc/scripts/build-boinc-images.sh`. It contains no BOINC code, no work generator, no validator,
 no assimilator and no app. The interface to #441 is in
@@ -31,7 +31,7 @@ no assimilator and no app. The interface to #441 is in
 ## 2. Hosting on Azure
 
 The production Container Apps environment, MySQL server, VNet, Files account and Key Vault use
-the `westus2` setting in `infra/boinc/env/prod.json`; other deployments take their region from
+the `westus2` setting in `boinc/infra/boinc/env/prod.json`; other deployments take their region from
 their committed settings. Static Web Apps retains its `eastus2` default because it is available
 in a limited set of regions.
 
@@ -39,7 +39,7 @@ in a limited set of regions.
 
 One Container Apps app, one container, `minReplicas = maxReplicas = 1`. The container runs
 what `boinc-server-docker`'s `apache` image runs: `supervisord` starting cron, Apache with
-PHP, and `bin/start`, which starts the feeder, transitioner, file_deleter (`--preserve_wu_files`: scans in `download/` are never deleted), db_purge and the two app daemons from #441's `boinc/apps/daemons.xml` (`sample_trivial_validator` and `batch_collect_assimilator`). Reasons:
+PHP, and `bin/start`, which starts the feeder, transitioner, file_deleter (`--preserve_wu_files`: scans in `download/` are never deleted), db_purge and the app daemons from #441's `boinc/apps/daemons.xml` (for `usnm_ocr`, `sample_trivial_validator` and `batch_collect_assimilator`). Reasons:
 
 - The feeder and the scheduler share a System V shared-memory segment (at least 32 MB), so
   they must share a host. Two containers in one replica share the network namespace, but
@@ -293,7 +293,7 @@ access off and are reached through private endpoints in the project's VNet. The 
 `boinc.usnewsmap.com` with a managed certificate; #470 records a successful production health
 check. The master URL is part of every volunteer's attachment and cannot change.
 
-- The web server user runs the public PHP and shares a group with the project owner, so it can write `upload/`, `download/`, the logs and the page cache. `lock_code_trees` removes its write access to the project root, `html/`, `bin/`, `cgi-bin/`, `py/` and `apps/` at every start.
+- The web server user runs the public PHP and shares a group with the project user (`boincadm`), so it can write `upload/`, `download/`, the logs and the page cache. `lock_code_trees` removes its write access to the project root, `html/`, `bin/`, `cgi-bin/`, `py/` and `apps/` at every start.
 - Keep the PHP surface small: disable forums, profiles, private messages and teams in
   `html/project/project.inc`. Account creation can use `INVITE_CODES` so the project starts
   effectively private (#441's pilot is a few friends).
@@ -397,10 +397,12 @@ Per-unit consequences, using the unit prices above:
   which the project's own nodes measure at about 160 to 330 s (UNVERIFIED on volunteer
   hardware), so one core completes roughly 11 to 22 tasks an hour, and downloads about 50 to
   100 MB an hour. Scheduler contacts are about one per task.
-- Files holds the staged scans for `delete_delay_hours` (168 in the template) after
-  assimilation. The share quota is a parameter (`shareQuotaGb`, 200 GiB by default;
-  production preserves the observed 200 GiB during #464 reconciliation; any increase
-  needs a separately reviewed setting). Check actual share usage before staging:
+- Files keeps the staged scans: `file_deleter` runs with `--preserve_wu_files`
+  ([Scans are never deleted](server-and-apps.md#scans-are-never-deleted)), so
+  `delete_delay_hours` (168 in the template) now delays only the deletion of output files.
+  The share quota is a parameter (`shareQuotaGb`, 200 GiB by default in
+  `modules/storage.bicep`; `main.bicep` sets 250 GB, the size the share was raised to by
+  hand for the quality wave, so a provision does not shrink it). Check actual share usage before staging:
   retained assessment inputs exhausted the former 200 GiB production limit.
 - The bridge job runs for seconds to minutes per cohort at 0.5 vCPU and 1 GiB, billed at the
   active rate for that time only.
@@ -421,7 +423,8 @@ if CPU credits drain), and the retention of staged scans.
    the jobs, the journal and the scan cache, and run `create_work` from a local project
    directory. With the server in Azure and the cache on-prem, the journal has to be copied
    across by hand (4.3). A `submit` that works from a remote hand-off, or journals on the
-   server side, would remove that.
+   server side, would remove that. The remote hand-off (#469, `submit-remote` and
+   `spool-out` bridge steps; [scan-cache-handoff.md](scan-cache-handoff.md)) now does this.
 3. **`--cap-drop=ALL` and directory permissions.** `boinc/apps/job.toml` drops all
    capabilities, and `boinc/apps/Containerfile` sets the user. BOINC creates slot and project
    directories with mode 0771 (`boinc_mkdir`), so the container user may not be able to write
@@ -431,10 +434,10 @@ if CPU credits drain), and the retention of staged scans.
    wrapper source does (verified-facts.md (d)). A released wrapper binary is needed that has
    them.
 5. **`install.py` needs a `docker` plan class** that the repository did not provide.
-   `boinc/plan_class_spec.xml` here supplies it.
+   `boinc/project/plan_class_spec.xml` here supplies it.
 6. **The worker image's registry.** Volunteers' Docker pulls it by digest, without our
    credentials, from the public GHCR package (ADR-0019, addendum).
-7. **`daemons.xml` has no standard daemons.** It lists only the validator and the assimilator;
+7. **`daemons.xml` has no standard daemons.** It lists only the apps' validators and assimilators;
    the template here adds the feeder, transitioner, file_deleter and db_purge.
 8. **Azure Files semantics.** The Container Apps app and jobs mount SMB with `mfsymlinks`
    and explicit uid/gid and mode options (2.3). Full POSIX permissions and file-locking
@@ -477,7 +480,9 @@ the images would be preferred if one exists. It is not planned until the maintai
 8. The terms of use and any change to project metadata. The production domain and master URL
    are set; a URL change after volunteers attach would require them to reattach.
 9. ~~Who builds the server image and bridge job?~~ `boinc/scripts/build-boinc-images.sh` builds both in ACR Tasks and writes their digests to the settings (docs/images.md).
-10. Should `submit` get a remote mode in #441, or is the manual hand-off enough for the pilot?
+10. ~~Should `submit` get a remote mode in #441, or is the manual hand-off enough for the pilot?~~
+    The remote hand-off (#469, [scan-cache-handoff.md](scan-cache-handoff.md)) replaced the
+    manual copy.
 11. What network path does the maintainer use to reach the Files share for the hand-off in
     section 4? Secrets and project initialization are handled by in-VNet jobs; the share
     hand-off still requires an operator path into the VNet.

@@ -422,8 +422,7 @@ The values are the job's environment: `az containerapp job show --name usnm-boin
 controller then sends the steps here with `--onprem-handoff claim --onprem-handoff collect`
 ([boinc-batch-scheduler.md](boinc-batch-scheduler.md#on-prem-claim-collect-and-export-967)), and
 `export` too with `--onprem-handoff export`: the controller then pushes the scans straight to this host (`--target scans --step receive`, into `/srv/usnm-boinc/project/handoff-scans`), export mounts them read-only, and `submit-remote` takes each page from them, so no scan goes through Azure (#1116).
-`texts-export` runs on the host with the local copy of curated (`boinc/scripts/texts-export-onprem.sh`, [boinc-quality.md](boinc-quality.md)). Once claim and collect have run cleanly here
-for a day, a separate Bicep change retires the job's claim and collect use.
+`texts-export` runs on the host with the local copy of curated (`boinc/scripts/texts-export-onprem.sh`, [boinc-quality.md](boinc-quality.md)).
 
 The hand-off steps take `/run/usnm-boinc-handoff.lock`, not the step lock: they touch only Azure
 storage, Cosmos and the queues, and the controller runs one at a time. `spool-out` and
@@ -518,15 +517,14 @@ Work that ran as Azure jobs, and where it runs now:
 
 ## Cloudflare
 
-`boinc.usnewsmap.com` is a proxied CNAME to the tunnel. Volunteer clients and the controller are scripts, so the zone has Bot Fight Mode off. A configuration rule skips Browser Integrity Check for requests from the on-prem public IP to `boinc.usnewsmap.com`, because Browser Integrity Check answers `Python-urllib` with 403. An IP Access allow rule covers the same IP. Both rules name that IP, so update them if it changes. [ADR-0024](design/adr/0024-cloudflare-tunnel-and-r2-credentials.md) records the ADR-0009 exception for the Cloudflare credentials.
+`boinc.usnewsmap.com` is a proxied CNAME to the tunnel. Volunteer clients and the controller are scripts, so the zone's bot checks are set up not to block them. That configuration is kept outside this repository. [ADR-0024](design/adr/0024-cloudflare-tunnel-and-r2-credentials.md) records the ADR-0009 exception for the Cloudflare credentials.
 
 ## LAN access (#1357)
 
 **Status: the network-wide records were rolled back on 30 October 2026, and [project-run clients](#project-run-clients) now use a hosts entry instead.** Everything else on the LAN goes through Cloudflare. Firefox failed with `SSL_ERROR_INTERNAL_ERROR_ALERT`, because the gateway still forwarded the public HTTPS record advertising Cloudflare's Encrypted Client Hello, and Caddy here can't answer its outer name, `cloudflare-ech.com`. Both local records were removed. Caddy, the certificate, its timer and the guard remain. Don't restore the records until browsers are handled and tested as well as BOINC clients. The rest of this section, up to the 30 October live acceptance, describes that setup as designed.
 
 Home hosts don't go out to Cloudflare and back in through the tunnel. The UniFi gateway's local
-DNS answers `boinc.usnewsmap.com` with CT230's LAN IPv4 and IPv6 addresses. Its IPv4 address has a DHCP reservation, the same
-as `ocr.tjg.fyi`. The address isn't written here. Anywhere else, the name is still Cloudflare's.
+DNS answers `boinc.usnewsmap.com` with CT230's LAN IPv4 and IPv6 addresses. Its IPv4 address has a DHCP reservation. The address isn't written here. Anywhere else, the name is still Cloudflare's.
 Clients keep the master URL, scheduler, download and upload URLs, and normal certificate
 checks. The controller's `--server-status-url` is unchanged.
 
@@ -542,8 +540,8 @@ than the installed one, and restarts Caddy when it changes. Caddy's access log,
 ```sh
 python3 scripts/azure/origin_tls_bootstrap.py --boinc-lan   # operator, once: the secrets and grants
 gh workflow run origin-tls.yml -f validate-dns=true         # then check the run
-tar -C boinc/scripts/onprem/lan-tls -cf - . | ssh root@pve.tjg.fyi 'cat > /root/lan-tls.tar'
-ssh root@pve.tjg.fyi 'pct push 230 /root/lan-tls.tar /root/lan-tls.tar && pct exec 230 -- sh -c "mkdir -p /root/lan-tls && tar -C /root/lan-tls -xf /root/lan-tls.tar && /root/lan-tls/lan-tls-setup.sh"'
+tar -C boinc/scripts/onprem/lan-tls -cf - . | ssh root@<Proxmox host> 'cat > /root/lan-tls.tar'
+ssh root@<Proxmox host> 'pct push 230 /root/lan-tls.tar /root/lan-tls.tar && pct exec 230 -- sh -c "mkdir -p /root/lan-tls && tar -C /root/lan-tls -xf /root/lan-tls.tar && /root/lan-tls/lan-tls-setup.sh"'
 ```
 
 Then add the gateway's local A and AAAA records (using CT230's current LAN addresses).
@@ -556,7 +554,7 @@ guard, `systemctl disable --now usnm-boinc-lan-guard`.
 
 The public certificate expires 27 January 2027. Both local DNS record types now resolve to
 CT230; public resolvers still return Cloudflare. Direct HTTPS passes normal certificate
-validation from the Mac, CT100, CT214 and CT211. Caddy recorded actual BOINC scheduler RPCs,
+validation from a LAN workstation, CT100, CT214 and CT211. Caddy recorded actual BOINC scheduler RPCs,
 downloads and uploads returning 200, including Linux and Mac clients, without changing their
 master URL or work-acquisition settings. The public tunnel still returns 200.
 

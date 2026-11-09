@@ -12,12 +12,17 @@ joined PC can sit idle for a while. That is normal.
 
 - Windows 11, or Windows 10 22H2 with current updates, on an Intel or AMD
   64-bit PC. Windows on ARM and Windows Server are not supported.
-- For GPU work, an NVIDIA GPU with the official NVIDIA driver 551.61 or newer
-  and at least 3 GB of free video memory. A PC without one (AMD or Intel
-  graphics, or no GPU) can only offer CPU time: add `-AllowCpuOnly` to both
-  helper commands below. CPU work is optional and not always available.
+- The helper looks for an NVIDIA GPU with the official NVIDIA driver 551.61
+  or newer and at least 3 GB of free video memory. The only Windows GPU
+  version that gets work, though, is for AMD GPUs with 7 GB or more
+  ([AMD](boinc-amd-gpu.md)). The NVIDIA and Intel GPU versions run on Linux
+  only ([app versions](boinc-quality.md#app-versions-and-plan-classes)). On a
+  PC without an NVIDIA GPU, add `-AllowCpuOnly` to the preview and apply
+  commands below (not to `-Status`). It only skips the helper's NVIDIA check:
+  BOINC still finds an AMD GPU and can send it GPU work. CPU work is optional
+  and not always available.
 - 6 GB of RAM and 12 GiB of free disk, or 18 GiB if your GPU has 7 GB or more
-  of video memory (binary gigabytes: about 13 and 20 GB as most disk tools
+  of video memory (binary gigabytes: about 13 and 19 GB as most disk tools
   show them).
 
 ## 2. Run the helper
@@ -58,8 +63,9 @@ joined PC can sit idle for a while. That is normal.
    installer and again before it runs it. It verifies the installer's checksum
    and signature first. In the installer, open **Advanced** and keep **Service
    install** off (a service cannot use the GPU), and at **Finish** leave
-   **Launch BOINC Manager** unchecked. If BOINC is already installed, the
-   helper skips this and reuses it.
+   **Launch BOINC Manager** unchecked. If BOINC 8.2.11 or newer is already
+   installed, the helper skips this and reuses it; an older one is upgraded,
+   after you exit it.
 
 5. The helper then asks before opening **BOINC Manager** and prints the steps
    to follow there (next section). When you have done them, press Enter and it
@@ -92,7 +98,7 @@ by state. "No tasks" with a **Scheduler request completed** line in Manager's
 task that downloads, runs and uploads is a success; its validation shows under
 **Tasks** on your account page.
 
-If the GPU is not listed in the Event Log at startup, update the NVIDIA driver
+If the GPU is not listed in the Event Log at startup, update the GPU driver
 and check that BOINC was not installed as a service.
 
 ## 5. Pause, stop or leave

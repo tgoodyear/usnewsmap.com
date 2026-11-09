@@ -43,8 +43,9 @@ detected through OpenCL for Vulkan execution; NVIDIA uses CUDA detection for
 its CUDA/Vulkan routes, and Apple uses its native GPU route. A host still needs
 a published app version for its OS, the correct model/batch, supported BOINC
 and driver capabilities, sufficient memory, and the actual assigned device.
-GPU classes never silently fall back to CPU. Existing Intel/NVIDIA native
-cohort windows are also bounded pilots, not general automatic queue admission.
+GPU classes never silently fall back to CPU. Intel/NVIDIA native classes are
+admitted separately, by bounded windows or by their own general admission
+(`native-qwen-cohort.php --general`).
 
 Automatic admission does not manufacture work. Matching native Qwen 8B batch-8
 work with ordinary replicas must be available in the accelerator-only queue;
@@ -156,7 +157,7 @@ For the next reviewed Windows AMD app version:
    `--extra-file AMD_RUNTIME_BUILD.json=PATH`. Never overlay an unsigned DLL
    into a client slot or expose signing keys. Record the new app/version IDs,
    commit and public signed-download/readback hashes.
-4. Coordinate with the current `#529` runtime owner **before** publication,
+4. Coordinate on `#529` **before** publication,
    host validation or any admission change. Keep general AMD admission stopped.
    Use the bounded exact-one-workunit acceptance procedure below only with
    separately coordinated permission; require the corrected signed app download,
@@ -434,9 +435,9 @@ workunits that already have results.
 
 The scheduler uses `<gpu_type>ati</gpu_type><opencl/>` and reserves one AMD GPU
 plus two host CPUs. The pinned BOINC source accepts `ati`/`amd` in
-[`plan_class_spec.cpp`](https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/plan_class_spec.cpp#L690-L750)
+[`plan_class_spec.cpp`](https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/plan_class_spec.cpp)
 and maps `amd` plan names to `PROC_TYPE_AMD_GPU` in
-[`sched_util_basic.cpp`](https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/sched_util_basic.cpp#L313-L332).
+[`sched_util_basic.cpp`](https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/sched_util_basic.cpp).
 Inference uses Vulkan, not OpenCL. The staging CLI patch exposes BOINC's existing
 targeted-work flag without creating an assignment before audit/admission.
 The ordinary transitioner must not create generic replicas: the pinned
