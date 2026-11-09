@@ -8,7 +8,7 @@
     "bridge": "crusnmprodffapzy.azurecr.io/usnm-boinc-bridge@sha256:8ec2b15ea5ae6b10302e3d8a68bdd41234ade1f5b4ddfe58c9ea06381425daa2",
     "server": "crusnmprodffapzy.azurecr.io/usnm-boinc-server@sha256:3b6d73b4e56dfe9edd2290432a10d8e251234972bce49e2a366992bbd6728251",
     "web": "crusnmprodffapzy.azurecr.io/usnm-boinc-bridge@sha256:9b40bb510243097dcb09b5392d9b96c1ca10b0c9534c2951aa5c2d73492042d1",
-    "worker": "ghcr.io/tgoodyear/usnm-boinc-worker@sha256:247c131a599403645c4c96782c0556dc27f27a5d991c764b4b9565182a8c71aa"
+    "worker": "ghcr.io/tgoodyear/usnm-boinc-worker@sha256:dac9c123a52d7b10281d3204a815233da1fe9819afdadd4341a034a95441eb34"
   },
   "keyVaultAllowedIps": [
     "107.205.227.23"
