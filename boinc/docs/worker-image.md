@@ -41,8 +41,11 @@ them to both builds to skip the mirror, as CI does
 ([Rebuild the apt bases](#rebuild-the-apt-bases)):
 
 ```sh
+# A separate assignment, so a rejected pin, malformed lock or failed pull stops here
+# instead of leaving `bases` empty and falling back to the snapshot.
+lines=$(scripts/ci/tesseract-base.sh --arch amd64 --check-label docker) || exit 1
 bases=()
-for line in $(scripts/ci/tesseract-base.sh --arch amd64 --check-label docker); do
+for line in $lines; do
   bases+=(--build-arg "$line")
 done
 # then add "${bases[@]}" to each docker build above
