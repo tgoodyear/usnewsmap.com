@@ -1,0 +1,413 @@
+{
+ "dev": {
+  "0.5": {
+   "all": {
+    "l->chr": 19,
+    "l->eng": 1041,
+    "o->chr": 16,
+    "o->eng": 491,
+    "s->chr": 12635,
+    "s->eng": 67
+   },
+   "hand": {
+    "l->chr": 17,
+    "l->eng": 43,
+    "o->chr": 1,
+    "o->eng": 24,
+    "s->chr": 85
+   },
+   "rule": {
+    "l->eng": 1,
+    "o->chr": 13,
+    "o->eng": 420,
+    "s->chr": 11135,
+    "s->eng": 56
+   },
+   "synth": {
+    "l->chr": 2,
+    "l->eng": 997,
+    "o->chr": 2,
+    "o->eng": 47,
+    "s->chr": 1415,
+    "s->eng": 11
+   }
+  },
+  "0.7": {
+   "all": {
+    "l->chr": 27,
+    "l->eng": 1033,
+    "o->chr": 17,
+    "o->eng": 490,
+    "s->chr": 12659,
+    "s->eng": 43
+   },
+   "hand": {
+    "l->chr": 22,
+    "l->eng": 38,
+    "o->chr": 1,
+    "o->eng": 24,
+    "s->chr": 85
+   },
+   "rule": {
+    "l->eng": 1,
+    "o->chr": 14,
+    "o->eng": 419,
+    "s->chr": 11154,
+    "s->eng": 37
+   },
+   "synth": {
+    "l->chr": 5,
+    "l->eng": 994,
+    "o->chr": 2,
+    "o->eng": 47,
+    "s->chr": 1420,
+    "s->eng": 6
+   }
+  },
+  "0.8": {
+   "all": {
+    "l->chr": 36,
+    "l->eng": 1024,
+    "o->chr": 19,
+    "o->eng": 488,
+    "s->chr": 12669,
+    "s->eng": 33
+   },
+   "hand": {
+    "l->chr": 30,
+    "l->eng": 30,
+    "o->chr": 1,
+    "o->eng": 24,
+    "s->chr": 85
+   },
+   "rule": {
+    "l->eng": 1,
+    "o->chr": 16,
+    "o->eng": 417,
+    "s->chr": 11161,
+    "s->eng": 30
+   },
+   "synth": {
+    "l->chr": 6,
+    "l->eng": 993,
+    "o->chr": 2,
+    "o->eng": 47,
+    "s->chr": 1423,
+    "s->eng": 3
+   }
+  },
+  "0.9": {
+   "all": {
+    "l->chr": 42,
+    "l->eng": 1018,
+    "o->chr": 22,
+    "o->eng": 485,
+    "s->chr": 12680,
+    "s->eng": 22
+   },
+   "hand": {
+    "l->chr": 34,
+    "l->eng": 26,
+    "o->chr": 1,
+    "o->eng": 24,
+    "s->chr": 85
+   },
+   "rule": {
+    "l->eng": 1,
+    "o->chr": 19,
+    "o->eng": 414,
+    "s->chr": 11171,
+    "s->eng": 20
+   },
+   "synth": {
+    "l->chr": 8,
+    "l->eng": 991,
+    "o->chr": 2,
+    "o->eng": 47,
+    "s->chr": 1424,
+    "s->eng": 2
+   }
+  },
+  "0.95": {
+   "all": {
+    "l->chr": 50,
+    "l->eng": 1010,
+    "o->chr": 30,
+    "o->eng": 477,
+    "s->chr": 12685,
+    "s->eng": 17
+   },
+   "hand": {
+    "l->chr": 36,
+    "l->eng": 24,
+    "o->chr": 1,
+    "o->eng": 24,
+    "s->chr": 85
+   },
+   "rule": {
+    "l->eng": 1,
+    "o->chr": 27,
+    "o->eng": 406,
+    "s->chr": 11176,
+    "s->eng": 15
+   },
+   "synth": {
+    "l->chr": 14,
+    "l->eng": 985,
+    "o->chr": 2,
+    "o->eng": 47,
+    "s->chr": 1424,
+    "s->eng": 2
+   }
+  },
+  "0.98": {
+   "all": {
+    "l->chr": 65,
+    "l->eng": 995,
+    "o->chr": 50,
+    "o->eng": 457,
+    "s->chr": 12691,
+    "s->eng": 11
+   },
+   "hand": {
+    "l->chr": 40,
+    "l->eng": 20,
+    "o->chr": 1,
+    "o->eng": 24,
+    "s->chr": 85
+   },
+   "rule": {
+    "l->eng": 1,
+    "o->chr": 47,
+    "o->eng": 386,
+    "s->chr": 11181,
+    "s->eng": 10
+   },
+   "synth": {
+    "l->chr": 25,
+    "l->eng": 974,
+    "o->chr": 2,
+    "o->eng": 47,
+    "s->chr": 1425,
+    "s->eng": 1
+   }
+  }
+ },
+ "dev_words": 14269,
+ "importance": [
+  [
+   "cnn_s",
+   1.1147
+  ],
+  [
+   "eng_conf_minus_chr",
+   0.0141
+  ],
+  [
+   "chr_conf",
+   0.01
+  ],
+  [
+   "chr_n",
+   0.0051
+  ],
+  [
+   "cnn_l",
+   0.0035
+  ],
+  [
+   "eng_shared_caps",
+   0.0033
+  ],
+  [
+   "chr_cherokee",
+   0.0028
+  ],
+  [
+   "chr_digits",
+   0.0018
+  ],
+  [
+   "word_q_sharpness",
+   0.0017
+  ],
+  [
+   "eng_lower",
+   0.0017
+  ],
+  [
+   "word_w_rel",
+   0.0016
+  ],
+  [
+   "eng_bigram",
+   0.0014
+  ],
+  [
+   "left_eng_lower",
+   0.0014
+  ],
+  [
+   "line_cnn_s",
+   0.0014
+  ],
+  [
+   "block_short",
+   0.0013
+  ],
+  [
+   "line_eng_lower",
+   0.0011
+  ],
+  [
+   "word_q_separability",
+   0.001
+  ],
+  [
+   "block_q_separability",
+   0.0008
+  ],
+  [
+   "eng_n_lower",
+   0.0008
+  ],
+  [
+   "left_cnn_l",
+   0.0008
+  ],
+  [
+   "right_cnn_s",
+   0.0008
+  ],
+  [
+   "d_comp_w",
+   0.0006
+  ],
+  [
+   "eng_digits",
+   0.0006
+  ],
+  [
+   "line_cnn_l",
+   0.0006
+  ],
+  [
+   "d_gap",
+   0.0004
+  ],
+  [
+   "eng_latin_only_caps",
+   0.0004
+  ],
+  [
+   "word_comp_w",
+   0.0003
+  ],
+  [
+   "word_density",
+   0.0003
+  ],
+  [
+   "d_short",
+   0.0003
+  ],
+  [
+   "eng_conf",
+   0.0003
+  ]
+ ],
+ "labels": {
+  "hand/l": 60,
+  "hand/o": 57,
+  "hand/s": 223,
+  "rule/l": 3,
+  "rule/o": 1739,
+  "rule/s": 50985,
+  "synth/l": 4626,
+  "synth/o": 209,
+  "synth/s": 6511
+ },
+ "test_hand": {
+  "0.5": {
+   "all": {
+    "l->eng": 11,
+    "o->eng": 13,
+    "s->chr": 118,
+    "s->eng": 4
+   },
+   "hand": {
+    "l->eng": 11,
+    "o->eng": 13,
+    "s->chr": 118,
+    "s->eng": 4
+   }
+  },
+  "0.7": {
+   "all": {
+    "l->eng": 11,
+    "o->eng": 13,
+    "s->chr": 119,
+    "s->eng": 3
+   },
+   "hand": {
+    "l->eng": 11,
+    "o->eng": 13,
+    "s->chr": 119,
+    "s->eng": 3
+   }
+  },
+  "0.8": {
+   "all": {
+    "l->eng": 11,
+    "o->eng": 13,
+    "s->chr": 120,
+    "s->eng": 2
+   },
+   "hand": {
+    "l->eng": 11,
+    "o->eng": 13,
+    "s->chr": 120,
+    "s->eng": 2
+   }
+  },
+  "0.9": {
+   "all": {
+    "l->eng": 11,
+    "o->eng": 13,
+    "s->chr": 121,
+    "s->eng": 1
+   },
+   "hand": {
+    "l->eng": 11,
+    "o->eng": 13,
+    "s->chr": 121,
+    "s->eng": 1
+   }
+  },
+  "0.95": {
+   "all": {
+    "l->eng": 11,
+    "o->eng": 13,
+    "s->chr": 122
+   },
+   "hand": {
+    "l->eng": 11,
+    "o->eng": 13,
+    "s->chr": 122
+   }
+  },
+  "0.98": {
+   "all": {
+    "l->eng": 11,
+    "o->eng": 13,
+    "s->chr": 122
+   },
+   "hand": {
+    "l->eng": 11,
+    "o->eng": 13,
+    "s->chr": 122
+   }
+  }
+ },
+ "train_words": 50144
+}

@@ -1,0 +1,389 @@
+{
+ "dev": {
+  "0.5": {
+   "all": {
+    "l->chr": 4,
+    "l->eng": 917,
+    "o->chr": 10,
+    "o->eng": 378,
+    "s->chr": 10761,
+    "s->eng": 53
+   },
+   "hand": {
+    "o->eng": 2,
+    "s->chr": 29
+   },
+   "rule": {
+    "o->chr": 8,
+    "o->eng": 335,
+    "s->chr": 9433,
+    "s->eng": 41
+   },
+   "synth": {
+    "l->chr": 4,
+    "l->eng": 917,
+    "o->chr": 2,
+    "o->eng": 41,
+    "s->chr": 1299,
+    "s->eng": 12
+   }
+  },
+  "0.7": {
+   "all": {
+    "l->chr": 4,
+    "l->eng": 917,
+    "o->chr": 14,
+    "o->eng": 374,
+    "s->chr": 10779,
+    "s->eng": 35
+   },
+   "hand": {
+    "o->eng": 2,
+    "s->chr": 29
+   },
+   "rule": {
+    "o->chr": 12,
+    "o->eng": 331,
+    "s->chr": 9443,
+    "s->eng": 31
+   },
+   "synth": {
+    "l->chr": 4,
+    "l->eng": 917,
+    "o->chr": 2,
+    "o->eng": 41,
+    "s->chr": 1307,
+    "s->eng": 4
+   }
+  },
+  "0.8": {
+   "all": {
+    "l->chr": 4,
+    "l->eng": 917,
+    "o->chr": 16,
+    "o->eng": 372,
+    "s->chr": 10789,
+    "s->eng": 25
+   },
+   "hand": {
+    "o->eng": 2,
+    "s->chr": 29
+   },
+   "rule": {
+    "o->chr": 14,
+    "o->eng": 329,
+    "s->chr": 9453,
+    "s->eng": 21
+   },
+   "synth": {
+    "l->chr": 4,
+    "l->eng": 917,
+    "o->chr": 2,
+    "o->eng": 41,
+    "s->chr": 1307,
+    "s->eng": 4
+   }
+  },
+  "0.9": {
+   "all": {
+    "l->chr": 8,
+    "l->eng": 913,
+    "o->chr": 18,
+    "o->eng": 370,
+    "s->chr": 10797,
+    "s->eng": 17
+   },
+   "hand": {
+    "o->eng": 2,
+    "s->chr": 29
+   },
+   "rule": {
+    "o->chr": 16,
+    "o->eng": 327,
+    "s->chr": 9459,
+    "s->eng": 15
+   },
+   "synth": {
+    "l->chr": 8,
+    "l->eng": 913,
+    "o->chr": 2,
+    "o->eng": 41,
+    "s->chr": 1309,
+    "s->eng": 2
+   }
+  },
+  "0.95": {
+   "all": {
+    "l->chr": 11,
+    "l->eng": 910,
+    "o->chr": 24,
+    "o->eng": 364,
+    "s->chr": 10804,
+    "s->eng": 10
+   },
+   "hand": {
+    "o->eng": 2,
+    "s->chr": 29
+   },
+   "rule": {
+    "o->chr": 22,
+    "o->eng": 321,
+    "s->chr": 9465,
+    "s->eng": 9
+   },
+   "synth": {
+    "l->chr": 11,
+    "l->eng": 910,
+    "o->chr": 2,
+    "o->eng": 41,
+    "s->chr": 1310,
+    "s->eng": 1
+   }
+  },
+  "0.98": {
+   "all": {
+    "l->chr": 22,
+    "l->eng": 899,
+    "o->chr": 41,
+    "o->eng": 347,
+    "s->chr": 10806,
+    "s->eng": 8
+   },
+   "hand": {
+    "o->eng": 2,
+    "s->chr": 29
+   },
+   "rule": {
+    "o->chr": 38,
+    "o->eng": 305,
+    "s->chr": 9467,
+    "s->eng": 7
+   },
+   "synth": {
+    "l->chr": 22,
+    "l->eng": 899,
+    "o->chr": 3,
+    "o->eng": 40,
+    "s->chr": 1310,
+    "s->eng": 1
+   }
+  }
+ },
+ "dev_words": 12123,
+ "importance": [
+  [
+   "cnn_s",
+   1.0397
+  ],
+  [
+   "eng_conf_minus_chr",
+   0.0064
+  ],
+  [
+   "chr_n",
+   0.0059
+  ],
+  [
+   "chr_conf",
+   0.0056
+  ],
+  [
+   "cnn_l",
+   0.003
+  ],
+  [
+   "word_w_rel",
+   0.0025
+  ],
+  [
+   "chr_digits",
+   0.0021
+  ],
+  [
+   "eng_shared_caps",
+   0.0018
+  ],
+  [
+   "chr_cherokee",
+   0.0017
+  ],
+  [
+   "eng_bigram",
+   0.0015
+  ],
+  [
+   "word_q_sharpness",
+   0.0011
+  ],
+  [
+   "eng_english_long",
+   0.0009
+  ],
+  [
+   "eng_lower",
+   0.0008
+  ],
+  [
+   "eng_digits",
+   0.0008
+  ],
+  [
+   "right_cnn_l",
+   0.0006
+  ],
+  [
+   "line_cnn_s",
+   0.0006
+  ],
+  [
+   "d_comp_w",
+   0.0005
+  ],
+  [
+   "right_chr_conf",
+   0.0005
+  ],
+  [
+   "line_eng_lower",
+   0.0005
+  ],
+  [
+   "left_cnn_l",
+   0.0005
+  ],
+  [
+   "word_comp_w",
+   0.0004
+  ],
+  [
+   "line_q_bg_uneven",
+   0.0004
+  ],
+  [
+   "d_density",
+   0.0003
+  ],
+  [
+   "left_eng_lower",
+   0.0003
+  ],
+  [
+   "line_eng_conf",
+   0.0003
+  ],
+  [
+   "right_cnn_s",
+   0.0003
+  ],
+  [
+   "line_cnn_l",
+   0.0003
+  ],
+  [
+   "d_short",
+   0.0002
+  ],
+  [
+   "d_tall",
+   0.0002
+  ],
+  [
+   "next_ink_bot",
+   0.0002
+  ]
+ ],
+ "labels": {
+  "hand/l": 60,
+  "hand/o": 57,
+  "hand/s": 223,
+  "rule/l": 3,
+  "rule/o": 1739,
+  "rule/s": 50985,
+  "synth/l": 4626,
+  "synth/o": 209,
+  "synth/s": 6511
+ },
+ "test_hand": {
+  "0.5": {
+   "all": {
+    "l->eng": 11,
+    "o->eng": 13,
+    "s->chr": 118,
+    "s->eng": 4
+   },
+   "hand": {
+    "l->eng": 11,
+    "o->eng": 13,
+    "s->chr": 118,
+    "s->eng": 4
+   }
+  },
+  "0.7": {
+   "all": {
+    "l->eng": 11,
+    "o->eng": 13,
+    "s->chr": 119,
+    "s->eng": 3
+   },
+   "hand": {
+    "l->eng": 11,
+    "o->eng": 13,
+    "s->chr": 119,
+    "s->eng": 3
+   }
+  },
+  "0.8": {
+   "all": {
+    "l->eng": 11,
+    "o->eng": 13,
+    "s->chr": 120,
+    "s->eng": 2
+   },
+   "hand": {
+    "l->eng": 11,
+    "o->eng": 13,
+    "s->chr": 120,
+    "s->eng": 2
+   }
+  },
+  "0.9": {
+   "all": {
+    "l->eng": 11,
+    "o->eng": 13,
+    "s->chr": 121,
+    "s->eng": 1
+   },
+   "hand": {
+    "l->eng": 11,
+    "o->eng": 13,
+    "s->chr": 121,
+    "s->eng": 1
+   }
+  },
+  "0.95": {
+   "all": {
+    "l->eng": 11,
+    "o->eng": 13,
+    "s->chr": 122
+   },
+   "hand": {
+    "l->eng": 11,
+    "o->eng": 13,
+    "s->chr": 122
+   }
+  },
+  "0.98": {
+   "all": {
+    "l->eng": 11,
+    "o->eng": 13,
+    "s->chr": 122
+   },
+   "hand": {
+    "l->eng": 11,
+    "o->eng": 13,
+    "s->chr": 122
+   }
+  }
+ },
+ "train_words": 52290
+}
