@@ -10,6 +10,12 @@ Alias /@PROJECT@_ops "@PROJ@/html/ops"
 Alias /@PROJECT@ "@PROJ@/html/user"
 ScriptAlias /@PROJECT@_cgi "@PROJ@/cgi-bin"
 DirectoryIndex index.php index.html
+# Keep search engines to the front page: the rest (user, team and result pages, forums, CGIs,
+# downloads) is noindex. A header, not a robots.txt Disallow, so crawlers that already know a
+# URL see the noindex and drop it. The BOINC client ignores it.
+<If "%{REQUEST_URI} !~ m#^/(index\.php)?$#">
+    Header always set X-Robots-Tag "noindex"
+</If>
 
 <Directory "@PROJ@/html/user">
     Options Indexes FollowSymLinks
