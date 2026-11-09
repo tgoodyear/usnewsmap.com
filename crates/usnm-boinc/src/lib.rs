@@ -1033,10 +1033,23 @@ pub async fn import(
     let (text, alto) = if record.job.lines.is_some() {
         let job_dir = dir(root, id)?;
         let merged = lines::merge_in(&job_dir, &record.job, &text)?;
+        // Rule line-merge-v1, against LoC's ALTO (#1621): a page it doesn't admit keeps LoC's
+        // text, and is settled here, held, like a held trust scope's.
+        let admission = lines::admission_in(&job_dir, &record.job, &merged.alto, &text)?;
+        let mut file = serde_json::to_value(&merged.stats)?;
+        file["admission"] = serde_json::to_value(&admission)?;
         atomic(
             &job_dir.join(lines::MERGE_FILE),
-            &serde_json::to_vec_pretty(&merged.stats)?,
+            &serde_json::to_vec_pretty(&file)?,
         )?;
+        if admission.verdict != "admit" {
+            let reason = format!("{}: {}", admission.rule, admission.verdict);
+            if record.held.as_deref() != Some(reason.as_str()) {
+                record.held = Some(reason);
+                save(root, &record)?;
+            }
+            return Ok(());
+        }
         (
             normalized_text(&record.job, merged.text.as_bytes())?,
             merged.alto.into_bytes(),

@@ -3938,6 +3938,7 @@ dependencies = [
  "usnm-alto",
  "usnm-core",
  "usnm-ocr-contract",
+ "usnm-ocr-route",
  "usnm-overlay",
  "usnm-state",
  "usnm-store",

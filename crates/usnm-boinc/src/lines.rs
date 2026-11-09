@@ -502,6 +502,134 @@ pub fn merge_in(job_dir: &Path, job: &Job, result_text: &[u8]) -> anyhow::Result
     merge(job, &loc, &record, std::str::from_utf8(result_text)?)
 }
 
+/// Rule `line-merge-v1`'s verdict on a page, as `line-merge.json` records it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Admission {
+    pub rule: &'static str,
+    /// `admit`, or why LoC's text stays.
+    pub verdict: &'static str,
+    pub cherokee: usize,
+    pub model: usize,
+}
+
+/// A line's text as an ALTO gives it: its non-empty words joined by spaces, and with
+/// `hyphen` its hyphen at the end.
+fn alto_line_text(line: &Line, hyphen: bool) -> String {
+    let mut s = line
+        .words
+        .iter()
+        .map(|w| w.text.as_str())
+        .filter(|w| !w.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    if let (true, Some(h)) = (hyphen, &line.hyphen) {
+        s.push_str(h);
+    }
+    s
+}
+
+/// Rule `line-merge-v1` (`usnm_ocr_local::rule::line_merge`) on `published`, the ALTO a line
+/// job's page is published with, checked against LoC's own ALTO rather than the merge: each
+/// of LoC's lines, scaled to the scan, is found in `published` by its box, and its text there
+/// compared with LoC's. A line of `published` that is none of LoC's counts as a change.
+pub fn admission(
+    job: &Job,
+    loc_alto: &[u8],
+    record: &LineReadRecord,
+    published: &str,
+    result_text: &str,
+) -> anyhow::Result<Admission> {
+    use usnm_ocr_local::rule::line_merge;
+    ensure!(
+        boinc::sha256(loc_alto) == record.loc_alto_sha256,
+        "LoC's ALTO changed since export"
+    );
+    let readings: BTreeMap<&str, &str> = job
+        .line_texts(result_text)?
+        .context("not a line job")?
+        .into_iter()
+        .collect();
+    let mut loc = parse_loc(loc_alto)?;
+    let ids: Vec<String> = page_lines(&loc).into_iter().map(|(id, ..)| id).collect();
+    loc.rescale(f64::from(record.scan_width), f64::from(record.scan_height));
+    let ours = usnm_alto::parse(published.as_bytes(), &usnm_alto::ParseOptions::default())?;
+    let key = |r: &Rect| [r.x0, r.y0, r.x1, r.y1].map(|v| v.round() as i64);
+    // Each line's text with and without its hyphen: a line the job read is compared by its
+    // words, since the merge keeps LoC's hyphen after a reading that has none.
+    type Texts = std::collections::VecDeque<(String, String)>;
+    let mut by_box: BTreeMap<[i64; 4], Texts> = BTreeMap::new();
+    for b in ours.blocks.iter().filter(|b| b.kind.is_text()) {
+        for l in &b.lines {
+            by_box
+                .entry(key(&l.rect))
+                .or_default()
+                .push_back((alto_line_text(l, true), alto_line_text(l, false)));
+        }
+    }
+    let texts: Vec<(String, String, Option<&str>)> = page_lines(&loc)
+        .into_iter()
+        .zip(&ids)
+        .map(|((_, _, line), id)| {
+            let (full, words) = by_box
+                .get_mut(&key(&line.rect))
+                .and_then(|q| q.pop_front())
+                .unwrap_or_default();
+            match readings.get(id.as_str()).copied() {
+                Some(read) => (alto_line_text(line, false), words, Some(read)),
+                None => (alto_line_text(line, true), full, None),
+            }
+        })
+        .collect();
+    let mut lines: Vec<line_merge::Line<'_>> = texts
+        .iter()
+        .map(|(loc, ours, read)| line_merge::Line {
+            loc,
+            ours,
+            read: *read,
+        })
+        .collect();
+    // A line in what is published that is none of LoC's.
+    let extra: Vec<&String> = by_box.values().flatten().map(|(full, _)| full).collect();
+    for e in &extra {
+        lines.push(line_merge::Line {
+            loc: "",
+            ours: e,
+            read: None,
+        });
+    }
+    let (counts, verdict) = line_merge::verdict(&lines);
+    Ok(Admission {
+        rule: line_merge::VERSION,
+        verdict: match verdict {
+            Ok(()) => "admit",
+            Err(keep) => keep.as_str(),
+        },
+        cherokee: counts.cherokee,
+        model: counts.model,
+    })
+}
+
+/// [`admission`] for the line job journaled in `job_dir`.
+pub fn admission_in(
+    job_dir: &Path,
+    job: &Job,
+    published: &str,
+    result_text: &[u8],
+) -> anyhow::Result<Admission> {
+    let loc = crate::read(&job_dir.join(LOC_ALTO_FILE), boinc::MAX_ALTO)?;
+    let record: LineReadRecord = serde_json::from_slice(&crate::read(
+        &job_dir.join(LINE_READ_FILE),
+        boinc::MAX_JSON,
+    )?)?;
+    admission(
+        job,
+        &loc,
+        &record,
+        published,
+        std::str::from_utf8(result_text)?,
+    )
+}
+
 /// One line job in [`report`].
 #[derive(Debug, Clone, Serialize)]
 pub struct ReportRow {
@@ -510,6 +638,8 @@ pub struct ReportRow {
     pub stats: MergeStats,
     /// Rule v1's verdict on the merged page against LoC's text: `pass`, or why LoC's stays.
     pub verdict: String,
+    /// Rule `line-merge-v1`'s verdict, the rule that decides a line job's page.
+    pub line_merge: Admission,
     /// The language and damage rate rule v1 found for the merged page and for LoC's text.
     pub ours: (Option<String>, Option<f64>),
     pub loc: (Option<String>, Option<f64>),
@@ -547,6 +677,7 @@ pub fn report(root: &Path, spool: Option<&Path>) -> anyhow::Result<Vec<ReportRow
             continue;
         };
         let merged = merge_in(&job_dir, &record.job, &text)?;
+        let line_merge = admission_in(&job_dir, &record.job, &merged.alto, &text)?;
         let line_read: LineReadRecord = serde_json::from_slice(&crate::read(
             &job_dir.join(LINE_READ_FILE),
             boinc::MAX_JSON,
@@ -569,6 +700,7 @@ pub fn report(root: &Path, spool: Option<&Path>) -> anyhow::Result<Vec<ReportRow
                 Ok(()) => "pass".into(),
                 Err(keep) => keep.as_str().into(),
             },
+            line_merge,
             ours: (ours_scores.lang, ours_scores.damage_rate),
             loc: (loc_scores.lang, loc_scores.damage_rate),
         });
@@ -793,6 +925,22 @@ mod tests {
             usnm_alto::parse(merged.alto.as_bytes(), &usnm_alto::ParseOptions::default()).unwrap();
         assert_eq!((page.width, page.height), (2000.0, 2000.0));
         assert_eq!(usnm_alto::text(&page), merged.text);
+        // line-merge-v1, against LoC's ALTO: 2 of 3 lines took the model's reading.
+        let admit = admission(&job, alto, &record, &merged.alto, result).unwrap();
+        assert_eq!(
+            (admit.verdict, admit.cherokee, admit.model),
+            ("admit", 3, 2)
+        );
+        // An English line changed in what is published is refused.
+        let changed = merged.alto.replace("PHOENIX.", "PHOENIX,");
+        assert_ne!(changed, merged.alto);
+        let refused = admission(&job, alto, &record, &changed, result).unwrap();
+        assert_eq!(refused.verdict, "line_changed");
+        // Under half the Cherokee lines from the model.
+        let mostly_loc = "\nᎠ\nᎦᎪᎯ\n";
+        let page = merge(&job, alto, &record, mostly_loc).unwrap();
+        let few = admission(&job, alto, &record, &page.alto, mostly_loc).unwrap();
+        assert_eq!((few.verdict, few.model), ("model_share", 1));
         // A result for other lines, or LoC's ALTO changed, is refused.
         assert!(merge(&job, alto, &record, "a\nb\n").is_err());
         let mut changed = record.clone();

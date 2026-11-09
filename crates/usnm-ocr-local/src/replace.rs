@@ -211,7 +211,10 @@ impl Listing {
             }
             n += best
                 .values()
-                .filter(|(r, _, _)| rule::verdict(&r.ours, &r.loc, Some(&langs)).is_ok())
+                .filter(|(r, _, _)| {
+                    rule::line_merge::is_line_job(&r.ocr_engine)
+                        || rule::verdict(&r.ours, &r.loc, Some(&langs)).is_ok()
+                })
                 .count() as u64;
         }
         Ok(n)
@@ -378,6 +381,8 @@ pub struct Tally {
     /// The pages the rule weighed, by our text's language and by engine.
     pub by_language: BTreeMap<String, Count>,
     pub by_engine: BTreeMap<String, Count>,
+    /// The pages weighed by each rule: `v1`, or `line-merge-v1` for line jobs' pages (#1621).
+    pub by_rule: BTreeMap<String, Count>,
     /// The parts read, with each title's read once per batch holding it.
     #[serde(skip)]
     parts: BTreeMap<String, InputPart>,
@@ -389,8 +394,19 @@ impl Tally {
         *self.kept.entry(why.to_owned()).or_default() += 1;
     }
 
-    /// A page the rule weighed.
+    /// A page the rule weighed: rule v1, or the row's own rule ([`rule::rule_for`]).
     pub fn weighed(&mut self, c: &Candidate, ours: &Scores, verdict: Result<(), Keep>) {
+        self.weighed_by(c, ours, verdict, rule::rule_for(&c.row.ocr_engine));
+    }
+
+    /// A page `rule` weighed.
+    pub fn weighed_by(
+        &mut self,
+        c: &Candidate,
+        ours: &Scores,
+        verdict: Result<(), Keep>,
+        rule: &str,
+    ) {
         self.considered += 1;
         let ok = verdict.is_ok();
         self.replaced += u64::from(ok);
@@ -403,6 +419,7 @@ impl Tally {
             self.by_engine
                 .entry(engine_key(&c.row.ocr_engine))
                 .or_default(),
+            self.by_rule.entry(rule.to_owned()).or_default(),
         ] {
             t.considered += 1;
             t.replaced += u64::from(ok);
@@ -423,6 +440,7 @@ impl Tally {
         for (mine, theirs) in [
             (&mut self.by_language, other.by_language),
             (&mut self.by_engine, other.by_engine),
+            (&mut self.by_rule, other.by_rule),
         ] {
             for (k, c) in theirs {
                 let t = mine.entry(k).or_default();

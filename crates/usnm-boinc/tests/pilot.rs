@@ -4222,11 +4222,13 @@ async fn line_read_exports_cherokee_lines_and_imports_the_merged_page() {
     assert_eq!(
         stats,
         serde_json::json!({"lines": 2, "model": 1, "fallback": {"fewer_known": 1},
-            "fallback_lines": {"b1l1": "fewer_known"}})
+            "fallback_lines": {"b1l1": "fewer_known"},
+            "admission": {"rule": "line-merge-v1", "verdict": "admit", "cherokee": 2, "model": 1}})
     );
     let report = usnm_boinc::lines::report(&fx.options.root, None).unwrap();
     assert_eq!(report.len(), 1);
     assert_eq!(report[0].stats.model, 1);
+    assert_eq!(report[0].line_merge.verdict, "admit");
     let status = sync::run(
         &fx.state,
         "test-boinc",
@@ -4277,4 +4279,18 @@ async fn line_read_skips_pages_without_cherokee_lines_or_alto() {
     )
     .await
     .is_err());
+}
+
+#[tokio::test]
+async fn line_merge_v1_holds_a_page_with_under_half_model_lines() {
+    let mut fx = Fixture::new("eng").await;
+    fx.line_read(LOC_CHEROKEE_ALTO);
+    let id = fx.export().await;
+    // Both readings fail, so both lines keep LoC's text.
+    let files = fx.line_result(&id, "\nᎦᎪᎯ\n");
+    fx.import(&id, &files).await.unwrap();
+    let record = usnm_boinc::load(&fx.options.root, &id).unwrap();
+    assert_eq!(record.held.as_deref(), Some("line-merge-v1: model_share"));
+    assert_ne!(record.stage, Stage::Published);
+    assert!(fx.stores.out.list("pages").await.unwrap().is_empty());
 }

@@ -328,9 +328,14 @@ fn build_row(ctx: &PartContext<'_>, row: &CuratedRow, out: &mut PartDocs) -> any
                 out.tally.keep("japanese_ocr");
             } else {
                 let langs: Vec<&str> = title.languages.iter().map(String::as_str).collect();
-                let (scores, _, verdict) =
-                    ocr_local::rule::judge(&c.text, row.text.as_deref(), &langs);
-                out.tally.weighed(c, &scores, verdict);
+                // Rule v1, or `line-merge-v1` for a line job's page (#1621).
+                let (scores, _, verdict, rule) = ocr_local::rule::judge_row(
+                    &c.row.ocr_engine,
+                    &c.text,
+                    row.text.as_deref(),
+                    &langs,
+                );
+                out.tally.weighed_by(c, &scores, verdict, rule);
                 if verdict.is_ok() {
                     local_text = Some(c.text.as_str());
                     out.local_replaced
