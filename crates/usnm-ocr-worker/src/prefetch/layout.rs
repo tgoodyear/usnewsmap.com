@@ -264,39 +264,52 @@ pub(super) async fn elsewhere(out: &Path, row: &ManifestRow, size: ImageSize) ->
 
 /// Give `to` (and its sidecar) the bytes of `from` (and its sidecar), a
 /// verified scan in the other set: a hard link, else a copy through a
-/// `.part` file. Never over a file already there, so nothing is lost; a
-/// page promoted from the buffer to the keep set gets its keep copy (and so
-/// its archive copy) without asking LoC again.
-pub(super) async fn link_into(from: &Path, to: &Path) -> anyhow::Result<()> {
+/// `.part` file. A page promoted from the buffer to the keep set gets its
+/// keep copy (and so its archive copy) without asking LoC again.
+///
+/// Only into empty names: if the scan or its sidecar is already at `to`
+/// (a conflicting image, an orphaned sidecar), nothing is linked or
+/// written over and it returns `false`, so the caller keeps both and
+/// reports the page instead of pairing unrelated bytes and metadata.
+pub(super) async fn link_into(from: &Path, to: &Path) -> anyhow::Result<bool> {
     let (from, to) = (from.to_owned(), to.to_owned());
-    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-        std::fs::create_dir_all(to.parent().context("no parent directory")?)?;
-        // The scan first, then its sidecar: a sidecar never names bytes
-        // that aren't there.
-        for (src, dst) in [
+    tokio::task::spawn_blocking(move || -> anyhow::Result<bool> {
+        let pairs = [
             (from.clone(), to.clone()),
             (sidecar_path(&from), sidecar_path(&to)),
-        ] {
+        ];
+        for (_, dst) in &pairs {
+            if dst.try_exists().unwrap_or(true) {
+                return Ok(false);
+            }
+        }
+        std::fs::create_dir_all(to.parent().context("no parent directory")?)?;
+        // The scan first, then its sidecar: a sidecar never names bytes
+        // that aren't there. `link` refuses a name that is taken, unlike
+        // `rename`, so a file that appeared since the check is kept.
+        for (src, dst) in pairs {
             match std::fs::hard_link(&src, &dst) {
                 Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => return Ok(false),
                 Err(_) => {
                     let mut part = dst.as_os_str().to_owned();
                     part.push(".part");
                     let part = PathBuf::from(part);
                     std::fs::copy(&src, &part)?;
                     std::fs::File::open(&part)?.sync_all()?;
-                    // `link` refuses a name that is taken, unlike `rename`.
-                    match std::fs::hard_link(&part, &dst) {
+                    let linked = std::fs::hard_link(&part, &dst);
+                    std::fs::remove_file(&part)?;
+                    match linked {
                         Ok(()) => {}
-                        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                            return Ok(false)
+                        }
                         Err(e) => return Err(e.into()),
                     }
-                    std::fs::remove_file(&part)?;
                 }
             }
         }
-        Ok(())
+        Ok(true)
     })
     .await?
 }

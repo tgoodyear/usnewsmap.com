@@ -842,7 +842,15 @@ impl Run {
                         ScanFormat::Jpeg
                     };
                     let to = scan_path(&self.opts.out, &row, size, format);
-                    layout::link_into(&from, &to).await?;
+                    if !layout::link_into(&from, &to).await? {
+                        c.kept_unverified.fetch_add(1, Ordering::SeqCst);
+                        tracing::warn!(
+                            doc_id = row.doc_id,
+                            path = %to.display(),
+                            "a promoted page's keep path is taken; both kept, not fetched again"
+                        );
+                        return Ok(Outcome::Done);
+                    }
                 }
                 c.already_there.fetch_add(1, Ordering::SeqCst);
                 match set {

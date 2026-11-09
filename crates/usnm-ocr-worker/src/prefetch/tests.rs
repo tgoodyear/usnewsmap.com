@@ -331,6 +331,35 @@ async fn a_page_on_disk_anywhere_isnt_fetched_again() {
     assert_eq!(std::fs::read(&no_side).unwrap(), b"jpeg without a sidecar");
 }
 
+/// A promotion links only into empty names: a conflicting image or an
+/// orphaned sidecar at the keep path is left as it is, and nothing is paired.
+#[tokio::test]
+async fn a_promotion_never_links_over_a_conflicting_keep_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let from = dir.path().join("buffer/1.jpg");
+    std::fs::create_dir_all(from.parent().unwrap()).unwrap();
+    std::fs::write(&from, b"buffer").unwrap();
+    std::fs::write(sidecar_path(&from), b"buffer side").unwrap();
+    // An image already at the keep path.
+    let to = dir.path().join("keep/1.jpg");
+    std::fs::create_dir_all(to.parent().unwrap()).unwrap();
+    std::fs::write(&to, b"other").unwrap();
+    assert!(!super::layout::link_into(&from, &to).await.unwrap());
+    assert_eq!(std::fs::read(&to).unwrap(), b"other");
+    assert!(!sidecar_path(&to).exists());
+    // An orphaned sidecar there instead.
+    let to2 = dir.path().join("keep/2.jpg");
+    std::fs::write(sidecar_path(&to2), b"orphan").unwrap();
+    assert!(!super::layout::link_into(&from, &to2).await.unwrap());
+    assert!(!to2.exists());
+    assert_eq!(std::fs::read(sidecar_path(&to2)).unwrap(), b"orphan");
+    // Empty names: both linked.
+    let to3 = dir.path().join("keep/3.jpg");
+    assert!(super::layout::link_into(&from, &to3).await.unwrap());
+    assert_eq!(std::fs::read(&to3).unwrap(), b"buffer");
+    assert_eq!(std::fs::read(sidecar_path(&to3)).unwrap(), b"buffer side");
+}
+
 #[test]
 fn counts_only_scans_and_a_missing_buffer_as_empty() {
     let dir = tempfile::tempdir().unwrap();
