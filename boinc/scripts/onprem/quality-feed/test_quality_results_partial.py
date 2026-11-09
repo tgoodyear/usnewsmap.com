@@ -535,6 +535,16 @@ class PartialTest(unittest.TestCase):
             self.assertIsNone(partial.host_refresh_inventory(self.args))
         # A failed refresh keeps the last good report and is retried only after the interval.
         self.assertEqual(json.loads(marker.read_bytes())["report"], report)
+        # The interval counts from when an attempt ends, even one that used its whole budget.
+        state = json.loads(marker.read_bytes())
+        state["attempted_at"] -= 3601
+        marker.write_text(json.dumps(state))
+        started = time.time()
+        with mock.patch.object(partial.subprocess, "run",
+                               side_effect=subprocess.TimeoutExpired(["ssh"], 1620)):
+            self.assertIsNone(partial.host_refresh_inventory(self.args))
+        self.assertGreaterEqual(json.loads(marker.read_bytes())["attempted_at"], started)
+        self.assertEqual(json.loads(marker.read_bytes())["report"], report)
         with mock.patch.object(partial.subprocess, "run") as run:
             self.assertIsNone(partial.host_refresh_inventory(self.args))
         run.assert_not_called()

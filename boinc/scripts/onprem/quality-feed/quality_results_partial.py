@@ -381,10 +381,14 @@ def host_refresh_inventory(args):
         response = subprocess.run([*ssh, shlex.join(remote)], input=Path(__file__).read_bytes(),
                                   capture_output=True, timeout=budget + 120)
     except subprocess.TimeoutExpired:
+        # The interval counts from the end of an attempt, so a refresh that used its whole
+        # budget doesn't start again on the next tick. The last good report stays.
+        atomic_json(marker, {**last, "attempted_at": time.time()})
         print(json.dumps({"phase": "inventory_refresh_timeout", "budget_seconds": budget}),
               file=sys.stderr, flush=True)
         return None
     if response.returncode:
+        atomic_json(marker, {**last, "attempted_at": time.time()})
         print((response.stderr or b"").decode("utf-8", errors="replace"), file=sys.stderr, end="")
         print(json.dumps({"phase": "inventory_refresh_failed", "exit": response.returncode}),
               file=sys.stderr, flush=True)
