@@ -40,7 +40,8 @@ def cer(get, subset):
 for label, subset in [("all", checked), ("silver", [c for c in checked if c["tier"] == "silver"])]:
     res[label] = {"nt_reference": cer(lambda c: c["nt"], subset)}
     for name, m in eng.items():
-        sub = [c for c in subset if c["crop"] in m]
-        res[label][name] = cer(lambda c, m=m: m[c["crop"]], sub)
+        # Every engine is scored on the same lines: a missing prediction counts as empty text.
+        res[label][name] = cer(lambda c, m=m: m.get(c["crop"], ""), subset)
+        res[label][name]["missing"] = sum(1 for c in subset if c["crop"] not in m)
 json.dump(checked, open(a.out, "w", encoding="utf-8"), ensure_ascii=False, indent=0)
 print(json.dumps(res, indent=1))

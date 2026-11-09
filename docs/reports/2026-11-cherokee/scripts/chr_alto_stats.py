@@ -19,7 +19,9 @@ for t in a.tar:
                     if not ln.tag.endswith("String"): continue
                     s = ln.get("CONTENT") or ""
                     script = "chr" if CHR.search(s) else ("lat" if re.search(r"[A-Za-z]", s) else "other")
-                    words[(lang, script)] += 1; chars[script] += len(s)
+                    words[(lang, script)] += 1
+                    for ch in s:  # each character by its own script, so "9Ꮞ." adds one syllabary character
+                        chars["chr" if CHR.match(ch) else ("lat" if ch.isascii() and ch.isalpha() else "other")] += 1
                     if script == "chr": n_chr += 1
                     if ln.get("WC") is not None: wc[(lang, script)].append(float(ln.get("WC")))
             per_page_chr.append(n_chr); pages_with_chr += n_chr > 0

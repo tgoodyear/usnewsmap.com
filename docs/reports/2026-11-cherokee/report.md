@@ -25,7 +25,7 @@ Counts from LoC's OCR batches for the two titles (`dlc_misctopsn83020866_ver03`,
 | Lines in Cherokee blocks                          | 16,682 (9% of lines)  |
 | Syllabary words in Cherokee blocks                | 83,449                |
 | Syllabary tokens in the page text (`ocr.txt`)     | 84,833 (36,216 forms) |
-| Syllabary characters                              | 368,582               |
+| Syllabary characters                              | 342,559               |
 | Cherokee words per page: median / 90th percentile | 53 / 874              |
 
 The 9% share of lines fits Landini's content analysis of the paper, which found 83.4% of its editorial content in English ([Landini 1990](https://trace.tennessee.edu/utk_graddiss/11440)). Search works on the syllabary: on 6 November `/v1/aggregate` found ᏣᎳᎩ on 122 pages, ᎠᎴ on 117, ᏣᎳᎩ ᏧᎴᎯᏌᏅᎯ on 65 and ᏥᏌ on 38.
@@ -226,16 +226,24 @@ Made on 6 November 2026:
 
 ## Reproducing
 
-The scripts in [`scripts/`](scripts/) take only named arguments and read LoC's batch tars and the earlier evaluation outputs; they write JSON to standard output.
+The scripts in [`scripts/`](scripts/) take only named arguments and write JSON to standard output. Run them from the repository root.
 
 ```sh
-python3 scripts/chr_alto_stats.py --tar dlc_misctopsn83020866_ver03.tar.bz2 --tar dlc_misctopsn83020874_ver02.tar.bz2
-python3 scripts/chr_masthead.py --tar dlc_misctopsn83020866_ver03.tar.bz2 --tar dlc_misctopsn83020874_ver02.tar.bz2
-python3 scripts/chr_confusions.py --eval-dir EVAL_DIR
-python3 scripts/chr_letter_pairs.py --tar dlc_misctopsn83020866_ver03.tar.bz2 --tar dlc_misctopsn83020874_ver02.tar.bz2 --wordlists ocr/ja-ocr/wordlists
-python3 scripts/chr_dict_compare.py --out-dir OUT_DIR --refs NT_REF_DIR --wordlists ocr/ja-ocr/wordlists --baseline A_stock
-python3 scripts/chr_checked_score.py --answers glyph-check-answers.jsonl --engine loc=loc.jsonl --engine stock=tesseract-chr-stock.jsonl --out checked-v1.json
-python3 scripts/chr_ocr_variant_recall.py --tar dlc_misctopsn83020866_ver03.tar.bz2 --tar dlc_misctopsn83020874_ver02.tar.bz2 --wordlists ocr/ja-ocr/wordlists
+S=docs/reports/2026-11-cherokee/scripts
+python3 $S/chr_alto_stats.py --tar dlc_misctopsn83020866_ver03.tar.bz2 --tar dlc_misctopsn83020874_ver02.tar.bz2
+python3 $S/chr_masthead.py --tar dlc_misctopsn83020866_ver03.tar.bz2 --tar dlc_misctopsn83020874_ver02.tar.bz2
+python3 $S/chr_confusions.py --eval-dir EVAL_DIR
+python3 $S/chr_letter_pairs.py --tar dlc_misctopsn83020866_ver03.tar.bz2 --tar dlc_misctopsn83020874_ver02.tar.bz2 --wordlists ocr/ja-ocr/wordlists
+python3 $S/chr_dict_compare.py --out-dir OUT_DIR --refs NT_REF_DIR --wordlists ocr/ja-ocr/wordlists --baseline A_stock
+python3 $S/chr_checked_score.py --answers glyph-check-answers.jsonl --engine loc=loc.jsonl --engine stock=tesseract-chr-stock.jsonl --out checked-v1.json
+python3 $S/chr_ocr_variant_recall.py --tar dlc_misctopsn83020866_ver03.tar.bz2 --tar dlc_misctopsn83020874_ver02.tar.bz2 --wordlists ocr/ja-ocr/wordlists
 ```
 
-`EVAL_DIR` holds the #1581 evaluation outputs (`nt-reference/`, `region-aware/out/hybrid/`); they are not in the repository. The search counts are from `https://api.usnewsmap.com/v1/aggregate?q=…` on 6 November 2026.
+**Inputs.** LoC's batches come from `https://chroniclingamerica.loc.gov/data/ocr/<batch>.tar.bz2`:
+
+| Batch                                 | sha256                                                             |
+| ------------------------------------- | ------------------------------------------------------------------ |
+| `dlc_misctopsn83020866_ver03.tar.bz2` | `32fdb37c101f552c8a58bd3461fdf969d2c1a6dd57682fa2213cee09ac82e9cc` |
+| `dlc_misctopsn83020874_ver02.tar.bz2` | `b4dbf6c3f53ec5f43ae8bdd9434e1b5ac7363d830c0dd350547c957d02d976a0` |
+
+The word lists are in the repository. Some inputs aren't published yet: the #1581 evaluation outputs (`EVAL_DIR`: `nt-reference/`, `region-aware/out/hybrid/`), the dictionary comparison's outputs, the frozen test set with its engine readings, and the hand-check answers. Publishing them as the report's own data set (`report-2026-11-cherokee`) needs a rights review first; [#1676](https://github.com/tgoodyear/usnewsmap.com/issues/1676) tracks it. Until then, the confusion, dictionary and checked error-rate figures can't be reproduced from the repository. The search counts are from `https://api.usnewsmap.com/v1/aggregate?q=…` on the dates given.
