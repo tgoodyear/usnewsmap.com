@@ -147,7 +147,11 @@ impl LineRead {
                         .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-'),
                 "invalid line id"
             );
-            ensure!(seen.insert(line.id.as_str()), "duplicate line id {}", line.id);
+            ensure!(
+                seen.insert(line.id.as_str()),
+                "duplicate line id {}",
+                line.id
+            );
             let [x0, y0, x1, y1] = line.rect;
             ensure!(
                 x0 < x1 && y0 < y1 && x1 <= MAX_LINE_COORD && y1 <= MAX_LINE_COORD,
@@ -232,7 +236,10 @@ impl Job {
     }
     /// The model's reading of each line, in the job's order, from a result's `text.txt`: one
     /// line of text per line box, each ending in a newline. None for a page job.
-    pub fn line_texts<'a>(&'a self, text: &'a str) -> anyhow::Result<Option<Vec<(&'a str, &'a str)>>> {
+    pub fn line_texts<'a>(
+        &'a self,
+        text: &'a str,
+    ) -> anyhow::Result<Option<Vec<(&'a str, &'a str)>>> {
         let Some(lines) = &self.lines else {
             return Ok(None);
         };
@@ -1044,36 +1051,63 @@ mod line_tests {
         most.id = most.identity().unwrap();
         assert!(most.validate().is_err());
         // The most lines still fit a request.
-        assert!(serde_json::to_vec_pretty(&line_job(MAX_LINES)).unwrap().len() <= MAX_REQUEST);
+        assert!(
+            serde_json::to_vec_pretty(&line_job(MAX_LINES))
+                .unwrap()
+                .len()
+                <= MAX_REQUEST
+        );
     }
 
     #[test]
     fn line_ids_are_unique_short_ascii() {
-        assert!(rejected(|j| j.lines.as_mut().unwrap().lines[2].id = "b0l0".into()));
-        assert!(rejected(|j| j.lines.as_mut().unwrap().lines[0].id = String::new()));
-        assert!(rejected(|j| j.lines.as_mut().unwrap().lines[0].id =
-            "x".repeat(MAX_LINE_ID + 1)));
-        assert!(rejected(|j| j.lines.as_mut().unwrap().lines[0].id = "b0 l0".into()));
-        assert!(rejected(|j| j.lines.as_mut().unwrap().lines[0].id = "Ꭰ".into()));
-        assert!(!rejected(|j| j.lines.as_mut().unwrap().lines[0].id =
-            "x".repeat(MAX_LINE_ID)));
+        assert!(rejected(
+            |j| j.lines.as_mut().unwrap().lines[2].id = "b0l0".into()
+        ));
+        assert!(rejected(
+            |j| j.lines.as_mut().unwrap().lines[0].id = String::new()
+        ));
+        assert!(rejected(
+            |j| j.lines.as_mut().unwrap().lines[0].id = "x".repeat(MAX_LINE_ID + 1)
+        ));
+        assert!(rejected(
+            |j| j.lines.as_mut().unwrap().lines[0].id = "b0 l0".into()
+        ));
+        assert!(rejected(
+            |j| j.lines.as_mut().unwrap().lines[0].id = "Ꭰ".into()
+        ));
+        assert!(!rejected(
+            |j| j.lines.as_mut().unwrap().lines[0].id = "x".repeat(MAX_LINE_ID)
+        ));
     }
 
     #[test]
     fn line_boxes_are_non_empty_and_in_bounds() {
-        assert!(rejected(|j| j.lines.as_mut().unwrap().lines[0].rect = [5, 5, 5, 9]));
-        assert!(rejected(|j| j.lines.as_mut().unwrap().lines[0].rect = [5, 9, 9, 9]));
-        assert!(rejected(|j| j.lines.as_mut().unwrap().lines[0].rect = [9, 5, 5, 9]));
-        assert!(rejected(|j| j.lines.as_mut().unwrap().lines[0].rect =
-            [0, 0, MAX_LINE_COORD + 1, 9]));
-        assert!(!rejected(|j| j.lines.as_mut().unwrap().lines[0].rect =
-            [0, 0, MAX_LINE_COORD, MAX_LINE_COORD]));
+        assert!(rejected(
+            |j| j.lines.as_mut().unwrap().lines[0].rect = [5, 5, 5, 9]
+        ));
+        assert!(rejected(
+            |j| j.lines.as_mut().unwrap().lines[0].rect = [5, 9, 9, 9]
+        ));
+        assert!(rejected(
+            |j| j.lines.as_mut().unwrap().lines[0].rect = [9, 5, 5, 9]
+        ));
+        assert!(rejected(
+            |j| j.lines.as_mut().unwrap().lines[0].rect = [0, 0, MAX_LINE_COORD + 1, 9]
+        ));
+        assert!(!rejected(
+            |j| j.lines.as_mut().unwrap().lines[0].rect = [0, 0, MAX_LINE_COORD, MAX_LINE_COORD]
+        ));
     }
 
     #[test]
     fn line_jobs_name_a_line_language() {
-        assert!(rejected(|j| j.lines.as_mut().unwrap().language = "eng".into()));
-        assert!(rejected(|j| j.lines.as_mut().unwrap().language = "jpn".into()));
+        assert!(rejected(
+            |j| j.lines.as_mut().unwrap().language = "eng".into()
+        ));
+        assert!(rejected(
+            |j| j.lines.as_mut().unwrap().language = "jpn".into()
+        ));
     }
 
     #[test]

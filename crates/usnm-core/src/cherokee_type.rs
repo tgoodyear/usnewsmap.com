@@ -281,7 +281,8 @@ pub enum LineSource {
 
 /// The runs of syllabary letters in `text`.
 fn syllabary_words(text: &str) -> impl Iterator<Item = &str> {
-    text.split(|c: char| !is_syllabary(c)).filter(|w| !w.is_empty())
+    text.split(|c: char| !is_syllabary(c))
+        .filter(|w| !w.is_empty())
 }
 
 /// Why the model's reading `read` of a line fails against LoC's `loc`, or `None` when it
@@ -335,7 +336,10 @@ impl MergedLines {
 /// its reading: the model's reading replaces LoC's text unless [`reading_fails`]. Every other
 /// line, English included, stays as LoC read it.
 pub fn merge_lines(lines: &[(&str, Option<&str>)]) -> MergedLines {
-    let (mut out, mut sources) = (Vec::with_capacity(lines.len()), Vec::with_capacity(lines.len()));
+    let (mut out, mut sources) = (
+        Vec::with_capacity(lines.len()),
+        Vec::with_capacity(lines.len()),
+    );
     for (loc, read) in lines {
         let (text, source) = match read {
             None => (*loc, LineSource::Loc),
