@@ -404,7 +404,7 @@ def load_config(path):
                 and ".." not in config[key], f"invalid {key}")
     require(not config["manifest"].startswith("/") and
             config["manifest"].endswith("/manifest.parquet"), "invalid manifest snapshot path")
-    for key, maximum in (("batch_size", 100), ("max_pending", 10000), ("pages_per_host", 100)):
+    for key, maximum in (("batch_size", MAX_TICK_PAGES), ("max_pending", 10000), ("pages_per_host", 100)):
         require(type(config[key]) is int and 1 <= config[key] <= maximum, f"invalid {key}")
     if "app" in config or "platform" in config or "resource" in config or \
             "low_watermark" in config or "high_watermark" in config:
@@ -597,11 +597,37 @@ class ClaimFailed(RuntimeError):
         self.claims = claims
 
 
+def chunks(items, size=None):
+    """`items` in order, in lists of at most `size` (STEP_IDS by default)."""
+    size = STEP_IDS if size is None else size
+    items = list(items)
+    return [items[i:i + size] for i in range(0, len(items), size)]
+
+
+def unit_steps(units):
+    """Workunits (lists of job ids) in order, grouped so no group holds more than STEP_IDS ids.
+    A unit is never split: JOB_UNITS keeps each bundle whole."""
+    groups, current, size = [], [], 0
+    for unit in units:
+        if current and size + len(unit) > STEP_IDS:
+            groups.append(current)
+            current, size = [], 0
+        current.append(unit)
+        size += len(unit)
+    if current:
+        groups.append(current)
+    return groups
+
+
 # --onprem-handoff choices and the hand-off steps each one moves to the on-prem host. A claim's
 # release goes with it: both take pages off and back onto the work queues.
 # Most base batches one batched export execution takes (--batch-export): each is about half a
 # minute of the hand-off job's 30-minute timeout.
 EXPORT_BATCHES = 20
+# Every bridge and hand-off step takes at most STEP_IDS pages, jobs or doc ids per execution.
+# A tick may handle up to MAX_TICK_PAGES; the transport splits each list into steps of STEP_IDS.
+STEP_IDS = 100
+MAX_TICK_PAGES = 500
 # --rest-journals: requests at once, and the most changed journals a tick fetches one by one
 # before it takes one az download-batch of all of them (at this rate, a minute's work).
 JOURNAL_REQUESTS = 16
@@ -1178,7 +1204,30 @@ class Transport:
 
     @timed("claim")
     def claim(self, count):
-        """Take up to `count` usable pages off the work queues (the hand-off job's claim step)."""
+        """Take up to `count` usable pages off the work queues: one claim step per STEP_IDS,
+        stopping early once a step takes fewer than it asked for (the queues ran dry). A later
+        step's failure keeps the claims the earlier ones made (ClaimFailed carries them all)."""
+        claims = []
+        while len(claims) < count:
+            want = min(STEP_IDS, count - len(claims))
+            try:
+                got = self.claim_step(want)
+            except ClaimFailed as error:
+                raise ClaimFailed(str(error), claims + error.claims) from error
+            except (ValueError, KeyError, TypeError, OSError, RuntimeError) as error:
+                if claims:
+                    # As main() reports it: no paths or command output from an I/O error.
+                    message = str(error) if isinstance(error, (ValueError, RuntimeError)) \
+                        else type(error).__name__
+                    raise ClaimFailed(message, claims) from error
+                raise
+            claims += got
+            if len(got) < want:
+                break
+        return claims
+
+    def claim_step(self, count):
+        """Take up to `count` (at most STEP_IDS) pages: one hand-off claim step."""
         nonce = uuid.uuid4().hex
         failure = None
         languages = self.config.get("claim_languages")
@@ -1204,8 +1253,19 @@ class Transport:
             raise ClaimFailed(str(failure), summary["claims"]) from failure
         return summary["claims"]
 
-    @timed("push")
     def push_pages(self, bases, skip_truncated=None):
+        """push_page_step for each STEP_IDS of `bases`, merged: one push run stays well inside
+        its timeout however many pages a tick handles."""
+        found, missing, truncated = {}, [], {}
+        for group in chunks(bases):
+            f, m, t = self.push_page_step(group, skip_truncated)
+            found.update(f)
+            missing += m
+            truncated.update(t)
+        return found, missing, truncated
+
+    @timed("push")
+    def push_page_step(self, bases, skip_truncated=None):
         """Push the cached scans of claimed pages, finding each one's format on the scan server.
         Returns ({base: path under scans/}, [bases with no cached scan], {base: why its JP2 is
         cut short at LoC}); the last is empty unless the JP2s are checked (skip_truncated)."""
@@ -1244,7 +1304,8 @@ class Transport:
 
     @timed("release")
     def release(self, doc_ids):
-        self.step("handoff", "release", HANDOFF_DOCS=",".join(doc_ids))
+        for group in chunks(doc_ids):
+            self.step("handoff", "release", HANDOFF_DOCS=",".join(group))
 
     @timed("dead-letter")
     def dead_letter(self, job_ids):
@@ -1281,7 +1342,7 @@ class Transport:
             return
         if units and any(len(unit) > 1 for unit in units):
             url = self.handoff_url
-            groups = [units] if self.batch_submit else [[unit] for unit in units]
+            groups = unit_steps(units) if self.batch_submit else [[unit] for unit in units]
             for group in groups:
                 self.step("bridge", "submit-remote",
                           JOB_UNITS=",".join("+".join(unit) for unit in group),
@@ -1291,8 +1352,9 @@ class Transport:
             for job_id in job_ids:
                 self.submit(job_id)
             return
-        self.step("bridge", "submit-remote", JOB_IDS=",".join(job_ids),
-                  HANDOFF_URL=self.handoff_url)
+        for group in chunks(job_ids):
+            self.step("bridge", "submit-remote", JOB_IDS=",".join(group),
+                      HANDOFF_URL=self.handoff_url)
 
     @timed("collect")
     def collect_batch(self, pairs):
@@ -1310,11 +1372,12 @@ class Transport:
         url = self.handoff_url
         errors = []
         if self.batch_spool_out:
-            try:
-                self.step("bridge", "spool-out",
-                          HANDOFF_SPOOLS=",".join(f"{j}={s}" for j, s in pairs), HANDOFF_URL=url)
-            except RuntimeError as error:
-                errors.append(error)
+            for group in chunks(pairs):
+                try:
+                    self.step("bridge", "spool-out",
+                              HANDOFF_SPOOLS=",".join(f"{j}={s}" for j, s in group), HANDOFF_URL=url)
+                except RuntimeError as error:
+                    errors.append(error)
         else:
             for job_id, spool in pairs:
                 try:
@@ -1322,11 +1385,12 @@ class Transport:
                 except RuntimeError as error:
                     errors.append(error)
         if self.batch_collect:
-            try:
-                parallel = {"COLLECT_PARALLEL": str(self.collect_parallel)} if self.collect_parallel > 1 else {}
-                self.step("handoff", "collect", JOB_IDS=",".join(j for j, _ in pairs), **parallel)
-            except RuntimeError as error:
-                errors.append(error)
+            parallel = {"COLLECT_PARALLEL": str(self.collect_parallel)} if self.collect_parallel > 1 else {}
+            for group in chunks(pairs):
+                try:
+                    self.step("handoff", "collect", JOB_IDS=",".join(j for j, _ in group), **parallel)
+                except RuntimeError as error:
+                    errors.append(error)
         else:
             for job_id, _ in pairs:
                 try:
@@ -1659,9 +1723,9 @@ class QueueFeed:
             return
         require(all(isinstance(self.claims[page]["message"], str) and ID.fullmatch(self.claims[page]["message"])
                     for page in pages), "a source-truncated claim has no message sha256 to settle it by")
-        for i in range(0, len(pages), 100):  # the step takes 100 doc ids at most
+        for group in chunks(pages):  # the step takes STEP_IDS doc ids at most
             self.transport.dead_letter_truncated(
-                [(self.claims[page]["doc_id"], self.claims[page]["message"]) for page in pages[i:i + 100]])
+                [(self.claims[page]["doc_id"], self.claims[page]["message"]) for page in group])
         listed = self.state.setdefault("source_truncated", {})
         for page in pages:
             claim = self.claims.pop(page)
@@ -2109,8 +2173,8 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
                 f"terminal BOINC failure: {names}; dead-letter it with --dead-letter-failed "
                 "(#1154) or reconcile it by hand")
         jobs = sorted(record["job"]["id"] for record in failed.values())
-        for i in range(0, len(jobs), 100):  # the step takes 100 job ids at most
-            transport.dead_letter(jobs[i:i + 100])
+        for group in chunks(jobs):  # the step takes STEP_IDS job ids at most
+            transport.dead_letter(group)
         for record in failed.values():
             letters[record["job"]["id"]] = int(now)
         persist()
@@ -2263,11 +2327,13 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
                     and not owned[page["page"]].get("retry")))]
         if export:
             export = export[:refill]
-            pages = {page["page"] for page in export}
-            journals = [record["job"]["id"] for record in records
-                        if record["job"]["message"]["page"] in pages]
-            require(len(journals) <= 100, "too many existing journals for selected pages; reconcile history")
-            transport.export(export, journals)
+            for group in chunks(export):  # an export step takes STEP_IDS pages and journals
+                pages = {page["page"] for page in group}
+                journals = [record["job"]["id"] for record in records
+                            if record["job"]["message"]["page"] in pages]
+                require(len(journals) <= STEP_IDS,
+                        "too many existing journals for selected pages; reconcile history")
+                transport.export(group, journals)
             records = transport.records()
             owned = owned_records(config, records, state.get("deadline_retries"))
             stuck = sorted(page["page"] for page in export if retried(page))
@@ -2456,7 +2522,7 @@ def main(argv=None):
     parser.add_argument("--max-global-pending", type=int, default=None,
                         help="global safety cap on total unassimilated work across all BOINC apps")
     parser.add_argument("--refill-cap", type=int, default=None,
-                        help="claim, export and submit at most this many pages a tick (1-100; never more than "
+                        help="claim, export and submit at most this many pages a tick (1-500, in steps of at most 100; never more than "
                              "batch_size, the default); collection still takes up to batch_size (#1447)")
     parser.add_argument("--other-app-budget", type=int, default=None,
                         help="count at most this many of other apps' unassimilated workunits toward "
@@ -2512,7 +2578,7 @@ def main(argv=None):
         if args.max_global_pending is not None:
             require(1 <= args.max_global_pending <= MAX_GLOBAL_PENDING, "invalid max_global_pending")
         if args.refill_cap is not None:
-            require(1 <= args.refill_cap <= 100, "invalid --refill-cap")
+            require(1 <= args.refill_cap <= MAX_TICK_PAGES, "invalid --refill-cap")
             require(config.get("app") != SURYA_APP_NAME, "--refill-cap is for OCR plans")
         if args.other_app_budget is not None:
             require(config.get("app") != SURYA_APP_NAME, "--other-app-budget is for OCR plans")
