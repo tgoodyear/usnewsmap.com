@@ -17,7 +17,8 @@
     script_detect.py route --model model/model.pkl --feats feats --words words.jsonl \
         --testset-lines testset/v2/crops/lines.jsonl --crops testset/v2/crops --tessdata tessdata \
         --chr-lang chr_phoenix --base-pred chr-psm13.jsonl --out routed.jsonl
-    script_detect.py score --testset-dir testset/v2 --checked checked.json --pred chr=chr-psm13.jsonl --pred routed=routed.jsonl
+    script_detect.py score --testset-dir testset/v2 --checked checked.json --pred chr=chr-psm13.jsonl --pred routed=routed.jsonl \
+        [--compare chr:routed --bootstrap 10000]
     script_detect.py sheet --words sample.jsonl --images bank/images --out-dir sheets [--rows 20]
 """
 from __future__ import annotations
@@ -862,16 +863,24 @@ def cmd_route(a):
 
 def cmd_score(a):
     """Syllabary-letter CER (the test set's own measure) on the silver tier, on every line, and on
-    the hand-checked lines (their `checked` text as the reference)."""
+    the hand-checked lines (their `checked` text as the reference).
+
+    With --compare A:B, a paired page bootstrap of CER(B) - CER(A): the test set's pages are drawn
+    with replacement (--bootstrap times), both readings are scored on the same draw, and the 95%
+    interval is the 2.5th to 97.5th percentile of the differences. Pages, not lines, are drawn,
+    because lines of one page share type, paper and scan."""
     import importlib.util
+    import numpy as np
     spec = importlib.util.spec_from_file_location("cherokee_testset", os.path.join(a.testset_dir, "cherokee_testset.py"))
     T = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(T)
     lines = [json.loads(l) for l in open(os.path.join(a.testset_dir, "crops", "lines.jsonl"), encoding="utf-8")]
+    page_of = {r["crop"]: r["page"] for r in lines}
     checked = json.load(open(a.checked, encoding="utf-8")) if a.checked else []
     sets = {"silver": [(r["crop"], r["reference"]) for r in lines if r["tier"] == "silver"],
             "all": [(r["crop"], r["reference"]) for r in lines],
             "checked": [(r["crop"], r["checked"]) for r in checked]}
+    per = {}  # name -> tier -> page -> [errors, letters]
     out = {}
     for spec_ in a.pred:
         name, _, path = spec_.partition("=")
@@ -879,17 +888,39 @@ def cmd_score(a):
             preds = {r["crop"]: r["loc_text"] for r in lines}
         else:
             preds = {p["crop"]: p["text"] for p in map(json.loads, open(path, encoding="utf-8"))}
-        out[name] = {}
+        out[name], per[name] = {}, {}
         for sname, rows in sets.items():
-            err = ref = 0
+            pages = collections.defaultdict(lambda: [0, 0])
             for crop, gold in rows:
                 g = "".join(T.SYLLABARY.findall(gold))
-                err += T.letter_edit_distance(g, "".join(T.SYLLABARY.findall(preds.get(crop) or "")))
-                ref += len(g)
-            out[name][sname] = {"cer": round(err / max(1, ref), 4), "lines": len(rows), "letters": ref}
-    print(json.dumps(out, indent=1))
+                pages[page_of[crop]][0] += T.letter_edit_distance(g, "".join(T.SYLLABARY.findall(preds.get(crop) or "")))
+                pages[page_of[crop]][1] += len(g)
+            err, ref = sum(v[0] for v in pages.values()), sum(v[1] for v in pages.values())
+            out[name][sname] = {"cer": round(err / max(1, ref), 4), "lines": len(rows), "letters": ref,
+                                "pages": len(pages)}
+            per[name][sname] = pages
+    if a.compare:
+        rng = np.random.default_rng(a.seed)
+        out["compare"] = {}
+        for pair in a.compare:
+            base, new_ = pair.split(":")
+            res = {}
+            for sname in sets:
+                pages = sorted(per[base][sname])
+                A = np.array([per[base][sname][p] for p in pages], dtype=float)
+                B = np.array([per[new_][sname][p] for p in pages], dtype=float)
+                draws = rng.integers(0, len(pages), size=(a.bootstrap, len(pages)))
+                da = A[draws].sum(axis=1)
+                db = B[draws].sum(axis=1)
+                diff = db[:, 0] / db[:, 1] - da[:, 0] / da[:, 1]
+                point = B[:, 0].sum() / B[:, 1].sum() - A[:, 0].sum() / A[:, 1].sum()
+                lo, hi = np.percentile(diff, [2.5, 97.5])
+                res[sname] = {"diff": round(float(point), 4), "ci95": [round(float(lo), 4), round(float(hi), 4)],
+                              "pages": len(pages), "share_of_draws_better": round(float((diff < 0).mean()), 4)}
+            out["compare"][f"{new_} - {base}"] = res
+    print(json.dumps(out, indent=1, ensure_ascii=False))
     if a.out:
-        json.dump(out, open(a.out, "w"), indent=1)
+        json.dump(out, open(a.out, "w"), indent=1, sort_keys=True, ensure_ascii=False)
 
 
 def cmd_glyph_donors(a):
@@ -1096,6 +1127,9 @@ def main():
     s.add_argument("--testset-dir", required=True)
     s.add_argument("--checked", help="the hand-checked lines (crop, checked)")
     s.add_argument("--pred", required=True, action="append", help="NAME=PATH, one JSON line per crop; `loc` alone is LoC's text")
+    s.add_argument("--compare", action="append", help="A:B, two --pred names: a paired page bootstrap of CER(B) - CER(A)")
+    s.add_argument("--bootstrap", type=int, default=10000)
+    s.add_argument("--seed", type=int, default=1666)
     s.add_argument("--out")
     s = sub.add_parser("glyph-donors", help="English-line word crops for the glyph CNN")
     s.add_argument("--alto-dir", required=True)

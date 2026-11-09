@@ -3,136 +3,347 @@
   "all": {
    "cer": 0.3584,
    "letters": 44487,
-   "lines": 2160
+   "lines": 2160,
+   "pages": 29
   },
   "checked": {
    "cer": 0.122,
    "letters": 1311,
-   "lines": 70
+   "lines": 70,
+   "pages": 26
   },
   "silver": {
    "cer": 0.1966,
    "letters": 13123,
-   "lines": 700
+   "lines": 700,
+   "pages": 29
   }
  },
  "chr+eng": {
   "all": {
    "cer": 0.39,
    "letters": 44487,
-   "lines": 2160
+   "lines": 2160,
+   "pages": 29
   },
   "checked": {
    "cer": 0.1526,
    "letters": 1311,
-   "lines": 70
+   "lines": 70,
+   "pages": 26
   },
   "silver": {
    "cer": 0.2475,
    "letters": 13123,
-   "lines": 700
+   "lines": 700,
+   "pages": 29
   }
  },
- "chr_phoenix": {
+ "chr_phoenix-r1": {
   "all": {
    "cer": 0.3053,
    "letters": 44487,
-   "lines": 2160
+   "lines": 2160,
+   "pages": 29
   },
   "checked": {
    "cer": 0.0969,
    "letters": 1311,
-   "lines": 70
+   "lines": 70,
+   "pages": 26
   },
   "silver": {
    "cer": 0.1411,
    "letters": 13123,
-   "lines": 700
+   "lines": 700,
+   "pages": 29
   }
  },
- "chr_phoenix+eng": {
+ "chr_phoenix-r1+eng": {
   "all": {
    "cer": 0.3172,
    "letters": 44487,
-   "lines": 2160
+   "lines": 2160,
+   "pages": 29
   },
   "checked": {
    "cer": 0.1076,
    "letters": 1311,
-   "lines": 70
+   "lines": 70,
+   "pages": 26
   },
   "silver": {
    "cer": 0.1582,
    "letters": 13123,
-   "lines": 700
+   "lines": 700,
+   "pages": 29
   }
  },
- "cut-only": {
+ "chr_phoenix-r2": {
   "all": {
-   "cer": 0.3097,
+   "cer": 0.2761,
    "letters": 44487,
-   "lines": 2160
+   "lines": 2160,
+   "pages": 29
   },
   "checked": {
-   "cer": 0.0946,
+   "cer": 0.0656,
    "letters": 1311,
-   "lines": 70
+   "lines": 70,
+   "pages": 26
   },
   "silver": {
-   "cer": 0.1466,
+   "cer": 0.1022,
    "letters": 13123,
-   "lines": 700
+   "lines": 700,
+   "pages": 29
+  }
+ },
+ "chr_phoenix-r2+eng": {
+  "all": {
+   "cer": 0.2967,
+   "letters": 44487,
+   "lines": 2160,
+   "pages": 29
+  },
+  "checked": {
+   "cer": 0.0892,
+   "letters": 1311,
+   "lines": 70,
+   "pages": 26
+  },
+  "silver": {
+   "cer": 0.1286,
+   "letters": 13123,
+   "lines": 700,
+   "pages": 29
+  }
+ },
+ "compare": {
+  "cut-only-r2 - chr_phoenix-r2": {
+   "all": {
+    "ci95": [
+     0.0018,
+     0.0058
+    ],
+    "diff": 0.0038,
+    "pages": 29,
+    "share_of_draws_better": 0.0
+   },
+   "checked": {
+    "ci95": [
+     -0.0087,
+     0.0113
+    ],
+    "diff": 0.0008,
+    "pages": 26,
+    "share_of_draws_better": 0.3988
+   },
+   "silver": {
+    "ci95": [
+     0.003,
+     0.0095
+    ],
+    "diff": 0.0065,
+    "pages": 29,
+    "share_of_draws_better": 0.0002
+   }
+  },
+  "routed-r1 - chr_phoenix-r1": {
+   "all": {
+    "ci95": [
+     -0.0308,
+     -0.0261
+    ],
+    "diff": -0.0286,
+    "pages": 29,
+    "share_of_draws_better": 1.0
+   },
+   "checked": {
+    "ci95": [
+     -0.0624,
+     -0.0288
+    ],
+    "diff": -0.0442,
+    "pages": 26,
+    "share_of_draws_better": 1.0
+   },
+   "silver": {
+    "ci95": [
+     -0.0408,
+     -0.0353
+    ],
+    "diff": -0.0381,
+    "pages": 29,
+    "share_of_draws_better": 1.0
+   }
+  },
+  "routed-r2 - chr_phoenix-r2": {
+   "all": {
+    "ci95": [
+     -0.0094,
+     -0.0061
+    ],
+    "diff": -0.0077,
+    "pages": 29,
+    "share_of_draws_better": 1.0
+   },
+   "checked": {
+    "ci95": [
+     -0.0202,
+     0.0015
+    ],
+    "diff": -0.0092,
+    "pages": 26,
+    "share_of_draws_better": 0.9435
+   },
+   "silver": {
+    "ci95": [
+     -0.0131,
+     -0.0066
+    ],
+    "diff": -0.0097,
+    "pages": 29,
+    "share_of_draws_better": 1.0
+   }
+  },
+  "routed-r2 - chr_phoenix-r2+eng": {
+   "all": {
+    "ci95": [
+     -0.0316,
+     -0.0247
+    ],
+    "diff": -0.0283,
+    "pages": 29,
+    "share_of_draws_better": 1.0
+   },
+   "checked": {
+    "ci95": [
+     -0.0493,
+     -0.0154
+    ],
+    "diff": -0.0328,
+    "pages": 26,
+    "share_of_draws_better": 1.0
+   },
+   "silver": {
+    "ci95": [
+     -0.043,
+     -0.0292
+    ],
+    "diff": -0.036,
+    "pages": 29,
+    "share_of_draws_better": 1.0
+   }
+  },
+  "routed-r2 - loc": {
+   "all": {
+    "ci95": [
+     -0.0863,
+     -0.0668
+    ],
+    "diff": -0.0765,
+    "pages": 29,
+    "share_of_draws_better": 1.0
+   },
+   "checked": {
+    "ci95": [
+     -0.057,
+     0.0158
+    ],
+    "diff": -0.0275,
+    "pages": 26,
+    "share_of_draws_better": 0.9096
+   },
+   "silver": {
+    "ci95": [
+     -0.0999,
+     -0.0743
+    ],
+    "diff": -0.0873,
+    "pages": 29,
+    "share_of_draws_better": 1.0
+   }
+  }
+ },
+ "cut-only-r2": {
+  "all": {
+   "cer": 0.2799,
+   "letters": 44487,
+   "lines": 2160,
+   "pages": 29
+  },
+  "checked": {
+   "cer": 0.0664,
+   "letters": 1311,
+   "lines": 70,
+   "pages": 26
+  },
+  "silver": {
+   "cer": 0.1087,
+   "letters": 13123,
+   "lines": 700,
+   "pages": 29
   }
  },
  "loc": {
   "all": {
    "cer": 0.3449,
    "letters": 44487,
-   "lines": 2160
+   "lines": 2160,
+   "pages": 29
   },
   "checked": {
    "cer": 0.0839,
    "letters": 1311,
-   "lines": 70
+   "lines": 70,
+   "pages": 26
   },
   "silver": {
    "cer": 0.1798,
    "letters": 13123,
-   "lines": 700
+   "lines": 700,
+   "pages": 29
   }
  },
- "routed-v3": {
-  "all": {
-   "cer": 0.2852,
-   "letters": 44487,
-   "lines": 2160
-  },
-  "checked": {
-   "cer": 0.0618,
-   "letters": 1311,
-   "lines": 70
-  },
-  "silver": {
-   "cer": 0.114,
-   "letters": 13123,
-   "lines": 700
-  }
- },
- "routed-v5": {
+ "routed-r1": {
   "all": {
    "cer": 0.2767,
    "letters": 44487,
-   "lines": 2160
+   "lines": 2160,
+   "pages": 29
   },
   "checked": {
    "cer": 0.0526,
    "letters": 1311,
-   "lines": 70
+   "lines": 70,
+   "pages": 26
   },
   "silver": {
    "cer": 0.1029,
    "letters": 13123,
-   "lines": 700
+   "lines": 700,
+   "pages": 29
+  }
+ },
+ "routed-r2": {
+  "all": {
+   "cer": 0.2683,
+   "letters": 44487,
+   "lines": 2160,
+   "pages": 29
+  },
+  "checked": {
+   "cer": 0.0564,
+   "letters": 1311,
+   "lines": 70,
+   "pages": 26
+  },
+  "silver": {
+   "cer": 0.0925,
+   "letters": 13123,
+   "lines": 700,
+   "pages": 29
   }
  }
 }

@@ -2,41 +2,40 @@
  "dev": {
   "0.5": {
    "all": {
-    "l->chr": 1,
-    "l->eng": 920,
-    "o->chr": 11,
-    "o->eng": 377,
-    "s->chr": 10745,
-    "s->eng": 69
+    "l->chr": 2,
+    "l->eng": 919,
+    "o->chr": 10,
+    "o->eng": 378,
+    "s->chr": 10740,
+    "s->eng": 74
    },
    "hand": {
     "o->eng": 3,
-    "s->chr": 31,
-    "s->eng": 2
+    "s->chr": 33
    },
    "rule": {
-    "o->chr": 9,
-    "o->eng": 334,
-    "s->chr": 9416,
-    "s->eng": 58
+    "o->chr": 8,
+    "o->eng": 335,
+    "s->chr": 9415,
+    "s->eng": 59
    },
    "synth": {
-    "l->chr": 1,
-    "l->eng": 920,
+    "l->chr": 2,
+    "l->eng": 919,
     "o->chr": 2,
     "o->eng": 40,
-    "s->chr": 1298,
-    "s->eng": 9
+    "s->chr": 1292,
+    "s->eng": 15
    }
   },
   "0.7": {
    "all": {
-    "l->chr": 4,
-    "l->eng": 917,
+    "l->chr": 2,
+    "l->eng": 919,
     "o->chr": 14,
     "o->eng": 374,
-    "s->chr": 10771,
-    "s->eng": 43
+    "s->chr": 10768,
+    "s->eng": 46
    },
    "hand": {
     "o->eng": 3,
@@ -45,54 +44,54 @@
    "rule": {
     "o->chr": 12,
     "o->eng": 331,
-    "s->chr": 9438,
-    "s->eng": 36
+    "s->chr": 9434,
+    "s->eng": 40
    },
    "synth": {
-    "l->chr": 4,
-    "l->eng": 917,
+    "l->chr": 2,
+    "l->eng": 919,
     "o->chr": 2,
     "o->eng": 40,
-    "s->chr": 1300,
-    "s->eng": 7
+    "s->chr": 1301,
+    "s->eng": 6
    }
   },
   "0.8": {
    "all": {
     "l->chr": 4,
     "l->eng": 917,
-    "o->chr": 18,
-    "o->eng": 370,
-    "s->chr": 10779,
-    "s->eng": 35
+    "o->chr": 19,
+    "o->eng": 369,
+    "s->chr": 10780,
+    "s->eng": 34
    },
    "hand": {
     "o->eng": 3,
     "s->chr": 33
    },
    "rule": {
-    "o->chr": 16,
-    "o->eng": 327,
-    "s->chr": 9444,
-    "s->eng": 30
+    "o->chr": 17,
+    "o->eng": 326,
+    "s->chr": 9446,
+    "s->eng": 28
    },
    "synth": {
     "l->chr": 4,
     "l->eng": 917,
     "o->chr": 2,
     "o->eng": 40,
-    "s->chr": 1302,
-    "s->eng": 5
+    "s->chr": 1301,
+    "s->eng": 6
    }
   },
   "0.9": {
    "all": {
-    "l->chr": 7,
-    "l->eng": 914,
+    "l->chr": 9,
+    "l->eng": 912,
     "o->chr": 22,
     "o->eng": 366,
-    "s->chr": 10786,
-    "s->eng": 28
+    "s->chr": 10788,
+    "s->eng": 26
    },
    "hand": {
     "o->eng": 3,
@@ -101,40 +100,40 @@
    "rule": {
     "o->chr": 20,
     "o->eng": 323,
-    "s->chr": 9450,
-    "s->eng": 24
+    "s->chr": 9453,
+    "s->eng": 21
    },
    "synth": {
-    "l->chr": 7,
-    "l->eng": 914,
+    "l->chr": 9,
+    "l->eng": 912,
     "o->chr": 2,
     "o->eng": 40,
-    "s->chr": 1303,
-    "s->eng": 4
+    "s->chr": 1302,
+    "s->eng": 5
    }
   },
   "0.95": {
    "all": {
-    "l->chr": 16,
-    "l->eng": 905,
-    "o->chr": 30,
-    "o->eng": 358,
-    "s->chr": 10801,
-    "s->eng": 13
+    "l->chr": 14,
+    "l->eng": 907,
+    "o->chr": 29,
+    "o->eng": 359,
+    "s->chr": 10800,
+    "s->eng": 14
    },
    "hand": {
     "o->eng": 3,
     "s->chr": 33
    },
    "rule": {
-    "o->chr": 28,
-    "o->eng": 315,
-    "s->chr": 9462,
-    "s->eng": 12
+    "o->chr": 27,
+    "o->eng": 316,
+    "s->chr": 9461,
+    "s->eng": 13
    },
    "synth": {
-    "l->chr": 16,
-    "l->eng": 905,
+    "l->chr": 14,
+    "l->eng": 907,
     "o->chr": 2,
     "o->eng": 40,
     "s->chr": 1306,
@@ -143,30 +142,29 @@
   },
   "0.98": {
    "all": {
-    "l->chr": 30,
-    "l->eng": 891,
-    "o->chr": 41,
-    "o->eng": 347,
-    "s->chr": 10808,
-    "s->eng": 6
+    "l->chr": 26,
+    "l->eng": 895,
+    "o->chr": 39,
+    "o->eng": 349,
+    "s->chr": 10807,
+    "s->eng": 7
    },
    "hand": {
     "o->eng": 3,
     "s->chr": 33
    },
    "rule": {
-    "o->chr": 38,
-    "o->eng": 305,
-    "s->chr": 9469,
-    "s->eng": 5
+    "o->chr": 36,
+    "o->eng": 307,
+    "s->chr": 9467,
+    "s->eng": 7
    },
    "synth": {
-    "l->chr": 30,
-    "l->eng": 891,
+    "l->chr": 26,
+    "l->eng": 895,
     "o->chr": 3,
     "o->eng": 39,
-    "s->chr": 1306,
-    "s->eng": 1
+    "s->chr": 1307
    }
   }
  },
@@ -174,94 +172,102 @@
  "importance": [
   [
    "cnn_s",
-   0.9541
+   0.9507
   ],
   [
    "chr_conf",
-   0.0154
+   0.0086
+  ],
+  [
+   "chr_n",
+   0.0064
   ],
   [
    "word_h_rel",
-   0.0071
+   0.0062
   ],
   [
    "eng_conf_minus_chr",
-   0.0051
-  ],
-  [
-   "eng_bigram",
-   0.0035
+   0.0054
   ],
   [
    "eng_shared_caps",
-   0.0022
+   0.0025
+  ],
+  [
+   "eng_bigram",
+   0.0021
   ],
   [
    "eng_english_long",
-   0.0019
+   0.0018
   ],
   [
-   "cnn_l",
+   "chr_digits",
    0.0016
   ],
   [
-   "eng_digits",
-   0.0014
-  ],
-  [
-   "chr_cherokee",
-   0.0012
+   "cnn_l",
+   0.0013
   ],
   [
    "word_tall",
    0.0011
   ],
   [
-   "line_chr_conf",
-   0.0011
-  ],
-  [
-   "word_comp_w",
-   0.0008
-  ],
-  [
    "right_chr_conf",
-   0.0007
+   0.001
+  ],
+  [
+   "eng_digits",
+   0.0009
+  ],
+  [
+   "chr_cherokee",
+   0.0009
   ],
   [
    "eng_lower",
-   0.0005
-  ],
-  [
-   "d_tall",
-   0.0004
-  ],
-  [
-   "d_comp_w",
-   0.0004
-  ],
-  [
-   "next_ink_bot",
-   0.0004
-  ],
-  [
-   "line_tall",
-   0.0003
-  ],
-  [
-   "word_ink_top",
-   0.0002
-  ],
-  [
-   "block_upper",
-   0.0002
-  ],
-  [
-   "block_q_speckle",
-   0.0002
+   0.0007
   ],
   [
    "line_eng_lower",
+   0.0007
+  ],
+  [
+   "word_comp_w",
+   0.0006
+  ],
+  [
+   "line_chr_conf",
+   0.0004
+  ],
+  [
+   "d_tall",
+   0.0003
+  ],
+  [
+   "line_q_bg_uneven",
+   0.0003
+  ],
+  [
+   "left_eng_lower",
+   0.0003
+  ],
+  [
+   "right_cnn_s",
+   0.0003
+  ],
+  [
+   "d_short",
+   0.0002
+  ],
+  [
+   "next_tall",
+   0.0002
+  ],
+  [
+   "next_ink_bot",
    0.0002
   ],
   [
@@ -269,11 +275,11 @@
    0.0002
   ],
   [
-   "line_cnn_s",
-   0.0002
+   "word_w_rel",
+   0.0001
   ],
   [
-   "d_short",
+   "d_comp_w",
    0.0001
   ],
   [
@@ -282,14 +288,6 @@
   ],
   [
    "prev_short",
-   0.0001
-  ],
-  [
-   "prev_desc",
-   0.0001
-  ],
-  [
-   "prev_gap",
    0.0001
   ]
  ],
@@ -309,14 +307,14 @@
    "all": {
     "l->eng": 11,
     "o->eng": 13,
-    "s->chr": 118,
-    "s->eng": 4
+    "s->chr": 117,
+    "s->eng": 5
    },
    "hand": {
     "l->eng": 11,
     "o->eng": 13,
-    "s->chr": 118,
-    "s->eng": 4
+    "s->chr": 117,
+    "s->eng": 5
    }
   },
   "0.7": {
@@ -337,14 +335,14 @@
    "all": {
     "l->eng": 11,
     "o->eng": 13,
-    "s->chr": 119,
-    "s->eng": 3
+    "s->chr": 121,
+    "s->eng": 1
    },
    "hand": {
     "l->eng": 11,
     "o->eng": 13,
-    "s->chr": 119,
-    "s->eng": 3
+    "s->chr": 121,
+    "s->eng": 1
    }
   },
   "0.9": {
@@ -352,15 +350,13 @@
     "l->chr": 1,
     "l->eng": 10,
     "o->eng": 13,
-    "s->chr": 121,
-    "s->eng": 1
+    "s->chr": 122
    },
    "hand": {
     "l->chr": 1,
     "l->eng": 10,
     "o->eng": 13,
-    "s->chr": 121,
-    "s->eng": 1
+    "s->chr": 122
    }
   },
   "0.95": {
@@ -379,15 +375,15 @@
   },
   "0.98": {
    "all": {
-    "l->chr": 3,
-    "l->eng": 8,
+    "l->chr": 2,
+    "l->eng": 9,
     "o->chr": 3,
     "o->eng": 10,
     "s->chr": 122
    },
    "hand": {
-    "l->chr": 3,
-    "l->eng": 8,
+    "l->chr": 2,
+    "l->eng": 9,
     "o->chr": 3,
     "o->eng": 10,
     "s->chr": 122
