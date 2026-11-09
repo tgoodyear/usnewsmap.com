@@ -19,12 +19,20 @@ UNIT = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,255}")
 SNAPSHOT = re.compile(r"[a-f0-9]{32}")
 LOCK_ACQUIRED = "USNM_QUALITY_PARTIAL_STEP_LOCK_ACQUIRED"
 FRONTIER_LIMIT = 10_000
-REMOTE_WORK_SECONDS = 160  # Leave 20 seconds before the outer TERM for durable failure progress.
+REMOTE_WORK_SECONDS = 220  # Leave 20 seconds before the outer TERM for durable failure progress.
+# Each native call within a pass. A large bundle's re-check over NFS can pass 120 s (#1655);
+# a whole pass still holds the step lock for less than the bridge's 300 s wait.
+CALL_SECONDS = 150
 INVENTORY_FILE = "inventory.json"
 # The full scheduling inventory reads every unit over NFS, which took over 15 minutes for about
 # 2,800 wave10 units (#1655). It runs outside the step lock with its own budget; passes reuse it.
 INVENTORY_BUDGET_SECONDS = 3600
 INVENTORY_REFRESH_SECONDS = 3600
+# Each unit costs a fixed lock, transfer and load round of about two minutes, so one service
+# run loads several in a row while time allows. The step lock is released between units.
+UNITS_PER_RUN = 5
+RUN_BUDGET_SECONDS = 600
+UNIT_GAP_SECONDS = 5
 
 
 def replay_collection_diagnostics(stderr):
@@ -104,7 +112,7 @@ def select_frontier(inventory, state):
     return selected, names[-1], lane, updated
 
 
-def completion_inventory(args, project, base, selected=None, deadline=None, limit=120):
+def completion_inventory(args, project, base, selected=None, deadline=None, limit=CALL_SECONDS):
     qwen_root = project / "qwen" / args.qwen_campaign if args.qwen_campaign else base / "no-qwen"
     if args.qwen_campaign:
         # An unavailable configured reading source is not an empty reading campaign.
@@ -261,7 +269,7 @@ def scoped_collect(args, project=Path("/project")):
     ]
     started = time.time()
     try:
-        budget = min(120, deadline - time.monotonic()) if deadline is not None else 120
+        budget = min(CALL_SECONDS, deadline - time.monotonic()) if deadline is not None else CALL_SECONDS
         if budget <= 0:
             raise subprocess.TimeoutExpired(command, 0)
         result = subprocess.run(command, capture_output=True, text=True, timeout=budget)
@@ -413,7 +421,7 @@ def host_pass(args):
         "/run/usnm-boinc-step.lock", "sh", "-c",
         'printf "%s\\n" ' + LOCK_ACQUIRED + ' >&2; exec "$@"', "sh",
         "podman", "exec", "-i", "usnm-boinc-server",
-        "timeout", "--signal=TERM", "--kill-after=10s", "180s", "python3", "-", "--remote",
+        "timeout", "--signal=TERM", "--kill-after=10s", "240s", "python3", "-", "--remote",
         *common, "--collector", args.collector,
     ]
     if after:
@@ -432,7 +440,7 @@ def host_pass(args):
     try:
         response = subprocess.run(
             [*ssh, shlex.join(remote)], input=Path(__file__).read_bytes(),
-            capture_output=True, timeout=210,
+            capture_output=True, timeout=270,
         )
     except subprocess.TimeoutExpired as error:
         acquired = replay_collection_diagnostics(error.stderr)
@@ -493,6 +501,33 @@ def host_pass(args):
     return loaded
 
 
+def host_passes(args, sleep=time.sleep):
+    """Up to --units-per-run passes, each under its own step-lock acquisition. Another starts only
+    while the run's budget has time for one; the pause between them lets a waiting bridge step
+    take the lock first. A later pass finding the lock busy ends the run without an error."""
+    started = time.monotonic()
+    reports = []
+    for index in range(args.units_per_run):
+        if index:
+            sleep(UNIT_GAP_SECONDS)
+            # Checked after the pause, right before the pass starts.
+            if time.monotonic() - started >= args.run_budget_secs:
+                break
+        try:
+            report = host_pass(args)
+        except SystemExit as error:
+            if error.code == 75 and reports:
+                print(json.dumps({"phase": "step_lock_busy_after_units", "units": len(reports)}),
+                      file=sys.stderr, flush=True)
+                break
+            raise
+        print(json.dumps(report, sort_keys=True), flush=True)
+        reports.append(report)
+    return {"campaign": args.campaign, "units": len(reports),
+            "pages": sum(r.get("pages", 0) for r in reports),
+            "seconds": round(time.monotonic() - started, 1)}
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     mode = parser.add_mutually_exclusive_group()
@@ -514,6 +549,10 @@ def main(argv=None):
                         help="time limit for the full scheduling inventory, run without the step lock")
     parser.add_argument("--inventory-refresh-secs", type=int, default=INVENTORY_REFRESH_SECONDS,
                         help="minimum seconds between full scheduling inventory refreshes")
+    parser.add_argument("--units-per-run", type=int, default=UNITS_PER_RUN,
+                        help="most units one service run collects and loads, each under its own step lock")
+    parser.add_argument("--run-budget-secs", type=int, default=RUN_BUDGET_SECONDS,
+                        help="no further unit starts once a run has used this many seconds")
     parser.add_argument("--server-host", default="pve.tjg.fyi")
     parser.add_argument("--server-ct", type=int, default=230)
     parser.add_argument("--ctid", type=int, default=215)
@@ -534,6 +573,8 @@ def main(argv=None):
                 and not re.fullmatch(r"sha256:[a-f0-9]{64}", args.engine_image or ""))
             or not 60 <= args.inventory_budget_secs <= 7200
             or args.inventory_refresh_secs < 60
+            or not 1 <= args.units_per_run <= 50
+            or not 0 <= args.run_budget_secs <= 3600
             or (args.load and args.snapshot_dir is None)):
         parser.error("invalid partial collection arguments")
     os.umask(0o077)
@@ -555,7 +596,7 @@ def main(argv=None):
                 print(json.dumps({"phase": "host_lock_busy", "exit": 75}),
                       file=sys.stderr, flush=True)
                 raise SystemExit(75) from None
-            report = host_pass(args)
+            report = host_passes(args)
     print(json.dumps(report, sort_keys=True), flush=True)
 
 
