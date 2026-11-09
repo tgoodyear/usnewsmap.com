@@ -2,8 +2,8 @@
  "dev": {
   "0.5": {
    "all": {
-    "l->chr": 3,
-    "l->eng": 918,
+    "l->chr": 4,
+    "l->eng": 917,
     "o->chr": 10,
     "o->eng": 378,
     "s->chr": 10761,
@@ -16,34 +16,34 @@
    "rule": {
     "o->chr": 8,
     "o->eng": 335,
-    "s->chr": 9431,
-    "s->eng": 43
+    "s->chr": 9433,
+    "s->eng": 41
    },
    "synth": {
-    "l->chr": 3,
-    "l->eng": 918,
+    "l->chr": 4,
+    "l->eng": 917,
     "o->chr": 2,
     "o->eng": 41,
-    "s->chr": 1301,
-    "s->eng": 10
+    "s->chr": 1299,
+    "s->eng": 12
    }
   },
   "0.7": {
    "all": {
     "l->chr": 4,
     "l->eng": 917,
-    "o->chr": 15,
-    "o->eng": 373,
-    "s->chr": 10778,
-    "s->eng": 36
+    "o->chr": 14,
+    "o->eng": 374,
+    "s->chr": 10779,
+    "s->eng": 35
    },
    "hand": {
     "o->eng": 2,
     "s->chr": 29
    },
    "rule": {
-    "o->chr": 13,
-    "o->eng": 330,
+    "o->chr": 12,
+    "o->eng": 331,
     "s->chr": 9443,
     "s->eng": 31
    },
@@ -52,18 +52,18 @@
     "l->eng": 917,
     "o->chr": 2,
     "o->eng": 41,
-    "s->chr": 1306,
-    "s->eng": 5
+    "s->chr": 1307,
+    "s->eng": 4
    }
   },
   "0.8": {
    "all": {
-    "l->chr": 5,
-    "l->eng": 916,
+    "l->chr": 4,
+    "l->eng": 917,
     "o->chr": 16,
     "o->eng": 372,
-    "s->chr": 10786,
-    "s->eng": 28
+    "s->chr": 10789,
+    "s->eng": 25
    },
    "hand": {
     "o->eng": 2,
@@ -72,12 +72,12 @@
    "rule": {
     "o->chr": 14,
     "o->eng": 329,
-    "s->chr": 9450,
-    "s->eng": 24
+    "s->chr": 9453,
+    "s->eng": 21
    },
    "synth": {
-    "l->chr": 5,
-    "l->eng": 916,
+    "l->chr": 4,
+    "l->eng": 917,
     "o->chr": 2,
     "o->eng": 41,
     "s->chr": 1307,
@@ -86,10 +86,10 @@
   },
   "0.9": {
    "all": {
-    "l->chr": 10,
-    "l->eng": 911,
-    "o->chr": 19,
-    "o->eng": 369,
+    "l->chr": 8,
+    "l->eng": 913,
+    "o->chr": 18,
+    "o->eng": 370,
     "s->chr": 10797,
     "s->eng": 17
    },
@@ -98,14 +98,14 @@
     "s->chr": 29
    },
    "rule": {
-    "o->chr": 17,
-    "o->eng": 326,
+    "o->chr": 16,
+    "o->eng": 327,
     "s->chr": 9459,
     "s->eng": 15
    },
    "synth": {
-    "l->chr": 10,
-    "l->eng": 911,
+    "l->chr": 8,
+    "l->eng": 913,
     "o->chr": 2,
     "o->eng": 41,
     "s->chr": 1309,
@@ -114,26 +114,26 @@
   },
   "0.95": {
    "all": {
-    "l->chr": 12,
-    "l->eng": 909,
-    "o->chr": 25,
-    "o->eng": 363,
-    "s->chr": 10802,
-    "s->eng": 12
+    "l->chr": 11,
+    "l->eng": 910,
+    "o->chr": 24,
+    "o->eng": 364,
+    "s->chr": 10804,
+    "s->eng": 10
    },
    "hand": {
     "o->eng": 2,
     "s->chr": 29
    },
    "rule": {
-    "o->chr": 23,
-    "o->eng": 320,
-    "s->chr": 9463,
-    "s->eng": 11
+    "o->chr": 22,
+    "o->eng": 321,
+    "s->chr": 9465,
+    "s->eng": 9
    },
    "synth": {
-    "l->chr": 12,
-    "l->eng": 909,
+    "l->chr": 11,
+    "l->eng": 910,
     "o->chr": 2,
     "o->eng": 41,
     "s->chr": 1310,
@@ -142,10 +142,10 @@
   },
   "0.98": {
    "all": {
-    "l->chr": 21,
-    "l->eng": 900,
-    "o->chr": 40,
-    "o->eng": 348,
+    "l->chr": 22,
+    "l->eng": 899,
+    "o->chr": 41,
+    "o->eng": 347,
     "s->chr": 10806,
     "s->eng": 8
    },
@@ -160,10 +160,10 @@
     "s->eng": 7
    },
    "synth": {
-    "l->chr": 21,
-    "l->eng": 900,
-    "o->chr": 2,
-    "o->eng": 41,
+    "l->chr": 22,
+    "l->eng": 899,
+    "o->chr": 3,
+    "o->eng": 40,
     "s->chr": 1310,
     "s->eng": 1
    }
@@ -173,70 +173,62 @@
  "importance": [
   [
    "cnn_s",
-   1.0431
-  ],
-  [
-   "chr_conf",
-   0.0068
+   1.0397
   ],
   [
    "eng_conf_minus_chr",
-   0.0065
+   0.0064
   ],
   [
    "chr_n",
-   0.005
+   0.0059
+  ],
+  [
+   "chr_conf",
+   0.0056
   ],
   [
    "cnn_l",
-   0.0029
-  ],
-  [
-   "chr_digits",
-   0.0023
+   0.003
   ],
   [
    "word_w_rel",
-   0.002
+   0.0025
+  ],
+  [
+   "chr_digits",
+   0.0021
   ],
   [
    "eng_shared_caps",
-   0.002
-  ],
-  [
-   "eng_bigram",
-   0.0017
+   0.0018
   ],
   [
    "chr_cherokee",
    0.0017
   ],
   [
-   "word_q_sharpness",
-   0.001
+   "eng_bigram",
+   0.0015
   ],
   [
-   "eng_lower",
-   0.0009
+   "word_q_sharpness",
+   0.0011
   ],
   [
    "eng_english_long",
+   0.0009
+  ],
+  [
+   "eng_lower",
    0.0008
   ],
   [
    "eng_digits",
-   0.0007
+   0.0008
   ],
   [
    "right_cnn_l",
-   0.0007
-  ],
-  [
-   "d_comp_w",
-   0.0006
-  ],
-  [
-   "left_cnn_l",
    0.0006
   ],
   [
@@ -244,15 +236,31 @@
    0.0006
   ],
   [
+   "d_comp_w",
+   0.0005
+  ],
+  [
    "right_chr_conf",
    0.0005
   ],
   [
-   "line_cnn_l",
-   0.0004
+   "line_eng_lower",
+   0.0005
+  ],
+  [
+   "left_cnn_l",
+   0.0005
   ],
   [
    "word_comp_w",
+   0.0004
+  ],
+  [
+   "line_q_bg_uneven",
+   0.0004
+  ],
+  [
+   "d_density",
    0.0003
   ],
   [
@@ -260,11 +268,7 @@
    0.0003
   ],
   [
-   "line_eng_lower",
-   0.0003
-  ],
-  [
-   "line_chr_conf",
+   "line_eng_conf",
    0.0003
   ],
   [
@@ -272,24 +276,20 @@
    0.0003
   ],
   [
+   "line_cnn_l",
+   0.0003
+  ],
+  [
+   "d_short",
+   0.0002
+  ],
+  [
    "d_tall",
    0.0002
   ],
   [
-   "word_q_contrast",
+   "next_ink_bot",
    0.0002
-  ],
-  [
-   "eng_n",
-   0.0002
-  ],
-  [
-   "word_ink_top",
-   0.0001
-  ],
-  [
-   "word_h_rel",
-   0.0001
   ]
  ],
  "labels": {
@@ -322,14 +322,14 @@
    "all": {
     "l->eng": 11,
     "o->eng": 13,
-    "s->chr": 118,
-    "s->eng": 4
+    "s->chr": 119,
+    "s->eng": 3
    },
    "hand": {
     "l->eng": 11,
     "o->eng": 13,
-    "s->chr": 118,
-    "s->eng": 4
+    "s->chr": 119,
+    "s->eng": 3
    }
   },
   "0.8": {

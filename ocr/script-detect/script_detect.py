@@ -297,12 +297,18 @@ def cmd_features(a):
     page_id, page = None, None
     crop_cache, block_cache, gray_cache, bq_cache = {}, {}, {}, {}
 
-    def block_quality(box, H):
+    def block_quality(box):
+        """The block's scan quality, scaled by the block's own letter height (the median height of
+        its shapes), so it is the same whichever of its lines asks first."""
         k = tuple(box)
         if k not in bq_cache:
             x0, y0, x1, y1 = box
             g = page[y0:y1, x0:x1]
-            bq_cache[k] = F.quality(g, F.binarize(g), H)
+            ink = F.binarize(g)
+            boxes, _ = F.components(ink)
+            h = boxes[:, 2] - boxes[:, 0] if len(boxes) else np.zeros(0)
+            h = h[h >= 6]
+            bq_cache[k] = F.quality(g, ink, float(np.median(h)) if len(h) else 4.0)
         return bq_cache[k]
 
     def line_crop(box):
@@ -362,7 +368,7 @@ def cmd_features(a):
             lgray = gray_cache[tuple(r0["line_box"])]
         H = max(4.0, float(bot - top))
         lq = F.quality(lgray, ink, H)
-        bq = block_quality(r0["block_box"], H)
+        bq = block_quality(r0["block_box"])
         reads = {"eng": assign(words, eng.get(key, [])), "chr": assign(words, chr_.get(key, []))}
         rm = {m: [F.reading(t, c, vocab, english) for t, c in reads[m]] for m in reads}
         lm = [F.loc_measures(w["loc"], vocab) for w in words]
