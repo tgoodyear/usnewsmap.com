@@ -509,9 +509,10 @@ def host_passes(args, sleep=time.sleep):
     reports = []
     for index in range(args.units_per_run):
         if index:
-            if time.monotonic() - started > args.run_budget_secs:
-                break
             sleep(UNIT_GAP_SECONDS)
+            # Checked after the pause, right before the pass starts.
+            if time.monotonic() - started >= args.run_budget_secs:
+                break
         try:
             report = host_pass(args)
         except SystemExit as error:

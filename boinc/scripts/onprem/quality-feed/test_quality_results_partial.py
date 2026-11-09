@@ -583,6 +583,13 @@ class PartialTest(unittest.TestCase):
                 mock.patch("sys.stdout", new_callable=io.StringIO):
             report = partial.host_passes(self.args, sleep=lambda _: None)
         self.assertEqual((one.call_count, report["units"]), (2, 2))
+        # A pass ending at 599 s doesn't start another after the pause; reaching the budget ends it.
+        clock = iter([0, 600, 600])
+        with mock.patch.object(partial.time, "monotonic", side_effect=lambda: next(clock)), \
+                mock.patch.object(partial, "host_pass", side_effect=[{"pages": 1}, {"pages": 1}]) as one, \
+                mock.patch("sys.stdout", new_callable=io.StringIO):
+            report = partial.host_passes(self.args, sleep=lambda _: None)
+        self.assertEqual((one.call_count, report["units"]), (1, 1))
 
     def load_fixture(self, rows):
         root = self.args.snapshot_dir
