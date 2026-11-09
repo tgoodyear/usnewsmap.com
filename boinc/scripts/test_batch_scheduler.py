@@ -4292,13 +4292,14 @@ class StepChunkingTests(unittest.TestCase):
         t = batch.Transport(queue_config(), Path("."))
         first = [message(i) for i in range(1, 101)]
         for error in (batch.ClaimFailed("handoff/claim failed", [message(500)]),
-                      RuntimeError("handoff/claim failed")):
+                      RuntimeError("handoff/claim failed"), OSError("/private/path unreadable")):
             with self.subTest(error=type(error).__name__), \
                     patch.object(t, "claim_step", side_effect=[first, error]), \
                     self.assertRaises(batch.ClaimFailed) as caught:
                 t.claim(200)
             extra = [message(500)] if isinstance(error, batch.ClaimFailed) else []
             self.assertEqual(caught.exception.claims, first + extra)
+            self.assertNotIn("/private/path", str(caught.exception))
 
     def test_release_and_push_split_into_steps_of_100(self):
         t = batch.Transport(queue_config(), Path("."))

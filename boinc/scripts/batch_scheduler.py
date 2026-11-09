@@ -1214,9 +1214,12 @@ class Transport:
                 got = self.claim_step(want)
             except ClaimFailed as error:
                 raise ClaimFailed(str(error), claims + error.claims) from error
-            except (RuntimeError, ValueError) as error:
+            except (ValueError, KeyError, TypeError, OSError, RuntimeError) as error:
                 if claims:
-                    raise ClaimFailed(str(error), claims) from error
+                    # As main() reports it: no paths or command output from an I/O error.
+                    message = str(error) if isinstance(error, (ValueError, RuntimeError)) \
+                        else type(error).__name__
+                    raise ClaimFailed(message, claims) from error
                 raise
             claims += got
             if len(got) < want:
