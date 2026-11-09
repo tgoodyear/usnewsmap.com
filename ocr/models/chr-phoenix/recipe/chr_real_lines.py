@@ -24,6 +24,12 @@ NEUTRAL = re.compile(r"[0-35-9.,;:!()\-“”’…]+")
 UNWRITABLE = re.compile("[?\"'‘4]")
 
 
+def refuse_used_out(out: str) -> None:
+    """Never mix runs: training reads every image in the folder, so a used --out would leak old lines."""
+    if os.path.isdir(out) and any(n.endswith((".png", ".gt.txt")) for n in os.listdir(out)):
+        sys.exit(f"{out} already holds line images; give a new --out (nothing is deleted)")
+
+
 def make_fix(vocab):
     def fix(w):
         at = [i for i, c in enumerate(w) if c == "Ꭺ"]
@@ -53,6 +59,7 @@ def main():
     fix = make_fix(vocab)
     m = json.load(open(a.exclude_manifest, encoding="utf-8"))
     exclude = {p for s in m["sets"].values() if isinstance(s, dict) and isinstance(s.get("pages"), list) for p in s["pages"]}
+    refuse_used_out(a.out)
     os.makedirs(a.out, exist_ok=True)
     stats = {"pages": 0, "lines": 0, "kept": 0, "fixed_words": 0, "excluded_pages": 0}
     idx = open(os.path.join(a.out, "lines.jsonl"), "w", encoding="utf-8")

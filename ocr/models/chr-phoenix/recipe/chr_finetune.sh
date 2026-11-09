@@ -25,7 +25,8 @@ make_one() {
   rm -f "$out.png"
 }
 export -f make_one; export WORK
-find "$REAL" "$SYNTH" -name '*.png' | sort | xargs -P "$JOBS" -I{} bash -c 'make_one {}'
+# Inputs are flat: images directly in --real and --synth, as the line scripts write them.
+find "$REAL" "$SYNTH" -maxdepth 1 -name '*.png' | sort | xargs -P "$JOBS" -I{} bash -c 'make_one {}'
 # 2. Lists: evaluation = real lines of about one page in twenty, chosen by a hash of the page.
 python3 - "$WORK" "$REAL" "$SYNTH" <<'PY'
 import glob, os, sys, hashlib
@@ -33,7 +34,7 @@ work, real_dir, synth_dir = sys.argv[1:4]
 # Only this run's inputs: an .lstmf left in --work by another dataset is ignored.
 def wanted(d):
     return [os.path.join(work, "lstmf", f"{os.path.basename(os.path.normpath(d))}__{os.path.basename(p)[:-4]}.lstmf")
-            for p in sorted(glob.glob(os.path.join(d, "**", "*.png"), recursive=True))]
+            for p in sorted(glob.glob(os.path.join(d, "*.png")))]
 real, synth = [f for f in wanted(real_dir) if os.path.exists(f)], [f for f in wanted(synth_dir) if os.path.exists(f)]
 train, ev = list(synth), []
 for f in real:

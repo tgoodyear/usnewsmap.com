@@ -78,6 +78,12 @@ def mark_glyph(ch: str, body: int):
     return _mark_cache[key]
 
 
+def refuse_used_out(out: str) -> None:
+    """Never mix runs: training reads every image in the folder, so a used --out would leak old lines."""
+    if os.path.isdir(out) and any(n.endswith((".png", ".gt.txt")) for n in os.listdir(out)):
+        sys.exit(f"{out} already holds line images; give a new --out (nothing is deleted)")
+
+
 def excluded_pages(path: str | None) -> set[str]:
     if not path:
         return set()
@@ -232,6 +238,7 @@ def main(argv=None) -> int:
     rng = random.Random(a.seed)
     exclude = excluded_pages(a.exclude_manifest)
     pools = load_bank(a.bank, exclude)
+    refuse_used_out(a.out)
     os.makedirs(a.out, exist_ok=True)
     missing = collections.Counter()
     cache = {}
