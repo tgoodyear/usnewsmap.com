@@ -1223,7 +1223,10 @@ async fn a_starting_warm_up_goes_when_no_visitor_searches() {
     assert!(report.gave_way < Duration::from_secs(2), "{report:?}");
     visitor.await.unwrap();
 
-    // Nobody searching: no wait at all.
+    // Nobody searching: no wait at all. This half asserts that nothing is skipped, not that
+    // the run is fast: 400 real queries take about 3 s on a loaded 4-core runner, so the first
+    // half's 3 s budget would skip some of them whenever the machine is slow.
+    cfg.prewarm_startup_budget = Duration::from_secs(300);
     let quick = Counting::new(Duration::ZERO, false);
     let state = Arc::new(reloading_state(&dir, cfg, quick).await);
     let report = prewarm::run(&state, state.snapshot.load_full(), Trigger::Startup).await;
