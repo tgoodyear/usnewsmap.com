@@ -11,7 +11,7 @@
 //! `index.jsonl` (one glyph a line), `glyphs/<code point>/<id>.png`, `features.f32`
 //! (each glyph's feature, little-endian f32) and summaries.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -52,6 +52,10 @@ enum Cmd {
         min_agree: f32,
         #[arg(long, default_value_t = 8)]
         threads: usize,
+        /// A test-set manifest whose pages (`sets.*.pages`) never vote, so no frozen test page
+        /// decides which glyphs of other pages are kept. Their own glyphs are still judged.
+        #[arg(long)]
+        exclude_manifest: Option<PathBuf>,
     },
 }
 
@@ -68,7 +72,8 @@ fn main() -> Result<()> {
             k,
             min_agree,
             threads,
-        } => clean(&bank, k, min_agree, threads),
+            exclude_manifest,
+        } => clean(&bank, k, min_agree, threads, exclude_manifest.as_deref()),
     }
 }
 
@@ -125,9 +130,9 @@ fn build_page(slug: &str, alto: &Path, images: &Path, out: &Path) -> Result<Opti
     let (mut rows, mut stats, mut feats) = (Vec::new(), BTreeMap::new(), Vec::new());
     let mut count = |k: &str| *stats.entry(k.to_owned()).or_insert(0u64) += 1;
     count("pages");
-    for block in &page.blocks {
-        for line in &block.lines {
-            for word in &line.words {
+    for (bi, block) in page.blocks.iter().enumerate() {
+        for (li, line) in block.lines.iter().enumerate() {
+            for (wi, word) in line.words.iter().enumerate() {
                 if !word.text.chars().any(is_syllabary) {
                     continue;
                 }
@@ -164,9 +169,9 @@ fn build_page(slug: &str, alto: &Path, images: &Path, out: &Path) -> Result<Opti
                     continue;
                 };
                 count(&format!("split_ok_{how}"));
-                let hpos = (word.rect.x0).round() as i64;
                 for (i, (ch, b)) in letters.iter().zip(&boxes).enumerate() {
-                    let id = format!("{}_{}_{}", slug.replace('/', "_"), hpos, i);
+                    // Block, line and word index make the id unique on its page.
+                    let id = format!("{}_b{bi}_l{li}_w{wi}_{i}", slug.replace('/', "_"));
                     let dir = out.join("glyphs").join(format!("{:04x}", u32::from(*ch)));
                     fs::create_dir_all(&dir)?;
                     let (gx0, gy0) = (b[0].saturating_sub(2), b[1].saturating_sub(2));
@@ -253,7 +258,32 @@ fn build(alto_dir: &Path, images: &Path, out: &Path, threads: usize) -> Result<(
     Ok(())
 }
 
-fn clean(bank: &Path, k: usize, min_agree: f32, threads: usize) -> Result<()> {
+/// The page slugs listed in a test-set manifest's `sets.*.pages` arrays.
+fn manifest_pages(path: &Path) -> Result<HashSet<String>> {
+    let m: Value = serde_json::from_slice(&fs::read(path)?)?;
+    let mut out = HashSet::new();
+    for set in m["sets"].as_object().into_iter().flat_map(|o| o.values()) {
+        for p in set["pages"].as_array().into_iter().flatten() {
+            if let Some(p) = p.as_str() {
+                out.insert(p.to_owned());
+            }
+        }
+    }
+    anyhow::ensure!(!out.is_empty(), "{} lists no pages", path.display());
+    Ok(out)
+}
+
+fn clean(
+    bank: &Path,
+    k: usize,
+    min_agree: f32,
+    threads: usize,
+    exclude_manifest: Option<&Path>,
+) -> Result<()> {
+    let excluded = exclude_manifest
+        .map(manifest_pages)
+        .transpose()?
+        .unwrap_or_default();
     let rows: Vec<Value> = BufReader::new(fs::File::open(bank.join("index.jsonl"))?)
         .lines()
         .map(|l| Ok(serde_json::from_str(&l?)?))
@@ -293,7 +323,11 @@ fn clean(bank: &Path, k: usize, min_agree: f32, threads: usize) -> Result<()> {
         .iter()
         .map(|r| intern(format!("page:{}", r["page"])))
         .collect();
-    let agree = agreement(&features, &classes, &pages, k, threads);
+    let voters: Vec<bool> = rows
+        .iter()
+        .map(|r| !excluded.contains(r["page"].as_str().unwrap_or_default()))
+        .collect();
+    let agree = agreement(&features, &classes, &pages, &voters, k, threads);
     let mut index = BufWriter::new(fs::File::create(bank.join("index.jsonl.tmp"))?);
     let mut per: BTreeMap<String, (u64, u64)> = BTreeMap::new();
     let mut kept_n = 0u64;
@@ -319,8 +353,8 @@ fn clean(bank: &Path, k: usize, min_agree: f32, threads: usize) -> Result<()> {
         .values()
         .map(|v| v["all"].as_u64().unwrap_or(0))
         .sum::<u64>();
-    let summary =
-        json!({"glyphs": total, "kept": kept_n, "k": k, "min_agree": min_agree, "per_letter": per});
+    let summary = json!({"excluded_voter_pages": excluded.len(), "glyphs": total, "k": k, "kept": kept_n,
+        "min_agree": min_agree, "per_letter": per});
     fs::write(
         bank.join("summary-clean.json"),
         serde_json::to_string_pretty(&summary)?,

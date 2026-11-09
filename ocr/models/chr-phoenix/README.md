@@ -54,6 +54,14 @@ The test set is the frozen Cherokee test set v2 (#1620): 2,160 line crops from 2
 | **`chr_phoenix`** (round two) | **27.6%**       | **10.2%**        | **6.6%**              |
 | `chr_phoenix+eng`             | 29.7%           | 12.9%            | 8.9%                  |
 
+```mermaid
+xychart-beta
+    title "Silver lines: character error rate (%)"
+    x-axis ["LoC", "Stock chr", "Round one", "chr_phoenix", "chr_phoenix+eng"]
+    y-axis "CER %" 0 --> 20
+    bar [18.0, 19.7, 14.1, 10.2, 12.9]
+```
+
 - **Better than LoC on whole pages.** `chr_phoenix` minus LoC is −7.8 points on silver lines (95% page bootstrap −9.1 to −6.3) and −6.9 on all lines (−8.0 to −5.8). It was better on 26 of 29 pages.
 - **Hand-checked lines.** It was better on 38 lines and worse on 15, at −1.8 points (line bootstrap −4.9 to +1.9). The interval includes zero, so 70 lines are too few to settle it.
 - **The first type's letters.** Silver-line counts of each misreading:
@@ -77,11 +85,25 @@ The test set is the frozen Cherokee test set v2 (#1620): 2,160 line crops from 2
 Everything ran on pve-big's CPUs in the `recipe/Containerfile` image (Debian trixie, Tesseract 5.5.0).
 
 1. **Glyph bank.** `crates/usnm-glyphs` cut LoC's ALTO word boxes from 190 page scans and split each word LoC read as a known New Testament form into its letters. Of its 92,139 glyphs, it kept the 87,657 that agreed with their nearest neighbours on other pages. Word-initial Ꮎ is its own class. Pages of the frozen test set are excluded from everything below.
+
+   The bank this model was trained from had two faults that have since been fixed in the crate. Glyph ids were unique only by page, word position and letter index, so 2,323 rows (2.5%) shared an id with another and 1,141 crops were overwritten by another crop of the same letter. Its cleaning also let test-page glyphs vote on which training-page glyphs to keep; `clean --exclude-manifest` now stops that. No test-page glyph was used for training, and no label was wrong, but a rebuilt bank may give slightly different lines.
+
 2. **Real lines** (`chr_real_lines.py`). From 161 pages, it takes runs of consecutive words LoC read as New Testament forms, or that match exactly one form once one of the first type's misreadings is undone (Ꭺ read for Ꮩ; a word-initial Ꮹ/Ꮳ/Ᏻ/Ꮐ read for Ꮎ). Round two also keeps numeral and punctuation tokens inside runs. That gives 14,391 lines.
 3. **Synthetic lines** (`chr_synth_lines.py`). 20,000 lines of New Testament text are set glyph by glyph from the bank and degraded like the microfilm. Round two adds verse numbers and punctuation set in DejaVu Serif, and a sliver of a glyph in some margins.
 4. **Fine-tune** (`chr_finetune.sh`). The model trains with `lstmtraining --continue_from`, same character set, holding out the real lines of about one page in twenty, chosen by a hash of the page (497 lines), for lstmtraining's own evaluation:
    - Round one: 20,000 iterations from stock `chr` with the New Testament word list added, reaching a training error rate of 3.23%.
    - Round two (`round2.sh`): 20,000 more from round one, reaching 2.57%.
+
+```mermaid
+xychart-beta
+    title "Training error (BCER on training lines, %) by iteration"
+    x-axis "Iteration (thousands)" [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+    y-axis "BCER %" 0 --> 22
+    line [20.4, 14.1, 8.7, 9.4, 9.2, 13.6, 10.7, 10.5, 9.9, 9.7, 10.7, 8.9, 14.1, 12.0, 7.0, 4.9, 4.0, 4.0, 3.7, 3.2]
+    line [14.1, 10.1, 5.6, 6.2, 6.5, 10.0, 9.5, 7.2, 8.3, 9.3, 9.6, 8.3, 13.1, 11.7, 6.0, 3.9, 3.3, 3.0, 3.0, 2.6]
+```
+
+The upper line is round one, the lower round two. This is lstmtraining's running error on the lines it trains on, not the test set; it is noisy until about 15,000 iterations and then falls steadily in both rounds. The held-out lines (`eval.list`) were scored only a few times per run, at 8.9% to 10.2% character error.
 
 The start model can't write the digit 4, `?` or straight quotes. Lines needing them are left out.
 

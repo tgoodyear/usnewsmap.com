@@ -21,6 +21,7 @@ SYL = re.compile("[Ꭰ-Ᏽ]")
 PUNCT = ".,;:!?\"'“”‘’()[]-—"
 # Only marks the start model can write: its character set has no 4, ? or straight quotes.
 NEUTRAL = re.compile(r"[0-35-9.,;:!()\-“”’…]+")
+UNWRITABLE = re.compile("[?\"'‘4]")
 
 
 def make_fix(vocab):
@@ -81,7 +82,8 @@ def main():
                 w = s.get("CONTENT", "")
                 core = w.strip(PUNCT)
                 label = None
-                if core and all(SYL.match(c) for c in core):
+                # The start model can't write ? or straight quotes: a word carrying one ends the run.
+                if core and all(SYL.match(c) for c in core) and not UNWRITABLE.search(w):
                     label = w if core in vocab else (w.replace(core, f, 1) if (f := fix(core)) else None)
                 if label is None and NEUTRAL.fullmatch(w):
                     cur.append((s, w, False))

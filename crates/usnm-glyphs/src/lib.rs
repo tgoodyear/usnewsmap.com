@@ -229,11 +229,12 @@ pub fn feature(ink: &Ink, b: GlyphBox) -> Vec<f32> {
 /// For each glyph, the share of its `k` nearest neighbours' similarity
 /// (from pages other than its own) that falls on its own class. `features`
 /// holds unit vectors of equal length; `classes` and `pages` index them.
-/// Runs on `threads` threads.
+/// Only glyphs with `voters[t]` set count as neighbours. Runs on `threads` threads.
 pub fn agreement(
     features: &[Vec<f32>],
     classes: &[u32],
     pages: &[u32],
+    voters: &[bool],
     k: usize,
     threads: usize,
 ) -> Vec<f32> {
@@ -249,7 +250,7 @@ pub fn agreement(
                     top.clear();
                     let fi = &features[i];
                     for (t, ft) in features.iter().enumerate() {
-                        if pages[t] == pages[i] {
+                        if !voters[t] || pages[t] == pages[i] {
                             continue;
                         }
                         let sim = dot(fi, ft);
@@ -330,7 +331,20 @@ mod tests {
         let feats = [fa.clone(), fa.clone(), fa, fb.clone(), fb.clone(), fb];
         let classes = [0, 0, 0, 1, 1, 1];
         let pages = [0, 1, 2, 0, 1, 2];
-        let agree = agreement(&feats, &classes, &pages, 2, 2);
+        let agree = agreement(&feats, &classes, &pages, &[true; 6], 2, 2);
         assert!(agree.iter().all(|&g| g > 0.99), "{agree:?}");
+    }
+
+    #[test]
+    fn non_voters_never_vote() {
+        let a = Ink::of(&crop(30, 30, &[[5, 5, 25, 12]]));
+        let fa = feature(&a, [5, 5, 25, 12]);
+        // Glyph 0 (class 0) has two identical neighbours: one labelled 0 on a page that may
+        // vote and one labelled 1 on a page that may not. Only the first counts.
+        let feats = [fa.clone(), fa.clone(), fa];
+        let agree = agreement(&feats, &[0, 0, 1], &[0, 1, 2], &[true, true, false], 2, 1);
+        assert!(agree[0] > 0.99, "{agree:?}");
+        // The non-voter is still judged by the others.
+        assert!(agree[2] < 0.01, "{agree:?}");
     }
 }
