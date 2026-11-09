@@ -121,6 +121,9 @@ class Measures(unittest.TestCase):
         self.assertAlmostEqual(c[1, S.CNN_NAMES.index("line_cnn_l")], 0.55)
         self.assertEqual(c[2, S.CNN_NAMES.index("left_cnn_l")], -1)
 
+    def test_a_blank_box_has_no_ink(self):
+        self.assertFalse(F.binarize(np.full((10, 10), 200, dtype=np.uint8)).any())
+
     def test_names_match_rows(self):
         self.assertEqual(len(F.NAMES), len(set(F.NAMES)))
 

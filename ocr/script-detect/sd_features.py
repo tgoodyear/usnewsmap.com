@@ -45,6 +45,8 @@ def binarize(gray):
     mu = np.cumsum(p * np.arange(256))
     with np.errstate(divide="ignore", invalid="ignore"):
         sb = (mu[-1] * omega - mu) ** 2 / (omega * (1 - omega))
+    if not np.isfinite(sb).any():  # one tone only (a blank box): no ink
+        return np.zeros(g.shape, dtype=bool)
     t = int(np.nanargmax(sb))
     return g <= t
 

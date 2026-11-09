@@ -168,8 +168,11 @@ def tesseract_words(png, tessdata, lang, psm):
     """Tesseract's words on one image (TSV level 5): text, confidence and box in the image's pixels."""
     import subprocess
     env = dict(os.environ, OMP_THREAD_LIMIT="1")
-    out = subprocess.run(["tesseract", png, "-", "--psm", str(psm), "--oem", "1", "--tessdata-dir", tessdata,
-                          "-l", lang, "-c", "tessedit_create_tsv=1"], capture_output=True, text=True, env=env).stdout
+    run = subprocess.run(["tesseract", png, "-", "--psm", str(psm), "--oem", "1", "--tessdata-dir", tessdata,
+                          "-l", lang, "-c", "tessedit_create_tsv=1"], capture_output=True, text=True, env=env)
+    if run.returncode != 0:  # a missing model or a bad image must not be saved as an empty reading
+        raise RuntimeError(f"tesseract failed on {png} ({lang}): {run.stderr.strip()[-500:]}")
+    out = run.stdout
     words = []
     for row in out.splitlines()[1:]:
         f = row.split("\t")
@@ -405,15 +408,15 @@ def cmd_features(a):
                             lm[i]["loc_attested"], lm[i]["loc_paren"], rm["eng"][i]["conf"], rm["chr"][i]["conf"]]
                 else:
                     row += [0.0] * 8
-            left_open = j > 0 and (words[j - 1]["loc"].endswith("(") or w["loc"].startswith("(")
-                                   or reads["eng"][j][0].startswith("("))
-            right_close = w["loc"].rstrip(".,;:").endswith(")") or reads["eng"][j][0].rstrip(".,;:").endswith(")")
+            # From the eng readings only: LoC's text is never an input.
+            left_open = (j > 0 and reads["eng"][j - 1][0].endswith("(")) or reads["eng"][j][0].startswith("(")
+            right_close = reads["eng"][j][0].rstrip(".,;:").endswith(")")
             row += [float(left_open), float(right_close)]
             row += line_ctx
             assert len(row) == len(F.NAMES), (len(row), len(F.NAMES))
             X.append(row)
             meta.write(json.dumps({"page": w["page"], "word": w["word"], "line": key, "split": w["split"],
-                                   "synth": w.get("label"),
+                                   "synth": w.get("label"), "donor_page": w.get("donor_page"),
                                    "kind": w["kind"], "loc": w["loc"], "eng": reads["eng"][j][0],
                                    "eng_conf": round(reads["eng"][j][1], 1), "chr": reads["chr"][j][0],
                                    "chr_conf": round(reads["chr"][j][1], 1)}, ensure_ascii=False) + "\n")
@@ -729,9 +732,16 @@ def cmd_train(a):
     lab, src = np.array(lab, dtype=object), np.array(src)
     cols = model_columns(names)
     test = np.array([m["split"] == "test" for m in M])
-    use = np.array([l is not None for l in lab]) & ~test
     extra = set(a.extra_dev_page or [])
-    dev = np.array([dev_page(m["page"]) or m["page"] in extra for m in M])
+    test_pages = {m["page"] for m in M if m["split"] == "test"}
+    is_dev = lambda pg: dev_page(pg) or pg in extra
+    dev = np.array([is_dev(m["page"]) for m in M])
+    # A synthetic line whose donor page sits on the other side of the split (or in the test set)
+    # would carry glyphs across it: such lines are dropped.
+    cross = {m["line"] for m in M if m.get("donor_page") and
+             (m["donor_page"] in test_pages or is_dev(m["donor_page"]) != is_dev(m["page"]))}
+    use = np.array([l is not None for l in lab]) & ~test & np.array([m["line"] not in cross for m in M])
+    print("synthetic lines dropped for a donor across the split:", len(cross))
     y = np.array([0 if l == "s" else 1 for l in lab])
     print("labels", {f"{s_}/{l}": n for (s_, l), n in sorted(collections.Counter(zip(src[use], lab[use])).items())})
 
@@ -1036,6 +1046,13 @@ def cmd_glyph_cnn(a):
     models = []
     import torch
     for f in (0, 1):
+        saved = os.path.join(a.out, f"cnn-fold{f}.pt")
+        if a.reuse and os.path.exists(saved):  # score again with the CNNs trained before
+            m = sd_cnn.net()
+            m.load_state_dict(torch.load(saved))
+            m.eval()
+            models.append(m)
+            continue
         m = sd_cnn.train(tX[tf != f], ty[tf != f], epochs=a.epochs, seed=a.seed + f, threads=a.threads,
                          log=lambda t, f=f: print(f"fold {f}: {t}", flush=True))
         torch.save(m.state_dict(), os.path.join(a.out, f"cnn-fold{f}.pt"))
@@ -1048,12 +1065,14 @@ def cmd_glyph_cnn(a):
         meta = [json.loads(l) for l in open(os.path.join(d, "meta.jsonl"), encoding="utf-8")]
         c = np.load(os.path.join(d, "crops.npy")).astype(np.float32)
         P = np.zeros((len(meta), 3), dtype=np.float32)
-        f_of = np.array([sd_cnn.fold(m["page"]) for m in meta])
+        # The crop's own page decides: a pasted synthetic word was cut from its donor page.
+        f_of = np.array([sd_cnn.fold(m.get("donor_page") if m.get("synth") == "l" and m.get("donor_page")
+                                     else m["page"]) for m in meta])
         test = np.array([m["split"] == "test" for m in meta])
         for f in (0, 1):
-            # A page in fold f is scored by the CNN trained without fold f.
+            # models[f] was trained with fold f left out, so it scores fold f's pages.
             k = (f_of == f) & ~test
-            P[k] = sd_cnn.predict(models[1 - f], c[k])
+            P[k] = sd_cnn.predict(models[f], c[k])
         P[test] = (sd_cnn.predict(models[0], c[test]) + sd_cnn.predict(models[1], c[test])) / 2
         np.save(os.path.join(d, "cnn.npy"), P)
         print(d, "scored", len(meta))
@@ -1149,6 +1168,7 @@ def main():
     s.add_argument("--hand", required=True)
     s.add_argument("--score", required=True, action="append")
     s.add_argument("--syllabary-per-page", type=int, default=300)
+    s.add_argument("--reuse", action="store_true", help="load the fold CNNs already in --out instead of training")
     s.add_argument("--epochs", type=int, default=8)
     s.add_argument("--threads", type=int, default=3)
     s.add_argument("--seed", type=int, default=1666)
