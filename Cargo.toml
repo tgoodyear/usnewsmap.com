@@ -75,6 +75,9 @@ httpdate = "1"
 # JPEG and PNG decoding for the gold bundle (usnm-ocr-survey) and the page features of the OCR
 # quality estimate (usnm-ocr-quality, #522).
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+# Pure-Rust JPEG 2000 decoding: the Cherokee line re-read crops LoC's JP2 scans in the worker
+# (usnm-boinc, #1621), whose native build is static musl.
+hayro-jpeg2000 = { version = "0.4.1", default-features = false, features = ["std", "simd"] }
 # The md5s in LoC's BagIt batch manifests, checked against each fetched JP2 (#368).
 md-5 = "0.11"
 # The bounded ALTO reader (usnm-alto): streaming, no DTD processing.

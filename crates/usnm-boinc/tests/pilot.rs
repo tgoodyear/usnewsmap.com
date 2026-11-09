@@ -161,6 +161,8 @@ impl Fixture {
             timeout_secs: 600,
             claims: None,
             deadline_retries: vec![],
+            line_read: None,
+            loc_alto: None,
         };
         Self {
             tmp,
@@ -1676,6 +1678,7 @@ async fn a_held_scope_keeps_german_results_until_a_calibration_lifts_it() {
         },
         max_cer: 0.1,
         hold: None,
+        line_basis: None,
     };
     // The 20 Oct policy trusted every host for German; the hold trusts none and keeps them all.
     let held = Trust {
@@ -1690,6 +1693,7 @@ async fn a_held_scope_keeps_german_results_until_a_calibration_lifts_it() {
                 scope: deu_scope.clone(),
                 max_cer: 0.179,
                 hold: Some("German pages stay out of publishing until calibrated".into()),
+                line_basis: None,
             },
             eng,
         ],
@@ -4136,4 +4140,336 @@ mod queue_feed {
             claim::Ended::NotQueueFed
         );
     }
+}
+
+/// LoC's ALTO for the fixture page (inch1200 at 300 dpi), an early NDNP namespace: a heading in
+/// English, a block marked Cherokee, and an English line.
+const LOC_CHEROKEE_ALTO: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<alto xmlns="http://schema.ccs-gmbh.com/ALTO">
+<Description><MeasurementUnit>inch1200</MeasurementUnit></Description>
+<Layout><Page ID="P1" HEIGHT="4000" WIDTH="4000" PHYSICAL_IMG_NR="1"><PrintSpace>
+<TextBlock ID="TB1" HPOS="400" VPOS="400" WIDTH="3200" HEIGHT="400" LANGUAGE="eng">
+<TextLine ID="TL1" HPOS="400" VPOS="400" WIDTH="3200" HEIGHT="160"><String CONTENT="CHEROKEE" HPOS="400" VPOS="400" WIDTH="1200" HEIGHT="160"/><SP/><String CONTENT="PHOENIX." HPOS="1700" VPOS="400" WIDTH="1200" HEIGHT="160"/></TextLine>
+</TextBlock>
+<TextBlock ID="TB2" HPOS="400" VPOS="1200" WIDTH="3200" HEIGHT="800" LANGUAGE="chr">
+<TextLine ID="TL2" HPOS="400" VPOS="1200" WIDTH="3200" HEIGHT="160"><String CONTENT="ᎦᎪᎯ" HPOS="400" VPOS="1200" WIDTH="800" HEIGHT="160"/><SP/><String CONTENT="ᎠᎴ" HPOS="1300" VPOS="1200" WIDTH="600" HEIGHT="160"/></TextLine>
+<TextLine ID="TL3" HPOS="400" VPOS="1600" WIDTH="3200" HEIGHT="160"><String CONTENT="ᎦᏙᎯ" HPOS="400" VPOS="1600" WIDTH="800" HEIGHT="160"/></TextLine>
+</TextBlock>
+<TextBlock ID="TB3" HPOS="400" VPOS="2400" WIDTH="3200" HEIGHT="800">
+<TextLine ID="TL4" HPOS="400" VPOS="2400" WIDTH="3200" HEIGHT="160"><String CONTENT="The" HPOS="400" VPOS="2400" WIDTH="800" HEIGHT="160"/><SP/><String CONTENT="end." HPOS="1300" VPOS="2400" WIDTH="800" HEIGHT="160"/></TextLine>
+</TextBlock>
+</PrintSpace></Page></Layout></alto>"#;
+
+impl Fixture {
+    /// Line-read export (#1621) of the fixture page, with `alto` as its LoC ALTO.
+    fn line_read(&mut self, alto: &str) {
+        let key: PageKey = "sn00000001/1900-01-01/ed-1/seq-1".parse().unwrap();
+        let dir = self.tmp.path().join("loc-alto");
+        let path = usnm_boinc::lines::loc_alto_path(&dir, &key).unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, alto).unwrap();
+        self.options.line_read = Some("chr".into());
+        self.options.loc_alto = Some(dir);
+    }
+    /// A line job's returned files: `text` as its readings, its own ALTO.
+    fn line_result(&self, id: &str, text: &str) -> (PathBuf, PathBuf, PathBuf) {
+        let (manifest, txt, alto) = self.result_with_text(&self.options.root, id, text.as_bytes());
+        let mut result: ResultManifest =
+            serde_json::from_slice(&std::fs::read(&manifest).unwrap()).unwrap();
+        result.v = boinc::LINES_VERSION;
+        std::fs::write(&manifest, serde_json::to_vec(&result).unwrap()).unwrap();
+        (manifest, txt, alto)
+    }
+}
+
+#[tokio::test]
+async fn line_read_exports_cherokee_lines_and_imports_the_merged_page() {
+    let mut fx = Fixture::new("eng").await;
+    fx.line_read(LOC_CHEROKEE_ALTO);
+    let id = fx.export().await;
+    assert_eq!(fx.export().await, id);
+    let record = usnm_boinc::load(&fx.options.root, &id).unwrap();
+    let job = &record.job;
+    assert_eq!(job.v, boinc::LINES_VERSION);
+    assert_eq!(job.message.language, "eng");
+    assert_eq!(
+        (job.engine.profile.as_str(), job.engine.psm),
+        ("chr_phoenix", 13)
+    );
+    let lines = job.lines.as_ref().unwrap();
+    assert_eq!(
+        lines
+            .lines
+            .iter()
+            .map(|l| l.id.as_str())
+            .collect::<Vec<_>>(),
+        ["b1l0", "b1l1"]
+    );
+    // The boxes are in the scan's pixels.
+    let job_dir = fx.options.root.join("jobs").join(&id);
+    let scan = std::fs::read(job_dir.join("page")).unwrap();
+    let (w, _) = usnm_boinc::lines::scan_size(&scan).unwrap();
+    assert_eq!(lines.lines[0].rect[0], (f64::from(w) * 0.1).round() as u32);
+    // The model's first line replaces LoC's; its second loses a New Testament word.
+    let files = fx.line_result(&id, "ᎦᏙᎯ ᎠᎴ\nᎦᎪᎯ\n");
+    fx.import(&id, &files).await.unwrap();
+    assert_eq!(
+        imported_text(&fx).await,
+        "CHEROKEE PHOENIX.\nᎦᏙᎯ ᎠᎴ\nᎦᏙᎯ\nThe end."
+    );
+    let stats: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(job_dir.join(usnm_boinc::lines::MERGE_FILE)).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        stats,
+        serde_json::json!({"lines": 2, "model": 1, "fallback": {"fewer_known": 1},
+            "fallback_lines": {"b1l1": "fewer_known"},
+            "admission": {"rule": "line-merge-v1", "verdict": "admit", "cherokee": 2, "model": 1}})
+    );
+    let report = usnm_boinc::lines::report(&fx.options.root, None).unwrap();
+    assert_eq!(report.len(), 1);
+    assert_eq!(report[0].stats.model, 1);
+    assert_eq!(report[0].line_merge.verdict, "admit");
+    let status = sync::run(
+        &fx.state,
+        "test-boinc",
+        &fx.stores,
+        &sync::Options::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(status.last_run.imported, 1);
+    assert!(status.last_run.rejected.is_empty());
+}
+
+#[tokio::test]
+async fn line_read_skips_pages_without_cherokee_lines_or_alto() {
+    let mut fx = Fixture::new("eng").await;
+    let english = LOC_CHEROKEE_ALTO
+        .replace("LANGUAGE=\"chr\"", "LANGUAGE=\"eng\"")
+        .replace("ᎦᎪᎯ", "Tbe")
+        .replace("ᎠᎴ", "cify")
+        .replace("ᎦᏙᎯ", "met");
+    fx.line_read(&english);
+    let ids = usnm_boinc::export(
+        &fx.options,
+        &fx.state,
+        fx.stores.curated.as_ref(),
+        fx.stores.reference.as_ref(),
+    )
+    .await
+    .unwrap();
+    assert!(ids.is_empty());
+    fx.options.loc_alto = Some(fx.tmp.path().join("nowhere"));
+    let ids = usnm_boinc::export(
+        &fx.options,
+        &fx.state,
+        fx.stores.curated.as_ref(),
+        fx.stores.reference.as_ref(),
+    )
+    .await
+    .unwrap();
+    assert!(ids.is_empty());
+    // A line read is for cohort pages only, and needs LoC's ALTO.
+    fx.options.loc_alto = None;
+    assert!(usnm_boinc::export(
+        &fx.options,
+        &fx.state,
+        fx.stores.curated.as_ref(),
+        fx.stores.reference.as_ref(),
+    )
+    .await
+    .is_err());
+}
+
+#[tokio::test]
+async fn line_merge_v1_holds_a_page_with_under_half_model_lines() {
+    let mut fx = Fixture::new("eng").await;
+    fx.line_read(LOC_CHEROKEE_ALTO);
+    let id = fx.export().await;
+    // Both readings fail, so both lines keep LoC's text.
+    let files = fx.line_result(&id, "\nᎦᎪᎯ\n");
+    fx.import(&id, &files).await.unwrap();
+    let record = usnm_boinc::load(&fx.options.root, &id).unwrap();
+    assert_eq!(record.held.as_deref(), Some("line-merge-v1: model_share"));
+    assert_ne!(record.stage, Stage::Published);
+    assert!(fx.stores.out.list("pages").await.unwrap().is_empty());
+    // Its checked result is kept, so the report still has the page once the spool is gone.
+    let accepted = fx.options.root.join("jobs").join(&id).join("accepted");
+    for name in ["result.json", "text.txt", "layout.xml"] {
+        assert!(accepted.join(name).exists(), "{name}");
+    }
+    assert_eq!(
+        std::fs::read(accepted.join("text.txt")).unwrap(),
+        "\nᎦᎪᎯ\n".as_bytes()
+    );
+    std::fs::remove_dir_all(files.0.parent().unwrap()).unwrap();
+    let report = usnm_boinc::lines::report(&fx.options.root, None).unwrap();
+    assert_eq!(report.len(), 1);
+    assert_eq!(report[0].line_merge.verdict, "model_share");
+    // Collecting it again keeps it held, from the kept result.
+    fx.import(&id, &files).await.unwrap();
+    assert_eq!(
+        usnm_boinc::load(&fx.options.root, &id)
+            .unwrap()
+            .held
+            .as_deref(),
+        Some("line-merge-v1: model_share")
+    );
+}
+
+/// A trust list with an English page scope trusting `host` on `image`, and the line-job scope
+/// for chr_phoenix (#1621) on that basis.
+fn line_trust(image: &str, host: u64, line_cer: f64) -> usnm_boinc::trust::Trust {
+    use usnm_boinc::trust::{LineBasis, Scope, ScopedPolicy, Trust};
+    let eng = ScopedPolicy {
+        hosts: [(image.to_owned(), [host].into())].into(),
+        manifest_sha256: "b".repeat(64),
+        scope: Scope {
+            language: "eng".into(),
+            profile: "eng".into(),
+            psm: 3,
+            dpi: 300,
+        },
+        max_cer: 0.1,
+        hold: None,
+        line_basis: None,
+    };
+    let lines = ScopedPolicy {
+        hosts: Default::default(),
+        manifest_sha256: "b".repeat(64),
+        scope: Scope {
+            language: "chr".into(),
+            profile: "chr_phoenix".into(),
+            psm: 13,
+            dpi: 300,
+        },
+        max_cer: line_cer,
+        hold: None,
+        line_basis: Some(LineBasis {
+            page_scope: eng.scope.clone(),
+            evidence: "#1621 e2e: 3 Phoenix pages, model CER 26.19% vs 26.04% on hand-cut crops"
+                .into(),
+        }),
+    };
+    Trust {
+        hosts: eng.hosts.clone(),
+        manifest_sha256: Some(eng.manifest_sha256.clone()),
+        scope: Some(eng.scope.clone()),
+        max_cer: eng.max_cer,
+        policies: vec![eng, lines],
+        v: usnm_boinc::trust::TRUST_VERSION,
+    }
+}
+
+#[tokio::test]
+async fn a_line_job_is_collected_through_the_trust_gate() {
+    let mut fx = Fixture::new("eng").await;
+    fx.line_read(LOC_CHEROKEE_ALTO);
+    let id = fx.export().await;
+    let record = usnm_boinc::load(&fx.options.root, &id).unwrap();
+    let files = fx.line_result(&id, "ᎦᏙᎯ ᎠᎴ\nᎦᎪᎯ\n");
+    let spool = fx.tmp.path().join("line-spool");
+    std::fs::create_dir_all(&spool).unwrap();
+    for (source, logical) in [
+        (&files.0, "result.json"),
+        (&files.1, "text.txt"),
+        (&files.2, "layout.xml"),
+    ] {
+        std::fs::copy(
+            source,
+            spool.join(format!("{}__file_{logical}", record.job.workunit())),
+        )
+        .unwrap();
+    }
+    let image = record.job.engine.image.clone();
+    let run = |t: usnm_boinc::trust::Trust, host: u64| {
+        let (root, spool, id) = (fx.options.root.clone(), spool.clone(), id.clone());
+        let stores = &fx.stores;
+        async move {
+            usnm_boinc::trust::collect(
+                &root,
+                &spool,
+                &id,
+                &t,
+                Some(host),
+                stores.curated.as_ref(),
+                stores.out.as_ref(),
+            )
+            .await
+        }
+    };
+    // A page policy alone, at PSM 3, trusts no line job.
+    let mut page_only = line_trust(&image, 42, 0.1);
+    page_only.policies.clear();
+    assert!(run(page_only, 42).await.is_err());
+    // A host the basis doesn't trust, or a basis looser than the line scope allows, is refused.
+    assert!(run(line_trust(&image, 41, 0.1), 42).await.is_err());
+    assert!(run(line_trust(&image, 42, 0.05), 42).await.is_err());
+    assert_ne!(
+        usnm_boinc::load(&fx.options.root, &id).unwrap().stage,
+        Stage::Published
+    );
+    // On its recorded basis, the line job is published.
+    let trust = line_trust(&image, 42, 0.1);
+    let path = fx.tmp.path().join("trust.json");
+    std::fs::write(&path, serde_json::to_vec(&trust).unwrap()).unwrap();
+    let loaded = usnm_boinc::trust::Trust::load(&path).unwrap();
+    assert_eq!(
+        run(loaded, 42).await.unwrap(),
+        usnm_boinc::trust::Collected::Published
+    );
+    assert_eq!(
+        usnm_boinc::load(&fx.options.root, &id).unwrap().stage,
+        Stage::Published
+    );
+    assert_eq!(fx.stores.out.list("pages").await.unwrap().len(), 1);
+}
+
+/// The hand-off collect brings a line job's two sidecars down exactly (#1621), and nothing for
+/// a page job.
+#[tokio::test]
+async fn the_handoff_brings_a_line_jobs_sidecars_exactly() {
+    let mut fx = Fixture::new("eng").await;
+    fx.line_read(LOC_CHEROKEE_ALTO);
+    let id = fx.export().await;
+    let handoff = store(fx.tmp.path(), "handoff");
+    usnm_boinc::handoff::put(handoff.as_ref(), &fx.options.root, "dispatch")
+        .await
+        .unwrap();
+    let collect_root = fx.tmp.path().join("collect");
+    usnm_boinc::handoff::get_file(
+        handoff.as_ref(),
+        &format!("dispatch/jobs/{id}/record.json"),
+        &collect_root.join("jobs").join(&id).join("record.json"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        usnm_boinc::handoff::get_line_read(handoff.as_ref(), &collect_root, &id)
+            .await
+            .unwrap(),
+        2
+    );
+    usnm_boinc::lines::sidecars(&collect_root.join("jobs").join(&id)).unwrap();
+    // A page job has none to bring.
+    let page = Fixture::new("eng").await;
+    let page_id = page.export().await;
+    usnm_boinc::handoff::put(handoff.as_ref(), &page.options.root, "dispatch")
+        .await
+        .unwrap();
+    usnm_boinc::handoff::get_file(
+        handoff.as_ref(),
+        &format!("dispatch/jobs/{page_id}/record.json"),
+        &collect_root.join("jobs").join(&page_id).join("record.json"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        usnm_boinc::handoff::get_line_read(handoff.as_ref(), &collect_root, &page_id)
+            .await
+            .unwrap(),
+        0
+    );
 }

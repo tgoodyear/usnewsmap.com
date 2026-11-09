@@ -421,6 +421,9 @@ case "${HANDOFF_STEP:-}" in
       --to "$root/jobs/$JOB_ID/record.json"
     usnm-boinc handoff get --from-url "$HANDOFF_URL" --prefix "dispatch/jobs/$JOB_ID/accepted" \
       --to "$root/jobs/$JOB_ID/accepted"
+    # A line job's sidecars (#1621): exactly its LoC ALTO and line-read record, which its
+    # import merges the result into. Nothing for a page job.
+    usnm-boinc handoff get-line-read --from-url "$HANDOFF_URL" --root "$root" --job "$JOB_ID"
     host=$(usnm-boinc handoff get-spool --from-url "$HANDOFF_URL" --job "$JOB_ID" \
       --spool "$work/spool" --trust-out "$work/trust.json")
     if [ "$host" = requeued ]; then

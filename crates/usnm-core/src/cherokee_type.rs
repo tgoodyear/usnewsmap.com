@@ -246,6 +246,117 @@ pub fn query_phrases(node: &Node) -> Vec<Vec<String>> {
     }
 }
 
+/// Why a Cherokee line keeps LoC's text rather than the line model's reading (#1621).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Fallback {
+    /// The model read nothing.
+    Empty,
+    /// The model read under half as many syllabary letters as LoC did.
+    FewLetters,
+    /// The model read fewer New Testament words ([`is_known`]) than LoC did.
+    FewerKnown,
+}
+
+impl Fallback {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Fallback::Empty => "empty",
+            Fallback::FewLetters => "few_letters",
+            Fallback::FewerKnown => "fewer_known",
+        }
+    }
+}
+
+/// Where a merged line's text came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LineSource {
+    /// Not a line the model read: LoC's text.
+    Loc,
+    /// The model's reading.
+    Model,
+    /// A line the model read, kept as LoC read it.
+    Fallback(Fallback),
+}
+
+/// The runs of syllabary letters in `text`.
+fn syllabary_words(text: &str) -> impl Iterator<Item = &str> {
+    text.split(|c: char| !is_syllabary(c))
+        .filter(|w| !w.is_empty())
+}
+
+/// Why the model's reading `read` of a line fails against LoC's `loc`, or `None` when it
+/// replaces LoC's: it is empty, it has under half LoC's syllabary letters, or it has fewer
+/// New Testament words than LoC's.
+pub fn reading_fails(loc: &str, read: &str) -> Option<Fallback> {
+    if read.trim().is_empty() {
+        return Some(Fallback::Empty);
+    }
+    let letters = |t: &str| t.chars().filter(|c| is_syllabary(*c)).count();
+    if letters(read) * 2 < letters(loc) {
+        return Some(Fallback::FewLetters);
+    }
+    let known_words = |t: &str| syllabary_words(t).filter(|w| is_known(w)).count();
+    if known_words(read) < known_words(loc) {
+        return Some(Fallback::FewerKnown);
+    }
+    None
+}
+
+/// A page's lines after [`merge_lines`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct MergedLines {
+    /// Each line's text, in the order given.
+    pub lines: Vec<String>,
+    pub sources: Vec<LineSource>,
+}
+
+impl MergedLines {
+    /// Lines that took the model's reading.
+    pub fn model(&self) -> usize {
+        self.sources
+            .iter()
+            .filter(|s| **s == LineSource::Model)
+            .count()
+    }
+
+    /// Lines the model read that kept LoC's text, by why.
+    pub fn fallbacks(&self) -> std::collections::BTreeMap<Fallback, usize> {
+        let mut out = std::collections::BTreeMap::new();
+        for s in &self.sources {
+            if let LineSource::Fallback(f) = s {
+                *out.entry(*f).or_insert(0) += 1;
+            }
+        }
+        out
+    }
+}
+
+/// A page's lines in reading order, each LoC's text and, for a Cherokee line the model read,
+/// its reading: the model's reading replaces LoC's text unless [`reading_fails`]. Every other
+/// line, English included, stays as LoC read it.
+pub fn merge_lines(lines: &[(&str, Option<&str>)]) -> MergedLines {
+    let (mut out, mut sources) = (
+        Vec::with_capacity(lines.len()),
+        Vec::with_capacity(lines.len()),
+    );
+    for (loc, read) in lines {
+        let (text, source) = match read {
+            None => (*loc, LineSource::Loc),
+            Some(read) => match reading_fails(loc, read) {
+                None => (read.trim(), LineSource::Model),
+                Some(why) => (*loc, LineSource::Fallback(why)),
+            },
+        };
+        out.push(text.to_owned());
+        sources.push(source);
+    }
+    MergedLines {
+        lines: out,
+        sources,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -335,5 +446,68 @@ mod tests {
         assert!(printed_with_1828_type(d(1834, 5, 31)));
         assert!(!printed_with_1828_type(d(1835, 1, 1)));
         assert!(!printed_with_1828_type(d(1844, 9, 26)));
+    }
+
+    #[test]
+    fn a_reading_fails_when_empty_short_or_less_attested() {
+        // ᎦᏙᎯ is a New Testament form; ᎦᎪᎯ is its misreading.
+        assert!(is_known("ᎦᏙᎯ") && !is_known("ᎦᎪᎯ"));
+        assert_eq!(reading_fails("ᎦᎪᎯ", "ᎦᏙᎯ"), None);
+        assert_eq!(reading_fails("ᎦᎪᎯ", "  "), Some(Fallback::Empty));
+        assert_eq!(reading_fails("ᎦᎪᎯ", ""), Some(Fallback::Empty));
+        // Under half LoC's letters: 1 of 3; half is enough: 3 of 6.
+        assert_eq!(reading_fails("ᎦᎪᎯ", "Ꭶ"), Some(Fallback::FewLetters));
+        assert_eq!(reading_fails("ᎦᎪᎯ ᎦᎪᎯ", "ᎦᏙᎯ"), None);
+        // Latin letters don't count as syllabary.
+        assert_eq!(reading_fails("ᎦᎪᎯ", "Gag"), Some(Fallback::FewLetters));
+        // LoC read a known word the model doesn't have.
+        assert_eq!(reading_fails("ᎦᏙᎯ", "ᎦᎪᎯ"), Some(Fallback::FewerKnown));
+        assert_eq!(reading_fails("ᎦᏙᎯ ᎦᎪᎯ", "ᎦᏙᎯ, ᎦᎪᎯ."), None);
+        // A line LoC read as no syllabary at all: any non-empty reading replaces it.
+        assert_eq!(reading_fails("Tbe cify", "ᎦᎪᎯ"), None);
+    }
+
+    #[test]
+    fn merging_keeps_loc_lines_and_counts_model_and_fallback_lines() {
+        let merged = merge_lines(&[
+            ("CHEROKEE PHOENIX.", None),
+            ("ᎦᎪᎯ ᎠᎴ", Some(" ᎦᏙᎯ ᎠᎴ ")),
+            ("ᎦᏙᎯ", Some("")),
+            ("ᎦᏙᎯ ᎦᏙᎯ", Some("ᎦᎪ")),
+            ("ᎦᏙᎯ", Some("ᎦᎪᎯ")),
+            ("The council met.", None),
+        ]);
+        assert_eq!(
+            merged.lines,
+            [
+                "CHEROKEE PHOENIX.",
+                "ᎦᏙᎯ ᎠᎴ",
+                "ᎦᏙᎯ",
+                "ᎦᏙᎯ ᎦᏙᎯ",
+                "ᎦᏙᎯ",
+                "The council met."
+            ]
+        );
+        assert_eq!(
+            merged.sources,
+            [
+                LineSource::Loc,
+                LineSource::Model,
+                LineSource::Fallback(Fallback::Empty),
+                LineSource::Fallback(Fallback::FewLetters),
+                LineSource::Fallback(Fallback::FewerKnown),
+                LineSource::Loc
+            ]
+        );
+        assert_eq!(merged.model(), 1);
+        assert_eq!(
+            merged.fallbacks().into_iter().collect::<Vec<_>>(),
+            [
+                (Fallback::Empty, 1),
+                (Fallback::FewLetters, 1),
+                (Fallback::FewerKnown, 1)
+            ]
+        );
+        assert_eq!(Fallback::FewerKnown.as_str(), "fewer_known");
     }
 }

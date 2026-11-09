@@ -113,6 +113,8 @@ type RawLine = (Option<Rect>, Vec<RawWord>, Option<String>);
 struct OpenBlock {
     rect: Option<Rect>,
     lines: Vec<RawLine>,
+    /// The TextBlock's `LANGUAGE` (or `LANG`), for [`parse_with_languages`].
+    lang: Option<String>,
 }
 
 /// Reads ALTO into a page in pixels, in document order (the engine's
@@ -122,6 +124,17 @@ struct OpenBlock {
 /// its parent's; the page's granularity is the finest level at which every
 /// element had its own.
 pub fn parse(xml: &[u8], opts: &ParseOptions) -> Result<Page, ParseError> {
+    parse_inner(xml, opts, false)
+}
+
+/// [`parse`], keeping each TextBlock's `LANGUAGE` (or `LANG`) attribute, lowercased, as its
+/// block's `lang`: for reading LoC's own ALTO, whose blocks say which are Cherokee (#1621),
+/// never for an engine's.
+pub fn parse_with_languages(xml: &[u8], opts: &ParseOptions) -> Result<Page, ParseError> {
+    parse_inner(xml, opts, true)
+}
+
+fn parse_inner(xml: &[u8], opts: &ParseOptions, languages: bool) -> Result<Page, ParseError> {
     let version = check(xml, &opts.limits)?.version;
     // Only elements in the document's own ALTO namespace count: ALTO
     // allows foreign XML (under `Tags/XmlData`), whose `Page` or
@@ -164,9 +177,20 @@ pub fn parse(xml: &[u8], opts: &ParseOptions) -> Result<Page, ParseError> {
                         page = w.zip(h);
                     }
                     "TextBlock" => {
+                        let lang = if languages {
+                            match attr(e, "LANGUAGE")? {
+                                Some(l) => Some(l),
+                                None => attr(e, "LANG")?,
+                            }
+                            .map(|l| l.trim().to_lowercase())
+                            .filter(|l| !l.is_empty() && l.len() <= 16)
+                        } else {
+                            None
+                        };
                         let ob = OpenBlock {
                             rect: rect(e)?,
                             lines: Vec::new(),
+                            lang,
                         };
                         // A TextBlock inside another (not valid ALTO) ends
                         // the outer one, so no line goes to the wrong block.
@@ -269,6 +293,7 @@ pub fn parse(xml: &[u8], opts: &ParseOptions) -> Result<Page, ParseError> {
     let (mut all_words, mut all_lines, mut all_blocks) = (true, true, true);
     let mut blocks = Vec::new();
     for (kind, r, open) in raw {
+        let lang = open.as_ref().and_then(|b| b.lang.clone());
         all_blocks &= r.is_some()
             || open
                 .as_ref()
@@ -311,7 +336,7 @@ pub fn parse(xml: &[u8], opts: &ParseOptions) -> Result<Page, ParseError> {
         blocks.push(Block {
             kind,
             rect: brect,
-            lang: None,
+            lang,
             lines,
         });
     }
@@ -453,5 +478,24 @@ mod tests {
             );
         let p = parse(nested.as_bytes(), &opts).unwrap();
         assert_eq!(text(&p), "Ein& Wort¬\n\nende");
+    }
+
+    #[test]
+    fn languages_are_kept_only_when_asked() {
+        let opts = ParseOptions {
+            dpi: Some(300.0),
+            ..ParseOptions::default()
+        };
+        let xml = KRAKEN.replace("LANG=\"eng\"", "LANGUAGE=\"CHR\"");
+        assert_eq!(parse(xml.as_bytes(), &opts).unwrap().blocks[0].lang, None);
+        let page = parse_with_languages(xml.as_bytes(), &opts).unwrap();
+        assert_eq!(page.blocks[0].lang.as_deref(), Some("chr"));
+        assert_eq!(page.blocks[1].lang, None);
+        let page = parse_with_languages(KRAKEN.as_bytes(), &opts).unwrap();
+        assert_eq!(page.blocks[0].lang.as_deref(), Some("eng"));
+        // Otherwise the same page.
+        let mut plain = parse(KRAKEN.as_bytes(), &opts).unwrap();
+        plain.blocks[0].lang = Some("eng".into());
+        assert_eq!(plain, page);
     }
 }

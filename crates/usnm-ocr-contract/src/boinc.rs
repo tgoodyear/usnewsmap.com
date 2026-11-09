@@ -10,7 +10,25 @@ use std::collections::BTreeMap;
 
 pub const VERSION: u32 = 1;
 pub const RETRY_VERSION: u32 = 2;
+/// A line job's first attempt ([`LineRead`], #1621). Workers built before line jobs know
+/// versions 1 and 2 only, so they refuse one.
+pub const LINES_VERSION: u32 = 3;
+/// A line job's retry.
+pub const LINES_RETRY_VERSION: u32 = 4;
+/// The page segmentation mode of a line job: one raw line, no layout analysis.
+pub const LINE_PSM: u8 = 13;
+/// The most lines in one line job.
+pub const MAX_LINES: usize = 2000;
+/// The longest line id.
+pub const MAX_LINE_ID: usize = 32;
+/// The largest box coordinate, in scan pixels.
+pub const MAX_LINE_COORD: u32 = 100_000;
+/// The languages a line job can read: their line route is a model trained on the print.
+pub const LINE_LANGUAGES: &[&str] = &["chr"];
+/// `result.json`, error markers, and a page job's `request.json`.
 pub const MAX_JSON: usize = 16 * 1024;
+/// A `request.json` of any kind: a line job's carries its line boxes.
+pub const MAX_REQUEST: usize = 512 * 1024;
 pub const MAX_TEXT: usize = 512 * 1024;
 pub const MAX_ALTO: usize = 32 * 1024 * 1024;
 pub const MAX_SCAN: usize = 128 * 1024 * 1024;
@@ -84,6 +102,67 @@ pub struct Engine {
     pub timeout_secs: u32,
 }
 
+/// One line of a line job: an id unique in the job and its box `[x0, y0, x1, y1]` in pixels
+/// of the scan, without padding (the worker pads it).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LineBox {
+    pub id: String,
+    #[serde(rename = "box")]
+    pub rect: [u32; 4],
+}
+
+/// The lines of a page a line job reads one at a time, each crop at [`LINE_PSM`], instead of
+/// the whole page (#1621). `language` routes the job's profile, whatever the page's message
+/// language is: a Cherokee Phoenix page is mostly English.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LineRead {
+    pub language: String,
+    pub psm: u8,
+    pub lines: Vec<LineBox>,
+}
+
+impl LineRead {
+    pub fn validate(&self) -> anyhow::Result<()> {
+        use anyhow::ensure;
+        ensure!(
+            LINE_LANGUAGES.contains(&self.language.as_str()),
+            "no line route for language {:?}",
+            self.language
+        );
+        ensure!(self.psm == LINE_PSM, "line jobs use PSM {LINE_PSM}");
+        ensure!(
+            (1..=MAX_LINES).contains(&self.lines.len()),
+            "a line job reads 1 to {MAX_LINES} lines"
+        );
+        let mut seen = std::collections::BTreeSet::new();
+        for line in &self.lines {
+            ensure!(
+                !line.id.is_empty()
+                    && line.id.len() <= MAX_LINE_ID
+                    && line
+                        .id
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-'),
+                "invalid line id"
+            );
+            ensure!(
+                seen.insert(line.id.as_str()),
+                "duplicate line id {}",
+                line.id
+            );
+            let [x0, y0, x1, y1] = line.rect;
+            ensure!(
+                x0 < x1 && y0 < y1 && x1 <= MAX_LINE_COORD && y1 <= MAX_LINE_COORD,
+                "invalid box for line {}",
+                line.id
+            );
+        }
+        Ok(())
+    }
+}
+
 #[cfg(feature = "pipeline")]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -98,6 +177,9 @@ pub struct Job {
     pub batch_version: u16,
     pub scan: Scan,
     pub engine: Engine,
+    /// A line job's lines (#1621); none for a page job, which serializes as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lines: Option<LineRead>,
 }
 #[cfg(feature = "pipeline")]
 fn is_first_attempt(attempt: &u32) -> bool {
@@ -117,33 +199,85 @@ impl Job {
             &self.scan,
             &self.engine,
         );
-        if self.attempt == 0 {
-            Ok(sha256(&serde_json::to_vec(&legacy)?))
-        } else {
-            Ok(sha256(&serde_json::to_vec(&(
+        // A page job hashes exactly as before line jobs; a line job adds its lines.
+        match (self.attempt == 0, &self.lines) {
+            (true, None) => Ok(sha256(&serde_json::to_vec(&legacy)?)),
+            (false, None) => Ok(sha256(&serde_json::to_vec(&(
                 legacy,
                 self.attempt,
                 &self.retry_of,
-            ))?))
+            ))?)),
+            (true, Some(lines)) => Ok(sha256(&serde_json::to_vec(&(legacy, lines))?)),
+            (false, Some(lines)) => Ok(sha256(&serde_json::to_vec(&(
+                (legacy, self.attempt, &self.retry_of),
+                lines,
+            ))?)),
         }
     }
     pub fn workunit(&self) -> String {
         format!("usnm_{}", self.id)
     }
-    pub fn validate(&self) -> anyhow::Result<()> {
+    /// The version a job of this kind has: a first attempt or a retry, of a page or of lines.
+    pub fn version_for(retry: bool, lines: bool) -> u32 {
+        match (retry, lines) {
+            (false, false) => VERSION,
+            (true, false) => RETRY_VERSION,
+            (false, true) => LINES_VERSION,
+            (true, true) => LINES_RETRY_VERSION,
+        }
+    }
+    /// The language the job's engine profile is routed on: a line job's line language, else
+    /// the page's.
+    pub fn route_language(&self) -> &str {
+        match &self.lines {
+            Some(lines) => &lines.language,
+            None => &self.message.language,
+        }
+    }
+    /// The model's reading of each line, in the job's order, from a result's `text.txt`: one
+    /// line of text per line box, each ending in a newline. None for a page job.
+    pub fn line_texts<'a>(
+        &'a self,
+        text: &'a str,
+    ) -> anyhow::Result<Option<Vec<(&'a str, &'a str)>>> {
+        let Some(lines) = &self.lines else {
+            return Ok(None);
+        };
+        let body = text
+            .strip_suffix('\n')
+            .ok_or_else(|| anyhow::anyhow!("line result text does not end in a newline"))?;
+        let texts: Vec<&str> = body.split('\n').collect();
         ensure!(
-            (self.v == VERSION && self.attempt == 0 && self.retry_of.is_none())
-                || (self.v == RETRY_VERSION
-                    && (1..i32::MAX as u32).contains(&self.attempt)
-                    && self
-                        .retry_of
-                        .as_deref()
-                        .is_some_and(|id| is_sha256(id) && id != self.id)),
+            texts.len() == lines.lines.len() && !text.contains('\r'),
+            "line result has {} lines for {} line boxes",
+            texts.len(),
+            lines.lines.len()
+        );
+        Ok(Some(
+            lines
+                .lines
+                .iter()
+                .map(|l| l.id.as_str())
+                .zip(texts)
+                .collect(),
+        ))
+    }
+    pub fn validate(&self) -> anyhow::Result<()> {
+        let first = self.attempt == 0 && self.retry_of.is_none();
+        let retry = (1..i32::MAX as u32).contains(&self.attempt)
+            && self
+                .retry_of
+                .as_deref()
+                .is_some_and(|id| is_sha256(id) && id != self.id);
+        let lines = self.lines.is_some();
+        ensure!(
+            (self.v == Self::version_for(false, lines) && first)
+                || (self.v == Self::version_for(true, lines) && retry),
             "unsupported BOINC job version or attempt"
         );
         self.message.validate()?;
         ensure!(
-            self.engine.kind == crate::routing::EngineKind::for_language(&self.message.language),
+            self.engine.kind == crate::routing::EngineKind::for_language(self.route_language()),
             "engine does not match language route"
         );
         ensure!(
@@ -189,10 +323,23 @@ impl Job {
         );
         let tag = self.engine_tag()?;
         ensure!(tag.pinned(), "unpinned engine");
-        ensure!(
-            self.engine.psm == 3 && self.engine.dpi == 300,
-            "pilot uses PSM 3 and DPI 300"
-        );
+        match &self.lines {
+            None => ensure!(
+                self.engine.psm == 3 && self.engine.dpi == 300,
+                "pilot uses PSM 3 and DPI 300"
+            ),
+            Some(lines) => {
+                lines.validate()?;
+                ensure!(
+                    self.engine.psm == LINE_PSM && self.engine.dpi == 300,
+                    "line jobs use PSM {LINE_PSM} and DPI 300"
+                );
+                ensure!(
+                    self.engine.kind == crate::routing::EngineKind::Tesseract,
+                    "line jobs are Tesseract jobs"
+                );
+            }
+        }
         ensure!(
             (1..=3600).contains(&self.engine.timeout_secs),
             "invalid page deadline"
@@ -252,9 +399,10 @@ impl ResultManifest {
             self.text_sha256 == sha256(text) && self.alto_sha256 == sha256(alto),
             "returned output checksum mismatch"
         );
-        if std::str::from_utf8(text).is_err() {
+        let Ok(text) = std::str::from_utf8(text) else {
             bail!("text is not UTF-8");
-        }
+        };
+        job.line_texts(text)?;
         Ok(())
     }
 }
@@ -365,6 +513,10 @@ pub mod bundle {
                 ensure!(
                     page.job.attempt == 0,
                     "retry jobs use pinned single-page workunits"
+                );
+                ensure!(
+                    page.job.lines.is_none(),
+                    "line jobs use pinned single-page workunits"
                 );
                 ensure!(seen.insert(&page.job.id), "a page is in the bundle twice");
                 ensure!(
@@ -776,5 +928,222 @@ mod routing_tests {
         job.message.language = "eng".into();
         job.id = job.identity().unwrap();
         assert!(job.validate().is_err());
+    }
+}
+
+#[cfg(all(test, feature = "pipeline"))]
+mod line_tests {
+    use super::*;
+
+    const LEGACY: &str = include_str!("fixtures/boinc-tesseract.json");
+
+    fn line_job(n: usize) -> Job {
+        let mut job: Job = serde_json::from_str(LEGACY).unwrap();
+        job.v = LINES_VERSION;
+        job.engine.profile = "chr_phoenix".into();
+        job.engine.psm = LINE_PSM;
+        job.lines = Some(LineRead {
+            language: "chr".into(),
+            psm: LINE_PSM,
+            lines: (0..n)
+                .map(|i| LineBox {
+                    id: format!("b0l{i}"),
+                    rect: [10, 20 + 40 * i as u32, 900, 50 + 40 * i as u32],
+                })
+                .collect(),
+        });
+        job.id = job.identity().unwrap();
+        job
+    }
+
+    #[test]
+    fn page_jobs_serialize_and_hash_as_before() {
+        let job: Job = serde_json::from_str(LEGACY.trim_end()).unwrap();
+        assert_eq!(job.lines, None);
+        assert_eq!(serde_json::to_string(&job).unwrap(), LEGACY.trim_end());
+        assert_eq!(
+            job.identity().unwrap(),
+            "05a1b237ca490126d365648bed704bd0e04c72979922ef98d86514e9b79de777"
+        );
+        job.validate().unwrap();
+        assert_eq!(job.route_language(), "eng");
+        assert_eq!(job.line_texts("anything").unwrap(), None);
+    }
+
+    #[test]
+    fn line_jobs_have_their_own_version_and_identity() {
+        let job = line_job(3);
+        job.validate().unwrap();
+        assert_eq!(job.route_language(), "chr");
+        assert_eq!(job.message.language, "eng");
+        // A line job can't pass as a page job, nor a page job as a line job.
+        let mut old = job.clone();
+        old.v = VERSION;
+        old.id = old.identity().unwrap();
+        assert!(old.validate().is_err());
+        let mut page: Job = serde_json::from_str(LEGACY).unwrap();
+        page.v = LINES_VERSION;
+        page.id = page.identity().unwrap();
+        assert!(page.validate().is_err());
+        // The lines are in the identity.
+        let mut moved = job.clone();
+        moved.lines.as_mut().unwrap().lines[1].rect[0] += 1;
+        assert_ne!(moved.identity().unwrap(), job.id);
+        assert!(moved.validate().is_err());
+        // A worker that predates line jobs refuses the request outright.
+        let wire = serde_json::to_string(&job).unwrap();
+        assert!(wire.contains("\"lines\":{\"language\":\"chr\",\"psm\":13,"));
+        assert_eq!(serde_json::from_str::<Job>(&wire).unwrap(), job);
+    }
+
+    #[test]
+    fn line_jobs_retry_with_the_line_retry_version() {
+        let first = line_job(2);
+        let mut retry = first.clone();
+        retry.v = Job::version_for(true, true);
+        retry.attempt = 1;
+        retry.retry_of = Some(first.id.clone());
+        retry.id = retry.identity().unwrap();
+        retry.validate().unwrap();
+        assert_ne!(retry.id, first.id);
+        retry.v = RETRY_VERSION;
+        retry.id = retry.identity().unwrap();
+        assert!(retry.validate().is_err());
+        assert_eq!(
+            [
+                Job::version_for(false, false),
+                Job::version_for(true, false),
+                Job::version_for(false, true),
+                Job::version_for(true, true)
+            ],
+            [VERSION, RETRY_VERSION, LINES_VERSION, LINES_RETRY_VERSION]
+        );
+    }
+
+    fn rejected(edit: impl FnOnce(&mut Job)) -> bool {
+        let mut job = line_job(3);
+        edit(&mut job);
+        job.id = job.identity().unwrap();
+        job.validate().is_err()
+    }
+
+    #[test]
+    fn line_jobs_read_at_psm_13_only() {
+        assert!(rejected(|j| j.engine.psm = 3));
+        assert!(rejected(|j| j.lines.as_mut().unwrap().psm = 3));
+        assert!(rejected(|j| j.engine.dpi = 400));
+        // And page jobs stay at PSM 3.
+        let mut page: Job = serde_json::from_str(LEGACY).unwrap();
+        page.engine.psm = LINE_PSM;
+        page.id = page.identity().unwrap();
+        assert!(page.validate().is_err());
+    }
+
+    #[test]
+    fn line_jobs_have_a_sane_line_count() {
+        assert!(rejected(|j| j.lines.as_mut().unwrap().lines.clear()));
+        let mut most = line_job(MAX_LINES);
+        most.validate().unwrap();
+        most.lines.as_mut().unwrap().lines.push(LineBox {
+            id: "extra".into(),
+            rect: [1, 1, 2, 2],
+        });
+        most.id = most.identity().unwrap();
+        assert!(most.validate().is_err());
+        // The most lines still fit a request.
+        assert!(
+            serde_json::to_vec_pretty(&line_job(MAX_LINES))
+                .unwrap()
+                .len()
+                <= MAX_REQUEST
+        );
+    }
+
+    #[test]
+    fn line_ids_are_unique_short_ascii() {
+        assert!(rejected(
+            |j| j.lines.as_mut().unwrap().lines[2].id = "b0l0".into()
+        ));
+        assert!(rejected(
+            |j| j.lines.as_mut().unwrap().lines[0].id = String::new()
+        ));
+        assert!(rejected(
+            |j| j.lines.as_mut().unwrap().lines[0].id = "x".repeat(MAX_LINE_ID + 1)
+        ));
+        assert!(rejected(
+            |j| j.lines.as_mut().unwrap().lines[0].id = "b0 l0".into()
+        ));
+        assert!(rejected(
+            |j| j.lines.as_mut().unwrap().lines[0].id = "Ꭰ".into()
+        ));
+        assert!(!rejected(
+            |j| j.lines.as_mut().unwrap().lines[0].id = "x".repeat(MAX_LINE_ID)
+        ));
+    }
+
+    #[test]
+    fn line_boxes_are_non_empty_and_in_bounds() {
+        assert!(rejected(
+            |j| j.lines.as_mut().unwrap().lines[0].rect = [5, 5, 5, 9]
+        ));
+        assert!(rejected(
+            |j| j.lines.as_mut().unwrap().lines[0].rect = [5, 9, 9, 9]
+        ));
+        assert!(rejected(
+            |j| j.lines.as_mut().unwrap().lines[0].rect = [9, 5, 5, 9]
+        ));
+        assert!(rejected(
+            |j| j.lines.as_mut().unwrap().lines[0].rect = [0, 0, MAX_LINE_COORD + 1, 9]
+        ));
+        assert!(!rejected(
+            |j| j.lines.as_mut().unwrap().lines[0].rect = [0, 0, MAX_LINE_COORD, MAX_LINE_COORD]
+        ));
+    }
+
+    #[test]
+    fn line_jobs_name_a_line_language() {
+        assert!(rejected(
+            |j| j.lines.as_mut().unwrap().language = "eng".into()
+        ));
+        assert!(rejected(
+            |j| j.lines.as_mut().unwrap().language = "jpn".into()
+        ));
+    }
+
+    #[test]
+    fn line_jobs_never_go_in_bundles() {
+        let mut other = line_job(1);
+        other.message.page = "sn00000001/1900-01-01/ed-1/seq-2".into();
+        other.id = other.identity().unwrap();
+        assert!(bundle::Bundle::new(vec![line_job(1), other]).is_err());
+    }
+
+    #[test]
+    fn line_results_give_one_text_line_per_box() {
+        let job = line_job(3);
+        let text = "ᎠᏍᎦᏯ\n\nᏣᎳᎩ ᎦᏬᏂᎯᏍᏗ\n";
+        assert_eq!(
+            job.line_texts(text).unwrap().unwrap(),
+            [("b0l0", "ᎠᏍᎦᏯ"), ("b0l1", ""), ("b0l2", "ᏣᎳᎩ ᎦᏬᏂᎯᏍᏗ")]
+        );
+        assert!(job.line_texts("a\nb\n").is_err());
+        assert!(job.line_texts("a\nb\nc\nd\n").is_err());
+        assert!(job.line_texts("a\nb\nc").is_err());
+        assert!(job.line_texts("a\r\nb\nc\n").is_err());
+        let result = ResultManifest {
+            v: job.v,
+            job_id: job.id.clone(),
+            scan_sha256: job.scan.sha256.clone(),
+            engine: job.engine.clone(),
+            text_sha256: sha256(text.as_bytes()),
+            alto_sha256: sha256(b"alto"),
+            elapsed_ms: 1,
+            completed_at: "2026-11-09T12:00:00Z".into(),
+        };
+        result.matches(&job, text.as_bytes(), b"alto").unwrap();
+        let short = "a\nb\n";
+        let mut wrong = result;
+        wrong.text_sha256 = sha256(short.as_bytes());
+        assert!(wrong.matches(&job, short.as_bytes(), b"alto").is_err());
     }
 }

@@ -35,6 +35,7 @@ impl Fixture {
         std::fs::set_permissions(&mirror, std::fs::Permissions::from_mode(0o755)).unwrap();
         let mut job = Job {
             retry_of: None,
+            lines: None,
             attempt: 0,
             v: boinc::VERSION,
             id: String::new(),

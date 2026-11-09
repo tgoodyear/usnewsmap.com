@@ -28,7 +28,9 @@ base64.workspace = true
 bytes.workspace = true
 chrono.workspace = true
 clap.workspace = true
-image.workspace = true
+# PNM too: the line re-read decodes the test image crate's scans (#1621).
+image = { workspace = true, features = ["pnm"] }
+hayro-jpeg2000.workspace = true
 rustix = { workspace = true, features = ["process", "thread"] }
 serde.workspace = true
 serde_json.workspace = true

@@ -16,6 +16,15 @@
 //!   no hosts, and its `max_cer` is the threshold a calibration must meet to replace it:
 //!   `gold trust` refuses to merge a policy for that scope with a higher one.
 //!
+//! - A **line-job scope** (#1621) is a policy for the line jobs of a line route (language `chr`,
+//!   profile `chr_phoenix`, PSM 13), which no Gold unit calibrates: Gold units are page crops
+//!   read at PSM 3. It names its basis instead ([`LineBasis`]): the calibrated page scope whose
+//!   gold-checked hosts it trusts (they run the same worker image and the same Tesseract, on a
+//!   crop of a line rather than a page), and the evidence the line route was judged on. It lists
+//!   no hosts of its own: its hosts are its basis's at the time of the check, and a hold on
+//!   either holds it. Its `max_cer` is the most its basis may allow; a looser basis trusts no
+//!   line job.
+//!
 //! In native mode, BOINC's result-table host ID is authoritative and is checked against the
 //! host claimed by the uploaded report. It remains a BOINC quality signal, not an identity check.
 //! Native outcome snapshots are accepted only when every result of an assimilated workunit is
@@ -50,7 +59,33 @@ pub struct Scope {
 }
 
 impl Scope {
+    /// A page scope: Gold's PSM 3 at 300 DPI.
     pub fn validate(&self) -> anyhow::Result<()> {
+        self.validate_names()?;
+        anyhow::ensure!(
+            self.psm == 3 && self.dpi == 300,
+            "only the Gold PSM 3 / 300 DPI configuration is calibrated"
+        );
+        Ok(())
+    }
+
+    /// A line-job scope (#1621): a line language and route, at the line jobs' PSM 13 and 300
+    /// DPI. Only a policy with a [`LineBasis`] has one.
+    pub fn validate_line(&self) -> anyhow::Result<()> {
+        self.validate_names()?;
+        anyhow::ensure!(
+            usnm_ocr_contract::boinc::LINE_LANGUAGES.contains(&self.language.as_str()),
+            "a line-job scope's language is a line language"
+        );
+        anyhow::ensure!(
+            self.psm == usnm_ocr_contract::boinc::LINE_PSM && self.dpi == 300,
+            "a line-job scope is PSM {} at 300 DPI",
+            usnm_ocr_contract::boinc::LINE_PSM
+        );
+        Ok(())
+    }
+
+    fn validate_names(&self) -> anyhow::Result<()> {
         anyhow::ensure!(
             self.language.len() == 3 && self.language.bytes().all(|b| b.is_ascii_lowercase()),
             "calibrated source language must be a three-letter lower-case code"
@@ -64,12 +99,20 @@ impl Scope {
                     .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'+' | b'-')),
             "invalid calibrated model profile"
         );
-        anyhow::ensure!(
-            self.psm == 3 && self.dpi == 300,
-            "only the Gold PSM 3 / 300 DPI configuration is calibrated"
-        );
         Ok(())
     }
+}
+
+/// Why a line-job scope (#1621) is trusted though no Gold unit calibrates it: the page scope
+/// whose gold-checked hosts it trusts, and the evidence the line route was judged on.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LineBasis {
+    /// A calibrated page scope in the same list, not itself held, with a `max_cer` at or below
+    /// the line scope's.
+    pub page_scope: Scope,
+    /// What the line route was judged on, on one line: an issue, a report, its numbers.
+    pub evidence: String,
 }
 
 /// One calibrated `(language, profile, psm, dpi)` policy entry within [`Trust`].
@@ -87,6 +130,9 @@ pub struct ScopedPolicy {
     /// until a calibrated policy replaces this one. A held scope lists no hosts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hold: Option<String>,
+    /// For a line-job scope (#1621), the basis it is trusted on; none for a page scope.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line_basis: Option<LineBasis>,
 }
 
 impl ScopedPolicy {
@@ -96,7 +142,23 @@ impl ScopedPolicy {
             &self.manifest_sha256,
             &self.scope,
             self.max_cer,
+            self.line_basis.is_some(),
         )?;
+        if let Some(basis) = &self.line_basis {
+            basis.page_scope.validate()?;
+            anyhow::ensure!(
+                !basis.evidence.trim().is_empty()
+                    && basis.evidence.len() <= MAX_HOLD
+                    && !basis.evidence.chars().any(char::is_control),
+                "a line-job scope needs its evidence in 1 to {MAX_HOLD} bytes on one line"
+            );
+            anyhow::ensure!(
+                self.hosts.is_empty(),
+                "line-job scope {}/{} lists no hosts: they are its page scope's",
+                self.scope.language,
+                self.scope.profile
+            );
+        }
         if let Some(hold) = &self.hold {
             anyhow::ensure!(
                 !hold.trim().is_empty()
@@ -123,6 +185,7 @@ pub struct PolicyView<'a> {
     pub scope: &'a Scope,
     pub max_cer: f64,
     pub hold: Option<&'a str>,
+    pub line_basis: Option<&'a LineBasis>,
 }
 
 #[derive(Deserialize)]
@@ -163,8 +226,13 @@ impl Trust {
         manifest_sha256: &str,
         scope: &Scope,
         max_cer: f64,
+        lines: bool,
     ) -> anyhow::Result<()> {
-        scope.validate()?;
+        if lines {
+            scope.validate_line()?;
+        } else {
+            scope.validate()?;
+        }
         anyhow::ensure!(
             usnm_ocr_contract::boinc::is_sha256(manifest_sha256),
             "invalid calibrated challenge manifest"
@@ -194,6 +262,7 @@ impl Trust {
             scope,
             max_cer: self.max_cer,
             hold: None,
+            line_basis: None,
         })
     }
 
@@ -214,7 +283,7 @@ impl Trust {
             .manifest_sha256
             .as_deref()
             .context("invalid calibrated challenge manifest")?;
-        Self::validate_policy_fields(&self.hosts, manifest_sha256, scope, self.max_cer)?;
+        Self::validate_policy_fields(&self.hosts, manifest_sha256, scope, self.max_cer, false)?;
         if !self.policies.is_empty() {
             anyhow::ensure!(
                 self.policies.len() <= 64,
@@ -250,6 +319,19 @@ impl Trust {
                 primary_matched,
                 "scoped policies must include the primary trust scope"
             );
+            for policy in &self.policies {
+                let Some(basis) = &policy.line_basis else {
+                    continue;
+                };
+                anyhow::ensure!(
+                    self.policies
+                        .iter()
+                        .any(|p| p.line_basis.is_none() && p.scope == basis.page_scope),
+                    "line-job scope {}/{} names a page scope the list doesn't calibrate",
+                    policy.scope.language,
+                    policy.scope.profile
+                );
+            }
         }
         Ok(())
     }
@@ -276,6 +358,7 @@ impl Trust {
                     scope: &p.scope,
                     max_cer: p.max_cer,
                     hold: p.hold.as_deref(),
+                    line_basis: p.line_basis.as_ref(),
                 })
         } else {
             let scope = self.scope.as_ref()?;
@@ -286,6 +369,7 @@ impl Trust {
                 scope,
                 max_cer: self.max_cer,
                 hold: None,
+                line_basis: None,
             })
         }
     }
@@ -299,6 +383,7 @@ impl Trust {
             scope: view.scope.clone(),
             max_cer: view.max_cer,
             hold: view.hold.map(str::to_owned),
+            line_basis: view.line_basis.cloned(),
         })
     }
 

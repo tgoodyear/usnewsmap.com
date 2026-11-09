@@ -14,6 +14,16 @@ pub enum HandoffCommands {
         #[arg(long)]
         to: PathBuf,
     },
+    /// A line job's sidecars (#1621): exactly its two `line-read/` objects, copied beside the
+    /// job's record under --root, which must already be there; nothing for a page job.
+    GetLineRead {
+        #[arg(long)]
+        from_url: String,
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long)]
+        job: String,
+    },
     /// Copy every object under a prefix of the hand-off container into a directory.
     Get {
         #[arg(long)]
@@ -90,6 +100,14 @@ pub async fn run(command: HandoffCommands) -> anyhow::Result<()> {
     match command {
         HandoffCommands::GetFile { from_url, path, to } => {
             x::get_file(usnm_store::open(&from_url)?.as_ref(), &path, &to).await?;
+        }
+        HandoffCommands::GetLineRead {
+            from_url,
+            root,
+            job,
+        } => {
+            let n = x::get_line_read(usnm_store::open(&from_url)?.as_ref(), &root, &job).await?;
+            eprintln!("{n} line-read objects copied for job {job}");
         }
         HandoffCommands::Get {
             from_url,

@@ -34,7 +34,7 @@ mod write;
 pub use columns::{split_columns, Repair};
 pub use markup::Markup;
 pub use model::{default_dir, text, Block, BlockKind, Dir, Granularity, Line, Page, Rect, Word};
-pub use parse::{parse, ParseError, ParseOptions};
+pub use parse::{parse, parse_with_languages, ParseError, ParseOptions};
 pub use write::{write, Description, Software, Step, NAMESPACE, SCHEMA_LOCATION};
 
 use quick_xml::events::{BytesStart, Event};

@@ -196,6 +196,12 @@ impl Trust {
             .policy_view(&scope.language, &scope.profile)
             .context("no calibrated policy for this scope")?;
         anyhow::ensure!(
+            view.line_basis.is_none(),
+            "scope {}/{} is a line-job scope: its hosts are its page scope's",
+            scope.language,
+            scope.profile
+        );
+        anyhow::ensure!(
             view.hold.is_none(),
             "scope {}/{} is held from publication until calibrated; not admitting",
             scope.language,

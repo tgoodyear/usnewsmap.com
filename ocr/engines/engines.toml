@@ -328,6 +328,17 @@ credit = "tessdata/slk.traineddata — Tesseract OCR project (Apache-2.0)"
 terms = "https://github.com/tesseract-ocr/tessdata_best/blob/e12c65a915945e4c28e237a9b52bc4a8f39a0cec/LICENSE"
 fetched = 2026-10-16
 
+[[engine.model]]
+name = "tessdata/chr_phoenix.traineddata"
+version = "model-tesseract-chr-phoenix-20261109"
+license = "Apache-2.0"
+author = "usnewsmap.com, fine-tuned from tessdata/chr.traineddata by the Tesseract OCR project"
+source = "https://github.com/tgoodyear/usnewsmap.com/releases/tag/model-tesseract-chr-phoenix-20261109"
+credit = "tessdata/chr_phoenix.traineddata — Tesseract chr (Tesseract OCR project, Apache-2.0) fine-tuned by usnewsmap.com on lines of the Cherokee Phoenix and the 1860 Cherokee New Testament (Apache-2.0)"
+terms = "https://www.apache.org/licenses/LICENSE-2.0"
+note = "Issue 1621, sha256 88eb101611962ec6b6b421985203aa6722849da6b7350197e11ce2c0ff71f7f8. Trained on Chronicling America's public-domain Cherokee Phoenix scans and OCR and on the CC0 1860 New Testament text (ocr/models/chr-phoenix/NOTICE.md). Read only line by line: profile chr_phoenix is lines_only."
+fetched = 2026-11-09
+
 [[engine.profile]]
 id = "frak2021"
 models = ["tessdata/frak2021.traineddata"]
@@ -472,6 +483,12 @@ languages = ["hun"]
 id = "slk"
 models = ["tessdata/slk.traineddata"]
 languages = ["slk"]
+
+[[engine.profile]]
+id = "chr_phoenix"
+models = ["tessdata/chr_phoenix.traineddata"]
+languages = ["chr"]
+lines_only = true
 
 [[engine]]
 id = "kraken-7.1"

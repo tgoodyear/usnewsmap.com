@@ -35,6 +35,9 @@ enum Commands {
     Submit(job::SubmitArgs),
     /// Submit several reserved pages as one OCR bundle workunit (#1059).
     SubmitBundle(job::SubmitBundleArgs),
+    /// Line jobs' merged pages (#1621): lines that took the model's reading, fallbacks, and
+    /// whether rule v1 would admit each page.
+    LineReport(job::LineReportArgs),
     /// Reconcile an uncertain submission after checking the server for its workunit name.
     Reconcile(job::ReconcileArgs),
     /// Read stock batch_collect_assimilator's spool and publish native ALTO/Parquet.
@@ -101,6 +104,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::PrepareDownload(args) => job::prepare_download(args),
         Commands::Submit(args) => job::submit(args).await,
         Commands::SubmitBundle(args) => job::submit_bundle(args).await,
+        Commands::LineReport(args) => job::line_report(args),
         Commands::Reconcile(args) => job::reconcile(args),
         Commands::Collect(args) => job::collect(args).await,
         Commands::RejectOutput(args) => job::reject_output(args),

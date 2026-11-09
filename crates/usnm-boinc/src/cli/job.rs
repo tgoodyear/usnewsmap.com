@@ -51,6 +51,14 @@ pub struct ExportArgs {
     state_file: Option<PathBuf>,
     #[arg(long)]
     cosmos: Option<String>,
+    /// Read only the page's lines in this language, one LoC ALTO line box at a time at PSM 13,
+    /// with its line model (#1621): `chr`. A page without such lines is skipped and reported.
+    #[arg(long, requires = "loc_alto", conflicts_with_all = ["claims", "deadline_retries"])]
+    line_read: Option<String>,
+    /// LoC's bulk OCR archives unpacked (`<lccn>/<yyyy>/<mm>/<dd>/ed-<n>/seq-<m>/ocr.xml`),
+    /// for --line-read.
+    #[arg(long, requires = "line_read")]
+    loc_alto: Option<PathBuf>,
 }
 
 pub async fn export(args: ExportArgs) -> anyhow::Result<()> {
@@ -69,6 +77,8 @@ pub async fn export(args: ExportArgs) -> anyhow::Result<()> {
         reference_url,
         state_file,
         cosmos,
+        line_read,
+        loc_alto,
     } = args;
     let docs: Arc<dyn DocStore> = if let Some(endpoint) = cosmos {
         usnm_state::docs::open_endpoint(&endpoint)?
@@ -91,6 +101,8 @@ pub async fn export(args: ExportArgs) -> anyhow::Result<()> {
             timeout_secs,
             claims,
             deadline_retries,
+            line_read,
+            loc_alto,
         },
         &State::new(docs),
         store.as_ref(),
@@ -234,6 +246,10 @@ pub struct SubmitArgs {
     state_file: Option<PathBuf>,
     #[arg(long)]
     cosmos: Option<String>,
+    /// The signed usnm_ocr version whose worker reads line jobs (#1621): a line job is pinned
+    /// to it, so an older worker never gets one. Required for a line job, unused otherwise.
+    #[arg(long)]
+    app_version_num: Option<u32>,
 }
 
 pub async fn submit(args: SubmitArgs) -> anyhow::Result<()> {
@@ -246,6 +262,7 @@ pub async fn submit(args: SubmitArgs) -> anyhow::Result<()> {
         curated_url,
         state_file,
         cosmos,
+        app_version_num,
     } = args;
     let download = match (download_base_url, download_root) {
         (Some(base), Some(root)) => Some(crate::submit::Download::new(&base, &root)?),
@@ -271,8 +288,19 @@ pub async fn submit(args: SubmitArgs) -> anyhow::Result<()> {
             state,
             curated: curated.as_ref(),
         });
-    crate::submit::submit_checked(&root, &project, &job, download.as_ref(), sources.as_ref())
-        .await?;
+    let pin = match crate::load(&root, &job)?.job.lines {
+        Some(_) => app_version_num,
+        None => None,
+    };
+    crate::submit::submit_pinned(
+        &root,
+        &project,
+        &job,
+        download.as_ref(),
+        sources.as_ref(),
+        pin,
+    )
+    .await?;
     Ok(())
 }
 
@@ -429,5 +457,40 @@ pub fn status(args: StatusArgs) -> anyhow::Result<()> {
             serde_json::json!({"job":r.job.id,"workunit":r.workunit(),"page":r.job.message.page,"stage":r.stage,"error":r.error})
         );
     }
+    Ok(())
+}
+
+#[derive(Args)]
+pub struct LineReportArgs {
+    /// The dispatch root `export` journaled the line jobs in.
+    #[arg(long)]
+    root: PathBuf,
+    /// The assimilator's spool, for results not yet imported.
+    #[arg(long)]
+    spool: Option<PathBuf>,
+}
+
+/// One JSON line per line job with a result: its merge counts and rule v1's verdict on the
+/// merged page, then a summary line.
+pub fn line_report(args: LineReportArgs) -> anyhow::Result<()> {
+    let rows = crate::lines::report(&args.root, args.spool.as_deref())?;
+    let mut verdicts = std::collections::BTreeMap::<String, usize>::new();
+    let (mut lines, mut model) = (0, 0);
+    for row in &rows {
+        println!("{}", serde_json::to_string(row)?);
+        *verdicts.entry(row.verdict.clone()).or_default() += 1;
+        lines += row.stats.lines;
+        model += row.stats.model;
+    }
+    println!(
+        "{}",
+        serde_json::json!({
+            "pages": rows.len(),
+            "lines_read": lines,
+            "lines_model": model,
+            "lines_fallback": lines - model,
+            "verdicts": verdicts,
+        })
+    );
     Ok(())
 }

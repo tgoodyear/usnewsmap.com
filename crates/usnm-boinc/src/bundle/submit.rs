@@ -110,23 +110,28 @@ pub async fn submit(
         boinc::bundle::MAX_PAGES
     );
     let mut out = Submitted::default();
-    let (mut alone, together): (Vec<String>, Vec<(String, u64)>) = {
+    let (mut alone, together, lines) = {
         let _lock = Lock::take(root)?;
         let mut alone = vec![];
         let mut together = vec![];
+        let mut lines = std::collections::BTreeSet::new();
         for id in ids {
             let record = load(root, id)?;
             ensure!(
                 record.retry.is_none(),
                 "retry jobs use pinned single-page submit"
             );
-            if record.unbundled.is_some() {
+            // A line job (#1621) never goes in a bundle: it goes alone, pinned like one.
+            if record.job.lines.is_some() {
+                lines.insert(id.clone());
+            }
+            if record.unbundled.is_some() || record.job.lines.is_some() {
                 alone.push(id.clone());
             } else {
                 together.push((id.clone(), record.job.scan.bytes));
             }
         }
-        (alone, together)
+        (alone, together, lines)
     };
     // Split by the bundle's byte limit as well as its page count, in order; a page left on
     // its own goes alone.
@@ -139,14 +144,15 @@ pub async fn submit(
         }
     }
     // An unpinned bundle could go to an older worker that can't read it.
-    let app_version = match bundles.is_empty() {
+    let app_version = match bundles.is_empty() && lines.is_empty() {
         true => 0,
         false => app_version.filter(|v| *v > 0).context(
-            "a bundle needs --app-version-num, the usnm_ocr version whose worker reads bundles",
+            "a bundle or a line job needs --app-version-num, the usnm_ocr version whose worker reads it",
         )?,
     };
     for id in &alone {
-        crate::submit::submit(root, project, id).await?;
+        let pin = lines.contains(id).then_some(app_version);
+        crate::submit::submit_pinned(root, project, id, None, None, pin).await?;
         out.alone.push(id.clone());
     }
     for group in bundles {
@@ -181,7 +187,7 @@ async fn submit_bundle(
         );
         let input = dir(root, id)?;
         let job: Job =
-            serde_json::from_slice(&read(&input.join("request.json"), boinc::MAX_JSON)?)?;
+            serde_json::from_slice(&read(&input.join("request.json"), boinc::MAX_REQUEST)?)?;
         ensure!(job == record.job, "staged request changed");
         let scan = read(&input.join("page"), boinc::MAX_SCAN)?;
         ensure!(
@@ -387,6 +393,61 @@ pub(crate) mod tests {
         // A second call submits nothing: the pages are past reserved.
         assert!(submit(&s.root, &s.project, &ids, Some(106)).await.is_err());
         assert_eq!(s.calls().len(), 1);
+    }
+
+    /// Server page `n` made a line job (#1621), journaled under its new id; returns the id.
+    fn as_line_job(s: &Server, old: &str, n: u8) -> String {
+        let mut record = load(&s.root, old).unwrap();
+        let mut job = record.job.clone();
+        job.v = boinc::LINES_VERSION;
+        job.engine.profile = "chr_phoenix".into();
+        job.engine.psm = boinc::LINE_PSM;
+        job.lines = Some(boinc::LineRead {
+            language: "chr".into(),
+            psm: boinc::LINE_PSM,
+            lines: vec![boinc::LineBox {
+                id: "b0l0".into(),
+                rect: [1, 1, 50, 20],
+            }],
+        });
+        job.id = job.identity().unwrap();
+        job.validate().unwrap();
+        let d = s.root.join("jobs").join(&job.id);
+        atomic(&d.join("page"), &scan(n)).unwrap();
+        atomic(&d.join("request.json"), &serde_json::to_vec(&job).unwrap()).unwrap();
+        record.job = job;
+        save(&s.root, &record).unwrap();
+        record.job.id
+    }
+
+    #[tokio::test]
+    async fn line_jobs_go_alone_and_pinned() {
+        let (s, ids) = Server::new(&[1, 2, 3]);
+        let line = as_line_job(&s, &ids[0], 1);
+        let ids = vec![line.clone(), ids[1].clone(), ids[2].clone()];
+        // Unpinned, a line job could reach a worker that predates line jobs.
+        assert!(submit(&s.root, &s.project, &ids[..1], None).await.is_err());
+        assert!(crate::submit::submit(&s.root, &s.project, &line)
+            .await
+            .is_err());
+        assert!(s.calls().is_empty());
+        let out = submit(&s.root, &s.project, &ids, Some(107)).await.unwrap();
+        assert_eq!(out.alone, vec![line.clone()]);
+        assert_eq!(out.bundles.len(), 1);
+        let calls = s.calls();
+        assert!(calls[0].contains(&format!("--wu_name usnm_{line}")));
+        assert!(calls[0].contains("templates/usnm_ocr_in"));
+        assert!(calls[0].contains("--app_version_num 107"));
+        let staged: Job = serde_json::from_slice(
+            &std::fs::read(
+                s.project
+                    .join("download")
+                    .join(format!("{line}_request_json")),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(staged.lines.is_some());
     }
 
     #[tokio::test]

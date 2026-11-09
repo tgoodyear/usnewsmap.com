@@ -14,6 +14,10 @@
 # checked by sha256.
 ARG BASE=mirror.gcr.io/library/debian:trixie-slim@sha256:918311b7b6c4c6f68b232ba516584925f6c78ad82b6fd534b98979df6438e483
 ARG SNAPSHOT=20261001T000000Z
+# The chr_phoenix release's SHA256SUMS (ocr/models/chr-phoenix/SHA256SUMS), which pins its
+# NOTICE.md and Apache licence; the model itself is pinned by models.lock.
+ARG CHR_PHOENIX_RELEASE=https://github.com/tgoodyear/usnewsmap.com/releases/download/model-tesseract-chr-phoenix-20261109
+ARG CHR_PHOENIX_SUMS=eb309b6a2b4c8316cf58d0df11fbd90eb2caa3c383cc8a860b08eb8ed094ac3f
 
 FROM ${BASE} AS models
 ARG SNAPSHOT
@@ -35,6 +39,21 @@ RUN set -eu; mkdir -p /models; cd /models; \
         --connect-timeout 30 --max-time 600 -o "$name" "$url"; \
       echo "$sum  $name" | sha256sum --check --quiet; \
     done
+
+# chr_phoenix's notice and licence (Apache-2.0 section 4) ship beside it, from the same
+# release, each checked against the release's SHA256SUMS, itself checked by hash.
+ARG CHR_PHOENIX_RELEASE
+ARG CHR_PHOENIX_SUMS
+RUN set -eu; mkdir -p /notices/chr_phoenix; cd /notices/chr_phoenix; \
+    for name in SHA256SUMS NOTICE.md LICENSE-Apache-2.0.txt; do \
+      curl -fsSL --retry 30 --retry-all-errors --retry-delay 5 --retry-max-time 900 \
+        --connect-timeout 30 --max-time 600 -o "$name" "$CHR_PHOENIX_RELEASE/$name"; \
+    done; \
+    echo "$CHR_PHOENIX_SUMS  SHA256SUMS" | sha256sum --check --quiet; \
+    grep -E '  (NOTICE\.md|LICENSE-Apache-2\.0\.txt)$' SHA256SUMS > checked; \
+    [ "$(wc -l < checked)" -eq 2 ]; \
+    sha256sum --check --quiet checked; \
+    rm checked
 
 # Tesseract's command-line main() calls feenableexcept(FE_DIVBYZERO |
 # FE_OVERFLOW | FE_INVALID) (src/tesseract.cpp), so floating-point traps stay
@@ -68,6 +87,7 @@ COPY --from=fpshim /libusnm-nofpe.so /usr/local/lib/libusnm-nofpe.so
 ENV TESSDATA_PREFIX=/opt/tessdata OMP_THREAD_LIMIT=1 LD_PRELOAD=/usr/local/lib/libusnm-nofpe.so
 COPY --from=models /models/tessdata/ /opt/tessdata/
 COPY models.lock /opt/tessdata/models.lock
+COPY --from=models /notices/ /opt/tessdata/notices/
 # The output configs (txt, alto) live beside the models: without them
 # Tesseract writes text only.
 RUN cp -r /usr/share/tesseract-ocr/5/tessdata/configs /usr/share/tesseract-ocr/5/tessdata/tessconfigs /opt/tessdata/ \

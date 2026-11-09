@@ -1426,6 +1426,10 @@ class HandoffAndBridgeQualitySteps(unittest.TestCase):
         self.assertTrue(puts and max(puts) < finish and collect < min(puts), calls)
         self.assertIn(f"--job {job}", calls[finish])
         self.assertIn("--queue-url https://usnmst.queue.core.windows.net", calls[finish])
+        # A line job's sidecars (#1621) come down before collect merges its result.
+        (sidecars,) = [i for i, c in enumerate(calls) if c.startswith("handoff get-line-read ")]
+        self.assertIn(f"--job {job}", calls[sidecars])
+        self.assertLess(sidecars, collect)
 
     def test_handoff_collect_without_a_queue_url_or_after_a_failure_deletes_nothing(self):
         job = "a" * 64

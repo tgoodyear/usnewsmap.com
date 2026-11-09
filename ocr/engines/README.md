@@ -77,6 +77,15 @@ profile, and opt-in. Its model is a release asset
 entry. It comes after `yid` and `heb`, so a worker that had all three would
 still pick `yid`.
 
+`chr_phoenix`, Tesseract `chr` fine-tuned on lines of the Cherokee Phoenix
+(#1621, [`ocr/models/chr-phoenix/`](../models/chr-phoenix/README.md)), is in
+`tesseract/models.lock` and the image, but its profile is `lines_only`: it
+reads the English columns of a page as syllabary, so it never reads a whole
+page. A page route skips it, and a Cherokee page stays unroutable as before. A
+BOINC line job (`usnm-boinc export --line-read chr`) routes to it and reads
+LoC's Cherokee line boxes one crop at a time at PSM 13
+(`crates/usnm-boinc/src/lines.rs`).
+
 ## Credits data shape
 
 - `production_licenses`: array of licence identifier strings approved by the
@@ -93,8 +102,10 @@ still pick `yid`.
   labelling old text with today's pin. A profile id names one model set from
   2026-11-05 (see above), but older rows carry no such promise.
 - `[[engine.profile]]`: `id` (unique within its engine), nonempty `models`
-  (exact model names), and nonempty `languages` (ISO 639-3 strings). File order
-  is the preference order for the current minimal Tesseract route.
+  (exact model names), nonempty `languages` (ISO 639-3 strings), and optional
+  `lines_only` (defaults to false: a page route skips such a profile, a line
+  job's route takes it). File order is the preference order for the current
+  minimal Tesseract route.
 
 Attribution fields are direct TOML keys, **not embedded JSON, Markdown or HTML**:
 

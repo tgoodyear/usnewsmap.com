@@ -258,6 +258,7 @@ fn rejects_missing_or_invalid_policy_scope() {
 fn job(image: &str, language: &str, profile: &str) -> usnm_ocr_contract::boinc::Job {
     usnm_ocr_contract::boinc::Job {
         retry_of: None,
+        lines: None,
         attempt: 0,
         v: 1,
         id: "a".repeat(64),
@@ -1355,6 +1356,7 @@ fn a_hold_is_lifted_only_by_a_calibration_within_its_limit() {
         scope: scope(),
         max_cer: ADMIT_CER,
         hold: Some(HOLD.into()),
+        line_basis: None,
     };
     let deu_primary = Trust {
         policies: vec![
@@ -1479,4 +1481,153 @@ fn calibrated_srp(max_cer: f64) -> Trust {
         policies: Vec::new(),
         v: TRUST_VERSION,
     }
+}
+
+/// A line-job scope (#1621) at PSM 13, on the basis of the English page scope.
+fn with_line_scope(max_cer: f64) -> Trust {
+    let image = format!("sha256:{}", "a".repeat(64));
+    let eng = ScopedPolicy {
+        hosts: [(image, [7].into())].into(),
+        manifest_sha256: MANIFEST.into(),
+        scope: scope(),
+        max_cer: 0.1,
+        hold: None,
+        line_basis: None,
+    };
+    let lines = ScopedPolicy {
+        hosts: BTreeMap::new(),
+        manifest_sha256: MANIFEST.into(),
+        scope: Scope {
+            language: "chr".into(),
+            profile: "chr_phoenix".into(),
+            psm: 13,
+            dpi: 300,
+        },
+        max_cer,
+        hold: None,
+        line_basis: Some(LineBasis {
+            page_scope: scope(),
+            evidence: "#1621 e2e on 3 Phoenix pages".into(),
+        }),
+    };
+    Trust {
+        hosts: eng.hosts.clone(),
+        manifest_sha256: Some(MANIFEST.into()),
+        scope: Some(scope()),
+        max_cer: 0.1,
+        policies: vec![eng, lines],
+        v: TRUST_VERSION,
+    }
+}
+
+fn line_job(image: &str) -> usnm_ocr_contract::boinc::Job {
+    use usnm_ocr_contract::boinc;
+    let mut job: boinc::Job = serde_json::from_str(include_str!(
+        "../../../usnm-ocr-contract/src/fixtures/boinc-tesseract.json"
+    ))
+    .unwrap();
+    job.v = boinc::LINES_VERSION;
+    job.engine.image = image.into();
+    job.engine.profile = "chr_phoenix".into();
+    job.engine.psm = boinc::LINE_PSM;
+    job.lines = Some(boinc::LineRead {
+        language: "chr".into(),
+        psm: boinc::LINE_PSM,
+        lines: vec![boinc::LineBox {
+            id: "b0l0".into(),
+            rect: [1, 1, 9, 9],
+        }],
+    });
+    job.id = job.identity().unwrap();
+    job.validate().unwrap();
+    job
+}
+
+#[test]
+fn psm_13_is_for_line_job_scopes_on_a_recorded_basis_only() {
+    let t = with_line_scope(0.1);
+    t.validate().unwrap();
+    let round: Trust = serde_json::from_str(&serde_json::to_string(&t).unwrap()).unwrap();
+    assert_eq!(round, t);
+    // PSM 13 without a basis, or as the primary scope, isn't calibrated.
+    let mut bare = t.clone();
+    bare.policies[1].line_basis = None;
+    assert!(bare.validate().is_err());
+    let mut primary = t.clone();
+    primary.scope.as_mut().unwrap().psm = 13;
+    assert!(primary.validate().is_err());
+    // A line scope lists no hosts of its own, names its evidence, and needs its page scope.
+    let mut hosts = t.clone();
+    hosts.policies[1]
+        .hosts
+        .insert(format!("sha256:{}", "a".repeat(64)), [7].into());
+    assert!(hosts.validate().is_err());
+    let mut silent = t.clone();
+    silent.policies[1].line_basis.as_mut().unwrap().evidence = " ".into();
+    assert!(silent.validate().is_err());
+    let mut orphan = t.clone();
+    orphan.policies[1]
+        .line_basis
+        .as_mut()
+        .unwrap()
+        .page_scope
+        .profile = "fra".into();
+    assert!(orphan.validate().is_err());
+    // A page scope at PSM 13 is refused, line basis or not.
+    let mut page13 = t.clone();
+    page13.policies[1].scope.language = "eng".into();
+    assert!(page13.validate().is_err());
+}
+
+#[test]
+fn line_jobs_take_their_basis_hosts_and_page_jobs_their_own() {
+    let image = format!("sha256:{}", "a".repeat(64));
+    let t = with_line_scope(0.1);
+    let job = line_job(&image);
+    assert_eq!(t.refuse_job(&job, Some(7)), None);
+    assert_eq!(t.trusted_hosts_for_job(&job), BTreeSet::from([7]));
+    assert!(t.refuse_job(&job, Some(8)).is_some());
+    // A basis looser than the line scope allows trusts no line job.
+    assert!(with_line_scope(0.05).refuse_job(&job, Some(7)).is_some());
+    // A hold on the basis holds its line jobs.
+    let mut held = t.clone();
+    held.policies[0].hold = Some("held".into());
+    held.policies[0].hosts.clear();
+    held.hosts.clear();
+    held.scope = Some(Scope {
+        language: "deu".into(),
+        ..scope()
+    });
+    held.policies.push(ScopedPolicy {
+        hosts: BTreeMap::new(),
+        manifest_sha256: MANIFEST.into(),
+        scope: Scope {
+            language: "deu".into(),
+            ..scope()
+        },
+        max_cer: 0.1,
+        hold: None,
+        line_basis: None,
+    });
+    held.validate().unwrap();
+    assert!(held.scope_hold(&job).is_some());
+    // Without a line scope, a PSM-3 page policy refuses every line job; the page job still
+    // goes by its page scope, as before.
+    let mut page_only = t.clone();
+    page_only.policies.clear();
+    assert!(page_only.refuse_job(&job, Some(7)).is_some());
+    let mut page: usnm_ocr_contract::boinc::Job = serde_json::from_str(include_str!(
+        "../../../usnm-ocr-contract/src/fixtures/boinc-tesseract.json"
+    ))
+    .unwrap();
+    page.engine.image = image;
+    page.id = page.identity().unwrap();
+    assert_eq!(t.refuse_job(&page, Some(7)), None);
+    assert_eq!(page_only.refuse_job(&page, Some(7)), None);
+    // A line job's hosts are never admitted into its line scope.
+    assert!(t
+        .policy_for("chr", "chr_phoenix")
+        .unwrap()
+        .line_basis
+        .is_some());
 }

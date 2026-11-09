@@ -40,6 +40,17 @@ pub const TESSERACT_FILE: &str = "usnm_tesseract";
 pub const WORKER_FILE: &str = "usnm_ocr";
 /// A model's open name is this followed by its file name.
 pub const MODEL_PREFIX: &str = "tessdata_";
+/// A model's notice and licence, which its licence says ship with it (Apache-2.0 section 4):
+/// `notice_<model>_<file>`. The engine image keeps them in `/opt/tessdata/notices/<model>/`.
+pub const NOTICE_PREFIX: &str = "notice_";
+/// The models whose releases carry a notice and licence, their files, and the release's
+/// `SHA256SUMS` (the repository's copy, which `ocr/engines/tesseract/Containerfile` pins by
+/// hash): chr_phoenix (#1621).
+pub const NOTICES: &[(&str, &[&str], &str)] = &[(
+    "chr_phoenix",
+    &["NOTICE.md", "LICENSE-Apache-2.0.txt"],
+    include_str!("../../../ocr/models/chr-phoenix/SHA256SUMS"),
+)];
 pub const MANIFEST_VERSION: u32 = 1;
 const MAX_MANIFEST: usize = 64 << 10;
 const MAX_BUILD_FILE: u64 = 256 << 20;
@@ -109,6 +120,29 @@ fn locked_models() -> anyhow::Result<BTreeMap<String, String>> {
     Ok(models)
 }
 
+/// The locked notices, by open name, each with its path under the tessdata directory
+/// (`notices/<model>/<file>`), from the release's `SHA256SUMS`.
+fn locked_notices() -> anyhow::Result<BTreeMap<String, (String, String)>> {
+    let mut out = BTreeMap::new();
+    for (model, files, sums) in NOTICES {
+        for file in *files {
+            let sum = sums
+                .lines()
+                .find_map(|l| {
+                    let (sum, name) = l.split_once("  ")?;
+                    (name == *file).then_some(sum)
+                })
+                .with_context(|| format!("{model}'s SHA256SUMS has no {file}"))?;
+            ensure!(is_sha256(sum), "{model}'s {file} has no sha256");
+            out.insert(
+                format!("{NOTICE_PREFIX}{model}_{file}"),
+                (format!("notices/{model}/{file}"), sum.to_owned()),
+            );
+        }
+    }
+    Ok(out)
+}
+
 impl Manifest {
     fn validate(&self) -> anyhow::Result<()> {
         ensure!(self.v == MANIFEST_VERSION, "unsupported build manifest");
@@ -126,14 +160,21 @@ impl Manifest {
             ensure!(self.files.contains_key(name), "the build has no {name}");
         }
         let models = locked_models()?;
+        let notices = locked_notices()?;
         ensure!(
-            self.files.len() == models.len() + 2,
+            self.files.len() == models.len() + notices.len() + 2,
             "the build's files aren't the locked set"
         );
         for (name, sum) in models {
             ensure!(
                 self.files.get(&name).is_some_and(|f| f.sha256 == sum),
                 "the build's {name} isn't the locked model"
+            );
+        }
+        for (name, (_, sum)) in notices {
+            ensure!(
+                self.files.get(&name).is_some_and(|f| f.sha256 == sum),
+                "the build's {name} isn't the model release's notice"
             );
         }
         Ok(())
@@ -155,8 +196,9 @@ fn digest(path: &Path) -> anyhow::Result<BuildFile> {
     Ok(BuildFile { bytes, sha256 })
 }
 
-/// Writes the build's manifest. Refuses a model that isn't the locked one, and an engine that
-/// isn't the locked engine version.
+/// Writes the build's manifest. Refuses a model that isn't the locked one, a notice that isn't
+/// its release's (`<tessdata>/notices/<model>/<file>`), and an engine that isn't the locked
+/// engine version.
 pub fn write_manifest(
     worker: &Path,
     tesseract: &Path,
@@ -169,6 +211,9 @@ pub fn write_manifest(
     for name in locked_models()?.keys() {
         let file = name.strip_prefix(MODEL_PREFIX).context("model name")?;
         files.insert(name.clone(), digest(&tessdata.join(file))?);
+    }
+    for (name, (path, _)) in locked_notices()? {
+        files.insert(name, digest(&tessdata.join(path))?);
     }
     let version = Command::new(tesseract).arg("--version").output()?;
     let version = String::from_utf8_lossy(&version.stdout);
@@ -242,8 +287,10 @@ fn read_unit(work: &Path) -> anyhow::Result<Unit> {
             restart_after_suspend: false,
         });
     }
-    let job: Job =
-        serde_json::from_slice(&crate::read(&work.join("request.json"), boinc::MAX_JSON)?)?;
+    let job: Job = serde_json::from_slice(&crate::read(
+        &work.join("request.json"),
+        boinc::MAX_REQUEST,
+    )?)?;
     job.validate()?;
     Ok(Unit {
         image: job.engine.image,

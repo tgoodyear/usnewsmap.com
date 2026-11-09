@@ -91,6 +91,20 @@ pub async fn submit_checked(
     download: Option<&Download>,
     native: Option<&RetryNative<'_>>,
 ) -> anyhow::Result<()> {
+    submit_pinned(root, project, id, download, native, None).await
+}
+
+/// [`submit_checked`], pinned to the `usnm_ocr` version `pin` (`--app_version_num`). A line job
+/// (#1621) that isn't a retry needs one, so a worker that predates line jobs never gets it; a
+/// retry is pinned by its own record.
+pub async fn submit_pinned(
+    root: &Path,
+    project: &Path,
+    id: &str,
+    download: Option<&Download>,
+    native: Option<&RetryNative<'_>>,
+    pin: Option<u32>,
+) -> anyhow::Result<()> {
     let _lock = Lock::take(root)?;
     let project = project.canonicalize()?;
     let mut record = load(root, id)?;
@@ -99,6 +113,15 @@ pub async fn submit_checked(
         "job is not reserved; uncertain submissions require reconciliation"
     );
     let is_retry = record.retry.is_some();
+    let pin = if is_retry {
+        None
+    } else {
+        pin.filter(|v| *v > 0)
+    };
+    ensure!(
+        record.job.lines.is_none() || is_retry || pin.is_some(),
+        "a line job needs --app-version-num, the usnm_ocr version whose worker reads line jobs"
+    );
     let expected = record.queued()?;
     ensure!(
         !is_retry || native.is_some(),
@@ -107,7 +130,7 @@ pub async fn submit_checked(
     let input = dir(root, id)?;
     let job: usnm_ocr_contract::boinc::Job = serde_json::from_slice(&read(
         &input.join("request.json"),
-        usnm_ocr_contract::boinc::MAX_JSON,
+        usnm_ocr_contract::boinc::MAX_REQUEST,
     )?)?;
     ensure!(job == record.job, "staged request changed");
     let scan = read(&input.join("page"), usnm_ocr_contract::boinc::MAX_SCAN)?;
@@ -148,7 +171,7 @@ pub async fn submit_checked(
         let result = async {
             for (logical, limit) in [
                 ("page", usnm_ocr_contract::boinc::MAX_SCAN),
-                ("request.json", usnm_ocr_contract::boinc::MAX_JSON),
+                ("request.json", usnm_ocr_contract::boinc::MAX_REQUEST),
             ] {
                 if logical == "page" && remote.is_some() {
                     continue;
@@ -206,6 +229,8 @@ pub async fn submit_checked(
             ]);
             if let Some(retry) = &record.retry {
                 command.args(["--app_version_num", &retry.app_version_num.to_string()]);
+            } else if let Some(pin) = pin {
+                command.args(["--app_version_num", &pin.to_string()]);
             }
             // Stock create_work inserts remote_file at this exact input position.
             // Template file 0 opens as page, file 1 as request.json.

@@ -20,6 +20,7 @@ on:
       - Cargo.lock
       - rust-toolchain.toml
       # Files the crates it builds embed (scripts/ci/changes.sh finds them).
+      - "ocr/models/chr-phoenix/SHA256SUMS"
       - "docs/notes/2026-11-05-german-trust-hold.json"
       - "docs/notes/2026-11-07-serbian-trust-hold.json"
       - "fixtures/ocr-gold/bundle-v1.lock.json"
@@ -91,6 +92,25 @@ jobs:
             curl -fsSL --retry 10 --retry-all-errors --retry-delay 5 -o "$name" "$url"
             echo "$sum  $name" | sha256sum --check --quiet
             cp "$name" "build/tessdata_${name#tessdata/}"
+          done
+      # A model's notice and licence ship with it (Apache-2.0 section 4): chr_phoenix's, from its
+      # release, each checked against the release's SHA256SUMS, itself checked against the hash
+      # ocr/engines/tesseract/Containerfile pins (#1621).
+      - name: Fetch the models' notices
+        run: |
+          base=$(sed -n 's/^ARG CHR_PHOENIX_RELEASE=//p' ocr/engines/tesseract/Containerfile)
+          sums=$(sed -n 's/^ARG CHR_PHOENIX_SUMS=//p' ocr/engines/tesseract/Containerfile)
+          mkdir -p tessdata/notices/chr_phoenix
+          cd tessdata/notices/chr_phoenix
+          for name in SHA256SUMS NOTICE.md LICENSE-Apache-2.0.txt; do
+            curl -fsSL --retry 10 --retry-all-errors --retry-delay 5 -o "$name" "$base/$name"
+          done
+          echo "$sums  SHA256SUMS" | sha256sum --check --quiet
+          grep -E '  (NOTICE\.md|LICENSE-Apache-2\.0\.txt)$' SHA256SUMS > checked
+          [ "$(wc -l < checked)" -eq 2 ]
+          sha256sum --check --quiet checked
+          for name in NOTICE.md LICENSE-Apache-2.0.txt; do
+            cp "$name" "$GITHUB_WORKSPACE/build/notice_chr_phoenix_$name"
           done
       - name: Make the build manifest
         # bash -eo pipefail, so tee doesn't hide a failure.

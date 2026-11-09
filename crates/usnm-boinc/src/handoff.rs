@@ -73,6 +73,34 @@ pub async fn get_file(store: &dyn ObjectStore, path: &str, to: &Path) -> anyhow:
     crate::atomic(to, &bytes)
 }
 
+/// A line job's sidecars (#1621), from the dispatch root in `store`: exactly
+/// `dispatch/jobs/<id>/line-read/loc.xml` and `.../record.json`, beside the job's record under
+/// `root` (which must be there already, to say it is a line job), and checked against each
+/// other. Nothing for a page job. Returns how many objects it copied.
+pub async fn get_line_read(
+    store: &dyn ObjectStore,
+    root: &Path,
+    id: &str,
+) -> anyhow::Result<usize> {
+    let record = load(root, id)?;
+    if record.job.lines.is_none() {
+        return Ok(0);
+    }
+    let job_dir = dir(root, id)?;
+    let mut n = 0;
+    for file in [crate::lines::LOC_ALTO_FILE, crate::lines::LINE_READ_FILE] {
+        get_file(
+            store,
+            &format!("{DISPATCH}/jobs/{id}/{file}"),
+            &job_dir.join(file),
+        )
+        .await?;
+        n += 1;
+    }
+    crate::lines::sidecars(&job_dir)?;
+    Ok(n)
+}
+
 /// Every regular file under `dir`, as `/`-separated paths below it, without the lock and
 /// unfinished temporary files.
 fn files(dir: &Path) -> anyhow::Result<Vec<String>> {
@@ -119,8 +147,8 @@ pub async fn put(store: &dyn ObjectStore, from: &Path, prefix: &str) -> anyhow::
 /// The three files an exported job needs on the server, with their size limits.
 const JOB_FILES: [(&str, usize); 3] = [
     ("page", boinc::MAX_SCAN),
-    ("request.json", boinc::MAX_JSON),
-    ("record.json", boinc::MAX_JSON * 2),
+    ("request.json", boinc::MAX_REQUEST),
+    ("record.json", boinc::MAX_REQUEST * 2),
 ];
 
 /// What `pull` found.

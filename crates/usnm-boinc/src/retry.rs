@@ -33,7 +33,7 @@ pub fn validate(record: &Record) -> anyhow::Result<()> {
         Some(retry) => {
             ensure!(
                 record.job.attempt > 0
-                    && record.job.v == boinc::RETRY_VERSION
+                    && record.job.v == boinc::Job::version_for(true, record.job.lines.is_some())
                     && boinc::is_sha256(&retry.previous_job)
                     && retry.previous_job != record.job.id
                     && record.job.retry_of.as_ref() == Some(&retry.previous_job)
@@ -173,7 +173,7 @@ pub async fn prepare(
     let snapshot = Snapshot::load(state, reference).await?;
     let now = Utc::now();
     let mut job = previous.job.clone();
-    job.v = boinc::RETRY_VERSION;
+    job.v = boinc::Job::version_for(true, job.lines.is_some());
     job.attempt = job.attempt.checked_add(1).context("attempt overflow")?;
     job.retry_of = Some(previous.job.id.clone());
     job.engine.image = opts.image.into();
@@ -232,6 +232,11 @@ pub async fn prepare(
                 && boinc::sha256(&scan) == record.job.scan.sha256,
             "original cached scan changed"
         );
+        // A line job's sidecars go with it (#1621): its import merges against them. Copied
+        // again on a resumed preparation, checked each time.
+        if record.job.lines.is_some() {
+            crate::lines::copy_sidecars(&previous_dir, &child_dir)?;
+        }
         let expected = record.queued()?;
         usnm_ocr_local::boinc::retry(
             state,
@@ -721,5 +726,157 @@ mod tests {
         assert_eq!(terminal.error_mask, Some(2));
         assert!(!terminal.no_output_files);
         assert_eq!(terminal.marker_sha256, Some(boinc::sha256(b"0x2\n")));
+    }
+
+    /// A line job's retry carries its sidecars (#1621), checked, also when preparation resumes.
+    #[tokio::test]
+    async fn a_line_jobs_retry_carries_its_sidecars() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("jobs-root");
+        let spool = temp.path().join("spool");
+        std::fs::create_dir(&spool).unwrap();
+        let curated = usnm_store::open(temp.path().join("curated").to_str().unwrap()).unwrap();
+        let reference = usnm_store::open(temp.path().join("reference").to_str().unwrap()).unwrap();
+        let state = State::new(Arc::new(MemoryDocs::default()));
+        state.set_current_version("v1").await.unwrap();
+        reference.put_new("v1/batches.json", br#"[{"batch":"test_batch","curated":{"version":1,"parts":[],"counts":"","pages":1,"ok_pages":1,"lccns":["sn00000001"],"source_sha256":"","first":"","last":""}}]"#.to_vec(), "application/json").await.unwrap();
+        reference
+            .put_new(
+                "v1/titles.json",
+                br#"[{"lccn":"sn00000001","languages":["eng"]}]"#.to_vec(),
+                "application/json",
+            )
+            .await
+            .unwrap();
+        let mut job: Job = serde_json::from_str(include_str!(
+            "../../usnm-ocr-contract/src/fixtures/boinc-tesseract.json"
+        ))
+        .unwrap();
+        let page = b"cached scan";
+        job.scan.bytes = page.len() as u64;
+        job.scan.sha256 = boinc::sha256(page);
+        job.v = boinc::LINES_VERSION;
+        job.engine.profile = "chr_phoenix".into();
+        job.engine.psm = boinc::LINE_PSM;
+        job.lines = Some(boinc::LineRead {
+            language: "chr".into(),
+            psm: boinc::LINE_PSM,
+            lines: vec![boinc::LineBox {
+                id: "b1l0".into(),
+                rect: [1, 1, 9, 9],
+            }],
+        });
+        job.id = job.identity().unwrap();
+        job.validate().unwrap();
+        let parent = terminal_error_record(job);
+        save(&root, &parent).unwrap();
+        let parent_path = dir(&root, &parent.job.id).unwrap();
+        atomic(&parent_path.join("page"), page).unwrap();
+        let loc = b"<alto/>";
+        let line_read = crate::lines::LineReadRecord {
+            loc_alto_sha256: boinc::sha256(loc),
+            scan_height: 10,
+            scan_width: 10,
+            title_languages: vec!["eng".into()],
+        };
+        atomic(&parent_path.join(crate::lines::LOC_ALTO_FILE), loc).unwrap();
+        atomic(
+            &parent_path.join(crate::lines::LINE_READ_FILE),
+            &serde_json::to_vec(&line_read).unwrap(),
+        )
+        .unwrap();
+        atomic(
+            &spool.join(format!("{}_error", parent.job.workunit())),
+            b"0x2\n",
+        )
+        .unwrap();
+        let previous = parent.queued().unwrap();
+        let events = usnm_store::queue::LocalQueue::new(temp.path().join("events"));
+        dead_letter(&parent, curated.as_ref(), &events)
+            .await
+            .unwrap();
+        ledger::write_queued(
+            curated.as_ref(),
+            std::slice::from_ref(&previous),
+            previous.queued_at,
+            "prior",
+        )
+        .await
+        .unwrap();
+        let at = previous.queued_at + chrono::Duration::minutes(1);
+        ledger::write_outcomes(
+            curated.as_ref(),
+            &[ledger::Outcome {
+                doc_id: previous.doc_id.clone(),
+                outcome: ledger::DEAD_LETTERED.into(),
+                cause: Some("permanent".into()),
+                kind: None,
+                source: "prior-dead-letter".into(),
+                at,
+                run: "prior".into(),
+                message_sha256: Some(boinc::sha256(
+                    &serde_json::to_vec(&parent.job.message).unwrap(),
+                )),
+            }],
+            at,
+            "prior",
+        )
+        .await
+        .unwrap();
+        let image = format!("sha256:{}", "b".repeat(64));
+        let opts = Options {
+            root: &root,
+            spool: &spool,
+            previous_job: &parent.job.id,
+            expected: ExpectedTerminal::Mask(2),
+            app_version_num: 27,
+            image: &image,
+            reviewed_reason: "reviewed terminal marker and settled native row",
+            timeout_secs: None,
+            handoff: curated.as_ref(),
+        };
+        // A tampered LoC ALTO is refused before anything is reserved.
+        atomic(&parent_path.join(crate::lines::LOC_ALTO_FILE), b"<other/>").unwrap();
+        assert!(prepare(&opts, &state, curated.as_ref(), reference.as_ref())
+            .await
+            .is_err());
+        atomic(&parent_path.join(crate::lines::LOC_ALTO_FILE), loc).unwrap();
+        let id = prepare(&opts, &state, curated.as_ref(), reference.as_ref())
+            .await
+            .unwrap();
+        let child = load(&root, &id).unwrap();
+        assert_eq!(child.job.v, boinc::LINES_RETRY_VERSION);
+        let child_path = dir(&root, &id).unwrap();
+        let (got, record) = crate::lines::sidecars(&child_path).unwrap();
+        assert_eq!((got.as_slice(), record), (&loc[..], line_read.clone()));
+        // An interrupted preparation that lost them gets them back when it resumes.
+        std::fs::remove_dir_all(child_path.join(crate::lines::LINE_READ_DIR)).unwrap();
+        let mut interrupted = child.clone();
+        interrupted.stage = Stage::Prepared;
+        save(&root, &interrupted).unwrap();
+        assert_eq!(
+            prepare(&opts, &state, curated.as_ref(), reference.as_ref())
+                .await
+                .unwrap(),
+            id
+        );
+        crate::lines::sidecars(&child_path).unwrap();
+    }
+
+    fn terminal_error_record(job: Job) -> Record {
+        let terminal_error = crate::terminal_reason(Some(b"0x2\n"), job.engine.timeout_secs);
+        Record {
+            job,
+            plan: "reviewed-retry".into(),
+            stage: Stage::Failed,
+            stamp: "prior".into(),
+            error: Some(terminal_error),
+            terminal: Some(TerminalFailure::from_marker(Some(b"0x2\n"))),
+            retry: None,
+            ledger: None,
+            bundle: None,
+            unbundled: None,
+            held: None,
+        }
     }
 }

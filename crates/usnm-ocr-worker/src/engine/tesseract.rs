@@ -11,7 +11,7 @@ use usnm_core::ocr_engine::{Digest, Fields, OcrEngineTag, TagError};
 use super::{
     check_image_ref, image_digest, invalid_output, models_digest, models_from_lock, read_output,
     route_with_catalog, tail, Engine, EngineError, EngineOutput, Exited, ReadFailed, ReadInfo,
-    Runner, Sandbox, CONTRACT, MAX_ALTO, MAX_TEXT, MODELS_LOCK, ROUTE, ROUTE_VERSION,
+    RouteFor, Runner, Sandbox, CONTRACT, MAX_ALTO, MAX_TEXT, MODELS_LOCK, ROUTE, ROUTE_VERSION,
 };
 
 #[derive(Debug, Clone)]
@@ -58,6 +58,60 @@ pub(super) fn parse_langs(out: &str) -> BTreeSet<String> {
         .filter(|l| !l.is_empty() && !l.contains(' '))
         .map(str::to_owned)
         .collect()
+}
+
+/// What Tesseract read on one line crop.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LineReading {
+    /// The words, joined by single spaces; empty when it found none.
+    pub text: String,
+    /// The words' mean confidence, 0 to 1.
+    pub conf: Option<f64>,
+}
+
+/// Each image's words from Tesseract's TSV of a multi-image run: rows of level 5 are words,
+/// and `page_num` counts the images from 1.
+pub(crate) fn parse_line_tsv(tsv: &str, images: usize) -> anyhow::Result<Vec<LineReading>> {
+    let mut words: Vec<Vec<(String, Option<f64>)>> = vec![Vec::new(); images];
+    let mut lines = tsv.lines();
+    let header = lines.next().unwrap_or_default();
+    anyhow::ensure!(
+        header.starts_with("level\tpage_num\t") && header.ends_with("\tconf\ttext"),
+        "not Tesseract's TSV"
+    );
+    for row in lines {
+        let fields: Vec<&str> = row.split('\t').collect();
+        anyhow::ensure!(fields.len() == 12, "TSV row has {} fields", fields.len());
+        if fields[0] != "5" {
+            continue;
+        }
+        let page: usize = fields[1].parse().context("TSV page_num")?;
+        anyhow::ensure!(
+            (1..=images).contains(&page),
+            "TSV page {page} of {images} crops"
+        );
+        let text = fields[11].trim();
+        if text.is_empty() {
+            continue;
+        }
+        let conf: f64 = fields[10].parse().context("TSV conf")?;
+        let conf = (conf >= 0.0).then(|| (conf / 100.0).clamp(0.0, 1.0));
+        words[page - 1].push((text.to_owned(), conf));
+    }
+    Ok(words
+        .into_iter()
+        .map(|w| {
+            let confs: Vec<f64> = w.iter().filter_map(|(_, c)| *c).collect();
+            LineReading {
+                text: w
+                    .iter()
+                    .map(|(t, _)| t.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" "),
+                conf: (!confs.is_empty()).then(|| confs.iter().sum::<f64>() / confs.len() as f64),
+            }
+        })
+        .collect())
 }
 
 #[derive(Debug, Clone)]
@@ -163,7 +217,89 @@ impl Tesseract {
             &tesseract_id(&self.version),
             language,
             &self.installed,
+            RouteFor::Page,
         )
+    }
+
+    /// The profile a line job for `language` reads with (#1621), a lines-only one included.
+    pub fn line_profile(&self, language: &str) -> Option<String> {
+        route_with_catalog(
+            &self.catalog,
+            &tesseract_id(&self.version),
+            language,
+            &self.installed,
+            RouteFor::Lines,
+        )
+    }
+
+    /// Reads `crops`, image files in `work` holding one printed line each, with the line
+    /// profile for `language`, in one Tesseract run over a list of them (Tesseract reads a
+    /// text file of image paths as a multi-page input). Each crop's reading is its words
+    /// joined by spaces, with their mean confidence (0 to 1); a crop with no words reads as
+    /// empty. Runs the host binary only: a line job is a BOINC job.
+    pub async fn read_lines(
+        &self,
+        crops: &[std::path::PathBuf],
+        language: &str,
+        work: &Path,
+    ) -> Result<Vec<LineReading>, EngineError> {
+        let models = self
+            .line_profile(language)
+            .ok_or_else(|| EngineError::Unsupported(language.to_owned()))?;
+        if self.sandbox.is_some() || !matches!(self.runner, Runner::Host(_)) {
+            return Err(anyhow::anyhow!("line reads run the host's Tesseract").into());
+        }
+        let mut list = String::new();
+        for crop in crops {
+            let name = match crop.parent() {
+                Some(p) if p == work => crop.file_name().and_then(|n| n.to_str()),
+                _ => None,
+            }
+            .context("a line crop must be a UTF-8 file name in the scratch directory")?;
+            if name.contains(['\n', '\r']) {
+                return Err(anyhow::anyhow!("line crop name holds a line break").into());
+            }
+            list.push_str(name);
+            list.push('\n');
+        }
+        std::fs::write(work.join("lines.txt"), list).context("writing the line list")?;
+        let (mut cmd, _guard) = self.runner.command(self.threads, Some(work), None);
+        let child = cmd
+            .args(["lines.txt", "lines"])
+            .args(["-l", models.as_str(), "--psm", &self.psm.to_string()])
+            .args(["--dpi", &self.dpi.to_string()])
+            // A variable, not the `tsv` config file: the native build ships `txt` and `alto`
+            // only.
+            .args(["-c", "tessedit_create_tsv=1"])
+            .kill_on_drop(true)
+            .output();
+        let out = tokio::time::timeout(self.timeout, child)
+            .await
+            .map_err(|_| {
+                ReadFailed::error(
+                    "timeout",
+                    "engine_timeout",
+                    format!("tesseract took over {:?}", self.timeout),
+                )
+            })?
+            .context("running tesseract")?;
+        if !out.status.success() {
+            let err = String::from_utf8_lossy(&out.stderr);
+            return Err(anyhow::Error::new(Exited {
+                status: out.status,
+                stderr: tail(&err, 400),
+            })
+            .into());
+        }
+        let tsv = read_output(&work.join("lines.tsv"), MAX_TEXT).with_context(|| {
+            format!(
+                "tesseract wrote no line TSV; it said: {}",
+                tail(&String::from_utf8_lossy(&out.stderr), 400)
+            )
+        })?;
+        let tsv = String::from_utf8(tsv)
+            .map_err(|_| invalid_output("tesseract's TSV isn't UTF-8".into()))?;
+        parse_line_tsv(&tsv, crops.len()).map_err(|e| invalid_output(format!("{e:#}")).into())
     }
 
     pub fn version(&self) -> &str {
@@ -434,6 +570,86 @@ impl Tesseract {
             models_json,
             options_json: serde_json::json!({ "dpi": self.dpi, "psm": self.psm }).to_string(),
             ..ReadInfo::local("tesseract")
+        }
+    }
+}
+
+#[cfg(test)]
+mod line_tests {
+    use super::*;
+
+    const HEADER: &str =
+        "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext";
+
+    #[test]
+    fn line_tsv_gives_each_crop_its_words() {
+        let tsv = format!(
+            "{HEADER}\n\
+             1\t1\t0\t0\t0\t0\t0\t0\t100\t30\t-1\t\n\
+             5\t1\t1\t1\t1\t1\t2\t2\t40\t20\t90.0\tᏣᎳᎩ\n\
+             5\t1\t1\t1\t1\t2\t50\t2\t40\t20\t70.0\tᎦᏬᏂᎯᏍᏗ\n\
+             1\t2\t0\t0\t0\t0\t0\t0\t100\t30\t-1\t\n\
+             1\t3\t0\t0\t0\t0\t0\t0\t100\t30\t-1\t\n\
+             5\t3\t1\t1\t1\t1\t2\t2\t40\t20\t-1\t \n\
+             5\t3\t1\t1\t1\t2\t2\t2\t40\t20\t50\tᎠ\n"
+        );
+        let got = parse_line_tsv(&tsv, 3).unwrap();
+        assert_eq!(got[0].text, "ᏣᎳᎩ ᎦᏬᏂᎯᏍᏗ");
+        assert!((got[0].conf.unwrap() - 0.8).abs() < 1e-9);
+        assert_eq!(
+            got[1],
+            LineReading {
+                text: String::new(),
+                conf: None
+            }
+        );
+        assert_eq!(got[2].text, "Ꭰ");
+        assert_eq!(got[2].conf, Some(0.5));
+        assert!(parse_line_tsv(&tsv, 2).is_err());
+        assert!(parse_line_tsv("not a tsv", 1).is_err());
+        assert!(parse_line_tsv(&format!("{HEADER}\n5\t1\t1"), 1).is_err());
+        assert_eq!(parse_line_tsv(HEADER, 2).unwrap().len(), 2);
+    }
+
+    /// The host's Tesseract, when it has one with `eng`: a list of crops is read in one run,
+    /// each crop's words under its own index, and a blank crop reads as empty or as noise.
+    #[tokio::test]
+    async fn reads_a_list_of_line_crops_with_the_host_tesseract() {
+        let Ok(t) = Tesseract::detect(TesseractOptions {
+            psm: 13,
+            ..TesseractOptions::default()
+        })
+        .await
+        else {
+            eprintln!("no host Tesseract; skipped");
+            return;
+        };
+        if !t.installed().contains("eng") {
+            eprintln!("no eng model; skipped");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let mut crops = Vec::new();
+        for (i, black) in [true, false].into_iter().enumerate() {
+            // A thick bar reads as something or nothing; what matters is the shape of the result.
+            let img = image::GrayImage::from_fn(300, 60, |x, y| {
+                image::Luma([
+                    if black && (20..280).contains(&x) && (25..35).contains(&y) {
+                        0
+                    } else {
+                        255
+                    },
+                ])
+            });
+            let path = dir.path().join(format!("line-{i:04}.png"));
+            img.save(&path).unwrap();
+            crops.push(path);
+        }
+        assert_eq!(t.line_profile("eng").as_deref(), Some("eng"));
+        let got = t.read_lines(&crops, "eng", dir.path()).await.unwrap();
+        assert_eq!(got.len(), 2);
+        if !t.installed().contains("chr_phoenix") {
+            assert!(t.read_lines(&crops, "chr", dir.path()).await.is_err());
         }
     }
 }
