@@ -2,170 +2,169 @@
  "dev": {
   "0.5": {
    "all": {
-    "l->chr": 2,
-    "l->eng": 919,
-    "o->chr": 12,
-    "o->eng": 376,
-    "s->chr": 10744,
-    "s->eng": 70
+    "l->chr": 3,
+    "l->eng": 918,
+    "o->chr": 10,
+    "o->eng": 378,
+    "s->chr": 10761,
+    "s->eng": 53
    },
    "hand": {
-    "o->eng": 3,
-    "s->chr": 32,
-    "s->eng": 1
+    "o->eng": 2,
+    "s->chr": 29
    },
    "rule": {
-    "o->chr": 11,
-    "o->eng": 332,
-    "s->chr": 9420,
-    "s->eng": 54
+    "o->chr": 8,
+    "o->eng": 335,
+    "s->chr": 9431,
+    "s->eng": 43
    },
    "synth": {
-    "l->chr": 2,
-    "l->eng": 919,
-    "o->chr": 1,
+    "l->chr": 3,
+    "l->eng": 918,
+    "o->chr": 2,
     "o->eng": 41,
-    "s->chr": 1292,
-    "s->eng": 15
+    "s->chr": 1301,
+    "s->eng": 10
    }
   },
   "0.7": {
    "all": {
-    "l->chr": 2,
-    "l->eng": 919,
-    "o->chr": 14,
-    "o->eng": 374,
-    "s->chr": 10771,
-    "s->eng": 43
+    "l->chr": 4,
+    "l->eng": 917,
+    "o->chr": 15,
+    "o->eng": 373,
+    "s->chr": 10778,
+    "s->eng": 36
    },
    "hand": {
-    "o->eng": 3,
-    "s->chr": 33
+    "o->eng": 2,
+    "s->chr": 29
    },
    "rule": {
-    "o->chr": 12,
-    "o->eng": 331,
-    "s->chr": 9441,
-    "s->eng": 33
+    "o->chr": 13,
+    "o->eng": 330,
+    "s->chr": 9443,
+    "s->eng": 31
    },
    "synth": {
-    "l->chr": 2,
-    "l->eng": 919,
+    "l->chr": 4,
+    "l->eng": 917,
     "o->chr": 2,
-    "o->eng": 40,
-    "s->chr": 1297,
-    "s->eng": 10
+    "o->eng": 41,
+    "s->chr": 1306,
+    "s->eng": 5
    }
   },
   "0.8": {
    "all": {
-    "l->chr": 3,
-    "l->eng": 918,
-    "o->chr": 14,
-    "o->eng": 374,
-    "s->chr": 10784,
-    "s->eng": 30
+    "l->chr": 5,
+    "l->eng": 916,
+    "o->chr": 16,
+    "o->eng": 372,
+    "s->chr": 10786,
+    "s->eng": 28
    },
    "hand": {
-    "o->eng": 3,
-    "s->chr": 33
+    "o->eng": 2,
+    "s->chr": 29
    },
    "rule": {
-    "o->chr": 12,
-    "o->eng": 331,
-    "s->chr": 9451,
-    "s->eng": 23
+    "o->chr": 14,
+    "o->eng": 329,
+    "s->chr": 9450,
+    "s->eng": 24
    },
    "synth": {
-    "l->chr": 3,
-    "l->eng": 918,
+    "l->chr": 5,
+    "l->eng": 916,
     "o->chr": 2,
-    "o->eng": 40,
-    "s->chr": 1300,
-    "s->eng": 7
+    "o->eng": 41,
+    "s->chr": 1307,
+    "s->eng": 4
    }
   },
   "0.9": {
    "all": {
-    "l->chr": 9,
-    "l->eng": 912,
-    "o->chr": 20,
-    "o->eng": 368,
+    "l->chr": 10,
+    "l->eng": 911,
+    "o->chr": 19,
+    "o->eng": 369,
     "s->chr": 10797,
     "s->eng": 17
    },
    "hand": {
-    "o->eng": 3,
-    "s->chr": 33
+    "o->eng": 2,
+    "s->chr": 29
    },
    "rule": {
-    "o->chr": 18,
-    "o->eng": 325,
-    "s->chr": 9460,
-    "s->eng": 14
+    "o->chr": 17,
+    "o->eng": 326,
+    "s->chr": 9459,
+    "s->eng": 15
    },
    "synth": {
-    "l->chr": 9,
-    "l->eng": 912,
+    "l->chr": 10,
+    "l->eng": 911,
     "o->chr": 2,
-    "o->eng": 40,
-    "s->chr": 1304,
-    "s->eng": 3
+    "o->eng": 41,
+    "s->chr": 1309,
+    "s->eng": 2
    }
   },
   "0.95": {
    "all": {
-    "l->chr": 13,
-    "l->eng": 908,
-    "o->chr": 32,
-    "o->eng": 356,
-    "s->chr": 10801,
-    "s->eng": 13
-   },
-   "hand": {
-    "o->eng": 3,
-    "s->chr": 33
-   },
-   "rule": {
-    "o->chr": 29,
-    "o->eng": 314,
-    "s->chr": 9462,
+    "l->chr": 12,
+    "l->eng": 909,
+    "o->chr": 25,
+    "o->eng": 363,
+    "s->chr": 10802,
     "s->eng": 12
    },
+   "hand": {
+    "o->eng": 2,
+    "s->chr": 29
+   },
+   "rule": {
+    "o->chr": 23,
+    "o->eng": 320,
+    "s->chr": 9463,
+    "s->eng": 11
+   },
    "synth": {
-    "l->chr": 13,
-    "l->eng": 908,
-    "o->chr": 3,
-    "o->eng": 39,
-    "s->chr": 1306,
+    "l->chr": 12,
+    "l->eng": 909,
+    "o->chr": 2,
+    "o->eng": 41,
+    "s->chr": 1310,
     "s->eng": 1
    }
   },
   "0.98": {
    "all": {
-    "l->chr": 26,
-    "l->eng": 895,
-    "o->chr": 46,
-    "o->eng": 342,
+    "l->chr": 21,
+    "l->eng": 900,
+    "o->chr": 40,
+    "o->eng": 348,
     "s->chr": 10806,
     "s->eng": 8
    },
    "hand": {
-    "o->eng": 3,
-    "s->chr": 33
+    "o->eng": 2,
+    "s->chr": 29
    },
    "rule": {
-    "o->chr": 42,
-    "o->eng": 301,
+    "o->chr": 38,
+    "o->eng": 305,
     "s->chr": 9467,
     "s->eng": 7
    },
    "synth": {
-    "l->chr": 26,
-    "l->eng": 895,
-    "o->chr": 4,
-    "o->eng": 38,
-    "s->chr": 1306,
+    "l->chr": 21,
+    "l->eng": 900,
+    "o->chr": 2,
+    "o->eng": 41,
+    "s->chr": 1310,
     "s->eng": 1
    }
   }
@@ -174,135 +173,135 @@
  "importance": [
   [
    "cnn_s",
-   0.7268
-  ],
-  [
-   "chr_n",
-   0.0134
+   1.0431
   ],
   [
    "chr_conf",
-   0.0075
+   0.0068
   ],
   [
    "eng_conf_minus_chr",
    0.0065
   ],
   [
-   "word_h_rel",
-   0.0047
+   "chr_n",
+   0.005
   ],
   [
    "cnn_l",
-   0.0027
-  ],
-  [
-   "eng_bigram",
-   0.0026
-  ],
-  [
-   "line_eng_lower",
-   0.0024
-  ],
-  [
-   "word_q_sharpness",
-   0.0023
-  ],
-  [
-   "d_tall",
-   0.0012
-  ],
-  [
-   "right_chr_conf",
-   0.0012
-  ],
-  [
-   "eng_shared_caps",
-   0.001
-  ],
-  [
-   "eng_english_long",
-   0.0009
-  ],
-  [
-   "chr_cherokee",
-   0.0009
-  ],
-  [
-   "eng_digits",
-   0.0008
+   0.0029
   ],
   [
    "chr_digits",
+   0.0023
+  ],
+  [
+   "word_w_rel",
+   0.002
+  ],
+  [
+   "eng_shared_caps",
+   0.002
+  ],
+  [
+   "eng_bigram",
+   0.0017
+  ],
+  [
+   "chr_cherokee",
+   0.0017
+  ],
+  [
+   "word_q_sharpness",
+   0.001
+  ],
+  [
+   "eng_lower",
+   0.0009
+  ],
+  [
+   "eng_english_long",
    0.0008
   ],
   [
-   "word_tall",
+   "eng_digits",
    0.0007
   ],
   [
-   "word_comp_w",
-   0.0006
+   "right_cnn_l",
+   0.0007
   ],
   [
    "d_comp_w",
    0.0006
   ],
   [
-   "eng_lower",
+   "left_cnn_l",
    0.0006
   ],
   [
-   "next_ink_bot",
-   0.0004
+   "line_cnn_s",
+   0.0006
   ],
   [
-   "line_q_bg_uneven",
-   0.0004
-  ],
-  [
-   "right_cnn_l",
-   0.0004
-  ],
-  [
-   "d_short",
-   0.0003
-  ],
-  [
-   "d_gap",
-   0.0003
-  ],
-  [
-   "eng_n",
-   0.0003
-  ],
-  [
-   "left_cnn_s",
-   0.0003
-  ],
-  [
-   "block_q_sharpness",
-   0.0002
+   "right_chr_conf",
+   0.0005
   ],
   [
    "line_cnn_l",
+   0.0004
+  ],
+  [
+   "word_comp_w",
+   0.0003
+  ],
+  [
+   "left_eng_lower",
+   0.0003
+  ],
+  [
+   "line_eng_lower",
+   0.0003
+  ],
+  [
+   "line_chr_conf",
+   0.0003
+  ],
+  [
+   "right_cnn_s",
+   0.0003
+  ],
+  [
+   "d_tall",
    0.0002
   ],
   [
-   "word_short",
+   "word_q_contrast",
+   0.0002
+  ],
+  [
+   "eng_n",
+   0.0002
+  ],
+  [
+   "word_ink_top",
+   0.0001
+  ],
+  [
+   "word_h_rel",
    0.0001
   ]
  ],
  "labels": {
   "hand/l": 60,
-  "hand/o": 62,
-  "hand/s": 239,
+  "hand/o": 57,
+  "hand/s": 223,
   "rule/l": 3,
   "rule/o": 1739,
   "rule/s": 50985,
   "synth/l": 4626,
-  "synth/o": 204,
-  "synth/s": 6495
+  "synth/o": 209,
+  "synth/s": 6511
  },
  "test_hand": {
   "0.5": {
@@ -323,28 +322,28 @@
    "all": {
     "l->eng": 11,
     "o->eng": 13,
-    "s->chr": 120,
-    "s->eng": 2
+    "s->chr": 118,
+    "s->eng": 4
    },
    "hand": {
     "l->eng": 11,
     "o->eng": 13,
-    "s->chr": 120,
-    "s->eng": 2
+    "s->chr": 118,
+    "s->eng": 4
    }
   },
   "0.8": {
    "all": {
     "l->eng": 11,
     "o->eng": 13,
-    "s->chr": 121,
-    "s->eng": 1
+    "s->chr": 120,
+    "s->eng": 2
    },
    "hand": {
     "l->eng": 11,
     "o->eng": 13,
-    "s->chr": 121,
-    "s->eng": 1
+    "s->chr": 120,
+    "s->eng": 2
    }
   },
   "0.9": {
@@ -364,32 +363,24 @@
   "0.95": {
    "all": {
     "l->eng": 11,
-    "o->chr": 2,
-    "o->eng": 11,
-    "s->chr": 121,
-    "s->eng": 1
+    "o->eng": 13,
+    "s->chr": 122
    },
    "hand": {
     "l->eng": 11,
-    "o->chr": 2,
-    "o->eng": 11,
-    "s->chr": 121,
-    "s->eng": 1
+    "o->eng": 13,
+    "s->chr": 122
    }
   },
   "0.98": {
    "all": {
-    "l->chr": 1,
-    "l->eng": 10,
-    "o->chr": 3,
-    "o->eng": 10,
+    "l->eng": 11,
+    "o->eng": 13,
     "s->chr": 122
    },
    "hand": {
-    "l->chr": 1,
-    "l->eng": 10,
-    "o->chr": 3,
-    "o->eng": 10,
+    "l->eng": 11,
+    "o->eng": 13,
     "s->chr": 122
    }
   }

@@ -597,7 +597,11 @@ def cmd_synth(a):
         for w in d["words"]:
             bx0 = max(0, cut0) + int((w["box"][0] - max(0, dx0)) * scale)
             bx1 = max(0, cut0) + int((w["box"][2] - max(0, dx0)) * scale)
-            recs.append(({"word": "synth-" + w["id"], "loc": w["text"]}, [bx0, htop, bx1, hbot], "l"))
+            # Its own height, moved as the paste was (cut at DY0, scaled, set off by `off`), so its
+            # capitals and descenders are inside the box the glyph CNN's crop is cut from.
+            by0 = min(H - 1, max(0, int((w["box"][1] - DY0) * scale) + off))
+            by1 = min(H, max(by0 + 1, int((w["box"][3] - DY0) * scale) + off))
+            recs.append(({"word": "synth-" + w["id"], "loc": w["text"]}, [bx0, by0, bx1, by1], "l"))
         for w in hw[j + n:]:
             recs.append((w, [w["box"][0] - HX0 + shift, w["box"][1] - HY0, w["box"][2] - HX0 + shift,
                              w["box"][3] - HY0], None))
@@ -684,18 +688,18 @@ def cnn_columns(P, meta):
     return out
 
 
-def load_feats(dirs, cnn=True):
+def load_feats(dirs, cnn=True, cnn_name="cnn.npy"):
     """Feature rows, metadata and names of one or more `features` directories; with the glyph CNN's
     columns appended when every directory has its `cnn.npy` (from `glyph-cnn`)."""
     import numpy as np
     Xs, M = [], []
     names = None
-    with_cnn = cnn and all(os.path.exists(os.path.join(d, "cnn.npy")) for d in dirs)
+    with_cnn = cnn and all(os.path.exists(os.path.join(d, cnn_name)) for d in dirs)
     for d in dirs:
         X = np.load(os.path.join(d, "X.npy"))
         meta = [json.loads(l) for l in open(os.path.join(d, "meta.jsonl"), encoding="utf-8")]
         if with_cnn:
-            X = np.concatenate([X, cnn_columns(np.load(os.path.join(d, "cnn.npy")), meta)], axis=1)
+            X = np.concatenate([X, cnn_columns(np.load(os.path.join(d, cnn_name)), meta)], axis=1)
         Xs.append(X)
         M += meta
         names = json.load(open(os.path.join(d, "names.json"))) + (CNN_NAMES if with_cnn else [])
@@ -712,7 +716,7 @@ def cmd_train(a):
     import pickle
     import numpy as np
     from sklearn.ensemble import HistGradientBoostingClassifier
-    X, M, names = load_feats(a.feats)
+    X, M, names = load_feats(a.feats, cnn_name=a.cnn_name)
     col = {n: i for i, n in enumerate(names)}
 
     def fit(idx):
@@ -724,7 +728,9 @@ def cmd_train(a):
     for m, row in zip(M, X):
         h = hand.get((m["page"], m["word"]))
         synth = "#synth" in m["line"]
-        src.append("hand" if h else "synth" if synth else "rule")
+        # A hand-labelled word copied into a synthetic line keeps its label but is counted with
+        # the synthetic lines, so the real and synthetic tables don't mix.
+        src.append("synth" if synth else "hand" if h else "rule")
         if m["split"] == "test" and not h:
             lab.append(None)
             continue
@@ -817,7 +823,7 @@ def cmd_route(a):
     import pickle
     model = pickle.load(open(a.model, "rb"))
     thr = a.threshold if a.threshold is not None else model["threshold"]
-    X, M, names = load_feats(a.feats)
+    X, M, names = load_feats(a.feats, cnn_name=a.cnn_name)
     col = {n: i for i, n in enumerate(names)}
     cols = [col[n] for n in model["features"]]
     test = np.array([m["split"] == "test" for m in M])
@@ -917,6 +923,8 @@ def cmd_score(a):
             res = {}
             for sname in sets:
                 pages = sorted(per[base][sname])
+                if not pages:  # no lines in this tier (no --checked): nothing to draw
+                    continue
                 A = np.array([per[base][sname][p] for p in pages], dtype=float)
                 B = np.array([per[new_][sname][p] for p in pages], dtype=float)
                 draws = rng.integers(0, len(pages), size=(a.bootstrap, len(pages)))
@@ -1024,7 +1032,14 @@ def cmd_glyph_cnn(a):
         if lab:
             per_page[m["page"]].append((i, lab))
     tX, ty, tpage = [], [], []
+    # Pages left out of both CNNs (the development fifth, the --exclude-page holdouts) are scored
+    # like test pages, so a router evaluated on them never sees features from a CNN that learned them.
+    excluded = set(a.exclude_page or [])
+    if a.exclude_dev:
+        excluded |= {m["page"] for m in M if dev_page(m["page"])}
     for pg, items in per_page.items():
+        if pg in excluded:
+            continue
         syl = [i for i, l in items if l == "s"]
         keep = set(rng.sample(syl, min(a.syllabary_per_page, len(syl))))
         for i, l in items:
@@ -1034,6 +1049,8 @@ def cmd_glyph_cnn(a):
                 tpage.append(pg)
     dcrops = np.load(os.path.join(a.donors, "crops.npy"))
     for m, c in zip(map(json.loads, open(os.path.join(a.donors, "meta.jsonl"), encoding="utf-8")), dcrops):
+        if m["page"] in excluded:
+            continue
         tX.append(c)
         ty.append(sd_cnn.CLASSES.index(m["label"]))
         tpage.append(m["page"])
@@ -1046,7 +1063,7 @@ def cmd_glyph_cnn(a):
     models = []
     import torch
     for f in (0, 1):
-        saved = os.path.join(a.out, f"cnn-fold{f}.pt")
+        saved = os.path.join(a.out, f"{a.name}-fold{f}.pt")
         if a.reuse and os.path.exists(saved):  # score again with the CNNs trained before
             m = sd_cnn.net()
             m.load_state_dict(torch.load(saved))
@@ -1055,7 +1072,7 @@ def cmd_glyph_cnn(a):
             continue
         m = sd_cnn.train(tX[tf != f], ty[tf != f], epochs=a.epochs, seed=a.seed + f, threads=a.threads,
                          log=lambda t, f=f: print(f"fold {f}: {t}", flush=True))
-        torch.save(m.state_dict(), os.path.join(a.out, f"cnn-fold{f}.pt"))
+        torch.save(m.state_dict(), saved)
         models.append(m)
         held = tf == f
         p = sd_cnn.predict(m, tX[held]).argmax(1)
@@ -1068,13 +1085,15 @@ def cmd_glyph_cnn(a):
         # The crop's own page decides: a pasted synthetic word was cut from its donor page.
         f_of = np.array([sd_cnn.fold(m.get("donor_page") if m.get("synth") == "l" and m.get("donor_page")
                                      else m["page"]) for m in meta])
-        test = np.array([m["split"] == "test" for m in meta])
+        src_page = [m.get("donor_page") if m.get("synth") == "l" and m.get("donor_page") else m["page"] for m in meta]
+        test = np.array([m["split"] == "test" or pg in excluded or m["page"] in excluded
+                         for m, pg in zip(meta, src_page)])
         for f in (0, 1):
             # models[f] was trained with fold f left out, so it scores fold f's pages.
             k = (f_of == f) & ~test
             P[k] = sd_cnn.predict(models[f], c[k])
         P[test] = (sd_cnn.predict(models[0], c[test]) + sd_cnn.predict(models[1], c[test])) / 2
-        np.save(os.path.join(d, "cnn.npy"), P)
+        np.save(os.path.join(d, a.name + ".npy"), P)
         print(d, "scored", len(meta))
 
 
@@ -1125,6 +1144,7 @@ def main():
     s.add_argument("--depth", type=int, default=3)
     s.add_argument("--seed", type=int, default=1666)
     s.add_argument("--threshold", type=float, default=0.9)
+    s.add_argument("--cnn-name", default="cnn.npy", help="the glyph CNN score file to read from each --feats")
     s.add_argument("--extra-dev-page", action="append",
                    help="hold this page out of the development fit as well (e.g. the pages with real Latin)")
     s.add_argument("--out", required=True)
@@ -1137,6 +1157,7 @@ def main():
     s.add_argument("--crops", required=True)
     s.add_argument("--tessdata", required=True)
     s.add_argument("--chr-lang", default="chr_phoenix")
+    s.add_argument("--cnn-name", default="cnn.npy", help="the glyph CNN score file to read from each --feats")
     s.add_argument("--latin-lang", default="eng",
                    help="the model for words routed away from the syllabary (the syllabary model again: the cut-only ablation)")
     s.add_argument("--base-pred", required=True, help="the syllabary model's whole-line readings")
@@ -1169,6 +1190,9 @@ def main():
     s.add_argument("--score", required=True, action="append")
     s.add_argument("--syllabary-per-page", type=int, default=300)
     s.add_argument("--reuse", action="store_true", help="load the fold CNNs already in --out instead of training")
+    s.add_argument("--exclude-dev", action="store_true", help="leave the development pages out of both CNNs")
+    s.add_argument("--exclude-page", action="append", help="leave this page out of both CNNs")
+    s.add_argument("--name", default="cnn", help="names the saved CNNs and the score file in each --score directory")
     s.add_argument("--epochs", type=int, default=8)
     s.add_argument("--threads", type=int, default=3)
     s.add_argument("--seed", type=int, default=1666)

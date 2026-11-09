@@ -98,24 +98,29 @@ Inline Latin is rare: under 0.1% of words and 0.3% of lines. Numerals, rules and
 
 ### The classifier on held-out pages (threshold 0.9)
 
-These are the figures for the router that reads with round two of `chr_phoenix` (#1673), the model it ships with. The development pages are one training page in five, chosen by a hash of the page name (27 of the 161 training pages; 12,123 labelled words). The test pages are the frozen set's 29 pages, scored with the final model and never trained on.
+These are the figures for the router that reads with round two of `chr_phoenix` (#1673), the model it ships with.
+
+- **The development pages** are one training page in five, chosen by a hash of the page name: 27 of the 161 training pages, with 12,123 labelled words.
+- **Nested evaluation.** For these figures, a second pair of glyph CNNs is trained with the development pages and the two real-Latin pages left out (`glyph-cnn --exclude-dev --exclude-page … --name cnn-eval`). So neither stage has seen a page it is evaluated on. The shipped model uses the CNNs trained on every training page.
+- **The test pages** are the frozen set's 29 pages, never trained on.
+- **Hand-labelled words that were copied into synthetic lines** count with the synthetic lines.
 
 |                                                                      | Syllabary sent to `eng` | Latin sent to `eng` | Other sent to `eng` |
 | -------------------------------------------------------------------- | ----------------------- | ------------------- | ------------------- |
-| Development pages, rule and hand labels                              | 14 / 9,507 (0.15%)      | –                   | 328 / 346           |
-| Development pages, synthetic lines                                   | 3 / 1,307               | 912 / 921 (99.0%)   | 40 / 42             |
+| Development pages, rule and hand labels                              | 15 / 9,503 (0.16%)      | –                   | 328 / 345           |
+| Development pages, synthetic lines                                   | 2 / 1,311               | 911 / 921 (98.9%)   | 41 / 43             |
 | Test pages, hand labels                                              | 1 / 122                 | 11 / 11             | 13 / 13             |
-| The two training pages with real Latin held out (`--extra-dev-page`) | 0 / 90                  | 33 / 60             | 26 / 27             |
+| The two training pages with real Latin held out (`--extra-dev-page`) | 0 / 85                  | 26 / 60             | 24 / 25             |
 
-Of the 14 real syllabary words sent to `eng` on the development pages, 4 begin with Ꭵ (ᎥᎥ, ᎥᎴ, ᎥᏰᏲ, ᎥᎫ1Ꭿ.). Ꭵ looks like a Latin `i`, and `eng` reads ᎥᎥ as "ii". Two others are dates that LoC read as syllabary (`17.Ꮔ`, `1ᎦᏘ0,`), where the rule label is wrong and `eng` is the right route anyway.
+Of the 15 real syllabary words sent to `eng` on the development pages, 3 begin with Ꭵ (ᎥᎥ twice, ᎥᎴ). Ꭵ looks like a Latin `i`, and `eng` reads ᎥᎥ as "ii". Three others are dates that LoC read as syllabary (`17.Ꮔ`, `189Ꮞ`, `1ᎦᏘ0,`), where the rule label is wrong and `eng` is the right route anyway.
 
-English inline is caught. The lesson page's transliterations are caught less well when that page is held out:
+English inline is caught. The lesson page's transliterations are not, when that page has been seen by neither stage:
 
-- The CNN calls almost all of them Latin. Of the 61 Latin words on the two held-out pages (60 hand-labelled, 1 by rule), 60 score above 0.5 and 47 score 0.95 or more.
-- But `eng` reads them at confidence 30 to 60, a combination the router has rarely seen on Latin. So it routes 33 of the 60 at 0.9 (46 at 0.5).
-- Also routing every word the CNN is sure of (0.99 or more) would catch 6 more of the 61. It would also send 8 more of the 11,276 development syllabary words to `eng` (29 instead of 21).
+- The CNN leans Latin on most of them, but is rarely sure. Of the 61 Latin words on the two held-out pages (60 hand-labelled, 1 by rule), 54 score above 0.5 and 27 score 0.95 or more.
+- `eng` reads them at confidence 30 to 60, a combination the router has seen on syllabary far more than on Latin. So it routes 26 of the 60 at 0.9 (43 at 0.5).
+- Also routing every word the CNN is sure of adds nothing at 0.99, and at 0.9 it would add 9 Latin words for 40 more syllabary words.
 
-With inline Latin under 0.1% of words, that trade isn't worth it. The final model is trained on the lesson page.
+The shipped model is trained on the lesson page. A transliteration source for the synthetic lines is the next step for this kind of Latin.
 
 ### Test set CER at PSM 13
 
@@ -128,32 +133,32 @@ Syllabary-letter CER from `cherokee_testset.py`'s measure (`score`), on the froz
 | `chr+eng`                                                         | 24.75%    | 39.00%     | 15.26%    |
 | `chr_phoenix` round one                                           | 14.11%    | 30.53%     | 9.69%     |
 | `chr_phoenix` round one `+eng`                                    | 15.82%    | 31.72%     | 10.76%    |
-| Routed, reading with round one                                    | 10.23%    | 27.60%     | 5.34%     |
+| Routed, reading with round one                                    | 10.20%    | 27.66%     | 5.26%     |
 | `chr_phoenix` round two                                           | 10.22%    | 27.61%     | 6.56%     |
 | `chr_phoenix` round two `+eng`                                    | 12.86%    | 29.67%     | 8.92%     |
 | Cut at the routed words, every piece read by round two (ablation) | 10.87%    | 27.97%     | 6.64%     |
-| **Routed, reading with round two**                                | **9.27%** | **26.84%** | **5.64%** |
+| **Routed, reading with round two**                                | **9.21%** | **26.80%** | **5.64%** |
 
 Paired page bootstrap (`score --compare`): the test set's 29 pages (26 for the checked lines) drawn with replacement 10,000 times, both readings scored on each draw. The table gives the difference in CER points with its 95% interval.
 
-| Routed (round two) minus | Silver               | All                  | Checked              |
-| ------------------------ | -------------------- | -------------------- | -------------------- |
-| round two alone          | −0.94 [−1.31, −0.60] | −0.76 [−0.91, −0.61] | −0.92 [−2.02, +0.15] |
-| round two `+eng`         | −3.58 [−4.30, −2.85] | −2.83 [−3.17, −2.44] | −3.28 [−4.93, −1.54] |
-| LoC                      | −8.71 [−9.98, −7.40] | −7.64 [−8.63, −6.65] | −2.75 [−5.70, +1.58] |
+| Routed (round two) minus | Silver                | All                  | Checked              |
+| ------------------------ | --------------------- | -------------------- | -------------------- |
+| round two alone          | −1.01 [−1.37, −0.68]  | −0.81 [−0.95, −0.66] | −0.92 [−2.02, +0.15] |
+| round two `+eng`         | −3.65 [−4.36, −2.93]  | −2.87 [−3.21, −2.49] | −3.28 [−4.93, −1.54] |
+| LoC                      | −8.78 [−10.04, −7.45] | −7.69 [−8.67, −6.70] | −2.75 [−5.70, +1.58] |
 
 Notes on the tables:
 
-- **Over round two alone, routing gains about one point.** That is a real gain on the silver lines and on all lines, where the intervals exclude zero. On the 70 hand-checked lines it is not established: the interval includes zero. The gain is small next to round one's, where routing cut silver CER by 3.9 points (interval −4.14 to −3.60). Round two was trained with verse numbers, punctuation and margin slivers, so it no longer reads most of them as letters, which was most of what routing fixed on this test set.
+- **Over round two alone, routing gains about one point.** That is a real gain on the silver lines and on all lines, where the intervals exclude zero. On the 70 hand-checked lines it is not established: the interval includes zero. The gain is small next to round one's, where routing cut silver CER by 3.9 points (interval −4.20 to −3.61). Round two was trained with verse numbers, punctuation and margin slivers, so it no longer reads most of them as letters, which was most of what routing fixed on this test set.
 - **Tesseract's own two-language mode makes every syllabary model worse.** It tries `eng` on low-confidence words and keeps confident misreadings (ᎠᎴ as "DE" or "DS").
-- **The ablation shows the gain is the routing.** It cuts lines at the routed words but reads every piece with round two, and it scores worse than round two alone (+0.65 points on silver, interval +0.30 to +0.95).
+- **The ablation shows the gain is the routing.** It cuts lines at the routed words but reads every piece with round two, and it scores worse than round two alone (+0.65 points on silver, interval +0.32 to +0.94).
 - **The test set reprints the New Testament and has almost no Latin.** Its gain comes from the "other" class, the numerals, punctuation, rules and specks routing still takes away from the syllabary model. The held-out table above measures the Latin class, which matters on news and laws but barely moves this test set.
 
-`results/` holds the test-set scores (`scores.json`), the training report (`report.json`: label counts, the confusion by threshold and label source, and the permutation importances), and the report with the real-Latin pages held out.
+`results/` holds the test-set scores (`scores.json`), the training report (`report.json`: label counts, the confusion by threshold and label source, and the permutation importances), and the report with the real-Latin pages held out. Both reports come from the nested evaluation.
 
 ## Reproducing
 
-The labels are in `labels/hand.jsonl` (page, LoC word ID, label, the sheet it came from). Everything else is rebuilt with the subcommands in the order of the table at the top. Each OCR pass over the 16,086 lines took about an hour with two to three threads, and the glyph CNNs about 50 minutes on four. Each other step takes minutes. The run behind these results read with round two's `chr_phoenix.traineddata` (sha256 `88eb1016…`; round one, `17dfa618…`, for its rows) with Tesseract 5.5.0 and Debian's `tesseract-ocr-eng` 4.1.0 (sha256 `7d4322bd…`). The router (`model.pkl`, sha256 `1269404f…`, scikit-learn 1.4.2) and the CNNs (`cnn-fold0.pt` `f3131bfa…`, `cnn-fold1.pt` `05f174ed…`, PyTorch 2.6.0) are not committed. A pickle is tied to its scikit-learn version, and models are published as release assets with a model card (`ocr/models/`) once they are used in production.
+The labels are in `labels/hand.jsonl` (page, LoC word ID, label, the sheet it came from). Everything else is rebuilt with the subcommands in the order of the table at the top. Each OCR pass over the 16,086 lines took about an hour with two to three threads, and each pair of glyph CNNs about 50 minutes on four. Each other step takes minutes. The run behind these results read with round two's `chr_phoenix.traineddata` (sha256 `88eb1016…`; round one, `17dfa618…`, for its rows) with Tesseract 5.5.0 and Debian's `tesseract-ocr-eng` 4.1.0 (sha256 `7d4322bd…`). The router (`model.pkl`, sha256 `02cd890e…`, scikit-learn 1.4.2), the CNNs (`cnn-fold0.pt` `f3131bfa…`, `cnn-fold1.pt` `05f174ed…`, PyTorch 2.6.0) and the evaluation CNNs (`cnn-eval-fold0.pt` `d1bd3471…`, `cnn-eval-fold1.pt` `2c277e34…`) are not committed. A pickle is tied to its scikit-learn version, and models are published as release assets with a model card (`ocr/models/`) once they are used in production.
 
 Not done yet:
 
