@@ -18,8 +18,9 @@ joined PC can sit idle for a while. That is normal.
   ([AMD](boinc-amd-gpu.md)). The NVIDIA and Intel GPU versions run on Linux
   only ([app versions](boinc-quality.md#app-versions-and-plan-classes)). On a
   PC without an NVIDIA GPU, add `-AllowCpuOnly` to the preview and apply
-  commands below (not to `-Status`). CPU work is optional and not always
-  available.
+  commands below (not to `-Status`). It only skips the helper's NVIDIA check:
+  BOINC still finds an AMD GPU and can send it GPU work. CPU work is optional
+  and not always available.
 - 6 GB of RAM and 12 GiB of free disk, or 18 GiB if your GPU has 7 GB or more
   of video memory (binary gigabytes: about 13 and 19 GB as most disk tools
   show them).

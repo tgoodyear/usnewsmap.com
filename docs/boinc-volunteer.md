@@ -392,10 +392,11 @@ or work around an enforced Group Policy; ask your administrator instead.
 - Intended classes: `nvidia_cuda_8b` with at least 7,000 MB GPU RAM, or
   `nvidia_cuda_2b` with at least 3,000 MB. Neither has had a live version
   since 2 November 2026 ([app versions](boinc-quality.md#app-versions-and-plan-classes)):
-  Windows GPU work now goes to AMD (`amd_vulkan_8b`, [AMD](boinc-amd-gpu.md))
-  and Intel (`intel_vulkan_8b`) GPUs, which this helper does not detect, so
-  use `-AllowCpuOnly` on those PCs; actual scheduling also depends on
-  BOINC's GPU and memory report and resource preferences. CPU participation is
+  the only live Windows GPU version is AMD's (`amd_vulkan_8b`,
+  [AMD](boinc-amd-gpu.md)). This helper does not detect AMD GPUs, so on an
+  AMD PC pass `-AllowCpuOnly` to get past its NVIDIA check. That flag only
+  skips the helper's check: BOINC still detects the AMD GPU and can send it
+  GPU work, depending on its GPU and memory report and resource preferences. CPU participation is
   **optional**. GPU-only volunteers disable **Use CPU** in normal project
   preferences. To knowingly onboard a CPU-only or unsupported-GPU host use
   `-AllowCpuOnly` with the same command; this only relaxes the local GPU check,

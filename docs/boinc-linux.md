@@ -18,7 +18,8 @@ setting up a whole cluster for it.
   with `boinc --version` and use [BOINC's own packages](https://boinc.berkeley.edu/linux_install.php)
   if yours is too old.
 - For GPU work, an NVIDIA, AMD or Intel GPU on x86-64 with a current driver
-  and at least 7 GB of free video memory, plus two free CPU cores per GPU task
+  and, for most classes, at least 7 GB of free video memory (per-class limits
+  are in the app versions table), plus two free CPU cores per GPU task
   ([app versions](boinc-quality.md#app-versions-and-plan-classes),
   [AMD](boinc-amd-gpu.md), [Intel](boinc-intel-gpu.md)). Without one, the
   computer gets CPU work from the quality app; the Qwen CPU app has had no

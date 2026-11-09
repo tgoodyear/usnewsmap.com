@@ -408,7 +408,7 @@ fake migration.
    `arm64-apple-darwin`, `x86_64-apple-darwin`, `windows_x86_64`) and the container plan
    classes (`docker`, `docker_mt`, `docker_nvidia_cuda`, `docker_mt_2b`, `docker_nvidia_cuda_8b`).
    - `usnm_ocr`, `usnm_assess`, `usnm_gold` and container `usnm_quality` use `--plan-class docker`
-     (the default) and `images.worker` from `infra/boinc/env/<env>.json`.
+     (the default) and `images.worker` from `boinc/infra/boinc/env/<env>.json`.
    - `usnm_surya` (#516) and container `usnm_qwen` (#522) have their own worker images
      (`.github/workflows/boinc-surya.yml` and `.github/workflows/boinc-qwen.yml`). Surya retains
      `docker_mt` and `docker_nvidia_cuda`; Qwen uses **separate immutable 2B/8B images** with
@@ -483,7 +483,7 @@ fake migration.
 
 ## What it needs
 
-- The server and bridge images in `infra/boinc/env/<env>.json` (`boinc/scripts/build-boinc-images.sh`).
+- The server and bridge images in `boinc/infra/boinc/env/<env>.json` (`boinc/scripts/build-boinc-images.sh`).
   Provisioning ensures the project is initialised automatically.
 - `codeSignPublicKey` in the settings: the public half of the key on the signing host.
 - `images.worker`: the public GHCR worker image, by digest (below).

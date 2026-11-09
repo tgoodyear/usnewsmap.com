@@ -12,7 +12,7 @@ Volunteers should start with [docs/boinc-volunteer.md](../docs/boinc-volunteer.m
 
 ## Contents
 
-- `infra/boinc/`: the Azure fallback Bicep for the stock server (prod runs it on-prem and deploys only the identities, Key Vault, VNet and static site): a Container App (Apache, PHP and the stock daemons, one replica, no scale to zero), a MySQL flexible server, an Azure Files share, Key Vault, Log Analytics, a static site for the human pages, and a manual-trigger Container Apps Job that runs `usnm-boinc submit`. Lint and compile only.
+- `boinc/infra/boinc/`: the Azure fallback Bicep for the stock server (prod runs it on-prem and deploys only the identities, Key Vault, VNet and static site): a Container App (Apache, PHP and the stock daemons, one replica, no scale to zero), a MySQL flexible server, an Azure Files share, Key Vault, Log Analytics, a static site for the human pages, and a manual-trigger Container Apps Job that runs `usnm-boinc submit`. Lint and compile only.
 - `project/`: `config.xml.template` (daemons come from `apps/daemons.xml`), `project.xml` and `plan_class_spec.xml` (the `docker` plan class).
 - `apps/`: container recipes, app templates, engine locks and native app support.
 - `images/`: the server image (stock BOINC, Apache, PHP and the daemons in one container), the bridge job image and the signed app-version image; see [docs/images.md](docs/images.md).
