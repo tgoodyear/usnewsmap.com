@@ -14,5 +14,6 @@ Environment=CTID=215
 Environment=QUALITY_COLLECTOR=/project/ops/quality-results/usnm-boinc
 EnvironmentFile=-/etc/usnm/quality-results.env
 ExecStart=/usr/bin/python3 /opt/usnm-quality-feed/quality_results_partial.py --campaign ${CAMPAIGN} --engine-image ${ENGINE_IMAGE} --ctid ${CTID} --collector ${QUALITY_COLLECTOR} --completion-frontier
-TimeoutStartSec=10min
+# The hourly inventory refresh can take up to 25 minutes before the pass itself.
+TimeoutStartSec=40min
 Nice=10
