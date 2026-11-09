@@ -1,0 +1,114 @@
+{
+  "deployment": "Not deployed: not in ocr/engines/tesseract/models.lock, engines.toml, the BOINC worker or any route. A BOINC re-OCR campaign of pre-1835 Cherokee pages is the next step (#1621).",
+  "evaluation": {
+    "caveats": [
+      "every test line is New Testament text printed in the Phoenix; synthetic training lines are New Testament text too, so the model may have learned some verses' wording. On the 69 silver lines with no word pair in the synthetic text, the model still beats LoC (15.6% against 20.7%), a smaller gain than on the rest",
+      "the 70 hand-checked lines favour the model (38 lines better, 15 worse) but their interval includes zero",
+      "round two's changes were chosen after looking at round one's errors on the test set",
+      "news pages, which are not New Testament text, are unscored"
+    ],
+    "cer_percent": {
+      "all_2160_lines": {
+        "chr_phoenix": 27.61,
+        "chr_phoenix_plus_eng": 29.67,
+        "chr_phoenix_round_one": 30.53,
+        "loc": 34.49,
+        "stock_chr": 35.84
+      },
+      "hand_checked_70_lines": {
+        "chr_phoenix": 6.56,
+        "chr_phoenix_plus_eng": 8.92,
+        "chr_phoenix_round_one": 9.69,
+        "loc": 8.39,
+        "stock_chr": 12.2
+      },
+      "silver_700_lines": {
+        "chr_phoenix": 10.22,
+        "chr_phoenix_plus_eng": 12.86,
+        "chr_phoenix_round_one": 14.11,
+        "loc": 17.98,
+        "stock_chr": 19.66
+      }
+    },
+    "format": "CER is syllabary-letter edit distance over reference letters, pooled over lines; Tesseract runs are PSM 13 on the line crops, OEM 1; intervals are [lower 95%, upper 95%] of chr_phoenix minus LoC in points, 29-page bootstrap (lines for the hand-checked set)",
+    "pages_better": "26 of 29",
+    "paired_difference_points": {
+      "all_lines_by_page": [
+        -7.96,
+        -5.77
+      ],
+      "hand_checked_by_line": [
+        -4.87,
+        1.87
+      ],
+      "silver_by_page": [
+        -9.09,
+        -6.34
+      ]
+    },
+    "test_set": "the frozen Cherokee test set v2 (#1620): 2,160 line crops from 29 Phoenix pages, never trained on"
+  },
+  "format": "usnm-model-provenance/1",
+  "issue": 1621,
+  "model": {
+    "bytes": 2516527,
+    "file": "chr_phoenix.traineddata",
+    "kind": "Tesseract 5 LSTM, float, written by lstmtraining --stop_training",
+    "language": "chr_phoenix",
+    "sha256": "88eb101611962ec6b6b421985203aa6722849da6b7350197e11ce2c0ff71f7f8"
+  },
+  "start_model": {
+    "dictionary": "stock word list extended with the 1860 New Testament's forms (#1621 dictionary comparison, B_stock_nt)",
+    "file": "chr.traineddata",
+    "sha256_stock": "b3a0da90e7744cfec534cdf2dd85860718f32b5595a07d4b7e49113a89bd0f98",
+    "sha256_with_dictionary": "7af4310bbe332f86eea16b7e93c88b185660fd3712bbf2601f97aab39c576144",
+    "source": "tessdata_best",
+    "version": "4.00.00alpha:chr:synth20170629"
+  },
+  "training": {
+    "glyph_bank": {
+      "builder": "crates/usnm-glyphs (build, clean --k 9 --min-agree 0.5)",
+      "glyphs": 92139,
+      "kept": 87657,
+      "pages": 190
+    },
+    "loc_batches": {
+      "dlc_misctopsn83020866_ver03.tar.bz2": "32fdb37c101f552c8a58bd3461fdf969d2c1a6dd57682fa2213cee09ac82e9cc",
+      "dlc_misctopsn83020874_ver02.tar.bz2": "b4dbf6c3f53ec5f43ae8bdd9434e1b5ac7363d830c0dd350547c957d02d976a0"
+    },
+    "nt_pdf_sha256": "54fd06850e09f4904b1b3f941e491789be39f9ad89f88c9b7e610ec4e4fb88ca",
+    "nt_text_sha256": "c74c8ccf17af897c07dd43c5f0cc655c1447960b6f4a64449061016db6e2e9f7",
+    "recipe": "ocr/models/chr-phoenix/recipe/",
+    "rounds": [
+      {
+        "best_train_bcer_percent": 3.231,
+        "continue_from": "start model",
+        "iterations": 20000,
+        "lines": {
+          "eval": 497,
+          "real": 14428,
+          "synthetic": 20000,
+          "train": 33931
+        },
+        "model_sha256": "17dfa618a0ad7a8234503d69d341f1c831a0007c3c3037e00ed3627f1350f84a",
+        "synthetic": "chr_synth_lines.py --seed 1621, no marks"
+      },
+      {
+        "best_train_bcer_percent": 2.568,
+        "continue_from": "round one's model",
+        "iterations": 20000,
+        "lines": {
+          "eval": 497,
+          "real": 14391,
+          "synthetic": 20000,
+          "train": 33894
+        },
+        "model_sha256": "88eb101611962ec6b6b421985203aa6722849da6b7350197e11ce2c0ff71f7f8",
+        "real": "chr_real_lines.py keeping numeral and punctuation tokens",
+        "synthetic": "chr_synth_lines.py --seed 1622 --marks-share 0.4 --punct-rate 0.15 --edge-rate 0.3"
+      }
+    ],
+    "tesseract": "5.5.0 (Debian trixie), image built from recipe/Containerfile",
+    "test_pages_excluded": 29
+  }
+}
