@@ -1,14 +1,14 @@
 # Cherokee: what is searchable, how good the OCR is, and a plan
 
-6 November 2026. Follows [#1581](https://github.com/tgoodyear/usnewsmap.com/issues/1581) (the word lists and the engine tests) and [#1590](https://github.com/tgoodyear/usnewsmap.com/issues/1590) (the Georgia Historic Newspapers images).
+6 November 2026, updated 9 November with the _Phoenix_ model (step 3). Follows [#1581](https://github.com/tgoodyear/usnewsmap.com/issues/1581) (the word lists and the engine tests) and [#1590](https://github.com/tgoodyear/usnewsmap.com/issues/1590) (the Georgia Historic Newspapers images).
 
 ## Summary
 
 - **Volume.** usnewsmap.com searches 324 pages of the _Cherokee Phoenix_ (82 issues, 1828-03-06 to 1833-10-19). They hold about 85,000 words of Cherokee syllabary, on 191 pages. That is 32% of the 1,023 pages LoC and GHN list for the paper. Images of the other 699 pages are already on our storage, without OCR. No other Cherokee-language newspaper is in the index. The largest one outside it is the _Cherokee Advocate_ (1844–1906), 895 issues on the Gateway to Oklahoma History.
 - **Accuracy.** The first measured figure comes from 70 lines checked against the page images: LoC's Cherokee OCR misreads at least 8–9% of syllabary letters, and stock Tesseract 16–17% (step 2). The proxies we can compute say LoC's Cherokee OCR is weak, and weak in particular letters. ᎾᏍᎩ ("that"), the second most common word in the New Testament, is read correctly 127 times and misread as ᏩᏍᎩ, ᏣᏍᎩ or ᏳᏍᎩ 1,007 times. ᎠᎴ ("and", the most common) is read correctly 2,547 times in 2,555. The paper's name, ᏣᎳᎩ ᏧᎴᎯᏌᏅᎯ, reads exactly on 47 of 82 front pages. It appears in a standing notice in the first column, not in the masthead. LoC's word confidences are no help: 99.8% of Cherokee words have a confidence of at least 0.5, and the median is 1.0.
-- **Models.** Tesseract's Cherokee model reads clean typeset text well: 1.67% character error on the New Testament PDFs. On Phoenix scans it makes the same letter confusions LoC's OCR makes. Read line by line, it improves the word-list proxy only slightly (32.5% of words known, against LoC's 31.2%). Our Qwen3-VL-2B route produced no syllabary at all, and in a 2026 benchmark none of 14 vision-language models read Cherokee.
+- **Models.** Tesseract's Cherokee model reads clean typeset text well: 1.67% character error on the New Testament PDFs. On Phoenix scans it makes the same letter confusions LoC's OCR makes. Our Qwen3-VL-2B route produced no syllabary at all, and in a 2026 benchmark none of 14 vision-language models read Cherokee. Fine-tuned on the paper's own glyphs, Tesseract beats LoC: `chr_phoenix` reads the test set's silver lines at 10.2% character error against LoC's 18.0%, and the hand-checked lines at 6.6% against 8.4%, though 70 lines are too few to settle that (step 3). It isn't deployed yet.
 - **The type.** The _Phoenix_ was set in one font, cast in Boston in 1827. Nine of its letters were recut in 1834, mostly because they looked too much like other letters. Three of them (Ꮩ, Ꮅ and Ꮦ) are among the pairs our engines confuse (section 4). The recut came after the paper's last issue, so every _Phoenix_ page has the 1828 shapes.
-- **Plan.** Build ground truth without new transcription work where we can, train a Phoenix-specific model, OCR the 699 missing pages, and make search tolerant of the known confusions in the meantime. The search change is the quickest gain: a query for ᎾᏍᎩ now finds 35 pages, and its three common misreadings are on far more.
+- **Plan.** Build ground truth without new transcription work where we can, train a Phoenix-specific model, OCR the 699 missing pages, and make search tolerant of the known confusions in the meantime. Steps 1 to 3 are done: search now finds ᎾᏍᎩ on 108 pages (35 before), and the model passed its test. Next is the BOINC re-OCR (step 4), with per-word script detection (#1666) for English words inside Cherokee lines.
 
 ## 1. Volume: what we have against what exists
 
@@ -59,7 +59,7 @@ Machine-readable Cherokee text, for vocabulary and as possible ground truth:
 
 ## 2. Accuracy of what is searchable
 
-There is no checked transcription of any _Phoenix_ page, so no figure below is an error rate. They are proxies, each computed the same way for any reading of the pages so that two engines can be compared.
+There is no checked transcription of a whole _Phoenix_ page; the error rates measured on test lines are in steps 2 and 3. The figures below are proxies over all 324 pages, each computed the same way for any reading of the pages so that two engines can be compared.
 
 | Proxy (LoC OCR, 324 pages)                                       | Value                        |
 | ---------------------------------------------------------------- | ---------------------------- |
@@ -87,6 +87,8 @@ Search often misses a word with one of these letters. A query for ᎾᏍᎩ find
 | Tesseract `chr`, LoC's Cherokee lines only (`cherokee_hybrid.py`) | Same 8 pages, 1,320 lines              | 32.5% known; ᎾᏍᎩ 7 right, 38 misread (LoC: 11 and 50); 123 empty lines kept LoC's text      | About 70 ms/line  |
 | Tesseract `chr`, line crops: upscaled 2x, or PSM 6                | 40 lines, agreement with LoC           | Less agreement than native-size PSM 7 (28.7% and 30.2% edit distance against 25.2%)         | n/a               |
 | Qwen3-VL-2B Q8 (BOINC `usnm_qwen` prompt)                         | 1 New Testament page                   | No syllabary output; 100% error on Cherokee characters                                      | 624 s/page on CPU |
+| Tesseract `chr_phoenix` (step 3), line crops at PSM 13            | Test set v2, 2,160 lines               | 27.6% error on all lines, 10.2% silver, 6.6% hand-checked (LoC: 34.5%, 18.0%, 8.4%)         | n/a               |
+| Tesseract `chr_phoenix+eng`, line crops at PSM 13                 | Same                                   | Worse than `chr_phoenix` alone (12.9% silver); writes 863 Latin words on syllabary lines    | n/a               |
 
 From the literature, on other material:
 
@@ -94,7 +96,7 @@ From the literature, on other material:
 - GlotOCR Bench ([2026](https://arxiv.org/html/2604.12978)), 100 synthetic Cherokee sentences: none of 14 vision-language models, among them GPT-4.1, Gemini 3.1 Flash-Lite and Qwen3-VL-8B, read any sentence under 5% character error.
 - No Transkribus or Kraken model for the syllabary was found, and no published handwriting work.
 
-The New Testament results show Tesseract can read Cherokee type, and the _Phoenix_ results show it doesn't know this type. Two unrelated engines make the same confusions, which points at the glyphs. A model trained on _Phoenix_-like lines is the change most likely to help. The vision-language route is closed for now.
+The New Testament results show Tesseract can read Cherokee type, and the _Phoenix_ results show it doesn't know this type. Two unrelated engines make the same confusions, which points at the glyphs. A model trained on _Phoenix_-like lines was the change most likely to help, and in step 3 it did. The vision-language route is closed for now.
 
 ## 4. The press's type
 
@@ -104,17 +106,17 @@ Patrick Giasson's MA thesis, _The Typographic Inception of the Cherokee Syllabar
 
 **The 1834 recut.** In 1834 Worcester had letters recut (the thesis says ten and describes nine) because they were "sufficiently distinct when the print is clear but we find that we cannot always rely upon it" (his letter, ABCFM 18.3.1 v.7, 234). The new type reached the press in 1835. The _Phoenix_ had stopped in May 1834, so none of its pages has the new shapes. Against our measurements:
 
-| Letter | 1828 shape and its trouble                                            | 1834 change                     | What we measured (sections 2 and 5)                                       |
-| ------ | --------------------------------------------------------------------- | ------------------------------- | ------------------------------------------------------------------------- |
-| Ꮩ do   | Λ, an upside-down V, taken for Ꭺ go                                   | Small capital V                 | Ꮩ read as Ꭺ 430 times; Λ was Ꮩ in 22 of 26 hand-checked disputes          |
-| Ꮅ li   | A P with a flag, taken for Ꮲ tlv                                      | Rounded off                     | Ꮅ read as Ꮲ 1,007 times, the commonest misreading                         |
-| Ꮦ te   | Its short left stroke broke off the metal, leaving Ꮣ da              | Stroke enlarged, tail closed    | Ꮣ/Ꮦ 44 disagreements                                                      |
-| Ꮯ tli  | G-shaped, taken for Ꮆ lo                                              | Small capital C                 | Not separated yet; see the G-shaped letters below                         |
-| Ᏺ yo   | A plain h, the same as Ꮒ ni except the top serif                      | Hooked ascender                 | Not measured                                                              |
-| Ꮢ sv   | Close to Ꭱ e                                                          | Counter opened, leg straightened | Not measured                                                             |
-| Ꮥ de   | Close to Ꭶ ga, which it often stands next to                          | New shape                       | Not measured                                                              |
-| Ꮾ wv   | Reason not given                                                      | Made like a 6                   | Ꮎ/Ꮾ 46 disagreements                                                      |
-| Ꮌ mo   | Reason not given                                                      | Recut twice                     | Not measured                                                              |
+| Letter | 1828 shape and its trouble                              | 1834 change                      | What we measured (sections 2 and 5)                              |
+| ------ | ------------------------------------------------------- | -------------------------------- | ---------------------------------------------------------------- |
+| Ꮩ do   | Λ, an upside-down V, taken for Ꭺ go                     | Small capital V                  | Ꮩ read as Ꭺ 430 times; Λ was Ꮩ in 22 of 26 hand-checked disputes |
+| Ꮅ li   | A P with a flag, taken for Ꮲ tlv                        | Rounded off                      | Ꮅ read as Ꮲ 1,007 times, the commonest misreading                |
+| Ꮦ te   | Its short left stroke broke off the metal, leaving Ꮣ da | Stroke enlarged, tail closed     | Ꮣ/Ꮦ 44 disagreements                                             |
+| Ꮯ tli  | G-shaped, taken for Ꮆ lo                                | Small capital C                  | Not separated yet; see the G-shaped letters below                |
+| Ᏺ yo   | A plain h, the same as Ꮒ ni except the top serif        | Hooked ascender                  | Not measured                                                     |
+| Ꮢ sv   | Close to Ꭱ e                                            | Counter opened, leg straightened | Not measured                                                     |
+| Ꮥ de   | Close to Ꭶ ga, which it often stands next to            | New shape                        | Not measured                                                     |
+| Ꮾ wv   | Reason not given                                        | Made like a 6                    | Ꮎ/Ꮾ 46 disagreements                                             |
+| Ꮌ mo   | Reason not given                                        | Recut twice                      | Not measured                                                     |
 
 The thesis lists further letters told apart only by a serif or a ball terminal: Ꭱ/Ꮢ, Ꭹ/Ꮍ, Ꮒ/Ᏺ, and six G-shaped letters, Ꮐ Ꮯ Ꮆ Ᏻ Ꮳ Ꮹ. Ꮃ and Ꮤ differ only slightly in structure.
 
@@ -140,6 +142,8 @@ Search `word~ocr` with a Cherokee table of letter pairs, so ᎾᏍᎩ~ocr also f
 
 **Done in [#1624](https://github.com/tgoodyear/usnewsmap.com/pull/1624).** The table holds the 13 pairs with at least 50 occurrences among LoC's one-letter misreadings of the New Testament's 5,000 most frequent words, out of 7,870 such misreadings in 84,833 tokens ([`scripts/chr_letter_pairs.py`](scripts/chr_letter_pairs.py)). The commonest are Ꮅ read as Ꮲ (1,007), Ꮧ as Ꮨ (473) and Ꮩ as Ꭺ (430, the inverted-V do). Ꮎ goes to five letters: Ᏻ, Ꮹ, Ꭷ, Ꮾ and Ꮳ (101 to 145 each). For the 200 most frequent New Testament words, the 324 pages give 5,496 page hits exactly and 1,102 more with `~ocr` ([`scripts/chr_ocr_variant_recall.py`](scripts/chr_ocr_variant_recall.py)). Of the added hits, 979 match only non-words. 122 match another New Testament form and 1 matches both, so those 123 may be false hits. ᎾᏍᎩ goes from 35 pages to 109. ᎦᏙᎯ ("earth") goes from 0 to 52, because its Ꮩ is always read as Ꭺ. `~ocr` is opt-in, so a ranking penalty for variants isn't needed yet; making it the default for syllabary queries is a separate decision.
 
+**Date-aware search and text, 8 November ([#1661](https://github.com/tgoodyear/usnewsmap.com/pull/1661)).** Every _Phoenix_ page was printed with the 1828 type, so two misreadings can be undone without `~ocr`: Ꭺ read for the Λ-shaped Ꮩ, and a word-initial Ꮹ, Ꮳ, Ᏻ or Ꮐ read for Ꮎ. A word is changed only when it isn't a New Testament form and exactly one undone reading is. It applies to pages printed before 1835, in the index text (LoC's original is kept beside it) and in plain queries. Live, a plain query for ᎾᏍᎩ now finds 108 pages (35 before) and ᎦᏙᎯ 52 (0 before); ᎠᎴ is unchanged at 117. The hand check supports the Ꮩ rule (19 answers for it, none for LoC). It doesn't yet support the Ꮎ rule: none of 38 answers chose the undone reading, so that rule rests on the New Testament alignment alone.
+
 ### Step 2. Ground truth without new transcription ([#1620](https://github.com/tgoodyear/usnewsmap.com/issues/1620))
 
 1. **Synthetic _Phoenix_ lines.** Render New Testament and ChrEn sentences in a font with the period glyphs (Plantagenet Cherokee has the Λ do; Digohweli has it as a historic alternate). Add microfilm noise, blur and ink spread, tuned so the letter confusions on synthetic lines match the ones measured above. These give exact references for training and a first error rate.
@@ -161,16 +165,24 @@ Stock Tesseract reads these lines worse than LoC does. The silver tier favours L
 
 **Hand check, 7 November.** In the 200-line sample, LoC and the reference disagree on 575 words. Each was checked against the page image: does the reference match the print, does LoC, or neither? The answers were reference 183, LoC 185, neither 179 and can't tell 28. On silver lines the reference matched the print more often (109 against LoC's 47, with 57 neither). On the dropped tiers LoC matched more often, and neither ran 35–40%. The answers come from one checker who doesn't read Cherokee and may include a few misclicks. 70 lines came out fully resolved, with every disputed word answered by one of the two readings. Character error on those lines, against the checked text ([`scripts/chr_checked_score.py`](scripts/chr_checked_score.py)):
 
-| Text                    | 70 lines | 47 silver lines |
-| ----------------------- | -------: | --------------: |
-| 1860 New Testament      |    10.5% |            3.3% |
-| LoC OCR                 |     8.4% |            9.2% |
-| Tesseract stock         |    17.2% |           16.5% |
-| Stock + NT word list    |    16.6% |           15.5% |
+| Text                 | 70 lines | 47 silver lines |
+| -------------------- | -------: | --------------: |
+| 1860 New Testament   |    10.5% |            3.3% |
+| LoC OCR              |     8.4% |            9.2% |
+| Tesseract stock      |    17.2% |           16.5% |
+| Stock + NT word list |    16.6% |           15.5% |
 
 These are the first measured error rates for the index's Cherokee text. About half of the error measured against the unchecked reference was the reference's own. The ranking doesn't change. The lines with a "neither" answer are left out, so the 70 lean clean. The checked text is built from LoC's and the reference's words, which flatters LoC, so its figure is a floor.
 
 The answers back up the letter findings above. Λ was Ꮩ in 22 of 26 Ꮩ/Ꭺ disputes, Ꮅ beat Ꮲ in 22 of 25, and Ꮧ beat Ꮨ in 23 of 24. All 16 disputes between Ꮎ and Ꮹ or Ꮳ came out neither or can't tell: the paper prints a G-shaped letter in ᎾᏍᎩ, not today's θ-like Ꮎ. Which letter it is hasn't been settled yet. Specks in the margin also get read as letters. Digits aren't scored at all: LoC read a verse number "24." as "9Ꮞ.".
+
+**The paper's own glyphs, 8–9 November ([#1673](https://github.com/tgoodyear/usnewsmap.com/pull/1673)).** Item 1 changed course. The synthetic lines are set from the paper's own letters instead of a modern font. `crates/usnm-glyphs` cuts the words LoC read as New Testament forms (or as one after undoing the 1828 misreadings) out of 190 page scans and splits them into letters. It keeps the 87,657 of 92,139 glyphs whose nearest neighbours on other pages carry the same label. Word-initial Ꮎ is a class of its own. Ꮊ, Ꮌ, Ꮍ, Ꮐ and Ꮛ have no samples, and Ꮯ, Ꮚ, Ꮬ and Ꮾ almost none. From the bank came:
+
+- **Synthetic lines.** New Testament text set glyph by glyph and degraded like the microfilm, 20,000 lines per training round.
+- **A traced font.** "Phoenix 1828", averaged and traced from the best samples, covers 72 letters plus the word-initial Ꮎ. It is CC0, a research tool rather than a revival.
+- **New examples on check.usnewsmap.com.** 76 letters now show crops from this bank. The tasks and the 833 answers so far are unchanged.
+
+No glyph from a test-set page was used for training. The bank the model was trained from did let test-page glyphs vote when deciding which training glyphs to keep; the crate no longer does (`clean --exclude-manifest`).
 
 ### Step 3. A _Phoenix_ model ([#1621](https://github.com/tgoodyear/usnewsmap.com/issues/1621))
 
@@ -178,9 +190,27 @@ Fine-tune Tesseract's `chr` model with `tesstrain` on the synthetic lines plus t
 
 **Dictionary-only test, 6 November.** Before any retraining, the word list inside the stock model was replaced, with the network unchanged ([`scripts/chr_dict_compare.py`](scripts/chr_dict_compare.py)). Adding the 24,479 New Testament forms to the model's 6,368 words changed about 2.3% of the tokens on the same 1,320 _Phoenix_ lines. Of the changes, 127 turned a non-word into a New Testament word and 3 went the other way. ᎾᏍᎩ was still read right only 7 times, as with the stock list, which already held the word. Adding ChrEn's 54,922 forms as well made the readings worse: 30 known words reversed, 165 other changes, and ᎾᏍᎩ down to 5. So the word list helps a little but cannot fix the letter shapes. The fine-tune keeps the New Testament list, and ChrEn goes into the rendered training text instead. Results and hashes are on [#1621](https://github.com/tgoodyear/usnewsmap.com/issues/1621).
 
+**The fine-tune, 9 November ([#1673](https://github.com/tgoodyear/usnewsmap.com/pull/1673)).** `chr_phoenix` is stock `chr` with the New Testament word list, trained further with `lstmtraining` on CPU in two rounds of 20,000 iterations. Each round used about 14,400 real lines and 20,000 synthetic ones. The real lines are runs of words LoC read as New Testament forms, cut from 161 pages. ChrEn wasn't used in the end; the synthetic text is the New Testament alone. Round two added verse numbers, punctuation and margin specks to the training lines, after round one read "28" as ᎯᎯ and invented letters at line ends. Scores on test set v2 (2,160 line crops from the same 29 pages, re-tiered: 700 silver), at PSM 13:
+
+| Reading         | All lines | Silver | Hand-checked (70) |
+| --------------- | --------: | -----: | ----------------: |
+| LoC OCR         |     34.5% |  18.0% |              8.4% |
+| Tesseract stock |     35.8% |  19.7% |             12.2% |
+| Round one       |     30.5% |  14.1% |              9.7% |
+| `chr_phoenix`   |     27.6% |  10.2% |              6.6% |
+
+- **It passes this step's test.** On silver lines it is 7.8 points better than LoC (95% page bootstrap −9.1 to −6.3), on 26 of 29 pages. On the hand-checked lines it is better on 38 and worse on 15, but 70 lines don't settle it (−4.9 to +1.9).
+- **It fixes the 1828 letters.** On silver lines, Ꮩ read as Ꭺ falls from 192 to 17, Ꮅ as Ꮲ from 191 to 2, Ꮧ as Ꮨ from 119 to 8, and Ꮎ misread from 155 to 7.
+- **Some verses may be memorised.** The synthetic text and every test reference are New Testament text. On the 69 silver lines with no word pair in the synthetic text, it still beats LoC, by less: 15.6% against 20.7%. News pages are unscored.
+- **Line mode.** At PSM 7, both it and stock `chr` return nothing on 166 of the 2,160 crops, mostly tall ones; PSM 13 reads them. The stock figures in step 2's tables come from the earlier baseline run; at PSM 13, stock reads the silver lines at 19.7%.
+
+The model is Apache-2.0, like the start model. It is documented in `ocr/models/chr-phoenix/` and isn't deployed.
+
 ### Step 4. OCR the 699 missing pages and re-read the 324 ([#1622](https://github.com/tgoodyear/usnewsmap.com/issues/1622))
 
 The GHN-only pages have no layout. Find text lines with a layout model, classify each line's script (syllabary against Latin) on the crop, and read Cherokee lines with the step-3 model and English lines with the engine we use for English. On LoC's pages, keep LoC's English and replace Cherokee lines only where the new reading is better by the step-3 measures (the `cherokee_hybrid.py` path). The production run goes through BOINC, like all OCR; at about 1,000 pages it is one small campaign. **Measure:** Cherokee words searchable (from about 85,000 to an estimated 250,000 or more, if the GHN pages carry the same share), and the proxies on the new text.
+
+**Script detection.** Tesseract's own fallback can't split the scripts. With `chr+eng` it re-reads low-confidence words in English and wrote 863 Latin words on test lines that have essentially none, because 16 of the type's letters are Latin small capitals. Per-word script detection is [#1666](https://github.com/tgoodyear/usnewsmap.com/issues/1666). Its classifier looks at the word crop and at the lines around it, since an English name usually follows its syllabary form in parentheses.
 
 ### Step 5. The _Cherokee Advocate_ ([#1623](https://github.com/tgoodyear/usnewsmap.com/issues/1623))
 
