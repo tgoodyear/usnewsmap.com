@@ -11,6 +11,12 @@
     "sha256": "8752cdaeba5bea839a45ef2ddee0f036ec38f9b2f47ba8c4cedd23af77071d92",
     "tag": "data-report-2026-10-ocr-damage-ranking-20261106-1ab6d45"
   },
+  "report-2026-11-cherokee": {
+    "asset": "report-2026-11-cherokee.tar.gz",
+    "members": "docs/reports/2026-11-cherokee/data and the source-rights notice",
+    "sha256": null,
+    "tag": null
+  },
   "report-2026-11-gpu-studies": {
     "asset": "report-2026-11-gpu-studies.tar.gz",
     "members": "docs/reports/2026-11-gpu-studies/data and the source-rights notice",

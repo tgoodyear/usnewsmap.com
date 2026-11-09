@@ -1,0 +1,4977 @@
+{
+  "schema": 1,
+  "image": "images/phoenix_eval_9a8aaec7d82698e6.jpg",
+  "image_sha256": "89741d1939bd528363bce93dcff3d0c25ee6a332951a248728e9d74434d6f827",
+  "alto_sha256": "b9bc746aa4a0c03b0503fe14ded9cc760ac0fbfab368cff73e5ec1814f776eda",
+  "alto_page_size": [
+    16788.0,
+    26004.0
+  ],
+  "image_size": [
+    4197,
+    6501
+  ],
+  "language": "chr",
+  "psm": 7,
+  "omp_thread_limit": 1,
+  "padding_px": [
+    12,
+    8
+  ],
+  "recognized_lines": 97,
+  "empty_recognitions": 23,
+  "fallback_lines": 23,
+  "blocks": [
+    {
+      "block_id": "P1_TB00001",
+      "language": "eng",
+      "source": "loc_alto",
+      "text": "VOL. 1.",
+      "lines": [
+        {
+          "line_id": "P1_TL00001",
+          "source_text": "VOL. 1.",
+          "tesseract_text": null,
+          "text": "VOL. 1.",
+          "source": "loc_alto",
+          "box_px": null
+        }
+      ]
+    },
+    {
+      "block_id": "P1_TB00002",
+      "language": "eng",
+      "source": "loc_alto",
+      "text": "EDITED BY ELIAS BOUDINOTT.\nPRINTED WEEKLY BY\nISAAC . HARRIES,\n“FOR THE CHEROKEE NATION,\nAt $250 if paid in advance, $8 in six\nmonths, or $8 50 if paid at the end of the\nyea. R\n. Do subscribers who can read only the\nCherokee lariguage theprice will be #2,00\nin alvance, or $2,50 to be paid within the\nyedr, | N 8 ¥ § kR\n_ Every. subscription will he considered as\ncontinued unless subscribers give notice to\nthe contrary before the commencement of a\nnew year. g i\n~/Any person procuring six subscribers,’\nand becoming responsible for the payment,\nghall receive a seventh gratis. s\n. Advertisements will be inserted at seven-\nty-five cents per squaré for the first inser-\ntion, and thirty-seven and/a half cents for\neach continuance; longer ones in propor-\ngion. - . . ;\n=AI letters addressed to the Editor,\npost paia, will receive ducattention. *",
+      "lines": [
+        {
+          "line_id": "P1_TL00002",
+          "source_text": "EDITED BY ELIAS BOUDINOTT.",
+          "tesseract_text": null,
+          "text": "EDITED BY ELIAS BOUDINOTT.",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00003",
+          "source_text": "PRINTED WEEKLY BY",
+          "tesseract_text": null,
+          "text": "PRINTED WEEKLY BY",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00004",
+          "source_text": "ISAAC . HARRIES,",
+          "tesseract_text": null,
+          "text": "ISAAC . HARRIES,",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00005",
+          "source_text": "“FOR THE CHEROKEE NATION,",
+          "tesseract_text": null,
+          "text": "“FOR THE CHEROKEE NATION,",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00006",
+          "source_text": "At $250 if paid in advance, $8 in six",
+          "tesseract_text": null,
+          "text": "At $250 if paid in advance, $8 in six",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00007",
+          "source_text": "months, or $8 50 if paid at the end of the",
+          "tesseract_text": null,
+          "text": "months, or $8 50 if paid at the end of the",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00008",
+          "source_text": "yea. R",
+          "tesseract_text": null,
+          "text": "yea. R",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00009",
+          "source_text": ". Do subscribers who can read only the",
+          "tesseract_text": null,
+          "text": ". Do subscribers who can read only the",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00010",
+          "source_text": "Cherokee lariguage theprice will be #2,00",
+          "tesseract_text": null,
+          "text": "Cherokee lariguage theprice will be #2,00",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00011",
+          "source_text": "in alvance, or $2,50 to be paid within the",
+          "tesseract_text": null,
+          "text": "in alvance, or $2,50 to be paid within the",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00012",
+          "source_text": "yedr, | N 8 ¥ § kR",
+          "tesseract_text": null,
+          "text": "yedr, | N 8 ¥ § kR",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00013",
+          "source_text": "_ Every. subscription will he considered as",
+          "tesseract_text": null,
+          "text": "_ Every. subscription will he considered as",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00014",
+          "source_text": "continued unless subscribers give notice to",
+          "tesseract_text": null,
+          "text": "continued unless subscribers give notice to",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00015",
+          "source_text": "the contrary before the commencement of a",
+          "tesseract_text": null,
+          "text": "the contrary before the commencement of a",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00016",
+          "source_text": "new year. g i",
+          "tesseract_text": null,
+          "text": "new year. g i",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00017",
+          "source_text": "~/Any person procuring six subscribers,’",
+          "tesseract_text": null,
+          "text": "~/Any person procuring six subscribers,’",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00018",
+          "source_text": "and becoming responsible for the payment,",
+          "tesseract_text": null,
+          "text": "and becoming responsible for the payment,",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00019",
+          "source_text": "ghall receive a seventh gratis. s",
+          "tesseract_text": null,
+          "text": "ghall receive a seventh gratis. s",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00020",
+          "source_text": ". Advertisements will be inserted at seven-",
+          "tesseract_text": null,
+          "text": ". Advertisements will be inserted at seven-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00021",
+          "source_text": "ty-five cents per squaré for the first inser-",
+          "tesseract_text": null,
+          "text": "ty-five cents per squaré for the first inser-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00022",
+          "source_text": "tion, and thirty-seven and/a half cents for",
+          "tesseract_text": null,
+          "text": "tion, and thirty-seven and/a half cents for",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00023",
+          "source_text": "each continuance; longer ones in propor-",
+          "tesseract_text": null,
+          "text": "each continuance; longer ones in propor-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00024",
+          "source_text": "gion. - . . ;",
+          "tesseract_text": null,
+          "text": "gion. - . . ;",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00025",
+          "source_text": "=AI letters addressed to the Editor,",
+          "tesseract_text": null,
+          "text": "=AI letters addressed to the Editor,",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00026",
+          "source_text": "post paia, will receive ducattention. *",
+          "tesseract_text": null,
+          "text": "post paia, will receive ducattention. *",
+          "source": "loc_alto",
+          "box_px": null
+        }
+      ]
+    },
+    {
+      "block_id": "P1_TB00005",
+      "language": "chr",
+      "source": "hybrid_chr",
+      "text": "ᏣᎳᎩ ᏧᎴᏁᏌᏅᎯ ᎯᎠ ᏂᎦᎥᏧᎬᏩᎶᏗ.\nᏑᎾᎧᎪᏓᏆᏍᏘ ᎢᎪᎯᏛ ᏌᏉ .ᏧᏂᎴᎰᎬᎪᏗ ᎨᏎᏍᏗ.\nᏴᏫᏁᎬ ᏗᏂᏬᏂᏘᏍᎩ ᏦᎢᏁ ᎠᏰᏢ ᎤᏮᎩᏴᏗ\nᎨᏎᏍᏗ, ᎢᏳᏃ ᎢᎬᏪᏅᏛ ᎠᎾᎫᏱᏍᎨᏍᏘ,\nᎢᏳᏃ ᏑᏓᏢ ᎢᏯᏅᎪ ᎢᏴ ᎠᎾᎫᏱᏍᎨᏍᏗ, ᎡᏘ\nᎠᎨᎸ ᎤᎧᎫᏴᏘ ᎨᏎᏍᏗ. ᎠᎸᏕᏗᏱᏍᎬᏃ ᎢᏴ ᎩᎳ\n“ᎠᎾᏮᎫᏱᏍᎨᏍᏘ; ᏅᎩᏁᎢ ᎠᏰᏢ ᎤᎾᎫᏴᏘ ᎨᏎᏍᏗ.\nᏣᎳᎩᏃ ᎤᏩᏒ ᏗᏂᏬᏂᏗᏍᎩ, ᏔᎵᏉ ᎠᎨᎸ\nᏬᎧᎾᎫᏴᏗ ᎨᏎᏍᏗ ᏑᏕᏘᏴᏛ. ᎢᏳᏃ ᎢᎬᏪᏅᏛ ᎠᎾ”\nᎫᏱᏍᎨᏍᏗ. ᏦᎢᏁᏃ ᎠᏰᎵ” ᎩᎳ ᎣᏂ ᎤᏕᏗᏴᎯ”\nᏌᏗᎡ ᎠᎾᎫᏱᏍᎨᏍᏗ.",
+      "lines": [
+        {
+          "line_id": "P1_TL00053",
+          "source_text": "ᏣᎳᎩ ᏧᎴᎯᎪᏌᏅᎯ ᎯᎠ ᏂᎦᎥᏧᎬᏩᎶᏗ.",
+          "tesseract_text": "ᏣᎳᎩ ᏧᎴᏁᏌᏅᎯ ᎯᎠ ᏂᎦᎥᏧᎬᏩᎶᏗ.",
+          "text": "ᏣᎳᎩ ᏧᎴᏁᏌᏅᎯ ᎯᎠ ᏂᎦᎥᏧᎬᏩᎶᏗ.",
+          "source": "tesseract_chr",
+          "box_px": [
+            231,
+            2238,
+            888,
+            2289
+          ]
+        },
+        {
+          "line_id": "P1_TL00054",
+          "source_text": "ᏑᎾᏁᏓᏆᏍᏘ ᎢᎪᎯᏛ ᏌᏉ ᏧᏂᎴᎮᎪᏗ ᎨᏎᏍᏗ.",
+          "tesseract_text": "ᏑᎾᎧᎪᏓᏆᏍᏘ ᎢᎪᎯᏛ ᏌᏉ .ᏧᏂᎴᎰᎬᎪᏗ ᎨᏎᏍᏗ.",
+          "text": "ᏑᎾᎧᎪᏓᏆᏍᏘ ᎢᎪᎯᏛ ᏌᏉ .ᏧᏂᎴᎰᎬᎪᏗ ᎨᏎᏍᏗ.",
+          "source": "tesseract_chr",
+          "box_px": [
+            267,
+            2282,
+            902,
+            2329
+          ]
+        },
+        {
+          "line_id": "P1_TL00055",
+          "source_text": ". ᏴᏫᏁᎬ ᏗᏂᏬᏂᏘᏍᎩ ᏦᎢᏁ ᎠᏰᏢ ᎤᏮᎫᏴᏗ",
+          "tesseract_text": "ᏴᏫᏁᎬ ᏗᏂᏬᏂᏘᏍᎩ ᏦᎢᏁ ᎠᏰᏢ ᎤᏮᎩᏴᏗ",
+          "text": "ᏴᏫᏁᎬ ᏗᏂᏬᏂᏘᏍᎩ ᏦᎢᏁ ᎠᏰᏢ ᎤᏮᎩᏴᏗ",
+          "source": "tesseract_chr",
+          "box_px": [
+            226,
+            2333,
+            905,
+            2381
+          ]
+        },
+        {
+          "line_id": "P1_TL00056",
+          "source_text": "ᎨᏎᏍᏗ, ᎢᏳᏃ ᎢᎬᏪᏅᏛ ᎠᎾᎫᏱᏍᎨᏍᏘ.",
+          "tesseract_text": "ᎨᏎᏍᏗ, ᎢᏳᏃ ᎢᎬᏪᏅᏛ ᎠᎾᎫᏱᏍᎨᏍᏘ,",
+          "text": "ᎨᏎᏍᏗ, ᎢᏳᏃ ᎢᎬᏪᏅᏛ ᎠᎾᎫᏱᏍᎨᏍᏘ,",
+          "source": "tesseract_chr",
+          "box_px": [
+            226,
+            2376,
+            902,
+            2428
+          ]
+        },
+        {
+          "line_id": "P1_TL00057",
+          "source_text": "ᎢᏳᏃ ᏑᏓᎵ-ᎢᏯᏅᎪ ᎢᏴ ᎠᎾᎫᏱᏍᎨᏍᏗ. ᏦᎢ",
+          "tesseract_text": "ᎢᏳᏃ ᏑᏓᏢ ᎢᏯᏅᎪ ᎢᏴ ᎠᎾᎫᏱᏍᎨᏍᏗ, ᎡᏘ",
+          "text": "ᎢᏳᏃ ᏑᏓᏢ ᎢᏯᏅᎪ ᎢᏴ ᎠᎾᎫᏱᏍᎨᏍᏗ, ᎡᏘ",
+          "source": "tesseract_chr",
+          "box_px": [
+            226,
+            2416,
+            905,
+            2475
+          ]
+        },
+        {
+          "line_id": "P1_TL00058",
+          "source_text": "ᎠᏠᎮᎸ ᎤᎧᎫᏴᏗ ᎨᏎᏍᏗ. ᎠᏕᏗᏘᏱᏍᎬᏃ ᎢᏢ ᎩᎳ",
+          "tesseract_text": "ᎠᎨᎸ ᎤᎧᎫᏴᏘ ᎨᏎᏍᏗ. ᎠᎸᏕᏗᏱᏍᎬᏃ ᎢᏴ ᎩᎳ",
+          "text": "ᎠᎨᎸ ᎤᎧᎫᏴᏘ ᎨᏎᏍᏗ. ᎠᎸᏕᏗᏱᏍᎬᏃ ᎢᏴ ᎩᎳ",
+          "source": "tesseract_chr",
+          "box_px": [
+            230,
+            2460,
+            906,
+            2517
+          ]
+        },
+        {
+          "line_id": "P1_TL00059",
+          "source_text": "“ᎠᎾᎫᏱᏍᎨᏍᏘ, ᏅᎩᏁᎢ ᎠᏰᏢ ᎤᎾᎫᏴᏘ ᎨᏎᏍᏗ",
+          "tesseract_text": "“ᎠᎾᏮᎫᏱᏍᎨᏍᏘ; ᏅᎩᏁᎢ ᎠᏰᏢ ᎤᎾᎫᏴᏘ ᎨᏎᏍᏗ.",
+          "text": "“ᎠᎾᏮᎫᏱᏍᎨᏍᏘ; ᏅᎩᏁᎢ ᎠᏰᏢ ᎤᎾᎫᏴᏘ ᎨᏎᏍᏗ.",
+          "source": "tesseract_chr",
+          "box_px": [
+            226,
+            2506,
+            893,
+            2562
+          ]
+        },
+        {
+          "line_id": "P1_TL00060",
+          "source_text": "ᏣᎳᎩᏃ ᎤᏩᏒ ᏗᏂᏬᏂᏗᏍᎩ, ᏔᎵᏉ ᎠᏠᎸ",
+          "tesseract_text": "ᏣᎳᎩᏃ ᎤᏩᏒ ᏗᏂᏬᏂᏗᏍᎩ, ᏔᎵᏉ ᎠᎨᎸ",
+          "text": "ᏣᎳᎩᏃ ᎤᏩᏒ ᏗᏂᏬᏂᏗᏍᎩ, ᏔᎵᏉ ᎠᎨᎸ",
+          "source": "tesseract_chr",
+          "box_px": [
+            268,
+            2557,
+            907,
+            2610
+          ]
+        },
+        {
+          "line_id": "P1_TL00061",
+          "source_text": "ᏬᎾᎫᏴᏘ ᎨᏎᏍᏘ ᏑᏕᏘᏴᏛ. ᎢᏳᏨᏃ ᎢᎬᏪᏅᏛ ᎠᎧ”",
+          "tesseract_text": "ᏬᎧᎾᎫᏴᏗ ᎨᏎᏍᏗ ᏑᏕᏘᏴᏛ. ᎢᏳᏃ ᎢᎬᏪᏅᏛ ᎠᎾ”",
+          "text": "ᏬᎧᎾᎫᏴᏗ ᎨᏎᏍᏗ ᏑᏕᏘᏴᏛ. ᎢᏳᏃ ᎢᎬᏪᏅᏛ ᎠᎾ”",
+          "source": "tesseract_chr",
+          "box_px": [
+            226,
+            2598,
+            907,
+            2647
+          ]
+        },
+        {
+          "line_id": "P1_TL00062",
+          "source_text": "ᎫᏱᎣᏥᏍᏗ. ᏦᎢᏁᏃ ᎠᏰᎵ ᎩᎳ ᎣᏂ ᎤᏕᏗᏴᎯ”",
+          "tesseract_text": "ᎫᏱᏍᎨᏍᏗ. ᏦᎢᏁᏃ ᎠᏰᎵ” ᎩᎳ ᎣᏂ ᎤᏕᏗᏴᎯ”",
+          "text": "ᎫᏱᏍᎨᏍᏗ. ᏦᎢᏁᏃ ᎠᏰᎵ” ᎩᎳ ᎣᏂ ᎤᏕᏗᏴᎯ”",
+          "source": "tesseract_chr",
+          "box_px": [
+            226,
+            2638,
+            907,
+            2689
+          ]
+        },
+        {
+          "line_id": "P1_TL00063",
+          "source_text": "Ꮜ .ᏆᎡ ᎠᎾᎫᏱᏍᎨᏍᏗ.",
+          "tesseract_text": "ᏌᏗᎡ ᎠᎾᎫᏱᏍᎨᏍᏗ.",
+          "text": "ᏌᏗᎡ ᎠᎾᎫᏱᏍᎨᏍᏗ.",
+          "source": "tesseract_chr",
+          "box_px": [
+            226,
+            2679,
+            538,
+            2730
+          ]
+        }
+      ]
+    },
+    {
+      "block_id": "P1_TB00027",
+      "language": "eng",
+      "source": "loc_alto",
+      "text": "CHEROKER LAWS,",
+      "lines": [
+        {
+          "line_id": "P1_TL00461",
+          "source_text": "CHEROKER LAWS,",
+          "tesseract_text": null,
+          "text": "CHEROKER LAWS,",
+          "source": "loc_alto",
+          "box_px": null
+        }
+      ]
+    },
+    {
+      "block_id": "P1_TB00028",
+      "language": "eng",
+      "source": "loc_alto",
+      "text": "[coNTizUED. ]\nResolved by the Nutional Commitiee\nand Cowncil, That fhe Cherokee na-\ntion be orcanized & 'aid off into Dis-\ntricts, and tobe bo mded as follows:—",
+      "lines": [
+        {
+          "line_id": "P1_TL00462",
+          "source_text": "[coNTizUED. ]",
+          "tesseract_text": null,
+          "text": "[coNTizUED. ]",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00463",
+          "source_text": "Resolved by the Nutional Commitiee",
+          "tesseract_text": null,
+          "text": "Resolved by the Nutional Commitiee",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00464",
+          "source_text": "and Cowncil, That fhe Cherokee na-",
+          "tesseract_text": null,
+          "text": "and Cowncil, That fhe Cherokee na-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00465",
+          "source_text": "tion be orcanized & 'aid off into Dis-",
+          "tesseract_text": null,
+          "text": "tion be orcanized & 'aid off into Dis-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00466",
+          "source_text": "tricts, and tobe bo mded as follows:—",
+          "tesseract_text": null,
+          "text": "tricts, and tobe bo mded as follows:—",
+          "source": "loc_alto",
+          "box_px": null
+        }
+      ]
+    },
+    {
+      "block_id": "P1_TB00029",
+      "language": "eng",
+      "source": "loc_alto",
+      "text": "\" 'iist. The First District shall\nR GL s xnhﬁ‘:‘ﬂf‘a‘ﬁicﬁ‘im@\"'\n.f(;w;, and be bounded as follows;, be-\nginning at the miuth of Aumuchee\nceeek, on Oostenxaidah viver, thence\nnorth in a straight course to a spring\nbranch hetween the Island and Rac-\n§oo_n villaz&; thenze a straight course\nver the Lookout Mountain, where the\nheads of Will’s and Lookout creeks\noppose against each other on the\nBiue Ridge, thence a straight course\nto the naain source of Raccoon creek,\nand down the same into the Tennessce\nriver, and up said river to the mouth\nof Qoletewah creek, and up said creek\nto take the most south eastern fork,\nthence a southern course to the mouth\nof Sugar creek, into the Cannasawgee\nriver; and down the said viver to its\nconfluence with QOostennallah river,\nand down the same to the place of be-\nginning. 4",
+      "lines": [
+        {
+          "line_id": "P1_TL00467",
+          "source_text": "\" 'iist. The First District shall",
+          "tesseract_text": null,
+          "text": "\" 'iist. The First District shall",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00468",
+          "source_text": "R GL s xnhﬁ‘:‘ﬂf‘a‘ﬁicﬁ‘im@\"'",
+          "tesseract_text": null,
+          "text": "R GL s xnhﬁ‘:‘ﬂf‘a‘ﬁicﬁ‘im@\"'",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00469",
+          "source_text": ".f(;w;, and be bounded as follows;, be-",
+          "tesseract_text": null,
+          "text": ".f(;w;, and be bounded as follows;, be-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00470",
+          "source_text": "ginning at the miuth of Aumuchee",
+          "tesseract_text": null,
+          "text": "ginning at the miuth of Aumuchee",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00471",
+          "source_text": "ceeek, on Oostenxaidah viver, thence",
+          "tesseract_text": null,
+          "text": "ceeek, on Oostenxaidah viver, thence",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00472",
+          "source_text": "north in a straight course to a spring",
+          "tesseract_text": null,
+          "text": "north in a straight course to a spring",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00473",
+          "source_text": "branch hetween the Island and Rac-",
+          "tesseract_text": null,
+          "text": "branch hetween the Island and Rac-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00474",
+          "source_text": "§oo_n villaz&; thenze a straight course",
+          "tesseract_text": null,
+          "text": "§oo_n villaz&; thenze a straight course",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00475",
+          "source_text": "ver the Lookout Mountain, where the",
+          "tesseract_text": null,
+          "text": "ver the Lookout Mountain, where the",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00476",
+          "source_text": "heads of Will’s and Lookout creeks",
+          "tesseract_text": null,
+          "text": "heads of Will’s and Lookout creeks",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00477",
+          "source_text": "oppose against each other on the",
+          "tesseract_text": null,
+          "text": "oppose against each other on the",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00478",
+          "source_text": "Biue Ridge, thence a straight course",
+          "tesseract_text": null,
+          "text": "Biue Ridge, thence a straight course",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00479",
+          "source_text": "to the naain source of Raccoon creek,",
+          "tesseract_text": null,
+          "text": "to the naain source of Raccoon creek,",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00480",
+          "source_text": "and down the same into the Tennessce",
+          "tesseract_text": null,
+          "text": "and down the same into the Tennessce",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00481",
+          "source_text": "river, and up said river to the mouth",
+          "tesseract_text": null,
+          "text": "river, and up said river to the mouth",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00482",
+          "source_text": "of Qoletewah creek, and up said creek",
+          "tesseract_text": null,
+          "text": "of Qoletewah creek, and up said creek",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00483",
+          "source_text": "to take the most south eastern fork,",
+          "tesseract_text": null,
+          "text": "to take the most south eastern fork,",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00484",
+          "source_text": "thence a southern course to the mouth",
+          "tesseract_text": null,
+          "text": "thence a southern course to the mouth",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00485",
+          "source_text": "of Sugar creek, into the Cannasawgee",
+          "tesseract_text": null,
+          "text": "of Sugar creek, into the Cannasawgee",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00486",
+          "source_text": "river; and down the said viver to its",
+          "tesseract_text": null,
+          "text": "river; and down the said viver to its",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00487",
+          "source_text": "confluence with QOostennallah river,",
+          "tesseract_text": null,
+          "text": "confluence with QOostennallah river,",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00488",
+          "source_text": "and down the same to the place of be-",
+          "tesseract_text": null,
+          "text": "and down the same to the place of be-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00489",
+          "source_text": "ginning. 4",
+          "tesseract_text": null,
+          "text": "ginning. 4",
+          "source": "loc_alto",
+          "box_px": null
+        }
+      ]
+    },
+    {
+      "block_id": "P1_TB00030",
+      "language": "eng",
+      "source": "loc_alto",
+      "text": "24\" The Secono District shall\nbe called by the name of Cuarroo-\nciE, and be hounded as follows; be-\nginn’mF at the mouth of Raccoon creek,\nwi the Tennesses river, and down the\n“said river to the boundary line, com-\nmoaly called Coffee’s line, and along\nsaid line wherzi. strikes Widl’s creek,\nand down the s:id creek to its conflu-\nence with the Goosa river;and thence\nembracing the boundary line between\n‘the Cherokees & Creeks, run by Wm.\nM’lntosh and Cherokee commissioners\nappdinted by their respective Nations,\nruning south eastwardly to its inter-)\ngection with' Chinibee’s trace, and a-\nlong said trace leading eastwardly by\nAvery Vam’s place, including his\nplantation, and thence on said trace to\nwhere it erosses the Etowah river, at\nthe old ford above the fork, and down\nsaid river to its ¢onfluence with Oos-\ntannallah river, and upy said river to\nthe mouth of Atmuchee creek, and.to\n‘vé Loended by the first district.\n3d.The 'l:;mrq Drstricy, shall be\ncalled by the name of Coo?;wums.\nand hounded as f(#ows; begining at\nthe widow Fool's Ferry on the Ocstan-\nnzllah river, where the Alabama road\nerosses it, along said wagon road e@ast-\nwardly; leading towards Btowah town\nto a large ereek ahove Thomas Pet-\ntit’s plantation. near to the Sixes, and\nup said creek, north eastward, to_its\nsonrce; thenceastraicht course to the\nhead of Talloney creek, up which the\nFederal road leads: thenee a straight\ncourse to the head source of Potatoe",
+      "lines": [
+        {
+          "line_id": "P1_TL00490",
+          "source_text": "24\" The Secono District shall",
+          "tesseract_text": null,
+          "text": "24\" The Secono District shall",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00491",
+          "source_text": "be called by the name of Cuarroo-",
+          "tesseract_text": null,
+          "text": "be called by the name of Cuarroo-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00492",
+          "source_text": "ciE, and be hounded as follows; be-",
+          "tesseract_text": null,
+          "text": "ciE, and be hounded as follows; be-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00493",
+          "source_text": "ginn’mF at the mouth of Raccoon creek,",
+          "tesseract_text": null,
+          "text": "ginn’mF at the mouth of Raccoon creek,",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00494",
+          "source_text": "wi the Tennesses river, and down the",
+          "tesseract_text": null,
+          "text": "wi the Tennesses river, and down the",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00495",
+          "source_text": "“said river to the boundary line, com-",
+          "tesseract_text": null,
+          "text": "“said river to the boundary line, com-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00496",
+          "source_text": "moaly called Coffee’s line, and along",
+          "tesseract_text": null,
+          "text": "moaly called Coffee’s line, and along",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00497",
+          "source_text": "said line wherzi. strikes Widl’s creek,",
+          "tesseract_text": null,
+          "text": "said line wherzi. strikes Widl’s creek,",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00498",
+          "source_text": "and down the s:id creek to its conflu-",
+          "tesseract_text": null,
+          "text": "and down the s:id creek to its conflu-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00499",
+          "source_text": "ence with the Goosa river;and thence",
+          "tesseract_text": null,
+          "text": "ence with the Goosa river;and thence",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00500",
+          "source_text": "embracing the boundary line between",
+          "tesseract_text": null,
+          "text": "embracing the boundary line between",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00501",
+          "source_text": "‘the Cherokees & Creeks, run by Wm.",
+          "tesseract_text": null,
+          "text": "‘the Cherokees & Creeks, run by Wm.",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00502",
+          "source_text": "M’lntosh and Cherokee commissioners",
+          "tesseract_text": null,
+          "text": "M’lntosh and Cherokee commissioners",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00503",
+          "source_text": "appdinted by their respective Nations,",
+          "tesseract_text": null,
+          "text": "appdinted by their respective Nations,",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00504",
+          "source_text": "runing south eastwardly to its inter-)",
+          "tesseract_text": null,
+          "text": "runing south eastwardly to its inter-)",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00505",
+          "source_text": "gection with' Chinibee’s trace, and a-",
+          "tesseract_text": null,
+          "text": "gection with' Chinibee’s trace, and a-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00506",
+          "source_text": "long said trace leading eastwardly by",
+          "tesseract_text": null,
+          "text": "long said trace leading eastwardly by",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00507",
+          "source_text": "Avery Vam’s place, including his",
+          "tesseract_text": null,
+          "text": "Avery Vam’s place, including his",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00508",
+          "source_text": "plantation, and thence on said trace to",
+          "tesseract_text": null,
+          "text": "plantation, and thence on said trace to",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00509",
+          "source_text": "where it erosses the Etowah river, at",
+          "tesseract_text": null,
+          "text": "where it erosses the Etowah river, at",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00510",
+          "source_text": "the old ford above the fork, and down",
+          "tesseract_text": null,
+          "text": "the old ford above the fork, and down",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00511",
+          "source_text": "said river to its ¢onfluence with Oos-",
+          "tesseract_text": null,
+          "text": "said river to its ¢onfluence with Oos-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00512",
+          "source_text": "tannallah river, and upy said river to",
+          "tesseract_text": null,
+          "text": "tannallah river, and upy said river to",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00513",
+          "source_text": "the mouth of Atmuchee creek, and.to",
+          "tesseract_text": null,
+          "text": "the mouth of Atmuchee creek, and.to",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00514",
+          "source_text": "‘vé Loended by the first district.",
+          "tesseract_text": null,
+          "text": "‘vé Loended by the first district.",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00515",
+          "source_text": "3d.The 'l:;mrq Drstricy, shall be",
+          "tesseract_text": null,
+          "text": "3d.The 'l:;mrq Drstricy, shall be",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00516",
+          "source_text": "called by the name of Coo?;wums.",
+          "tesseract_text": null,
+          "text": "called by the name of Coo?;wums.",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00517",
+          "source_text": "and hounded as f(#ows; begining at",
+          "tesseract_text": null,
+          "text": "and hounded as f(#ows; begining at",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00518",
+          "source_text": "the widow Fool's Ferry on the Ocstan-",
+          "tesseract_text": null,
+          "text": "the widow Fool's Ferry on the Ocstan-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00519",
+          "source_text": "nzllah river, where the Alabama road",
+          "tesseract_text": null,
+          "text": "nzllah river, where the Alabama road",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00520",
+          "source_text": "erosses it, along said wagon road e@ast-",
+          "tesseract_text": null,
+          "text": "erosses it, along said wagon road e@ast-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00521",
+          "source_text": "wardly; leading towards Btowah town",
+          "tesseract_text": null,
+          "text": "wardly; leading towards Btowah town",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00522",
+          "source_text": "to a large ereek ahove Thomas Pet-",
+          "tesseract_text": null,
+          "text": "to a large ereek ahove Thomas Pet-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00523",
+          "source_text": "tit’s plantation. near to the Sixes, and",
+          "tesseract_text": null,
+          "text": "tit’s plantation. near to the Sixes, and",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00524",
+          "source_text": "up said creek, north eastward, to_its",
+          "tesseract_text": null,
+          "text": "up said creek, north eastward, to_its",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00525",
+          "source_text": "sonrce; thenceastraicht course to the",
+          "tesseract_text": null,
+          "text": "sonrce; thenceastraicht course to the",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00526",
+          "source_text": "head of Talloney creek, up which the",
+          "tesseract_text": null,
+          "text": "head of Talloney creek, up which the",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00527",
+          "source_text": "Federal road leads: thenee a straight",
+          "tesseract_text": null,
+          "text": "Federal road leads: thenee a straight",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00528",
+          "source_text": "course to the head source of Potatoe",
+          "tesseract_text": null,
+          "text": "course to the head source of Potatoe",
+          "source": "loc_alto",
+          "box_px": null
+        }
+      ]
+    },
+    {
+      "block_id": "P1_TB00003",
+      "language": "eng",
+      "source": "loc_alto",
+      "text": "Mine creek; thence a straight course\nto the head of ‘Clapboard creek;\nthence a straight course to the most\nsouthern head source of Camnasaw-\ngee river; thence a northwestern\ncourse ta Camnasawgeewiver, to strike\nopposite to the mouth of Sugar creek,\ninto the Cannasawgee river, and to be\nbounded by the first and second Dis-\ntricts. ‘",
+      "lines": [
+        {
+          "line_id": "P1_TL00027",
+          "source_text": "Mine creek; thence a straight course",
+          "tesseract_text": null,
+          "text": "Mine creek; thence a straight course",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00028",
+          "source_text": "to the head of ‘Clapboard creek;",
+          "tesseract_text": null,
+          "text": "to the head of ‘Clapboard creek;",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00029",
+          "source_text": "thence a straight course to the most",
+          "tesseract_text": null,
+          "text": "thence a straight course to the most",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00030",
+          "source_text": "southern head source of Camnasaw-",
+          "tesseract_text": null,
+          "text": "southern head source of Camnasaw-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00031",
+          "source_text": "gee river; thence a northwestern",
+          "tesseract_text": null,
+          "text": "gee river; thence a northwestern",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00032",
+          "source_text": "course ta Camnasawgeewiver, to strike",
+          "tesseract_text": null,
+          "text": "course ta Camnasawgeewiver, to strike",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00033",
+          "source_text": "opposite to the mouth of Sugar creek,",
+          "tesseract_text": null,
+          "text": "opposite to the mouth of Sugar creek,",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00034",
+          "source_text": "into the Cannasawgee river, and to be",
+          "tesseract_text": null,
+          "text": "into the Cannasawgee river, and to be",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00035",
+          "source_text": "bounded by the first and second Dis-",
+          "tesseract_text": null,
+          "text": "bounded by the first and second Dis-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00036",
+          "source_text": "tricts. ‘",
+          "tesseract_text": null,
+          "text": "tricts. ‘",
+          "source": "loc_alto",
+          "box_px": null
+        }
+      ]
+    },
+    {
+      "block_id": "P1_TB00004",
+      "language": "eng",
+      "source": "loc_alto",
+      "text": ". 4th. The Fourra pis Trier, shall\nbe called by the name of Amoan, and\nbe bounded as follows; beginning at the\nhead source of Cannasawgee river,\nwhere the third District strikes the\nsaid source; thence eastwardly a\nstraight course to Spring Town, above\nHiwassee Old Town; thence to the\nboundary line run by colonel Houston,\nwhere it crosses Sloan creek; thence\nwestwardly along said line to the Hi-\nwassee river; thence down said river\ninto the Tennessee river, and down the\nsame to the mouth of Ooclatewah creek,\nand to be bounded by the first and third\n' Distriets.",
+      "lines": [
+        {
+          "line_id": "P1_TL00037",
+          "source_text": ". 4th. The Fourra pis Trier, shall",
+          "tesseract_text": null,
+          "text": ". 4th. The Fourra pis Trier, shall",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00038",
+          "source_text": "be called by the name of Amoan, and",
+          "tesseract_text": null,
+          "text": "be called by the name of Amoan, and",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00039",
+          "source_text": "be bounded as follows; beginning at the",
+          "tesseract_text": null,
+          "text": "be bounded as follows; beginning at the",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00040",
+          "source_text": "head source of Cannasawgee river,",
+          "tesseract_text": null,
+          "text": "head source of Cannasawgee river,",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00041",
+          "source_text": "where the third District strikes the",
+          "tesseract_text": null,
+          "text": "where the third District strikes the",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00042",
+          "source_text": "said source; thence eastwardly a",
+          "tesseract_text": null,
+          "text": "said source; thence eastwardly a",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00043",
+          "source_text": "straight course to Spring Town, above",
+          "tesseract_text": null,
+          "text": "straight course to Spring Town, above",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00044",
+          "source_text": "Hiwassee Old Town; thence to the",
+          "tesseract_text": null,
+          "text": "Hiwassee Old Town; thence to the",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00045",
+          "source_text": "boundary line run by colonel Houston,",
+          "tesseract_text": null,
+          "text": "boundary line run by colonel Houston,",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00046",
+          "source_text": "where it crosses Sloan creek; thence",
+          "tesseract_text": null,
+          "text": "where it crosses Sloan creek; thence",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00047",
+          "source_text": "westwardly along said line to the Hi-",
+          "tesseract_text": null,
+          "text": "westwardly along said line to the Hi-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00048",
+          "source_text": "wassee river; thence down said river",
+          "tesseract_text": null,
+          "text": "wassee river; thence down said river",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00049",
+          "source_text": "into the Tennessee river, and down the",
+          "tesseract_text": null,
+          "text": "into the Tennessee river, and down the",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00050",
+          "source_text": "same to the mouth of Ooclatewah creek,",
+          "tesseract_text": null,
+          "text": "same to the mouth of Ooclatewah creek,",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00051",
+          "source_text": "and to be bounded by the first and third",
+          "tesseract_text": null,
+          "text": "and to be bounded by the first and third",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00052",
+          "source_text": "' Distriets.",
+          "tesseract_text": null,
+          "text": "' Distriets.",
+          "source": "loc_alto",
+          "box_px": null
+        }
+      ]
+    },
+    {
+      "block_id": "P1_TB00006",
+      "language": "eng",
+      "source": "loc_alto",
+      "text": "sth. The Firra DistricT shall\nbe called by the nome of Hickory\nLoc, and shall be bounded as follows;\nbeginning at the head of Potatoe Mine\ncreek, on the Blue Ridge, thence\nsouth eastwardly along the Blue Ridge\nto where Cheewostoye path crosses\nsaid ridge, and along said path to the\nhead branch of Frog Town creek, and\ndown the same to its confluence with\nT'ahsantee; thence down the same to\nthe Shallow wagon ford on said river,\nebove the standing Peach Tree; thence\nwestward alosg sei€ wagon road Jead-\ning to ——~— Town, where it crosses\nLittle river, a fork of the Etowah riv-\ner, and'down the some to its conflu-\nence with Etowah river, and down the\nel bl el /‘*- ] oo\nwimein 3 dyret cour 1o o nfe",
+      "lines": [
+        {
+          "line_id": "P1_TL00064",
+          "source_text": "sth. The Firra DistricT shall",
+          "tesseract_text": null,
+          "text": "sth. The Firra DistricT shall",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00065",
+          "source_text": "be called by the nome of Hickory",
+          "tesseract_text": null,
+          "text": "be called by the nome of Hickory",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00066",
+          "source_text": "Loc, and shall be bounded as follows;",
+          "tesseract_text": null,
+          "text": "Loc, and shall be bounded as follows;",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00067",
+          "source_text": "beginning at the head of Potatoe Mine",
+          "tesseract_text": null,
+          "text": "beginning at the head of Potatoe Mine",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00068",
+          "source_text": "creek, on the Blue Ridge, thence",
+          "tesseract_text": null,
+          "text": "creek, on the Blue Ridge, thence",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00069",
+          "source_text": "south eastwardly along the Blue Ridge",
+          "tesseract_text": null,
+          "text": "south eastwardly along the Blue Ridge",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00070",
+          "source_text": "to where Cheewostoye path crosses",
+          "tesseract_text": null,
+          "text": "to where Cheewostoye path crosses",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00071",
+          "source_text": "said ridge, and along said path to the",
+          "tesseract_text": null,
+          "text": "said ridge, and along said path to the",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00072",
+          "source_text": "head branch of Frog Town creek, and",
+          "tesseract_text": null,
+          "text": "head branch of Frog Town creek, and",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00073",
+          "source_text": "down the same to its confluence with",
+          "tesseract_text": null,
+          "text": "down the same to its confluence with",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00074",
+          "source_text": "T'ahsantee; thence down the same to",
+          "tesseract_text": null,
+          "text": "T'ahsantee; thence down the same to",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00075",
+          "source_text": "the Shallow wagon ford on said river,",
+          "tesseract_text": null,
+          "text": "the Shallow wagon ford on said river,",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00076",
+          "source_text": "ebove the standing Peach Tree; thence",
+          "tesseract_text": null,
+          "text": "ebove the standing Peach Tree; thence",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00077",
+          "source_text": "westward alosg sei€ wagon road Jead-",
+          "tesseract_text": null,
+          "text": "westward alosg sei€ wagon road Jead-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00078",
+          "source_text": "ing to ——~— Town, where it crosses",
+          "tesseract_text": null,
+          "text": "ing to ——~— Town, where it crosses",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00079",
+          "source_text": "Little river, a fork of the Etowah riv-",
+          "tesseract_text": null,
+          "text": "Little river, a fork of the Etowah riv-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00080",
+          "source_text": "er, and'down the some to its conflu-",
+          "tesseract_text": null,
+          "text": "er, and'down the some to its conflu-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00081",
+          "source_text": "ence with Etowah river, and down the",
+          "tesseract_text": null,
+          "text": "ence with Etowah river, and down the",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00082",
+          "source_text": "el bl el /‘*- ] oo",
+          "tesseract_text": null,
+          "text": "el bl el /‘*- ] oo",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00083",
+          "source_text": "wimein 3 dyret cour 1o o nfe",
+          "tesseract_text": null,
+          "text": "wimein 3 dyret cour 1o o nfe",
+          "source": "loc_alto",
+          "box_px": null
+        }
+      ]
+    },
+    {
+      "block_id": "P1_TB00007",
+      "language": "eng",
+      "source": "loc_alto",
+      "text": "vond crosses it to the oppusite side\nand to be bounded by the thivd district.\n6th. . The Sixte Districr shall be\ncalled by the name of ETowsn, and\nLe bounded as follows; beginning on\nthe Chattahooche river, at the shallow\nwagon ford on said river. and down the\nsame to the Buzzard Roost, where the\nCreek and Cherokee boundarydine in-\ntersects the said river; thence along\nsaid boundary westwardly, to where\nit-intersects Chinibee’s trace, and to\nbe bounded by the fifth and third dis-\ntricts, leaving Thomas Pettit’s family\nin Etowah distriet. ; ;",
+      "lines": [
+        {
+          "line_id": "P1_TL00084",
+          "source_text": "vond crosses it to the oppusite side",
+          "tesseract_text": null,
+          "text": "vond crosses it to the oppusite side",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00085",
+          "source_text": "and to be bounded by the thivd district.",
+          "tesseract_text": null,
+          "text": "and to be bounded by the thivd district.",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00086",
+          "source_text": "6th. . The Sixte Districr shall be",
+          "tesseract_text": null,
+          "text": "6th. . The Sixte Districr shall be",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00087",
+          "source_text": "called by the name of ETowsn, and",
+          "tesseract_text": null,
+          "text": "called by the name of ETowsn, and",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00088",
+          "source_text": "Le bounded as follows; beginning on",
+          "tesseract_text": null,
+          "text": "Le bounded as follows; beginning on",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00089",
+          "source_text": "the Chattahooche river, at the shallow",
+          "tesseract_text": null,
+          "text": "the Chattahooche river, at the shallow",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00090",
+          "source_text": "wagon ford on said river. and down the",
+          "tesseract_text": null,
+          "text": "wagon ford on said river. and down the",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00091",
+          "source_text": "same to the Buzzard Roost, where the",
+          "tesseract_text": null,
+          "text": "same to the Buzzard Roost, where the",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00092",
+          "source_text": "Creek and Cherokee boundarydine in-",
+          "tesseract_text": null,
+          "text": "Creek and Cherokee boundarydine in-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00093",
+          "source_text": "tersects the said river; thence along",
+          "tesseract_text": null,
+          "text": "tersects the said river; thence along",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00094",
+          "source_text": "said boundary westwardly, to where",
+          "tesseract_text": null,
+          "text": "said boundary westwardly, to where",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00095",
+          "source_text": "it-intersects Chinibee’s trace, and to",
+          "tesseract_text": null,
+          "text": "it-intersects Chinibee’s trace, and to",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00096",
+          "source_text": "be bounded by the fifth and third dis-",
+          "tesseract_text": null,
+          "text": "be bounded by the fifth and third dis-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00097",
+          "source_text": "tricts, leaving Thomas Pettit’s family",
+          "tesseract_text": null,
+          "text": "tricts, leaving Thomas Pettit’s family",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00098",
+          "source_text": "in Etowah distriet. ; ;",
+          "tesseract_text": null,
+          "text": "in Etowah distriet. ; ;",
+          "source": "loc_alto",
+          "box_px": null
+        }
+      ]
+    },
+    {
+      "block_id": "P1_TB00008",
+      "language": "eng",
+      "source": "loc_alto",
+      "text": "7th. The SevenTH DisTrICT shall\nbe called by the name of TAUQUOHEE,\nand be bounded as follows; beginning\n“where Col. Houstons” boundary line'\ncrosses Slare’s creek, thence along\nsaid boundary line south eastwardly,\nto the Unicoy turnpike road, and along\nsaid road to where it crosses the Hi-\nwassee river, in the Valley Towns;\nthence astraight course tothe gead\nsource of Coosa creek, on the Blue\nRidge above Cheewostoyeh, and along\nsaid Ridge eastwardly, where the U-\nnicoy turnpike road crosses it; -and\nthence a direct course to the head\nsource of Percimmon creek; thence\ndown the same to the confluence of\nTahsantee, with the Frog Town\n1 ¢reek; and to he bounded by the third,\nfourth and fiftli districts. '",
+      "lines": [
+        {
+          "line_id": "P1_TL00099",
+          "source_text": "7th. The SevenTH DisTrICT shall",
+          "tesseract_text": null,
+          "text": "7th. The SevenTH DisTrICT shall",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00100",
+          "source_text": "be called by the name of TAUQUOHEE,",
+          "tesseract_text": null,
+          "text": "be called by the name of TAUQUOHEE,",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00101",
+          "source_text": "and be bounded as follows; beginning",
+          "tesseract_text": null,
+          "text": "and be bounded as follows; beginning",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00102",
+          "source_text": "“where Col. Houstons” boundary line'",
+          "tesseract_text": null,
+          "text": "“where Col. Houstons” boundary line'",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00103",
+          "source_text": "crosses Slare’s creek, thence along",
+          "tesseract_text": null,
+          "text": "crosses Slare’s creek, thence along",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00104",
+          "source_text": "said boundary line south eastwardly,",
+          "tesseract_text": null,
+          "text": "said boundary line south eastwardly,",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00105",
+          "source_text": "to the Unicoy turnpike road, and along",
+          "tesseract_text": null,
+          "text": "to the Unicoy turnpike road, and along",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00106",
+          "source_text": "said road to where it crosses the Hi-",
+          "tesseract_text": null,
+          "text": "said road to where it crosses the Hi-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00107",
+          "source_text": "wassee river, in the Valley Towns;",
+          "tesseract_text": null,
+          "text": "wassee river, in the Valley Towns;",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00108",
+          "source_text": "thence astraight course tothe gead",
+          "tesseract_text": null,
+          "text": "thence astraight course tothe gead",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00109",
+          "source_text": "source of Coosa creek, on the Blue",
+          "tesseract_text": null,
+          "text": "source of Coosa creek, on the Blue",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00110",
+          "source_text": "Ridge above Cheewostoyeh, and along",
+          "tesseract_text": null,
+          "text": "Ridge above Cheewostoyeh, and along",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00111",
+          "source_text": "said Ridge eastwardly, where the U-",
+          "tesseract_text": null,
+          "text": "said Ridge eastwardly, where the U-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00112",
+          "source_text": "nicoy turnpike road crosses it; -and",
+          "tesseract_text": null,
+          "text": "nicoy turnpike road crosses it; -and",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00113",
+          "source_text": "thence a direct course to the head",
+          "tesseract_text": null,
+          "text": "thence a direct course to the head",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00114",
+          "source_text": "source of Percimmon creek; thence",
+          "tesseract_text": null,
+          "text": "source of Percimmon creek; thence",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00115",
+          "source_text": "down the same to the confluence of",
+          "tesseract_text": null,
+          "text": "down the same to the confluence of",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00116",
+          "source_text": "Tahsantee, with the Frog Town",
+          "tesseract_text": null,
+          "text": "Tahsantee, with the Frog Town",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00117",
+          "source_text": "1 ¢reek; and to he bounded by the third,",
+          "tesseract_text": null,
+          "text": "1 ¢reek; and to he bounded by the third,",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00118",
+          "source_text": "fourth and fiftli districts. '",
+          "tesseract_text": null,
+          "text": "fourth and fiftli districts. '",
+          "source": "loc_alto",
+          "box_px": null
+        }
+      ]
+    },
+    {
+      "block_id": "P1_TB00009",
+      "language": "eng",
+      "source": "loc_alto",
+      "text": "Bth. The Eicura District shall\nbe called by the name of AQUONEE,\nand be bounded as follows; beginning\nwhere the seventh district intersects\nthe Blue Ridge, where the Unicoy\nturnpike road crosses the same;\nthence eastwardly alonz said Ridge to\nthe Standing Man, to Col. Houston’s\nboundary line, thence slong said line\nto the confluence of Nnateyalee, and\nLittle Tennesse river; thence down\nthe same to Tallassee village, thence\nalong said boundary line we-twardlyy\nto where it intersects the Unicoy turn-\npike road: and tobe bounded by the\nseventh district; and that each district\nshall hold their respective councils or\ncourts, on the following days, viz:\nThe first Mondays in May and Sep-\ntember, for Chickamaugee district;\nand on the ‘\nSecond Mondays in May and - Sep-\ntember, for Chattoogee district; &on\nthe s",
+      "lines": [
+        {
+          "line_id": "P1_TL00119",
+          "source_text": "Bth. The Eicura District shall",
+          "tesseract_text": null,
+          "text": "Bth. The Eicura District shall",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00120",
+          "source_text": "be called by the name of AQUONEE,",
+          "tesseract_text": null,
+          "text": "be called by the name of AQUONEE,",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00121",
+          "source_text": "and be bounded as follows; beginning",
+          "tesseract_text": null,
+          "text": "and be bounded as follows; beginning",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00122",
+          "source_text": "where the seventh district intersects",
+          "tesseract_text": null,
+          "text": "where the seventh district intersects",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00123",
+          "source_text": "the Blue Ridge, where the Unicoy",
+          "tesseract_text": null,
+          "text": "the Blue Ridge, where the Unicoy",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00124",
+          "source_text": "turnpike road crosses the same;",
+          "tesseract_text": null,
+          "text": "turnpike road crosses the same;",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00125",
+          "source_text": "thence eastwardly alonz said Ridge to",
+          "tesseract_text": null,
+          "text": "thence eastwardly alonz said Ridge to",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00126",
+          "source_text": "the Standing Man, to Col. Houston’s",
+          "tesseract_text": null,
+          "text": "the Standing Man, to Col. Houston’s",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00127",
+          "source_text": "boundary line, thence slong said line",
+          "tesseract_text": null,
+          "text": "boundary line, thence slong said line",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00128",
+          "source_text": "to the confluence of Nnateyalee, and",
+          "tesseract_text": null,
+          "text": "to the confluence of Nnateyalee, and",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00129",
+          "source_text": "Little Tennesse river; thence down",
+          "tesseract_text": null,
+          "text": "Little Tennesse river; thence down",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00130",
+          "source_text": "the same to Tallassee village, thence",
+          "tesseract_text": null,
+          "text": "the same to Tallassee village, thence",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00131",
+          "source_text": "along said boundary line we-twardlyy",
+          "tesseract_text": null,
+          "text": "along said boundary line we-twardlyy",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00132",
+          "source_text": "to where it intersects the Unicoy turn-",
+          "tesseract_text": null,
+          "text": "to where it intersects the Unicoy turn-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00133",
+          "source_text": "pike road: and tobe bounded by the",
+          "tesseract_text": null,
+          "text": "pike road: and tobe bounded by the",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00134",
+          "source_text": "seventh district; and that each district",
+          "tesseract_text": null,
+          "text": "seventh district; and that each district",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00135",
+          "source_text": "shall hold their respective councils or",
+          "tesseract_text": null,
+          "text": "shall hold their respective councils or",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00136",
+          "source_text": "courts, on the following days, viz:",
+          "tesseract_text": null,
+          "text": "courts, on the following days, viz:",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00137",
+          "source_text": "The first Mondays in May and Sep-",
+          "tesseract_text": null,
+          "text": "The first Mondays in May and Sep-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00138",
+          "source_text": "tember, for Chickamaugee district;",
+          "tesseract_text": null,
+          "text": "tember, for Chickamaugee district;",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00139",
+          "source_text": "and on the ‘",
+          "tesseract_text": null,
+          "text": "and on the ‘",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00140",
+          "source_text": "Second Mondays in May and - Sep-",
+          "tesseract_text": null,
+          "text": "Second Mondays in May and - Sep-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00141",
+          "source_text": "tember, for Chattoogee district; &on",
+          "tesseract_text": null,
+          "text": "tember, for Chattoogee district; &on",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00142",
+          "source_text": "the s",
+          "tesseract_text": null,
+          "text": "the s",
+          "source": "loc_alto",
+          "box_px": null
+        }
+      ]
+    },
+    {
+      "block_id": "P1_TB00010",
+      "language": "eng",
+      "source": "loc_alto",
+      "text": "NEW ECHOTA, THURSDAY AFRLL 3, 1828,",
+      "lines": [
+        {
+          "line_id": "P1_TL00143",
+          "source_text": "NEW ECHOTA, THURSDAY AFRLL 3, 1828,",
+          "tesseract_text": null,
+          "text": "NEW ECHOTA, THURSDAY AFRLL 3, 1828,",
+          "source": "loc_alto",
+          "box_px": null
+        }
+      ]
+    },
+    {
+      "block_id": "P1_TB00011",
+      "language": "eng",
+      "source": "loc_alto",
+      "text": "First Mondays in May andiSeptem-\nber for Coosewattee distriety a@’i‘(g‘on*‘\nthe LA\nSecond Mondays in May zﬁep-\ntember, for Amoah district; and on\nthe | e\nFirst Mondays in May and Septem-\nber for Hickory Log distrvict; and on\nthe : b e\nSecond Mondays in/ May ndqug-\ntember, for Etowah distl‘ic‘f%f,}fli)niL on\nthe S\nFirst Mondays in Vay and Sepfem-\nber for Aquohee disirict; 'an%dzi the\nSecond Mondays in May ‘and Sep-\ntember, for Taquohee dis%‘rictg‘a_uﬂ_,\n“each of the eouncils or courts shall sit\nfive days for the transaction of busi-:\nness at each term. Beetl o\nBy order of the council and com-\nmitte, fie ’g\n' CH. R. HICKNO",
+      "lines": [
+        {
+          "line_id": "P1_TL00144",
+          "source_text": "First Mondays in May andiSeptem-",
+          "tesseract_text": null,
+          "text": "First Mondays in May andiSeptem-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00145",
+          "source_text": "ber for Coosewattee distriety a@’i‘(g‘on*‘",
+          "tesseract_text": null,
+          "text": "ber for Coosewattee distriety a@’i‘(g‘on*‘",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00146",
+          "source_text": "the LA",
+          "tesseract_text": null,
+          "text": "the LA",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00147",
+          "source_text": "Second Mondays in May zﬁep-",
+          "tesseract_text": null,
+          "text": "Second Mondays in May zﬁep-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00148",
+          "source_text": "tember, for Amoah district; and on",
+          "tesseract_text": null,
+          "text": "tember, for Amoah district; and on",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00149",
+          "source_text": "the | e",
+          "tesseract_text": null,
+          "text": "the | e",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00150",
+          "source_text": "First Mondays in May and Septem-",
+          "tesseract_text": null,
+          "text": "First Mondays in May and Septem-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00151",
+          "source_text": "ber for Hickory Log distrvict; and on",
+          "tesseract_text": null,
+          "text": "ber for Hickory Log distrvict; and on",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00152",
+          "source_text": "the : b e",
+          "tesseract_text": null,
+          "text": "the : b e",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00153",
+          "source_text": "Second Mondays in/ May ndqug-",
+          "tesseract_text": null,
+          "text": "Second Mondays in/ May ndqug-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00154",
+          "source_text": "tember, for Etowah distl‘ic‘f%f,}fli)niL on",
+          "tesseract_text": null,
+          "text": "tember, for Etowah distl‘ic‘f%f,}fli)niL on",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00155",
+          "source_text": "the S",
+          "tesseract_text": null,
+          "text": "the S",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00156",
+          "source_text": "First Mondays in Vay and Sepfem-",
+          "tesseract_text": null,
+          "text": "First Mondays in Vay and Sepfem-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00157",
+          "source_text": "ber for Aquohee disirict; 'an%dzi the",
+          "tesseract_text": null,
+          "text": "ber for Aquohee disirict; 'an%dzi the",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00158",
+          "source_text": "Second Mondays in May ‘and Sep-",
+          "tesseract_text": null,
+          "text": "Second Mondays in May ‘and Sep-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00159",
+          "source_text": "tember, for Taquohee dis%‘rictg‘a_uﬂ_,",
+          "tesseract_text": null,
+          "text": "tember, for Taquohee dis%‘rictg‘a_uﬂ_,",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00160",
+          "source_text": "“each of the eouncils or courts shall sit",
+          "tesseract_text": null,
+          "text": "“each of the eouncils or courts shall sit",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00161",
+          "source_text": "five days for the transaction of busi-:",
+          "tesseract_text": null,
+          "text": "five days for the transaction of busi-:",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00162",
+          "source_text": "ness at each term. Beetl o",
+          "tesseract_text": null,
+          "text": "ness at each term. Beetl o",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00163",
+          "source_text": "By order of the council and com-",
+          "tesseract_text": null,
+          "text": "By order of the council and com-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00164",
+          "source_text": "mitte, fie ’g",
+          "tesseract_text": null,
+          "text": "mitte, fie ’g",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00165",
+          "source_text": "' CH. R. HICKNO",
+          "tesseract_text": null,
+          "text": "' CH. R. HICKNO",
+          "source": "loc_alto",
+          "box_px": null
+        }
+      ]
+    },
+    {
+      "block_id": "P1_TB00012",
+      "language": "eng",
+      "source": "loc_alto",
+      "text": "New Town, Oct. 27, gl??l&' ';~‘1\nResolved by the Nutional Commitiee\nand Council, That any perém}gﬁr-i\nsons, whatsoever, who shall elioose to\nemigrate to the Arkansas countyy, and\nshall sell the improvements he or they\nmay be in possession of, toany person\nor persons whatsoever, he or they, o’\ndisnosing of their improverients,\nshall forfeit and pay untof%vé_,»ﬂ |\nLee nation the sum of one Idmdred and\nfifty dollars; and be it further rdsolv-\ned, that any person or per;cjc_ms@«ﬂ?@at-_‘\nsoever, who shall purchake ‘atgf*imi\nprovement from person. 4r persons\nso emigrating. he or they siv oﬂ'e:i;%lfﬁ\nshall also forfeit and pay a\\fine of 9ne.\nhundred and fifty doljars to he nation;\nto be collected by the marshal of the\ndigtridin. - t:f‘ bl o\n5% ~~,\".“‘d<*.l‘.-‘I el e R\nSl g;‘:sm_;xﬁ@»iigf ‘,,%S*Sﬁ j,{,:,g;.z%g‘ b;ﬁmgﬁﬁ\nApproved-PATH »¢ XILLER, S\nmaris\n. CHARLES HICKS. 3\nA. M°COY, Clerk.",
+      "lines": [
+        {
+          "line_id": "P1_TL00166",
+          "source_text": "New Town, Oct. 27, gl??l&' ';~‘1",
+          "tesseract_text": null,
+          "text": "New Town, Oct. 27, gl??l&' ';~‘1",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00167",
+          "source_text": "Resolved by the Nutional Commitiee",
+          "tesseract_text": null,
+          "text": "Resolved by the Nutional Commitiee",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00168",
+          "source_text": "and Council, That any perém}gﬁr-i",
+          "tesseract_text": null,
+          "text": "and Council, That any perém}gﬁr-i",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00169",
+          "source_text": "sons, whatsoever, who shall elioose to",
+          "tesseract_text": null,
+          "text": "sons, whatsoever, who shall elioose to",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00170",
+          "source_text": "emigrate to the Arkansas countyy, and",
+          "tesseract_text": null,
+          "text": "emigrate to the Arkansas countyy, and",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00171",
+          "source_text": "shall sell the improvements he or they",
+          "tesseract_text": null,
+          "text": "shall sell the improvements he or they",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00172",
+          "source_text": "may be in possession of, toany person",
+          "tesseract_text": null,
+          "text": "may be in possession of, toany person",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00173",
+          "source_text": "or persons whatsoever, he or they, o’",
+          "tesseract_text": null,
+          "text": "or persons whatsoever, he or they, o’",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00174",
+          "source_text": "disnosing of their improverients,",
+          "tesseract_text": null,
+          "text": "disnosing of their improverients,",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00175",
+          "source_text": "shall forfeit and pay untof%vé_,»ﬂ |",
+          "tesseract_text": null,
+          "text": "shall forfeit and pay untof%vé_,»ﬂ |",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00176",
+          "source_text": "Lee nation the sum of one Idmdred and",
+          "tesseract_text": null,
+          "text": "Lee nation the sum of one Idmdred and",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00177",
+          "source_text": "fifty dollars; and be it further rdsolv-",
+          "tesseract_text": null,
+          "text": "fifty dollars; and be it further rdsolv-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00178",
+          "source_text": "ed, that any person or per;cjc_ms@«ﬂ?@at-_‘",
+          "tesseract_text": null,
+          "text": "ed, that any person or per;cjc_ms@«ﬂ?@at-_‘",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00179",
+          "source_text": "soever, who shall purchake ‘atgf*imi",
+          "tesseract_text": null,
+          "text": "soever, who shall purchake ‘atgf*imi",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00180",
+          "source_text": "provement from person. 4r persons",
+          "tesseract_text": null,
+          "text": "provement from person. 4r persons",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00181",
+          "source_text": "so emigrating. he or they siv oﬂ'e:i;%lfﬁ",
+          "tesseract_text": null,
+          "text": "so emigrating. he or they siv oﬂ'e:i;%lfﬁ",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00182",
+          "source_text": "shall also forfeit and pay a\\fine of 9ne.",
+          "tesseract_text": null,
+          "text": "shall also forfeit and pay a\\fine of 9ne.",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00183",
+          "source_text": "hundred and fifty doljars to he nation;",
+          "tesseract_text": null,
+          "text": "hundred and fifty doljars to he nation;",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00184",
+          "source_text": "to be collected by the marshal of the",
+          "tesseract_text": null,
+          "text": "to be collected by the marshal of the",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00185",
+          "source_text": "digtridin. - t:f‘ bl o",
+          "tesseract_text": null,
+          "text": "digtridin. - t:f‘ bl o",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00186",
+          "source_text": "5% ~~,\".“‘d<*.l‘.-‘I el e R",
+          "tesseract_text": null,
+          "text": "5% ~~,\".“‘d<*.l‘.-‘I el e R",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00187",
+          "source_text": "Sl g;‘:sm_;xﬁ@»iigf ‘,,%S*Sﬁ j,{,:,g;.z%g‘ b;ﬁmgﬁﬁ",
+          "tesseract_text": null,
+          "text": "Sl g;‘:sm_;xﬁ@»iigf ‘,,%S*Sﬁ j,{,:,g;.z%g‘ b;ﬁmgﬁﬁ",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00188",
+          "source_text": "Approved-PATH »¢ XILLER, S",
+          "tesseract_text": null,
+          "text": "Approved-PATH »¢ XILLER, S",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00189",
+          "source_text": "maris",
+          "tesseract_text": null,
+          "text": "maris",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00190",
+          "source_text": ". CHARLES HICKS. 3",
+          "tesseract_text": null,
+          "text": ". CHARLES HICKS. 3",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00191",
+          "source_text": "A. M°COY, Clerk.",
+          "tesseract_text": null,
+          "text": "A. M°COY, Clerk.",
+          "source": "loc_alto",
+          "box_px": null
+        }
+      ]
+    },
+    {
+      "block_id": "P1_TB00013",
+      "language": "eng",
+      "source": "loc_alto",
+      "text": "New Town, Oct. 27,1821, °\nResolved by the Nutional Committee\nand Council, That it shall be the'du-\nty of the district and circuit judges,\nto inquire particularly into the eircum-\nstances of all stray horses, that may be\ntakenupin their respective districts;\n& all horses which shall evidently ap-\npear tohave been stolen away from ci-\ntizens of the United S. by citizens of\nthis nation, shall be surrendered upito\nthe United States’ Agent for this na-\ntion, agreeably to the treaty existing\nbetween the United States and this\nnation. \\\nBy order of the National Commiitee,\nJNO. I?iQSS, Pres’t N. Com.\nIS | A\n. PATH ¥ KILLER, v\n: marl, ;\n‘ CHARLES HICKS.\nA, M’COY, Clerk.",
+      "lines": [
+        {
+          "line_id": "P1_TL00192",
+          "source_text": "New Town, Oct. 27,1821, °",
+          "tesseract_text": null,
+          "text": "New Town, Oct. 27,1821, °",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00193",
+          "source_text": "Resolved by the Nutional Committee",
+          "tesseract_text": null,
+          "text": "Resolved by the Nutional Committee",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00194",
+          "source_text": "and Council, That it shall be the'du-",
+          "tesseract_text": null,
+          "text": "and Council, That it shall be the'du-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00195",
+          "source_text": "ty of the district and circuit judges,",
+          "tesseract_text": null,
+          "text": "ty of the district and circuit judges,",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00196",
+          "source_text": "to inquire particularly into the eircum-",
+          "tesseract_text": null,
+          "text": "to inquire particularly into the eircum-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00197",
+          "source_text": "stances of all stray horses, that may be",
+          "tesseract_text": null,
+          "text": "stances of all stray horses, that may be",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00198",
+          "source_text": "takenupin their respective districts;",
+          "tesseract_text": null,
+          "text": "takenupin their respective districts;",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00199",
+          "source_text": "& all horses which shall evidently ap-",
+          "tesseract_text": null,
+          "text": "& all horses which shall evidently ap-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00200",
+          "source_text": "pear tohave been stolen away from ci-",
+          "tesseract_text": null,
+          "text": "pear tohave been stolen away from ci-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00201",
+          "source_text": "tizens of the United S. by citizens of",
+          "tesseract_text": null,
+          "text": "tizens of the United S. by citizens of",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00202",
+          "source_text": "this nation, shall be surrendered upito",
+          "tesseract_text": null,
+          "text": "this nation, shall be surrendered upito",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00203",
+          "source_text": "the United States’ Agent for this na-",
+          "tesseract_text": null,
+          "text": "the United States’ Agent for this na-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00204",
+          "source_text": "tion, agreeably to the treaty existing",
+          "tesseract_text": null,
+          "text": "tion, agreeably to the treaty existing",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00205",
+          "source_text": "between the United States and this",
+          "tesseract_text": null,
+          "text": "between the United States and this",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00206",
+          "source_text": "nation. \\",
+          "tesseract_text": null,
+          "text": "nation. \\",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00207",
+          "source_text": "By order of the National Commiitee,",
+          "tesseract_text": null,
+          "text": "By order of the National Commiitee,",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00208",
+          "source_text": "JNO. I?iQSS, Pres’t N. Com.",
+          "tesseract_text": null,
+          "text": "JNO. I?iQSS, Pres’t N. Com.",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00209",
+          "source_text": "IS | A",
+          "tesseract_text": null,
+          "text": "IS | A",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00210",
+          "source_text": ". PATH ¥ KILLER, v",
+          "tesseract_text": null,
+          "text": ". PATH ¥ KILLER, v",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00211",
+          "source_text": ": marl, ;",
+          "tesseract_text": null,
+          "text": ": marl, ;",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00212",
+          "source_text": "‘ CHARLES HICKS.",
+          "tesseract_text": null,
+          "text": "‘ CHARLES HICKS.",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00213",
+          "source_text": "A, M’COY, Clerk.",
+          "tesseract_text": null,
+          "text": "A, M’COY, Clerk.",
+          "source": "loc_alto",
+          "box_px": null
+        }
+      ]
+    },
+    {
+      "block_id": "P1_TB00014",
+      "language": "eng",
+      "source": "loc_alto",
+      "text": "New Town, Oct. 27, 1821.°\nResolved by the Nutional Commatice\nand Council, That if”any person or\npeisons whatsoever, shall resist and\nkill any of the magshals or light-horse-\nmen i their official duties, it shell\nbe the duty of the marshals to lead\nthe light-horse to apprehend; or kill\nthe person or persons so trausgressing.\nBy order of the N, Committee, .\n: JNO. ROSS_,, Prei’t N.' Com.\n‘ S hIS :\nApproved—PATH 4, KILLER, °\n‘ mar‘.t'. 4\nCHARLES HICKS. ;.\n}A. MROOY, Clerks, \" e",
+      "lines": [
+        {
+          "line_id": "P1_TL00214",
+          "source_text": "New Town, Oct. 27, 1821.°",
+          "tesseract_text": null,
+          "text": "New Town, Oct. 27, 1821.°",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00215",
+          "source_text": "Resolved by the Nutional Commatice",
+          "tesseract_text": null,
+          "text": "Resolved by the Nutional Commatice",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00216",
+          "source_text": "and Council, That if”any person or",
+          "tesseract_text": null,
+          "text": "and Council, That if”any person or",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00217",
+          "source_text": "peisons whatsoever, shall resist and",
+          "tesseract_text": null,
+          "text": "peisons whatsoever, shall resist and",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00218",
+          "source_text": "kill any of the magshals or light-horse-",
+          "tesseract_text": null,
+          "text": "kill any of the magshals or light-horse-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00219",
+          "source_text": "men i their official duties, it shell",
+          "tesseract_text": null,
+          "text": "men i their official duties, it shell",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00220",
+          "source_text": "be the duty of the marshals to lead",
+          "tesseract_text": null,
+          "text": "be the duty of the marshals to lead",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00221",
+          "source_text": "the light-horse to apprehend; or kill",
+          "tesseract_text": null,
+          "text": "the light-horse to apprehend; or kill",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00222",
+          "source_text": "the person or persons so trausgressing.",
+          "tesseract_text": null,
+          "text": "the person or persons so trausgressing.",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00223",
+          "source_text": "By order of the N, Committee, .",
+          "tesseract_text": null,
+          "text": "By order of the N, Committee, .",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00224",
+          "source_text": ": JNO. ROSS_,, Prei’t N.' Com.",
+          "tesseract_text": null,
+          "text": ": JNO. ROSS_,, Prei’t N.' Com.",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00225",
+          "source_text": "‘ S hIS :",
+          "tesseract_text": null,
+          "text": "‘ S hIS :",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00226",
+          "source_text": "Approved—PATH 4, KILLER, °",
+          "tesseract_text": null,
+          "text": "Approved—PATH 4, KILLER, °",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00227",
+          "source_text": "‘ mar‘.t'. 4",
+          "tesseract_text": null,
+          "text": "‘ mar‘.t'. 4",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00228",
+          "source_text": "CHARLES HICKS. ;.",
+          "tesseract_text": null,
+          "text": "CHARLES HICKS. ;.",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00229",
+          "source_text": "}A. MROOY, Clerks, \" e",
+          "tesseract_text": null,
+          "text": "}A. MROOY, Clerks, \" e",
+          "source": "loc_alto",
+          "box_px": null
+        }
+      ]
+    },
+    {
+      "block_id": "P1_TB00015",
+      "language": "eng",
+      "source": "loc_alto",
+      "text": "- New Town, October 27, 1821, w\n. Resolved by the National Commiltee\nand Council, \"That any person or per-\nsops who have been citizens <uf\n+this nation and now have reservations\nand living on the same, or uader the\nlaws of the United States, and has a\npublic ferry croossing opposite his .ox\ntheir reservations, such person or per-\nsons shall not be permiited to keep a\nwhite ferryman-on the lands belonging\nto the Nation, ne#ther shall he be per-\nmitted to tend any land thereon, for\nthe use of his ferryman: but nothing\n| shall be so construed in the above re-\nsolution; as to’affect the richts and\nprivileges of such citizens as moy have",
+      "lines": [
+        {
+          "line_id": "P1_TL00230",
+          "source_text": "- New Town, October 27, 1821, w",
+          "tesseract_text": null,
+          "text": "- New Town, October 27, 1821, w",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00231",
+          "source_text": ". Resolved by the National Commiltee",
+          "tesseract_text": null,
+          "text": ". Resolved by the National Commiltee",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00232",
+          "source_text": "and Council, \"That any person or per-",
+          "tesseract_text": null,
+          "text": "and Council, \"That any person or per-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00233",
+          "source_text": "sops who have been citizens <uf",
+          "tesseract_text": null,
+          "text": "sops who have been citizens <uf",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00234",
+          "source_text": "+this nation and now have reservations",
+          "tesseract_text": null,
+          "text": "+this nation and now have reservations",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00235",
+          "source_text": "and living on the same, or uader the",
+          "tesseract_text": null,
+          "text": "and living on the same, or uader the",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00236",
+          "source_text": "laws of the United States, and has a",
+          "tesseract_text": null,
+          "text": "laws of the United States, and has a",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00237",
+          "source_text": "public ferry croossing opposite his .ox",
+          "tesseract_text": null,
+          "text": "public ferry croossing opposite his .ox",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00238",
+          "source_text": "their reservations, such person or per-",
+          "tesseract_text": null,
+          "text": "their reservations, such person or per-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00239",
+          "source_text": "sons shall not be permiited to keep a",
+          "tesseract_text": null,
+          "text": "sons shall not be permiited to keep a",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00240",
+          "source_text": "white ferryman-on the lands belonging",
+          "tesseract_text": null,
+          "text": "white ferryman-on the lands belonging",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00241",
+          "source_text": "to the Nation, ne#ther shall he be per-",
+          "tesseract_text": null,
+          "text": "to the Nation, ne#ther shall he be per-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00242",
+          "source_text": "mitted to tend any land thereon, for",
+          "tesseract_text": null,
+          "text": "mitted to tend any land thereon, for",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00243",
+          "source_text": "the use of his ferryman: but nothing",
+          "tesseract_text": null,
+          "text": "the use of his ferryman: but nothing",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00244",
+          "source_text": "| shall be so construed in the above re-",
+          "tesseract_text": null,
+          "text": "| shall be so construed in the above re-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00245",
+          "source_text": "solution; as to’affect the richts and",
+          "tesseract_text": null,
+          "text": "solution; as to’affect the richts and",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00246",
+          "source_text": "privileges of such citizens as moy have",
+          "tesseract_text": null,
+          "text": "privileges of such citizens as moy have",
+          "source": "loc_alto",
+          "box_px": null
+        }
+      ]
+    },
+    {
+      "block_id": "P1_TB00016",
+      "language": "eng",
+      "source": "loc_alto",
+      "text": "moved off the ceded lands and now liv-\ning in the Nation. ; i\nBy order of the National Committee, 1\n. JNO. ROSS;} Preg’t N. Communittee.\ni o, Sy S 4 :\n3+ -PATH » KILLER, o\n| R Stk .\nSA CH;\\RI}E.'S,J-IIQKS. e -4\nA. McCOY, Bee’y to the Couneil: |\nNew Town, November 8, 1821.\nResolved by the National Cemmitlee,\nThat all prommissory notes, payable\nafter date, shall he entitled tobear an\ninterest at the rate of six per cent.\nper annum, after the date, payable un-\ntil such notes are paid; this resolution\nto take effect and be in force from and\nafter thisdate. . 87\" 4 ' |\nBy order of the National Com. ;\nJNO ROSS, Pres2t N. Comqi & |\n; EHNAUTAUNAUEH, |\n) 2 Speaker of Council.\n% 18 ;\n; PATH ¥ KILLRER, »\n| mark.,\n‘ CHARLES R. HICKS. 7\nl A. M’COY, Clerk N. Committee.",
+      "lines": [
+        {
+          "line_id": "P1_TL00247",
+          "source_text": "moved off the ceded lands and now liv-",
+          "tesseract_text": null,
+          "text": "moved off the ceded lands and now liv-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00248",
+          "source_text": "ing in the Nation. ; i",
+          "tesseract_text": null,
+          "text": "ing in the Nation. ; i",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00249",
+          "source_text": "By order of the National Committee, 1",
+          "tesseract_text": null,
+          "text": "By order of the National Committee, 1",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00250",
+          "source_text": ". JNO. ROSS;} Preg’t N. Communittee.",
+          "tesseract_text": null,
+          "text": ". JNO. ROSS;} Preg’t N. Communittee.",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00251",
+          "source_text": "i o, Sy S 4 :",
+          "tesseract_text": null,
+          "text": "i o, Sy S 4 :",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00252",
+          "source_text": "3+ -PATH » KILLER, o",
+          "tesseract_text": null,
+          "text": "3+ -PATH » KILLER, o",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00253",
+          "source_text": "| R Stk .",
+          "tesseract_text": null,
+          "text": "| R Stk .",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00254",
+          "source_text": "SA CH;\\RI}E.'S,J-IIQKS. e -4",
+          "tesseract_text": null,
+          "text": "SA CH;\\RI}E.'S,J-IIQKS. e -4",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00255",
+          "source_text": "A. McCOY, Bee’y to the Couneil: |",
+          "tesseract_text": null,
+          "text": "A. McCOY, Bee’y to the Couneil: |",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00256",
+          "source_text": "New Town, November 8, 1821.",
+          "tesseract_text": null,
+          "text": "New Town, November 8, 1821.",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00257",
+          "source_text": "Resolved by the National Cemmitlee,",
+          "tesseract_text": null,
+          "text": "Resolved by the National Cemmitlee,",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00258",
+          "source_text": "That all prommissory notes, payable",
+          "tesseract_text": null,
+          "text": "That all prommissory notes, payable",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00259",
+          "source_text": "after date, shall he entitled tobear an",
+          "tesseract_text": null,
+          "text": "after date, shall he entitled tobear an",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00260",
+          "source_text": "interest at the rate of six per cent.",
+          "tesseract_text": null,
+          "text": "interest at the rate of six per cent.",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00261",
+          "source_text": "per annum, after the date, payable un-",
+          "tesseract_text": null,
+          "text": "per annum, after the date, payable un-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00262",
+          "source_text": "til such notes are paid; this resolution",
+          "tesseract_text": null,
+          "text": "til such notes are paid; this resolution",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00263",
+          "source_text": "to take effect and be in force from and",
+          "tesseract_text": null,
+          "text": "to take effect and be in force from and",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00264",
+          "source_text": "after thisdate. . 87\" 4 ' |",
+          "tesseract_text": null,
+          "text": "after thisdate. . 87\" 4 ' |",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00265",
+          "source_text": "By order of the National Com. ;",
+          "tesseract_text": null,
+          "text": "By order of the National Com. ;",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00266",
+          "source_text": "JNO ROSS, Pres2t N. Comqi & |",
+          "tesseract_text": null,
+          "text": "JNO ROSS, Pres2t N. Comqi & |",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00267",
+          "source_text": "; EHNAUTAUNAUEH, |",
+          "tesseract_text": null,
+          "text": "; EHNAUTAUNAUEH, |",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00268",
+          "source_text": ") 2 Speaker of Council.",
+          "tesseract_text": null,
+          "text": ") 2 Speaker of Council.",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00269",
+          "source_text": "% 18 ;",
+          "tesseract_text": null,
+          "text": "% 18 ;",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00270",
+          "source_text": "; PATH ¥ KILLRER, »",
+          "tesseract_text": null,
+          "text": "; PATH ¥ KILLRER, »",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00271",
+          "source_text": "| mark.,",
+          "tesseract_text": null,
+          "text": "| mark.,",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00272",
+          "source_text": "‘ CHARLES R. HICKS. 7",
+          "tesseract_text": null,
+          "text": "‘ CHARLES R. HICKS. 7",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00273",
+          "source_text": "l A. M’COY, Clerk N. Committee.",
+          "tesseract_text": null,
+          "text": "l A. M’COY, Clerk N. Committee.",
+          "source": "loc_alto",
+          "box_px": null
+        }
+      ]
+    },
+    {
+      "block_id": "P1_TB00017",
+      "language": "eng",
+      "source": "loc_alto",
+      "text": "¢ 3 ooy »\nY New Town, November 2, 1821.\n_Resolved by the National Committce\nand Council, That the circuit:judges\nbe allowed fifty-five dellars, and the |\ndistrict’ judzes twenty-five dollars\n‘each per.anaum for their services.\nBy order of the N. Committee, = . ~\nJNO. RI?SS, Pres’t. Nat. Com.\ng 18\n© PATH » KILLER,\ney 8 mark.\nA. M’COY, Clerk N. Com.\nELIJAH HICKS, Clerkof N. Couneil, -",
+      "lines": [
+        {
+          "line_id": "P1_TL00274",
+          "source_text": "¢ 3 ooy »",
+          "tesseract_text": null,
+          "text": "¢ 3 ooy »",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00275",
+          "source_text": "Y New Town, November 2, 1821.",
+          "tesseract_text": null,
+          "text": "Y New Town, November 2, 1821.",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00276",
+          "source_text": "_Resolved by the National Committce",
+          "tesseract_text": null,
+          "text": "_Resolved by the National Committce",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00277",
+          "source_text": "and Council, That the circuit:judges",
+          "tesseract_text": null,
+          "text": "and Council, That the circuit:judges",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00278",
+          "source_text": "be allowed fifty-five dellars, and the |",
+          "tesseract_text": null,
+          "text": "be allowed fifty-five dellars, and the |",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00279",
+          "source_text": "district’ judzes twenty-five dollars",
+          "tesseract_text": null,
+          "text": "district’ judzes twenty-five dollars",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00280",
+          "source_text": "‘each per.anaum for their services.",
+          "tesseract_text": null,
+          "text": "‘each per.anaum for their services.",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00281",
+          "source_text": "By order of the N. Committee, = . ~",
+          "tesseract_text": null,
+          "text": "By order of the N. Committee, = . ~",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00282",
+          "source_text": "JNO. RI?SS, Pres’t. Nat. Com.",
+          "tesseract_text": null,
+          "text": "JNO. RI?SS, Pres’t. Nat. Com.",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00283",
+          "source_text": "g 18",
+          "tesseract_text": null,
+          "text": "g 18",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00284",
+          "source_text": "© PATH » KILLER,",
+          "tesseract_text": null,
+          "text": "© PATH » KILLER,",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00285",
+          "source_text": "ey 8 mark.",
+          "tesseract_text": null,
+          "text": "ey 8 mark.",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00286",
+          "source_text": "A. M’COY, Clerk N. Com.",
+          "tesseract_text": null,
+          "text": "A. M’COY, Clerk N. Com.",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00287",
+          "source_text": "ELIJAH HICKS, Clerkof N. Couneil, -",
+          "tesseract_text": null,
+          "text": "ELIJAH HICKS, Clerkof N. Couneil, -",
+          "source": "loc_alto",
+          "box_px": null
+        }
+      ]
+    },
+    {
+      "block_id": "P1_TB00018",
+      "language": "eng",
+      "source": "loc_alto",
+      "text": "LR ey 5\nNew Town, Novenber 2, 1822,\nRego% &xgﬁ the National Committce\nand- Coacil, ﬂtﬁwﬁﬁwoﬁﬂm\ncircuit judges be, and' the same is\nﬁi; ,vg;; faﬁﬁgﬁd&ﬂig rs (o\n#:1 - dol] ' 1‘« m;v\" , . \"\n“\"‘ om '“zf“. ‘-1”\" oY TS\n< By order of the National Committee, .\nJNO. ROSS, Pre®’t. N. Com. \"\nApproved, \" oo\nhis \" :\nPAPH AKILLER, ...+\nmarl. . ’ &\nA. M:COY, Clerk N. Com.\nELIJAH HICKS, Clerk N. Ceuncil,”",
+      "lines": [
+        {
+          "line_id": "P1_TL00288",
+          "source_text": "LR ey 5",
+          "tesseract_text": null,
+          "text": "LR ey 5",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00289",
+          "source_text": "New Town, Novenber 2, 1822,",
+          "tesseract_text": null,
+          "text": "New Town, Novenber 2, 1822,",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00290",
+          "source_text": "Rego% &xgﬁ the National Committce",
+          "tesseract_text": null,
+          "text": "Rego% &xgﬁ the National Committce",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00291",
+          "source_text": "and- Coacil, ﬂtﬁwﬁﬁwoﬁﬂm",
+          "tesseract_text": null,
+          "text": "and- Coacil, ﬂtﬁwﬁﬁwoﬁﬂm",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00292",
+          "source_text": "circuit judges be, and' the same is",
+          "tesseract_text": null,
+          "text": "circuit judges be, and' the same is",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00293",
+          "source_text": "ﬁi; ,vg;; faﬁﬁgﬁd&ﬂig rs (o",
+          "tesseract_text": null,
+          "text": "ﬁi; ,vg;; faﬁﬁgﬁd&ﬂig rs (o",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00294",
+          "source_text": "#:1 - dol] ' 1‘« m;v\" , . \"",
+          "tesseract_text": null,
+          "text": "#:1 - dol] ' 1‘« m;v\" , . \"",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00295",
+          "source_text": "“\"‘ om '“zf“. ‘-1”\" oY TS",
+          "tesseract_text": null,
+          "text": "“\"‘ om '“zf“. ‘-1”\" oY TS",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00296",
+          "source_text": "< By order of the National Committee, .",
+          "tesseract_text": null,
+          "text": "< By order of the National Committee, .",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00297",
+          "source_text": "JNO. ROSS, Pre®’t. N. Com. \"",
+          "tesseract_text": null,
+          "text": "JNO. ROSS, Pre®’t. N. Com. \"",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00298",
+          "source_text": "Approved, \" oo",
+          "tesseract_text": null,
+          "text": "Approved, \" oo",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00299",
+          "source_text": "his \" :",
+          "tesseract_text": null,
+          "text": "his \" :",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00300",
+          "source_text": "PAPH AKILLER, ...+",
+          "tesseract_text": null,
+          "text": "PAPH AKILLER, ...+",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00301",
+          "source_text": "marl. . ’ &",
+          "tesseract_text": null,
+          "text": "marl. . ’ &",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00302",
+          "source_text": "A. M:COY, Clerk N. Com.",
+          "tesseract_text": null,
+          "text": "A. M:COY, Clerk N. Com.",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00303",
+          "source_text": "ELIJAH HICKS, Clerk N. Ceuncil,”",
+          "tesseract_text": null,
+          "text": "ELIJAH HICKS, Clerk N. Ceuncil,”",
+          "source": "loc_alto",
+          "box_px": null
+        }
+      ]
+    },
+    {
+      "block_id": "P1_TB00022",
+      "language": "eng",
+      "source": "loc_alto",
+      "text": "New , Toun, C. N. QOct. 23, 1822.\nIn CommitTTEE AND CoOUNCIL.\nWHEREAS, it appears in the prints of\nthe public newspapers, that ia con-\nsequence of the earnest solicita-\n» tions of the Goverrior and legislature\nof the State of Georgia, the Con-\ngress of the United States, did ap-\npropriate_a sum of money last ses-\nsion, with a view ‘of holding a trea-\nty with the Cherokees for the pur-\npose of extinguishing - their - title to\nlands within the chartered limits,\nclaimed by the State of Georgia,\nand it also appearing inthe public\nprints that the President of the Uni-\nted States has appointed Commis-\n'sioners in conformitly to the views\nof said appropriation, and anticipa-\nting @ call by the commissioners;\n- the head chiefs of the Cherokee na-\n‘tion requested the judges to ascer-\ntain the sentiments and . disposition\nof the citizens of their respective\ndistricts on the subject, and to re-\n. port the same to them, which re-\nports having been accordingly made\nand now laid before the national\ncommittee and council, deelaring,\nunanimously, with one voice and de-\ntermination, to hold_ngftwaties with\na?' commissioners of the United\nStates to make any cession of lands\nbeing resolved not to dispose of e-\nven one foot of ground;",
+      "lines": [
+        {
+          "line_id": "P1_TL00346",
+          "source_text": "New , Toun, C. N. QOct. 23, 1822.",
+          "tesseract_text": null,
+          "text": "New , Toun, C. N. QOct. 23, 1822.",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00347",
+          "source_text": "In CommitTTEE AND CoOUNCIL.",
+          "tesseract_text": null,
+          "text": "In CommitTTEE AND CoOUNCIL.",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00348",
+          "source_text": "WHEREAS, it appears in the prints of",
+          "tesseract_text": null,
+          "text": "WHEREAS, it appears in the prints of",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00349",
+          "source_text": "the public newspapers, that ia con-",
+          "tesseract_text": null,
+          "text": "the public newspapers, that ia con-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00350",
+          "source_text": "sequence of the earnest solicita-",
+          "tesseract_text": null,
+          "text": "sequence of the earnest solicita-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00351",
+          "source_text": "» tions of the Goverrior and legislature",
+          "tesseract_text": null,
+          "text": "» tions of the Goverrior and legislature",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00352",
+          "source_text": "of the State of Georgia, the Con-",
+          "tesseract_text": null,
+          "text": "of the State of Georgia, the Con-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00353",
+          "source_text": "gress of the United States, did ap-",
+          "tesseract_text": null,
+          "text": "gress of the United States, did ap-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00354",
+          "source_text": "propriate_a sum of money last ses-",
+          "tesseract_text": null,
+          "text": "propriate_a sum of money last ses-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00355",
+          "source_text": "sion, with a view ‘of holding a trea-",
+          "tesseract_text": null,
+          "text": "sion, with a view ‘of holding a trea-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00356",
+          "source_text": "ty with the Cherokees for the pur-",
+          "tesseract_text": null,
+          "text": "ty with the Cherokees for the pur-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00357",
+          "source_text": "pose of extinguishing - their - title to",
+          "tesseract_text": null,
+          "text": "pose of extinguishing - their - title to",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00358",
+          "source_text": "lands within the chartered limits,",
+          "tesseract_text": null,
+          "text": "lands within the chartered limits,",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00359",
+          "source_text": "claimed by the State of Georgia,",
+          "tesseract_text": null,
+          "text": "claimed by the State of Georgia,",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00360",
+          "source_text": "and it also appearing inthe public",
+          "tesseract_text": null,
+          "text": "and it also appearing inthe public",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00361",
+          "source_text": "prints that the President of the Uni-",
+          "tesseract_text": null,
+          "text": "prints that the President of the Uni-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00362",
+          "source_text": "ted States has appointed Commis-",
+          "tesseract_text": null,
+          "text": "ted States has appointed Commis-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00363",
+          "source_text": "'sioners in conformitly to the views",
+          "tesseract_text": null,
+          "text": "'sioners in conformitly to the views",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00364",
+          "source_text": "of said appropriation, and anticipa-",
+          "tesseract_text": null,
+          "text": "of said appropriation, and anticipa-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00365",
+          "source_text": "ting @ call by the commissioners;",
+          "tesseract_text": null,
+          "text": "ting @ call by the commissioners;",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00366",
+          "source_text": "- the head chiefs of the Cherokee na-",
+          "tesseract_text": null,
+          "text": "- the head chiefs of the Cherokee na-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00367",
+          "source_text": "‘tion requested the judges to ascer-",
+          "tesseract_text": null,
+          "text": "‘tion requested the judges to ascer-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00368",
+          "source_text": "tain the sentiments and . disposition",
+          "tesseract_text": null,
+          "text": "tain the sentiments and . disposition",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00369",
+          "source_text": "of the citizens of their respective",
+          "tesseract_text": null,
+          "text": "of the citizens of their respective",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00370",
+          "source_text": "districts on the subject, and to re-",
+          "tesseract_text": null,
+          "text": "districts on the subject, and to re-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00371",
+          "source_text": ". port the same to them, which re-",
+          "tesseract_text": null,
+          "text": ". port the same to them, which re-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00372",
+          "source_text": "ports having been accordingly made",
+          "tesseract_text": null,
+          "text": "ports having been accordingly made",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00373",
+          "source_text": "and now laid before the national",
+          "tesseract_text": null,
+          "text": "and now laid before the national",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00374",
+          "source_text": "committee and council, deelaring,",
+          "tesseract_text": null,
+          "text": "committee and council, deelaring,",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00375",
+          "source_text": "unanimously, with one voice and de-",
+          "tesseract_text": null,
+          "text": "unanimously, with one voice and de-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00376",
+          "source_text": "termination, to hold_ngftwaties with",
+          "tesseract_text": null,
+          "text": "termination, to hold_ngftwaties with",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00377",
+          "source_text": "a?' commissioners of the United",
+          "tesseract_text": null,
+          "text": "a?' commissioners of the United",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00378",
+          "source_text": "States to make any cession of lands",
+          "tesseract_text": null,
+          "text": "States to make any cession of lands",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00379",
+          "source_text": "being resolved not to dispose of e-",
+          "tesseract_text": null,
+          "text": "being resolved not to dispose of e-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00380",
+          "source_text": "ven one foot of ground;",
+          "tesseract_text": null,
+          "text": "ven one foot of ground;",
+          "source": "loc_alto",
+          "box_px": null
+        }
+      ]
+    },
+    {
+      "block_id": "P1_TB00024",
+      "language": "eng",
+      "source": "loc_alto",
+      "text": "BE & THEREFORE KNOWN AND RE-\n“mEMBERED, That we the undersign-\n“ooed ln.cm%)gl;s of the national commit-\ntee and cguhcil, after maturely de-\nliberating on the subject, . -\nResolved, That the chiefs of. the\nCherokee na&ion, will” not meet any\ncommissioners rof the United States\nto hold a treaty with than;on the sub-\nject of mgkihg‘céssi_én of lands,s the\nproperty of the Cherokee Qa}ion', as\nwe arg determined hereafter never\n‘to make g@( cession of Jands, having\nnot more than'sufiicient for our nation\n“and posterity. . But on any other, bu-\ninens. ot relatingsto ‘makinga treaty",
+      "lines": [
+        {
+          "line_id": "P1_TL00405",
+          "source_text": "BE & THEREFORE KNOWN AND RE-",
+          "tesseract_text": null,
+          "text": "BE & THEREFORE KNOWN AND RE-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00406",
+          "source_text": "“mEMBERED, That we the undersign-",
+          "tesseract_text": null,
+          "text": "“mEMBERED, That we the undersign-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00407",
+          "source_text": "“ooed ln.cm%)gl;s of the national commit-",
+          "tesseract_text": null,
+          "text": "“ooed ln.cm%)gl;s of the national commit-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00408",
+          "source_text": "tee and cguhcil, after maturely de-",
+          "tesseract_text": null,
+          "text": "tee and cguhcil, after maturely de-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00409",
+          "source_text": "liberating on the subject, . -",
+          "tesseract_text": null,
+          "text": "liberating on the subject, . -",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00410",
+          "source_text": "Resolved, That the chiefs of. the",
+          "tesseract_text": null,
+          "text": "Resolved, That the chiefs of. the",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00411",
+          "source_text": "Cherokee na&ion, will” not meet any",
+          "tesseract_text": null,
+          "text": "Cherokee na&ion, will” not meet any",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00412",
+          "source_text": "commissioners rof the United States",
+          "tesseract_text": null,
+          "text": "commissioners rof the United States",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00413",
+          "source_text": "to hold a treaty with than;on the sub-",
+          "tesseract_text": null,
+          "text": "to hold a treaty with than;on the sub-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00414",
+          "source_text": "ject of mgkihg‘céssi_én of lands,s the",
+          "tesseract_text": null,
+          "text": "ject of mgkihg‘céssi_én of lands,s the",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00415",
+          "source_text": "property of the Cherokee Qa}ion', as",
+          "tesseract_text": null,
+          "text": "property of the Cherokee Qa}ion', as",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00416",
+          "source_text": "we arg determined hereafter never",
+          "tesseract_text": null,
+          "text": "we arg determined hereafter never",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00417",
+          "source_text": "‘to make g@( cession of Jands, having",
+          "tesseract_text": null,
+          "text": "‘to make g@( cession of Jands, having",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00418",
+          "source_text": "not more than'sufiicient for our nation",
+          "tesseract_text": null,
+          "text": "not more than'sufiicient for our nation",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00419",
+          "source_text": "“and posterity. . But on any other, bu-",
+          "tesseract_text": null,
+          "text": "“and posterity. . But on any other, bu-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00420",
+          "source_text": "inens. ot relatingsto ‘makinga treaty",
+          "tesseract_text": null,
+          "text": "inens. ot relatingsto ‘makinga treaty",
+          "source": "loc_alto",
+          "box_px": null
+        }
+      ]
+    },
+    {
+      "block_id": "P1_TB00019",
+      "language": "eng",
+      "source": "loc_alto",
+      "text": "of egssion, wewill, at all times du~\nving the session of the national coun-\ncil, at New Town, receivé: the Uni-\nted States” commissioners or agents,\nwith friendship and cordiality, end\nwill eyer keep bright the chain of\npeace and friendship which links tle\nCherokee nation, and the government\n‘of the United States.\nBy order of the National Committee,\nki N R?.SS, Pres’t, N. Com.\nus A\nApproved—PATH LK}LLE;R,\nmark.\n- CHAELES HICKS.\nA. M’COY, Clerk.\nThe above is signed by upwards of\n- fifty-four memlers of both branches of\nthe legislative council and committee,",
+      "lines": [
+        {
+          "line_id": "P1_TL00304",
+          "source_text": "of egssion, wewill, at all times du~",
+          "tesseract_text": null,
+          "text": "of egssion, wewill, at all times du~",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00305",
+          "source_text": "ving the session of the national coun-",
+          "tesseract_text": null,
+          "text": "ving the session of the national coun-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00306",
+          "source_text": "cil, at New Town, receivé: the Uni-",
+          "tesseract_text": null,
+          "text": "cil, at New Town, receivé: the Uni-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00307",
+          "source_text": "ted States” commissioners or agents,",
+          "tesseract_text": null,
+          "text": "ted States” commissioners or agents,",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00308",
+          "source_text": "with friendship and cordiality, end",
+          "tesseract_text": null,
+          "text": "with friendship and cordiality, end",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00309",
+          "source_text": "will eyer keep bright the chain of",
+          "tesseract_text": null,
+          "text": "will eyer keep bright the chain of",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00310",
+          "source_text": "peace and friendship which links tle",
+          "tesseract_text": null,
+          "text": "peace and friendship which links tle",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00311",
+          "source_text": "Cherokee nation, and the government",
+          "tesseract_text": null,
+          "text": "Cherokee nation, and the government",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00312",
+          "source_text": "‘of the United States.",
+          "tesseract_text": null,
+          "text": "‘of the United States.",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00313",
+          "source_text": "By order of the National Committee,",
+          "tesseract_text": null,
+          "text": "By order of the National Committee,",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00314",
+          "source_text": "ki N R?.SS, Pres’t, N. Com.",
+          "tesseract_text": null,
+          "text": "ki N R?.SS, Pres’t, N. Com.",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00315",
+          "source_text": "us A",
+          "tesseract_text": null,
+          "text": "us A",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00316",
+          "source_text": "Approved—PATH LK}LLE;R,",
+          "tesseract_text": null,
+          "text": "Approved—PATH LK}LLE;R,",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00317",
+          "source_text": "mark.",
+          "tesseract_text": null,
+          "text": "mark.",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00318",
+          "source_text": "- CHAELES HICKS.",
+          "tesseract_text": null,
+          "text": "- CHAELES HICKS.",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00319",
+          "source_text": "A. M’COY, Clerk.",
+          "tesseract_text": null,
+          "text": "A. M’COY, Clerk.",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00320",
+          "source_text": "The above is signed by upwards of",
+          "tesseract_text": null,
+          "text": "The above is signed by upwards of",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00321",
+          "source_text": "- fifty-four memlers of both branches of",
+          "tesseract_text": null,
+          "text": "- fifty-four memlers of both branches of",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00322",
+          "source_text": "the legislative council and committee,",
+          "tesseract_text": null,
+          "text": "the legislative council and committee,",
+          "source": "loc_alto",
+          "box_px": null
+        }
+      ]
+    },
+    {
+      "block_id": "P1_TB00020",
+      "language": "chr",
+      "source": "hybrid_chr",
+      "text": "Ꭳ ᏗᎧᏖᏩ-ᏛᏍ.Ꮓ:ᎦᎻᏆᎩ;ᎤᏮᏤᏢᎦ,\nᎠᏂ ᎨᎦᎦᎴᏅᏛ ᎠᏂ ᏱᎳᏥᎦᎭᏁ\nᎭᏥᏁᎩ ᎠᏰᎵ ᎣᏣᏓᏅᏖᏍᎩ ᎠᎴ ᎪᏪᎳᏫᏚ Ꮳ”\nᎳᎩᏱ; ᎠᏯᎪᎴᏍᏗ ᏄᎥᏚᏩᏗᏒᎡ ᎯᏴ ᏂᎦᏯᏠᏍᏗ.\nᎢᎵᎬᏱᏱ ᎦᏚᎲ ᏔᎦᏥᎦ ᏚᎪᏒᏍᏗ; ᎯᎠᏃ ᏄᏄᎸᏍᏗ\nᏩᎳᎩ ᎠᎶᏮᏎᎢ. ’ ᎤᎭᏓᏮᏢ ᎤᏪᏍᏗᏛ ᎠᎹᏥ Ꭴ”-\nᏏᏢᏛᏱ. ᎤᏪᏴᎢ: ᎠᎴ ᏂᏍᎨᏍᏗ, ᏧᏴᏢ ᎢᏘᏢ ᏧᏳᎩᎯ\nᎪᏗᏯ ᏫᏂᎬᏁᏍᏗ ᎦᏄᏎᏴ ᏏᎮ ᎠᎹᏰᎵ ᎬᎭᏱᏃ\nᎦᎦᎦᎲ ᎠᏰᏢ ᎦᎶᏍᎨᏍᏗ.- ᎪᏉᏃ ᏧᏨᏳᏁᏘᏯ Ꮹ\nᏓᏬᎯᎳᏗᏍᎨᏍᏗ ᏓᎾᏓᏬᏮᎲ., ᎣᏓᎸᎢ: ᎿᏉᏃ\nᏧᏨᎪᏘᏊ. ᎦᎨᏍᏁᏂᎸ ᎧᎵᏱ, ᏓᎾᏓᏬᏮᏯᏃ ᏕᏢᎬᎢ\nᎤᏫᏓᏟᎭ,. ᏩᏓᏬᎯᎳᏗᏇᏥᏍᏘ ᎡᎵᏱ ᎤᏛᏮ ᎣᏖ”\nᏐ: -ᎿᏉᏃ ᏧᏳᎪᏗᏯ ᎧᏮᏂᎬᏁᏍᏗ ᏄᎬᎾᏮᏳᏒ\n“ᏬᎨᏱ ᏧᎵᏍᏁᏂᎸ ᏫᎬᏬᎥᎮᏍᏘ ᎤᏪᎠ ᏩᏍᏖᏍᏗ,\nᏓᏃ ᏔᎧᏍᏏ ᎠᏉᏂ -ᎢᎬᏓᏢᎬᏕᎴᏍᏗ ᎤᏢᏁᏩ ᏅᏬ\nᏪᏴ ᏩᏍᏖᏍᏗ, - ᎿᏉᏃ ᏩᏍᎩ- ᎤᎵᏘᏩ ᏂᏌᏯᏘᎡ\nᎧᎬᏂᎨ,, ᏧᎦᏮᏮ ᏗᎧᏄᏝᏃ ᎾᏚᏅᎪᏛ ᏫᏥᏴ ᎢᎠᏝ ᏓᏢ”\nᎤᎮᏈᏍᎦ. ᎿᏉᏃ ᏧᎦᏮᏣ ᎢᎸᏢ ᏫᏂᎬᏁᏍᏗ ᎠᏃ\nᎩᎯ ᎤᏪᏴ ᏩᏍᏓᎣᏗ.. ᎿᎳᏃ ᎦᎧᏍᏖᎩᏱ ᏂᏒ\nᎩᎳ ᎠᏁ ᏎᎵᎲᎾᎲ “Ꮑ\nᏍᏏᏪ ᏣᏍᏉ ᏫᎬᏬᏎᎦᏍᏘᎥ; ᎢᎬᏱᏱᏉᏃ ᏘᎴᏂ”\n“ᏍᎬ ᎠᎹᏥ ᎾᏓᏠᏍᎨᏍᏗ. ! ᎨᎢ",
+      "lines": [
+        {
+          "line_id": "P1_TL00323",
+          "source_text": "Ꭳ ᏗᎧᏖᏩ-ᏛᏍ.Ꮓ:ᎦᎻᏆᎩ;ᎤᏮᏤᏢᎦ,",
+          "tesseract_text": "",
+          "text": "Ꭳ ᏗᎧᏖᏩ-ᏛᏍ.Ꮓ:ᎦᎻᏆᎩ;ᎤᏮᏤᏢᎦ,",
+          "source": "loc_alto_fallback_empty_tesseract",
+          "box_px": [
+            3007,
+            1995,
+            3554,
+            2075
+          ]
+        },
+        {
+          "line_id": "P1_TL00324",
+          "source_text": "Ꭲ Ꮑ Ꭲ",
+          "tesseract_text": "ᎠᏂ ᎨᎦᎦᎴᏅᏛ ᎠᏂ ᏱᎳᏥᎦᎭᏁ",
+          "text": "ᎠᏂ ᎨᎦᎦᎴᏅᏛ ᎠᏂ ᏱᎳᏥᎦᎭᏁ",
+          "source": "tesseract_chr",
+          "box_px": [
+            3113,
+            2050,
+            3651,
+            2127
+          ]
+        },
+        {
+          "line_id": "P1_TL00325",
+          "source_text": "- ᎲᏥᏁᎩ ᎠᏰᏢ ᎣᏣᏓᏇᏬᏖᏍᎩ ᎠᎴ ᎪᏥᎳᏫ; Ꮳ’",
+          "tesseract_text": "ᎭᏥᏁᎩ ᎠᏰᎵ ᎣᏣᏓᏅᏖᏍᎩ ᎠᎴ ᎪᏪᎳᏫᏚ Ꮳ”",
+          "text": "ᎭᏥᏁᎩ ᎠᏰᎵ ᎣᏣᏓᏅᏖᏍᎩ ᎠᎴ ᎪᏪᎳᏫᏚ Ꮳ”",
+          "source": "tesseract_chr",
+          "box_px": [
+            3013,
+            2108,
+            3700,
+            2165
+          ]
+        },
+        {
+          "line_id": "P1_TL00326",
+          "source_text": "ᎳᎩᏱ. ᎠᏯᎪᎴᏍᏗ ᏕᎦᏚᎲᏗᏒᎡ ᎯᏴ ᏂᏚᏍᎦᏍᏗ-",
+          "tesseract_text": "ᎳᎩᏱ; ᎠᏯᎪᎴᏍᏗ ᏄᎥᏚᏩᏗᏒᎡ ᎯᏴ ᏂᎦᏯᏠᏍᏗ.",
+          "text": "ᎳᎩᏱ; ᎠᏯᎪᎴᏍᏗ ᏄᎥᏚᏩᏗᏒᎡ ᎯᏴ ᏂᎦᏯᏠᏍᏗ.",
+          "source": "tesseract_chr",
+          "box_px": [
+            3009,
+            2149,
+            3684,
+            2205
+          ]
+        },
+        {
+          "line_id": "P1_TL00327",
+          "source_text": "ᎢᎵᎬᏱᏱ ᎦᏚᎲ ᏔᎦᏥᎦ ᏚᎪᏒᏍᏗ; ᎯᎠᏃ ᏄᏄᎸᏍᏗ",
+          "tesseract_text": "",
+          "text": "ᎢᎵᎬᏱᏱ ᎦᏚᎲ ᏔᎦᏥᎦ ᏚᎪᏒᏍᏗ; ᎯᎠᏃ ᏄᏄᎸᏍᏗ",
+          "source": "loc_alto_fallback_empty_tesseract",
+          "box_px": [
+            3007,
+            2185,
+            3686,
+            2254
+          ]
+        },
+        {
+          "line_id": "P1_TL00328",
+          "source_text": "ᏩᎳᎩ ᎠᎶᏮᎥᏎᎢ. .: ᎤᏯᏓᏮᏢ ᎤᏪᏍᏘᏛ ᎠᎹᏥ Ꭴ”",
+          "tesseract_text": "ᏩᎳᎩ ᎠᎶᏮᏎᎢ. ’ ᎤᎭᏓᏮᏢ ᎤᏪᏍᏗᏛ ᎠᎹᏥ Ꭴ”-",
+          "text": "ᏩᎳᎩ ᎠᎶᏮᏎᎢ. ’ ᎤᎭᏓᏮᏢ ᎤᏪᏍᏗᏛ ᎠᎹᏥ Ꭴ”-",
+          "source": "tesseract_chr",
+          "box_px": [
+            3013,
+            2238,
+            3710,
+            2294
+          ]
+        },
+        {
+          "line_id": "P1_TL00329",
+          "source_text": "ᏂᏢᏛᏱ. ᎤᏪᏴᎢ: ᎠᎴ ᏂᏍᎨᏍᏘ, ᏧᏴᏢ ᎢᏘᏢ ᏧᏳᎩ”",
+          "tesseract_text": "ᏏᏢᏛᏱ. ᎤᏪᏴᎢ: ᎠᎴ ᏂᏍᎨᏍᏗ, ᏧᏴᏢ ᎢᏘᏢ ᏧᏳᎩᎯ",
+          "text": "ᏏᏢᏛᏱ. ᎤᏪᏴᎢ: ᎠᎴ ᏂᏍᎨᏍᏗ, ᏧᏴᏢ ᎢᏘᏢ ᏧᏳᎩᎯ",
+          "source": "tesseract_chr",
+          "box_px": [
+            3013,
+            2273,
+            3711,
+            2329
+          ]
+        },
+        {
+          "line_id": "P1_TL00330",
+          "source_text": "ᎪᏘᏯ -ᏫᏂᎬᏁᎴᏘ ᎦᏄᏎᏴ ᎨᎮ ᎠᎹᏰᎵ ᎬᎭᏎᏱᏃ”",
+          "tesseract_text": "ᎪᏗᏯ ᏫᏂᎬᏁᏍᏗ ᎦᏄᏎᏴ ᏏᎮ ᎠᎹᏰᎵ ᎬᎭᏱᏃ",
+          "text": "ᎪᏗᏯ ᏫᏂᎬᏁᏍᏗ ᎦᏄᏎᏴ ᏏᎮ ᎠᎹᏰᎵ ᎬᎭᏱᏃ",
+          "source": "tesseract_chr",
+          "box_px": [
+            3012,
+            2310,
+            3709,
+            2374
+          ]
+        },
+        {
+          "line_id": "P1_TL00331",
+          "source_text": "ᎦᎦᎦᎲ ᎠᏰᏢ ᎦᎶᏍᎨᏍᏗ.- ᎪᏉᏃ ᏧᏨᏳᏁᏘᏯ Ꮹ",
+          "tesseract_text": "",
+          "text": "ᎦᎦᎦᎲ ᎠᏰᏢ ᎦᎶᏍᎨᏍᏗ.- ᎪᏉᏃ ᏧᏨᏳᏁᏘᏯ Ꮹ",
+          "source": "loc_alto_fallback_empty_tesseract",
+          "box_px": [
+            3010,
+            2328,
+            3691,
+            2418
+          ]
+        },
+        {
+          "line_id": "P1_TL00332",
+          "source_text": "ᏓᏬᎯᎳᏗᏍᎨᏍᏗ ᏖᎾᎿᏓᏬᏮᎲ, ᎣᏓᎸᎢ; ᎿᏉᏃ",
+          "tesseract_text": "ᏓᏬᎯᎳᏗᏍᎨᏍᏗ ᏓᎾᏓᏬᏮᎲ., ᎣᏓᎸᎢ: ᎿᏉᏃ",
+          "text": "ᏓᏬᎯᎳᏗᏍᎨᏍᏗ ᏓᎾᏓᏬᏮᎲ., ᎣᏓᎸᎢ: ᎿᏉᏃ",
+          "source": "tesseract_chr",
+          "box_px": [
+            3015,
+            2403,
+            3688,
+            2460
+          ]
+        },
+        {
+          "line_id": "P1_TL00333",
+          "source_text": "ᏧᏅᎪᏘᏊ. ᏚᎵᏍᏁᏂᎸ ᎾᎵᏱ. ᏓᎾᏓᏬᏮᏪᏃ ᏚᏪᎬᎢ”",
+          "tesseract_text": "ᏧᏨᎪᏘᏊ. ᎦᎨᏍᏁᏂᎸ ᎧᎵᏱ, ᏓᎾᏓᏬᏮᏯᏃ ᏕᏢᎬᎢ",
+          "text": "ᏧᏨᎪᏘᏊ. ᎦᎨᏍᏁᏂᎸ ᎧᎵᏱ, ᏓᎾᏓᏬᏮᏯᏃ ᏕᏢᎬᎢ",
+          "source": "tesseract_chr",
+          "box_px": [
+            3013,
+            2448,
+            3690,
+            2504
+          ]
+        },
+        {
+          "line_id": "P1_TL00334",
+          "source_text": "ᎤᏅᏓᏣᎭ.. ᏩᏓᏬᎯᎳᏗᏍᎨᏥᏍᏘ ᏥᎵᏱ ᎤᏛᎾ ᎣᏓ”",
+          "tesseract_text": "ᎤᏫᏓᏟᎭ,. ᏩᏓᏬᎯᎳᏗᏇᏥᏍᏘ ᎡᎵᏱ ᎤᏛᏮ ᎣᏖ”",
+          "text": "ᎤᏫᏓᏟᎭ,. ᏩᏓᏬᎯᎳᏗᏇᏥᏍᏘ ᎡᎵᏱ ᎤᏛᏮ ᎣᏖ”",
+          "source": "tesseract_chr",
+          "box_px": [
+            3012,
+            2486,
+            3691,
+            2559
+          ]
+        },
+        {
+          "line_id": "P1_TL00335",
+          "source_text": "Ꮠ: -ᎿᏉᏃ ᏧᏳᎪᏗᏯ ᎧᏮᏂᎬᏁᏍᏗ ᏄᎬᎾᏮᏳᏒ",
+          "tesseract_text": "",
+          "text": "Ꮠ: -ᎿᏉᏃ ᏧᏳᎪᏗᏯ ᎧᏮᏂᎬᏁᏍᏗ ᏄᎬᎾᏮᏳᏒ",
+          "source": "loc_alto_fallback_empty_tesseract",
+          "box_px": [
+            3008,
+            2535,
+            3689,
+            2622
+          ]
+        },
+        {
+          "line_id": "P1_TL00336",
+          "source_text": "“ᎵᎨᏱ. ᏧᎵᏍᏘᏂᎸ ᏫᎬᏬᎥᏕᏍᏗ ᎤᏪᏴ ᏩᏍᏖᏍᏗ.",
+          "tesseract_text": "“ᏬᎨᏱ ᏧᎵᏍᏁᏂᎸ ᏫᎬᏬᎥᎮᏍᏘ ᎤᏪᎠ ᏩᏍᏖᏍᏗ,",
+          "text": "“ᏬᎨᏱ ᏧᎵᏍᏁᏂᎸ ᏫᎬᏬᎥᎮᏍᏘ ᎤᏪᎠ ᏩᏍᏖᏍᏗ,",
+          "source": "tesseract_chr",
+          "box_px": [
+            3007,
+            2570,
+            3688,
+            2626
+          ]
+        },
+        {
+          "line_id": "P1_TL00337",
+          "source_text": "“ᎿᏉᏃ ᎥᏔᎧᏯᏏ ᎠᏉᏂ ᎢᎬᏓᏢᎬᏕᎴ“Ꮧ ᎤᏢᏘᏩ Ꮳ”",
+          "tesseract_text": "ᏓᏃ ᏔᎧᏍᏏ ᎠᏉᏂ -ᎢᎬᏓᏢᎬᏕᎴᏍᏗ ᎤᏢᏁᏩ ᏅᏬ",
+          "text": "ᏓᏃ ᏔᎧᏍᏏ ᎠᏉᏂ -ᎢᎬᏓᏢᎬᏕᎴᏍᏗ ᎤᏢᏁᏩ ᏅᏬ",
+          "source": "tesseract_chr",
+          "box_px": [
+            3007,
+            2615,
+            3690,
+            2675
+          ]
+        },
+        {
+          "line_id": "P1_TL00338",
+          "source_text": "ᏪᏴ ᏩᏍᏖᏍᏗ, - ᎿᏉᏃ ᏩᏍᎩ- ᎤᎵᏘᏩ ᏂᏌᏯᏘᎡ",
+          "tesseract_text": "",
+          "text": "ᏪᏴ ᏩᏍᏖᏍᏗ, - ᎿᏉᏃ ᏩᏍᎩ- ᎤᎵᏘᏩ ᏂᏌᏯᏘᎡ",
+          "source": "loc_alto_fallback_empty_tesseract",
+          "box_px": [
+            3009,
+            2660,
+            3689,
+            2724
+          ]
+        },
+        {
+          "line_id": "P1_TL00339",
+          "source_text": "ᎧᎬᏂᎨ,, ᏧᎦᏮᏮ ᏗᎧᏄᏝᏃ ᎾᏚᏅᎪᏛ ᏫᏥᏴ ᎢᎠᏝ ᏓᏢ”",
+          "tesseract_text": "",
+          "text": "ᎧᎬᏂᎨ,, ᏧᎦᏮᏮ ᏗᎧᏄᏝᏃ ᎾᏚᏅᎪᏛ ᏫᏥᏴ ᎢᎠᏝ ᏓᏢ”",
+          "source": "loc_alto_fallback_empty_tesseract",
+          "box_px": [
+            3014,
+            2698,
+            3690,
+            2770
+          ]
+        },
+        {
+          "line_id": "P1_TL00340",
+          "source_text": "ᎢᎭᏍᏗ,” ᎿᏉᏃ ᏧᎦᎾᏮᏣ ᎢᏢ ᏫᏂᎬᎦᏁᏍᏗ ᏢᏩᏛ”",
+          "tesseract_text": "ᎤᎮᏈᏍᎦ. ᎿᏉᏃ ᏧᎦᏮᏣ ᎢᎸᏢ ᏫᏂᎬᏁᏍᏗ ᎠᏃ",
+          "text": "ᎤᎮᏈᏍᎦ. ᎿᏉᏃ ᏧᎦᏮᏣ ᎢᎸᏢ ᏫᏂᎬᏁᏍᏗ ᎠᏃ",
+          "source": "tesseract_chr",
+          "box_px": [
+            3007,
+            2752,
+            3691,
+            2799
+          ]
+        },
+        {
+          "line_id": "P1_TL00341",
+          "source_text": "ᎩᎯ ᎤᏪᏴ ᏩᏇᎧᎿᏍᏘ.. ᎿᏉᏃ ᎦᎾᏍᏌᎩᏱ Ꮮ",
+          "tesseract_text": "ᎩᎯ ᎤᏪᏴ ᏩᏍᏓᎣᏗ.. ᎿᎳᏃ ᎦᎧᏍᏖᎩᏱ ᏂᏒ",
+          "text": "ᎩᎯ ᎤᏪᏴ ᏩᏍᏓᎣᏗ.. ᎿᎳᏃ ᎦᎧᏍᏖᎩᏱ ᏂᏒ",
+          "source": "tesseract_chr",
+          "box_px": [
+            3014,
+            2777,
+            3689,
+            2849
+          ]
+        },
+        {
+          "line_id": "P1_TL00342",
+          "source_text": "ᎢᎡᏩ-;ᏕᏍᏗᏉᎦᏍᏖᏲᏢ ᎨᏴ ᎾᏓᏜᏍᏔᏂᎯᎲ ’ Ꭰ”",
+          "tesseract_text": "ᎩᎳ ᎠᏁ ᏎᎵᎲᎾᎲ “Ꮑ",
+          "text": "ᎩᎳ ᎠᏁ ᏎᎵᎲᎾᎲ “Ꮑ",
+          "source": "tesseract_chr",
+          "box_px": [
+            3014,
+            2824,
+            3691,
+            2920
+          ]
+        },
+        {
+          "line_id": "P1_TL00343",
+          "source_text": "ᏍᏏᎹ “ᏣᏍᏉ ᎧᎬᏬᏎᎦᏍᏗ; ᎢᎬᏱᏱᏉᏃ ᏘᎴᏂ”",
+          "tesseract_text": "ᏍᏏᏪ ᏣᏍᏉ ᏫᎬᏬᏎᎦᏍᏘᎥ; ᎢᎬᏱᏱᏉᏃ ᏘᎴᏂ”",
+          "text": "ᏍᏏᏪ ᏣᏍᏉ ᏫᎬᏬᏎᎦᏍᏘᎥ; ᎢᎬᏱᏱᏉᏃ ᏘᎴᏂ”",
+          "source": "tesseract_chr",
+          "box_px": [
+            3014,
+            2869,
+            3692,
+            2931
+          ]
+        },
+        {
+          "line_id": "P1_TL00344",
+          "source_text": "ᏍᎬ. ᎠᏑᏥ ᏫᏓᏠᏍᎨᏍᏗ, :",
+          "tesseract_text": "“ᏍᎬ ᎠᎹᏥ ᎾᏓᏠᏍᎨᏍᏗ. ! ᎨᎢ",
+          "text": "“ᏍᎬ ᎠᎹᏥ ᎾᏓᏠᏍᎨᏍᏗ. ! ᎨᎢ",
+          "source": "tesseract_chr",
+          "box_px": [
+            3014,
+            2915,
+            3553,
+            2974
+          ]
+        }
+      ]
+    },
+    {
+      "block_id": "P1_TB00023",
+      "language": "chr",
+      "source": "hybrid_chr",
+      "text": "Ꭰ ᎠᏩᏖᏩᎢ. ᏊᏍ Ꮑ Ꮝ…. ᏊᏃ\nᎢᎢ Ꭲ Ꮑ Ꮓ…Ꮧ………Ꮓ\nᎴ Ꮎ Ꮑ Ꮣ ᎷᏞ;Ꭾ\nᎢ ᏟᎳᎩᎲᏗ\nᎤᎨᏱ ᎬᏊᏗᏍᏒ ᎢᏯᏍᏗ). ᎫᏮᏍᎩᏉᏃ ᎢᎬᏬᎪ”\nᏍᏗ, ᎫᏍᏌ ᎨᏯᏘᏴ ᏭᏓᎪᏍᏓᏂᎯᎲ ᏩᏍᏖᏍᏗ……-.\n“ᏌᏉᏃ ᎠᎶᎶᏛ ᎤᏅᎫᏛ ᎠᏂᏣᎳᎩ -ᎠᏞᏭᏍᏌᏃ ᏚᎾᏮᏖᏓ”\n“ᎯᎩᏛ, ᏩᏍᎩᏉ ᎠᏱᏓᏩᏘᏎᏍᏗ ᏏᏫᏂᎢᏅ ᏩᏍᎩ\n“ᏥᏫᏓᏠᎯᏍᏗ ᏥᏣᏈ ᎤᏅᏅᎢ. “ᏬᏇᎩᎮ”Ꮓ ᎦᏟ-Ꮕ\nᎠᏍᏓᏩᏕᎨᏍᏗ ᏗᎧᎸᎬ ᎢᏗᏢᏕ ᎡᎶ ᎦᎴᏁᎸ ᎦᎶᎨ”\nᏒ ᎾᏓᏍᏛ ᎦᎶᏍᎨᏍᏗ; ᎠᏍᏏᎬᏉ ᏣᏍᎩ ᎦᏅᏅ Ꮹ”\nᏕᎪᎲᏍᎨᏍᏁ ᏫᏘᎦᏐᏕᎢ: ᎢᏓᏩ. ᎨᏴ ᏚᎶᏕᎸ ᎬᎩᏗᏢ\nᎤᏪᏘ. .ᏗᎦᏡᎯᏍᏗᏱ ᏥᎩ ᏩᏯᏖᏍᏘ. ᏩᎴᏇᎩᏉᏃ\nᎬᏌᏴ ᎢᎬᏬᎥᏕᏍᏘ ᎤᏍᏔᏌᏢ ᎤᏪᏴ. ᎦᏚᏟᎦᏯᎸ ᏩᏍᏖ”\nᏍᏗ,. ᎿᏉᏃ“ᎤᏍᏓᎧᏢ. ᎨᏍᏗᏒ . ᎢᎬᎿᏓᏢᏏᏐᏍᏗᎨ\nᎠᎹᏏ ᎤᏪᏴ ᏩᏍᏖᏍᏗ, , ᎢᎬᏱᏱᏉᏃ ᎦᏚᎲ ᏧᎦᏑᎦ\nᏚᏓᎯᏠᎵᏍᏗ. “Ꮈ\nᏦᎢᏁᏃ ᎦᏚᎲ ᏧᏑᏪᎯᏱ ᏚᎪᎡᏍᏘ; .ᎯᎠᏃᏃ ᏄᎹ\nᏍᏐᎣᏘᏁ. ᏩᏍᎩ ᎠᏣᎶᎥᎢ. ᎤᎵᏍᎦᏂ ᏥᎨᏒ ᎤᏓᏴᏛ\nᏧᎿᏙᏍᎪᏗᏱ ᎤᏍᏓᏮᏢ. ᏥᏴ ᎠᏢᎹᎹ. ᎦᏅᎿᏩᏗᏒ\nᏥᎦᎦᎭᎦ ᎠᎴᏂᎸᎲᏍᏗ. ᏩᏍᎩᏉᏃ ᏓᏃᎴᎷ ᏧᏂ”\nᎠᏍᎪᏗᏱ ᏥᎦᏅᎿ ᏗᎧᎸᎬ ᎢᏗᏢ ᎢᏓᏩ ᎦᏚᎲ ᎢᏘ”\nᏢ ᏥᏫᎦᏅᎾ, ᏄᏅ ᏓᎱᏴ ᎤᎶᎨᏒ ᏦᎩᏗᏢ ᎤᏂᏢᏛ”\nᏱ ᎤᏛᎾ ᏧᏪᏴ ᏩᏍᏖᏇᏱᏗ. ᏑᏓᏢᏱ ᎾᎥ. “ᏣᏍᎩᏉᏃ",
+      "lines": [
+        {
+          "line_id": "P1_TL00381",
+          "source_text": "Ꭰ ᎠᏩᏖᏩᎢ. ᏊᏍ Ꮑ Ꮝ…. ᏊᏃ",
+          "tesseract_text": "",
+          "text": "Ꭰ ᎠᏩᏖᏩᎢ. ᏊᏍ Ꮑ Ꮝ…. ᏊᏃ",
+          "source": "loc_alto_fallback_empty_tesseract",
+          "box_px": [
+            3013,
+            2993,
+            3686,
+            3058
+          ]
+        },
+        {
+          "line_id": "P1_TL00382",
+          "source_text": "ᎢᎢ Ꭲ Ꮑ Ꮓ…Ꮧ………Ꮓ",
+          "tesseract_text": "",
+          "text": "ᎢᎢ Ꭲ Ꮑ Ꮓ…Ꮧ………Ꮓ",
+          "source": "loc_alto_fallback_empty_tesseract",
+          "box_px": [
+            3013,
+            3020,
+            3694,
+            3090
+          ]
+        },
+        {
+          "line_id": "P1_TL00383",
+          "source_text": "Ꮄ Ꮎ Ꮑ Ꮣ ᎷᏞ;Ꭾ",
+          "tesseract_text": "",
+          "text": "Ꮄ Ꮎ Ꮑ Ꮣ ᎷᏞ;Ꭾ",
+          "source": "loc_alto_fallback_empty_tesseract",
+          "box_px": [
+            3013,
+            3059,
+            3706,
+            3138
+          ]
+        },
+        {
+          "line_id": "P1_TL00384",
+          "source_text": "Ꭲ ᏟᎳᎩᎲᏗ",
+          "tesseract_text": "",
+          "text": "Ꭲ ᏟᎳᎩᎲᏗ",
+          "source": "loc_alto_fallback_empty_tesseract",
+          "box_px": [
+            3033,
+            3106,
+            3638,
+            3170
+          ]
+        },
+        {
+          "line_id": "P1_TL00385",
+          "source_text": "ᎤᎨᏱ ᎬᏊᏗᏍᏒ ᎢᏯᏍᏗ). ᎫᏮᏍᎩᏉᏃ ᎢᎬᏬᎪ”",
+          "tesseract_text": "",
+          "text": "ᎤᎨᏱ ᎬᏊᏗᏍᏒ ᎢᏯᏍᏗ). ᎫᏮᏍᎩᏉᏃ ᎢᎬᏬᎪ”",
+          "source": "loc_alto_fallback_empty_tesseract",
+          "box_px": [
+            3013,
+            3158,
+            3698,
+            3263
+          ]
+        },
+        {
+          "line_id": "P1_TL00386",
+          "source_text": "ᏍᏗ-ᎫᏍᏌ Ꭸ.ᏍᏘᏴ ᏰᏓᎪᏍᏓᏂᎯᎲ ᏩᏍᏖᏍᏘ----",
+          "tesseract_text": "ᏍᏗ, ᎫᏍᏌ ᎨᏯᏘᏴ ᏭᏓᎪᏍᏓᏂᎯᎲ ᏩᏍᏖᏍᏗ……-.",
+          "text": "ᏍᏗ, ᎫᏍᏌ ᎨᏯᏘᏴ ᏭᏓᎪᏍᏓᏂᎯᎲ ᏩᏍᏖᏍᏗ……-.",
+          "source": "tesseract_chr",
+          "box_px": [
+            3013,
+            3220,
+            3697,
+            3281
+          ]
+        },
+        {
+          "line_id": "P1_TL00387",
+          "source_text": ".ᏌᏉᏃ ᎠᎶᎶᏛ ᎤᏅᏭᏛ ᎠᏂᏣᎳᎩ”ᎠᏂᏭᏍᏌᏃ ᏚᎾᏓ”",
+          "tesseract_text": "“ᏌᏉᏃ ᎠᎶᎶᏛ ᎤᏅᎫᏛ ᎠᏂᏣᎳᎩ -ᎠᏞᏭᏍᏌᏃ ᏚᎾᏮᏖᏓ”",
+          "text": "“ᏌᏉᏃ ᎠᎶᎶᏛ ᎤᏅᎫᏛ ᎠᏂᏣᎳᎩ -ᎠᏞᏭᏍᏌᏃ ᏚᎾᏮᏖᏓ”",
+          "source": "tesseract_chr",
+          "box_px": [
+            3013,
+            3264,
+            3700,
+            3318
+          ]
+        },
+        {
+          "line_id": "P1_TL00388",
+          "source_text": "“ᎯᎩᏛ, ᏩᏍᎩᏉ ᎠᏍᏓᏩᏘᏎᏍᏗ’ ᏂᏫᏂᎢᏅ ᏣᏍᎩ",
+          "tesseract_text": "“ᎯᎩᏛ, ᏩᏍᎩᏉ ᎠᏱᏓᏩᏘᏎᏍᏗ ᏏᏫᏂᎢᏅ ᏩᏍᎩ",
+          "text": "“ᎯᎩᏛ, ᏩᏍᎩᏉ ᎠᏱᏓᏩᏘᏎᏍᏗ ᏏᏫᏂᎢᏅ ᏩᏍᎩ",
+          "source": "tesseract_chr",
+          "box_px": [
+            3013,
+            3307,
+            3700,
+            3368
+          ]
+        },
+        {
+          "line_id": "P1_TL00389",
+          "source_text": "“ᏥᏫᏓᏠᎯᏍᏗ ᏥᏮᏈ ᎤᏅᏅᎢ. “ᏬᏊᎩ”Ꮓ ᎦᏅᏅ",
+          "tesseract_text": "“ᏥᏫᏓᏠᎯᏍᏗ ᏥᏣᏈ ᎤᏅᏅᎢ. “ᏬᏇᎩᎮ”Ꮓ ᎦᏟ-Ꮕ",
+          "text": "“ᏥᏫᏓᏠᎯᏍᏗ ᏥᏣᏈ ᎤᏅᏅᎢ. “ᏬᏇᎩᎮ”Ꮓ ᎦᏟ-Ꮕ",
+          "source": "tesseract_chr",
+          "box_px": [
+            3013,
+            3350,
+            3702,
+            3406
+          ]
+        },
+        {
+          "line_id": "P1_TL00390",
+          "source_text": "ᎠᏍᏓᏩᏕᏥᏑᏍᏗ ᏗᎧᎸᎬ ᎢᏗᏢᏕ’ ᎡᎶ ᏕᎦᏁᎸ ᏚᎶᎨ”",
+          "tesseract_text": "ᎠᏍᏓᏩᏕᎨᏍᏗ ᏗᎧᎸᎬ ᎢᏗᏢᏕ ᎡᎶ ᎦᎴᏁᎸ ᎦᎶᎨ”",
+          "text": "ᎠᏍᏓᏩᏕᎨᏍᏗ ᏗᎧᎸᎬ ᎢᏗᏢᏕ ᎡᎶ ᎦᎴᏁᎸ ᎦᎶᎨ”",
+          "source": "tesseract_chr",
+          "box_px": [
+            3021,
+            3401,
+            3700,
+            3452
+          ]
+        },
+        {
+          "line_id": "P1_TL00391",
+          "source_text": "Ꮢ ᎾᏓᏍᏛ ᎦᎶᏍᎨᏍᏗ; ᎠᏍᎬᏉ ᏣᏍᎩ ᎦᏅᏅ Ꮹ”",
+          "tesseract_text": "Ꮢ ᎾᏓᏍᏛ ᎦᎶᏍᎨᏍᏗ; ᎠᏍᏏᎬᏉ ᏣᏍᎩ ᎦᏅᏅ Ꮹ”",
+          "text": "Ꮢ ᎾᏓᏍᏛ ᎦᎶᏍᎨᏍᏗ; ᎠᏍᏏᎬᏉ ᏣᏍᎩ ᎦᏅᏅ Ꮹ”",
+          "source": "tesseract_chr",
+          "box_px": [
+            3020,
+            3440,
+            3702,
+            3496
+          ]
+        },
+        {
+          "line_id": "P1_TL00392",
+          "source_text": "ᏕᎪᎲᏍᎨᏍᏘ, ᏫᏘᎦᏐᎢ: ᎢᏓᏩ ᎨᏴ ᏚᎶᎦᎸ ᎬᎩᏘᏢ",
+          "tesseract_text": "ᏕᎪᎲᏍᎨᏍᏁ ᏫᏘᎦᏐᏕᎢ: ᎢᏓᏩ. ᎨᏴ ᏚᎶᏕᎸ ᎬᎩᏗᏢ",
+          "text": "ᏕᎪᎲᏍᎨᏍᏁ ᏫᏘᎦᏐᏕᎢ: ᎢᏓᏩ. ᎨᏴ ᏚᎶᏕᎸ ᎬᎩᏗᏢ",
+          "source": "tesseract_chr",
+          "box_px": [
+            3021,
+            3474,
+            3698,
+            3540
+          ]
+        },
+        {
+          "line_id": "P1_TL00393",
+          "source_text": "ᎤᏪᏘ,ᏘᎦᏐᎯᏍᏗᏱ ᏥᎩ ᏩᏍᏖᏍᏗ.. ᏣᏍᎩᏉᏃ",
+          "tesseract_text": "ᎤᏪᏘ. .ᏗᎦᏡᎯᏍᏗᏱ ᏥᎩ ᏩᏯᏖᏍᏘ. ᏩᎴᏇᎩᏉᏃ",
+          "text": "ᎤᏪᏘ. .ᏗᎦᏡᎯᏍᏗᏱ ᏥᎩ ᏩᏯᏖᏍᏘ. ᏩᎴᏇᎩᏉᏃ",
+          "source": "tesseract_chr",
+          "box_px": [
+            3021,
+            3533,
+            3698,
+            3581
+          ]
+        },
+        {
+          "line_id": "P1_TL00394",
+          "source_text": "ᏌᏴ ᎢᎬᏬ;ᏕᏍᏘᏗ ᎤᏍᏇᏴᏌᎵ ᎤᏪᏴ ᏚᎶᎦᎸ ᏩᏍᏖ”",
+          "tesseract_text": "ᎬᏌᏴ ᎢᎬᏬᎥᏕᏍᏘ ᎤᏍᏔᏌᏢ ᎤᏪᏴ. ᎦᏚᏟᎦᏯᎸ ᏩᏍᏖ”",
+          "text": "ᎬᏌᏴ ᎢᎬᏬᎥᏕᏍᏘ ᎤᏍᏔᏌᏢ ᎤᏪᏴ. ᎦᏚᏟᎦᏯᎸ ᏩᏍᏖ”",
+          "source": "tesseract_chr",
+          "box_px": [
+            3024,
+            3565,
+            3701,
+            3615
+          ]
+        },
+        {
+          "line_id": "P1_TL00395",
+          "source_text": "ᏍᏗ, .. ᎿᏉᏃ“ᎤᏍᏓᎧᏢ. ᎨᏍᏗᏒ ,ᎢᎬᏓᏢᎵᏕᏍᏗ",
+          "tesseract_text": "ᏍᏗ,. ᎿᏉᏃ“ᎤᏍᏓᎧᏢ. ᎨᏍᏗᏒ . ᎢᎬᎿᏓᏢᏏᏐᏍᏗᎨ",
+          "text": "ᏍᏗ,. ᎿᏉᏃ“ᎤᏍᏓᎧᏢ. ᎨᏍᏗᏒ . ᎢᎬᎿᏓᏢᏏᏐᏍᏗᎨ",
+          "source": "tesseract_chr",
+          "box_px": [
+            3024,
+            3604,
+            3698,
+            3668
+          ]
+        },
+        {
+          "line_id": "P1_TL00396",
+          "source_text": "ᎠᎹᏏ. ᎤᏪᏴ ᏩᏍᏖᏍᏗ. , ᎢᎬᏱᏱᏉᏃ-ᎦᏚᎲ ᏧᎦᎹᎦ",
+          "tesseract_text": "ᎠᎹᏏ ᎤᏪᏴ ᏩᏍᏖᏍᏗ, , ᎢᎬᏱᏱᏉᏃ ᎦᏚᎲ ᏧᎦᏑᎦ",
+          "text": "ᎠᎹᏏ ᎤᏪᏴ ᏩᏍᏖᏍᏗ, , ᎢᎬᏱᏱᏉᏃ ᎦᏚᎲ ᏧᎦᏑᎦ",
+          "source": "tesseract_chr",
+          "box_px": [
+            3024,
+            3646,
+            3703,
+            3712
+          ]
+        },
+        {
+          "line_id": "P1_TL00397",
+          "source_text": "ᏚᏓᎯᏠᏕᏍᏗ. Ꭺ",
+          "tesseract_text": "ᏚᏓᎯᏠᎵᏍᏗ. “Ꮈ",
+          "text": "ᏚᏓᎯᏠᎵᏍᏗ. “Ꮈ",
+          "source": "tesseract_chr",
+          "box_px": [
+            3026,
+            3692,
+            3385,
+            3756
+          ]
+        },
+        {
+          "line_id": "P1_TL00398",
+          "source_text": "-ᏙᎡᎢᏁᏃ ᎦᎦᎲ ᏧᏙᏪᎯᏱ ᏚᎪᏴᏍᏘ; .ᎯᎠᏃ“ Ꮔ”",
+          "tesseract_text": "ᏦᎢᏁᏃ ᎦᏚᎲ ᏧᏑᏪᎯᏱ ᏚᎪᎡᏍᏘ; .ᎯᎠᏃᏃ ᏄᎹ",
+          "text": "ᏦᎢᏁᏃ ᎦᏚᎲ ᏧᏑᏪᎯᏱ ᏚᎪᎡᏍᏘ; .ᎯᎠᏃᏃ ᏄᎹ",
+          "source": "tesseract_chr",
+          "box_px": [
+            3013,
+            3750,
+            3703,
+            3806
+          ]
+        },
+        {
+          "line_id": "P1_TL00399",
+          "source_text": "ᏍᎦᎣᏘ. ᏣᏍᎩ. ᎠᏣᏳᎶᎥᎢ. ᎤᏢᏍᎦᏂ ᏥᎨᏒ ᎤᏓᏴᏛ",
+          "tesseract_text": "ᏍᏐᎣᏘᏁ. ᏩᏍᎩ ᎠᏣᎶᎥᎢ. ᎤᎵᏍᎦᏂ ᏥᎨᏒ ᎤᏓᏴᏛ",
+          "text": "ᏍᏐᎣᏘᏁ. ᏩᏍᎩ ᎠᏣᎶᎥᎢ. ᎤᎵᏍᎦᏂ ᏥᎨᏒ ᎤᏓᏴᏛ",
+          "source": "tesseract_chr",
+          "box_px": [
+            3027,
+            3798,
+            3703,
+            3840
+          ]
+        },
+        {
+          "line_id": "P1_TL00400",
+          "source_text": "ᏧᎿᏌᏍᎪᏘᏱ ᎤᏍᏓᏮᏢ. ᎲᏥᏴ ᎠᏢᎹᎹ. ᎦᏅᎿᏩᏘᏒ",
+          "tesseract_text": "ᏧᎿᏙᏍᎪᏗᏱ ᎤᏍᏓᏮᏢ. ᏥᏴ ᎠᏢᎹᎹ. ᎦᏅᎿᏩᏗᏒ",
+          "text": "ᏧᎿᏙᏍᎪᏗᏱ ᎤᏍᏓᏮᏢ. ᏥᏴ ᎠᏢᎹᎹ. ᎦᏅᎿᏩᏗᏒ",
+          "source": "tesseract_chr",
+          "box_px": [
+            3021,
+            3835,
+            3704,
+            3888
+          ]
+        },
+        {
+          "line_id": "P1_TL00401",
+          "source_text": "ᏂᏥᏕᎦᏔᎦ ᎠᎴᏂᏍᎨᏍᏗ. ᏩᏍᎩᏉᏃ ᏓᏆᎴᎳ. ᏧᏂ”",
+          "tesseract_text": "ᏥᎦᎦᎭᎦ ᎠᎴᏂᎸᎲᏍᏗ. ᏩᏍᎩᏉᏃ ᏓᏃᎴᎷ ᏧᏂ”",
+          "text": "ᏥᎦᎦᎭᎦ ᎠᎴᏂᎸᎲᏍᏗ. ᏩᏍᎩᏉᏃ ᏓᏃᎴᎷ ᏧᏂ”",
+          "source": "tesseract_chr",
+          "box_px": [
+            3027,
+            3877,
+            3705,
+            3927
+          ]
+        },
+        {
+          "line_id": "P1_TL00402",
+          "source_text": "ᎠᏍᎪᏗᏱ ᏥᎦᏅᎿ ᏗᎧᎸᎬ .ᎢᏗᏢ ᎢᏓᏩ ᎦᏚᎲ ᎢᏘ”",
+          "tesseract_text": "ᎠᏍᎪᏗᏱ ᏥᎦᏅᎿ ᏗᎧᎸᎬ ᎢᏗᏢ ᎢᏓᏩ ᎦᏚᎲ ᎢᏘ”",
+          "text": "ᎠᏍᎪᏗᏱ ᏥᎦᏅᎿ ᏗᎧᎸᎬ ᎢᏗᏢ ᎢᏓᏩ ᎦᏚᎲ ᎢᏘ”",
+          "source": "tesseract_chr",
+          "box_px": [
+            3028,
+            3919,
+            3701,
+            3974
+          ]
+        },
+        {
+          "line_id": "P1_TL00403",
+          "source_text": "Ꮲ ᏥᏫᏲᎦᏅᎾ, ᏄᏅ ᏓᏆᏴ ᎤᎶᏏᏒ ᏦᎩᏗᏢ ᎤᏂᏢᏛ”",
+          "tesseract_text": "Ꮲ ᏥᏫᎦᏅᎾ, ᏄᏅ ᏓᎱᏴ ᎤᎶᎨᏒ ᏦᎩᏗᏢ ᎤᏂᏢᏛ”",
+          "text": "Ꮲ ᏥᏫᎦᏅᎾ, ᏄᏅ ᏓᎱᏴ ᎤᎶᎨᏒ ᏦᎩᏗᏢ ᎤᏂᏢᏛ”",
+          "source": "tesseract_chr",
+          "box_px": [
+            3028,
+            3963,
+            3706,
+            4018
+          ]
+        },
+        {
+          "line_id": "P1_TL00404",
+          "source_text": "Ᏹ ᎤᏛᎾ ᏧᏪᏴ ᏩᏍᏖᏍᏗ. ᏑᏓᏢᏱ’ 61. “ᏣᏍᎩᏉᏃ",
+          "tesseract_text": "Ᏹ ᎤᏛᎾ ᏧᏪᏴ ᏩᏍᏖᏇᏱᏗ. ᏑᏓᏢᏱ ᎾᎥ. “ᏣᏍᎩᏉᏃ",
+          "text": "Ᏹ ᎤᏛᎾ ᏧᏪᏴ ᏩᏍᏖᏇᏱᏗ. ᏑᏓᏢᏱ ᎾᎥ. “ᏣᏍᎩᏉᏃ",
+          "source": "tesseract_chr",
+          "box_px": [
+            3027,
+            4015,
+            3703,
+            4053
+          ]
+        }
+      ]
+    },
+    {
+      "block_id": "P1_TB00025",
+      "language": "chr",
+      "source": "hybrid_chr",
+      "text": "“ᎤᏪᏯᏘᏒ. ᎢᎬᏓᏢᎠᎶᏍᏗ ᏧᎵᎵ”ᏗᎧᎸᎬᏃ ᎢᏗᏢ\nᏫᏚᏳᎪᏛ; ᏭᎨᏍᏁᏂᎸ ᏩᏪᏖᏍᏗ, ᎿᏉᏃ ᏧᏳᎪ”\nᏘᏯ ᏫᏂᎬᏁᏍᏗ ᎤᎵᏍᏘᏂᎸ ᏖᎶᏂᎯ ᎨᎠ ᏩᏍᏖ”\nᏍᏘ, ᏣᏍᎩ ᎨᏯᎯᏒ ᏥᎬᏓᎵᏢᏗ ᎠᏰᎵ ᎤᎧᏤᏢ Ꮵ”\nᎦᏅᎿ ᎿᏉᏃ ᏧᏅᏬᎪᏘᏯ ᎧᏂᎬᏁᏍᏘ ᏔᏤᏉᏬᏗ ᎤᏩ”\nᏝᎥ ᎤᏪᏴ ᏩᏍᏖᏍᏘ, ᏭᏘᏢᏱ ᎦᎦᎲ ᏮᎢ. ᏐᎹᏉᏃ\nᏧᏳᎪᏗᏯ ᏫᏂᎬᏁᏍᏗ ᏄᏣ-ᏧᎸ” ᎬᎬ ᏭᏢᏯᎯᏂᎸ.\nᏩᏍᏖᎴᏗ. ᎿᏉᏃ ᏧᏳᎪᏘᏯ) ᏫᏂᎬᏁᏨᏗ ᎠᏓ”\nᎷᎪᎢ.ᎨᏪ ᏭᏢᏍᏘᏂᎸ ᏩᏍᏖᏍᏗᏊ; ᎿᏉᏃ ᏧᎶ”\nᎪᏘᏯ ᏫᏂᎬᏁᏍᏘᏗ ᎾᎥᏂᏑ Ꮷ(ᎸᏕᏣ ᎢᏗᏢ ᏭᏪᏯᏗ”\nᎣᏛ ᎦᎧᏌᎩᏱ, ᏣᏍᎩ “ᎨᏢᏍᏘᏂᎸ ᏩᏍᏖᎴᏘ ᎿᏉᏃ\nᎦᎠᏢ ᎠᎴ ᏭᏕᎵᎬ ᎢᏗᏢ ᏚᏮᏍᏌᎩᏱ ᎨᏴ ᎧᏢᎣᏎᏥᎯ;\nᎤᏪᏞ ᏧᏬᎪᏘ ᏩᏍᎢᏓᏠᏍ;ᎬᏤ;”Ᏼ ᎦᎾᏍᏌᎩᏱ:; ᎢᎬ”\n-ᏱᏱᏉᏃ ᎠᎴ ᏔᏢᏁ ᏕᎦᎵᎲ ᏚᏓᎯᏞᏮᏎᏍᏗ.",
+      "lines": [
+        {
+          "line_id": "P1_TL00421",
+          "source_text": "ᎤᏪᏯᏱᏒ, ᎢᎬᏓᏢᏴᎸᏍᏗ ᏧᎵᎵ”ᏗᎧᎸᎬᏃ ᎢᏗᏢ",
+          "tesseract_text": "“ᎤᏪᏯᏘᏒ. ᎢᎬᏓᏢᎠᎶᏍᏗ ᏧᎵᎵ”ᏗᎧᎸᎬᏃ ᎢᏗᏢ",
+          "text": "“ᎤᏪᏯᏘᏒ. ᎢᎬᏓᏢᎠᎶᏍᏗ ᏧᎵᎵ”ᏗᎧᎸᎬᏃ ᎢᏗᏢ",
+          "source": "tesseract_chr",
+          "box_px": [
+            3028,
+            4052,
+            3704,
+            4100
+          ]
+        },
+        {
+          "line_id": "P1_TL00422",
+          "source_text": "ᏫᏚᏳᎪᏛ; ᏭᎨᏍᏁᏂᎸ ᏩᏪᏖᏍᏗ, ᎿᏉᏃ ᏧᏳᎪ”",
+          "tesseract_text": "",
+          "text": "ᏫᏚᏳᎪᏛ; ᏭᎨᏍᏁᏂᎸ ᏩᏪᏖᏍᏗ, ᎿᏉᏃ ᏧᏳᎪ”",
+          "source": "loc_alto_fallback_empty_tesseract",
+          "box_px": [
+            3030,
+            4090,
+            3712,
+            4158
+          ]
+        },
+        {
+          "line_id": "P1_TL00423",
+          "source_text": "ᏘᏯ ᏫᏂᎬᏁᏍᏗ ᎤᎵᏍᎯᎩᏏᎸ ᏓᎶᏂᎯ ᎨᏴᎠ ᏩᏍᏖ”",
+          "tesseract_text": "ᏘᏯ ᏫᏂᎬᏁᏍᏗ ᎤᎵᏍᏘᏂᎸ ᏖᎶᏂᎯ ᎨᎠ ᏩᏍᏖ”",
+          "text": "ᏘᏯ ᏫᏂᎬᏁᏍᏗ ᎤᎵᏍᏘᏂᎸ ᏖᎶᏂᎯ ᎨᎠ ᏩᏍᏖ”",
+          "source": "tesseract_chr",
+          "box_px": [
+            3030,
+            4142,
+            3710,
+            4184
+          ]
+        },
+        {
+          "line_id": "P1_TL00424",
+          "source_text": "ᏍᏘ; ᏣᏍᎩ ᏑᏯᏘᏒ ᏥᎬᏓᏑᏢᏗ ᎠᏰᎵ ᎤᎧᏤᏑ Ꮵ”",
+          "tesseract_text": "ᏍᏘ, ᏣᏍᎩ ᎨᏯᎯᏒ ᏥᎬᏓᎵᏢᏗ ᎠᏰᎵ ᎤᎧᏤᏢ Ꮵ”",
+          "text": "ᏍᏘ, ᏣᏍᎩ ᎨᏯᎯᏒ ᏥᎬᏓᎵᏢᏗ ᎠᏰᎵ ᎤᎧᏤᏢ Ꮵ”",
+          "source": "tesseract_chr",
+          "box_px": [
+            3032,
+            4179,
+            3710,
+            4233
+          ]
+        },
+        {
+          "line_id": "P1_TL00425",
+          "source_text": "ᎦᏅᎿ ᎿᏉᏃ ᏧᏬᎪᏘᏯ ᏫᏂᎬᏁᏍᏗ ᏴᏔᎳᏬᏗ ᎤᏩ”",
+          "tesseract_text": "ᎦᏅᎿ ᎿᏉᏃ ᏧᏅᏬᎪᏘᏯ ᎧᏂᎬᏁᏍᏘ ᏔᏤᏉᏬᏗ ᎤᏩ”",
+          "text": "ᎦᏅᎿ ᎿᏉᏃ ᏧᏅᏬᎪᏘᏯ ᎧᏂᎬᏁᏍᏘ ᏔᏤᏉᏬᏗ ᎤᏩ”",
+          "source": "tesseract_chr",
+          "box_px": [
+            3032,
+            4228,
+            3709,
+            4278
+          ]
+        },
+        {
+          "line_id": "P1_TL00426",
+          "source_text": "ᏝᎥ ᎤᏪᏴ ᏩᏍᏖᏍᏘ, ᎦᏘᎰᏢᏱ ᎦᎦᎲ ᏮᎥᎢ ᏐᏄᏉᏃ",
+          "tesseract_text": "ᏝᎥ ᎤᏪᏴ ᏩᏍᏖᏍᏘ, ᏭᏘᏢᏱ ᎦᎦᎲ ᏮᎢ. ᏐᎹᏉᏃ",
+          "text": "ᏝᎥ ᎤᏪᏴ ᏩᏍᏖᏍᏘ, ᏭᏘᏢᏱ ᎦᎦᎲ ᏮᎢ. ᏐᎹᏉᏃ",
+          "source": "tesseract_chr",
+          "box_px": [
+            3032,
+            4260,
+            3710,
+            4316
+          ]
+        },
+        {
+          "line_id": "P1_TL00427",
+          "source_text": "ᏧᏳᎪᏗᏯ ᏫᏂᎬᏁᏍᏗ ᏄᏅ-ᏧᎸ” ᏌᏢ ᏭᏢᏍᏘᏂᎸ.",
+          "tesseract_text": "ᏧᏳᎪᏗᏯ ᏫᏂᎬᏁᏍᏗ ᏄᏣ-ᏧᎸ” ᎬᎬ ᏭᏢᏯᎯᏂᎸ.",
+          "text": "ᏧᏳᎪᏗᏯ ᏫᏂᎬᏁᏍᏗ ᏄᏣ-ᏧᎸ” ᎬᎬ ᏭᏢᏯᎯᏂᎸ.",
+          "source": "tesseract_chr",
+          "box_px": [
+            3034,
+            4306,
+            3716,
+            4363
+          ]
+        },
+        {
+          "line_id": "P1_TL00428",
+          "source_text": "ᏩᏍᏖᏍᏗ.. ᎿᏉᏃ ᏧᏳᎪᏘᏯ) ᏫᏂᎬᏁᏨᏳᏗ ᎡᏴᎿ”",
+          "tesseract_text": "ᏩᏍᏖᎴᏗ. ᎿᏉᏃ ᏧᏳᎪᏘᏯ) ᏫᏂᎬᏁᏨᏗ ᎠᏓ”",
+          "text": "ᏩᏍᏖᎴᏗ. ᎿᏉᏃ ᏧᏳᎪᏘᏯ) ᏫᏂᎬᏁᏨᏗ ᎠᏓ”",
+          "source": "tesseract_chr",
+          "box_px": [
+            3034,
+            4352,
+            3715,
+            4398
+          ]
+        },
+        {
+          "line_id": "P1_TL00429",
+          "source_text": "ᎷᎪᎢ.ᏡᏊ ᏚᏢᏍᏘᏂᎸ-ᏩᏍᏖᏍᏗᏱ ᎿᏉᏃ ᏧᏳᎩ",
+          "tesseract_text": "ᎷᎪᎢ.ᎨᏪ ᏭᏢᏍᏘᏂᎸ ᏩᏍᏖᏍᏗᏊ; ᎿᏉᏃ ᏧᎶ”",
+          "text": "ᎷᎪᎢ.ᎨᏪ ᏭᏢᏍᏘᏂᎸ ᏩᏍᏖᏍᏗᏊ; ᎿᏉᏃ ᏧᎶ”",
+          "source": "tesseract_chr",
+          "box_px": [
+            3034,
+            4393,
+            3715,
+            4440
+          ]
+        },
+        {
+          "line_id": "P1_TL00430",
+          "source_text": "ᎪᏘᏯ ᏫᏂᎬᏁᏍᏘᏗ ᎾᎥᏂᏑ Ꮷ(ᎸᏕᏣ ᎢᏗᏢ ᏭᏪᏯᏗ”",
+          "tesseract_text": "",
+          "text": "ᎪᏘᏯ ᏫᏂᎬᏁᏍᏘᏗ ᎾᎥᏂᏑ Ꮷ(ᎸᏕᏣ ᎢᏗᏢ ᏭᏪᏯᏗ”",
+          "source": "loc_alto_fallback_empty_tesseract",
+          "box_px": [
+            3035,
+            4439,
+            3714,
+            4498
+          ]
+        },
+        {
+          "line_id": "P1_TL00431",
+          "source_text": "ᎣᏛ ᎦᎾᏌᎩᏱ, ᏳᏩᎩ ᏭᏢᏍᏘᏂᎸ ᏩᏍᏖᏍᏗ ᎿᏓᏉᏃ",
+          "tesseract_text": "ᎣᏛ ᎦᎧᏌᎩᏱ, ᏣᏍᎩ “ᎨᏢᏍᏘᏂᎸ ᏩᏍᏖᎴᏘ ᎿᏉᏃ",
+          "text": "ᎣᏛ ᎦᎧᏌᎩᏱ, ᏣᏍᎩ “ᎨᏢᏍᏘᏂᎸ ᏩᏍᏖᎴᏘ ᎿᏉᏃ",
+          "source": "tesseract_chr",
+          "box_px": [
+            3036,
+            4480,
+            3711,
+            4530
+          ]
+        },
+        {
+          "line_id": "P1_TL00432",
+          "source_text": "ᏧᏴᏢ ᎠᎴ ᏭᏕᏢᎬ ᎢᏗᏢ ᎦᎾᏇᏍᏌᎩᏱ ᎨᎮ ᎧᏈᏍᏎᏥᎯ’",
+          "tesseract_text": "ᎦᎠᏢ ᎠᎴ ᏭᏕᎵᎬ ᎢᏗᏢ ᏚᏮᏍᏌᎩᏱ ᎨᏴ ᎧᏢᎣᏎᏥᎯ;",
+          "text": "ᎦᎠᏢ ᎠᎴ ᏭᏕᎵᎬ ᎢᏗᏢ ᏚᏮᏍᏌᎩᏱ ᎨᏴ ᎧᏢᎣᏎᏥᎯ;",
+          "source": "tesseract_chr",
+          "box_px": [
+            3038,
+            4519,
+            3721,
+            4578
+          ]
+        },
+        {
+          "line_id": "P1_TL00433",
+          "source_text": "ᎤᏪᏞ ᏧᏬᎪᏘ ᏩᏍᎢᏓᏠᏍ;ᎬᏤ;”Ᏼ ᎦᎾᏍᏌᎩᏱ:; ᎢᎬ”",
+          "tesseract_text": "",
+          "text": "ᎤᏪᏞ ᏧᏬᎪᏘ ᏩᏍᎢᏓᏠᏍ;ᎬᏤ;”Ᏼ ᎦᎾᏍᏌᎩᏱ:; ᎢᎬ”",
+          "source": "loc_alto_fallback_empty_tesseract",
+          "box_px": [
+            3036,
+            4562,
+            3714,
+            4644
+          ]
+        },
+        {
+          "line_id": "P1_TL00434",
+          "source_text": "-ᏱᏱᏉᏃ ᎠᎴ ᏔᏢᏁ ᏕᎦᎵᎲ ᏚᏓᎯᏞᏮᏎᏍᏗ.",
+          "tesseract_text": "",
+          "text": "-ᏱᏱᏉᏃ ᎠᎴ ᏔᏢᏁ ᏕᎦᎵᎲ ᏚᏓᎯᏞᏮᏎᏍᏗ.",
+          "source": "loc_alto_fallback_empty_tesseract",
+          "box_px": [
+            3028,
+            4598,
+            3625,
+            4653
+          ]
+        }
+      ]
+    },
+    {
+      "block_id": "P1_TB00026",
+      "language": "chr",
+      "source": "hybrid_chr",
+      "text": "ᏅᎩᏁᏃ ᎦᏚᎲ ᏴᏱᎯ ᏚᏜᎡᏍᏘᎢ ᏱᎠᏃ ᏂᎬᏁ”\nᏍᏘ ᎠᎶᎶᎮ. ᎦᏥᏍᏁᏂᎸ ᎦᏮᎿᎩᏱ ᏂᎻ ᏦᎢᏁ\nᎦᏚᎲ. ᏥᏫᎦᏃᏝ, ᏩᏍᎩ ᎨᏢᎮ ᏓᏢᏍᏁᏂᎸ ᎦᏮᏌᎩᏱ\nᎠᎴᏂᏍᎨᏍᏗ. : ᎿᏉᏃ ᏗᎧᎸᎬ ᎢᏗᏴᎬᎯᏳᎪᏗᏯ\nᏫᏂᎬᏁᏍᏘ;, ᎠᎹᎦᏄᎪᏢᎬ ᎦᏝᎲ ᎠᏳᏩᏍᏏ ᎦᏚᏅ\nᎬᎩᏗᏢ ᏫᏍᏖᏍᏗ. ᎿᎹᏃ, ᎠᏣᎶᏛ ᏂᎬᏧᏛ Ᏻ\nᏍᎶᏘᏂᏪᎶᏮᎶᏮᎥᎢ, ᏩᏍᎩ ᏥᎵᎭᎦ ᏏᏴ ᏩᏍᏖᏍᏗ,\nᏩᏍᎩᏉᏃ ᎠᎶᎶᏛ ᎬᏠᏛ ᎠᏇᏓᏩᏕᎨᏍᏗ -\n; ᎠᏒ ᏩᏛᎯᎢ “ Ꮞ “ ᏞᏊ, ! ᎠᏗ Ꮧ, ᏜᏯ\nᏮᏇᏯᏄᏒᎡ ᎢᏢᏬᎥᎮᏍᏗ, ᏔᏮᏍᏏ ᎨᏴ ᏫᎦᎷᎩ: Ꮹ\nᏯᎣᎩᏉᏃ ᏩᎴᏉ ᎤᏪᏯᏗᏒ ᎢᎬᏬᏥᏍᏗ ᎤᎵᏘᏩ\nᎤᏪᏴᎮᏫᎦᏃᏞᏍᏗ. ᎿᏂᏉᏃ ᎢᎬᏱᏱᏉᏃ ᎠᎴ ᏦᎢᏁᏃ\nᏧᎦᏚᏪ “ᏓᏱᏓᏫᏎᏍᏗ-\nᎯᏍᎩᏁᏃ ᏃᏊ Ꮹ ᏁᎠᏒᏢ ᏚᎪᏒᏍᏘ; ; ᎯᎠᏃ Ꮒ”\nᎬᏁᏍᏘ ᎠᏣᎶᎨᎥᎢ. ᏚᏢᏍᏛ ᏄᏅ 3.3 ᎨᏊ ᏍᏌᎪ”\nᏂᎨ ᎤᏅᏓᎶᎠᎴᏂᏍᎨᏍᏗ, ᏧᎦᏮᏣ ᎠᎴ ᏘᎧᎸᏑ Ꭲ”\nᏗᏢ ᏫᏂᏔᎾᏍᏗ, ᎠᏍᏓᏩᏘᏜᏍᏗᏛ ᎧᏌᎪᎰ- Ꭴ”\nᏅᏓᎵᏗᎡᎢ, ᏧᏬᏍᎪᏱ’ “ᏅᎿᏩᏘᏒ ᏣᏓᏬᎯᎳᏘ,\n“ᏩᏍᎩ ᎤᎾ-ᏓᎶᏳ ᏩᏍᏖᏍᏗ. ᏣᏍᎩᏉᏃ ᏅᏃᎯ Ꭰ”\nᏍᎣᏓᏩᏕᎨᏍᏗ ᏭᏢᏍᏁᏂᎸ ᏩᎶᎴᎰᏱ. ᎦᏚᎲ Ꮟ“ᎭᏘᎡ\n“ᎾᏄᏖᏍᏗ; ( ᏣᏍᎩᏉᏃ . ᎤᏪᏯᏘᏒ ᎢᎬᏬᎥᏎᏍᏗ\n“ᎡᏗ ᏓᏜᏍᏗᏍᎬ ᏩᏍᏖᏍᏗ. ᏄᏉᏃ ᎠᏬᏨᏯᏁᏗ”\nᎠᏎ ᎤᏪᏍᏗᎡ “ᎢᏢᏬ;ᎮᏍᏗ ᏣᎢᎢᏥ ᎤᏪᏴ ᎾᎦᏥᎩ.\nᎠᏁ Ꮎ ᏂᎦᏯᎢᏊ\nᏓᏆᎴᎷ ᏧᏂᏌᏍᎪᏘᏱ ᏬᎾᏚᏗᏱ. ᎴᎩ ᏖᏩᏯᏖᎿᏗ-,\nᏓᎢ",
+      "lines": [
+        {
+          "line_id": "P1_TL00435",
+          "source_text": "ᏅᎩᏁᏃ ᎦᏚᎲ ᏴᏱᎯ ᏚᎪᏒᏍᏘ; ᎯᎠᏃᎩᏂᎬᏁ”",
+          "tesseract_text": "ᏅᎩᏁᏃ ᎦᏚᎲ ᏴᏱᎯ ᏚᏜᎡᏍᏘᎢ ᏱᎠᏃ ᏂᎬᏁ”",
+          "text": "ᏅᎩᏁᏃ ᎦᏚᎲ ᏴᏱᎯ ᏚᏜᎡᏍᏘᎢ ᏱᎠᏃ ᏂᎬᏁ”",
+          "source": "tesseract_chr",
+          "box_px": [
+            3079,
+            4656,
+            3716,
+            4704
+          ]
+        },
+        {
+          "line_id": "P1_TL00436",
+          "source_text": "ᏍᏘ ᎠᎶᎶᏎᎢ ᏕᎬᏍᎯᏂᎸ “ᏮᏌᎩᏱ ᎨᏒ ᏦᎢᏁ",
+          "tesseract_text": "ᏍᏘ ᎠᎶᎶᎮ. ᎦᏥᏍᏁᏂᎸ ᎦᏮᎿᎩᏱ ᏂᎻ ᏦᎢᏁ",
+          "text": "ᏍᏘ ᎠᎶᎶᎮ. ᎦᏥᏍᏁᏂᎸ ᎦᏮᎿᎩᏱ ᏂᎻ ᏦᎢᏁ",
+          "source": "tesseract_chr",
+          "box_px": [
+            3038,
+            4684,
+            3716,
+            4749
+          ]
+        },
+        {
+          "line_id": "P1_TL00437",
+          "source_text": "ᎦᏚᎲ. ᏥᏫᎦᏃᎲ, ᏩᏍᎩ ᎨᏴ ᏭᏢᏍᏘᏂᎸ ᎦᏮᏌᎩᏱ",
+          "tesseract_text": "ᎦᏚᎲ. ᏥᏫᎦᏃᏝ, ᏩᏍᎩ ᎨᏢᎮ ᏓᏢᏍᏁᏂᎸ ᎦᏮᏌᎩᏱ",
+          "text": "ᎦᏚᎲ. ᏥᏫᎦᏃᏝ, ᏩᏍᎩ ᎨᏢᎮ ᏓᏢᏍᏁᏂᎸ ᎦᏮᏌᎩᏱ",
+          "source": "tesseract_chr",
+          "box_px": [
+            3038,
+            4728,
+            3716,
+            4787
+          ]
+        },
+        {
+          "line_id": "P1_TL00438",
+          "source_text": "ᎠᎴᏂᏍᎨᏍᏗ. : ᎿᏉᏃ ᏗᎧᎸᎬ ᎢᏗᏴᎬᎯᏳᎪᏗᏯ",
+          "tesseract_text": "",
+          "text": "ᎠᎴᏂᏍᎨᏍᏗ. : ᎿᏉᏃ ᏗᎧᎸᎬ ᎢᏗᏴᎬᎯᏳᎪᏗᏯ",
+          "source": "loc_alto_fallback_empty_tesseract",
+          "box_px": [
+            3039,
+            4767,
+            3712,
+            4835
+          ]
+        },
+        {
+          "line_id": "P1_TL00439",
+          "source_text": "ᏫᎧᏂᎬᏁᏍᏘ,’ ᎠᏑᎹᎦᏄᎪᏢ ᎦᏚᎲ ᎠᏳᏩᏍᏏ ᎦᏚᏅ",
+          "tesseract_text": "ᏫᏂᎬᏁᏍᏘ;, ᎠᎹᎦᏄᎪᏢᎬ ᎦᏝᎲ ᎠᏳᏩᏍᏏ ᎦᏚᏅ",
+          "text": "ᏫᏂᎬᏁᏍᏘ;, ᎠᎹᎦᏄᎪᏢᎬ ᎦᏝᎲ ᎠᏳᏩᏍᏏ ᎦᏚᏅ",
+          "source": "tesseract_chr",
+          "box_px": [
+            3041,
+            4828,
+            3717,
+            4874
+          ]
+        },
+        {
+          "line_id": "P1_TL00440",
+          "source_text": "ᏦᎩᏗᏢ ᏫᏍᏖᏍᏗ.. ᏎᎹᏃ, “ᎠᏣᎶᏛ ᏂᎬᎫᏛ Ᏻ",
+          "tesseract_text": "ᎬᎩᏗᏢ ᏫᏍᏖᏍᏗ. ᎿᎹᏃ, ᎠᏣᎶᏛ ᏂᎬᏧᏛ Ᏻ",
+          "text": "ᎬᎩᏗᏢ ᏫᏍᏖᏍᏗ. ᎿᎹᏃ, ᎠᏣᎶᏛ ᏂᎬᏧᏛ Ᏻ",
+          "source": "tesseract_chr",
+          "box_px": [
+            3041,
+            4858,
+            3695,
+            4920
+          ]
+        },
+        {
+          "line_id": "P1_TL00441",
+          "source_text": "ᏍᎶᏘᏂᏪᎶᏮᎶᏮᎥᎢ, ᏩᏍᎩ ᏥᎵᎭᎦ ᏏᏴ ᏩᏍᏖᏍᏗ,",
+          "tesseract_text": "",
+          "text": "ᏍᎶᏘᏂᏪᎶᏮᎶᏮᎥᎢ, ᏩᏍᎩ ᏥᎵᎭᎦ ᏏᏴ ᏩᏍᏖᏍᏗ,",
+          "source": "loc_alto_fallback_empty_tesseract",
+          "box_px": [
+            3040,
+            4892,
+            3716,
+            4958
+          ]
+        },
+        {
+          "line_id": "P1_TL00442",
+          "source_text": "ᏣᏍᎩᏉᏃ, “ᎠᏣᎴᏛ ᎬᏠᏛ ᎠᏯᏓᎶᏕᎨᏍᏗ ᎦᏓᎵᎬ",
+          "tesseract_text": "ᏩᏍᎩᏉᏃ ᎠᎶᎶᏛ ᎬᏠᏛ ᎠᏇᏓᏩᏕᎨᏍᏗ -",
+          "text": "ᏩᏍᎩᏉᏃ ᎠᎶᎶᏛ ᎬᏠᏛ ᎠᏇᏓᏩᏕᎨᏍᏗ -",
+          "source": "tesseract_chr",
+          "box_px": [
+            3042,
+            4943,
+            3717,
+            5004
+          ]
+        },
+        {
+          "line_id": "P1_TL00443",
+          "source_text": "-ᎢᏘᏢ, ᎠᏅᏩᏏ ᎨᏴ ᏫᎦ.ᎢᏚᎢ.Ꮦ;;.Ꭼ ᎭᏉᏃ ᏩᏣᏇᎩᎧ”",
+          "tesseract_text": "; ᎠᏒ ᏩᏛᎯᎢ “ Ꮞ “ ᏞᏊ, ! ᎠᏗ Ꮧ, ᏜᏯ",
+          "text": "; ᎠᏒ ᏩᏛᎯᎢ “ Ꮞ “ ᏞᏊ, ! ᎠᏗ Ꮧ, ᏜᏯ",
+          "source": "tesseract_chr",
+          "box_px": [
+            3038,
+            4964,
+            3722,
+            5044
+          ]
+        },
+        {
+          "line_id": "P1_TL00444",
+          "source_text": "ᏮᏇᏯᏄᏒᎡ ᎢᏢᏬᎥᎮᏍᏗ, ᏔᏮᏍᏏ ᎨᏴ ᏫᎦᎷᎩ: Ꮹ",
+          "tesseract_text": "",
+          "text": "ᏮᏇᏯᏄᏒᎡ ᎢᏢᏬᎥᎮᏍᏗ, ᏔᏮᏍᏏ ᎨᏴ ᏫᎦᎷᎩ: Ꮹ",
+          "source": "loc_alto_fallback_empty_tesseract",
+          "box_px": [
+            3042,
+            5026,
+            3706,
+            5088
+          ]
+        },
+        {
+          "line_id": "P1_TL00445",
+          "source_text": "ᏯᎩᏉᏃ ᏩᎡᏲᏉ ᎤᏪᏯᏘᏒ ᎢᎬᏬᎥᎮᏍᏘ ᎤᏢᏘᏩ",
+          "tesseract_text": "ᏯᎣᎩᏉᏃ ᏩᎴᏉ ᎤᏪᏯᏗᏒ ᎢᎬᏬᏥᏍᏗ ᎤᎵᏘᏩ",
+          "text": "ᏯᎣᎩᏉᏃ ᏩᎴᏉ ᎤᏪᏯᏗᏒ ᎢᎬᏬᏥᏍᏗ ᎤᎵᏘᏩ",
+          "source": "tesseract_chr",
+          "box_px": [
+            3045,
+            5072,
+            3723,
+            5128
+          ]
+        },
+        {
+          "line_id": "P1_TL00446",
+          "source_text": "ᎤᏪᏴᎮᏫᎦᏃᏞᏍᏗ. ᎿᏉᏃ ᎢᎬᏱᏱᏉᏃ ᎠᎴ ᏦᎢᏁᏃ",
+          "tesseract_text": "ᎤᏪᏴᎮᏫᎦᏃᏞᏍᏗ. ᎿᏂᏉᏃ ᎢᎬᏱᏱᏉᏃ ᎠᎴ ᏦᎢᏁᏃ",
+          "text": "ᎤᏪᏴᎮᏫᎦᏃᏞᏍᏗ. ᎿᏂᏉᏃ ᎢᎬᏱᏱᏉᏃ ᎠᎴ ᏦᎢᏁᏃ",
+          "source": "tesseract_chr",
+          "box_px": [
+            3042,
+            5119,
+            3734,
+            5168
+          ]
+        },
+        {
+          "line_id": "P1_TL00447",
+          "source_text": "ᏕᎦᏚᎲ ᏚᏖᏁᏞᏫᏎᏍᏠ-Ᏹ. Ꭱ",
+          "tesseract_text": "ᏧᎦᏚᏪ “ᏓᏱᏓᏫᏎᏍᏗ-",
+          "text": "ᏧᎦᏚᏪ “ᏓᏱᏓᏫᏎᏍᏗ-",
+          "source": "tesseract_chr",
+          "box_px": [
+            3045,
+            5164,
+            3468,
+            5231
+          ]
+        },
+        {
+          "line_id": "P1_TL00448",
+          "source_text": "ᎯᏍᎩᏁᏃ ᎦᏚᏇ ᏩᏁᎠᏒᏢ ᏚᎪᏢᏍᏗ; ᎯᎠᏃ ᏂᎴ",
+          "tesseract_text": "ᎯᏍᎩᏁᏃ ᏃᏊ Ꮹ ᏁᎠᏒᏢ ᏚᎪᏒᏍᏘ; ; ᎯᎠᏃ Ꮒ”",
+          "text": "ᎯᏍᎩᏁᏃ ᏃᏊ Ꮹ ᏁᎠᏒᏢ ᏚᎪᏒᏍᏘ; ; ᎯᎠᏃ Ꮒ”",
+          "source": "tesseract_chr",
+          "box_px": [
+            3087,
+            5198,
+            3726,
+            5270
+          ]
+        },
+        {
+          "line_id": "P1_TL00449",
+          "source_text": "ᎬᏁᏍᏗ ᎠᎶᎶᎥᎢ. ᎦᏢᏍᏛ ᏄᏅ ᏧᎸ ᎬᏴᏒ ᏍᏌᎪ”",
+          "tesseract_text": "ᎬᏁᏍᏘ ᎠᏣᎶᎨᎥᎢ. ᏚᏢᏍᏛ ᏄᏅ 3.3 ᎨᏊ ᏍᏌᎪ”",
+          "text": "ᎬᏁᏍᏘ ᎠᏣᎶᎨᎥᎢ. ᏚᏢᏍᏛ ᏄᏅ 3.3 ᎨᏊ ᏍᏌᎪ”",
+          "source": "tesseract_chr",
+          "box_px": [
+            3050,
+            5256,
+            3728,
+            5305
+          ]
+        },
+        {
+          "line_id": "P1_TL00450",
+          "source_text": "ᏂᎨ ᎤᏅᏓᎶᎠᎴᏂᏍᎨ-ᏍᏗ, ᏧᎦᏮᏣ ᎠᎴ ᏗᏛᎸᎵ Ꭲ”",
+          "tesseract_text": "ᏂᎨ ᎤᏅᏓᎶᎠᎴᏂᏍᎨᏍᏗ, ᏧᎦᏮᏣ ᎠᎴ ᏘᎧᎸᏑ Ꭲ”",
+          "text": "ᏂᎨ ᎤᏅᏓᎶᎠᎴᏂᏍᎨᏍᏗ, ᏧᎦᏮᏣ ᎠᎴ ᏘᎧᎸᏑ Ꭲ”",
+          "source": "tesseract_chr",
+          "box_px": [
+            3048,
+            5304,
+            3728,
+            5357
+          ]
+        },
+        {
+          "line_id": "P1_TL00451",
+          "source_text": "ᏗᏢ ᏫᏂᏔᎣᏍᏗ, ᎠᏍᏓᏩᏘᏎᏍᏘᏉ ᏍᏌᎪᎰ-Ꮵ Ꭴ”",
+          "tesseract_text": "ᏗᏢ ᏫᏂᏔᎾᏍᏗ, ᎠᏍᏓᏩᏘᏜᏍᏗᏛ ᎧᏌᎪᎰ- Ꭴ”",
+          "text": "ᏗᏢ ᏫᏂᏔᎾᏍᏗ, ᎠᏍᏓᏩᏘᏜᏍᏗᏛ ᎧᏌᎪᎰ- Ꭴ”",
+          "source": "tesseract_chr",
+          "box_px": [
+            3048,
+            5342,
+            3728,
+            5404
+          ]
+        },
+        {
+          "line_id": "P1_TL00452",
+          "source_text": "ᏅᏓᎵᏗᎡᎢ, ᏧᏬᏍᎪᏱ’ “ᏅᎿᏩᏘᏒ ᏣᏓᏬᎯᎳᏘ,",
+          "tesseract_text": "",
+          "text": "ᏅᏓᎵᏗᎡᎢ, ᏧᏬᏍᎪᏱ’ “ᏅᎿᏩᏘᏒ ᏣᏓᏬᎯᎳᏘ,",
+          "source": "loc_alto_fallback_empty_tesseract",
+          "box_px": [
+            3050,
+            5392,
+            3725,
+            5448
+          ]
+        },
+        {
+          "line_id": "P1_TL00453",
+          "source_text": "“ᏩᏍᎩ ᎤᎾ-ᏓᎶᏳ ᏩᏍᏖᏍᏗ. ᏣᏍᎩᏉᏃ ᏅᏃᎯ Ꭰ”",
+          "tesseract_text": "",
+          "text": "“ᏩᏍᎩ ᎤᎾ-ᏓᎶᏳ ᏩᏍᏖᏍᏗ. ᏣᏍᎩᏉᏃ ᏅᏃᎯ Ꭰ”",
+          "source": "loc_alto_fallback_empty_tesseract",
+          "box_px": [
+            3038,
+            5422,
+            3730,
+            5494
+          ]
+        },
+        {
+          "line_id": "P1_TL00454",
+          "source_text": "ᏍᎣᏓᏩᏕᎨᏍᏗ ᏭᏢᏍᏁᏂᎸ ᏩᎶᎴᎰᏱ. ᎦᏚᎲ Ꮟ“ᎭᏘᎡ",
+          "tesseract_text": "",
+          "text": "ᏍᎣᏓᏩᏕᎨᏍᏗ ᏭᏢᏍᏁᏂᎸ ᏩᎶᎴᎰᏱ. ᎦᏚᎲ Ꮟ“ᎭᏘᎡ",
+          "source": "loc_alto_fallback_empty_tesseract",
+          "box_px": [
+            3052,
+            5462,
+            3734,
+            5544
+          ]
+        },
+        {
+          "line_id": "P1_TL00455",
+          "source_text": "ᎲᎣ“ᏖᏍᏗ. ᏣᏍᎩᏉᏃ ᎤᏪᏪᏯᏗᏒ ᎢᏥᏬᎥᎮᏍᏔ",
+          "tesseract_text": "“ᎾᏄᏖᏍᏗ; ( ᏣᏍᎩᏉᏃ . ᎤᏪᏯᏘᏒ ᎢᎬᏬᎥᏎᏍᏗ",
+          "text": "“ᎾᏄᏖᏍᏗ; ( ᏣᏍᎩᏉᏃ . ᎤᏪᏯᏘᏒ ᎢᎬᏬᎥᏎᏍᏗ",
+          "source": "tesseract_chr",
+          "box_px": [
+            3046,
+            5518,
+            3734,
+            5575
+          ]
+        },
+        {
+          "line_id": "P1_TL00456",
+          "source_text": "“ᎡᏗ ᏓᏜᏍᏗᏍᎬ ᏩᏍᏖᏍᏗ. ᏄᏉᏃ ᎠᏬᏨᏯᏁᏗ”",
+          "tesseract_text": "",
+          "text": "“ᎡᏗ ᏓᏜᏍᏗᏍᎬ ᏩᏍᏖᏍᏗ. ᏄᏉᏃ ᎠᏬᏨᏯᏁᏗ”",
+          "source": "loc_alto_fallback_empty_tesseract",
+          "box_px": [
+            3053,
+            5554,
+            3734,
+            5621
+          ]
+        },
+        {
+          "line_id": "P1_TL00457",
+          "source_text": "“Ᏹ ᎤᏪᏍᏗᎬ ᎵᏓᏢᏬᎥᏎᎸᏍᏗ ᏣᏖᎢᏥ ᎤᏪᎮ ᎾᎦᎳᎩ.",
+          "tesseract_text": "ᎠᏎ ᎤᏪᏍᏗᎡ “ᎢᏢᏬ;ᎮᏍᏗ ᏣᎢᎢᏥ ᎤᏪᏴ ᎾᎦᏥᎩ.",
+          "text": "ᎠᏎ ᎤᏪᏍᏗᎡ “ᎢᏢᏬ;ᎮᏍᏗ ᏣᎢᎢᏥ ᎤᏪᏴ ᎾᎦᏥᎩ.",
+          "source": "tesseract_chr",
+          "box_px": [
+            3042,
+            5607,
+            3729,
+            5656
+          ]
+        },
+        {
+          "line_id": "P1_TL00458",
+          "source_text": "; ᏉᏃ;Ꮔ(ᏕᏒ-ᎱᎻ’ᏚᏪᏯᏗᏒ .ᎢᎬᏬᎥᎮᏍᏗ ᎤᏩᏬᏛᎯ",
+          "tesseract_text": "ᎠᏁ Ꮎ ᏂᎦᏯᎢᏊ",
+          "text": "ᎠᏁ Ꮎ ᏂᎦᏯᎢᏊ",
+          "source": "tesseract_chr",
+          "box_px": [
+            3056,
+            5608,
+            3734,
+            5704
+          ]
+        },
+        {
+          "line_id": "P1_TL00459",
+          "source_text": "ᏓᏆᎴᎷ ᏧᏂᏌᏍᎪᏘᏱ ᏬᎾᏚᏗᏱ. ᎴᎩ ᏖᏩᏯᏖᎿᏗ-,",
+          "tesseract_text": "",
+          "text": "ᏓᏆᎴᎷ ᏧᏂᏌᏍᎪᏘᏱ ᏬᎾᏚᏗᏱ. ᎴᎩ ᏖᏩᏯᏖᎿᏗ-,",
+          "source": "loc_alto_fallback_empty_tesseract",
+          "box_px": [
+            3060,
+            5674,
+            3734,
+            5753
+          ]
+        },
+        {
+          "line_id": "P1_TL00460",
+          "source_text": "-,",
+          "tesseract_text": "ᏓᎢ",
+          "text": "ᏓᎢ",
+          "source": "tesseract_chr",
+          "box_px": [
+            3124,
+            5730,
+            3158,
+            5753
+          ]
+        }
+      ]
+    },
+    {
+      "block_id": "P1_TB00021",
+      "language": "eng",
+      "source": "loc_alto",
+      "text": "N 7",
+      "lines": [
+        {
+          "line_id": "P1_TL00345",
+          "source_text": "N 7",
+          "tesseract_text": null,
+          "text": "N 7",
+          "source": "loc_alto",
+          "box_px": null
+        }
+      ]
+    }
+  ],
+  "tesseract_version": "tesseract 5.5.0",
+  "model_sha256": "b3a0da90e7744cfec534cdf2dd85860718f32b5595a07d4b7e49113a89bd0f98"
+}

@@ -1,0 +1,4815 @@
+{
+  "schema": 1,
+  "image": "/eval/images/phoenix_eval_c80eec601ac8b66e.jpg",
+  "image_sha256": "0a5fe9558141e2886671306b51e64a59acac6a89a306bd127e7676b63db1e000",
+  "alto_sha256": "0db69a77446a4a11d3460343f14e18cb93cdf6612274038dc80b0255c81f91f9",
+  "alto_page_size": [
+    17216.0,
+    26004.0
+  ],
+  "image_size": [
+    4304,
+    6501
+  ],
+  "language": "chr",
+  "psm": 7,
+  "omp_thread_limit": 1,
+  "padding_px": [
+    12,
+    8
+  ],
+  "recognized_lines": 143,
+  "empty_recognitions": 23,
+  "fallback_lines": 23,
+  "blocks": [
+    {
+      "block_id": "P1_TB00001",
+      "language": "eng",
+      "source": "loc_alto",
+      "text": "VYOL, §..",
+      "lines": [
+        {
+          "line_id": "P1_TL00001",
+          "source_text": "VYOL, §..",
+          "tesseract_text": null,
+          "text": "VYOL, §..",
+          "source": "loc_alto",
+          "box_px": null
+        }
+      ]
+    },
+    {
+      "block_id": "P1_TB00002",
+      "language": "eng",
+      "source": "loc_alto",
+      "text": "EDITED BY ELI 5 ¥ UDINOTT.\n| PRINTED WHEEKS ¥ BY\nISAACH. ¥ RBRIS.\nFOR THE CHER(LY 4 (ATiON,\nAt $250 if paid iw ade ‘e, sß.in six\nmonths, or SBSO if poid 2t he end of the\nyear. Eger\nTo subscribers who 22° 2 only \" the\nCherokee language the o = Ihe §2,00\n. in advance, or 2,50 13 Ge i /¢« thin the\n- yeak. 4 )\nEvery subscription w:i} biconsidered as\ncontinued unless suhscribersﬁive notice to\nthe contrary before.the comrencement of a\nnew year. : ‘\nThe Phenix willbe printd on a Super-\nRoyal sheet, with type gntirey new procur-\ned for the purpose. fuy peon procuring\nsix subscribers, and beuci’mi’i{g responsible\nfor the payment, shall :redve a giventh |\ngratia 5 i 1",
+      "lines": [
+        {
+          "line_id": "P1_TL00002",
+          "source_text": "EDITED BY ELI 5 ¥ UDINOTT.",
+          "tesseract_text": null,
+          "text": "EDITED BY ELI 5 ¥ UDINOTT.",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00003",
+          "source_text": "| PRINTED WHEEKS ¥ BY",
+          "tesseract_text": null,
+          "text": "| PRINTED WHEEKS ¥ BY",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00004",
+          "source_text": "ISAACH. ¥ RBRIS.",
+          "tesseract_text": null,
+          "text": "ISAACH. ¥ RBRIS.",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00005",
+          "source_text": "FOR THE CHER(LY 4 (ATiON,",
+          "tesseract_text": null,
+          "text": "FOR THE CHER(LY 4 (ATiON,",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00006",
+          "source_text": "At $250 if paid iw ade ‘e, sß.in six",
+          "tesseract_text": null,
+          "text": "At $250 if paid iw ade ‘e, sß.in six",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00007",
+          "source_text": "months, or SBSO if poid 2t he end of the",
+          "tesseract_text": null,
+          "text": "months, or SBSO if poid 2t he end of the",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00008",
+          "source_text": "year. Eger",
+          "tesseract_text": null,
+          "text": "year. Eger",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00009",
+          "source_text": "To subscribers who 22° 2 only \" the",
+          "tesseract_text": null,
+          "text": "To subscribers who 22° 2 only \" the",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00010",
+          "source_text": "Cherokee language the o = Ihe §2,00",
+          "tesseract_text": null,
+          "text": "Cherokee language the o = Ihe §2,00",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00011",
+          "source_text": ". in advance, or 2,50 13 Ge i /¢« thin the",
+          "tesseract_text": null,
+          "text": ". in advance, or 2,50 13 Ge i /¢« thin the",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00012",
+          "source_text": "- yeak. 4 )",
+          "tesseract_text": null,
+          "text": "- yeak. 4 )",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00013",
+          "source_text": "Every subscription w:i} biconsidered as",
+          "tesseract_text": null,
+          "text": "Every subscription w:i} biconsidered as",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00014",
+          "source_text": "continued unless suhscribersﬁive notice to",
+          "tesseract_text": null,
+          "text": "continued unless suhscribersﬁive notice to",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00015",
+          "source_text": "the contrary before.the comrencement of a",
+          "tesseract_text": null,
+          "text": "the contrary before.the comrencement of a",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00016",
+          "source_text": "new year. : ‘",
+          "tesseract_text": null,
+          "text": "new year. : ‘",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00017",
+          "source_text": "The Phenix willbe printd on a Super-",
+          "tesseract_text": null,
+          "text": "The Phenix willbe printd on a Super-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00018",
+          "source_text": "Royal sheet, with type gntirey new procur-",
+          "tesseract_text": null,
+          "text": "Royal sheet, with type gntirey new procur-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00019",
+          "source_text": "ed for the purpose. fuy peon procuring",
+          "tesseract_text": null,
+          "text": "ed for the purpose. fuy peon procuring",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00020",
+          "source_text": "six subscribers, and beuci’mi’i{g responsible",
+          "tesseract_text": null,
+          "text": "six subscribers, and beuci’mi’i{g responsible",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00021",
+          "source_text": "for the payment, shall :redve a giventh |",
+          "tesseract_text": null,
+          "text": "for the payment, shall :redve a giventh |",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00022",
+          "source_text": "gratia 5 i 1",
+          "tesseract_text": null,
+          "text": "gratia 5 i 1",
+          "source": "loc_alto",
+          "box_px": null
+        }
+      ]
+    },
+    {
+      "block_id": "P1_TB00004",
+      "language": "eng",
+      "source": "loc_alto",
+      "text": "¢ Advergigements will by irsrfed at seven-\nirelgend por Square:f Wr-\n-30% e L\ni il ‘!&e';‘m‘i;ﬂtt‘g,',;{.b 20 o=\ni WO \\ LML\n| x‘ﬁ ¢ S addresse: t the Rditor;\npost paid; il receive due wtention.",
+      "lines": [
+        {
+          "line_id": "P1_TL00041",
+          "source_text": "¢ Advergigements will by irsrfed at seven-",
+          "tesseract_text": null,
+          "text": "¢ Advergigements will by irsrfed at seven-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00042",
+          "source_text": "irelgend por Square:f Wr-",
+          "tesseract_text": null,
+          "text": "irelgend por Square:f Wr-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00043",
+          "source_text": "-30% e L",
+          "tesseract_text": null,
+          "text": "-30% e L",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00044",
+          "source_text": "i il ‘!&e';‘m‘i;ﬂtt‘g,',;{.b 20 o=",
+          "tesseract_text": null,
+          "text": "i il ‘!&e';‘m‘i;ﬂtt‘g,',;{.b 20 o=",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00045",
+          "source_text": "i WO \\ LML",
+          "tesseract_text": null,
+          "text": "i WO \\ LML",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00046",
+          "source_text": "| x‘ﬁ ¢ S addresse: t the Rditor;",
+          "tesseract_text": null,
+          "text": "| x‘ﬁ ¢ S addresse: t the Rditor;",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00047",
+          "source_text": "post paid; il receive due wtention.",
+          "tesseract_text": null,
+          "text": "post paid; il receive due wtention.",
+          "source": "loc_alto",
+          "box_px": null
+        }
+      ]
+    },
+    {
+      "block_id": "P1_TB00006",
+      "language": "chr",
+      "source": "hybrid_chr",
+      "text": "ᏣᎳᎩ ᏧᎴᎯᏌᏅᎯ ᏱᎯᎠ-ᏂᎦ ᎥᏔᏩᎶᏣᏗ.\n: ᏠᏈᏫᎪᏖᏆᏍᏗ ᎢᎪᎯᏛ ᎿᏃᏉ Ꮷ575.ᎫᎫᏯ ᎮᏎᏍᏗ.,\n’ ᏴᏫᏁᎬ ᏗᏂᏬᏂᏗᏍᎩᎦᏞᏦᎢ.). ;ᏞᏮ-:- “ᏮᎫᏴᏘ\n“ᏥᏎᏍᏘ, ᎢᏳᏃ ᎢᎬᏖ.ᏰᏅᏛ-; (ᏕᏱᏎᏍᏗ.\nᎢᏳᏃ ᎤᏓᏢ ᎢᏯᏅᎪ ᎢᏴ … ᎯᏪᎦᏎ. Ꭵ, ᏦᎢ\n“ᎠᏠᎸ ᎤᎧᎫᏴᏗ ᎨᎨᏎᏍᏗ,”” ᏴᎸ, ᎥᏗᎲᎬᏃ Ꮱ! ᎩᎳ\nᎠᎾᎫᏱᏍᎨᏍᏗ, ᏅᎩᏁᎢ ᎠᏰᎠ, (.017.Ꮧ ᎨᏎᏍᏗ.\nᏣᎳᎩᏃ ᎤᏩᏒ “ᏗᏂᏬ ᏡᎩ, ᏔᏚᏉ ᎠᏕᎯ\nᏬᎾᎫᏤᏗ ᎨᏎᏍᏘ ᏑᏕᏗᎡᏛ, ᏙᎶᏊᎭ ᏈᏥᏪᎲᏅᏛ ᎠᏮ”\nᎫᏱᏍᎨᏍᏗ, - ᏦᎢᏁᏃ ᎠᏰᏢ ᎩᎳ.ᎲᏂ ᎤᎦᏗᏴᎯ”\nᏌ ᏄᏒ ᎠᎾᎩᏱᏍᎨᏍᏗ.",
+      "lines": [
+        {
+          "line_id": "P1_TL00060",
+          "source_text": "ᏣᎳᎩ ᏧᎴᎯᏌᏅᎯ ᎯᎠ ᏂᎦ .ᏓᏩᎶᏘ.",
+          "tesseract_text": "ᏣᎳᎩ ᏧᎴᎯᏌᏅᎯ ᏱᎯᎠ-ᏂᎦ ᎥᏔᏩᎶᏣᏗ.",
+          "text": "ᏣᎳᎩ ᏧᎴᎯᏌᏅᎯ ᏱᎯᎠ-ᏂᎦ ᎥᏔᏩᎶᏣᏗ.",
+          "source": "tesseract_chr",
+          "box_px": [
+            284,
+            2448,
+            911,
+            2502
+          ]
+        },
+        {
+          "line_id": "P1_TL00061",
+          "source_text": ": ᏠᏈᏫᎪᏖᏆᏍᏗ ᎢᎪᎯᏛ ᎿᏃᏉ Ꮷ575.ᎫᎫᏯ ᎮᏎᏍᏗ.,",
+          "tesseract_text": "",
+          "text": ": ᏠᏈᏫᎪᏖᏆᏍᏗ ᎢᎪᎯᏛ ᎿᏃᏉ Ꮷ575.ᎫᎫᏯ ᎮᏎᏍᏗ.,",
+          "source": "loc_alto_fallback_empty_tesseract",
+          "box_px": [
+            274,
+            2470,
+            930,
+            2544
+          ]
+        },
+        {
+          "line_id": "P1_TL00062",
+          "source_text": "’ ᏴᏫᏁᎬ ᏗᏂᏬᏂᏗᏍᎩᎦᏞᏦᎢ.). ;ᏞᏮ-:- “ᏮᎫᏴᏘ",
+          "tesseract_text": "",
+          "text": "’ ᏴᏫᏁᎬ ᏗᏂᏬᏂᏗᏍᎩᎦᏞᏦᎢ.). ;ᏞᏮ-:- “ᏮᎫᏴᏘ",
+          "source": "loc_alto_fallback_empty_tesseract",
+          "box_px": [
+            255,
+            2509,
+            931,
+            2586
+          ]
+        },
+        {
+          "line_id": "P1_TL00063",
+          "source_text": "“ᏥᏎᏍᏘ, ᎢᏳᏃ ᎢᎬᏖ.ᏰᏅᏛ-; (ᏕᏱᏎᏍᏗ.",
+          "tesseract_text": "",
+          "text": "“ᏥᏎᏍᏘ, ᎢᏳᏃ ᎢᎬᏖ.ᏰᏅᏛ-; (ᏕᏱᏎᏍᏗ.",
+          "source": "loc_alto_fallback_empty_tesseract",
+          "box_px": [
+            255,
+            2554,
+            928,
+            2629
+          ]
+        },
+        {
+          "line_id": "P1_TL00064",
+          "source_text": "ᎢᏳᏃ ᏑᏓᏢ ᎢᏯᏅᎪ ᎢᏴ ᎠᎴᎫᏍᎳᎰᏧ). ᏦᎢ",
+          "tesseract_text": "ᎢᏳᏃ ᎤᏓᏢ ᎢᏯᏅᎪ ᎢᏴ … ᎯᏪᎦᏎ. Ꭵ, ᏦᎢ",
+          "text": "ᎢᏳᏃ ᎤᏓᏢ ᎢᏯᏅᎪ ᎢᏴ … ᎯᏪᎦᏎ. Ꭵ, ᏦᎢ",
+          "source": "tesseract_chr",
+          "box_px": [
+            260,
+            2606,
+            923,
+            2668
+          ]
+        },
+        {
+          "line_id": "P1_TL00065",
+          "source_text": "ᎠᏠᎸ ᎤᎾᎫᏴᏗ ᎨᏎᏍᏗ. ”” ᎠᏠ, ᎥᏘᏍᎬᏃ Ꮱ! ᎩᎳ",
+          "tesseract_text": "“ᎠᏠᎸ ᎤᎧᎫᏴᏗ ᎨᎨᏎᏍᏗ,”” ᏴᎸ, ᎥᏗᎲᎬᏃ Ꮱ! ᎩᎳ",
+          "text": "“ᎠᏠᎸ ᎤᎧᎫᏴᏗ ᎨᎨᏎᏍᏗ,”” ᏴᎸ, ᎥᏗᎲᎬᏃ Ꮱ! ᎩᎳ",
+          "source": "tesseract_chr",
+          "box_px": [
+            258,
+            2646,
+            928,
+            2714
+          ]
+        },
+        {
+          "line_id": "P1_TL00066",
+          "source_text": "ᎠᎾᎫᏱᏍᎨᏍᏗ, ᏅᎩᏁᎢ ᎠᏰᎠ, (.017.Ꮧ ᎨᏎᏍᏗ.",
+          "tesseract_text": "",
+          "text": "ᎠᎾᎫᏱᏍᎨᏍᏗ, ᏅᎩᏁᎢ ᎠᏰᎠ, (.017.Ꮧ ᎨᏎᏍᏗ.",
+          "source": "loc_alto_fallback_empty_tesseract",
+          "box_px": [
+            257,
+            2690,
+            925,
+            2759
+          ]
+        },
+        {
+          "line_id": "P1_TL00067",
+          "source_text": "ᏣᎳᎩᏃ ᎤᏩᏒ “ᏗᏂᏬᏂᏍᎩ, “ᏔᏚᏉ ᎠᏕᎸ",
+          "tesseract_text": "ᏣᎳᎩᏃ ᎤᏩᏒ “ᏗᏂᏬ ᏡᎩ, ᏔᏚᏉ ᎠᏕᎯ",
+          "text": "ᏣᎳᎩᏃ ᎤᏩᏒ “ᏗᏂᏬ ᏡᎩ, ᏔᏚᏉ ᎠᏕᎯ",
+          "source": "tesseract_chr",
+          "box_px": [
+            299,
+            2736,
+            926,
+            2791
+          ]
+        },
+        {
+          "line_id": "P1_TL00068",
+          "source_text": "ᏬᎧᎫᏢᏗ ᎬᏎᏍᏗ. ᏑᏕᏗᏴᏛ) “ᏳᏃ ᏈᎬ.ᏌᏅ-Ꮫ ᎠᏮ”",
+          "tesseract_text": "ᏬᎾᎫᏤᏗ ᎨᏎᏍᏘ ᏑᏕᏗᎡᏛ, ᏙᎶᏊᎭ ᏈᏥᏪᎲᏅᏛ ᎠᏮ”",
+          "text": "ᏬᎾᎫᏤᏗ ᎨᏎᏍᏘ ᏑᏕᏗᎡᏛ, ᏙᎶᏊᎭ ᏈᏥᏪᎲᏅᏛ ᎠᏮ”",
+          "source": "tesseract_chr",
+          "box_px": [
+            255,
+            2778,
+            930,
+            2837
+          ]
+        },
+        {
+          "line_id": "P1_TL00069",
+          "source_text": "ᎫᏱᏍᎨᏍᏗ, - ᏦᎢᏁᏃ ᎠᏰᏢ ᎩᎳ.ᎲᏂ ᎤᎦᏗᏴᎯ”",
+          "tesseract_text": "",
+          "text": "ᎫᏱᏍᎨᏍᏗ, - ᏦᎢᏁᏃ ᎠᏰᏢ ᎩᎳ.ᎲᏂ ᎤᎦᏗᏴᎯ”",
+          "source": "loc_alto_fallback_empty_tesseract",
+          "box_px": [
+            255,
+            2818,
+            928,
+            2886
+          ]
+        },
+        {
+          "line_id": "P1_TL00070",
+          "source_text": "Ꮜ ᎢᏒ ᎠᎧᎩᏱᏍᎨᏍᏗ.",
+          "tesseract_text": "Ꮜ ᏄᏒ ᎠᎾᎩᏱᏍᎨᏍᏗ.",
+          "text": "Ꮜ ᏄᏒ ᎠᎾᎩᏱᏍᎨᏍᏗ.",
+          "source": "tesseract_chr",
+          "box_px": [
+            255,
+            2876,
+            561,
+            2912
+          ]
+        }
+      ]
+    },
+    {
+      "block_id": "P1_TB00029",
+      "language": "eng",
+      "source": "loc_alto",
+      "text": "LAKE OF ARIM' SPIRITS,\nMe. Eprror—ln récghti terning over\nthe pages of a Magaz ne » wtﬁin the year\n1813, my attentiow was atrrgefed by 2 eal-\nculation of the ausennt & Teut spi¥B con-\n»;}3’,’};\"‘2 Ir’ll:’b.: PT_;n;Jte;i By rxv\\,;‘bn vear\nq . LB ANIORTE 19 gL ‘W -\nbl e Mol tesis L naniaset i\nheve iaph 35%& e g & abiigied\n‘gr',m' % Aftey RL}%‘E{Q;@ ¥ :mﬁ;\"’:‘ikgh\\% the\nwriteywdds the fubLeing | -AL zal cal-s\nexlations. 9 Ry i\nI'he qnantity which t&ﬂy\"a_')hﬂlﬂ will con-\nsume would doubtless 8 \" we rouch lar-\ngerstill, v R N, |\nNow 33,365,529 galle i ¢ 18,932\nho; sheads, (at move (he + 1344 gabons.\nthe hogshead,) which. v posing one\nteam to ciry two hog: ÜB, would\nload 124,466 waggops Ahese, al-\nlowing only three rods fa cach feam,\nwould reach more that & 4L6 miles, or\nnearly the whole lerath #4w United\nStates, from north g !Wi tum-\nber of hogsheads noetws 1y {0 € ontain\nthe liquor, ‘must, wpos « mocerate\ncomputation, cost 6¢ 4. & dolia: s, and\nwould, if placed sp 25 0 touan cach\nother, reach more,._iﬂ}‘ij;w 5 myles, ex-\nceeding by 48. the.# ol kength of\n«Mcssachusotts Propsg w'{ﬁ worth-\nern line:. Or, toiper g subject\nin snother light, the quaitify of ardent\ndistilled spirits; whi). ¥ amnually\n\" drunk in the United &7 *i*ssufficient\nto fill a canal 42 m' s - 10 feet\n- wide. and 2 feet de. oiding con-\nvenicnt nayigation. ;= ats of several\ntons burthen! The s - 3 quantity if\nbrought togethdp; v.¢' orma pond\nmore than 68 rods lun;. < rods broad,\nand six feet deep, coveripg an area of\n17 acres. At A",
+      "lines": [
+        {
+          "line_id": "P1_TL00409",
+          "source_text": "LAKE OF ARIM' SPIRITS,",
+          "tesseract_text": null,
+          "text": "LAKE OF ARIM' SPIRITS,",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00410",
+          "source_text": "Me. Eprror—ln récghti terning over",
+          "tesseract_text": null,
+          "text": "Me. Eprror—ln récghti terning over",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00411",
+          "source_text": "the pages of a Magaz ne » wtﬁin the year",
+          "tesseract_text": null,
+          "text": "the pages of a Magaz ne » wtﬁin the year",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00412",
+          "source_text": "1813, my attentiow was atrrgefed by 2 eal-",
+          "tesseract_text": null,
+          "text": "1813, my attentiow was atrrgefed by 2 eal-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00413",
+          "source_text": "culation of the ausennt & Teut spi¥B con-",
+          "tesseract_text": null,
+          "text": "culation of the ausennt & Teut spi¥B con-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00414",
+          "source_text": "»;}3’,’};\"‘2 Ir’ll:’b.: PT_;n;Jte;i By rxv\\,;‘bn vear",
+          "tesseract_text": null,
+          "text": "»;}3’,’};\"‘2 Ir’ll:’b.: PT_;n;Jte;i By rxv\\,;‘bn vear",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00415",
+          "source_text": "q . LB ANIORTE 19 gL ‘W -",
+          "tesseract_text": null,
+          "text": "q . LB ANIORTE 19 gL ‘W -",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00416",
+          "source_text": "bl e Mol tesis L naniaset i",
+          "tesseract_text": null,
+          "text": "bl e Mol tesis L naniaset i",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00417",
+          "source_text": "heve iaph 35%& e g & abiigied",
+          "tesseract_text": null,
+          "text": "heve iaph 35%& e g & abiigied",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00418",
+          "source_text": "‘gr',m' % Aftey RL}%‘E{Q;@ ¥ :mﬁ;\"’:‘ikgh\\% the",
+          "tesseract_text": null,
+          "text": "‘gr',m' % Aftey RL}%‘E{Q;@ ¥ :mﬁ;\"’:‘ikgh\\% the",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00419",
+          "source_text": "writeywdds the fubLeing | -AL zal cal-s",
+          "tesseract_text": null,
+          "text": "writeywdds the fubLeing | -AL zal cal-s",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00420",
+          "source_text": "exlations. 9 Ry i",
+          "tesseract_text": null,
+          "text": "exlations. 9 Ry i",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00421",
+          "source_text": "I'he qnantity which t&ﬂy\"a_')hﬂlﬂ will con-",
+          "tesseract_text": null,
+          "text": "I'he qnantity which t&ﬂy\"a_')hﬂlﬂ will con-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00422",
+          "source_text": "sume would doubtless 8 \" we rouch lar-",
+          "tesseract_text": null,
+          "text": "sume would doubtless 8 \" we rouch lar-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00423",
+          "source_text": "gerstill, v R N, |",
+          "tesseract_text": null,
+          "text": "gerstill, v R N, |",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00424",
+          "source_text": "Now 33,365,529 galle i ¢ 18,932",
+          "tesseract_text": null,
+          "text": "Now 33,365,529 galle i ¢ 18,932",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00425",
+          "source_text": "ho; sheads, (at move (he + 1344 gabons.",
+          "tesseract_text": null,
+          "text": "ho; sheads, (at move (he + 1344 gabons.",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00426",
+          "source_text": "the hogshead,) which. v posing one",
+          "tesseract_text": null,
+          "text": "the hogshead,) which. v posing one",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00427",
+          "source_text": "team to ciry two hog: ÜB, would",
+          "tesseract_text": null,
+          "text": "team to ciry two hog: ÜB, would",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00428",
+          "source_text": "load 124,466 waggops Ahese, al-",
+          "tesseract_text": null,
+          "text": "load 124,466 waggops Ahese, al-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00429",
+          "source_text": "lowing only three rods fa cach feam,",
+          "tesseract_text": null,
+          "text": "lowing only three rods fa cach feam,",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00430",
+          "source_text": "would reach more that & 4L6 miles, or",
+          "tesseract_text": null,
+          "text": "would reach more that & 4L6 miles, or",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00431",
+          "source_text": "nearly the whole lerath #4w United",
+          "tesseract_text": null,
+          "text": "nearly the whole lerath #4w United",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00432",
+          "source_text": "States, from north g !Wi tum-",
+          "tesseract_text": null,
+          "text": "States, from north g !Wi tum-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00433",
+          "source_text": "ber of hogsheads noetws 1y {0 € ontain",
+          "tesseract_text": null,
+          "text": "ber of hogsheads noetws 1y {0 € ontain",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00434",
+          "source_text": "the liquor, ‘must, wpos « mocerate",
+          "tesseract_text": null,
+          "text": "the liquor, ‘must, wpos « mocerate",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00435",
+          "source_text": "computation, cost 6¢ 4. & dolia: s, and",
+          "tesseract_text": null,
+          "text": "computation, cost 6¢ 4. & dolia: s, and",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00436",
+          "source_text": "would, if placed sp 25 0 touan cach",
+          "tesseract_text": null,
+          "text": "would, if placed sp 25 0 touan cach",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00437",
+          "source_text": "other, reach more,._iﬂ}‘ij;w 5 myles, ex-",
+          "tesseract_text": null,
+          "text": "other, reach more,._iﬂ}‘ij;w 5 myles, ex-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00438",
+          "source_text": "ceeding by 48. the.# ol kength of",
+          "tesseract_text": null,
+          "text": "ceeding by 48. the.# ol kength of",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00439",
+          "source_text": "«Mcssachusotts Propsg w'{ﬁ worth-",
+          "tesseract_text": null,
+          "text": "«Mcssachusotts Propsg w'{ﬁ worth-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00440",
+          "source_text": "ern line:. Or, toiper g subject",
+          "tesseract_text": null,
+          "text": "ern line:. Or, toiper g subject",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00441",
+          "source_text": "in snother light, the quaitify of ardent",
+          "tesseract_text": null,
+          "text": "in snother light, the quaitify of ardent",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00442",
+          "source_text": "distilled spirits; whi). ¥ amnually",
+          "tesseract_text": null,
+          "text": "distilled spirits; whi). ¥ amnually",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00443",
+          "source_text": "\" drunk in the United &7 *i*ssufficient",
+          "tesseract_text": null,
+          "text": "\" drunk in the United &7 *i*ssufficient",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00444",
+          "source_text": "to fill a canal 42 m' s - 10 feet",
+          "tesseract_text": null,
+          "text": "to fill a canal 42 m' s - 10 feet",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00445",
+          "source_text": "- wide. and 2 feet de. oiding con-",
+          "tesseract_text": null,
+          "text": "- wide. and 2 feet de. oiding con-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00446",
+          "source_text": "venicnt nayigation. ;= ats of several",
+          "tesseract_text": null,
+          "text": "venicnt nayigation. ;= ats of several",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00447",
+          "source_text": "tons burthen! The s - 3 quantity if",
+          "tesseract_text": null,
+          "text": "tons burthen! The s - 3 quantity if",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00448",
+          "source_text": "brought togethdp; v.¢' orma pond",
+          "tesseract_text": null,
+          "text": "brought togethdp; v.¢' orma pond",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00449",
+          "source_text": "more than 68 rods lun;. < rods broad,",
+          "tesseract_text": null,
+          "text": "more than 68 rods lun;. < rods broad,",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00450",
+          "source_text": "and six feet deep, coveripg an area of",
+          "tesseract_text": null,
+          "text": "and six feet deep, coveripg an area of",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00451",
+          "source_text": "17 acres. At A",
+          "tesseract_text": null,
+          "text": "17 acres. At A",
+          "source": "loc_alto",
+          "box_px": null
+        }
+      ]
+    },
+    {
+      "block_id": "P1_TB00030",
+      "language": "eng",
+      "source": "loc_alto",
+      "text": "HOW TO READ SCRIPTURE.\nTuor sitmple and unprejudiced study\nof the Bible is the death of religious\nexiravagance. Many read it under a\n{jarticular bias of mind. They read\nooks, written by others, under the\nsame views. Their preaching & con-\n‘versation run in the same channel, If\nthey could awaken themselves' from\nthis state, and come to read the whole\nsuripture for every thing which they\ncould find there, they would start as\nfrom a dream—amazed 2t the humble.\nmeek, forbearing, holy, Leavenly char-\nacter of the simple religion of the\nScriptures, to which, in a greater or\nJess degree, their eyes had been\nblinded.—Cecil.\n- A man may find much amusement\nin the Bible—variety of prudential\ninstruction—abundance of sublimity and\npoetry: but, ifhe stops there, he stops\nshort of its great end; for, the testimo-\nny of Jesus is the spirit of prophecy.\nThe grand secret in the study of\nthe Serintures, is, to discover Jesus\nChrist therein, the way, the truth, and\nﬁt h‘j‘e-—\"u:",
+      "lines": [
+        {
+          "line_id": "P1_TL00452",
+          "source_text": "HOW TO READ SCRIPTURE.",
+          "tesseract_text": null,
+          "text": "HOW TO READ SCRIPTURE.",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00453",
+          "source_text": "Tuor sitmple and unprejudiced study",
+          "tesseract_text": null,
+          "text": "Tuor sitmple and unprejudiced study",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00454",
+          "source_text": "of the Bible is the death of religious",
+          "tesseract_text": null,
+          "text": "of the Bible is the death of religious",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00455",
+          "source_text": "exiravagance. Many read it under a",
+          "tesseract_text": null,
+          "text": "exiravagance. Many read it under a",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00456",
+          "source_text": "{jarticular bias of mind. They read",
+          "tesseract_text": null,
+          "text": "{jarticular bias of mind. They read",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00457",
+          "source_text": "ooks, written by others, under the",
+          "tesseract_text": null,
+          "text": "ooks, written by others, under the",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00458",
+          "source_text": "same views. Their preaching & con-",
+          "tesseract_text": null,
+          "text": "same views. Their preaching & con-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00459",
+          "source_text": "‘versation run in the same channel, If",
+          "tesseract_text": null,
+          "text": "‘versation run in the same channel, If",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00460",
+          "source_text": "they could awaken themselves' from",
+          "tesseract_text": null,
+          "text": "they could awaken themselves' from",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00461",
+          "source_text": "this state, and come to read the whole",
+          "tesseract_text": null,
+          "text": "this state, and come to read the whole",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00462",
+          "source_text": "suripture for every thing which they",
+          "tesseract_text": null,
+          "text": "suripture for every thing which they",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00463",
+          "source_text": "could find there, they would start as",
+          "tesseract_text": null,
+          "text": "could find there, they would start as",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00464",
+          "source_text": "from a dream—amazed 2t the humble.",
+          "tesseract_text": null,
+          "text": "from a dream—amazed 2t the humble.",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00465",
+          "source_text": "meek, forbearing, holy, Leavenly char-",
+          "tesseract_text": null,
+          "text": "meek, forbearing, holy, Leavenly char-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00466",
+          "source_text": "acter of the simple religion of the",
+          "tesseract_text": null,
+          "text": "acter of the simple religion of the",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00467",
+          "source_text": "Scriptures, to which, in a greater or",
+          "tesseract_text": null,
+          "text": "Scriptures, to which, in a greater or",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00468",
+          "source_text": "Jess degree, their eyes had been",
+          "tesseract_text": null,
+          "text": "Jess degree, their eyes had been",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00469",
+          "source_text": "blinded.—Cecil.",
+          "tesseract_text": null,
+          "text": "blinded.—Cecil.",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00470",
+          "source_text": "- A man may find much amusement",
+          "tesseract_text": null,
+          "text": "- A man may find much amusement",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00471",
+          "source_text": "in the Bible—variety of prudential",
+          "tesseract_text": null,
+          "text": "in the Bible—variety of prudential",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00472",
+          "source_text": "instruction—abundance of sublimity and",
+          "tesseract_text": null,
+          "text": "instruction—abundance of sublimity and",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00473",
+          "source_text": "poetry: but, ifhe stops there, he stops",
+          "tesseract_text": null,
+          "text": "poetry: but, ifhe stops there, he stops",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00474",
+          "source_text": "short of its great end; for, the testimo-",
+          "tesseract_text": null,
+          "text": "short of its great end; for, the testimo-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00475",
+          "source_text": "ny of Jesus is the spirit of prophecy.",
+          "tesseract_text": null,
+          "text": "ny of Jesus is the spirit of prophecy.",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00476",
+          "source_text": "The grand secret in the study of",
+          "tesseract_text": null,
+          "text": "The grand secret in the study of",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00477",
+          "source_text": "the Serintures, is, to discover Jesus",
+          "tesseract_text": null,
+          "text": "the Serintures, is, to discover Jesus",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00478",
+          "source_text": "Christ therein, the way, the truth, and",
+          "tesseract_text": null,
+          "text": "Christ therein, the way, the truth, and",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00479",
+          "source_text": "ﬁt h‘j‘e-—\"u:",
+          "tesseract_text": null,
+          "text": "ﬁt h‘j‘e-—\"u:",
+          "source": "loc_alto",
+          "box_px": null
+        }
+      ]
+    },
+    {
+      "block_id": "P1_TB00003",
+      "language": "eng",
+      "source": "loc_alto",
+      "text": "[coNcLUDED. ] ;\nCONSTITUTION OF THE CHERO-\nKEE NATION,\nFormed by a Convention of Delegates from\nthe several Listricts, at New Echota, Ju-\nIy 18217.\nArticLE VI E\nSec. 1. Whereas the ministers of the\nGospel are, by their profession, dedicated\nto the service of God—and the care of\nsouls, and ought not to be diverted from the\ngreat duty of their function, therefore, no\nminister vf the Gospel, or public preacher,\nof any religious persuasion, whilst he con-\ntinues in the exercises of his pastoral func-\ntions, shall be eligible to the cffice of\nPrincipal Chief, or a Seat in either house\nof the General Council:",
+      "lines": [
+        {
+          "line_id": "P1_TL00023",
+          "source_text": "[coNcLUDED. ] ;",
+          "tesseract_text": null,
+          "text": "[coNcLUDED. ] ;",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00024",
+          "source_text": "CONSTITUTION OF THE CHERO-",
+          "tesseract_text": null,
+          "text": "CONSTITUTION OF THE CHERO-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00025",
+          "source_text": "KEE NATION,",
+          "tesseract_text": null,
+          "text": "KEE NATION,",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00026",
+          "source_text": "Formed by a Convention of Delegates from",
+          "tesseract_text": null,
+          "text": "Formed by a Convention of Delegates from",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00027",
+          "source_text": "the several Listricts, at New Echota, Ju-",
+          "tesseract_text": null,
+          "text": "the several Listricts, at New Echota, Ju-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00028",
+          "source_text": "Iy 18217.",
+          "tesseract_text": null,
+          "text": "Iy 18217.",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00029",
+          "source_text": "ArticLE VI E",
+          "tesseract_text": null,
+          "text": "ArticLE VI E",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00030",
+          "source_text": "Sec. 1. Whereas the ministers of the",
+          "tesseract_text": null,
+          "text": "Sec. 1. Whereas the ministers of the",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00031",
+          "source_text": "Gospel are, by their profession, dedicated",
+          "tesseract_text": null,
+          "text": "Gospel are, by their profession, dedicated",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00032",
+          "source_text": "to the service of God—and the care of",
+          "tesseract_text": null,
+          "text": "to the service of God—and the care of",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00033",
+          "source_text": "souls, and ought not to be diverted from the",
+          "tesseract_text": null,
+          "text": "souls, and ought not to be diverted from the",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00034",
+          "source_text": "great duty of their function, therefore, no",
+          "tesseract_text": null,
+          "text": "great duty of their function, therefore, no",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00035",
+          "source_text": "minister vf the Gospel, or public preacher,",
+          "tesseract_text": null,
+          "text": "minister vf the Gospel, or public preacher,",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00036",
+          "source_text": "of any religious persuasion, whilst he con-",
+          "tesseract_text": null,
+          "text": "of any religious persuasion, whilst he con-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00037",
+          "source_text": "tinues in the exercises of his pastoral func-",
+          "tesseract_text": null,
+          "text": "tinues in the exercises of his pastoral func-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00038",
+          "source_text": "tions, shall be eligible to the cffice of",
+          "tesseract_text": null,
+          "text": "tions, shall be eligible to the cffice of",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00039",
+          "source_text": "Principal Chief, or a Seat in either house",
+          "tesseract_text": null,
+          "text": "Principal Chief, or a Seat in either house",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00040",
+          "source_text": "of the General Council:",
+          "tesseract_text": null,
+          "text": "of the General Council:",
+          "source": "loc_alto",
+          "box_px": null
+        }
+      ]
+    },
+    {
+      "block_id": "P1_TB00005",
+      "language": "eng",
+      "source": "loc_alto",
+      "text": "l Sec. 2No person who denies the he-\ning of a God, ora future state of rewards &\n' prnihiscstes et hold aiy ofiide in the ¢i-\n'vil department of this Nation.\n- Bec. 3. The free exercise of religious\n- worship, and serving God without distine-\n‘tion, shall forever be allowed within this\nNotion: Provided, That this liberty of con-\nscience shall not be so construed as to ex-\ncuse acts of licentiousness or justify prac-\ntices inconsistent with the peace or safe-\nty of this Nation.",
+      "lines": [
+        {
+          "line_id": "P1_TL00048",
+          "source_text": "l Sec. 2No person who denies the he-",
+          "tesseract_text": null,
+          "text": "l Sec. 2No person who denies the he-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00049",
+          "source_text": "ing of a God, ora future state of rewards &",
+          "tesseract_text": null,
+          "text": "ing of a God, ora future state of rewards &",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00050",
+          "source_text": "' prnihiscstes et hold aiy ofiide in the ¢i-",
+          "tesseract_text": null,
+          "text": "' prnihiscstes et hold aiy ofiide in the ¢i-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00051",
+          "source_text": "'vil department of this Nation.",
+          "tesseract_text": null,
+          "text": "'vil department of this Nation.",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00052",
+          "source_text": "- Bec. 3. The free exercise of religious",
+          "tesseract_text": null,
+          "text": "- Bec. 3. The free exercise of religious",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00053",
+          "source_text": "- worship, and serving God without distine-",
+          "tesseract_text": null,
+          "text": "- worship, and serving God without distine-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00054",
+          "source_text": "‘tion, shall forever be allowed within this",
+          "tesseract_text": null,
+          "text": "‘tion, shall forever be allowed within this",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00055",
+          "source_text": "Notion: Provided, That this liberty of con-",
+          "tesseract_text": null,
+          "text": "Notion: Provided, That this liberty of con-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00056",
+          "source_text": "science shall not be so construed as to ex-",
+          "tesseract_text": null,
+          "text": "science shall not be so construed as to ex-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00057",
+          "source_text": "cuse acts of licentiousness or justify prac-",
+          "tesseract_text": null,
+          "text": "cuse acts of licentiousness or justify prac-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00058",
+          "source_text": "tices inconsistent with the peace or safe-",
+          "tesseract_text": null,
+          "text": "tices inconsistent with the peace or safe-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00059",
+          "source_text": "ty of this Nation.",
+          "tesseract_text": null,
+          "text": "ty of this Nation.",
+          "source": "loc_alto",
+          "box_px": null
+        }
+      ]
+    },
+    {
+      "block_id": "P1_TB00007",
+      "language": "eng",
+      "source": "loc_alto",
+      "text": "| Sec. 4. Whenever the General Coun-\n“cll shall determine the expediency of ap-\npointing delegrtes, or other public Agents,\nfor the purpose of transacting business with\nthe Government of the United States; the\nPrincipal Chief shall have power to recom-\nmend, ana by the advice and consent of the\nCommittee, shall appoint and commission\nsuch delegates or Public Agentsaccording-\nly, and. on all matters of interest touching\nilie ‘rights of - the citizens oi this Nation,\nswhith mayrequive the atteation o}f)‘ the U-\nnutel] - Htages s Kroveramant, the Principat\n‘dence with that Gove: matend, through the\namedium of iis propenofficers.",
+      "lines": [
+        {
+          "line_id": "P1_TL00071",
+          "source_text": "| Sec. 4. Whenever the General Coun-",
+          "tesseract_text": null,
+          "text": "| Sec. 4. Whenever the General Coun-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00072",
+          "source_text": "“cll shall determine the expediency of ap-",
+          "tesseract_text": null,
+          "text": "“cll shall determine the expediency of ap-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00073",
+          "source_text": "pointing delegrtes, or other public Agents,",
+          "tesseract_text": null,
+          "text": "pointing delegrtes, or other public Agents,",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00074",
+          "source_text": "for the purpose of transacting business with",
+          "tesseract_text": null,
+          "text": "for the purpose of transacting business with",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00075",
+          "source_text": "the Government of the United States; the",
+          "tesseract_text": null,
+          "text": "the Government of the United States; the",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00076",
+          "source_text": "Principal Chief shall have power to recom-",
+          "tesseract_text": null,
+          "text": "Principal Chief shall have power to recom-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00077",
+          "source_text": "mend, ana by the advice and consent of the",
+          "tesseract_text": null,
+          "text": "mend, ana by the advice and consent of the",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00078",
+          "source_text": "Committee, shall appoint and commission",
+          "tesseract_text": null,
+          "text": "Committee, shall appoint and commission",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00079",
+          "source_text": "such delegates or Public Agentsaccording-",
+          "tesseract_text": null,
+          "text": "such delegates or Public Agentsaccording-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00080",
+          "source_text": "ly, and. on all matters of interest touching",
+          "tesseract_text": null,
+          "text": "ly, and. on all matters of interest touching",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00081",
+          "source_text": "ilie ‘rights of - the citizens oi this Nation,",
+          "tesseract_text": null,
+          "text": "ilie ‘rights of - the citizens oi this Nation,",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00082",
+          "source_text": "swhith mayrequive the atteation o}f)‘ the U-",
+          "tesseract_text": null,
+          "text": "swhith mayrequive the atteation o}f)‘ the U-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00083",
+          "source_text": "nutel] - Htages s Kroveramant, the Principat",
+          "tesseract_text": null,
+          "text": "nutel] - Htages s Kroveramant, the Principat",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00084",
+          "source_text": "‘dence with that Gove: matend, through the",
+          "tesseract_text": null,
+          "text": "‘dence with that Gove: matend, through the",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00085",
+          "source_text": "amedium of iis propenofficers.",
+          "tesseract_text": null,
+          "text": "amedium of iis propenofficers.",
+          "source": "loc_alto",
+          "box_px": null
+        }
+      ]
+    },
+    {
+      "block_id": "P1_TB00008",
+      "language": "eng",
+      "source": "loc_alto",
+      "text": "Sec. 5. All commissions shall be in the\nname and by the authority of the Cherokee\nNation, and be sealed with the Seal of the\nNation, and be signed by the Principal\nChief. : :\nThe Principal Chief shall make use of\nhis private seal until a National seal shall\nbe provided.\nSec. 6. A sheriff shall be elected in\ncach District by the qualified electors\nthareof, who shall hold his office for the\nterm of two years, unless sooner removed.\nShould a vacancy oceur subsequent to an\nelection, it shall be filled by the Principal\nChief as in other cases, and the person so\nappointed shall continue in office until the\nnext General election, when such vacancy\nshall be filled by the qualified electors, and\nthe Sheriff then elected shall continue in\nofiice for two years.\nSec. 7. There shall be a Marshall ap-\npointed by a joint vote of both houses of the\nGeneral Council for the term of four\nyears, whose compensation and duties shall\nhe regulated by law. & whose jurisdiction\nshall extend over the Cherokee Nation.",
+      "lines": [
+        {
+          "line_id": "P1_TL00086",
+          "source_text": "Sec. 5. All commissions shall be in the",
+          "tesseract_text": null,
+          "text": "Sec. 5. All commissions shall be in the",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00087",
+          "source_text": "name and by the authority of the Cherokee",
+          "tesseract_text": null,
+          "text": "name and by the authority of the Cherokee",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00088",
+          "source_text": "Nation, and be sealed with the Seal of the",
+          "tesseract_text": null,
+          "text": "Nation, and be sealed with the Seal of the",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00089",
+          "source_text": "Nation, and be signed by the Principal",
+          "tesseract_text": null,
+          "text": "Nation, and be signed by the Principal",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00090",
+          "source_text": "Chief. : :",
+          "tesseract_text": null,
+          "text": "Chief. : :",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00091",
+          "source_text": "The Principal Chief shall make use of",
+          "tesseract_text": null,
+          "text": "The Principal Chief shall make use of",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00092",
+          "source_text": "his private seal until a National seal shall",
+          "tesseract_text": null,
+          "text": "his private seal until a National seal shall",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00093",
+          "source_text": "be provided.",
+          "tesseract_text": null,
+          "text": "be provided.",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00094",
+          "source_text": "Sec. 6. A sheriff shall be elected in",
+          "tesseract_text": null,
+          "text": "Sec. 6. A sheriff shall be elected in",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00095",
+          "source_text": "cach District by the qualified electors",
+          "tesseract_text": null,
+          "text": "cach District by the qualified electors",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00096",
+          "source_text": "thareof, who shall hold his office for the",
+          "tesseract_text": null,
+          "text": "thareof, who shall hold his office for the",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00097",
+          "source_text": "term of two years, unless sooner removed.",
+          "tesseract_text": null,
+          "text": "term of two years, unless sooner removed.",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00098",
+          "source_text": "Should a vacancy oceur subsequent to an",
+          "tesseract_text": null,
+          "text": "Should a vacancy oceur subsequent to an",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00099",
+          "source_text": "election, it shall be filled by the Principal",
+          "tesseract_text": null,
+          "text": "election, it shall be filled by the Principal",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00100",
+          "source_text": "Chief as in other cases, and the person so",
+          "tesseract_text": null,
+          "text": "Chief as in other cases, and the person so",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00101",
+          "source_text": "appointed shall continue in office until the",
+          "tesseract_text": null,
+          "text": "appointed shall continue in office until the",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00102",
+          "source_text": "next General election, when such vacancy",
+          "tesseract_text": null,
+          "text": "next General election, when such vacancy",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00103",
+          "source_text": "shall be filled by the qualified electors, and",
+          "tesseract_text": null,
+          "text": "shall be filled by the qualified electors, and",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00104",
+          "source_text": "the Sheriff then elected shall continue in",
+          "tesseract_text": null,
+          "text": "the Sheriff then elected shall continue in",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00105",
+          "source_text": "ofiice for two years.",
+          "tesseract_text": null,
+          "text": "ofiice for two years.",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00106",
+          "source_text": "Sec. 7. There shall be a Marshall ap-",
+          "tesseract_text": null,
+          "text": "Sec. 7. There shall be a Marshall ap-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00107",
+          "source_text": "pointed by a joint vote of both houses of the",
+          "tesseract_text": null,
+          "text": "pointed by a joint vote of both houses of the",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00108",
+          "source_text": "General Council for the term of four",
+          "tesseract_text": null,
+          "text": "General Council for the term of four",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00109",
+          "source_text": "years, whose compensation and duties shall",
+          "tesseract_text": null,
+          "text": "years, whose compensation and duties shall",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00110",
+          "source_text": "he regulated by law. & whose jurisdiction",
+          "tesseract_text": null,
+          "text": "he regulated by law. & whose jurisdiction",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00111",
+          "source_text": "shall extend over the Cherokee Nation.",
+          "tesseract_text": null,
+          "text": "shall extend over the Cherokee Nation.",
+          "source": "loc_alto",
+          "box_px": null
+        }
+      ]
+    },
+    {
+      "block_id": "P1_TB00009",
+      "language": "eng",
+      "source": "loc_alto",
+      "text": "Sec. 8. No person shall for the same of-\nfence be twice put in jeopardy of life, or\nlimb, nor shall any persons property be taken\nor applied to pubic use without his consent;\nProvided, That nothing in this clause shall\nbe so construed as to impair the right and\npower of the Greneral Council to lay and\ncollect Taxes. All courts shall be open,\nand every person for an injury done him in\nhis property person or reputation, shall\nhave remedy by due course of law.\nSec. 9. The right of trial by jury shall\nremain inviolate. - s\nSec. 10. Religion morality and knowl-\nedge being necessary to good Government,\nthe preservation of liberty, and the happi-\nnes of mankind, Schools and the means of\neducation shall forever be encouraged in\nthis Nation.\nSec. 11. The appointment of all offi-\ncers, not otherwise directed by this Consti-\ntution, shall be vesied in the legislature.",
+      "lines": [
+        {
+          "line_id": "P1_TL00112",
+          "source_text": "Sec. 8. No person shall for the same of-",
+          "tesseract_text": null,
+          "text": "Sec. 8. No person shall for the same of-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00113",
+          "source_text": "fence be twice put in jeopardy of life, or",
+          "tesseract_text": null,
+          "text": "fence be twice put in jeopardy of life, or",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00114",
+          "source_text": "limb, nor shall any persons property be taken",
+          "tesseract_text": null,
+          "text": "limb, nor shall any persons property be taken",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00115",
+          "source_text": "or applied to pubic use without his consent;",
+          "tesseract_text": null,
+          "text": "or applied to pubic use without his consent;",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00116",
+          "source_text": "Provided, That nothing in this clause shall",
+          "tesseract_text": null,
+          "text": "Provided, That nothing in this clause shall",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00117",
+          "source_text": "be so construed as to impair the right and",
+          "tesseract_text": null,
+          "text": "be so construed as to impair the right and",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00118",
+          "source_text": "power of the Greneral Council to lay and",
+          "tesseract_text": null,
+          "text": "power of the Greneral Council to lay and",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00119",
+          "source_text": "collect Taxes. All courts shall be open,",
+          "tesseract_text": null,
+          "text": "collect Taxes. All courts shall be open,",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00120",
+          "source_text": "and every person for an injury done him in",
+          "tesseract_text": null,
+          "text": "and every person for an injury done him in",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00121",
+          "source_text": "his property person or reputation, shall",
+          "tesseract_text": null,
+          "text": "his property person or reputation, shall",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00122",
+          "source_text": "have remedy by due course of law.",
+          "tesseract_text": null,
+          "text": "have remedy by due course of law.",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00123",
+          "source_text": "Sec. 9. The right of trial by jury shall",
+          "tesseract_text": null,
+          "text": "Sec. 9. The right of trial by jury shall",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00124",
+          "source_text": "remain inviolate. - s",
+          "tesseract_text": null,
+          "text": "remain inviolate. - s",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00125",
+          "source_text": "Sec. 10. Religion morality and knowl-",
+          "tesseract_text": null,
+          "text": "Sec. 10. Religion morality and knowl-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00126",
+          "source_text": "edge being necessary to good Government,",
+          "tesseract_text": null,
+          "text": "edge being necessary to good Government,",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00127",
+          "source_text": "the preservation of liberty, and the happi-",
+          "tesseract_text": null,
+          "text": "the preservation of liberty, and the happi-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00128",
+          "source_text": "nes of mankind, Schools and the means of",
+          "tesseract_text": null,
+          "text": "nes of mankind, Schools and the means of",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00129",
+          "source_text": "education shall forever be encouraged in",
+          "tesseract_text": null,
+          "text": "education shall forever be encouraged in",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00130",
+          "source_text": "this Nation.",
+          "tesseract_text": null,
+          "text": "this Nation.",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00131",
+          "source_text": "Sec. 11. The appointment of all offi-",
+          "tesseract_text": null,
+          "text": "Sec. 11. The appointment of all offi-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00132",
+          "source_text": "cers, not otherwise directed by this Consti-",
+          "tesseract_text": null,
+          "text": "cers, not otherwise directed by this Consti-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00133",
+          "source_text": "tution, shall be vesied in the legislature.",
+          "tesseract_text": null,
+          "text": "tution, shall be vesied in the legislature.",
+          "source": "loc_alto",
+          "box_px": null
+        }
+      ]
+    },
+    {
+      "block_id": "P1_TB00010",
+      "language": "eng",
+      "source": "loc_alto",
+      "text": "Sec. 12. All laws in force in this No-\ntion, at the passing of this Constitution,",
+      "lines": [
+        {
+          "line_id": "P1_TL00134",
+          "source_text": "Sec. 12. All laws in force in this No-",
+          "tesseract_text": null,
+          "text": "Sec. 12. All laws in force in this No-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00135",
+          "source_text": "tion, at the passing of this Constitution,",
+          "tesseract_text": null,
+          "text": "tion, at the passing of this Constitution,",
+          "source": "loc_alto",
+          "box_px": null
+        }
+      ]
+    },
+    {
+      "block_id": "P1_TB00011",
+      "language": "eng",
+      "source": "loc_alto",
+      "text": "NEW ECHOTA, THURSD AY MARCIH 6,182 S.",
+      "lines": [
+        {
+          "line_id": "P1_TL00136",
+          "source_text": "NEW ECHOTA, THURSD AY MARCIH 6,182 S.",
+          "tesseract_text": null,
+          "text": "NEW ECHOTA, THURSD AY MARCIH 6,182 S.",
+          "source": "loc_alto",
+          "box_px": null
+        }
+      ]
+    },
+    {
+      "block_id": "P1_TB00012",
+      "language": "chr",
+      "source": "hybrid_chr",
+      "text": "ᏗᎧᏮᏩᏛᏍᏗ ᏣᎳᎩ ᏞᏃ Ꭶ.\nᎫ ᎥᎧᏢᏃᎯᏒᎯ)) Ꮺ",
+      "lines": [
+        {
+          "line_id": "P1_TL00137",
+          "source_text": ".ᎢᏦᎧᏩ”…ᏛᏍᏗ ᎶᎳ”ᎩᏚ’)ᏗᏮᏤᎥ-Ꮥ.",
+          "tesseract_text": "ᏗᎧᏮᏩᏛᏍᏗ ᏣᎳᎩ ᏞᏃ Ꭶ.",
+          "text": "ᏗᎧᏮᏩᏛᏍᏗ ᏣᎳᎩ ᏞᏃ Ꭶ.",
+          "source": "tesseract_chr",
+          "box_px": [
+            1824,
+            1335,
+            2244,
+            1403
+          ]
+        },
+        {
+          "line_id": "P1_TL00138",
+          "source_text": "5 ᏞᎤᏢᎷᏴᏡᎹ -Ꮚ Ꭵ",
+          "tesseract_text": "Ꭻ ᎥᎧᏢᏃᎯᏒᎯ)) Ꮺ",
+          "text": "Ꭻ ᎥᎧᏢᏃᎯᏒᎯ)) Ꮺ",
+          "source": "tesseract_chr",
+          "box_px": [
+            1873,
+            1389,
+            2234,
+            1450
+          ]
+        }
+      ]
+    },
+    {
+      "block_id": "P1_TB00013",
+      "language": "chr",
+      "source": "hybrid_chr",
+      "text": "; ᏈᎬ..) 1\nᏓ Ꭵ! ᎬᏂᏉ ᏄᏍᏗ ᏚᏂᎸᏮᎥᏍᏓᏁᎭ ᎦᎸᎳ”\nᏗᏘ ᎠᎪᏬᏂᏗᏍᎩ, ᎦᎸᎳᏗ ᏓᏤᏢ ᏥᏒ ᎦᏂᎢ\nᎸᏫᏍᏓᏁᎭ;, Ꮭ ᎠᎴᏃ ᏱᎦᏲᎯ ᏳᏂᏲᏍᎪᏓᏁ:\nᎭ; ᎧᏍᎩ ᎢᏳᏍᏗ. ᎠᏂᏬᏂᏗᏍᎩ ᏄᎾᏓᎴ!:\nᏂᎪᎯᎸ ᎦᎸᎳᏗ ᎠᏂᏬᏂᏗᏩᏍᎩ ᎨᏒ, ᎥᎥ\nᎤᏂᎬᏫᏳᎯ ᎢᎬᏩᎾᏮᏑᏍᎪᏗ ᏱᎨᏎᏍᏘ, ᎠᎴ\nᎤᏛᏍ ᏕᎦᎳᏫᎥ ᎬᏩᎧᏮᏖᎳᏗᏍᏗ ᏱᎨᏎᏍᏗ,",
+      "lines": [
+        {
+          "line_id": "P1_TL00139",
+          "source_text": "; ᏈᎬ..) 1",
+          "tesseract_text": "",
+          "text": "; ᏈᎬ..) 1",
+          "source": "loc_alto_fallback_empty_tesseract",
+          "box_px": [
+            1729,
+            1614,
+            2324,
+            1682
+          ]
+        },
+        {
+          "line_id": "P1_TL00140",
+          "source_text": "Ꮡ 1. ᎬᏂᏉ ᏄᏍᏘ ᏚᏂᎸᏬᏍᏓᏁᎭ ᎦᎸᎳ”",
+          "tesseract_text": "Ꮣ Ꭵ! ᎬᏂᏉ ᏄᏍᏗ ᏚᏂᎸᏮᎥᏍᏓᏁᎭ ᎦᎸᎳ”",
+          "text": "Ꮣ Ꭵ! ᎬᏂᏉ ᏄᏍᏗ ᏚᏂᎸᏮᎥᏍᏓᏁᎭ ᎦᎸᎳ”",
+          "source": "tesseract_chr",
+          "box_px": [
+            1729,
+            1663,
+            2327,
+            1723
+          ]
+        },
+        {
+          "line_id": "P1_TL00141",
+          "source_text": "ᏗᏘ ᎠᎪᏬᏂᏗᏍᎩ, ᎦᎸᎳᏗ ᏓᏤᏢ ᏥᏒ ᎦᏂᎢ",
+          "tesseract_text": "",
+          "text": "ᏗᏘ ᎠᎪᏬᏂᏗᏍᎩ, ᎦᎸᎳᏗ ᏓᏤᏢ ᏥᏒ ᎦᏂᎢ",
+          "source": "loc_alto_fallback_empty_tesseract",
+          "box_px": [
+            1737,
+            1694,
+            2328,
+            1766
+          ]
+        },
+        {
+          "line_id": "P1_TL00142",
+          "source_text": "ᏄᏫᏍᏓᏁᎭ; Ꮭ ᎠᎴᏃ ᏱᎦᏲᎯ ᏳᏂᏲᏍᎪᏓᏁ’",
+          "tesseract_text": "ᎸᏫᏍᏓᏁᎭ;, Ꮭ ᎠᎴᏃ ᏱᎦᏲᎯ ᏳᏂᏲᏍᎪᏓᏁ:",
+          "text": "ᎸᏫᏍᏓᏁᎭ;, Ꮭ ᎠᎴᏃ ᏱᎦᏲᎯ ᏳᏂᏲᏍᎪᏓᏁ:",
+          "source": "tesseract_chr",
+          "box_px": [
+            1736,
+            1752,
+            2326,
+            1814
+          ]
+        },
+        {
+          "line_id": "P1_TL00143",
+          "source_text": "Ꭽ; ᎧᏍᎩ ᎢᏳᏍᏗ. ᎠᏂᏬᏂᏗᏍᎩ ᏄᎾᏓᎴ!:",
+          "tesseract_text": "",
+          "text": "Ꭽ; ᎧᏍᎩ ᎢᏳᏍᏗ. ᎠᏂᏬᏂᏗᏍᎩ ᏄᎾᏓᎴ!:",
+          "source": "loc_alto_fallback_empty_tesseract",
+          "box_px": [
+            1736,
+            1802,
+            2328,
+            1890
+          ]
+        },
+        {
+          "line_id": "P1_TL00144",
+          "source_text": "ᏂᎪᎯᎸ ᎦᎸᎳᏗ ᎠᏂᏬᏂᏇᏍᎩ ᎨᏒ, Ꭵ",
+          "tesseract_text": "ᏂᎪᎯᎸ ᎦᎸᎳᏗ ᎠᏂᏬᏂᏗᏩᏍᎩ ᎨᏒ, ᎥᎥ",
+          "text": "ᏂᎪᎯᎸ ᎦᎸᎳᏗ ᎠᏂᏬᏂᏗᏩᏍᎩ ᎨᏒ, ᎥᎥ",
+          "source": "tesseract_chr",
+          "box_px": [
+            1737,
+            1848,
+            2310,
+            1896
+          ]
+        },
+        {
+          "line_id": "P1_TL00145",
+          "source_text": "ᎤᏂᎬᏫᏳᎯ ᎢᎬᏩᏮᏑᏍᎪᏗ ᏱᎨᏎᏍᏘ, ᎠᎴ",
+          "tesseract_text": "ᎤᏂᎬᏫᏳᎯ ᎢᎬᏩᎾᏮᏑᏍᎪᏗ ᏱᎨᏎᏍᏘ, ᎠᎴ",
+          "text": "ᎤᏂᎬᏫᏳᎯ ᎢᎬᏩᎾᏮᏑᏍᎪᏗ ᏱᎨᏎᏍᏘ, ᎠᎴ",
+          "source": "tesseract_chr",
+          "box_px": [
+            1736,
+            1891,
+            2328,
+            1939
+          ]
+        },
+        {
+          "line_id": "P1_TL00146",
+          "source_text": "ᎤᏛᏍ ᏕᎦᎳᏫᎿᎥ ᎬᏩᏮᏖᏤᏉᏗᏍᏗ ᏱᎨᏎᏍᏗ;,",
+          "tesseract_text": "ᎤᏛᏍ ᏕᎦᎳᏫᎥ ᎬᏩᎧᏮᏖᎳᏗᏍᏗ ᏱᎨᏎᏍᏗ,",
+          "text": "ᎤᏛᏍ ᏕᎦᎳᏫᎥ ᎬᏩᎧᏮᏖᎳᏗᏍᏗ ᏱᎨᏎᏍᏗ,",
+          "source": "tesseract_chr",
+          "box_px": [
+            1736,
+            1934,
+            2325,
+            1984
+          ]
+        }
+      ]
+    },
+    {
+      "block_id": "P1_TB00014",
+      "language": "chr",
+      "source": "hybrid_chr",
+      "text": "( .3.. ᎢᏛᏃ ᎩᎶ ᎦᎸᎳᏁ ᎡᏁ ᏄᏬᎯᏳᏒ”\n-Ꭷ! ᎢᏂᎲᏍᏗ,’ ᎠᎴ ᎦᏗᏲ ᎢᎬᎷᎾᎸ, ᎢᎦᎬᏰᏈᏴᎢ.\nᎤ ᏂᎢ Ꮎ Ꭲ\nᏤᏗ ᏱᎨᏎᏍᏗ, ᎠᏂᏣᎳᎩ 1117\n38. ᎯᎠ ᏣᎳᎩ ᎦᏬᎪᎯ ᎧᏃ ᏴᏫ’ ᎪᎯ\nᎢᏳᏓᎴᏅᏛ, ᎤᏬᏘᎥᏉ Ꭴ8Ꮏ). “Ꮧ, ᏄᏍᏛᏉ\nᎠᎾᏓᏅᏖᏍᎬ ᎢᏳᏠᎳᎩᏗ Ꮒ ᏱᏍᏱᏗ ᎦᎸᎳᏗ.\nᏧᏂᎧᎧᏩᏛᏍᏗ; .ᎫᎪᏒᎩ (ᎯᎠ ᏦᏂ”\n…………………………Ꭰ\nᏂᏍᏗᏍᎩ ᎬᏩᏮᏢᎴ Ꮎ Ꮧ” ᏱᎨᏎᏍᏘᎥ",
+      "lines": [
+        {
+          "line_id": "P1_TL00147",
+          "source_text": "( .3.. ᎢᏛᏃ ᎩᎶ ᎦᎸᎳᏁ ᎡᏁ ᏄᏬᎯᏳᏒ”",
+          "tesseract_text": "",
+          "text": "( .3.. ᎢᏛᏃ ᎩᎶ ᎦᎸᎳᏁ ᎡᏁ ᏄᏬᎯᏳᏒ”",
+          "source": "loc_alto_fallback_empty_tesseract",
+          "box_px": [
+            1726,
+            2130,
+            2320,
+            2207
+          ]
+        },
+        {
+          "line_id": "P1_TL00148",
+          "source_text": "-Ꭷ! ᎢᏂᎲᏍᏗ,’ ᎠᎴ ᎦᏗᏲ ᎢᎬᎷᎾᎸ, ᎢᎦᎬᏰᏈᏴᎢ.",
+          "tesseract_text": "",
+          "text": "-Ꭷ! ᎢᏂᎲᏍᏗ,’ ᎠᎴ ᎦᏗᏲ ᎢᎬᎷᎾᎸ, ᎢᎦᎬᏰᏈᏴᎢ.",
+          "source": "loc_alto_fallback_empty_tesseract",
+          "box_px": [
+            1726,
+            2175,
+            2322,
+            2244
+          ]
+        },
+        {
+          "line_id": "P1_TL00149",
+          "source_text": "Ꭴ ᏂᎢ Ꮎ Ꭲ",
+          "tesseract_text": "",
+          "text": "Ꭴ ᏂᎢ Ꮎ Ꭲ",
+          "source": "loc_alto_fallback_empty_tesseract",
+          "box_px": [
+            1726,
+            2182,
+            2315,
+            2284
+          ]
+        },
+        {
+          "line_id": "P1_TL00150",
+          "source_text": "ᏤᏗ ᏱᎨᏎᏍᏘ; ᎠᏂᏣᎳᎩ 15.ᎫᎪᎢ:",
+          "tesseract_text": "ᏤᏗ ᏱᎨᏎᏍᏗ, ᎠᏂᏣᎳᎩ 1117",
+          "text": "ᏤᏗ ᏱᎨᏎᏍᏗ, ᎠᏂᏣᎳᎩ 1117",
+          "source": "tesseract_chr",
+          "box_px": [
+            1734,
+            2262,
+            2210,
+            2323
+          ]
+        },
+        {
+          "line_id": "P1_TL00151",
+          "source_text": "3. ᎯᎠ “ᏣᎳᎩ ᏠᎤᎪᏊ ᎠᎯᏎ ᏴᏫ” ᎪᎯ",
+          "tesseract_text": "38. ᎯᎠ ᏣᎳᎩ ᎦᏬᎪᎯ ᎧᏃ ᏴᏫ’ ᎪᎯ",
+          "text": "38. ᎯᎠ ᏣᎳᎩ ᎦᏬᎪᎯ ᎧᏃ ᏴᏫ’ ᎪᎯ",
+          "source": "tesseract_chr",
+          "box_px": [
+            1775,
+            2307,
+            2314,
+            2364
+          ]
+        },
+        {
+          "line_id": "P1_TL00152",
+          "source_text": "ᎢᏳᏓᎴᏅᏛ, ᎤᏅᏘᎥᏉ Ꭴ 851. 153) ᏄᏍᏛᏉ",
+          "tesseract_text": "ᎢᏳᏓᎴᏅᏛ, ᎤᏬᏘᎥᏉ Ꭴ8Ꮏ). “Ꮧ, ᏄᏍᏛᏉ",
+          "text": "ᎢᏳᏓᎴᏅᏛ, ᎤᏬᏘᎥᏉ Ꭴ8Ꮏ). “Ꮧ, ᏄᏍᏛᏉ",
+          "source": "tesseract_chr",
+          "box_px": [
+            1734,
+            2354,
+            2314,
+            2408
+          ]
+        },
+        {
+          "line_id": "P1_TL00153",
+          "source_text": "ᎠᎾᏮᏓᏅᏖᏍᎬ ᎢᏳᏠᏲᎿᎸ Ꮧ7.ᏍᏘ ᎦᎸᎳᏗ",
+          "tesseract_text": "ᎠᎾᏓᏅᏖᏍᎬ ᎢᏳᏠᎳᎩᏗ Ꮒ ᏱᏍᏱᏗ ᎦᎸᎳᏗ.",
+          "text": "ᎠᎾᏓᏅᏖᏍᎬ ᎢᏳᏠᎳᎩᏗ Ꮒ ᏱᏍᏱᏗ ᎦᎸᎳᏗ.",
+          "source": "tesseract_chr",
+          "box_px": [
+            1732,
+            2396,
+            2313,
+            2450
+          ]
+        },
+        {
+          "line_id": "P1_TL00154",
+          "source_text": "ᏍᏳᏨ………Ꭲ……Ꭲ…Ꭲ",
+          "tesseract_text": "ᏧᏂᎧᎧᏩᏛᏍᏗ; .ᎫᎪᏒᎩ (ᎯᎠ ᏦᏂ”",
+          "text": "ᏧᏂᎧᎧᏩᏛᏍᏗ; .ᎫᎪᏒᎩ (ᎯᎠ ᏦᏂ”",
+          "source": "tesseract_chr",
+          "box_px": [
+            1789,
+            2433,
+            2312,
+            2499
+          ]
+        },
+        {
+          "line_id": "P1_TL00155",
+          "source_text": "…………………………Ꭰ",
+          "tesseract_text": "",
+          "text": "…………………………Ꭰ",
+          "source": "loc_alto_fallback_empty_tesseract",
+          "box_px": [
+            1729,
+            2476,
+            2315,
+            2545
+          ]
+        },
+        {
+          "line_id": "P1_TL00156",
+          "source_text": "ᏂᏍᏗᏍᎩ ᎬᏩᎧᏢᏯ ᏓᏱ; ᎠᏦ7.3. ᏱᎨ-ᏎᏍᏘ;",
+          "tesseract_text": "ᏂᏍᏗᏍᎩ ᎬᏩᏮᏢᎴ Ꮎ Ꮧ” ᏱᎨᏎᏍᏘᎥ",
+          "text": "ᏂᏍᏗᏍᎩ ᎬᏩᏮᏢᎴ Ꮎ Ꮧ” ᏱᎨᏎᏍᏘᎥ",
+          "source": "tesseract_chr",
+          "box_px": [
+            1726,
+            2517,
+            2307,
+            2582
+          ]
+        }
+      ]
+    },
+    {
+      "block_id": "P1_TB00015",
+      "language": "chr",
+      "source": "hybrid_chr",
+      "text": "ᏧᏂᎭ. ᎦᏓ; ᏓᏯ ᎳᎯᏍᎯ\nᎳᏫᎩ ᏗᎵᏰᎡ. ᎠᏊᏢᏍᎢ. ᏱᏯᎴᏅᎯ,\nᎠᎴ ᎤᏂᎬᏫᏳᎯ” 20 17.Ꮔ ᏄᎮᏚᏛ ᏗᏮᏠᏁ”\nᏍᏘᏍᎩ, ᏣᎳᏙᎩᏍᏔᎥᎨ Ᏻ ;Ꮏ) “ᎤᏰᏍᏗ\nᎨᏎᏍᏗ,, ᎾᏍᎩᏃ Ꮪ ᎠᏂᏜᎣ ᎪᎦᎲᏊ ᎠᏰᏢ\nᎠᎧᏓᏅᏖᏍᎩ, ᎪᏪ ᎠᎫᎴ Ꭻ05Ꮧ ᎫᏁᏤᏗ\nᎬᏎᏍᏗ- ᎧᏍᎩᏃ ᎦᏏᎲ ᏂᏍᎦᏗ ᎠᏁᎯ ᏯᏏ\nᎢᎬᏩᎾᏢᏍᏓᏁᏗ. ᎨᏒ ᎤᏂᎬᏫᏛᎧ ᎤᎧᎵᏂ”\nᎬᏁᏗ Ꭾ-Ꭹ, ᎾᏍᎩ ᎤᏂᎱ.ᏫᏳᎯ ᎯᎴ ᏧᏂᏁ”\nᏤᎸᎯ ᎡᏍᎦᏂᏃ ᎤᎬᏫᏳᎯ ᏧᎧ ᎪᏪᎳᏁᏗ\nᏂᏂᏍᏪᎮ ᏔᎳ) Ꮄ ; 1",
+      "lines": [
+        {
+          "line_id": "P1_TL00157",
+          "source_text": "Ꮞ. ᎢᏳᏃ ᎯᎸᎯᏳ Ꮹ;ᏊᎳᎥᎧᎥ ᏗᏤ",
+          "tesseract_text": "ᏧᏂᎭ. ᎦᏓ; ᏓᏯ ᎳᎯᏍᎯ",
+          "text": "ᏧᏂᎭ. ᎦᏓ; ᏓᏯ ᎳᎯᏍᎯ",
+          "source": "tesseract_chr",
+          "box_px": [
+            1768,
+            2646,
+            2308,
+            2747
+          ]
+        },
+        {
+          "line_id": "P1_TL00158",
+          "source_text": "ᎳᏫᎩ ᏗᏑᏰᏒ. “ᎠᏊᎩ “! ᏱᎴ ᏂᏪᏫᏅᎯ,",
+          "tesseract_text": "ᎳᏫᎩ ᏗᎵᏰᎡ. ᎠᏊᏢᏍᎢ. ᏱᏯᎴᏅᎯ,",
+          "text": "ᎳᏫᎩ ᏗᎵᏰᎡ. ᎠᏊᏢᏍᎢ. ᏱᏯᎴᏅᎯ,",
+          "source": "tesseract_chr",
+          "box_px": [
+            1724,
+            2690,
+            2302,
+            2764
+          ]
+        },
+        {
+          "line_id": "P1_TL00159",
+          "source_text": "ᎠᎴ ᎤᏂᎬᏫᏳᎯ” 20 17.Ꮔ ᏄᎮᏚᏛ ᏗᏮᏠᏁ”",
+          "tesseract_text": "",
+          "text": "ᎠᎴ ᎤᏂᎬᏫᏳᎯ” 20 17.Ꮔ ᏄᎮᏚᏛ ᏗᏮᏠᏁ”",
+          "source": "loc_alto_fallback_empty_tesseract",
+          "box_px": [
+            1723,
+            2731,
+            2306,
+            2800
+          ]
+        },
+        {
+          "line_id": "P1_TL00160",
+          "source_text": "ᏍᏘᏍᎩ, ᏣᎳᏙᎩᏍᏔᎥᎨ Ᏻ ;Ꮏ) “ᎤᏰᏍᏗ",
+          "tesseract_text": "",
+          "text": "ᏍᏘᏍᎩ, ᏣᎳᏙᎩᏍᏔᎥᎨ Ᏻ ;Ꮏ) “ᎤᏰᏍᏗ",
+          "source": "loc_alto_fallback_empty_tesseract",
+          "box_px": [
+            1722,
+            2738,
+            2304,
+            2845
+          ]
+        },
+        {
+          "line_id": "P1_TL00161",
+          "source_text": "ᎨᏎᏍᏗ,, ᎾᏍᎩᏃ Ꮪ ᎠᏂᏜᎣ ᎪᎦᎲᏊ ᎠᏰᏢ",
+          "tesseract_text": "",
+          "text": "ᎨᏎᏍᏗ,, ᎾᏍᎩᏃ Ꮪ ᎠᏂᏜᎣ ᎪᎦᎲᏊ ᎠᏰᏢ",
+          "source": "loc_alto_fallback_empty_tesseract",
+          "box_px": [
+            1722,
+            2820,
+            2302,
+            2884
+          ]
+        },
+        {
+          "line_id": "P1_TL00162",
+          "source_text": "ᎠᎾᏓᏅᏖᏍᎩ; ᎪᏪᎵ Ꮣ -ᏄᏚᏗ--”:Ꮷ.ᎢᎷ",
+          "tesseract_text": "ᎠᎧᏓᏅᏖᏍᎩ, ᎪᏪ ᎠᎫᎴ Ꭻ05Ꮧ ᎫᏁᏤᏗ",
+          "text": "ᎠᎧᏓᏅᏖᏍᎩ, ᎪᏪ ᎠᎫᎴ Ꭻ05Ꮧ ᎫᏁᏤᏗ",
+          "source": "tesseract_chr",
+          "box_px": [
+            1721,
+            2857,
+            2302,
+            2925
+          ]
+        },
+        {
+          "line_id": "P1_TL00163",
+          "source_text": "ᎨᏎᏍᏘ. ᎾᏍᎩᏃ 5ᏂᎥ ᎡᏍᎦ ᎠᏁᏱ ᎣᏏ",
+          "tesseract_text": "ᎬᏎᏍᏗ- ᎧᏍᎩᏃ ᎦᏏᎲ ᏂᏍᎦᏗ ᎠᏁᎯ ᏯᏏ",
+          "text": "ᎬᏎᏍᏗ- ᎧᏍᎩᏃ ᎦᏏᎲ ᏂᏍᎦᏗ ᎠᏁᎯ ᏯᏏ",
+          "source": "tesseract_chr",
+          "box_px": [
+            1718,
+            2906,
+            2302,
+            2967
+          ]
+        },
+        {
+          "line_id": "P1_TL00164",
+          "source_text": "ᎢᎬᏩᎧᎵᏍᏓᏁᏗ. ᎨᏒ ᎤᏂᎬᏫᏬᏛᎯ ᎤᎧᎵᏂ”",
+          "tesseract_text": "ᎢᎬᏩᎾᏢᏍᏓᏁᏗ. ᎨᏒ ᎤᏂᎬᏫᏛᎧ ᎤᎧᎵᏂ”",
+          "text": "ᎢᎬᏩᎾᏢᏍᏓᏁᏗ. ᎨᏒ ᎤᏂᎬᏫᏛᎧ ᎤᎧᎵᏂ”",
+          "source": "tesseract_chr",
+          "box_px": [
+            1717,
+            2948,
+            2302,
+            3008
+          ]
+        },
+        {
+          "line_id": "P1_TL00165",
+          "source_text": "ᎬᏁᏘ Ꭾ-Ꭹ, ᎾᏍᎩ ᎤᏂᏃᏫᏳᎯᏔᎴ ᏧᏂᏁ”",
+          "tesseract_text": "ᎬᏁᏗ Ꭾ-Ꭹ, ᎾᏍᎩ ᎤᏂᎱ.ᏫᏳᎯ ᎯᎴ ᏧᏂᏁ”",
+          "text": "ᎬᏁᏗ Ꭾ-Ꭹ, ᎾᏍᎩ ᎤᏂᎱ.ᏫᏳᎯ ᎯᎴ ᏧᏂᏁ”",
+          "source": "tesseract_chr",
+          "box_px": [
+            1718,
+            2997,
+            2302,
+            3049
+          ]
+        },
+        {
+          "line_id": "P1_TL00166",
+          "source_text": "ᏤᎸᎯ ᎡᏍᎦᏂᏃ ᎤᎬᏫᏳᎯ . ᏧᎾᏃᏓᎿᏪᎳᏁᏗ",
+          "tesseract_text": "ᏤᎸᎯ ᎡᏍᎦᏂᏃ ᎤᎬᏫᏳᎯ ᏧᎧ ᎪᏪᎳᏁᏗ",
+          "text": "ᏤᎸᎯ ᎡᏍᎦᏂᏃ ᎤᎬᏫᏳᎯ ᏧᎧ ᎪᏪᎳᏁᏗ",
+          "source": "tesseract_chr",
+          "box_px": [
+            1716,
+            3038,
+            2299,
+            3093
+          ]
+        },
+        {
+          "line_id": "P1_TL00167",
+          "source_text": "ᏂᏂᏍᏪᎮ ᏔᎳ) Ꮄ ; 1",
+          "tesseract_text": "",
+          "text": "ᏂᏂᏍᏪᎮ ᏔᎳ) Ꮄ ; 1",
+          "source": "loc_alto_fallback_empty_tesseract",
+          "box_px": [
+            1716,
+            3074,
+            2174,
+            3142
+          ]
+        }
+      ]
+    },
+    {
+      "block_id": "P1_TB00016",
+      "language": "chr",
+      "source": "hybrid_chr",
+      "text": "5. ᏂᎦᎥ ᎪᏪᏢ ᎠᏰᏢ ᎠᎿᏁᏤᎯᎨᏒ, Ꮳ’\nᎳᎩ ᎠᏰᏢ ᎨᏒ ᎠᎴ ᏚᎪᏍᏛ ᎧᏁᎢᏍᏗᏍᎨ”\nᏍᏗ, ᎠᎴ ᏣᎳᎩ ᎤᏮᏤᏢ ᎠᏰ” ᎠᏰᎸᏗ”\nᏍᎩ ᏗᎦᎴᏴᎪᏗ ᎨᏎᏍᏗ, ᎠᎴ ᎤᎬᏫᏳᎯ\nᏕᎤᎪᎥ ᎤᏬᏪᎶᏘ -“ᏎᏍᏗ.\nᎤᎬᏫᏳᎯ ᎤᏩᏒ ᎤᏤᎵ ᎠᏰᎸᏗᏍᎩ\nᏧᎴᏴᏁᏗ ᎨᏎᏍᏘ, ᎬᏂ ᏣᎳᎩ ᎠᏰᎵ ᎠᏰᎸ”\nᏘᏍᎩ ᎤᏂᏩᏒᎲ.- !\n60. ᏧᏁᎳ ᎢᎦᏚᎩ ᏧᎾᏠᏁᎳᎩᎭ ᏌᏉᎭᎾ\nᏧᎾᏑᏰᏍᏗ ᎨᏎᏍᏗ ᏔᏢᏁ ᎠᏂᎪᎧᎢ ᏗᏮᏖ”\nᏂᎶᏍᎩ. ᎤᎾᏓᎪᎧᏛᎪᏗ ᎨᏎᏍᏘ, ᎠᎴ\nᎠᏂᏁᎩ ᏧᎾᏑᏰᏍᏗ ᎨᏎᏍᏗ. ᏔᎵᏢᏉ ᏧᏕ”\nᏘᏴᏛ ᏧᏂᎸᏫᏍᏓᏁᏗ ᎨᏎᏍᏗ, ᎢᎬᏱᏍᎩᏂ”\nᏃᏅ ᏱᎨᏥᏌᏕᎦ. ᎢᏳᏃ ᏱᏴᎣᏅᏓᏗ ᎠᏏ,\nᎤᎾᏂᎪᎾᏛᎪᏗ ᎨᏒ ᏯᏍᏆᎵᏍᎬᎧᏱᎩ, ᎤᎬ”\nᏫᏳᎯ ᎤᎧᏢᎢᏍᏗ ᎨᏎᏍᏗ ᎬᏂᏉ ᎦᏳᎳ\nᎣᎩᏁᏨ ᎢᏑᎹᏛᏁᏗᏱ. ᎾᏍᎩᏃ ᎠᏥᏁᏤᎸ\nᏗᏓᏂᏣᏍᎩ) ᏔᎬᏁᏉ ᎤᎧᏖᎪᎧᎯᎪᏗᏱ ᎬᏒ\nᎢᎪᎯᏛ ᏧᎸᏫᏍᏓᏁᏗ ᎨᏎᏍᏗ.",
+      "lines": [
+        {
+          "line_id": "P1_TL00168",
+          "source_text": "Ꭶ. ᏂᎦᎥ ᎪᏪᎵ ᎠᏰᏢ ᎠᏓᏁᏤᎯᎨᏒ, Ꮳ”",
+          "tesseract_text": "5. ᏂᎦᎥ ᎪᏪᏢ ᎠᏰᏢ ᎠᎿᏁᏤᎯᎨᏒ, Ꮳ’",
+          "text": "5. ᏂᎦᎥ ᎪᏪᏢ ᎠᏰᏢ ᎠᎿᏁᏤᎯᎨᏒ, Ꮳ’",
+          "source": "tesseract_chr",
+          "box_px": [
+            1752,
+            3323,
+            2298,
+            3374
+          ]
+        },
+        {
+          "line_id": "P1_TL00169",
+          "source_text": "ᎳᎩ ᎠᏰᏢ ᎬᎨᏒ ᎠᎴ ᏮᎪᏍᏛ ᎧᏁᎢᏍᏗᏍᎨ”",
+          "tesseract_text": "ᎳᎩ ᎠᏰᏢ ᎨᏒ ᎠᎴ ᏚᎪᏍᏛ ᎧᏁᎢᏍᏗᏍᎨ”",
+          "text": "ᎳᎩ ᎠᏰᏢ ᎨᏒ ᎠᎴ ᏚᎪᏍᏛ ᎧᏁᎢᏍᏗᏍᎨ”",
+          "source": "tesseract_chr",
+          "box_px": [
+            1710,
+            3364,
+            2298,
+            3417
+          ]
+        },
+        {
+          "line_id": "P1_TL00170",
+          "source_text": "ᏍᏗ, ᎠᎴ ᏣᎳᎩ ᎤᏮᏤᏢ ᎠᏰᎮ ᎠᏰᎸᏗ”",
+          "tesseract_text": "ᏍᏗ, ᎠᎴ ᏣᎳᎩ ᎤᏮᏤᏢ ᎠᏰ” ᎠᏰᎸᏗ”",
+          "text": "ᏍᏗ, ᎠᎴ ᏣᎳᎩ ᎤᏮᏤᏢ ᎠᏰ” ᎠᏰᎸᏗ”",
+          "source": "tesseract_chr",
+          "box_px": [
+            1709,
+            3415,
+            2298,
+            3462
+          ]
+        },
+        {
+          "line_id": "P1_TL00171",
+          "source_text": "ᏍᎩ ᏗᎦᎴᏴᎪᏗ ᎨᏎᏍᏗ, ᎠᎴ ᎤᎬᏫᏳᎯ",
+          "tesseract_text": "ᏍᎩ ᏗᎦᎴᏴᎪᏗ ᎨᏎᏍᏗ, ᎠᎴ ᎤᎬᏫᏳᎯ",
+          "text": "ᏍᎩ ᏗᎦᎴᏴᎪᏗ ᎨᏎᏍᏗ, ᎠᎴ ᎤᎬᏫᏳᎯ",
+          "source": "tesseract_chr",
+          "box_px": [
+            1709,
+            3461,
+            2297,
+            3504
+          ]
+        },
+        {
+          "line_id": "P1_TL00172",
+          "source_text": "ᏕᎤᎪ;: ᎤᏬᏪᎶᏘ -“ᏎᏍᏗ.",
+          "tesseract_text": "ᏕᎤᎪᎥ ᎤᏬᏪᎶᏘ -“ᏎᏍᏗ.",
+          "text": "ᏕᎤᎪᎥ ᎤᏬᏪᎶᏘ -“ᏎᏍᏗ.",
+          "source": "tesseract_chr",
+          "box_px": [
+            1709,
+            3504,
+            2073,
+            3542
+          ]
+        },
+        {
+          "line_id": "P1_TL00173",
+          "source_text": "ᎤᎬᏫᏳᎯ ᎤᏩᏒ ᎤᏤᎵ ᎠᏰᎸᏗᏍᎩ",
+          "tesseract_text": "ᎤᎬᏫᏳᎯ ᎤᏩᏒ ᎤᏤᎵ ᎠᏰᎸᏗᏍᎩ",
+          "text": "ᎤᎬᏫᏳᎯ ᎤᏩᏒ ᎤᏤᎵ ᎠᏰᎸᏗᏍᎩ",
+          "source": "tesseract_chr",
+          "box_px": [
+            1756,
+            3545,
+            2296,
+            3589
+          ]
+        },
+        {
+          "line_id": "P1_TL00174",
+          "source_text": "ᏧᎴᏴᎪᏘ ᎨᏎᏍᏘ, ᎬᏂ ᏣᎳᎩ ᎠᏰᏢ ᎠᏰᎸ”",
+          "tesseract_text": "ᏧᎴᏴᏁᏗ ᎨᏎᏍᏘ, ᎬᏂ ᏣᎳᎩ ᎠᏰᎵ ᎠᏰᎸ”",
+          "text": "ᏧᎴᏴᏁᏗ ᎨᏎᏍᏘ, ᎬᏂ ᏣᎳᎩ ᎠᏰᎵ ᎠᏰᎸ”",
+          "source": "tesseract_chr",
+          "box_px": [
+            1708,
+            3585,
+            2298,
+            3634
+          ]
+        },
+        {
+          "line_id": "P1_TL00175",
+          "source_text": "ᏗᏍᎩ ᎤᏂᏩᏒᎲ- 1",
+          "tesseract_text": "ᏘᏍᎩ ᎤᏂᏩᏒᎲ.- !",
+          "text": "ᏘᏍᎩ ᎤᏂᏩᏒᎲ.- !",
+          "source": "tesseract_chr",
+          "box_px": [
+            1709,
+            3632,
+            2159,
+            3670
+          ]
+        },
+        {
+          "line_id": "P1_TL00176",
+          "source_text": "0.. ᏧᏁᎳ ᎢᎦᏎᎩ ᏧᎾᏁᎳᎩᎭ ᏌᏉᎭᎾ",
+          "tesseract_text": "60. ᏧᏁᎳ ᎢᎦᏚᎩ ᏧᎾᏠᏁᎳᎩᎭ ᏌᏉᎭᎾ",
+          "text": "60. ᏧᏁᎳ ᎢᎦᏚᎩ ᏧᎾᏠᏁᎳᎩᎭ ᏌᏉᎭᎾ",
+          "source": "tesseract_chr",
+          "box_px": [
+            1750,
+            3664,
+            2295,
+            3713
+          ]
+        },
+        {
+          "line_id": "P1_TL00177",
+          "source_text": "ᏧᎾᏑᏰᏍᏗ. ᎰᏎᏍᏗ ᏔᎵᏁ ᎠᏂᎥᎧᎢ ᏗᎧᏖ”",
+          "tesseract_text": "ᏧᎾᏑᏰᏍᏗ ᎨᏎᏍᏗ ᏔᏢᏁ ᎠᏂᎪᎧᎢ ᏗᏮᏖ”",
+          "text": "ᏧᎾᏑᏰᏍᏗ ᎨᏎᏍᏗ ᏔᏢᏁ ᎠᏂᎪᎧᎢ ᏗᏮᏖ”",
+          "source": "tesseract_chr",
+          "box_px": [
+            1709,
+            3708,
+            2296,
+            3759
+          ]
+        },
+        {
+          "line_id": "P1_TL00178",
+          "source_text": "ᏂᎶᏍᎩ. ᎤᎾᏓᎪᏮᏛᎪᏗ ᎨᏎᏍᏘ, ᎠᎴ",
+          "tesseract_text": "ᏂᎶᏍᎩ. ᎤᎾᏓᎪᎧᏛᎪᏗ ᎨᏎᏍᏘ, ᎠᎴ",
+          "text": "ᏂᎶᏍᎩ. ᎤᎾᏓᎪᎧᏛᎪᏗ ᎨᏎᏍᏘ, ᎠᎴ",
+          "source": "tesseract_chr",
+          "box_px": [
+            1711,
+            3760,
+            2296,
+            3804
+          ]
+        },
+        {
+          "line_id": "P1_TL00179",
+          "source_text": "ᎠᏂᏁᎩ ᏧᎾᏑᏰᏍᏗ ᎨᏎᏍᏗ. ᏔᎵᏢᏉ ᏧᏕ”",
+          "tesseract_text": "ᎠᏂᏁᎩ ᏧᎾᏑᏰᏍᏗ ᎨᏎᏍᏗ. ᏔᎵᏢᏉ ᏧᏕ”",
+          "text": "ᎠᏂᏁᎩ ᏧᎾᏑᏰᏍᏗ ᎨᏎᏍᏗ. ᏔᎵᏢᏉ ᏧᏕ”",
+          "source": "tesseract_chr",
+          "box_px": [
+            1709,
+            3802,
+            2296,
+            3844
+          ]
+        },
+        {
+          "line_id": "P1_TL00180",
+          "source_text": "ᏘᏴᏛ ᏧᏂᎸᏫᏍᏓᏁᏗ ᎨᏎᏍᏘ, ᎢᎬᏱᏍᎩᏂ”",
+          "tesseract_text": "ᏘᏴᏛ ᏧᏂᎸᏫᏍᏓᏁᏗ ᎨᏎᏍᏗ, ᎢᎬᏱᏍᎩᏂ”",
+          "text": "ᏘᏴᏛ ᏧᏂᎸᏫᏍᏓᏁᏗ ᎨᏎᏍᏗ, ᎢᎬᏱᏍᎩᏂ”",
+          "source": "tesseract_chr",
+          "box_px": [
+            1709,
+            3845,
+            2296,
+            3889
+          ]
+        },
+        {
+          "line_id": "P1_TL00181",
+          "source_text": "ᏃᏅ ᏱᎨᏥᏌᏕᎦ. ᎢᏳᏃ ᏱᏴᏜᏅᏓᏗ ᎠᏏ,",
+          "tesseract_text": "ᏃᏅ ᏱᎨᏥᏌᏕᎦ. ᎢᏳᏃ ᏱᏴᎣᏅᏓᏗ ᎠᏏ,",
+          "text": "ᏃᏅ ᏱᎨᏥᏌᏕᎦ. ᎢᏳᏃ ᏱᏴᎣᏅᏓᏗ ᎠᏏ,",
+          "source": "tesseract_chr",
+          "box_px": [
+            1710,
+            3887,
+            2293,
+            3932
+          ]
+        },
+        {
+          "line_id": "P1_TL00182",
+          "source_text": "ᎤᎾᏏᎪᏮᏛᎪᏗ ᎨᏒ ᏯᏍᏆᏢᏍᎬᎧᏱᎩ; ᎤᎬ”",
+          "tesseract_text": "ᎤᎾᏂᎪᎾᏛᎪᏗ ᎨᏒ ᏯᏍᏆᎵᏍᎬᎧᏱᎩ, ᎤᎬ”",
+          "text": "ᎤᎾᏂᎪᎾᏛᎪᏗ ᎨᏒ ᏯᏍᏆᎵᏍᎬᎧᏱᎩ, ᎤᎬ”",
+          "source": "tesseract_chr",
+          "box_px": [
+            1710,
+            3923,
+            2296,
+            3974
+          ]
+        },
+        {
+          "line_id": "P1_TL00183",
+          "source_text": "ᏫᏳᎯ ᎤᎧᏢᎢᏍᏗ ᎨᏎᏍᏗ ᎬᎨᎳᏛ ᎦᏳᎳ",
+          "tesseract_text": "ᏫᏳᎯ ᎤᎧᏢᎢᏍᏗ ᎨᏎᏍᏗ ᎬᏂᏉ ᎦᏳᎳ",
+          "text": "ᏫᏳᎯ ᎤᎧᏢᎢᏍᏗ ᎨᏎᏍᏗ ᎬᏂᏉ ᎦᏳᎳ",
+          "source": "tesseract_chr",
+          "box_px": [
+            1711,
+            3969,
+            2293,
+            4011
+          ]
+        },
+        {
+          "line_id": "P1_TL00184",
+          "source_text": "ᎣᎩᏁᏨ ᎢᏳᏅᏛᏁᏗᏱ. ᎾᏍᎩᏗᏃ ᎠᏥᏁᏤᎸ",
+          "tesseract_text": "ᎣᎩᏁᏨ ᎢᏑᎹᏛᏁᏗᏱ. ᎾᏍᎩᏃ ᎠᏥᏁᏤᎸ",
+          "text": "ᎣᎩᏁᏨ ᎢᏑᎹᏛᏁᏗᏱ. ᎾᏍᎩᏃ ᎠᏥᏁᏤᎸ",
+          "source": "tesseract_chr",
+          "box_px": [
+            1711,
+            4015,
+            2295,
+            4060
+          ]
+        },
+        {
+          "line_id": "P1_TL00185",
+          "source_text": "ᏗᏓᏂᎶᏍᎩ, ᏔᎵᏁᏉ ᎤᎾᏖᎪᎾᏪ:ᎪᏗᏱ ᏥᏒ",
+          "tesseract_text": "ᏗᏓᏂᏣᏍᎩ) ᏔᎬᏁᏉ ᎤᎧᏖᎪᎧᎯᎪᏗᏱ ᎬᏒ",
+          "text": "ᏗᏓᏂᏣᏍᎩ) ᏔᎬᏁᏉ ᎤᎧᏖᎪᎧᎯᎪᏗᏱ ᎬᏒ",
+          "source": "tesseract_chr",
+          "box_px": [
+            1711,
+            4049,
+            2295,
+            4112
+          ]
+        },
+        {
+          "line_id": "P1_TL00186",
+          "source_text": "ᎢᎪᎯᏛ ᏧᎸᏫᏍᏓᏁᏗ ᎨᏎᏍᏗ.",
+          "tesseract_text": "ᎢᎪᎯᏛ ᏧᎸᏫᏍᏓᏁᏗ ᎨᏎᏍᏗ.",
+          "text": "ᎢᎪᎯᏛ ᏧᎸᏫᏍᏓᏁᏗ ᎨᏎᏍᏗ.",
+          "source": "tesseract_chr",
+          "box_px": [
+            1712,
+            4102,
+            2130,
+            4140
+          ]
+        }
+      ]
+    },
+    {
+      "block_id": "P1_TB00017",
+      "language": "chr",
+      "source": "hybrid_chr",
+      "text": "1.. ᎤᏛᏅ ᏕᎦᎳᏫᎥ ᏗᏂᎳᏫᎩ ᎤᏮᏖᏆᎶ”\nᏘ ᎤᎧᏑᏰᏍᏗ ᎨᏎᏍᏗ ᏌᏉ ᎢᎬᏱ ᎦᎪᎩ\nᏗᏓᏂᎶᏍᎩ); ᎧᏍᎩᏃ ᏅᎩ ᏧᏕᏁᏛ. ᏧᏄᏫ”\nᏍᏓᏁᏗ ᎨᏎᏍᏗ- ᎠᎴ ᎢᎦᎢ ᎠᎦᎫᏫ ᎡᏗᏱ ᎠᎴ\nᎢᏅᏍᏘ ᏧᎸᎧᏍᏓᏁᏗᏱ ᎨᏒ ᎠᏰᎵ ᎤᏢᏁᏨ\nᎬᏎᏍᏗ, ᎠᎴ ᏣᎳᎩ ᏂᎬᎾᏛᎢ ᎢᎠᏩᏍᏖ”\nᏍᏗ ᏧᎸᏫᏍᏓᏁᏗᏱ.\n8. ᏝᎩᎶ ᏌᏉᏉ ᎢᏳᏍᎦᏅᎶ ᎠᏥᎧᏅ\nᎨᏎᏍᏘ, ᎠᎴ ᎤᎭᎶᏛᏛ ᎨᏎᏍᏘ. ᏔᎵᏁ ᎤᏢ”\nᏭᎢᏢᏠᏘ ᏱᎨᏎᏍᏗ. ᎠᎴ ᎥᏝ ᏧᎬᏩᎶᏗ Ꭴ”\nᎲᎢ ᎩᎶ ᎠᏰᏢ ᎤᎾᏤᏢ ᎢᏳᎵᏍᎪᏗᏘ ᏱᏂᏏᏎ”\nᏍᏗ;, ᎬᏂ ᏅᏩᏒ ᎣᏏ ᎤᏰᎸᏅ ᏂᏎᏍᏗ----\nᎥᏝᎴᏯᎩᏂᏃᏅ ᎯᎠ ᏦᏥᏁᎩ ᎤᏲᏍᎪᏗ ᏱᎨᏎ”\nᏍᏘ ᏅᏛᏅ ᏕᎦᎳᏫᎥ ᎤᏂᏁᎢᏍᏗ ᏥᎩ ᎠᏰᎱ\nᎠᏕᎸ. ᎤᎾᎫᏴᏗᏱ.",
+      "lines": [
+        {
+          "line_id": "P1_TL00187",
+          "source_text": "Ꭲ ᎤᏛᏅ ᎦᎦᎳᏫ; ᏘᏂᎳᏫᎩ ᎤᎾᏖᏆᎶ”",
+          "tesseract_text": "1.. ᎤᏛᏅ ᏕᎦᎳᏫᎥ ᏗᏂᎳᏫᎩ ᎤᏮᏖᏆᎶ”",
+          "text": "1.. ᎤᏛᏅ ᏕᎦᎳᏫᎥ ᏗᏂᎳᏫᎩ ᎤᏮᏖᏆᎶ”",
+          "source": "tesseract_chr",
+          "box_px": [
+            1757,
+            4178,
+            2298,
+            4233
+          ]
+        },
+        {
+          "line_id": "P1_TL00188",
+          "source_text": "Ꮧ ᎤᎧᏮᏑᏰᏍᏗ ᎨᏎᏍᏗ ᏌᏉ ᎢᎬᏱ ᎦᎪᎩ",
+          "tesseract_text": "Ꮨ ᎤᎧᏑᏰᏍᏗ ᎨᏎᏍᏗ ᏌᏉ ᎢᎬᏱ ᎦᎪᎩ",
+          "text": "Ꮨ ᎤᎧᏑᏰᏍᏗ ᎨᏎᏍᏗ ᏌᏉ ᎢᎬᏱ ᎦᎪᎩ",
+          "source": "tesseract_chr",
+          "box_px": [
+            1714,
+            4219,
+            2298,
+            4276
+          ]
+        },
+        {
+          "line_id": "P1_TL00189",
+          "source_text": "ᏗᏓᏂᎶᏍᎩ), ᎧᏍᎩᏃ ᏅᎩ ᏧᏕᎯᎮᏛ. ᏧᏄᏫ”",
+          "tesseract_text": "ᏗᏓᏂᎶᏍᎩ); ᎧᏍᎩᏃ ᏅᎩ ᏧᏕᏁᏛ. ᏧᏄᏫ”",
+          "text": "ᏗᏓᏂᎶᏍᎩ); ᎧᏍᎩᏃ ᏅᎩ ᏧᏕᏁᏛ. ᏧᏄᏫ”",
+          "source": "tesseract_chr",
+          "box_px": [
+            1714,
+            4250,
+            2298,
+            4320
+          ]
+        },
+        {
+          "line_id": "P1_TL00190",
+          "source_text": "ᏍᏓᏁᏗ ᎨᏎᏍᏗ- ᎠᎴ ᎢᎦᎢ ᎠᎦᎫ“ ᎡᏘᏱ ᎠᎴ",
+          "tesseract_text": "ᏍᏓᏁᏗ ᎨᏎᏍᏗ- ᎠᎴ ᎢᎦᎢ ᎠᎦᎫᏫ ᎡᏗᏱ ᎠᎴ",
+          "text": "ᏍᏓᏁᏗ ᎨᏎᏍᏗ- ᎠᎴ ᎢᎦᎢ ᎠᎦᎫᏫ ᎡᏗᏱ ᎠᎴ",
+          "source": "tesseract_chr",
+          "box_px": [
+            1714,
+            4297,
+            2298,
+            4359
+          ]
+        },
+        {
+          "line_id": "P1_TL00191",
+          "source_text": "ᎢᏅᏍᏗ ᏧᏄᏫᏍᏓᏁᏗᏱ ᎨᏒ ᎠᏰᎵ ᎤᏢᏁᏨ",
+          "tesseract_text": "ᎢᏅᏍᏘ ᏧᎸᎧᏍᏓᏁᏗᏱ ᎨᏒ ᎠᏰᎵ ᎤᏢᏁᏨ",
+          "text": "ᎢᏅᏍᏘ ᏧᎸᎧᏍᏓᏁᏗᏱ ᎨᏒ ᎠᏰᎵ ᎤᏢᏁᏨ",
+          "source": "tesseract_chr",
+          "box_px": [
+            1714,
+            4358,
+            2300,
+            4404
+          ]
+        },
+        {
+          "line_id": "P1_TL00192",
+          "source_text": "ᎬᏌᏎᏍᏗ, ᎠᎴ ᏣᎳᎩ ᏂᎬᎾᏛᎢ ᎢᎠᏩᏍᏖ”",
+          "tesseract_text": "ᎬᏎᏍᏗ, ᎠᎴ ᏣᎳᎩ ᏂᎬᎾᏛᎢ ᎢᎠᏩᏍᏖ”",
+          "text": "ᎬᏎᏍᏗ, ᎠᎴ ᏣᎳᎩ ᏂᎬᎾᏛᎢ ᎢᎠᏩᏍᏖ”",
+          "source": "tesseract_chr",
+          "box_px": [
+            1714,
+            4400,
+            2298,
+            4444
+          ]
+        },
+        {
+          "line_id": "P1_TL00193",
+          "source_text": "ᏍᏘᏗ ᏧᎸᏫᏍᏓᏁᏗᏱ. ,",
+          "tesseract_text": "ᏍᏗ ᏧᎸᏫᏍᏓᏁᏗᏱ.",
+          "text": "ᏍᏗ ᏧᎸᏫᏍᏓᏁᏗᏱ.",
+          "source": "tesseract_chr",
+          "box_px": [
+            1714,
+            4439,
+            2151,
+            4487
+          ]
+        },
+        {
+          "line_id": "P1_TL00194",
+          "source_text": "8, ᏝᎩᎶ ᏌᏉᏉ ᎢᏳᏍᎦᏅᎶ ᎠᏥᎧᏅ",
+          "tesseract_text": "8. ᏝᎩᎶ ᏌᏉᏉ ᎢᏳᏍᎦᏅᎶ ᎠᏥᎧᏅ",
+          "text": "8. ᏝᎩᎶ ᏌᏉᏉ ᎢᏳᏍᎦᏅᎶ ᎠᏥᎧᏅ",
+          "source": "tesseract_chr",
+          "box_px": [
+            1754,
+            4477,
+            2301,
+            4525
+          ]
+        },
+        {
+          "line_id": "P1_TL00195",
+          "source_text": "ᏂᏎᏍᏘ, ᎠᎴ ᎤᏍᏛᏛ ᎨᏎᏍᏘ. ᏔᏢᏁ ᎤᏢ”",
+          "tesseract_text": "ᎨᏎᏍᏘ, ᎠᎴ ᎤᎭᎶᏛᏛ ᎨᏎᏍᏘ. ᏔᎵᏁ ᎤᏢ”",
+          "text": "ᎨᏎᏍᏘ, ᎠᎴ ᎤᎭᎶᏛᏛ ᎨᏎᏍᏘ. ᏔᎵᏁ ᎤᏢ”",
+          "source": "tesseract_chr",
+          "box_px": [
+            1714,
+            4517,
+            2301,
+            4580
+          ]
+        },
+        {
+          "line_id": "P1_TL00196",
+          "source_text": "ᏰᎢᏢᏕᏘ ᏱᎨᏎᏍᏗ. - ᎠᎴ ᎥᏝ ᏧᎬᏩᎶᏘ Ꭴ”",
+          "tesseract_text": "ᏭᎢᏢᏠᏘ ᏱᎨᏎᏍᏗ. ᎠᎴ ᎥᏝ ᏧᎬᏩᎶᏗ Ꭴ”",
+          "text": "ᏭᎢᏢᏠᏘ ᏱᎨᏎᏍᏗ. ᎠᎴ ᎥᏝ ᏧᎬᏩᎶᏗ Ꭴ”",
+          "source": "tesseract_chr",
+          "box_px": [
+            1712,
+            4560,
+            2301,
+            4618
+          ]
+        },
+        {
+          "line_id": "P1_TL00197",
+          "source_text": "ᎲᎢ ᎩᎶ ᎠᏰᏢ. ᎤᎾᏤᏢ ᎢᏳᎵᏍᎪᏗ ᏱᎨᏎ”",
+          "tesseract_text": "ᎲᎢ ᎩᎶ ᎠᏰᏢ ᎤᎾᏤᏢ ᎢᏳᎵᏍᎪᏗᏘ ᏱᏂᏏᏎ”",
+          "text": "ᎲᎢ ᎩᎶ ᎠᏰᏢ ᎤᎾᏤᏢ ᎢᏳᎵᏍᎪᏗᏘ ᏱᏂᏏᏎ”",
+          "source": "tesseract_chr",
+          "box_px": [
+            1712,
+            4615,
+            2301,
+            4657
+          ]
+        },
+        {
+          "line_id": "P1_TL00198",
+          "source_text": "ᏍᏗ; ᎬᏂ ᏅᏩᏒ ᎣᏏ ᎤᏰᎸᏅ ᏥᎬᏎᏍᏗ-----",
+          "tesseract_text": "ᏍᏗ;, ᎬᏂ ᏅᏩᏒ ᎣᏏ ᎤᏰᎸᏅ ᏂᏎᏍᏗ----",
+          "text": "ᏍᏗ;, ᎬᏂ ᏅᏩᏒ ᎣᏏ ᎤᏰᎸᏅ ᏂᏎᏍᏗ----",
+          "source": "tesseract_chr",
+          "box_px": [
+            1714,
+            4654,
+            2301,
+            4702
+          ]
+        },
+        {
+          "line_id": "P1_TL00199",
+          "source_text": "ᎥᏝᏍᎩᏂᏃᏅ ᎯᎠ ᏦᏥᏁᎩ ᎤᏲᏂᏍᎪᏗ ᏱᎨᏎ”",
+          "tesseract_text": "ᎥᏝᎴᏯᎩᏂᏃᏅ ᎯᎠ ᏦᏥᏁᎩ ᎤᏲᏍᎪᏗ ᏱᎨᏎ”",
+          "text": "ᎥᏝᎴᏯᎩᏂᏃᏅ ᎯᎠ ᏦᏥᏁᎩ ᎤᏲᏍᎪᏗ ᏱᎨᏎ”",
+          "source": "tesseract_chr",
+          "box_px": [
+            1715,
+            4696,
+            2301,
+            4738
+          ]
+        },
+        {
+          "line_id": "P1_TL00200",
+          "source_text": "ᏍᏘ ᎤᏛᏅ ᏕᎦᎳᏫ;Ꭵ ᎤᏂᏁᎢᏍᏗ ᏥᎩ ᎠᏰᏝ",
+          "tesseract_text": "ᏍᏘ ᏅᏛᏅ ᏕᎦᎳᏫᎥ ᎤᏂᏁᎢᏍᏗ ᏥᎩ ᎠᏰᎱ",
+          "text": "ᏍᏘ ᏅᏛᏅ ᏕᎦᎳᏫᎥ ᎤᏂᏁᎢᏍᏗ ᏥᎩ ᎠᏰᎱ",
+          "source": "tesseract_chr",
+          "box_px": [
+            1714,
+            4742,
+            2298,
+            4790
+          ]
+        },
+        {
+          "line_id": "P1_TL00201",
+          "source_text": "ᎠᏕᎸ. ᎤᎾᎫᏴᏗᏱ.",
+          "tesseract_text": "ᎠᏕᎸ. ᎤᎾᎫᏴᏗᏱ.",
+          "text": "ᎠᏕᎸ. ᎤᎾᎫᏴᏗᏱ.",
+          "source": "tesseract_chr",
+          "box_px": [
+            1714,
+            4785,
+            1966,
+            4821
+          ]
+        }
+      ]
+    },
+    {
+      "block_id": "P1_TB00018",
+      "language": "chr",
+      "source": "hybrid_chr",
+      "text": "9. ᏂᎦᏛ ᏗᏄᎪᏗᏍᎩᏱ ᏧᎵᏍᏚᎢᏛ Ꭸ\n(ᏎᏍᏗ, ᎾᎿᏃ ᎤᏓᏰᎢᏢᏓᏍᏗ ᎨᏎᏍᏗ ᎩᎶ\nᎡᏍᎦ ᏅᎦᎦ ᎨᎥ ᎠᎴ ᏥᏰᎸ. ᎠᎴ ᏧᎬᏩᎶᏗ Ꭰ”\nᎩᏍᏆᏂᎪᏛ ᎡᎨᏢᏍᎨᏍᏗ;. -\n100. ᏓᎧᏓᏱᏢᎪᎲ ᎠᎾᏛᏓᏍᏗᏍᎩ. ᏥᏓ”;\nᏄᎪᏗᎭ ᏂᎬᏩᏍᏗᏘᏎᏍᏗ; ᎠᎴ Ꮽ ᎤᏖᏁᏳ”\nᏴᏍᏗ ᏱᎨᏎᏍᏗ. 188\n11. ᎦᎸᎳᏗ ᏒᎯ ᎤᏃᎯᎶᎬ ᎠᎴ ᎤᏮᏓ”\nᏅᏘ ᎨᏒ ᎠᎴ ᎠᏂᏏᎾᏌᏅ : ᏗᏢᏰᎢᎸᏍᏗᏍᎪ\nᎣᏏ ᎠᏰᏢ ᏧᏂᎧᎾᏩᎲᏈᏛᏍᏗ ᎤᏂᏐᎨᎢ; ᎠᎴ ᎤᏢ”\nᏂᎩᏘ ᏂᎦᎵᏍᏗᏍᎪ ᏗᏂᏥᏮᎵᎢ ᏂᎨᎡᎾ ᎨᏒ;\nᎠᎴ ᏴᏫ ᎪᎯᏱ ᎤᏖᏅᎪᎢ. ᎠᏂᏍᎩᏂ Ꭱ”\nᏍᎦᏂ ᎪᏪᏢᏈ ᏓᎾᏕᎶᏆᏍᎬ, ᎠᎴ ᎪᎦᎥ ᎤᎾᏖᏂ”\nᎠᎪᏘ ᏓᎾᏕᎶᏆᏍᎬ ᏗᏍᏕᎸᎡᏗ ᏂᏎᏍᏗ ᏂᎪ”\nᎯᎸᎢ. …",
+      "lines": [
+        {
+          "line_id": "P1_TL00202",
+          "source_text": "-Ꮽ. ᏂᎦᏛ ᏘᏄᎪᏘᏍᎩᏱ ᏧᎵᏢᏍᏚᎢᏛ Ꭸ",
+          "tesseract_text": "9. ᏂᎦᏛ ᏗᏄᎪᏗᏍᎩᏱ ᏧᎵᏍᏚᎢᏛ Ꭸ",
+          "text": "9. ᏂᎦᏛ ᏗᏄᎪᏗᏍᎩᏱ ᏧᎵᏍᏚᎢᏛ Ꭸ",
+          "source": "tesseract_chr",
+          "box_px": [
+            1734,
+            4947,
+            2293,
+            4995
+          ]
+        },
+        {
+          "line_id": "P1_TL00203",
+          "source_text": "Ꮔ ᏎᏍᎢᏗ, ᎾᎿᏃ ᎤᏓᏰᎢᏢᏓᏍᏗ ᎨᏎᏍᏗ ᎩᎶ",
+          "tesseract_text": "(ᏎᏍᏗ, ᎾᎿᏃ ᎤᏓᏰᎢᏢᏓᏍᏗ ᎨᏎᏍᏗ ᎩᎶ",
+          "text": "(ᏎᏍᏗ, ᎾᎿᏃ ᎤᏓᏰᎢᏢᏓᏍᏗ ᎨᏎᏍᏗ ᎩᎶ",
+          "source": "tesseract_chr",
+          "box_px": [
+            1703,
+            4999,
+            2302,
+            5049
+          ]
+        },
+        {
+          "line_id": "P1_TL00204",
+          "source_text": "ᎡᏍᎦ ᏅᎦᎦ ᎨᏎ ᎠᎴ ᏥᏰᎸ ᎠᎴ ᏧᎬᏩᎶᏗ Ꭰ”",
+          "tesseract_text": "ᎡᏍᎦ ᏅᎦᎦ ᎨᎥ ᎠᎴ ᏥᏰᎸ. ᎠᎴ ᏧᎬᏩᎶᏗ Ꭰ”",
+          "text": "ᎡᏍᎦ ᏅᎦᎦ ᎨᎥ ᎠᎴ ᏥᏰᎸ. ᎠᎴ ᏧᎬᏩᎶᏗ Ꭰ”",
+          "source": "tesseract_chr",
+          "box_px": [
+            1715,
+            5041,
+            2302,
+            5084
+          ]
+        },
+        {
+          "line_id": "P1_TL00205",
+          "source_text": "ᎩᏍᏆᏂᎪᏛ ᎡᎵᏍᎨᏍᏗ., -",
+          "tesseract_text": "ᎩᏍᏆᏂᎪᏛ ᎡᎨᏢᏍᎨᏍᏗ;. -",
+          "text": "ᎩᏍᏆᏂᎪᏛ ᎡᎨᏢᏍᎨᏍᏗ;. -",
+          "source": "tesseract_chr",
+          "box_px": [
+            1714,
+            5085,
+            2192,
+            5133
+          ]
+        },
+        {
+          "line_id": "P1_TL00206",
+          "source_text": "10. ᏓᎧᏓᏱᏢᎪᎲ ᎠᎾᏛᏓᏍᏘᏗᏍᎩ. ᏥᏓ”.",
+          "tesseract_text": "100. ᏓᎧᏓᏱᏢᎪᎲ ᎠᎾᏛᏓᏍᏗᏍᎩ. ᏥᏓ”;",
+          "text": "100. ᏓᎧᏓᏱᏢᎪᎲ ᎠᎾᏛᏓᏍᏗᏍᎩ. ᏥᏓ”;",
+          "source": "tesseract_chr",
+          "box_px": [
+            1758,
+            5119,
+            2304,
+            5166
+          ]
+        },
+        {
+          "line_id": "P1_TL00207",
+          "source_text": "ᏄᎪᏗᎭ ᏂᎬᏩᏍᏗᏘᏎᏍᏗ, ᎠᎴ ᎥᎬ ᎤᏖᏁᏳ",
+          "tesseract_text": "ᏄᎪᏗᎭ ᏂᎬᏩᏍᏗᏘᏎᏍᏗ; ᎠᎴ Ꮽ ᎤᏖᏁᏳ”",
+          "text": "ᏄᎪᏗᎭ ᏂᎬᏩᏍᏗᏘᏎᏍᏗ; ᎠᎴ Ꮽ ᎤᏖᏁᏳ”",
+          "source": "tesseract_chr",
+          "box_px": [
+            1714,
+            5169,
+            2300,
+            5220
+          ]
+        },
+        {
+          "line_id": "P1_TL00208",
+          "source_text": "ᏴᏍᏗ ᏱᎨᏎᏍᏗ. Ꭲ",
+          "tesseract_text": "ᏴᏍᏗ ᏱᎨᏎᏍᏗ. 188",
+          "text": "ᏴᏍᏗ ᏱᎨᏎᏍᏗ. 188",
+          "source": "tesseract_chr",
+          "box_px": [
+            1714,
+            5208,
+            2164,
+            5259
+          ]
+        },
+        {
+          "line_id": "P1_TL00209",
+          "source_text": "11. ᎦᏄᎳᏘ ᎡᎯ ᎤᏃᎯᎶᎨ ᎠᎴ ᎤᏮᏓ”",
+          "tesseract_text": "11. ᎦᎸᎳᏗ ᏒᎯ ᎤᏃᎯᎶᎬ ᎠᎴ ᎤᏮᏓ”",
+          "text": "11. ᎦᎸᎳᏗ ᏒᎯ ᎤᏃᎯᎶᎬ ᎠᎴ ᎤᏮᏓ”",
+          "source": "tesseract_chr",
+          "box_px": [
+            1756,
+            5289,
+            2300,
+            5341
+          ]
+        },
+        {
+          "line_id": "P1_TL00210",
+          "source_text": "ᏅᏘ ᎨᏒ ᎠᎴ ᎠᏂᏏᎾᏌᏅ .: ᏗᏢᏰᎢᎸᏍᏗᏍᎪ",
+          "tesseract_text": "ᏅᏘ ᎨᏒ ᎠᎴ ᎠᏂᏏᎾᏌᏅ : ᏗᏢᏰᎢᎸᏍᏗᏍᎪ",
+          "text": "ᏅᏘ ᎨᏒ ᎠᎴ ᎠᏂᏏᎾᏌᏅ : ᏗᏢᏰᎢᎸᏍᏗᏍᎪ",
+          "source": "tesseract_chr",
+          "box_px": [
+            1711,
+            5327,
+            2299,
+            5388
+          ]
+        },
+        {
+          "line_id": "P1_TL00211",
+          "source_text": "ᎣᏏ ᎠᏰᏢ ᏧᏂᎧᎾᏩᏛᏍᏗ ᎤᏂᏐᎢ; ᎠᎴ ᎤᏢ”",
+          "tesseract_text": "ᎣᏏ ᎠᏰᏢ ᏧᏂᎧᎾᏩᎲᏈᏛᏍᏗ ᎤᏂᏐᎨᎢ; ᎠᎴ ᎤᏢ”",
+          "text": "ᎣᏏ ᎠᏰᏢ ᏧᏂᎧᎾᏩᎲᏈᏛᏍᏗ ᎤᏂᏐᎨᎢ; ᎠᎴ ᎤᏢ”",
+          "source": "tesseract_chr",
+          "box_px": [
+            1711,
+            5382,
+            2300,
+            5427
+          ]
+        },
+        {
+          "line_id": "P1_TL00212",
+          "source_text": "ᏂᎩᏘ ᏂᎦᏢᏍᏗᏍᎪ ᏗᏓᏥᏮᏝᎢ ᏂᎨᎡᎾ ᎨᏒ,",
+          "tesseract_text": "ᏂᎩᏘ ᏂᎦᎵᏍᏗᏍᎪ ᏗᏂᏥᏮᎵᎢ ᏂᎨᎡᎾ ᎨᏒ;",
+          "text": "ᏂᎩᏘ ᏂᎦᎵᏍᏗᏍᎪ ᏗᏂᏥᏮᎵᎢ ᏂᎨᎡᎾ ᎨᏒ;",
+          "source": "tesseract_chr",
+          "box_px": [
+            1711,
+            5419,
+            2299,
+            5467
+          ]
+        },
+        {
+          "line_id": "P1_TL00213",
+          "source_text": "ᎠᎴ ᏴᏫ ᎪᎯᏱ ᎤᏖᏅᎪᎢ. ᎠᏂᏍᎩᏂ Ꭱ”",
+          "tesseract_text": "ᎠᎴ ᏴᏫ ᎪᎯᏱ ᎤᏖᏅᎪᎢ. ᎠᏂᏍᎩᏂ Ꭱ”",
+          "text": "ᎠᎴ ᏴᏫ ᎪᎯᏱ ᎤᏖᏅᎪᎢ. ᎠᏂᏍᎩᏂ Ꭱ”",
+          "source": "tesseract_chr",
+          "box_px": [
+            1714,
+            5468,
+            2301,
+            5507
+          ]
+        },
+        {
+          "line_id": "P1_TL00214",
+          "source_text": "ᏍᎦᏂ ᎪᏪᏢ ᏓᎾᏕᎶᏆᏍᎬ, ᎠᎴ ᎪᎦᎥ ᎤᎾᏖᏂ”",
+          "tesseract_text": "ᏍᎦᏂ ᎪᏪᏢᏈ ᏓᎾᏕᎶᏆᏍᎬ, ᎠᎴ ᎪᎦᎥ ᎤᎾᏖᏂ”",
+          "text": "ᏍᎦᏂ ᎪᏪᏢᏈ ᏓᎾᏕᎶᏆᏍᎬ, ᎠᎴ ᎪᎦᎥ ᎤᎾᏖᏂ”",
+          "source": "tesseract_chr",
+          "box_px": [
+            1709,
+            5510,
+            2299,
+            5553
+          ]
+        },
+        {
+          "line_id": "P1_TL00215",
+          "source_text": "ᎠᎪᏘ ᏓᎾᏕᎶᏆᏍᎬ. ᏗᏍᏕᎸᎡᏗ ᎨᏎᏍᏗ ᏂᎪ”",
+          "tesseract_text": "ᎠᎪᏘ ᏓᎾᏕᎶᏆᏍᎬ ᏗᏍᏕᎸᎡᏗ ᏂᏎᏍᏗ ᏂᎪ”",
+          "text": "ᎠᎪᏘ ᏓᎾᏕᎶᏆᏍᎬ ᏗᏍᏕᎸᎡᏗ ᏂᏎᏍᏗ ᏂᎪ”",
+          "source": "tesseract_chr",
+          "box_px": [
+            1711,
+            5554,
+            2301,
+            5594
+          ]
+        },
+        {
+          "line_id": "P1_TL00216",
+          "source_text": "ᎯᎸᎢ. , “",
+          "tesseract_text": "ᎯᎸᎢ. …",
+          "text": "ᎯᎸᎢ. …",
+          "source": "tesseract_chr",
+          "box_px": [
+            1708,
+            5587,
+            2304,
+            5644
+          ]
+        }
+      ]
+    },
+    {
+      "block_id": "P1_TB00019",
+      "language": "chr",
+      "source": "hybrid_chr",
+      "text": "13, ᎠᏰᎵ ᏧᏂᎸᏫᏍᏖᏁᎯ ᎨᎨᏐᏁᏤᏘ ᎨᏒ,\nᎤᏛᏅ ᏕᎦᎳᏫᎥ ᏗᏂᎳᏫᎩ ᎤᏂᏁᎢᏍᏗ;",
+      "lines": [
+        {
+          "line_id": "P1_TL00217",
+          "source_text": "13, ᎠᏰᏢ ᏧᏂᎸᏫᏍᏖᏁᎯ ᎨᎨᏥᏁᏤᏘ ᎨᏒ,",
+          "tesseract_text": "13, ᎠᏰᎵ ᏧᏂᎸᏫᏍᏖᏁᎯ ᎨᎨᏐᏁᏤᏘ ᎨᏒ,",
+          "text": "13, ᎠᏰᎵ ᏧᏂᎸᏫᏍᏖᏁᎯ ᎨᎨᏐᏁᏤᏘ ᎨᏒ,",
+          "source": "tesseract_chr",
+          "box_px": [
+            1752,
+            5759,
+            2302,
+            5808
+          ]
+        },
+        {
+          "line_id": "P1_TL00218",
+          "source_text": "ᎤᏛᏅ ᏕᎦᎳᏫᎥ ᏗᏂᎳᏫᎩ ᎤᏂᏁᎢᏍᏗ;",
+          "tesseract_text": "ᎤᏛᏅ ᏕᎦᎳᏫᎥ ᏗᏂᎳᏫᎩ ᎤᏂᏁᎢᏍᏗ;",
+          "text": "ᎤᏛᏅ ᏕᎦᎳᏫᎥ ᏗᏂᎳᏫᎩ ᎤᏂᏁᎢᏍᏗ;",
+          "source": "tesseract_chr",
+          "box_px": [
+            1706,
+            5804,
+            2304,
+            5854
+          ]
+        }
+      ]
+    },
+    {
+      "block_id": "P1_TB00020",
+      "language": "eng",
+      "source": "loc_alto",
+      "text": "shall so continue until altered er repealed\nby the legislature, except where they are\ntemporary, in which case they shall expire\nat the times respectively limited for their\nduration; if not contmued by act of the legis-\nlatuve. )",
+      "lines": [
+        {
+          "line_id": "P1_TL00219",
+          "source_text": "shall so continue until altered er repealed",
+          "tesseract_text": null,
+          "text": "shall so continue until altered er repealed",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00220",
+          "source_text": "by the legislature, except where they are",
+          "tesseract_text": null,
+          "text": "by the legislature, except where they are",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00221",
+          "source_text": "temporary, in which case they shall expire",
+          "tesseract_text": null,
+          "text": "temporary, in which case they shall expire",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00222",
+          "source_text": "at the times respectively limited for their",
+          "tesseract_text": null,
+          "text": "at the times respectively limited for their",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00223",
+          "source_text": "duration; if not contmued by act of the legis-",
+          "tesseract_text": null,
+          "text": "duration; if not contmued by act of the legis-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00224",
+          "source_text": "latuve. )",
+          "tesseract_text": null,
+          "text": "latuve. )",
+          "source": "loc_alto",
+          "box_px": null
+        }
+      ]
+    },
+    {
+      "block_id": "P1_TB00021",
+      "language": "eng",
+      "source": "loc_alto",
+      "text": "Sec. 13. The General Council may at\nany time propose such amendments {o this\nConstitution as two thirds of each house\nshall deem expedient; aud the Principal\nChief shal! issue a proclamation, directing\nall the ¢ivil officers of the several Districts\nto promulgate the same os extensivey as\npossible within their respective Districts,\nat least nine months previous to the next\nGeneral election; and if at the first session\n2)‘ the General Council after such Genexal\nlection, two thirds of each house shall,\nby yeas and nays, retify suech proposed a-\nmenaments. they shall be valid g alliin..\nenis wid purposcs, as parts of this Consti-\ntution; Provided, That such proposed a-\nmendments shall be read onthree several\ndays, in each house, as well when the same\nare proposed, as when they are finally rat-\nified.",
+      "lines": [
+        {
+          "line_id": "P1_TL00225",
+          "source_text": "Sec. 13. The General Council may at",
+          "tesseract_text": null,
+          "text": "Sec. 13. The General Council may at",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00226",
+          "source_text": "any time propose such amendments {o this",
+          "tesseract_text": null,
+          "text": "any time propose such amendments {o this",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00227",
+          "source_text": "Constitution as two thirds of each house",
+          "tesseract_text": null,
+          "text": "Constitution as two thirds of each house",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00228",
+          "source_text": "shall deem expedient; aud the Principal",
+          "tesseract_text": null,
+          "text": "shall deem expedient; aud the Principal",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00229",
+          "source_text": "Chief shal! issue a proclamation, directing",
+          "tesseract_text": null,
+          "text": "Chief shal! issue a proclamation, directing",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00230",
+          "source_text": "all the ¢ivil officers of the several Districts",
+          "tesseract_text": null,
+          "text": "all the ¢ivil officers of the several Districts",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00231",
+          "source_text": "to promulgate the same os extensivey as",
+          "tesseract_text": null,
+          "text": "to promulgate the same os extensivey as",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00232",
+          "source_text": "possible within their respective Districts,",
+          "tesseract_text": null,
+          "text": "possible within their respective Districts,",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00233",
+          "source_text": "at least nine months previous to the next",
+          "tesseract_text": null,
+          "text": "at least nine months previous to the next",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00234",
+          "source_text": "General election; and if at the first session",
+          "tesseract_text": null,
+          "text": "General election; and if at the first session",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00235",
+          "source_text": "2)‘ the General Council after such Genexal",
+          "tesseract_text": null,
+          "text": "2)‘ the General Council after such Genexal",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00236",
+          "source_text": "lection, two thirds of each house shall,",
+          "tesseract_text": null,
+          "text": "lection, two thirds of each house shall,",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00237",
+          "source_text": "by yeas and nays, retify suech proposed a-",
+          "tesseract_text": null,
+          "text": "by yeas and nays, retify suech proposed a-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00238",
+          "source_text": "menaments. they shall be valid g alliin..",
+          "tesseract_text": null,
+          "text": "menaments. they shall be valid g alliin..",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00239",
+          "source_text": "enis wid purposcs, as parts of this Consti-",
+          "tesseract_text": null,
+          "text": "enis wid purposcs, as parts of this Consti-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00240",
+          "source_text": "tution; Provided, That such proposed a-",
+          "tesseract_text": null,
+          "text": "tution; Provided, That such proposed a-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00241",
+          "source_text": "mendments shall be read onthree several",
+          "tesseract_text": null,
+          "text": "mendments shall be read onthree several",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00242",
+          "source_text": "days, in each house, as well when the same",
+          "tesseract_text": null,
+          "text": "days, in each house, as well when the same",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00243",
+          "source_text": "are proposed, as when they are finally rat-",
+          "tesseract_text": null,
+          "text": "are proposed, as when they are finally rat-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00244",
+          "source_text": "ified.",
+          "tesseract_text": null,
+          "text": "ified.",
+          "source": "loc_alto",
+          "box_px": null
+        }
+      ]
+    },
+    {
+      "block_id": "P1_TB00022",
+      "language": "eng",
+      "source": "loc_alto",
+      "text": "Done in Convention at New Echota. this\ntwenty-sixth day of July, in the vear of our\nLord one thousand eigat hundred and twen-\nty seven; In testimony whereof, we have\ncach of us, bereunto subscribed our names.\nDelegates of Chickamauga District.\nJNO. ROSS, President of Convention,\nJOHN BALDRIDGE, his x mark.\nDelegates of Chattoega District.\nGLEORGE LOWREY,\nJNO. BROWN, :\nEDWARD GUNTER.\nDet'egatgs of Cocsawatee District.\nJOHN MARTTN, % o e .\nJOSEFH VANN, L ;\nKELEGBELL g:ois ki vy\nDelegides \" . Mholiee Lhisiigt 1 M\nLEWIS:RO&S, - 4\n\"THOMAS FOREMAN, pAREER\nHAIR CONRADL, his x mark.\nLelegates of HickoryListrict.\nJAMES DANIEL,\nJOHN DUNCAN.\nDelegates of Etowah Disirict,\nJOSEPH VANN, 3\nTHOS, PETITT, his xmark, LAt\nJOHN BEAMER, his x mark,\nDelegates of Taquoe District.\nOOCLENOTA, his x mark.\nWM. BOLING, his x mark, . i\nDelegates of Aquohee District.\nJOHN TIMSON, -\nSITUWAKEE, his x mark. :\nRICHARD WALKER, his x mark.\nA. M’COY, Secretary of Convention.",
+      "lines": [
+        {
+          "line_id": "P1_TL00245",
+          "source_text": "Done in Convention at New Echota. this",
+          "tesseract_text": null,
+          "text": "Done in Convention at New Echota. this",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00246",
+          "source_text": "twenty-sixth day of July, in the vear of our",
+          "tesseract_text": null,
+          "text": "twenty-sixth day of July, in the vear of our",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00247",
+          "source_text": "Lord one thousand eigat hundred and twen-",
+          "tesseract_text": null,
+          "text": "Lord one thousand eigat hundred and twen-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00248",
+          "source_text": "ty seven; In testimony whereof, we have",
+          "tesseract_text": null,
+          "text": "ty seven; In testimony whereof, we have",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00249",
+          "source_text": "cach of us, bereunto subscribed our names.",
+          "tesseract_text": null,
+          "text": "cach of us, bereunto subscribed our names.",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00250",
+          "source_text": "Delegates of Chickamauga District.",
+          "tesseract_text": null,
+          "text": "Delegates of Chickamauga District.",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00251",
+          "source_text": "JNO. ROSS, President of Convention,",
+          "tesseract_text": null,
+          "text": "JNO. ROSS, President of Convention,",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00252",
+          "source_text": "JOHN BALDRIDGE, his x mark.",
+          "tesseract_text": null,
+          "text": "JOHN BALDRIDGE, his x mark.",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00253",
+          "source_text": "Delegates of Chattoega District.",
+          "tesseract_text": null,
+          "text": "Delegates of Chattoega District.",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00254",
+          "source_text": "GLEORGE LOWREY,",
+          "tesseract_text": null,
+          "text": "GLEORGE LOWREY,",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00255",
+          "source_text": "JNO. BROWN, :",
+          "tesseract_text": null,
+          "text": "JNO. BROWN, :",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00256",
+          "source_text": "EDWARD GUNTER.",
+          "tesseract_text": null,
+          "text": "EDWARD GUNTER.",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00257",
+          "source_text": "Det'egatgs of Cocsawatee District.",
+          "tesseract_text": null,
+          "text": "Det'egatgs of Cocsawatee District.",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00258",
+          "source_text": "JOHN MARTTN, % o e .",
+          "tesseract_text": null,
+          "text": "JOHN MARTTN, % o e .",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00259",
+          "source_text": "JOSEFH VANN, L ;",
+          "tesseract_text": null,
+          "text": "JOSEFH VANN, L ;",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00260",
+          "source_text": "KELEGBELL g:ois ki vy",
+          "tesseract_text": null,
+          "text": "KELEGBELL g:ois ki vy",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00261",
+          "source_text": "Delegides \" . Mholiee Lhisiigt 1 M",
+          "tesseract_text": null,
+          "text": "Delegides \" . Mholiee Lhisiigt 1 M",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00262",
+          "source_text": "LEWIS:RO&S, - 4",
+          "tesseract_text": null,
+          "text": "LEWIS:RO&S, - 4",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00263",
+          "source_text": "\"THOMAS FOREMAN, pAREER",
+          "tesseract_text": null,
+          "text": "\"THOMAS FOREMAN, pAREER",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00264",
+          "source_text": "HAIR CONRADL, his x mark.",
+          "tesseract_text": null,
+          "text": "HAIR CONRADL, his x mark.",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00265",
+          "source_text": "Lelegates of HickoryListrict.",
+          "tesseract_text": null,
+          "text": "Lelegates of HickoryListrict.",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00266",
+          "source_text": "JAMES DANIEL,",
+          "tesseract_text": null,
+          "text": "JAMES DANIEL,",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00267",
+          "source_text": "JOHN DUNCAN.",
+          "tesseract_text": null,
+          "text": "JOHN DUNCAN.",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00268",
+          "source_text": "Delegates of Etowah Disirict,",
+          "tesseract_text": null,
+          "text": "Delegates of Etowah Disirict,",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00269",
+          "source_text": "JOSEPH VANN, 3",
+          "tesseract_text": null,
+          "text": "JOSEPH VANN, 3",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00270",
+          "source_text": "THOS, PETITT, his xmark, LAt",
+          "tesseract_text": null,
+          "text": "THOS, PETITT, his xmark, LAt",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00271",
+          "source_text": "JOHN BEAMER, his x mark,",
+          "tesseract_text": null,
+          "text": "JOHN BEAMER, his x mark,",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00272",
+          "source_text": "Delegates of Taquoe District.",
+          "tesseract_text": null,
+          "text": "Delegates of Taquoe District.",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00273",
+          "source_text": "OOCLENOTA, his x mark.",
+          "tesseract_text": null,
+          "text": "OOCLENOTA, his x mark.",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00274",
+          "source_text": "WM. BOLING, his x mark, . i",
+          "tesseract_text": null,
+          "text": "WM. BOLING, his x mark, . i",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00275",
+          "source_text": "Delegates of Aquohee District.",
+          "tesseract_text": null,
+          "text": "Delegates of Aquohee District.",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00276",
+          "source_text": "JOHN TIMSON, -",
+          "tesseract_text": null,
+          "text": "JOHN TIMSON, -",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00277",
+          "source_text": "SITUWAKEE, his x mark. :",
+          "tesseract_text": null,
+          "text": "SITUWAKEE, his x mark. :",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00278",
+          "source_text": "RICHARD WALKER, his x mark.",
+          "tesseract_text": null,
+          "text": "RICHARD WALKER, his x mark.",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00279",
+          "source_text": "A. M’COY, Secretary of Convention.",
+          "tesseract_text": null,
+          "text": "A. M’COY, Secretary of Convention.",
+          "source": "loc_alto",
+          "box_px": null
+        }
+      ]
+    },
+    {
+      "block_id": "P1_TB00023",
+      "language": "eng",
+      "source": "loc_alto",
+      "text": "REFORT\nOf a joint Cominitiee in the Legisla-\ntare of Georgia, on the Cherekee Lands.\nFrom this gloomy and almost hope-\nless prospect, we turn our attention to\nthe second hranch of our enquiry, and\ntrust that we shall be able to e\nlish in the State of Georgiaa goo:_\ngal. and perfect title to the lands in\nquestion, and that we have the right,\nby any meens in our prwer to posscss\nourseives of them.",
+      "lines": [
+        {
+          "line_id": "P1_TL00280",
+          "source_text": "REFORT",
+          "tesseract_text": null,
+          "text": "REFORT",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00281",
+          "source_text": "Of a joint Cominitiee in the Legisla-",
+          "tesseract_text": null,
+          "text": "Of a joint Cominitiee in the Legisla-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00282",
+          "source_text": "tare of Georgia, on the Cherekee Lands.",
+          "tesseract_text": null,
+          "text": "tare of Georgia, on the Cherekee Lands.",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00283",
+          "source_text": "From this gloomy and almost hope-",
+          "tesseract_text": null,
+          "text": "From this gloomy and almost hope-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00284",
+          "source_text": "less prospect, we turn our attention to",
+          "tesseract_text": null,
+          "text": "less prospect, we turn our attention to",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00285",
+          "source_text": "the second hranch of our enquiry, and",
+          "tesseract_text": null,
+          "text": "the second hranch of our enquiry, and",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00286",
+          "source_text": "trust that we shall be able to e",
+          "tesseract_text": null,
+          "text": "trust that we shall be able to e",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00287",
+          "source_text": "lish in the State of Georgiaa goo:_",
+          "tesseract_text": null,
+          "text": "lish in the State of Georgiaa goo:_",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00288",
+          "source_text": "gal. and perfect title to the lands in",
+          "tesseract_text": null,
+          "text": "gal. and perfect title to the lands in",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00289",
+          "source_text": "question, and that we have the right,",
+          "tesseract_text": null,
+          "text": "question, and that we have the right,",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00290",
+          "source_text": "by any meens in our prwer to posscss",
+          "tesseract_text": null,
+          "text": "by any meens in our prwer to posscss",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00291",
+          "source_text": "ourseives of them.",
+          "tesseract_text": null,
+          "text": "ourseives of them.",
+          "source": "loc_alto",
+          "box_px": null
+        }
+      ]
+    },
+    {
+      "block_id": "P1_TB00024",
+      "language": "eng",
+      "source": "loc_alto",
+      "text": "in the examination of this important\nand’interesting question, we are ne-\ncessarily carried back to the earliest\nhistory of this country. When the\ncontinent of America was first discov-\ned, it was posscssed and owned by va-\nrions tribes of savages; and the discov-\nevs asserted successiully the right of\noccupying such parts as each dis-\ncovered, and thereby established\ntheir supreme commang over it, as-\n‘;erting their claim both to domain and\ntoempire. By domain we mean that,\nby “virtue of which a naiton may use\nthe country for the supply-of its neces-\nsities; may dispose of it &s it thinks\nproper, and derive from it any advan-\ntage itis capable of yielding.” And\nby “‘empire,” we mean the ‘“right of\nsovereign command. by which, the nae\ntion directs and regulates at its plea-\nsure, every thing that passes in the\ncountry.” . Precisely in this way, and\nno other, did Spain, France, Eng-\nland, Holland and Portugal obtain\nsovereiznty over the portions of this\ncouniry discovered by each. It may",
+      "lines": [
+        {
+          "line_id": "P1_TL00292",
+          "source_text": "in the examination of this important",
+          "tesseract_text": null,
+          "text": "in the examination of this important",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00293",
+          "source_text": "and’interesting question, we are ne-",
+          "tesseract_text": null,
+          "text": "and’interesting question, we are ne-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00294",
+          "source_text": "cessarily carried back to the earliest",
+          "tesseract_text": null,
+          "text": "cessarily carried back to the earliest",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00295",
+          "source_text": "history of this country. When the",
+          "tesseract_text": null,
+          "text": "history of this country. When the",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00296",
+          "source_text": "continent of America was first discov-",
+          "tesseract_text": null,
+          "text": "continent of America was first discov-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00297",
+          "source_text": "ed, it was posscssed and owned by va-",
+          "tesseract_text": null,
+          "text": "ed, it was posscssed and owned by va-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00298",
+          "source_text": "rions tribes of savages; and the discov-",
+          "tesseract_text": null,
+          "text": "rions tribes of savages; and the discov-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00299",
+          "source_text": "evs asserted successiully the right of",
+          "tesseract_text": null,
+          "text": "evs asserted successiully the right of",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00300",
+          "source_text": "occupying such parts as each dis-",
+          "tesseract_text": null,
+          "text": "occupying such parts as each dis-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00301",
+          "source_text": "covered, and thereby established",
+          "tesseract_text": null,
+          "text": "covered, and thereby established",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00302",
+          "source_text": "their supreme commang over it, as-",
+          "tesseract_text": null,
+          "text": "their supreme commang over it, as-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00303",
+          "source_text": "‘;erting their claim both to domain and",
+          "tesseract_text": null,
+          "text": "‘;erting their claim both to domain and",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00304",
+          "source_text": "toempire. By domain we mean that,",
+          "tesseract_text": null,
+          "text": "toempire. By domain we mean that,",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00305",
+          "source_text": "by “virtue of which a naiton may use",
+          "tesseract_text": null,
+          "text": "by “virtue of which a naiton may use",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00306",
+          "source_text": "the country for the supply-of its neces-",
+          "tesseract_text": null,
+          "text": "the country for the supply-of its neces-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00307",
+          "source_text": "sities; may dispose of it &s it thinks",
+          "tesseract_text": null,
+          "text": "sities; may dispose of it &s it thinks",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00308",
+          "source_text": "proper, and derive from it any advan-",
+          "tesseract_text": null,
+          "text": "proper, and derive from it any advan-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00309",
+          "source_text": "tage itis capable of yielding.” And",
+          "tesseract_text": null,
+          "text": "tage itis capable of yielding.” And",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00310",
+          "source_text": "by “‘empire,” we mean the ‘“right of",
+          "tesseract_text": null,
+          "text": "by “‘empire,” we mean the ‘“right of",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00311",
+          "source_text": "sovereign command. by which, the nae",
+          "tesseract_text": null,
+          "text": "sovereign command. by which, the nae",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00312",
+          "source_text": "tion directs and regulates at its plea-",
+          "tesseract_text": null,
+          "text": "tion directs and regulates at its plea-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00313",
+          "source_text": "sure, every thing that passes in the",
+          "tesseract_text": null,
+          "text": "sure, every thing that passes in the",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00314",
+          "source_text": "country.” . Precisely in this way, and",
+          "tesseract_text": null,
+          "text": "country.” . Precisely in this way, and",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00315",
+          "source_text": "no other, did Spain, France, Eng-",
+          "tesseract_text": null,
+          "text": "no other, did Spain, France, Eng-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00316",
+          "source_text": "land, Holland and Portugal obtain",
+          "tesseract_text": null,
+          "text": "land, Holland and Portugal obtain",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00317",
+          "source_text": "sovereiznty over the portions of this",
+          "tesseract_text": null,
+          "text": "sovereiznty over the portions of this",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00318",
+          "source_text": "couniry discovered by each. It may",
+          "tesseract_text": null,
+          "text": "couniry discovered by each. It may",
+          "source": "loc_alto",
+          "box_px": null
+        }
+      ]
+    },
+    {
+      "block_id": "P1_TB00026",
+      "language": "chr",
+      "source": "hybrid_chr",
+      "text": "ᎨᏎᏍᏗ ᎯᎠᏍᎩᏂᏃᏅ ᏗᎧᎾᏩᏛᏍᏗ ᏂᎦᏯᎲ\nᏍᎬ ᎤᏣᏘᏂ ᎥᏝ ᏳᏓᏑᏰᏍᏗ.",
+      "lines": [
+        {
+          "line_id": "P1_TL00320",
+          "source_text": "ᎨᏎᏍᏗ ᎯᎠᏍᎩᏂᏃᏅ ᏗᎧᎾᏩᏛᏍᏗ ᏂᎦᎴ",
+          "tesseract_text": "ᎨᏎᏍᏗ ᎯᎠᏍᎩᏂᏃᏅ ᏗᎧᎾᏩᏛᏍᏗ ᏂᎦᏯᎲ",
+          "text": "ᎨᏎᏍᏗ ᎯᎠᏍᎩᏂᏃᏅ ᏗᎧᎾᏩᏛᏍᏗ ᏂᎦᏯᎲ",
+          "source": "tesseract_chr",
+          "box_px": [
+            3130,
+            1370,
+            3720,
+            1417
+          ]
+        },
+        {
+          "line_id": "P1_TL00321",
+          "source_text": "ᏍᎬ ᎤᏣᏗᏂ ᎥᏝ ᏳᏓᏑᏰᏍᏗ.",
+          "tesseract_text": "ᏍᎬ ᎤᏣᏘᏂ ᎥᏝ ᏳᏓᏑᏰᏍᏗ.",
+          "text": "ᏍᎬ ᎤᏣᏘᏂ ᎥᏝ ᏳᏓᏑᏰᏍᏗ.",
+          "source": "tesseract_chr",
+          "box_px": [
+            3128,
+            1414,
+            3527,
+            1461
+          ]
+        }
+      ]
+    },
+    {
+      "block_id": "P1_TB00027",
+      "language": "chr",
+      "source": "hybrid_chr",
+      "text": "ᎢᏎ. ᏂᎦᎥ ᎠᏰᎵ ᎤᏢᏁᏨᎯ ᎢᏳᏃ ᏣᎳᎩ\nᏓᏂᎧᎧᏩᏘᏎᏍᏗ ᎯᎠ ᎣᏥᏁᏦᏅ,, ᎥᏝ ᎤᏲᎢ”\nᏍᏘ ᏱᎵᎦᏎᏍᏘ, ᎬᏂ ᎤᏛᏅ ᏕᎦᎳᏫᎥ ᏗᏂ”\nᎳᎶᎩ ᎠᏂᏁᎶᏴᏍᎨᏍᏗ. ᎢᎦᏛᏍᎩᎠᏃᏅ\nᎤᏢᏁᏨ ᎢᎪᎯᏛ ᏫᏓᏍᏗᎨᏍᏗ ᎧᏉ ᏧᏲᎢ”\nᏍᏘ ᎨᏎᏍᏗ; ᎬᏂ ᎤᏛᏅ ᏕᎦᎳᏫᎥ ᏗᏂᎳᏫᏛ\nᎩ ᏫᎪᎬᎯᏖ ᎠᏁᏢᏍᎨᏍᏗ.\n15. ᎤᏛᏅ ᏐᎦᎳᎶᎥ ᏗᏂᎳᏮᎩ, ᎢᏧᎳ\nᏚᎧᏮᏓᏡᏈᎬ ᏦᎢ ᎢᏧᏂᏨ ᏔᏢ ᏂᏓᏂᎯᏍᏘ, ᎯᎠ\nᏗᎧᎧᏩᏛᏍᏗ ᎦᏁᎶᏏᏒ” ᎠᏁᏢᏍᎨᏍᏘ, ᎾᏉ\nᏂᏁᎢᏍᏗ ᎬᏎᏍᏗ. ᏄᏍᏛ ᎠᎧᏖᏅᏖᏍᎬᎢ;\nᎧᏍᎩ ᎤᎬᏫᏳᎯ ᎤᏬᏪᎶᏗ ᎨᏎᏍᏗ ᏄᏍᏛ\nᎤᏂᏁᏨᎢ,, ᏧᏰᎬᎯᏍᎪᏗ “ᎨᎲᏎᎲᏗ “ᏗᎧᏮᏓᏅᏅ\nᎧᎤᏔ Ꭵ!.Ꮎ’ᎨᏉᏗ.--”Ꭾ”:ᏖᎢ Ꮎ ᏍᏍᏍᏗ. ᏓᏍᏍᏗᎯ.\nᏐᎣᏁᎳ ᎢᏯᏅᎪ ᎤᏃᏎᏍᏗ ᎤᎾᏓᎪᎾᏛᎪ”\nᏗᏱ ᎨᏒ ᏗᏂᎳᏫᎩ, ᏮᏜᎩᏃ ᏔᏢᏁ ᏖᏓᏂᎳ”\nᏫᎨᏍᏗ ᎤᏛᏅ. ᏗᏂᎳᏫᎩ, ᏔᏢ ᏄᎾᏓᏡᏢᎬ\nᏦᎢ ᎢᏧᏂᏨ ᏔᎵ ᏂᏓᏂᎨᏍᏗ ᎠᏂᏁᎨᏍᏗ.\nᎠᏂᏍᏓᏱᏁᏍᎨᏛᏗ ᎢᎬᏱᏱ ᏗᏂᎳᏫᎩ ᎤᏂ”\nᏁᏨᎢᏤ ᏮᏉ ᎧᏛᎩ. ᏗᎧᎾᏩᏛᏍᏗ ᏂᎦᎵᏍᏗ”\nᎣᎨᏍᏗ,. ᏦᎢᏍᎩᏂᏃᏅ ᏧᎪᏓᏔᏛ ᎤᏂᏬᏂᏓ\nᎪᏘ ᎨᏎᏍᏘ, ᎦᏁᎶᎱᏒ ᎠᏁᏢᏍᎨᏍᏘ; ᎠᎴᎥ\nᎾᏍᏉ ᎠᏂᎧᏖᏱᏗᏍᎨᏍᏗ. )\nᎪᏥᎳᏫᎥ ᎢᏦᏘ ᏁᎳᏦᏁ -ᎢᎦ. ᎫᏁᏉᏂ-Ꮩ\nᏡᎸᎢ 1827, ᎣᏣᏖᏆᎶᎲᎦ ᎯᎠ ᎣᏥᏁᎩ”\nᎬᏂᏉ ᎯᎠ ᏂᎦᏘᏳ ᎪᎦᎪᎥ ᏁᏦᏪᎲᎦ.\nᎤᏅ ᎠᏗᎾ ᎢᎾ\nᏩᎩᎫ : ) ᏏᏥᏁᏤᎸᎯ-\nᎩᏢ ᎢᎩ\nᎣᏏ; Ꮪ ᏣᎦᎩ ᎨᏥᏁᏤᎸᎯ.\n“ᏁᏗ. ;\nᏡᎩ.\nᎦᎾᏏᏅ ᏗᏗ ᎨᏥᏁᏤᎸᎯ.-\nᎩ ᏧᏢ, :\n’\nᎷᏱ,\n… ᎤᎸᎲ ᏓᏊ ᎨᏥᏁ Ꭿ\nᏔᎵ) , . ᏩᏁᎩᎯᎡᏐ ᎦᏥᏗᏈᎸᎯ.\nᏰᏂ;, Ꮑ ᎠᏍ” ᏂᎪᏗ,\nᎡᏘ ᎸᎳᏗ ᎤᏪᏂ, ᎾᎯ ᎨᏥᏁᏤ\nᏄᎾ ᏓᏔᎯ ( ᎢᏓᏩ ᎡᏥᏁᏤᎸᎯᎴ.\nᏥᏍᏚ ᎦᏃᎦ, 5\nᎾᎴ ! ᏓᏉᎢ ᎨᏥᏁᏤᎸᎯ.\nᎤᎩ ᏏᏅᏘ, Ꭻ ᏓᏉᎢ ᎡᏥᏁᏤᎸᎯᎲ\nᏣᏂ,\n… ᎡᏉᎯ ᎨᏥᏁᏤᎸᎯ. :\nᎧᏄᏄ;\nᎹᎦᏱ, ᏧᏬᏇᎳᏅᎯᎪ.",
+      "lines": [
+        {
+          "line_id": "P1_TL00322",
+          "source_text": "ᎢᏎ. ᏂᎦᎥ ᎠᏰᏢ ᎤᏢᏁᏨᎯ ᎢᏳᏃ ᏣᎳᎩ",
+          "tesseract_text": "ᎢᏎ. ᏂᎦᎥ ᎠᏰᎵ ᎤᏢᏁᏨᎯ ᎢᏳᏃ ᏣᎳᎩ",
+          "text": "ᎢᏎ. ᏂᎦᎥ ᎠᏰᎵ ᎤᏢᏁᏨᎯ ᎢᏳᏃ ᏣᎳᎩ",
+          "source": "tesseract_chr",
+          "box_px": [
+            3171,
+            1618,
+            3720,
+            1678
+          ]
+        },
+        {
+          "line_id": "P1_TL00323",
+          "source_text": "ᏓᏂᎧᎧᏩᏗᏎᏍᏗ ᎯᎠ ᎣᏥᏁᏦᏅ, ᎥᏝ ᎤᏂᎢ”",
+          "tesseract_text": "ᏓᏂᎧᎧᏩᏘᏎᏍᏗ ᎯᎠ ᎣᏥᏁᏦᏅ,, ᎥᏝ ᎤᏲᎢ”",
+          "text": "ᏓᏂᎧᎧᏩᏘᏎᏍᏗ ᎯᎠ ᎣᏥᏁᏦᏅ,, ᎥᏝ ᎤᏲᎢ”",
+          "source": "tesseract_chr",
+          "box_px": [
+            3126,
+            1669,
+            3717,
+            1723
+          ]
+        },
+        {
+          "line_id": "P1_TL00324",
+          "source_text": "ᏍᏘᏗ ᏱᎨᏎᏍᏘ, ᎬᏂ ᎤᏛᏅ ᏕᎦᎳᏫᎥ ᏗᏂ”",
+          "tesseract_text": "ᏍᏘ ᏱᎵᎦᏎᏍᏘ, ᎬᏂ ᎤᏛᏅ ᏕᎦᎳᏫᎥ ᏗᏂ”",
+          "text": "ᏍᏘ ᏱᎵᎦᏎᏍᏘ, ᎬᏂ ᎤᏛᏅ ᏕᎦᎳᏫᎥ ᏗᏂ”",
+          "source": "tesseract_chr",
+          "box_px": [
+            3124,
+            1713,
+            3716,
+            1760
+          ]
+        },
+        {
+          "line_id": "P1_TL00325",
+          "source_text": "ᎳᎶᎩ ᎠᏂᏁᎶᏴᏍᎨᏍᏗ. ᎢᎦᏛᏍᎩᏞᏃᏅ",
+          "tesseract_text": "ᎳᎶᎩ ᎠᏂᏁᎶᏴᏍᎨᏍᏗ. ᎢᎦᏛᏍᎩᎠᏃᏅ",
+          "text": "ᎳᎶᎩ ᎠᏂᏁᎶᏴᏍᎨᏍᏗ. ᎢᎦᏛᏍᎩᎠᏃᏅ",
+          "source": "tesseract_chr",
+          "box_px": [
+            3124,
+            1754,
+            3717,
+            1803
+          ]
+        },
+        {
+          "line_id": "P1_TL00326",
+          "source_text": "ᎤᏢᏁᏨ ᎢᎪᎯᏛ ᏫᏓᏍᏗᎨᏍᏗ ᎧᏉ ᏧᏲᎢ”",
+          "tesseract_text": "ᎤᏢᏁᏨ ᎢᎪᎯᏛ ᏫᏓᏍᏗᎨᏍᏗ ᎧᏉ ᏧᏲᎢ”",
+          "text": "ᎤᏢᏁᏨ ᎢᎪᎯᏛ ᏫᏓᏍᏗᎨᏍᏗ ᎧᏉ ᏧᏲᎢ”",
+          "source": "tesseract_chr",
+          "box_px": [
+            3122,
+            1792,
+            3715,
+            1847
+          ]
+        },
+        {
+          "line_id": "P1_TL00327",
+          "source_text": "ᏍᏗ ᎨᏎᏍᏘ, ᎬᏂ ᎤᏛᏅ ᎦᎦᎳᏫᎥ ᏗᏂᎳᏫ”",
+          "tesseract_text": "ᏍᏘ ᎨᏎᏍᏗ; ᎬᏂ ᎤᏛᏅ ᏕᎦᎳᏫᎥ ᏗᏂᎳᏫᏛ",
+          "text": "ᏍᏘ ᎨᏎᏍᏗ; ᎬᏂ ᎤᏛᏅ ᏕᎦᎳᏫᎥ ᏗᏂᎳᏫᏛ",
+          "source": "tesseract_chr",
+          "box_px": [
+            3120,
+            1840,
+            3715,
+            1890
+          ]
+        },
+        {
+          "line_id": "P1_TL00328",
+          "source_text": "Ꭹ ᏫᎪᏦᎯᏖ ᎠᏁᏈᏍᎨᏍᏗ.",
+          "tesseract_text": "Ꭹ ᏫᎪᎬᎯᏖ ᎠᏁᏢᏍᎨᏍᏗ.",
+          "text": "Ꭹ ᏫᎪᎬᎯᏖ ᎠᏁᏢᏍᎨᏍᏗ.",
+          "source": "tesseract_chr",
+          "box_px": [
+            3122,
+            1883,
+            3501,
+            1926
+          ]
+        },
+        {
+          "line_id": "P1_TL00329",
+          "source_text": "15. ᎤᏛᏅ ᎮᎦᎳᏮᎥ ᏗᏂᎳᏫᎩ, ᎢᏧᎳ",
+          "tesseract_text": "15. ᎤᏛᏅ ᏐᎦᎳᎶᎥ ᏗᏂᎳᏮᎩ, ᎢᏧᎳ",
+          "text": "15. ᎤᏛᏅ ᏐᎦᎳᎶᎥ ᏗᏂᎳᏮᎩ, ᎢᏧᎳ",
+          "source": "tesseract_chr",
+          "box_px": [
+            3165,
+            1918,
+            3710,
+            1978
+          ]
+        },
+        {
+          "line_id": "P1_TL00330",
+          "source_text": "ᏚᎧᏖᏈᎬ ᏦᎢ ᎢᏧᏂᏨ ᏔᎵ ᏂᏓᎿᏂᎯᏍᏗ, ᎯᎠ",
+          "tesseract_text": "ᏚᎧᏮᏓᏡᏈᎬ ᏦᎢ ᎢᏧᏂᏨ ᏔᏢ ᏂᏓᏂᎯᏍᏘ, ᎯᎠ",
+          "text": "ᏚᎧᏮᏓᏡᏈᎬ ᏦᎢ ᎢᏧᏂᏨ ᏔᏢ ᏂᏓᏂᎯᏍᏘ, ᎯᎠ",
+          "source": "tesseract_chr",
+          "box_px": [
+            3120,
+            1968,
+            3710,
+            2020
+          ]
+        },
+        {
+          "line_id": "P1_TL00331",
+          "source_text": "ᏗᎧᎾᏩᏛᏍᏗ ᎦᏁᎶᏏᏒ’ ᎠᏁᏢᏍᎨᏍᏘ; Ꭴ”",
+          "tesseract_text": "ᏗᎧᎧᏩᏛᏍᏗ ᎦᏁᎶᏏᏒ” ᎠᏁᏢᏍᎨᏍᏘ, ᎾᏉ",
+          "text": "ᏗᎧᎧᏩᏛᏍᏗ ᎦᏁᎶᏏᏒ” ᎠᏁᏢᏍᎨᏍᏘ, ᎾᏉ",
+          "source": "tesseract_chr",
+          "box_px": [
+            3117,
+            2012,
+            3710,
+            2064
+          ]
+        },
+        {
+          "line_id": "P1_TL00332",
+          "source_text": "ᏂᏁᎢᏍᏗ ᎨᏎᏍᏗ ᏄᏍᏛ. ᎠᎧᏓᏅᏖᏍᎬᎢ;",
+          "tesseract_text": "ᏂᏁᎢᏍᏗ ᎬᏎᏍᏗ. ᏄᏍᏛ ᎠᎧᏖᏅᏖᏍᎬᎢ;",
+          "text": "ᏂᏁᎢᏍᏗ ᎬᏎᏍᏗ. ᏄᏍᏛ ᎠᎧᏖᏅᏖᏍᎬᎢ;",
+          "source": "tesseract_chr",
+          "box_px": [
+            3116,
+            2054,
+            3705,
+            2108
+          ]
+        },
+        {
+          "line_id": "P1_TL00333",
+          "source_text": "ᎧᎴᎩ ᎤᎬᏫᏳᎯ ᎤᏬᏪᎶᏗ ᎨᏎᏍᏗ ᏄᏍᏛ",
+          "tesseract_text": "ᎧᏍᎩ ᎤᎬᏫᏳᎯ ᎤᏬᏪᎶᏗ ᎨᏎᏍᏗ ᏄᏍᏛ",
+          "text": "ᎧᏍᎩ ᎤᎬᏫᏳᎯ ᎤᏬᏪᎶᏗ ᎨᏎᏍᏗ ᏄᏍᏛ",
+          "source": "tesseract_chr",
+          "box_px": [
+            3116,
+            2098,
+            3708,
+            2153
+          ]
+        },
+        {
+          "line_id": "P1_TL00334",
+          "source_text": "ᎤᏂᏁᏨᎢ,, ᏧᏰᎬᎯᏍᎪᏗ “ᎨᎲᏎᎲᏗ “ᏗᎧᏮᏓᏅᏅ",
+          "tesseract_text": "",
+          "text": "ᎤᏂᏁᏨᎢ,, ᏧᏰᎬᎯᏍᎪᏗ “ᎨᎲᏎᎲᏗ “ᏗᎧᏮᏓᏅᏅ",
+          "source": "loc_alto_fallback_empty_tesseract",
+          "box_px": [
+            3113,
+            2132,
+            3746,
+            2197
+          ]
+        },
+        {
+          "line_id": "P1_TL00335",
+          "source_text": "ᎧᎤᏔ Ꭵ!.Ꮎ’ᎨᏉᏗ.--”Ꭾ”:ᏖᎢ Ꮎ ᏍᏍᏍᏗ. ᏓᏍᏍᏗᎯ.",
+          "tesseract_text": "",
+          "text": "ᎧᎤᏔ Ꭵ!.Ꮎ’ᎨᏉᏗ.--”Ꭾ”:ᏖᎢ Ꮎ ᏍᏍᏍᏗ. ᏓᏍᏍᏗᎯ.",
+          "source": "loc_alto_fallback_empty_tesseract",
+          "box_px": [
+            3111,
+            2166,
+            3730,
+            2232
+          ]
+        },
+        {
+          "line_id": "P1_TL00336",
+          "source_text": "ᏐᎣᏁᎳ ᎢᏯᏅᎪ ᎤᏃᏎᏍ. ᎤᎾᏓᎪᎾᏛᎪ”",
+          "tesseract_text": "ᏐᎣᏁᎳ ᎢᏯᏅᎪ ᎤᏃᏎᏍᏗ ᎤᎾᏓᎪᎾᏛᎪ”",
+          "text": "ᏐᎣᏁᎳ ᎢᏯᏅᎪ ᎤᏃᏎᏍᏗ ᎤᎾᏓᎪᎾᏛᎪ”",
+          "source": "tesseract_chr",
+          "box_px": [
+            3112,
+            2215,
+            3704,
+            2258
+          ]
+        },
+        {
+          "line_id": "P1_TL00337",
+          "source_text": "ᏗᏱ ᎬᏒ ᏗᏂᎳᏫᎩ, ᎧᎴᎩᏃ ᏔᎵᏁ ᏖᏂᎳ”",
+          "tesseract_text": "ᏗᏱ ᎨᏒ ᏗᏂᎳᏫᎩ, ᏮᏜᎩᏃ ᏔᏢᏁ ᏖᏓᏂᎳ”",
+          "text": "ᏗᏱ ᎨᏒ ᏗᏂᎳᏫᎩ, ᏮᏜᎩᏃ ᏔᏢᏁ ᏖᏓᏂᎳ”",
+          "source": "tesseract_chr",
+          "box_px": [
+            3112,
+            2260,
+            3705,
+            2304
+          ]
+        },
+        {
+          "line_id": "P1_TL00338",
+          "source_text": "ᏫᎨᏍᏗᏘ ᎤᏛᏅ ᏘᏂᎳᏫᎩ, ᏔᎵ ᏄᎾᏓᏡᎬ",
+          "tesseract_text": "ᏫᎨᏍᏗ ᎤᏛᏅ. ᏗᏂᎳᏫᎩ, ᏔᏢ ᏄᎾᏓᏡᏢᎬ",
+          "text": "ᏫᎨᏍᏗ ᎤᏛᏅ. ᏗᏂᎳᏫᎩ, ᏔᏢ ᏄᎾᏓᏡᏢᎬ",
+          "source": "tesseract_chr",
+          "box_px": [
+            3113,
+            2302,
+            3700,
+            2344
+          ]
+        },
+        {
+          "line_id": "P1_TL00339",
+          "source_text": "ᏦᎢ ᎢᏧᏂᏨ ᏔᎵ ᏂᏓᏂᎨᏍᏗ ᎠᏂᏁᎰᎨᏍᏗ.",
+          "tesseract_text": "ᏦᎢ ᎢᏧᏂᏨ ᏔᎵ ᏂᏓᏂᎨᏍᏗ ᎠᏂᏁᎨᏍᏗ.",
+          "text": "ᏦᎢ ᎢᏧᏂᏨ ᏔᎵ ᏂᏓᏂᎨᏍᏗ ᎠᏂᏁᎨᏍᏗ.",
+          "source": "tesseract_chr",
+          "box_px": [
+            3113,
+            2344,
+            3700,
+            2386
+          ]
+        },
+        {
+          "line_id": "P1_TL00340",
+          "source_text": "ᎠᏂᏍᏓᏱᏗᏍᎨᏛᏗ ᎢᎬᏱᏱ ᏗᏂᎳᏍᎩ ᎤᏂᏉ”",
+          "tesseract_text": "ᎠᏂᏍᏓᏱᏁᏍᎨᏛᏗ ᎢᎬᏱᏱ ᏗᏂᎳᏫᎩ ᎤᏂ”",
+          "text": "ᎠᏂᏍᏓᏱᏁᏍᎨᏛᏗ ᎢᎬᏱᏱ ᏗᏂᎳᏫᎩ ᎤᏂ”",
+          "source": "tesseract_chr",
+          "box_px": [
+            3112,
+            2386,
+            3705,
+            2429
+          ]
+        },
+        {
+          "line_id": "P1_TL00341",
+          "source_text": "ᏁᏨᎢ (Ꮙ ᎾᎴᎩ. ᏗᎧᎾᏩᏛᏍᏗ ᏂᎦᎵᏍᏘ”",
+          "tesseract_text": "ᏁᏨᎢᏤ ᏮᏉ ᎧᏛᎩ. ᏗᎧᎾᏩᏛᏍᏗ ᏂᎦᎵᏍᏗ”",
+          "text": "ᏁᏨᎢᏤ ᏮᏉ ᎧᏛᎩ. ᏗᎧᎾᏩᏛᏍᏗ ᏂᎦᎵᏍᏗ”",
+          "source": "tesseract_chr",
+          "box_px": [
+            3111,
+            2430,
+            3703,
+            2473
+          ]
+        },
+        {
+          "line_id": "P1_TL00342",
+          "source_text": "ᏍᎨᏍᏗ. ᏦᎢᏍᎩᏂᏃᏅ ᏧᎪᏓᎢᏛ ᎤᏂᏬᏂᏓ",
+          "tesseract_text": "ᎣᎨᏍᏗ,. ᏦᎢᏍᎩᏂᏃᏅ ᏧᎪᏓᏔᏛ ᎤᏂᏬᏂᏓ",
+          "text": "ᎣᎨᏍᏗ,. ᏦᎢᏍᎩᏂᏃᏅ ᏧᎪᏓᏔᏛ ᎤᏂᏬᏂᏓ",
+          "source": "tesseract_chr",
+          "box_px": [
+            3111,
+            2462,
+            3704,
+            2517
+          ]
+        },
+        {
+          "line_id": "P1_TL00343",
+          "source_text": "ᎪᏘ ᎨᏎᏍᏘ, ᎦᏁᎶᏢᏒ ᎠᏁᏢᏍᎨᏍᏘ; ᎠᎴᎥ",
+          "tesseract_text": "ᎪᏘ ᎨᏎᏍᏘ, ᎦᏁᎶᎱᏒ ᎠᏁᏢᏍᎨᏍᏘ; ᎠᎴᎥ",
+          "text": "ᎪᏘ ᎨᏎᏍᏘ, ᎦᏁᎶᎱᏒ ᎠᏁᏢᏍᎨᏍᏘ; ᎠᎴᎥ",
+          "source": "tesseract_chr",
+          "box_px": [
+            3110,
+            2506,
+            3715,
+            2568
+          ]
+        },
+        {
+          "line_id": "P1_TL00344",
+          "source_text": "ᎾᏍᏉ ᎠᏂᏍᏖᏱᏗᏍᎨᏍᏗ. Ꭵ",
+          "tesseract_text": "ᎾᏍᏉ ᎠᏂᎧᏖᏱᏗᏍᎨᏍᏗ. )",
+          "text": "ᎾᏍᏉ ᎠᏂᎧᏖᏱᏗᏍᎨᏍᏗ. )",
+          "source": "tesseract_chr",
+          "box_px": [
+            3111,
+            2557,
+            3714,
+            2597
+          ]
+        },
+        {
+          "line_id": "P1_TL00345",
+          "source_text": "ᎪᏥᎳᏫᎥ ᎢᏦᏘ ’ ᏁᎳᏦᏁ -ᎢᎦ. ᎫᏰᏉᏂ; Ꮠ",
+          "tesseract_text": "ᎪᏥᎳᏫᎥ ᎢᏦᏘ ᏁᎳᏦᏁ -ᎢᎦ. ᎫᏁᏉᏂ-Ꮩ",
+          "text": "ᎪᏥᎳᏫᎥ ᎢᏦᏘ ᏁᎳᏦᏁ -ᎢᎦ. ᎫᏁᏉᏂ-Ꮩ",
+          "source": "tesseract_chr",
+          "box_px": [
+            3151,
+            2593,
+            3730,
+            2650
+          ]
+        },
+        {
+          "line_id": "P1_TL00346",
+          "source_text": "ᏡᎸᎢ 1837, ᎣᏣᏖᏆᎴᎶᎲᎦ ᎯᎠ ᎣᏥᏁᎩ.",
+          "tesseract_text": "ᏡᎸᎢ 1827, ᎣᏣᏖᏆᎶᎲᎦ ᎯᎠ ᎣᏥᏁᎩ”",
+          "text": "ᏡᎸᎢ 1827, ᎣᏣᏖᏆᎶᎲᎦ ᎯᎠ ᎣᏥᏁᎩ”",
+          "source": "tesseract_chr",
+          "box_px": [
+            3111,
+            2634,
+            3696,
+            2687
+          ]
+        },
+        {
+          "line_id": "P1_TL00347",
+          "source_text": "ᎬᏂᏉ ᎯᎠ ᏂᎦᏘᏳ ᎪᎦᎪᎥ ᎪᏦᏪᎲᎦ.",
+          "tesseract_text": "ᎬᏂᏉ ᎯᎠ ᏂᎦᏘᏳ ᎪᎦᎪᎥ ᏁᏦᏪᎲᎦ.",
+          "text": "ᎬᏂᏉ ᎯᎠ ᏂᎦᏘᏳ ᎪᎦᎪᎥ ᏁᏦᏪᎲᎦ.",
+          "source": "tesseract_chr",
+          "box_px": [
+            3111,
+            2686,
+            3612,
+            2728
+          ]
+        },
+        {
+          "line_id": "P1_TL00348",
+          "source_text": "ᏣᏂ ᎫᏟᏍᎫᏫ, ᎤᏘᏅᏅᎯ, Ꭼ ᏥᎦᎹᎦ Ꭸ.",
+          "tesseract_text": "ᎤᏅ ᎠᏗᎾ ᎢᎾ",
+          "text": "ᎤᏅ ᎠᏗᎾ ᎢᎾ",
+          "source": "tesseract_chr",
+          "box_px": [
+            3151,
+            2731,
+            3706,
+            2830
+          ]
+        },
+        {
+          "line_id": "P1_TL00349",
+          "source_text": "ᏩᎩᎫ ( ᏥᏁᏤᎸᎯ-",
+          "tesseract_text": "ᏩᎩᎫ : ) ᏏᏥᏁᏤᎸᎯ-",
+          "text": "ᏩᎩᎫ : ) ᏏᏥᏁᏤᎸᎯ-",
+          "source": "tesseract_chr",
+          "box_px": [
+            3151,
+            2782,
+            3694,
+            2826
+          ]
+        },
+        {
+          "line_id": "P1_TL00350",
+          "source_text": "ᏓᎩ",
+          "tesseract_text": "ᎩᏢ ᎢᎩ",
+          "text": "ᎩᏢ ᎢᎩ",
+          "source": "tesseract_chr",
+          "box_px": [
+            3151,
+            2829,
+            3311,
+            2877
+          ]
+        },
+        {
+          "line_id": "P1_TL00351",
+          "source_text": "ᎣᏏ; Ꮪ ᏣᎦᎩ ᎨᏥᏁᏤᎸᎯ.",
+          "tesseract_text": "",
+          "text": "ᎣᏏ; Ꮪ ᏣᎦᎩ ᎨᏥᏁᏤᎸᎯ.",
+          "source": "loc_alto_fallback_empty_tesseract",
+          "box_px": [
+            3151,
+            2826,
+            3530,
+            2966
+          ]
+        },
+        {
+          "line_id": "P1_TL00352",
+          "source_text": "“ᏁᏗ. ;",
+          "tesseract_text": "",
+          "text": "“ᏁᏗ. ;",
+          "source": "loc_alto_fallback_empty_tesseract",
+          "box_px": [
+            3138,
+            2907,
+            3375,
+            2969
+          ]
+        },
+        {
+          "line_id": "P1_TL00353",
+          "source_text": "“ᏈᎩ.",
+          "tesseract_text": "ᏡᎩ.",
+          "text": "ᏡᎩ.",
+          "source": "tesseract_chr",
+          "box_px": [
+            3134,
+            2972,
+            3230,
+            3008
+          ]
+        },
+        {
+          "line_id": "P1_TL00354",
+          "source_text": "ᎦᎵᏍᎨᏫ, Ꭼ ᎫᏑᏪᏗᏱ ᎡᏥᏁᏤᎸᎯ.-",
+          "tesseract_text": "ᎦᎾᏏᏅ ᏗᏗ ᎨᏥᏁᏤᎸᎯ.-",
+          "text": "ᎦᎾᏏᏅ ᏗᏗ ᎨᏥᏁᏤᎸᎯ.-",
+          "source": "tesseract_chr",
+          "box_px": [
+            3148,
+            2964,
+            3642,
+            3102
+          ]
+        },
+        {
+          "line_id": "P1_TL00355",
+          "source_text": "ᎩᎵᎮᏧᏢ, Ꮒ",
+          "tesseract_text": "Ꭹ ᏧᏢ, :",
+          "text": "Ꭹ ᏧᏢ, :",
+          "source": "tesseract_chr",
+          "box_px": [
+            3149,
+            3057,
+            3670,
+            3100
+          ]
+        },
+        {
+          "line_id": "P1_TL00356",
+          "source_text": "’",
+          "tesseract_text": "",
+          "text": "’",
+          "source": "loc_alto_fallback_empty_tesseract",
+          "box_px": [
+            3334,
+            3086,
+            3369,
+            3116
+          ]
+        },
+        {
+          "line_id": "P1_TL00357",
+          "source_text": "ᎷᏱ,",
+          "tesseract_text": "",
+          "text": "ᎷᏱ,",
+          "source": "loc_alto_fallback_empty_tesseract",
+          "box_px": [
+            3151,
+            3110,
+            3234,
+            3153
+          ]
+        },
+        {
+          "line_id": "P1_TL00358",
+          "source_text": "“ᎠᏱᏊᎩ ᎫᏗᎩᏍᎩ, ᎬᎠᎿᏖᎥᎯ ᎨᏥᏁᏤᏪᎯ",
+          "tesseract_text": "… ᎤᎸᎲ ᏓᏊ ᎨᏥᏁ Ꭿ",
+          "text": "… ᎤᎸᎲ ᏓᏊ ᎨᏥᏁ Ꭿ",
+          "source": "tesseract_chr",
+          "box_px": [
+            3131,
+            3103,
+            3694,
+            3217
+          ]
+        },
+        {
+          "line_id": "P1_TL00359",
+          "source_text": "ᏄᏈᏥ ” “.Ꮑ“ᎯᏯᎡᏖᏐ ᎲᏱᏥᏗᎪᏤᎸᎯ.",
+          "tesseract_text": "ᏔᎵ) , . ᏩᏁᎩᎯᎡᏐ ᎦᏥᏗᏈᎸᎯ.",
+          "text": "ᏔᎵ) , . ᏩᏁᎩᎯᎡᏐ ᎦᏥᏗᏈᎸᎯ.",
+          "source": "tesseract_chr",
+          "box_px": [
+            3145,
+            3240,
+            3599,
+            3307
+          ]
+        },
+        {
+          "line_id": "P1_TL00360",
+          "source_text": "ᏯᏙᎳᏆ, .",
+          "tesseract_text": "ᏰᏂ;, Ꮑ ᎠᏍ” ᏂᎪᏗ,",
+          "text": "ᏰᏂ;, Ꮑ ᎠᏍ” ᏂᎪᏗ,",
+          "source": "tesseract_chr",
+          "box_px": [
+            3145,
+            3285,
+            3496,
+            3328
+          ]
+        },
+        {
+          "line_id": "P1_TL00361",
+          "source_text": "ᏦᏩ ᎡᏫ ᎤᏪᏥ, Ꮓ -",
+          "tesseract_text": "ᎡᏘ ᎸᎳᏗ ᎤᏪᏂ, ᎾᎯ ᎨᏥᏁᏤ",
+          "text": "ᎡᏘ ᎸᎳᏗ ᎤᏪᏂ, ᎾᎯ ᎨᏥᏁᏤ",
+          "source": "tesseract_chr",
+          "box_px": [
+            3145,
+            3326,
+            3618,
+            3410
+          ]
+        },
+        {
+          "line_id": "P1_TL00362",
+          "source_text": "ᏄᎾ ᏓᏑᎯ ᎢᏓᏩ ᎲᏥᏁᏤᏈᎸᎯᏥ.",
+          "tesseract_text": "ᏄᎾ ᏓᏔᎯ ( ᎢᏓᏩ ᎡᏥᏁᏤᎸᎯᎴ.",
+          "text": "ᏄᎾ ᏓᏔᎯ ( ᎢᏓᏩ ᎡᏥᏁᏤᎸᎯᎴ.",
+          "source": "tesseract_chr",
+          "box_px": [
+            3145,
+            3377,
+            3697,
+            3430
+          ]
+        },
+        {
+          "line_id": "P1_TL00363",
+          "source_text": "ᏥᏍᏚ ᎦᏃᎦ, 5",
+          "tesseract_text": "",
+          "text": "ᏥᏍᏚ ᎦᏃᎦ, 5",
+          "source": "loc_alto_fallback_empty_tesseract",
+          "box_px": [
+            3145,
+            3395,
+            3425,
+            3466
+          ]
+        },
+        {
+          "line_id": "P1_TL00364",
+          "source_text": "Ꮎ Ꮥ ᏓᏉᎢ ᎨᏥᏁᏤᎸᎯ.",
+          "tesseract_text": "ᎾᎴ ! ᏓᏉᎢ ᎨᏥᏁᏤᎸᎯ.",
+          "text": "ᎾᎴ ! ᏓᏉᎢ ᎨᏥᏁᏤᎸᎯ.",
+          "source": "tesseract_chr",
+          "box_px": [
+            3143,
+            3463,
+            3608,
+            3563
+          ]
+        },
+        {
+          "line_id": "P1_TL00365",
+          "source_text": "ᎤᎩᏏᏅᏘ, .",
+          "tesseract_text": "ᎤᎩ ᏏᏅᏘ, Ꭻ ᏓᏉᎢ ᎡᏥᏁᏤᎸᎯᎲ",
+          "text": "ᎤᎩ ᏏᏅᏘ, Ꭻ ᏓᏉᎢ ᎡᏥᏁᏤᎸᎯᎲ",
+          "source": "tesseract_chr",
+          "box_px": [
+            3142,
+            3502,
+            3638,
+            3564
+          ]
+        },
+        {
+          "line_id": "P1_TL00366",
+          "source_text": "ᏣᏂ,",
+          "tesseract_text": "ᏣᏂ,",
+          "text": "ᏣᏂ,",
+          "source": "tesseract_chr",
+          "box_px": [
+            3142,
+            3566,
+            3219,
+            3609
+          ]
+        },
+        {
+          "line_id": "P1_TL00367",
+          "source_text": "ᏏᎦᏚᏪᎩ, Ꭼ ᎡᏉᎯ ᎨᎨᏥᏁᏤᎸᎯ. ;",
+          "tesseract_text": "… ᎡᏉᎯ ᎨᏥᏁᏤᎸᎯ. :",
+          "text": "… ᎡᏉᎯ ᎨᏥᏁᏤᎸᎯ. :",
+          "source": "tesseract_chr",
+          "box_px": [
+            3139,
+            3558,
+            3727,
+            3699
+          ]
+        },
+        {
+          "line_id": "P1_TL00368",
+          "source_text": "ᎧᏄᎸ;",
+          "tesseract_text": "ᎧᏄᏄ;",
+          "text": "ᎧᏄᏄ;",
+          "source": "tesseract_chr",
+          "box_px": [
+            3143,
+            3651,
+            3247,
+            3696
+          ]
+        },
+        {
+          "line_id": "P1_TL00369",
+          "source_text": "ᎹᏰᏱ; ᏧᏬᏪᎳᏅᏗᎲ",
+          "tesseract_text": "ᎹᎦᏱ, ᏧᏬᏇᎳᏅᎯᎪ.",
+          "text": "ᎹᎦᏱ, ᏧᏬᏇᎳᏅᎯᎪ.",
+          "source": "tesseract_chr",
+          "box_px": [
+            3358,
+            3704,
+            3651,
+            3764
+          ]
+        }
+      ]
+    },
+    {
+      "block_id": "P1_TB00028",
+      "language": "eng",
+      "source": "loc_alto",
+      "text": "e contended with much plausibility,\nthat there is in these claims more of\nJorce than of justice; but they are\nclaims which have been recognised\n‘z.nd admitted by the whole civilized\nworld, and it is unquestionably true\nthat nnder such circumstauces force\nsomes right. This kind of title is\n‘not only goed and valid agreeable to\n‘the laws of MNations, but is perfectly\nconsistent with justice. 'The earih\nwas certainly made for the benefit,\ncomfort and subsistence of man, and\nshould be soused as to accommodate\nthe greatest possible number of hu-\nman beings. It was therefore per-\nfectly inaccordance with the design\nof nature, that the densely populated\ncountries of Europe, should possess\nthemselves of the immense forests in\nAmerica, which were used only as\nhunting grounds, and employ them in\npromoting the comfoits and providing\nfor the subsistence of their overflow-\ning population. Acting no doubt up-\non these principles, Great Britain oc-\ncupied and colonized the province of*\nGeorgia, the limits of which anterior-\nto the revolutionary war, were defin-\ned, and made to extend from the At-\nlantic coast to the Mississippi, and\nfrom the 31st to the 35th degrees of\nnorth latitude. The whole of this ter-\nritory was made to form a_provincial\ngovernment, thus exercising the high.,\nest and most unequivocal act of sove-\nreignty. In this exercise, both of do-\nmain and empire on the part of Great\nBritain, certain portions of tervitory",
+      "lines": [
+        {
+          "line_id": "P1_TL00370",
+          "source_text": "e contended with much plausibility,",
+          "tesseract_text": null,
+          "text": "e contended with much plausibility,",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00371",
+          "source_text": "that there is in these claims more of",
+          "tesseract_text": null,
+          "text": "that there is in these claims more of",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00372",
+          "source_text": "Jorce than of justice; but they are",
+          "tesseract_text": null,
+          "text": "Jorce than of justice; but they are",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00373",
+          "source_text": "claims which have been recognised",
+          "tesseract_text": null,
+          "text": "claims which have been recognised",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00374",
+          "source_text": "‘z.nd admitted by the whole civilized",
+          "tesseract_text": null,
+          "text": "‘z.nd admitted by the whole civilized",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00375",
+          "source_text": "world, and it is unquestionably true",
+          "tesseract_text": null,
+          "text": "world, and it is unquestionably true",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00376",
+          "source_text": "that nnder such circumstauces force",
+          "tesseract_text": null,
+          "text": "that nnder such circumstauces force",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00377",
+          "source_text": "somes right. This kind of title is",
+          "tesseract_text": null,
+          "text": "somes right. This kind of title is",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00378",
+          "source_text": "‘not only goed and valid agreeable to",
+          "tesseract_text": null,
+          "text": "‘not only goed and valid agreeable to",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00379",
+          "source_text": "‘the laws of MNations, but is perfectly",
+          "tesseract_text": null,
+          "text": "‘the laws of MNations, but is perfectly",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00380",
+          "source_text": "consistent with justice. 'The earih",
+          "tesseract_text": null,
+          "text": "consistent with justice. 'The earih",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00381",
+          "source_text": "was certainly made for the benefit,",
+          "tesseract_text": null,
+          "text": "was certainly made for the benefit,",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00382",
+          "source_text": "comfort and subsistence of man, and",
+          "tesseract_text": null,
+          "text": "comfort and subsistence of man, and",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00383",
+          "source_text": "should be soused as to accommodate",
+          "tesseract_text": null,
+          "text": "should be soused as to accommodate",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00384",
+          "source_text": "the greatest possible number of hu-",
+          "tesseract_text": null,
+          "text": "the greatest possible number of hu-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00385",
+          "source_text": "man beings. It was therefore per-",
+          "tesseract_text": null,
+          "text": "man beings. It was therefore per-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00386",
+          "source_text": "fectly inaccordance with the design",
+          "tesseract_text": null,
+          "text": "fectly inaccordance with the design",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00387",
+          "source_text": "of nature, that the densely populated",
+          "tesseract_text": null,
+          "text": "of nature, that the densely populated",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00388",
+          "source_text": "countries of Europe, should possess",
+          "tesseract_text": null,
+          "text": "countries of Europe, should possess",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00389",
+          "source_text": "themselves of the immense forests in",
+          "tesseract_text": null,
+          "text": "themselves of the immense forests in",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00390",
+          "source_text": "America, which were used only as",
+          "tesseract_text": null,
+          "text": "America, which were used only as",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00391",
+          "source_text": "hunting grounds, and employ them in",
+          "tesseract_text": null,
+          "text": "hunting grounds, and employ them in",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00392",
+          "source_text": "promoting the comfoits and providing",
+          "tesseract_text": null,
+          "text": "promoting the comfoits and providing",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00393",
+          "source_text": "for the subsistence of their overflow-",
+          "tesseract_text": null,
+          "text": "for the subsistence of their overflow-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00394",
+          "source_text": "ing population. Acting no doubt up-",
+          "tesseract_text": null,
+          "text": "ing population. Acting no doubt up-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00395",
+          "source_text": "on these principles, Great Britain oc-",
+          "tesseract_text": null,
+          "text": "on these principles, Great Britain oc-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00396",
+          "source_text": "cupied and colonized the province of*",
+          "tesseract_text": null,
+          "text": "cupied and colonized the province of*",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00397",
+          "source_text": "Georgia, the limits of which anterior-",
+          "tesseract_text": null,
+          "text": "Georgia, the limits of which anterior-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00398",
+          "source_text": "to the revolutionary war, were defin-",
+          "tesseract_text": null,
+          "text": "to the revolutionary war, were defin-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00399",
+          "source_text": "ed, and made to extend from the At-",
+          "tesseract_text": null,
+          "text": "ed, and made to extend from the At-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00400",
+          "source_text": "lantic coast to the Mississippi, and",
+          "tesseract_text": null,
+          "text": "lantic coast to the Mississippi, and",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00401",
+          "source_text": "from the 31st to the 35th degrees of",
+          "tesseract_text": null,
+          "text": "from the 31st to the 35th degrees of",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00402",
+          "source_text": "north latitude. The whole of this ter-",
+          "tesseract_text": null,
+          "text": "north latitude. The whole of this ter-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00403",
+          "source_text": "ritory was made to form a_provincial",
+          "tesseract_text": null,
+          "text": "ritory was made to form a_provincial",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00404",
+          "source_text": "government, thus exercising the high.,",
+          "tesseract_text": null,
+          "text": "government, thus exercising the high.,",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00405",
+          "source_text": "est and most unequivocal act of sove-",
+          "tesseract_text": null,
+          "text": "est and most unequivocal act of sove-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00406",
+          "source_text": "reignty. In this exercise, both of do-",
+          "tesseract_text": null,
+          "text": "reignty. In this exercise, both of do-",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00407",
+          "source_text": "main and empire on the part of Great",
+          "tesseract_text": null,
+          "text": "main and empire on the part of Great",
+          "source": "loc_alto",
+          "box_px": null
+        },
+        {
+          "line_id": "P1_TL00408",
+          "source_text": "Britain, certain portions of tervitory",
+          "tesseract_text": null,
+          "text": "Britain, certain portions of tervitory",
+          "source": "loc_alto",
+          "box_px": null
+        }
+      ]
+    },
+    {
+      "block_id": "P1_TB00025",
+      "language": "eng",
+      "source": "loc_alto",
+      "text": "NO. 3.",
+      "lines": [
+        {
+          "line_id": "P1_TL00319",
+          "source_text": "NO. 3.",
+          "tesseract_text": null,
+          "text": "NO. 3.",
+          "source": "loc_alto",
+          "box_px": null
+        }
+      ]
+    }
+  ],
+  "tesseract_version": "tesseract 5.5.0",
+  "model_sha256": "b3a0da90e7744cfec534cdf2dd85860718f32b5595a07d4b7e49113a89bd0f98"
+}
