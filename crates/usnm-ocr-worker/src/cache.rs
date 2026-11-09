@@ -91,6 +91,16 @@ fn timed_out(doc_id: &str) -> FetchError {
     ))
 }
 
+/// The outcome to keep of two failed candidates: a cached scan that can't
+/// be read (never LoC) over a give-up (LoC) over a miss.
+fn worse(a: Found, b: Found) -> Found {
+    match (a, b) {
+        (Found::Unreadable(e), _) | (_, Found::Unreadable(e)) => Found::Unreadable(e),
+        (Found::GiveUp, _) | (_, Found::GiveUp) => Found::GiveUp,
+        _ => Found::Missing,
+    }
+}
+
 /// What a lookup across both sets came to.
 fn settle(found: Option<Found>, doc_id: &str) -> Option<Result<Scan, FetchError>> {
     match found {
@@ -173,15 +183,17 @@ impl CachedScans {
         crate::loc::read_limited(resp, max).await.map(Some)
     }
 
-    /// The page in `set`: its JP2, else its JPEG.
+    /// The page in `set`: its JP2, else its JPEG. A candidate that fails
+    /// doesn't stop the search: the other format may be readable.
     async fn lookup(&self, set: Set, key: &PageKey, batch: &str, seen: &AtomicBool) -> Found {
+        let mut worst = Found::Missing;
         for format in [ScanFormat::Jp2, ScanFormat::Jpeg] {
             match self.lookup_as(set, key, batch, format, seen).await {
-                Found::Missing => continue,
-                found => return found,
+                Found::Scan(s) => return Found::Scan(s),
+                other => worst = worse(worst, other),
             }
         }
-        Found::Missing
+        worst
     }
 
     /// The page in `set` and `format`. Sets `seen` once a sidecar shows
@@ -227,14 +239,25 @@ impl CachedScans {
             );
             return Found::GiveUp;
         }
-        seen.store(true, Ordering::SeqCst);
+        let before = seen.swap(true, Ordering::SeqCst);
         let bytes = match self.get(&url, MAX_IMAGE_BYTES).await {
             Ok(Some(b)) => b,
             // A sidecar without its scan: a buffer page read and deleted
-            // before 2026-11-08. No local copy, so LoC.
+            // before 2026-11-08. No local copy here.
             Ok(None) => {
-                seen.store(false, Ordering::SeqCst);
+                seen.store(before, Ordering::SeqCst);
                 return Found::Missing;
+            }
+            // Bigger than any scan: a damaged copy, like one that doesn't
+            // match its sidecar.
+            Err(e) if e == crate::loc::over_limit(MAX_IMAGE_BYTES) => {
+                seen.store(before, Ordering::SeqCst);
+                tracing::warn!(
+                    doc_id,
+                    error = e,
+                    "a cached scan is over the size cap; fetching from LoC"
+                );
+                return Found::GiveUp;
             }
             Err(e) => {
                 tracing::warn!(
@@ -246,6 +269,7 @@ impl CachedScans {
             }
         };
         if !matches_sidecar(&bytes, &side) {
+            seen.store(before, Ordering::SeqCst);
             tracing::warn!(
                 doc_id,
                 "a cached scan doesn't match its sidecar; fetching from LoC"
@@ -273,13 +297,14 @@ impl ScanSource for CachedScans {
         // (2026-11-08): a server failure or timeout on it is transient.
         let seen = AtomicBool::new(false);
         let lookup = async {
+            let mut worst = Found::Missing;
             for set in [Set::Keep, Set::Buffer] {
                 match self.lookup(set, key, batch, &seen).await {
-                    Found::Missing => continue,
-                    found => return Some(found),
+                    Found::Scan(s) => return Some(Found::Scan(s)),
+                    other => worst = worse(worst, other),
                 }
             }
-            None
+            Some(worst)
         };
         let doc_id = key.doc_id();
         match tokio::time::timeout(REQUEST_TIMEOUT, lookup).await {
@@ -300,16 +325,17 @@ impl ScanSource for CachedScans {
     async fn jpeg(&self, key: &PageKey, batch: &str, iiif_base: &str) -> Result<Scan, FetchError> {
         let seen = AtomicBool::new(false);
         let lookup = async {
+            let mut worst = Found::Missing;
             for set in [Set::Keep, Set::Buffer] {
                 match self
                     .lookup_as(set, key, batch, ScanFormat::Jpeg, &seen)
                     .await
                 {
-                    Found::Missing => continue,
-                    found => return Some(found),
+                    Found::Scan(s) => return Some(Found::Scan(s)),
+                    other => worst = worse(worst, other),
                 }
             }
-            None
+            Some(worst)
         };
         let doc_id = key.doc_id();
         match tokio::time::timeout(REQUEST_TIMEOUT, lookup).await {
@@ -461,8 +487,20 @@ mod tests {
         assert_eq!(&s.bytes[..], b"keep bytes");
         // Another batch's copy isn't this one's.
         assert!(!cache.scan(&key, "batch_y").await.unwrap().from_cache);
-        // A sidecar off the image server, a wrong sha256, a scaled scan or
-        // a URL not its base's: LoC.
+        // A damaged keep copy falls through to the buffer's good one, not LoC.
+        put(dir.path(), "keep", &key, "batch_x", b"keep bytes", |s| {
+            s.sha256 = sha256(b"other")
+        });
+        let before = loc.0.load(Ordering::SeqCst);
+        let s = cache.scan(&key, "batch_x").await.unwrap();
+        assert!(s.from_cache);
+        assert_eq!(&s.bytes[..], b"jpeg bytes");
+        assert_eq!(loc.0.load(Ordering::SeqCst), before);
+        // With no other copy (a temporary test tree), a sidecar off the image
+        // server, a wrong sha256, a scaled scan or a URL not its base's: LoC.
+        let buffered = dir.path().join("buffer/batch_x/sn1/1890-05-03/1/1.jpg");
+        std::fs::remove_file(&buffered).unwrap();
+        std::fs::remove_file(buffered.with_extension("jpg.json")).unwrap();
         for edit in [
             Box::new(|s: &mut Sidecar| {
                 s.iiif_base = "https://evil.example/iiif/service:x".into();
@@ -600,6 +638,54 @@ mod tests {
         std::fs::write(&scan, b"jpeg bytes").unwrap();
         assert!(cache.scan(&key, "batch_x").await.unwrap().from_cache);
         assert_eq!(loc.0.load(Ordering::SeqCst), 0);
+    }
+
+    /// An unreadable candidate doesn't stop the search: the keep set's JP2
+    /// failing leaves its JPEG and the buffer's copy to try.
+    #[tokio::test]
+    async fn an_unreadable_copy_falls_through_to_another_local_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = server(dir.path()).await;
+        let loc = Arc::new(Loc::default());
+        let cache = CachedScans::new(&base, ROOT.into(), STORAGE.into(), loc.clone()).unwrap();
+        let key: PageKey = "sn1/1890-05-03/ed-1/seq-7".parse().unwrap();
+        put_jp2(dir.path(), "keep", &key, b"jp2 bytes", |_| {});
+        let jp2 = dir.path().join("keep/batch_x/sn1/1890-05-03/1/7.jp2");
+        std::fs::remove_file(&jp2).unwrap();
+        std::fs::create_dir(&jp2).unwrap();
+        put(
+            dir.path(),
+            "buffer",
+            &key,
+            "batch_x",
+            b"buffer jpeg",
+            |_| {},
+        );
+        let s = cache.scan(&key, "batch_x").await.unwrap();
+        assert!(s.from_cache && s.format == ScanFormat::Jpeg);
+        assert_eq!(&s.bytes[..], b"buffer jpeg");
+        let s = cache.jpeg(&key, "batch_x", "unused").await.unwrap();
+        assert_eq!(&s.bytes[..], b"buffer jpeg");
+        assert_eq!(loc.0.load(Ordering::SeqCst), 0);
+    }
+
+    /// A cached scan bigger than any scan is a damaged copy: LoC, as for one
+    /// that doesn't match its sidecar.
+    #[tokio::test]
+    async fn an_oversized_cached_scan_goes_to_loc() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = server(dir.path()).await;
+        let loc = Arc::new(Loc::default());
+        let cache = CachedScans::new(&base, ROOT.into(), STORAGE.into(), loc.clone()).unwrap();
+        let key: PageKey = "sn1/1890-05-03/ed-1/seq-1".parse().unwrap();
+        put(dir.path(), "keep", &key, "batch_x", b"jpeg", |_| {});
+        let scan = dir.path().join("keep/batch_x/sn1/1890-05-03/1/1.jpg");
+        std::fs::File::create(&scan)
+            .unwrap()
+            .set_len(MAX_IMAGE_BYTES as u64 + 1)
+            .unwrap();
+        assert!(!cache.scan(&key, "batch_x").await.unwrap().from_cache);
+        assert_eq!(loc.0.load(Ordering::SeqCst), 1);
     }
 
     #[test]

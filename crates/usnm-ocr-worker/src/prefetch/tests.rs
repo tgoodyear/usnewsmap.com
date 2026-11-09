@@ -254,11 +254,14 @@ async fn a_page_on_disk_anywhere_isnt_fetched_again() {
     let dir = tempfile::tempdir().unwrap();
     let moved = row("sn1", 1890, 1, "eng");
     let bare = row("sn1", 1890, 2, "eng");
+    // A page promoted to the keep set while its copy sits in the buffer.
+    let promoted = row("sn1", 1890, 3, "deu");
     assert_eq!(set_of(&moved), Set::Buffer);
+    assert_eq!(set_of(&promoted), Set::Keep);
     let manifest = dir.path().join("m.parquet");
     std::fs::write(
         &manifest,
-        prefetch::encode(&[moved.clone(), bare.clone()]).unwrap(),
+        prefetch::encode(&[moved.clone(), bare.clone(), promoted.clone()]).unwrap(),
     )
     .unwrap();
     let out = dir.path().join("scans");
@@ -284,6 +287,17 @@ async fn a_page_on_disk_anywhere_isnt_fetched_again() {
         md5: None,
     };
     std::fs::write(sidecar_path(&keep), serde_json::to_vec(&side).unwrap()).unwrap();
+    let kept = scan_path(&out, &promoted, ImageSize::Full, ScanFormat::Jpeg);
+    let buffered = out
+        .join("buffer")
+        .join(kept.strip_prefix(out.join("keep")).unwrap());
+    std::fs::create_dir_all(buffered.parent().unwrap()).unwrap();
+    std::fs::write(&buffered, b"jpeg").unwrap();
+    let side3 = Sidecar {
+        doc_id: promoted.doc_id.clone(),
+        ..side.clone()
+    };
+    std::fs::write(sidecar_path(&buffered), serde_json::to_vec(&side3).unwrap()).unwrap();
     let no_side = scan_path(&out, &bare, ImageSize::Full, ScanFormat::Jpeg);
     std::fs::create_dir_all(no_side.parent().unwrap()).unwrap();
     std::fs::write(&no_side, b"jpeg without a sidecar").unwrap();
@@ -308,9 +322,12 @@ async fn a_page_on_disk_anywhere_isnt_fetched_again() {
             s.fetched,
             s.failed_transient
         ),
-        (1, 1, 0, 0)
+        (2, 1, 0, 0)
     );
     assert!(!buffer.exists());
+    // The promoted page's keep copy comes from the buffer's bytes, which stay.
+    assert_eq!(std::fs::read(&kept).unwrap(), b"jpeg");
+    assert!(sidecar_path(&kept).exists() && buffered.exists());
     assert_eq!(std::fs::read(&no_side).unwrap(), b"jpeg without a sidecar");
 }
 

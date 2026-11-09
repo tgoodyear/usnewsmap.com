@@ -831,7 +831,19 @@ impl Run {
         // Any other local copy: never fetched from LoC again (2026-11-08).
         match layout::elsewhere(&self.opts.out, &row, size).await {
             Elsewhere::Nothing => {}
-            Elsewhere::OtherSet(n) => {
+            Elsewhere::OtherSet(n, from) => {
+                // A buffer page the manifest now keeps: its keep copy, from
+                // the bytes on disk, so the keep set (and its archive) has it.
+                if set == Set::Keep {
+                    let ext = from.extension().and_then(|e| e.to_str());
+                    let format = if ext == Some("jp2") {
+                        ScanFormat::Jp2
+                    } else {
+                        ScanFormat::Jpeg
+                    };
+                    let to = scan_path(&self.opts.out, &row, size, format);
+                    layout::link_into(&from, &to).await?;
+                }
                 c.already_there.fetch_add(1, Ordering::SeqCst);
                 match set {
                     Set::Keep => c.keep_bytes.fetch_add(n, Ordering::SeqCst),

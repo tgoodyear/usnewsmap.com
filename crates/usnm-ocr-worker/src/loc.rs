@@ -350,9 +350,14 @@ pub(crate) fn error_chain(e: &dyn std::error::Error) -> String {
     out
 }
 
+/// The error [`read_limited`] gives for a body over its cap.
+pub(crate) fn over_limit(max: usize) -> String {
+    format!("response over {max} bytes")
+}
+
 pub(crate) async fn read_limited(mut resp: reqwest::Response, max: usize) -> Result<Bytes, String> {
     if resp.content_length().is_some_and(|n| n > max as u64) {
-        return Err(format!("response over {max} bytes"));
+        return Err(over_limit(max));
     }
     let mut body = Vec::new();
     while let Some(chunk) = resp
@@ -361,7 +366,7 @@ pub(crate) async fn read_limited(mut resp: reqwest::Response, max: usize) -> Res
         .map_err(|e| error_chain(&e.without_url()))?
     {
         if body.len() + chunk.len() > max {
-            return Err(format!("response over {max} bytes"));
+            return Err(over_limit(max));
         }
         body.extend_from_slice(&chunk);
     }

@@ -202,8 +202,8 @@ pub(super) async fn there(out: &Path, row: &ManifestRow, size: ImageSize) -> Opt
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum Elsewhere {
     /// A copy that checks out in the other set (a page whose set changed
-    /// between manifests): the worker reads either set.
-    OtherSet(u64),
+    /// between manifests), its size and path: the worker reads either set.
+    OtherSet(u64, PathBuf),
     /// A scan file at one of the page's paths, in either set, that doesn't
     /// check out against a sidecar (none, or a different one). It is kept
     /// and never overwritten: scans are never deleted (2026-11-08), and a
@@ -236,8 +236,9 @@ pub(super) async fn elsewhere(out: &Path, row: &ManifestRow, size: ImageSize) ->
         )
     };
     for f in formats(size) {
-        if let Some(n) = verified(&path(other, *f), row, size, *f).await {
-            return Elsewhere::OtherSet(n);
+        let scan = path(other, *f);
+        if let Some(n) = verified(&scan, row, size, *f).await {
+            return Elsewhere::OtherSet(n, scan);
         }
     }
     for set in [own, other] {
@@ -259,6 +260,45 @@ pub(super) async fn elsewhere(out: &Path, row: &ManifestRow, size: ImageSize) ->
         }
     }
     Elsewhere::Nothing
+}
+
+/// Give `to` (and its sidecar) the bytes of `from` (and its sidecar), a
+/// verified scan in the other set: a hard link, else a copy through a
+/// `.part` file. Never over a file already there, so nothing is lost; a
+/// page promoted from the buffer to the keep set gets its keep copy (and so
+/// its archive copy) without asking LoC again.
+pub(super) async fn link_into(from: &Path, to: &Path) -> anyhow::Result<()> {
+    let (from, to) = (from.to_owned(), to.to_owned());
+    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        std::fs::create_dir_all(to.parent().context("no parent directory")?)?;
+        // The scan first, then its sidecar: a sidecar never names bytes
+        // that aren't there.
+        for (src, dst) in [
+            (from.clone(), to.clone()),
+            (sidecar_path(&from), sidecar_path(&to)),
+        ] {
+            match std::fs::hard_link(&src, &dst) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(_) => {
+                    let mut part = dst.as_os_str().to_owned();
+                    part.push(".part");
+                    let part = PathBuf::from(part);
+                    std::fs::copy(&src, &part)?;
+                    std::fs::File::open(&part)?.sync_all()?;
+                    // `link` refuses a name that is taken, unlike `rename`.
+                    match std::fs::hard_link(&part, &dst) {
+                        Ok(()) => {}
+                        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                        Err(e) => return Err(e.into()),
+                    }
+                    std::fs::remove_file(&part)?;
+                }
+            }
+        }
+        Ok(())
+    })
+    .await?
 }
 
 /// Write `body` to `path` through a synced `.part` file and a rename.
