@@ -36,7 +36,7 @@ res = {"lines_total": len(rows), "lines_fully_checked": len(checked), "by_tier":
 def cer(get, subset):
     e = n = 0
     for c in subset: e += ed(get(c), c["checked"]); n += len(c["checked"])
-    return {"cer": round(e / n, 4), "letters": n, "lines": len(subset)}
+    return {"cer": round(e / n, 4) if n else None, "letters": n, "lines": len(subset)}
 for label, subset in [("all", checked), ("silver", [c for c in checked if c["tier"] == "silver"])]:
     res[label] = {"nt_reference": cer(lambda c: c["nt"], subset)}
     for name, m in eng.items():

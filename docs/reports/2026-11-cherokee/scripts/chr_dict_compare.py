@@ -129,6 +129,8 @@ for model, ls in lines.items():
                 k = "pair_letter_to_a_known_word"
             elif along and x in nt and y not in nt:
                 k = "pair_letter_away_from_a_known_word"
+            elif along and x in nt and y in nt:
+                k = "pair_letter_both_known"
             elif along:
                 k = "pair_letter_neither_known"
             elif y in nt and x not in nt:
