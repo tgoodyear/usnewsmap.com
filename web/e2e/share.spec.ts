@@ -227,6 +227,32 @@ test("baseline-dependent table previews wait for coverage and reject failures", 
   await expect(page.locator("main.results")).toHaveAttribute("data-share-ready", "false");
 });
 
+test("a relative rate that settles on page counts is ready to capture", async ({ page, isMobile }) => {
+  test.skip(!process.env.PW_BASE_URL || isMobile, "requires the API serving the built app");
+  // Two states have fewer places than the relative rate needs, so the page settles
+  // on page counts with a notice. That is the view to capture, not one still loading.
+  await page.goto("/?q=convention&bucket=month&state=IL,NY&norm=skew");
+  await expect(page.getByRole("status").filter({ hasText: "at least 5 places" })).toBeVisible();
+  await expect(page.locator("main.results")).toHaveAttribute("data-share-ready", "true", { timeout: 15_000 });
+  await expect(page.locator("main.results")).toHaveAttribute("data-share-error", "false");
+});
+
+test("a relative rate whose publication counts failed is reported as an error", async ({ page, isMobile }) => {
+  test.skip(!process.env.PW_BASE_URL || isMobile, "requires the API serving the built app");
+  await page.route("**/v1/coverage?**", (route) =>
+    route.fulfill({
+      status: 400,
+      contentType: "application/problem+json",
+      body: JSON.stringify({ type: "about:blank", title: "Coverage unavailable", status: 400 }),
+    }),
+  );
+  await page.goto("/?q=convention&bucket=month&norm=skew");
+  await expect(page.locator(".notice--error")).toContainText("Publication counts could not be loaded");
+  // The capture script waits for ready or error; neither would mean waiting out its timeout.
+  await expect(page.locator("main.results")).toHaveAttribute("data-share-error", "true", { timeout: 15_000 });
+  await expect(page.locator("main.results")).toHaveAttribute("data-share-ready", "false");
+});
+
 test("zero-result native states preview waits for its lazy map", async ({ request, isMobile }) => {
   test.skip(!process.env.PW_BASE_URL || isMobile, "requires the API serving the built app and Chromium");
   test.setTimeout(60_000);

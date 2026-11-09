@@ -1,6 +1,13 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
 
+// A route callback that calls `route.fetch()` can still be running when the test's last
+// assertion passes (a background request from the page). Wait for it, or Playwright fails
+// the test with "Test ended" / "Response has been disposed" while it runs.
+test.afterEach(async ({ page }) => {
+  await page.unrouteAll({ behavior: "wait" });
+});
+
 // The app uses the default basemap style. Serve a local style in its place,
 // with a GeoJSON source so MapLibre's worker must load, and no third-party
 // tile service is contacted.
