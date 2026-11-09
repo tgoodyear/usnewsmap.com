@@ -96,6 +96,35 @@ impl Trust {
         self.refuse_campaign(engine_image, manifest, scope, host_id)
     }
 
+    /// The policy for `job`'s exact `(language, profile, psm, dpi)`: a page job's by its page
+    /// language, a line job's (#1621) by its line language, in a line-job scope only. A line
+    /// scope's view carries its basis's hosts, and its basis's hold if it has none of its own;
+    /// none when its basis is missing or allows more than the line scope's `max_cer`.
+    fn job_policy(&self, job: &usnm_ocr_contract::boinc::Job) -> Option<PolicyView<'_>> {
+        let view = self.policy_view(job.route_language(), &job.engine.profile)?;
+        if view.line_basis.is_some() != job.lines.is_some()
+            || view.scope.psm != job.engine.psm
+            || view.scope.dpi != job.engine.dpi
+        {
+            return None;
+        }
+        let Some(basis) = view.line_basis else {
+            return Some(view);
+        };
+        let page = self.policy_view(&basis.page_scope.language, &basis.page_scope.profile)?;
+        if *page.scope != basis.page_scope
+            || page.line_basis.is_some()
+            || page.max_cer > view.max_cer
+        {
+            return None;
+        }
+        Some(PolicyView {
+            hosts: page.hosts,
+            hold: view.hold.or(page.hold),
+            ..view
+        })
+    }
+
     /// Returns the hosts trusted for `job`'s exact `(language, profile, psm, dpi)` and image.
     pub fn trusted_hosts_for_job(&self, job: &usnm_ocr_contract::boinc::Job) -> BTreeSet<u64> {
         if !immutable_image(&job.engine.image)
@@ -104,13 +133,10 @@ impl Trust {
         {
             return BTreeSet::new();
         }
-        let Some(policy) = self.policy_view(&job.message.language, &job.engine.profile) else {
+        let Some(policy) = self.job_policy(job) else {
             return BTreeSet::new();
         };
-        if policy.scope.psm != job.engine.psm
-            || policy.scope.dpi != job.engine.dpi
-            || policy.hold.is_some()
-        {
+        if policy.hold.is_some() {
             return BTreeSet::new();
         }
         policy
@@ -143,18 +169,12 @@ impl Trust {
                     .into(),
             );
         }
-        let Some(policy) = self.policy_view(&job.message.language, &job.engine.profile) else {
+        let Some(policy) = self.job_policy(job) else {
             return Some(
                 "source language, model profile or scoring configuration is outside calibrated trust"
                     .into(),
             );
         };
-        if job.engine.psm != policy.scope.psm || job.engine.dpi != policy.scope.dpi {
-            return Some(
-                "source language, model profile or scoring configuration is outside calibrated trust"
-                    .into(),
-            );
-        }
         if let Some(reason) = held(&policy) {
             return Some(reason);
         }
@@ -186,10 +206,7 @@ impl Trust {
         {
             return None;
         }
-        let policy = self.policy_view(&job.message.language, &job.engine.profile)?;
-        if policy.scope.psm != job.engine.psm || policy.scope.dpi != job.engine.dpi {
-            return None;
-        }
+        let policy = self.job_policy(job)?;
         held(&policy)
     }
 }

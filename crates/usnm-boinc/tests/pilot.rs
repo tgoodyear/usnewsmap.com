@@ -1678,6 +1678,7 @@ async fn a_held_scope_keeps_german_results_until_a_calibration_lifts_it() {
         },
         max_cer: 0.1,
         hold: None,
+        line_basis: None,
     };
     // The 20 Oct policy trusted every host for German; the hold trusts none and keeps them all.
     let held = Trust {
@@ -1692,6 +1693,7 @@ async fn a_held_scope_keeps_german_results_until_a_calibration_lifts_it() {
                 scope: deu_scope.clone(),
                 max_cer: 0.179,
                 hold: Some("German pages stay out of publishing until calibrated".into()),
+                line_basis: None,
             },
             eng,
         ],
@@ -4293,4 +4295,112 @@ async fn line_merge_v1_holds_a_page_with_under_half_model_lines() {
     assert_eq!(record.held.as_deref(), Some("line-merge-v1: model_share"));
     assert_ne!(record.stage, Stage::Published);
     assert!(fx.stores.out.list("pages").await.unwrap().is_empty());
+}
+
+/// A trust list with an English page scope trusting `host` on `image`, and the line-job scope
+/// for chr_phoenix (#1621) on that basis.
+fn line_trust(image: &str, host: u64, line_cer: f64) -> usnm_boinc::trust::Trust {
+    use usnm_boinc::trust::{LineBasis, Scope, ScopedPolicy, Trust};
+    let eng = ScopedPolicy {
+        hosts: [(image.to_owned(), [host].into())].into(),
+        manifest_sha256: "b".repeat(64),
+        scope: Scope {
+            language: "eng".into(),
+            profile: "eng".into(),
+            psm: 3,
+            dpi: 300,
+        },
+        max_cer: 0.1,
+        hold: None,
+        line_basis: None,
+    };
+    let lines = ScopedPolicy {
+        hosts: Default::default(),
+        manifest_sha256: "b".repeat(64),
+        scope: Scope {
+            language: "chr".into(),
+            profile: "chr_phoenix".into(),
+            psm: 13,
+            dpi: 300,
+        },
+        max_cer: line_cer,
+        hold: None,
+        line_basis: Some(LineBasis {
+            page_scope: eng.scope.clone(),
+            evidence: "#1621 e2e: 3 Phoenix pages, model CER 26.19% vs 26.04% on hand-cut crops"
+                .into(),
+        }),
+    };
+    Trust {
+        hosts: eng.hosts.clone(),
+        manifest_sha256: Some(eng.manifest_sha256.clone()),
+        scope: Some(eng.scope.clone()),
+        max_cer: eng.max_cer,
+        policies: vec![eng, lines],
+        v: usnm_boinc::trust::TRUST_VERSION,
+    }
+}
+
+#[tokio::test]
+async fn a_line_job_is_collected_through_the_trust_gate() {
+    let mut fx = Fixture::new("eng").await;
+    fx.line_read(LOC_CHEROKEE_ALTO);
+    let id = fx.export().await;
+    let record = usnm_boinc::load(&fx.options.root, &id).unwrap();
+    let files = fx.line_result(&id, "ᎦᏙᎯ ᎠᎴ\nᎦᎪᎯ\n");
+    let spool = fx.tmp.path().join("line-spool");
+    std::fs::create_dir_all(&spool).unwrap();
+    for (source, logical) in [
+        (&files.0, "result.json"),
+        (&files.1, "text.txt"),
+        (&files.2, "layout.xml"),
+    ] {
+        std::fs::copy(
+            source,
+            spool.join(format!("{}__file_{logical}", record.job.workunit())),
+        )
+        .unwrap();
+    }
+    let image = record.job.engine.image.clone();
+    let run = |t: usnm_boinc::trust::Trust, host: u64| {
+        let (root, spool, id) = (fx.options.root.clone(), spool.clone(), id.clone());
+        let stores = &fx.stores;
+        async move {
+            usnm_boinc::trust::collect(
+                &root,
+                &spool,
+                &id,
+                &t,
+                Some(host),
+                stores.curated.as_ref(),
+                stores.out.as_ref(),
+            )
+            .await
+        }
+    };
+    // A page policy alone, at PSM 3, trusts no line job.
+    let mut page_only = line_trust(&image, 42, 0.1);
+    page_only.policies.clear();
+    assert!(run(page_only, 42).await.is_err());
+    // A host the basis doesn't trust, or a basis looser than the line scope allows, is refused.
+    assert!(run(line_trust(&image, 41, 0.1), 42).await.is_err());
+    assert!(run(line_trust(&image, 42, 0.05), 42).await.is_err());
+    assert_ne!(
+        usnm_boinc::load(&fx.options.root, &id).unwrap().stage,
+        Stage::Published
+    );
+    // On its recorded basis, the line job is published.
+    let trust = line_trust(&image, 42, 0.1);
+    let path = fx.tmp.path().join("trust.json");
+    std::fs::write(&path, serde_json::to_vec(&trust).unwrap()).unwrap();
+    let loaded = usnm_boinc::trust::Trust::load(&path).unwrap();
+    assert_eq!(
+        run(loaded, 42).await.unwrap(),
+        usnm_boinc::trust::Collected::Published
+    );
+    assert_eq!(
+        usnm_boinc::load(&fx.options.root, &id).unwrap().stage,
+        Stage::Published
+    );
+    assert_eq!(fx.stores.out.list("pages").await.unwrap().len(), 1);
 }
