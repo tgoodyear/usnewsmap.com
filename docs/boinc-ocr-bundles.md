@@ -125,6 +125,21 @@ Eastern.
    Use the next version number (106 unless one is already taken; check the `app_version`
    table). Then check the feeder sends 106 for a single-page unit. The new worker runs
    single-page units exactly as 105 did, so nothing else changes yet.
+
+   **Host trust starts over with the new worker image.** `gold/trust.json` lists trusted hosts
+   under the full worker digest ([gold-check.md](../boinc/docs/gold-check.md)), so until a host
+   passes gold on the new image, `collect` holds its results. Before the server image is built,
+   add the new digest to `boinc/project/gold-engine-platforms.json` with each architecture's
+   `USNM_TESSERACT_IMAGE` (read from the published image configs). Release a `usnm_gold`
+   version whose Dockerfile pins the same worker. The English threshold carries over only if a
+   project host scores challenge `d8cd7279…` with the same per-crop edit counts on both images
+   ([boinc-native-ocr.md](boinc-native-ocr.md), "Threshold carry-over"). Then point the plan's
+   `gold_onboarding` at a campaign prepared for the new image, with `engine_base` set to its
+   amd64 engine. Gold onboarding matches hosts by the campaign's exact engine base, and the
+   controller takes one scope per language and profile, so it never reaches arm64 hosts.
+   Calibrate those with a separate campaign on the arm64 engine, submitted and promoted by
+   hand, as `current247c-arm-calibration-20261017` was for `247c`.
+
 3. **Server.** Stop CT 211's controller timer and wait for any running tick to finish. Move
    CT 230 to the new bridge image, as in the 24 October image switch on #529 (stop the server,
    `refresh-project-code.py apply` with a backup, point `SERVER_IMAGE` at it, start, check
