@@ -388,6 +388,8 @@ pub struct MergeStats {
     pub model: usize,
     /// Of them, lines that kept LoC's text, by why.
     pub fallback: BTreeMap<&'static str, usize>,
+    /// Each line that kept LoC's text, by id, and why.
+    pub fallback_lines: BTreeMap<String, &'static str>,
 }
 
 /// A line job's page after the merge.
@@ -457,6 +459,14 @@ pub fn merge(
             .into_iter()
             .map(|(why, n)| (why.as_str(), n))
             .collect(),
+        fallback_lines: ids
+            .iter()
+            .zip(&merged.sources)
+            .filter_map(|((_, _, id), source)| match source {
+                LineSource::Fallback(why) => Some((id.clone(), why.as_str())),
+                _ => None,
+            })
+            .collect(),
     };
     let mut desc = description(job, "LoC ALTO; Cherokee lines read again one crop each")?;
     desc.post = Some(usnm_alto::Step {
@@ -500,6 +510,9 @@ pub struct ReportRow {
     pub stats: MergeStats,
     /// Rule v1's verdict on the merged page against LoC's text: `pass`, or why LoC's stays.
     pub verdict: String,
+    /// The language and damage rate rule v1 found for the merged page and for LoC's text.
+    pub ours: (Option<String>, Option<f64>),
+    pub loc: (Option<String>, Option<f64>),
 }
 
 /// Rule v1 (`usnm_ocr_local::rule::judge`) on each line job under `root` with a result: the
@@ -546,7 +559,8 @@ pub fn report(root: &Path, spool: Option<&Path>) -> anyhow::Result<Vec<ReportRow
             .iter()
             .map(String::as_str)
             .collect();
-        let (_, _, verdict) = usnm_ocr_local::rule::judge(&ours, Some(&loc_text), &languages);
+        let (ours_scores, loc_scores, verdict) =
+            usnm_ocr_local::rule::judge(&ours, Some(&loc_text), &languages);
         rows.push(ReportRow {
             job: id,
             page: record.job.message.page.clone(),
@@ -555,6 +569,8 @@ pub fn report(root: &Path, spool: Option<&Path>) -> anyhow::Result<Vec<ReportRow
                 Ok(()) => "pass".into(),
                 Err(keep) => keep.as_str().into(),
             },
+            ours: (ours_scores.lang, ours_scores.damage_rate),
+            loc: (loc_scores.lang, loc_scores.damage_rate),
         });
     }
     Ok(rows)
@@ -770,6 +786,7 @@ mod tests {
                 lines: 3,
                 model: 2,
                 fallback: BTreeMap::from([("fewer_known", 1)]),
+                fallback_lines: BTreeMap::from([("b2l0".to_owned(), "fewer_known")]),
             }
         );
         let page =

@@ -4221,7 +4221,8 @@ async fn line_read_exports_cherokee_lines_and_imports_the_merged_page() {
     .unwrap();
     assert_eq!(
         stats,
-        serde_json::json!({"lines": 2, "model": 1, "fallback": {"fewer_known": 1}})
+        serde_json::json!({"lines": 2, "model": 1, "fallback": {"fewer_known": 1},
+            "fallback_lines": {"b1l1": "fewer_known"}})
     );
     let report = usnm_boinc::lines::report(&fx.options.root, None).unwrap();
     assert_eq!(report.len(), 1);
