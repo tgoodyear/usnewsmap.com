@@ -520,6 +520,8 @@ class ControllerTests(unittest.TestCase):
         or "native" (systemd's line alone)."""
         entries = []
         for at, invocation, outcome in runs:
+            # (json id, systemd id) for a run whose lines carry different ids.
+            invocation, native_id = invocation if isinstance(invocation, tuple) else (invocation, invocation)
             ids = {"_SYSTEMD_INVOCATION_ID": invocation} if invocation else {}
             if outcome in ("ok", "slow"):
                 entries.append((at, {**ids, "MESSAGE": json.dumps({"event": "boinc_batch_tick", "timings": {
@@ -531,7 +533,7 @@ class ControllerTests(unittest.TestCase):
                 entries.append((at + 1, {"MESSAGE_ID": "d9b373ed55a64feb8242e02dbe79a49c",
                                          "UNIT": "usnm-boinc-priority-controller.service",
                                          "UNIT_RESULT": "exit-code", "MESSAGE": "Failed.",
-                                         **({"INVOCATION_ID": invocation} if invocation else {})}))
+                                         **({"INVOCATION_ID": native_id} if native_id else {})}))
         return entries
 
     def test_failed_in_a_row_counts_finished_runs_since_the_last_good_one(self):
@@ -539,6 +541,8 @@ class ControllerTests(unittest.TestCase):
                 # Each run's JSON and systemd lines are one run, with or without invocation ids.
                 ([(NOW - 900, "a", "ok"), (NOW - 600, "b", "failed")], 1),
                 ([(NOW - 900, None, "ok"), (NOW - 600, None, "failed")], 1),
+                # Mixed: the JSON line without an id and systemd's with one are still one run.
+                ([(NOW - 900, "a", "ok"), (NOW - 600, ("", "b"), "failed")], 1),
                 ([(NOW - 900, "a", "failed"), (NOW - 600, "b", "failed")], 2),
                 ([(NOW - 900, None, "failed"), (NOW - 600, None, "native")], 2),
                 ([(NOW - 900, "a", "slow"), (NOW - 600, "b", "failed")], 2),

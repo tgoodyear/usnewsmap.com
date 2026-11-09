@@ -869,6 +869,11 @@ def controller(unit, maintenance=()):
         elif not key:
             near = [k for k, (t, _) in runs.items() if 0 <= at - t <= TICK_FAILURE_SAME_S]
             key = max(near, key=lambda k: runs[k][0]) if near else "at-%d" % at
+        elif key not in runs:
+            # A run seen first without its id (an anonymous line under a minute before) is this one.
+            near = [k for k, (t, _) in runs.items() if k.startswith("at-") and 0 <= at - t <= TICK_FAILURE_SAME_S]
+            if near:
+                runs[key] = runs.pop(max(near, key=lambda k: runs[k][0]))
         t, was = runs.get(key, (at, False))
         runs[key] = [max(t, at), was or failed]
 
