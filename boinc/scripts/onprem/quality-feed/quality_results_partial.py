@@ -23,7 +23,7 @@ REMOTE_WORK_SECONDS = 160  # Leave 20 seconds before the outer TERM for durable 
 INVENTORY_FILE = "inventory.json"
 # The full scheduling inventory reads every unit over NFS, which took over 15 minutes for about
 # 2,800 wave10 units (#1655). It runs outside the step lock with its own budget; passes reuse it.
-INVENTORY_BUDGET_SECONDS = 1500
+INVENTORY_BUDGET_SECONDS = 3600
 INVENTORY_REFRESH_SECONDS = 3600
 
 
@@ -528,7 +528,7 @@ def main(argv=None):
             or ((args.remote or args.load) and not args.snapshot)
             or (not (args.remote or args.remote_inventory)
                 and not re.fullmatch(r"sha256:[a-f0-9]{64}", args.engine_image or ""))
-            or not 60 <= args.inventory_budget_secs <= 3600
+            or not 60 <= args.inventory_budget_secs <= 7200
             or args.inventory_refresh_secs < 60
             or (args.load and args.snapshot_dir is None)):
         parser.error("invalid partial collection arguments")
