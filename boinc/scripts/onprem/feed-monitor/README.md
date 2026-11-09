@@ -6,12 +6,12 @@ The feed sources (`usnm-boinc-feed-source@.service`) and the evaluator (`usnm-bo
 
 1. A merge to `main` that changes one of the four scripts runs [feed-monitor-release.yml](../../../../.github/workflows/feed-monitor-release.yml). It runs the feed monitor tests, builds [bundle.sh](bundle.sh)'s archive, attests it and `SHA256SUMS` (build provenance), and publishes them twice:
    - as the release `feed-monitor-<yyyymmdd>-<sha7>`, which never changes;
-   - as the assets of the release `feed-monitor-latest`, which are replaced each time and never move back to an older commit.
+   - as the assets of the release `feed-monitor-latest`, which are replaced each time and only move forward along `main`.
 2. On each host, `usnm-feed-monitor-update.timer` runs [update.sh](update.sh) 2 minutes after the last run ended. It reads `feed-monitor-latest`'s `SHA256SUMS` from the release download (not the API, so it costs no rate limit) and stops if that names the installed archive.
-3. For a new archive it downloads it, checks the sum, reads its attestation from the public API with no token and verifies it with `gh attestation verify --bundle` (signer `feed-monitor-release.yml`, ref `refs/heads/main`). It then checks the contents: exactly the bundle's files, as regular files, matching `VERSION.json`, whose commit must be the attested one and no older than the installed one. It also checks that both scripts start.
-4. It unpacks the archive into `/opt/usnm-feed-monitor-releases/<version>/` and points the symlink `/opt/usnm-feed-monitor` at it in one rename. First it waits up to 120 s for any running feed unit to finish. Nothing restarts: the next timer run uses the new files.
+3. For a new archive it downloads it, checks the sum, reads its attestation from the public API with no token and verifies it with `gh attestation verify --bundle` (signer `feed-monitor-release.yml`, ref `refs/heads/main`). It then checks the contents: exactly the bundle's files, as regular files, matching `VERSION.json`, whose commit must be the attested one and the installed one or a descendant of it (the public compare API says which). It also checks that both scripts start.
+4. It unpacks the archive into `/opt/usnm-feed-monitor-releases/<version>/` and points the symlink `/opt/usnm-feed-monitor` at it in one rename. First it stops the feed timers, so no run starts, and waits up to 120 s for any running feed unit to finish; then it starts the timers again. Nothing else restarts: the next timer run uses the new files.
 
-An archive that fails a check is rejected (`/var/lib/usnm-feed-monitor-update/rejected`) and never tried again. A sum mismatch on `feed-monitor-latest` is a publication in progress and is retried. Deploys and rejections are logged at Warning:
+An archive that fails a check is rejected (`/var/lib/usnm-feed-monitor-update/rejected`) and never tried again. A sum mismatch on `feed-monitor-latest` is a publication in progress and is retried, and so are API errors and a gh that can't load its trusted signing data. Deploys and rejections are logged at Warning:
 
 ```sh
 journalctl -u usnm-feed-monitor-update -p warning

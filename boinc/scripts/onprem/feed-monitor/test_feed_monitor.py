@@ -41,10 +41,12 @@ def shell_list(path, name):
 
 
 # curl, as the scripts call it: release downloads served from STUB_DIR/releases/<tag>/,
-# the attestations API (an attestation exists when STUB_DIR/attested/<digest> does), and
-# gh's own release tarball for install.sh. Every call is logged to STUB_LOG.
+# the attestations API (an attestation exists when STUB_DIR/attested/<digest> does), the
+# compare API (answered from the scratch repository STUB_REPO), and gh's own release
+# tarball for install.sh. While STUB_DIR/api-down exists the API answers 503. Every call
+# is logged to STUB_LOG.
 STUB_CURL = r'''#!/usr/bin/env python3
-import json, os, shutil, sys
+import json, os, shutil, subprocess, sys
 args = sys.argv[1:]
 stubs = os.environ["STUB_DIR"]
 url = next(a for a in reversed(args) if a.startswith("http"))
@@ -52,7 +54,17 @@ out = args[args.index("-o") + 1] if "-o" in args else None
 with open(os.environ["STUB_LOG"], "a") as log:
     log.write("curl %s\n" % url)
 dl = "https://github.com/tgoodyear/usnewsmap.com/releases/download/"
-api = "https://api.github.com/repos/tgoodyear/usnewsmap.com/attestations/sha256:"
+api = "https://api.github.com/repos/tgoodyear/usnewsmap.com/"
+
+def answer(code, body):
+    with open(out, "w") as f:
+        f.write(json.dumps(body))
+    sys.stdout.write("%d" % code)
+    sys.exit(0)
+
+def ancestor(a, b):
+    return subprocess.run(["git", "-C", os.environ["STUB_REPO"], "merge-base", "--is-ancestor", a, b]).returncode == 0
+
 if url.startswith(dl):
     path = os.path.join(stubs, "releases", url[len(dl):])
     if not os.path.isfile(path):
@@ -60,18 +72,29 @@ if url.startswith(dl):
         sys.exit(22)
     shutil.copyfile(path, out)
 elif url.startswith(api):
-    d = url[len(api):]
-    if not os.path.exists(os.path.join(stubs, "attested", d)):
-        sys.exit(22)
-    print(json.dumps({"attestations": [{"bundle": {"digest": d}}]}))
+    assert "-w" in args, args
+    if os.path.exists(os.path.join(stubs, "api-down")):
+        answer(503, {"message": "unavailable"})
+    path = url[len(api):]
+    if path.startswith("attestations/sha256:"):
+        d = path[len("attestations/sha256:"):]
+        if not os.path.exists(os.path.join(stubs, "attested", d)):
+            answer(404, {"message": "Not Found"})
+        answer(200, {"attestations": [{"bundle": {"digest": d}}]})
+    assert path.startswith("compare/") and path.endswith("?per_page=1"), path
+    old, new = path[len("compare/"):-len("?per_page=1")].split("...")
+    status = ("identical" if old == new else "ahead" if ancestor(old, new)
+              else "behind" if ancestor(new, old) else "diverged")
+    answer(200, {"status": status})
 elif url.startswith("https://github.com/cli/cli/releases/download/"):
     shutil.copyfile(os.path.join(stubs, "gh.tar.gz"), out)
 else:
     sys.exit(7)
 '''
 
-# gh: --version, and attestation verify, which passes unless STUB_DIR/bad-signature exists
-# and names the commit STUB_DIR/attested/<digest> holds.
+# gh: --version, attestation trusted-root, and attestation verify, which passes unless
+# STUB_DIR/bad-signature exists and names the commit STUB_DIR/attested/<digest> holds.
+# While STUB_DIR/tuf-down exists, both fail as when the trusted signing data can't load.
 STUB_GH = r'''#!/usr/bin/env python3
 import hashlib, json, os, sys
 args = sys.argv[1:]
@@ -81,12 +104,18 @@ with open(os.environ["STUB_LOG"], "a") as log:
 if args == ["--version"]:
     print("gh version 2.103.3 (2026-10-26)")
     sys.exit(0)
+assert "GH_TOKEN" not in os.environ and "GITHUB_TOKEN" not in os.environ
+if os.path.exists(os.path.join(stubs, "tuf-down")):
+    sys.stderr.write("failed to create TUF client: connection refused\n")
+    sys.exit(1)
+if args == ["attestation", "trusted-root"]:
+    print("{}")
+    sys.exit(0)
 assert args[:2] == ["attestation", "verify"], args
 for flag, want in (("--repo", "tgoodyear/usnewsmap.com"),
                    ("--signer-workflow", "tgoodyear/usnewsmap.com/.github/workflows/feed-monitor-release.yml"),
                    ("--source-ref", "refs/heads/main")):
     assert args[args.index(flag) + 1] == want, (flag, args)
-assert "GH_TOKEN" not in os.environ and "GITHUB_TOKEN" not in os.environ
 if os.path.exists(os.path.join(stubs, "bad-signature")):
     sys.stderr.write("verification failed\n")
     sys.exit(1)
@@ -95,15 +124,20 @@ commit = open(os.path.join(stubs, "attested", d)).read().strip()
 print(json.dumps([{"verificationResult": {"signature": {"certificate": {"sourceRepositoryDigest": commit}}}}]))
 '''
 
-# systemctl: list-units prints STUB_DIR/busy's lines while it exists (each call takes one
-# away when STUB_DIR/busy-countdown does), and every other call succeeds.
+# systemctl: list-units of services prints STUB_DIR/busy's lines while it exists (each
+# call takes one away when STUB_DIR/busy-countdown does), list-units of timers prints
+# STUB_DIR/timers, and every other call succeeds.
 STUB_SYSTEMCTL = r'''#!/usr/bin/env python3
 import os, sys
 stubs = os.environ["STUB_DIR"]
 with open(os.environ["STUB_LOG"], "a") as log:
     log.write("systemctl %s\n" % " ".join(sys.argv[1:]))
 busy = os.path.join(stubs, "busy")
-if sys.argv[1:2] == ["list-units"] and os.path.exists(busy):
+timers = os.path.join(stubs, "timers")
+if sys.argv[1:2] == ["list-units"] and sys.argv[-1].endswith(".timer"):
+    if os.path.exists(timers):
+        sys.stdout.write(open(timers).read())
+elif sys.argv[1:2] == ["list-units"] and os.path.exists(busy):
     lines = open(busy).read().splitlines()
     if lines:
         print(lines[0])
@@ -213,7 +247,7 @@ class FeedMonitor(unittest.TestCase):
 
     def env(self):
         return dict(os.environ, USNM_FEED_MONITOR_TEST_ROOT=self.root, STUB_DIR=self.stubs,
-                    STUB_LOG=self.log, TMPDIR=self.tmp,
+                    STUB_LOG=self.log, STUB_REPO=self.repo, TMPDIR=self.tmp,
                     PATH=os.path.join(self.stubs, "bin") + os.pathsep + os.environ["PATH"])
 
     def commit(self, marker, when):
@@ -440,6 +474,64 @@ class FeedMonitor(unittest.TestCase):
         self.assertIn("is older than the installed", self.update(ok=False))
         self.assertEqual(self.rejected(), [digest])
 
+    def test_a_descendant_with_an_earlier_commit_time_installs(self):
+        self.release()
+        self.update()
+        tag, _ = self.release("clock skew", when=self.when - 86400)
+        self.update()
+        self.assertEqual(self.live(), tag)
+
+    def test_a_bundle_off_main_s_line_is_rejected(self):
+        self.release()
+        self.update()
+        base = git(self.repo, "rev-parse", "HEAD~0")
+        self.release("on main")
+        self.update()
+        main = git(self.repo, "rev-parse", "HEAD")
+        git(self.repo, "checkout", "-q", "-b", "side", base)
+        _, digest = self.release("side")
+        git(self.repo, "checkout", "-q", "main")
+        self.assertIn("isn't a descendant", self.update(ok=False))
+        self.assertEqual(self.rejected(), [digest])
+        self.assertTrue(self.live().endswith(main[:7]))
+
+    def test_api_errors_reject_nothing(self):
+        self.release()
+        self.update()
+        _, digest = self.release("second")
+        open(os.path.join(self.stubs, "api-down"), "w").close()
+        self.assertIn("HTTP 503", self.update(ok=False))
+        # Past the attestation wait too: an error isn't an answer.
+        pending = self.path("var/lib/usnm-feed-monitor-update/pending")
+        open(pending, "w").write("%s %d 0\n" % (digest, int(time.time()) - 4 * 3600))
+        self.assertIn("HTTP 503", self.update(ok=False))
+        self.assertEqual(self.rejected(), [])
+        os.remove(os.path.join(self.stubs, "api-down"))
+        open(pending, "w").write("%s %d 0\n" % (digest, int(time.time()) - 4 * 3600))
+        self.update()
+        self.assertEqual(self.rejected(), [])
+        self.assertTrue(self.live().endswith(git(self.repo, "rev-parse", "--short=7", "HEAD")))
+
+    def test_a_compare_error_rejects_nothing(self):
+        self.release()
+        self.update()
+        self.release("second")
+        # The attestation reads, the compare doesn't.
+        real = os.path.join(self.stubs, "bin", "curl")
+        os.rename(real, real + ".real")
+        self._stub(real, "#!/bin/sh\ncase \"$*\" in *compare/*) printf 000; exit 0;; esac\nexec \"$0.real\" \"$@\"\n")
+        self.assertIn("can't compare", self.update(ok=False))
+        self.assertEqual(self.rejected(), [])
+
+    def test_gh_that_can_t_load_its_signing_data_rejects_nothing(self):
+        tag, _ = self.release()
+        open(os.path.join(self.stubs, "tuf-down"), "w").close()
+        self.assertIn("trusted signing data", self.update(ok=False))
+        self.assertEqual(self.rejected(), [])
+        os.remove(os.path.join(self.stubs, "tuf-down"))
+        self.update()
+        self.assertEqual(self.live(), tag)
+
     def _forged(self, members):
         """A gzip tar archive of (name, bytes, type) with an attestation of HEAD."""
         buf = io.BytesIO()
@@ -520,6 +612,34 @@ class FeedMonitor(unittest.TestCase):
         os.remove(os.path.join(self.stubs, "busy"))
         self.update()
         self.assertEqual(self.live(), second)
+
+    def test_the_switch_stops_the_feed_timers_and_starts_them_again(self):
+        open(os.path.join(self.stubs, "timers"), "w").write(
+            "usnm-boinc-feed-health.timer loaded active waiting\nusnm-boinc-feed-source@server.timer loaded active waiting\n")
+        tag, _ = self.release()
+        self.update()
+        self.assertEqual(self.live(), tag)
+        calls = self.calls("systemctl")
+        timers = "usnm-boinc-feed-health.timer usnm-boinc-feed-source@server.timer"
+        stop, start = calls.index("systemctl stop " + timers), calls.index("systemctl start " + timers)
+        self.assertLess(stop, start)
+        self.assertEqual(len([c for c in calls if c.startswith("systemctl start")]), 1)
+        # Still busy when the wait ends: the timers run again all the same.
+        open(os.path.join(self.stubs, "busy"), "w").write("usnm-boinc-feed-health.service loaded activating start\n")
+        self.release("second")
+        open(self.log, "w").close()
+        self.update("--idle-secs", "0")
+        self.assertIn("systemctl start " + timers, self.calls("systemctl"))
+        self.assertEqual(self.live(), tag)
+
+    def test_a_pin_that_can_t_switch_fails(self):
+        first, _ = self.release()
+        self.update()
+        self.release("second")
+        self.update()
+        open(os.path.join(self.stubs, "busy"), "w").write("usnm-boinc-feed-health.service loaded activating start\n")
+        self.assertIn("run this again", self.update("--version", first, "--idle-secs", "0", ok=False))
+        self.assertFalse(os.path.exists(self.path("etc/usnm-feed-monitor-update/hold")))
 
     def test_runs_never_overlap(self):
         self.release()

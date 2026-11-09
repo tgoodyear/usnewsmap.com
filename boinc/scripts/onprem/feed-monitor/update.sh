@@ -24,12 +24,14 @@
 #    --bundle` checks it (the gh install.sh puts in
 #    /usr/local/libexec/usnm-feed-monitor, never signed in). CI attests
 #    before it publishes, so a missing attestation is asked for every run
-#    for 10 minutes, then every 30, and after 3 hours the archive is
-#    rejected;
+#    for 10 minutes, then every 30, and once the API still answers that
+#    there's none 3 hours on, the archive is rejected. An API error, or a gh
+#    that can't load its trusted signing data, rejects nothing: the run
+#    fails and the next one tries again;
 #  - it holds exactly bundle.sh's files, as regular files, and its
 #    VERSION.json names the attested commit and each file's sha256;
-#  - its commit isn't older than the installed one's (no downgrade without
-#    --version);
+#  - its commit is the installed one's or a descendant of it, as the
+#    public compare API says (no downgrade without --version);
 #  - feed_collect.py and feed_status.py start (--help) from it.
 # An archive that fails any of these is rejected: its digest goes into
 # /var/lib/usnm-feed-monitor-update/rejected, and it is never tried again.
@@ -38,10 +40,12 @@
 # in /opt/usnm-feed-monitor-releases/, renamed to its version, and
 # /opt/usnm-feed-monitor (the path the units run) becomes a symlink to it in
 # one rename. Hand-copied files there before the first install are moved
-# aside to /opt/usnm-feed-monitor.pre-ci-<time>, untouched. The switch waits
-# up to --idle-secs for every usnm-boinc-feed-* service run to end, so no
-# run imports one version's module into another's; if they don't, the next
-# run switches. Nothing is restarted: the units are timer-started oneshots,
+# aside to /opt/usnm-feed-monitor.pre-ci-<time>, untouched. For the switch
+# the active usnm-boinc-feed-* timers are stopped, so no run starts, and it
+# waits up to --idle-secs for the running ones to end, so no run imports one
+# version's module into another's; then the timers start again. If runs
+# don't end in time, the next run switches (a --version or --rollback run
+# fails instead). Nothing is restarted: the units are timer-started oneshots,
 # and the next run uses the new files. The --keep newest releases stay, and
 # always the live and the previous one. Each deploy logs, at Warning, the
 # version before and after.
@@ -132,6 +136,28 @@ idle() {
     sleep 2
   done
 }
+# The feed timers this run stopped, started again by resume (and on exit).
+paused=()
+resume() {
+  [ ${#paused[@]} -eq 0 ] || systemctl start "${paused[@]}" || warn "warning: can't start ${paused[*]} again"
+  paused=()
+}
+# Stops the active feed timers, so no run starts, then waits for the
+# running ones to end (idle). On false the timers run again.
+drain() {
+  mapfile -t paused < <(systemctl list-units --plain --no-legend --state=active 'usnm-boinc-feed-*.timer' 2> /dev/null | cut -d' ' -f1)
+  [ ${#paused[@]} -eq 0 ] || systemctl stop "${paused[@]}"
+  idle || { resume; return 1; }
+}
+# GET $API/$1 into file $2; prints the HTTP status, 000 when nothing answered.
+api_get() {
+  curl -sSL --retry 2 --max-time 60 -H 'Accept: application/vnd.github+json' \
+    -o "$2" -w '%{http_code}' "$API/$1" 2> /dev/null || true
+}
+# The pinned gh, never signed in.
+ghx() {
+  env -u GH_TOKEN -u GITHUB_TOKEN GH_CONFIG_DIR="$TMP/gh" GH_NO_UPDATE_NOTIFIER=1 GH_PROMPT_DISABLED=1 "$GH" "$@"
+}
 # Points the live path at release $1 in one rename; hand-copied files there
 # are moved aside first.
 switch_to() {
@@ -142,13 +168,8 @@ switch_to() {
   mv -T "$LIVE.new" "$LIVE"
 }
 
-current=$(live_tag)
-if [ -z "$VERSION" ] && ! $ROLLBACK && [ -e "$HOLD" ]; then
-  log "held: $HOLD exists, so the feed monitor stays on ${current:-its hand-copied files}"
-  exit 0
-fi
 TMP=$(mktemp -d "${TMPDIR:-/var/tmp}/usnm-feed-monitor-update.XXXXXX")
-trap 'rm -rf "$TMP"' EXIT
+trap 'resume; rm -rf "$TMP"' EXIT
 if [ "$DRY_RUN" = false ]; then
   mkdir -p "$(dirname "$LOCK")" "$STATE" "$RELEASES"
   exec 9> "$LOCK"
@@ -156,6 +177,12 @@ if [ "$DRY_RUN" = false ]; then
     log "another run holds $LOCK"
     exit 0
   fi
+fi
+# Read under the lock, so a pin or rollback that just ended is seen.
+current=$(live_tag)
+if [ -z "$VERSION" ] && ! $ROLLBACK && [ -e "$HOLD" ]; then
+  log "held: $HOLD exists, so the feed monitor stays on ${current:-its hand-copied files}"
+  exit 0
 fi
 
 if $ROLLBACK; then
@@ -166,8 +193,9 @@ if $ROLLBACK; then
     log "dry run: would roll back ${current:-the hand-copied files} -> $prev and hold"
     exit 0
   fi
-  idle || { warn "warning: feed monitor runs didn't end within $IDLE_SECS s; not rolled back"; exit 1; }
+  drain || { warn "warning: feed monitor runs didn't end within $IDLE_SECS s; not rolled back"; exit 1; }
   switch_to "$prev"
+  resume
   [ -z "$current" ] || [ "$current" = "$prev" ] || echo "$current" > "$STATE/previous"
   mkdir -p "$(dirname "$HOLD")"
   touch "$HOLD"
@@ -225,38 +253,46 @@ if [ -z "$VERSION" ]; then
   [[ $p_first =~ ^[0-9]+$ && $p_last =~ ^[0-9]+$ ]] || p_digest=""
   if [ "$p_digest" != "$digest" ]; then
     p_first=$now p_last=0
-  elif [ $((now - p_first)) -gt "$WAIT_SECS" ]; then
-    reject "no attestation $((WAIT_SECS / 3600)) hours after $tag first showed it"
   elif [ $((now - p_first)) -gt "$EAGER_SECS" ] && [ $((now - p_last)) -lt "$BACKOFF_SECS" ]; then
     exit 0
   fi
   $DRY_RUN || echo "$digest $p_first $now" > "$PENDING"
 fi
-if ! curl -fsSL --retry 3 --max-time 60 -H 'Accept: application/vnd.github+json' \
-  "$API/attestations/sha256:$digest" > "$TMP/attestations.json" 2> /dev/null; then
-  # The API answers 404 for a digest it has no attestation of.
-  echo '{"attestations": []}' > "$TMP/attestations.json"
-fi
-jq -c '.attestations[]?.bundle' "$TMP/attestations.json" > "$TMP/bundles.jsonl" 2> /dev/null || true
+code=$(api_get "attestations/sha256:$digest" "$TMP/attestations.json")
+case $code in
+  200) jq -c '.attestations[]?.bundle' "$TMP/attestations.json" > "$TMP/bundles.jsonl" 2> /dev/null || : > "$TMP/bundles.jsonl" ;;
+  404) : > "$TMP/bundles.jsonl" ;; # the API's answer for a digest it has no attestation of
+  *) warn "warning: can't read the attestations of $ARCHIVE@sha256:$digest (HTTP $code); trying again next run"; exit 1 ;;
+esac
 if [ ! -s "$TMP/bundles.jsonl" ]; then
   if [ -n "$VERSION" ]; then
     warn "warning: $VERSION ($digest) has no attestation; not installing it"
     exit 1
   fi
+  [ $((now - p_first)) -le "$WAIT_SECS" ] || reject "no attestation $((WAIT_SECS / 3600)) hours after $tag first showed it"
   log "waiting for the attestation of $ARCHIVE@sha256:$digest"
   exit 0
 fi
 mkdir -p "$TMP/gh"
-if ! env -u GH_TOKEN -u GITHUB_TOKEN GH_CONFIG_DIR="$TMP/gh" GH_NO_UPDATE_NOTIFIER=1 GH_PROMPT_DISABLED=1 \
-  "$GH" attestation verify "$TMP/$ARCHIVE" --bundle "$TMP/bundles.jsonl" --repo "$REPO" \
-  --signer-workflow "$WORKFLOW" --source-ref refs/heads/main \
-  --format json > "$TMP/verified.json" 2> "$TMP/verify.err"; then
-  warn "$(tail -5 "$TMP/verify.err")"
-  reject "its attestation doesn't verify as built by $WORKFLOW on main"
+verify() {
+  ghx attestation verify "$TMP/$ARCHIVE" --bundle "$TMP/bundles.jsonl" --repo "$REPO" \
+    --signer-workflow "$WORKFLOW" --source-ref refs/heads/main \
+    --format json > "$TMP/verified.json" 2> "$TMP/verify.err"
+}
+if ! verify; then
+  # gh fetches its trusted signing data even with --bundle; failing to is
+  # no verdict on the archive.
+  if ! ghx attestation trusted-root > /dev/null 2> "$TMP/root.err"; then
+    warn "warning: gh can't load its trusted signing data ($(tail -1 "$TMP/root.err")); trying again next run"
+    exit 1
+  fi
+  if ! verify; then
+    warn "$(tail -5 "$TMP/verify.err")"
+    reject "its attestation doesn't verify as built by $WORKFLOW on main"
+  fi
 fi
 commit=$(jq -r '[.[].verificationResult.signature.certificate.sourceRepositoryDigest] | unique | .[]' "$TMP/verified.json" 2> /dev/null || true)
 [[ $commit =~ ^[0-9a-f]{40}$ ]] || reject "its attestations name no single source commit"
-$DRY_RUN || rm -f "$PENDING"
 
 # Its contents: exactly the bundle's files, regular, nothing else.
 members=$(tar -tvzf "$TMP/$ARCHIVE" 2> /dev/null) || reject "it isn't a gzip tar archive"
@@ -275,15 +311,27 @@ version=$(jq -r .version "$stage/VERSION.json")
 [ "${version: -7}" = "${commit:0:7}" ] || reject "$version isn't commit $commit"
 at=$(jq -r .committed_at "$stage/VERSION.json")
 [[ $at =~ ^[0-9]{9,11}$ ]] || reject "its VERSION.json has no commit time"
-if [ -z "$VERSION" ] && [ -n "$current" ]; then
-  current_at=$(jq -r .committed_at "$RELEASES/$current/VERSION.json" 2> /dev/null || echo 0)
-  [[ $current_at =~ ^[0-9]+$ ]] || current_at=0
-  [ "$at" -ge "$current_at" ] || reject "$version is older than the installed $current (pin it with --version to downgrade)"
+# Only forward along main: commit times don't order commits, ancestry does.
+current_commit=""
+[ -z "$current" ] || current_commit=$(jq -r .commit "$RELEASES/$current/VERSION.json" 2> /dev/null || true)
+if [ -z "$VERSION" ] && [[ $current_commit =~ ^[0-9a-f]{40}$ ]] && [ "$current_commit" != "$commit" ]; then
+  code=$(api_get "compare/$current_commit...$commit?per_page=1" "$TMP/compare.json")
+  status=$(jq -r '.status // empty' "$TMP/compare.json" 2> /dev/null || true)
+  if [ "$code" != 200 ] || [ -z "$status" ]; then
+    warn "warning: can't compare $version with the installed $current (HTTP $code); trying again next run"
+    exit 1
+  fi
+  case $status in
+    ahead) ;;
+    behind) reject "$version is older than the installed $current (pin it with --version to downgrade)" ;;
+    *) reject "$version isn't a descendant of the installed $current ($status)" ;;
+  esac
 fi
 for f in feed_collect.py feed_status.py; do
   (cd "$stage" && python3 -E -s -B "$f" --help > /dev/null 2> "$TMP/start.err") ||
     { warn "$(tail -3 "$TMP/start.err")"; reject "$f from $version doesn't start"; }
 done
+$DRY_RUN || rm -f "$PENDING"
 log "$ARCHIVE@sha256:$digest: attestation verified for $commit ($version)"
 
 if $DRY_RUN; then
@@ -303,11 +351,16 @@ else
   echo "$digest" > "$RELEASES/$version/.bundle-sha256"
 fi
 touch "$RELEASES/$version"
-if ! idle; then
+if ! drain; then
+  if [ -n "$VERSION" ]; then
+    warn "warning: feed monitor runs didn't end within $IDLE_SECS s; $version is staged but not installed or held, run this again"
+    exit 1
+  fi
   log "feed monitor runs didn't end within $IDLE_SECS s; $version is staged and switches next run"
   exit 0
 fi
 switch_to "$version"
+resume
 [ -z "$current" ] || [ "$current" = "$version" ] || echo "$current" > "$STATE/previous"
 if [ -n "$VERSION" ]; then
   mkdir -p "$(dirname "$HOLD")"

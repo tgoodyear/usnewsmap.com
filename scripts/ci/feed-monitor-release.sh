@@ -3,9 +3,10 @@
 # after the job has attested both files: the release
 # feed-monitor-<yyyymmdd>-<sha7>, which never changes, and the same two
 # files as the assets of feed-monitor-latest, which hosts poll
-# (boinc/scripts/onprem/feed-monitor/update.sh). feed-monitor-latest never
-# moves back: when it already holds a bundle of a later commit, it's left
-# as it is. A versioned release that exists already (a re-run) is left as
+# (boinc/scripts/onprem/feed-monitor/update.sh). feed-monitor-latest only
+# moves forward along main: it's replaced only when this commit is the one
+# it holds or a descendant of it, and when its bundle can't be read the run
+# fails and leaves it. A versioned release that exists already (a re-run) is left as
 # it is.
 #   scripts/ci/feed-monitor-release.sh --dist DIR
 #
@@ -29,7 +30,6 @@ done
 (cd "$DIST" && sha256sum --check --quiet SHA256SUMS)
 meta=$(tar -xzOf "$DIST/usnm-feed-monitor.tar.gz" VERSION.json)
 tag=$(jq -r .version <<< "$meta")
-at=$(jq -r .committed_at <<< "$meta")
 [ "$(jq -r .commit <<< "$meta")" = "$GITHUB_SHA" ] || { echo "error: the bundle isn't of $GITHUB_SHA" >&2; exit 1; }
 [[ $tag =~ ^feed-monitor-[0-9]{8}-[0-9a-f]{7}$ ]] || { echo "error: the bundle names no release ($tag)" >&2; exit 1; }
 digest=$(awk '{ print $1 }' "$DIST/SHA256SUMS")
@@ -82,13 +82,22 @@ if [ -z "$s" ]; then
   echo "created $latest with $tag"
   exit 0
 fi
-old=$(mktemp -d)
-if gh release download "$latest" --repo "$GITHUB_REPOSITORY" --pattern usnm-feed-monitor.tar.gz --dir "$old" 2> /dev/null; then
-  old_at=$(tar -xzOf "$old/usnm-feed-monitor.tar.gz" VERSION.json | jq -r .committed_at) || old_at=0
-  [[ $old_at =~ ^[0-9]+$ ]] || old_at=0
-  if [ "$old_at" -gt "$at" ]; then
-    echo "::notice::$latest holds a bundle of a later commit; leaving it"
-    exit 0
+if [[ ",${s#* }," == *,usnm-feed-monitor.tar.gz,* ]]; then
+  old=$(mktemp -d)
+  gh release download "$latest" --repo "$GITHUB_REPOSITORY" --pattern usnm-feed-monitor.tar.gz --dir "$old" ||
+    { echo "error: can't download $latest's bundle; leaving it" >&2; exit 1; }
+  old_commit=$(tar -xzOf "$old/usnm-feed-monitor.tar.gz" VERSION.json | jq -r .commit) || old_commit=""
+  [[ $old_commit =~ ^[0-9a-f]{40}$ ]] || { echo "error: $latest's bundle names no commit; leaving it" >&2; exit 1; }
+  if [ "$old_commit" != "$GITHUB_SHA" ]; then
+    status=$(gh api "repos/$GITHUB_REPOSITORY/compare/$old_commit...$GITHUB_SHA?per_page=1" --jq .status) ||
+      { echo "error: can't compare $old_commit with $GITHUB_SHA; leaving $latest" >&2; exit 1; }
+    case $status in
+      ahead) ;;
+      behind)
+        echo "::notice::$latest holds a bundle of a later commit ($old_commit); leaving it"
+        exit 0 ;;
+      *) echo "error: $GITHUB_SHA isn't a descendant of $latest's $old_commit ($status); leaving it" >&2; exit 1 ;;
+    esac
   fi
 fi
 gh release upload "$latest" "$DIST/usnm-feed-monitor.tar.gz" --repo "$GITHUB_REPOSITORY" --clobber
