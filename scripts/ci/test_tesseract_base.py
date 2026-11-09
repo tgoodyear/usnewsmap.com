@@ -216,6 +216,25 @@ class Workflows(unittest.TestCase):
         self.assertIn("if: github.ref == 'refs/heads/main'", text)
         self.assertEqual(text.count("actions/attest-build-provenance@"), 2)
 
+    def test_package_lists_name_packages_without_their_architecture(self):
+        # dpkg-query -W's default names Multi-Arch libraries as libtesseract5:amd64.
+        text = BASE_WORKFLOW.read_text()
+        calls = re.findall(r"dpkg-query \S+ -W.*", text)
+        self.assertTrue(calls)
+        for call in calls:
+            self.assertIn("-f '${Package}\\t${Version}\\n'", call)
+        self.assertIn("grep -qx $'libtesseract5\\t5.5.0-1+b1'", text)
+
+    def test_ghcr_login_lasts_through_the_attestations(self):
+        steps = BASE_WORKFLOW.read_text().split("\n      - ")
+        names = [step.splitlines()[0] for step in steps]
+        self.assertNotIn("docker logout", "".join(s for s in steps if "trap" in s))
+        logout = next(i for i, s in enumerate(steps) if "run: docker logout ghcr.io" in s)
+        self.assertIn("if: always()", steps[logout])
+        last_attest = max(i for i, s in enumerate(steps) if "attest-build-provenance@" in s)
+        upload = max(i for i, s in enumerate(steps) if "upload-artifact@" in s)
+        self.assertGreater(logout, max(last_attest, upload), names)
+
 
 if __name__ == "__main__":
     unittest.main()

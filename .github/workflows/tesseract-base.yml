@@ -68,7 +68,7 @@ jobs:
             [ "$got" = "$snapshot" ] || { echo "::error::$base base is labelled '$got', not $snapshot"; exit 1; }
             got=$(docker image inspect --format '{{index .Config.Labels "org.usnewsmap.apt-recipe"}}' "$IMAGE:$GITHUB_SHA-$base-$ARCH")
             [ "$got" = "$recipe" ] || { echo "::error::$base base's recipe label is '$got', not $recipe"; exit 1; }
-            docker run --rm --network=none --entrypoint dpkg-query "$IMAGE:$GITHUB_SHA-$base-$ARCH" -W \
+            docker run --rm --network=none --entrypoint dpkg-query "$IMAGE:$GITHUB_SHA-$base-$ARCH" -W -f '${Package}\t${Version}\n' \
               > "$RUNNER_TEMP/dpkg-$base-$ARCH.txt"
           done
           grep -qx $'tesseract-ocr\t5.5.0-1+b1' "$RUNNER_TEMP/dpkg-engine-$ARCH.txt"
@@ -83,8 +83,8 @@ jobs:
           ACTOR: ${{ github.actor }}
           ARCH: ${{ matrix.arch }}
         run: |
+          # Logged in until the cleanup step: the attestations push to the registry with these credentials.
           printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$ACTOR" --password-stdin
-          trap 'docker logout ghcr.io' EXIT
           prefix=${ARCH^^}
           mkdir -p "$RUNNER_TEMP/lock"
           for base in engine tools; do
@@ -130,6 +130,9 @@ jobs:
             ${{ runner.temp }}/dpkg-*.txt
             ${{ runner.temp }}/lock/*.txt
           if-no-files-found: error
+      - name: Log out of GHCR
+        if: always()
+        run: docker logout ghcr.io
   lock:
     name: apt bases (lock lines)
     needs: publish
