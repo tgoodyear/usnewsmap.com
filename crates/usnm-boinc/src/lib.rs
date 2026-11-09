@@ -1043,6 +1043,13 @@ pub async fn import(
             &serde_json::to_vec_pretty(&file)?,
         )?;
         if admission.verdict != "admit" {
+            // The checked result is kept, as a published one is, result.json last as the
+            // commit marker, so the readings outlive the spool and `line-report` finds them.
+            if !accepted.join("result.json").exists() {
+                atomic(&accepted.join("text.txt"), &raw_text)?;
+                atomic(&accepted.join("layout.xml"), &raw_alto)?;
+                atomic(&accepted.join("result.json"), &result_bytes)?;
+            }
             let reason = format!("{}: {}", admission.rule, admission.verdict);
             if record.held.as_deref() != Some(reason.as_str()) {
                 record.held = Some(reason);

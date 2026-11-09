@@ -4295,6 +4295,28 @@ async fn line_merge_v1_holds_a_page_with_under_half_model_lines() {
     assert_eq!(record.held.as_deref(), Some("line-merge-v1: model_share"));
     assert_ne!(record.stage, Stage::Published);
     assert!(fx.stores.out.list("pages").await.unwrap().is_empty());
+    // Its checked result is kept, so the report still has the page once the spool is gone.
+    let accepted = fx.options.root.join("jobs").join(&id).join("accepted");
+    for name in ["result.json", "text.txt", "layout.xml"] {
+        assert!(accepted.join(name).exists(), "{name}");
+    }
+    assert_eq!(
+        std::fs::read(accepted.join("text.txt")).unwrap(),
+        "\nᎦᎪᎯ\n".as_bytes()
+    );
+    std::fs::remove_dir_all(files.0.parent().unwrap()).unwrap();
+    let report = usnm_boinc::lines::report(&fx.options.root, None).unwrap();
+    assert_eq!(report.len(), 1);
+    assert_eq!(report[0].line_merge.verdict, "model_share");
+    // Collecting it again keeps it held, from the kept result.
+    fx.import(&id, &files).await.unwrap();
+    assert_eq!(
+        usnm_boinc::load(&fx.options.root, &id)
+            .unwrap()
+            .held
+            .as_deref(),
+        Some("line-merge-v1: model_share")
+    );
 }
 
 /// A trust list with an English page scope trusting `host` on `image`, and the line-job scope
@@ -4403,4 +4425,51 @@ async fn a_line_job_is_collected_through_the_trust_gate() {
         Stage::Published
     );
     assert_eq!(fx.stores.out.list("pages").await.unwrap().len(), 1);
+}
+
+/// The hand-off collect brings a line job's two sidecars down exactly (#1621), and nothing for
+/// a page job.
+#[tokio::test]
+async fn the_handoff_brings_a_line_jobs_sidecars_exactly() {
+    let mut fx = Fixture::new("eng").await;
+    fx.line_read(LOC_CHEROKEE_ALTO);
+    let id = fx.export().await;
+    let handoff = store(fx.tmp.path(), "handoff");
+    usnm_boinc::handoff::put(handoff.as_ref(), &fx.options.root, "dispatch")
+        .await
+        .unwrap();
+    let collect_root = fx.tmp.path().join("collect");
+    usnm_boinc::handoff::get_file(
+        handoff.as_ref(),
+        &format!("dispatch/jobs/{id}/record.json"),
+        &collect_root.join("jobs").join(&id).join("record.json"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        usnm_boinc::handoff::get_line_read(handoff.as_ref(), &collect_root, &id)
+            .await
+            .unwrap(),
+        2
+    );
+    usnm_boinc::lines::sidecars(&collect_root.join("jobs").join(&id)).unwrap();
+    // A page job has none to bring.
+    let page = Fixture::new("eng").await;
+    let page_id = page.export().await;
+    usnm_boinc::handoff::put(handoff.as_ref(), &page.options.root, "dispatch")
+        .await
+        .unwrap();
+    usnm_boinc::handoff::get_file(
+        handoff.as_ref(),
+        &format!("dispatch/jobs/{page_id}/record.json"),
+        &collect_root.join("jobs").join(&page_id).join("record.json"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        usnm_boinc::handoff::get_line_read(handoff.as_ref(), &collect_root, &page_id)
+            .await
+            .unwrap(),
+        0
+    );
 }

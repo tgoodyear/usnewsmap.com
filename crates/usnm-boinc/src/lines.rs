@@ -252,27 +252,14 @@ impl LineEngine for Tesseract {
     }
 }
 
-/// `text`'s words spread over `rect` by their lengths, a space's width between them.
-fn spread(rect: Rect, text: &str, conf: Option<f64>) -> Vec<Word> {
-    let words: Vec<&str> = text.split_whitespace().collect();
-    let units: usize =
-        words.iter().map(|w| w.chars().count()).sum::<usize>() + words.len().saturating_sub(1);
-    if units == 0 {
-        return Vec::new();
-    }
-    let per = rect.width() / units as f64;
-    let mut x = rect.x0;
-    words
-        .iter()
-        .map(|w| {
-            let x1 = x + per * w.chars().count() as f64;
-            let word = Word {
-                rect: Rect::new(x, rect.y0, x1, rect.y1),
-                text: (*w).to_owned(),
-                conf,
-            };
-            x = x1 + per;
-            word
+/// `text`'s words, each with its line's box: a line read whole has no word geometry, and the
+/// stored ALTO's finer elements inherit their parent's box (13 §13.8.2), never a guess.
+fn line_words(rect: Rect, text: &str, conf: Option<f64>) -> Vec<Word> {
+    text.split_whitespace()
+        .map(|w| Word {
+            rect,
+            text: w.to_owned(),
+            conf,
         })
         .collect()
 }
@@ -358,7 +345,7 @@ pub async fn ocr_lines(
         let rect = Rect::new(x0, y0, x1, y1);
         out_lines.push(Line {
             rect,
-            words: spread(rect, &one, reading.conf),
+            words: line_words(rect, &one, reading.conf),
             hyphen: None,
         });
     }
@@ -375,16 +362,15 @@ pub async fn ocr_lines(
             lines: out_lines,
         }],
     };
-    let alto = usnm_alto::write(
-        &page,
-        &description(
-            job,
-            "LoC ALTO line boxes, one crop each",
-            Some(&completed_at),
-        )?,
-        &lines.language,
-    )
-    .into_bytes();
+    let mut desc = description(
+        job,
+        "LoC ALTO line boxes, one crop each",
+        Some(&completed_at),
+    )?;
+    desc.ocr
+        .settings
+        .push(("granularity".into(), page.granularity.as_str().into()));
+    let alto = usnm_alto::write(&page, &desc, &lines.language).into_bytes();
     ensure!(alto.len() <= boinc::MAX_ALTO, "result over limit");
     usnm_alto::check(&alto, &usnm_alto::Limits::default())?;
     let result = ResultManifest {
@@ -468,10 +454,14 @@ pub fn merge(
             continue;
         }
         let line = &mut page.blocks[*bi].lines[*li];
-        line.words = spread(line.rect, text, None);
+        line.words = line_words(line.rect, text, None);
         if text.ends_with(['-', '⸗', '¬', '‐']) {
             line.hyphen = None;
         }
+    }
+    // A line the model read has its words at the line's box: the page's geometry is no finer.
+    if merged.model() > 0 && page.granularity < Granularity::Line {
+        page.granularity = Granularity::Line;
     }
     page.rescale(f64::from(record.scan_width), f64::from(record.scan_height));
     let stats = MergeStats {
@@ -496,6 +486,9 @@ pub fn merge(
         "LoC ALTO; Cherokee lines read again one crop each",
         completed_at,
     )?;
+    desc.ocr
+        .settings
+        .push(("granularity".into(), page.granularity.as_str().into()));
     desc.post = Some(usnm_alto::Step {
         date_time: None,
         settings: vec![
@@ -946,6 +939,11 @@ mod tests {
             Rect::new(20.0, 15.0, 40.0, 25.0)
         );
         assert_eq!(page.blocks[0].lines[0].words.len(), 2);
+        for line in &page.blocks[0].lines {
+            for word in &line.words {
+                assert_eq!(word.rect, line.rect);
+            }
+        }
         // A box off the scan fails the page.
         let off = line_job(JP2, &[("a", [80, 15, 90, 25])]);
         assert!(ocr_lines(&engine, &off, JP2).await.is_err());
@@ -989,6 +987,17 @@ mod tests {
             usnm_alto::parse(merged.alto.as_bytes(), &usnm_alto::ParseOptions::default()).unwrap();
         assert_eq!((page.width, page.height), (2000.0, 2000.0));
         assert_eq!(usnm_alto::text(&page), merged.text);
+        // Every word lies within its line, and the page claims line geometry, no finer.
+        assert!(merged.alto.contains("granularity=line"), "{}", merged.alto);
+        for line in page.blocks.iter().flat_map(|b| &b.lines) {
+            for word in &line.words {
+                let (w, l) = (word.rect, line.rect);
+                assert!(
+                    w.x0 >= l.x0 && w.y0 >= l.y0 && w.x1 <= l.x1 && w.y1 <= l.y1,
+                    "{word:?} outside {l:?}"
+                );
+            }
+        }
         // The same result merges to the same bytes, whenever: the ALTO's date is the result's.
         let at = Some("2026-11-09T12:00:00Z");
         let once = merge(&job, alto, &record, result, at).unwrap();

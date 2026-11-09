@@ -1427,10 +1427,8 @@ class HandoffAndBridgeQualitySteps(unittest.TestCase):
         self.assertIn(f"--job {job}", calls[finish])
         self.assertIn("--queue-url https://usnmst.queue.core.windows.net", calls[finish])
         # A line job's sidecars (#1621) come down before collect merges its result.
-        (sidecars,) = [i for i, c in enumerate(calls)
-                       if f"--prefix dispatch/jobs/{job}/line-read" in c]
-        self.assertTrue(calls[sidecars].startswith("handoff get "), calls[sidecars])
-        self.assertIn(f"/jobs/{job}/line-read", calls[sidecars])
+        (sidecars,) = [i for i, c in enumerate(calls) if c.startswith("handoff get-line-read ")]
+        self.assertIn(f"--job {job}", calls[sidecars])
         self.assertLess(sidecars, collect)
 
     def test_handoff_collect_without_a_queue_url_or_after_a_failure_deletes_nothing(self):

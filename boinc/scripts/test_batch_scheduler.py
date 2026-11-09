@@ -1136,6 +1136,10 @@ elif args[0] == "export":
             prefixes = [call[call.index("--prefix") + 1] for call in calls
                         if call[:2] == ["handoff", "get"]]
             self.assertEqual(prefixes, ["dispatch/jobs/" + "a" * 64 + "/accepted"])
+            # A line job's sidecars (#1621) come as exactly its two objects, not a prefix.
+            line_read = [call for call in calls if call[:2] == ["handoff", "get-line-read"]]
+            self.assertEqual(len(line_read), 1)
+            self.assertEqual(line_read[0][line_read[0].index("--job") + 1], "a" * 64)
             collect = next(call for call in calls if call[0] == "collect")
             self.assertIn("--trust", collect)
             self.assertEqual(collect[collect.index("--host-id") + 1], "42")
