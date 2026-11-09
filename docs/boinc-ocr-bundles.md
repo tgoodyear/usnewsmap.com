@@ -135,7 +135,10 @@ Eastern.
    project host scores challenge `d8cd7279…` with the same per-crop edit counts on both images
    ([boinc-native-ocr.md](boinc-native-ocr.md), "Threshold carry-over"). Then point the plan's
    `gold_onboarding` at a campaign prepared for the new image, with `engine_base` set to its
-   amd64 engine.
+   amd64 engine. Gold onboarding matches hosts by the campaign's exact engine base, and the
+   controller takes one scope per language and profile, so it never reaches arm64 hosts.
+   Calibrate those with a separate campaign on the arm64 engine, submitted and promoted by
+   hand, as `current247c-arm-calibration-20261017` was for `247c`.
 
 3. **Server.** Stop CT 211's controller timer and wait for any running tick to finish. Move
    CT 230 to the new bridge image, as in the 24 October image switch on #529 (stop the server,
