@@ -41,3 +41,7 @@ baselines and adapted models with `usnm_qwen`.
 - [The scan-cache hand-off](scan-cache-handoff.md): getting one page from the scan cache to the BOINC server, with the infrastructure, the runbook, the scan fetcher's identity and the quality wave's page JPEG cache.
 - [Allocation, recovery and acceptance](allocation-and-recovery.md): how a cohort is allocated, how to recover failed work, and the live acceptance exercise.
 - [The gold check](gold-check.md): scoring a host's engine on public ground truth, host trust for `usnm_ocr`, building the gold bundle and engine routing.
+- [Releasing an app version](app-release.md): signing and publishing app versions, the feeder sizing, the native GPU windows and client acceptance.
+- [The AMD #885 release](amd-885-release.md): the record of the scoped AMD Vulkan production release.
+- [The bootstrap pipeline](bootstrap-pipeline.md): the reviewed orchestration of the existing BOINC scripts (#551).
+- [Database TLS acceptance](db-tls-acceptance.md): the local BOINC database TLS checks.

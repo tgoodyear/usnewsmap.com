@@ -15,7 +15,7 @@ Volunteers should start with [docs/boinc-volunteer.md](../docs/boinc-volunteer.m
 - `infra/boinc/`: the Azure fallback Bicep for the stock server (prod runs it on-prem and deploys only the identities, Key Vault, VNet and static site): a Container App (Apache, PHP and the stock daemons, one replica, no scale to zero), a MySQL flexible server, an Azure Files share, Key Vault, Log Analytics, a static site for the human pages, and a manual-trigger Container Apps Job that runs `usnm-boinc submit`. Lint and compile only.
 - `project/`: `config.xml.template` (daemons come from `apps/daemons.xml`), `project.xml` and `plan_class_spec.xml` (the `docker` plan class).
 - `apps/`: container recipes, app templates, engine locks and native app support.
-- `images/`: the server image (stock BOINC, Apache, PHP and the daemons in one container) and the bridge job image; see [docs/images.md](docs/images.md).
+- `images/`: the server image (stock BOINC, Apache, PHP and the daemons in one container), the bridge job image and the signed app-version image; see [docs/images.md](docs/images.md).
 - `boinc/scripts/provision-boinc.sh` and `boinc/scripts/build-boinc-images.sh`: provision the stack and build and pin its server and bridge images. For an Azure-hosted server, secrets and project initialization run as in-VNet Container Apps Jobs. The signing and app-version release workflow remains in `boinc/scripts/boinc-app-release.sh`; its private signing key stays offline.
 - `docs/`: [design](docs/design.md), [interface](docs/interface.md) (what is assumed of #441), and [verified facts](docs/verified-facts.md) (each with its source and fetch date), and [images and deployment steps](docs/images.md).
 
@@ -55,7 +55,7 @@ From the repository root:
 for f in boinc/project/project.xml boinc/project/plan_class_spec.xml boinc/project/config.xml.template; do
   python3 -c 'import sys, xml.dom.minidom as m; m.parse(sys.argv[1])' "$f"
 done
-shellcheck -x -S warning boinc/scripts/*.sh boinc/images/server/*.sh
+shellcheck -x -S warning boinc/scripts/*.sh boinc/images/server/*.sh boinc/images/appver/*.sh boinc/images/bridge/*.sh
 for f in $(git ls-files 'boinc/infra/*.bicep'); do bicep build "$f" --stdout > /dev/null; done
 ```
 

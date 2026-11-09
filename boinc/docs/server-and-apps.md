@@ -50,7 +50,7 @@ python3 boinc/scripts/install.py --project /srv/boinc/newspapers \
   --platform x86_64-pc-linux-gnu --version 1.1
 ```
 
-`boinc/project/plan_class_spec.xml` defines both the container plan classes (`docker`, `docker_mt`, `docker_nvidia_cuda`) and the native `usnm_qwen` plan classes (`apple_gpu_8b`, `nvidia_cuda_8b`, `nvidia_cuda_2b`, `nvidia_vulkan_2b`, `mt`). For native `usnm_qwen`, `boinc/apps/qwen/llama.lock` pins the upstream `llama.cpp` release tag and per-platform archive SHA-256 digests, and the GGUF model templates use `<sticky/>` and `<no_delete/>` so volunteer clients cache models across workunits (`client/client_types.cpp:387`) and `file_deleter` (`sched/file_deleter.cpp:160-171`) never deletes shared model files from `download/`.
+`boinc/project/plan_class_spec.xml` defines both the container plan classes (`docker`, `docker_mt`, `docker_mt_2b`, `docker_nvidia_cuda`, `docker_nvidia_cuda_8b`, `docker_nvidia_train`, `docker_intel_vulkan`, `docker_intel_opencl_4b`) and the native `usnm_qwen` plan classes (`mt`, `apple_gpu_8b`, `nvidia_cuda_8b`, `nvidia_cuda_2b`, `nvidia_vulkan_8b`, `nvidia_vulkan_6gb_8b`, `nvidia_vulkan_2b`, `intel_vulkan_8b`, `amd_vulkan_8b`). For native `usnm_qwen`, `boinc/apps/qwen/llama.lock` pins the upstream `llama.cpp` release tag and per-platform archive SHA-256 digests, and the GGUF model templates use `<sticky/>` and `<no_delete/>` so volunteer clients cache models across workunits (`client/client_types.cpp`) and `file_deleter` (`sched/file_deleter.cpp`) never deletes shared model files from `download/`.
 
 The installer refuses an existing version directory. It does not alter running
 server configuration. Sign and publish its files using BOINC's normal
@@ -193,7 +193,7 @@ Two settings carry this on the server:
   below changed, whose `xml_doc` has no `<no_delete/>`.
 - Every input template (`boinc/apps/*_in`) marks every `file_info`
   `<no_delete/>`, which `file_deleter` honours per file
-  (`sched/file_deleter.cpp:160-171`). This is a second guard: a `file_deleter`
+  (`sched/file_deleter.cpp`). This is a second guard: a `file_deleter`
   started without the flag still skips files of workunits created from these
   templates. It does not change what volunteers' clients do with the files;
   `<sticky/>` does that, and the page files stay non-sticky.

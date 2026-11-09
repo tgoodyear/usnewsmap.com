@@ -53,7 +53,10 @@ Volunteers pull the worker image from a public GHCR package,
 `linux/amd64` and `linux/arm64` images on matching Ubuntu runners. The Debian and
 Rust bases are pinned per architecture in that workflow; no QEMU setup is used.
 Publishing starts by hand from `main` and combines both tested images into one OCI
-index only after both builds pass. Pull requests build and test without pushing:
+index only after both builds pass. Pull requests build and test without pushing, and only
+when the worker's own recipe changes; they build arm64 only when its Containerfile, the
+engine's Containerfile, `.dockerignore`, the workflow or its build action changes. A merge to
+`main` builds both architectures without publishing (#1585). To publish:
 
 ```sh
 c="worker-$(date -u +%Y%m%dT%H%M%S)"

@@ -15,8 +15,8 @@ boinc/scripts/onprem-step.sh --env prod --target bridge --step <step> [--var NAM
 
 `--wait-mins` is required. `boinc/scripts/start-boinc-bridge.sh` starts only the Azure bridge job
 (`boinc/infra/boinc/modules/bridge-job.bicep`) of a `"server": "azure"`
-environment and the hand-off job (`--target handoff`). The hand-off job's `claim`, `release`
-and `collect` can also run on the on-prem host as `onprem-step.sh --target handoff`
+environment and the hand-off job (`--target handoff`). The hand-off job's `claim`, `release`,
+`dead-letter`, `deadline-retry`, `collect` and `export` can also run on the on-prem host as `onprem-step.sh --target handoff`
 ([boinc-onprem.md](../../docs/boinc-onprem.md#hand-off-steps-on-prem)). Since 6 November 2026 prod has no Azure hand-off job (#308): `USNM_BOINC_HANDOFF_IMAGE` is out of prod's settings, and the on-prem controller runs `claim`, `collect` and `export` on the BOINC host ([hand-off steps on-prem](../../docs/boinc-onprem.md#hand-off-steps-on-prem)). What follows about the job applies only to an environment whose settings still name its image. Where the job exists, its other steps run in Azure:
 
 ```sh
@@ -127,13 +127,13 @@ The normal one-page controller admitted
 (LoC version `kyu_frenchie_ver02`) under plan
 `boinc-mac-current247c-20261017`. Four earlier ticks correctly held at
 617 pending workunits against the normal target of 600. The existing managed
-laptop client had 59 successful completed results waiting to report; an
+client had 59 successful completed results waiting to report; an
 identity-guarded ordinary project update reported them, reducing pending
 work to 558. The unchanged allocation/configuration and persisted controller
 state then admitted exactly one page. No cap exception, task cancellation,
 reprioritization, account change or client-preference change was used.
 
-The existing Mac fetched the page through ordinary scheduling; this was not
+The existing Apple Silicon client fetched the page through ordinary scheduling; this was not
 a targeted Gold challenge or a relabeled Linux result. Native evidence:
 
 | Field                        | Accepted value                                                     |
@@ -176,7 +176,7 @@ head-count test, but are an estimate: a real release scores the texts again,
 checks title languages, revocations and competing candidates, and records
 its actual selection. The already-running `pages-v20261017-1` rebuild
 started before this import; do not assume its frozen local-OCR inputs
-include the new part or restart its owner's writer to force inclusion.
+include the new part or restart its writer to force inclusion.
 
 This proves fresh-page Mac computation, native canonical assimilation,
 trust-checked handoff and native import. Actual release selection,

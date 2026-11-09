@@ -14,6 +14,7 @@ describe the Azure server, whose app, jobs, MySQL, storage and workbook `"server
 | bridge-bin | `images/bridge-bin/Containerfile` | Release-built `usnm-boinc` binary; cached in the shared ACR as `usnm-boinc-bridge-bin:<input-key>`.                                                                |
 | server     | `images/server/Containerfile`     | The base plus project configuration, Apache/PHP, scheduler and upload CGIs, and all daemons under `supervisord`; one container.                                    |
 | bridge     | `images/bridge/Containerfile`     | The server image plus the bridge binary; used by the in-VNet bridge and optional gold-bundle jobs.                                                                 |
+| appver     | `images/appver/Containerfile`     | The server image plus one signed app version, built by `boinc/scripts/boinc-app-release.sh` for the publish step ([app-release.md](app-release.md)).               |
 | worker     | `boinc/apps/Containerfile` (#441) | Tesseract and `usnm-boinc work`; volunteers pull it from the public GHCR package. Built and published by `.github/workflows/boinc-worker.yml` (ADR-0019 addendum). |
 
 One container holds Apache and the daemons because the feeder and the scheduler share a System V shared-memory segment (design.md, section 2.1).

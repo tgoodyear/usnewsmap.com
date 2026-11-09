@@ -200,7 +200,7 @@ Spool-out, collect and export carry on past a failing job and fail at the end, s
 
 Journal metadata is cached as an account-bound snapshot in the state directory. Every read lists all names and ETags; an identical listing reuses validated records, and up to 32 changes are fetched incrementally after retained files are rechecked by digest (more, or another account, does a full refresh). Directory symlinks are rejected. A download invalidates the marker first and must match a second ETag listing before publishing a snapshot; bad or changed local records fail closed. The cache is never a claim or acknowledgement; don't restore state from it.
 
-The hand-off steps default to the Azure hand-off job, which prod no longer has (#308, 6 November 2026), so prod passes `--onprem-handoff claim`, `collect` and `export` (runtime flags). These send the steps via `step_command` to `usnm-boinc-step --target handoff` on the BOINC host ([boinc-onprem.md](boinc-onprem.md#hand-off-steps-on-prem)); `claim` brings `release`. They need `step_command` and the host's `/etc/usnm-boinc/handoff.env`; dry runs show `onprem_handoff`. `texts-export` runs with `boinc/scripts/texts-export-onprem.sh` on a host with a local curated copy. With `export` on-prem, the push sends scans straight to the BOINC host (`usnm-boinc-step --target scans --step receive`, a tar into `/srv/usnm-boinc/project/handoff-scans`), so no scan goes through Azure (#1116).
+The hand-off steps default to the Azure hand-off job, which prod no longer has (#308, 6 November 2026), so prod passes `--onprem-handoff claim`, `collect` and `export` (runtime flags). These send the steps via `step_command` to `usnm-boinc-step --target handoff` on the BOINC host ([boinc-onprem.md](boinc-onprem.md#hand-off-steps-on-prem)); `claim` brings `release` and `dead-letter`. They need `step_command` and the host's `/etc/usnm-boinc/handoff.env`; dry runs show `onprem_handoff`. `texts-export` runs with `boinc/scripts/texts-export-onprem.sh` on a host with a local curated copy. With `export` on-prem, the push sends scans straight to the BOINC host (`usnm-boinc-step --target scans --step receive`, a tar into `/srv/usnm-boinc/project/handoff-scans`), so no scan goes through Azure (#1116).
 
 ### Retirement evidence (#1116)
 
@@ -281,7 +281,7 @@ With `"source": "queue"` the controller takes pages from the exchange's Azure St
 }
 ```
 
-No `batch` or `pages`; `claim_queues` defaults to `ocr-bulk`. Bulk workunits get a three-day `delay_bound`; `reason` `user` pages (`ocr-priority`) get one day and priority 10 (#866), which the feeder's `priority desc, workunitid` order serves first (no app uses homogeneous redundancy). Claiming `ocr-priority`, set `lease_hours` 36.
+No `batch` or `pages`; `claim_queues` and `lease_hours` are required. Bulk workunits get a three-day `delay_bound`; `reason` `user` pages (`ocr-priority`) get one day and priority 10 (#866), which the feeder's `priority desc, workunitid` order serves first (no app uses homogeneous redundancy). Claiming `ocr-priority`, set `lease_hours` 36.
 
 ```
 ocr-bulk (and ocr-priority) --claim--> claims/<doc_id>.json in boinc-handoff

@@ -285,7 +285,7 @@ canary, and again during and after any separately approved bounded cohort:
 
 ```sh
 python3 boinc/scripts/observe_node.py \
-  --host claude@usnm-ocr-node4-arcs-prod.tjg.fyi \
+  --host <user>@<node-host> \
   --window-seconds 900 --out target/node4-before.json
 ```
 
@@ -312,7 +312,7 @@ existing Tesseract containers each consumed about 96% CPU for 14–15 minutes. T
 production worker was still active, unchanged since October 14, with no OOM
 events. No BOINC account, subordinate IDs, client or service was installed;
 adding pilot load was withheld. An active process alone is not a comparable
-healthy throughput baseline. Let the owner resolve the existing workload or
+healthy throughput baseline. Let the maintainer resolve the existing workload or
 obtain a naturally valid fresh baseline rather than restarting or replacing the
 worker, attributing the existing slowdown to BOINC, or purchasing dev resources.
 At 11:44:50 UTC it naturally recovered: 23 successful pages in 900 seconds
@@ -506,7 +506,7 @@ Parquet columns. `read_parquet(..., union_by_name=true)` within each campaign do
 not make a positional `UNION ALL` across campaigns compatible: missing columns
 must be filled with null by a name-based union across campaign queries as well.
 
-The compatibility change and regression belong to the assessment-database owner
+The compatibility change and regression belong to the assessment-database work
 in PR #777, not this reconciliation. Before collector rollout, require a merged
 fix for both page and crop campaign unions in
 `scripts/data/build-quality-assessment-db.py` and a passing regression consolidating

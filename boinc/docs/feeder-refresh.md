@@ -21,24 +21,23 @@ In short:
   guard, slot shares, bounded replicas in the cache and a natural assignment to an eligible host.
 
 BOINC references are to the pinned commit `22bbebe` (`BOINC_COMMIT` in
-[`boinc/images/base/Containerfile`](../../boinc/images/base/Containerfile#L12)),
+[`boinc/images/base/Containerfile`](../../boinc/images/base/Containerfile)),
 which the server image builds. Commands assume the on-prem layout: the `usnm-boinc-server`
 container on CT 230 and the project at `/project/usnmocr`.
 
 ## Why `reread_db` is not enough
 
-With `--allapps` ([`config.xml.template` L96](../../boinc/project/config.xml.template#L96)),
+With `--allapps` (the feeder's `<cmd>` in [`config.xml.template`](../../boinc/project/config.xml.template)),
 the feeder builds two tables once, at startup, from the apps it has just read: `app_indices` maps
 each of the `shmem_work_items` cache slots to an _index_ into the shared-memory app array, and
-`enum_sizes` gives each index its share of `feeder_query_size` ([feeder.cpp
-L150-L158][feeder-150-158], [L904-L933][feeder-904-933]). The interleave gives each app about `slots
-× weight / sum of weights` slots ([L371-L405][feeder-371-405]).
+`enum_sizes` gives each index its share of `feeder_query_size` ([feeder.cpp][feeder] `main`). The interleave, `weighted_interleave`, gives
+each app about `slots × weight / sum of weights` slots.
 
 Touching `reread_db` makes the running feeder clear the whole cache and read the tables again
-([L177-L200][feeder-177-200], [sched_shmem.cpp L43-L57][sched-shmem-43-57]), but it does not rebuild
+([feeder.cpp][feeder] `check_reread_trigger`, [sched_shmem.cpp][sched_shmem] `SCHED_SHMEM::init`), but it does not rebuild
 `app_indices`, `enum_sizes` or the feeder's own app count. Every pass still fills slot `i` with work
-for `ssp->apps[app_indices[i]]`, with that index's startup query budget ([feeder.cpp
-L250-L254][feeder-250-254], [L478-L481][feeder-478-481]). So after a reread that changed the active
+for `ssp->apps[app_indices[i]]`, with that index's startup query budget (`get_job_from_db` and `scan_work_array` in
+[feeder.cpp][feeder]). So after a reread that changed the active
 apps:
 
 - an app added since startup gets no slots;
@@ -54,43 +53,40 @@ The guarded feeder from #1464 records the app IDs and weights it allocated from 
 ## Who owns the feeder
 
 - The stock `bin/start` starts the feeder from the `<daemons>` list in `config.xml`
-  ([`config.xml.template` L94-L108](../../boinc/project/config.xml.template#L94-L108)). It
+  ([`config.xml.template`](../../boinc/project/config.xml.template)). It
   double-forks, takes an exclusive `lockf` lock on `pid_<host>/feeder.lock`, writes
-  `pid_<host>/feeder.pid` and `exec`s the command, so the feeder itself holds the lock ([start
-  L168-L186][start-168-186], [L309-L325][start-309-325], [L446-L465][start-446-465]). A second start
-  finds the lock held and starts nothing ([L449-L452][start-449-452]).
-- The feeder is not a supervisord program. `[program:boinc]`
-  ([`supervisord.conf` L15-L21](../../boinc/images/server/supervisord.conf#L15-L21))
-  runs `boinc-daemons.sh`, which runs `bin/start` once and then `bin/start --cron` every 300
+  `pid_<host>/feeder.pid` and `exec`s the command, so the feeder itself holds the lock ([`start`][start] `run_daemon`, `lock_file`). A second start
+  finds the lock held and starts nothing.
+- The feeder is not a supervisord program. `[program:boinc]` in
+  [`supervisord.conf`](../../boinc/images/server/supervisord.conf) runs `boinc-daemons.sh`, which runs `bin/start` once and then `bin/start --cron` every 300
   seconds as `boincadm`, unless `stop_maintenance` or its own restart hold is present
-  ([`boinc-daemons.sh` L132-L141](../../boinc/images/server/boinc-daemons.sh#L132-L141)).
+  ([`boinc-daemons.sh`](../../boinc/images/server/boinc-daemons.sh) `main`).
   That loop is the feeder's supervisor: a feeder that exits is started again within five minutes,
-  as BOINC expects from cron ([feeder.cpp L269-L277][feeder-269-277], [start L14-L17][start-14-17]).
+  as BOINC expects from cron (`DB connection lost` in [feeder.cpp][feeder], `--cron` in [`start`][start]).
   It restarts a stopped feeder at most three times an hour, then holds the project
   ([The loop's restart bound](#the-loops-restart-bound)). This procedure adds no loop to it, and
   holds it once a start fails ([Hold the supervisor loop](#hold-the-supervisor-loop)).
 - `pid_<host>` is on the container's own disk, `${USNM_PID_ROOT:-/var/lib/usnm-boinc}/pid_<host>`,
   and linked into the project
-  ([`boinc-daemons.sh` L19-L44](../../boinc/images/server/boinc-daemons.sh#L19-L44)). The
+  (`local_pid_dir` in [`boinc-daemons.sh`](../../boinc/images/server/boinc-daemons.sh)). The
   guard's snapshot, `usnm-feeder-slots.json`, and the loop's hold marker,
   `usnm-feeder-restart-hold`, are always in that local directory, even where the wrapper keeps an
   older `pid_<host>` directory in the project instead of the link. The commands below use the local
   path.
 - The stock stop is `SIGHUP`. The handler only sets a flag; the feeder exits at its next
   `check_stop_daemons`, which runs every second while it sleeps and after every pass. On that exit,
-  `cleanup_shmem` clears `ready` and removes the segment ([sched_util_basic.cpp
-  L40-L93][sched-util-basic-40-93], [feeder.cpp L561-L610][feeder-561-610],
-  [L171-L175][feeder-171-175], [L869-L870][feeder-869-870]). `SIGTERM` and `SIGKILL` skip that
+  `cleanup_shmem` clears `ready` and removes the segment ([sched_util_basic.cpp][sched_util_basic],
+  [feeder.cpp][feeder] `feeder_loop`). `SIGTERM` and `SIGKILL` skip that
   cleanup. `bin/stop` (`bin/start --stop`) sends `SIGHUP` too, but to every daemon, and disables
-  the project ([start L513-L555][start-513-555], [L589-L599][start-589-599]).
+  the project ([`start`][start] `stop_daemon`, `command_disable_stop`).
 
 None of these is a feeder-only refresh:
 
 - Starting `bin/feeder` by hand. It would not hold `feeder.lock`, so the next `--cron` starts a
   second feeder; the second removes the first's segment at startup and the first keeps filling a
-  cache no scheduler can reach ([feeder.cpp L854-L867][feeder-854-867]).
+  cache no scheduler can reach ([feeder.cpp][feeder] `main`).
 - `supervisorctl restart boinc`. It restarts the wrapper, whose plain `bin/start` clears
-  `stop_sched` ([start L559-L572][start-559-572]) but leaves the running feeder alone, since the
+  `stop_sched` (`command_enable_start` in [`start`][start]) but leaves the running feeder alone, since the
   feeder is not the wrapper's child and holds its lock.
 - Restarting `usnm-boinc-server.service`. That restarts Apache, every daemon and the container.
 
@@ -103,7 +99,7 @@ the wrapper logs `the feeder is not running; restart k of N in Ws` to the server
 If `N` restarts already fall within the last `W` seconds, it skips the run instead, creates the
 marker `usnm-feeder-restart-hold` in the local `pid_<host>` directory
 (`held_at=<epoch> restarts=<n> window_s=<W>`) and logs `holding the project until ... is removed`
-([`boinc-daemons.sh` L54-L130](../../boinc/images/server/boinc-daemons.sh#L54-L130)).
+(`held` in [`boinc-daemons.sh`](../../boinc/images/server/boinc-daemons.sh)).
 The wrapper runs as root in a directory `boincadm` can write, so it only ever creates a new file
 there. If anything already occupies the path, such as a link, or the write fails, it logs
 `could not write` and stays held without a marker until the container restarts; the guard then
@@ -181,8 +177,7 @@ start and the change's own record puts an active-registry change between the two
 at `-d 2`, which drops BOINC's normal-level lines such as `Starting` and
 `Found trigger file reread_db`. Its log does show each start as one
 `Executing command: feeder ...` line from `bin/start`, and each scan of the tables, at a start or a
-reread, as five `have apps for` lines ([start L463][start-463],
-[sched_shmem.cpp L247-L251][sched-shmem-247-251]). The first five `have apps for` lines after
+reread, as five `have apps for` lines from `scan_tables`. The first five `have apps for` lines after
 the last `Executing command` line are that start's own scan; any later group of five is a reread. Cached results whose app differs from the slot's app in the
 current registry's interleave confirm the second case; the
 [proposed helper](#proposed-a-dry-run---plan-refresh-mode-not-implemented) would compute that. On
@@ -198,32 +193,32 @@ Coordination:
 - A coordination claim on #529 and #1462 names the operator, the window, the evidence directory
   and the maintainer's approval.
 - The project mutex, `/run/usnm-boinc-step.lock` on CT 230, is held through the restart and
-  the readbacks of step 4. While it is held, bridge steps that take it fail fast. That covers
+  the readbacks of step 4. While it is held, bridge steps that take it fail fast, or wait at most
+  `USNM_BOINC_STEP_LOCK_WAIT_SECS` (up to 300 s) where that is set. That covers
   `register-apps` (`bin/xadd`), publication through the step and steps that other hosts start,
-  so tell their owners. The Qwen auto-cohort controller's tick exits 75
-  ([`onprem-step.sh` L353-L372](../../boinc/scripts/onprem-step.sh#L353-L372),
-  [`usnm-qwen-cohort-auto.service`](../../boinc/scripts/usnm-qwen-cohort-auto.service#L8)).
+  so tell whoever runs them. The Qwen auto-cohort controller's tick exits 75
+  ([`onprem-step.sh`](../../boinc/scripts/onprem-step.sh),
+  [`usnm-qwen-cohort-auto.service`](../../boinc/scripts/usnm-qwen-cohort-auto.service)).
 - Registry writers that don't take that lock are paused for the whole window, verification
   included: retirement and rollback scripts such as `app_tidy.php`
   ([Retiring an app](server-and-apps.md#retiring-an-app)), and any direct SQL on
   `app.deprecated`, `app.weight` or `app.homogeneous_redundancy`.
 - `reread_db` writers that don't change apps are paused too, because each reread empties the whole
-  cache ([feeder.cpp L186][feeder-186]) and spoils the readbacks:
-  [`publish-appver.sh`](../../boinc/images/appver/publish-appver.sh#L222) (its
+  cache and spoils the readbacks:
+  [`publish-appver.sh`](../../boinc/images/appver/publish-appver.sh) (its
   `.usnm-publish.lock` directory must be absent),
-  [`hold-legacy-qwen.php`](../../boinc/scripts/hold-legacy-qwen.php#L81) and
-  [`quality_corpus_runner.py`](../../boinc/scripts/quality_corpus_runner.py#L627).
+  [`hold-legacy-qwen.php`](../../boinc/scripts/hold-legacy-qwen.php) and
+  [`quality_corpus_runner.py`](../../boinc/scripts/quality_corpus_runner.py).
 
 Project state:
 
 - `bin/status --verbose` says `BOINC is ENABLED` and shows every daemon that is not disabled as
   `running` and `locked`. `bin/start --cron` also starts any other stopped daemon, so a stopped
   daemon must be explained
-  first ([start L467-L478][start-467-478], [L574-L583][start-574-583]).
+  first ([`start`][start] `run_daemons`, `command_cron_start`).
 - None of these exists in the project directory: `stop_maintenance` (pauses the supervisor loop),
   `stop_sched` (scheduler maintenance), `stop_daemons` (stops every daemon, and `bin/start`
-  removes it, which would undo someone else's stop: [start L209-L221][start-209-221],
-  [L467-L470][start-467-470]) or `reread_db` (a pending reread). Nor is there a restart hold
+  removes it, which would undo someone else's stop: `remove_stop_daemons` in [`start`][start]) or `reread_db` (a pending reread). Nor is there a restart hold
   marker (`$restart_hold` in step 1): the loop has [held itself](#the-loops-restart-bound), and why
   comes first.
 - Exactly one feeder: `pgrep -u boincadm -x feeder` prints one PID, the PID in
@@ -232,74 +227,62 @@ Project state:
 - The database answers the guard's verified-TLS query (no `database_unavailable`).
 
 The registry the new feeder will load (`WHERE deprecated=0`,
-[sched_shmem.cpp L112-L264][sched-shmem-112-264]):
+`SCHED_SHMEM::scan_tables` in [sched_shmem.cpp][sched_shmem]):
 
 - At most 10 active apps; an 11th stops the feeder at startup. The other tables are capped as
   well: at most 49 active platforms, 99 loaded app versions (counted from the database as in
-  step 1) and 9 multi-host assignments
-  ([sched_shmem.h L37-L48][sched-shmem-h-37-48], [sched_shmem.cpp L99-L108][sched-shmem-99-108],
-  [L119-L261][sched-shmem-119-261]).
+  step 1) and 9 multi-host assignments (`MAX_APPS` and the other limits in
+  [sched_shmem.h][sched_shmem_h]).
 - Every active app has `homogeneous_redundancy = 0` and `n_size_classes` of at most 1. An HR
-  misconfiguration stops the feeder ([feeder.cpp L612-L691][feeder-612-691]), and a missing size
-  census file ends the table scan early, a failure that the startup path ignores ([sched_shmem.cpp
-  L145-L171][sched-shmem-145-171], [feeder.cpp L887][feeder-887]). The project uses no HR ([Feeder
+  misconfiguration stops the feeder (`hr_init` in [feeder.cpp][feeder]), and a missing size
+  census file ends the table scan early, a failure that the startup path ignores. The project uses no HR ([Feeder
   visibility](../../boinc/docs/app-release.md#feeder-visibility)).
 - No unsent result belongs to a workunit with a nonzero `hr_class` (step 1's last query returns 0).
   Without HR there should be none. The feeder's stale purge, which runs all the time, clears such a
-  class and adds a replica ([feeder.cpp L436-L454][feeder-436-454]), which would change replication
+  class and adds a replica (`purge_stale` in [feeder.cpp][feeder]), which would change replication
   while step 5 is judging it.
 - The sizing invariant in [Feeder
   visibility](../../boinc/docs/app-release.md#feeder-visibility) holds for the current
-  weights: every positive-weight app's `floor(0.5 + feeder_query_size × weight / sum)` ([feeder.cpp
-  L923-L925][feeder-923-925]) is at least twice `shmem_work_items`, Qwen's budget is at least four
+  weights: every positive-weight app's `floor(0.5 + feeder_query_size × weight / sum)` (`enum_sizes` in
+  [feeder.cpp][feeder]) is at least twice `shmem_work_items`, Qwen's budget is at least four
   times its ready baseline, and Qwen's slot share covers that baseline. A registry that fails this
   needs a reviewed configuration change first, not a refresh.
 - The current `app` rows are saved in the evidence directory (step 1).
 
 Memory: the new feeder creates its segment while requests already attached may still map the old
-one, which the kernel frees only at the last detach ([lib/shmem.cpp L441-L467][shmem-441-467]). Allow
-for two segments of `sizeof(SCHED_SHMEM) + shmem_work_items × sizeof(WU_RESULT)`
-([feeder.cpp L860-L861][feeder-860-861]) for a few seconds; Feeder visibility estimates about 380 MB
+one, which the kernel frees only at the last detach ([lib/shmem.cpp][shmem] `destroy_shmem`). Allow
+for two segments of `sizeof(SCHED_SHMEM) + shmem_work_items × sizeof(WU_RESULT)` for a few seconds; Feeder visibility estimates about 380 MB
 each at 4,096 slots.
 
 ## What the scheduler does during the restart
 
-The scheduler runs as plain CGI ([`apache-project.conf.template`
-L11](../../boinc/images/server/apache-project.conf.template#L11)), so each request is a
-new process that attaches to the segment by key ([sched_main.cpp L525-L531][sched-main-525-531]).
+The scheduler runs as plain CGI (`ScriptAlias` in [`apache-project.conf.template`](../../boinc/images/server/apache-project.conf.template)),
+so each request is a new process that attaches to the segment by key (`attach_to_feeder_shmem` in
+[sched_main.cpp][sched_main]).
 
-1. **Old feeder exits.** `cleanup_shmem` clears `ready`, detaches and removes the segment
-   ([feeder.cpp L171-L175][feeder-171-175]). Removal hides the key at once, but the segment stays
-   mapped in every process attached to it ([lib/shmem.cpp L441-L467][shmem-441-467]).
+1. **Old feeder exits.** `cleanup_shmem` clears `ready`, detaches and removes the segment.
+   Removal hides the key at once, but the segment stays mapped in every process attached to it.
 2. **In-flight requests finish on the old cache.** A request already past the `ready` check keeps
    working. To send a cached result it reserves the slot under the semaphore, reads the result from
    the database again and requires it to be unsent, then marks it sent with an update that only
-   succeeds if the state hasn't changed ([sched_score.cpp L346-L429][sched-score-346-429],
-   [sched_array.cpp L279-L352][sched-array-279-352], [sched_check.cpp
-   L499-L523][sched-check-499-523], [boinc_db.cpp L1178-L1198][boinc-db-1178-1198], [sched_send.cpp
-   L1008-L1012][sched-send-1008-1012]). The database, not the cache, prevents a double send.
+   succeeds if the state hasn't changed (`result_still_sendable` in [sched_check.cpp][sched_check],
+   `DB_RESULT::mark_as_sent` in [boinc_db.cpp][boinc_db]). The database, not the cache, prevents a double send.
 3. **No segment.** A new request cannot attach. It gets `Server error: feeder not running`, with
-   `<project_is_down/>` and a `request_delay` of `maintenance_delay` ([sched_main.cpp
-   L156-L169][sched-main-156-169], [L284-L304][sched-main-284-304]). `config.xml.template` sets
-   it to 1200 seconds
-   ([L45-L49](../../boinc/project/config.xml.template#L45-L49)), so that client waits
+   `<project_is_down/>` and a `request_delay` of `maintenance_delay` (`send_message` in
+   [sched_main.cpp][sched_main]). [`config.xml.template`](../../boinc/project/config.xml.template)
+   sets it to 1200 seconds, so that client waits
    20 minutes before asking again ([Client retry behaviour](#client-retry-behaviour)). A server
-   image built before that runs with BOINC's default of 3600 seconds ([sched_config.cpp
-   L93][sched-config-93]), an hour; `grep maintenance_delay /project/usnmocr/config.xml` in the
+   image built before that runs with BOINC's default of 3600 seconds ([sched_config.cpp][sched_config]), an hour; `grep maintenance_delay /project/usnmocr/config.xml` in the
    server container finds nothing on such an image.
 4. **New segment, not yet ready.** The new feeder creates the segment with `ready` false
-   ([feeder.cpp L860-L867][feeder-860-867]) and sets it after its first fill pass
-   ([L569-L576][feeder-569-576]). A request that attaches in between waits up to 10 seconds for
-   `ready`, then gets the same reply ([sched_main.cpp L316-L331][sched-main-316-331]).
-5. **Semaphore.** The new feeder destroys and re-creates the semaphore at startup ([feeder.cpp
-   L849-L852][feeder-849-852]). Requests look it up by key on every lock and unlock and ignore
-   errors ([lib/synch.cpp L41-L105][synch-41-105], [sched_send.cpp L780-L786][sched-send-780-786]),
-   so a request still on the old segment can briefly lose or skew slot exclusion. `SEM_UNDO`
+   and sets it after its first fill pass (`feeder_loop`). A request that attaches in between waits
+   up to 10 seconds for `ready`, then gets the same reply (`attach_to_feeder_shmem`).
+5. **Semaphore.** The new feeder destroys and re-creates the semaphore at startup. Requests look it up by key on every lock and unlock and
+   ignore errors ([lib/synch.cpp][synch], `lock_sema` in [sched_send.cpp][sched_send]), so a request still on the old segment can briefly lose or skew slot exclusion. `SEM_UNDO`
    restores the count when that request exits, and the database check in step 2 still prevents a
    double send.
 
-`stop_sched` would not help: it returns the same `maintenance_delay` ([sched_main.cpp
-L517-L523][sched-main-517-523]) and only widens the window. What keeps the gap short is starting the
+`stop_sched` would not help: it returns the same `maintenance_delay` and only widens the window. What keeps the gap short is starting the
 new feeder as soon as the old one exits, instead of waiting up to five minutes for the supervisor
 loop. `maintenance_delay` itself is not part of this procedure. It changes only with a server image,
 because a new value changes the rendered `config.xml` and so the SHA-256 the Qwen auto-cohort
@@ -308,12 +291,11 @@ controller pins ([boinc-intel-gpu.md](../../docs/boinc-intel-gpu.md)).
 ### Client retry behaviour
 
 A BOINC client that gets a project-down reply sets its next scheduler request to now +
-`request_delay` ([cs_scheduler.cpp L720-L724][cs-scheduler-720-724]). It then counts the reply as a
-failed request and backs off ([scheduler_op.cpp L515-L517][scheduler-op-515-517]) by min(60 s ×
-2ⁿ, 4 h) × U(0.5, 1), where n is the number of failed requests to the project in a row, capped at
-10 ([scheduler_op.cpp L162-L203][scheduler-op-162-203], [client_state.cpp
-L397-L403][client-state-397-403]). `set_min_rpc_time` keeps the later of the two times
-([project.cpp L888-L890][project-888-890]), so the client waits max(`maintenance_delay`, backoff):
+`request_delay` (`handle_scheduler_reply` in [cs_scheduler.cpp][cs_scheduler]). It then counts the
+reply as a failed request and backs off by min(60 s × 2ⁿ, 4 h) × U(0.5, 1), where n is the number of
+failed requests to the project in a row, capped at 10 (`project_rpc_backoff` in
+[scheduler_op.cpp][scheduler_op], `calculate_exponential_backoff` in [client_state.cpp][client_state]).
+`set_min_rpc_time` keeps the later of the two times ([project.cpp][project]), so the client waits max(`maintenance_delay`, backoff):
 
 | Failures in a row | Backoff                 | Wait at 1200 s | Wait at 3600 s (older image) |
 | ----------------- | ----------------------- | -------------- | ---------------------------- |
@@ -325,11 +307,11 @@ L397-L403][client-state-397-403]). `set_min_rpc_time` keeps the later of the two
 
 The eleventh failure in a row is the exception to that rule. It clears the time the reply just set,
 schedules a fresh fetch of the project's master page and starts n again at 1, so that client waits
-only 1–2 minutes, `maintenance_delay` or not ([scheduler_op.cpp L179-L187][scheduler-op-179-187]). A
-successful request sets n back to 0 ([cs_scheduler.cpp L1198-L1199][cs-scheduler-1198-1199]), so a
+only 1–2 minutes, `maintenance_delay` or not (`project_rpc_backoff`). A
+successful request sets n back to 0 (`handle_scheduler_reply`), so a
 client that asked during a short gap comes back once, 20 minutes later. If the server can't be
 reached over HTTP at all, there is no reply and no `request_delay`, and only the backoff applies
-([scheduler_op.cpp L507-L509][scheduler-op-507-509], [L212-L213][scheduler-op-212-213]).
+(`rpc_failed` in [scheduler_op.cpp][scheduler_op]).
 
 ## Procedure
 
@@ -399,7 +381,7 @@ SELECT COUNT(*) FROM result r JOIN workunit w ON w.id = r.workunitid
 ```
 
 Check the active rows against the preconditions and against the reviewed change. The app-version
-count follows `scan_tables` ([sched_shmem.cpp L173-L235][sched-shmem-173-235]): on active
+count follows `scan_tables`: on active
 platforms, every version at or above an app's nonzero `min_version`, otherwise the newest in each
 plan class. It must be at most 99. Don't count from `shmem-before.txt`: that is the old feeder's
 last scan, which misses later changes.
@@ -421,8 +403,8 @@ for i in $(seq 24); do [ "$(awk '{print $22}' "/proc/$pid/stat" 2>/dev/null)" = 
 tail -n +"$((lines + 1))" "log_$host/feeder.log" | grep 'GOT STOP SIGNAL'
 ```
 
-The `grep` shows that the feeder caught the signal ([sched_util_basic.cpp
-L61-L64][sched-util-basic-61-64]); the loop above shows that it exited. The feeder exits after its
+The `grep` shows that the feeder caught the signal (`stop_signal_handler` in
+[sched_util_basic.cpp][sched_util_basic]); the loop above shows that it exited. The feeder exits after its
 current pass, normally within seconds. If it is still running after two
 minutes, do not send another signal, `SIGTERM` or `SIGKILL`. The flag is set, and it will exit
 when its current database call returns. Check the database and the feeder log, and stay with it:
@@ -440,12 +422,12 @@ bin/start --cron 2>&1 | tee "$evidence/start-$attempt.txt"
 
 Expect exactly one `Starting daemon: feeder -d 2 --allapps --purge_stale 5` line and no other
 daemon. Any periodic task that is due runs as well, as it would in the loop's own run. If the
-output is `start is currently running!` ([start L794-L797][start-794-797]), the supervisor loop is
+output is `start is currently running!`, the supervisor loop is
 starting daemons right now: don't run it again, go to step 4. If it prints no `Starting daemon:` line
 at all, the loop started the feeder between steps 2 and 3, which is just as good: go to step 4.
 
-Never use plain `bin/start` (clears `stop_sched`, [start L559-L572][start-559-572]), `bin/stop` or
-`--disable` (stops every daemon and disables the project, [L589-L599][start-589-599]), `supervisorctl`
+Never use plain `bin/start` (clears `stop_sched`), `bin/stop` or
+`--disable` (stops every daemon and disables the project), `supervisorctl`
 or the systemd unit.
 
 ### 4. Verify the start
@@ -474,12 +456,12 @@ attempt's readback. Expect:
 - A new PID, different from `$pid`, as the only feeder, with the same command line.
 - One `Executing command: feeder -d 2 --allapps --purge_stale 5` line, then the startup scan's five
   `have apps for` lines. The `[CRITICAL]` `grep` prints nothing. At `-d 2` the feeder doesn't log
-  its app or slot counts ([feeder.cpp L887-L902][feeder-887-902]), so they come from `show_shmem`.
+  its app or slot counts (its `read ... apps` line is `MSG_NORMAL`), so they come from `show_shmem`.
 - `ready: 1` and `max_wu_results: 4096`.
 - The `apps:` list is the active rows in `id` order: same IDs, `hr: 0`, and the same weights to the
-  two decimals `show_shmem` prints ([sched_shmem.cpp L345-L353][sched-shmem-345-353]). A position in
-  this list is the app index the allocation uses. The table is read without an `ORDER BY`
-  ([L130][sched-shmem-130]), normally giving ascending `id`; any other order is a finding.
+  two decimals `show_shmem` prints (`SCHED_SHMEM::show` in [sched_shmem.cpp][sched_shmem]). A
+  position in this list is the app index the allocation uses. `scan_tables` reads the table without
+  an `ORDER BY`, normally giving ascending `id`; any other order is a finding.
 - One segment with key `0x1111aaaa` in `ipcs -m`. The old segment may linger with key
   `0x00000000` and status `dest` until its last request finishes; it must be gone within minutes.
 - In `status-after-$attempt.txt`, the feeder `running` and `locked` with the new PID, and every
@@ -497,7 +479,7 @@ cat "pid_$host/feeder.pid"
 
 Expect `match` with `allocation_matches_registry`, a snapshot naming `$newpid`, and the same
 `$newpid` still running: a feeder whose first `update_av_scales` fails exits after it has set
-`ready` ([feeder.cpp L595-L605][feeder-595-605]). Then record the PID and leave the shell to release
+`ready` (`update_av_scales failed` in [feeder.cpp][feeder]). Then record the PID and leave the shell to release
 the mutex:
 
 ```sh
@@ -528,7 +510,7 @@ newpid=$(cat "$evidence/feeder-after.txt")
 ```
 
 Allow at least two purge rotations before judging the cache (`--purge_stale 5` is five minutes:
-[feeder.cpp L779-L780][feeder-779-780], [L484-L491][feeder-484-491]), and at least
+`purge_stale_time` in [feeder.cpp][feeder]), and at least
 `maintenance_delay` (20 minutes, or an hour on an older image) for clients that hit the window to
 come back.
 
@@ -538,7 +520,7 @@ come back.
    bin/show_shmem | awk '$1 ~ /^[0-9]+$/ {n[$2]++} END {for (a in n) print a, n[a]}'
    ```
 
-   `show_shmem` cuts app names to 12 characters ([sched_shmem.cpp L397-L427][sched-shmem-397-427]).
+   `show_shmem` cuts app names to 12 characters (`SCHED_SHMEM::show`).
    No app may hold more than its share, about `4096 × weight / sum`. An app whose unsent backlog
    exceeds its share should be close to it. `weighted_interleave` gives the exact numbers, and the
    proposed helper would check every slot's app against it.
@@ -547,8 +529,8 @@ come back.
    replicas (`SELECT id, workunitid FROM result WHERE workunitid IN (...) AND server_state=2`) and
    check that their IDs appear in `show_shmem`'s `result ID` column within two rotations.
 3. **Assignment to an eligible host.** A host with a matching app version that has not run another
-   replica of the workunit (`one_result_per_host_per_wu`,
-   [`config.xml.template` L42](../../boinc/project/config.xml.template#L42)) receives one
+   replica of the workunit (`one_result_per_host_per_wu` in
+   [`config.xml.template`](../../boinc/project/config.xml.template)) receives one
    of those replicas on its own next request. For those IDs,
    `SELECT id, hostid, server_state, sent_time FROM result WHERE id IN (...)` shows
    `server_state=4` with a `sent_time` after the stop time. Don't restart clients or force requests
@@ -571,20 +553,20 @@ A start has failed if, within two minutes of step 3, there is no new live feeder
 the feeder log has a `[CRITICAL]` line, `show_shmem`'s `apps:` list is not the active rows,
 or the new PID disappears or changes before the guard reports `match`. Every error below ends the
 feeder, except perhaps the census one. One that gets past creating the segment removes it on the
-way out ([feeder.cpp L869][feeder-869]), so no ready segment is left, every request gets the
+way out (`atexit(cleanup_shmem)`), so no ready segment is left, every request gets the
 project-down reply ([Client retry behaviour](#client-retry-behaviour)), and the supervisor loop
 tries `bin/start --cron` again every five minutes until it is held.
 
-| Feeder log                                                 | Source                                                                                                       | Kind                                                                                                                                                                    |
-| ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `boinc_db.open`, `DB connection lost`                      | [feeder.cpp L872-L880][feeder-872-880], [L269-L277][feeder-269-277]                                          | Transient: the database.                                                                                                                                                |
-| `update_av_scales failed`                                  | [feeder.cpp L595-L605][feeder-595-605]                                                                       | A database write after `ready`. Transient once; deterministic if again.                                                                                                 |
-| `Can't parse config.xml`                                   | [feeder.cpp L830-L836][feeder-830-836]                                                                       | Deterministic: configuration.                                                                                                                                           |
-| `The SCHED_SHMEM structure is too small for the ... table` | [sched_shmem.cpp L99-L108][sched-shmem-99-108]                                                               | Deterministic: the registry (too many apps, versions, platforms).                                                                                                       |
-| `HR type ... out of range` and the other HR messages       | [feeder.cpp L612-L691][feeder-612-691]                                                                       | Deterministic: the registry.                                                                                                                                            |
-| `can't destroy shmem`                                      | [feeder.cpp L854-L858][feeder-854-858]                                                                       | Deterministic: the segment belongs to another user.                                                                                                                     |
-| `can't create shmem`                                       | [feeder.cpp L860-L865][feeder-860-865]                                                                       | Deterministic: memory or kernel limits.                                                                                                                                 |
-| `Missing size census file`, and `show_shmem` lists no apps | [sched_shmem.cpp L145-L171][sched-shmem-145-171], [feeder.cpp L887][feeder-887], [L904-L933][feeder-904-933] | Deterministic: the registry. The scan stops before any app is counted, and allocating slots over no apps is undefined: the feeder may crash or stay up serving nothing. |
+| Feeder log                                                 | Source                                       | Kind                                                                                                                                                                    |
+| ---------------------------------------------------------- | -------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `boinc_db.open`, `DB connection lost`                      | [feeder.cpp][feeder]                         | Transient: the database.                                                                                                                                                |
+| `update_av_scales failed`                                  | [feeder.cpp][feeder] `feeder_loop`           | A database write after `ready`. Transient once; deterministic if again.                                                                                                 |
+| `Can't parse config.xml`                                   | [feeder.cpp][feeder] `main`                  | Deterministic: configuration.                                                                                                                                           |
+| `The SCHED_SHMEM structure is too small for the ... table` | [sched_shmem.cpp][sched_shmem] `overflow`    | Deterministic: the registry (too many apps, versions, platforms).                                                                                                       |
+| `HR type ... out of range` and the other HR messages       | [feeder.cpp][feeder] `hr_init`               | Deterministic: the registry.                                                                                                                                            |
+| `can't destroy shmem`                                      | [feeder.cpp][feeder] `main`                  | Deterministic: the segment belongs to another user.                                                                                                                     |
+| `can't create shmem`                                       | [feeder.cpp][feeder] `main`                  | Deterministic: memory or kernel limits.                                                                                                                                 |
+| `Missing size census file`, and `show_shmem` lists no apps | [sched_shmem.cpp][sched_shmem] `scan_tables` | Deterministic: the registry. The scan stops before any app is counted, and allocating slots over no apps is undefined: the feeder may crash or stay up serving nothing. |
 
 ### Hold the supervisor loop
 
@@ -597,7 +579,7 @@ echo "hold $(date -u +%FT%TZ)" | tee -a "$evidence/hold-time.txt"
 
 `boinc-daemons.sh` checks the marker before each `bin/start --cron` and skips the run while it
 exists, and a container start waits for it
-([`boinc-daemons.sh` L46-L52](../../boinc/images/server/boinc-daemons.sh#L46-L52)). It
+(`maintenance` in [`boinc-daemons.sh`](../../boinc/images/server/boinc-daemons.sh)). It
 stops nothing that is running. While it is in place, the loop starts no daemon and runs no periodic
 task, and the guard reports `maintenance`, which doesn't fail the host unit. The hold is part of
 the approved window. Record the loop's own attempts made before the hold: every
@@ -629,7 +611,7 @@ needs the maintainer, the hold stays until they decide.
   database, confirm it with a read-only query such as `SELECT COUNT(*) FROM app WHERE deprecated=0`
   over step 1's verified-TLS connection, saved to `$evidence/db-check.txt`. The guard can't confirm
   it: during the hold it reports `maintenance` before it queries anything
-  ([`feeder-slot-guard.py` L165-L168](../../boinc/images/server/feeder-slot-guard.py#L165-L168)).
+  (`check` in [`feeder-slot-guard.py`](../../boinc/images/server/feeder-slot-guard.py)).
   Then repeat step 4. If a feeder is already running by
   then (the loop started it before the hold), don't retry: verify that feeder with step 4 and
   `attempt=2`. Never script a retry, loop, or watch and restart.
@@ -730,88 +712,25 @@ and review.
   boundary, so that the guard has a baseline
   ([Feeder allocation guard](../../docs/boinc-onprem.md#feeder-allocation-guard-1462)). The server copies
   `bin/feeder` from the image only when the container starts
-  ([`entrypoint.sh` L104-L115](../../boinc/images/server/entrypoint.sh#L104-L115)), so
+  (`project_tree` in [`entrypoint.sh`](../../boinc/images/server/entrypoint.sh)), so
   that deployment is a server restart and outside this procedure.
 - The first live refresh needs the maintainer's approval. Its step 5 is the rollout verification
   #1462 asks for: live app IDs and weights, query and slot sizing, HR, bounded replicas in the
   cache, assignment to an eligible host, distinct-host validation and load.
 
-[feeder-150-158]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/feeder.cpp#L150-L158
-[feeder-904-933]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/feeder.cpp#L904-L933
-[feeder-371-405]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/feeder.cpp#L371-L405
-[feeder-177-200]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/feeder.cpp#L177-L200
-[sched-shmem-43-57]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/sched_shmem.cpp#L43-L57
-[feeder-250-254]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/feeder.cpp#L250-L254
-[feeder-478-481]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/feeder.cpp#L478-L481
-[start-168-186]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/start#L168-L186
-[start-309-325]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/start#L309-L325
-[start-446-465]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/start#L446-L465
-[start-449-452]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/start#L449-L452
-[feeder-269-277]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/feeder.cpp#L269-L277
-[start-14-17]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/start#L14-L17
-[sched-util-basic-40-93]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/sched_util_basic.cpp#L40-L93
-[feeder-561-610]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/feeder.cpp#L561-L610
-[feeder-171-175]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/feeder.cpp#L171-L175
-[feeder-869-870]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/feeder.cpp#L869-L870
-[start-513-555]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/start#L513-L555
-[feeder-854-867]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/feeder.cpp#L854-L867
-[start-559-572]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/start#L559-L572
-[feeder-186]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/feeder.cpp#L186
-[start-467-478]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/start#L467-L478
-[start-574-583]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/start#L574-L583
-[start-209-221]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/start#L209-L221
-[start-467-470]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/start#L467-L470
-[sched-shmem-112-264]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/sched_shmem.cpp#L112-L264
-[sched-shmem-h-37-48]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/sched_shmem.h#L37-L48
-[sched-shmem-99-108]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/sched_shmem.cpp#L99-L108
-[sched-shmem-119-261]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/sched_shmem.cpp#L119-L261
-[feeder-612-691]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/feeder.cpp#L612-L691
-[sched-shmem-145-171]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/sched_shmem.cpp#L145-L171
-[feeder-887]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/feeder.cpp#L887
-[feeder-923-925]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/feeder.cpp#L923-L925
-[shmem-441-467]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/lib/shmem.cpp#L441-L467
-[feeder-860-861]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/feeder.cpp#L860-L861
-[sched-main-525-531]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/sched_main.cpp#L525-L531
-[sched-score-346-429]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/sched_score.cpp#L346-L429
-[sched-array-279-352]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/sched_array.cpp#L279-L352
-[sched-check-499-523]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/sched_check.cpp#L499-L523
-[boinc-db-1178-1198]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/db/boinc_db.cpp#L1178-L1198
-[sched-send-1008-1012]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/sched_send.cpp#L1008-L1012
-[sched-main-156-169]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/sched_main.cpp#L156-L169
-[sched-main-284-304]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/sched_main.cpp#L284-L304
-[sched-config-93]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/sched_config.cpp#L93
-[feeder-860-867]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/feeder.cpp#L860-L867
-[feeder-569-576]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/feeder.cpp#L569-L576
-[sched-main-316-331]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/sched_main.cpp#L316-L331
-[feeder-849-852]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/feeder.cpp#L849-L852
-[synch-41-105]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/lib/synch.cpp#L41-L105
-[sched-send-780-786]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/sched_send.cpp#L780-L786
-[sched-main-517-523]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/sched_main.cpp#L517-L523
-[start-463]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/start#L463
-[sched-shmem-247-251]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/sched_shmem.cpp#L247-L251
-[sched-util-basic-61-64]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/sched_util_basic.cpp#L61-L64
-[start-794-797]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/start#L794-L797
-[start-589-599]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/start#L589-L599
-[feeder-887-902]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/feeder.cpp#L887-L902
-[sched-shmem-345-353]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/sched_shmem.cpp#L345-L353
-[sched-shmem-130]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/sched_shmem.cpp#L130
-[feeder-595-605]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/feeder.cpp#L595-L605
-[feeder-779-780]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/feeder.cpp#L779-L780
-[feeder-484-491]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/feeder.cpp#L484-L491
-[sched-shmem-397-427]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/sched_shmem.cpp#L397-L427
-[feeder-869]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/feeder.cpp#L869
-[feeder-872-880]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/feeder.cpp#L872-L880
-[feeder-830-836]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/feeder.cpp#L830-L836
-[feeder-854-858]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/feeder.cpp#L854-L858
-[feeder-860-865]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/feeder.cpp#L860-L865
-[feeder-436-454]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/feeder.cpp#L436-L454
-[sched-shmem-173-235]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/sched_shmem.cpp#L173-L235
-[cs-scheduler-720-724]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/client/cs_scheduler.cpp#L720-L724
-[cs-scheduler-1198-1199]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/client/cs_scheduler.cpp#L1198-L1199
-[scheduler-op-515-517]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/client/scheduler_op.cpp#L515-L517
-[scheduler-op-162-203]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/client/scheduler_op.cpp#L162-L203
-[scheduler-op-179-187]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/client/scheduler_op.cpp#L179-L187
-[scheduler-op-507-509]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/client/scheduler_op.cpp#L507-L509
-[scheduler-op-212-213]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/client/scheduler_op.cpp#L212-L213
-[client-state-397-403]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/client/client_state.cpp#L397-L403
-[project-888-890]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/client/project.cpp#L888-L890
+[feeder]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/feeder.cpp
+[sched_shmem]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/sched_shmem.cpp
+[sched_shmem_h]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/sched_shmem.h
+[start]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/start
+[sched_util_basic]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/sched_util_basic.cpp
+[sched_main]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/sched_main.cpp
+[sched_check]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/sched_check.cpp
+[boinc_db]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/db/boinc_db.cpp
+[sched_send]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/sched_send.cpp
+[sched_config]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/sched_config.cpp
+[shmem]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/lib/shmem.cpp
+[synch]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/lib/synch.cpp
+[cs_scheduler]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/client/cs_scheduler.cpp
+[scheduler_op]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/client/scheduler_op.cpp
+[client_state]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/client/client_state.cpp
+[project]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/client/project.cpp

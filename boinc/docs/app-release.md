@@ -473,8 +473,8 @@ fake migration.
      prints the build's `engine.image` and `engine.base`, the identity for the Gold binding in
      `gold-engine-platforms.json`. Files are named for their content, so the two apps share one
      download, and the models aren't copied into each slot. `check_appver.py` checks that layout.
-     Publishing needs the app in `boinc/project/project.xml` first; neither app is
-     registered yet (`docs/boinc-native-ocr.md`, Rollout):
+     Publishing needs the app in `boinc/project/project.xml` first; `usnm_gold_native` is
+     there at weight 0 (#1607), `usnm_ocr_native` isn't yet (`docs/boinc-native-ocr.md`, Rollout):
 
    ```sh
    boinc/scripts/boinc-app-release.sh --env prod --app usnm_gold_native --version 1.0 --kind native \
@@ -647,7 +647,7 @@ Example **operator-local, secret-free** config for an existing dedicated client
   "client": {
     "mode": "existing",
     "dedicated_test_client": true,
-    "python_command": ["ssh", "pve-big", "pct exec 100 -- runuser -u boinc -- python3 -"]
+    "python_command": ["ssh", "CLIENT-HOST", "runuser -u boinc -- python3 -"]
   }
 }
 ```
@@ -886,8 +886,8 @@ maintainer publishes and signs from the merged commit.
    signing host. Mac binaries are never executed on that Linux host. A new
    platform can share a version number only when its shared templates agree;
    existing platform files remain immutable. Changed image, wrapper or job
-   configuration requires a new version. Commit the resulting `images.appver`
-   setting.
+   configuration requires a new version. On the Azure server, commit the resulting
+   `images.appver` setting; the on-prem server writes none.
 
 4. Reserve a synthetic or cached-page `usnm_ocr` job for an ARM Mac client,
    then verify scheduler selection, signed download, native execution, upload,

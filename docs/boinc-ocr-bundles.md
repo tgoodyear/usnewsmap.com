@@ -152,7 +152,9 @@ Eastern.
      (`submit-remote` copies them).
 4. **Hand-off image.** `collect` must understand `get-spool`'s `requeued` before any bundle can
    fail. With `--onprem-handoff collect` (#967), collect runs from CT 230's `SERVER_IMAGE`, so
-   step 3 covers it. Otherwise, update `USNM_BOINC_HANDOFF_IMAGE` to the new bridge image.
+   step 3 covers it. Prod has had no Azure hand-off job since 6 November 2026 (#308); only an
+   environment whose settings still name `USNM_BOINC_HANDOFF_IMAGE` needs it set to the new
+   bridge image.
 5. **Canary plan.** Start a new plan on CT 211, `queue-feed-<n+1>`, once the old plan has
    drained or is left to drain under its own state. Only the plan name, image and the fields
    below change; keep everything else as in the live config:

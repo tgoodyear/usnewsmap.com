@@ -411,7 +411,7 @@ usnm-boinc-step --env prod --step gold-bundle --var GOLD_CAMPAIGN=v1-tess550 --w
 
 `"goldBundle": true` in `boinc/infra/boinc/env/<env>.json` applies to the Azure
 server only. With `"server": "azure"`, the bundle is built inside the VNet instead: set it
-in the same commit as the new digest (it is false until then). After
+in the same commit as the new digest (prod's file already sets it). After
 `boinc/scripts/provision-boinc.sh`, the stack has the gold bundle job (`usnm-boinc-gold-caj-<env>`, the stack's
 output `goldBundleJobName`). It runs the same step with `GOLD_CAMPAIGN=v1-tess550` set in
 the job itself, so it needs no override:

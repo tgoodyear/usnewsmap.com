@@ -17,13 +17,15 @@ setting up a whole cluster for it.
 - A BOINC client 8.2.13 or newer. Some distributions ship an older one; check
   with `boinc --version` and use [BOINC's own packages](https://boinc.berkeley.edu/linux_install.php)
   if yours is too old.
-- For GPU work, an NVIDIA GPU with a driver that supports CUDA 12.4 or newer
-  and at least 3 GB of free video memory (7 GB for the larger model), plus two free CPU
-  cores per GPU task. Without one, the computer gets CPU work: the quality app
-  on any machine, the Qwen CPU app on 4 to 8 cores.
-- Free disk that BOINC is allowed to use: 2 GiB for the quality app, 12 GiB
-  for the Qwen CPU app, and 18 GiB for the Qwen GPU app (those are binary
-  gigabytes, so about 2.2, 13 and 20 GB as most disk tools show them).
+- For GPU work, an NVIDIA, AMD or Intel GPU on x86-64 with a current driver
+  and at least 7 GB of free video memory, plus two free CPU cores per GPU task
+  ([app versions](boinc-quality.md#app-versions-and-plan-classes),
+  [AMD](boinc-amd-gpu.md), [Intel](boinc-intel-gpu.md)). Without one, the
+  computer gets CPU work from the quality app; the Qwen CPU app has had no
+  live version since 2 November 2026.
+- Free disk that BOINC is allowed to use: 2 GiB for the quality app and
+  18 GiB for the Qwen GPU app (those are binary gigabytes, so about 2.2 and
+  19 GB as most disk tools show them).
   BOINC's own disk limit (**Options → Computing preferences → Disk**) must
   allow it as well.
 
