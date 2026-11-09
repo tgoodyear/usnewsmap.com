@@ -25,10 +25,10 @@ Where this page and #441 differ, #441 wins; it is the client base.
 
 | Item                               | Where                                                                                                                   |
 | ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
-| A stock server in Azure            | `boinc/infra/boinc/` (Container App, MySQL, Files share, Key Vault, Log Analytics, static site)                               |
+| A stock server in Azure            | `boinc/infra/boinc/` (Container App, MySQL, Files share, Key Vault, Log Analytics, static site)                         |
 | The `docker` plan class            | `boinc/project/plan_class_spec.xml`                                                                                     |
 | Project and daemon configuration   | `boinc/project/config.xml.template` and `boinc/project/project.xml`                                                     |
-| Where `submit` and `reconcile` run | the manual-trigger Container Apps Job in `boinc/infra/boinc/modules/bridge-job.bicep`                                         |
+| Where `submit` and `reconcile` run | the manual-trigger Container Apps Job in `boinc/infra/boinc/modules/bridge-job.bicep`                                   |
 | The set-up plan and deployment     | `boinc/scripts/provision-boinc.sh` and `boinc/scripts/build-boinc-images.sh`; secrets and project init run in VNet jobs |
 | The server and bridge images       | `images/server`, `images/bridge` ([images.md](images.md))                                                               |
 

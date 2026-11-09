@@ -138,12 +138,12 @@ No BOINC workunit was submitted, and no curated data or trust state was changed.
   the Python ALTO converter matched all 16 String contents and geometry.
   Complete ALTO/result files differ, including processing timestamps.
 
-| Measurement                       | Host A         | Host B            |
-| --------------------------------- | -------------- | ----------------- |
-| Worker-reported elapsed time      | 25.637 s       | 10.670 s          |
-| Independent Python wall time      | 25.123 s       | 10.807 s          |
-| Independent Python CPU time       | 21.781 CPU-s   | 10.806 CPU-s      |
-| Independent Python peak child RSS | 679,100 KiB    | 683,960 KiB       |
+| Measurement                       | Host A       | Host B       |
+| --------------------------------- | ------------ | ------------ |
+| Worker-reported elapsed time      | 25.637 s     | 10.670 s     |
+| Independent Python wall time      | 25.123 s     | 10.807 s     |
+| Independent Python CPU time       | 21.781 CPU-s | 10.806 CPU-s |
+| Independent Python peak child RSS | 679,100 KiB  | 683,960 KiB  |
 
 These are headline smoke measurements on two x86-64 CPUs, not full-page
 resource bounds, ARM/x86 equivalence, scheduler acceptance, canonical
@@ -178,11 +178,11 @@ including duplicate counts, but their sequence differs: upstream text follows
 XML document order, while ALTO sorts 90 blocks and their lines by `ORDER`.
 The headline did not cover this difference.
 
-| Independent Python measurement | Host A         | Host B            |
-| ------------------------------ | -------------- | ----------------- |
-| Wall time                      | 79.431 s       | 59.724 s          |
-| CPU time                       | 79.424 CPU-s   | 59.726 CPU-s      |
-| Peak child RSS                 | 1,110,140 KiB  | 1,107,948 KiB     |
+| Independent Python measurement | Host A        | Host B        |
+| ------------------------------ | ------------- | ------------- |
+| Wall time                      | 79.431 s      | 59.724 s      |
+| CPU time                       | 79.424 CPU-s  | 59.726 CPU-s  |
+| Peak child RSS                 | 1,110,140 KiB | 1,107,948 KiB |
 
 The release blocker is tracked in [#699](https://github.com/tgoodyear/usnewsmap.com/issues/699);
 [#700](https://github.com/tgoodyear/usnewsmap.com/pull/700) preserves both output
@@ -215,12 +215,12 @@ normalized text, and the existing Python converter matched every String's
 content and geometry. These are actual worker results, not the earlier
 synthetic checker envelopes.
 
-| Measurement                       | Host A         | Host B            |
-| --------------------------------- | -------------- | ----------------- |
-| Worker-reported elapsed time      | 84.014 s       | 60.233 s          |
-| Independent Python wall time      | 76.749 s       | 59.071 s          |
-| Independent Python CPU time       | 76.345 CPU-s   | 59.074 CPU-s      |
-| Independent Python peak child RSS | 1,110,676 KiB  | 1,112,048 KiB     |
+| Measurement                       | Host A        | Host B        |
+| --------------------------------- | ------------- | ------------- |
+| Worker-reported elapsed time      | 84.014 s      | 60.233 s      |
+| Independent Python wall time      | 76.749 s      | 59.071 s      |
+| Independent Python CPU time       | 76.345 CPU-s  | 59.074 CPU-s  |
+| Independent Python peak child RSS | 1,110,676 KiB | 1,112,048 KiB |
 
 An ONNX Runtime affinity warning on host B was nonfatal; no confinement or
 affinity setting was relaxed. The full-page runtime blocker is resolved in the
