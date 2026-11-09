@@ -38,17 +38,14 @@ pub fn write_executable_with_mode(
 mod unix {
     use super::*;
     use std::process::Command;
-    use std::sync::atomic::{AtomicU64, Ordering};
 
     pub(super) fn write(path: &Path, contents: &[u8], mode: u32) -> io::Result<()> {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        // Staged outside the destination's directory, so tests that list it never see it. The
-        // staged file is never run, so holding it open for writing here is harmless.
-        let staged = std::env::temp_dir().join(format!(
-            "usnm-script-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
+        // Staged in a private directory of its own (random name, mode 0700), not at a name
+        // another user could guess in the shared temporary directory and point at a file of
+        // ours. It is also outside the destination's directory, so tests that list that never
+        // see it. The staged file is never run, so holding it open for writing here is harmless.
+        let staging = tempfile::tempdir()?;
+        let staged = staging.path().join("script");
         std::fs::write(&staged, contents)?;
         let status = Command::new("install")
             .arg("-m")
@@ -57,7 +54,6 @@ mod unix {
             .arg(&staged)
             .arg(path)
             .status();
-        let _ = std::fs::remove_file(&staged);
         match status {
             Ok(status) if status.success() => Ok(()),
             Ok(status) => Err(io::Error::other(format!(
