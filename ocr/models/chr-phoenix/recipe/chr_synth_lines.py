@@ -5,7 +5,11 @@ Each line is a run of words from a CC0 text (the 1860 New Testament as typeset b
 Legg), set glyph by glyph from the glyph bank (`chr_glyph_bank.py`): a random kept sample of each
 letter, word-initial Ꮎ as the block G this paper prints there. Glyphs are scaled to a common body
 height and set on a shared baseline with the paper's spacing, then degraded like the microfilm
-(blur, ink spread or loss, noise, contrast, slight skew, JPEG). Each line is written as
+(blur, ink spread or loss, noise, contrast, slight skew, JPEG). Some lines start with a verse
+number and some words carry punctuation (`--marks-share`, `--punct-rate`); those marks are set
+from DejaVu Serif, since the bank holds only syllabary, and use only characters the start model's
+character set has (no 4, ? or straight quotes). Some lines get a sliver of a glyph in a margin
+(`--edge-rate`), the way a crop catches the neighbouring column, with the label unchanged. Each line is written as
 `<name>.png` and `<name>.gt.txt` (tesstrain's layout), and `lines.jsonl` lists them with the
 glyphs used.
 
@@ -27,10 +31,49 @@ import re
 import sys
 
 import numpy as np
-from PIL import Image, ImageFilter
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 SYL = re.compile("[Ꭰ-Ᏽ]+")
 NA = "Ꮎ"
+SERIF = "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf"
+DIGITS = "012356789"  # no 4: the start model can't write it
+PUNCT = [",", ".", ";", ":", "!"]
+
+
+def verse_number(rng: random.Random) -> str:
+    while True:
+        n = str(rng.randint(1, 60))
+        if all(c in DIGITS for c in n):
+            return n + "."
+
+
+def add_marks(words, rng: random.Random, marks_share: float, punct_rate: float):
+    out = [w + rng.choice(PUNCT) if rng.random() < punct_rate else w for w in words]
+    if rng.random() < 0.08:
+        out[0], out[-1] = "“" + out[0], out[-1] + "”"
+    if rng.random() < marks_share:
+        out.insert(0, verse_number(rng))
+    return out
+
+
+_mark_cache: dict = {}
+
+
+def mark_glyph(ch: str, body: int):
+    """A font-set mark as (ink array, rows from its top to the baseline)."""
+    key = (ch, body)
+    if key not in _mark_cache:
+        font = ImageFont.truetype(SERIF, max(6, int(body / 0.73)))  # digit height ≈ body
+        size = body * 3
+        im = Image.new("L", (size, size), 255)
+        ImageDraw.Draw(im).text((body // 2, 2 * body), ch, font=font, fill=0, anchor="ls")
+        a = np.asarray(im, np.float32)
+        ys, xs = np.nonzero(a < 128)
+        if len(ys) == 0:
+            _mark_cache[key] = None
+        else:
+            _mark_cache[key] = (a[ys.min():ys.max() + 1, xs.min():xs.max() + 1], 2 * body - ys.min())
+    return _mark_cache[key]
 
 
 def excluded_pages(path: str | None) -> set[str]:
@@ -83,37 +126,66 @@ def sentences(path: str, rng: random.Random, n_words=(3, 9)):
         i += k + rng.randint(0, 40)
 
 
+def load_glyph(p, cache):
+    if p not in cache:
+        raw = np.asarray(Image.open(p).convert("L"), np.float32)
+        # Paper to white and ink to black, so pasted glyphs carry no box.
+        ink, paper = np.percentile(raw, 5), np.percentile(raw, 80)
+        cache[p] = np.clip((raw - ink) / max(1.0, paper - ink), 0, 1) * 255
+    return cache[p]
+
+
+def edge_sliver(canvas, pools, rng, body, cache, right: bool):
+    """Paste part of a random glyph into the left or right margin (text untouched)."""
+    a = load_glyph(rng.choice(rng.choice([v for v in pools.values() if v])), cache)
+    y0, y1, x0, x1 = ink_box(a)
+    g = a[y0:y1, x0:x1]
+    s = body / max(1, g.shape[0])
+    g = np.asarray(Image.fromarray(g).resize((max(1, int(g.shape[1] * s)), body), Image.BILINEAR), np.float32)
+    keep = max(2, int(g.shape[1] * rng.uniform(0.15, 0.5)))
+    g = g[:, :keep] if right else g[:, -keep:]
+    room = int(body * 0.5)
+    if keep >= room:
+        g = g[:, :room - 1] if right else g[:, -(room - 1):]
+    y = max(0, int(body * 0.45) + rng.randint(-body // 3, body // 3))
+    h = min(g.shape[0], canvas.shape[0] - y)
+    x = canvas.shape[1] - g.shape[1] - rng.randint(0, 3) if right else rng.randint(0, 3)
+    region = canvas[y:y + h, x:x + g.shape[1]]
+    canvas[y:y + h, x:x + g.shape[1]] = np.minimum(region, g[:h, :region.shape[1]])
+
+
 def render(words, pools, rng, body: int, cache):
     """A grayscale line image of `words`, or None when a letter has no sample."""
     glyphs = []
     for wi, w in enumerate(words):
+        core_start = next((k for k, c in enumerate(w) if SYL.match(c)), 0)
         for i, ch in enumerate(w):
-            key = NA + "^" if ch == NA and i == 0 and (NA + "^") in pools else ch
+            if not SYL.match(ch):
+                m = mark_glyph(ch, body)
+                if m is None:
+                    return None, ch
+                glyphs.append((m[0], i == 0 and wi > 0, m[1]))
+                continue
+            key = NA + "^" if ch == NA and i == core_start and (NA + "^") in pools else ch
             if not pools.get(key):
                 return None, ch
-            p = rng.choice(pools[key])
-            if p not in cache:
-                raw = np.asarray(Image.open(p).convert("L"), np.float32)
-                # Paper to white and ink to black, so pasted glyphs carry no box.
-                ink, paper = np.percentile(raw, 5), np.percentile(raw, 80)
-                cache[p] = np.clip((raw - ink) / max(1.0, paper - ink), 0, 1) * 255
-            a = cache[p]
+            a = load_glyph(rng.choice(pools[key]), cache)
             y0, y1, x0, x1 = ink_box(a)
             g = a[y0:y1, x0:x1]
             s = body / max(1, g.shape[0])
             g = np.asarray(Image.fromarray(g).resize((max(1, int(g.shape[1] * s)), body), Image.BILINEAR), np.float32)
-            glyphs.append((g, i == 0 and wi > 0))
+            glyphs.append((g, i == 0 and wi > 0, body))
     gap, space = max(1, int(0.08 * body)), int(0.55 * body)
-    width = sum(g.shape[1] for g, _ in glyphs) + gap * len(glyphs) + space * sum(1 for _, s in glyphs if s) + 2 * body
+    width = sum(g.shape[1] for g, *_ in glyphs) + gap * len(glyphs) + space * sum(1 for _, s, _ in glyphs if s) + 2 * body
     h = int(body * 1.9)
     canvas = np.full((h, width), 255.0, np.float32)
     x = body
     base = int(body * 0.45)
-    for g, new_word in glyphs:
+    for g, new_word, above in glyphs:
         if new_word:
             x += space
         jitter = rng.randint(-1, 1)
-        y = base + jitter
+        y = max(0, base + body - above + jitter)  # `above`: rows from the glyph's top to the baseline
         region = canvas[y:y + g.shape[0], x:x + g.shape[1]]
         canvas[y:y + g.shape[0], x:x + g.shape[1]] = np.minimum(region, g[:region.shape[0], :region.shape[1]])
         x += g.shape[1] + gap + rng.randint(-1, 1)
@@ -148,6 +220,9 @@ def main(argv=None) -> int:
     ap.add_argument("--lines", type=int, default=1000)
     ap.add_argument("--seed", type=int, default=1620)
     ap.add_argument("--body", type=int, default=36, help="glyph body height in pixels")
+    ap.add_argument("--marks-share", type=float, default=0.0, help="share of lines that start with a verse number")
+    ap.add_argument("--edge-rate", type=float, default=0.0, help="chance of a glyph sliver in each margin")
+    ap.add_argument("--punct-rate", type=float, default=0.0, help="chance a word is followed by punctuation")
     a = ap.parse_args(argv)
     rng = random.Random(a.seed)
     exclude = excluded_pages(a.exclude_manifest)
@@ -160,10 +235,15 @@ def main(argv=None) -> int:
         for words in sentences(a.text, rng):
             if made >= a.lines:
                 break
+            words = add_marks(words, rng, a.marks_share, a.punct_rate)
             arr, miss = render(words, pools, rng, a.body + rng.randint(-4, 4), cache)
             if arr is None:
                 missing[miss] += 1
                 continue
+            body = int(round(arr.shape[0] / 1.9))
+            for right in (False, True):
+                if rng.random() < a.edge_rate:
+                    edge_sliver(arr, pools, rng, body, cache, right)
             name = f"chr-synth-{a.seed}-{made:06d}"
             degrade(arr, rng).save(os.path.join(a.out, name + ".png"))
             text = " ".join(words)

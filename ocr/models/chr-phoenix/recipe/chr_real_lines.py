@@ -4,7 +4,9 @@
 Each run of consecutive trusted words on a line of LoC's ALTO (at least --min-words of them) becomes a
 training line, cut from the first word's box to the last's. A trusted word is a syllabary word that is a form of the 1860 New Testament as LoC read it, or
 one the first type's misreadings, undone, turn into exactly one such form (Ꭺ read for Ꮩ;
-a word-initial Ꮹ/Ꮳ/Ᏻ/Ꮐ read for Ꮎ). Punctuation LoC read around a word is kept. The line is cut from
+a word-initial Ꮹ/Ꮳ/Ᏻ/Ꮐ read for Ꮎ). Punctuation LoC read around a word is kept, and so is a token of numerals and punctuation alone
+(a verse number such as `19.`, a lone quote or dash) inside or at the edge of a run, as LoC read
+it, so the model learns these marks are not letters; a run needs at least one trusted word. The line is cut from
 the page scan and written as `<name>.png` and `<name>.gt.txt` (tesstrain's layout). Pages of the frozen
 test set (`--exclude-manifest`, its page list) are never used.
 
@@ -17,6 +19,8 @@ from PIL import Image
 
 SYL = re.compile("[Ꭰ-Ᏽ]")
 PUNCT = ".,;:!?\"'“”‘’()[]-—"
+# Only marks the start model can write: its character set has no 4, ? or straight quotes.
+NEUTRAL = re.compile(r"[0-35-9.,;:!()\-“”’…]+")
 
 
 def make_fix(vocab):
@@ -79,6 +83,9 @@ def main():
                 label = None
                 if core and all(SYL.match(c) for c in core):
                     label = w if core in vocab else (w.replace(core, f, 1) if (f := fix(core)) else None)
+                if label is None and NEUTRAL.fullmatch(w):
+                    cur.append((s, w, False))
+                    continue
                 if label is None:
                     if cur:
                         runs.append(cur)
@@ -88,7 +95,7 @@ def main():
             if cur:
                 runs.append(cur)
             for run in runs:
-                if len(run) < a.min_words:
+                if sum(1 for _, lbl, _ in run if SYL.search(lbl)) < a.min_words:
                     continue
                 if page is None:
                     page = Image.open(img).convert("L")
