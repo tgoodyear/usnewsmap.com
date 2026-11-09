@@ -32,10 +32,14 @@ use usnm_ocr_worker::engine::{LineReading, Tesseract};
 pub const PAD_X: u32 = 12;
 /// Padding around a line box, in scan pixels, above and below.
 pub const PAD_Y: u32 = 8;
+/// A line job's sidecars, in its journal directory: everything `import` needs besides the
+/// result, in one directory so the hand-off's collect (`handoff get --prefix
+/// dispatch/jobs/<id>/line-read`) and a retry carry them together.
+pub const LINE_READ_DIR: &str = "line-read";
 /// LoC's ALTO for the page, kept beside a line job by `export`.
-pub const LOC_ALTO_FILE: &str = "loc.xml";
+pub const LOC_ALTO_FILE: &str = "line-read/loc.xml";
 /// What `export` read it with ([`LineReadRecord`]).
-pub const LINE_READ_FILE: &str = "line-read.json";
+pub const LINE_READ_FILE: &str = "line-read/record.json";
 /// The merge's counts, written by `import`.
 pub const MERGE_FILE: &str = "line-merge.json";
 /// LoC's ALTO is in inch1200; read it at the job's DPI.
@@ -273,12 +277,24 @@ fn spread(rect: Rect, text: &str, conf: Option<f64>) -> Vec<Word> {
         .collect()
 }
 
-fn description(job: &Job, step: &str) -> anyhow::Result<usnm_alto::Description> {
+/// The ALTO's description. `date_time` is the result's completion time, never the clock's, so
+/// the same result always gives the same bytes.
+fn description(
+    job: &Job,
+    step: &str,
+    date_time: Option<&str>,
+) -> anyhow::Result<usnm_alto::Description> {
     Ok(usnm_alto::Description {
         file_name: job.scan.url.clone(),
         file_identifiers: Vec::new(),
         ocr: usnm_alto::Step {
-            date_time: Some(chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
+            date_time: date_time
+                .map(chrono::DateTime::parse_from_rfc3339)
+                .transpose()?
+                .map(|t| {
+                    t.with_timezone(&chrono::Utc)
+                        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+                }),
             settings: vec![
                 ("ocr_engine".into(), job.engine_tag()?.to_string()),
                 ("read".into(), step.into()),
@@ -347,6 +363,7 @@ pub async fn ocr_lines(
         });
     }
     ensure!(text.len() <= boinc::MAX_TEXT, "result over limit");
+    let completed_at = chrono::Utc::now().to_rfc3339();
     let page = Page {
         width: f64::from(w),
         height: f64::from(h),
@@ -360,7 +377,11 @@ pub async fn ocr_lines(
     };
     let alto = usnm_alto::write(
         &page,
-        &description(job, "LoC ALTO line boxes, one crop each")?,
+        &description(
+            job,
+            "LoC ALTO line boxes, one crop each",
+            Some(&completed_at),
+        )?,
         &lines.language,
     )
     .into_bytes();
@@ -374,7 +395,7 @@ pub async fn ocr_lines(
         text_sha256: boinc::sha256(text.as_bytes()),
         alto_sha256: boinc::sha256(&alto),
         elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
-        completed_at: chrono::Utc::now().to_rfc3339(),
+        completed_at,
     };
     Ok((result, text, alto))
 }
@@ -402,12 +423,14 @@ pub struct Merged {
 }
 
 /// A line job's page from LoC's ALTO and the job's result text: LoC's lines in reading order,
-/// each line the model read replaced by its reading unless the reading fails.
+/// each line the model read replaced by its reading unless the reading fails. `completed_at`
+/// is the result's (`ResultManifest::completed_at`): the ALTO is the same bytes each time.
 pub fn merge(
     job: &Job,
     loc_alto: &[u8],
     record: &LineReadRecord,
     result_text: &str,
+    completed_at: Option<&str>,
 ) -> anyhow::Result<Merged> {
     ensure!(
         boinc::sha256(loc_alto) == record.loc_alto_sha256,
@@ -468,7 +491,11 @@ pub fn merge(
             })
             .collect(),
     };
-    let mut desc = description(job, "LoC ALTO; Cherokee lines read again one crop each")?;
+    let mut desc = description(
+        job,
+        "LoC ALTO; Cherokee lines read again one crop each",
+        completed_at,
+    )?;
     desc.post = Some(usnm_alto::Step {
         date_time: None,
         settings: vec![
@@ -492,14 +519,55 @@ pub fn merge(
     })
 }
 
+/// A line job's sidecars from its journal directory, checked against each other.
+pub fn sidecars(job_dir: &Path) -> anyhow::Result<(Vec<u8>, LineReadRecord)> {
+    let loc = crate::read(&job_dir.join(LOC_ALTO_FILE), boinc::MAX_ALTO).with_context(|| {
+        format!(
+            "a line job's LoC ALTO, {} under its journal directory",
+            LOC_ALTO_FILE
+        )
+    })?;
+    let record: LineReadRecord = serde_json::from_slice(
+        &crate::read(&job_dir.join(LINE_READ_FILE), boinc::MAX_JSON).with_context(|| {
+            format!(
+                "a line job's line-read record, {} under its journal directory",
+                LINE_READ_FILE
+            )
+        })?,
+    )?;
+    ensure!(
+        boinc::sha256(&loc) == record.loc_alto_sha256,
+        "a line job's LoC ALTO is not the one it was exported with"
+    );
+    Ok((loc, record))
+}
+
+/// Copies a line job's sidecars from `from` to `to` (a retry's journal directory), checked.
+pub fn copy_sidecars(from: &Path, to: &Path) -> anyhow::Result<()> {
+    let (loc, record) = sidecars(from)?;
+    crate::atomic(&to.join(LOC_ALTO_FILE), &loc)?;
+    crate::atomic(
+        &to.join(LINE_READ_FILE),
+        &serde_json::to_vec_pretty(&record)?,
+    )?;
+    Ok(())
+}
+
 /// The merged page of the line job journaled in `job_dir`, from its result text.
-pub fn merge_in(job_dir: &Path, job: &Job, result_text: &[u8]) -> anyhow::Result<Merged> {
-    let loc = crate::read(&job_dir.join(LOC_ALTO_FILE), boinc::MAX_ALTO)?;
-    let record: LineReadRecord = serde_json::from_slice(&crate::read(
-        &job_dir.join(LINE_READ_FILE),
-        boinc::MAX_JSON,
-    )?)?;
-    merge(job, &loc, &record, std::str::from_utf8(result_text)?)
+pub fn merge_in(
+    job_dir: &Path,
+    job: &Job,
+    result_text: &[u8],
+    completed_at: Option<&str>,
+) -> anyhow::Result<Merged> {
+    let (loc, record) = sidecars(job_dir)?;
+    merge(
+        job,
+        &loc,
+        &record,
+        std::str::from_utf8(result_text)?,
+        completed_at,
+    )
 }
 
 /// Rule `line-merge-v1`'s verdict on a page, as `line-merge.json` records it.
@@ -616,11 +684,7 @@ pub fn admission_in(
     published: &str,
     result_text: &[u8],
 ) -> anyhow::Result<Admission> {
-    let loc = crate::read(&job_dir.join(LOC_ALTO_FILE), boinc::MAX_ALTO)?;
-    let record: LineReadRecord = serde_json::from_slice(&crate::read(
-        &job_dir.join(LINE_READ_FILE),
-        boinc::MAX_JSON,
-    )?)?;
+    let (loc, record) = sidecars(job_dir)?;
     admission(
         job,
         &loc,
@@ -676,7 +740,7 @@ pub fn report(root: &Path, spool: Option<&Path>) -> anyhow::Result<Vec<ReportRow
         } else {
             continue;
         };
-        let merged = merge_in(&job_dir, &record.job, &text)?;
+        let merged = merge_in(&job_dir, &record.job, &text, None)?;
         let line_merge = admission_in(&job_dir, &record.job, &merged.alto, &text)?;
         let line_read: LineReadRecord = serde_json::from_slice(&crate::read(
             &job_dir.join(LINE_READ_FILE),
@@ -907,7 +971,7 @@ mod tests {
         // b1l0 takes the model's reading; b1l1 (LoC "Tbe") too, LoC had no syllabary;
         // b2l0 loses a New Testament word, so LoC's stays.
         let result = "ᎦᏙᎯ ᎠᎴ\nᎠᏍᎦᏯ\nᎦᎪᎯ\n";
-        let merged = merge(&job, alto, &record, result).unwrap();
+        let merged = merge(&job, alto, &record, result, None).unwrap();
         assert_eq!(
             merged.text,
             "CHEROKEE PHOENIX.\n\nᎦᏙᎯ ᎠᎴ\nᎠᏍᎦᏯ\n\nᎦᏙᎯ\nThe end."
@@ -925,6 +989,13 @@ mod tests {
             usnm_alto::parse(merged.alto.as_bytes(), &usnm_alto::ParseOptions::default()).unwrap();
         assert_eq!((page.width, page.height), (2000.0, 2000.0));
         assert_eq!(usnm_alto::text(&page), merged.text);
+        // The same result merges to the same bytes, whenever: the ALTO's date is the result's.
+        let at = Some("2026-11-09T12:00:00Z");
+        let once = merge(&job, alto, &record, result, at).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        let again = merge(&job, alto, &record, result, at).unwrap();
+        assert_eq!(once.alto, again.alto);
+        assert!(once.alto.contains("2026-11-09T12:00:00Z"));
         // line-merge-v1, against LoC's ALTO: 2 of 3 lines took the model's reading.
         let admit = admission(&job, alto, &record, &merged.alto, result).unwrap();
         assert_eq!(
@@ -938,15 +1009,15 @@ mod tests {
         assert_eq!(refused.verdict, "line_changed");
         // Under half the Cherokee lines from the model.
         let mostly_loc = "\nᎠ\nᎦᎪᎯ\n";
-        let page = merge(&job, alto, &record, mostly_loc).unwrap();
+        let page = merge(&job, alto, &record, mostly_loc, None).unwrap();
         let few = admission(&job, alto, &record, &page.alto, mostly_loc).unwrap();
         assert_eq!((few.verdict, few.model), ("model_share", 1));
         // A result for other lines, or LoC's ALTO changed, is refused.
-        assert!(merge(&job, alto, &record, "a\nb\n").is_err());
+        assert!(merge(&job, alto, &record, "a\nb\n", None).is_err());
         let mut changed = record.clone();
         changed.loc_alto_sha256 = boinc::sha256(b"other");
-        assert!(merge(&job, alto, &changed, result).is_err());
+        assert!(merge(&job, alto, &changed, result, None).is_err());
         let other = line_job(scan, &[("b9l9", [1, 1, 2, 2])]);
-        assert!(merge(&other, alto, &record, "Ꭰ\n").is_err());
+        assert!(merge(&other, alto, &record, "Ꭰ\n", None).is_err());
     }
 }

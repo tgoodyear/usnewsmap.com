@@ -1032,7 +1032,7 @@ pub async fn import(
     // (#1621).
     let (text, alto) = if record.job.lines.is_some() {
         let job_dir = dir(root, id)?;
-        let merged = lines::merge_in(&job_dir, &record.job, &text)?;
+        let merged = lines::merge_in(&job_dir, &record.job, &text, Some(&result.completed_at))?;
         // Rule line-merge-v1, against LoC's ALTO (#1621): a page it doesn't admit keeps LoC's
         // text, and is settled here, held, like a held trust scope's.
         let admission = lines::admission_in(&job_dir, &record.job, &merged.alto, &text)?;
