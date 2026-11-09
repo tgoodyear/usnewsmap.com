@@ -138,7 +138,7 @@ class PartialTest(unittest.TestCase):
             self.assertEqual(state["through"], "bundle-b")
             self.assertIn("flock -n", run.call_args_list[0].args[0][-1])
             self.assertIn("-E 75", run.call_args_list[0].args[0][-1])
-            self.assertIn("180s", run.call_args_list[0].args[0][-1])
+            self.assertIn("240s", run.call_args_list[0].args[0][-1])
             for call in run.call_args_list[2:4]:
                 command = call.args[0]
                 if command[0] == "ssh":
@@ -421,14 +421,14 @@ class PartialTest(unittest.TestCase):
         (unit / "quality.json").write_text(json.dumps({"id": self.job, "doc_id": "doc-a"}))
         inventory = {"a-ready": {"status": "canonical-present", "fingerprint": "a" * 64}}
         self.cache_inventory(inventory)
-        # A 90-second inventory must not leave the collector its former 120 seconds.
+        # A 90-second inventory must not leave the collector its full per-call limit.
         with mock.patch.object(partial.time, "monotonic", side_effect=[0, 90, 90]), \
                 mock.patch.object(partial, "completion_inventory", return_value=inventory), \
                 mock.patch.object(partial.subprocess, "run",
                                   side_effect=subprocess.TimeoutExpired(["collector"], 70)) as run:
             with self.assertRaises(subprocess.TimeoutExpired):
                 partial.scoped_collect(self.args, self.root)
-        self.assertEqual(run.call_args.kwargs["timeout"], 70)
+        self.assertEqual(run.call_args.kwargs["timeout"], partial.REMOTE_WORK_SECONDS - 90)
         state = json.loads((self.root / "ops/quality-results/scoped/test/frontier.json").read_bytes())
         self.assertEqual(state["priority_after"], "a-ready")
         self.assertEqual(state["turns"], 1)
@@ -548,6 +548,41 @@ class PartialTest(unittest.TestCase):
         with mock.patch.object(partial.subprocess, "run") as run:
             self.assertIsNone(partial.host_refresh_inventory(self.args))
         run.assert_not_called()
+
+    def test_run_loads_several_units_with_a_lock_release_between_each(self):
+        self.args.units_per_run, self.args.run_budget_secs = 3, 600
+        loaded = [{"pages": 200, "selected_unit": f"u{i}"} for i in range(3)]
+        sleeps = []
+        with mock.patch.object(partial, "host_pass", side_effect=loaded) as one, \
+                mock.patch("sys.stdout", new_callable=io.StringIO):
+            report = partial.host_passes(self.args, sleep=sleeps.append)
+        self.assertEqual(one.call_count, 3)
+        self.assertEqual(sleeps, [partial.UNIT_GAP_SECONDS] * 2)
+        self.assertEqual((report["units"], report["pages"]), (3, 600))
+
+    def test_run_stops_quietly_on_a_later_busy_lock_but_not_on_the_first(self):
+        self.args.units_per_run, self.args.run_budget_secs = 5, 600
+        with mock.patch.object(partial, "host_pass", side_effect=[{"pages": 1}, SystemExit(75)]), \
+                mock.patch("sys.stdout", new_callable=io.StringIO), mock.patch("sys.stderr", new_callable=io.StringIO):
+            self.assertEqual(partial.host_passes(self.args, sleep=lambda _: None)["units"], 1)
+        with mock.patch.object(partial, "host_pass", side_effect=SystemExit(75)):
+            with self.assertRaises(SystemExit) as raised:
+                partial.host_passes(self.args, sleep=lambda _: None)
+        self.assertEqual(raised.exception.code, 75)
+        # Any other failure, even after loaded units, still fails the run so it's visible.
+        with mock.patch.object(partial, "host_pass",
+                               side_effect=[{"pages": 1}, subprocess.CalledProcessError(1, ["ssh"])]), \
+                mock.patch("sys.stdout", new_callable=io.StringIO):
+            with self.assertRaises(subprocess.CalledProcessError):
+                partial.host_passes(self.args, sleep=lambda _: None)
+
+    def test_run_starts_no_unit_past_its_budget(self):
+        self.args.units_per_run, self.args.run_budget_secs = 5, 600
+        with mock.patch.object(partial.time, "monotonic", side_effect=[0, 300, 601, 601]), \
+                mock.patch.object(partial, "host_pass", side_effect=[{"pages": 1}, {"pages": 1}]) as one, \
+                mock.patch("sys.stdout", new_callable=io.StringIO):
+            report = partial.host_passes(self.args, sleep=lambda _: None)
+        self.assertEqual((one.call_count, report["units"]), (2, 2))
 
     def load_fixture(self, rows):
         root = self.args.snapshot_dir
