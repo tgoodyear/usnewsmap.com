@@ -12,17 +12,14 @@ joined PC can sit idle for a while. That is normal.
 
 - Windows 11, or Windows 10 22H2 with current updates, on an Intel or AMD
   64-bit PC. Windows on ARM and Windows Server are not supported.
-- The helper looks for an NVIDIA GPU with the official NVIDIA driver 551.61
-  or newer and at least 3 GB of free video memory. The only Windows GPU
-  version that gets work, though, is for AMD GPUs with 7 GB or more
-  ([AMD](boinc-amd-gpu.md)). The NVIDIA and Intel GPU versions run on Linux
-  only ([app versions](boinc-quality.md#app-versions-and-plan-classes)). On a
-  PC without an NVIDIA GPU, add `-AllowCpuOnly` to the preview and apply
-  commands below (not to `-Status`). It only skips the helper's NVIDIA check:
-  BOINC still finds an AMD GPU and can send it GPU work. CPU work is optional
-  and not always available.
-- 6 GB of RAM and 12 GiB of free disk, or 18 GiB if your GPU has 7 GB or more
-  of video memory (binary gigabytes: about 13 and 19 GB as most disk tools
+- For GPU work, an AMD GPU with at least 7 GB of video memory and a current
+  AMD graphics driver, which provides Vulkan ([AMD](boinc-amd-gpu.md)). No
+  Windows version has been released for NVIDIA or Intel GPUs yet; both get GPU
+  work on Linux ([app versions](boinc-quality.md#app-versions-and-plan-classes)). On a PC
+  without an eligible AMD GPU, add `-AllowCpuOnly` to the preview and apply
+  commands below (not to `-Status`) to offer CPU time instead. CPU work is
+  optional and not always available.
+- 6 GB of RAM and 12 GiB of free disk, or 18 GiB with an eligible AMD GPU (binary gigabytes: about 13 and 19 GB as most disk tools
   show them).
 
 ## 2. Run the helper

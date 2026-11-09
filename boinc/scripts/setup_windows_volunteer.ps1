@@ -91,7 +91,7 @@ function Invoke-BoundedProcess([string]$File, [string]$Arguments, [string]$Direc
         $errors = $process.StandardError.ReadToEndAsync()
         if (-not $process.WaitForExit(30000)) {
             $process.Kill()
-            throw 'Local BOINC/driver check timed out. Check BOINC Manager and the NVIDIA driver, then retry.'
+            throw 'Local BOINC check timed out. Check BOINC Manager, then retry.'
         }
         return [pscustomobject]@{
             ExitCode = $process.ExitCode
@@ -155,23 +155,20 @@ function Get-WindowsReadiness([string]$DataDirectory, [bool]$CpuAllowed, [bool]$
     $ramGiB = [math]::Round(([double]$os.TotalVisibleMemorySize * 1KB / 1GB), 1)
     if ($ramGiB -lt 6) { throw 'Native Qwen onboarding requires at least 6 GiB host RAM. Use a larger host or ask the operator about CPU-quality-only participation.' }
 
+    # Windows GPU work is the amd_vulkan_8b plan class only: an AMD GPU with
+    # >= 7,000 MB device memory and the driver's Vulkan loader. No Windows
+    # version has been released for the NVIDIA or Intel classes yet; when one is,
+    # admit that vendor here. Keep this in step with the live app versions.
+    $gpus = @(Get-GpuAdapters)
     $gpu = $null
-    $gpus = @()
-    $smi = Get-Command nvidia-smi.exe -CommandType Application -ErrorAction SilentlyContinue
-    if (-not $smi) {
-        $smiPath = Join-Path $env:SystemRoot 'System32\nvidia-smi.exe'
-        if (Test-Path -LiteralPath $smiPath) { $smi = [pscustomobject]@{ Source = $smiPath } }
-    }
-    if ($smi) {
-        $result = Invoke-BoundedProcess $smi.Source `
-            '--query-gpu=name,driver_version,memory.total,memory.free --format=csv,noheader,nounits' $env:SystemRoot
-        if ($result.ExitCode -eq 0) {
-            $gpus = @(Get-NvidiaGpus $result.Output)
-            $gpu = $gpus | Where-Object { $_.FreeMiB -ge 3000 } | Sort-Object FreeMiB -Descending | Select-Object -First 1
-        }
+    if (Test-VulkanLoader) {
+        $gpu = $gpus | Where-Object { $_.Vendor -eq 'AMD' -and $_.TotalMiB -ge 7000 } |
+            Sort-Object TotalMiB -Descending | Select-Object -First 1
     }
     if (-not $gpu -and -not $CpuAllowed) {
-        throw 'No eligible NVIDIA CUDA GPU found (driver >= 551.61 and >= 3000 MiB free VRAM). Update the official NVIDIA Windows driver, close GPU-heavy apps and retry. AMD/Intel GPUs are not supported for this native CUDA pilot. For optional CPU participation, rerun with -AllowCpuOnly; no CPU preferences are changed automatically.'
+        $found = 'none detected'
+        if ($gpus) { $found = ($gpus | ForEach-Object { "$($_.Name) ($($_.Vendor), $($_.TotalMiB) MiB)" }) -join '; ' }
+        throw "No eligible GPU for Windows GPU work, which needs an AMD GPU with at least 7,000 MB of video memory and a current AMD driver with Vulkan. Found: $found. No Windows version has been released for NVIDIA or Intel GPUs yet; on Linux they can get GPU work now (docs/boinc-linux.md). For optional CPU participation, rerun with -AllowCpuOnly; no CPU preferences are changed automatically."
     }
     $service = Get-Service -Name BOINC -ErrorAction SilentlyContinue
     if ($service) {
@@ -182,35 +179,85 @@ function Get-WindowsReadiness([string]$DataDirectory, [bool]$CpuAllowed, [bool]$
         $gpu = $null
     }
     $diskGiB = 12
-    if ($gpus | Where-Object { $_.TotalMiB -ge 7000 }) { $diskGiB = 18 }
+    # Only a GPU this setup will use needs the 8B model's reserve.
+    if ($gpu) { $diskGiB = 18 }
     if (-not $DeferDiskCheck -and (Get-DataFreeBytes $DataDirectory) -lt ($diskGiB * 1GB)) {
         throw "Need at least $diskGiB GiB free on the BOINC data volume (cold model download/unpacking). Free space without deleting shared sticky model files, then retry."
     }
     return [pscustomobject]@{ RamGiB = $ramGiB; Gpu = $gpu; DiskGiB = $diskGiB }
 }
 
-function Get-NvidiaGpus([string]$Csv) {
-    foreach ($line in ($Csv -split '\r?\n')) {
-        $fields = $line -split ','
-        if ($fields.Count -ne 4) { continue }
-        $driver = $fields[1].Trim()
-        $total = $fields[2].Trim()
-        $free = $fields[3].Trim()
-        if ($driver -notmatch '^\d+\.\d+$' -or $total -notmatch '^\d+$' -or $free -notmatch '^\d+$') {
-            continue
+function Get-PresentDisplayDriverKeys {
+    # Driver keys of display devices that are connected now, such as
+    # '{4d36e968-e325-11ce-bfc1-08002be10318}\0001'. The class key also keeps
+    # entries for removed adapters (an unplugged eGPU), so only these count.
+    $devices = @(Get-PnpDevice -Class Display -PresentOnly -ErrorAction SilentlyContinue)
+    foreach ($device in $devices) {
+        $driver = Get-PnpDeviceProperty -InstanceId $device.InstanceId -KeyName 'DEVPKEY_Device_Driver' `
+            -ErrorAction SilentlyContinue
+        if ($driver -and $driver.Data) { [string]$driver.Data }
+    }
+}
+
+function Get-DisplayAdapterKeys {
+    # Display adapter driver keys (GUID_DEVCLASS_DISPLAY) for present devices.
+    # Each has the vendor, name, driver version and, from WDDM drivers, the
+    # dedicated memory size. No present devices means no adapters (fail closed).
+    $guid = '{4d36e968-e325-11ce-bfc1-08002be10318}'
+    $present = @(Get-PresentDisplayDriverKeys | ForEach-Object { $_.ToLowerInvariant() })
+    if (-not $present) { return @() }
+    $class = "HKLM:\SYSTEM\CurrentControlSet\Control\Class\$guid"
+    return @(Get-ChildItem -LiteralPath $class -ErrorAction SilentlyContinue |
+        Where-Object { $_.PSChildName -match '^\d{4}$' -and
+            $present -contains ("$guid\$($_.PSChildName)").ToLowerInvariant() } |
+        ForEach-Object { Get-ItemProperty -LiteralPath $_.PSPath -ErrorAction SilentlyContinue })
+}
+
+function Get-RegistryValue($Key, [string]$Name) {
+    $property = $Key.PSObject.Properties[$Name]
+    # The comma keeps a REG_BINARY byte[] from being unrolled on return.
+    if ($property) { return ,$property.Value }
+    return $null
+}
+
+function ConvertTo-MemoryBytes($Value) {
+    if ($null -eq $Value) { return 0 }
+    if ($Value -is [byte[]]) {
+        if ($Value.Length -ge 8) { return [BitConverter]::ToUInt64($Value, 0) }
+        if ($Value.Length -ge 4) { return [BitConverter]::ToUInt32($Value, 0) }
+        return 0
+    }
+    # REG_DWORD reads back as a signed int; sizes of 2 GiB and up come back negative.
+    if ($Value -is [int]) { return [uint64][BitConverter]::ToUInt32([BitConverter]::GetBytes($Value), 0) }
+    return [uint64]$Value
+}
+
+function Get-GpuAdapters {
+    foreach ($key in (Get-DisplayAdapterKeys)) {
+        $device = [string](Get-RegistryValue $key 'MatchingDeviceId')
+        $vendor = switch -Regex ($device) {
+            'VEN_1002' { 'AMD'; break }
+            'VEN_10DE' { 'NVIDIA'; break }
+            'VEN_8086' { 'Intel'; break }
+            default { $null }
         }
-        if ([version]$driver -ge [version]'551.61') {
-            [pscustomobject]@{
-                Name = $fields[0].Trim(); Driver = $driver
-                TotalMiB = [int]$total; FreeMiB = [int]$free
-            }
+        if (-not $vendor) { continue }
+        # qwMemorySize (QWORD) is exact; the older MemorySize value stops at 4 GiB.
+        $bytes = ConvertTo-MemoryBytes (Get-RegistryValue $key 'HardwareInformation.qwMemorySize')
+        if ($bytes -eq 0) { $bytes = ConvertTo-MemoryBytes (Get-RegistryValue $key 'HardwareInformation.MemorySize') }
+        $name = [string](Get-RegistryValue $key 'DriverDesc')
+        if (-not $name) { $name = "$vendor GPU" }
+        [pscustomobject]@{
+            Name = $name; Vendor = $vendor
+            Driver = [string](Get-RegistryValue $key 'DriverVersion')
+            TotalMiB = [int]([uint64]$bytes / 1MB)
         }
     }
 }
 
-function Select-NvidiaGpu([string]$Csv) {
-    return (Get-NvidiaGpus $Csv | Where-Object { $_.FreeMiB -ge 3000 } |
-        Sort-Object FreeMiB -Descending | Select-Object -First 1)
+function Test-VulkanLoader {
+    # AMD's driver installs the Vulkan loader; the app does not ship one.
+    return (Test-Path -LiteralPath (Join-Path $env:SystemRoot 'System32\vulkan-1.dll') -PathType Leaf)
 }
 
 function Assert-VerifiedInstaller([string]$Path) {
@@ -339,7 +386,7 @@ function Invoke-WindowsOnboarding {
     }
     Write-Host "Native Windows preview: $($ready.RamGiB) GiB RAM; reserve $($ready.DiskGiB) GiB disk in BOINC preferences."
     if ($ready.Gpu) {
-        Write-Host "NVIDIA: $($ready.Gpu.Name); driver $($ready.Gpu.Driver); $($ready.Gpu.FreeMiB) MiB currently free."
+        Write-Host "AMD: $($ready.Gpu.Name); driver $($ready.Gpu.Driver); $($ready.Gpu.TotalMiB) MiB video memory. A task needs 7,000 MiB of it free when it starts, so close GPU-heavy apps while BOINC runs."
     } else {
         Write-Warning 'CPU-only participation explicitly allowed. CPU app publication is not guaranteed; set CPU/GPU choices yourself in project preferences.'
     }
@@ -385,7 +432,7 @@ Before adding a project:
      enter $script:ProjectUrl and sign in to the SAME account.
      Enter passwords ONLY in Manager/the HTTPS project site. Never paste account
      keys or gui_rpc_auth.cfg here. Already attached? Do NOT remove/re-add it.
-  4. In Manager's Event Log verify the NVIDIA GPU is detected and look for
+  4. In Manager's Event Log verify the AMD GPU is detected and look for
      Scheduler request completed. Service installs cannot access Windows GPUs.
 "@
     [void](Read-Host 'Complete/review these steps in Manager, then press Enter to verify local attachment (Ctrl+C cancels)')
