@@ -240,6 +240,9 @@ pub fn agreement(
 ) -> Vec<f32> {
     let n = features.len();
     let mut out = vec![0f32; n];
+    if k == 0 {
+        return out; // no neighbours, no agreement
+    }
     let chunk = n.div_ceil(threads.max(1)).max(1);
     std::thread::scope(|s| {
         for (part, slot) in out.chunks_mut(chunk).enumerate() {

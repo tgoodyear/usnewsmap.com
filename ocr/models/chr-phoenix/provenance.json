@@ -105,7 +105,7 @@
         },
         "model_sha256": "88eb101611962ec6b6b421985203aa6722849da6b7350197e11ce2c0ff71f7f8",
         "real": "chr_real_lines.py keeping numeral and punctuation tokens",
-        "synthetic": "chr_synth_lines.py --seed 1622 --marks-share 0.4 --punct-rate 0.15 --edge-rate 0.3"
+        "synthetic": "chr_synth_lines.py --seed 1622 --marks-share 0.4 --punct-rate 0.15 --quote-rate 0.08 --edge-rate 0.3 (quotes were always on at 0.08 when it ran; the flag now names them)"
       }
     ],
     "tesseract": "5.5.0 (Debian trixie), image built from recipe/Containerfile",

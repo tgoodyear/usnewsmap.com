@@ -47,9 +47,11 @@ def verse_number(rng: random.Random) -> str:
             return n + "."
 
 
-def add_marks(words, rng: random.Random, marks_share: float, punct_rate: float):
+def add_marks(words, rng: random.Random, marks_share: float, punct_rate: float, quote_rate: float):
+    if not (marks_share or punct_rate or quote_rate):
+        return list(words)  # no random draws, so a no-marks run reproduces round one's lines
     out = [w + rng.choice(PUNCT) if rng.random() < punct_rate else w for w in words]
-    if rng.random() < 0.08:
+    if rng.random() < quote_rate:
         out[0], out[-1] = "“" + out[0], out[-1] + "”"
     if rng.random() < marks_share:
         out.insert(0, verse_number(rng))
@@ -222,6 +224,9 @@ def main(argv=None) -> int:
     ap.add_argument("--body", type=int, default=36, help="glyph body height in pixels")
     ap.add_argument("--marks-share", type=float, default=0.0, help="share of lines that start with a verse number")
     ap.add_argument("--edge-rate", type=float, default=0.0, help="chance of a glyph sliver in each margin")
+    ap.add_argument("--quote-rate", type=float, default=0.0, help="chance a line is wrapped in curly quotes")
+    ap.add_argument("--max-misses", type=int, default=100000,
+                    help="give up after this many lines in a row that need a letter with no sample")
     ap.add_argument("--punct-rate", type=float, default=0.0, help="chance a word is followed by punctuation")
     a = ap.parse_args(argv)
     rng = random.Random(a.seed)
@@ -230,20 +235,27 @@ def main(argv=None) -> int:
     os.makedirs(a.out, exist_ok=True)
     missing = collections.Counter()
     cache = {}
-    made = 0
+    made = misses = 0
     with open(os.path.join(a.out, "lines.jsonl"), "w", encoding="utf-8") as idx:
         for words in sentences(a.text, rng):
             if made >= a.lines:
                 break
-            words = add_marks(words, rng, a.marks_share, a.punct_rate)
+            words = add_marks(words, rng, a.marks_share, a.punct_rate, a.quote_rate)
             arr, miss = render(words, pools, rng, a.body + rng.randint(-4, 4), cache)
             if arr is None:
                 missing[miss] += 1
+                misses += 1
+                if misses >= a.max_misses:
+                    print(f"gave up after {misses} unrenderable lines in a row; missing letters: "
+                          f"{dict(missing.most_common(10))}", file=sys.stderr)
+                    break
                 continue
+            misses = 0
             body = int(round(arr.shape[0] / 1.9))
-            for right in (False, True):
-                if rng.random() < a.edge_rate:
-                    edge_sliver(arr, pools, rng, body, cache, right)
+            if a.edge_rate > 0:  # no draws when off, as in round one
+                for right in (False, True):
+                    if rng.random() < a.edge_rate:
+                        edge_sliver(arr, pools, rng, body, cache, right)
             name = f"chr-synth-{a.seed}-{made:06d}"
             degrade(arr, rng).save(os.path.join(a.out, name + ".png"))
             text = " ".join(words)
@@ -254,7 +266,7 @@ def main(argv=None) -> int:
                "skipped_for_missing_letter": dict(missing.most_common())}
     json.dump(summary, open(os.path.join(a.out, "summary.json"), "w"), ensure_ascii=False, indent=1)
     print(json.dumps(summary, ensure_ascii=False))
-    return 0
+    return 0 if made >= a.lines else 1
 
 
 if __name__ == "__main__":

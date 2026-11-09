@@ -280,6 +280,7 @@ fn clean(
     threads: usize,
     exclude_manifest: Option<&Path>,
 ) -> Result<()> {
+    anyhow::ensure!(k > 0, "--k must be at least 1");
     let excluded = exclude_manifest
         .map(manifest_pages)
         .transpose()?

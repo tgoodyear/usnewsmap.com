@@ -9,5 +9,5 @@ python3 tools/chr_real_lines.py --alto-dir loc --images images --vocab chr-attes
   --exclude-manifest /w/testset/v1/manifest.json --out real-v2
 python3 tools/chr_synth_lines.py --bank bank-rs --text /w/testset/v2/cnts.raw.txt \
   --exclude-manifest /w/testset/v1/manifest.json --out synth-v2 --lines 20000 --seed 1622 \
-  --marks-share 0.4 --punct-rate 0.15 --edge-rate 0.3
+  --marks-share 0.4 --punct-rate 0.15 --quote-rate 0.08 --edge-rate 0.3
 bash tools/chr_finetune.sh --base ft-v2-base --real real-v2 --synth synth-v2 --work ft-v2 --iterations 20000 --jobs 6

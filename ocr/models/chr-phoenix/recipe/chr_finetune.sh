@@ -10,7 +10,7 @@ while [ $# -gt 0 ]; do case "$1" in
   --base) BASE=$2; shift 2;; --real) REAL=$2; shift 2;; --synth) SYNTH=$2; shift 2;;
   --work) WORK=$2; shift 2;; --iterations) ITER=$2; shift 2;; --jobs) JOBS=$2; shift 2;;
   *) echo "unknown $1" >&2; exit 2;; esac; done
-[ "$(basename "$REAL")" != "$(basename "$SYNTH")" ] || { echo "--real and --synth need different directory names" >&2; exit 2; }
+[ "$(basename "${REAL%/}")" != "$(basename "${SYNTH%/}")" ] || { echo "--real and --synth need different directory names" >&2; exit 2; }
 mkdir -p "$WORK/lstmf" "$WORK/out"
 # 1. A WordStr box file per line image (tesstrain's line format), then an .lstmf.
 make_one() {
@@ -27,18 +27,19 @@ make_one() {
 export -f make_one; export WORK
 find "$REAL" "$SYNTH" -name '*.png' | sort | xargs -P "$JOBS" -I{} bash -c 'make_one {}'
 # 2. Lists: evaluation = real lines of about one page in twenty, chosen by a hash of the page.
-python3 - "$WORK" "$(basename "$REAL")" <<'PY'
+python3 - "$WORK" "$REAL" "$SYNTH" <<'PY'
 import glob, os, sys, hashlib
-work, real = sys.argv[1], sys.argv[2] + "__"  # make_one names each file <its dir>__<name>
-files = sorted(glob.glob(os.path.join(work, "lstmf", "*.lstmf")))
-train, ev = [], []
-for f in files:
-    name = os.path.basename(f)
-    if name.startswith(real):
-        page = "_".join(name.split("__", 1)[1].split("_")[:4])
-        (ev if int(hashlib.sha256(page.encode()).hexdigest(), 16) % 20 == 0 else train).append(f)
-    else:
-        train.append(f)
+work, real_dir, synth_dir = sys.argv[1:4]
+# Only this run's inputs: an .lstmf left in --work by another dataset is ignored.
+def wanted(d):
+    return [os.path.join(work, "lstmf", f"{os.path.basename(os.path.normpath(d))}__{os.path.basename(p)[:-4]}.lstmf")
+            for p in sorted(glob.glob(os.path.join(d, "**", "*.png"), recursive=True))]
+real, synth = [f for f in wanted(real_dir) if os.path.exists(f)], [f for f in wanted(synth_dir) if os.path.exists(f)]
+train, ev = list(synth), []
+for f in real:
+    page = "_".join(os.path.basename(f).split("__", 1)[1].split("_")[:4])
+    (ev if int(hashlib.sha256(page.encode()).hexdigest(), 16) % 20 == 0 else train).append(f)
+train.sort()
 open(os.path.join(work, "train.list"), "w").write("\n".join(train) + "\n")
 open(os.path.join(work, "eval.list"), "w").write("\n".join(ev) + "\n")
 print(len(train), "train,", len(ev), "eval")
