@@ -1,0 +1,14 @@
+# The apt bases of the Tesseract engine image and the BOINC worker image (#1681): the
+# Containerfile's apt-engine and apt-tools-base stages, built once per architecture from the
+# Debian snapshot by .github/workflows/tesseract-base.yml and published to
+# ghcr.io/tgoodyear/usnm-tesseract-base. One <ARCH>_<build argument>=<image>@sha256:<digest>
+# per line. scripts/ci/tesseract-base.sh --arch <amd64|arm64> prints an architecture's lines
+# without the prefix, for `--build-arg`, and checks each base's labels against the Containerfile:
+# its SNAPSHOT, and the hash of its apt-* stages.
+#
+# An empty value means not pinned yet: the build then installs from the snapshot, as the
+# Containerfile's defaults do. An architecture pins both or neither.
+AMD64_ENGINE_BASE=
+AMD64_TOOLS_BASE=
+ARM64_ENGINE_BASE=
+ARM64_TOOLS_BASE=

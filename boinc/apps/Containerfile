@@ -7,21 +7,41 @@
 ARG TESSERACT_IMAGE
 ARG TESSERACT_FROM=${TESSERACT_IMAGE}
 ARG RUST_IMAGE=rust:1-bookworm
+# Where procps's .debs come from (#1681): by default the procps-debs stage below, which downloads
+# them from the engine's Debian snapshot; with the pinned tools base
+# (ocr/engines/tesseract/base.lock, through scripts/ci/tesseract-base.sh), from that image, so
+# the build contacts no Debian mirror.
+ARG TOOLS_BASE=procps-debs
 FROM ${RUST_IMAGE} AS build
 ARG BUILD_JOBS=2
 WORKDIR /src
 COPY . .
 RUN cargo build --release --locked --jobs "$BUILD_JOBS" -p usnm-boinc --bin usnm-boinc --example pilot_fixture
 
+# The engine's package sources are already pinned to its Debian snapshot. The same download as
+# the apt-procps stage of ocr/engines/tesseract/Containerfile, which the tools base holds.
+FROM ${TESSERACT_FROM} AS procps-debs
+USER 0
+RUN apt-get -o Acquire::Check-Valid-Until=false update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends --download-only procps \
+ && mkdir -p /usnm/debs/procps && mv /var/cache/apt/archives/*.deb /usnm/debs/procps/ \
+ && rm -rf /var/lib/apt/lists/*
+
+FROM ${TOOLS_BASE} AS tools
+
 FROM ${TESSERACT_FROM}
 # The assessment (#456) checks each unit against the engine image this one is built on.
 ARG TESSERACT_IMAGE
 ENV USNM_TESSERACT_IMAGE=${TESSERACT_IMAGE}
-# The base's package sources are already pinned to its Debian snapshot.
 USER 0
-RUN apt-get -o Acquire::Check-Valid-Until=false update \
- && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends procps \
- && rm -rf /var/lib/apt/lists/*
+# The .debs must come from the engine's snapshot. apt installs them as it would procps from the
+# mirror, then marks all but procps as installed automatically, as it would have.
+COPY --from=tools /etc/apt/sources.list.d/debian.sources /tmp/usnm-debs/debian.sources
+COPY --from=tools /usnm/debs/procps/ /tmp/usnm-debs/
+RUN cmp /tmp/usnm-debs/debian.sources /etc/apt/sources.list.d/debian.sources \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends /tmp/usnm-debs/*.deb \
+ && for deb in /tmp/usnm-debs/*.deb; do dpkg-deb --field "$deb" Package; done | grep -vx procps | xargs -r apt-mark auto \
+ && rm -rf /tmp/usnm-debs /var/lib/apt/lists/*
 COPY --from=build /src/target/release/usnm-boinc /usr/local/bin/usnm-boinc
 # Stock docker_wrapper mounts a BOINC-owned slot at /work. job.toml drops
 # capabilities except DAC_OVERRIDE so UID 0 can access that foreign-owned
