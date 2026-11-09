@@ -5,8 +5,8 @@
   "notes": {
     "Ꮩ": "this paper prints it as Λ, an A with no crossbar",
     "Ꭺ": "has a crossbar",
-    "Ꮎ": "at the start of a word this paper prints it as a plain G; inside a word it looks like θ"
+    "Ꮎ": "at the start of a word this paper prints it as a plain G (the first two pictures); inside a word it looks like θ (the last)"
   },
-  "drop_examples": "ᎿᏇᏋ",
+  "drop_examples": "Ꮛ",
   "min_examples": 3
 }

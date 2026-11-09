@@ -3750,6 +3750,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "usnm-glyphs"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "image",
+ "serde",
+ "serde_json",
+ "usnm-alto",
+ "usnm-core",
+]
+
+[[package]]
 name = "usnm-ingest"
 version = "0.1.0"
 dependencies = [
