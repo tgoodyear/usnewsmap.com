@@ -128,10 +128,13 @@ intact() {
   done
 }
 # Waits up to --idle-secs for no usnm-boinc-feed-* service to be running.
+# False when they don't end in time or systemctl can't say.
 idle() {
-  local deadline=$((SECONDS + IDLE_SECS))
+  local deadline=$((SECONDS + IDLE_SECS)) running
   while :; do
-    [ -n "$(systemctl list-units --plain --no-legend --state=activating,deactivating 'usnm-boinc-feed-*.service' 2> /dev/null)" ] || return 0
+    running=$(systemctl list-units --plain --no-legend --state=activating,deactivating 'usnm-boinc-feed-*.service') ||
+      { warn "warning: can't list the feed monitor runs"; return 1; }
+    [ -n "$running" ] || return 0
     [ "$SECONDS" -lt "$deadline" ] || return 1
     sleep 2
   done
@@ -143,10 +146,19 @@ resume() {
   paused=()
 }
 # Stops the active feed timers, so no run starts, then waits for the
-# running ones to end (idle). On false the timers run again.
+# running ones to end (idle). False, with the timers running again, when
+# any of that fails. Each step is checked here: set -e doesn't apply inside
+# a function called as a condition.
 drain() {
-  mapfile -t paused < <(systemctl list-units --plain --no-legend --state=active 'usnm-boinc-feed-*.timer' 2> /dev/null | cut -d' ' -f1)
-  [ ${#paused[@]} -eq 0 ] || systemctl stop "${paused[@]}"
+  local timers
+  timers=$(systemctl list-units --plain --no-legend --state=active 'usnm-boinc-feed-*.timer') ||
+    { warn "warning: can't list the feed monitor timers"; return 1; }
+  mapfile -t paused < <(cut -d' ' -f1 <<< "$timers" | sed '/^$/d')
+  if [ ${#paused[@]} -gt 0 ] && ! systemctl stop "${paused[@]}"; then
+    warn "warning: can't stop ${paused[*]}"
+    resume
+    return 1
+  fi
   idle || { resume; return 1; }
 }
 # GET $API/$1 into file $2; prints the HTTP status, 000 when nothing answered.

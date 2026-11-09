@@ -126,12 +126,16 @@ print(json.dumps([{"verificationResult": {"signature": {"certificate": {"sourceR
 
 # systemctl: list-units of services prints STUB_DIR/busy's lines while it exists (each
 # call takes one away when STUB_DIR/busy-countdown does), list-units of timers prints
-# STUB_DIR/timers, and every other call succeeds.
+# STUB_DIR/timers, and every other call succeeds, except one whose first word (list-units,
+# stop) STUB_DIR/systemctl-fails holds a line of.
 STUB_SYSTEMCTL = r'''#!/usr/bin/env python3
 import os, sys
 stubs = os.environ["STUB_DIR"]
 with open(os.environ["STUB_LOG"], "a") as log:
     log.write("systemctl %s\n" % " ".join(sys.argv[1:]))
+fails = os.path.join(stubs, "systemctl-fails")
+if os.path.exists(fails) and sys.argv[1] in open(fails).read().split():
+    sys.exit(1)
 busy = os.path.join(stubs, "busy")
 timers = os.path.join(stubs, "timers")
 if sys.argv[1:2] == ["list-units"] and sys.argv[-1].endswith(".timer"):
@@ -631,6 +635,22 @@ class FeedMonitor(unittest.TestCase):
         self.update("--idle-secs", "0")
         self.assertIn("systemctl start " + timers, self.calls("systemctl"))
         self.assertEqual(self.live(), tag)
+
+    def test_no_switch_when_systemctl_fails(self):
+        open(os.path.join(self.stubs, "timers"), "w").write("usnm-boinc-feed-health.timer loaded active waiting\n")
+        tag, _ = self.release()
+        self.update()
+        self.release("second")
+        for verb in ("list-units", "stop"):
+            open(os.path.join(self.stubs, "systemctl-fails"), "w").write(verb + "\n")
+            open(self.log, "w").close()
+            self.update()
+            self.assertEqual(self.live(), tag, verb)
+            if verb == "stop":
+                self.assertIn("systemctl start usnm-boinc-feed-health.timer", self.calls("systemctl"))
+        os.remove(os.path.join(self.stubs, "systemctl-fails"))
+        self.update()
+        self.assertNotEqual(self.live(), tag)
 
     def test_a_pin_that_can_t_switch_fails(self):
         first, _ = self.release()
