@@ -49,7 +49,8 @@ jobs:
     if: needs.current.outputs.current == 'true'
     runs-on: ubuntu-latest
     environment: prod
-    timeout-minutes: 15
+    # deploy.sh waits up to ten minutes for the new version to be served.
+    timeout-minutes: 25
     concurrency:
       group: check-site-prod
       cancel-in-progress: false

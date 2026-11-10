@@ -70,12 +70,12 @@ trap 'rm -f "$ROOT/edge/check/public/build.txt"' EXIT
   npx --yes wrangler@4.154.0 deploy --message "edge/check $tree")
 unset TOKEN
 
-for _ in $(seq 1 24); do
-  [ "$(curl --silent --max-time 10 "$SITE/build.txt?$RANDOM" || true)" = "$tree" ] && break
-  sleep 5
+# A new version has taken over two minutes to reach every request (10 Nov 2026), so wait up to ten.
+deadline=$((SECONDS + 600))
+until [ "$(curl --silent --max-time 10 "$SITE/build.txt?$RANDOM" || true)" = "$tree" ]; do
+  [ "$SECONDS" -lt "$deadline" ] || die "check.usnewsmap.com doesn't serve build $tree ten minutes after the deploy"
+  sleep 10
 done
-[ "$(curl --silent --max-time 10 "$SITE/build.txt?$RANDOM" || true)" = "$tree" ] ||
-  die "check.usnewsmap.com doesn't serve build $tree two minutes after the deploy"
 code=$(curl --silent --output /dev/null --write-out '%{http_code}' --max-time 20 "$SITE/api/languages")
 [ "$code" = 200 ] || die "check.usnewsmap.com/api/languages answered $code after the deploy"
 echo "verified check.usnewsmap.com serves edge/check $tree"
