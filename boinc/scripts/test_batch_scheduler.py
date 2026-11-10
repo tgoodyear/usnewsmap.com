@@ -1215,6 +1215,23 @@ class GoldOnboardingTests(unittest.TestCase):
         self.tick()
         self.assertEqual(self.fake.timings.summary()["phases"]["gold"]["count"], 2)
 
+    def test_a_gold_tick_collects_but_does_not_refill(self):
+        # A gold run takes minutes; with a refill on top the tick ran past controller_tick's
+        # 15-minute limit. The next tick, gold not due, refills.
+        event = self.tick()
+        self.assertEqual((event["backpressure_reason"], len(self.fake.jobs)), ("gold_tick", 0))
+        event = self.tick(at=5 * 60)
+        self.assertEqual(len(self.fake.steps), 2)
+        self.assertNotEqual(event["backpressure_reason"], "gold_tick")
+        self.assertEqual(len(self.fake.jobs), 2)
+
+    def test_a_gold_run_skipped_at_the_cap_still_refills(self):
+        # Only promotion ran (seconds), so the tick refills as usual.
+        self.fake.other = 2000
+        event = self.tick()
+        self.assertEqual(event["gold_onboarding"][0]["steps"]["gold-onboard"], batch.GOLD_SKIPPED_AT_CAP)
+        self.assertNotEqual(event["backpressure_reason"], "gold_tick")
+
     def test_a_scope_can_onboard_onto_another_worker_than_the_plans(self):
         # #1687: before a rotation, the live plan calibrates its hosts on the new worker while it
         # still feeds OCR on the old one; `image` defaults to the plan's.
@@ -1254,6 +1271,7 @@ class GoldOnboardingTests(unittest.TestCase):
     def test_held_wait_never_exceeds_a_long_interval(self):
         self.config["gold_onboarding"] = [dict(GOLD, interval_minutes=1440)]
         self.tick()
+        self.tick(at=60)  # the gold tick doesn't refill; this one does
         for job in self.fake.jobs.values():
             job["spool"] = "/project/usnmocr/results/batch1"
         self.fake.hold = True
@@ -1267,6 +1285,7 @@ class GoldOnboardingTests(unittest.TestCase):
 
     def test_an_admitted_host_publishes_its_held_result_in_the_same_tick(self):
         self.tick()
+        self.tick(at=60)  # the gold tick doesn't refill; this one does
         for job in self.fake.jobs.values():
             job["spool"] = "/project/usnmocr/results/batch1"
         self.fake.hold = True
@@ -1286,9 +1305,10 @@ class GoldOnboardingTests(unittest.TestCase):
         self.assertIn({"code": "gold_onboarding_failed", "scope": "v1-tess550/eng/eng",
                        "step": "gold-onboard",
                        "error": event["gold_onboarding"][0]["steps"]["gold-onboard"]}, event["alerts"])
-        # The feed went on as before.
-        self.assertEqual(len(self.fake.jobs), 2)
+        # A gold tick doesn't refill, failed or not; the next one does, without retrying gold.
+        self.assertEqual(len(self.fake.jobs), 0)
         self.tick(at=5 * 60)
+        self.assertEqual(len(self.fake.jobs), 2)
         self.assertEqual(len(self.fake.steps), 2)
 
     def test_the_run_is_on_record_before_its_steps(self):
@@ -1335,7 +1355,8 @@ class GoldOnboardingTests(unittest.TestCase):
         event = self.tick(other_app_budget=995)
         self.assertEqual(self.fake.steps[0][2]["GOLD_MAX_HOSTS"], 5)
         self.assertEqual((event["global_pending"], event["global_pending_counted"]), (1005, 1000))
-        self.assertEqual(event["backpressure_reason"], "global_safety_cap")
+        # A gold tick doesn't refill at all (gold_tick comes before the cap among the reasons).
+        self.assertEqual(event["backpressure_reason"], "gold_tick")
         self.assertEqual(len(self.fake.jobs), 0)
 
     def other_plan(self, number, stage):
@@ -1389,6 +1410,7 @@ class GoldOnboardingTests(unittest.TestCase):
 
     def test_held_results_report_their_age(self):
         self.tick()
+        self.tick(at=60)  # the gold tick doesn't refill; this one does
         for job in self.fake.jobs.values():
             job["spool"] = "/project/usnmocr/results/batch1"
         self.fake.hold = True

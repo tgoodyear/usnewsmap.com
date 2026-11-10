@@ -2288,6 +2288,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
     # Before collection: a host admitted now has its held results published by this tick's
     # collect, which otherwise stops at the first result it must hold.
     gold_runs = []
+    gold_ran = False
     if not drain and config.get("gold_onboarding"):
         # The same caps and the same retained backlog the refill below counts, from the same
         # status. Without status there is no room for gold units (promotion still runs); the
@@ -2308,6 +2309,9 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
                                               held=bool(held_jobs), room=room)
         # The gold units just issued are in flight too, for this tick's refill.
         snapshot = {**snapshot, "pending_workunits": snapshot["pending_workunits"] + reserved}
+        # A gold run takes about 9 minutes on CT 230: with a refill on top, the tick ran past
+        # controller_tick's 15-minute limit, which fires while it still runs. The next tick refills.
+        gold_ran = any(run["steps"].get("gold-onboard") != GOLD_SKIPPED_AT_CAP for run in gold_runs)
     to_collect = []
     for page, record in owned.items():
         job_id = record["job"]["id"]
@@ -2405,7 +2409,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
     global_free = max(0, global_room(cohort_info, global_pending, budgeted_other))
     free = min(cohort_free, global_free)
     submitted = 0
-    if target and not held and not drain:
+    if target and not held and not drain and not gold_ran:
         if free > 0:
             if feed:
                 feed.fill(min(refill, free), selected, owned, now)
@@ -2511,6 +2515,9 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
     elif held > 0:
         backpressure = True
         backpressure_reason = "collection_backlog"
+    elif gold_ran:
+        backpressure = True
+        backpressure_reason = "gold_tick"
     elif target == 0:
         backpressure = True
         backpressure_reason = "no_active_hosts"
