@@ -8,6 +8,8 @@ Round 1 of the engine survey in #296 ran five OCR engines on the same 80 sampled
 
 As §13.9 says, round 1 is indicative only. It ran on the Python harness, not on production images: Debian's Tesseract 5.5.0 without `--dpi 300`, the engines' raw text rather than the `normalize_ocr` text the overlay stores, and memory measured inside each container.
 
+Status on 10 November 2026: #296 was closed on 1 November 2026, superseded by #1415, and OCR now runs only through BOINC. The credits page (#372) shipped on 15 October 2026. Surya was retired on 2 November 2026; the [GPU studies](../2026-11-gpu-studies/report.md) retested it and found it worse than Tesseract on human-transcribed crops (23.0% CER against 9.0%). Those studies measure CER against human transcriptions; this round had none.
+
 # Summary
 
 - **No ground truth, so no CER or WER.** No crops were hand-transcribed. Accuracy is the language audit's damage metric (`ocr/ja-ocr/quality.py`): each text's damage rate and its known words, compared with LoC's text of the same page. Lower damage is better. More known words than LoC means more words a search could match.

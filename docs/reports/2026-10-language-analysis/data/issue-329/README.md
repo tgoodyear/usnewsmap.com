@@ -1,5 +1,7 @@
 # Issue #329: reproducible Slavic flag screening (15 October 2026)
 
+Status on 10 November 2026: #329 was closed as not planned on 1 November 2026 because the hand check needs fluent readers. The inflection-bias question moved to #1415.
+
 **This is agent-prepared evidence, not the completed hand audit.** Access to
 the OCR data worked. The evidence does not establish the true-error precision
 requested in #329: most flags still need a fluent reader to compare them with
