@@ -1546,21 +1546,30 @@ def deadline_retried(page, roots, deadline_retries):
     return [chain[-1]]
 
 
-def owned_records(config, records, deadline_retries=None):
+def owned_records(config, records, deadline_retries=None, conflicts=None):
     """Each allocated page's current journal: its one root, or its last reviewed retry
     (#1328). `deadline_retries` (the controller's state of that name, #1417) lets a page's
-    dead-lettered root give way to the root an operator's deadline retry exported."""
+    dead-lettered root give way to the root an operator's deadline retry exported.
+
+    An allocated page that another plan's journal is for is refused, naming the page and the
+    plan. Given a dict as `conflicts` (a queue-fed tick, #1685), such a page is left out of the
+    result instead: `conflicts[page]` names the other plans and holds this plan's own current
+    journal for it, or None. The plan's own journals of that page are checked all the same."""
     # Each allocated page's base batch: one for the whole cohort, or the claimed page's own.
     wanted = {page["page"]: page.get("batch") or config["batch"] for page in config["pages"]}
     by_page = {}
+    foreign = {}
     for record in records:
         require(record["stage"] in STAGES and ID.fullmatch(record["job"]["id"]),
                 "invalid dispatch journal")
         job = record["job"]
         page = job["message"]["page"]
         if record["plan"] != config["plan"]:
-            require(page not in wanted,
-                    "page is already allocated to another plan; reconcile the allocation before export")
+            if page in wanted:
+                require(conflicts is not None,
+                        f"page {page} is already allocated to another plan ({str(record['plan'])[:64]}); "
+                        "reconcile the allocation before export (archive_history.py reconcile, #1685)")
+                foreign.setdefault(page, set()).add(str(record["plan"])[:64])
             continue
         require(wanted.get(page) == job["message"]["batch"],
                 "plan already exists with a different allocation/image; operator migration required")
@@ -1599,6 +1608,8 @@ def owned_records(config, records, deadline_retries=None):
             remaining.remove(child)
             current = child
         owned[page] = current
+    for page, plans in foreign.items():
+        conflicts[page] = {"plans": sorted(plans), "own": owned.pop(page, None)}
     return owned
 
 
@@ -2204,7 +2215,33 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
     records = transport.records()
     # Here rather than in journal_inventory, which a tick runs several times.
     warn_near_cap("dispatch_journals", len(records), MAX_JOBS, now)
-    owned = owned_records(config, records, state.get("deadline_retries"))
+    # A queue-fed plan passes over a claimed page another plan's journal is for (#1685): it
+    # exports, submits and collects nothing for it, and logs it for `archive_history.py
+    # reconcile`, so one stranded page doesn't stop the plan. A fixed page list still refuses.
+    conflicts = {}
+    reported = set()
+
+    def own(records):
+        found = {} if feed else None
+        owned = owned_records(config, records, state.get("deadline_retries"), found)
+        conflicts.clear()
+        conflicts.update(found or {})
+        fresh = sorted(set(conflicts) - reported)
+        if fresh:
+            reported.update(fresh)
+            try:
+                print(json.dumps({
+                    "event": "boinc_batch_ownership_conflict", "schema_version": 1, "plan": config["plan"],
+                    "pages": [{"page": page, "other_plans": conflicts[page]["plans"],
+                               "own_stage": (conflicts[page]["own"] or {}).get("stage")} for page in fresh],
+                    "message": "passed over: another plan's journal is for these claimed pages; "
+                               "reconcile with archive_history.py reconcile (#1685)"},
+                    sort_keys=True), file=sys.stderr, flush=True)
+            except (OSError, ValueError):
+                pass
+        return owned
+
+    owned = own(records)
     for record in owned.values():
         job_id = record["job"]["id"]
         require(server.get(job_id, {}).get("stage") != "submitting",
@@ -2292,7 +2329,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
     count = len(to_collect)
     if count:
         records = transport.records()
-        owned = owned_records(config, records, state.get("deadline_retries"))
+        owned = own(records)
     settle_failed(owned)
     status = _extract_status(snapshot, transport, server_status=server_status, drain=drain)
     cohort_info = resolve_watermarks(
@@ -2383,7 +2420,10 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
             return bool(record and record["stage"] == "failed"
                         and page.get("supersedes") == record["job"]["id"])
 
+        # Never a page any other plan's journal is for, a page claimed this tick included (#1685).
+        foreign = {record["job"]["message"]["page"] for record in records if record["plan"] != config["plan"]}
         export = [page for page in config["pages"] if page["page"] in selected and
+                  page["page"] not in foreign and
                   (page["page"] not in owned or retried(page) or
                    (owned[page["page"]]["stage"] == "prepared"
                     and not owned[page["page"]].get("retry")))]
@@ -2397,7 +2437,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
                         "too many existing journals for selected pages; reconcile history")
                 transport.export(group, journals)
             records = transport.records()
-            owned = owned_records(config, records, state.get("deadline_retries"))
+            owned = own(records)
             stuck = sorted(page["page"] for page in export if retried(page))
             require(not stuck, f"the deadline retry of {', '.join(stuck)} exported no job of its own; "
                     "reconcile it before the next tick")
@@ -2516,6 +2556,10 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         "refilled": submitted,
         "blocked_by": backpressure_reason,
     }] if starvation_alert else []
+    if conflicts:
+        alerts.append({"code": "ownership_conflict", "pages": len(conflicts),
+                       "first": [{"page": page, "other_plans": conflicts[page]["plans"]}
+                                 for page in sorted(conflicts)[:5]]})
     for run in gold_runs:
         for step, outcome in run["steps"].items():
             if outcome not in ("ok", GOLD_SKIPPED_AT_CAP):
@@ -2526,7 +2570,10 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         and server.get(record["job"]["id"], {}).get("spool")}, now)
     scope_held = sum(kept_by_policy(record) for record in owned.values())
 
-    published = sum(record["stage"] == "published" for record in owned.values())
+    # A passed-over page's own published journal still counts, or newly_published would count
+    # it twice once the conflict is reconciled.
+    published = sum(record["stage"] == "published" for record in owned.values()) + sum(
+        bool(conflict["own"]) and conflict["own"]["stage"] == "published" for conflict in conflicts.values())
     previous = state.get("published", 0)
     started = state.setdefault("started_at", now)
     state["published"] = published
@@ -2541,6 +2588,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         "oldest_held_seconds": oldest_held,
         "scope_held": scope_held,
         "scope_held_archived": len(state.get("archived_held", {})),
+        "ownership_conflicts": len(conflicts),
         "gold_onboarding": gold_runs,
         "newly_published": max(0, published - previous),
         "pages_per_hour": round(published * 3600 / max(1, now - started), 3),

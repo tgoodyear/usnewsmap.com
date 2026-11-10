@@ -584,7 +584,9 @@ class SchedulerTests(unittest.TestCase):
         original = record(self.config["pages"][0]["page"], 1, "submitted")
         original.update(plan="original-owner", stamp="original-timestamp")
         self.fake.rows = [copy.deepcopy(original)]
-        with self.assertRaisesRegex(ValueError, "another plan"):
+        # A fixed page list still refuses, naming the page and the other plan (#1685).
+        with self.assertRaisesRegex(ValueError, r"page sn12345678/1900-01-01/ed-1/seq-1 is already "
+                                                r"allocated to another plan \(original-owner\)"):
             self.tick()
         self.assertEqual(self.fake.rows, [original])
         self.assertEqual(self.fake.actions, [])
@@ -1657,6 +1659,94 @@ class QueueModeTests(unittest.TestCase):
         self.assertTrue(self.tick()["backpressure"])
         self.assertEqual([a for a in self.fake.actions if a[0] == "claim"], claims)
         self.assertEqual(len(self.fake.waiting), 3)
+
+    def foreign(self, number, stage="reserved", plan="queue-feed-10"):
+        row = record(message(number)["page"], 100 + number, stage)
+        row["plan"] = plan
+        return row
+
+    def test_a_page_another_plan_has_a_journal_for_is_passed_over(self):
+        # #1685: a draining plan's stranded journal for page 1; its message came back and this
+        # plan claimed it. The tick exports and submits page 2 only, and says why.
+        stranded = self.foreign(1)
+        self.fake.rows = [copy.deepcopy(stranded)]
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            event = self.tick()
+        page = message(1)["page"]
+        self.assertEqual([a for a in self.fake.actions if a[0] == "export"],
+                         [("export", "test_batch", [message(2)["page"]])])
+        submitted = [a[1] for a in self.fake.actions if a[0] == "submit"]
+        self.assertEqual(submitted, [row["job"]["id"] for row in self.fake.rows
+                                     if row["job"]["message"]["page"] == message(2)["page"]])
+        self.assertEqual(self.fake.rows[0], stranded)
+        self.assertIn(page, self.state["claims"])
+        self.assertEqual(event["ownership_conflicts"], 1)
+        self.assertIn({"code": "ownership_conflict", "pages": 1,
+                       "first": [{"page": page, "other_plans": ["queue-feed-10"]}]}, event["alerts"])
+        logged = [json.loads(line) for line in err.getvalue().splitlines()
+                  if '"boinc_batch_ownership_conflict"' in line]
+        self.assertEqual([entry["pages"] for entry in logged],
+                         [[{"page": page, "other_plans": ["queue-feed-10"], "own_stage": None}]])
+        # Still passed over next tick; once reconciled, exported like any page.
+        self.fake.actions.clear()
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(self.tick()["ownership_conflicts"], 1)
+        self.assertFalse([a for a in self.fake.actions if a[0] == "export" and page in a[2]])
+        self.fake.rows.remove(stranded)
+        self.fake.hosts, self.config["max_pending"] = 4, 8
+        event = self.tick()
+        self.assertEqual(event["ownership_conflicts"], 0)
+        self.assertTrue([a for a in self.fake.actions if a[0] == "export" and page in a[2]])
+
+    def test_a_passed_over_page_keeps_its_own_job_unsubmitted_and_uncollected(self):
+        # #1685, 10 Nov: this plan exported page 1, then another plan's journal for it showed up.
+        self.fake.hosts = 0  # claim and export only
+        self.tick()
+        self.fake.hosts = 2
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.tick()
+        self.assertEqual(len(self.fake.jobs), 2)
+        own = next(row for row in self.fake.rows if row["job"]["message"]["page"] == message(1)["page"])
+        for job in self.fake.jobs.values():
+            job["spool"] = "/project/usnmocr/results/batch1"
+        self.fake.rows.append(self.foreign(1, "failed"))
+        self.fake.actions.clear()
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            event = self.tick()
+        self.assertFalse([a for a in self.fake.actions if a[0] == "collect" and a[1] == own["job"]["id"]])
+        self.assertTrue([a for a in self.fake.actions if a[0] == "collect"])
+        self.assertEqual(event["ownership_conflicts"], 1)
+        # Its held result doesn't hold up the refill either.
+        self.assertEqual(event["collection_backlog"], 0)
+        self.assertEqual(self.fake.jobs[own["job"]["id"]]["spool"], "/project/usnmocr/results/batch1")
+        logged = [json.loads(line) for line in err.getvalue().splitlines()
+                  if '"boinc_batch_ownership_conflict"' in line]
+        self.assertEqual(logged[0]["pages"], [{"page": message(1)["page"], "other_plans": ["queue-feed-10"],
+                                               "own_stage": "reserved"}])
+
+    def test_a_passed_over_page_still_fails_on_its_own_integrity_errors(self):
+        self.fake.rows = [self.foreign(1)]
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.tick()
+        own = next(row for row in self.fake.rows if row["plan"] == "batch-test"
+                   and row["job"]["message"]["page"] == message(2)["page"])
+        mine = copy.deepcopy(own)
+        mine["job"]["id"] = "f" * 64
+        mine["job"]["message"]["page"] = message(1)["page"]
+        mine["job"]["engine"]["image"] = "sha256:" + "b" * 64
+        self.fake.rows.append(mine)
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaisesRegex(ValueError, "migration"):
+                self.tick()
+        mine["job"]["engine"]["image"] = own["job"]["engine"]["image"]
+        twin = copy.deepcopy(mine)
+        twin["job"]["id"] = "e" * 64
+        self.fake.rows.append(twin)
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaisesRegex(ValueError, "multiple jobs"):
+                self.tick()
 
     def test_other_work_in_line_shrinks_the_claim(self):
         self.fake.other = 3

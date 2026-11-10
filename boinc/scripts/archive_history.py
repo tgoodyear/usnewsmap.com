@@ -27,6 +27,11 @@ Three steps, each on the host that holds its stores, in this order for every bat
             again, then puts their controller state back (the bridge and database steps need
             no undoing: `collect` reads only the hand-off container).
 
+  reconcile  On the controller host. Gives back a draining plan's stranded claimed pages (#1685):
+            dead-lettered pages, claims without a journal and exported jobs that never reached
+            BOINC. Their state entries and hand-off blobs are archived as dispatch archives a
+            batch's, once every plan given accepts its journals afterwards (owned_records).
+
 Each step writes an intent file before it changes anything and a receipt when it is done, so
 a step stopped half way is resumed by running it again with the same arguments.
 """
@@ -1038,6 +1043,327 @@ def restore_held(args):
     return 0
 
 
+# --- reconcile: a draining plan's stranded pages, given back (#1685) ---------------------------
+
+RECONCILE_KINDS = ("dead-lettered", "journal-less", "unsubmitted")
+RECONCILE_LISTED = 500
+
+
+class Plan:
+    """One controller plan: its config, its state directory and the state in it, checked to be
+    the config's own."""
+
+    def __init__(self, scheduler, config_path, state_dir):
+        self.config = scheduler.load_config(config_path)
+        self.state_dir = state_dir.resolve()
+        self.state_path = self.state_dir / "state.json"
+        self.state = read_json(self.state_path)
+        self.name = self.config["plan"]
+        require(self.state.get("config_sha256") == scheduler.digest(self.config),
+                f"{state_dir} is not {config_path}'s state directory (the state belongs to another allocation)")
+
+    def reload(self, scheduler):
+        self.state = read_json(self.state_path)
+        require(self.state.get("config_sha256") == scheduler.digest(self.config),
+                f"{self.state_path} changed allocation; stop and reconcile by hand")
+
+
+def ownership(scheduler, plans, records, states=None):
+    """Each plan's own owned_records on the journals and states given, as a tick runs it before
+    any export, with no page passed over: {plan: {"ok", "owned"} or {"ok": False, "error"}}."""
+    out = {}
+    for plan in plans:
+        state = (states or {}).get(plan.name, plan.state)
+        config = plan.config
+        if config.get("source") == "queue":
+            config = {**config, "pages": claimed_pages(state)}
+        try:
+            owned = scheduler.owned_records(config, records, state.get("deadline_retries"))
+            out[plan.name] = {"ok": True, "owned": len(owned)}
+        except ValueError as error:
+            out[plan.name] = {"ok": False, "error": str(error)}
+    return out
+
+
+def collisions(plans, records, states=None):
+    """The pages a plan has claimed (or, with a fixed list, allocated) that another plan's
+    journal is for: the conflicts a queue-fed tick passes over."""
+    journals = {}
+    for record in records:
+        journals.setdefault(record["job"]["message"]["page"], set()).add(record["plan"])
+    found = []
+    for plan in plans:
+        state = (states or {}).get(plan.name, plan.state)
+        pages = claimed_pages(state) if plan.config.get("source") == "queue" else plan.config.get("pages", [])
+        for page in pages:
+            others = sorted(journals.get(page["page"], set()) - {plan.name})
+            if others:
+                found.append({"page": page["page"], "allocated_to": plan.name, "journals_of": others})
+    return sorted(found, key=lambda item: (item["page"], item["allocated_to"]))
+
+
+def read_bridge_jobs(path):
+    """The job ids in a listing of the bridge's $HANDOFF_DIR/jobs (e.g. `ls`), one per word;
+    anything that isn't a job id is left out."""
+    require(path.is_file() and not path.is_symlink(), f"{path} must be a regular file")
+    jobs = {word for word in path.read_text().split() if ID.fullmatch(word)}
+    require(jobs, f"{path} lists no bridge job: give a listing of the BOINC host's $HANDOFF_DIR/jobs")
+    return jobs
+
+
+def stranded(scheduler, plan, blobs, records, bridge, kinds):
+    """The draining plan's claimed pages that nothing will move again, by kind, and the pages
+    passed over with why:
+      dead-lettered  the page's only journal of this plan is a failed root it dead-lettered,
+                     with no retry, superseding letter or deadline retry;
+      journal-less   claimed, with no journal of this plan (a draining tick never exports);
+      unsubmitted    the only journal is a reserved root that never reached BOINC: no bridge
+                     journal (the bridge writes one before create_work), no spool output and
+                     not kept by a held scope (a draining tick never submits)."""
+    state = plan.state
+    letters, retries = state.get("dead_lettered", {}), state.get("deadline_retries", {})
+    archived = state.get(ARCHIVED_HELD, {})
+    mine = {}
+    for record in records:
+        if record["plan"] == plan.name:
+            mine.setdefault(record["job"]["message"]["page"], []).append(record)
+    extra = {}
+    for name, blob in blobs.items():
+        if name.startswith("spool/") or "/superseding/" in name or "/deadline-retry/" in name:
+            extra.setdefault(blob["job"], set()).add(name.split("/")[0] if name.startswith("spool/")
+                                                      else name.split("/")[3])
+    found = {kind: [] for kind in RECONCILE_KINDS}
+    skipped = {}
+
+    def skip(reason, page):
+        skipped.setdefault(reason, []).append(page)
+
+    for page, claim in sorted(state.get("claims", {}).items()):
+        history = mine.get(page, [])
+        if not history:
+            if "journal-less" not in kinds:
+                continue
+            if page in archived:
+                skip("journal_less_archived_held", page)
+            elif isinstance(claim, dict) and "source_truncated" in claim:
+                skip("journal_less_source_truncated", page)  # a tick dead-letters it, draining or not
+            else:
+                found["journal-less"].append({"page": page, "jobs": []})
+            continue
+        if len(history) != 1:
+            if any(record["stage"] in ("failed", "reserved") for record in history):
+                skip("several_journals", page)
+            continue
+        record = history[0]
+        job = record["job"]["id"]
+        if record["stage"] == "failed" and "dead-lettered" in kinds:
+            if record.get("retry"):
+                skip("failed_retry", page)
+            elif job not in letters:
+                skip("failed_not_dead_lettered", page)
+            elif job in retries or (isinstance(claim, dict) and claim.get("supersedes")) \
+                    or extra.get(job, set()) & {"superseding", "deadline-retry"}:
+                skip("failed_retried_or_superseded", page)
+            else:
+                found["dead-lettered"].append({"page": page, "jobs": [job]})
+        elif record["stage"] == "reserved" and "unsubmitted" in kinds:
+            if record.get("retry"):
+                skip("reserved_retry", page)
+            elif scheduler.kept_by_policy(record):
+                skip("reserved_held_by_scope", page)
+            elif job in bridge:
+                skip("reserved_with_bridge_journal", page)
+            elif "spool" in extra.get(job, set()):
+                skip("reserved_with_spool_output", page)
+            else:
+                found["unsubmitted"].append({"page": page, "jobs": [job]})
+    return found, {reason: sorted(pages) for reason, pages in sorted(skipped.items())}
+
+
+def plan_reconcile(scheduler, target, plans, container, bridge, args):
+    """The manifest of what reconcile moves out of the draining plan, and a summary with every
+    plan's owned_records before and after."""
+    blobs = list_job_blobs(container)
+    records = read_records(container, blobs)
+    found, skipped = stranded(scheduler, target, blobs, records, bridge, args.kinds)
+    chosen = sorted((dict(item, kind=kind) for kind, items in found.items() for item in items),
+                    key=lambda item: item["page"])
+    jobs = sorted(job for item in chosen for job in item["jobs"])
+    require(len(set(jobs)) == len(jobs), "a job belongs to two pages; reconcile the journals by hand")
+    state = target.state
+    entries = {key: {} for key in STATE_KEYS}
+    for item in chosen:
+        for key in ("claims", "selected"):
+            if item["page"] in state.get(key, {}):
+                entries[key][item["page"]] = state[key][item["page"]]
+        for key in ("held_since", "dead_lettered"):
+            for job in item["jobs"]:
+                if job in state.get(key, {}):
+                    entries[key][job] = state[key][job]
+    entries["published"] = 0
+    jobset = set(jobs)
+    plan_blobs = sorted(({key: blob[key] for key in ("name", "etag", "size", "md5")}
+                         for blob in blobs.values() if blob["job"] in jobset), key=lambda blob: blob["name"])
+    require(sum(1 for blob in plan_blobs if RECORD_BLOB.fullmatch(blob["name"])) == len(jobs),
+            "every job to move needs its record.json")
+    after_state = without(state, entries)
+    after_states = {target.name: after_state}
+    remaining = [record for record in records if record["job"]["id"] not in jobset]
+    manifest = {
+        "schema_version": SCHEMA_VERSION, "kind": "usnm-boinc-reconcile", "created_at": int(time.time()),
+        "account": target.config["account"], "plan": target.name,
+        "config_sha256": scheduler.digest(target.config), "kinds": sorted(args.kinds),
+        "checked_plans": sorted(plan.name for plan in plans),
+        "bridge_jobs": None if bridge is None else {"listed": len(bridge),
+                                                    "sha256": sha256_file(args.bridge_jobs)},
+        "pages": chosen, "jobs": jobs, "blobs": plan_blobs, "state": entries,
+        "before": {"journals": sum(1 for name in blobs if RECORD_BLOB.fullmatch(name)), "blobs": len(blobs),
+                   "state_sha256": sha256_file(target.state_path),
+                   **{f"state_{key}": value for key, value in state_counts(state).items()}},
+    }
+    before_collisions = collisions(plans, records)
+    after_collisions = collisions(plans, remaining, after_states)
+    summary = {
+        "plan": target.name, "kinds": sorted(args.kinds),
+        "found": {kind: len(items) for kind, items in found.items()},
+        "pages": {kind: [item["page"] for item in items][:RECONCILE_LISTED] for kind, items in found.items()},
+        "skipped": {reason: {"count": len(pages), "first": pages[:5]} for reason, pages in skipped.items()},
+        "jobs": len(jobs), "blobs": len(plan_blobs), "bytes": sum(blob["size"] for blob in plan_blobs),
+        "state_entries": {key: len(entries[key]) for key in STATE_KEYS},
+        "after": {"journals": manifest["before"]["journals"] - len(jobs),
+                  **{f"state_{key}": value for key, value in state_counts(after_state).items()}},
+        "collisions": {"before": len(before_collisions), "after": len(after_collisions),
+                       "first_before": before_collisions[:20], "first_after": after_collisions[:20]},
+        "owned_records": {"before": ownership(scheduler, plans, records),
+                          "after": ownership(scheduler, plans, remaining, after_states)},
+    }
+    return manifest, summary
+
+
+def reconcile_dirs(archive):
+    root = archive / "reconcile"
+    if not root.is_dir():
+        return []
+    return sorted(path for path in root.iterdir() if path.is_dir() and BATCH_NAME.fullmatch(path.name))
+
+
+def open_reconcile(archive):
+    """The run to work on: the newest one if it never finished, else a new one."""
+    existing = reconcile_dirs(archive)
+    for path in existing[:-1]:
+        require((path / "receipts/reconcile.json").is_file(),
+                f"reconcile run {path.name} has no receipt; only the newest run can be unfinished")
+    if existing and not (existing[-1] / "receipts/reconcile.json").is_file():
+        return existing[-1], (existing[-1] / "manifest.json").is_file()
+    number = int(existing[-1].name) + 1 if existing else 1
+    return archive / "reconcile" / f"{number:04d}", False
+
+
+def reconcile(args):
+    """Gives back a draining (or retired) plan's stranded claimed pages, so a live plan that
+    claims their messages again isn't passed over or refused (#1685)."""
+    scheduler = load_scheduler()
+    target = Plan(scheduler, args.config, args.state_dir)
+    require(target.config.get("source") == "queue", "only a queue-fed plan has claims to reconcile")
+    require(len(args.check_config or []) == len(args.check_state_dir or []),
+            "give each --check-config its --check-state-dir, in the same order")
+    plans = [target] + [Plan(scheduler, config, state_dir)
+                        for config, state_dir in zip(args.check_config or [], args.check_state_dir or [])]
+    names = [plan.name for plan in plans]
+    require(len(set(names)) == len(names), f"a plan is given twice: {sorted(names)}")
+    require(len({plan.state_dir for plan in plans}) == len(plans), "two plans share a state directory")
+    for plan in plans:
+        require(plan.config["account"] == target.config["account"],
+                f"{plan.name} uses another hand-off account; reconcile plans of one container together")
+    args.kinds = sorted(set(args.kind or RECONCILE_KINDS))
+    bridge = None
+    if "unsubmitted" in args.kinds:
+        require(args.bridge_jobs is not None,
+                "--bridge-jobs is needed to find unsubmitted jobs (or leave out --kind unsubmitted)")
+        bridge = read_bridge_jobs(args.bridge_jobs)
+    container = RestContainer(target.config["account"])
+    units = {"timer": unit_state(f"{args.controller_unit}.timer"),
+             "service": unit_state(f"{args.controller_unit}.service")}
+    lease = container.lease_state(LEASE_BLOB)
+    controller = {**units, "lease": lease, "paused": controller_stopped(units) and lease in FREE_LEASE_STATES}
+    archive = args.archive_dir.resolve() if args.archive_dir else None
+    if archive is not None:
+        for plan in plans:
+            require(not archive.is_relative_to(plan.state_dir), "--archive-dir must be outside every --state-dir")
+    if not args.apply:
+        _, summary = plan_reconcile(scheduler, target, plans, container, bridge, args)
+        emit({"event": "boinc_archive_reconcile", "schema_version": SCHEMA_VERSION, "apply": False,
+              "controller": controller, **summary})
+        return 0
+    require_apply(args, units)
+    require(args.confirm_plan_draining,
+            f"--apply needs --confirm-plan-draining: {target.name} must run with --drain, or not at all")
+    require(archive is not None, "--apply needs --archive-dir")
+    require(lease in FREE_LEASE_STATES, f"the controller lease is {lease}: a tick may be running")
+    expected = {"dead-lettered": args.expect_dead_lettered, "journal-less": args.expect_journal_less,
+                "unsubmitted": args.expect_unsubmitted}
+    missing = sorted(f"--expect-{kind}" for kind in args.kinds if expected[kind] is None)
+    require(not missing, f"--apply needs the dry run's counts: {', '.join(missing)}")
+    locks = [plan.state_dir / "controller.lock" for plan in plans]
+    with flocked(locks, existing=locks), leased(container, LEASE_BLOB):
+        for plan in plans:
+            plan.reload(scheduler)
+        batch, planned = open_reconcile(archive)
+        if planned:
+            manifest = read_json(batch / "manifest.json")
+            require(manifest.get("kind") == "usnm-boinc-reconcile" and manifest["account"] == target.config["account"]
+                    and manifest["plan"] == target.name
+                    and manifest["config_sha256"] == scheduler.digest(target.config),
+                    f"reconcile run {batch.name} was planned for another plan")
+            progress(f"resuming reconcile run {batch.name}")
+            summary = None
+        else:
+            manifest, summary = plan_reconcile(scheduler, target, plans, container, bridge, args)
+            wrong = {kind: summary["found"][kind] for kind in args.kinds if summary["found"][kind] != expected[kind]}
+            require(not wrong, f"found {wrong}, not the counts given; dry-run again and check")
+            refused = {name: result["error"] for name, result in summary["owned_records"]["after"].items()
+                       if not result["ok"]}
+            require(not refused, f"a plan would still refuse its journals afterwards: {refused}")
+            if not manifest["pages"]:
+                emit({"event": "boinc_archive_reconcile", "schema_version": SCHEMA_VERSION, "apply": True,
+                      "run": None, "message": "nothing to reconcile", **summary})
+                return 0
+            archive.mkdir(parents=True, exist_ok=True, mode=0o700)
+            require(shutil.disk_usage(archive).free > summary["bytes"] * 1.1 + (64 << 20),
+                    "not enough free space in --archive-dir")
+            write_json(batch / "manifest.json", manifest)
+            progress(f"planned reconcile run {batch.name}: {len(manifest['pages'])} pages, "
+                     f"{len(manifest['jobs'])} jobs")
+        manifest_sha = sha256_file(batch / "manifest.json")
+        # The claims first, then the journals, as dispatch does: a journal left without its claim
+        # stops the draining plan's tick closed, where a claim left without its journal would not.
+        controller_result = controller_step(manifest, target.state_path, batch)
+        progress(f"reconcile run {batch.name}: controller state archived")
+        handoff_result = handoff_step(manifest, container, batch)
+        for plan in plans:
+            plan.reload(scheduler)
+        blobs = list_job_blobs(container)
+        records = read_records(container, blobs)
+        after = ownership(scheduler, plans, records)
+        receipt = {
+            "schema_version": SCHEMA_VERSION, "step": "reconcile", "run": batch.name, "complete": True,
+            "finished_at": int(time.time()), "manifest_sha256": manifest_sha, "plan": target.name,
+            "pages": len(manifest["pages"]),
+            "by_kind": {kind: sum(1 for page in manifest["pages"] if page["kind"] == kind)
+                        for kind in RECONCILE_KINDS},
+            "jobs": len(manifest["jobs"]), "before": manifest["before"],
+            "after": {"journals": sum(1 for name in blobs if RECORD_BLOB.fullmatch(name)),
+                      "state_sha256": sha256_file(target.state_path),
+                      **{f"state_{key}": value for key, value in state_counts(target.state).items()}},
+            "owned_records": after, "collisions": len(collisions(plans, records)),
+            "controller": controller_result, "handoff": handoff_result,
+        }
+        write_json(batch / "receipts/reconcile.json", receipt)
+    emit({"event": "boinc_archive_reconcile", "apply": True, **receipt})
+    return 0 if all(result["ok"] for result in after.values()) else 1
+
+
+
 # --- bridge: the BOINC host's journals and spool outputs -------------------------------------
 
 
@@ -1541,13 +1867,36 @@ def main(argv=None):
     four.add_argument("--controller-unit", default=UNIT,
                       help="the controller's systemd service and timer name, without the suffix")
     common(four)
+    five = steps.add_parser("reconcile", help="a draining plan's stranded claimed pages, given back (controller host)")
+    five.add_argument("--config", type=Path, required=True, help="the draining plan's config")
+    five.add_argument("--state-dir", type=Path, required=True, help="the draining plan's state directory")
+    five.add_argument("--check-config", type=Path, action="append",
+                      help="another plan on the same hand-off container, checked before and after "
+                           "(repeatable; each with its --check-state-dir, in the same order)")
+    five.add_argument("--check-state-dir", type=Path, action="append",
+                      help="that plan's state directory (repeatable)")
+    five.add_argument("--kind", action="append", choices=RECONCILE_KINDS,
+                      help="what to give back (repeatable; default: all three)")
+    five.add_argument("--bridge-jobs", type=Path,
+                      help="a listing of the BOINC host's $HANDOFF_DIR/jobs, taken with the controller "
+                           "stopped (needed for --kind unsubmitted)")
+    five.add_argument("--archive-dir", type=Path, help="where runs are archived (required with --apply)")
+    for kind in RECONCILE_KINDS:
+        five.add_argument(f"--expect-{kind}", type=int, metavar="N",
+                          help=f"the dry run's count of {kind} pages (required with --apply)")
+    five.add_argument("--confirm-plan-draining", action="store_true",
+                      help="the plan named by --config runs with --drain, or not at all")
+    five.add_argument("--controller-unit", default=UNIT,
+                      help="the controller's systemd service and timer name, without the suffix")
+    common(five)
     args = parser.parse_args(argv)
     if args.step == "dispatch" and not 1 <= args.pages <= MAX_PAGES:
         parser.error(f"--pages is 1 to {MAX_PAGES}")
     if args.step == "dispatch" and args.min_age_hours < 0:
         parser.error("--min-age-hours is 0 or more")
     try:
-        return {"dispatch": dispatch, "bridge": bridge, "db": db, "restore-held": restore_held}[args.step](args)
+        return {"dispatch": dispatch, "bridge": bridge, "db": db, "restore-held": restore_held,
+                "reconcile": reconcile}[args.step](args)
     except (ValueError, KeyError, TypeError, OSError, RuntimeError) as error:
         message = str(error) if isinstance(error, (ValueError, RuntimeError)) else type(error).__name__
         emit({"event": "boinc_archive_failure", "schema_version": SCHEMA_VERSION, "step": args.step,
