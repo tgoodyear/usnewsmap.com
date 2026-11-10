@@ -380,6 +380,35 @@ class DispatchTests(DispatchFixture):
                 self.assertEqual((batch / "handoff" / name).read_bytes(), data)
         self.assertEqual(archive.batch_dirs(self.archive_dir), [batch])
 
+    def test_an_older_plans_page_a_checked_plan_claimed_stays(self):
+        # Copilot on #1714: page 20's journal is an older plan's. A checked plan's claim keeps it.
+        other = self.state_dir.parent / "checked-plan"
+        other.mkdir()
+        (other / "state.json").write_text(json.dumps({"claims": {page_key(20): {"batch": "test_batch"}},
+                                                      "selected": {}}))
+        code, summary, _ = run(self.argv("--check-state-dir", str(other)))
+        self.assertEqual(code, 0)
+        self.assertEqual(summary["pages"]["skipped"]["claimed_by_another_plan"], 1)
+        self.assertEqual(summary["batch"]["other_plan_pages"], 0)
+
+    def test_a_resume_refuses_a_page_a_checked_plan_claimed_since(self):
+        self.container.fail_deletes_after = 4
+        code, _, _ = self.apply()
+        self.assertEqual(code, 1)
+        other = self.state_dir.parent / "checked-plan"
+        other.mkdir()
+        (other / "state.json").write_text(json.dumps({"claims": {}, "selected": {page_key(2): 1}}))
+        self.container.fail_deletes_after = None
+        deletes = self.container.deletes
+        code, _, errors = self.apply("--check-state-dir", str(other))
+        self.assertEqual(code, 1)
+        self.assertIn("claimed or selected by a checked plan", errors[-1]["error"])
+        self.assertEqual(self.container.deletes, deletes)
+        # Without that claim the resume finishes.
+        (other / "state.json").write_text(json.dumps({"claims": {}, "selected": {}}))
+        code, receipt, _ = self.apply("--check-state-dir", str(other))
+        self.assertEqual((code, receipt["batch"]), (0, "0001"))
+
     def test_a_resume_checks_archived_copies_by_their_sha256(self):
         self.container.md5 = False
         originals = self.container.snapshot()[0]
@@ -501,6 +530,25 @@ class HeldTests(DispatchFixture):
         # Too recent for a longer minimum age.
         code, summary, _ = run(self.argv("--include-held", "--min-age-hours", "60"))
         self.assertEqual((summary["pages"]["eligible_held"], summary["pages"]["skipped"]["held_too_recently"]), (1, 1))
+
+    def test_a_held_page_another_plan_claimed_stays(self):
+        # #1713: a live plan had claimed page 8 too. Archived, its journals gone, the live plan
+        # would export it under the same job id, whose workunit row still exists.
+        other = self.state_dir.parent / "other-plan-state"
+        other.mkdir()
+        (other / "state.json").write_text(json.dumps({"claims": {page_key(8): claim(8)}, "selected": {}}))
+        code, summary, _ = run(self.argv("--include-held", "--check-state-dir", str(other)))
+        self.assertEqual(code, 0)
+        self.assertEqual(summary["pages"]["skipped"]["claimed_by_another_plan"], 1)
+        self.assertEqual((summary["pages"]["eligible_held"], summary["batch"]["held_pages"]), (1, 1))
+        # A page only selected there stays too.
+        (other / "state.json").write_text(json.dumps({"claims": {}, "selected": {page_key(9): 1}}))
+        code, summary, _ = run(self.argv("--include-held", "--check-state-dir", str(other)))
+        self.assertEqual(summary["pages"]["skipped"]["claimed_by_another_plan"], 1)
+        # Its own state directory can't be the other plan's.
+        code, _, errors = run(self.argv("--include-held", "--check-state-dir", str(self.state_dir)))
+        self.assertNotEqual(code, 0)
+        self.assertIn("own state directory", errors[-1]["error"])
 
     def test_apply_archives_held_pages_and_restore_puts_them_back_exactly(self):
         originals = self.container.snapshot()[0]

@@ -187,6 +187,36 @@ class HeldArchive(unittest.TestCase):
         self.assertTrue(tool and all("--controller-unit other-controller" in line for line in tool))
         self.assertIn("systemctl stop other-controller.timer", self.log())
 
+    def test_other_plans_state_dirs_are_checked(self):
+        # #1713: sibling <state dir>.* directories (the drain plans) by default, so a page
+        # another plan claimed is never archived; an explicit --check-state-dir replaces them.
+        root = self.root
+        for name in ("state.queue-feed-10", "state.queue-feed-11", "state.empty"):
+            (root / name).mkdir()
+        for name in ("state.queue-feed-10", "state.queue-feed-11"):
+            (root / name / "state.json").write_text("{}")
+        done = self.run_archive()
+        self.assertEqual(done.returncode, 0, done.stderr)
+        tool = [line for line in self.log() if line.startswith("tool dispatch")]
+        expected = (f"--check-state-dir {root / 'state.queue-feed-10'} "
+                    f"--check-state-dir {root / 'state.queue-feed-11'}")
+        self.assertTrue(tool and all(expected in line for line in tool), tool)
+        self.assertFalse(any("state.empty" in line for line in tool))
+        # A trailing slash on --state-dir still finds the siblings (Copilot on #1714).
+        (root / "log").write_text("")
+        (root / "left").write_text("1")
+        done = self.run_archive("--state-dir", f"{root / 'state'}//")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        tool = [line for line in self.log() if line.startswith("tool dispatch")]
+        self.assertTrue(tool and all(expected in line for line in tool), tool)
+        (root / "log").write_text("")
+        (root / "left").write_text("1")
+        done = self.run_archive("--check-state-dir", str(root / "state.queue-feed-11"))
+        self.assertEqual(done.returncode, 0, done.stderr)
+        tool = [line for line in self.log() if line.startswith("tool dispatch")]
+        self.assertTrue(all(f"--check-state-dir {root / 'state.queue-feed-11'}" in line
+                            and "queue-feed-10" not in line for line in tool), tool)
+
     def test_a_stop_interrupts_the_tool_waits_for_it_and_resumes(self):
         import signal
         import time

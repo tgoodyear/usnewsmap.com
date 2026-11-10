@@ -190,5 +190,38 @@ class RegisterApps(unittest.TestCase):
         self.assertNotIn("usnm_gold_native", weights)
 
 
+
+class GoldOnboardShare(unittest.TestCase):
+    """bridge-job.sh's gold-onboard tail: share_readable walks the whole download tree, so a pass
+    that issued no unit skips it (10 Nov: ~11 minutes over NFS each hourly gold tick)."""
+
+    def tail(self):
+        text = (HERE / "bridge-job.sh").read_text()
+        start = text.index('    stamp="$(mktemp)"\n    rc=0\n    issued=')
+        end = text.index('    exit "$rc" ;;', start)
+        return text[start:end]
+
+    def run_tail(self, output, status):
+        with tempfile.TemporaryDirectory(prefix="gold-onboard-") as directory:
+            directory = Path(directory)
+            log = directory / "log"
+            stub = directory / "usnm-boinc"
+            stub.write_text(f"#!/bin/sh\necho '{output}'\nexit {status}\n")
+            stub.chmod(0o755)
+            script = ("set -eu\n"
+                      f"share_readable() {{ echo walked >> '{log}'; }}\n"
+                      f"PROJ='{directory}'\ncontroller='{directory}/c.json'\n" + self.tail() + 'echo "rc=$rc"\n')
+            done = subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=True,
+                                  env={**os.environ, "PATH": f"{directory}{os.pathsep}{os.environ['PATH']}"})
+            return done.stdout.splitlines(), log.exists()
+
+    def test_no_unit_issued_skips_the_walk(self):
+        self.assertEqual(self.run_tail("[]", 0), (["[]", "rc=0"], False))
+
+    def test_issued_units_or_a_failure_walk(self):
+        self.assertEqual(self.run_tail("[4,9]", 0), (["[4,9]", "rc=0"], True))
+        self.assertEqual(self.run_tail("[]", 3), (["[]", "rc=3"], True))
+
+
 if __name__ == "__main__":
     unittest.main()
