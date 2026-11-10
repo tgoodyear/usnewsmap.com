@@ -1,6 +1,6 @@
 # The server and the apps
 
-Part of the [BOINC batch pilot guide](../README.md).
+How app versions, plan classes and daemons go onto a stock BOINC project, the single-page submit and collect commands, and the server settings that keep scans and retire apps. The project's own server is described in [BOINC server on-prem](onprem.md).
 
 ## Connect a stock BOINC project
 
@@ -57,11 +57,8 @@ server configuration. Sign and publish its files using BOINC's normal
 code-signing process and `bin/update_versions`. Merge `boinc/apps/daemons.xml`
 into the existing `config.xml` daemons section and restart the project daemons.
 This file is a fragment, not a replacement list: retain the stock feeder,
-transitioner, file_deleter (with `--preserve_wu_files`, see "Scans are never
-deleted" below), db_purge and other standard daemons. The separate
-hosting work in [#439](https://github.com/tgoodyear/usnewsmap.com/pull/439)
-supplies server deployment and bootstrap configuration; it is not a prerequisite
-for self-hosting.
+transitioner, file_deleter (with `--preserve_wu_files`, see [Scans are never
+deleted](#scans-are-never-deleted)), db_purge and other standard daemons.
 
 `sample_trivial_validator` accepts results for this trusted-friends pilot; it is
 not an accuracy or security check. `batch_collect_assimilator` moves canonical
@@ -82,7 +79,7 @@ target/debug/usnm-boinc submit --root /srv/usnm/boinc-state \
   --project /srv/boinc/newspapers --job JOB_ID
 ```
 
-#### Optional local page hosting (native OCR pilot only, #783)
+### Optional local page hosting (#783)
 
 The native `usnm-boinc submit` command alone accepts
 `--download-base-url https://downloads.example.org/ocr-pages/` for an
@@ -141,10 +138,24 @@ template maps them to logical `page` and `request.json`. Any failure after
 write-ahead remains uncertain and requires existing explicit reconciliation.
 Allocation, trust, validation, acceptance and publication gates are unchanged.
 Before enabling this opt-in, verify ingress from outside the LAN and adequate
-upload bandwidth; no service or deployment change is included here. Public
-HTTPS ingress is not yet established: the local origin is LAN-only, so
-production volunteer submission/cutover remains blocked pending an approved,
-persistent public ingress path. Do not relax the HTTPS probe to enable it.
+upload bandwidth. No public HTTPS ingress for such an origin exists (UNVERIFIED
+on 10 November 2026; nothing in the repository configures one), so this stays
+off in prod. Do not relax the HTTPS probe to enable it.
+
+`boinc/scripts/file-host.conf` is an nginx site for a dedicated, isolated origin
+container with a **read-only** bind mount at `/srv/usnm-boinc-downloads`,
+published by a separate trusted writer. It listens on port 8080 and is not a
+public HTTPS endpoint: put a separately configured TLS ingress in front that
+preserves the path. It serves only `GET` and `HEAD` of a lowercase
+64-character SHA-256 filename, with no listings, uploads or symlinks, single
+byte ranges, at most four concurrent transfers per address and sixteen overall,
+each limited to 2 MiB/s. Never mount the scan cache, project share, result
+quarantine or credentials into it, and never expose the LAN scan server, which
+also takes deletes and manifest writes. Before a real workunit uses the origin,
+fetch the exact URL from outside the LAN over HTTPS and check its size,
+SHA-256 and a ranged request, then watch a real volunteer transfer and result
+return. App bundles, model files and result uploads need their own signed,
+authenticated paths; this origin doesn't cover them.
 
 Attach one friend's stock BOINC client to the project. Configure idle-only
 processing and conservative preferences, and update the project. After the task
@@ -253,7 +264,7 @@ state before and after.
   behaviour](feeder-refresh.md#client-retry-behaviour), #1462). That
   restart changes the pin (`CONFIG_SHA256` in `/etc/usnm-boinc/qwen-cohort-auto.env`) once for both, so
   disable `usnm-qwen-cohort-auto.timer` before it, and update the pin after it
-  ([boinc-intel-gpu.md](../apps/intel-gpu.md)).
+  ([Intel and NVIDIA GPUs](../apps/intel-gpu.md)).
 
 The state before is saved under `/project/ops/app-tidy-20261102/` with the script that made
 the change. Rollback, in the server container as `boincadm`: run
@@ -266,31 +277,3 @@ does not itself refresh the slot map; coordinate the feeder-only boundary after 
 Retiring an app no longer leaves its daemons running. Restoring `usnm_surya`, `usnm_assess`,
 `usnm_iris` or `usnm_qwen_train` now also needs its daemons and validator links back in
 `render_config`, and a new server image.
-
-## Moving the project share
-
-The share left Azure on 21 October 2026 ([boinc-onprem.md](onprem.md)). This section records the staged move of the Azure Files share and applies to `"server": "azure"`.
-
-The project directory (`/project`: uploads, downloads, staging, results) is one Azure Files share mounted by the server and every job. On the pay-as-you-go Standard account (`usnmboincst…`, TransactionOptimized) it cost about $21 in operations in four days of October 2026: 51M operations, 83% of them open, close and stat. Capacity was $0.61. A provisioned v2 SSD share (`usnmboincv2st…`, `PremiumV2_LRS`) bills only for its provisioned size, about $0.10/GiB a month with 3,000 + 1 IOPS per GiB included, and nothing per operation (#917).
-
-`projectShare` in `boinc/infra/boinc/env/<env>.json` moves the share in stages, each a pull request and a `boinc/scripts/provision-boinc.sh` run (claimed on #529):
-
-1. **`copy`.** Creates the provisioned account, share and private endpoint, plus the share copy job `usnm-boinc-sharecopy-caj-<env>` and its own identity. That identity has Storage File Data Privileged Reader on the old account, Storage File Data Privileged Contributor on the new one, and pull rights on the registry.
-   - The job runs AzCopy (pinned by version and SHA-256 in `main.bicep`): `azcopy sync https://<old account>.file.core.windows.net/project https://<new account>.file.core.windows.net/project --delete-destination=true`, as the job's identity, both over their private endpoints.
-   - Over REST, BOINC's symlinks are the small `mfsymlinks` files that store them, so they copy byte for byte, and the new share's normal mount reads them as symlinks again. Listing the old share over the SMB mount instead took 107 to 156 minutes a pass.
-   - Start it (`az containerapp job start`) while BOINC runs; repeat runs send only what changed. Files being written at that moment (logs, `run_state`, the web cache) fail and the execution shows Failed; that's expected while live.
-   - The server isn't touched in this stage.
-2. **Cutover.** Make the tree still:
-   - stop the quality wave job and the batch controller in CT 211, and wait for running bridge executions;
-   - as `boincadm` in `/project/usnmocr`: `touch stop_maintenance`, `bin/stop`, then `touch stop_sched stop_upload`. `stop_maintenance` keeps the server image's startup wrapper (`boinc-daemons.sh`) from running `bin/start`, which would reopen the scheduler on the new revision before it is checked. The scheduler then answers "temporarily shut down for maintenance" and the upload handler refuses uploads with a transient error that clients retry. Apache keeps running, so the liveness probe (`get_project_config.php`) stays healthy;
-   - wait a minute for requests already in flight to finish.
-
-   Then start the copy job once more and wait for it to succeed: every file copies while nothing writes. Set **`provisioned`** and provision with `BOINC_MAINTENANCE=1`, which lets the final health check accept the closed scheduler. `provision-boinc.sh` refuses this while a copy is running, or when the latest copy didn't succeed within two hours. After reading a pass's failed transfers, `BOINC_COPY_ACCEPTED=<execution name>` accepts that pass when the only failures are files the server regenerates on start (`run_state_*.xml`, `html/cache`).
-   - The environment storage for `/project` is `project-v2` on the new account (`project` on the old one), so the change produces a new server revision and no replica keeps the old mount.
-   - Check that the new revision is the only one running and that `/project` on it is the new account (`grep " /project " /proc/mounts`). Then, in `/project/usnmocr`, remove `stop_maintenance`, `stop_sched` and `stop_upload`, and `bin/start` as `boincadm` (the wrapper also starts it within a minute). A server image older than the `stop_maintenance` check runs `bin/start` as it boots, so it reopens the scheduler on its own; the October 2026 cutover ran on such an image, and only `stop_upload` was left to remove. In the October 2026 cutover the outage was 35 minutes, 24 of them the final copy.
-   - Run `provision-boinc.sh` once more without `BOINC_MAINTENANCE`: the strict health check now passes, and nothing else changes.
-   - Start everything else again, re-apply GPU admission, and relaunch the quality wave (`launch-corpus`).
-
-3. **`provisioned-final`**, after a few days without trouble: the stack deletes the old account and its endpoint.
-
-To roll back before stage 3, stop the server the same way (`stop_maintenance`, `bin/stop`, `stop_sched`, `stop_upload`), copy back what was written to the provisioned share after the cutover, set `standard` and provision: the storage name changes back to `project`, so again a new revision replaces the running one. Then remove the three files and `bin/start`.

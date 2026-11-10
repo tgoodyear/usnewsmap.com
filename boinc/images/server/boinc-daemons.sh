@@ -43,7 +43,7 @@ local_pid_dir() {
   hold="$dir/usnm-feeder-restart-hold"
 }
 
-# stop_maintenance in the project directory (docs/boinc/server/server-and-apps.md, "Moving the project share") holds
+# stop_maintenance in the project directory (docs/boinc/server/azure.md, "Moving the project share") holds
 # the project stopped across container starts: bin/start would clear stop_sched and start the
 # daemons, so neither it nor the periodic start runs until an operator removes the marker.
 maintenance() {

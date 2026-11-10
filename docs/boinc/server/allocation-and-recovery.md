@@ -1,6 +1,6 @@
 # Allocation, recovery and acceptance
 
-Part of the [BOINC batch pilot guide](../README.md).
+How `usnm-boinc export` allocates pages, the journal that tracks each job, and how failed work is recovered. The [batch controller](batch-scheduler.md) runs these commands in prod; this page covers what they guarantee and what an operator does by hand.
 
 ## Allocation and recovery
 
@@ -49,8 +49,10 @@ present` (mark submitted) or `--found absent` (permit submission again).
   Native import outcomes recover a lost local commit after `ocr-sync` consumed
   the objects. A completed import is never republished from another callback.
 - A terminal BOINC error sets `failed`. Preserve the native reservation and
-  diagnose it with BOINC's server tools. This first pilot has no automatic
-  reallocation. After recovering the same workunit on the server, preserve then
+  diagnose it with BOINC's server tools. The controller can dead-letter such a
+  page (`--dead-letter-failed`, [a page that fails for good](batch-scheduler.md#a-page-that-fails-for-good)),
+  and a reviewed page can be [retried deliberately](#deliberate-terminal-ocr-retry-1159);
+  nothing reallocates it automatically. After recovering the same workunit on the server, preserve then
   remove its stale spool error marker and use `reconcile --root DIR --job ID
 --found present` to permit collection of its recovered output. A failed job
   cannot be marked absent to create a duplicate workunit. Alternatively arrange
@@ -87,10 +89,10 @@ Raising quorum alone with `sample_trivial_validator` does not compare OCR
 output. A future audit or comparative validator could rerun sampled pages and
 compare text, after measuring determinism across supported hosts, or check a
 trusted reference set. No hand-transcribed historical accuracy measurement is
-implied by the synthetic smoke test. The optional comparative validator is being
-developed separately in
-[#444](https://github.com/tgoodyear/usnewsmap.com/pull/444); it is not part of
-this pilot's default validator or a claim of public-volunteer readiness.
+implied by the synthetic smoke test. `usnm_ocr` still validates with
+`sample_trivial_validator` (`boinc/apps/daemons.xml`); the optional fuzzy
+validator from [#444](https://github.com/tgoodyear/usnewsmap.com/pull/444) is
+not enabled for it. Publication is gated on [host trust](gold-check.md#host-trust-for-usnm_ocr) instead.
 
 Replicas of one workunit go to different **hosts**
 (`one_result_per_host_per_wu`), not different accounts. The project's own hosts
@@ -99,6 +101,88 @@ each quorum-2 pair, so they idled while the second copies waited for another
 user. The cost: a volunteer with several hosts can supply both copies of a unit.
 Gold units and spot checks ([Host trust](gold-check.md#host-trust-for-usnm_ocr)) are the guard against that, not
 the quorum.
+
+## Deliberate terminal OCR retry (#1159)
+
+`usnm-boinc retry` prepares **one explicitly reviewed single-page retry**, not an
+automatic recovery loop. Attempt 0 keeps its existing v1 JSON and job/workunit ID.
+Retry contract v2 binds a new attempt to its parent ID. Never edit an old request,
+signed app version, journal, assimilator marker or accepted result to force a replay.
+
+Before activation, deploy the reviewed reader to **every** strict journal consumer
+(controller, server, bridge, native sync and seeder), and sign/install a matching `usnm_ocr` worker
+supporting contract v2. Old workers reject v2; a new CLI alone is insufficient.
+Record the supporting BOINC worker's full released image digest (not its separate
+Tesseract base image digest) and
+BOINC app version number. Existing trust, routing, source budgets and validation
+still apply. Do not retry a bundle or bypass its reconciliation.
+Submission verifies its registered Dockerfile signature, requires an unambiguous
+active app/version/platform/plan mapping, and compares the signed Dockerfile's
+immutable worker `FROM` digest against `Job.engine.image`. No Podman socket or
+host image store is required. Missing registration or signature proof refuses
+submission before its uncertain state.
+
+After confirming BOINC's actual terminal disposition and that native sync has
+settled the exact previous native row as a permanent failure:
+
+```sh
+usnm-boinc retry --root /private/jobs --spool /private/assimilated \
+  --job PARENT_JOB_ID --expected-error-mask 2 \
+  --image sha256:SUPPORTING_WORKER_DIGEST --app-version-num SUPPORTING_APP_VERSION \
+  --reviewed-reason 'Reviewed terminal 0x2; supporting worker release recorded' \
+  --handoff-url /private/handoff \
+  --state-file /private/state.json \
+  --curated-url /private/curated --reference-url /private/reference
+```
+
+A page that ran out of time on every host fails again with the same deadline:
+add `--timeout-secs <1 to 3600>` to give the child a longer one (`engine.timeout_secs`,
+part of its identity). The parent keeps its own. Without it the child keeps the
+parent's, and a resumed retry must give the same value.
+
+Use `--expected-no-output-files` instead of `--expected-error-mask` only for an
+actual `_no_output_files` marker. Unknown and zero masks are refused, not treated
+as missing output. An error mask is decimal on the CLI (`2` reviews `0x2`).
+Accepted/canonical/partial output, changed terminal proof, nonterminal work and a
+newer native reservation all require reconciliation, not retry.
+Historical imports always veto retry, even if a later dead letter became the
+latest outcome. Legacy journals without terminal proof require collection of
+the unchanged actual marker; a later collect cannot overwrite the first proof.
+The permanent outcome must carry the exact parent message digest; historical
+unbound outcomes cannot authorize retry. For queue-fed parents, the exact handoff
+claim must be conclusively `dead_lettered`, not lease-lost or still outstanding.
+
+The command prints the new child ID and reserves it without submission. It
+preserves the original scan, failed journal and request-day quota attribution.
+An identical invocation resumes its durable prepared/reserved child; it never
+creates another workunit for that parent. Submit that child through the existing
+single-page `submit` path, which pins `--app_version_num` from the retry journal.
+Pass `--curated-url` and exactly one of `--state-file` or `--cosmos` again on
+submission. For both `submit` and `submit-remote`, the on-prem bridge forwards
+host-owned `COSMOS_ENDPOINT` and `CURATED_URL` from `bridge.env`; configure its
+existing identity with the native lock/ledger permissions before activation.
+Submission holds the native lease while revalidating the exact outstanding
+child, verifying the signed worker, and crossing the write-ahead/create-work
+boundary. A replaced or settled child is refused without submission.
+Uncertain submission still requires authoritative BOINC lookup and explicit
+`reconcile`; never delete its journal and repeat. A retry of a failed child needs
+a fresh terminal review naming that child.
+Preparation validates settlement under the native lease before persisting the
+child timestamp, scan and journal, then writes its reservation. An unreserved
+prepared child may refresh its timestamp after later settlement; a reserved
+replay must still match the exact outstanding native row. The controller retains
+the parent/child chain but never automatically exports or submits manual retries.
+
+If that child fails, the existing handoff `claim dead-letter` step publishes the
+child's terminal mask and new message timestamp without touching the old claim.
+Its private durable payload/sent receipt makes a completed repeat a no-op; lost
+send acknowledgement retains at-least-once delivery. Native sync fences duplicate
+old-attempt events from subsequent retries.
+
+First acceptance is one reviewed failed-page canary: preserve its original real
+mask through collect/journal/dead letter, verify the one new workunit and supporting
+app version, collect/import via ordinary validation, verify native settlement,
+and record all identities. Code tests or a merged PR do not prove this live gate.
 
 ## Live acceptance exercise
 

@@ -1,31 +1,136 @@
-# Reviewed BOINC bootstrap pipeline (#551)
+# Release pipeline (#551)
 
-`boinc/scripts/bootstrap_pipeline.py` orchestrates the existing BOINC scripts. It
-never imports private signing keys, unlocks storage, merges a PR, resets Git,
-reinitializes a partial project, drops a database, or deletes a resource. It does
-not replace the proposed subscription/dev bootstrap in PR #634: the isolated
-BOINC resource group, registry, policy/waiver prerequisites and credentials must
-already exist. It never invokes the full application provisioner.
+`boinc/scripts/bootstrap_pipeline.py` runs a BOINC release end to end with the existing scripts: images, the worker, signing, publication and #548's client acceptance, stopping at two reviewed pull requests. Prod's server is on-prem, so prod releases use the [on-prem lifecycle](#on-prem-lifecycle); the [Azure lifecycle](#azure-lifecycle) remains for a `"server": "azure"` environment.
 
-This page covers the Azure lifecycle, for a server hosted in Azure; an omitted
-`server` keeps the schema's Azure default. Prod's server has run on-prem since
-21 October 2026. For it, pass `--onprem-host` and `--onprem-ct`, which select the
-separate on-prem lifecycle (`boinc/scripts/onprem_pipeline.py`, #1258). That
-lifecycle builds local Podman images and reviews an on-prem release manifest instead
-of Azure pins. It is described in
-[boinc-onprem.md](onprem.md#reviewed-resumable-release-pipeline-551).
-Without those arguments, preflight rejects on-prem or unknown server modes from
-freshly fetched main, including on resume and `--dry-run`, before invoking
-acceptance validation or any lifecycle phase. Do not change production's server
-mode to bypass this gate.
+Both lifecycles share these rules:
 
-## Interface
+- It is an **operator-invoked release**. Execution needs `--coordination-claim https://github.com/tgoodyear/usnewsmap.com/issues/529#issuecomment-N`: an acknowledgement of the #529 deploy protocol, not a lock, cost authorization, signing approval or permission to deploy. Code review and CI don't authorize a live restart, signing, dispatch or acceptance.
+- Run from a clean checkout of current main. Before changing anything, the pipeline checks that #548's entrypoint `boinc/scripts/acceptance.py` exists on `origin/main` and in the checkout, and runs its offline config validator. A missing entrypoint fails; there is no fallback to registration-only acceptance.
+- It never imports private signing keys, unlocks storage, merges a PR, resets Git, reinitializes a partial project, drops a database or deletes a resource.
+- Operator inputs go in ignored `target/`, with private permissions. All fields shown are required and unknown fields are rejected. A `usnm_ocr` release signs with `--hold` by default (#1687): the version is published deprecated, so release it with `app-version-hold.php --action release` ([held versions](../apps/app-release.md#held-versions)) before the acceptance phase, which needs it sent. `"release_mode": "outrank-pinned"`, the one optional field, publishes it live instead; it is accepted only for `usnm_ocr` and `usnm_gold`.
 
-Run from a clean, current-main checkout. Before any resource mutation the pipeline
-verifies that #548's entrypoint `boinc/scripts/acceptance.py` exists on
-`origin/main` and in the checkout, and invokes its offline config validator. A
-missing entrypoint is an explicit failure, not a fallback to registration-only
-acceptance.
+## On-prem lifecycle
+
+`--onprem-host HOST --onprem-ct CT` select this lifecycle (`boinc/scripts/onprem_pipeline.py`, #1258). It builds local Podman images and reviews an on-prem release manifest; it never uses the environment's old Azure image pins as deployment or signing identities.
+
+Prerequisites: the existing on-prem MySQL/project setup, configured `server.env` and
+`bridge.env`, server unit, Podman, Python 3 and installed `usnm-boinc-step`; root SSH to
+the Proxmox host/CT; an already unlocked reachable isolated signing host; GitHub workflow
+and reviewed-PR permissions; and independent, dedicated existing-client acceptance inputs
+from #548. The pipeline does not install a runtime, initialize/reset a database, unlock a
+key, copy private keys, or change topology. A missing prerequisite fails explicitly.
+
+Place the operator configuration and #548 existing-client configuration below ignored
+`target/` in a clean checkout of reviewed main. Container configuration:
+
+```json
+{
+  "env": "dev",
+  "app": "usnm_ocr",
+  "version": "1.0",
+  "platform": "x86_64-pc-linux-gnu",
+  "plan_class": "docker",
+  "signing_host": "signing.example",
+  "acceptance_config": "existing-client.json"
+}
+```
+
+For a native Linux x86_64 release, add `"kind": "native"`, `"binary": "worker"`,
+`"binary_sha256": "<64 lowercase hex>"`, and `"binary_source": "<40 hex source commit>"`.
+Supported native identities are `usnm_quality` with empty `plan_class`, or `usnm_qwen`
+with `mt`, `nvidia_cuda_2b`, `nvidia_cuda_8b`, `intel_vulkan_8b`,
+`nvidia_vulkan_8b`, `nvidia_vulkan_6gb_8b`, `nvidia_vulkan_2b`, or `amd_vulkan_8b`. Supply an already built binary; additional
+platforms are not claimed. A native release reviews the
+binary checksum/source instead of dispatching a container worker workflow. Native
+auxiliary payloads use `"extra_files": {"llama-server": {"path": "llama-server",
+"sha256": "<64 hex>", "source_commit": "<40 hex>"}}`; every payload checksum/source
+is included in the reviewed manifest and checked before signing. Existing native
+plan-specific required-file checks still apply. Container
+support remains OCR `docker` and Qwen `docker_mt_2b` / `docker_nvidia_cuda_8b`; do not
+select a deprecated production plan just to exercise the lifecycle.
+
+Offline parser check (no SSH, builds, signing, installation or publication):
+
+```sh
+python3 boinc/scripts/bootstrap_pipeline.py --config target/release/config.json \
+  --state-dir target/release/state --onprem-host pve.example --onprem-ct 230 --dry-run
+```
+
+Only in a separately authorized serialized window, invoke/resume the same command:
+
+```sh
+python3 boinc/scripts/bootstrap_pipeline.py --config target/release/config.json \
+  --state-dir target/release/state --onprem-host pve.example --onprem-ct 230 \
+  --authorize-runtime-install \
+  --coordination-claim https://github.com/tgoodyear/usnewsmap.com/issues/529#issuecomment-CLAIM
+```
+
+The explicit install flag authorizes installation of the **reviewed** `SERVER_IMAGE`
+pin and a server-unit restart. The runner shares the installed bridge runner's exclusive
+lock. Existing runtime prerequisites are read first; base/server/bridge-bin/bridge are
+built locally from an archived reviewed source, using the existing Containerfiles.
+Like the installed step runner, these online builds use the CT's host network; they
+do not require `/dev/net/tun` or an additional nested network stack inside an LXC.
+This does not change the separate, network-disabled signing operation.
+Each local image's immutable ID and source label is read back. Partial builds retain
+private per-stage image-ID receipts on the CT and reuse only source-verified IDs.
+An independent per-operation supervisor inherits that lock and passes it to child
+commands, so a lost SSH/helper cannot release exclusion while an operation continues.
+Installation waits for the expected container to be running. A submitted systemd job
+must finish before the supervisor releases its lock; if systemd cannot confirm this,
+exclusion remains held for operator reconciliation rather than permitting overlap.
+The rollback receipt and replacement env pin are file- and directory-fsynced before
+restart submission; a failed artifact/source check cannot modify the privileged config.
+
+Two independent review checkpoints remain mandatory:
+
+1. A version-1 manifest at
+   `boinc/infra/boinc/releases/ENV-onprem-APP-PLAN.json` (`default` for an empty
+   plan) records target host/CT, environment, exact release, source commit, local
+   `base`/`bin`/`server`/`bridge` IDs, and the public worker digest with successful
+   run/attempt/model/source receipt provenance (or native checksum/source).
+   Only this manifest may change. The pipeline opens a PR and stops. A maintainer
+   must review and merge it with successful CI and no unresolved findings.
+   The pipeline never approves or merges its own candidate.
+2. After reviewing the first manifest, installation writes `images.bridge` (the bridge
+   contains both server and bridge tools) into `/etc/usnm-boinc/server.env`, preserving
+   other host settings and a private old-pin rollback receipt. Both the server unit
+   and installed step runner consume that file. The running image is checked, not
+   just a tag. Signing transfers only this public image to the isolated signing host;
+   no Azure pull/pin fallback is allowed. `boinc-app-release.sh --prepare-only
+--onprem-manifest PATH --artifact-receipt FILE` emits a versioned signed local
+   appver-ID receipt. Its source and runtime must match the candidate.
+   A second manifest-only PR adds `images.appver` and `signing_source`.
+   Publication waits for its reviewed merge and successful CI too.
+
+Publication uses the installed `usnm-boinc-step --target publish --step publish
+--image sha256:...`, never a moving tag. Runtime/env/source identities are rechecked
+before publication and acceptance. The pipeline binds #1246's root-local acceptance
+transport to the reviewed running bridge ID and the staged reviewed adapter source;
+the operator's existing-client command and expected outputs are retained. The final
+durable #548 receipt must prove canonical acceptance **and cleanup**, and is checksummed
+on subsequent resumes. Fake tests are not live #548/#551 closure evidence.
+
+Exit 3 means a workflow/review checkpoint is pending; rerun the identical command
+after it completes. Exit 3 also means another step held the production step lock when
+a build, installation or verification was due to start. Nothing ran, so rerun the
+identical command later. Publication waits up to five minutes for that lock
+(`USNM_BOINC_STEP_LOCK_WAIT_SECS=300`), because the verification before it has just
+released the lock and queued steps take it first. If the lock is still held,
+publication fails like any other phase. Interrupted/failed phases persist an ambiguous intent and require
+operator reconciliation followed by `--approve-retry PHASE`. Completed phases never
+repeat automatically. A crash after `server.env` replacement can be reconciled by the
+runtime retry, which restarts and reads back the already-reviewed pin. There is no
+automatic rollback, key unlock or destructive recovery. Do not delete state to evade
+an ambiguous publication or acceptance reservation.
+Native binary/auxiliary inputs are rehashed after copying into private staging;
+only those verified copies are transferred for signing and appver construction.
+
+## Azure lifecycle
+
+For a `"server": "azure"` environment ([the Azure server](azure.md)). Without `--onprem-host` and `--onprem-ct`, preflight rejects an on-prem or unknown server mode from freshly fetched main, including on resume and `--dry-run`, before any phase. Don't change an environment's server mode to get past this.
+
+### Interface
 
 Put operator inputs in ignored `target/`, with private directory/file permissions:
 
@@ -45,7 +150,7 @@ Put operator inputs in ignored `target/`, with private directory/file permission
 reviewed config format. No passwords, authenticators, key contents or arbitrary
 command overrides are accepted by this pipeline's own config. #548 owns private
 account configuration and client cleanup; do not put that config in Git. All
-fields above are required, and unknown fields are rejected. A `usnm_ocr` release signs with `--hold` by default (#1687): the version is published deprecated, so release it with `app-version-hold.php --action release` (docs/boinc/apps/app-release.md, "Held versions") before the acceptance phase, which needs it sent. `"release_mode": "outrank-pinned"`, the one optional field, publishes it live instead; it is accepted only for `usnm_ocr` and `usnm_gold`. The Azure lifecycle
+fields above are required, and unknown fields are rejected. The Azure lifecycle
 supports Linux x86_64 container releases: `usnm_ocr/docker`,
 `usnm_qwen/docker_mt_2b`, and `usnm_qwen/docker_nvidia_cuda_8b`. Other app,
 platform and native build contracts fail before deployment instead of silently
@@ -61,16 +166,10 @@ provision/build/sign/publish/client action. It returns the ordered phase plan. I
 may create a private local state directory/lock, but does not advance state.
 Tests use fake GitHub/Azure/SSH/registry interfaces; Docker is unnecessary.
 
-Execution uses the same command without `--dry-run`, plus
-`--coordination-claim https://github.com/tgoodyear/usnewsmap.com/issues/529#issuecomment-N`.
-A claim is required for both environments to prevent accidental dev/prod
-concurrency. It is an acknowledgement, **not** an automatic distributed lock,
-resource/cost authorization, signing approval or permission to deploy. The
-operator must hold the current #529 deployment-coordination protocol and all
-necessary approvals for the entire execution window. No live execution is part
-of this implementation's acceptance evidence.
+Execution uses the same command without `--dry-run`, plus `--coordination-claim`, for dev
+as well as prod.
 
-## Durable phases
+### Durable phases
 
 | Phase            | Action and completion gate                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

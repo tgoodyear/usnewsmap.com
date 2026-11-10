@@ -1,6 +1,6 @@
-# Boundaries and monitoring
+# Feed health and monitoring
 
-Part of the [BOINC batch pilot guide](../README.md).
+The read-only feed health checks that alert when the BOINC feed stops, and the public task counts. The server's own failed-unit alerts are in [BOINC server on-prem](onprem.md) (the feeder allocation guard and the image security check).
 
 ## Live feed health (#1441)
 
@@ -227,57 +227,3 @@ Never restart a retired feed timer as a rollback.
 The public `/datasets` page reads `https://boinc.usnewsmap.com/work_summary.php`, a credential-free, CORS-enabled endpoint that caches an aggregate query for two minutes. It gives each app's tasks ready to send, in progress, and completed with BOINC validation; errors return 503, never zeros, and the page marks counts older than ten minutes as out of date.
 
 These are retained task records, not lifetime totals or unique pages. Completed records are purged after 30 days, replicas and retries count separately, and BOINC validation doesn't mean the OCR was accepted or published. The server entrypoint installs the endpoint, so roll out the server image before the frontend, after comparing the live image's source revision with `main`.
-
-## Workbook query validation
-
-The BOINC workbook and its workspace belong to the Azure-hosted server and are deleted with `"server": "onprem"`, so this applies only to `"server": "azure"`.
-
-`python3 boinc/scripts/validate-boinc-workbook.py --workspace <customer-GUID>` runs a positive control and the workbook's nine queries (seven days, one-hour grain) and reports each panel's status, row count and query hash, with no raw log text. It uses your Azure CLI sign-in, or `--identity arc` on an Arc host whose identity has workspace Reader. `--subscription <id>` picks the account. For the BOINC workspace pass `--location westus2`; Arc-only hosts must pass the location or host.
-
-The shared client, `scripts/azure/log_analytics.py`, queries `https://<region>.api.loganalytics.io/v1/workspaces/<customer-GUID>/query`. In October 2026 some Azure frontends refused the BOINC workspace while serving others (#528), so it tries hosts in order: the workspace region, westus, eastus, northcentralus, westcentralus, then `api.loganalytics.io`. `--hosts` or `LOG_ANALYTICS_QUERY_HOSTS` replaces the order; `--host` or `LOG_ANALYTICS_QUERY_HOST` sets only the first, and `--location` or `LOG_ANALYTICS_WORKSPACE_LOCATION` the region. Only `.io` API hosts are accepted. A 403 `InsufficientAccessError`, 429, 5xx or connection failure moves to the next host; it makes at most one more pass after 3 to 6 s, within 90 s. Other errors and partial results fail. The receipt goes to a private `.boinc-work-*` directory in the checkout; delete it after reading. The BOINC post-deploy health step runs this as a warning-level check.
-
-## Pipeline
-
-The OCR and search pipeline with BOINC, as it has run since 6 November 2026:
-
-```mermaid
-flowchart LR
-  LOC[(Library of Congress<br/>scans)]
-  subgraph OP["On-prem"]
-    FETCH[Scan fetcher<br/>and scan cache]
-    CTRL[Priority controller<br/>claim · export · collect]
-    SRV[BOINC server<br/>boinc.usnewsmap.com]
-    SYNC[ocr-sync pickup<br/>hourly]
-    REL[Release build]
-    API[API and searcher]
-  end
-  subgraph AZ["Azure"]
-    HO[(boinc-handoff<br/>journals · lease)]
-    Q[(ocr-priority · ocr-bulk<br/>Storage queues)]
-    OUT[(ocr-out)]
-    LAKE[(Curated lake)]
-  end
-  V[Volunteers<br/>pinned worker]
-  R2[(R2 · Qwen model files)]
-
-  LOC --> FETCH -->|claimed pages' scans| SRV
-  SYNC -->|pages to OCR| Q
-  Q -->|claim| CTRL
-  HO <--> CTRL
-  CTRL -->|submit| SRV <--> V
-  V --> R2
-  SRV -->|returned results| CTRL
-  CTRL -->|collect: trusted hosts| OUT
-  OUT --> SYNC --> LAKE --> REL --> API
-```
-
-The controller pushes each claimed page's scan straight to the BOINC host, so no scan goes through Azure (#1116; [batch scheduler](batch-scheduler.md)). `collect` publishes a trusted host's result to `ocr-out` and deletes its queue message, and holds an untrusted host's result in quarantine. The hand-off state in `boinc-handoff` is moving to the BOINC host ([#1367](https://github.com/tgoodyear/usnewsmap.com/issues/1367); [local hand-off journals](onprem.md#local-handoff-journals)).
-
-## Boundaries
-
-- **Platforms:** `x86_64-pc-linux-gnu`, `aarch64-unknown-linux-gnu`, `arm64-apple-darwin`, `x86_64-apple-darwin` and `windows_x86_64` (`boinc/project/project.xml`, #533).
-- **Container apps** (`usnm_ocr`, `usnm_gold` and container versions of `usnm_quality` and `usnm_qwen`; `usnm_assess` and `usnm_surya` retired on 2 November 2026) run under BOINC's `docker_wrapper` with plan classes `docker`, `docker_mt` and `docker_nvidia_cuda`: Docker or Podman on Linux, Podman through `Run_Podman` on macOS (with the quoting fix in `boinc/scripts/patch-mac-wrapper.py`), and the WSL2 `boinc-buda-runner` on Windows. The task's container runs Tesseract directly, with no nested container daemon. The [volunteer guide](../volunteer/README.md) has the rootless Podman profile and the startup preflight, `boinc/scripts/volunteer_preflight.py --job-toml`, which checks slot access, cgroup limits, and pausing and resuming.
-- **Native apps** run without a container ([boinc-quality.md](../apps/quality.md)). `usnm_quality` is a CPU binary (`crates/usnm-quality-app`) on all five platforms. `usnm_qwen` is a driver with the pinned `llama.cpp` builds in `boinc/apps/qwen/llama.lock` and `<sticky/><no_delete/>` model files, under `apple_gpu_8b` (≥ 7,000 MB unified RAM), `nvidia_cuda_8b` (≥ 7,000 MB VRAM), `nvidia_cuda_2b` (≥ 3,000 MB VRAM) and `mt` (4–8 threads). Native binaries copy their slot files, report `fraction_done`, and write `boinc_finish_called` containing `0\n` before exiting 0; otherwise the client restarts them up to 100 times and aborts with `ERR_TOO_MANY_EXITS` (`client/app_control.cpp`).
-- **Work** is an explicit cohort of 1 to 100 cached pages from one batch, or pages the [batch controller](batch-scheduler.md#queue-fed-work) claims off `ocr-bulk`, the queue's only consumer since #966. Neither fetches from LoC.
-- **Credentials** stay with the bridge and controller, which alone reach Azure. Volunteers get images and processing metadata only.
-- **Provenance:** the job and result transport (version 1) is separate from the planned ADR-0016 engine protocol; results record `contract=0` and `route=boinc@r1`, with the same models and routing as the retired worker.
