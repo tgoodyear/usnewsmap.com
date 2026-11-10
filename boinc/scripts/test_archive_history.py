@@ -10,6 +10,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 import sqlite3
 import tempfile
 import threading
@@ -1016,6 +1017,364 @@ class DbTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("bridge.json", errors[-1]["error"])
         self.assertEqual(before, self.rows())
+
+
+class ReconcileFixture(unittest.TestCase):
+    """Two queue-fed plans on one hand-off container (#1685): `queue-feed-10`, draining, whose
+    stranded pages collide with the live `queue-feed-12`."""
+
+    DRAINING, LIVE = "queue-feed-10", "queue-feed-12"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        root = Path(self.tmp.name)
+        self.archive_dir = root / "archive"
+        self.container = FakeContainer()
+        now = time.time()
+        self.paths = {}
+        for plan in (self.DRAINING, self.LIVE):
+            config_path = root / f"{plan}.json"
+            config_path.write_text(json.dumps({**config(), "plan": plan}))
+            state_dir = root / plan
+            state_dir.mkdir()
+            (state_dir / "controller.lock").touch()
+            self.paths[plan] = (config_path, state_dir)
+
+        def put(number, page, stage, plan, modified=now - DAY, spool=False):
+            record = journal(number, page_key(page), stage, plan=plan)
+            job = record["job"]["id"]
+            self.container.put(f"dispatch/jobs/{job}/record.json", json.dumps(record).encode(), modified)
+            self.container.put(f"dispatch/jobs/{job}/request.json", b'{"synthetic": true}', modified)
+            if spool:
+                self.container.put(f"spool/{job}/usnm_{job}__file_result.json", b"{}", modified)
+            return job
+
+        # The draining plan's claimed pages:
+        put(1, 1, "failed", self.DRAINING, spool=True)  # dead-lettered on 26 Oct; fed again, see 41
+        # page 2: claimed, no journal (a draining tick never exports)
+        put(3, 3, "reserved", self.DRAINING)  # exported, never submitted (9 Nov)
+        put(4, 4, "reserved", self.DRAINING)  # in the bridge: submitted, not yet collected
+        put(5, 5, "published", self.DRAINING, spool=True)
+        put(6, 6, "failed", self.DRAINING)  # failed, not dead-lettered yet
+        put(7, 7, "failed", self.DRAINING)  # dead-lettered, then retried with another deadline
+        self.container.put(f"dispatch/jobs/{job_id(7)}/deadline-retry/{'e' * 64}.json", b"{}", now)
+        put(9, 9, "reserved", self.DRAINING, spool=True)  # returned by BOINC, journal not yet moved
+        # page 8: claimed, scan cut short at the source; a tick dead-letters it
+        # The live plan claimed pages 1 and 3 again and exported page 1.
+        put(41, 1, "reserved", self.LIVE)
+        put(50, 50, "published", self.LIVE)
+        self.container.put("scheduler/controller.lock", b'{"schema_version":1}\n', now - 30 * DAY)
+        self.bridge = root / "bridge-jobs.txt"
+        self.bridge.write_text("\n".join([job_id(4), job_id(50), "lost+found"]) + "\n")
+        draining_claims = {page_key(n): claim(n) for n in (1, 2, 3, 4, 5, 6, 7, 8, 9)}
+        draining_claims[page_key(8)]["source_truncated"] = "no EOC marker"
+        self.states = {
+            self.DRAINING: {
+                "claims": draining_claims,
+                "selected": {page_key(n): int(now - 20 * DAY) for n in (1, 2, 3, 4, 5, 6, 7, 9)},
+                "dead_lettered": {job_id(1): int(now - 15 * DAY), job_id(7): int(now - 15 * DAY)},
+                "deadline_retries": {job_id(7): {"page": page_key(7), "message": "e" * 64,
+                                                 "queued_at": "2026-11-01T00:00:00Z", "timeout_secs": 3600}},
+                "held_since": {}, "published": 1,
+            },
+            self.LIVE: {
+                "claims": {page_key(n): claim(n) for n in (1, 3, 50)},
+                "selected": {page_key(n): int(now - DAY) for n in (1, 3, 50)},
+                "dead_lettered": {}, "held_since": {}, "published": 1,
+            },
+        }
+        for plan, state in self.states.items():
+            config_path, state_dir = self.paths[plan]
+            state["config_sha256"] = scheduler.digest(scheduler.load_config(config_path))
+            (state_dir / "state.json").write_text(json.dumps(state, sort_keys=True) + "\n")
+        self.units = {"timer": "inactive", "service": "inactive"}
+        self.patches = [
+            mock.patch.object(archive, "RestContainer", lambda account: self.container),
+            mock.patch.object(archive, "unit_state", lambda unit: self.units[unit.rsplit(".", 1)[1]]),
+        ]
+        for patch in self.patches:
+            patch.start()
+
+    def tearDown(self):
+        for patch in self.patches:
+            patch.stop()
+        self.tmp.cleanup()
+
+    def argv(self, *extra, bridge=True):
+        config_path, state_dir = self.paths[self.DRAINING]
+        live_config, live_state = self.paths[self.LIVE]
+        return ["reconcile", "--config", str(config_path), "--state-dir", str(state_dir),
+                "--check-config", str(live_config), "--check-state-dir", str(live_state),
+                "--archive-dir", str(self.archive_dir),
+                *(["--bridge-jobs", str(self.bridge)] if bridge else []), *extra]
+
+    EXPECT = ("--expect-dead-lettered", "1", "--expect-journal-less", "1", "--expect-unsubmitted", "1")
+
+    def apply(self, *extra):
+        return run(self.argv("--apply", "--confirm-controller-paused", "--confirm-plan-draining",
+                             *self.EXPECT, *extra))
+
+    def state_of(self, plan):
+        return json.loads((self.paths[plan][1] / "state.json").read_text())
+
+    def snapshot(self):
+        return (self.container.snapshot(), tree(self.paths[self.DRAINING][1]), tree(self.paths[self.LIVE][1]),
+                tree(self.archive_dir))
+
+    def records(self):
+        return [json.loads(blob["data"]) for name, blob in self.container.blobs.items()
+                if archive.RECORD_BLOB.fullmatch(name)]
+
+    def jobs_in_container(self):
+        return {match[1] for match in map(archive.JOB_BLOB.fullmatch, self.container.blobs) if match}
+
+
+class ReconcileTests(ReconcileFixture):
+
+    def test_dry_run_finds_each_stranded_kind_and_reads_only(self):
+        before = self.snapshot()
+        code, summary, _ = run(self.argv())
+        self.assertEqual(code, 0)
+        self.assertEqual(before, self.snapshot())
+        self.assertEqual(self.container.acquired, 0)
+        self.assertFalse(summary["apply"])
+        self.assertEqual(summary["found"], {"dead-lettered": 1, "journal-less": 1, "unsubmitted": 1})
+        self.assertEqual(summary["pages"], {"dead-lettered": [page_key(1)], "journal-less": [page_key(2)],
+                                            "unsubmitted": [page_key(3)]})
+        self.assertEqual({reason: item["first"] for reason, item in summary["skipped"].items()}, {
+            "failed_not_dead_lettered": [page_key(6)],
+            "failed_retried_or_superseded": [page_key(7)],
+            "journal_less_source_truncated": [page_key(8)],
+            "reserved_with_bridge_journal": [page_key(4)],
+            "reserved_with_spool_output": [page_key(9)],
+        })
+        self.assertEqual((summary["jobs"], summary["blobs"]), (2, 5))
+        self.assertEqual(summary["state_entries"], {"claims": 3, "selected": 3, "held_since": 0, "dead_lettered": 1})
+        # Today the live plan refuses, naming the page and the draining plan; afterwards both accept.
+        now = summary["owned_records"]["before"]
+        self.assertRegex(now[self.LIVE]["error"], r"page sn12345678/1900-01-01/ed-1/seq-[13] is already "
+                                                  r"allocated to another plan \(queue-feed-10\)")
+        # And the draining plan's drain refuses the other way round.
+        self.assertRegex(now[self.DRAINING]["error"], r"page sn12345678/1900-01-01/ed-1/seq-1 is already "
+                                                      r"allocated to another plan \(queue-feed-12\)")
+        self.assertEqual({plan: result["ok"] for plan, result in summary["owned_records"]["after"].items()},
+                         {self.DRAINING: True, self.LIVE: True})
+        self.assertEqual((summary["collisions"]["before"], summary["collisions"]["after"]), (3, 0))
+        self.assertIn({"page": page_key(1), "allocated_to": self.LIVE, "journals_of": [self.DRAINING]},
+                      summary["collisions"]["first_before"])
+
+    def test_apply_gives_the_pages_back_and_archives_their_journals(self):
+        originals = self.container.snapshot()[0]
+        live_before = (self.paths[self.LIVE][1] / "state.json").read_bytes()
+        code, receipt, _ = self.apply()
+        self.assertEqual(code, 0, receipt)
+        self.assertTrue(receipt["complete"])
+        self.assertEqual(receipt["by_kind"], {"dead-lettered": 1, "journal-less": 1, "unsubmitted": 1})
+        self.assertEqual((receipt["pages"], receipt["jobs"], receipt["collisions"]), (3, 2, 0))
+        self.assertTrue(all(result["ok"] for result in receipt["owned_records"].values()))
+        # The draining plan's state: the three pages and the dead letter moved to the archive.
+        state = self.state_of(self.DRAINING)
+        self.assertEqual(sorted(state["claims"]), [page_key(n) for n in (4, 5, 6, 7, 8, 9)])
+        self.assertEqual(sorted(state["selected"]), [page_key(n) for n in (4, 5, 6, 7, 9)])
+        self.assertEqual(sorted(state["dead_lettered"]), [job_id(7)])
+        self.assertEqual(state["deadline_retries"], self.states[self.DRAINING]["deadline_retries"])
+        self.assertEqual(state["published"], 1)
+        run_dir = self.archive_dir / "reconcile/0001"
+        saved = json.loads((run_dir / "controller/state-entries.json").read_text())
+        self.assertEqual(sorted(saved["claims"]), [page_key(n) for n in (1, 2, 3)])
+        self.assertEqual(saved["dead_lettered"], {job_id(1): self.states[self.DRAINING]["dead_lettered"][job_id(1)]})
+        # The hand-off: both jobs' blobs gone and held byte for byte; nothing else touched.
+        self.assertFalse(self.jobs_in_container() & {job_id(1), job_id(3)})
+        for name, (_, data) in originals.items():
+            match = archive.JOB_BLOB.fullmatch(name)
+            if match and match[1] in (job_id(1), job_id(3)):
+                self.assertEqual((run_dir / "handoff" / name).read_bytes(), data)
+            else:
+                self.assertIn(name, self.container.blobs)
+        self.assertEqual(self.container.lease_blob_state, "available")
+        # The live plan's state isn't changed; its tick now owns pages 1 and 50 and can export 3.
+        self.assertEqual((self.paths[self.LIVE][1] / "state.json").read_bytes(), live_before)
+        live = {**scheduler.load_config(self.paths[self.LIVE][0]),
+                "pages": archive.claimed_pages(self.state_of(self.LIVE))}
+        self.assertEqual(sorted(scheduler.owned_records(live, self.records())), [page_key(1), page_key(50)])
+        self.assertEqual(json.loads((run_dir / "manifest.json").read_text())["kind"], "usnm-boinc-reconcile")
+        # Nothing left to give back: a second run plans nothing and makes no run directory.
+        code, summary, _ = run(self.argv("--apply", "--confirm-controller-paused", "--confirm-plan-draining",
+                                         "--expect-dead-lettered", "0", "--expect-journal-less", "0",
+                                         "--expect-unsubmitted", "0"))
+        self.assertEqual(code, 0)
+        self.assertIsNone(summary["run"])
+        self.assertEqual(archive.reconcile_dirs(self.archive_dir), [run_dir])
+
+    def test_apply_refuses_unless_paused_confirmed_and_counted(self):
+        before = self.snapshot()
+        cases = [
+            (self.argv("--apply", "--confirm-plan-draining", *self.EXPECT), "--confirm-controller-paused"),
+            (self.argv("--apply", "--confirm-controller-paused", *self.EXPECT), "--confirm-plan-draining"),
+            (self.argv("--apply", "--confirm-controller-paused", "--confirm-plan-draining",
+                       "--expect-dead-lettered", "1", "--expect-journal-less", "1"), "--expect-unsubmitted"),
+            (self.argv("--apply", "--confirm-controller-paused", "--confirm-plan-draining",
+                       "--expect-dead-lettered", "1", "--expect-journal-less", "2", "--expect-unsubmitted", "1"),
+             "not the counts given"),
+            (self.argv(bridge=False), "--bridge-jobs is needed"),
+        ]
+        for argv, message in cases:
+            with self.subTest(message=message):
+                code, _, errors = run(argv)
+                self.assertEqual(code, 1)
+                self.assertIn(message, errors[-1]["error"])
+        self.units["timer"] = "active"
+        code, _, errors = self.apply()
+        self.assertIn("not paused", errors[-1]["error"])
+        self.units["timer"] = "inactive"
+        self.container.lease_blob_state = "leased"
+        code, _, errors = self.apply()
+        self.assertIn("lease is leased", errors[-1]["error"])
+        self.container.lease_blob_state = "available"
+        # Every plan's lock is held for the run: a live plan's tick in progress stops it.
+        with open(self.paths[self.LIVE][1] / "controller.lock", "a") as held:
+            fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            code, _, errors = self.apply()
+        self.assertEqual(code, 1)
+        self.assertIn("locked", errors[-1]["error"])
+        self.assertEqual(before, self.snapshot())
+
+    def test_refuses_a_plan_on_a_local_handoff(self):
+        # A local hand-off keeps its journals under handoff_root, which reconcile doesn't read.
+        config_path, state_dir = self.paths[self.LIVE]
+        local = Path(self.tmp.name) / "local-handoff"
+        local.mkdir()
+        config_path.write_text(json.dumps({**json.loads(config_path.read_text()), "handoff_root": str(local)}))
+        state = self.state_of(self.LIVE)
+        state["config_sha256"] = scheduler.digest(scheduler.load_config(config_path))
+        (state_dir / "state.json").write_text(json.dumps(state, sort_keys=True) + "\n")
+        before = self.snapshot()
+        code, _, errors = run(self.argv())
+        self.assertEqual(code, 1)
+        self.assertIn("local handoff_root", errors[-1]["error"])
+        self.assertEqual(before, self.snapshot())
+
+    def test_refuses_when_a_plan_would_still_refuse_afterwards(self):
+        # The live plan claimed page 4 too, whose draining job is in BOINC: it isn't given back,
+        # so the live plan would still refuse, and nothing is changed.
+        state = self.state_of(self.LIVE)
+        state["claims"][page_key(4)] = claim(4)
+        (self.paths[self.LIVE][1] / "state.json").write_text(json.dumps(state, sort_keys=True) + "\n")
+        code, summary, _ = run(self.argv())
+        self.assertEqual(code, 0)
+        after = summary["owned_records"]["after"][self.LIVE]
+        self.assertFalse(after["ok"])
+        self.assertIn(page_key(4), after["error"])
+        self.assertEqual(summary["collisions"]["first_after"],
+                         [{"page": page_key(4), "allocated_to": self.LIVE, "journals_of": [self.DRAINING]}])
+        before = self.snapshot()
+        code, _, errors = self.apply()
+        self.assertEqual(code, 1)
+        self.assertIn("would still refuse", errors[-1]["error"])
+        self.assertIn(page_key(4), errors[-1]["error"])
+        self.assertEqual(before, self.snapshot())
+
+    def test_kinds_can_be_given_back_one_at_a_time(self):
+        code, _, errors = run(self.argv("--apply", "--confirm-controller-paused", "--confirm-plan-draining",
+                                        "--kind", "journal-less", "--expect-journal-less", "1", bridge=False))
+        self.assertEqual(code, 1)  # pages 1 and 3 still collide
+        self.assertIn("would still refuse", errors[-1]["error"])
+        # Had the live plan not claimed page 3, the dead letter and the bare claim are enough,
+        # with no bridge listing.
+        state = self.state_of(self.LIVE)
+        del state["claims"][page_key(3)]
+        (self.paths[self.LIVE][1] / "state.json").write_text(json.dumps(state, sort_keys=True) + "\n")
+        code, summary, _ = run(self.argv("--kind", "journal-less", "--kind", "dead-lettered", bridge=False))
+        self.assertEqual(summary["found"], {"dead-lettered": 1, "journal-less": 1, "unsubmitted": 0})
+        self.assertNotIn("reserved_with_bridge_journal", summary["skipped"])
+        code, receipt, _ = run(self.argv("--apply", "--confirm-controller-paused", "--confirm-plan-draining",
+                                         "--kind", "journal-less", "--kind", "dead-lettered",
+                                         "--expect-journal-less", "1", "--expect-dead-lettered", "1",
+                                         bridge=False))
+        self.assertEqual(code, 0, receipt)
+        self.assertEqual((receipt["pages"], receipt["jobs"]), (2, 1))
+        self.assertEqual(sorted(set(self.states[self.DRAINING]["claims"]) - set(self.state_of(self.DRAINING)["claims"])),
+                         [page_key(1), page_key(2)])
+
+    def test_a_run_stopped_half_way_resumes(self):
+        self.container.fail_deletes_after = 2
+        code, _, errors = self.apply()
+        self.assertEqual(code, 1)
+        self.assertIn("injected", errors[-1]["error"])
+        self.assertNotIn(page_key(1), self.state_of(self.DRAINING)["claims"])
+        self.container.fail_deletes_after = None
+        # Resuming needs a listing taken after the run was planned, which still doesn't name
+        # the planned unsubmitted job: a submission since changes no hand-off blob.
+        old = time.time() - DAY
+        os.utime(self.bridge, (old, old))
+        before = self.snapshot()
+        code, _, errors = self.apply()
+        self.assertEqual(code, 1)
+        self.assertIn("take the listing again", errors[-1]["error"])
+        code, _, errors = run(self.argv("--apply", "--confirm-controller-paused", "--confirm-plan-draining",
+                                        "--kind", "dead-lettered", "--kind", "journal-less",
+                                        "--expect-dead-lettered", "1", "--expect-journal-less", "1", bridge=False))
+        self.assertIn("resuming needs a fresh --bridge-jobs listing", errors[-1]["error"])
+        self.bridge.write_text("\n".join([job_id(3), job_id(4), job_id(50)]) + "\n")
+        code, _, errors = self.apply()
+        self.assertEqual(code, 1)
+        self.assertIn("now have a bridge journal", errors[-1]["error"])
+        self.assertEqual(before, self.snapshot())
+        self.bridge.write_text("\n".join([job_id(4), job_id(50)]) + "\n")
+        # The resume finishes the planned run; it doesn't plan again, so the counts aren't rechecked.
+        code, receipt, _ = self.apply()
+        self.assertEqual(code, 0, receipt)
+        self.assertTrue(receipt["controller"]["resumed"])
+        self.assertEqual(receipt["run"], "0001")
+        self.assertFalse(self.jobs_in_container() & {job_id(1), job_id(3)})
+
+    def stop_half_way(self):
+        self.container.fail_deletes_after = 2
+        code, _, errors = self.apply()
+        self.assertIn("injected", errors[-1]["error"])
+        self.container.fail_deletes_after = None
+        self.bridge.write_text("\n".join([job_id(4), job_id(50)]) + "\n")  # taken again
+
+    def test_a_resume_needs_the_plans_it_was_planned_with(self):
+        self.stop_half_way()
+        before = self.snapshot()
+        config_path, state_dir = self.paths[self.DRAINING]
+        code, _, errors = run(["reconcile", "--config", str(config_path), "--state-dir", str(state_dir),
+                               "--archive-dir", str(self.archive_dir), "--bridge-jobs", str(self.bridge),
+                               "--apply", "--confirm-controller-paused", "--confirm-plan-draining", *self.EXPECT])
+        self.assertEqual(code, 1)
+        self.assertIn("resume it with the same plans", errors[-1]["error"])
+        self.assertEqual(before, self.snapshot())
+
+    def test_a_resume_refuses_a_collision_made_since(self):
+        self.stop_half_way()
+        # Since the stopped attempt the live plan exported page 4, which the draining plan keeps.
+        record = journal(60, page_key(4), "reserved", plan=self.LIVE)
+        self.container.put(f"dispatch/jobs/{job_id(60)}/record.json", json.dumps(record).encode(), time.time())
+        before = self.snapshot()
+        code, _, errors = self.apply()
+        self.assertEqual(code, 1)
+        self.assertIn("would leave a plan refusing", errors[-1]["error"])
+        self.assertIn(page_key(4), errors[-1]["error"])
+        self.assertEqual(before, self.snapshot())
+        self.assertFalse((self.archive_dir / "reconcile/0001/receipts/reconcile.json").exists())
+
+    def test_plans_are_checked_against_their_own_state(self):
+        config_path, state_dir = self.paths[self.DRAINING]
+        live_config, live_state = self.paths[self.LIVE]
+        for argv, message in [
+            (["--check-config", str(live_config), "--check-state-dir", str(state_dir)], "another allocation"),
+            (["--check-config", str(live_config)], "each --check-config its --check-state-dir"),
+            (["--check-config", str(config_path), "--check-state-dir", str(state_dir)], "given twice"),
+        ]:
+            with self.subTest(message=message):
+                code, _, errors = run(["reconcile", "--config", str(config_path), "--state-dir", str(state_dir),
+                                       "--bridge-jobs", str(self.bridge), *argv])
+                self.assertEqual(code, 1)
+                self.assertIn(message, errors[-1]["error"])
+        self.bridge.write_text("lost+found\n")
+        code, _, errors = run(self.argv())
+        self.assertIn("lists no bridge job", errors[-1]["error"])
 
 
 if __name__ == "__main__":
