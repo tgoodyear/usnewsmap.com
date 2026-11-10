@@ -1290,6 +1290,10 @@ def reconcile(args):
     for plan in plans:
         require(plan.config["account"] == target.config["account"],
                 f"{plan.name} uses another hand-off account; reconcile plans of one container together")
+        # Journals and claims of a local hand-off live under handoff_root, not in Azure: reading
+        # the container would miss them and leave a journal behind for a claim it gives back.
+        require("handoff_root" not in plan.config,
+                f"{plan.name} uses a local handoff_root; reconcile reads only the Azure hand-off")
     args.kinds = sorted(set(args.kind or RECONCILE_KINDS))
     bridge = None
     if "unsubmitted" in args.kinds:

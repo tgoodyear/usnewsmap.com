@@ -1239,6 +1239,21 @@ class ReconcileTests(ReconcileFixture):
         self.assertIn("locked", errors[-1]["error"])
         self.assertEqual(before, self.snapshot())
 
+    def test_refuses_a_plan_on_a_local_handoff(self):
+        # A local hand-off keeps its journals under handoff_root, which reconcile doesn't read.
+        config_path, state_dir = self.paths[self.LIVE]
+        local = Path(self.tmp.name) / "local-handoff"
+        local.mkdir()
+        config_path.write_text(json.dumps({**json.loads(config_path.read_text()), "handoff_root": str(local)}))
+        state = self.state_of(self.LIVE)
+        state["config_sha256"] = scheduler.digest(scheduler.load_config(config_path))
+        (state_dir / "state.json").write_text(json.dumps(state, sort_keys=True) + "\n")
+        before = self.snapshot()
+        code, _, errors = run(self.argv())
+        self.assertEqual(code, 1)
+        self.assertIn("local handoff_root", errors[-1]["error"])
+        self.assertEqual(before, self.snapshot())
+
     def test_refuses_when_a_plan_would_still_refuse_afterwards(self):
         # The live plan claimed page 4 too, whose draining job is in BOINC: it isn't given back,
         # so the live plan would still refuse, and nothing is changed.

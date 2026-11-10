@@ -375,7 +375,7 @@ Before anything changes, every plan given (the draining one and each `--check-co
      --bridge-jobs bridge-jobs.txt --archive-dir /srv/usnm-archive
    ```
 
-   Read `found`, `pages`, `skipped`, `collisions` and `owned_records.after` (every plan `ok`).
+   Read `found`, `pages`, `skipped`, `collisions` and `owned_records.after` (every plan `ok`). Reconcile reads only the Azure hand-off, so it refuses a plan with a local `handoff_root`.
 
 4. Apply with the same arguments and `--apply --confirm-controller-paused --confirm-plan-draining`, plus the dry run's counts as `--expect-dead-lettered N --expect-journal-less N --expect-unsubmitted N` (one per kind asked for). It holds every plan's `controller.lock` and the controller lease, plans again and refuses if the counts differ or a plan would still refuse. The receipt is `receipts/reconcile.json`, with each plan's `owned_records` afterwards; a run stopped half way resumes when rerun. A submission changes only the bridge journal, so the hand-off checks can't see one: a resume of a run with `unsubmitted` pages needs a new `--bridge-jobs` listing, taken after the run was planned, and refuses if it names any of them. A resume also needs the same plans and configs it was planned with (the manifest's `checked_plan_digests`), holds all their locks, and runs every plan's `owned_records` again on what the run leaves before changing anything more.
 5. Start the timer and check the next tick reports `ownership_conflicts: 0`.
