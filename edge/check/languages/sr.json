@@ -21,7 +21,7 @@
     "x": "х",
     "y": "у"
   },
-  "intro": "These words come from pages of Amerikanski Srbobran, a Serbian newspaper printed in Pittsburgh. The pages date from 1906 to 1963 and are held by the Library of Congress. The paper is printed in Cyrillic letters. The box marks one word in a line. Pick the reading whose letters match the printed word. Highlighted letters are where the two readings differ. Some Latin letters print the same as Cyrillic ones (C and С, P and Р), so they count as the same and are never highlighted. You don't need to read Serbian, only to match shapes. If you can't make out the highlighted letters, pick Can't tell. If the readings differ in more than one place, pick a reading only if all its highlighted letters match. Otherwise pick Neither.",
+  "intro": "These words come from pages of Amerikanski Srbobran, a Serbian newspaper printed in Pittsburgh. The pages date from 1906 to 1963 and are held by the Library of Congress. The paper is printed in Cyrillic letters. Some Latin letters print the same as Cyrillic ones (C and С, P and Р), so they count as the same and are never highlighted.",
   "name": "Serbian",
   "notes": {
     "Ђ": "the right leg curls into a hook at the bottom; Ћ's leg is straight",
