@@ -1,6 +1,6 @@
 # Holding German BOINC results until Fraktur trust is calibrated
 
-**Status:** code merged, not deployed: the reviewed policy is [`2026-11-05-german-trust-hold.json`](2026-11-05-german-trust-hold.json), and CT 230's live `trust.json` is unchanged · **Date:** November 2026 · **Measured on:** synthetic fixtures in the `usnm-boinc` trust and pilot tests and the controller tests; CT 230's `gold/trust.json` read on 5 November (sha256 `4f0787b4…`, read-only) · **Code:** `crates/usnm-boinc/src/trust.rs`, `trust/gate.rs`, `trust/promote.rs`, `claim.rs`, `boinc/scripts/batch_scheduler.py`; [gold check](../../boinc/docs/gold-check.md#host-trust-for-usnm_ocr), [the claim](../boinc-batch-scheduler.md#the-claim) · **Issues:** #835, #1415, #1428, #968
+**Status:** code merged, not deployed: the reviewed policy is [`2026-11-05-german-trust-hold.json`](2026-11-05-german-trust-hold.json), and CT 230's live `trust.json` is unchanged · **Date:** November 2026 · **Measured on:** synthetic fixtures in the `usnm-boinc` trust and pilot tests and the controller tests; CT 230's `gold/trust.json` read on 5 November (sha256 `4f0787b4…`, read-only) · **Code:** `crates/usnm-boinc/src/trust.rs`, `trust/gate.rs`, `trust/promote.rs`, `claim.rs`, `boinc/scripts/batch_scheduler.py`; [gold check](../boinc/server/gold-check.md#host-trust-for-usnm_ocr), [the claim](../boinc/server/batch-scheduler.md#the-claim) · **Issues:** #835, #1415, #1428, #968
 
 ## The question
 

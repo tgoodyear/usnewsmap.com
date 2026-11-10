@@ -34,7 +34,7 @@
          platform and plan class. Only workunits in batch 1621 can use it, so unpinned work
          never runs on it. usnm-boinc puts every line job in that batch, pinned to the
          docker_lines version, and gold submit does the same with its docker-lines option
-         (docs/boinc-ocr-bundles.md, "Line jobs"). Keep the batch in step with
+         (docs/boinc/apps/ocr-bundles.md, "Line jobs"). Keep the batch in step with
          usnm_boinc::submit::LINE_BATCH. -->
     <plan_class>
         <name>docker_lines</name>
@@ -43,7 +43,7 @@
         <min_batch>1621</min_batch>
         <max_batch>1621</max_batch>
     </plan_class>
-    <!-- usnm_surya (#516, docs/boinc-surya.md). CPU: 4 to 8 threads; the scheduler reserves them
+    <!-- usnm_surya (#516, docs/boinc/apps/surya.md). CPU: 4 to 8 threads; the scheduler reserves them
          and the stock docker_wrapper passes them to the container as cpus. Hosts with fewer than
          4 usable CPUs get no CPU version. -->
     <plan_class>
@@ -180,7 +180,7 @@
          integrated GPU's memory is system RAM: on Computer 9's Iris Xe (#787) an 8B unit peaked at
          8,609 MiB of GPU buffers plus process memory. The scheduler reserves no host memory for a
          GPU class (mem_usage_base_mb applies only to multicore CPU classes), so volunteers with an
-         integrated GPU run one unit at a time (docs/boinc-intel-gpu.md). OpenCL reports nearly
+         integrated GPU run one unit at a time (docs/boinc/apps/intel-gpu.md). OpenCL reports nearly
          all system RAM as an integrated GPU's memory, so min_gpu_ram_mb admits such hosts that
          the app may still refuse. Closed until an operator opens one audited workunit. -->
     <plan_class>

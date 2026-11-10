@@ -33,7 +33,7 @@
 # the project tree and the database. So it refuses while any execution of the job is still
 # running, and after the start it reads the new execution's settings back and fails if they
 # are not this run's (another caller updated the job in between). A cross-host blob lease
-# serializes the check/update/start transaction for both targets; see docs/boinc-start-guard.md.
+# serializes the check/update/start transaction for both targets; see docs/boinc/server/start-guard.md.
 #
 # The az calls on the job and the start lease have time limits (scripts/lib/bounded-az.sh).
 # A read, such as the status poll, is killed with its child processes after BOINC_AZ_READ_TIMEOUT
@@ -42,7 +42,7 @@
 # job update and start, and the lease acquire and release) are killed after
 # BOINC_AZ_WRITE_TIMEOUT seconds (300) and not retried, since a request that timed out may have
 # taken effect: the run fails as it does for any failed update or start, and
-# docs/boinc-start-guard.md says how the lease is kept or released. The checks at the start of a
+# docs/boinc/server/start-guard.md says how the lease is kept or released. The checks at the start of a
 # run have no limit: the sign-in check, the stack-output lookups and, for --target bridge, the
 # resource group check.
 # Needs az signed in to the settings' subscription, jq, and python3.

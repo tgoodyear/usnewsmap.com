@@ -455,7 +455,7 @@ def load_config(path):
             "bundles need bundle_app_version, the usnm_ocr version_num whose worker reads them")
     if queue:
         # BOINC is a second consumer of the work queues, beside the on-prem nodes
-        # (docs/boinc-batch-scheduler.md#queue-fed-work). The page list is whatever it claims.
+        # (docs/boinc/server/batch-scheduler.md#queue-fed-work). The page list is whatever it claims.
         require(config["source"] == "queue", "invalid source")
         queues = config["claim_queues"]
         require(isinstance(queues, list) and queues and len(set(queues)) == len(queues)

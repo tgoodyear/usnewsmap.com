@@ -1,5 +1,5 @@
 name: ocr-bench
-# The OCR benchmark releases (#738, docs/ocr-bench.md). A pull request that touches them rebuilds
+# The OCR benchmark releases (#738, docs/ocr/bench.md). A pull request that touches them rebuilds
 # every unpublished release from its staged inputs and requires the bytes to match
 # ocr/bench/releases.json, and fetches every published release back with --verify. A push to
 # main publishes any release that builds to its entry and has no GitHub release yet. Published

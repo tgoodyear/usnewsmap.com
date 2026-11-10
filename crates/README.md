@@ -2,7 +2,7 @@
 
 The Rust workspace: 23 crates. The root `Cargo.toml` lists the members, pins the shared dependency versions in `[workspace.dependencies]`, and sets `unsafe_code = "forbid"` and Clippy's `all` group to warn for every crate through `[lints] workspace = true`. `rust-toolchain.toml` selects the stable toolchain with rustfmt and Clippy. [`fuzz/`](../fuzz/README.md) is a separate crate outside this workspace.
 
-Crates named `usnm-ocr-*` belong to the OCR pipeline ([design 12](../docs/design/12-onprem-ocr-pipeline.md) and [13](../docs/design/13-ocr-engines.md)). `usnm-boinc`, `usnm-ocr-app`, `usnm-quality-app` and `usnm-qwen-app` belong to the BOINC volunteer pilot (status: see [boinc/docs/README.md](../boinc/docs/README.md)).
+Crates named `usnm-ocr-*` belong to the OCR pipeline ([design 12](../docs/design/12-onprem-ocr-pipeline.md) and [13](../docs/design/13-ocr-engines.md)). `usnm-boinc`, `usnm-ocr-app`, `usnm-quality-app` and `usnm-qwen-app` belong to the BOINC volunteer pilot (status: see [docs/boinc/README.md](../docs/boinc/README.md)).
 
 Eleven crates are libraries only: `usnm-core`, `usnm-search`, `usnm-store`, `usnm-state`, `usnm-telemetry`, `usnm-alto`, `usnm-overlay`, `usnm-congress`, `usnm-ocr-local`, `usnm-ocr-route` and `usnm-ocr-quality`. Three are BOINC apps with no library: `usnm-ocr-app`, `usnm-quality-app` and `usnm-qwen-app`. The other eight have a library and at least one binary.
 
@@ -46,11 +46,11 @@ Eleven crates are libraries only: `usnm-core`, `usnm-search`, `usnm-store`, `usn
 | Crate              | Kind               | What it does                                                                                                                                                                                                                                                                                                                                                                                           | Binaries       |
 | ------------------ | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------- |
 | `usnm-boinc`       | library and binary | The bridge and controller for the stock BOINC server. It exports cached pages, claims work, submits work units, collects results, and holds the staging, validation and collection code of the `assess`, `gold`, `surya`, `quality` and `qwen` apps and the Japanese `ndlocr` work. Its `work` subcommand is the entry point of the worker image (`boinc/apps/Containerfile`). Not itself a BOINC app. | `usnm-boinc`   |
-| `usnm-ocr-app`     | binary (BOINC app) | The native `usnm_ocr` and `usnm_gold` worker: the container worker's page contract in a BOINC slot with a bundled static Tesseract and no container runtime ([boinc-native-ocr.md](../docs/boinc-native-ocr.md)).                                                                                                                                                                                      | `usnm_ocr`     |
+| `usnm-ocr-app`     | binary (BOINC app) | The native `usnm_ocr` and `usnm_gold` worker: the container worker's page contract in a BOINC slot with a bundled static Tesseract and no container runtime ([boinc-native-ocr.md](../docs/boinc/apps/native-ocr.md)).                                                                                                                                                                                 | `usnm_ocr`     |
 | `usnm-quality-app` | binary (BOINC app) | The native `usnm_quality` app. It runs in a BOINC slot on Linux, macOS and Windows without Docker or Podman and writes the deterministic quality report using `usnm-ocr-quality`.                                                                                                                                                                                                                      | `usnm_quality` |
 | `usnm-qwen-app`    | binary (BOINC app) | The native `usnm_qwen` app. It starts `llama-server` on a local port, sends each crop to it and writes the readings. It runs on GPU or CPU.                                                                                                                                                                                                                                                            | `usnm_qwen`    |
 
-`.github/workflows/boinc-quality-native.yml` builds the two BOINC apps for the volunteer platforms listed in [docs/boinc-quality.md](../docs/boinc-quality.md). They use `usnm-ocr-contract` without feature `pipeline`, so they build without Arrow, Parquet and the pipeline's other dependencies.
+`.github/workflows/boinc-quality-native.yml` builds the two BOINC apps for the volunteer platforms listed in [docs/boinc/apps/quality.md](../docs/boinc/apps/quality.md). They use `usnm-ocr-contract` without feature `pipeline`, so they build without Arrow, Parquet and the pipeline's other dependencies.
 
 ## How the crates depend on each other
 
@@ -102,7 +102,7 @@ cargo test --workspace --locked
 cargo run -p usnm-api        # the API on :8080, serving the synthetic fixtures
 ```
 
-The API and ingest tests run against [`fixtures/`](../fixtures/README.md). The Quickwit parity test skips unless `QUICKWIT_URL` is set ([development guide](../docs/development.md)).
+The API and ingest tests run against [`fixtures/`](../fixtures/README.md). The Quickwit parity test skips unless `QUICKWIT_URL` is set ([development guide](../docs/guides/development.md)).
 
 ## Regenerating generated files
 

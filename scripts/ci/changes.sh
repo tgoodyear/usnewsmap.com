@@ -138,7 +138,7 @@ echo "$files" | sed 's/^/changed: /'
 if grep -Eq '\.md$' <<< "$files"; then markdown=true; else markdown=false; fi
 # Documentation is only read, except the executable GPU-study scripts, which
 # have regression tests in scripts/ci/. No README is compiled into an image.
-files=$(awk '!/\.md$/ && ($0 !~ /^(docs|boinc\/docs)\// || $0 ~ /^docs\/reports\/2026-11-gpu-studies\/scripts\/.*\.(py|sh)$/)' <<< "$files")
+files=$(awk '!/\.md$/ && ($0 !~ /^docs\// || $0 ~ /^docs\/reports\/2026-11-gpu-studies\/scripts\/.*\.(py|sh)$/)' <<< "$files")
 if grep -Eq '^boinc/project/html/' <<< "$files"; then boinc_pages=true; else boinc_pages=false; fi
 files=$(grep -Ev '^boinc/project/html/' <<< "$files" || true)
 matches() { [ -n "$files" ] && grep -Eq "$1" <<< "$files"; }

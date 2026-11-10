@@ -4,7 +4,7 @@
 
 ## The question
 
-#786 runs one Intel host as a second 8B Qwen backend. A [cohort controller](../boinc-intel-gpu.md#persistent-finite-nvidiaintel-refill) opens Intel's plan class to a small window of fresh units at a time, while the AMD and Apple classes and the generally admitted NVIDIA class take any unsent native 8B (batch 8) replica. The issue's acceptance asks for evidence under ordinary work that dispatch moves past a prefix of units no host can take, and that a warm feeder cache doesn't hide work. This note measures both and asks why the Intel host has had no Qwen work since the evening of 4 November.
+#786 runs one Intel host as a second 8B Qwen backend. A [cohort controller](../boinc/apps/intel-gpu.md#persistent-finite-nvidiaintel-refill) opens Intel's plan class to a small window of fresh units at a time, while the AMD and Apple classes and the generally admitted NVIDIA class take any unsent native 8B (batch 8) replica. The issue's acceptance asks for evidence under ordinary work that dispatch moves past a prefix of units no host can take, and that a warm feeder cache doesn't hide work. This note measures both and asks why the Intel host has had no Qwen work since the evening of 4 November.
 
 ## What we found
 

@@ -154,7 +154,7 @@ jobs:
             python3 -m unittest boinc.scripts.test_amd_device_map
       # #1234: the Linux NVIDIA 2B release's inputs, rebuilt from this commit's binary and the
       # llama.lock-pinned runtime. Its runtime must be byte for byte the one already reviewed and
-      # signed for nvidia_vulkan_6gb_8b. Nothing here signs or publishes (boinc/docs/app-release.md).
+      # signed for nvidia_vulkan_6gb_8b. Nothing here signs or publishes (docs/boinc/apps/app-release.md).
       - name: Assemble native Qwen nvidia_vulkan_2b release inputs (Linux x86-64)
         if: matrix.boinc_platform == 'x86_64-pc-linux-gnu'
         shell: bash

@@ -82,7 +82,7 @@ const fn lock_value(lock: &'static str, key: &str) -> &'static str {
 /// (`<lccn>_<date>_ed-<n>_seq-<n>`) and the batches that may hold it
 /// (`<name>_ver<NN>`, joined with `+`, tried in order), given as
 /// `group:lang:doc_id:batch[+batch...]`. The batches come from the
-/// published set's `batches.json` (docs/boinc-surya.md): staging never asks
+/// published set's `batches.json` (docs/boinc/apps/surya.md): staging never asks
 /// loc.gov's item API where a page is.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Page {

@@ -358,7 +358,7 @@
     },
     "USNM_BOINC_FEED_ALERTS": {
       "x-usnm-visibility": "public",
-      "description": "Alert on the live BOINC feed health (#1441): a data collection rule for the evaluator host's local0 lines into the OCR nodes' workspace (usnm-boinc-feed-dcr-<env>) and two log alerts through the action group (usnm-boinc-feed-condition-alert-<env>, usnm-boinc-feed-missing-alert-<env>). With USNM_OCR_NODES, alert emails and USNM_BOINC_FEED_MACHINE; after provisioning, associate the host with the rule by hand (boinc/docs/boundaries-and-monitoring.md).",
+      "description": "Alert on the live BOINC feed health (#1441): a data collection rule for the evaluator host's local0 lines into the OCR nodes' workspace (usnm-boinc-feed-dcr-<env>) and two log alerts through the action group (usnm-boinc-feed-condition-alert-<env>, usnm-boinc-feed-missing-alert-<env>). With USNM_OCR_NODES, alert emails and USNM_BOINC_FEED_MACHINE; after provisioning, associate the host with the rule by hand (docs/boinc/server/boundaries-and-monitoring.md).",
       "type": "boolean"
     },
     "USNM_BOINC_FEED_MACHINE": {

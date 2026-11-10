@@ -248,7 +248,7 @@ if [ "$TARGET" = archive ]; then
     exit 0
   fi
   [ -n "$WAIT_MINS" ] || die "--wait-mins is required on-prem"
-  [ -f "$tool" ] && [ ! -L "$tool" ] || die "no $tool: install archive_history.py there first (docs/boinc-batch-scheduler.md)"
+  [ -f "$tool" ] && [ ! -L "$tool" ] || die "no $tool: install archive_history.py there first (docs/boinc/server/batch-scheduler.md)"
   mkdir -p "$ARCHIVE_ROOT"; [ -d "$ARCHIVE_ROOT/batches" ] || mkdir -m 0700 "$ARCHIVE_ROOT/batches"
   # One archive step at a time (a lock in the run directory). Reads the two files, checks them,
   # and puts them in place; prints "done" when the batch's bridge receipt already names the

@@ -1,6 +1,6 @@
 # Rootless BOINC volunteer readiness on an SELinux host
 
-**Status:** measured, contribution proposed · **Date:** October 2026 · **Measured on:** Linux x86-64, RHEL 10.2, SELinux enforcing, BOINC 8.2.13, Podman 5.8.2, cgroup v2 · **Code:** `boinc/scripts/setup_volunteer.py`, `boinc/scripts/volunteer_preflight.py`, [volunteer guide](../boinc-volunteer.md) · **Issues:** [#504](https://github.com/tgoodyear/usnewsmap.com/issues/504), [#469](https://github.com/tgoodyear/usnewsmap.com/issues/469), [#484](https://github.com/tgoodyear/usnewsmap.com/issues/484)
+**Status:** measured, contribution proposed · **Date:** October 2026 · **Measured on:** Linux x86-64, RHEL 10.2, SELinux enforcing, BOINC 8.2.13, Podman 5.8.2, cgroup v2 · **Code:** `boinc/scripts/setup_volunteer.py`, `boinc/scripts/volunteer_preflight.py`, [volunteer guide](../boinc/volunteer/README.md) · **Issues:** [#504](https://github.com/tgoodyear/usnewsmap.com/issues/504), [#469](https://github.com/tgoodyear/usnewsmap.com/issues/469), [#484](https://github.com/tgoodyear/usnewsmap.com/issues/484)
 
 ## The question
 

@@ -1,6 +1,6 @@
 // The BOINC hand-off's access (#469): `usnm-boinc export` and `usnm-boinc
 // collect` run as the hand-off job's identity (boinc-handoff-job.bicep,
-// boinc/docs/scan-cache-handoff.md#one-page-from-the-scan-cache). The on-prem BOINC host's own
+// docs/boinc/server/scan-cache-handoff.md#one-page-from-the-scan-cache). The on-prem BOINC host's own
 // Arc identity gets the same grants for claim and collect (boincHandoffOnPrem,
 // #967); the ledger writer role is defined here once for both. Only what those
 // commands touch:

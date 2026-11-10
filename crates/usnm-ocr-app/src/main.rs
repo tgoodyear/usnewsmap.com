@@ -1,4 +1,4 @@
-//! The native BOINC worker for `usnm_ocr` and `usnm_gold` (#1418). See docs/boinc-native-ocr.md.
+//! The native BOINC worker for `usnm_ocr` and `usnm_gold` (#1418). See docs/boinc/apps/native-ocr.md.
 //!
 //! The stock client starts this with no arguments in a task's slot. It keeps the client's
 //! control channel and runs the unit in a child (`unit`) that reads pages with the same code as
@@ -68,7 +68,7 @@ fn run() -> anyhow::Result<()> {
     }
 }
 
-/// Only Linux x86_64 is built for now (docs/boinc-native-ocr.md).
+/// Only Linux x86_64 is built for now (docs/boinc/apps/native-ocr.md).
 #[cfg(not(target_os = "linux"))]
 fn main() -> ExitCode {
     eprintln!("usnm_ocr runs on Linux only");

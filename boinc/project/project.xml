@@ -41,7 +41,7 @@
         <!-- Weight 0: its units are only ever assigned to one host (gold-onboard), and the
              scheduler sends assigned work from the database, not the feeder's cache. A zero
              weight takes one cache slot and leaves the other apps' query budgets as they were
-             (docs/boinc-native-ocr.md, Rollout). -->
+             (docs/boinc/apps/native-ocr.md, Rollout). -->
         <weight>0</weight>
         <beta>0</beta>
         <target_nresults>1</target_nresults>

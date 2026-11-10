@@ -69,7 +69,7 @@ was used. No published settings were changed.
 ## What is left
 
 The maintainer must merge the build tooling, publish the tested worker index,
-commit public digest settings, and use the [offline-signing release procedure](../../boinc/docs/app-release.md#mac-app-versions).
+commit public digest settings, and use the [offline-signing release procedure](../boinc/apps/app-release.md#mac-app-versions).
 Then verify a reserved native Mac `usnm_ocr` job end to end, fix and retest
 Podman pause and restart, test client restart and reboot, and establish native
 gold-page agreement before closing #476. Gold and assessment expectations

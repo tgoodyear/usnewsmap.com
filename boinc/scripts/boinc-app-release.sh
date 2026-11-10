@@ -10,13 +10,13 @@
 #   boinc/scripts/boinc-app-release.sh --env prod --app usnm_qwen --version 1.0 --plan-class docker_nvidia_cuda_8b \
 #     --worker-image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:... --signing-host HOST
 #
-# The native OCR apps (docs/boinc-native-ocr.md, #1418) release the build directory that
+# The native OCR apps (docs/boinc/apps/native-ocr.md, #1418) release the build directory that
 # .github/workflows/boinc-ocr-native.yml uploads, checked against the container worker's engine
 # and models first (boinc/scripts/check-native-ocr-build.py):
 #   boinc/scripts/boinc-app-release.sh --env prod --app usnm_gold_native --version 1.0 --kind native \
 #     --build-dir build --signing-host HOST
 #
-# Steps (boinc/docs/app-release.md):
+# Steps (docs/boinc/apps/app-release.md):
 # 1. Worker image. Volunteers pull it from the public GHCR package named, by digest, in
 #    images.worker of boinc/infra/boinc/env/<env>.json; .github/workflows/boinc-worker.yml
 #    publishes it. This checks that an anonymous pull of that digest works. With images.worker
@@ -34,7 +34,7 @@
 #    provision-boinc.sh --publish-image deploys the publish job with it, and the job copies the
 #    version onto the share and verifies registration. The digest is then written to
 #    images.appver in the settings, to commit: the stack keeps the job on it from then on.
-#    With "server": "onprem" in the settings (docs/boinc-onprem.md, #961), the on-prem BOINC
+#    With "server": "onprem" in the settings (docs/boinc/server/onprem.md, #961), the on-prem BOINC
 #    container builds the same image with podman, on the server image it runs, and its step
 #    runner (boinc/scripts/onprem-step.sh --target publish) publishes it. Nothing is pushed to
 #    ACR and images.appver isn't written. --onprem-host names the Proxmox host and --onprem-ct
@@ -52,7 +52,7 @@
 # older ones of its platform: the feeder then stops loading them, so units pinned to an older
 # usnm_ocr version go unsent, and gold units for the older worker are refused. --hold publishes
 # the version deprecated, to release with app-version-hold.php in the same step as the plan
-# rotation (docs/boinc-ocr-bundles.md); --outrank-pinned publishes it live. A usnm_gold version
+# rotation (docs/boinc/apps/ocr-bundles.md); --outrank-pinned publishes it live. A usnm_gold version
 # whose worker the running server's gold-engine-platforms.json doesn't bind is refused without
 # --hold.
 # --prepare-only stages, signs and builds, then records the appver pin for a release PR
@@ -266,14 +266,14 @@ PUBLIC_KEY=$(jq -r .codeSignPublicKey "$BOINC_SETTINGS")
 SERVER_MODE=$(jq -r '.server // "azure"' "$BOINC_SETTINGS")
 case "$SERVER_MODE" in
   azure) [ -z "$ONPREM_HOST$ONPREM_CT" ] || die "--onprem-host and --onprem-ct are for \"server\": \"onprem\" in $BOINC_SETTINGS" ;;
-  onprem) [ -n "$ONPREM_HOST" ] && [ -n "$ONPREM_CT" ] || die "$BOINC_SETTINGS has \"server\": \"onprem\": give --onprem-host and --onprem-ct (docs/boinc-onprem.md)" ;;
+  onprem) [ -n "$ONPREM_HOST" ] && [ -n "$ONPREM_CT" ] || die "$BOINC_SETTINGS has \"server\": \"onprem\": give --onprem-host and --onprem-ct (docs/boinc/server/onprem.md)" ;;
   *) die "server must be azure or onprem in $BOINC_SETTINGS" ;;
 esac
 ! { $HOLD && $OUTRANK_PINNED; } || die "give --hold or --outrank-pinned, not both"
 ! $HOLD || [ -z "$ACCEPTANCE_CONFIG" ] || die "a held version isn't sent, so it can't take client acceptance: release it first"
 case "$KIND:$APP" in
   container:usnm_ocr | container:usnm_gold)
-    $HOLD || $OUTRANK_PINNED || die "$APP $VERSION outranks the older $APP versions of $PLATFORM: units pinned to them stop being sent (#1687). Give --hold to publish it deprecated and release it with the plan rotation (boinc/docs/app-release.md, \"Held versions\"), or --outrank-pinned to publish it live" ;;
+    $HOLD || $OUTRANK_PINNED || die "$APP $VERSION outranks the older $APP versions of $PLATFORM: units pinned to them stop being sent (#1687). Give --hold to publish it deprecated and release it with the plan rotation (docs/boinc/apps/app-release.md, \"Held versions\"), or --outrank-pinned to publish it live" ;;
   *) if $HOLD || $OUTRANK_PINNED; then die "--hold and --outrank-pinned are for usnm_ocr and usnm_gold container versions"; fi ;;
 esac
 if [ -n "$ONPREM_MANIFEST$ARTIFACT_RECEIPT" ]; then
@@ -399,7 +399,7 @@ elif [ -z "$WORKER_IMAGE" ] && $WHAT_IF; then
   echo "1. no images.worker in $BOINC_SETTINGS: a real run builds the worker in ACR as a check and stops there (publish it with .github/workflows/boinc-worker.yml)"
 elif [ -z "$WORKER_IMAGE" ]; then
   build_worker_in_acr
-  die "no images.worker in $BOINC_SETTINGS. Publish the worker to GHCR (gh workflow run boinc-worker.yml --ref main; boinc/docs/worker-image.md, \"Publish the worker image\"), make the package public once, put its ghcr.io/tgoodyear/usnm-boinc-worker@sha256:... in images.worker, commit, and run this again"
+  die "no images.worker in $BOINC_SETTINGS. Publish the worker to GHCR (gh workflow run boinc-worker.yml --ref main; docs/boinc/apps/worker-image.md, \"Publish the worker image\"), make the package public once, put its ghcr.io/tgoodyear/usnm-boinc-worker@sha256:... in images.worker, commit, and run this again"
 else
   ghcr_public "$WORKER_IMAGE" ||
     die "$WORKER_IMAGE is not anonymously readable or lacks the required native Linux architecture for $PLATFORM"

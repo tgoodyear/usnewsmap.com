@@ -666,7 +666,7 @@ class BuildInputs(unittest.TestCase):
 
     def test_docs_only_change_runs_only_the_markdown_check(self):
         self.assertEqual(self.select("docs/operations/onprem-ocr.md", "README.md"), {"markdown"})
-        self.assertEqual(self.select("boinc/docs/README.md", "boinc/docs/example.json"), {"markdown"})
+        self.assertEqual(self.select("docs/boinc/README.md", "docs/boinc/example.json"), {"markdown"})
 
     def test_gpu_study_scripts_run_script_checks(self):
         for path in (
@@ -905,7 +905,7 @@ class BuildInputs(unittest.TestCase):
             ([".github/actions/boinc-qwen-build/action.yml"], QWEN_MODELS, []),
             ([".github/workflows/boinc-surya.yml"], [], SURYA_VARIANTS),
             ([".github/actions/boinc-surya-build/action.yml"], [], SURYA_VARIANTS),
-            (["docs/boinc-quality.md", "docs/boinc-surya.md", "boinc/apps/qwen/README.md"], [], []),
+            (["docs/boinc/apps/quality.md", "docs/boinc/apps/surya.md", "boinc/apps/qwen/README.md"], [], []),
         ]:
             with self.subTest(paths=paths):
                 self.select(*paths, event="pull_request")

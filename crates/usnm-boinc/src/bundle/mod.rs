@@ -1,4 +1,4 @@
-//! Several `usnm_ocr` pages in one BOINC workunit (#1059, docs/boinc-ocr-bundles.md).
+//! Several `usnm_ocr` pages in one BOINC workunit (#1059, docs/boinc/apps/ocr-bundles.md).
 //!
 //! Only the BOINC unit is shared. Each page keeps its own claim, export, ledger reservation,
 //! dispatch record, hand-off spool, trust and gold check, and publication:

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Sets up the BOINC server's LAN listener (#1357) on CT230, as root, from a directory holding
 # this directory's files. Safe to run again. The UniFi gateway's local DNS record is separate
-# (docs/boinc-onprem.md, "LAN access").
+# (docs/boinc/server/onprem.md, "LAN access").
 #
 #   lan-tls-setup.sh
 set -euo pipefail

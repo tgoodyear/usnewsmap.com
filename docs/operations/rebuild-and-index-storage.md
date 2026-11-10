@@ -247,7 +247,7 @@ The #283/#245/#416 move ([ADR-0021](../design/adr/0021-separate-index-storage.md
 
      or pin `USNM_OCR_SEED_MANIFEST` to the version whose manifest and fetched list the seeder reads now, and provision.
 
-   Record between BOINC priority-controller ticks. On the controller host ([the batch scheduler](../boinc-batch-scheduler.md#on-prem-controller-host-ct-211)):
+   Record between BOINC priority-controller ticks. On the controller host ([the batch scheduler](../boinc/server/batch-scheduler.md#on-prem-controller-host-ct-211)):
 
    ```sh
    systemctl stop usnm-boinc-priority-controller.timer

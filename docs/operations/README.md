@@ -4,7 +4,7 @@ Running the pipeline and the site: the backfill, releases, full rebuilds, search
 
 - **Serving** runs on-prem behind Cloudflare, with an Azure copy at zero replicas for failover ([search serving](search-serving.md#the-azure-cold-spare), [`scripts/onprem/serving/`](../../scripts/onprem/serving/README.md)).
 - **Ingest** has no Azure jobs in prod (`USNM_INGEST_JOBS` is `false`). The `usnm-ingest` commands, the hourly OCR pickup and the releases run on on-prem hosts with their own Arc identities ([environments and deploys](environments-and-deploys.md), [full rebuild on-prem](rebuild-and-index-storage.md#full-rebuild-on-prem)). The Container Apps jobs, `caj-usnm-ingest-{env}` (`usnm-ingest run`: new LoC batches, the title catalog and a release) and `caj-usnm-backfill-{env}` (parallel `curate` workers), exist only where the setting is on, as in dev's settings. Commands below that start them apply only there.
-- **OCR** runs only through BOINC ([BOINC pages](../../boinc/docs/README.md)).
+- **OCR** runs only through BOINC ([BOINC pages](../boinc/README.md)).
 
 The data stays in Azure: the Blob lake, Cosmos DB and the OCR exchange account. How it is deployed is in [`infra/README.md`](../../infra/README.md); the design is in [08](../design/08-azure-infrastructure.md) and [04](../design/04-data-sources-and-ingestion.md).
 

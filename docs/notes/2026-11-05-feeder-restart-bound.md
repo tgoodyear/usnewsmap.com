@@ -1,16 +1,16 @@
 # The feeder's restart bound and a stale-slot check
 
-**Status:** measured; the bound is in the server image's source, not deployed · **Date:** November 2026 · **Measured on:** CT 230's server and database journals and the feeder log, 21 October to 5 November 2026; `bin/show_shmem` and the `app` table on 5 November, read-only · **Code:** `boinc/images/server/boinc-daemons.sh`, `feeder-slot-guard.py`; [Feeder-only refresh](../../boinc/docs/feeder-refresh.md#the-loops-restart-bound) · **Issues:** #1462
+**Status:** measured; the bound is in the server image's source, not deployed · **Date:** November 2026 · **Measured on:** CT 230's server and database journals and the feeder log, 21 October to 5 November 2026; `bin/show_shmem` and the `app` table on 5 November, read-only · **Code:** `boinc/images/server/boinc-daemons.sh`, `feeder-slot-guard.py`; [Feeder-only refresh](../boinc/server/feeder-refresh.md#the-loops-restart-bound) · **Issues:** #1462
 
 ## The question
 
-#1462 left two things after the [feeder refresh runbook](../../boinc/docs/feeder-refresh.md): whether the running feeder's slot allocation is stale now, and what bound the server image's supervisor loop should put on restarting a feeder that keeps stopping. The loop ran `bin/start --cron` every five minutes with no limit, so a feeder that failed every start was started again every five minutes for as long as nobody looked.
+#1462 left two things after the [feeder refresh runbook](../boinc/server/feeder-refresh.md): whether the running feeder's slot allocation is stale now, and what bound the server image's supervisor loop should put on restarting a feeder that keeps stopping. The loop ran `bin/start --cron` every five minutes with no limit, so a feeder that failed every start was started again every five minutes for as long as nobody looked.
 
 ## What we did
 
 - Counted the feeder's starts in its log (`Executing command: feeder` lines) and the loop's restarts in the server unit's journal (`Starting daemon: feeder` from `bin/start --cron`), and timed the database's restarts from its journal.
 - Compared the running feeder's cache with the slot map a new feeder would build. `bin/show_shmem` gave the feeder's apps, weights and cached results; a read-only `SELECT` gave the `app` rows. Reproducing BOINC's `weighted_interleave` over the slots gave each slot's app, and each cached result was checked against its slot. No lock, signal or write.
-- Chose a rolling window: at most three restarts of a stopped feeder in any hour, then a hold that an operator releases ([the bound](../../boinc/docs/feeder-refresh.md#the-loops-restart-bound)). A count of consecutive failures was rejected because it never holds a feeder that runs for a few minutes after each start; a growing back-off because it never stops trying and lengthens the outage after the cause is fixed. The loop doesn't create `stop_maintenance`, which the runbook keeps for operators.
+- Chose a rolling window: at most three restarts of a stopped feeder in any hour, then a hold that an operator releases ([the bound](../boinc/server/feeder-refresh.md#the-loops-restart-bound)). A count of consecutive failures was rejected because it never holds a feeder that runs for a few minutes after each start; a growing back-off because it never stops trying and lengthens the outage after the cause is fixed. The loop doesn't create `stop_maintenance`, which the runbook keeps for operators.
 
 ## What we measured
 

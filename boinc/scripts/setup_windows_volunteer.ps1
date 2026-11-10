@@ -105,7 +105,7 @@ function Invoke-BoundedProcess([string]$File, [string]$Arguments, [string]$Direc
 
 function Assert-NativeWindows {
     if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
-        throw 'This helper is for native Windows only. See docs/boinc-volunteer.md for Linux/macOS.'
+        throw 'This helper is for native Windows only. See docs/boinc/volunteer/README.md for Linux/macOS.'
     }
     if (-not [Environment]::Is64BitProcess -or $env:PROCESSOR_ARCHITECTURE -ne 'AMD64') {
         throw 'Use 64-bit PowerShell on Intel/AMD x64 Windows. Windows ARM and 32-bit hosts are not supported by this helper.'
@@ -168,7 +168,7 @@ function Get-WindowsReadiness([string]$DataDirectory, [bool]$CpuAllowed, [bool]$
     if (-not $gpu -and -not $CpuAllowed) {
         $found = 'none detected'
         if ($gpus) { $found = ($gpus | ForEach-Object { "$($_.Name) ($($_.Vendor), $($_.TotalMiB) MiB)" }) -join '; ' }
-        throw "No eligible GPU for Windows GPU work, which needs an AMD GPU with at least 7,000 MB of video memory and a current AMD driver with Vulkan. Found: $found. No Windows version has been released for NVIDIA or Intel GPUs yet; on Linux they can get GPU work now (docs/boinc-linux.md). For optional CPU participation, rerun with -AllowCpuOnly; no CPU preferences are changed automatically."
+        throw "No eligible GPU for Windows GPU work, which needs an AMD GPU with at least 7,000 MB of video memory and a current AMD driver with Vulkan. Found: $found. No Windows version has been released for NVIDIA or Intel GPUs yet; on Linux they can get GPU work now (docs/boinc/volunteer/linux.md). For optional CPU participation, rerun with -AllowCpuOnly; no CPU preferences are changed automatically."
     }
     $service = Get-Service -Name BOINC -ErrorAction SilentlyContinue
     if ($service) {
@@ -354,7 +354,7 @@ function Invoke-WindowsStatus {
     Assert-NativeWindows
     $installation = Get-BoincInstallation $Directory
     if (-not $installation) {
-        throw 'BOINC is not installed. Run this helper with -Apply -InstallBoinc first (see docs/boinc-windows.md).'
+        throw 'BOINC is not installed. Run this helper with -Apply -InstallBoinc first (see docs/boinc/volunteer/windows.md).'
     }
     Write-Host "BOINC $($installation.Version) at $($installation.Directory); data in $($installation.DataDirectory)."
     if (-not (Test-ProjectAttached $installation)) {

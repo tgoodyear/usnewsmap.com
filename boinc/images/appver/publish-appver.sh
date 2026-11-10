@@ -146,7 +146,7 @@ case "${APPVER_REUSE_PROJECT:-0}" in
     fetch_secrets
     render_config
     # xadd, then the declared weight of each app it added: xadd alone leaves a new app at
-    # weight 1 (register-apps.php, boinc/docs/bridge-steps.md).
+    # weight 1 (register-apps.php, docs/boinc/server/bridge-steps.md).
     (cd "$PROJ" && cp "$src/project.xml" project.xml && php /usr/local/lib/usnm-boinc/register-apps.php)
     ;;
   1)

@@ -78,7 +78,7 @@ over the same DNS-01 path, with its own ACME state (`usnm-prod-boinc-lan-acme-st
 touches Azure ingress: it writes the private key and full chain only to the deploy secret
 `usnm-prod-boinc-lan-tls`, which CT230's Arc identity can read (Secrets User on that secret
 alone). The weekly workflow renews it after the origin certificate. Grants:
-`origin_tls_bootstrap.py --boinc-lan`. The host side is in [boinc-onprem.md](../boinc-onprem.md#lan-access-1357).
+`origin_tls_bootstrap.py --boinc-lan`. The host side is in [boinc-onprem.md](../boinc/server/onprem.md#lan-access-1357).
 
 ## Renewal and credential maintenance
 

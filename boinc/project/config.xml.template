@@ -45,7 +45,7 @@
         <!-- The request_delay of every "project is down" reply: no feeder or one not yet
              ready, stop_sched, no database. BOINC's default is 3600. A client waits the later
              of this and its own backoff, so the first four such replies in a row each mean
-             about 20 minutes (boinc/docs/feeder-refresh.md, Client retry behaviour; #1462). -->
+             about 20 minutes (docs/boinc/server/feeder-refresh.md, Client retry behaviour; #1462). -->
         <maintenance_delay>1200</maintenance_delay>
         <max_wus_in_progress>32</max_wus_in_progress>
         <daily_result_quota>50000</daily_result_quota>
@@ -60,7 +60,7 @@
              slots, 170-171 per other app and 8192 candidates per weight-1 app. Re-size
              for the actual active DB apps, app/weight changes or backlog growth.
              This bounded window is not starvation-free scheduling.
-             See boinc/docs/app-release.md, Feeder visibility. -->
+             See docs/boinc/apps/app-release.md, Feeder visibility. -->
         <feeder_query_size>196608</feeder_query_size>
         <delete_delay_hours>168</delete_delay_hours>
         <!-- Upload certificates on: the transitioner signs each output file_info (name and

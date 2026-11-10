@@ -63,7 +63,7 @@ pub enum Ships {
 }
 
 /// The licence decides what ships. Sources that are not listed are refused, so a new dataset gets a
-/// deliberate decision here and in docs/ocr-gold-set.md before it can go into a bundle.
+/// deliberate decision here and in docs/ocr/gold-set.md before it can go into a bundle.
 pub fn policy(source: &str) -> Option<Ships> {
     match source {
         "bln600" => Some(Ships::References),

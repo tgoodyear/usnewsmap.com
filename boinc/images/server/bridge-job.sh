@@ -16,7 +16,7 @@
 #   BRIDGE_STEP=assess-collect  ASSESS_SPOOL=<assimilator results directory>; runs score.py
 #                               and aggregate.py into <campaign>/out
 #
-# The gold check (#462, boinc/docs/gold-check.md#gold-check), under $SHARE_DIR/gold/<GOLD_CAMPAIGN> (one
+# The gold check (#462, docs/boinc/server/gold-check.md#gold-check), under $SHARE_DIR/gold/<GOLD_CAMPAIGN> (one
 # campaign per bundle and engine build; same name rule as ASSESS_CAMPAIGN). Copy the bundle tar
 # to <campaign>/bundle.tar first.
 #   BRIDGE_STEP=gold-prepare    fetches the original files the bundle names, one request at a
@@ -44,7 +44,7 @@
 #                               against the committed lock and writes <campaign>/bundle.tar
 #                               (gold-bundle.sh; the gold bundle job, bridge image only)
 #
-# The Surya 2 test (#516, docs/boinc-surya.md), under $SHARE_DIR/surya/<SURYA_CAMPAIGN> (same
+# The Surya 2 test (#516, docs/boinc/apps/surya.md), under $SHARE_DIR/surya/<SURYA_CAMPAIGN> (same
 # name rule as ASSESS_CAMPAIGN):
 #   BRIDGE_STEP=surya-stage     SURYA_PAGES=group:lang:doc_id:batch[+batch...],... (at most
 #                               SURYA_MAX, default 20; batches as <name>_ver<NN>), or
@@ -65,7 +65,7 @@
 #   BRIDGE_STEP=surya-stage-gold SURYA_GOLD_MANIFEST=<a gold manifest.jsonl on the share>
 #                               SURYA_ENGINE_IMAGE=... SURYA_ENGINE_LLAMA=... SURYA_ENGINE_WEIGHTS=...
 #                               [SURYA_MAX=50 crops] [SURYA_TIMEOUT_SECS=600]: one unit per
-#                               manifest row (docs/ocr-gold-set.md), the box cut from the row's
+#                               manifest row (docs/ocr/gold-set.md), the box cut from the row's
 #                               tile.loc.gov page, one request at a time, 5 s apart, and kept
 #                               only if the page matches the row's sha256 (#968)
 #   BRIDGE_STEP=surya-gold-hyp  SURYA_SPOOL=<assimilator results directory>: writes
@@ -79,7 +79,7 @@
 #   BRIDGE_STEP=surya-summary   prints the kept results and compared pairs (<project>/surya) as
 #                               a Markdown table, and writes it to <campaign>/summary.md
 #
-# The OCR quality estimate (#522, docs/boinc-quality.md), under $SHARE_DIR/quality/<QUALITY_CAMPAIGN>
+# The OCR quality estimate (#522, docs/boinc/apps/quality.md), under $SHARE_DIR/quality/<QUALITY_CAMPAIGN>
 # and $SHARE_DIR/qwen/<QWEN_CAMPAIGN> (same name rule as ASSESS_CAMPAIGN):
 #   BRIDGE_STEP=quality-stage   [HANDOFF_URL=...] (pulls texts/ into <campaign>/texts)
 #                               [QUALITY_LANGS=eng,deu,...] (writes <campaign>/function-words)
@@ -127,7 +127,7 @@
 #   BRIDGE_STEP=iris-bundle-cancel IRIS_CAMPAIGN=<name>   [IRIS_APPLY=1] cancels the workunits of a
 #                               batch-105 campaign, which the scheduler can never send (dry run without)
 #
-# The remote hand-off (#469, boinc/docs/scan-cache-handoff.md#one-page-from-the-scan-cache), through the
+# The remote hand-off (#469, docs/boinc/server/scan-cache-handoff.md#one-page-from-the-scan-cache), through the
 # hand-off container HANDOFF_URL=https://<account>.blob.core.windows.net/boinc-handoff, read
 # and written with this job's identity:
 #   BRIDGE_STEP=submit-remote   JOB_ID; copies the exported job from the container's
@@ -141,7 +141,7 @@
 #                               to send it to one calibrated host; it goes in batch 1621.
 #                               JOB_UNITS=<id>[+<id>...][,...] (up to 100 ids, up to 32 a unit)
 #                               submits each +-joined group as one OCR bundle workunit (#1059,
-#                               docs/boinc-ocr-bundles.md), pinned to BUNDLE_APP_VERSION (the
+#                               docs/boinc/apps/ocr-bundles.md), pinned to BUNDLE_APP_VERSION (the
 #                               usnm_ocr version_num whose worker reads bundles; required). A
 #                               group of one, and a page taken out of an earlier bundle, go alone.
 #   BRIDGE_STEP=spool-out       JOB_ID HANDOFF_SPOOL=<assimilator results directory under
@@ -154,7 +154,7 @@
 #                               back to reserved (to be submitted alone) with a spool/<id>/requeued
 #                               marker (#1059).
 #
-# Registering the apps after init (boinc/docs/bridge-steps.md#register-the-apps):
+# Registering the apps after init (docs/boinc/server/bridge-steps.md#register-the-apps):
 #   BRIDGE_STEP=register-apps   copies this image's project.xml into the project and runs
 #                               bin/xadd, which adds the apps and platforms the database lacks
 #                               and leaves the others (safe to repeat)
@@ -749,7 +749,7 @@ case "$step" in
     # and admit the hosts whose complete native evidence passes the scope's existing
     # calibration in gold/trust.json (#901); it adds hosts only and never sets a threshold.
     [[ "${GOLD_MAX_HOSTS:-10}" =~ ^[1-9][0-9]?$|^100$ ]] || fail "GOLD_MAX_HOSTS must be 1 to 100"
-    # A native campaign (docs/boinc-native-ocr.md) names its hosts. Not settable over the
+    # A native campaign (docs/boinc/apps/native-ocr.md) names its hosts. Not settable over the
     # controller's ssh: a person chooses them.
     [[ "${GOLD_NATIVE_HOSTS:-}" =~ ^([1-9][0-9]*(,[1-9][0-9]*)*)?$ ]] || fail "GOLD_NATIVE_HOSTS must be a comma-separated list of host ids"
     write_mycnf

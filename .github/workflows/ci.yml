@@ -35,7 +35,7 @@ env:
 
 jobs:
   # What each job checks, when it runs, how long it takes and which ones a pull request
-  # needs green: docs/development.md, "What CI runs".
+  # needs green: docs/guides/development.md, "What CI runs".
   #
   # What a change touches (scripts/ci/changes.sh): jobs it can't affect are
   # skipped, so an infra-only fix doesn't wait on Rust, web and image builds.
@@ -366,7 +366,7 @@ jobs:
         if: hashFiles('crates/usnm-boinc/Cargo.toml') != ''
         run: |
           docker run --rm --entrypoint usnm-boinc usnm-boinc-bridge:check --help > /dev/null
-          # The gold-bundle step's tools (boinc/docs/gold-check.md#build-the-gold-bundle).
+          # The gold-bundle step's tools (docs/boinc/server/gold-check.md#build-the-gold-bundle).
           docker run --rm --entrypoint sh usnm-boinc-bridge:check -c 'usnm-ocr-survey --help > /dev/null &&
             bsdtar --version && python3 -c "import PIL; assert PIL.__version__ == \"13.0.0\", PIL.__version__" &&
             python3 /usr/local/lib/usnm-boinc/gold/scripts/ocr-survey/gold.py --help > /dev/null &&

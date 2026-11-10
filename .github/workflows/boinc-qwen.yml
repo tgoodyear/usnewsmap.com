@@ -1,5 +1,5 @@
 name: boinc-qwen
-# The usnm_qwen worker image (#522, docs/boinc-quality.md): Qwen3-VL on llama.cpp's CUDA server
+# The usnm_qwen worker image (#522, docs/boinc/apps/quality.md): Qwen3-VL on llama.cpp's CUDA server
 # image, with usnm-boinc. A manual run on main publishes it to the public package
 # ghcr.io/tgoodyear/usnm-boinc-worker under tags qwen-2b-<commit> / qwen-8b-<commit>, and its summary gives the
 # registry digest and the two values a campaign is staged with. A pull request that changes what

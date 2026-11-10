@@ -213,5 +213,5 @@ unit was aborted, no pending GPU work remains, and no extension was taken.
 
 #812 remains OPEN for the remaining comparison/acceptance work. #516/#515 remain
 historically CLOSED; their state is not a new CUDA acceptance. No production OCR
-routing change is proposed. The [runbook](../../boinc-surya.md) documents the
+routing change is proposed. The [runbook](../../boinc/apps/surya.md) documents the
 staging/targeting/export commands and unchanged validator contract.

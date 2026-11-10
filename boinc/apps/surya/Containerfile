@@ -1,5 +1,5 @@
 # The usnm_surya worker image (#516, #842): Surya 2 (surya-ocr) on llama.cpp's server, and
-# usnm-boinc, which runs one BOINC unit (docs/boinc-surya.md).
+# usnm-boinc, which runs one BOINC unit (docs/boinc/apps/surya.md).
 #   - LLAMA_VARIANT=cuda (default): llama.cpp's CUDA server image loads its CUDA backend when the
 #     container sees an NVIDIA GPU and falls back to its CPU backends otherwise (GGML_BACKEND_DL,
 #     GGML_CPU_ALL_VARIANTS), serving docker_mt and docker_nvidia_cuda.

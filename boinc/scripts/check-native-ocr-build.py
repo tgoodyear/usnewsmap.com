@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check a native OCR build (usnm_ocr_native, usnm_gold_native; docs/boinc-native-ocr.md) before a
+"""Check a native OCR build (usnm_ocr_native, usnm_gold_native; docs/boinc/apps/native-ocr.md) before a
 release stages and signs it, and print the identity its jobs and the Gold binding name it by.
 
   check-native-ocr-build.py --binary usnm_ocr --extra-file usnm_native_build.json=PATH \

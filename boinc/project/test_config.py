@@ -139,7 +139,7 @@ class DaemonConfig(unittest.TestCase):
             self.assertEqual((secrets / "keys/upload_public").read_text(), "public fixture")
 
     def test_retired_apps_get_no_daemons_or_validator_links(self):
-        # #1449: the apps retired in "Retiring an app" (boinc/docs/server-and-apps.md) leave the
+        # #1449: the apps retired in "Retiring an app" (docs/boinc/server/server-and-apps.md) leave the
         # status page; every other app keeps one validator and one assimilator.
         root = Path(__file__).resolve().parents[2]
         with tempfile.TemporaryDirectory(dir=root) as directory:
