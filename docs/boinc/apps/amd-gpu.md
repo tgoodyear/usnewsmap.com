@@ -1,20 +1,20 @@
 # AMD GPUs for usnm_qwen
 
-`usnm_qwen` plan class `amd_vulkan_8b` reads Qwen3-VL-8B Q4_K_M crops on AMD GPUs through the pinned llama.cpp Vulkan build, as a native app for x86-64 Linux and x64 Windows. It is not Docker or Podman, ROCm or a CUDA fallback. Measurements and progress are in [#885](https://github.com/tgoodyear/usnewsmap.com/issues/885), which is open.
+`usnm_qwen` plan class `amd_vulkan_8b` reads Qwen3-VL-8B Q4_K_M crops on AMD GPUs through the pinned llama.cpp Vulkan build, as a native app for x86-64 Linux and x64 Windows. It uses no container runtime, no ROCm and no CUDA fallback. Measurements and progress are in [#885](https://github.com/tgoodyear/usnewsmap.com/issues/885), which is open.
 
-AMD has had general admission since 1 November 2026: `amd_vulkan_8b` has no workunit bounds, and compatible hosts get ordinary native-8B batch-8 work through normal BOINC scheduling, without per-volunteer cohorts or host approval. GPU, memory and validation checks are unchanged. The maintainer approved it after a dry run; it followed the pause in [home-infra#81](https://github.com/tgoodyear/home-infra/issues/81), which came after signed Windows 1.10 failed before inference on an RX 9070 XT.
+AMD has had general admission since 1 November 2026: `amd_vulkan_8b` has no workunit bounds, and compatible hosts get ordinary native-8B batch-8 work through normal BOINC scheduling, without per-volunteer cohorts or host approval. GPU, memory and validation checks are unchanged. The maintainer approved it after a dry run; it followed a pause after signed Windows 1.10 failed before inference on an RX 9070 XT.
 
 The acceptance evidence is one ordinary canary. On workunit 23296 (30 October 2026), signed Windows 1.14 on an RX 9070 XT read 12 of 12 crops, an Apple host's reading agreed under the strict validator, and the AMD result became canonical. Workunit 21128 (1.11, 27 October) stayed inconclusive ([validation note](../../notes/2026-11-01-qwen-cross-vendor-validation.md)). That is one validated unit on one card, not an accuracy or equivalence claim. Other AMD cards and Linux drivers haven't run it, and correctness, memory use and speed are unmeasured.
 
 The published AMD versions read request version 1 only. Request versions 2 to 4 ([OCR quality](quality.md)) need a newer signed AMD release; until then the refill controller closes its window rather than admit jobs an open AMD class can't read ([Intel and NVIDIA GPUs](intel-gpu.md#persistent-finite-nvidiaintel-refill)).
 
-| Versions                                                      | Published       | Record                                                                                                                     |
-| ------------------------------------------------------------- | --------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| 1.7 Linux, 1.8 Windows                                        | 19 October 2026 | [First AMD Vulkan release](../../notes/2026-10-19-amd-vulkan-release.md)                                                   |
-| 1.9 Linux (app version 61), 1.10 Windows (app version 62)     | 26 October 2026 | [GPU release](../../notes/2026-10-26-boinc-gpu-release.md): bounded failure diagnostics and the Windows embedded-lock fix |
-| 1.11 (workunit 21128), 1.14 Windows (workunit 23296)          | by 30 October   | the canaries above                                                                                                         |
+| Versions                                                  | Published          | Record                                                                                                                    |
+| --------------------------------------------------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------- |
+| 1.7 Linux, 1.8 Windows                                    | 19 October 2026    | [First AMD Vulkan release](../../notes/2026-10-19-amd-vulkan-release.md)                                                  |
+| 1.9 Linux (app version 61), 1.10 Windows (app version 62) | 26 October 2026    | [GPU release](../../notes/2026-10-26-boinc-gpu-release.md): bounded failure diagnostics and the Windows embedded-lock fix |
+| 1.11 (workunit 21128), 1.14 Windows (workunit 23296)      | by 30 October 2026 | the canaries above                                                                                                        |
 
-Which AMD versions are live now is UNVERIFIED: anonymous `apps.php` redirects to the login page, and the repository records only the 6 GB NVIDIA release (`boinc/infra/boinc/releases/`).
+Which AMD versions are live is UNVERIFIED: anonymous `apps.php` redirects to the login page, and `boinc/infra/boinc/releases/` holds only the 6 GB NVIDIA release.
 
 ## Volunteer prerequisites
 

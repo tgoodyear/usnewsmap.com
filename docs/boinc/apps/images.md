@@ -6,14 +6,14 @@ Prod's server runs on-prem since 21 October 2026 ([BOINC server on-prem](../serv
 
 ## What is built
 
-| Image      | Source                            | Contents                                                                                                                                                           |
-| ---------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| base       | `boinc/images/base/Containerfile`       | Pinned BOINC source, runtime dependencies and `docker_wrapper`; cached in the shared ACR as `usnm-boinc-base:<input-key>`.                                         |
-| bridge-bin | `boinc/images/bridge-bin/Containerfile` | Release-built `usnm-boinc` binary; cached in the shared ACR as `usnm-boinc-bridge-bin:<input-key>`.                                                                |
-| server     | `boinc/images/server/Containerfile`     | The base plus project configuration, Apache/PHP, scheduler and upload CGIs, and all daemons under `supervisord`; one container.                                    |
-| bridge     | `boinc/images/bridge/Containerfile`     | The server image plus the bridge binary; runs the bridge steps and gold-bundle builds.                                                                             |
-| appver     | `boinc/images/appver/Containerfile`     | The server image plus one signed app version, built by `boinc/scripts/boinc-app-release.sh` for the publish step ([Releasing an app version](app-release.md)).     |
-| worker     | `boinc/apps/Containerfile`        | Tesseract and `usnm-boinc work`; volunteers pull it from the public GHCR package. Built and published by `.github/workflows/boinc-worker.yml` ([worker-image.md](worker-image.md)). |
+| Image      | Source                                  | Contents                                                                                                                                                                            |
+| ---------- | --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| base       | `boinc/images/base/Containerfile`       | Pinned BOINC source, runtime dependencies and `docker_wrapper`; cached in the shared ACR as `usnm-boinc-base:<input-key>`.                                                          |
+| bridge-bin | `boinc/images/bridge-bin/Containerfile` | Release-built `usnm-boinc` binary; cached in the shared ACR as `usnm-boinc-bridge-bin:<input-key>`.                                                                                 |
+| server     | `boinc/images/server/Containerfile`     | The base plus project configuration, Apache/PHP, scheduler and upload CGIs, and all daemons under `supervisord`; one container.                                                     |
+| bridge     | `boinc/images/bridge/Containerfile`     | The server image plus the bridge binary; runs the bridge steps and gold-bundle builds.                                                                                              |
+| appver     | `boinc/images/appver/Containerfile`     | The server image plus one signed app version, built by `boinc/scripts/boinc-app-release.sh` for the publish step ([Releasing an app version](app-release.md)).                      |
+| worker     | `boinc/apps/Containerfile`              | Tesseract and `usnm-boinc work`; volunteers pull it from the public GHCR package. Built and published by `.github/workflows/boinc-worker.yml` ([worker-image.md](worker-image.md)). |
 
 `boinc/images/server/` also holds overlay Containerfiles built on a running image rather than from `main`: `security-overlay.Containerfile` for package updates ([onprem.md](../server/onprem.md)), and `live-overlay.Containerfile`, `batch-overlay.Containerfile` and `amd-885.Containerfile`, each for one scoped change (the last is recorded in [the first AMD Vulkan release](../../notes/2026-10-19-amd-vulkan-release.md)).
 
@@ -37,11 +37,11 @@ When either key changes, only that layer is rebuilt. The server image is then bu
 - `maintenance_delay` is 1200 seconds, so a client told the project is down (no feeder or one not yet ready, `stop_sched`, no database) asks again after about 20 minutes, not BOINC's default hour ([client retry behaviour](../server/feeder-refresh.md#client-retry-behaviour)).
 - The bridge stages public download inputs with mode `0644` before publication and before `create_work`, so Apache can read them at once. The hand-off journal and original input snapshots stay owner-only.
 
-### Why the BOINC commit is master, not the 1.6.2 tag
+### BOINC source revision
 
 `batch_collect_assimilator`, which `boinc/apps/daemons.xml` runs, is not in the `server_release/1.6/1.6.2` tree (searched on 13 October 2026) and is in master. `boinc/images/base/Containerfile` pins master at `22bbebe08e2eaac5d5e88a6d93b88e800cb6341c` (13 October 2026). Move to the first release tag that contains it when one exists. The image is unmodified upstream source plus the patches the base key covers.
 
-### Facts about the stock tools that shaped the entry point
+### Stock BOINC tools and the entry point
 
 - `make_project` creates the schema, the project tree and key pairs in its key directory (`py/Boinc/setup_project.py`). Init mode uses tmpfs and removes the generated signing private key. The code-signing private key stays offline on the signing host and is never made by a deployment.
 - `make_project` refuses an existing project root, so the project lives in a subdirectory of the project volume: `/project/usnmocr`, with `/project/handoff` beside it.

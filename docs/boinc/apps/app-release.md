@@ -9,7 +9,7 @@ boinc/scripts/boinc-app-release.sh --env prod --app usnm_ocr --version 1.0 \
   --signing-host HOST --onprem-host HOST --onprem-ct ID --hold
 ```
 
-`--what-if` runs the read-only checks (settings, the worker image, the signing host's key status and podman) and prints the plan. `--signing-key-dir` (default `/usbbak/signing/boinc`) and `--signing-dataset` (default `usbbak/signing`) name where the private key is on the signing host. `--prepare-only` stages, signs and builds the app-version image in the container, then prints the `usnm-boinc-step --target publish` command that publishes it; omit it only when immediate publication is authorized. Preparation proves neither publication nor volunteer execution. `usnm_ocr` and `usnm_gold` releases also need `--hold` or `--outrank-pinned` ([Held versions](#held-versions)).
+`--what-if` runs the read-only checks (settings, the worker image, the signing host's key status and podman) and prints the plan. `--signing-key-dir` (default `/usbbak/signing/boinc`) and `--signing-dataset` (default `usbbak/signing`) name where the private key is on the signing host. `--prepare-only` stages, signs and builds the app-version image in the container, then prints the `usnm-boinc-step --target publish` command that publishes it; leave it off only when immediate publication is authorized. Preparation proves neither publication nor volunteer execution. `usnm_ocr` and `usnm_gold` releases also need `--hold` or `--outrank-pinned` ([Held versions](#held-versions)).
 
 On macOS, prefix release commands with `COPYFILE_DISABLE=1` so BSD tar doesn't add AppleDouble `._*` files to the staged payload.
 
@@ -50,9 +50,9 @@ Container versions run `boinc/apps/Containerfile`'s worker image under the stock
 
 The container classes of the retired apps (`docker_mt` and `docker_nvidia_cuda` for `usnm_surya`, `docker_intel_vulkan`, `docker_intel_opencl_4b` for `usnm_iris`, `docker_nvidia_train`) and of container `usnm_qwen` (`docker_mt_2b`, `docker_nvidia_cuda_8b`) remain in `plan_class_spec.xml`, but none has a live version since 2 November 2026. Those apps had their own images (`.github/workflows/boinc-qwen.yml`, `.github/workflows/boinc-surya.yml`), and a release for one takes `--plan-class` and a digest-pinned `--worker-image`.
 
-#### A worker for line jobs only (`docker_lines`)
+#### Line-job versions (`docker_lines`)
 
-A `usnm_ocr` or `usnm_gold` version for Cherokee line jobs goes under `--plan-class docker_lines`, on the same platforms and wrappers as `docker`, with a version number its app hasn't used. It loads beside the live `docker` version instead of outranking it, and serves only batch-1621 units. Why, and how line jobs and their gold are submitted, is in [OCR bundles](ocr-bundles.md), "Line jobs".
+A `usnm_ocr` or `usnm_gold` version for Cherokee line jobs goes under `--plan-class docker_lines`, on the same platforms and wrappers as `docker`, with a version number its app hasn't used. It loads beside the live `docker` version instead of outranking it, and serves only batch-1621 units. [OCR bundles](ocr-bundles.md), "Line jobs", explains why, and how line jobs and their gold are submitted.
 
 ### Native versions
 
@@ -131,7 +131,7 @@ boinc/scripts/boinc-app-release.sh --env prod --app usnm_qwen --version VERSION 
   --signing-host HOST --onprem-host HOST --onprem-ct ID --what-if
 ```
 
-No `nvidia_vulkan_2b` version has been released.
+No `nvidia_vulkan_2b` version had been released by 10 November 2026.
 
 ## Client acceptance (#548)
 
@@ -203,7 +203,7 @@ The AMD route stages its fixture differently ([AMD GPUs](amd-gpu.md#bounded-acce
 
 The feeder runs `--allapps --purge_stale 5` with `shmem_work_items` 4096 and `feeder_query_size` 196608 (`boinc/project/config.xml.template`). Two limits decide what a scheduler request can see (#860):
 
-- **Cache share.** With `--allapps`, the feeder divides the shared-memory slots between apps by `app.weight` once, at startup. `usnm_qwen` has weight 16; every other active app has 1 (`boinc/project/project.xml`). At nine equal weights Qwen got 111 slots while 624 to 635 Qwen replicas were unsent, and eligible requests mostly got empty replies.
+- **Cache share.** With `--allapps`, the feeder divides the shared-memory slots between apps by `app.weight` once, at startup. `usnm_qwen` has weight 16; every other active app has 1 (`boinc/project/project.xml`). At nine equal weights (#860, October 2026) Qwen got 111 slots while 624 to 635 Qwen replicas were unsent, and eligible requests mostly got empty replies.
 - **Query budget.** Each app's enumeration limit per pass is `floor(0.5 + feeder_query_size * app_weight / total_app_weight)`, independent of the cache size (the [pinned feeder](https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/feeder.cpp) defaults to 200 in total). Replicas a requesting host has already run occupy that prefix, so eligible work beyond it stays invisible.
 
 `--purge_stale 5` is multiplied by 60 in the pinned feeder, so cached slots rotate after five minutes. On 28 October 2026, all 111 Qwen slots stayed occupied for over six hours while an eligible unit was absent from the cache. Stale purging can uncommit a homogeneous-redundancy workunit and add a replica; the project uses no HR, so check that every app's HR fields and every workunit's `hr_class` stay zero.
@@ -235,6 +235,6 @@ A contributor can build and test native ARM workers and wrappers without server 
      --wrapper-source-pin /tmp/mac-wrappers/BOINC_COMMIT --what-if
    ```
 
-   For an Intel Mac use `x86_64-apple-darwin` and `docker_wrapper_x86_64`. The script requires a worker index with the matching native Linux child, checks the wrapper's architecture, checksum and source pin, and signs the frozen bytes; Mac binaries never run on the signing host. A new platform can share a version number only when its shared templates agree; a changed image, wrapper or job configuration needs a new version.
+   For an Intel Mac use `x86_64-apple-darwin` and `docker_wrapper_x86_64`. The script requires a worker index with the matching native Linux child, checks the wrapper's architecture, checksum and source pin, and signs the frozen bytes; Mac binaries never run on the signing host. A new platform can share a version number if its shared templates agree; a changed image, wrapper or job configuration needs a new version.
 
 4. Reserve a synthetic or cached-page `usnm_ocr` job for an ARM Mac client and check scheduler selection, signed download, execution, upload, validation, assimilation and collection, then pause and resume, client restart and reboot, and a matched gold campaign. Repeat on an Intel Mac when one is available. See [Mac tests without a project server](../../notes/2026-10-14-buda-mac-offline-tests.md).

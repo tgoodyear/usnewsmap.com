@@ -53,8 +53,8 @@ Volunteers pull the worker image from a public GHCR package,
 `.github/workflows/boinc-worker.yml` builds and smoke-tests separate native
 `linux/amd64` and `linux/arm64` images on matching Ubuntu runners. The Debian and
 Rust bases are pinned per architecture in that workflow; no QEMU setup is used.
-Publishing starts by hand from `main` and combines both tested images into one OCI
-index only after both builds pass. Pull requests that change the worker's inputs build
+Publishing starts by hand from `main`. When both builds pass, it combines the two
+tested images into one OCI index. Pull requests that change the worker's inputs build
 and test without pushing, and a merge to `main` builds both architectures without
 publishing (#1585). To publish:
 
@@ -172,7 +172,7 @@ docker run --rm --network=none --read-only --cap-drop=ALL --cap-add=DAC_OVERRIDE
   -v /tmp/usnm-boinc-demo/dispatch/jobs/JOB_ID:/work usnm-boinc:pilot
 ```
 
-On SELinux hosts, label only this scratch directory appropriately (e.g. a `:Z`
+On SELinux hosts, relabel only this scratch directory (for example with a `:Z`
 volume). The stock spool names are `<workunit>__file_<logical_name>`; for this
 local test copy the three output files into a scratch spool with that naming,
 where the workunit is `usnm_JOB_ID`, then run:
@@ -183,7 +183,7 @@ target/debug/usnm-boinc collect --root /tmp/usnm-boinc-demo/dispatch \
   --curated-url /tmp/usnm-boinc-demo/curated --out-url /tmp/usnm-boinc-demo/out
 ```
 
-Run it twice: publication remains one ALTO/Parquet pair. The Rust integration
+Running it twice still publishes one ALTO/Parquet pair. The Rust integration
 suite also runs these outputs through the real `ocr-sync` in directory mode:
 
 ```sh

@@ -1,6 +1,6 @@
 # First AMD Vulkan release of usnm_qwen (#885)
 
-**Status:** published; superseded by the [26 October GPU release](2026-10-26-boinc-gpu-release.md) (1.9 and 1.10) · **Date:** October 2026 · **Measured on:** PR #889 at `5e12de6d7a12b86314959005c4c73c055c0f461c`; native workflow `39188557570`, CI `39188533783`, CodeQL `39188533710`; the live runtime `tls464-rb3` · **Code:** `boinc/images/server/amd-885.Containerfile`, `boinc/images/server/amd-885-entrypoint.sh`, `boinc/scripts/native-qwen-cohort.php`, `boinc/scripts/acceptance_server.py`; [AMD GPUs](../boinc/apps/amd-gpu.md) · **Issues:** #885, #529, #889, #894
+**Status:** published; superseded by the [26 October GPU release](2026-10-26-boinc-gpu-release.md) (1.9 and 1.10) · **Date:** 19 October 2026 · **Measured on:** PR #889 at `5e12de6d7a12b86314959005c4c73c055c0f461c`; native workflow `39188557570`, CI `39188533783`, CodeQL `39188533710`; the live runtime `tls464-rb3` · **Code:** `boinc/images/server/amd-885.Containerfile`, `boinc/images/server/amd-885-entrypoint.sh`, `boinc/scripts/native-qwen-cohort.php`, `boinc/scripts/acceptance_server.py`; [AMD GPUs](../boinc/apps/amd-gpu.md) · **Issues:** #885, #529, #889, #894
 
 ## The question
 
@@ -22,7 +22,7 @@ Publication used the normal signed app-version image with `APPVER_REUSE_PROJECT=
 
 MySQL `require_secure_transport=OFF` was kept as found, with the maintainer's approval; this release didn't resume #464.
 
-The maintainer then approved general AMD admission before hardware qualification. After publication, `native-qwen-cohort.php --plan-class amd_vulkan_8b --general --apply` removed the AMD workunit bounds and wrote the marker `usnm-amd-general-admission-v1`. Every other class's live bounds were kept. The preparation snapshot showed Intel and NVIDIA open at `17099–17100`, but #860 had closed that pilot at 03:08 UTC, and the newer closure was kept. No workunit, result, volunteer preference or attachment was changed.
+The maintainer then approved general AMD admission before hardware qualification. After publication, `native-qwen-cohort.php --plan-class amd_vulkan_8b --general --apply` removed the AMD workunit bounds and wrote the marker `usnm-amd-general-admission-v1`. Every other class's live bounds were kept. The preparation snapshot showed Intel and NVIDIA open at `17099` to `17100`, but #860 had closed that pilot at 03:08 UTC, and the newer closure was kept. No workunit, result, volunteer preference or attachment was changed.
 
 ## What we measured
 
