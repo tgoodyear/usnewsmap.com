@@ -197,7 +197,7 @@ impl Reader for Tesseract {
             b
         });
         // Stops the whole process group, so nothing it started keeps
-        // working into the next page (13 §13.6.5), then reaps the child.
+        // working into the next page (13 §13.6.3), then reaps the child.
         let stop = |child: &mut std::process::Child| {
             #[cfg(unix)]
             if let Some(pid) = rustix::process::Pid::from_raw(child.id() as i32) {
