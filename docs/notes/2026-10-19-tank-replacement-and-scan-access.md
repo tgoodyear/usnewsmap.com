@@ -1,4 +1,6 @@
-# 16. `tank` disk replacement options and scan staging
+# `tank` disk replacement options and scan staging
+
+**Status:** design only, formerly design document 16 · **Date:** 19 October 2026 · **Outcome:** as of 10 November 2026 [ADR-0023](../design/adr/0023-onprem-scan-access.md) is still a direction with nothing implemented, and the repository records no `tank` disk replacement.
 
 Follow-up to [design 15](2026-10-18-onprem-cold-storage.md) (#895). **Design only.** Nothing here has been bought, changed on `pve-big`, deployed or changed in Azure. Maintainer decisions of 2026-10-19: (1) **hardware decisions remain open**: no drive size, replacement order, burn-in or swap is selected or authorized; this document keeps the alternatives and their risks. (2) **Scan access direction is outbound-only staging into Azure, with no public gateway**; the gateway, an Entra app registration and a tunnel are unselected alternatives, not approved implementation. (3) Mirror-only with no independent backup is settled. Any "recommended" wording below is analysis, not a decision. Facts below were read from `pve-big` on 2026-10-18 (`zpool status`, `zpool get`, `smartctl`, `lsblk`; read-only).
 
