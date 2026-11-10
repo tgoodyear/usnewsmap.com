@@ -56,6 +56,9 @@ JOB_TOML = {
     ("usnm_ocr", "docker"): "boinc/apps/job.toml",
     ("usnm_assess", "docker"): "boinc/apps/job.toml",
     ("usnm_gold", "docker"): "boinc/apps/job.toml",
+    # Cherokee line jobs (#1621): the same hosts and job.toml as docker, for batch 1621 only.
+    ("usnm_ocr", "docker_lines"): "boinc/apps/job.toml",
+    ("usnm_gold", "docker_lines"): "boinc/apps/job.toml",
     ("usnm_ndlocr", "docker"): "boinc/apps/ndlocr-lite/job.toml",
     ("usnm_surya", "docker_mt"): "boinc/apps/surya/job-cpu.toml",
     ("usnm_surya", "docker_nvidia_cuda"): "boinc/apps/surya/job-gpu.toml",
@@ -66,6 +69,10 @@ JOB_TOML = {
     ("usnm_qwen_train", "docker_nvidia_train"): "boinc/apps/train/job.toml",
     ("usnm_iris", "docker_intel_opencl_4b"): "boinc/apps/iris/job.toml",
 }
+
+# Container classes with the same host gates as docker, so they take its wrappers on every
+# platform; the others are Linux x86-64 only.
+ALL_PLATFORM_CLASSES = frozenset({"docker", "docker_lines"})
 
 PLATFORMS = (
     "x86_64-pc-linux-gnu",
@@ -219,8 +226,8 @@ def install(
                 f"{app} has no version for plan class {plan_class}: one of "
                 + ", ".join(sorted(p for a, p in JOB_TOML if a == app))
             )
-        if platform != "x86_64-pc-linux-gnu" and plan_class != "docker":
-            raise ValueError(f"{platform} supports only plan class docker")
+        if platform != "x86_64-pc-linux-gnu" and plan_class not in ALL_PLATFORM_CLASSES:
+            raise ValueError(f"{platform} supports only plan classes docker and docker_lines")
         if not image or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[0-9a-f]{64}", image):
             raise ValueError("--image must be a pullable registry reference pinned by full digest")
         if platform != "x86_64-pc-linux-gnu" and (

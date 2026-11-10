@@ -300,7 +300,14 @@ def verify_version_files(project, image, xml_doc):
     return image
 
 
-def verify_retry_worker(project, version_num, engine):
+RETRY_PLAN_CLASSES = ('docker', 'docker_lines')
+
+
+def verify_retry_worker(project, version_num, engine, plan_class='docker'):
+    """A retry's pinned usnm_ocr version: one active row, in `plan_class` (`docker`, or
+    `docker_lines` for a line job, #1621), whose signed worker is `engine`."""
+    if plan_class not in RETRY_PLAN_CLASSES:
+        raise ValueError('retry plan class must be docker or docker_lines')
     db = db_connect(project)
     try:
         versions = query(db, 'SELECT av.id, av.xml_doc, av.plan_class, p.name AS platform '
@@ -308,7 +315,7 @@ def verify_retry_worker(project, version_num, engine):
                         'JOIN platform p ON p.id=av.platformid '
                         'WHERE a.name=%s AND av.version_num=%s AND av.deprecated=0',
                         ('usnm_ocr', version_num))
-        if len(versions) != 1 or versions[0]['plan_class'] != 'docker':
+        if len(versions) != 1 or versions[0]['plan_class'] != plan_class:
             raise ValueError('retry requires one unambiguous active usnm_ocr container version')
         version = versions[0]
         registered_version(db, dict(app='usnm_ocr', version_num=version_num,

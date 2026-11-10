@@ -110,8 +110,9 @@ if ($action === "min-version") {
     $id = intval($args["app-version"]);
     $version = BoincAppVersion::lookup_id($id);
     $app = $version ? BoincApp::lookup_id(intval($version->appid)) : null;
-    if (!$version || !$app || !in_array($app->name, APPS, true) || $version->plan_class !== "docker") {
-        refuse("only usnm_ocr and usnm_gold container (docker) app versions");
+    if (!$version || !$app || !in_array($app->name, APPS, true) || !in_array($version->plan_class, ["docker", "docker_lines"], true)) {
+        // docker_lines: the Cherokee line-job versions (#1621), batch 1621 only.
+        refuse("only usnm_ocr and usnm_gold container (docker or docker_lines) app versions");
     }
     $platform = BoincPlatform::lookup_id(intval($version->platformid));
     if (!$platform) refuse("app version platform missing");

@@ -173,6 +173,22 @@ class InstallTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             module.install(self.project, self.wrapper, IMAGE, "1.0", "usnm_surya", "docker_mt", platform="arm64-apple-darwin")
 
+    def test_line_versions_install_beside_docker_on_every_container_platform(self):
+        # docker_lines (#1621) admits the docker hosts, so it takes the same wrappers and job.toml.
+        for app in ("usnm_ocr", "usnm_gold"):
+            for platform in ("x86_64-pc-linux-gnu", "arm64-apple-darwin", "x86_64-apple-darwin"):
+                wrapper = self.root / f"wrapper_{platform}"
+                wrapper.write_bytes(f"wrapper-payload-{platform}".encode())
+                plain = module.install(self.project, wrapper, IMAGE, "1.8", app, platform=platform)
+                lines = module.install(self.project, wrapper, IMAGE, "1.8", app, "docker_lines", platform=platform)
+                self.assertEqual(lines.name, f"{platform}__docker_lines")
+                self.assertEqual(plain.parent, lines.parent)
+                suffix = f"{app}_1.8_{platform}"
+                self.assertEqual((lines / f"job_{suffix}_docker_lines.toml").read_bytes(),
+                                 (plain / f"job_{suffix}_docker.toml").read_bytes())
+        with self.assertRaises(ValueError):
+            module.install(self.project, self.wrapper, IMAGE, "1.9", "usnm_quality", "docker_lines")
+
     def test_invalid_platform_does_not_create_files(self):
         with self.assertRaisesRegex(ValueError, "platform"):
             module.install(self.project, self.wrapper, IMAGE, "1.0", platform="../../other")
@@ -486,6 +502,20 @@ class InstallTest(unittest.TestCase):
                     "--signing-host", "signhost",
                 ],
                 "Windows requires --wrapper, --wrapper-sha256 and --wrapper-source-pin from the reviewed build artifact",
+            ),
+            (
+                [
+                    "--env", "prod", "--app", "usnm_ocr", "--version", "1.8", "--plan-class", "docker_lines",
+                    "--platform", "arm64-apple-darwin", "--signing-host", "signhost",
+                ],
+                "Mac requires --wrapper, --wrapper-sha256 and --wrapper-source-pin from the reviewed build artifact",
+            ),
+            (
+                [
+                    "--env", "prod", "--app", "usnm_quality", "--version", "1.8", "--plan-class", "docker_lines",
+                    "--signing-host", "signhost",
+                ],
+                "unsupported --app and --plan-class",
             ),
             (
                 [

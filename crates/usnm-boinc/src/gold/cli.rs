@@ -37,6 +37,11 @@ pub enum GoldCommands {
         /// Optional targeted gold campaign; requires the server's enable_assignment.
         #[arg(long)]
         target_host: Option<u64>,
+        /// A `docker_lines` usnm_gold version (#1621): pin the units to it and put them in
+        /// batch 1621, the only batch that plan class admits. Their results land in
+        /// results/1621.
+        #[arg(long)]
+        docker_lines_version: Option<u32>,
         /// The worker image's full digest (sha256:...).
         #[arg(long)]
         engine_image: String,
@@ -139,6 +144,7 @@ pub async fn run(command: GoldCommands) -> anyhow::Result<()> {
             project,
             units,
             target_host,
+            docker_lines_version,
             engine_image,
             engine_base,
             engine_version,
@@ -150,6 +156,7 @@ pub async fn run(command: GoldCommands) -> anyhow::Result<()> {
                 project,
                 units,
                 target_host,
+                docker_lines_version,
                 engine: crate::gold::job::Engine {
                     base: engine_base,
                     dpi: 300,

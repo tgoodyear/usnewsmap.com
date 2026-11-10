@@ -183,6 +183,24 @@ class BoincAppVersion {
                 self.assertIn(f'Verified {app} 1.0 x86_64-pc-linux-gnu {plan}', result.stdout)
                 self.assertTrue((self.project / f'apps/{app}/1.0/{subdir}/docker_wrapper').is_file())
 
+    def test_line_class_publishes_on_the_docker_platforms(self):
+        # docker_lines (#1621) admits the docker hosts, Macs included.
+        for platform in ('arm64-apple-darwin', 'x86_64-apple-darwin'):
+            with self.subTest(platform=platform):
+                src = self.source / f'apps/usnm_ocr/1.8/{platform}__docker_lines'
+                src.mkdir(parents=True)
+                (src / 'docker_wrapper').write_text(f'lines-{platform}')
+                result = subprocess.run(
+                    ['bash', str(self.script)], capture_output=True, text=True,
+                    env={**os.environ, 'PROJ': str(self.project), 'APPVER_KIND': 'container',
+                         'APPVER_APP': 'usnm_ocr', 'APPVER_VERSION': '1.8', 'APPVER_PLATFORM': platform,
+                         'APPVER_PLAN_CLASS': 'docker_lines',
+                         'DB_HOST': 'db.example.org', 'DB_NAME': 'fixture', 'MASTER_HOST': 'boinc.example.org',
+                         'PATH': str(self.root) + os.pathsep + os.environ['PATH']},
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertTrue((self.project / f'apps/usnm_ocr/1.8/{platform}__docker_lines/docker_wrapper').is_file())
+
     INSERT_QUERY = '$query = "set create_time=$now, xml_doc=\'$xml\', plan_class=\'$plan_class\', beta=$b";'
 
     def held_fixture(self, inserts=1):
@@ -211,6 +229,19 @@ class BoincAppVersion {
                 'APPVER_PLATFORM': 'x86_64-pc-linux-gnu', 'APPVER_HOLD': '1',
                 'DB_HOST': 'db.example.org', 'DB_NAME': 'fixture', 'MASTER_HOST': 'boinc.example.org',
                 'PATH': str(self.root) + os.pathsep + os.environ['PATH']}
+
+    @unittest.skipUnless(shutil.which('php'), 'PHP unavailable')
+    def test_a_docker_lines_version_publishes_held(self):
+        # #1621: the line-job versions go out held too, released with app-version-hold.php.
+        env = self.held_fixture()
+        src = self.source / 'apps/usnm_ocr/1.7/x86_64-pc-linux-gnu__docker_lines'
+        src.mkdir(parents=True)
+        (src / 'docker_wrapper').write_text('wrapper')
+        result = subprocess.run(['bash', str(self.script)], capture_output=True, text=True,
+                                env={**env, 'APPVER_PLAN_CLASS': 'docker_lines'})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.project / 'inserted').read_text().strip(), 'beta=$b, deprecated=1";')
+        self.assertTrue((self.project / 'apps/usnm_ocr/1.7/x86_64-pc-linux-gnu__docker_lines/docker_wrapper').is_file())
 
     @unittest.skipUnless(shutil.which('php'), 'PHP unavailable')
     def test_a_held_publication_inserts_the_row_deprecated(self):
@@ -273,6 +304,8 @@ class BoincAppVersion {
             ('usnm_ocr', 'docker_nvidia_cuda_8b', 'x86_64-pc-linux-gnu'),
             ('usnm_qwen', 'docker_mt_2b', 'aarch64-unknown-linux-gnu'),
             ('usnm_qwen', 'docker_nvidia_cuda_8b', 'windows_x86_64'),
+            ('usnm_quality', 'docker_lines', 'x86_64-pc-linux-gnu'),
+            ('usnm_ocr', 'docker_mt', 'arm64-apple-darwin'),
         ):
             with self.subTest(app=app, plan=plan, platform=platform):
                 result = subprocess.run(

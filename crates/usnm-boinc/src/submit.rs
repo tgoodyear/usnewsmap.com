@@ -94,6 +94,22 @@ pub async fn submit_checked(
     submit_pinned(root, project, id, download, native, None).await
 }
 
+/// The workunit batch of every line job (#1621), retries included. The `docker_lines` plan
+/// class (boinc/project/plan_class_spec.xml) admits only this batch, so its app version loads
+/// beside the live `docker` one without serving unpinned work, and a line job's pin can only
+/// be met there. Its results land in `results/1621`.
+pub const LINE_BATCH: u32 = 1621;
+
+/// The plan class a retry's pinned version must be in: a line job's worker is a
+/// `docker_lines` version, every other page's a `docker` one.
+fn retry_plan_class(job: &usnm_ocr_contract::boinc::Job) -> &'static str {
+    if job.lines.is_some() {
+        "docker_lines"
+    } else {
+        "docker"
+    }
+}
+
 /// [`submit_checked`], pinned to the `usnm_ocr` version `pin` (`--app_version_num`). A line job
 /// (#1621) that isn't a retry needs one, so a worker that predates line jobs never gets it; a
 /// retry is pinned by its own record.
@@ -104,6 +120,21 @@ pub async fn submit_pinned(
     download: Option<&Download>,
     native: Option<&RetryNative<'_>>,
     pin: Option<u32>,
+) -> anyhow::Result<()> {
+    submit_placed(root, project, id, download, native, pin, None).await
+}
+
+/// [`submit_pinned`], and for a line job optionally targeted at one host (`--target_host`,
+/// which needs `<enable_assignment>`): a targeted job never enters the feeder's array, so only
+/// that host, calibrated on the line worker, can get it.
+pub async fn submit_placed(
+    root: &Path,
+    project: &Path,
+    id: &str,
+    download: Option<&Download>,
+    native: Option<&RetryNative<'_>>,
+    pin: Option<u32>,
+    target_host: Option<u64>,
 ) -> anyhow::Result<()> {
     let _lock = Lock::take(root)?;
     let project = project.canonicalize()?;
@@ -122,6 +153,18 @@ pub async fn submit_pinned(
         record.job.lines.is_none() || is_retry || pin.is_some(),
         "a line job needs --app-version-num, the usnm_ocr version whose worker reads line jobs"
     );
+    if let Some(host) = target_host {
+        ensure!(host > 0, "--target-host must be positive");
+        ensure!(
+            record.job.lines.is_some(),
+            "only a line job can be targeted at a host"
+        );
+        let config = std::fs::read_to_string(project.join("config.xml"))?;
+        ensure!(
+            crate::gold::submit::assignment_enabled(&config)?,
+            "targeted work requires an explicitly enabled <enable_assignment>1</enable_assignment>"
+        );
+    }
     let expected = record.queued()?;
     ensure!(
         !is_retry || native.is_some(),
@@ -144,11 +187,12 @@ pub async fn submit_pinned(
             let output = tokio::time::timeout(
             std::time::Duration::from_secs(90),
             Command::new("python3")
-                .args(["-c", "import sys,types; m=types.ModuleType('retry_release_check'); exec(sys.argv[1],m.__dict__); m.verify_retry_worker(m.Path(sys.argv[2]),int(sys.argv[3]),sys.argv[4])"])
+                .args(["-c", "import sys,types; m=types.ModuleType('retry_release_check'); exec(sys.argv[1],m.__dict__); m.verify_retry_worker(m.Path(sys.argv[2]),int(sys.argv[3]),sys.argv[4],sys.argv[5])"])
                 .arg(include_str!("../../../boinc/scripts/acceptance_server.py"))
                 .arg(&project)
                 .arg(retry.app_version_num.to_string())
                 .arg(&job.engine.image)
+                .arg(retry_plan_class(&job))
                 .kill_on_drop(true)
                 .output(),
         ).await??;
@@ -231,6 +275,12 @@ pub async fn submit_pinned(
                 command.args(["--app_version_num", &retry.app_version_num.to_string()]);
             } else if let Some(pin) = pin {
                 command.args(["--app_version_num", &pin.to_string()]);
+            }
+            if record.job.lines.is_some() {
+                command.args(["--batch", &LINE_BATCH.to_string()]);
+            }
+            if let Some(host) = target_host {
+                command.args(["--target_host", &host.to_string()]);
             }
             // Stock create_work inserts remote_file at this exact input position.
             // Template file 0 opens as page, file 1 as request.json.

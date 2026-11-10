@@ -115,6 +115,8 @@ case "$KIND" in
     [ -z "$BINARY$BINARY_SHA$BUILD_DIR" ] && [ "${#EXTRA_FILES[@]}" -eq 0 ] || die "--binary, --extra-file and --build-dir are only valid with --kind native"
     case "$APP:$PLAN_CLASS" in
       usnm_ocr:docker | usnm_assess:docker | usnm_gold:docker | usnm_quality:docker) ;;
+      # Cherokee line jobs (#1621): the docker hosts, batch 1621 only (boinc/project/plan_class_spec.xml).
+      usnm_ocr:docker_lines | usnm_gold:docker_lines) ;;
       usnm_ndlocr:docker | usnm_surya:docker_mt | usnm_surya:docker_nvidia_cuda | usnm_surya:docker_intel_vulkan | usnm_qwen:docker_mt_2b | usnm_qwen:docker_nvidia_cuda_8b | usnm_qwen_train:docker_nvidia_train | usnm_iris:docker_intel_opencl_4b)
         [ -n "$WORKER_OVERRIDE" ] || die "$APP has its own worker image: give --worker-image" ;;
       *) die "unsupported --app and --plan-class: Qwen uses docker_mt_2b (2B) or docker_nvidia_cuda_8b (8B); see boinc/scripts/install.py" ;;
@@ -174,19 +176,19 @@ if [ "$KIND" = container ]; then
   case "$PLATFORM" in
     x86_64-pc-linux-gnu) [ -z "$WRAPPER$WRAPPER_SHA$WRAPPER_PIN" ] || die "Linux uses the wrapper built in the pinned server image" ;;
     windows_x86_64)
-      [ "$PLAN_CLASS" = docker ] || die "$PLATFORM supports only --plan-class docker"
+      [ "$PLAN_CLASS" = docker ] || [ "$PLAN_CLASS" = docker_lines ] || die "$PLATFORM supports only --plan-class docker or docker_lines"
       [ -f "$WRAPPER" ] && [ -f "$WRAPPER_PIN" ] && [[ $WRAPPER_SHA =~ ^[0-9a-f]{64}$ ]] ||
         die "Windows requires --wrapper, --wrapper-sha256 and --wrapper-source-pin from the reviewed build artifact"
       python3 boinc/scripts/check-windows-wrapper.py --wrapper "$WRAPPER" --platform "$PLATFORM" \
         --sha256 "$WRAPPER_SHA" --source-pin "$WRAPPER_PIN" || die "Windows wrapper verification failed" ;;
     aarch64-unknown-linux-gnu)
-      [ "$PLAN_CLASS" = docker ] || die "$PLATFORM supports only --plan-class docker"
+      [ "$PLAN_CLASS" = docker ] || [ "$PLAN_CLASS" = docker_lines ] || die "$PLATFORM supports only --plan-class docker or docker_lines"
       [ -f "$WRAPPER" ] && [ -f "$WRAPPER_PIN" ] && [[ $WRAPPER_SHA =~ ^[0-9a-f]{64}$ ]] ||
         die "Linux arm64 requires --wrapper, --wrapper-sha256 and --wrapper-source-pin from the reviewed build artifact"
       python3 boinc/scripts/check-linux-wrapper.py --wrapper "$WRAPPER" --platform "$PLATFORM" \
         --sha256 "$WRAPPER_SHA" --source-pin "$WRAPPER_PIN" || die "Linux arm64 wrapper verification failed" ;;
     arm64-apple-darwin|x86_64-apple-darwin)
-      [ "$PLAN_CLASS" = docker ] || die "$PLATFORM supports only --plan-class docker"
+      [ "$PLAN_CLASS" = docker ] || [ "$PLAN_CLASS" = docker_lines ] || die "$PLATFORM supports only --plan-class docker or docker_lines"
       [ -f "$WRAPPER" ] && [ -f "$WRAPPER_PIN" ] && [[ $WRAPPER_SHA =~ ^[0-9a-f]{64}$ ]] ||
         die "Mac requires --wrapper, --wrapper-sha256 and --wrapper-source-pin from the reviewed build artifact"
       python3 boinc/scripts/check-mac-wrapper.py --wrapper "$WRAPPER" --platform "$PLATFORM" \

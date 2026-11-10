@@ -259,6 +259,17 @@ class AppVersionHold(unittest.TestCase):
         self.assertEqual(self.hold("--app-version", "85", "--action", "release").returncode, 0)
         self.assertFalse((self.project / "reread_db").exists())
 
+    def test_a_docker_lines_version_releases_beside_the_pinned_docker_one(self):
+        # #1621: 108/docker_lines is its own platform and plan class group, so releasing it
+        # leaves 106/docker loaded and strands none of the 90 units pinned to 106.
+        self.state["versions"].append({"id": 91, "appid": 1, "platformid": 1, "version_num": 108,
+                                       "plan_class": "docker_lines", "deprecated": 1, "xml_doc": ""})
+        self.save()
+        done = self.hold("--app-version", "91", "--action", "release", apply=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual((self.deprecated(91), self.deprecated(82)), (0, 0))
+        self.assertEqual(self.load()["apps"][0]["min_version"], 0)
+
     def test_accept_stranded_and_drained_work_let_a_release_through(self):
         done = self.hold("--app-version", "85", "--action", "release", "--accept-stranded", apply=True)
         self.assertEqual(done.returncode, 0, done.stderr)

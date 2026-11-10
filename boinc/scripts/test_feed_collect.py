@@ -248,6 +248,30 @@ class EligibilityTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "CPU capacity unavailable"):
             C.supply(db, [h], "cpu")
 
+    def test_a_host_with_the_docker_and_line_versions_evaluates_cleanly(self):
+        # #1621: a host that has both 106/docker and 108/docker_lines installed. The classes'
+        # CPU demand is the same, so this isn't a mixed profile, and each unit counts only for
+        # the version that can serve it: line jobs are batch 1621, and targeted (so not counted).
+        import xml.etree.ElementTree as ET
+        live = {p.findtext("name"): {c.tag: c.text or "" for c in p}
+                for p in ET.parse(ROOT / "boinc/project/plan_class_spec.xml").findall("plan_class")}
+        db, h = database(), host()
+        db["plans"] = {"docker": live["docker"], "docker_lines": live["docker_lines"], "intel": db["plans"]["intel"]}
+        docker = dict(version("usnm_ocr", "docker", None), version_num=106)
+        lines = dict(version("usnm_ocr", "docker_lines", None), version_num=108)
+        db["versions"] = [version(), docker, lines]
+        h.update(versions=[version(), docker, lines], docker=True, client_version=80211, idle_cpu=2, cpus=2)
+        unit = {"app": "usnm_ocr", "hr_class": 0, "assignments": 0, "hosts": [], "unsent": 1,
+                "rsc_memory_bound": 10, "rsc_disk_bound": 10}
+        db["units"] = [dict(unit, id=20, batch=0, app_version_num=106),
+                       dict(unit, id=21, batch=1621, app_version_num=108),
+                       dict(unit, id=22, batch=1621, app_version_num=108, assignments=1),
+                       dict(unit, id=23, batch=0, app_version_num=108)]
+        self.assertEqual(C.supply(db, [h], "cpu"), {"idle": 2, "eligible": 2})
+        self.assertEqual(C.host_profile(h, lines, db)[:4], (0, 2**63, 1621, 1621))
+        db["units"] = db["units"][2:]
+        self.assertEqual(C.supply(db, [h], "cpu"), {"idle": 2, "eligible": 0})
+
     def test_policy_validation_cannot_be_bypassed_by_empty_or_rejected_stock(self):
         for resource, plan_name in (("cpu", "docker"), ("gpu", "intel")):
             for key, value in (("project_prefs_tag", "opt_in"), ("unmodeled_gate", "1"),

@@ -350,6 +350,7 @@ pub async fn onboard(c: &Config, execute: bool) -> anyhow::Result<Vec<u64>> {
             project: c.project.clone(),
             units: 1,
             target_host: Some(host),
+            docker_lines_version: None,
             engine: c.engine.clone(),
         })
         .await?;
