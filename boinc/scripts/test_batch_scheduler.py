@@ -1239,6 +1239,18 @@ class GoldOnboardingTests(unittest.TestCase):
         self.tick(at=61 * 60)      # the next tick collects the other
         self.assertEqual(len([a for a in self.fake.actions if a[0] == "collect"]), 1)
 
+    def test_a_short_interval_never_blocks_refill_for_good(self):
+        # Copilot on #1697: at interval_minutes=10, with ticks over 10 minutes apart, gold is due
+        # on every tick. The tick after a gold tick defers it and refills.
+        self.config["gold_onboarding"] = [dict(GOLD, interval_minutes=10)]
+        reasons = []
+        for minute in range(0, 60, 15):
+            reasons.append(self.tick(at=minute * 60)["backpressure_reason"])
+        self.assertEqual(reasons[0::2], ["gold_tick", "gold_tick"])
+        self.assertNotIn("gold_tick", reasons[1::2])
+        self.assertEqual(len(self.fake.jobs), 4)  # both other ticks refilled
+        self.assertEqual(len(self.fake.steps), 4)  # two gold runs in four ticks
+
     def test_a_gold_run_skipped_at_the_cap_still_refills(self):
         # Only promotion ran (seconds), so the tick refills as usual.
         self.fake.other = 2000

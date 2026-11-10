@@ -2289,7 +2289,10 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
     # collect, which otherwise stops at the first result it must hold.
     gold_runs = []
     gold_ran = False
-    if not drain and config.get("gold_onboarding"):
+    # A gold tick doesn't refill, so the tick after one never runs gold: with a short interval
+    # (10 minutes) gold would otherwise be due on every tick and the plan would never refill.
+    after_gold = bool(state.pop("gold_tick", False))
+    if not drain and not after_gold and config.get("gold_onboarding"):
         # The same caps and the same retained backlog the refill below counts, from the same
         # status. Without status there is no room for gold units (promotion still runs); the
         # status read after collection fails the tick as it always has.
@@ -2312,6 +2315,8 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         # A gold run takes about 9 minutes on CT 230: with a refill on top, the tick ran past
         # controller_tick's 15-minute limit, which fires while it still runs. The next tick refills.
         gold_ran = any(run["steps"].get("gold-onboard") != GOLD_SKIPPED_AT_CAP for run in gold_runs)
+        if gold_ran:
+            state["gold_tick"] = True
     to_collect = []
     # A gold tick collects one step's worth (STEP_IDS): a slow collect on top of gold (615 s on
     # 10 Nov, with blob-store timeouts) would take it past 15 minutes. The next tick takes the rest.
