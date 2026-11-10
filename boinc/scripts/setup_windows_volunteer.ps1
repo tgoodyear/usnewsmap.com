@@ -157,7 +157,7 @@ function Get-WindowsReadiness([string]$DataDirectory, [bool]$CpuAllowed, [bool]$
 
     # Windows GPU work is the amd_vulkan_8b plan class only: an AMD GPU with
     # >= 7,000 MB device memory and the driver's Vulkan loader. No Windows
-    # version has been released for the NVIDIA or Intel classes yet; when one is,
+    # version is currently available for the NVIDIA or Intel classes; when one is,
     # admit that vendor here. Keep this in step with the live app versions.
     $gpus = @(Get-GpuAdapters)
     $gpu = $null
@@ -168,7 +168,7 @@ function Get-WindowsReadiness([string]$DataDirectory, [bool]$CpuAllowed, [bool]$
     if (-not $gpu -and -not $CpuAllowed) {
         $found = 'none detected'
         if ($gpus) { $found = ($gpus | ForEach-Object { "$($_.Name) ($($_.Vendor), $($_.TotalMiB) MiB)" }) -join '; ' }
-        throw "No eligible GPU for Windows GPU work, which needs an AMD GPU with at least 7,000 MB of video memory and a current AMD driver with Vulkan. Found: $found. No Windows version has been released for NVIDIA or Intel GPUs yet; on Linux they can get GPU work now (docs/boinc/volunteer/linux.md). For optional CPU participation, rerun with -AllowCpuOnly; no CPU preferences are changed automatically."
+        throw "No eligible GPU for Windows GPU work, which needs an AMD GPU with at least 7,000 MB of video memory and a current AMD driver with Vulkan. Found: $found. No Windows version is currently available for NVIDIA or Intel GPUs; on Linux they can get GPU work now (docs/boinc/volunteer/linux.md). For optional CPU participation, rerun with -AllowCpuOnly; no CPU preferences are changed automatically."
     }
     $service = Get-Service -Name BOINC -ErrorAction SilentlyContinue
     if ($service) {
