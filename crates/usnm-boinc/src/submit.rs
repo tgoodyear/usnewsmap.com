@@ -100,6 +100,16 @@ pub async fn submit_checked(
 /// be met there. Its results land in `results/1621`.
 pub const LINE_BATCH: u32 = 1621;
 
+/// The plan class a retry's pinned version must be in: a line job's worker is a
+/// `docker_lines` version, every other page's a `docker` one.
+fn retry_plan_class(job: &usnm_ocr_contract::boinc::Job) -> &'static str {
+    if job.lines.is_some() {
+        "docker_lines"
+    } else {
+        "docker"
+    }
+}
+
 /// [`submit_checked`], pinned to the `usnm_ocr` version `pin` (`--app_version_num`). A line job
 /// (#1621) that isn't a retry needs one, so a worker that predates line jobs never gets it; a
 /// retry is pinned by its own record.
@@ -177,11 +187,12 @@ pub async fn submit_placed(
             let output = tokio::time::timeout(
             std::time::Duration::from_secs(90),
             Command::new("python3")
-                .args(["-c", "import sys,types; m=types.ModuleType('retry_release_check'); exec(sys.argv[1],m.__dict__); m.verify_retry_worker(m.Path(sys.argv[2]),int(sys.argv[3]),sys.argv[4])"])
+                .args(["-c", "import sys,types; m=types.ModuleType('retry_release_check'); exec(sys.argv[1],m.__dict__); m.verify_retry_worker(m.Path(sys.argv[2]),int(sys.argv[3]),sys.argv[4],sys.argv[5])"])
                 .arg(include_str!("../../../boinc/scripts/acceptance_server.py"))
                 .arg(&project)
                 .arg(retry.app_version_num.to_string())
                 .arg(&job.engine.image)
+                .arg(retry_plan_class(&job))
                 .kill_on_drop(true)
                 .output(),
         ).await??;

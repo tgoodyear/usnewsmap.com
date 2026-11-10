@@ -71,6 +71,22 @@ class RegisteredVersionRouting(unittest.TestCase):
             files.assert_called_with(Path("/unused"), None, "signed")
         self.assertEqual(db.close.call_count, 3)
 
+    def test_a_line_retry_needs_its_docker_lines_version(self):
+        # #1621: a line job's worker is a docker_lines version; a page job's stays docker.
+        worker = "ghcr.io/tgoodyear/usnm-boinc-worker@sha256:" + "b" * 64
+        image = "sha256:" + "b" * 64
+        lines = dict(id=1, xml_doc="signed", plan_class="docker_lines", platform="x86_64-pc-linux-gnu")
+        with patch.object(S, "db_connect", return_value=MagicMock()), \
+                patch.object(S, "query", return_value=[lines]), \
+                patch.object(S, "registered_version") as registered, \
+                patch.object(S, "verify_version_files", return_value=worker):
+            S.verify_retry_worker(Path("/unused"), 108, image, "docker_lines")
+            self.assertEqual(registered.call_args.args[1]["plan_class"], "docker_lines")
+            with self.assertRaisesRegex(ValueError, "unambiguous"):
+                S.verify_retry_worker(Path("/unused"), 108, image)
+            with self.assertRaisesRegex(ValueError, "docker or docker_lines"):
+                S.verify_retry_worker(Path("/unused"), 108, image, "docker_mt")
+
     def test_same_numeric_platform_versions_are_refused_but_distinct_versions_work(self):
         db = sqlite3.connect(":memory:")
         self.addCleanup(db.close)
