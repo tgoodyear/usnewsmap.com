@@ -115,7 +115,7 @@ registrations, exact `247c` Dockerfiles and three payload/signature pairs per
 platform. All nine native download URLs returned anonymous HTTP 200 and
 byte-identical SHA-256 hashes. Scoped global trust stayed unchanged.
 Publication and registration are **not actual OCR-client acceptance**. The
-[current-worker native Gold evidence and English-only scoped promotion](../../ocr/gold-set.md#current-worker-native-canonical-evidence-and-scoped-promotion)
+[current-worker native Gold evidence and English-only scoped promotion](../../notes/2026-10-17-gold-english-trust-calibration.md)
 are separate from fresh-page OCR execution, native handoff, release/search and
 Intel-client acceptance. No allocation, continuous-feed activation or
 backlog-policy exception is authorized by this publisher pin.
