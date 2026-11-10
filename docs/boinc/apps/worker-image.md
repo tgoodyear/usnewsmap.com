@@ -1,25 +1,10 @@
 # The worker image
 
-Part of the [BOINC batch pilot guide](../README.md).
+The container image volunteers run for `usnm_ocr`, `usnm_gold` and container `usnm_quality`: Tesseract plus `usnm-boinc work`, built from `boinc/apps/Containerfile` on the Tesseract engine image. Volunteers pull it from the public GHCR package `ghcr.io/tgoodyear/usnm-boinc-worker` by digest. The server-side images are on [Server images](images.md).
 
 ## Build the worker image
 
-First build the existing engine image. Keep its pinned base, package snapshot,
-and `models.lock`, including `frak2021`; the BOINC worker verifies the selected
-models' bytes at execution. The lock includes Spanish (`spa`), French (`fra`),
-Italian (`ita`), Yiddish (`yid`, then `heb` fallback), Hebrew (`heb`), Danish
-(`dan`), Norwegian (`nor`, for `nor`/`nob`/`nno`), Finnish (`fin`), Swedish (`swe`),
-Lithuanian (`lit`), Slovenian (`slv`), Hungarian (`hun`) and Slovak (`slk`).
-These thirteen tessdata_best additions are pinned to the same revision as the
-existing Apache-2.0 models and add 126,180,270 bytes (120.33 MiB) of model data
-to both images before compression. The BOINC Containerfile inherits them from
-the Tesseract image; it has no separate model list.
-
-After changing the lock, republish **both** images. Run and score a pilot per
-new language with the existing quality checks (including #522) before replacing
-LoC text. Yiddish also needs the reader work in #328; Danish and Norwegian
-1880s–1910s may need Fraktur routing (#325). Adding models alone does not
-perform these operational steps.
+First build the engine image. Keep its pinned base, package snapshot and `ocr/engines/tesseract/models.lock` (`frak2021`, the tessdata_best models at one pinned revision and the Cherokee `chr_phoenix` line model); the worker verifies the selected models' bytes at execution. The BOINC Containerfile inherits the models from the engine image and has no model list of its own. After changing the lock, republish both images, and score a pilot per new language with the quality checks ([OCR quality](quality.md)) before its text replaces LoC's.
 
 Then build the BOINC image using that engine image's
 immutable digest (these examples run from the repository root):
@@ -69,11 +54,9 @@ Volunteers pull the worker image from a public GHCR package,
 `linux/amd64` and `linux/arm64` images on matching Ubuntu runners. The Debian and
 Rust bases are pinned per architecture in that workflow; no QEMU setup is used.
 Publishing starts by hand from `main` and combines both tested images into one OCI
-index only after both builds pass. Pull requests build and test without pushing, and only
-when the worker's own recipe changes; they build arm64 only when its Containerfile, the
-engine's Containerfile, the apt bases' lock or `scripts/ci/tesseract-base.sh`, `.dockerignore`,
-the workflow or its build action changes. A merge to
-`main` builds both architectures without publishing (#1585). To publish:
+index only after both builds pass. Pull requests that change the worker's inputs build
+and test without pushing, and a merge to `main` builds both architectures without
+publishing (#1585). To publish:
 
 ```sh
 c="worker-$(date -u +%Y%m%dT%H%M%S)"
@@ -92,12 +75,7 @@ digest to use in `boinc/scripts/install.py --image` and `images.worker` in
 manifest and its `tesseract_image` engine configuration ID; the two engine IDs
 differ even though their Tesseract version and model lock match.
 
-`GOLD_ENGINE_IMAGE` and `ASSESS_ENGINE_IMAGE` use the worker index digest.
-`GOLD_ENGINE_BASE` and `ASSESS_ENGINE_BASE` must match the architecture executing
-the cohort. The current bridge settings hold only one base ID: keep assessment
-and gold campaigns restricted to a matching architecture until per-architecture
-expectations are supported. Start Mac validation with reserved `usnm_ocr` jobs;
-this build support does not establish cross-architecture gold agreement.
+`GOLD_ENGINE_IMAGE` takes the worker index digest and `GOLD_ENGINE_BASE` the engine base of the architecture that runs the campaign. The running server's `gold-engine-platforms.json` (from `boinc/project/`) binds each worker digest to its engine base per platform; a `usnm_gold` release needs a binding for its worker ([Held versions](app-release.md#held-versions)).
 
 The image is tagged with the commit; only the digest is used. A new GHCR package
 is private, and a workflow can't change that. Once, after the first push:
@@ -110,7 +88,11 @@ is private, and a workflow can't change that. Once, after the first push:
    `docker logout ghcr.io; docker pull ghcr.io/tgoodyear/usnm-boinc-worker@sha256:<digest>`.
 
 Later pushes keep the package public. Verify an anonymous pull on each native
-architecture before releasing Mac app versions. See the [Mac release procedure](app-release.md#mac-app-versions).
+architecture before releasing Mac app versions ([Mac app versions](app-release.md#mac-app-versions)).
+
+### Changing the worker image in production
+
+A job is bound to its engine: the worker checks the exact Tesseract version, profile and model bytes, and the collector checks each result against the job's engine metadata. Installing a new app version doesn't rewrite existing requests. So stop creating new cohorts, finish exporting and submitting the allocated ones with the old image, and let existing workunits drain through collection; resolve uncertain and failed tasks first, and don't send their requests to a different image. Then resume with fresh cohorts on the new image. Keep old signed files and journals for recovery. Bundled plans are pinned to an app version and rotate as in [OCR bundles](ocr-bundles.md#rotating-a-plan-onto-a-new-worker-version).
 
 ### Rebuild the apt bases
 
@@ -160,17 +142,6 @@ Rebuild the bases when `SNAPSHOT` or a package the `apt-*` stages install change
    runs build both images on both architectures from the new bases.
 6. Publish the worker image as usual once that merges.
 
-Before changing the installed worker image, stop creating new cohorts. Finish
-exporting and submitting already allocated cohorts with their original image,
-and drain all existing workunits through collection. Resolve uncertain and
-failed tasks before rolling the app version; do not send their existing requests
-to a different image. The worker checks the exact Tesseract version, profile and
-model bytes, and the collector checks the result against the job's immutable
-engine metadata. Installing a new app version does not rewrite existing requests
-or bind `create_work` to an image automatically. Resume with fresh cohorts and
-the new image pin after the old cohort is drained. Retain old signed files and
-journals for recovery.
-
 ## Local synthetic demonstration
 
 Requires Rust and the worker image above. `pilot_fixture` creates a rendered
@@ -219,10 +190,3 @@ suite also runs these outputs through the real `ocr-sync` in directory mode:
 cargo test --locked -p usnm-boinc
 python3 -m unittest discover -s boinc/scripts -p 'test_*.py'
 ```
-
-The bridge explicitly unlocks its state-directory `flock` before closing it;
-otherwise an unrelated fork's inherited descriptor can briefly retain the lock.
-The gold command tests publish closed, synced executable fixtures by rename,
-retry only fixture-spawn `ETXTBSY` (never an executed command), and verify worker
-termination through a dedicated FIFO rather than sampling `ps`. The timeout
-clock advances only after that worker announces its PID.
