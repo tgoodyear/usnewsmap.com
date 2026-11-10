@@ -5,6 +5,10 @@
 #
 # Platform versions are immutable: an existing platform directory must be identical,
 # and then only update_versions runs again (it skips versions it already has).
+#
+# APPVER_HOLD=1 (boinc-app-release.sh --hold, #1687) publishes the version held: deprecated,
+# journaled by app-version-hold.php, before the feeder is told to reread the database, so the
+# scheduler never sends it. app-version-hold.php --action release un-deprecates it later.
 set -euo pipefail
 # shellcheck source=SCRIPTDIR/../server/lib.sh
 . /usr/local/lib/usnm-boinc/lib.sh
@@ -47,6 +51,12 @@ case "$APPVER_KIND" in
   *)
     fail "unsupported appver kind: $APPVER_KIND"
     ;;
+esac
+case "${APPVER_HOLD:-0}:$APPVER_KIND:$APPVER_APP:$APPVER_PLAN_CLASS" in
+  0:*) ;;
+  1:container:usnm_ocr:docker | 1:container:usnm_gold:docker) ;;
+  1:*) fail "APPVER_HOLD is only for usnm_ocr and usnm_gold container versions" ;;
+  *) fail "APPVER_HOLD must be 0 or 1" ;;
 esac
 [ -e "$PROJ/.usnm-initialised" ] || fail "project is not initialised"
 src=/usr/local/lib/usnm-boinc/appver
@@ -183,7 +193,7 @@ fi
 ln -s "$dst" "$registration/apps/$APPVER_APP/$APPVER_VERSION/$subdir"
 (cd "$registration" && "$PROJ/bin/update_versions" --noconfirm)
 # PHP die(string) exits zero; the job status alone is not evidence of registration.
-(cd "$registration" && php <<'PHP'
+verified=$(cd "$registration" && php <<'PHP'
 <?php
 chdir("html/inc");
 require_once("boinc_db.inc");
@@ -224,6 +234,16 @@ if (count($versions) != 1) {
 echo "Verified $name $version $platformName $plan (app_version ".$versions[0]->id.")\n";
 PHP
 )
+echo "$verified"
+if [ "${APPVER_HOLD:-0}" = 1 ]; then
+  [[ $verified =~ \(app_version\ ([1-9][0-9]*)\)$ ]] || fail "no app version id to hold"
+  # Held before the feeder hears of it. The tool's own reread_db notice lands in the private
+  # registration copy; the project's comes next.
+  (cd "$registration" && php /usr/local/lib/usnm-boinc/app-version-hold.php --project "$registration" \
+    --journal-dir "$PROJ/ops-app-versions" --app-version "${BASH_REMATCH[1]}" --action hold --apply) ||
+    fail "registered but not held: app version ${BASH_REMATCH[1]} is live once the feeder rereads; hold it with app-version-hold.php"
+  log "published $APPVER_APP $APPVER_VERSION held (app version ${BASH_REMATCH[1]})"
+fi
 touch "$PROJ/reread_db"
 ownership_paths=("$dst" "$PROJ/templates")
 # Scoped publication must not walk the unrelated live download tree on Azure Files.

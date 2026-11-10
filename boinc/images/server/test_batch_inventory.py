@@ -149,6 +149,30 @@ class InventoryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "per-app"):
             inventory.inventory(self.root, self.results, [3, 2], "b" * 32, pending_by_app={"usnm_qwen": -1})
 
+    def test_reports_the_ocr_versions_the_feeder_can_load(self):
+        # #1687: the controller checks a bundle's pinned version against these before submitting.
+        payload = self.run_main("2\nminver\t0\nversion\tarm64-apple-darwin\tdocker\t106\n"
+                                "version\tx86_64-pc-linux-gnu\tdocker\t106\nversion\tx86_64-pc-linux-gnu\tdocker\t107\n"
+                                "version\tx86_64-pc-linux-gnu\t\t108\n")
+        self.assertEqual(payload["ocr_app_versions"], {"min_version": 0, "versions": [
+            {"platform": "arm64-apple-darwin", "plan_class": "docker", "version_num": 106},
+            {"platform": "x86_64-pc-linux-gnu", "plan_class": "docker", "version_num": 106},
+            {"platform": "x86_64-pc-linux-gnu", "plan_class": "docker", "version_num": 107},
+            {"platform": "x86_64-pc-linux-gnu", "plan_class": "", "version_num": 108}]})
+        self.assertEqual(self.run_main("2\nminver\t106\n")["ocr_app_versions"], {"min_version": 106, "versions": []})
+        # No usnm_ocr app row: nothing to report, and the controller says it is unchecked.
+        self.assertNotIn("ocr_app_versions", self.run_main("2\n"))
+        for bad in ("minver\t-1", "minver\t1\nminver\t2", "version\tlinux\tdocker\t106",
+                    "minver\t0\nversion\tlinux\tdocker\t0", "minver\t0\nversion\tlinux docker\t106",
+                    "minver\t0\nversion\tlinux\tdocker\t106\nversion\tlinux\tdocker\t106"):
+            with self.subTest(bad=bad), self.assertRaisesRegex(ValueError, "app version inventory"):
+                self.run_main(f"2\n{bad}\n")
+        many = "".join(f"version\tlinux\tdocker\t{n}\n" for n in range(1, inventory.MAX_VERSIONS + 2))
+        with self.assertRaisesRegex(ValueError, "app version inventory"):
+            self.run_main("2\nminver\t0\n" + many)
+        self.assertIn("app_version.deprecated = 0", inventory.QUERY)
+        self.assertIn(f"LIMIT {inventory.MAX_VERSIONS + 1};", inventory.query())
+
     def test_query_and_bridge_integration_are_read_only(self):
         bridge = Path(__file__).with_name("bridge-job.sh").read_text()
         self.assertIn('if [ "$step" = batch-inventory ]; then', bridge)
@@ -251,8 +275,14 @@ class InventorySQLTests(unittest.TestCase):
             input="""
 CREATE TEMPORARY TABLE workunit (assimilate_state INTEGER NOT NULL, name VARCHAR(254), appid INTEGER NOT NULL);
 CREATE TEMPORARY TABLE host (rpc_time DOUBLE NOT NULL);
-CREATE TEMPORARY TABLE app (id INTEGER NOT NULL PRIMARY KEY, name VARCHAR(254) NOT NULL);
-INSERT INTO app VALUES (1,'usnm_ocr'),(2,'usnm_qwen'),(3,'usnm_idle');
+CREATE TEMPORARY TABLE app (id INTEGER NOT NULL PRIMARY KEY, name VARCHAR(254) NOT NULL,
+ min_version INTEGER NOT NULL DEFAULT 0);
+CREATE TEMPORARY TABLE platform (id INTEGER NOT NULL PRIMARY KEY, name VARCHAR(254) NOT NULL);
+CREATE TEMPORARY TABLE app_version (appid INTEGER NOT NULL, platformid INTEGER NOT NULL,
+ version_num INTEGER NOT NULL, plan_class VARCHAR(254) NOT NULL, deprecated SMALLINT NOT NULL);
+INSERT INTO app (id, name) VALUES (1,'usnm_ocr'),(2,'usnm_qwen'),(3,'usnm_idle');
+INSERT INTO platform VALUES (1,'x86_64-pc-linux-gnu');
+INSERT INTO app_version VALUES (1,1,106,'docker',0),(1,1,107,'docker',1),(2,1,200,'docker',0);
 INSERT INTO workunit VALUES (0,'other-app',2),(1,'usnm_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',1),
  (2,'done',2),(2,'usnm_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',1),(9,'unknown',2),
  (0,'usnm_ocrb_cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',1),(0,'usnm_ocrb_short',1),(0,'orphan',7);
@@ -261,7 +291,7 @@ INSERT INTO host VALUES (0),(UNIX_TIMESTAMP()-90000),(UNIX_TIMESTAMP()),(UNIX_TI
             text=True, capture_output=True, check=True,
         )
         self.assertEqual(result.stdout.strip(),
-                         "2\napp\t\t1\napp\tusnm_ocr\t3\napp\tusnm_qwen\t2\nusnm_" + "a" * 64 + "\t1\nusnm_"
+                         "2\nminver\t0\nversion\tx86_64-pc-linux-gnu\tdocker\t106\napp\t\t1\napp\tusnm_ocr\t3\napp\tusnm_qwen\t2\nusnm_" + "a" * 64 + "\t1\nusnm_"
                          + "b" * 64 + "\t2\nusnm_ocrb_" + "c" * 64 + "\t0")
 
 

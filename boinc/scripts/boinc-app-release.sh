@@ -47,17 +47,25 @@
 #
 # --what-if makes the read-only checks (settings, Azure, the worker image, the signing host's
 # key status and podman) and prints the plan.
+#
+# usnm_ocr and usnm_gold take --hold or --outrank-pinned (#1687). A new version outranks the
+# older ones of its platform: the feeder then stops loading them, so units pinned to an older
+# usnm_ocr version go unsent, and gold units for the older worker are refused. --hold publishes
+# the version deprecated, to release with app-version-hold.php in the same step as the plan
+# rotation (docs/boinc-ocr-bundles.md); --outrank-pinned publishes it live. A usnm_gold version
+# whose worker the running server's gold-engine-platforms.json doesn't bind is refused without
+# --hold.
 # --prepare-only stages, signs and builds, then records the appver pin for a release PR
 # without deploying or starting the publish job.
 set -euo pipefail
 usage() {
-  echo "usage: boinc/scripts/boinc-app-release.sh --env <prod|dev> --app <usnm_ndlocr|usnm_ocr|usnm_assess|usnm_gold|usnm_quality|usnm_surya|usnm_qwen|usnm_qwen_train|usnm_iris|usnm_ocr_native|usnm_gold_native> --version <N.M> --signing-host HOST [--kind container|native] [--binary FILE [--binary-sha256 HEX] [--extra-file LOGICAL=PATH ...] | --build-dir DIR] [--plan-class CLASS] [--worker-image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:...] [--platform PLATFORM [--wrapper FILE --wrapper-sha256 HEX --wrapper-source-pin FILE]] [--signing-key-dir DIR] [--signing-dataset DATASET] [--onprem-host HOST --onprem-ct ID] [--prepare-only] [--acceptance-config FILE --acceptance-evidence FILE [--coordination-claim URL]] [--what-if]" >&2
+  echo "usage: boinc/scripts/boinc-app-release.sh --env <prod|dev> --app <usnm_ndlocr|usnm_ocr|usnm_assess|usnm_gold|usnm_quality|usnm_surya|usnm_qwen|usnm_qwen_train|usnm_iris|usnm_ocr_native|usnm_gold_native> --version <N.M> --signing-host HOST [--kind container|native] [--binary FILE [--binary-sha256 HEX] [--extra-file LOGICAL=PATH ...] | --build-dir DIR] [--plan-class CLASS] [--worker-image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:...] [--platform PLATFORM [--wrapper FILE --wrapper-sha256 HEX --wrapper-source-pin FILE]] [--signing-key-dir DIR] [--signing-dataset DATASET] [--onprem-host HOST --onprem-ct ID] [--prepare-only] [--acceptance-config FILE --acceptance-evidence FILE [--coordination-claim URL]] [--hold | --outrank-pinned] [--what-if]" >&2
   exit 2
 }
 ENV_NAME="" APP="" VERSION="" SIGNING_HOST="" KIND=container PLAN_CLASS="" PLAN_CLASS_SET=false WORKER_OVERRIDE="" KEY_DIR=/usbbak/signing/boinc KEY_DATASET=usbbak/signing WHAT_IF=false PREPARE_ONLY=false
 PLATFORM=x86_64-pc-linux-gnu WRAPPER="" WRAPPER_SHA="" WRAPPER_PIN="" BINARY="" BINARY_SHA="" BUILD_DIR=""
 ACCEPTANCE_CONFIG="" ACCEPTANCE_EVIDENCE="" COORDINATION_CLAIM="" ONPREM_HOST="" ONPREM_CT=""
-ONPREM_MANIFEST="" ARTIFACT_RECEIPT=""
+ONPREM_MANIFEST="" ARTIFACT_RECEIPT="" HOLD=false OUTRANK_PINNED=false
 EXTRA_FILES=()
 while [ $# -gt 0 ]; do
   case $1 in
@@ -86,6 +94,8 @@ while [ $# -gt 0 ]; do
     --onprem-manifest) [ $# -ge 2 ] || usage; ONPREM_MANIFEST=$2; shift 2 ;;
     --artifact-receipt) [ $# -ge 2 ] || usage; ARTIFACT_RECEIPT=$2; shift 2 ;;
     --prepare-only) PREPARE_ONLY=true; shift ;;
+    --hold) HOLD=true; shift ;;
+    --outrank-pinned) OUTRANK_PINNED=true; shift ;;
     --what-if) WHAT_IF=true; shift ;;
     -h | --help) usage ;;
     *) echo "error: unknown argument: $1" >&2; usage ;;
@@ -257,6 +267,13 @@ case "$SERVER_MODE" in
   onprem) [ -n "$ONPREM_HOST" ] && [ -n "$ONPREM_CT" ] || die "$BOINC_SETTINGS has \"server\": \"onprem\": give --onprem-host and --onprem-ct (docs/boinc-onprem.md)" ;;
   *) die "server must be azure or onprem in $BOINC_SETTINGS" ;;
 esac
+! { $HOLD && $OUTRANK_PINNED; } || die "give --hold or --outrank-pinned, not both"
+! $HOLD || [ -z "$ACCEPTANCE_CONFIG" ] || die "a held version isn't sent, so it can't take client acceptance: release it first"
+case "$KIND:$APP" in
+  container:usnm_ocr | container:usnm_gold)
+    $HOLD || $OUTRANK_PINNED || die "$APP $VERSION outranks the older $APP versions of $PLATFORM: units pinned to them stop being sent (#1687). Give --hold to publish it deprecated and release it with the plan rotation (boinc/docs/app-release.md, \"Held versions\"), or --outrank-pinned to publish it live" ;;
+  *) if $HOLD || $OUTRANK_PINNED; then die "--hold and --outrank-pinned are for usnm_ocr and usnm_gold container versions"; fi ;;
+esac
 if [ -n "$ONPREM_MANIFEST$ARTIFACT_RECEIPT" ]; then
   [ "$SERVER_MODE" = onprem ] && $PREPARE_ONLY && [ -f "$ONPREM_MANIFEST" ] && [ -n "$ARTIFACT_RECEIPT" ] ||
     die "--onprem-manifest and --artifact-receipt require on-prem --prepare-only"
@@ -416,6 +433,23 @@ if [ "$SERVER_MODE" = onprem ]; then
   fi
   echo "on-prem server: container $ONPREM_CT on $ONPREM_HOST has its server image and step runner"
 fi
+# A usnm_gold version whose worker the RUNNING server doesn't bind gets every gold unit refused
+# ("Gold image/base has no compatible reviewed platform binding", #1687).
+if [ "$KIND:$APP" = container:usnm_gold ]; then
+  binding=unchecked
+  if [ "$SERVER_MODE" = onprem ]; then
+    bindings=$(onprem_ct 'podman exec usnm-boinc-server cat /usr/local/lib/usnm-boinc/gold-engine-platforms.json') ||
+      die "can't read gold-engine-platforms.json from the running usnm-boinc-server in container $ONPREM_CT"
+    binding=$(python3 boinc/scripts/check-gold-binding.py --worker-image "$WORKER_IMAGE" --platform "$PLATFORM" <<< "$bindings") ||
+      die "the running server's gold-engine-platforms.json is unreadable"
+  fi
+  case "$binding" in
+    bound) echo "gold binding: the running server binds ${WORKER_IMAGE#*@} on $PLATFORM" ;;
+    *)
+      $HOLD || die "the running server's gold-engine-platforms.json binds no $PLATFORM engine for ${WORKER_IMAGE#*@} ($binding): the scheduler would refuse every gold unit for this version. Switch the server image to one with the binding first, or publish with --hold"
+      echo "WARNING: the running server binds no $PLATFORM engine for ${WORKER_IMAGE#*@} ($binding). Publishing held; app-version-hold.php refuses the release until the server runs an image with the binding." >&2 ;;
+  esac
+fi
 
 if $WHAT_IF; then
   cat << PLAN
@@ -424,6 +458,7 @@ would, from commit $sha:
    boinc/scripts/install.py in it with --network=none
 3. sign each file with sign_executable (--network=none, key $KEY_DIR read-only); bring back the .sig files
 PLAN
+  ! $HOLD || echo "   publish it held (deprecated, journaled under ops-app-versions/): app-version-hold.php --action release makes it live"
   if [ "$SERVER_MODE" = onprem ]; then
     echo "4. build localhost/$APPVER_REPO:$APPVER_TAG with podman in container $ONPREM_CT on $ONPREM_HOST, on its SERVER_IMAGE (every signature verified)"
     if $PREPARE_ONLY; then
@@ -578,6 +613,9 @@ git show "HEAD:boinc/images/appver/Containerfile" > "$ctx/Containerfile"
 git show "HEAD:boinc/images/appver/publish-appver.sh" > "$ctx/publish-appver.sh"
 git show "HEAD:boinc/images/appver/check_appver.py" > "$ctx/check_appver.py"
 git show "HEAD:boinc/images/server/register-apps.php" > "$ctx/register-apps.php"
+git show "HEAD:boinc/scripts/app-version-hold.php" > "$ctx/app-version-hold.php"
+hold_arg=0
+! $HOLD || hold_arg=1
 mv "$work/sigs" "$ctx/sigs"
 mkdir "$ctx/wrapper-candidate"
 appver_wrapper=/usr/local/lib/usnm-boinc/docker_wrapper
@@ -615,7 +653,7 @@ if [ "$SERVER_MODE" = onprem ]; then
   build_args=(--label "org.usnewsmap.source=$sha" --build-arg "KIND=$KIND" --build-arg "APP=$APP" --build-arg "VERSION=$VERSION"
     --build-arg "WORKER_IMAGE=$WORKER_IMAGE" --build-arg "PLAN_CLASS=$PLAN_CLASS" --build-arg "PLATFORM=$PLATFORM"
     --build-arg "WRAPPER_PATH=$appver_wrapper" --build-arg "WRAPPER_SHA256=$WRAPPER_SHA" --build-arg "WRAPPER_SOURCE_PIN=$appver_wrapper_pin"
-    --build-arg "BINARY_PATH=$appver_binary")
+    --build-arg "BINARY_PATH=$appver_binary" --build-arg "HOLD=$hold_arg")
   # shellcheck disable=SC2016 # expanded in the container
   COPYFILE_DISABLE=1 tar --no-xattrs -C "$ctx" -c . | onprem_ct 'set -euo pipefail
     . /etc/usnm-boinc/server.env
@@ -646,6 +684,7 @@ os.replace(staging, path)
 PY
     fi
     echo "prepared signed $APP $VERSION ($PLATFORM, $PLAN_CLASS) as $appver_image in container $ONPREM_CT; not published or registered"
+    ! $HOLD || echo "the image publishes it held (deprecated)"
     echo "publish it there with: usnm-boinc-step --env $ENV_NAME --target publish --step publish --image $appver_image --wait-mins 30"
     exit 0
   fi
@@ -653,6 +692,7 @@ PY
   onprem_ct "usnm-boinc-step --env $ENV_NAME --target publish --step publish --image $(printf '%q' "$appver_image") --wait-mins 30" ||
     die "the on-prem publish step failed (its log: journalctl in container $ONPREM_CT, usnm-boinc-step-*-publish)"
   echo "published and verified $APP $VERSION ($PLATFORM, $PLAN_CLASS)"
+  ! $HOLD || echo "held: deprecated, so the scheduler doesn't send it; release it with app-version-hold.php in the plan rotation step"
   # The Azure path gets this from provision-boinc.sh: the public endpoint must still answer.
   boinc_check_public_health "$work/project.xml"
   echo "release registration and public health verified; volunteer execution is a separate acceptance measurement"
@@ -667,7 +707,7 @@ acr_build_verified baz_build "$registry" "$APPVER_REPO:$APPVER_TAG" 1800 --platf
   --build-arg "SERVER_IMAGE=$SERVER_IMAGE" --build-arg "KIND=$KIND" --build-arg "APP=$APP" --build-arg "VERSION=$VERSION" \
   --build-arg "WORKER_IMAGE=$WORKER_IMAGE" --build-arg "PLAN_CLASS=$PLAN_CLASS" --build-arg "PLATFORM=$PLATFORM" \
   --build-arg "WRAPPER_PATH=$appver_wrapper" --build-arg "WRAPPER_SHA256=$WRAPPER_SHA" --build-arg "WRAPPER_SOURCE_PIN=$appver_wrapper_pin" \
-  --build-arg "BINARY_PATH=$appver_binary" --file "$ctx/Containerfile" "$ctx" ||
+  --build-arg "BINARY_PATH=$appver_binary" --build-arg "HOLD=$hold_arg" --file "$ctx/Containerfile" "$ctx" ||
   die "the app version image build failed (a signature that doesn't verify fails it)"
 appver_image="$registry.azurecr.io/$APPVER_REPO@$(digest "$APPVER_REPO" "$APPVER_TAG")"
 echo "   $appver_image"

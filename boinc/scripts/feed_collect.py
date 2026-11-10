@@ -1054,13 +1054,15 @@ def host_profile(host, version, database):
     if (any(value < 0 for value in integers.values())
             or any(not math.isfinite(value) or value < 0 for value in numbers.values())):
         raise ValueError("unmodeled scheduler resource policy")
-    available = [v for v in database["versions"] if v["app"] == version["app"]
+    # The installed version stands for its platform and plan class (#1687): the scheduler sends
+    # whichever loaded version a unit needs and the client downloads it, so a host with only an
+    # older version installed still takes work. Loaded as stock sched_shmem.cpp does: every
+    # undeprecated version at or above min_version when it is set, otherwise only the highest.
+    available = [v["version_num"] for v in database["versions"] if v["app"] == version["app"]
                  and v["plan_class"] == version["plan_class"] and v["platform"] == version["platform"]]
     minimum = database["minimum_versions"][version["app"]]
-    if not available or minimum and version["version_num"] not in [
-            v["version_num"] for v in available if v["version_num"] >= minimum]:
-        return None
-    if not minimum and version["version_num"] != max(v["version_num"] for v in available):
+    served = frozenset(n for n in available if n >= minimum) if minimum else frozenset(available and [max(available)])
+    if not served:
         return None
     effective = host.get("cpus")
     if numbers["min_ncpus"] or not version["gpu"] and not numbers["avg_ncpus"]:
@@ -1113,15 +1115,18 @@ def host_profile(host, version, database):
     if demand <= 0 or demand != version["cpus"]:
         raise ValueError("live CPU demand differs from installed resource profile")
     return (integers["min_wu_id"], integers["max_wu_id"] or 2**63,
-            integers["min_batch"], integers["max_batch"] or 2**63)
+            integers["min_batch"], integers["max_batch"] or 2**63, served)
 
 
 def eligible(unit, host, version, bounds):
+    """`bounds` is host_profile's: workunit and batch bounds, then the version numbers loaded
+    for the version's platform and plan class. An unpinned unit gets the newest of them, a
+    pinned one only its own number."""
     return (unit["app"] == version["app"] and host["host_id"] not in unit["hosts"]
             and not unit["assignments"] and not unit["hr_class"]
             and unit["rsc_memory_bound"] <= host["memory_bytes"]
             and unit["rsc_disk_bound"] <= host["disk_bytes"]
-            and (unit["app_version_num"] == 0 or unit["app_version_num"] == version["version_num"])
+            and (unit["app_version_num"] == 0 or unit["app_version_num"] in bounds[4])
             and bounds[0] <= unit["id"] <= bounds[1] and bounds[2] <= unit["batch"] <= bounds[3])
 
 

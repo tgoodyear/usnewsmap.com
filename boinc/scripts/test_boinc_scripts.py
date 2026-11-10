@@ -1131,6 +1131,44 @@ class AppReleaseArgs(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0)
         self.assertIn('--onprem-host and --onprem-ct are for "server": "onprem"', r.stderr)
 
+    def test_ocr_and_gold_need_hold_or_outrank_pinned(self):
+        # #1687: a new usnm_ocr version outranked 106 and starved the bundles pinned to it.
+        r = self.run_with_settings("azure", "--what-if")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("Give --hold to publish it deprecated", r.stderr)
+        r = self.run_with_settings("azure", "--hold", "--outrank-pinned", "--what-if")
+        self.assertIn("not both", r.stderr)
+        for flag in ("--hold", "--outrank-pinned"):
+            r = self.run_with_settings("azure", flag, "--what-if")
+            self.assertNotIn("Give --hold", r.stderr)
+        text = Path(APP_RELEASE_SCRIPT).read_text()
+        self.assertIn('! $HOLD || [ -z "$ACCEPTANCE_CONFIG" ] || die "a held version', text)
+        # The image carries the hold, so a --prepare-only image published later is held too.
+        self.assertIn('--build-arg "HOLD=$hold_arg"', text.split("acr_build_verified baz_build", 2)[2])
+        self.assertIn('--build-arg "BINARY_PATH=$appver_binary" --build-arg "HOLD=$hold_arg")', text)
+        self.assertIn('git show "HEAD:boinc/scripts/app-version-hold.php" > "$ctx/app-version-hold.php"', text)
+        # Gold reads the binding from the running server, not from the checkout.
+        self.assertIn("podman exec usnm-boinc-server cat /usr/local/lib/usnm-boinc/gold-engine-platforms.json", text)
+        self.assertIn('$HOLD || die "the running server\'s gold-engine-platforms.json binds no', text)
+
+    def test_hold_flags_are_only_for_ocr_and_gold(self):
+        img = "ghcr.io/tgoodyear/usnm-boinc-worker@sha256:" + "a" * 64
+        settings = json.loads(Path(ROOT, "boinc/infra/boinc/env/prod.json").read_text())
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp, "prod.json")
+            path.write_text(json.dumps(dict(settings, server="azure"), indent=2, sort_keys=True) + "\n")
+            bin_dir = Path(tmp, "bin"); bin_dir.mkdir()
+            (bin_dir / "az").write_text('#!/usr/bin/env bash\ncase "$*" in "account show"*) echo "$STUB_SUB" ;; '
+                                        '"group show"*) ;; *) exit 9 ;; esac\n')
+            (bin_dir / "az").chmod(0o755)
+            env = dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}", USNM_BOINC_TEST="1",
+                       USNM_BOINC_SETTINGS_FILE=str(path), STUB_SUB=settings["subscriptionId"])
+            r = subprocess.run([APP_RELEASE_SCRIPT, "--env", "prod", "--version", "1.0", "--signing-host",
+                                "fixture.invalid", "--app", "usnm_qwen", "--plan-class", "docker_mt_2b",
+                                "--worker-image", img, "--hold", "--what-if"],
+                               cwd=ROOT, env=env, capture_output=True, text=True)
+        self.assertIn("--hold and --outrank-pinned are for usnm_ocr and usnm_gold", r.stderr)
+
     def test_onprem_publish_builds_on_the_host_and_skips_acr(self):
         text = Path(APP_RELEASE_SCRIPT).read_text()
         onprem = text.split('if [ "$SERVER_MODE" = onprem ]; then\n  # The same context')[1].split("\nacr_build_verified")[0]

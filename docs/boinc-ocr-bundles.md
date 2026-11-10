@@ -110,6 +110,12 @@ each job's `reason`) and splits each group into units of at most that size. Admi
 counted in pages. Both fields are part of the configuration's hash, so turning bundles on
 makes a new plan, with fresh state.
 
+Before it submits bundles, the tick checks `bundle_app_version` against the inventory's
+`ocr_app_versions` (#1687): the `usnm_ocr` versions not deprecated in the database, and the
+app's `min_version`. It refuses, after collection and before any submission, when the pinned
+version is held, isn't published, or is outranked on a platform where it is published, since
+the scheduler would never send those units. Single-page units carry no pin and aren't checked.
+
 ## Rollout runbook (waits for the maintainer's go)
 
 Claim each production step on #529 first, and release the claim afterwards. Times are US
@@ -123,7 +129,9 @@ Eastern.
    for every platform the current version 105 has (`x86_64-pc-linux-gnu`,
    `arm64-apple-darwin`, `x86_64-apple-darwin`), with the signing host, `--what-if` first.
    Use the next version number (106 unless one is already taken; check the `app_version`
-   table). Then check the feeder sends 106 for a single-page unit. The new worker runs
+   table). Since #1687, publish it held and release it as in
+   [Rotating a plan onto a new worker version](#rotating-a-plan-onto-a-new-worker-version).
+   Then check the feeder sends 106 for a single-page unit. The new worker runs
    single-page units exactly as 105 did, so nothing else changes yet.
 
    **Host trust starts over with the new worker image.** `gold/trust.json` lists trusted hosts
@@ -175,6 +183,70 @@ Eastern.
    `unbundled`, and `requeued` markers under `spool/`). To roll back, start a plan without
    `pages_per_unit`. Bundles already in flight finish and collect under the new images.
    Rolling back the images too would strand them, so let them drain first.
+
+## Rotating a plan onto a new worker version
+
+A plan pins its bundles to `bundle_app_version`. Publishing a newer `usnm_ocr` version makes
+the feeder stop loading the pinned one, so the plan's unsent bundles stop going out. Host
+trust is keyed by worker digest, so it starts over on a new image. On 9 November both
+happened during one roll (#1687, #529). Since then a new `usnm_ocr` or `usnm_gold` version is
+published held, and released in the rotation step below
+([app-release.md](../boinc/docs/app-release.md#held-versions)). Claim each production step on
+#529 first. Steps in this order:
+
+1. **Publish held.** Release the new `usnm_ocr` and `usnm_gold` versions for every platform
+   the current ones have, with `--hold` (`--what-if` first). Hosts see no change: the
+   versions are deprecated and the live plan keeps its pin.
+2. **Server.** Switch CT 230 to a server image built from a commit that has this change and
+   binds the new worker in `gold-engine-platforms.json`. A gold release refuses without the
+   binding. An image without this change has no `ocr_app_versions` in its inventory (the
+   controller only warns) and no `app-version-hold.php` (copy it in with `podman cp`).
+3. **Rotation window.** On the feed monitor host, defer the alerts that a rotation trips:
+
+   ```sh
+   python3 /opt/usnm-feed-monitor/feed_status.py --rotation-start \
+     --state-dir /var/lib/usnm-boinc-feed-health --minutes 180 --reason "<#529 claim>"
+   ```
+
+4. **Gold first.** Release the new `usnm_gold` versions with `app-version-hold.php --action
+   release`. In the same step, point the live plan's `gold_onboarding` at the campaign for the
+   new image. `gold_onboarding` is outside the allocation digest, so this isn't a new plan.
+   Calibrate arm64 hosts by hand, as before. Wait until `gold-promote` has added the project's
+   hosts on the new digest in `gold/trust.json`. Meanwhile the live plan keeps feeding OCR on
+   the old version, and every collected result comes from a host trusted on the old image.
+   Gold units already out for the old image are refused from the release on; let them expire.
+5. **Rotate OCR.** Stop CT 211's controller timer between ticks, then, together:
+   1. `app-version-hold.php --action min-version --min-version <old pin>`. The feeder then
+      keeps the old version loaded beside the new one, so the old plan's unsent bundles still
+      go out while it drains.
+   2. `app-version-hold.php --action release` for each new `usnm_ocr` app version. It refuses
+      while a change would strand unsent units pinned to a version.
+   3. Start the new plan: the live config with only the plan name, `image` and
+      `bundle_app_version` changed (`gold_onboarding` stays as step 4 set it). Archive the old
+      plan to drain.
+   4. Run one `--apply` tick by hand, check that it submits bundles and that a host takes one,
+      then turn the timer back on.
+6. **Close the window** once ticks are clean and `cpu_shortage` is healthy:
+   `feed_status.py --rotation-end --state-dir /var/lib/usnm-boinc-feed-health`.
+7. **Later.** Once no workunit pinned to the old version is unsent or in progress, raise
+   `min_version` to the new pin, or leave it. The hold tool refuses a raise that strands work.
+
+Rollback: hold the new `usnm_ocr` versions again, which brings the old one back, and revert to
+the old plan. A held version stays published.
+
+### What fires during a rotation
+
+| Check | Fires when | During a rotation | With the window |
+| --- | --- | --- | --- |
+| `collection` | a source is unknown for 3 minutes | the controller's timer stopped, or a tick by hand, for more than 15 minutes ("no recent completed controller tick") | a missing controller tick doesn't count; any other unknown source still fires |
+| `cpu_shortage` | own clients have more idle CPU slots than eligible unsent results for 30 minutes | no refill while the timer is stopped, or while ticks fail | held until the window ends, then fires if still true |
+| `usnm_ocr_no_work` | OCR has a backlog and no new workunit for an hour | the same | held until the window ends |
+| `controller_tick` | two failed ticks in a row | collect stops each tick on a result from a host not yet trusted on the new image | not covered: step 4 is what prevents it |
+
+The window lasts at most 240 minutes, and every other check fires as usual inside it. A host
+with only an older version installed no longer makes the eligibility check unavailable
+(`collection` fired on 9 November for that): the collector counts it for the version the
+scheduler would send it.
 
 ## Not changed
 

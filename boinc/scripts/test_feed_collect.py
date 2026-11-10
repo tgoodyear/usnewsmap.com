@@ -430,6 +430,39 @@ class EligibilityTests(unittest.TestCase):
         db["units"][0]["unsent"] = 1
         self.assertEqual(C.supply(db, [host(9), host(10)], "gpu")["eligible"], 1)
 
+    def test_a_host_with_an_older_installed_version_still_counts_for_the_loaded_one(self):
+        # #1687: on 9 Nov 107 was published while hosts had only 106 installed. That made
+        # host_profile None, "host application eligibility unavailable", and collection fired.
+        db, h = database(), host()
+        db["units"][0].update(app="usnm_ocr", app_version_num=0, batch=0, id=1)
+        newer = dict(version("usnm_ocr", "docker", None), version_num=118)
+        db["versions"].append(newer)
+        self.assertEqual(C.supply(db, [h], "cpu"), {"idle": 1, "eligible": 1})
+        # Units pinned to the installed 117 aren't sent once 118 outranks it: the shortage is real.
+        db["units"][0]["app_version_num"] = 117
+        self.assertEqual(C.supply(db, [h], "cpu"), {"idle": 1, "eligible": 0})
+        db["units"][0]["app_version_num"] = 118
+        self.assertEqual(C.supply(db, [h], "cpu"), {"idle": 1, "eligible": 1})
+        # With min_version at 117 the feeder loads both, and either pin is sent.
+        db["minimum_versions"]["usnm_ocr"] = 117
+        for pin in (0, 117, 118):
+            db["units"][0]["app_version_num"] = pin
+            self.assertEqual(C.supply(db, [h], "cpu"), {"idle": 1, "eligible": 1})
+        db["minimum_versions"]["usnm_ocr"] = 118
+        db["units"][0]["app_version_num"] = 117
+        self.assertEqual(C.supply(db, [h], "cpu"), {"idle": 1, "eligible": 0})
+        # Holding 118 (deprecated, so not listed) brings 117 back.
+        db["minimum_versions"]["usnm_ocr"] = 0
+        db["versions"].remove(newer)
+        self.assertEqual(C.supply(db, [h], "cpu"), {"idle": 1, "eligible": 1})
+        # A host with only the held 118 installed counts for 117, its platform and plan class's.
+        h["versions"][1] = dict(h["versions"][1], version_num=118)
+        self.assertEqual(C.supply(db, [h], "cpu"), {"idle": 1, "eligible": 1})
+        # Nothing published for its platform: still unavailable, never a healthy zero.
+        db["versions"] = [v for v in db["versions"] if v["app"] != "usnm_ocr"]
+        with self.assertRaisesRegex(ValueError, "eligibility unavailable"):
+            C.supply(db, [h], "cpu")
+
     def test_policy_host_batch_memory_platform_and_version_constraints(self):
         for field, value in [("id", 11), ("batch", 2), ("hosts", [9]),
                              ("app_version_num", 118), ("app_version_num", 116),

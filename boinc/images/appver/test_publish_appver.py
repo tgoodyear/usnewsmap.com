@@ -1,4 +1,5 @@
 """Exercise the publish transaction on a temporary share, without a database."""
+import json
 import os
 import importlib.util
 from pathlib import Path
@@ -181,6 +182,87 @@ class BoincAppVersion {
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn(f'Verified {app} 1.0 x86_64-pc-linux-gnu {plan}', result.stdout)
                 self.assertTrue((self.project / f'apps/{app}/1.0/{subdir}/docker_wrapper').is_file())
+
+    @unittest.skipUnless(shutil.which('php'), 'PHP unavailable')
+    def test_a_held_publication_is_deprecated_and_journaled_before_the_feeder_hears(self):
+        # #1687: boinc-app-release.sh --hold bakes APPVER_HOLD=1 into the image.
+        php = shutil.which('php')
+        (self.root / 'php').write_text(f'#!/bin/sh\nexec "{php}" "$@"\n')
+        state = self.root / 'state.json'
+        state.write_text('{"deprecated": 0, "touched_before": null}')
+        (self.project / 'html/inc/boinc_db.inc').write_text('''<?php
+function usnm_state() { return json_decode(file_get_contents(getenv("USNM_FAKE_STATE")), true); }
+class BoincApp {
+    public $id = 1, $name = "usnm_ocr", $min_version = 0;
+    static function lookup($q) { return new self; }
+    static function lookup_id($id) { return new self; }
+}
+class BoincPlatform {
+    static function lookup($q) { return (object)["id" => 1]; }
+    static function lookup_id($id) { return (object)["id" => 1, "name" => "x86_64-pc-linux-gnu"]; }
+}
+class BoincAppVersion {
+    public $id = 86, $appid = 1, $platformid = 1, $version_num = 107, $plan_class = "docker", $deprecated, $xml_doc = "";
+    function __construct() { $this->deprecated = usnm_state()["deprecated"]; }
+    static function enum($q) {
+        if (str_starts_with($q, "appid=1 and version_num=")) return [new self];
+        $old = new self; $old->id = 82; $old->version_num = 106; $old->deprecated = 0;
+        return [$old, new self];
+    }
+    static function lookup_id($id) { return new self; }
+    function update($q) {
+        $s = usnm_state();
+        $s["deprecated"] = $q === "deprecated=1" ? 1 : 0;
+        $s["touched_before"] = file_exists(getenv("PROJ") . "/reread_db");
+        file_put_contents(getenv("USNM_FAKE_STATE"), json_encode($s));
+        return true;
+    }
+}
+class BoincDb {
+    static function get() { return new self; }
+    function do_query($q) { return new class { function fetch_assoc() { return null; } }; }
+}
+''')
+        tool = Path(__file__).resolve().parents[2] / 'scripts/app-version-hold.php'
+        self.script.write_text(self.script.read_text().replace(
+            'php /usr/local/lib/usnm-boinc/app-version-hold.php', f'php "{tool}"'))
+        src = self.source / 'apps/usnm_ocr/1.7/x86_64-pc-linux-gnu__docker'
+        src.mkdir(parents=True)
+        (src / 'docker_wrapper').write_text('wrapper')
+        env = {**os.environ, 'PROJ': str(self.project), 'APPVER_APP': 'usnm_ocr', 'APPVER_VERSION': '1.7',
+               'APPVER_PLATFORM': 'x86_64-pc-linux-gnu', 'APPVER_HOLD': '1', 'USNM_FAKE_STATE': str(state),
+               'DB_HOST': 'db.example.org', 'DB_NAME': 'fixture', 'MASTER_HOST': 'boinc.example.org',
+               'PATH': str(self.root) + os.pathsep + os.environ['PATH']}
+        result = subprocess.run(['bash', str(self.script)], capture_output=True, text=True, env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(state.read_text()), {'deprecated': 1, 'touched_before': False})
+        self.assertTrue((self.project / 'reread_db').exists())
+        journal = list((self.project / 'ops-app-versions').glob('hold-app-version-86-*.json'))
+        self.assertEqual(len(journal), 1)
+        self.assertEqual(json.loads(journal[0].read_text())['deprecated_before'], 0)
+        # Only usnm_ocr and usnm_gold container versions can be published held.
+        for app, value in (('usnm_quality', '1'), ('usnm_ocr', '2')):
+            bad = subprocess.run(['bash', str(self.script)], capture_output=True, text=True,
+                                 env={**env, 'APPVER_APP': app, 'APPVER_HOLD': value})
+            self.assertNotEqual(bad.returncode, 0)
+            self.assertIn('APPVER_HOLD', bad.stderr)
+        here = Path(__file__).resolve().parent
+        containerfile = (here / 'Containerfile').read_text()
+        self.assertIn('COPY app-version-hold.php /usr/local/lib/usnm-boinc/app-version-hold.php', containerfile)
+        self.assertIn('APPVER_HOLD=${HOLD}', containerfile)
+
+    def test_a_hold_without_a_registered_id_fails_loudly(self):
+        src = self.source / 'apps/usnm_ocr/1.7/x86_64-pc-linux-gnu__docker'
+        src.mkdir(parents=True)
+        (src / 'docker_wrapper').write_text('wrapper')
+        result = subprocess.run(['bash', str(self.script)], capture_output=True, text=True,
+                                env={**os.environ, 'PROJ': str(self.project), 'APPVER_APP': 'usnm_ocr',
+                                     'APPVER_VERSION': '1.7', 'APPVER_HOLD': '1',
+                                     'DB_HOST': 'db.example.org', 'DB_NAME': 'fixture', 'MASTER_HOST': 'boinc.example.org',
+                                     'PATH': str(self.root) + os.pathsep + os.environ['PATH']})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('no app version id to hold', result.stderr)
+        self.assertFalse((self.project / 'reread_db').exists())
 
     def test_container_publication_rejects_wrong_or_legacy_model_classes(self):
         for app, plan, platform in (

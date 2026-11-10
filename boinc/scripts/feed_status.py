@@ -35,6 +35,12 @@ MAX_AGE = 180
 MAX_GAP = 180
 APP_NAMES = ("usnm_ocr", "usnm_qwen")
 DELIVERY_TEST_EVENT = "boinc_feed_delivery_test"
+# A planned version rotation (#1687): while the window lasts, cpu_shortage and usnm_ocr_no_work
+# don't fire, and a missing controller tick (its timer stopped, a long tick by hand) doesn't
+# count towards collection. Every other check, and a controller tick that fails, still fires.
+ROTATION_FILE = "rotation.json"
+ROTATION_MAX_MINUTES = 240
+ROTATION_DEFERRED = ("cpu_shortage", "usnm_ocr_no_work")
 
 
 def atomic_text(path, value):
@@ -101,8 +107,42 @@ def qwen_admission(record, facts, now):
             backlog, report["status"])
 
 
-def evaluate(facts, previous, now, monotonic, boot_id, config_id):
-    """Durations require uninterrupted, fresh observations; never bridge an unknown gap."""
+def rotation_window(raw, now):
+    """The planned rotation from ROTATION_FILE's contents, while it lasts, else None. Anything
+    malformed, expired or longer than ROTATION_MAX_MINUTES is no window: alerts as usual."""
+    try:
+        window = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    if (not isinstance(window, dict) or set(window) != {"reason", "started_at", "until"}
+            or type(window["until"]) not in (int, float) or type(window["started_at"]) not in (int, float)
+            or not isinstance(window["reason"], str) or not 0 < len(window["reason"]) <= 200
+            or not window["started_at"] <= now < window["until"]
+            or window["until"] - window["started_at"] > ROTATION_MAX_MINUTES * 60):
+        return None
+    return window
+
+
+def start_rotation(state_dir, minutes, reason, now):
+    if not 1 <= minutes <= ROTATION_MAX_MINUTES:
+        raise ValueError(f"--minutes is 1 to {ROTATION_MAX_MINUTES}")
+    if not 0 < len(reason) <= 200:
+        raise ValueError("--reason is 1 to 200 characters")
+    window = {"reason": reason, "started_at": now, "until": now + minutes * 60}
+    atomic_json(Path(state_dir) / ROTATION_FILE, window)
+    return window
+
+
+def end_rotation(state_dir):
+    path = Path(state_dir) / ROTATION_FILE
+    existed = path.exists()
+    path.unlink(missing_ok=True)
+    return existed
+
+
+def evaluate(facts, previous, now, monotonic, boot_id, config_id, rotation=None):
+    """Durations require uninterrupted, fresh observations; never bridge an unknown gap.
+    `rotation` is a current rotation_window: ROTATION_DEFERRED checks wait for its end."""
     if (not isinstance(previous, dict)
             or type(previous.get("time", 0)) not in (int, float)
             or type(previous.get("monotonic", 0)) not in (int, float)
@@ -122,6 +162,8 @@ def evaluate(facts, previous, now, monotonic, boot_id, config_id):
     old = previous.get("conditions", {}) if continuous else {}
     conditions, checks = {}, []
 
+    deferred_until = rotation["until"] if rotation else None
+
     def check(code, condition, hold=0, generation=None, **measurements):
         prior = old.get(code, {})
         if not isinstance(prior, dict):
@@ -132,9 +174,12 @@ def evaluate(facts, previous, now, monotonic, boot_id, config_id):
         if not isinstance(since, (int, float)) or not 0 <= since <= now:
             since = now
         duration = now - since if condition is True else 0
+        deferred = code in ROTATION_DEFERRED and deferred_until is not None and now < deferred_until
         state = ("unknown" if condition is None else
-                 "firing" if condition and duration >= hold else
+                 "firing" if condition and duration >= hold and not deferred else
                  "pending" if condition else "healthy")
+        if deferred and condition:
+            measurements["rotation_until"] = deferred_until
         conditions[code] = {"active": condition is True, "since": since, "generation": generation}
         checks.append({"code": code, "state": state, "duration_s": int(duration),
                        "threshold_s": hold, **measurements})
@@ -189,7 +234,10 @@ def evaluate(facts, previous, now, monotonic, boot_id, config_id):
         check("feeder_allocation", drift, FEEDER_DRIFT_HOLD_S,
               generation=guard["reason"] + ":" + ",".join(map(str, guard["app_ids"])),
               reason=guard["reason"], app_ids=guard["app_ids"])
-    unknown = facts.get("errors", []) or [c["code"] for c in checks if c["state"] == "unknown"]
+    # In a rotation the controller source may be missing a tick on purpose; nothing else may.
+    errors = [e for e in facts.get("errors", []) if not (rotation and e == "controller")]
+    unknown = errors or [c["code"] for c in checks if c["state"] == "unknown"
+                         and not (rotation and c["code"] == "controller_tick")]
     # Held: one failed source run (a single unknown evaluation) is not worth an email.
     # Its time is kept apart from the condition timers a reset clears, so resets that
     # recur (an evaluator running only every few minutes, configs changing) still fire.
@@ -208,6 +256,8 @@ def evaluate(facts, previous, now, monotonic, boot_id, config_id):
                 "max_age_s": MAX_AGE, "checks": checks,
                 "sources": facts.get("sources", {}),
                 "healthy": all(c["state"] == "healthy" for c in checks)}
+    if rotation:
+        document["rotation"] = {"reason": rotation["reason"], "until": rotation["until"]}
     state = {"schema_version": 1, "config_id": config_id, "boot_id": boot_id,
              "time": now, "monotonic": monotonic, "conditions": conditions,
              "last_failure_at": max(failure_at, previous.get("last_failure_at", 0)),
@@ -251,8 +301,12 @@ def monitor(config_path, state_dir):
             boot = feed_collect.run(["sysctl", "-n", "kern.boottime"], limit=1024).decode().strip()
         else:
             boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+        try:
+            raw = (state_dir / ROTATION_FILE).read_text()
+        except OSError:
+            raw = None
         document, state = evaluate(facts, previous, now, time.monotonic(), boot,
-                                   hashlib.sha256(config_bytes).hexdigest())
+                                   hashlib.sha256(config_bytes).hexdigest(), rotation_window(raw, now))
         atomic_json(state_dir / "feed-health.json", document)
         atomic_text(state_dir / "feed-health.prom", metrics(document))
         print(json.dumps(document, sort_keys=True), flush=True)
@@ -289,7 +343,34 @@ def main(argv=None):
     mode = argparse.ArgumentParser(add_help=False)
     mode.add_argument("--config", type=Path)
     mode.add_argument("--delivery-test", action="store_true")
+    mode.add_argument("--rotation-start", action="store_true")
+    mode.add_argument("--rotation-end", action="store_true")
     selected, _ = mode.parse_known_args(argv)
+    if selected.rotation_start or selected.rotation_end:
+        parser = argparse.ArgumentParser(description="Open or close a planned rotation window (#1687)")
+        action = parser.add_mutually_exclusive_group(required=True)
+        action.add_argument("--rotation-start", action="store_true",
+                            help="defer cpu_shortage and usnm_ocr_no_work, and tolerate a missing "
+                                 "controller tick, until --minutes from now")
+        action.add_argument("--rotation-end", action="store_true", help="close the window now")
+        parser.add_argument("--state-dir", type=Path, required=True)
+        parser.add_argument("--minutes", type=int, help=f"1 to {ROTATION_MAX_MINUTES}, with --rotation-start")
+        parser.add_argument("--reason", help="what is rotating, with --rotation-start (the #529 claim)")
+        args = parser.parse_args(argv)
+        if args.rotation_end:
+            if args.minutes is not None or args.reason is not None:
+                parser.error("--rotation-end takes only --state-dir")
+            print(json.dumps({"event": "boinc_feed_rotation", "action": "end",
+                              "had_window": end_rotation(args.state_dir)}, sort_keys=True), flush=True)
+            return 0
+        if args.minutes is None or args.reason is None:
+            parser.error("--rotation-start needs --minutes and --reason")
+        try:
+            window = start_rotation(args.state_dir, args.minutes, args.reason, int(time.time()))
+        except ValueError as error:
+            parser.error(str(error))
+        print(json.dumps({"event": "boinc_feed_rotation", "action": "start", **window}, sort_keys=True), flush=True)
+        return 0
     if selected.delivery_test:
         parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
         parser.add_argument("--delivery-test", action="store_true", required=True,

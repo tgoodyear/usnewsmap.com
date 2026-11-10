@@ -1430,6 +1430,48 @@ def ocr_workunit_counts(snapshot, pending_jobs):
     return workunits, len(pending_jobs) - workunits
 
 
+def served_versions(app_versions):
+    """{(platform, plan class): (published, loaded)} for usnm_ocr, from the inventory's
+    ocr_app_versions (#1687): the version numbers not deprecated in the database, and those of
+    them BOINC's feeder loads. As stock sched_shmem.cpp does, that is every one at or above the
+    app's min_version when it is set, and otherwise only the highest in its platform and plan
+    class. A workunit pinned with app_version_num gets only a loaded version of that number, so
+    work pinned to any other one is never sent; a held (deprecated) version isn't loaded at all."""
+    require(isinstance(app_versions, dict) and set(app_versions) == {"min_version", "versions"}
+            and type(app_versions["min_version"]) is int and app_versions["min_version"] >= 0
+            and isinstance(app_versions["versions"], list), "invalid app version inventory")
+    published = {}
+    for entry in app_versions["versions"]:
+        require(isinstance(entry, dict) and set(entry) == {"platform", "plan_class", "version_num"}
+                and isinstance(entry["platform"], str) and isinstance(entry["plan_class"], str)
+                and type(entry["version_num"]) is int and entry["version_num"] > 0,
+                "invalid app version inventory")
+        published.setdefault((entry["platform"], entry["plan_class"]), set()).add(entry["version_num"])
+    minimum = app_versions["min_version"]
+    return {key: (numbers, {n for n in numbers if n >= minimum} if minimum else {max(numbers)})
+            for key, numbers in published.items()}
+
+
+def pinned_version_problem(snapshot, pin):
+    """Why BOINC wouldn't send a unit pinned to usnm_ocr version `pin`, or None when it would
+    (#1687): `pin` must be published and loaded wherever it is published. None too when the
+    inventory predates the check (a server image without ocr_app_versions); the tick says so."""
+    if "ocr_app_versions" not in snapshot:
+        return None
+    served = served_versions(snapshot["ocr_app_versions"])
+    outranked = sorted(f"{max(loaded)} on {platform}" + (f" ({plan})" if plan else "")
+                       for (platform, plan), (numbers, loaded) in served.items()
+                       if pin in numbers and pin not in loaded)
+    if outranked:
+        return (f"bundle_app_version {pin} is not the usnm_ocr version the scheduler sends: "
+                f"{', '.join(outranked)} outranks it, so units pinned to {pin} would go unsent. "
+                "Hold the newer version (boinc/scripts/app-version-hold.php) or rotate the plan onto it")
+    if not any(pin in loaded for _, loaded in served.values()):
+        return (f"bundle_app_version {pin} is not a usnm_ocr version the scheduler loads: it isn't "
+                "published, or it is held (deprecated). Release it or rotate the plan")
+    return None
+
+
 def units_of(config, records):
     """Split the records to submit into workunits (#1059): by queue and page deadline (a bundle's
     pages share one, #1159), in their order, into groups of at most that queue's pages_per_unit
@@ -2365,7 +2407,20 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         if hasattr(transport, "submit_batch"):
             if max(config.get("pages_per_unit", {}).values(), default=1) > 1:
                 by_id = {record["job"]["id"]: record for record in owned.values()}
-                transport.submit_batch(to_submit, units_of(config, [by_id[j] for j in to_submit]))
+                units = units_of(config, [by_id[j] for j in to_submit])
+                if any(len(unit) > 1 for unit in units):
+                    # Pinned bundles the scheduler won't send starve the plan (#1687): refuse,
+                    # after collection, so controller_tick pages and nothing is submitted.
+                    if "ocr_app_versions" not in snapshot:
+                        print(json.dumps({
+                            "event": "boinc_batch_pin_unchecked", "schema_version": 1,
+                            "app_version_num": config["bundle_app_version"],
+                            "message": "the inventory has no ocr_app_versions (a server image from "
+                                       "before #1687): bundles submitted without checking their pin"},
+                            sort_keys=True), file=sys.stderr, flush=True)
+                    problem = pinned_version_problem(snapshot, config["bundle_app_version"])
+                    require(problem is None, problem or "")
+                transport.submit_batch(to_submit, units)
             else:
                 transport.submit_batch(to_submit)
         else:
