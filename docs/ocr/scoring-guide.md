@@ -2,9 +2,9 @@
 
 This guide is for people who run their own OCR engine and want its character error rate (CER) and word error rate (WER) on historical newspaper text. You do not transcribe anything. `scripts/ocr-survey/gold.py` downloads public datasets whose text was transcribed and checked by people, cuts them into crops, and scores your engine's text for those crops against the published transcription.
 
-The design, the source policy and the dataset survey are in [ocr-gold-set.md](gold-set.md). This guide covers the steps. Where it says UNVERIFIED, neither the code nor that document confirms the point.
+The source policy, the dataset survey and how each reader works are in [the gold set](gold-set.md#public-ground-truth). This guide covers the steps. Where it says UNVERIFIED, neither the code nor that page confirms the point.
 
-Scoring uses `usnm-ocr-survey score`, the Rust scorer in `crates/usnm-ocr-survey` ([#457](https://github.com/tgoodyear/usnewsmap.com/issues/457)). It replaces `gold.py score`: same flags, same normalization, same output files byte for byte, and a golden test in CI keeps the two equal. `gold.py score` still works and stays as the reference. Fetching, converting and validating stay in `gold.py`.
+Scoring uses `usnm-ocr-survey score`, the Rust scorer in `crates/usnm-ocr-survey`. It writes the same files as `gold.py score`, byte for byte ([CER and WER](gold-set.md#cer-and-wer)). Fetching, converting and validating stay in `gold.py`.
 
 ## Prerequisites
 
@@ -14,7 +14,7 @@ Scoring uses `usnm-ocr-survey score`, the Rust scorer in `crates/usnm-ocr-survey
 - **Pillow**, for `public-convert`, which opens the page images and cuts the crops (`pip install Pillow`). `validate` and `score` don't need it.
 - **bsdtar or 7-Zip**, for BLN600 only. Its zip is AES-encrypted and Python's `zipfile` can't open it, so `public-fetch` calls `bsdtar` (libarchive) or `7z`/`7zz`, and stops with an error if neither is on the `PATH`.
 - **Network access** to Zenodo, figshare, GitHub, the UB Mannheim image server, Hugging Face and loc.gov, depending on the dataset.
-- **Disk.** Sizes of the downloads, from [ocr-gold-set.md](gold-set.md); the extracted files need about as much again:
+- **Disk.** Sizes of the downloads, from [the gold set](gold-set.md#datasets-surveyed); the extracted files need about as much again:
 
   | Dataset                         | Download                                                                                                                   |
   | ------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
@@ -29,7 +29,7 @@ Scoring uses `usnm-ocr-survey score`, the Rust scorer in `crates/usnm-ocr-survey
 
 ## Choosing datasets
 
-Pick the sets that match the language and script your engine is meant for. Languages are the `lang` codes `gold.py` writes; eras and licences are from [ocr-gold-set.md](gold-set.md).
+Pick the sets that match the language and script your engine is meant for. Languages are the `lang` codes `gold.py` writes; eras and licences are from [the gold set](gold-set.md#datasets-surveyed).
 
 | `--dataset`       | Language, script                        | Era                                     | Licence                                                                                                | Use             |
 | ----------------- | --------------------------------------- | --------------------------------------- | ------------------------------------------------------------------------------------------------------ | --------------- |
@@ -52,7 +52,7 @@ Pick the sets that match the language and script your engine is meant for. Langu
 
 `public-fetch` downloads a dataset into `--src` and won't run without `--confirm-download`. It writes `SOURCE.json` (licence, attribution and URLs) beside the download. A file already downloaded is not fetched again. `public-convert` reads `--src` and writes the scoring layout to `--out`.
 
-The commands below assume the repository root as the working directory, with `DATA` and `OUT` standing for directories of your choice. The counts are the ones used in the real runs of 13 October 2026, listed in [ocr-gold-set.md](gold-set.md#fetch-and-convert); `--count` defaults to 60 and `--per-page` to 3.
+The commands below assume the repository root as the working directory, with `DATA` and `OUT` standing for directories of your choice. The counts are the ones used in the real runs of 13 October 2026, listed in [the gold set](gold-set.md#fetch-and-convert); `--count` defaults to 60 and `--per-page` to 3.
 
 ```sh
 # BLN600: 600 excerpts; the zip's sha256 is checked before extracting
@@ -83,14 +83,7 @@ scripts/ocr-survey/gold.py public-convert --dataset newseye-bnf --src DATA/newse
 
 Other `public-convert` flags: `--seed` (default 296) changes which regions are picked; `--min-chars` and `--max-chars` override the length window (200 to 2,500 normalized characters for most sets, 200 to 8,000 for BLN600, 20 to 300 for NZZ lines). The pick takes one region from each page before a second from any page, up to `--per-page` per page. With the same download, seed and flags, the pick is the same, so two people can score on the same crops.
 
-The `austrian` conversion has now run on real training and validation files;
-the publisher's partitions overlap by newspaper issue. See the
-[German diagnostic](gold-set.md#german-fraktur-cutover-diagnostic-18-october-2026)
-for the issue-disjoint experiment and its failed candidate. Reichsanzeiger image
-retrieval returned HTTP 503 on 18 October 2026, so that attempted run did not
-establish image-backed conversion coverage. If a conversion fails or writes no
-crops, record the failing stage rather than treating a downloaded XML archive as
-a complete reference set.
+The `austrian` conversion has run on the real training and validation files; the publisher's two partitions overlap by newspaper issue, so don't treat validation as unseen ([German diagnostic](../notes/2026-10-18-german-fraktur-diagnostic.md)). Mannheim's image server returned HTTP 503 on 18 October 2026, so `reichsanzeiger` has not yet converted on real images. If a conversion fails or writes no crops, record the failing stage rather than treating a downloaded XML archive as a complete reference set.
 
 ## Running your engine
 
@@ -185,7 +178,7 @@ scripts/ocr-survey/gold.py validate --crops OUT/bln600/crops.jsonl --manifest OU
 cargo run --release -p usnm-ocr-survey -- score --crops OUT/bln600/crops.jsonl --hyp tesseract-5.5=OUT/bln600/tesseract.jsonl --out OUT/bln600/scores
 ```
 
-`validate` checks the transcriptions and that each image is present. It prints each error and warning, then a count, and exits with status 1 on any error. `crop_sha256` in the manifest is the checksum of the bytes `public-convert` wrote, so a warning that an image differs from it means the file changed after conversion; convert again. The real runs listed in [ocr-gold-set.md](gold-set.md#fetch-and-convert) validated with 0 errors.
+`validate` checks the transcriptions and that each image is present. It prints each error and warning, then a count, and exits with status 1 on any error. `crop_sha256` in the manifest is the checksum of the bytes `public-convert` wrote, so a warning that an image differs from it means the file changed after conversion; convert again. The real runs listed in [the gold set](gold-set.md#fetch-and-convert) validated with 0 errors.
 
 `score` takes one `--hyp NAME=FILE.jsonl` per engine; repeat the flag to score several engines in one run. `NAME` is your label for the engine and its settings, and it's what the output shows, so put the version and profile in it (`tesseract-5.5-psm6`). `score` leaves out crops that fail validation and prints how many it used on stderr. It prints the summary as a Markdown table and, with `--out`, writes two CSV files.
 
@@ -230,7 +223,7 @@ BLN600 crops run up to 7,000 characters. Scoring all 600 against Gale's OCR took
 
 **Comparing engines.** Compare engines with each other on the same crops: the same dataset, the same `public-convert` flags and seed, and the same `crops.jsonl`. Check that `crops` and `ref_chars` match between the engines' rows. If one engine has fewer crops, it skipped some or your file lacks rows, and its CER covers different text. The easiest way to keep them comparable is one `score` run with a `--hyp` per engine.
 
-**Accuracy and agreement are different numbers.** `gold.py agree` compares engines with each other on this project's own 60 crops, which have no transcription yet (the 40 Czech, Serbian, Polish and Russian crops are out for transcription: [ocr-gold-set.md](gold-set.md#selection)). That number is agreement, not accuracy: two engines can agree and both be wrong. The public sets give accuracy against a human transcription. Report them in separate tables with those labels, and never put a public-set CER and an agreement figure in the same column. The `pub-` prefix on every public group keeps the rows apart.
+**Accuracy and agreement are different numbers.** `gold.py agree` compares engines with each other on this project's own 60 crops, which have no transcription yet (the 40 Czech, Serbian, Polish and Russian crops are out for transcription: [Selection](gold-set.md#selection)). That number is agreement, not accuracy: two engines can agree and both be wrong. The public sets give accuracy against a human transcription. Report them in separate tables with those labels, and never put a public-set CER and an agreement figure in the same column. The `pub-` prefix on every public group keeps the rows apart.
 
 **Sample size.** The NewsEye validation sets gave 24 (French), 18 (Finnish) and 10 (Swedish) crops in the real runs. Small sets swing with a few crops; quote `crops` and `ref_chars` with every CER.
 
@@ -238,11 +231,11 @@ BLN600 crops run up to 7,000 characters. Scoring all 600 against Gale's OCR took
 
 Each output directory has a `LICENSES/` folder with `SOURCE.json` (dataset, URL, licence, attribution, and for BLN600 a note on the No-Derivatives terms) and the dataset's own licence and readme files where it has them. Every row in `manifest.jsonl` carries `source_dataset`, `source_url`, `source_license` and `source_attribution`. When you publish results, cite each dataset you scored on from those fields, and say which subset, `--count`, `--per-page` and `--seed` you used so others can rebuild the same crops.
 
-- **Attribution (BY).** Every scoring set except Reichsanzeiger's GitHub copy carries a BY term. Credit the source named in `SOURCE.json`. Its `attribution` (and the manifest's `source_attribution`) is null for Reichsanzeiger and Austrian, because `gold.py` has no attribution text for them yet, so use the credits that follow. From [ocr-gold-set.md](gold-set.md#source-policy): UB Mannheim for Reichsanzeiger-GT; ONB, NewsEye and READ for the Austrian set; Callum Booth, Alan Thomas and Robert Gaizauskas for BLN600.
-- **NonCommercial (NC): BLN600, NZZ, Overproof.** The source terms condition sharing on non-commercial use. This guide does not decide whether the project's activities, hosting or volunteer distribution qualify; the operator must verify the specific use against each source's terms before serving or distributing the data.
+- **Attribution (BY).** Every scoring set except Reichsanzeiger's GitHub copy carries a BY term. Credit the source with the `attribution` in `SOURCE.json` (the manifest's `source_attribution`); every scoring set has one.
+- **NonCommercial (NC): BLN600, NZZ, Overproof.** The source terms condition sharing on non-commercial use. This guide does not decide whether a particular use, hosting or distribution qualifies; check yours against each source's terms before serving or distributing the data.
 - **ShareAlike (SA): Overproof (HIPE copy).** If you redistribute the converted text or an adaptation of it, it goes out under CC BY-NC-SA 4.0. The HIPE licence applies to the structured format; the newspaper text and LoC's images are public domain.
 - **NoDerivatives (ND): BLN600.** Don't share crops, re-encoded images or other derived files of BLN600. `public-convert` copies BLN600's images unchanged for that reason. To let someone reproduce your run, give them the dataset's URL and your flags, and let them fetch it themselves.
 
-Scores, tables and per-crop CSVs hold numbers and crop IDs, not the dataset's text or images. This guide does not determine whether publishing those outputs is permitted under applicable terms. Hypothesis files contain engine text of the crops; whether publishing those counts as a derivative under ND or SA terms is UNVERIFIED, so keep BLN600 hypotheses private.
+Scores, tables and per-crop CSVs hold numbers and crop IDs, not the dataset's text or images. Hypothesis files contain engine text of the crops; whether publishing those counts as a derivative under ND or SA terms is UNVERIFIED, so keep BLN600 hypotheses private.
 
 Nothing from these datasets is committed to this repository. Keep `DATA` and `OUT` outside it, or out of version control.
