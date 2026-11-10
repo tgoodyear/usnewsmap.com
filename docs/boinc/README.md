@@ -6,8 +6,8 @@ its database, the bridge steps and the controller run on an on-prem host
 ([BOINC server on-prem](server/onprem.md)).
 Production and experimental tasks, including Qwen, share the same account,
 CPU and GPU choices and resource limits. No per-experiment profile update is
-required. Operators bound campaigns with the [native NVIDIA workunit window
-and stop procedure](apps/app-release.md).
+required. Operators bound campaigns with the [native GPU admission windows
+and stop procedure](apps/intel-gpu.md#admission).
 
 The pilot uses stock BOINC, one cached page per task, pinned Tesseract 5.5.0,
 the model lock and language routing. It publishes native ALTO and Parquet to
@@ -38,7 +38,7 @@ baselines and adapted models with `usnm_qwen`.
 ## Apps
 
 - [OCR quality](apps/quality.md): `usnm_quality` and `usnm_qwen`.
-- [OCR bundles](apps/ocr-bundles.md): several pages in one `usnm_ocr` workunit.
+- [OCR bundles](apps/ocr-bundles.md): several pages in one `usnm_ocr` workunit, Cherokee line jobs and rotating pinned versions.
 - [Native OCR](apps/native-ocr.md): `usnm_ocr` and `usnm_gold` without a container runtime.
 - [Japanese OCR with NDLOCR-Lite](apps/ndlocr-lite.md): `usnm_ndlocr`.
 - [AMD GPUs](apps/amd-gpu.md) and [Intel and NVIDIA GPUs](apps/intel-gpu.md) for `usnm_qwen`.
@@ -53,14 +53,13 @@ baselines and adapted models with `usnm_qwen`.
 ## Pipeline pages
 
 - [Boundaries and monitoring](server/boundaries-and-monitoring.md): the public dataset-page counts, workbook query validation and the pilot's boundaries.
-- [The worker image](apps/worker-image.md): building and publishing the worker image, and the local synthetic demonstration.
+- [The worker image](apps/worker-image.md): building and publishing the worker image, and the local synthetic demonstration. [Server images](apps/images.md): the server, bridge and app-version images.
 - [The server and the apps](server/server-and-apps.md): connecting a stock BOINC project, installing app versions and plan classes, and moving the project share.
 - [Feeder-only refresh](server/feeder-refresh.md): when and how to restart only the feeder so its `--allapps` slot allocation matches the app registry, with the readbacks, retry limit and rollback (#1462).
 - [The bridge steps](server/bridge-steps.md): starting a bridge step, registering the apps, two October 2026 campaign records, and running the server and maintainer on different hosts.
 - [The scan-cache hand-off](server/scan-cache-handoff.md): getting one page from the scan cache to the BOINC server, with the infrastructure, the runbook, the scan fetcher's identity and the quality wave's page JPEG cache.
 - [Allocation, recovery and acceptance](server/allocation-and-recovery.md): how a cohort is allocated, how to recover failed work, and the live acceptance exercise.
 - [The gold check](server/gold-check.md): scoring a host's engine on public ground truth, host trust for `usnm_ocr`, building the gold bundle and engine routing.
-- [Releasing an app version](apps/app-release.md): signing and publishing app versions, the feeder sizing, the native GPU windows and client acceptance.
-- [The AMD #885 release](apps/amd-885-release.md): the record of the scoped AMD Vulkan production release.
+- [Releasing an app version](apps/app-release.md): signing and publishing app versions, held versions, feeder visibility and client acceptance.
 - [The bootstrap pipeline](server/bootstrap-pipeline.md): the reviewed orchestration of the existing BOINC scripts (#551).
 - [Database TLS acceptance](server/db-tls-acceptance.md): the local BOINC database TLS checks.

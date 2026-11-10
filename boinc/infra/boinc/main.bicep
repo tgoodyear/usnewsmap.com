@@ -356,7 +356,7 @@ module publishJob 'modules/bridge-job.bicep' = if (withApp && !empty(publishImag
     workloadProfileName: app!.outputs.workloadProfileName
     command: [ '/usr/local/lib/usnm-boinc/publish-appver.sh' ]
     // Publish into the live project, keeping its credentials and config links
-    // (docs/boinc/apps/amd-885-release.md); set by hand for the AMD release (#529).
+    // (docs/notes/2026-10-19-amd-vulkan-release.md); set by hand for the AMD release (#529).
     extraEnv: [ { name: 'APPVER_REUSE_PROJECT', value: '1' } ]
   }
 }
