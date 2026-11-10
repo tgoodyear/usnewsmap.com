@@ -1208,6 +1208,11 @@ class GoldOnboardingTests(unittest.TestCase):
         # Gold runs before any feed work in the tick.
         self.assertEqual(self.fake.actions[:2], [("step", "gold-onboard"), ("step", "gold-promote")])
 
+    def test_its_steps_are_timed_as_the_gold_phase(self):
+        self.fake.timings = batch.Timings()
+        self.tick()
+        self.assertEqual(self.fake.timings.summary()["phases"]["gold"]["count"], 2)
+
     def test_a_scope_can_onboard_onto_another_worker_than_the_plans(self):
         # #1687: before a rotation, the live plan calibrates its hosts on the new worker while it
         # still feeds OCR on the old one; `image` defaults to the plan's.
@@ -1229,18 +1234,34 @@ class GoldOnboardingTests(unittest.TestCase):
         self.assertEqual(len(self.fake.steps), 2)
         self.tick(at=60 * 60)
         self.assertEqual(len(self.fake.steps), 4)
-        # A held result shortens the wait to ten minutes.
+        # A held result never runs it more than hourly: a run takes minutes, and a host gold
+        # can't calibrate keeps its results held for good.
+        for job in self.fake.jobs.values():
+            job["spool"] = "/project/usnmocr/results/batch1"
+        self.fake.hold = True
+        self.fake.admits = False
+        for at in (65, 70, 110):
+            with self.subTest(minute=at), self.assertRaisesRegex(RuntimeError, "trust"):
+                self.tick(at=at * 60)
+            self.assertEqual(len(self.fake.steps), 4)
+        with self.assertRaisesRegex(RuntimeError, "trust"):
+            self.tick(at=120 * 60)
+        self.assertEqual(len(self.fake.steps), 6)
+        self.assertTrue(self.state["gold_onboarding"]["v1-tess550/eng/eng"]["held"])
+
+    def test_held_wait_never_exceeds_a_long_interval(self):
+        self.config["gold_onboarding"] = [dict(GOLD, interval_minutes=1440)]
+        self.tick()
         for job in self.fake.jobs.values():
             job["spool"] = "/project/usnmocr/results/batch1"
         self.fake.hold = True
         self.fake.admits = False
         with self.assertRaisesRegex(RuntimeError, "trust"):
-            self.tick(at=65 * 60)
-        self.assertEqual(len(self.fake.steps), 4)
+            self.tick(at=59 * 60)
+        self.assertEqual(len(self.fake.steps), 2)
         with self.assertRaisesRegex(RuntimeError, "trust"):
-            self.tick(at=70 * 60)
-        self.assertEqual(len(self.fake.steps), 6)
-        self.assertTrue(self.state["gold_onboarding"]["v1-tess550/eng/eng"]["held"])
+            self.tick(at=60 * 60)
+        self.assertEqual(len(self.fake.steps), 4)
 
     def test_an_admitted_host_publishes_its_held_result_in_the_same_tick(self):
         self.tick()
