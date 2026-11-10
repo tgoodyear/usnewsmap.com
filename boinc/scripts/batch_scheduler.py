@@ -126,8 +126,11 @@ GOLD_REQUIRED = {"campaign", "language", "profile", "engine_base"}
 # plan rotating onto a new worker first calibrates its hosts on it, still feeding the old one.
 GOLD_OPTIONAL = {"engine_version", "max_hosts", "interval_minutes", "image"}
 GOLD_DEFAULT_INTERVAL_MINUTES = 60
-# While results are held at collection, a scope is retried at most this often.
-GOLD_HELD_INTERVAL_SECONDS = 600
+# While results are held at collection, a scope's wait is cut to at most this. An hour, not ten
+# minutes: a gold run takes about 12 minutes on CT 230, so a shorter wait ran it on every tick and
+# kept ticks past controller_tick's 15-minute limit. Held results from hosts gold can't calibrate
+# never clear, so the shorter wait never ended.
+GOLD_HELD_INTERVAL_SECONDS = 60 * 60
 GOLD_STEPS = ("gold-onboard", "gold-promote")
 GOLD_SKIPPED_AT_CAP = "skipped: global safety cap"
 QUEUES = ("ocr-bulk", "ocr-priority")
@@ -2056,7 +2059,8 @@ def gold_onboarding(config, state, transport, persist, now, *, held, room):
     """Run each due gold_onboarding scope's gold-onboard and gold-promote bridge steps (#901).
 
     A scope is due when its interval has passed since its last run, or GOLD_HELD_INTERVAL_SECONDS
-    while results are held at collection. The run is recorded before its steps start, so a
+    (an hour) while results are held at collection, if that is shorter. The steps are timed as
+    the tick's `gold` phase. The run is recorded before its steps start, so a
     crash or a failing step waits for the next due time instead of retrying every tick. A failed
     step is reported, never hidden, and doesn't stop the tick: collection then holds results
     from uncalibrated hosts exactly as before.
@@ -2097,7 +2101,9 @@ def gold_onboarding(config, state, transport, persist, now, *, held, room):
             try:
                 # Promotion issues nothing; it always takes the configured positive limit.
                 limit = issue if step == "gold-onboard" else entry.get("max_hosts", 10)
-                transport.step("bridge", step, **variables, GOLD_MAX_HOSTS=limit)
+                timings = getattr(transport, "timings", None)
+                with timings.phase("gold") if timings is not None else contextlib.nullcontext():
+                    transport.step("bridge", step, **variables, GOLD_MAX_HOSTS=limit)
                 run["steps"][step] = "ok"
             except RuntimeError as error:
                 run["steps"][step] = str(error)
