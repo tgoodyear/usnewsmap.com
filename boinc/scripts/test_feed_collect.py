@@ -3,6 +3,7 @@ from copy import deepcopy
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import io
 import json
+import tempfile
 import os
 from pathlib import Path
 import shutil
@@ -874,6 +875,39 @@ class CollectionTests(unittest.TestCase):
             finally:
                 http.shutdown()
                 thread.join()
+
+    def test_only_a_missing_tick_is_excused_by_a_rotation_window(self):
+        # #1687: the controller source names "no recent tick" apart from every other failure,
+        # and the evaluator's rotation window excuses only that one.
+        rotation = {"reason": "roll", "started_at": NOW - 60, "until": NOW + 3600}
+        base = self.documents()
+        for error, excused in ((C.NO_RECENT_TICK, True), ("source unavailable", False), (None, False)):
+            with self.subTest(error=error):
+                docs = json.loads(json.dumps(base))
+                if error:
+                    docs["/controller"] = {"schema_version": 1, "source": "controller",
+                                           "observed_at": NOW, "error": error}
+                else:
+                    docs["/controller"]["tick"]["finished_at"] = NOW - 901   # stale evidence
+                config = {"server": "/server", "controller": "/controller", "backlog": "/backlog",
+                          "clients": ["/own"]}
+                with patch.object(C, "read_source", side_effect=lambda path: docs[path]), \
+                        patch.object(C.time, "time", return_value=NOW):
+                    facts = C.collect(config)
+                self.assertEqual(facts["errors"], ["controller"])
+                self.assertEqual(facts["sources"]["controller"]["reason"] == C.NO_RECENT_TICK, excused)
+                state = {}
+                for at in range(0, 300, 60):
+                    document, state = F.evaluate(facts, state, NOW + at, 1000 + at, "boot", "cfg", rotation)
+                collection = next(c for c in document["checks"] if c["code"] == "collection")
+                self.assertEqual(collection["state"], "healthy" if excused else "firing")
+        # The controller source writes the reason itself when no tick finished lately.
+        with patch.object(C, "controller", side_effect=C.NoRecentTick()), \
+                tempfile.TemporaryDirectory() as folder:
+            out = Path(folder) / "controller.json"
+            self.assertEqual(C.main(["controller", "--output", str(out)]), 1)
+            self.assertEqual(json.loads(out.read_text())["error"], C.NO_RECENT_TICK)
+        self.assertEqual(F.NO_RECENT_TICK, C.NO_RECENT_TICK)
 
     def test_unconfigured_clients_and_backlog_are_unknown_never_healthy(self):
         docs = self.documents()

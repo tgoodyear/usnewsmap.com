@@ -6,9 +6,11 @@
 # Platform versions are immutable: an existing platform directory must be identical,
 # and then only update_versions runs again (it skips versions it already has).
 #
-# APPVER_HOLD=1 (boinc-app-release.sh --hold, #1687) publishes the version held: deprecated,
-# journaled by app-version-hold.php, before the feeder is told to reread the database, so the
-# scheduler never sends it. app-version-hold.php --action release un-deprecates it later.
+# APPVER_HOLD=1 (boinc-app-release.sh --hold, #1687) publishes the version held: the row is
+# inserted already deprecated, in update_versions' one INSERT, so no feeder reload (a restart,
+# a pending reread_db) can ever load it, and a job that fails after the insert leaves it held.
+# A journal under <project>/ops-app-versions/ records the publication first.
+# app-version-hold.php --action release un-deprecates it later.
 set -euo pipefail
 # shellcheck source=SCRIPTDIR/../server/lib.sh
 . /usr/local/lib/usnm-boinc/lib.sh
@@ -191,7 +193,28 @@ else
   ln -s "$PROJ/config.xml" "$registration/config.xml"
 fi
 ln -s "$dst" "$registration/apps/$APPVER_APP/$APPVER_VERSION/$subdir"
-(cd "$registration" && "$PROJ/bin/update_versions" --noconfirm)
+update_versions="$PROJ/bin/update_versions"
+if [ "${APPVER_HOLD:-0}" = 1 ]; then
+  # A private copy whose one app_version INSERT sets deprecated=1: the row is born held. Exactly
+  # one INSERT must match, or the stock script changed and this refuses before registering.
+  update_versions="$registration/update_versions.held"
+  python3 - "$PROJ/bin/update_versions" "$update_versions" <<'PYHOLD' || fail "can't make update_versions register the version held; nothing registered"
+import os, sys
+text = open(sys.argv[1]).read()
+needle = 'xml_doc=\'$xml\', plan_class=\'$plan_class\', beta=$b";'
+if text.count(needle) != 1 or text.count("BoincAppVersion::insert(") != 1:
+    raise SystemExit("update_versions has no single app_version insert to hold")
+fd = os.open(sys.argv[2], os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o700)
+with os.fdopen(fd, "w") as stream:
+    stream.write(text.replace(needle, needle[:-2] + ', deprecated=1";'))
+PYHOLD
+  mkdir -p "$PROJ/ops-app-versions"
+  journal="$PROJ/ops-app-versions/publish-held-$APPVER_APP-$APPVER_VERSION-$APPVER_PLATFORM-$(date -u +%Y%m%dT%H%M%SZ)-$$.json"
+  printf '{"action": "publish-held", "app": "%s", "deprecated": 1, "plan_class": "%s", "platform": "%s", "version": "%s"}\n' \
+    "$APPVER_APP" "$APPVER_PLAN_CLASS" "$APPVER_PLATFORM" "$APPVER_VERSION" > "$journal" ||
+    fail "can't write the publication journal; nothing registered"
+fi
+(cd "$registration" && "$update_versions" --noconfirm)
 # PHP die(string) exits zero; the job status alone is not evidence of registration.
 verified=$(cd "$registration" && php <<'PHP'
 <?php
@@ -231,19 +254,16 @@ $versions = BoincAppVersion::enum("appid=$app->id and version_num=$number and pl
 if (count($versions) != 1) {
     fwrite(STDERR, "Expected exactly one registered app version\n"); exit(1);
 }
+// A held publication (#1687) must have registered the row deprecated. A version registered live
+// earlier (a rerun of a release made without --hold) stays as it is: hold it by hand.
+if (getenv("APPVER_HOLD") === "1" && intval($versions[0]->deprecated) !== 1) {
+    fwrite(STDERR, "The registered app version ".$versions[0]->id." is live, not held; hold it with app-version-hold.php\n"); exit(1);
+}
 echo "Verified $name $version $platformName $plan (app_version ".$versions[0]->id.")\n";
 PHP
 )
 echo "$verified"
-if [ "${APPVER_HOLD:-0}" = 1 ]; then
-  [[ $verified =~ \(app_version\ ([1-9][0-9]*)\)$ ]] || fail "no app version id to hold"
-  # Held before the feeder hears of it. The tool's own reread_db notice lands in the private
-  # registration copy; the project's comes next.
-  (cd "$registration" && php /usr/local/lib/usnm-boinc/app-version-hold.php --project "$registration" \
-    --journal-dir "$PROJ/ops-app-versions" --app-version "${BASH_REMATCH[1]}" --action hold --apply) ||
-    fail "registered but not held: app version ${BASH_REMATCH[1]} is live once the feeder rereads; hold it with app-version-hold.php"
-  log "published $APPVER_APP $APPVER_VERSION held (app version ${BASH_REMATCH[1]})"
-fi
+[ "${APPVER_HOLD:-0}" != 1 ] || log "published $APPVER_APP $APPVER_VERSION held (deprecated from its insert)"
 touch "$PROJ/reread_db"
 ownership_paths=("$dst" "$PROJ/templates")
 # Scoped publication must not walk the unrelated live download tree on Azure Files.

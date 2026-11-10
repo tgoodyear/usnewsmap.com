@@ -571,9 +571,12 @@ So `usnm_ocr` and `usnm_gold` releases take one of two flags:
 
 - `--hold` publishes the version deprecated. The image carries the hold (`APPVER_HOLD=1`), so
   a `--prepare-only` image published later with `usnm-boinc-step` is held too.
-  `publish-appver.sh` deprecates the new row with `app-version-hold.php` before it touches
-  `reread_db`, so the scheduler never sends it. The journal goes under
-  `<project>/ops-app-versions/`.
+  `publish-appver.sh` runs a private copy of `update_versions` whose one `app_version` INSERT
+  adds `deprecated=1`, so the row is held from the moment it exists: no feeder reload can load
+  it, and a job that fails after the insert leaves it held. If the stock script doesn't have
+  exactly one such INSERT, the publication refuses before registering anything. A journal
+  (`publish-held-<app>-<version>-<platform>-<time>.json`) goes under `<project>/ops-app-versions/`
+  first, and verification refuses a row it finds live.
 - `--outrank-pinned` publishes it live, for an app with no pinned work.
 
 For `usnm_gold` the script also reads `gold-engine-platforms.json` from the running
@@ -597,7 +600,9 @@ podman exec usnm-boinc-server php /usr/local/lib/usnm-boinc/app-version-hold.php
 - `--action hold` and `--action release` set `deprecated` on one `usnm_ocr` or `usnm_gold`
   container (`docker`) version. `--action min-version` sets `usnm_ocr`'s `min_version`, which
   keeps every version from that number up loaded, so units pinned to an older version are still
-  sent after a newer one is released.
+  sent after a newer one is released. Registration keeps it: `register-apps.php` writes the
+  database's `min_version` into `project.xml` for each app already registered before BOINC's
+  `xadd` runs, so a later publication doesn't reset it to `project.xml`'s 0.
 - Each change writes a journal first (`<action>-app-version-<id>-<time>-<random>.json` or
   `min-version-usnm_ocr-...`, with the value before), then makes the change, checks it and
   touches `reread_db`. Revert with the opposite action. A version already in the target state

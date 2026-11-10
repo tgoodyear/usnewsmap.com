@@ -25,14 +25,13 @@ ARG WRAPPER_PATH=/usr/local/lib/usnm-boinc/docker_wrapper
 ARG WRAPPER_SHA256=""
 ARG WRAPPER_SOURCE_PIN=""
 ARG BINARY_PATH=""
-# 1: publish the version held (deprecated) (#1687); app-version-hold.php releases it.
+# 1: register the version held, deprecated from its insert (#1687); app-version-hold.php releases it.
 ARG HOLD=0
 COPY src /opt/usnm-appver-build/appver-src
 COPY sigs /opt/usnm-appver-build/sigs
 COPY code_sign_public /opt/usnm-appver-build/code_sign_public
 COPY publish-appver.sh /usr/local/lib/usnm-boinc/publish-appver.sh
 COPY register-apps.php /usr/local/lib/usnm-boinc/register-apps.php
-COPY app-version-hold.php /usr/local/lib/usnm-boinc/app-version-hold.php
 COPY check_appver.py /opt/usnm-appver-build/check_appver.py
 # The release script supplies a verified Mac/Linux-arm64/Windows wrapper or native binary here;
 # only Linux x86_64 container releases use the server wrapper.

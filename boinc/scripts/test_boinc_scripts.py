@@ -1146,7 +1146,6 @@ class AppReleaseArgs(unittest.TestCase):
         # The image carries the hold, so a --prepare-only image published later is held too.
         self.assertIn('--build-arg "HOLD=$hold_arg"', text.split("acr_build_verified baz_build", 2)[2])
         self.assertIn('--build-arg "BINARY_PATH=$appver_binary" --build-arg "HOLD=$hold_arg")', text)
-        self.assertIn('git show "HEAD:boinc/scripts/app-version-hold.php" > "$ctx/app-version-hold.php"', text)
         # Gold reads the binding from the running server, not from the checkout.
         self.assertIn("podman exec usnm-boinc-server cat /usr/local/lib/usnm-boinc/gold-engine-platforms.json", text)
         self.assertIn('$HOLD || die "the running server\'s gold-engine-platforms.json binds no', text)

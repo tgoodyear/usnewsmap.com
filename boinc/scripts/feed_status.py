@@ -36,11 +36,13 @@ MAX_GAP = 180
 APP_NAMES = ("usnm_ocr", "usnm_qwen")
 DELIVERY_TEST_EVENT = "boinc_feed_delivery_test"
 # A planned version rotation (#1687): while the window lasts, cpu_shortage and usnm_ocr_no_work
-# don't fire, and a missing controller tick (its timer stopped, a long tick by hand) doesn't
-# count towards collection. Every other check, and a controller tick that fails, still fires.
+# don't fire, and a controller source reporting no recent tick (its timer stopped, a long tick by
+# hand: feed_collect's no_recent_controller_tick) doesn't count towards collection. Any other
+# controller source failure, every other check, and a controller tick that fails, still fire.
 ROTATION_FILE = "rotation.json"
 ROTATION_MAX_MINUTES = 240
 ROTATION_DEFERRED = ("cpu_shortage", "usnm_ocr_no_work")
+NO_RECENT_TICK = "no_recent_controller_tick"  # feed_collect.NO_RECENT_TICK
 
 
 def atomic_text(path, value):
@@ -234,10 +236,11 @@ def evaluate(facts, previous, now, monotonic, boot_id, config_id, rotation=None)
         check("feeder_allocation", drift, FEEDER_DRIFT_HOLD_S,
               generation=guard["reason"] + ":" + ",".join(map(str, guard["app_ids"])),
               reason=guard["reason"], app_ids=guard["app_ids"])
-    # In a rotation the controller source may be missing a tick on purpose; nothing else may.
-    errors = [e for e in facts.get("errors", []) if not (rotation and e == "controller")]
+    # In a rotation the controller may be missing a tick on purpose; nothing else is excused.
+    excused = bool(rotation) and facts.get("sources", {}).get("controller", {}).get("reason") == NO_RECENT_TICK
+    errors = [e for e in facts.get("errors", []) if not (excused and e == "controller")]
     unknown = errors or [c["code"] for c in checks if c["state"] == "unknown"
-                         and not (rotation and c["code"] == "controller_tick")]
+                         and not (excused and c["code"] == "controller_tick")]
     # Held: one failed source run (a single unknown evaluation) is not worth an email.
     # Its time is kept apart from the condition timers a reset clears, so resets that
     # recur (an evaluator running only every few minutes, configs changing) still fire.

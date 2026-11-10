@@ -613,7 +613,6 @@ git show "HEAD:boinc/images/appver/Containerfile" > "$ctx/Containerfile"
 git show "HEAD:boinc/images/appver/publish-appver.sh" > "$ctx/publish-appver.sh"
 git show "HEAD:boinc/images/appver/check_appver.py" > "$ctx/check_appver.py"
 git show "HEAD:boinc/images/server/register-apps.php" > "$ctx/register-apps.php"
-git show "HEAD:boinc/scripts/app-version-hold.php" > "$ctx/app-version-hold.php"
 hold_arg=0
 ! $HOLD || hold_arg=1
 mv "$work/sigs" "$ctx/sigs"

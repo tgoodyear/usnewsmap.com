@@ -32,6 +32,12 @@ class BoincApp {
     }
     function update($clause) {
         if (getenv("STUB_IGNORE_UPDATE")) return true;
+        if (preg_match("/^min_version = ([0-9]+)$/", $clause, $mv)) {
+            $rows = self::rows();
+            foreach ($rows as &$row) if ($row["name"] === $this->name) $row["min_version"] = $mv[1];
+            file_put_contents(getenv("STUB_DB"), json_encode($rows));
+            return true;
+        }
         preg_match("/^weight=([0-9]+)$/", $clause, $m) or die("bad update $clause\n");
         $rows = self::rows();
         foreach ($rows as &$row) if ($row["name"] === $this->name) $row["weight"] = $m[1];
@@ -54,7 +60,10 @@ chdir("html/inc"); require_once("boinc_db.inc"); chdir("../..");
 if (getenv("STUB_XADD_STATUS")) exit((int)getenv("STUB_XADD_STATUS"));
 foreach (simplexml_load_file("project.xml")->app as $app) {
     $n = (string)$app->name;
-    if (BoincApp::lookup("name='$n'")) { echo "app $n already in DB\n"; } else { BoincApp::insert($n); echo "added app: $n\n"; }
+    $a = BoincApp::lookup("name='$n'");
+    // As tools/xadd: an existing app takes project.xml's min_version.
+    if ($a && (int)($a->min_version ?? 0) != (int)$app->min_version) { $a->update("min_version = " . (int)$app->min_version); echo "updated min_version of app $n\n"; }
+    elseif ($a) { echo "app $n already in DB\n"; } else { BoincApp::insert($n); echo "added app: $n\n"; }
 }
 """
 
@@ -103,6 +112,28 @@ class RegisterApps(unittest.TestCase):
         self.assertIn("set weight of app usnm_gold_native, which has no app version, to 0", result.stdout)
         self.assertEqual(weights["usnm_gold_native"], "0")
         self.assertEqual(weights, {name: str(weight) for name, weight in self.declared().items()})
+
+    def test_an_operator_set_min_version_survives_registration(self):
+        # #1687: app-version-hold.php --action min-version keeps 106 loaded beside 107; xadd
+        # would set it back to project.xml's 0 on the next publication.
+        rows = self.live()
+        for row in rows:
+            row["min_version"] = "106" if row["name"] == "usnm_ocr" else "0"
+        result, _ = self.run_script(rows)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("app usnm_ocr keeps min_version 106 from the database (project.xml says 0)", result.stdout)
+        self.assertNotIn("updated min_version of app usnm_ocr", result.stdout)
+        after = {row["name"]: row.get("min_version") for row in json.loads(self.db.read_text())}
+        self.assertEqual(after["usnm_ocr"], "106")
+        self.assertEqual(ET.parse(self.project / "project.xml").find("app[name='usnm_ocr']").findtext("min_version"), "106")
+        self.assertEqual(list(self.project.glob("project.xml.register-apps.*")), [])
+        # Without the preserving step, the stub xadd (as BOINC's) would have reset it.
+        shutil.copy(PROJECT_XML, self.project / "project.xml")
+        self.db.write_text(json.dumps(rows))
+        subprocess.run([str(self.project / "bin/xadd")], cwd=self.project, capture_output=True, text=True,
+                       env={**os.environ, "STUB_DB": str(self.db)}, check=True)
+        reset = {row["name"]: row.get("min_version") for row in json.loads(self.db.read_text())}
+        self.assertEqual(reset["usnm_ocr"], "0")
 
     def test_a_rerun_changes_nothing(self):
         rows = self.live() + [{"id": 99, "name": "usnm_gold_native", "weight": "0", "deprecated": "0", "versions": 0}]

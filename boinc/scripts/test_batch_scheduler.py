@@ -1208,6 +1208,21 @@ class GoldOnboardingTests(unittest.TestCase):
         # Gold runs before any feed work in the tick.
         self.assertEqual(self.fake.actions[:2], [("step", "gold-onboard"), ("step", "gold-promote")])
 
+    def test_a_scope_can_onboard_onto_another_worker_than_the_plans(self):
+        # #1687: before a rotation, the live plan calibrates its hosts on the new worker while it
+        # still feeds OCR on the old one; `image` defaults to the plan's.
+        new = "sha256:" + "8" * 64
+        self.config["gold_onboarding"] = [dict(GOLD, image=new, campaign="current8404-amd64")]
+        self.tick()
+        self.assertEqual({v["GOLD_ENGINE_IMAGE"] for v in self.ran()}, {new})
+        self.assertNotEqual(self.config["image"], new)
+        # Validated as a pinned digest, and outside the allocation digest like the rest of it.
+        for bad in ("ghcr.io/tgoodyear/usnm-boinc-worker@" + new, "sha256:abc", 7, "latest"):
+            with self.subTest(image=bad), self.assertRaisesRegex(ValueError, "invalid gold_onboarding image"):
+                batch._validate_gold_onboarding([dict(GOLD, image=bad)])
+        batch._validate_gold_onboarding([dict(GOLD, image=new)])
+        self.assertEqual(batch.digest(self.config), batch.digest(dict(self.config, gold_onboarding=[dict(GOLD)])))
+
     def test_runs_on_its_interval_and_sooner_while_results_are_held(self):
         self.tick()
         self.tick(at=30 * 60)
@@ -2235,7 +2250,12 @@ class BundleTests(unittest.TestCase):
             # A min_version keeps every version at or above it loaded.
             ({"min_version": 106, "versions": [version(106), version(107)]}, None),
             ({"min_version": 0, "versions": [version(107)]}, "isn't published, or it is held"),
-            ({"min_version": 107, "versions": [version(106), version(107)]}, "outranks it"),
+            ({"min_version": 107, "versions": [version(106), version(107)]}, "below usnm_ocr's min_version 107"),
+            # Every Linux version below the minimum: Linux loads nothing, which used to raise
+            # max() of an empty list instead of naming the pin and the platform.
+            ({"min_version": 107, "versions": [version(106), version(107, "arm64-apple-darwin")]},
+             r"below usnm_ocr's min_version 107, so the feeder loads it nowhere \(published on "
+             r"x86_64-pc-linux-gnu \(docker\)\).*Lower min_version to 106"),
         )
         for versions, refusal in cases:
             with self.subTest(versions=versions):

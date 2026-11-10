@@ -305,9 +305,24 @@ class DurationTest(unittest.TestCase):
         self.tick(0, rotation=rotation)
         self.facts.pop("tick")
         self.facts["errors"] = ["controller"]
+        self.facts["sources"] = {"controller": {"observed_at": None, "state": "unknown",
+                                                "reason": F.NO_RECENT_TICK}}
         for at in range(60, 600, 60):
             checks = self.tick(at, rotation=rotation)
         self.assertEqual((checks["collection"]["state"], checks["controller_tick"]["state"]), ("healthy", "unknown"))
+        # Any other controller source failure (transport, a malformed or stale document) isn't excused.
+        for reason in ("unavailable_or_invalid", "http_protocol_error", "stale_at_completion"):
+            with self.subTest(reason=reason):
+                self.state = {}
+                self.facts["sources"]["controller"]["reason"] = reason
+                for at in range(0, 300, 60):
+                    checks = self.tick(at, rotation=rotation)
+                self.assertEqual(checks["collection"]["state"], "firing")
+        self.facts["sources"]["controller"]["reason"] = F.NO_RECENT_TICK
+        self.state = {}
+        self.tick(0, rotation=rotation)
+        for at in range(60, 600, 60):
+            checks = self.tick(at, rotation=rotation)
         # Any other unknown source still does, and a failing tick still fires.
         self.facts["errors"] = ["controller", "server"]
         for at in range(600, 840, 60):
@@ -318,6 +333,8 @@ class DurationTest(unittest.TestCase):
         self.assertEqual(self.tick(900, rotation=rotation)["controller_tick"]["state"], "firing")
         # Without a window the same missing tick is unknown and collection fires as before.
         self.state = {}
+        self.facts["sources"] = {"controller": {"observed_at": None, "state": "unknown",
+                                                "reason": F.NO_RECENT_TICK}}
         self.facts["tick"] = {"ok": True, "seconds": 900}
         self.tick(0)
         self.facts.pop("tick")

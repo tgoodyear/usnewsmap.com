@@ -47,6 +47,17 @@ class SupplyUnknown(ValueError):
     """A bounded model cannot prove a feasible concurrent allocation."""
 
 
+# The controller source's only error a planned rotation may excuse (#1687): no tick finished in
+# the last 15 minutes, its timer stopped or a tick running by hand. Every other controller
+# failure (transport, a malformed or stale document) keeps its own reason.
+NO_RECENT_TICK = "no_recent_controller_tick"
+
+
+class NoRecentTick(SupplyUnknown):
+    def __init__(self):
+        super().__init__("no recent completed controller tick")
+
+
 def read_file(path, limit=MAX_BYTES):
     with Path(path).open("rb") as stream:
         value = stream.read(limit + 1)
@@ -190,6 +201,8 @@ def fresh(document, now, kind):
     if document.get("error"):
         if kind == "client" and document["error"] in SOURCE_UNKNOWN_REASONS:
             raise SupplyUnknown(document["error"])
+        if kind == "controller" and document["error"] == NO_RECENT_TICK:
+            raise SupplyUnknown(NO_RECENT_TICK)
         raise ValueError("source unavailable")
     if kind == "controller":
         tick = document["tick"]
@@ -957,7 +970,7 @@ def controller(unit, maintenance=()):
             # Paused on purpose: nothing ran, so nothing ran long or failed.
             return {"ok": None, "seconds": 0, "finished_at": int(time.time()), **failures,
                     "paused_by": paused}
-        raise ValueError("no recent completed controller tick")
+        raise NoRecentTick()
     return latest | failures
 
 
@@ -1367,7 +1380,8 @@ def collect(config):
                 facts["sources"][name] = {"observed_at": document["observed_at"], "state": "fresh"}
                 documents[name] = document
             except (OSError, ValueError, KeyError, TypeError, http.client.HTTPException) as error:
-                if isinstance(error, SupplyUnknown) and str(error) in (*SOURCE_UNKNOWN_REASONS, BINDING_MISMATCH):
+                if isinstance(error, SupplyUnknown) and str(error) in (*SOURCE_UNKNOWN_REASONS, BINDING_MISMATCH,
+                                                                     NO_RECENT_TICK):
                     reason = str(error)
                 else:
                     reason = "http_protocol_error" if isinstance(error, http.client.HTTPException) else "unavailable_or_invalid"
@@ -1499,6 +1513,8 @@ def main(argv=None):
             result["tick"] = controller(args.unit, tuple(args.maintenance_unit))
         else:
             result.update(backlog(args.dashboard, args.requests, args.outbox, args.selection))
+    except NoRecentTick:
+        result["error"] = NO_RECENT_TICK
     except SupplyUnknown as error:
         result["error"] = str(error) if str(error) in SOURCE_UNKNOWN_REASONS else "source unavailable"
     except Exception:

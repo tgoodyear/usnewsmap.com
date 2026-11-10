@@ -122,7 +122,9 @@ QUEUE_OF_REASON = {"user": "ocr-priority", "bulk": "ocr-bulk"}
 # host is calibrated before its first priority result is held at collection. Not part of the
 # allocation: its settings stay out of the config digest.
 GOLD_REQUIRED = {"campaign", "language", "profile", "engine_base"}
-GOLD_OPTIONAL = {"engine_version", "max_hosts", "interval_minutes"}
+# `image`: the worker digest to onboard hosts onto, when it isn't the plan's own (#1687): a
+# plan rotating onto a new worker first calibrates its hosts on it, still feeding the old one.
+GOLD_OPTIONAL = {"engine_version", "max_hosts", "interval_minutes", "image"}
 GOLD_DEFAULT_INTERVAL_MINUTES = 60
 # While results are held at collection, a scope is retried at most this often.
 GOLD_HELD_INTERVAL_SECONDS = 600
@@ -371,7 +373,9 @@ def _validate_gold_onboarding(entries):
                              # The worker's TESSERACT_IMAGE as the gold reports record it: a bare
                              # digest (what calibration and bridge-job use) or name@digest.
                              ("engine_base", r"(?:[A-Za-z0-9._/:-]{1,180}@)?sha256:[0-9a-f]{64}"),
-                             ("engine_version", r"[0-9]{1,3}(\.[0-9]{1,3}){1,3}")):
+                             ("engine_version", r"[0-9]{1,3}(\.[0-9]{1,3}){1,3}"),
+                             # A pinned worker digest, as the plan's own `image`.
+                             ("image", r"sha256:[0-9a-f]{64}")):
             if key in entry:
                 require(isinstance(entry[key], str) and re.fullmatch(pattern, entry[key]),
                         f"invalid gold_onboarding {key}")
@@ -1459,7 +1463,17 @@ def pinned_version_problem(snapshot, pin):
     if "ocr_app_versions" not in snapshot:
         return None
     served = served_versions(snapshot["ocr_app_versions"])
-    outranked = sorted(f"{max(loaded)} on {platform}" + (f" ({plan})" if plan else "")
+    minimum = snapshot["ocr_app_versions"]["min_version"]
+
+    def where(platform, plan):
+        return platform + (f" ({plan})" if plan else "")
+    if minimum and pin < minimum:
+        excluded = sorted(where(*key) for key, (numbers, _) in served.items() if pin in numbers)
+        return (f"bundle_app_version {pin} is below usnm_ocr's min_version {minimum}, so the feeder "
+                f"loads it nowhere{' (published on ' + ', '.join(excluded) + ')' if excluded else ''}: "
+                f"units pinned to it would go unsent. Lower min_version to {pin} or below "
+                "(app-version-hold.php --action min-version) or rotate the plan onto a loaded version")
+    outranked = sorted(f"{max(loaded)} on {where(platform, plan)}"
                        for (platform, plan), (numbers, loaded) in served.items()
                        if pin in numbers and pin not in loaded)
     if outranked:
@@ -2064,7 +2078,7 @@ def gold_onboarding(config, state, transport, persist, now, *, held, room):
             continue
         variables = {
             "GOLD_CAMPAIGN": entry["campaign"], "GOLD_LANGUAGE": entry["language"],
-            "GOLD_PROFILE": entry["profile"], "GOLD_ENGINE_IMAGE": config["image"],
+            "GOLD_PROFILE": entry["profile"], "GOLD_ENGINE_IMAGE": entry.get("image", config["image"]),
             "GOLD_ENGINE_BASE": entry["engine_base"],
             "GOLD_ENGINE_VERSION": entry.get("engine_version", "5.5.0"),
         }

@@ -209,8 +209,19 @@ published held, and released in the rotation step below
    ```
 
 4. **Gold first.** Release the new `usnm_gold` versions with `app-version-hold.php --action
-   release`. In the same step, point the live plan's `gold_onboarding` at the campaign for the
-   new image. `gold_onboarding` is outside the allocation digest, so this isn't a new plan.
+   release`. In the same step, point the live plan's `gold_onboarding` entry at the new worker:
+   its `campaign` prepared for the new image, `engine_base` its amd64 engine, and `image` the
+   new worker digest (`sha256:...`). Without `image` the scope onboards onto the plan's own
+   `image`, the old worker. `gold_onboarding` is outside the allocation digest, so this isn't a
+   new plan, and the plan's `image` stays the old one:
+
+   ```json
+   "gold_onboarding": [
+     {"campaign": "current8404-amd64-calibration-20261109", "language": "eng", "profile": "eng",
+      "engine_base": "sha256:942f5e02…", "image": "sha256:840487b2…"}
+   ]
+   ```
+
    Calibrate arm64 hosts by hand, as before. Wait until `gold-promote` has added the project's
    hosts on the new digest in `gold/trust.json`. Meanwhile the live plan keeps feeding OCR on
    the old version, and every collected result comes from a host trusted on the old image.
