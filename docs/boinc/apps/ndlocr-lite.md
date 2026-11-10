@@ -1,19 +1,18 @@
 # Japanese OCR with NDLOCR-Lite
 
-Issue [#626](https://github.com/tgoodyear/usnewsmap.com/issues/626) adds a CPU-only
-volunteer engine for Japanese scans. It uses the same upstream revision and
-conversion as `docker/Dockerfile.ja-ocr` and `ocr/ja-ocr/jaocr.py`, without the Flet desktop UI.
-Engine-level routing is tracked in [#624](https://github.com/tgoodyear/usnewsmap.com/issues/624).
+`usnm_ndlocr` is a CPU-only volunteer app for Japanese scans (#626). It runs the same upstream
+NDLOCR-Lite revision and ALTO conversion as `docker/Dockerfile.ja-ocr` and `ocr/ja-ocr/jaocr.py`,
+without the Flet desktop UI. Engine-level routing is #624. This page is for whoever builds,
+releases or feeds the app.
 
-**Status:** the pinned contract engine and dedicated BOINC lifecycle are
-implemented. The image and `usnm_ndlocr` 1.1 are published (see
-[Production canonical collection](#production-canonical-collection-16-october-2026));
-a multi-host pilot on fresh pages remains an operator step. See [BOINC lifecycle](#boinc-lifecycle-phase-2-626)
-below.
+`usnm_ndlocr` 1.1 is published (app_version 26, 16 October 2026). One already-read page has gone
+through the whole lifecycle, from staging to the curated `ocr-ja` overlay; the record is in
+[2026-10-16-ndlocr-lite-boinc-validation.md](../../notes/2026-10-16-ndlocr-lite-boinc-validation.md).
+The multi-host pilot on fresh pages hasn't been run.
 
-## Pinned engine and contract
+## Engine and contract
 
-Build from the repository root:
+Build and smoke-test from the repository root:
 
 ```sh
 docker build -f ocr/engines/ndlocr-lite/Containerfile -t usnm-ndlocr-lite .
@@ -21,460 +20,213 @@ python3 boinc/scripts/smoke-ndlocr.py --image usnm-ndlocr-lite --work "$PWD/ndlo
 ```
 
 The Python and Rust bases are pinned by digest. `NDLOCR_COMMIT` is
-`636d1cfeb1331f89f4048f416e49e23a09a714b5`, matching the existing Japanese job.
-`ocr/engines/ndlocr-lite/models.lock` is where the commit is pinned (its header and
-every model URL); a Dockerfile, the adapter's `COMMIT` and the engine catalog cannot
-read it, so `scripts/ci/check-engine-pins.py` fails CI when any of them, including
-`docker/Dockerfile.ja-ocr` and the source archive's checksum, names another commit.
-The upstream source archive has a SHA-256 check, and
-`ocr/engines/ndlocr-lite/models.lock` independently pins all four ONNX models
-(DEIM layout and the 30-, 50-, and 100-character PARSeq recognizers). The build
-checks each model's bytes; the Rust adapter hashes and checks them again before
-sending `hello`. Model loading happens per page, and counts toward its deadline.
-The Japanese character set and layout configuration come from the checked source
-archive, not a mutable URL or a runtime download.
+`636d1cfeb1331f89f4048f416e49e23a09a714b5`, the same as the existing Japanese job.
+`ocr/engines/ndlocr-lite/models.lock` is where the commit is pinned (its header and every model
+URL). A Dockerfile, the adapter's `COMMIT` and the engine catalog can't read it, so
+`scripts/ci/check-engine-pins.py` fails CI when any of them, `docker/Dockerfile.ja-ocr` and the
+source archive's checksum included, names another commit. The upstream source archive has a
+SHA-256 check, and `models.lock` pins all four ONNX models (DEIM layout and the 30-, 50- and
+100-character PARSeq recognizers). The build checks each model's bytes, and the Rust adapter
+hashes them again before sending `hello`. Models load per page, inside the page's deadline. The
+Japanese character set and layout configuration come from the checked source archive, never a
+mutable URL or a runtime download.
 
-The image keeps National Diet Library's CC-BY-4.0 licence, the layout model's
-additional DINOv3 licence (already cleared by the maintainer), and attribution
-`NOTICE` beside the models at `/opt/ndlocr-lite/src/model/`. Upstream dependency
-notices are retained too. Production model names and credits are in
-`ocr/engines/engines.toml`; the survey-only entry remains separate so historical
-Japanese credit snapshots are not silently relabelled.
+The image keeps the National Diet Library's CC-BY-4.0 licence, the layout model's additional
+DINOv3 licence (cleared by the maintainer), and the attribution `NOTICE` beside the models at
+`/opt/ndlocr-lite/src/model/`, plus upstream dependency notices. Production model names and
+credits are in `ocr/engines/engines.toml`; the survey-only entry stays separate so historical
+Japanese credit snapshots keep their labels.
 
-`usnm-ocr-adapter-ndlocr-lite --contract 1 --threads 1` speaks
-`usnm-ocr-engine/1` (ADR-0016), with family and id `ndlocr-lite`, profile `default`,
-language `jpn`, and line granularity. Its root filesystem can be read-only, with
-no network or capabilities. Mount inputs at `/in` (read-only) and output and
-scratch at `/out/<run_id>/` (writable; the `/out` parent only needs search
-permission). The adapter puts private scratch inside that page directory and
-invokes the unmodified upstream CPU CLI for one image. If the deadline expires,
-it kills the CLI's process group and reaps it. It requires both XML and text
-even when upstream exits successfully, because upstream can exit 0 without
-processing an image. Extensionless BOINC scans get a detected JPEG, PNG, or JP2
-suffix in private job scratch.
+`usnm-ocr-adapter-ndlocr-lite --contract 1 --threads 1` speaks `usnm-ocr-engine/1` (ADR-0016),
+with family and id `ndlocr-lite`, profile `default`, language `jpn`, and line granularity. Its
+root filesystem can be read-only, with no network or capabilities. Mount inputs at `/in`
+(read-only) and output and scratch at `/out/<run_id>/` (writable; the `/out` parent only needs
+search permission). The adapter puts private scratch inside that page directory and runs the
+unmodified upstream CPU CLI on one image. When the deadline expires it kills and reaps the CLI's
+process group. It requires both XML and text even when upstream exits 0, because upstream can exit
+0 without processing an image. Extensionless BOINC scans get a detected JPEG, PNG or JP2 suffix in
+private job scratch.
 
-The adapter converts NDLOCR XML to the **same ALTO 3.1 in inch1200** as
-`ocr/ja-ocr/alto.py`: fractional reading order, one String per line, block unions,
-confidence clamping, scan dpi, and optional LoC page-size clamping. It returns
-the upstream text with the NFC, control-character and whitespace rules of
-`jaocr.normalize`, not the general pipeline's Latin ligature expansion or
-dehyphenation. The on-prem contract worker may still derive and store its
-standard pixel ALTO and text, as ADR-0016 requires. The worker validates the
-geometry before preserving the engine's declared line granularity; line-sized
-Strings are not word-level provenance. The small Rust golden fixture was
-generated by the existing Python converter. The image smoke test reads the real
-Japanese headline fixture twice and compares both the converted ALTO and the
-normalized text against the existing Python job.
+The adapter converts NDLOCR XML to the same ALTO 3.1 in inch1200 as `ocr/ja-ocr/alto.py`:
+fractional reading order, one String per line, block unions, confidence clamping, scan dpi, and
+optional LoC page-size clamping. It returns the upstream text with the NFC, control-character and
+whitespace rules of `jaocr.normalize`, without the general pipeline's Latin ligature expansion or
+dehyphenation. The on-prem contract worker may still derive and store its standard pixel ALTO and
+text, as ADR-0016 requires. The worker validates the geometry before keeping the engine's declared
+line granularity; line-sized Strings are not word-level provenance. The small Rust golden fixture
+was generated by the Python converter, and the image smoke test reads the Japanese headline
+fixture twice and compares the converted ALTO and normalized text with the Python job.
 
-## Reproducibility and resources
+## Determinism and resources
 
-`hello.deterministic` is deliberately false: matching model hashes do not prove
-bit-identical ONNX floating-point output between x86 and ARM hosts. The smoke
-test checks two same-host readings, **not** cross-host determinism. The pilot
-must retain each host's text and compare readings before changing the initial
-character-similarity policy. Japanese similarity must use characters or
-character n-grams, not whitespace-delimited word bags, because a Japanese line
-may be one token.
+`hello.deterministic` is false: matching model hashes don't prove bit-identical ONNX
+floating-point output between x86 and ARM hosts. The smoke test compares two readings on one host,
+which says nothing about cross-host determinism. Japanese similarity uses characters or character
+n-grams, never whitespace-delimited word bags, because a Japanese line may be one token.
 
-### Native full-page baseline (2026-10-16 UTC)
-
-A real full-size Japanese page was read locally through the Rust contract adapter
-on an **Apple M1, 8 logical CPUs, 16 GiB RAM**, with Python 3.12 and the upstream
-macOS ONNX Runtime pin **1.23.2**. The Docker CLI was installed but its daemon was
-unavailable, so this was a **native macOS run, not the Linux image** (whose pin is
-ONNX Runtime 1.26.0). Source: [Rocky Shimpo, 1945-01-01 full scan](https://tile.loc.gov/image-services/iiif/service:sgp:sgpbatches:batch_dlc_ballston_ver01:data:sn83025517:00237288798:1945010101:0365/full/full/0/default.jpg),
-5,832 × 7,582 pixels, 7,607 normalized characters.
-
-| Metric                                       | First run                | Repeat after contract regression fixes |
-| -------------------------------------------- | ------------------------ | -------------------------------------- |
-| Wall time, including startup/model loading   | 40.56 s                  | 12.55 s                                |
-| CPU time (user + system)                     | 65.54 CPU-s              | 48.52 CPU-s                            |
-| Peak process RSS                             | 1,283,344 KiB (1.22 GiB) | 1,531,328 KiB (1.46 GiB)               |
-| Text and ALTO comparison with the Python job | Exact                    | Exact                                  |
-
-CPU time and high-water RSS were collected with `getrusage(RUSAGE_CHILDREN)`
-after the adapter reaped the engine. Each measured run was also checked against
-a second upstream read and the existing Python converters. The repeat exercised
-a search-only output parent and the default local-root scratch mapping. The
-shared development host was not CPU-quota limited; elapsed time varies with host
-load and caches. Two quorum results cost roughly 97–131 CPU-s for a page like
-this one, before retries. This is **one page on one host**, not a cross-host
-determinism test or a measured Linux-container bound.
-
-A cautious initial scheduler estimate is `rsc_fpops_est = 1e12` (65.54 CPU-s at
-an assumed 5 GFLOPS/core, with about 3× margin) and
-`rsc_memory_bound = 4294967296` (4 GiB, about 2.7× the highest observed peak).
-Revise both from a multi-page volunteer pilot; FLOPS here are an assumption,
-not a benchmark of this M1.
-
-The image CI reports the same wall-time, CPU and RSS fields for the small
-headline fixture; that is a smoke cost, not a newspaper-page estimate. With a
-running container runtime, repeat the image parity and cost check on a full-size
-local image:
+One full page took 48 to 66 CPU-s and peaked at 1.46 GiB RSS; on two Linux x86-64 hosts the
+published worker took 60 to 84 s ([validation note](../../notes/2026-10-16-ndlocr-lite-boinc-validation.md)).
+The image CI reports wall time, CPU and RSS for the small headline fixture, which is a smoke cost,
+not a page estimate. To repeat the parity and cost check on a full-size page with a running
+container runtime:
 
 ```sh
 python3 boinc/scripts/smoke-ndlocr.py --image IMAGE --work "$PWD/ndlocr-page-probe" --source "$PWD/page.jpg"
 ```
 
-Record the architecture, CPU quota, page dimensions and model and runtime
-identity before comparing hosts or increasing the campaign.
+Record the architecture, CPU quota, page dimensions, and model and runtime identity before
+comparing hosts or increasing the work supply.
 
-### Two-host Linux headline check (2026-10-16 UTC)
+## Worker and job identity
 
-The published BOINC worker was exercised independently in Docker on two test
-hosts, A (i7-7700K) and B (i7-1185G7). Both runs used
-`ocr/ja-ocr/testdata/rocky-shimpo-1945-01-01-seq-4-headline.jpg`, one CPU, 4 GiB
-memory with no additional swap, no network, and a read-only container root.
-No BOINC workunit was submitted, and no curated data or trust state was changed.
+`usnm_ndlocr` is its own app, separate from `usnm_ocr`: Japanese work must not enter the Tesseract
+reservation ledger or its `ocr-out` importer. Staging selects `routing::EngineRoute` from
+`engine::candidates("jpn")`, then checks `EngineKind::NdlocrLite` and profile `default`. The job
+identity covers the route, the immutable engine, the scan, the batch and version, and the original
+LoC text classification. Unknown routes, models, versions or reasons fail closed.
 
-- Worker manifest: `sha256:1c7731046380c340b73dc4c14e47a0aff1a933815bc7f733f54681d54eb70819`.
-- Engine configuration: `sha256:bf3a44e1e23b18f1c234a768939acedf38dfcf432d1a3aabf10754352fb7928a`.
-- Both workers passed the shipped `ndlocr check`. The actual `ndlocr compare`
-  across the two independent result sets reported character-bigram Dice
-  **1.000000** against the unchanged 0.99 floor.
-- Both returned 246 normalized characters with text SHA-256
-  `bb779f06f366c89a46679cfac60377b103d8b8ebc941567101aca8c7aacf5978`.
-  A separate upstream Python invocation on each host matched the text;
-  the Python ALTO converter matched all 16 String contents and geometry.
-  Complete ALTO/result files differ, including processing timestamps.
+The `boinc-ndlocr-lite` workflow publishes two images: the engine, and the BOINC worker built on
+it. A job's `--engine-image` is the engine-base image's full configuration ID, which the workflow
+prints and the worker embeds as `USNM_NDLOCR_IMAGE`. The signed app version pins the complete
+worker's registry manifest digest. These are different identities, because a worker can't embed
+its own digest. The worker checks its embedded engine identity, hashes every installed model,
+checks the pinned upstream commit and route, checks the scan's size and hash, and enforces a
+per-page deadline. A volunteer host never downloads a model or touches the network.
 
-| Measurement                       | Host A       | Host B       |
-| --------------------------------- | ------------ | ------------ |
-| Worker-reported elapsed time      | 25.637 s     | 10.670 s     |
-| Independent Python wall time      | 25.123 s     | 10.807 s     |
-| Independent Python CPU time       | 21.781 CPU-s | 10.806 CPU-s |
-| Independent Python peak child RSS | 679,100 KiB  | 683,960 KiB  |
+## Stage, submit and collect
 
-These are headline smoke measurements on two x86-64 CPUs, not full-page
-resource bounds, ARM/x86 equivalence, scheduler acceptance, canonical
-assimilation, or curated publication. The classified full-page pilot and normal
-release/search checks below remain required.
+Existing BOINC identities can't publish this overlay. The server bridge has no curated
+credentials, and the hand-off runner's curated grant covers only `ocr-local/`, not `ocr-ja/`
+(`infra/modules/boinc-handoff-runner.bicep`); rebuilding images doesn't change that. Run
+collection on a trusted ingest-side host with an Entra identity already allowed to list, read and
+create objects under curated `ocr-ja/` (for example the maintainer's Azure CLI login), or
+provision a separate narrowly scoped publisher identity. Don't widen the server bridge's access or
+give volunteers curated credentials. Local file stores need no Azure grant for tests.
 
-An initial attempt through host A's host-level Podman failed before inference:
-AppArmor profile `containers-default-0.62.2` denied creation of a Unix stream
-socket required by Tokio's signal handler. A Python `socket.socketpair()`
-probe reproduced the denial, confirmed in the host kernel audit log. No
-AppArmor or seccomp policy was relaxed; the successful second-host test used
-the existing Docker test container instead. Host-level Podman compatibility
-remains unresolved and must not be inferred from these Docker results.
+The bridge image can run `usnm-boinc` with its entrypoint overridden to `/usr/local/bin/usnm-boinc`.
+The flow is:
 
-### Full-page acceptance blocker, 16 October 2026
-
-The same pinned worker was then run on both hosts with the actual full-page
-`sn83025517/1945-01-01/ed-1/seq-4`, real `missing` classification and published
-`dlc_ballston` v01. The shipped staging route fetched a 5,832 by 7,582 JPEG,
-4,665,071 bytes, SHA-256
-`73732eb9253253eba4269ac5afb348626bc691c9f79ecf5ddb46aae74bf4af0a`;
-the staged job is
-`41fa5b807da96634892d6b18325931ae4fc184f2c0d502f2397aa3cce11746da`.
-This page already has native Japanese output; it is not a fresh-page claim.
-
-**Both published workers failed with `ALTO/text disagree` before writing
-result files.** Independent upstream runs on both hosts produced identical
-7,607-character normalized text, SHA-256
-`022cdf8fc80d2554d0ba40fad98e5f1424e32be4ab943ded7f6d675358c46145`.
-Their 630 complete text lines agree with the Python ALTO converter's lines,
-including duplicate counts, but their sequence differs: upstream text follows
-XML document order, while ALTO sorts 90 blocks and their lines by `ORDER`.
-The headline did not cover this difference.
-
-| Independent Python measurement | Host A        | Host B        |
-| ------------------------------ | ------------- | ------------- |
-| Wall time                      | 79.431 s      | 59.724 s      |
-| CPU time                       | 79.424 CPU-s  | 59.726 CPU-s  |
-| Peak child RSS                 | 1,110,140 KiB | 1,107,948 KiB |
-
-The release blocker is tracked in [#699](https://github.com/tgoodyear/usnewsmap.com/issues/699);
-[#700](https://github.com/tgoodyear/usnewsmap.com/pull/700) preserves both output
-formats and checks complete-line content with multiplicity. Patched maintainer
-checker replay of the independent outputs passes with peer Dice 1.000000,
-using explicitly synthetic offline envelopes, **not worker or canonical
-results**. The worker and server validator must both contain the reviewed fix
-before repeating the actual BOINC pilot. No work was submitted, assimilated,
-collected into `ocr-ja`, or verified through release/search in this run.
-
-### Corrected published full-page worker, 16 October 2026
-
-After [#700](https://github.com/tgoodyear/usnewsmap.com/pull/700) merged as
-`137306bb1574708b71c1dbf0eb70a806093f7ba7`, publication workflow
-`38959718544` passed and published worker manifest
-`sha256:60280a6b080f9c670b7218e9ba2d92bec5486ad41c8dd118e74e68f28c8dd611`.
-Its embedded engine configuration is
-`sha256:0a1c3fc63c183127a24a9bd49e35b917d94a6e1e5cea5e4b3349ddcd6304934a`.
-The staging CLI generated a new job,
-`77a3a1457511db4ee342978a4307ee87715e12909487d9f20c60073172c4392c`,
-for the same actual `missing` page and unchanged scan hash above.
-
-Both hosts A and B independently ran this **published worker**, with one
-CPU, 4 GiB memory and no additional swap, no network, and a read-only root.
-Both completed and passed the shipped checker. Their genuine worker outputs
-passed the native peer comparison with character-bigram Dice **1.000000**.
-Both returned the same 7,607-character text hash recorded above and 630 ALTO
-Strings. A separate upstream invocation on each host matched the worker's
-normalized text, and the existing Python converter matched every String's
-content and geometry. These are actual worker results, not the earlier
-synthetic checker envelopes.
-
-| Measurement                       | Host A        | Host B        |
-| --------------------------------- | ------------- | ------------- |
-| Worker-reported elapsed time      | 84.014 s      | 60.233 s      |
-| Independent Python wall time      | 76.749 s      | 59.071 s      |
-| Independent Python CPU time       | 76.345 CPU-s  | 59.074 CPU-s  |
-| Independent Python peak child RSS | 1,110,676 KiB | 1,112,048 KiB |
-
-An ONNX Runtime affinity warning on host B was nonfatal; no confinement or
-affinity setting was relaxed. The full-page runtime blocker is resolved in the
-published worker. These isolated runs still do **not** prove BOINC redundant
-volunteer execution, canonical assimilation, authorized `ocr-ja` collection,
-or normal release/search acceptance. The page already has native output and
-must not be counted as the genuinely fresh-page pilot.
-
-### Production canonical collection, 16 October 2026
-
-The signed Linux `usnm_ndlocr` **1.1** publisher selected by
-[#716](https://github.com/tgoodyear/usnewsmap.com/pull/716) completed in
-`usnm-boinc-publish-caj-prod-cgicdf7`. Its database verification registered
-**app_version 26**. Only the existing publisher's image changed; its remaining
-template, configuration, environment and identity were compared with the saved
-before-state and preserved. The already-deployed #714 runtime contained #700
-and #702; no additional broad provision or bridge configuration reset was used.
-The subsequent concurrent #718 runtime was preserved too.
-
-The genuine CLI-staged job `77a3a145...` above was transferred through the private
-authenticated hand-off container, without any offline result files. The normal
-`ndlocr submit` command created workunit **15711**, retaining its real
-`submitted` marker, quorum 2 and target 2. Actual server database readback showed:
-
-| Result | Host | App version | Outcome | Validation | Exit status |
-| ------ | ---- | ----------- | ------- | ---------- | ----------- |
-| 31035  | 6    | 26          | Success | Valid      | 0           |
-| 31036  | 6    | 26          | Success | Valid      | 0           |
-
-**Both results ran on the same host.** This proves the real redundant BOINC
-lifecycle, not independent-host volunteer consensus. The separate host A/B
-published-worker measurements remain the cross-host evidence. The workunit's
-canonical result is **31035**, assimilation state **2**, error mask **0**.
-The stock assimilator wrote its three canonical files under `results/0/`.
-The canonical text has the same 7,607 characters and SHA-256 recorded above;
-worker-reported elapsed time was 133.340 seconds.
-
-Only that real canonical spool and its retained submitted state were copied
-back to the authorized maintainer. The ordinary `ndlocr collect` then wrote
-the immutable ALTO followed by the 16,719-byte Parquet part under
-`curated/ocr-ja/`, with stem
-`sn83025517_1945-01-01_ed-1_seq-4.boinc-77a3a1457511db4ee342978a4307ee87715e12909487d9f20c60073172c4392c`.
-Collection replay succeeded without replacing the accepted bytes or timestamp.
-The actual downloaded part passes the unchanged production
-`usnm_ingest::ocr_ja::read_part` reader with source `usnm-ndlocr-lite`, reason
-`missing`, and `indexable() == true`.
-
-Exact accepted bytes, the acceptance timestamp and the `published` marker are
-retained locally, in the private hand-off backup, and on the trusted project
-share under
-`/project/ndlocr-fullpage-77a3a145/published-state/state`.
-The returned state archive SHA-256 is
-`9552c6695eb5df22cb4fa916dc4630b1a039dc365c56f1316b9eececa8f1376c`.
-Do not reconstruct this state from volunteer files or rerun collection from
-the older pre-publication snapshot.
-
-**Normal release/search acceptance remains pending.** The prior full rebuild
-`caj-usnm-ingest-prod-pg4wqlz` failed; the #283 release operator merged the local-WAL
-recovery in #753 and started replacement
-`caj-usnm-ingest-prod-si5kesp` at `2026-10-17T05:40:57Z` for
-`pages-v20261017-1`. The operator verified Running/Ready with no restart, actual
-local WAL placement and main-page progress. Public search still serves
-`pages-v20261010-2`; see [#283](https://github.com/tgoodyear/usnewsmap.com/issues/283)
-for current progress and forecasts.
-
-The replacement's startup count of 12,768 Japanese pages is not evidence
-that this BOINC part won. Its eventual frozen overlay manifest must contain
-the exact part/hash, and the selected row must actually be from that part.
-The normal reader chooses the newest `(ocred_at, part path)` per document
-among rows in the release's batches with catalogued titles; a read part need
-not be the winning row. Only then can Japanese/Latin queries and source
-credits against the newly served version establish final acceptance, rather
-than merely finding the page's older native OCR.
-
-A read-only check on 17 October downloaded the four current same-issue
-parts. Three contain this document; the `.3.parquet` part contains another
-page. The BOINC part is byte-identical to the retained canonical collection,
-SHA-256 `a55a3f72505803e0cb99d01864cc6362bab5e921c074238fe957120077fb9fe8`.
-Its `ocred_at`, `2026-10-16T22:07:36.345231Z`, is newer than both native
-copies (`2026-10-05T17:12:02.136580Z` and
-`2026-10-05T01:54:36.725406Z`), so it wins among these same-issue candidates.
-All three rows name batch `dlc_ballston` and have identical 7,607-character
-text and text hashes. A text-search hit alone therefore cannot distinguish
-BOINC from native OCR. The BOINC row's engine is
-`ndlocr-lite/636d1cfeb1331f89f4048f416e49e23a09a714b5 default`;
-the native rows use
-`ndlocr-lite 636d1cfeb1331f89f4048f416e49e23a09a714b5`.
-This bounded present-state comparison does not prove the running release's
-frozen release-wide winner or its batch/catalog qualification. Preserve the
-exact winning part/hash and engine provenance at release acceptance.
-
-Do not start a competing release, change the running full-rebuild settings,
-break locks or prune old indexes to advance this gate. The original accepted
-bytes and state remain intact. This already-native page is separate from the
-genuinely fresh-page pilot and current-image Gold trust.
-
-## BOINC lifecycle (phase 2, #626)
-
-The dedicated `usnm_ndlocr` CPU app is separate from `usnm_ocr`: Japanese
-work must not enter the native Tesseract reservation ledger or its `ocr-out`
-importer. Staging selects `routing::EngineRoute` from `engine::candidates("jpn")`,
-then checks `EngineKind::NdlocrLite` and profile `default`. The job identity
-covers the route, immutable engine, scan, batch and version and original LoC
-text classification. Unknown routes, models, versions or reasons fail closed.
-
-Publish the workflow's **two** images after merge: the engine and the BOINC
-worker built on it. A job's `--engine-image` is the full engine-base image
-**configuration ID**, printed by the workflow, embedded as `USNM_NDLOCR_IMAGE`.
-The signed app-version wrapper independently pins the complete worker's
-**registry manifest digest**. These are different identities: embedding a
-worker's own digest inside itself would be circular. The worker checks its
-embedded engine identity, hashes all installed models, verifies the pinned
-upstream commit and route, checks the scan's size and hash, and enforces a
-per-page deadline. No network or model download occurs on a volunteer host.
-
-### Stage, submit and collect
-
-**Authorization prerequisite:** existing BOINC identities cannot publish this
-overlay. The server bridge deliberately has **no curated credentials**, and the
-hand-off runner's curated grants cover only `ocr-local/`, not `ocr-ja/`
-(`infra/modules/boinc-handoff-runner.bicep`). Rebuilding
-images does not change those permissions. Run collection on a **trusted
-maintainer or ingest-side host** using an Entra identity already authorized to
-list, read and create objects under curated `ocr-ja/` (for example the
-maintainer's Azure CLI login), or provision a separate narrowly scoped publisher
-identity before the pilot. Do not broaden the server bridge's access or give
-volunteers curated credentials. Local file stores need no Azure grant for tests.
-
-The bridge image can be invoked with its entrypoint overridden to
-`/usr/local/bin/usnm-boinc`. Stage on the trusted ingest-side host with scan-cache
-read access, then transfer the complete staging root, including each page and
-`ndlocr.json`, to persistent server-side storage. Run **submit on the BOINC
-server or bridge** with its project mount and database access. After assimilation,
-transfer the updated staging root (including `submitted`) and canonical spool
-from the trusted project share back to the authorized publisher. Preserve all
-state, including any `accepted/` snapshot, `accepted-at.txt` and `published`
-marker, between publisher runs; do not reconstruct it from volunteer output. Use
-the deployment's authenticated administrative or share transfer, never a public
-volunteer upload. Collector matching against the retained staged job remains
-mandatory.
-
-The example below assumes the same `./ndlocr-stage` contents have been copied
-between these hosts and the publisher has a trusted mount or copy of the project
-at `/project/usnmocr`. Without that mount, copy **`results/0/`** and set
-`--spool` to the local copy. The stock batch assimilator writes
-`results/<batch>/`; these workunits use default batch **0**, not
-`batch_output/`.
-
-The `stage` command uses the same archive-first scan source and the same paced
-access to batches, METS and IIIF as Surya. It uses no item API, never retries
-against LoC, and holds persistently after a network refusal or failure. Specify
-one known published batch version per page. For each selected page, carry the
-**actual** classification from `jaocr.py` or curation (`missing`, `empty`,
-`short`, `garbled` or `mixed`), not `bulk` or an inferred Japanese-only language
-label. The explicit page list is operator-selected, not an automatic corpus
-sweep.
+1. **Stage** on the trusted ingest-side host with scan-cache read access.
+2. Copy the complete staging root, each page and `ndlocr.json` included, to persistent
+   server-side storage.
+3. **Submit** on the BOINC server or bridge, with its project mount and database access.
+4. After assimilation, copy the updated staging root (including `submitted`) and the canonical
+   spool from the project share back to the publisher, using the deployment's authenticated
+   administrative or share transfer, never a public volunteer upload.
+5. **Collect** on the publisher. Keep all state between publisher runs, including any `accepted/`
+   snapshot, `accepted-at.txt` and the `published` marker; never rebuild it from volunteer output.
 
 ```sh
-# Trusted ingest-side host, with scan-cache read authorization:
+# Trusted ingest-side host, with scan-cache read access:
 usnm-boinc ndlocr stage --root ./ndlocr-stage \
   --engine-image sha256:ENGINE_CONFIGURATION_ID \
   --scan-archive https://ACCOUNT.blob.core.windows.net/scan-archive \
   --batch-cache ./batch-cache \
   --page mixed:jpn:sn83025517_1945-01-01_ed-1_seq-4:dlc_ballston_ver01
-# BOINC server/bridge after copying the complete staging root:
+# BOINC server or bridge, after copying the complete staging root:
 usnm-boinc ndlocr submit --root ./ndlocr-stage --project /project/usnmocr \
   --doc sn83025517_1945-01-01_ed-1_seq-4
-# Authorized publisher after copying back updated state and canonical spool:
+# Publisher, after copying back the updated state and canonical spool:
 usnm-boinc ndlocr collect --root ./ndlocr-stage --spool /project/usnmocr/results/0 \
   --doc sn83025517_1945-01-01_ed-1_seq-4 \
   --curated-url https://ACCOUNT.blob.core.windows.net/curated
 ```
 
-`--scans DIR` stages the JPEGs in a copy of the scan fetcher's tree instead
-(`keep/<batch>/<lccn>/<date>/<edition>/<seq>.jpg` and the sidecars) and sends
-nothing to LoC, so pages queued through `usnm-loc-fetch` stay inside the host's
-global LoC budget. Each scan has to match its sidecar, and the unit keeps the
-sidecar's LoC URL and IIIF base. A page the tree lacks fails the stage, and so does
-a page it holds only as a JP2: volunteers get JPEGs, never masters
-([#1415](https://github.com/tgoodyear/usnewsmap.com/issues/1415)), and `usnm-boinc`
-can't reproduce the Pillow conversion in `scripts/ocr-node/quality-jpeg-cache.py`.
+The example assumes the publisher has a mount or copy of the project at `/project/usnmocr`.
+Without one, copy `results/0/` and point `--spool` at the copy. The stock batch assimilator writes
+`results/<batch>/`, and these workunits use batch 0.
 
-Each unit is under `units/<doc_id>/`. `submitting` is written **before**
-`create_work`, so an interrupted or failed submit is uncertain and is never
-retried blindly. Check the deterministic workunit name on the server, then
-rename `submitting` to `submitted` by hand if the workunit is present, or remove
-it if the workunit is absent. Re-staging refuses to change an existing unit's
-engine, reason or batch. Use a separate staging root for a deliberate new
-processing specification.
+`--page` is `reason:jpn:doc_id:batch_verNN`, one known published batch version per page. Give
+the page's actual classification from `jaocr.py` or curation (`missing`, `empty`, `short`,
+`garbled` or `mixed`), not `bulk` or a guessed Japanese-only label. The page list is chosen by an
+operator; nothing sweeps the corpus. `--timeout-secs` sets the engine deadline (default 600,
+model loading included).
 
-Stock `script_validator` checks three files in template order: `text.txt`,
-`layout.xml`, `result.json`. It verifies bounded regular files, checksums,
-Japanese normalization, ALTO geometry, agreement between the ALTO and the text,
-and the pinned job identity. Layout/text agreement compares normalized complete
-lines, including duplicate counts: upstream text follows XML document order,
-whereas the Python-equivalent ALTO converter sorts blocks and lines by `ORDER`.
-The orders can differ on full pages without losing any content. This does not
-permit missing, duplicated, substituted or repartitioned lines.
-It compares **two** results with the same full job,
-scan and engine identity. Exact text passes; otherwise the character-bigram
-multiset Dice must be at least **0.99**. The Dice score uses adjacent Unicode
-characters, not a whitespace word bag, so Japanese lines are not treated as one
-indivisible word. ALTO timestamps are not compared. The validator prints the
-score without page text to its daemon log. The floor is a conservative initial
-policy, **not** a calibrated cross-host measurement; pilot across CPU
-architectures before increasing the work supply. Disagreements use BOINC's
-normal limits on additional results and errors, never unconditional acceptance.
+`stage` uses the same archive-first scan source and the same paced access to batches, METS and
+IIIF as Surya. It uses no item API, never retries against LoC, and holds after a network refusal
+or failure. `--scans DIR` stages the JPEGs from a copy of the scan fetcher's tree instead
+(`keep/<batch>/<lccn>/<date>/<edition>/<seq>.jpg` and the sidecars) and sends nothing to LoC, so
+pages queued through `usnm-loc-fetch` stay inside the host's global LoC budget. Each scan has to
+match its sidecar, and the unit keeps the sidecar's LoC URL and IIIF base. A page the tree lacks
+fails the stage, and so does a page it holds only as a JP2: volunteers get JPEGs, never masters
+([#1415](https://github.com/tgoodyear/usnewsmap.com/issues/1415)), and `usnm-boinc` can't
+reproduce the Pillow conversion in `scripts/ocr-node/quality-jpeg-cache.py`.
 
-Collection accepts only the canonical stock assimilator spool with an exact
-match to the staged job. It snapshots accepted bytes for interrupted retries. It
-orders the overlay by a persisted **bridge acceptance timestamp**; the volunteer
-clock is retained only in the accepted result provenance. It writes
-`ocr-ja/alto/<doc>.boinc-<id>.xml` **before**
-`ocr-ja/pages/<doc>.boinc-<id>.parquet` in the **curated** store, and marks the
-unit published only after both immutable writes succeed. Different retry bytes
-cannot overwrite a prior object. That overlay is the same one read by every
-release, with `ocr_source = usnm-ndlocr-lite` and the pinned modern engine
-credit key. Japanese NFC normalization is retained, without the Latin pipeline's
-ligature expansion or dehyphenation. `ocr_ja.rs` remains unchanged: newest rows,
-published-batch and catalog filtering, the `mixed` page Japanese-character floor
-and English-column checks still apply. The regression suite reads the produced
-part with that real release reader and verifies that an English column with a
-stray Japanese glyph is **not** indexable. The cloud job recognizes both these
-immutable ALTO names and its legacy filenames, so collected pages count as
-complete and are not queued again.
+Each unit is under `units/<doc_id>/`. `submit` writes `submitting` before `create_work`, so an
+interrupted or failed submit is uncertain and is never retried blindly. Check the deterministic
+workunit name on the server, then rename `submitting` to `submitted` by hand if the workunit
+exists, or remove it if it doesn't. Re-staging refuses to change an existing unit's engine, reason
+or batch; use a separate staging root for a deliberate new processing specification.
 
-### Scheduling and operations
+## Validation
 
-`create_work` requests a quorum and target of **2**, `rsc_fpops_est = 1e12`,
-`rsc_fpops_bound = 1e14`, `rsc_memory_bound = 4294967296` (4 GiB), 1 GiB disk,
-and a three-day return window. The estimate comes from the measured **48–66
-CPU-s/full page** with a roughly 3× FLOPS margin at an assumed 5 GFLOPS/core;
-4 GiB leaves roughly 2.7× the observed 1.46 GiB RSS. These are scheduling
-estimates, not measured host FLOPS. The default engine deadline is 600 seconds,
-including model loading, and the container has a 4 GiB memory cap with no swap.
+Stock `script_validator` (`usnm_ndlocr_check` and `usnm_ndlocr_compare`, configured in
+`boinc/images/server/lib.sh`) checks three files in template order: `text.txt`, `layout.xml`,
+`result.json`. It verifies bounded regular files, checksums, Japanese normalization, ALTO
+geometry, agreement between the ALTO and the text, and the pinned job identity. Layout and text
+agreement compares normalized complete lines, duplicate counts included: upstream text follows XML
+document order, while the ALTO converter sorts blocks and lines by `ORDER`, so the orders can
+differ on full pages (#699). Missing, duplicated, substituted or repartitioned lines still fail.
 
-After merge:
+It compares two results with the same job, scan and engine identity. Exact text passes; otherwise
+the character-bigram multiset Dice must be at least 0.99 (`ndlocr::MIN_SIMILARITY`). The Dice
+score uses adjacent Unicode characters, so a Japanese line isn't treated as one word. ALTO
+timestamps aren't compared. The validator logs the score without page text. The 0.99 floor is a
+conservative starting policy, not a calibrated cross-host measurement. Disagreements go through
+BOINC's normal limits on extra results and errors.
 
-1. Dispatch `boinc-ndlocr-lite` on main. It builds the pinned engine, checks
-   Python parity, builds the BOINC worker on that verified local image, and runs
-   a real Japanese BOINC unit plus validator offline before publishing both.
-2. Deploy the rebuilt server and bridge images, register `usnm_ndlocr` with
-   `xadd`, and restart daemons so its script validator and batch assimilator
-   run. Install the input/output templates when publishing the app version.
-3. Publish a signed **x86_64 Linux container** app version with
-   `boinc/scripts/boinc-app-release.sh --env prod --app usnm_ndlocr --version N.M
---worker-image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:WORKER_MANIFEST
---signing-host HOST --onprem-host HOST --onprem-ct ID` (the last two because prod's
-   server is on-prem). Its dedicated `job.toml` is selected automatically.
-   Do not reuse the Tesseract image or publish unsupported native or GPU
-   versions.
-4. Pilot a small classified set not yet read by `jaocr.py`, comparing independent
-   output against that job. Record cross-host character scores and the
-   full-page CPU and RSS distribution, including mixed English and Japanese
-   columns; tune the threshold and scheduler bounds only from that evidence.
-5. Collect canonical output to curated `ocr-ja`, build a normal release, and
-   inspect Japanese and Latin searches plus credits before expanding supply.
+## Collection
+
+Collection accepts only the canonical stock assimilator spool, and only when it matches the
+staged job exactly. It snapshots the accepted bytes for interrupted retries and orders the overlay
+by a stored bridge acceptance timestamp; the volunteer's clock is kept only in the result's
+provenance. It writes `ocr-ja/alto/<doc>.boinc-<id>.xml` and then
+`ocr-ja/pages/<doc>.boinc-<id>.parquet` in the curated store, and marks the unit published once
+both immutable writes succeed. Different bytes on a retry can't overwrite an earlier object.
+
+Every release reads that overlay, with `ocr_source = usnm-ndlocr-lite` and the pinned engine's
+credit key. `usnm_ingest::ocr_ja` applies its usual rules: newest rows, published-batch and
+catalog filters, the `mixed` page Japanese-character floor and the English-column checks. The
+regression suite reads the produced part with that reader and checks that an English column with
+a stray Japanese glyph is not indexable. The cloud job recognizes both these ALTO names and its
+older filenames, so collected pages count as complete and aren't queued again.
+
+## Scheduling
+
+`submit` runs `create_work` with a quorum and target of 2, at most 3 error, 5 total and 3
+successful results, `rsc_fpops_est = 1e12`,
+`rsc_fpops_bound = 1e14`, `rsc_memory_bound = 4294967296` (4 GiB), 1 GiB disk, and a three-day
+delay bound (`crates/usnm-boinc/src/ndlocr.rs`). The estimate is 66 CPU-s for a full page with
+about 3× margin at an assumed 5 GFLOPS a core; 4 GiB is about 2.7× the highest RSS seen. These are
+estimates, not measured host FLOPS. The container (`boinc/apps/ndlocr-lite/job.toml`) has a 4 GiB
+memory cap with no swap.
+
+## Releasing a version
+
+1. Dispatch `boinc-ndlocr-lite` on main. It builds the pinned engine, checks Python parity,
+   builds the BOINC worker on that image, and runs a Japanese BOINC unit and the validator offline
+   before publishing both images.
+2. A server whose project doesn't have the app yet needs the rebuilt server and bridge images,
+   `register-apps` (BOINC `xadd`), and a daemon restart so its script validator and batch
+   assimilator run. The release installs the input and output templates.
+3. Publish a signed x86_64 Linux container version:
+
+   ```sh
+   boinc/scripts/boinc-app-release.sh --env prod --app usnm_ndlocr --version N.M \
+     --worker-image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:WORKER_MANIFEST \
+     --signing-host HOST --onprem-host HOST --onprem-ct ID
+   ```
+
+   `--onprem-host` and `--onprem-ct` are there because the production server is on-prem. The
+   release picks `boinc/apps/ndlocr-lite/job.toml` itself. Don't reuse the Tesseract image, and
+   don't publish native or GPU versions: none is supported.
+
+## Open work
+
+- **Fresh-page pilot.** Read a small classified set that `jaocr.py` hasn't read, on independent
+  hosts across CPU architectures, and compare with that job. Record cross-host character scores
+  and the full-page CPU and RSS distribution, mixed English and Japanese columns included. Tune
+  the 0.99 floor and the scheduler bounds only from that evidence.
+- **Release acceptance.** Collect canonical output to curated `ocr-ja`, build a normal release,
+  and check Japanese and Latin searches and credits before adding supply. For the one page already
+  collected, no acceptance has been recorded since the 17 October 2026 release check.
