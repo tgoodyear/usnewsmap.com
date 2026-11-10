@@ -1208,6 +1208,21 @@ class GoldOnboardingTests(unittest.TestCase):
         # Gold runs before any feed work in the tick.
         self.assertEqual(self.fake.actions[:2], [("step", "gold-onboard"), ("step", "gold-promote")])
 
+    def test_a_scope_can_onboard_onto_another_worker_than_the_plans(self):
+        # #1687: before a rotation, the live plan calibrates its hosts on the new worker while it
+        # still feeds OCR on the old one; `image` defaults to the plan's.
+        new = "sha256:" + "8" * 64
+        self.config["gold_onboarding"] = [dict(GOLD, image=new, campaign="current8404-amd64")]
+        self.tick()
+        self.assertEqual({v["GOLD_ENGINE_IMAGE"] for v in self.ran()}, {new})
+        self.assertNotEqual(self.config["image"], new)
+        # Validated as a pinned digest, and outside the allocation digest like the rest of it.
+        for bad in ("ghcr.io/tgoodyear/usnm-boinc-worker@" + new, "sha256:abc", 7, "latest"):
+            with self.subTest(image=bad), self.assertRaisesRegex(ValueError, "invalid gold_onboarding image"):
+                batch._validate_gold_onboarding([dict(GOLD, image=bad)])
+        batch._validate_gold_onboarding([dict(GOLD, image=new)])
+        self.assertEqual(batch.digest(self.config), batch.digest(dict(self.config, gold_onboarding=[dict(GOLD)])))
+
     def test_runs_on_its_interval_and_sooner_while_results_are_held(self):
         self.tick()
         self.tick(at=30 * 60)
@@ -2204,6 +2219,75 @@ class BundleTests(unittest.TestCase):
         plain.units = "unset"
         batch.tick(queue_config(), {}, plain, lambda: None, NOW)
         self.assertEqual(plain.units, None)
+
+    def test_bundles_refuse_a_pin_the_scheduler_will_not_send(self):
+        # #1687: on 9 Nov usnm_ocr 107 made the feeder drop 106, and units pinned to 106 went unsent.
+        class Versioned(QueueFake):
+            versions = None
+
+            def inventory(self):
+                snapshot = super().inventory()
+                if self.versions is not None:
+                    snapshot["ocr_app_versions"] = self.versions
+                return snapshot
+
+            def submit_batch(self, job_ids, units=None):
+                self.units = units
+                for job_id in job_ids:
+                    self.submit(job_id)
+
+        def version(n, platform="x86_64-pc-linux-gnu"):
+            return {"platform": platform, "plan_class": "docker", "version_num": n}
+
+        cfg = dict(queue_config(), pages_per_unit={"ocr-bulk": 2}, bundle_app_version=106,
+                   batch_size=4, max_pending=8, pages_per_host=4)
+        cases = (
+            ({"min_version": 0, "versions": [version(106), version(106, "arm64-apple-darwin")]}, None),
+            ({"min_version": 0, "versions": [version(106), version(107)]}, "107 on x86_64-pc-linux-gnu \\(docker\\) outranks it"),
+            # Outranked on one platform only still strands that platform's hosts.
+            ({"min_version": 0, "versions": [version(106), version(106, "arm64-apple-darwin"),
+                                             version(107, "arm64-apple-darwin")]}, "107 on arm64-apple-darwin"),
+            # A min_version keeps every version at or above it loaded.
+            ({"min_version": 106, "versions": [version(106), version(107)]}, None),
+            ({"min_version": 0, "versions": [version(107)]}, "isn't published, or it is held"),
+            ({"min_version": 107, "versions": [version(106), version(107)]}, "below usnm_ocr's min_version 107"),
+            # Every Linux version below the minimum: Linux loads nothing, which used to raise
+            # max() of an empty list instead of naming the pin and the platform.
+            ({"min_version": 107, "versions": [version(106), version(107, "arm64-apple-darwin")]},
+             r"below usnm_ocr's min_version 107, so the feeder loads it nowhere \(published on "
+             r"x86_64-pc-linux-gnu \(docker\)\).*Lower min_version to 106"),
+        )
+        for versions, refusal in cases:
+            with self.subTest(versions=versions):
+                fake = Versioned([message(n) for n in range(1, 8)])
+                fake.assertions = []
+                fake.versions = versions
+                state = {}
+                if refusal:
+                    with self.assertRaisesRegex(ValueError, refusal):
+                        batch.tick(cfg, state, fake, lambda: None, NOW)
+                    self.assertFalse(any(j["stage"] == "submitted" for j in fake.jobs.values()))
+                else:
+                    batch.tick(cfg, state, fake, lambda: None, NOW)
+                    self.assertEqual([len(u) for u in fake.units], [2, 2])
+        # An inventory from before the check: submitted, with a warning naming the pin.
+        fake = Versioned([message(n) for n in range(1, 8)])
+        fake.assertions = []
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            batch.tick(cfg, {}, fake, lambda: None, NOW)
+        self.assertEqual([len(u) for u in fake.units], [2, 2])
+        self.assertIn('"event": "boinc_batch_pin_unchecked"', err.getvalue())
+        # Single-page units carry no pin and aren't checked.
+        fake = Versioned([message(n) for n in range(1, 2)])
+        fake.assertions = []
+        fake.versions = {"min_version": 0, "versions": [version(107)]}
+        batch.tick(cfg, {}, fake, lambda: None, NOW)
+        self.assertEqual(fake.units, [[next(iter(fake.jobs))]])
+        with self.assertRaisesRegex(ValueError, "invalid app version inventory"):
+            batch.served_versions({"min_version": -1, "versions": []})
+        with self.assertRaisesRegex(ValueError, "invalid app version inventory"):
+            batch.served_versions({"min_version": 0, "versions": [dict(version(106), version_num="106")]})
 
 
 class BatchedStepsTests(unittest.TestCase):

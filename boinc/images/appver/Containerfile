@@ -25,6 +25,8 @@ ARG WRAPPER_PATH=/usr/local/lib/usnm-boinc/docker_wrapper
 ARG WRAPPER_SHA256=""
 ARG WRAPPER_SOURCE_PIN=""
 ARG BINARY_PATH=""
+# 1: register the version held, deprecated from its insert (#1687); app-version-hold.php releases it.
+ARG HOLD=0
 COPY src /opt/usnm-appver-build/appver-src
 COPY sigs /opt/usnm-appver-build/sigs
 COPY code_sign_public /opt/usnm-appver-build/code_sign_public
@@ -79,6 +81,6 @@ RUN set -eu; \
     python3 /opt/usnm-appver-build/check_appver.py --kind "$KIND" --app "$APP" --platform "$PLATFORM" --version-dir "$d" --sigs /opt/usnm-appver-build/sigs --public-key /opt/usnm-appver-build/code_sign_public; \
     rm -rf /opt/usnm-appver-build; \
     chmod 0755 /usr/local/lib/usnm-boinc/publish-appver.sh
-ENV APPVER_KIND=${KIND} APPVER_APP=${APP} APPVER_VERSION=${VERSION} APPVER_PLATFORM=${PLATFORM} APPVER_PLAN_CLASS=${PLAN_CLASS}
+ENV APPVER_KIND=${KIND} APPVER_APP=${APP} APPVER_VERSION=${VERSION} APPVER_PLATFORM=${PLATFORM} APPVER_PLAN_CLASS=${PLAN_CLASS} APPVER_HOLD=${HOLD}
 ENTRYPOINT ["/usr/local/lib/usnm-boinc/publish-appver.sh"]
 CMD []

@@ -45,7 +45,7 @@ Put operator inputs in ignored `target/`, with private directory/file permission
 reviewed config format. No passwords, authenticators, key contents or arbitrary
 command overrides are accepted by this pipeline's own config. #548 owns private
 account configuration and client cleanup; do not put that config in Git. All
-fields above are required, and unknown fields are rejected. The Azure lifecycle
+fields above are required, and unknown fields are rejected. A `usnm_ocr` release signs with `--hold` by default (#1687): the version is published deprecated, so release it with `app-version-hold.php --action release` (boinc/docs/app-release.md, "Held versions") before the acceptance phase, which needs it sent. `"release_mode": "outrank-pinned"`, the one optional field, publishes it live instead; it is accepted only for `usnm_ocr` and `usnm_gold`. The Azure lifecycle
 supports Linux x86_64 container releases: `usnm_ocr/docker`,
 `usnm_qwen/docker_mt_2b`, and `usnm_qwen/docker_nvidia_cuda_8b`. Other app,
 platform and native build contracts fail before deployment instead of silently

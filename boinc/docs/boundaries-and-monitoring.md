@@ -54,6 +54,10 @@ The evaluator writes `feed-health.json` and `feed-health.prom` atomically, logs 
 
 The alert rule keeps every firing check for ten minutes, so a five-minute evaluation doesn't miss a short failure.
 
+**Rotation window (#1687).** A planned plan rotation onto a new app version stops the controller and leaves the queue empty for a while. `feed_status.py --rotation-start --state-dir DIR --minutes N --reason TEXT` (N at most 240) writes `rotation.json` in the evaluator's state directory. Until it ends, `cpu_shortage` and `usnm_ocr_no_work` stay pending (the check carries `rotation_until`) and fire at its end if still true, and a missing controller tick doesn't count towards `collection`. Every other check, and a controller tick that fails, fires as usual. `--rotation-end --state-dir DIR` closes it early; an expired or malformed file is ignored. The order a rotation follows is in [boinc-ocr-bundles.md](../../docs/boinc-ocr-bundles.md#rotating-a-plan-onto-a-new-worker-version).
+
+The supply model loads app versions as the feeder does: the version installed on a host stands for its platform and plan class, so a host whose only installed version is older than the one published still counts, for the version the scheduler would send it.
+
 The source units have a 75-second start timeout, the evaluator 90 seconds, both with 256 MiB of memory. The command reader kills its whole process group on timeout, overflow, failure and success, but killing a local Podman CLI doesn't cancel an exec or query already running in the container.
 
 ### Optional checks

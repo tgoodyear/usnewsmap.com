@@ -34,6 +34,8 @@ Place the operator configuration and #548 existing-client configuration below ig
 }
 ```
 
+A `usnm_ocr` release signs with `--hold` by default (#1687): the version is published deprecated, so release it with `app-version-hold.php --action release` ([app-release.md](../boinc/docs/app-release.md#held-versions)) before the acceptance phase, which needs it sent. `"release_mode": "outrank-pinned"`, the one optional field, publishes it live instead; it is accepted only for `usnm_ocr` and `usnm_gold`.
+
 For a native Linux x86_64 release, add `"kind": "native"`, `"binary": "worker"`,
 `"binary_sha256": "<64 lowercase hex>"`, and `"binary_source": "<40 hex source commit>"`.
 Supported native identities are `usnm_quality` with empty `plan_class`, or `usnm_qwen`

@@ -3,6 +3,7 @@ from copy import deepcopy
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import io
 import json
+import tempfile
 import os
 from pathlib import Path
 import shutil
@@ -454,6 +455,39 @@ class EligibilityTests(unittest.TestCase):
         db["units"][0]["unsent"] = 1
         self.assertEqual(C.supply(db, [host(9), host(10)], "gpu")["eligible"], 1)
 
+    def test_a_host_with_an_older_installed_version_still_counts_for_the_loaded_one(self):
+        # #1687: on 9 Nov 107 was published while hosts had only 106 installed. That made
+        # host_profile None, "host application eligibility unavailable", and collection fired.
+        db, h = database(), host()
+        db["units"][0].update(app="usnm_ocr", app_version_num=0, batch=0, id=1)
+        newer = dict(version("usnm_ocr", "docker", None), version_num=118)
+        db["versions"].append(newer)
+        self.assertEqual(C.supply(db, [h], "cpu"), {"idle": 1, "eligible": 1})
+        # Units pinned to the installed 117 aren't sent once 118 outranks it: the shortage is real.
+        db["units"][0]["app_version_num"] = 117
+        self.assertEqual(C.supply(db, [h], "cpu"), {"idle": 1, "eligible": 0})
+        db["units"][0]["app_version_num"] = 118
+        self.assertEqual(C.supply(db, [h], "cpu"), {"idle": 1, "eligible": 1})
+        # With min_version at 117 the feeder loads both, and either pin is sent.
+        db["minimum_versions"]["usnm_ocr"] = 117
+        for pin in (0, 117, 118):
+            db["units"][0]["app_version_num"] = pin
+            self.assertEqual(C.supply(db, [h], "cpu"), {"idle": 1, "eligible": 1})
+        db["minimum_versions"]["usnm_ocr"] = 118
+        db["units"][0]["app_version_num"] = 117
+        self.assertEqual(C.supply(db, [h], "cpu"), {"idle": 1, "eligible": 0})
+        # Holding 118 (deprecated, so not listed) brings 117 back.
+        db["minimum_versions"]["usnm_ocr"] = 0
+        db["versions"].remove(newer)
+        self.assertEqual(C.supply(db, [h], "cpu"), {"idle": 1, "eligible": 1})
+        # A host with only the held 118 installed counts for 117, its platform and plan class's.
+        h["versions"][1] = dict(h["versions"][1], version_num=118)
+        self.assertEqual(C.supply(db, [h], "cpu"), {"idle": 1, "eligible": 1})
+        # Nothing published for its platform: still unavailable, never a healthy zero.
+        db["versions"] = [v for v in db["versions"] if v["app"] != "usnm_ocr"]
+        with self.assertRaisesRegex(ValueError, "eligibility unavailable"):
+            C.supply(db, [h], "cpu")
+
     def test_policy_host_batch_memory_platform_and_version_constraints(self):
         for field, value in [("id", 11), ("batch", 2), ("hosts", [9]),
                              ("app_version_num", 118), ("app_version_num", 116),
@@ -865,6 +899,39 @@ class CollectionTests(unittest.TestCase):
             finally:
                 http.shutdown()
                 thread.join()
+
+    def test_only_a_missing_tick_is_excused_by_a_rotation_window(self):
+        # #1687: the controller source names "no recent tick" apart from every other failure,
+        # and the evaluator's rotation window excuses only that one.
+        rotation = {"reason": "roll", "started_at": NOW - 60, "until": NOW + 3600}
+        base = self.documents()
+        for error, excused in ((C.NO_RECENT_TICK, True), ("source unavailable", False), (None, False)):
+            with self.subTest(error=error):
+                docs = json.loads(json.dumps(base))
+                if error:
+                    docs["/controller"] = {"schema_version": 1, "source": "controller",
+                                           "observed_at": NOW, "error": error}
+                else:
+                    docs["/controller"]["tick"]["finished_at"] = NOW - 901   # stale evidence
+                config = {"server": "/server", "controller": "/controller", "backlog": "/backlog",
+                          "clients": ["/own"]}
+                with patch.object(C, "read_source", side_effect=lambda path: docs[path]), \
+                        patch.object(C.time, "time", return_value=NOW):
+                    facts = C.collect(config)
+                self.assertEqual(facts["errors"], ["controller"])
+                self.assertEqual(facts["sources"]["controller"]["reason"] == C.NO_RECENT_TICK, excused)
+                state = {}
+                for at in range(0, 300, 60):
+                    document, state = F.evaluate(facts, state, NOW + at, 1000 + at, "boot", "cfg", rotation)
+                collection = next(c for c in document["checks"] if c["code"] == "collection")
+                self.assertEqual(collection["state"], "healthy" if excused else "firing")
+        # The controller source writes the reason itself when no tick finished lately.
+        with patch.object(C, "controller", side_effect=C.NoRecentTick()), \
+                tempfile.TemporaryDirectory() as folder:
+            out = Path(folder) / "controller.json"
+            self.assertEqual(C.main(["controller", "--output", str(out)]), 1)
+            self.assertEqual(json.loads(out.read_text())["error"], C.NO_RECENT_TICK)
+        self.assertEqual(F.NO_RECENT_TICK, C.NO_RECENT_TICK)
 
     def test_unconfigured_clients_and_backlog_are_unknown_never_healthy(self):
         docs = self.documents()

@@ -36,6 +36,13 @@ def max_existing_workunits(environ=None):
 # (#1474). Workunits of no known app have an empty name and count only in the total.
 QUERY = """
 SELECT COUNT(*) FROM host WHERE rpc_time > UNIX_TIMESTAMP() - 86400;
+SELECT 'minver', min_version FROM app WHERE name = 'usnm_ocr';
+SELECT 'version', platform.name, app_version.plan_class, app_version.version_num
+ FROM app_version JOIN app ON app.id = app_version.appid
+ JOIN platform ON platform.id = app_version.platformid
+ WHERE app.name = 'usnm_ocr' AND app_version.deprecated = 0
+ ORDER BY platform.name, app_version.plan_class, app_version.version_num
+ LIMIT {version_limit};
 SELECT 'app', COALESCE(app.name, ''), COUNT(*) FROM workunit LEFT JOIN app ON app.id = workunit.appid
  WHERE workunit.assimilate_state != 2
  GROUP BY app.name
@@ -49,7 +56,31 @@ SELECT name, assimilate_state FROM workunit
 
 def query(limit=DEFAULT_MAX_EXISTING_WORKUNITS):
     """QUERY reading one existing workunit past `limit`, so an oversized inventory is seen."""
-    return QUERY.replace("{limit}", str(limit + 1))
+    return QUERY.replace("{limit}", str(limit + 1)).replace("{version_limit}", str(MAX_VERSIONS + 1))
+
+
+# The usnm_ocr versions the feeder can load (#1687): its app's min_version and every version not
+# deprecated in the database. The controller checks a bundle's pinned version against them.
+MAX_VERSIONS = 200
+MINVER_ROW = re.compile(r"minver\t([0-9]+)")
+VERSION_ROW = re.compile(r"version\t([A-Za-z0-9_.-]{1,254})\t([A-Za-z0-9_.-]{0,254})\t([1-9][0-9]{0,8})")
+
+
+def ocr_app_versions(rows):
+    """{"min_version", "versions"} from the minver and version rows, or None without the app's
+    row (no usnm_ocr registered). Raises on anything malformed or over the limit."""
+    minver = [MINVER_ROW.fullmatch(row) for row in rows if row.startswith("minver\t")]
+    versions = [VERSION_ROW.fullmatch(row) for row in rows if row.startswith("version\t")]
+    if len(minver) > 1 or not all(minver) or not all(versions) or len(versions) > MAX_VERSIONS:
+        raise ValueError("invalid app version inventory")
+    if not minver:
+        if versions:
+            raise ValueError("invalid app version inventory")
+        return None
+    entries = [{"platform": m[1], "plan_class": m[2], "version_num": int(m[3])} for m in versions]
+    if len({(e["platform"], e["plan_class"], e["version_num"]) for e in entries}) != len(entries):
+        raise ValueError("invalid app version inventory")
+    return {"min_version": int(minver[0][1]), "versions": entries}
 
 
 SPOOL_FILE = re.compile(
@@ -99,7 +130,7 @@ def _ids(values, message):
 
 def inventory(root, results, counts, nonce, pending_ids=(), existing_ids=None,
               pending_bundles=(), existing_bundles=None, pending_by_app=None,
-              existing_limit=DEFAULT_MAX_EXISTING_WORKUNITS):
+              existing_limit=DEFAULT_MAX_EXISTING_WORKUNITS, app_versions=None):
     """pending_ids/existing_ids are single-page workunits' job ids; pending_bundles and
     existing_bundles are OCR bundle workunits' bundle ids (#1059), reported as their pages,
     which the server's journals name (record["bundle"]). pending_by_app is each app's
@@ -202,6 +233,8 @@ def inventory(root, results, counts, nonce, pending_ids=(), existing_ids=None,
     }
     if pending_by_app is not None:
         payload["pending_workunits_by_app"] = pending_by_app
+    if app_versions is not None:
+        payload["ocr_app_versions"] = app_versions
     return payload
 
 
@@ -226,7 +259,8 @@ def main():
     ).stdout.strip().splitlines()
     hosts = output[0] if output else ""
     apps = [APP_ROW.fullmatch(value) for value in output[1:] if value.startswith("app\t")]
-    names = [value for value in output[1:] if not value.startswith("app\t")]
+    versioned = [value for value in output[1:] if value.startswith(("minver\t", "version\t"))]
+    names = [value for value in output[1:] if not value.startswith(("app\t", "minver\t", "version\t"))]
     if not hosts.isdecimal() or not all(apps) or len({app[1] for app in apps}) != len(apps) or \
             any(not re.fullmatch(r"usnm_(ocrb_)?[0-9a-f]{64}\t-?[0-9]+", value) for value in names):
         raise ValueError("invalid database inventory")
@@ -247,7 +281,7 @@ def main():
                         [name for name, state in bundles if state != 2],
                         [name for name, _ in bundles],
                         pending_by_app={app[1]: int(app[2]) for app in apps if app[1]},
-                        existing_limit=existing_limit)
+                        existing_limit=existing_limit, app_versions=ocr_app_versions(versioned))
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(payload, sort_keys=True) + "\n")
 

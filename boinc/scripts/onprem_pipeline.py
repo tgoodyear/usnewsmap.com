@@ -5,7 +5,7 @@ from pathlib import Path
 import re
 import shlex
 
-from bootstrap_pipeline import Blocked, CommandFailed, Pipeline, PipelineError, atomic, fingerprint, load
+from bootstrap_pipeline import Blocked, CommandFailed, Pipeline, PipelineError, atomic, fingerprint, load, release_mode_args
 from onprem_artifacts import BUSY, validate
 
 
@@ -278,6 +278,7 @@ class OnpremPipeline(Pipeline):
                     args += ["--extra-file", logical + "=" + entry["path"]]
             else:
                 args += ["--worker-image", self.worker_for_signing(work)]
+            args += release_mode_args(self.config)
             self.script(work, "boinc-app-release.sh", *args)
             signed = json.loads(receipt.read_text())
             value = self.candidate(work)

@@ -47,6 +47,17 @@ class SupplyUnknown(ValueError):
     """A bounded model cannot prove a feasible concurrent allocation."""
 
 
+# The controller source's only error a planned rotation may excuse (#1687): no tick finished in
+# the last 15 minutes, its timer stopped or a tick running by hand. Every other controller
+# failure (transport, a malformed or stale document) keeps its own reason.
+NO_RECENT_TICK = "no_recent_controller_tick"
+
+
+class NoRecentTick(SupplyUnknown):
+    def __init__(self):
+        super().__init__("no recent completed controller tick")
+
+
 def read_file(path, limit=MAX_BYTES):
     with Path(path).open("rb") as stream:
         value = stream.read(limit + 1)
@@ -190,6 +201,8 @@ def fresh(document, now, kind):
     if document.get("error"):
         if kind == "client" and document["error"] in SOURCE_UNKNOWN_REASONS:
             raise SupplyUnknown(document["error"])
+        if kind == "controller" and document["error"] == NO_RECENT_TICK:
+            raise SupplyUnknown(NO_RECENT_TICK)
         raise ValueError("source unavailable")
     if kind == "controller":
         tick = document["tick"]
@@ -957,7 +970,7 @@ def controller(unit, maintenance=()):
             # Paused on purpose: nothing ran, so nothing ran long or failed.
             return {"ok": None, "seconds": 0, "finished_at": int(time.time()), **failures,
                     "paused_by": paused}
-        raise ValueError("no recent completed controller tick")
+        raise NoRecentTick()
     return latest | failures
 
 
@@ -1054,13 +1067,15 @@ def host_profile(host, version, database):
     if (any(value < 0 for value in integers.values())
             or any(not math.isfinite(value) or value < 0 for value in numbers.values())):
         raise ValueError("unmodeled scheduler resource policy")
-    available = [v for v in database["versions"] if v["app"] == version["app"]
+    # The installed version stands for its platform and plan class (#1687): the scheduler sends
+    # whichever loaded version a unit needs and the client downloads it, so a host with only an
+    # older version installed still takes work. Loaded as stock sched_shmem.cpp does: every
+    # undeprecated version at or above min_version when it is set, otherwise only the highest.
+    available = [v["version_num"] for v in database["versions"] if v["app"] == version["app"]
                  and v["plan_class"] == version["plan_class"] and v["platform"] == version["platform"]]
     minimum = database["minimum_versions"][version["app"]]
-    if not available or minimum and version["version_num"] not in [
-            v["version_num"] for v in available if v["version_num"] >= minimum]:
-        return None
-    if not minimum and version["version_num"] != max(v["version_num"] for v in available):
+    served = frozenset(n for n in available if n >= minimum) if minimum else frozenset(available and [max(available)])
+    if not served:
         return None
     effective = host.get("cpus")
     if numbers["min_ncpus"] or not version["gpu"] and not numbers["avg_ncpus"]:
@@ -1113,15 +1128,18 @@ def host_profile(host, version, database):
     if demand <= 0 or demand != version["cpus"]:
         raise ValueError("live CPU demand differs from installed resource profile")
     return (integers["min_wu_id"], integers["max_wu_id"] or 2**63,
-            integers["min_batch"], integers["max_batch"] or 2**63)
+            integers["min_batch"], integers["max_batch"] or 2**63, served)
 
 
 def eligible(unit, host, version, bounds):
+    """`bounds` is host_profile's: workunit and batch bounds, then the version numbers loaded
+    for the version's platform and plan class. An unpinned unit gets the newest of them, a
+    pinned one only its own number."""
     return (unit["app"] == version["app"] and host["host_id"] not in unit["hosts"]
             and not unit["assignments"] and not unit["hr_class"]
             and unit["rsc_memory_bound"] <= host["memory_bytes"]
             and unit["rsc_disk_bound"] <= host["disk_bytes"]
-            and (unit["app_version_num"] == 0 or unit["app_version_num"] == version["version_num"])
+            and (unit["app_version_num"] == 0 or unit["app_version_num"] in bounds[4])
             and bounds[0] <= unit["id"] <= bounds[1] and bounds[2] <= unit["batch"] <= bounds[3])
 
 
@@ -1362,7 +1380,8 @@ def collect(config):
                 facts["sources"][name] = {"observed_at": document["observed_at"], "state": "fresh"}
                 documents[name] = document
             except (OSError, ValueError, KeyError, TypeError, http.client.HTTPException) as error:
-                if isinstance(error, SupplyUnknown) and str(error) in (*SOURCE_UNKNOWN_REASONS, BINDING_MISMATCH):
+                if isinstance(error, SupplyUnknown) and str(error) in (*SOURCE_UNKNOWN_REASONS, BINDING_MISMATCH,
+                                                                     NO_RECENT_TICK):
                     reason = str(error)
                 else:
                     reason = "http_protocol_error" if isinstance(error, http.client.HTTPException) else "unavailable_or_invalid"
@@ -1494,6 +1513,8 @@ def main(argv=None):
             result["tick"] = controller(args.unit, tuple(args.maintenance_unit))
         else:
             result.update(backlog(args.dashboard, args.requests, args.outbox, args.selection))
+    except NoRecentTick:
+        result["error"] = NO_RECENT_TICK
     except SupplyUnknown as error:
         result["error"] = str(error) if str(error) in SOURCE_UNKNOWN_REASONS else "source unavailable"
     except Exception:
