@@ -9,6 +9,8 @@
 **Issues:** [#476](https://github.com/tgoodyear/usnewsmap.com/issues/476),
 [#481](https://github.com/tgoodyear/usnewsmap.com/issues/481)
 
+**Outcome:** released on 18 October 2026 as `usnm_ocr` 1.5 for `arm64-apple-darwin` and `x86_64-apple-darwin` and `usnm_gold` 1.4 for `arm64-apple-darwin`, validated on Apple Silicon (#476); no Intel Mac was available to test. The pause and restart failure was fixed by the [`Run_Podman` patch](2026-10-15-boinc-cross-platform-distribution.md).
+
 ## The question
 
 Can Apple Silicon volunteers execute the existing science worker natively in
