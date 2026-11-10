@@ -509,14 +509,7 @@ class EligibilityTests(unittest.TestCase):
         db["plans"]["intel"]["max_wu_id"] = "0"
         self.assertEqual(C.supply(db, [host()], "gpu")["eligible"], 1)
         db["plans"]["intel"]["max_wu_id"] = "1"
-        # A closed range (min_wu_id above max_wu_id) is a device given no work on purpose:
-        # no idle slot, so no shortage (host 9's Intel GPU, 10 Nov).
-        self.assertEqual(C.supply(db, [host()], "gpu"), {"idle": 0, "eligible": 0})
-        db["plans"]["intel"]["max_wu_id"] = "10"
-        db["plans"]["intel"]["min_batch"], db["plans"]["intel"]["max_batch"] = "9", "8"
-        self.assertEqual(C.supply(db, [host()], "gpu"), {"idle": 0, "eligible": 0})
-        db["plans"]["intel"]["min_batch"], db["plans"]["intel"]["max_batch"] = "8", "8"
-        db["plans"]["intel"]["max_wu_id"] = "1"
+        self.assertEqual(C.supply(db, [host()], "gpu")["eligible"], 0)
         db["plans"]["intel"]["project_prefs_tag"] = "opt_in"
         with self.assertRaises(ValueError):
             C.supply(db, [host()], "gpu")

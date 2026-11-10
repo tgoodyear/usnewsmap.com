@@ -380,6 +380,35 @@ class DispatchTests(DispatchFixture):
                 self.assertEqual((batch / "handoff" / name).read_bytes(), data)
         self.assertEqual(archive.batch_dirs(self.archive_dir), [batch])
 
+    def test_an_older_plans_page_a_checked_plan_claimed_stays(self):
+        # Copilot on #1714: page 20's journal is an older plan's. A checked plan's claim keeps it.
+        other = self.state_dir.parent / "checked-plan"
+        other.mkdir()
+        (other / "state.json").write_text(json.dumps({"claims": {page_key(20): {"batch": "test_batch"}},
+                                                      "selected": {}}))
+        code, summary, _ = run(self.argv("--check-state-dir", str(other)))
+        self.assertEqual(code, 0)
+        self.assertEqual(summary["pages"]["skipped"]["claimed_by_another_plan"], 1)
+        self.assertEqual(summary["batch"]["other_plan_pages"], 0)
+
+    def test_a_resume_refuses_a_page_a_checked_plan_claimed_since(self):
+        self.container.fail_deletes_after = 4
+        code, _, _ = self.apply()
+        self.assertEqual(code, 1)
+        other = self.state_dir.parent / "checked-plan"
+        other.mkdir()
+        (other / "state.json").write_text(json.dumps({"claims": {}, "selected": {page_key(2): 1}}))
+        self.container.fail_deletes_after = None
+        deletes = self.container.deletes
+        code, _, errors = self.apply("--check-state-dir", str(other))
+        self.assertEqual(code, 1)
+        self.assertIn("claimed or selected by a checked plan", errors[-1]["error"])
+        self.assertEqual(self.container.deletes, deletes)
+        # Without that claim the resume finishes.
+        (other / "state.json").write_text(json.dumps({"claims": {}, "selected": {}}))
+        code, receipt, _ = self.apply("--check-state-dir", str(other))
+        self.assertEqual((code, receipt["batch"]), (0, "0001"))
+
     def test_a_resume_checks_archived_copies_by_their_sha256(self):
         self.container.md5 = False
         originals = self.container.snapshot()[0]

@@ -505,10 +505,10 @@ def choose(config, state, records, blobs, now, *, pages, min_age_hours, include_
     this plan is claimed for the batch its journals name, and a page of another plan isn't
     claimed or selected here. With include_held, a chain may also end in a job a held trust
     scope kept from publication (#835): a page of this plan, claimed with a message, whose
-    kept result is in the container. A page of this plan that another plan has claimed or
-    selected (`others`, from --check-state-dir) stays: once its journals are gone, that plan
-    would export it again under the same deterministic job id, whose workunit row still exists,
-    and every tick would refuse with an SQL/journal mismatch (#1713)."""
+    kept result is in the container. A page that a checked plan has claimed or selected
+    (`others`, from --check-state-dir) stays, whichever plan's journals it has: once they are
+    gone, that plan would export it again under the same deterministic job id, whose workunit
+    row still exists, and every tick would refuse with an SQL/journal mismatch (#1713)."""
     queue = config.get("source") == "queue"
     kept = kept_result(blobs) if include_held else set()
     claims, selected = state.get("claims", {}), state.get("selected", {})
@@ -550,7 +550,7 @@ def choose(config, state, records, blobs, now, *, pages, min_age_hours, include_
         if published_at is None or now - published_at < min_age_hours * 3600:
             skip("held_too_recently" if held else "published_too_recently")
             continue
-        if plan == config["plan"] and page in others:
+        if page in others:
             skip("claimed_by_another_plan")
             continue
         if plan == config["plan"]:
@@ -879,6 +879,11 @@ def dispatch(args):
             require(manifest["account"] == config["account"] and manifest["plan"] == config["plan"]
                     and manifest["config_sha256"] == scheduler.digest(config),
                     f"batch {batch.name} was planned for another allocation")
+            # Another plan may have claimed a batch page since it was planned (#1713).
+            claimed = sorted({page["page"] for page in manifest["pages"]} & other_plans_pages(args))
+            require(not claimed, f"{len(claimed)} of batch {batch.name}'s pages are claimed or selected by a "
+                                 f"checked plan since it was planned (first: {claimed[0] if claimed else ''}); "
+                                 "reconcile before resuming")
             progress(f"resuming batch {batch.name}")
         else:
             manifest, summary = plan_batch(scheduler, config, state, container, now, args)

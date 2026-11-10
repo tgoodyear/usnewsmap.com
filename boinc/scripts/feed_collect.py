@@ -1334,15 +1334,6 @@ def supply(database, hosts, resource, resource_usage=None):
             bounds = host_profile(host, version, database)
             if bounds is not None:
                 profiles.append((version, bounds))
-        # A device whose every usable version has an empty workunit or batch range (a plan
-        # class closed on purpose, such as min_wu_id above max_wu_id) can take no work: it is
-        # no idle slot, not a shortage.
-        open_profiles = [(v, b) for v, b in profiles if b[0] <= b[1] and b[2] <= b[3]]
-        devices -= ({v["gpu"] or "cpu" for v, _ in profiles}
-                    - {v["gpu"] or "cpu" for v, _ in open_profiles})
-        profiles = open_profiles
-        if not devices:
-            continue
         if devices - {v["gpu"] or "cpu" for v, _ in profiles}:
             raise ValueError("host application eligibility unavailable for idle device")
         versions = [v for v, _ in profiles]
