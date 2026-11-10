@@ -214,6 +214,22 @@ fn feed_panel(v: &crate::feed::FeedView, o: &mut String) {
             }),
             _ => None,
         };
+        // Own hosts the shortage checks leave out because their running tasks can't be counted
+        // (#1698): busy, so not idle capacity, and not a reason for unknown.
+        let detail = match check.excluded_hosts.as_deref() {
+            Some(hosts) if !hosts.is_empty() => {
+                let hosts = hosts
+                    .iter()
+                    .map(|h| format!("host {} ({})", h.host_id, h.reason))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                Some(match detail {
+                    Some(detail) => format!("{detail}; excludes unproven {hosts}"),
+                    None => format!("excludes unproven {hosts}"),
+                })
+            }
+            _ => detail,
+        };
         // An unknown check names the source it waits on (#1698).
         let detail = match (&check.state, &check.cause) {
             (State::Unknown, Some(cause)) => Some(match detail {

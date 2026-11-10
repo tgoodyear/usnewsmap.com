@@ -606,6 +606,10 @@ mod tests {
             if code == "cpu_shortage" {
                 check["idle_slots"] = 2.into();
                 check["eligible_results"] = 2.into();
+                check["excluded_hosts"] = serde_json::json!([{
+                    "source": "client_2", "host_id": 10,
+                    "reason": "active_task_resource_usage_unavailable"
+                }]);
             } else if code == "gpu_shortage" {
                 check["state"] = "unknown".into();
                 check["reason"] = "gpu_memory_packing".into();
@@ -638,7 +642,7 @@ mod tests {
         )
         .unwrap();
         let (_, html) = call(a, "198.51.100.14", "GET", "/", "").await;
-        assert!(html.contains("2 modeled candidates / 2 resource-eligible own slots"));
+        assert!(html.contains("2 modeled candidates / 2 resource-eligible own slots; excludes unproven host 10 (active_task_resource_usage_unavailable)"));
         assert!(html.contains("not guaranteed scheduler dispatch"));
         assert!(html.contains("gpu_memory_packing"));
         assert!(html.contains("registry_changed: app IDs 3, 7"));

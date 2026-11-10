@@ -1210,6 +1210,114 @@ class CollectionTests(unittest.TestCase):
             with self.subTest(clients=clients), self.assertRaises(ValueError):
                 C.own_clients({"clients": clients})
 
+    def unproven_documents(self):
+        """Host 9 proven, host 10 (the GPU host on 10 Nov) busy with tasks it can't count (#1698)."""
+        docs = self.documents()
+        docs["/ten"] = dict(docs["/own"], **host(10))
+        docs["/ten"].update(idle_cpu=0, available_cpu=0, memory_bytes=0, disk_bytes=0, idle_gpu={"intel_gpu": 0},
+                            capacity_unproven=True, unproven="active_task_resource_usage_unavailable")
+        config = {name: "/" + name for name in ("server", "controller", "backlog")}
+        return docs, config
+
+    def test_an_unproven_host_is_excluded_and_shortage_judged_from_the_others(self):
+        docs, config = self.unproven_documents()
+        config["clients"] = [{"location": "/own", "host_id": 9}, {"location": "/ten", "host_id": 10}]
+        excluded = [{"source": "client_1", "host_id": 10, "reason": "active_task_resource_usage_unavailable"}]
+        with patch.object(C, "read_source", side_effect=lambda path: deepcopy(docs[path])), \
+                patch.object(C.time, "time", return_value=NOW):
+            facts = C.collect(config)
+            self.assertEqual(facts["errors"], [])
+            self.assertEqual(facts["sources"]["client_1"],
+                             {"observed_at": NOW, "state": "fresh", "unproven": "active_task_resource_usage_unavailable"})
+            self.assertEqual(facts["supply"]["gpu"], {"idle": 1, "eligible": 1})
+            self.assertEqual(facts["excluded_hosts"], excluded)
+            _, previous = F.evaluate(facts, {}, NOW - 60, 940, "boot", "cfg")
+            document, _ = F.evaluate(facts, previous, NOW, 1000, "boot", "cfg")
+            checks = {c["code"]: c for c in document["checks"]}
+            for code in ("cpu_shortage", "gpu_shortage"):
+                self.assertEqual(checks[code]["excluded_hosts"], excluded)
+                self.assertNotIn("cause", checks[code])
+            self.assertEqual((checks["gpu_shortage"]["state"], checks["collection"]["state"]), ("healthy", "healthy"))
+            self.assertFalse([c["code"] for c in document["checks"] if c["state"] == "unknown"])
+            # A real shortage on the proven host still shows.
+            docs["/server"]["units"][0]["unsent"] = 0
+            document, _ = F.evaluate(C.collect(config), {}, NOW, 1000, "boot", "cfg")
+            gpu = next(c for c in document["checks"] if c["code"] == "gpu_shortage")
+            self.assertEqual((gpu["state"], gpu["idle_slots"], gpu["eligible_results"]), ("pending", 1, 0))
+            # The excluded host's own slots never count, even if a document claimed some.
+            docs["/server"]["units"][0]["unsent"] = 2
+            docs["/ten"].update(idle_gpu={"intel_gpu": 1}, idle_cpu=1, available_cpu=1, memory_bytes=1000,
+                               disk_bytes=1000)
+            self.assertEqual(C.collect(config)["supply"]["gpu"], {"idle": 1, "eligible": 1})
+            # Without the exclusion host 10 is just another own host.
+            for key in ("capacity_unproven", "unproven"):
+                del docs["/ten"][key]
+            facts = C.collect(config)
+            self.assertNotIn("excluded_hosts", facts)
+            self.assertEqual(facts["supply"]["gpu"], {"idle": 2, "eligible": 2})
+
+    def test_every_own_host_unproven_is_unknown_with_the_clients_cause(self):
+        docs, config = self.unproven_documents()
+        config["clients"] = ["/ten"]
+        with patch.object(C, "read_source", side_effect=lambda path: deepcopy(docs[path])), \
+                patch.object(C.time, "time", return_value=NOW):
+            facts = C.collect(config)
+        self.assertNotIn("supply", facts)
+        self.assertEqual(facts["supply_errors"], {"cpu": "no_proven_clients", "gpu": "no_proven_clients"})
+        self.assertCountEqual(facts["errors"], ["cpu_no_proven_clients", "gpu_no_proven_clients"])
+        previous = {}
+        for minute in range(5):
+            document, previous = F.evaluate(facts, previous, NOW + 60 * minute, 1000 + 60 * minute, "boot", "cfg")
+        checks = {c["code"]: c for c in document["checks"]}
+        for code in ("cpu_shortage", "gpu_shortage"):
+            self.assertEqual((checks[code]["state"], checks[code]["reason"], checks[code]["cause"]),
+                             ("unknown", "no_proven_clients", "source:clients"))
+            self.assertEqual(checks[code]["excluded_hosts"][0]["host_id"], 10)
+        # One source:clients alert row, as before #1698; collection adds nothing uncovered.
+        self.assertEqual((checks["collection"]["state"], checks["collection"]["uncovered"]), ("firing", 0))
+
+    def test_an_unreachable_client_is_still_an_error(self):
+        docs, config = self.unproven_documents()
+        config["clients"] = ["/own", "/down"]
+        with fixture() as root:
+            (root / "gui_rpc_auth.cfg").write_text("secret")
+            with socket.socket() as closed:
+                closed.bind(("127.0.0.1", 0))
+                port = closed.getsockname()[1]
+            output = root / "client.json"
+            with patch.object(C.time, "time", return_value=NOW):
+                self.assertEqual(C.main(["client", "--data-dir", str(root), "--port", str(port),
+                                         "--output", str(output)]), 1)
+            docs["/down"] = json.loads(output.read_text())
+        self.assertEqual(docs["/down"]["error"], "source unavailable")
+        self.assertNotIn("capacity_unproven", docs["/down"])
+        with patch.object(C, "read_source", side_effect=lambda path: deepcopy(docs[path])), \
+                patch.object(C.time, "time", return_value=NOW):
+            facts = C.collect(config)
+        self.assertEqual(facts["sources"]["client_1"]["state"], "unknown")
+        self.assertNotIn("supply", facts)
+        document, _ = F.evaluate(facts, {}, NOW, 1000, "boot", "cfg")
+        gpu = next(c for c in document["checks"] if c["code"] == "gpu_shortage")
+        self.assertEqual((gpu["state"], gpu["cause"]), ("unknown", "source:clients"))
+
+    def test_fresh_takes_unproven_capacity_only_as_a_pair_with_a_listed_reason(self):
+        docs, _ = self.unproven_documents()
+        good = docs["/ten"]
+        self.assertIs(C.fresh(deepcopy(good), NOW, "client")["capacity_unproven"], True)
+        for bad in ({"capacity_unproven": False}, {"capacity_unproven": 1}, {"unproven": "client_restarted"},
+                    {"unproven": None}):
+            with self.subTest(bad=bad), self.assertRaisesRegex(ValueError, "invalid unproven capacity"):
+                C.fresh(dict(good, **bad), NOW, "client")
+        for key in ("capacity_unproven", "unproven"):
+            alone = dict(good)
+            del alone[key]
+            with self.subTest(alone=key), self.assertRaisesRegex(ValueError, "invalid unproven capacity"):
+                C.fresh(alone, NOW, "client")
+        # A source from before #1698 still sends the error, and stays unknown with its reason.
+        with self.assertRaisesRegex(C.SupplyUnknown, "active_task_resource_usage_unavailable"):
+            C.fresh({"schema_version": 1, "source": "client", "observed_at": NOW,
+                     "error": "active_task_resource_usage_unavailable"}, NOW, "client")
+
     def test_disk_is_shared_between_cpu_and_gpu_allocations(self):
         docs = self.documents()
         docs["/own"].update(cpus=2, idle_cpu=2)
@@ -1780,11 +1888,13 @@ with socket.create_connection({listener.getsockname()!r}, timeout=2) as connecti
                 answers["get_messages"] = messages
                 stats = f"<time_stats><client_start_time>{started}</client_start_time></time_stats>" if started else ""
                 answers["get_state"] = base.replace("</client_state>", stats + running + "</client_state>")
-                try:
-                    return C.client(root, port, session)["available_cpu"]
-                except C.SupplyUnknown as error:
-                    self.assertEqual(str(error), "active_task_resource_usage_unavailable")
+                observed = C.client(root, port, session)
+                if observed.get("capacity_unproven"):
+                    # Published with what it proves and no idle capacity (#1698), never an error.
+                    self.assertEqual(observed["unproven"], "active_task_resource_usage_unavailable")
+                    self.assertEqual((observed["host_id"], observed["available_cpu"]), (9, 0))
                     return None
+                return observed["available_cpu"]
 
             def reset(config_mtime=None):
                 shutil.rmtree(projects, ignore_errors=True)
@@ -1840,11 +1950,11 @@ with socket.create_connection({listener.getsockname()!r}, timeout=2) as connecti
 <avg_ncpus>1</avg_ncpus></app_version>""" + running
             answers["get_state"] = base.replace("</client_state>", "<time_stats><client_start_time>2000"
                                                 "</client_start_time></time_stats>" + other + "</client_state>")
-            with self.assertRaisesRegex(C.SupplyUnknown, "active_task_resource_usage_unavailable"):
-                C.client(root, port, session)              # another project's started task stays unknown
+            # Another project's started task stays unproven.
+            self.assertEqual(C.client(root, port, session)["unproven"], "active_task_resource_usage_unavailable")
             answers["get_state"] = base.replace("</client_state>", running + "</client_state>")
-            with self.assertRaisesRegex(C.SupplyUnknown, "active_task_resource_usage_unavailable"):
-                C.client(root, port)                       # no session record: never trusted
+            # No session record: never trusted.
+            self.assertEqual(C.client(root, port)["unproven"], "active_task_resource_usage_unavailable")
 
     def test_paused_clients_have_no_idle_capacity_rather_than_unknown(self):
         with client_rpc_fixture() as (root, port, answers, _):
@@ -1868,7 +1978,18 @@ with socket.create_connection({listener.getsockname()!r}, timeout=2) as connecti
             with self.assertRaisesRegex(ValueError, "client status unavailable"):
                 C.client(root, port)
 
-    def test_unprovable_task_reservations_are_source_local_unknown_and_recover(self):
+    def assert_unproven(self, observed, reason):
+        """What an unproven client still publishes (#1698): host, versions and devices, no idle capacity."""
+        self.assertEqual((observed["capacity_unproven"], observed["unproven"]), (True, reason))
+        self.assertEqual((observed["host_id"], observed["cpus"], observed["gpu_devices"]), (9, 2, {"intel_gpu": 1}))
+        self.assertTrue(observed["versions"])
+        self.assertEqual((observed["idle_cpu"], observed["available_cpu"], observed["memory_bytes"],
+                          observed["disk_bytes"], observed["idle_gpu"]), (0, 0, 0, 0, {"intel_gpu": 0}))
+        self.assertNotIn("used_gpu", observed)
+        self.assertNotIn("error", observed)
+        C.fresh(dict(observed, schema_version=1, source="client", observed_at=NOW), NOW, "client")
+
+    def test_unprovable_task_reservations_publish_the_host_as_unproven_and_recover(self):
         with client_rpc_fixture() as (root, port, answers, _):
             base = answers["get_state"]
             coproc = "<coproc><type>intel_gpu</type><count>.5</count></coproc>"
@@ -1878,30 +1999,39 @@ with socket.create_connection({listener.getsockname()!r}, timeout=2) as connecti
                               "<avg_ncpus>1</avg_ncpus><coproc><type>absent_gpu</type><count>1</count></coproc>"):
                 with self.subTest(resources=resources):
                     answers["get_state"] = base.replace("</client_state>", queued_task(resources) + "</client_state>")
-                    with self.assertRaisesRegex(C.SupplyUnknown, "task_resource_usage_unavailable"):
-                        C.client(root, port)
+                    self.assert_unproven(C.client(root, port), "task_resource_usage_unavailable")
+            answers["get_state"] = base.replace("</client_state>", queued_task("", "<coproc_missing/>") + "</client_state>")
+            self.assert_unproven(C.client(root, port), "task_resource_usage_unavailable")
+            # A task the source can't account for at all is still an error, not unproven.
+            answers["get_state"] = base.replace("</client_state>", queued_task().replace(
+                "<version_num>117</version_num>", "<version_num>999</version_num>", 1) + "</client_state>")
+            with self.assertRaisesRegex(ValueError, "unaccounted client task"):
+                C.client(root, port)
             for active in ("<active_task/>", "<active_task><active_task_state>1</active_task_state></active_task>",
                            "<active_task><active_task_state>9</active_task_state></active_task>"):
                 fields = active + "<resources>0.25 CPUs + 0.25 Intel GPUs</resources>"
                 answers["get_state"] = base.replace(
                     "</client_state>", queued_task("<avg_ncpus>2</avg_ncpus>", fields) + "</client_state>")
-                with self.subTest(active=active), self.assertRaisesRegex(C.SupplyUnknown, "active_task_resource_usage_unavailable"):
-                    C.client(root, port)
+                with self.subTest(active=active):
+                    self.assert_unproven(C.client(root, port), "active_task_resource_usage_unavailable")
             output = root / "client.json"
             args = ["client", "--data-dir", str(root), "--port", str(port), "--output", str(output)]
             docs = self.documents()
             config = {name: "/" + name for name in ("server", "controller", "backlog")}
             config["clients"] = ["/own"]
             with patch.object(C.time, "time", return_value=NOW):
-                self.assertEqual(C.main(args), 1)
+                self.assertEqual(C.main(args), 0)
                 docs["/own"] = json.loads(output.read_text())
+                self.assertEqual(docs["/own"]["unproven"], "active_task_resource_usage_unavailable")
                 with patch.object(C, "read_source", side_effect=lambda path: docs[path]):
                     facts = C.collect(config)
-                self.assertEqual(facts["sources"]["client_0"]["reason"], "active_task_resource_usage_unavailable")
+                self.assertEqual(facts["sources"]["client_0"]["state"], "fresh")
+                # The only own client is unproven: unknown, waiting on the clients, as before #1698.
                 document, _ = F.evaluate(facts, {}, NOW, 1000, "boot", "cfg")
-                checks = {c["code"]: c["state"] for c in document["checks"]}
-                self.assertEqual((checks["cpu_shortage"], checks["gpu_shortage"], checks["controller_tick"]),
-                                 ("unknown", "unknown", "healthy"))
+                checks = {c["code"]: c for c in document["checks"]}
+                self.assertEqual((checks["cpu_shortage"]["state"], checks["gpu_shortage"]["state"],
+                                  checks["controller_tick"]["state"]), ("unknown", "unknown", "healthy"))
+                self.assertEqual(checks["gpu_shortage"]["cause"], "source:clients")
                 answers["get_state"] = answers["get_state"].replace(
                     "<active_task_state>9</active_task_state>", "<active_task_state>0</active_task_state>")
                 self.assertEqual(C.main(args), 0)

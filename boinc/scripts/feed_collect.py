@@ -22,7 +22,7 @@ import urllib.request
 import urllib.error
 import xml.etree.ElementTree as ET
 
-from feed_status import APP_NAMES, MAX_AGE, TICK_FAILURE_SAME_S, TICK_LIMIT_S, atomic_json
+from feed_status import APP_NAMES, MAX_AGE, NO_PROVEN_CLIENTS, TICK_FAILURE_SAME_S, TICK_LIMIT_S, atomic_json
 
 MAX_BYTES = 8 * 1024 * 1024
 MAX_ROWS = 8000
@@ -364,6 +364,10 @@ def fresh(document, now, kind):
                 or len(document["versions"]) > 256
                 or any(not isinstance(version, dict) for version in document["versions"])):
             raise ValueError("invalid own host")
+        if ("capacity_unproven" in document or "unproven" in document) and (
+                document.get("capacity_unproven") is not True or document.get("unproven") not in SOURCE_UNKNOWN_REASONS):
+            # Both or neither (#1698): a host whose running tasks can't be counted.
+            raise ValueError("invalid unproven capacity")
         if (not isinstance(document.get("gpu_memory", {}), dict)
                 or not isinstance(document.get("gpu_capabilities", {}), dict)
                 or any(not isinstance(caps, dict) for caps in document.get("gpu_capabilities", {}).values())):
@@ -825,6 +829,10 @@ def client(data_dir, port, session=None):
                          **client_resource_usage(v, 1)})
     # Count queued/download-pending work as occupied: it already feeds this device.
     used_cpu, used_memory, used_gpu = 0, 0, {}
+    # The first task whose reservation can't be counted (#1698). The host is busy with it, so
+    # the source still publishes what it proves (host, devices, versions) with no idle capacity
+    # and `capacity_unproven`, and the evaluator leaves the host out of the shortage checks.
+    unproven = None
     units = {(owner, w.findtext("name")): w for owner, w in scoped if w.tag == "workunit"}
     for owner, result in ([] if paused else scoped):
         if result.tag != "result":
@@ -841,9 +849,11 @@ def client(data_dir, port, session=None):
             # updates; get_state exposes only a rounded display string for them.
             # They count at their records only in a trusted session, and only for
             # this project, whose scheduler-side changes the profile checks cover.
-            raise SupplyUnknown("active_task_resource_usage_unavailable")
+            unproven = unproven or "active_task_resource_usage_unavailable"
+            continue
         if flag(result, "coproc_missing"):
-            raise SupplyUnknown("task_resource_usage_unavailable")
+            unproven = unproven or "task_resource_usage_unavailable"
+            continue
         unit = units.get((owner, result.findtext("wu_name")))
         app = unit.findtext("app_name") if unit is not None else None
         match = [v for v in versions if v["project"] == owner and v["app"] == app
@@ -855,7 +865,11 @@ def client(data_dir, port, session=None):
             raise ValueError("unaccounted client task")
         usage = match[0]
         if unit is not None and (unit.find("avg_ncpus") is not None or unit.find("coproc") is not None):
-            usage = client_resource_usage(unit, 0)
+            try:
+                usage = client_resource_usage(unit, 0)
+            except SupplyUnknown as error:
+                unproven = unproven or str(error)
+                continue
         memory_bound = unit.findtext("rsc_memory_bound") if unit is not None else None
         if memory_bound is None or not math.isfinite(float(memory_bound)) or float(memory_bound) < 0:
             raise ValueError("occupied task memory unavailable")
@@ -892,7 +906,7 @@ def client(data_dir, port, session=None):
                 and opencl_memory > 0 else None,
             }
     if any(device not in gpu_devices or gpu_devices[device] <= 0 for device in used_gpu):
-        raise SupplyUnknown("task_resource_usage_unavailable")
+        unproven = unproven or "task_resource_usage_unavailable"
     if gpu_paused:
         gpus = {vendor: 0 for vendor in gpus}
     blocked = {node.text for tag in ("no_rsc_pref", "no_rsc_apps", "no_rsc_ams", "no_rsc_config")
@@ -914,18 +928,26 @@ def client(data_dir, port, session=None):
     monitored = [{k: value for k, value in v.items() if k != "project"} for v in versions
                  if v["project"] == MASTER.rstrip("/") and v["app"] in APP_NAMES]
     available = 0 if paused else max(0, cpus - used_cpu)
-    return {"host_id": host_id, "versions": monitored, "paused": paused,
-            "idle_cpu": 0 if "CPU" in blocked or flag(project, "no_cpu_pref") or flag(project, "no_cpu")
-            else available,
-            "available_cpu": available,
-            "cpus": cpus, "idle_gpu": gpus, "gpu_memory": gpu_memory, "gpu_capabilities": capabilities,
-            "gpu_devices": gpu_devices, "used_gpu": used_gpu,
-            "client_version": sum(int(state.findtext(".//" + tag, "0")) * factor for tag, factor in (
-                ("core_client_major_version", 10000), ("core_client_minor_version", 100), ("core_client_release", 1))),
-            "docker": container_runtime(read_command=run)
-            if any(v["plan_class"].startswith("docker") for v in monitored) else False,
-            "memory_bytes": 0 if paused else max(0, memory * fraction - used_memory),
-            "disk_bytes": 0 if paused else max(0, min(float(free), float(allowance) - used))}
+    document = {"host_id": host_id, "versions": monitored, "paused": paused,
+                "idle_cpu": 0 if "CPU" in blocked or flag(project, "no_cpu_pref") or flag(project, "no_cpu")
+                else available,
+                "available_cpu": available,
+                "cpus": cpus, "idle_gpu": gpus, "gpu_memory": gpu_memory, "gpu_capabilities": capabilities,
+                "gpu_devices": gpu_devices, "used_gpu": used_gpu,
+                "client_version": sum(int(state.findtext(".//" + tag, "0")) * factor for tag, factor in (
+                    ("core_client_major_version", 10000), ("core_client_minor_version", 100),
+                    ("core_client_release", 1))),
+                "docker": container_runtime(read_command=run)
+                if any(v["plan_class"].startswith("docker") for v in monitored) else False,
+                "memory_bytes": 0 if paused else max(0, memory * fraction - used_memory),
+                "disk_bytes": 0 if paused else max(0, min(float(free), float(allowance) - used))}
+    if unproven:
+        # No idle capacity is claimed, so an evaluator from before #1698 reads a full host, not a
+        # healthy one with spare slots, and a newer one excludes it (feed_collect.collect).
+        document.update(idle_cpu=0, available_cpu=0, memory_bytes=0, disk_bytes=0,
+                        idle_gpu={vendor: 0 for vendor in gpus}, capacity_unproven=True, unproven=unproven)
+        del document["used_gpu"]
+    return document
 
 
 def controller(unit, maintenance=()):
@@ -1523,6 +1545,9 @@ def collect(config):
                 if expected is not None and document["host_id"] != expected:
                     raise SupplyUnknown(BINDING_MISMATCH)
                 facts["sources"][name] = {"observed_at": document["observed_at"], "state": "fresh"}
+                if document.get("capacity_unproven"):
+                    # Fresh, so it never counts towards collection; the shortage checks leave it out.
+                    facts["sources"][name]["unproven"] = document["unproven"]
                 documents[name] = document
             except (OSError, ValueError, KeyError, TypeError, http.client.HTTPException) as error:
                 if isinstance(error, SupplyUnknown) and str(error) in (*SOURCE_UNKNOWN_REASONS, BINDING_MISMATCH,
@@ -1534,16 +1559,30 @@ def collect(config):
                 facts["errors"].append(name)
     database = documents.get("server")
     hosts = [documents.get(name) for name in clients]
+    # A host whose running tasks can't be counted (capacity_unproven) is busy: leaving it out can
+    # only under-count idle slots, so it can hide a shortage on that host but never make one up.
+    # Both lanes and the shared budgets below see the same proven hosts, as the shared-capacity
+    # rule keeps only proven allocation (#1698).
+    proven = [h for h in hosts if h and not h.get("capacity_unproven")]
+    excluded = [{"source": name, "host_id": documents[name]["host_id"], "reason": documents[name]["unproven"]}
+                for name in clients if documents.get(name, {}).get("capacity_unproven")]
+    if excluded:
+        facts["excluded_hosts"] = excluded
     if not clients:
         # No own capacity to judge is unknown, not zero idle slots.
         facts["supply_errors"] = {resource: "no_own_clients_configured" for resource in ("cpu", "gpu")}
         facts["errors"] += ["cpu_no_own_clients_configured", "gpu_no_own_clients_configured"]
+    elif database and all(hosts) and not proven:
+        # Every own client fresh but unproven: nothing to judge, as with none configured.
+        facts["supply_errors"] = {resource: NO_PROVEN_CLIENTS for resource in ("cpu", "gpu")}
+        facts["errors"] += ["cpu_" + NO_PROVEN_CLIENTS, "gpu_" + NO_PROVEN_CLIENTS]
     elif database and all(hosts):
+        every, hosts = hosts, proven
         facts["supply"] = {}
         usage = {"cpu": {}, "gpu": {}}
         for resource in ("cpu", "gpu"):
             try:
-                if len({h["host_id"] for h in hosts}) != len(hosts):
+                if len({h["host_id"] for h in every}) != len(every):
                     raise ValueError("duplicate host")
                 facts["supply"][resource] = supply(database, hosts, resource, usage[resource])
             except SupplyUnknown as error:
