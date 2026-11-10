@@ -624,7 +624,7 @@ fn release_notes(m: &Manifest) -> String {
     let mut s = format!(
         "# usnm OCR benchmark {}\n\n{} samples from {} sources. The samples, subsets, sources and \
          licences are listed in manifest.json; SHA256SUMS lists every file, and its sha256 is the \
-         release's content digest. docs/ocr/bench.md in the usnewsmap.com repository has the \
+         release's content digest. docs/ocr-bench.md in the usnewsmap.com repository has the \
          contract.\n\n## Subsets\n\n| Subset | Samples | Source pages |\n| --- | ---: | ---: |\n",
         m.release,
         m.samples.len(),
