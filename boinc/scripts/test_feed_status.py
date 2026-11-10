@@ -104,7 +104,7 @@ class MainTest(unittest.TestCase):
         health = condition.split("| union (", 1)[0]
         self.assertNotIn("in ('firing', 'unknown')", health)
         self.assertIn("where tostring(Held.code) == 'collection'", health)
-        self.assertIn("(State == 'unknown' and CollectionFiring)", health)
+        self.assertIn("(State == 'unknown' and CollectionFiring and not(tobool(Check.excused)))", health)
         # #1698: unknown rows count over the same ten minutes as firing ones, so they don't flap.
         self.assertIn("FeedEvents\n| where Observed between (ago(10m) .. now())", health)
         self.assertNotIn("ago(3m)", health)
@@ -468,6 +468,43 @@ class ControllerSignalsTest(unittest.TestCase):
             del self.tick[key]
         checked = self.checks(120)["controller_tick"]
         self.assertEqual((checked["state"], checked["reason"], checked["sticky"]), ("firing", None, False))
+
+    def test_alternating_failures_keep_one_reason_across_a_good_tick(self):
+        # Copilot on #1699: a good tick cleared the streak's reason, so the alert switched between
+        # controller_tick:<reason> and controller_tick. The hourly count names the hour's newest class.
+        names = []
+        for elapsed, ok, streak, reason in ((0, False, 1, "handoff_failed"), (300, True, 0, None),
+                                            (600, False, 1, "handoff_failed"), (900, True, 0, None)):
+            self.tick.update(ok=ok, failed_in_a_row=streak, reason=reason, same_error_in_a_row=streak,
+                             failed_last_hour=5, last_hour_reason="handoff_failed")
+            checked = self.checks(elapsed)["controller_tick"]
+            self.assertEqual(checked["state"], "firing")
+            names.append(checked["code"] + ":" + str(checked["reason"]))
+        self.assertEqual(set(names), {"controller_tick:handoff_failed"})
+        # Below the hourly count, a good tick shows no reason, as before.
+        self.tick.update(failed_last_hour=3)
+        self.assertEqual(self.checks(960)["controller_tick"]["reason"], None)
+
+    def test_excused_controller_checks_stay_unknown_but_send_no_row(self):
+        # #1687: a rotation pauses the controller on purpose; an unrelated outage firing collection
+        # must not page for the controller's checks too.
+        del self.facts["tick"], self.facts["enabled_until"]
+        self.facts["sources"] = {"controller": {"observed_at": None, "state": "unknown", "reason": F.NO_RECENT_TICK},
+                                 "server": {"observed_at": None, "state": "unknown", "reason": "unavailable_or_invalid"}}
+        self.facts["errors"] = ["controller", "server"]
+        rotation = {"reason": "#529 claim", "started_at": NOW, "until": NOW + 3600}
+        checks = self.checks(rotation=rotation)
+        for code in ("controller_tick", *F.CONTROLLER_SIGNAL_CHECKS):
+            self.assertEqual((checks[code]["state"], checks[code].get("excused")), ("unknown", True))
+            self.assertNotIn("cause", checks[code])
+        self.assertEqual(checks["qwen_refill_window"]["cause"], "source:server")
+        self.assertNotIn("excused", checks["qwen_refill_window"])
+        # Without the window the controller's checks are a source:controller row as usual.
+        checks = self.checks(60)
+        self.assertEqual((checks["controller_tick"].get("excused"), checks["controller_tick"]["cause"]),
+                         (None, "source:controller"))
+        module = (ROOT / "infra/modules/boinc-feed-alerts.bicep").read_text()
+        self.assertIn("(State == 'unknown' and CollectionFiring and not(tobool(Check.excused)))", module)
 
     def test_signal_checks_are_opt_in(self):
         del self.facts["controller_signals"]

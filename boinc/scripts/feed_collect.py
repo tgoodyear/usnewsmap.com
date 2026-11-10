@@ -288,6 +288,8 @@ def fresh(document, now, kind):
             natural(tick.get("maintenance_failure_at"))
         if "failed_last_hour" in tick:
             natural(tick["failed_last_hour"])
+            if tick.get("last_hour_reason") is not None and tick["last_hour_reason"] not in FAILURE_REASONS:
+                raise ValueError("invalid controller failure reason")
         if "reason" in tick or "same_error_in_a_row" in tick:
             # Read together (#1698): a class from the fixed list, never error text.
             if tick.get("reason") is not None and tick.get("reason") not in FAILURE_REASONS:
@@ -1066,10 +1068,15 @@ def controller(unit, maintenance=()):
     # Failed or slow runs in the last hour, good runs between them or not: failures that alternate
     # with good ticks never make a streak (#1698).
     failed_last_hour = sum(failed and time.time() - at <= TICK_TREND_WINDOW_S for at, failed in runs.values())
+    # The newest error in that hour, good runs between or not: the reason the hourly count fires
+    # with, so a success between failures doesn't change the alert's name.
+    hour = [key for key in errors if runs[key][1] and time.time() - runs[key][0] <= TICK_TREND_WINDOW_S]
+    last_hour_reason = failure_reason(errors[max(hour, key=lambda k: runs[k][0])]) if hour else None
     live = [plan for plan in plans.values() if not plan["draining"]]
     failures = {"last_failure_at": max(controller_failure, maintenance_failure),
                 "controller_failure_at": controller_failure, "maintenance_failure_at": maintenance_failure,
                 "failed_in_a_row": streak, "failed_last_hour": failed_last_hour,
+                "last_hour_reason": last_hour_reason,
                 "reason": reason, "same_error_in_a_row": repeats,
                 "caps": caps,
                 # None: no tick line in the window reports it (a scheduler from before #1685).

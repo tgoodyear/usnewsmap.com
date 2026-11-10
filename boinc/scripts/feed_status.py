@@ -243,6 +243,9 @@ def evaluate(facts, previous, now, monotonic, boot_id, config_id, rotation=None)
             measurements["rotation_until"] = deferred_until
         if state == "unknown" and cause(code):
             measurements["cause"] = cause(code)
+        if state == "unknown" and excused and code in ("controller_tick", *CONTROLLER_SIGNAL_CHECKS):
+            # Paused on purpose in a rotation: still unknown, but no alert row (#1687, #1698).
+            measurements["excused"] = True
         conditions[code] = {"active": condition is True, "since": since, "generation": generation}
         checks.append({"code": code, "state": state, "duration_s": int(duration),
                        "threshold_s": hold, **measurements})
@@ -273,6 +276,8 @@ def evaluate(facts, previous, now, monotonic, boot_id, config_id, rotation=None)
     new_failure = failure_at > previous.get("last_failure_at", 0)
     maintenance_at = previous.get("maintenance_failure_at", 0)
     streak = None if tick is None else tick.get("failed_in_a_row")
+    # Failures that alternate with good ticks never make a streak; four in an hour still fire.
+    hourly = tick is not None and tick.get("failed_last_hour", 0) >= TICK_FAILURES_PER_HOUR
     if tick is None:
         tick_condition = None
     elif streak is None:
@@ -286,15 +291,16 @@ def evaluate(facts, previous, now, monotonic, boot_id, config_id, rotation=None)
         # neither waits for a second.
         new_maintenance = tick["maintenance_failure_at"] > maintenance_at
         maintenance_at = max(maintenance_at, tick["maintenance_failure_at"])
-        tick_condition = (streak >= TICK_FAILURES_TO_FIRE or new_maintenance
-                          or tick.get("failed_last_hour", 0) >= TICK_FAILURES_PER_HOUR
+        tick_condition = (streak >= TICK_FAILURES_TO_FIRE or new_maintenance or hourly
                           or (tick["ok"] is None and tick["seconds"] > TICK_HANG_S))
-    # The newest failure's class (feed_collect.FAILURE_REASONS), never its text (#1698).
+    # The newest failure's class (feed_collect.FAILURE_REASONS), never its text (#1698). While the
+    # hourly count fires, the hour's newest class, so a good tick between failures keeps one name.
     repeats = None if tick is None else tick.get("same_error_in_a_row")
+    reason = None if tick is None else (tick.get("last_hour_reason") if hourly else tick.get("reason"))
     check("controller_tick", tick_condition,
           seconds=None if tick is None else tick["seconds"], failed_in_a_row=streak,
           failed_last_hour=None if tick is None else tick.get("failed_last_hour"),
-          reason=None if tick is None else tick.get("reason"), same_error_in_a_row=repeats,
+          reason=reason, same_error_in_a_row=repeats,
           sticky=repeats is not None and repeats >= STICKY_FAILURES)
     if facts.get("controller_signals"):
         controller_signals(check, tick, now)

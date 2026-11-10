@@ -29,7 +29,8 @@ NOW = 1_800_000_000
 def core(tick):
     """A controller tick without its failure reason and signals (#1698), which have their own tests."""
     return {key: value for key, value in tick.items()
-            if key not in (*C.SIGNAL_FIELDS, "reason", "same_error_in_a_row", "failed_last_hour")}
+            if key not in (*C.SIGNAL_FIELDS, "reason", "same_error_in_a_row", "failed_last_hour",
+                          "last_hour_reason")}
 
 
 @contextlib.contextmanager
@@ -902,6 +903,7 @@ class SignalTests(unittest.TestCase):
                                    "timings": {"tick_seconds": 800}}))
         tick = self.observe(lines)
         self.assertEqual((tick["failed_in_a_row"], tick["failed_last_hour"], tick["tick_p90_s"]), (0, 6, 800))
+        self.assertEqual((tick["reason"], tick["last_hour_reason"]), (None, "other"))
         facts = {"tick": tick, "controller_signals": True}
         checks = {c["code"]: c for c in F.evaluate(facts, {}, NOW, 1000, "boot", "cfg")[0]["checks"]}
         self.assertEqual((checks["controller_tick"]["state"], checks["controller_tick"]["failed_last_hour"]),

@@ -27,7 +27,9 @@
 //   sends no email. An unknown check names the source it waits on (#1698):
 //   its row is Check = cause (source:server, source:controller,
 //   source:backlog, source:clients), so a source that goes down is one alert,
-//   not one per dependent check; one with no cause keeps its own code.
+//   not one per dependent check; one with no cause keeps its own code. An
+//   unknown check marked excused (the controller's, paused on purpose in a
+//   rotation window, #1687) stays unknown in the evidence but is no row.
 //   collection itself is a row only while the evaluator says something it
 //   counts (uncovered) has no cause row: a model or reset problem, not a
 //   dead source. A firing controller_tick with a failure class is
@@ -130,7 +132,7 @@ FeedEvents
 | extend Code = tostring(Check.code), State = tostring(Check.state),
     Cause = tostring(Check.cause), Reason = tostring(Check.reason)
 | where (State == 'firing' and (Code != 'collection' or Uncovered > 0))
-    or (State == 'unknown' and CollectionFiring)
+    or (State == 'unknown' and CollectionFiring and not(tobool(Check.excused)))
 | project Check = case(
     State == 'unknown' and isnotempty(Cause), Cause,
     State == 'firing' and Code == 'controller_tick' and isnotempty(Reason), strcat(Code, ':', Reason),
