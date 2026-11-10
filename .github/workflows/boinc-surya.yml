@@ -1,5 +1,5 @@
 name: boinc-surya
-# The usnm_surya worker image (#516, docs/boinc-surya.md): Surya 2 on llama.cpp's CUDA server image,
+# The usnm_surya worker image (#516, docs/boinc/apps/surya.md): Surya 2 on llama.cpp's CUDA server image,
 # with usnm-boinc. A manual run on main publishes it to the public package
 # ghcr.io/tgoodyear/usnm-boinc-worker under the tag surya-<commit>, and its summary gives the
 # registry digest and the two values a campaign is staged with. A pull request that changes what

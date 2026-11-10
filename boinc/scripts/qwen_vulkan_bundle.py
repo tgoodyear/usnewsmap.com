@@ -31,7 +31,7 @@ WEIGHTS = ROOT / "boinc/apps/qwen/weights.lock"
 DISK_POLICY = ROOT / "boinc/apps/qwen/disk-policy.json"
 ASSET = "ubuntu-vulkan-x64"
 PLATFORM = "x86_64-pc-linux-gnu"
-# The llama.cpp source commit of each pinned tag (docs/boinc-intel-gpu.md); a new pin is reviewed here.
+# The llama.cpp source commit of each pinned tag (docs/boinc/apps/intel-gpu.md); a new pin is reviewed here.
 LLAMA_SOURCE = {"b8799": "e1a9a6dcbefccb4b864d9385ce8494f2a7f2ffcd"}
 PLAN_CLASSES = ("nvidia_vulkan_2b", "nvidia_vulkan_6gb_8b", "nvidia_vulkan_8b", "intel_vulkan_8b")
 BINARY = f"usnm_qwen_{PLATFORM}"

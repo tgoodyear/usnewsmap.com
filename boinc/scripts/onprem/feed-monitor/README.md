@@ -19,7 +19,7 @@ readlink /opt/usnm-feed-monitor
 jq . /opt/usnm-feed-monitor/VERSION.json
 ```
 
-The updater, its units and the feed units themselves aren't in the bundle. A change to them still needs `install.sh` (or the unit install in [boundaries-and-monitoring.md](../../../docs/boundaries-and-monitoring.md#installing)) on each host.
+The updater, its units and the feed units themselves aren't in the bundle. A change to them still needs `install.sh` (or the unit install in [boundaries-and-monitoring.md](../../../../docs/boinc/server/boundaries-and-monitoring.md#installing)) on each host.
 
 ## Install
 

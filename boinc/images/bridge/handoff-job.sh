@@ -31,7 +31,7 @@
 #                         [CLAIM_MAX=<1 to 100, default 10>] [CLAIM_QUEUES=ocr-bulk[,ocr-priority]]
 #                         [CLAIM_LEASE_HOURS=<1 to 168, default 96>] [CLAIM_LANGUAGES=eng[,...]]
 #                         takes usable pages off the work queues, as a second consumer beside
-#                         the on-prem nodes (docs/boinc-batch-scheduler.md#queue-fed-work):
+#                         the on-prem nodes (docs/boinc/server/batch-scheduler.md#queue-fed-work):
 #                         writes claims/<doc_id>.json, then scheduler/claims.json, which names
 #                         the pages and their scans and echoes the nonce. Messages it can't use
 #                         here go back to the queue for the nodes. Only pages on the newest
@@ -51,7 +51,7 @@
 #                         an operator's only (#1417): the page of that dead-lettered job was
 #                         claimed again with a newer message; prints that message's sha256 and
 #                         changes nothing, or with its sha256 confirmed dead-letters and deletes it
-#                         (docs/boinc-batch-scheduler.md#a-retried-page-claimed-after-its-dead-letter)
+#                         (docs/boinc/server/batch-scheduler.md#a-retried-page-claimed-after-its-dead-letter)
 #   HANDOFF_STEP=deadline-retry SUPERSEDES_FAILED_JOB=<id> TIMEOUT_SECS=<1 to 3600>
 #                         [CONFIRM_MESSAGE_SHA256=<sha256>]
 #                         an operator's only (#1417): the other choice for that page, retrying the

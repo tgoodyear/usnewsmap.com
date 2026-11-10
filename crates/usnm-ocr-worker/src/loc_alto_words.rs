@@ -3,7 +3,7 @@
 //! The sibling of [`crate::loc_alto`], over the same archives: `loc-alto-stats` keeps a line a
 //! page, this keeps a row a `String`, with its place in the page, confidence and box. Each
 //! archive becomes `<out>/<archive stem>.parquet`. The schema, mapped to ALTO elements, is in
-//! `docs/loc-alto-words.md`.
+//! `docs/ocr/loc-alto-words.md`.
 //!
 //! Archives are read in parallel, each by one thread that streams the tar through bzip2 and
 //! pull-parses each page's ALTO. Rows go to the Parquet writer as each page ends, so a worker

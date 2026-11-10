@@ -1,6 +1,6 @@
 //! The OCR benchmark release (#738): one versioned, checksummed archive of images and reference
 //! transcriptions that any engine can be scored on, with named subsets that resolve to the same
-//! bytes. docs/ocr-bench.md has the contract.
+//! bytes. docs/ocr/bench.md has the contract.
 //!
 //! A release is built from a committed recipe, `ocr/bench/<release>/spec.json`, and a committed
 //! inventory of its inputs, `ocr/bench/<release>/inputs.sha256` (`sha256sum` format). Every input

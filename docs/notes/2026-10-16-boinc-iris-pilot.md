@@ -58,7 +58,7 @@ substantially understates memory use.
 
 ## Prepare, dispatch, inspect
 
-OCR benchmark release v1.0.0 ([docs/ocr-bench.md](../ocr-bench.md)) preserves the pilot's exact
+OCR benchmark release v1.0.0 ([docs/ocr/bench.md](../ocr/bench.md)) preserves the pilot's exact
 images and references, and those of the paired and German campaigns. Subset
 `legacy/overproof-en-100` is this acceptance set byte for byte. When comparing against it, cite
 its subset digest and the release's content digest.

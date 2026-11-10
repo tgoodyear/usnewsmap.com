@@ -645,7 +645,7 @@ class CanaryPreferences(unittest.TestCase):
     def test_all_shipped_user_surfaces_describe_one_project_participation_policy(self):
         for name in (
             "boinc/scripts/setup_windows_volunteer.ps1",
-            "docs/boinc-volunteer.md",
+            "docs/boinc/volunteer/README.md",
             "boinc/project/html/user/about.php",
         ):
             with self.subTest(name=name):

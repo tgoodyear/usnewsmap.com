@@ -174,7 +174,7 @@ def profile(service, data_dir, image, uid, job_toml=None, job_tomls=None, ocr_no
         job_args += f" --ocr-node-uid={uid}"
     if dedicated_node:
         job_args += f" --dedicated-node-uid={uid}"
-    dropin = f"""# Managed by boinc/scripts/setup_volunteer.py. See docs/boinc-volunteer.md.
+    dropin = f"""# Managed by boinc/scripts/setup_volunteer.py. See docs/boinc/volunteer/README.md.
 [Unit]
 Requires=user@{uid}.service
 After=user@{uid}.service

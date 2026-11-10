@@ -1,6 +1,6 @@
 # Security updates only, on the exact running image: the same upgrade and PHP and Apache floors
 # as the server and bridge images, and no change to the project's code or files. This is the quick
-# rollout after a Debian security advisory (docs/boinc-onprem.md, "Security updates"). There
+# rollout after a Debian security advisory (docs/boinc/server/onprem.md, "Security updates"). There
 # are no COPYs, so any directory is a context:
 #
 #   podman build --build-arg RUNTIME_IMAGE=<running image> --build-arg SECURITY_REFRESH=<date> \

@@ -7,7 +7,7 @@ controller state so a re-claim of its message doesn't start another job. `restor
 such pages back, exactly as they were, for `collect` to publish once the hold is lifted.
 
 The controller, the bridge and the BOINC database each cap their history at 10,000 jobs
-(docs/boinc-batch-scheduler.md#archive-drained-history-1483). This tool moves the oldest
+(docs/boinc/server/batch-scheduler.md#archive-drained-history-1483). This tool moves the oldest
 fully published pages' history out of every store, one batch at a time, into a retained
 archive directory. Nothing is deleted without a verified copy in the archive first. Every
 step is a dry run unless --apply is given, and the dry run only reads.
@@ -249,7 +249,7 @@ def controller_stopped(units):
 def require_apply(args, units=None):
     require(args.confirm_controller_paused,
             "--apply needs --confirm-controller-paused: stop the controller's timer first "
-            "(docs/boinc-batch-scheduler.md#archive-drained-history-1483)")
+            "(docs/boinc/server/batch-scheduler.md#archive-drained-history-1483)")
     if units is not None:
         require(controller_stopped(units),
                 f"the controller is not paused (timer {units['timer']}, service {units['service']}): "

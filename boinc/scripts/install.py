@@ -397,7 +397,7 @@ def main() -> None:
             crypt_prog=args.crypt_prog,
         )
     )
-    print(f"Register {args.app}, sign/publish the app, and configure stock daemons; see boinc/docs/server-and-apps.md.")
+    print(f"Register {args.app}, sign/publish the app, and configure stock daemons; see docs/boinc/server/server-and-apps.md.")
 
 
 if __name__ == "__main__":

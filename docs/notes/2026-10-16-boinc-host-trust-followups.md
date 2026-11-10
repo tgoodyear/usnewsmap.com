@@ -6,7 +6,7 @@ they create no controller root or work. They install no timer, enable no
 assignment, calibrate no threshold, publish no OCR and modify no production
 setting. Only `promote --execute` changes trust, and only by adding hosts whose
 evidence passes an existing calibration (see below). The priority controller can
-run `onboard` and `promote` on a schedule (docs/boinc-batch-scheduler.md, "Gold
+run `onboard` and `promote` on a schedule (docs/boinc/server/batch-scheduler.md, "Gold
 onboarding").
 
 Coordinate scope and current runtime and worker releases in #529 before
@@ -132,7 +132,7 @@ retries may have been issued and purged. A marker with unresolved native results
 fails collection. This records an execution failure, not measured OCR quality.
 Server cancellation, send failure, no reply, validator error, a missing spool
 artifact or a result without authoritative host/time does not automatically
-revoke. See [the Gold trust policy](../../boinc/docs/gold-check.md#host-trust-for-usnm_ocr).
+revoke. See [the Gold trust policy](../boinc/server/gold-check.md#host-trust-for-usnm_ocr).
 In production, the bridge's `gold-onboard` step runs one pass with the bridge's
 own database credentials, the campaign's prepared inputs and
 `$SHARE_DIR/gold/trust.json` (when there); the controller root is `$SHARE_DIR/host-trust`:

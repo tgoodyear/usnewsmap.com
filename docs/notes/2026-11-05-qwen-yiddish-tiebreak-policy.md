@@ -4,7 +4,7 @@
 
 ## The question
 
-When a Qwen unit's first pair disagrees, BOINC sends a third replica and then a fourth. For Yiddish request version 1 these tie-breakers rarely settle the unit: the [replica cost note](2026-11-04-qwen-replica-cost.md) found that a third replica settled 13% of the units it reached and a fourth 6%. #1477's first option is to stop them. This note measures what that saves if it's turned on today. The code is described in [`docs/boinc-quality.md`](../boinc-quality.md) under "Stopping tie-breakers by language and request version".
+When a Qwen unit's first pair disagrees, BOINC sends a third replica and then a fourth. For Yiddish request version 1 these tie-breakers rarely settle the unit: the [replica cost note](2026-11-04-qwen-replica-cost.md) found that a third replica settled 13% of the units it reached and a fourth 6%. #1477's first option is to stop them. This note measures what that saves if it's turned on today. The code is described in [`docs/boinc/apps/quality.md`](../boinc/apps/quality.md) under "Stopping tie-breakers by language and request version".
 
 ## What we found
 

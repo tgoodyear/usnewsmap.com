@@ -145,7 +145,7 @@ Each item gives the method, the evidence to record, what it's compared against a
 - **Category:** drill, on the private test container.
 - **Method:** in the private test container, run a temporary header-echo listener on loopback in place of Caddy, reachable only through the drill hostname's tunnel, logging nothing. It answers `/readyz` with 200 and the exact body `ready`, with no `X-USNM-Origin: azure` header, so the drill Worker keeps choosing it; check that the echoed response has no `X-USNM-Origin: azure`. Send one DNT request with a known `X-Forwarded-For`, save the echoed headers, then stop the listener and restore Caddy.
 - **Evidence:** the header as sent, as Cloudflare forwards it and as Caddy receives it.
-- **Compared against:** `USNM_TRUST_CF_CONNECTING_IP` and `USNM_TRUSTED_PROXY_HOPS` ([configuration](../configuration.md)), which assume the API takes the address from `CF-Connecting-IP` when the peer is loopback.
+- **Compared against:** `USNM_TRUST_CF_CONNECTING_IP` and `USNM_TRUSTED_PROXY_HOPS` ([configuration](../guides/configuration.md)), which assume the API takes the address from `CF-Connecting-IP` when the peer is loopback.
 - **Status:** open.
 
 ### M6. A forced upstream failure leaves no search or client IP in a retained log

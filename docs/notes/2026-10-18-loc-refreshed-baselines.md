@@ -169,7 +169,7 @@ Benchmark references retain their existing human-verified status and licenses.
 
 ## Reproduction
 
-Use the commands in [the benchmark guide](../ocr-bench.md#loc-published-baselines).
+Use the commands in [the benchmark guide](../ocr/bench.md#loc-published-baselines).
 The inventory parser is offline and fails on missing tables, duplicate batches
 or inconsistent published totals. Save the original guide bytes: a later live
 guide can legitimately have a different checksum and coverage.

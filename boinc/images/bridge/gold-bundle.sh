@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Build a locked gold bundle (docs/ocr-gold-set.md#volunteer-bundle) inside the VNet, onto the
-# project share, and install it for a gold campaign (boinc/docs/gold-check.md#build-the-gold-bundle):
+# Build a locked gold bundle (docs/ocr/gold-set.md#volunteer-bundle) inside the VNet, onto the
+# project share, and install it for a gold campaign (docs/boinc/server/gold-check.md#build-the-gold-bundle):
 #
 #   gold-bundle.sh --share /project --campaign v2-tess550 --version 2
 #   Add --source-cache /sources to rebuild offline from a read-only cache of all six datasets.
@@ -10,7 +10,7 @@
 #    request at a time, a second apart; loc.gov as locfetch paces it). A file already there is
 #    not fetched again, so a rerun resumes.
 # 2. gold.py public-convert for each, with the flags of the 13 October 2026 runs the lock was
-#    built from (docs/ocr-scoring-guide.md), into <share>/gold/build-v1/out.
+#    built from (docs/ocr/scoring-guide.md), into <share>/gold/build-v1/out.
 # 3. usnm-ocr-survey bundle-build with the selected version, --seed 457 --per-source 30, writing its lock
 #    beside the bundle, then bundle-verify on the tar.
 # 4. The new lock must equal the committed one (--lock), the tar's sha256 must be --tar-sha256

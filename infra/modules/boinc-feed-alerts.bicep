@@ -173,7 +173,7 @@ resource alerts 'Microsoft.Insights/scheduledQueryRules@2023-12-01' = [for alert
   kind: 'LogAlert'
   properties: {
     displayName: alert.displayName
-    description: 'Read-only BOINC feed health (#1441). Check names the check; delivery_test is the end-to-end notification check (boinc/docs/boundaries-and-monitoring.md). Check the OCR dashboard BOINC feed / stale data panel. Do not start a second feed owner or automatically renew admission windows.'
+    description: 'Read-only BOINC feed health (#1441). Check names the check; delivery_test is the end-to-end notification check (docs/boinc/server/boundaries-and-monitoring.md). Check the OCR dashboard BOINC feed / stale data panel. Do not start a second feed owner or automatically renew admission windows.'
     enabled: true
     severity: 2
     evaluationFrequency: 'PT5M'

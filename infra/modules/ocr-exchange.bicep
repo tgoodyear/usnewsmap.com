@@ -23,7 +23,7 @@ param boincSubnetId string = ''
 param handoffWriterIds array = []
 @description('Principals given the node writer role on `ocr-out` for the fetched-scans list (#1056): the scan fetcher\'s Arc machine identity, which runs `usnm-ocr-worker publish-fetched` after each fetch. Service principals; empty grants none.')
 param fetchedPublisherIds array = []
-@description('Principals given the hand-off archiver role on `boinc-handoff` (#835): delete blobs there and nothing else, for the daily held-page archive (`archive_history.py dispatch`, docs/boinc-batch-scheduler.md). The batch controller\'s Arc machine identity, which already lists, reads and writes there. Service principals; empty grants none.')
+@description('Principals given the hand-off archiver role on `boinc-handoff` (#835): delete blobs there and nothing else, for the daily held-page archive (`archive_history.py dispatch`, docs/boinc/server/batch-scheduler.md). The batch controller\'s Arc machine identity, which already lists, reads and writes there. Service principals; empty grants none.')
 param handoffArchiverIds array = []
 @description('Object id of the on-prem hosts\' Entra group (usnm-onprem-grp-<env>, scripts/ocr-node/group.sh --kind onprem): the node writer role on `boinc-handoff`, as the handoffWriterIds have. Empty grants none.')
 param onPremGroupId string = ''
@@ -65,7 +65,7 @@ var outputContainer = 'ocr-out'
 // 8), with a reason record each. No node role; ocr-sync replays them after
 // a fix (--from-quarantine).
 var quarantineContainer = 'ocr-quarantine'
-// The BOINC hand-off (#469, boinc/docs/scan-cache-handoff.md#one-page-from-the-scan-cache): the scan fetcher's
+// The BOINC hand-off (#469, docs/boinc/server/scan-cache-handoff.md#one-page-from-the-scan-cache): the scan fetcher's
 // scans and manifests, the hand-off job's dispatch root, the bridge's spool and trust list.
 var handoffContainer = 'boinc-handoff'
 
@@ -347,7 +347,7 @@ resource fetchedPublishers 'Microsoft.Authorization/roleAssignments@2022-04-01' 
   }
 ]
 
-// BOINC takes pages off the work queues beside the nodes (#296, docs/boinc-batch-scheduler.md):
+// BOINC takes pages off the work queues beside the nodes (#296, docs/boinc/server/batch-scheduler.md):
 // the hand-off job's identity and the on-prem BOINC host's (#967) get the nodes' queue roles,
 // Message Processor to take and delete a message and Message Sender to put one back. Per
 // queue, so nothing else in the account.

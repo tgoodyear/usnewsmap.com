@@ -17,7 +17,7 @@ improvement.
 
 ## Dataset preparation
 
-Use the existing [public ground-truth fetch and conversion](../ocr-scoring-guide.md).
+Use the existing [public ground-truth fetch and conversion](../ocr/scoring-guide.md).
 Do not use LoC, American Stories or engine consensus as human truth.
 Before an Overproof-CA accuracy run, inspect the alignment between each crop
 and its reference text, and exclude the oversized boxes described in

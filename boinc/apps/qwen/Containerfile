@@ -1,5 +1,5 @@
 # The usnm_qwen worker image (#522): Qwen3-VL on llama.cpp's server, and usnm-boinc, which runs one
-# BOINC unit (docs/boinc-quality.md). Separate immutable 2B CPU and 8B GPU payloads share a CUDA server
+# BOINC unit (docs/boinc/apps/quality.md). Separate immutable 2B CPU and 8B GPU payloads share a CUDA server
 # image loads its CUDA backend when the container sees an NVIDIA GPU and falls back to its CPU
 # backends otherwise (GGML_BACKEND_DL, GGML_CPU_ALL_VARIANTS). No Python: usnm-boinc starts
 # /app/llama-server itself and talks to it over the loopback.

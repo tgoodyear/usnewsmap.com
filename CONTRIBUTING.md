@@ -25,7 +25,7 @@ npm run build
 
 The infrastructure checks, and the scan for shared keys, run on every pull request that changes anything other than Markdown or `docs/` (from the repository root):
 
-Before the script suite, follow the [Python 3.12 virtual-environment setup](docs/development.md#script-tests) and install `scripts/pictures/requirements.txt`; the discovered picture tests require PyArrow. CI installs this pinned prerequisite automatically.
+Before the script suite, follow the [Python 3.12 virtual-environment setup](docs/guides/development.md#script-tests) and install `scripts/pictures/requirements.txt`; the discovered picture tests require PyArrow. CI installs this pinned prerequisite automatically.
 
 ```sh
 scripts/ci/lint-bicep.sh
@@ -46,9 +46,9 @@ scripts/ci/build-bicep.sh
 AZURE_ENV_NAME=dev USNM_VNET_ADDRESS_PREFIX=192.0.2.0/24 bicep build-params infra/main.bicepparam --stdout > /dev/null
 ```
 
-`scripts/ci/no-private-addresses.sh` runs on every pull request, documentation included. The gold set and OCR node tests need `pillow`; the `infra` job also runs shellcheck over the OCR node install scripts (see [the CI map](docs/development.md#what-ci-runs)).
+`scripts/ci/no-private-addresses.sh` runs on every pull request, documentation included. The gold set and OCR node tests need `pillow`; the `infra` job also runs shellcheck over the OCR node install scripts (see [the CI map](docs/guides/development.md#what-ci-runs)).
 
-Use Bicep CLI v0.48.1, the single version pinned in `scripts/ci/bicep-version`; CI installs that release. The lint and build helpers above verify the pinned compiler and cover every tracked `.bicep` template. The checks on the JSON data files are listed in the [development guide](docs/development.md#json-data-files). The end-to-end tests are described in [`web/README.md`](web/README.md), and the Quickwit parity tests in the [development guide](docs/development.md#against-quickwit).
+Use Bicep CLI v0.48.1, the single version pinned in `scripts/ci/bicep-version`; CI installs that release. The lint and build helpers above verify the pinned compiler and cover every tracked `.bicep` template. The checks on the JSON data files are listed in the [development guide](docs/guides/development.md#json-data-files). The end-to-end tests are described in [`web/README.md`](web/README.md), and the Quickwit parity tests in the [development guide](docs/guides/development.md#against-quickwit).
 
 Local nightly fuzz targets for untrusted OCR Parquet, ALTO and dead letters live
 in [`fuzz/`](fuzz/README.md), outside the production workspace. Its README covers
@@ -65,7 +65,7 @@ seed regeneration, memory budgets and bounded smoke runs.
 
 ## Pull requests
 
-Keep each pull request to one change, and say what it changes and how you tested it. CI skips the jobs a change can't affect, so an infrastructure-only fix doesn't wait on the Rust and web builds. [What CI runs](docs/development.md#what-ci-runs) lists each job, when it runs, which ones the repository requires, and the local commands that match.
+Keep each pull request to one change, and say what it changes and how you tested it. CI skips the jobs a change can't affect, so an infrastructure-only fix doesn't wait on the Rust and web builds. [What CI runs](docs/guides/development.md#what-ci-runs) lists each job, when it runs, which ones the repository requires, and the local commands that match.
 
 Request GitHub Copilot Review for every pull request. Use the latest Copilot review's
 summary verdict, not just its GitHub review state, to decide merge eligibility:

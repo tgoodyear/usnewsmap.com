@@ -212,7 +212,7 @@ class Pipeline:
         if settings.get("server", "azure") != getattr(self, "topology", "azure"):
             raise PipelineError("bootstrap pipeline supports only Azure-hosted BOINC servers; "
                                 "on-prem releases require a separate reviewed orchestration "
-                                "(docs/boinc-onprem.md)")
+                                "(docs/boinc/server/onprem.md)")
         if not settings.get("codeSignPublicKey"):
             raise PipelineError("reviewed public signing key is missing")
         if not (ROOT / "boinc/scripts/acceptance.py").is_file():

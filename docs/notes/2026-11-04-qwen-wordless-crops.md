@@ -4,7 +4,7 @@
 
 ## The question
 
-The strict rule (`strict-v1`, [the validator](../boinc-quality.md)) counts a crop as read when its reading isn't blank, and compares two readings by word-bag Dice. A word is a run of letters or digits. A reading with none, such as `[?]` on an illustration or a row of dashes, has an empty bag, and `dice` scores two empty bags 1.0. So two different punctuation-only readings pass at any floor, and the rule never looks at the loop guard's flags. Production WU 27224 had four such crops, one of them loop-stopped. It didn't become canonical, because its other eight crops disagreed. How often does this happen, and does it decide canonical results?
+The strict rule (`strict-v1`, [the validator](../boinc/apps/quality.md)) counts a crop as read when its reading isn't blank, and compares two readings by word-bag Dice. A word is a run of letters or digits. A reading with none, such as `[?]` on an illustration or a row of dashes, has an empty bag, and `dice` scores two empty bags 1.0. So two different punctuation-only readings pass at any floor, and the rule never looks at the loop guard's flags. Production WU 27224 had four such crops, one of them loop-stopped. It didn't become canonical, because its other eight crops disagreed. How often does this happen, and does it decide canonical results?
 
 ## What we did
 

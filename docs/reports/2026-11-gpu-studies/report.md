@@ -164,7 +164,7 @@ MinerU and dots.ocr were not run. Their terms in [design document 13](../../desi
 
 ## Japanese agreement scores
 
-64 crops, 32 typeset and 32 from camp papers. Nothing here measures accuracy. The 23 references are machine-made and barely checked (#135). No verifiable public human transcription of these crops turned up. [The gold set](../../ocr-gold-set.md) lists CODH's modern magazines and NDL's set, which are magazines and books. Neither was checked for these crops.
+64 crops, 32 typeset and 32 from camp papers. Nothing here measures accuracy. The 23 references are machine-made and barely checked (#135). No verifiable public human transcription of these crops turned up. [The gold set](../../ocr/gold-set.md) lists CODH's modern magazines and NDL's set, which are magazines and books. Neither was checked for these crops.
 
 Character bigram F1 over Japanese characters, old forms folded. Median over crops, against the machine references (23 crops, 12 typeset and 11 camp):
 

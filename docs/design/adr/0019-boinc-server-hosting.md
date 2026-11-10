@@ -5,7 +5,7 @@
 - **Extends:** ADR-0015 (on-prem OCR workers) and ADR-0016 (pluggable OCR engines)
 - **Amends:** ADR-0009 for the BOINC project server only, in three places (decision 6)
 - **Code and docs:** [`boinc/`](../../../boinc/README.md)
-- **Current state (November 2026):** the BOINC server, its database and the bridge steps moved from Azure Container Apps to an on-prem container host on 21 October 2026 (#942; [BOINC server on-prem](../../boinc-onprem.md)), and the Azure hand-off job was retired on 6 November 2026 (#308). The Bicep in `boinc/infra/boinc/` is kept as the fallback; with the server on-prem it deploys only the identities, Key Vault, VNet and static site.
+- **Current state (November 2026):** the BOINC server, its database and the bridge steps moved from Azure Container Apps to an on-prem container host on 21 October 2026 (#942; [BOINC server on-prem](../../boinc/server/onprem.md)), and the Azure hand-off job was retired on 6 November 2026 (#308). The Bicep in `boinc/infra/boinc/` is kept as the fallback; with the server on-prem it deploys only the identities, Key Vault, VNet and static site.
 - **Follow-up:** [ADR-0020](0020-boinc-buda-evaluation.md) evaluates BUDA; separate science apps remain the proposed choice.
 
 ## Context
@@ -31,7 +31,7 @@ This ADR covers that missing piece, the Azure hosting of a stock server, so the 
    The upload-signing key pair is kept apart from the code-signing key, which stays offline. `scripts/ci/no-shared-keys.sh` doesn't scan `boinc/`; these three exceptions are what it would flag.
 
 7. **Network and database settings match the deployed stack.** The VNet contains the Key Vault private DNS zone `privatelink.vaultcore.azure.net` and its link. MySQL `require_secure_transport` is explicitly OFF because BOINC's clients do not request TLS; #464 tracks the migration to required TLS. The MySQL endpoint is private in the VNet, with no public endpoint.
-8. **The images are defined in `boinc/images/`** (the server and bridge job; [docs/images.md](../../../boinc/docs/images.md)), from pinned BOINC source. `boinc/scripts/build-boinc-images.sh` uses ACR Tasks and caches the input-keyed `usnm-boinc-base` and `usnm-boinc-bridge-bin` images. The server build uses the repository root as its context to share site metadata with the API image; the worker image's registry is in the addendum.
+8. **The images are defined in `boinc/images/`** (the server and bridge job; [docs/images.md](../../boinc/apps/images.md)), from pinned BOINC source. `boinc/scripts/build-boinc-images.sh` uses ACR Tasks and caches the input-keyed `usnm-boinc-base` and `usnm-boinc-bridge-bin` images. The server build uses the repository root as its context to share site metadata with the API image; the worker image's registry is in the addendum.
 9. **The places where #441 and this hosting may not fit are recorded, not worked around.** The Docker wrapper on the client side needs Docker only on volunteers' machines, not on the server (`docs/verified-facts.md`). The bridge's single `--root`, the permissions of the Docker job under `--cap-drop=ALL`, and Azure Files permission and locking semantics are open (`docs/design.md`, section 7).
 
 ## Alternatives
@@ -49,11 +49,11 @@ This ADR covers that missing piece, the Azure hosting of a stock server, so the 
 
 ## Addendum (2026-10-13): where the worker image is published
 
-Implemented by `.github/workflows/boinc-worker.yml` (boinc/docs/worker-image.md, "Publish the worker image").
+Implemented by `.github/workflows/boinc-worker.yml` (docs/boinc/apps/worker-image.md, "Publish the worker image").
 
 **Problem.** Each volunteer's Docker pulls the worker image: the app version's `Dockerfile` is `FROM <image>` (`boinc/scripts/install.py` in PR #441). Volunteers have no credentials for us. The project's Azure Container Registry has no anonymous pull and no admin user (design.md, 5.2), and that is right for the server images, so it cannot serve volunteers.
 
-**Decision.** Publish the worker image as a public GHCR package under this repository: `ghcr.io/tgoodyear/usnm-boinc-worker`, linked to the repository. It is built the way #441 describes (`boinc/docs/worker-image.md`, "Build the worker image"): first the engine image from `ocr/engines/tesseract/Containerfile`, then `boinc/apps/Containerfile` with `--build-arg TESSERACT_IMAGE=sha256:<engine image id>`. The app version records the registry digest of the pushed worker image (`ghcr.io/tgoodyear/usnm-boinc-worker@sha256:<64 hex>`), not the local image id and not the engine's pin.
+**Decision.** Publish the worker image as a public GHCR package under this repository: `ghcr.io/tgoodyear/usnm-boinc-worker`, linked to the repository. It is built the way #441 describes (`docs/boinc/apps/worker-image.md`, "Build the worker image"): first the engine image from `ocr/engines/tesseract/Containerfile`, then `boinc/apps/Containerfile` with `--build-arg TESSERACT_IMAGE=sha256:<engine image id>`. The app version records the registry digest of the pushed worker image (`ghcr.io/tgoodyear/usnm-boinc-worker@sha256:<64 hex>`), not the local image id and not the engine's pin.
 
 - The image holds Tesseract, its pinned models, and the `usnm-boinc` binary. It holds no credential, no data and no scan, so a public package discloses nothing that the repository does not already publish.
 - A GHCR package is private by default. The maintainer sets its visibility once in the package settings; a workflow cannot do it. Before the first task is sent, verify an anonymous pull from a logged-out Docker on a host that is not the maintainer's (#441 asks for the same check from the volunteer runtime).
@@ -79,7 +79,7 @@ Mac wrappers are built separately on macOS from the same upstream commit as the
 server, checked for the intended Mach-O slice and checksum, then passed to the
 existing offline BOINC signing path. Publishing adds a platform directory without
 changing siblings and registers the reviewed project platform metadata before
-`update_versions`. [Release steps](../../../boinc/docs/app-release.md#mac-app-versions)
+`update_versions`. [Release steps](../../boinc/apps/app-release.md#mac-app-versions)
 remain maintainer operations. End-to-end Mac execution, lifecycle recovery and
 gold agreement are still unverified; this addendum does not change the BUDA
 decision.

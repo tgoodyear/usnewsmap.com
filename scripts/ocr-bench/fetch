@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Fetch and verify a usnm OCR benchmark release (#738, docs/ocr-bench.md).
+# Fetch and verify a usnm OCR benchmark release (#738, docs/ocr/bench.md).
 #   scripts/ocr-bench/fetch --version v1.0.0 --verify [--dest DIR] [--subset ID] [--index FILE]
 # Reads the release's archive name, sha256 and content digest from ocr/bench/releases.json
 # (this checkout's, or --index), downloads the archive from the repository's GitHub release,

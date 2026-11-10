@@ -1,28 +1,20 @@
 # Documentation
 
-## Guides
+| Section                                   | What's in it                                                                                                                                          |
+| ----------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [Development](guides/development.md)      | Running and testing locally: the API and the site on the synthetic corpus, Quickwit, the ingest pipeline, the local Azure stand-ins                   |
+| [Configuration](guides/configuration.md)  | The API's environment variables                                                                                                                       |
+| [MCP server](guides/mcp.md)               | Searching the corpus from an AI agent through the public MCP endpoint                                                                                 |
+| [Operations](operations/README.md)        | Running the pipeline and the site: environments and deploys, releases, full rebuilds, search serving and the Azure spare, on-prem OCR, the search log |
+| [BOINC](boinc/README.md)                  | All OCR runs on volunteer computers through BOINC: volunteer setup, the apps and their releases, and the on-prem server and its steps                 |
+| [OCR evaluation](ocr/README.md)           | Benchmark releases, the gold set, scoring an engine, text agreement and LoC's OCR words                                                               |
+| [Design](design/README.md)                | Design documents 01–14 and the architecture decision records                                                                                          |
+| [Notes](notes/README.md)                  | Dated write-ups: what was tried, measured and decided, and when                                                                                       |
+| [Reports](reports/README.md)              | Research reports with their scripts and data                                                                                                          |
+| [Infrastructure](../infra/README.md)      | What the Bicep deploys, standing an environment up, settings, DNS, the container registry                                                             |
+| [Web app](../web/README.md)               | The front end: scripts, build settings, how it works                                                                                                  |
+| [Contributor compute](../boinc/README.md) | The BOINC code: apps, server images, scripts and Bicep                                                                                                |
+| [Fixtures](../fixtures/README.md)         | The synthetic corpus the tests and local development use                                                                                              |
+| [Contributing](../CONTRIBUTING.md)        | The checks to run and the repository's rules                                                                                                          |
 
-| Guide                                     | For                                                                                                                                                                                        |
-| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| [Development](development.md)             | Running and testing locally: the API and the site on the synthetic corpus, Quickwit, the ingest pipeline, the local Azure stand-ins                                                        |
-| [Configuration](configuration.md)         | The API's environment variables                                                                                                                                                            |
-| [Operations](operations/README.md)        | Running the pipeline and the site, one page per topic: environments and deploys, releases, full rebuilds, search serving and the Azure spare, the Japanese and on-prem OCR, the search log |
-| [Infrastructure](../infra/README.md)      | What the Bicep deploys, standing an environment up, settings, DNS, the container registry                                                                                                  |
-| [Web app](../web/README.md)               | The front end: scripts, build settings, how it works                                                                                                                                       |
-| [Contributor compute](../boinc/README.md) | Running OCR on other people's machines with BOINC: the stock BOINC server (on-prem since 21 October 2026) that #441's pilot submits to                                                     |
-| [Fixtures](../fixtures/README.md)         | The synthetic corpus the tests and local development use                                                                                                                                   |
-| [Contributing](../CONTRIBUTING.md)        | The checks to run and the repository's rules                                                                                                                                               |
-
-## Design
-
-The [design documents](design/README.md) (01–14) record the background, requirements and architecture, and the reasoning behind each part of the system; the [architecture decision records](design/adr/README.md) record each major decision and the alternatives rejected. References such as "05 §5.5.1" in the code and docs point into them.
-
-## Notes
-
-The [technical notes](notes/README.md) are dated write-ups of work on the index, the OCR and the corpus's coverage: what was tried, what was measured, what was decided and what is left. The design documents say how the system stands now; a note says what was true when. The BOINC pilot write-ups (assessment, Iris, transcription, host trust), the OCR benchmark audits and trials, the Serial Set audit, the on-prem storage plans (formerly design 15 and 16) and the former experiments directories are notes too; the scripts only they cite are in [`scripts/archive/`](../scripts/archive/README.md).
-
-- [BOINC batch pilot](../boinc/docs/README.md): opt-in cached-page volunteer processing and recovery, one page per topic: the worker image, the server and apps, the bridge steps, the scan-cache hand-off, recovery and the gold check.
-- [Linux BOINC quick start](boinc-linux.md): install, join, set limits and check, in five short steps, with the headless attachment helper for cluster nodes.
-- [Windows BOINC quick start](boinc-windows.md): the one-script setup for a Windows PC, in five short steps.
-- [macOS BOINC quick start](boinc-macos.md): the same five steps for an Apple Silicon or Intel Mac.
-- [LoC ALTO words](loc-alto-words.md): every word of LoC's OCR in Parquet, one file per archive, and its schema.
+The design documents say how the system stands now; a note or report says what was true when it was written. References such as "05 §5.5.1" in the code and docs point into the design documents.

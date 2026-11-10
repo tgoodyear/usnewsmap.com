@@ -9,7 +9,7 @@
 #   podman build -f boinc/apps/native/Containerfile -t usnm-ocr/tesseract-native boinc/apps/native
 #   podman run --rm --network=none usnm-ocr/tesseract-native cat /out/usnm_tesseract > usnm_tesseract
 #
-# The two differences from the container's engine are recorded in docs/boinc-native-ocr.md:
+# The two differences from the container's engine are recorded in docs/boinc/apps/native-ocr.md:
 # libcurl and libarchive are replaced by stubs.c, and main() is compiled without
 # HAVE_FEENABLEEXCEPT, which does what the container's LD_PRELOAD shim (fpshim.c) does.
 ARG BASE=mirror.gcr.io/library/debian:trixie-slim@sha256:918311b7b6c4c6f68b232ba516584925f6c78ad82b6fd534b98979df6438e483

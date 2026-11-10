@@ -97,7 +97,7 @@ flowchart LR
 | API, site and search  | One on-prem container behind the Cloudflare Tunnel `usnm-serving`: Caddy, the API image CI builds and attests, in blue/green colors, and the pinned Quickwit binary reading the index from local disk ([`scripts/onprem/serving/`](../../scripts/onprem/serving/README.md)) |
 | Azure spare           | The same API image and Quickwit in a Container Apps environment without a VNet, at zero replicas until the Worker wakes them, with its own copy of the current release ([search serving](../operations/search-serving.md#the-azure-cold-spare))                             |
 | Ingest and releases   | On-prem hosts with their own Azure Arc identities. Prod has no Container Apps ingest jobs (`USNM_INGEST_JOBS` is `false`; [environments and deploys](../operations/environments-and-deploys.md))                                                                            |
-| OCR                   | BOINC only: the BOINC server and its controller run on-prem ([BOINC server on-prem](../boinc-onprem.md)); work and results pass through the Azure exchange account's Storage queues and `ocr-out`                                                                           |
+| OCR                   | BOINC only: the BOINC server and its controller run on-prem ([BOINC server on-prem](../boinc/server/onprem.md)); work and results pass through the Azure exchange account's Storage queues and `ocr-out`                                                                    |
 | Shared state          | Azure: the Blob lake, Cosmos DB, the index account, the registry and Key Vault. Both serving origins read and write the same stores (ADR-0029 decision 7)                                                                                                                   |
 | OCR quality results   | On-prem PostgreSQL ([`scripts/onprem/quality/`](../../scripts/onprem/quality/README.md))                                                                                                                                                                                    |
 | Monitoring and alerts | Azure Monitor: Application Insights, Log Analytics and the alert rules in `infra/modules/`, with the on-prem hosts reporting through Arc                                                                                                                                    |
@@ -200,7 +200,7 @@ sequenceDiagram
 
 ### 3.5.2 Ingestion (weekly and on demand)
 
-The flow below is the one first designed, with Container Apps jobs and Spot backfills. The steps are the same today, but they run as commands on on-prem hosts; [the full rebuild on-prem](../operations/rebuild-and-index-storage.md) covers releases. The OCR flow through BOINC is drawn in 3.3 and described in the [BOINC pages](../../boinc/docs/README.md).
+The flow below is the one first designed, with Container Apps jobs and Spot backfills. The steps are the same today, but they run as commands on on-prem hosts; [the full rebuild on-prem](../operations/rebuild-and-index-storage.md) covers releases. The OCR flow through BOINC is drawn in 3.3 and described in the [BOINC pages](../boinc/README.md).
 
 ```mermaid
 sequenceDiagram

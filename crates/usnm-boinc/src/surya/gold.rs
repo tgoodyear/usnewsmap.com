@@ -1,5 +1,5 @@
 //! Surya on the gold crops (#968): one `usnm_surya` crop unit for each row of
-//! a gold-set manifest (`docs/ocr-gold-set.md`, "Crop format"), so Surya's
+//! a gold-set manifest (`docs/ocr/gold-set.md`, "Crop format"), so Surya's
 //! reading of exactly the boxes a person transcribes can be scored with
 //! `scripts/ocr-survey/gold.py score --hyp surya=FILE`.
 //!

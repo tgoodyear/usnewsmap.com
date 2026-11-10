@@ -11,7 +11,7 @@ The pages come from [Chronicling America](https://www.loc.gov/collections/chroni
 
 **For AI agents:** connect to `https://usnewsmap.com/mcp` (alias: `https://api.usnewsmap.com/mcp`)
 using Streamable HTTP. Search the corpus, inspect historical page snippets and follow source
-citations without an API key. See the [MCP guide](docs/mcp.md) for tools and client setup.
+citations without an API key. See the [MCP guide](docs/guides/mcp.md) for tools and client setup.
 
 ## Repository map
 
@@ -94,7 +94,7 @@ cargo run -p usnm-api                 # terminal 1: the API on http://localhost:
 cd web && npm ci && npm run dev       # terminal 2: the site on http://localhost:5173
 ```
 
-`cargo test --workspace` runs the unit and API tests against the same fixtures. The [development guide](docs/development.md) covers running against Quickwit, the ingest pipeline and the local Azure stand-ins.
+`cargo test --workspace` runs the unit and API tests against the same fixtures. The [development guide](docs/guides/development.md) covers running against Quickwit, the ingest pipeline and the local Azure stand-ins.
 
 ## Repository layout
 
@@ -113,8 +113,8 @@ cd web && npm ci && npm run dev       # terminal 2: the site on http://localhost
 
 ## Documentation
 
-- [Development](docs/development.md): running and testing locally.
-- [Configuration](docs/configuration.md): the API's settings.
+- [Development](docs/guides/development.md): running and testing locally.
+- [Configuration](docs/guides/configuration.md): the API's settings.
 - [Operations](docs/operations/README.md): running the ingest pipeline, releases, search serving and the Azure spare.
 - [Infrastructure](infra/README.md): what the Bicep deploys and how to stand an environment up.
 - [Design documents](docs/design/README.md) and [architecture decision records](docs/design/adr/README.md): what was built and why.
@@ -122,7 +122,7 @@ cd web && npm ci && npm run dev       # terminal 2: the site on http://localhost
 
 ## Contributing and security
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). To help make historical newspapers searchable by donating computer time, read [why volunteer and how to get started](docs/boinc-volunteer.md#why-volunteer). BOINC tasks transcribe pages and evaluate OCR quality; platform availability is limited during the pilot. To report a vulnerability, follow [SECURITY.md](SECURITY.md) and don't open a public issue.
+See [CONTRIBUTING.md](CONTRIBUTING.md). To help make historical newspapers searchable by donating computer time, read [why volunteer and how to get started](docs/boinc/volunteer/README.md#why-volunteer). BOINC tasks transcribe pages and evaluate OCR quality; platform availability is limited during the pilot. To report a vulnerability, follow [SECURITY.md](SECURITY.md) and don't open a public issue.
 
 ## Credits
 

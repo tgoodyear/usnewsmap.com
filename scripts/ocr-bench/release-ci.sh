@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build, check and publish the OCR benchmark releases (#738, docs/ocr-bench.md) in CI.
+# Build, check and publish the OCR benchmark releases (#738, docs/ocr/bench.md) in CI.
 #   scripts/ocr-bench/release-ci.sh --mode check|publish --survey BIN --work DIR
 # For every ocr/bench/v*/spec.json:
 # - Published: scripts/ocr-bench/fetch --verify must pass against the published archive, the

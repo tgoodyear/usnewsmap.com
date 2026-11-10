@@ -93,7 +93,7 @@ an asset in this release. Using Python with PyArrow 25.0.1, the published
 It checks the input hash, preserves row order and serializes the documented
 fields as sorted-key compact JSON plus newline. Its output and receipt were
 independently regenerated and compared byte-for-byte before publication.
-Fetch and verify the benchmark through [the existing release protocol](../ocr-bench.md).
+Fetch and verify the benchmark through [the existing release protocol](../ocr/bench.md).
 
 ```sh
 mkdir loc-reproduced

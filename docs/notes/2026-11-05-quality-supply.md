@@ -4,7 +4,7 @@
 
 ## The question
 
-Since about 09:00 UTC on 3 November, `usnm_quality` has run out of unsent units: volunteers finish units faster than `follow` makes them. #1475 asks what limits the pages `follow` feeds, and whether it could feed more without more LoC requests. The options were to feed the scans already held first, to feed the worst pages first (#1415), and to stop the retries of scans that don't decode (#1465). [The full image pass](../boinc-quality.md#the-full-image-pass-and-the-piggyback-962) describes the mechanism.
+Since about 09:00 UTC on 3 November, `usnm_quality` has run out of unsent units: volunteers finish units faster than `follow` makes them. #1475 asks what limits the pages `follow` feeds, and whether it could feed more without more LoC requests. The options were to feed the scans already held first, to feed the worst pages first (#1415), and to stop the retries of scans that don't decode (#1465). [The full image pass](../boinc/apps/quality.md#the-full-image-pass-and-the-piggyback-962) describes the mechanism.
 
 ## What we found
 
@@ -83,7 +83,7 @@ Each figure is for that moment or window only. The fetch rate depends on which b
 
 Each of these is the maintainer's decision:
 
-- **Deploy `follow` with `--quarantine-decode`.** [Undecodable source scans](../boinc-quality.md#undecodable-source-scans) gives the order: the quarantine-aware manifest builder first, at an idle boundary, and the follower restarted at a safe one. #1475 has the steps. It ends the retry loop but adds no supply. The 2 quarantined scans then need a review: fetch them again or leave them out.
+- **Deploy `follow` with `--quarantine-decode`.** [Undecodable source scans](../boinc/apps/quality.md#undecodable-source-scans) gives the order: the quarantine-aware manifest builder first, at an idle boundary, and the follower restarted at a safe one. #1475 has the steps. It ends the retry loop but adds no supply. The 2 quarantined scans then need a review: fetch them again or leave them out.
 - **The pass's size or interval.** `MAX_PAGES` in `/etc/usnm/quality-build.env` (`--pass-pages`, 2,000) or the timer's 2 hours. The fetcher finishes a pass in about an hour of the 2 hours 12 minutes between them, so a larger or more frequent pass should raise the supply from the bucket, at the cost of more bucket requests. The bucket client's own spacing (2 seconds a request by default) caps it. How far it goes wasn't tested.
 - **The order of the z368 backlog.** Taking its bucket-served batches first may raise the supply as it did from 18:00 on 4 November, with more bucket requests sooner. This wasn't tested.
 - **LoC's budget.** In the half hour measured, the pacer let through under half of its 20 requests a minute and had free slots, so a larger budget wouldn't have raised the supply then. What holds the fetcher's LoC route below the budget wasn't found. The z368 manifest it was working through then had 785 of its first 828 pages already on disk.

@@ -150,7 +150,7 @@ jobs:
           {
             echo "### ocr/engines/tesseract/base.lock"
             echo
-            echo "Make the package public once (boinc/docs/worker-image.md, \"Rebuild the apt bases\"), check an anonymous pull, then pin:"
+            echo "Make the package public once (docs/boinc/apps/worker-image.md, \"Rebuild the apt bases\"), check an anonymous pull, then pin:"
             echo
             echo '```'
             echo "$lines"

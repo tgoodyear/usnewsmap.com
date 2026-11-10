@@ -154,7 +154,7 @@ render_config() {
   # The gold check (#462, and its native app usnm_gold_native, #1418), NDL OCR, QUALITY and Qwen validate with usnm-boinc, which only the bridge image carries.
   # A server run from that image adds their daemons and links the validator scripts into bin/.
   # The retired usnm_assess, usnm_surya, usnm_iris and usnm_qwen_train have none (#1449): see
-  # "Retiring an app" in boinc/docs/server-and-apps.md. Links an older image made stay in bin/.
+  # "Retiring an app" in docs/boinc/server/server-and-apps.md. Links an older image made stay in bin/.
   # Script names only: script_validator then adds "files" (and "files2") itself. Spelled out,
   # the macros never expand at BOINC 22bbebe0, whose split() keeps the delimiter on each token.
   if command -v usnm-boinc >/dev/null 2>&1; then

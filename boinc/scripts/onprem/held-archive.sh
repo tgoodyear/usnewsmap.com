@@ -2,7 +2,7 @@
 # The daily held-page archive (#835) on the controller host (CT 211), as
 # usnm-boinc-held-archive.timer runs it. While a trust scope is held, its pages' journals, claims
 # and bridge journals pile up toward the controller's caps (10,000 each); this moves them out,
-# as docs/boinc-batch-scheduler.md "Archive held pages (#835)" does by hand:
+# as docs/boinc/server/batch-scheduler.md "Archive held pages (#835)" does by hand:
 #
 #   1. Stops usnm-boinc-priority-controller.timer and waits for a running tick to end. If the
 #      timer is already stopped, an operator has paused the controller: the run does nothing.

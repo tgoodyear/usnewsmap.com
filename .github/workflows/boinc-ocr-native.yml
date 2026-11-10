@@ -1,5 +1,5 @@
 name: boinc-ocr-native
-# The native usnm_ocr and usnm_gold build (#1418, docs/boinc-native-ocr.md). It builds and smoke
+# The native usnm_ocr and usnm_gold build (#1418, docs/boinc/apps/native-ocr.md). It builds and smoke
 # tests; it publishes nothing. The artifact is what a release would stage and sign.
 on:
   workflow_dispatch:
