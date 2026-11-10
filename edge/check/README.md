@@ -32,20 +32,20 @@ Answers are published under CC0. `GET /api/export?lang=chr` returns one JSON lin
 
 ## API
 
-| Method and path                           | Who         | What                                                                  |
-| ----------------------------------------- | ----------- | --------------------------------------------------------------------- |
-| `GET /api/config`                         | anyone      | The Turnstile site key.                                               |
-| `GET /api/languages`                      | anyone      | Languages with task and settled counts.                               |
-| `GET /api/languages/<code>`               | anyone      | A language's configuration.                                           |
-| `POST /api/session`                       | anyone      | `{turnstile}` → `{session}`.                                          |
-| `GET /api/next?lang=<code>[&skip=id,...]` | session     | `{task, answered}`; `task` is null when none is left for this person. |
-| `POST /api/answers`                       | session     | `{task, choice}`: `a`, `b`, `neither`, `unsure` or `notext`.          |
-| `GET /api/stats?lang=<code>`              | anyone      | Tasks, settled, answers, people.                                      |
-| `GET /api/export?lang=<code>`             | anyone      | CC0 JSON lines (above).                                               |
-| `PUT /admin/clips/<key>`                  | admin token | An image (JPEG, PNG or WebP).                                         |
+| Method and path                           | Who         | What                                                                                                       |
+| ----------------------------------------- | ----------- | ---------------------------------------------------------------------------------------------------------- |
+| `GET /api/config`                         | anyone      | The Turnstile site key.                                                                                    |
+| `GET /api/languages`                      | anyone      | Languages with task and settled counts.                                                                    |
+| `GET /api/languages/<code>`               | anyone      | A language's configuration.                                                                                |
+| `POST /api/session`                       | anyone      | `{turnstile}` → `{session}`.                                                                               |
+| `GET /api/next?lang=<code>[&skip=id,...]` | session     | `{task, answered}`; `task` is null when none is left for this person.                                      |
+| `POST /api/answers`                       | session     | `{task, choice}`: `a`, `b`, `neither`, `unsure` or `notext`.                                               |
+| `GET /api/stats?lang=<code>`              | anyone      | Tasks, settled, answers, people.                                                                           |
+| `GET /api/export?lang=<code>`             | anyone      | CC0 JSON lines (above).                                                                                    |
+| `PUT /admin/clips/<key>`                  | admin token | An image (JPEG, PNG or WebP).                                                                              |
 | `PUT /admin/languages/<code>`             | admin token | A language's configuration. With `?keep=examples` (an existing language only), the stored `examples` stay. |
-| `POST /admin/tasks`                       | admin token | JSON lines of tasks; a task already loaded keeps its answers.         |
-| `POST /admin/answers`                     | admin token | JSON lines of seed answers, `seed:` contributors only.                |
+| `POST /admin/tasks`                       | admin token | JSON lines of tasks; a task already loaded keeps its answers.                                              |
+| `POST /admin/answers`                     | admin token | JSON lines of seed answers, `seed:` contributors only.                                                     |
 
 A task, as loaded: `id` (`<lang>/<set>/<word id>`), `lang`, `set`, then what the page shows: `page`, `source` (the page on Chronicling America), `label`, `line` and `word` (clip keys), `box` (the word in the line image, as fractions `[x, y, w, h]`), `a`, `b`, `a_diff`, `b_diff` (indexes of the letters that differ) and `a_is`, `b_is` (what each reading is, e.g. `reference` and `loc`). The page shows `a` and `b` in an order fixed by the task id, so neither side is always first.
 
