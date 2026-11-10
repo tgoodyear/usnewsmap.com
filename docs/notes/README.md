@@ -28,6 +28,7 @@ Some notes started as plans, runbooks or experiment logs elsewhere in `docs/`: t
 | ---------- | ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------- |
 | 2026-10-26 | [100 additional historical search examples](2026-10-26-100-more-historical-examples.md)                | Record of the additions; corrected by the #1360 audit   |
 | 2026-10-05 | [Corpus coverage: what is searchable, what is counted, what is missing](2026-10-05-corpus-coverage.md) | Backfill complete; the other gaps listed are still open |
+| 2026-10-01 | [Term skew: full output for seven searches](2026-10-01-term-skew-full-output.md)                       | Measured; summary figures in design 11                  |
 
 ## OCR engines and text
 
