@@ -215,6 +215,7 @@ How the scheduler at BOINC `22bbebe0` picks a version for a unit (`sched/sched_v
 
   So a unit pinned to 106 is sent with 106 whatever the host's best version is, and a line
   job pinned to the `docker_lines` version only with that one.
+
 - **An unpinned unit gets the fastest feasible version.** Both classes would be feasible on the
   same host, so `docker_lines` admits only batch 1621 (`min_batch` = `max_batch` = 1621;
   `plan_class_spec.cpp`, `wu_is_infeasible_for_plan_class`). Live single-page and gold units are
