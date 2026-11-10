@@ -143,6 +143,13 @@ pub async fn submit(
             bundles.push(group);
         }
     }
+    // A line job's pin is a docker_lines version, which serves only batch 1621 (#1621), and a
+    // bundle's is a docker one: one --app-version-num can't serve both, so refuse before
+    // creating anything.
+    ensure!(
+        lines.is_empty() || bundles.is_empty(),
+        "line jobs and bundles take different app versions (docker_lines and docker): submit them separately"
+    );
     // An unpinned bundle could go to an older worker that can't read it.
     let app_version = match bundles.is_empty() && lines.is_empty() {
         true => 0,
@@ -430,17 +437,30 @@ pub(crate) mod tests {
         assert!(crate::submit::submit(&s.root, &s.project, &line)
             .await
             .is_err());
+        // One pin can't serve a line job (docker_lines, batch 1621) and a bundle (docker,
+        // batch 0), so a mixed call submits nothing.
+        let mixed = submit(&s.root, &s.project, &ids, Some(108)).await;
+        assert!(mixed
+            .unwrap_err()
+            .to_string()
+            .contains("submit them separately"));
         assert!(s.calls().is_empty());
-        let out = submit(&s.root, &s.project, &ids, Some(107)).await.unwrap();
+        let out = submit(&s.root, &s.project, &ids[..1], Some(108))
+            .await
+            .unwrap();
         assert_eq!(out.alone, vec![line.clone()]);
+        let out = submit(&s.root, &s.project, &ids[1..], Some(106))
+            .await
+            .unwrap();
         assert_eq!(out.bundles.len(), 1);
         let calls = s.calls();
         assert!(calls[0].contains(&format!("--wu_name usnm_{line}")));
         assert!(calls[0].contains("templates/usnm_ocr_in"));
-        assert!(calls[0].contains("--app_version_num 107"));
+        assert!(calls[0].contains("--app_version_num 108"));
         // Only the docker_lines class (batch 1621) can serve the pin; bundles stay in batch 0.
         assert!(calls[0].contains(&format!("--batch {}", crate::submit::LINE_BATCH)));
         assert!(!calls[0].contains("--target_host"));
+        assert!(calls[1].contains("--app_version_num 106"));
         assert!(!calls[1].contains("--batch"));
         let staged: Job = serde_json::from_slice(
             &std::fs::read(
