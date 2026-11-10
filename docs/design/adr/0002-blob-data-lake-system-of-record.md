@@ -2,6 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-09
+- **Amended by:** [ADR-0021](0021-separate-index-storage.md) (Quickwit's index in its own storage account)
 
 ## Context
 

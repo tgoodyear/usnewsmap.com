@@ -5,8 +5,8 @@
 - **Extends:** ADR-0015 (on-prem OCR workers) and ADR-0016 (pluggable OCR engines)
 - **Amends:** ADR-0009 for the BOINC project server only, in three places (decision 6)
 - **Code and docs:** [`boinc/`](../../../boinc/README.md)
-- **Current state (November 2026):** the BOINC server, its database and the bridge steps moved from Azure Container Apps to an on-prem container host on 21 October 2026 (#942; [BOINC server on-prem](../../boinc/server/onprem.md)), and the Azure hand-off job was retired on 6 November 2026 (#308). The Bicep in `boinc/infra/boinc/` is kept as the fallback; with the server on-prem it deploys only the identities, Key Vault, VNet and static site.
-- **Follow-up:** [ADR-0020](0020-boinc-buda-evaluation.md) evaluates BUDA; separate science apps remain the proposed choice.
+- **Later:** The BOINC server, its database and the bridge steps moved from Azure Container Apps to an on-prem container host on 21 October 2026 (#942; [BOINC server on-prem](../../boinc/server/onprem.md)), and the Azure hand-off job was retired on 6 November 2026 (#308). The Bicep in `boinc/infra/boinc/` is kept as the fallback; with the server on-prem it deploys only the identities, Key Vault, VNet and static site.
+- **Follow-up:** [ADR-0020](0020-boinc-buda-evaluation.md) evaluated BUDA and kept separate science apps (16 October 2026).
 
 ## Context
 

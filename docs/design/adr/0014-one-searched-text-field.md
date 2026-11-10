@@ -1,6 +1,6 @@
 # ADR-0014: One searched text field for LoC's and American Stories' text
 
-- **Status:** Accepted (built behind a setting; the full rebuild that turns it on waits for #283's measurements)
+- **Status:** Accepted. In production: `/v1/meta` reports `text_layout: 3` for `pages-v20261026-1`, published 28 October 2026 (checked 10 November 2026)
 - **Date:** 2026-10
 - **Amends:** 05 §5.5.4 (American Stories' text in fields of its own)
 - **Amended by:** the [October 2026 amendment](#amendment-october-2026-locs-original-text-beside-our-ocrs-925) below (a third text in layout 3)
