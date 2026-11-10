@@ -556,6 +556,76 @@ flowchart LR
    to ACR, and `images.appver` isn't written: the on-prem host has no publish job to keep on
    it. `--prepare-only` builds the image and stops, printing the publish command to run there.
 
+### Held versions
+
+A new app version outranks the older ones of its platform and plan class. BOINC's feeder
+(stock `sched_shmem.cpp`) loads, of an app's versions not deprecated in the database, every
+one at or above the app's `min_version` when that is set, and otherwise only the highest. A
+workunit pinned with `app_version_num` is sent only with a loaded version of that number. So
+when `usnm_ocr` 1.7 (107) was published on 9 November, the feeder dropped 106, and the
+controller's bundles, pinned to 106, went unsent (#1687). A `usnm_gold` version whose worker
+the running server's `gold-engine-platforms.json` doesn't bind gets every gold unit refused
+("Gold image/base has no compatible reviewed platform binding").
+
+So `usnm_ocr` and `usnm_gold` releases take one of two flags:
+
+- `--hold` publishes the version deprecated. The image carries the hold (`APPVER_HOLD=1`), so
+  a `--prepare-only` image published later with `usnm-boinc-step` is held too.
+  `publish-appver.sh` runs a private copy of `update_versions` whose one `app_version` INSERT
+  adds `deprecated=1`, so the row is held from the moment it exists: no feeder reload can load
+  it, and a job that fails after the insert leaves it held. If the stock script doesn't have
+  exactly one such INSERT, the publication refuses before registering anything. A journal
+  (`publish-held-<app>-<version>-<platform>-<time>.json`) goes under `<project>/ops-app-versions/`
+  first, and verification refuses a row it finds live.
+- `--outrank-pinned` publishes it live, for an app with no pinned work.
+
+For `usnm_gold` the script also reads `gold-engine-platforms.json` from the running
+`usnm-boinc-server` container. Without a binding for the worker on `--platform` it refuses,
+unless `--hold`, and then it warns. Without `"server": "onprem"` it can't read the running
+copy and treats the binding as missing.
+
+`boinc/scripts/app-version-hold.php` holds and releases. It runs in the server container,
+which carries it at `/usr/local/lib/usnm-boinc/app-version-hold.php` from #1687 on (copy it in
+with `podman cp` on an older image). Preview is the default; `--apply` changes the database:
+
+```sh
+podman exec usnm-boinc-server php /usr/local/lib/usnm-boinc/app-version-hold.php \
+  --project /project/usnmocr --journal-dir /project/usnmocr/ops-app-versions \
+  --app-version ID --action release
+podman exec usnm-boinc-server php /usr/local/lib/usnm-boinc/app-version-hold.php \
+  --project /project/usnmocr --journal-dir /project/usnmocr/ops-app-versions \
+  --action min-version --min-version 106
+```
+
+- `--action hold` and `--action release` set `deprecated` on one `usnm_ocr` or `usnm_gold`
+  container (`docker`) version. `--action min-version` sets `usnm_ocr`'s `min_version`, which
+  keeps every version from that number up loaded, so units pinned to an older version are still
+  sent after a newer one is released. Registration keeps it: `register-apps.php` writes the
+  database's `min_version` into `project.xml` for each app already registered before BOINC's
+  `xadd` runs, so a later publication doesn't reset it to `project.xml`'s 0.
+- Each change writes a journal first (`<action>-app-version-<id>-<time>-<random>.json` or
+  `min-version-usnm_ocr-...`, with the value before), then makes the change, checks it and
+  touches `reread_db`. Revert with the opposite action. A version already in the target state
+  is left alone and journals nothing, but an `--apply` still touches `reread_db` again, so
+  rerunning a run that stopped before its notice finishes it.
+- It refuses a change that would stop a pinned version number loading on any platform while
+  workunits pinned to it are unfinished, and names the platforms. Unfinished is anything that
+  may still need a result sent: no canonical result and no error yet (unsent, in progress,
+  awaiting validation or a retry), `need_validate` set, or not yet assimilated. A result that
+  fails or times out gets a replacement, which needs the pinned version loaded. Wait for them
+  to finish, set `min_version` first, or pass `--accept-stranded`.
+- A `usnm_gold` release also needs `/usr/local/lib/usnm-boinc/gold-engine-platforms.json` (or
+  `--gold-bindings FILE`) to bind the worker that the version's `Dockerfile` pins on its
+  platform.
+
+The controller checks the other side. Before it submits bundles, it refuses a tick whose
+`bundle_app_version` the scheduler wouldn't send: held, unpublished, or outranked on a
+platform where it is published. The tick fails after collection, so `controller_tick` pages
+on the second one. That needs a server image whose `batch-inventory` reports
+`ocr_app_versions` (#1687). With an older one, each tick prints a `boinc_batch_pin_unchecked`
+warning and submits as before. The order for a plan rotation is in
+[boinc-ocr-bundles.md](../../docs/boinc-ocr-bundles.md#rotating-a-plan-onto-a-new-worker-version).
+
 Deployment previews use GA `az stack-whatif group create`, with the same unmanage and deny
 settings as deployment, three-hour retention and Azure's baseline-based noise reduction.
 Existing managed-identity principal IDs are resolved before template evaluation so role

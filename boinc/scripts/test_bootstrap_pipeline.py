@@ -221,6 +221,24 @@ class PipelineTests(unittest.TestCase):
                     self.p.script(self.work, name)
         self.runner.assert_not_called()
 
+    def test_release_mode_is_held_by_default_and_only_for_pinned_apps(self):
+        # #1687: the release script refuses usnm_ocr and usnm_gold without a mode.
+        self.assertEqual(pipeline.release_mode_args({"app": "usnm_ocr"}), ["--hold"])
+        self.assertEqual(pipeline.release_mode_args({"app": "usnm_gold", "release_mode": "outrank-pinned"}),
+                         ["--outrank-pinned"])
+        self.assertEqual(pipeline.release_mode_args({"app": "usnm_qwen"}), [])
+        for mode in ("hold", "outrank-pinned"):
+            self.assertEqual(pipeline.load(self.config_path, {**self.config, "release_mode": mode})[0]["release_mode"], mode)
+        for bad in ({"release_mode": "live"},
+                    {"release_mode": "hold", "app": "usnm_qwen", "plan_class": "docker_mt_2b"}):
+            with self.subTest(bad=bad), self.assertRaisesRegex(pipeline.PipelineError, "release_mode"):
+                pipeline.load(self.config_path, {**self.config, **bad})
+        with patch.object(self.p, "workspace", return_value=self.work), patch.object(self.p, "assert_reviewed"), \
+                patch.object(self.p, "git", return_value=""), patch.object(self.p, "worker_for_signing", return_value="w"), \
+                patch.object(self.p, "script") as script:
+            self.p.phase("sign")
+        self.assertIn("--hold", script.call_args.args)
+
     def test_locked_signing_never_bypasses_prepare_only(self):
         with patch.object(self.p, "workspace", return_value=self.work), patch.object(self.p, "assert_reviewed"), patch.object(self.p, "git", return_value=""), patch.object(self.p, "script", side_effect=pipeline.PipelineError("locked")) as script:
             with self.assertRaisesRegex(pipeline.PipelineError, "never unlock or bypass"):
@@ -444,6 +462,9 @@ name = Path(sys.argv[0]).name
 keys = ['server', 'bridge'] if name == 'build-boinc-images.sh' else ['appver'] if name == 'boinc-app-release.sh' else []
 if name == 'boinc-app-release.sh':
     assert '--prepare-only' in sys.argv
+    # #1687: usnm_ocr and usnm_gold need a mode, held by default; other apps take none.
+    pinned = sys.argv[sys.argv.index('--app') + 1] in ('usnm_ocr', 'usnm_gold')
+    assert ('--hold' in sys.argv) == pinned and '--outrank-pinned' not in sys.argv, sys.argv
     if sys.argv[sys.argv.index('--app') + 1] == 'usnm_qwen':
         assert sys.argv[sys.argv.index('--worker-image') + 1] == 'ghcr.io/tgoodyear/usnm-boinc-worker@sha256:' + 'c' * 64
 for key in keys:

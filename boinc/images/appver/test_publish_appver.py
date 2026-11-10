@@ -1,4 +1,5 @@
 """Exercise the publish transaction on a temporary share, without a database."""
+import json
 import os
 import importlib.util
 from pathlib import Path
@@ -181,6 +182,88 @@ class BoincAppVersion {
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn(f'Verified {app} 1.0 x86_64-pc-linux-gnu {plan}', result.stdout)
                 self.assertTrue((self.project / f'apps/{app}/1.0/{subdir}/docker_wrapper').is_file())
+
+    INSERT_QUERY = '$query = "set create_time=$now, xml_doc=\'$xml\', plan_class=\'$plan_class\', beta=$b";'
+
+    def held_fixture(self, inserts=1):
+        """A real-PHP verification over a stub update_versions that, as the stock one, holds one
+        app_version INSERT; running it records the query it would send."""
+        php = shutil.which('php')
+        (self.root / 'php').write_text(f'#!/bin/sh\nexec "{php}" "$@"\n')
+        update = self.project / 'bin/update_versions'
+        update.write_text('#!/bin/sh\n# ' + self.INSERT_QUERY + '\n' + '# BoincAppVersion::insert($query);\n' * inserts
+                          + 'grep -o "beta=.*" "$0" | head -1 > "$PROJ/inserted"\n')
+        update.chmod(0o755)
+        (self.project / 'html/inc/boinc_db.inc').write_text(
+            '<?php\n'
+            'class BoincApp { static function lookup($q) { return (object)["id" => 1]; } }\n'
+            'class BoincPlatform { static function lookup($q) { return (object)["id" => 1]; } }\n'
+            'class BoincAppVersion {\n'
+            '    static function enum($q) {\n'
+            '        $inserted = @file_get_contents(getenv("PROJ") . "/inserted");\n'
+            '        return [(object)["id" => 86, "deprecated" => str_contains((string)$inserted, "deprecated=1") ? 1 : 0]];\n'
+            '    }\n'
+            '}\n')
+        src = self.source / 'apps/usnm_ocr/1.7/x86_64-pc-linux-gnu__docker'
+        src.mkdir(parents=True, exist_ok=True)
+        (src / 'docker_wrapper').write_text('wrapper')
+        return {**os.environ, 'PROJ': str(self.project), 'APPVER_APP': 'usnm_ocr', 'APPVER_VERSION': '1.7',
+                'APPVER_PLATFORM': 'x86_64-pc-linux-gnu', 'APPVER_HOLD': '1',
+                'DB_HOST': 'db.example.org', 'DB_NAME': 'fixture', 'MASTER_HOST': 'boinc.example.org',
+                'PATH': str(self.root) + os.pathsep + os.environ['PATH']}
+
+    @unittest.skipUnless(shutil.which('php'), 'PHP unavailable')
+    def test_a_held_publication_inserts_the_row_deprecated(self):
+        # #1687: the row is born held, in update_versions' own INSERT, so no feeder reload between
+        # registration and a later UPDATE can load it, and a failure after the insert leaves it held.
+        env = self.held_fixture()
+        result = subprocess.run(['bash', str(self.script)], capture_output=True, text=True, env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.project / 'inserted').read_text().strip(), 'beta=$b, deprecated=1";')
+        self.assertTrue((self.project / 'reread_db').exists())
+        journal = list((self.project / 'ops-app-versions').glob('publish-held-usnm_ocr-1.7-x86_64-pc-linux-gnu-*.json'))
+        self.assertEqual(len(journal), 1)
+        self.assertEqual(json.loads(journal[0].read_text())['deprecated'], 1)
+        # The stock script is untouched: the patched copy lived in the private registration area.
+        self.assertNotIn('deprecated=1', (self.project / 'bin/update_versions').read_text())
+        # Without the hold the stock INSERT runs.
+        (self.project / 'reread_db').unlink()
+        live = subprocess.run(['bash', str(self.script)], capture_output=True, text=True, env={**env, 'APPVER_HOLD': '0'})
+        self.assertEqual(live.returncode, 0, live.stderr)
+        self.assertEqual((self.project / 'inserted').read_text().strip(), 'beta=$b";')
+        # A held rerun that finds the version registered live refuses and doesn't notify the feeder.
+        (self.project / 'reread_db').unlink()
+        update = self.project / 'bin/update_versions'
+        update.write_text(update.read_text().replace('grep -o', 'true || grep -o'))
+        rerun = subprocess.run(['bash', str(self.script)], capture_output=True, text=True, env=env)
+        self.assertNotEqual(rerun.returncode, 0)
+        self.assertIn('is live, not held', rerun.stderr)
+        self.assertFalse((self.project / 'reread_db').exists())
+
+    @unittest.skipUnless(shutil.which('php'), 'PHP unavailable')
+    def test_a_hold_refuses_an_update_versions_it_cannot_patch(self):
+        for inserts in (0, 2):
+            with self.subTest(inserts=inserts):
+                env = self.held_fixture(inserts=inserts)
+                result = subprocess.run(['bash', str(self.script)], capture_output=True, text=True, env=env)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('nothing registered', result.stderr)
+                self.assertFalse((self.project / 'inserted').exists())
+                self.assertFalse((self.project / 'reread_db').exists())
+
+    def test_only_ocr_and_gold_container_versions_can_be_held(self):
+        src = self.source / 'apps/usnm_ocr/1.7/x86_64-pc-linux-gnu__docker'
+        src.mkdir(parents=True)
+        (src / 'docker_wrapper').write_text('wrapper')
+        env = {**os.environ, 'PROJ': str(self.project), 'APPVER_VERSION': '1.7',
+               'DB_HOST': 'db.example.org', 'DB_NAME': 'fixture', 'MASTER_HOST': 'boinc.example.org',
+               'PATH': str(self.root) + os.pathsep + os.environ['PATH']}
+        for app, value in (('usnm_quality', '1'), ('usnm_ocr', '2')):
+            bad = subprocess.run(['bash', str(self.script)], capture_output=True, text=True,
+                                 env={**env, 'APPVER_APP': app, 'APPVER_HOLD': value})
+            self.assertNotEqual(bad.returncode, 0)
+            self.assertIn('APPVER_HOLD', bad.stderr)
+        self.assertIn('APPVER_HOLD=${HOLD}', (Path(__file__).resolve().parent / 'Containerfile').read_text())
 
     def test_container_publication_rejects_wrong_or_legacy_model_classes(self):
         for app, plan, platform in (

@@ -85,11 +85,29 @@ def fingerprint(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 
 
+# boinc-app-release.sh's mode for apps whose new versions outrank pinned work (#1687). A held
+# version isn't sent, so release it (app-version-hold.php --action release) before the
+# acceptance phase, or configure "outrank-pinned" for an app with no pinned work.
+RELEASE_MODES = {"hold": "--hold", "outrank-pinned": "--outrank-pinned"}
+PINNED_APPS = ("usnm_ocr", "usnm_gold")
+
+
+def release_mode_args(config):
+    """The release script's mode flag for `config`: --hold unless release_mode says otherwise,
+    and none for an app without pinned work (the script refuses one there)."""
+    if config["app"] not in PINNED_APPS:
+        return []
+    return [RELEASE_MODES[config.get("release_mode", "hold")]]
+
+
 def load(path, supplied=None):
     config = json.loads(path.read_text()) if supplied is None else dict(supplied)
     required = {"env", "app", "version", "platform", "plan_class", "signing_host", "acceptance_config"}
-    if set(config) != required:
+    if set(config) not in (required, required | {"release_mode"}):
         raise PipelineError("configuration must contain exactly the documented fields")
+    if "release_mode" in config and (config["release_mode"] not in RELEASE_MODES
+                                     or config.get("app") not in PINNED_APPS):
+        raise PipelineError("release_mode is hold or outrank-pinned, for usnm_ocr and usnm_gold only")
     if not all(isinstance(v, str) for v in config.values()):
         raise PipelineError("configuration fields must be strings")
     if config["env"] not in ("dev", "prod"):
@@ -500,6 +518,7 @@ class Pipeline:
                         "--worker-image", self.worker_for_signing(work)]
                 for key in ("app", "version", "platform", "plan_class"):
                     args.extend(["--" + key.replace("_", "-"), self.config[key]])
+                args += release_mode_args(self.config)
                 try:
                     self.script(work, "boinc-app-release.sh", *args)
                 except PipelineError as exc:

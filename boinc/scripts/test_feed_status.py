@@ -285,6 +285,105 @@ class DurationTest(unittest.TestCase):
             checks = self.tick(at, config_id=config)
         self.assertEqual((checks["collection"]["state"], checks["collection"]["duration_s"]), ("firing", 180))
 
+    def test_a_rotation_window_defers_shortage_and_no_work_and_tolerates_a_missing_tick(self):
+        # #1687: a planned version rotation stops the controller and empties the queue for a while.
+        rotation = {"reason": "#529 claim", "started_at": NOW, "until": NOW + 3900}
+        for at in range(0, 3900, 60):
+            checks = self.tick(at, rotation=rotation)
+        self.assertEqual((checks["cpu_shortage"]["state"], checks["cpu_shortage"]["rotation_until"]),
+                         ("pending", NOW + 3900))
+        self.assertEqual(checks["usnm_ocr_no_work"]["state"], "pending")
+        self.assertEqual(self.document["rotation"], {"reason": "#529 claim", "until": NOW + 3900})
+        # The window ends: both fire at once, on their unbroken durations.
+        checks = self.tick(3900)
+        self.assertEqual((checks["cpu_shortage"]["state"], checks["cpu_shortage"]["duration_s"]), ("firing", 3900))
+        self.assertEqual(checks["usnm_ocr_no_work"]["state"], "firing")
+        self.assertNotIn("rotation_until", checks["cpu_shortage"])
+        # A stopped timer: the controller source is missing, which doesn't count towards collection.
+        self.state = {}
+        rotation = dict(rotation, until=NOW + 10000)
+        self.tick(0, rotation=rotation)
+        self.facts.pop("tick")
+        self.facts["errors"] = ["controller"]
+        self.facts["sources"] = {"controller": {"observed_at": None, "state": "unknown",
+                                                "reason": F.NO_RECENT_TICK}}
+        for at in range(60, 600, 60):
+            checks = self.tick(at, rotation=rotation)
+        self.assertEqual((checks["collection"]["state"], checks["controller_tick"]["state"]), ("healthy", "unknown"))
+        # Any other controller source failure (transport, a malformed or stale document) isn't excused.
+        for reason in ("unavailable_or_invalid", "http_protocol_error", "stale_at_completion"):
+            with self.subTest(reason=reason):
+                self.state = {}
+                self.facts["sources"]["controller"]["reason"] = reason
+                for at in range(0, 300, 60):
+                    checks = self.tick(at, rotation=rotation)
+                self.assertEqual(checks["collection"]["state"], "firing")
+        self.facts["sources"]["controller"]["reason"] = F.NO_RECENT_TICK
+        self.state = {}
+        self.tick(0, rotation=rotation)
+        for at in range(60, 600, 60):
+            checks = self.tick(at, rotation=rotation)
+        # Any other unknown source still does, and a failing tick still fires.
+        self.facts["errors"] = ["controller", "server"]
+        for at in range(600, 840, 60):
+            checks = self.tick(at, rotation=rotation)
+        self.assertEqual(checks["collection"]["state"], "firing")
+        self.facts["errors"] = []
+        self.facts["tick"] = {"ok": False, "seconds": 1, "maintenance_failure_at": 0, "failed_in_a_row": 2}
+        self.assertEqual(self.tick(900, rotation=rotation)["controller_tick"]["state"], "firing")
+        # Without a window the same missing tick is unknown and collection fires as before.
+        self.state = {}
+        self.facts["sources"] = {"controller": {"observed_at": None, "state": "unknown",
+                                                "reason": F.NO_RECENT_TICK}}
+        self.facts["tick"] = {"ok": True, "seconds": 900}
+        self.tick(0)
+        self.facts.pop("tick")
+        self.facts["errors"] = ["controller"]
+        for at in range(60, 300, 60):
+            checks = self.tick(at)
+        self.assertEqual(checks["collection"]["state"], "firing")
+
+    def test_the_rotation_window_is_bounded_and_written_by_named_flags(self):
+        good = {"reason": "roll", "started_at": NOW - 60, "until": NOW + 60}
+        self.assertEqual(F.rotation_window(json.dumps(good), NOW), good)
+        for bad in (None, "", "{", "[]", json.dumps(dict(good, until=NOW)),
+                    json.dumps(dict(good, started_at=NOW + 1)), json.dumps(dict(good, reason="")),
+                    json.dumps(dict(good, until=NOW - 60 + 241 * 60)), json.dumps(dict(good, extra=1)),
+                    json.dumps(dict(good, until="later"))):
+            with self.subTest(bad=bad):
+                self.assertIsNone(F.rotation_window(bad, NOW))
+        import tempfile
+        with tempfile.TemporaryDirectory() as folder:
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(F.main(["--rotation-start", "--state-dir", folder, "--minutes", "90",
+                                         "--reason", "usnm_ocr 1.7 rotation"]), 0)
+            written = json.loads((Path(folder) / F.ROTATION_FILE).read_text())
+            self.assertEqual(written["until"] - written["started_at"], 5400)
+            self.assertEqual(json.loads(out.getvalue())["action"], "start")
+            self.assertIsNotNone(F.rotation_window(json.dumps(written), written["started_at"] + 1))
+            for argv in (["--minutes", "241", "--reason", "x"], ["--minutes", "0", "--reason", "x"],
+                         ["--minutes", "10"], ["--reason", "x"]):
+                with self.subTest(argv=argv), self.assertRaises(SystemExit), \
+                        contextlib.redirect_stderr(io.StringIO()):
+                    F.main(["--rotation-start", "--state-dir", folder, *argv])
+            with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+                F.main(["--rotation-start", "--rotation-end", "--state-dir", folder])
+            with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+                F.main(["--rotation-end", "--state-dir", folder, "--minutes", "5"])
+            # A file that isn't UTF-8 is no window, and doesn't stop the monitor.
+            (Path(folder) / F.ROTATION_FILE).write_bytes(b'{"reason": "\xff\xfe", "until": 1}')
+            self.assertIsNone(F.read_rotation(folder))
+            self.assertIsNone(F.rotation_window(F.read_rotation(folder), NOW))
+            (Path(folder) / F.ROTATION_FILE).write_text(json.dumps(written))
+            self.assertEqual(json.loads(F.read_rotation(folder)), written)
+            self.assertIsNone(F.read_rotation(Path(folder) / "missing"))
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                F.main(["--rotation-end", "--state-dir", folder])
+            self.assertTrue(json.loads(out.getvalue())["had_window"])
+            self.assertFalse((Path(folder) / F.ROTATION_FILE).exists())
+
     def test_a_wall_clock_jump_or_a_reboot_cannot_shorten_the_collection_hold(self):
         self.tick(0)                                           # the first evaluation is a reset
         self.assertEqual(self.tick(60)["collection"]["state"], "healthy")

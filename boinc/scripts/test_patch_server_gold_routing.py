@@ -248,5 +248,27 @@ int main(int argc, char** argv) {
         self.assertNotIn("return ERR_NO_APP_VERSION;", locality)
 
 
+class CheckGoldBindingTest(unittest.TestCase):
+    """#1687: boinc-app-release.sh reads the running server's bindings before a usnm_gold release."""
+
+    def check(self, stdin, worker, platform):
+        return subprocess.run(
+            ["python3", str(Path(__file__).with_name("check-gold-binding.py")), "--worker-image", worker,
+             "--platform", platform], input=stdin, capture_output=True, text=True)
+
+    def test_bound_missing_and_malformed(self):
+        text = BINDINGS.read_text()
+        worker = "ghcr.io/tgoodyear/usnm-boinc-worker@" + IMAGE
+        for platform in BASES:
+            result = self.check(text, worker, platform)
+            self.assertEqual((result.returncode, result.stdout.strip()), (0, "bound"))
+        self.assertEqual(self.check(text, worker, "windows_x86_64").stdout.strip(), "no_platform_entry")
+        other = "ghcr.io/tgoodyear/usnm-boinc-worker@sha256:" + "0" * 64
+        self.assertEqual(self.check(text, other, "x86_64-pc-linux-gnu").stdout.strip(), "no_worker_entry")
+        for bad_stdin in ("{", "[]", json.dumps({IMAGE: {"x86_64-pc-linux-gnu": "latest"}})):
+            self.assertEqual(self.check(bad_stdin, worker, "x86_64-pc-linux-gnu").returncode, 1)
+        self.assertEqual(self.check(text, "ghcr.io/other@" + IMAGE, "x86_64-pc-linux-gnu").returncode, 1)
+
+
 if __name__ == "__main__":
     unittest.main()
