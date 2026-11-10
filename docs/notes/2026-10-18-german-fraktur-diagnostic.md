@@ -1,6 +1,6 @@
 # German Fraktur cutover diagnostic
 
-**Status:** measured, not shipped; the candidate threshold failed. German results are now held from publication: see [Holding German BOINC results until Fraktur trust is calibrated](2026-11-05-german-trust-hold.md) · **Date:** October 2026 · **Measured on:** the pinned `247c` Tesseract worker (Tesseract 5.5.0, `frak2021`, PSM 3, 300 DPI) on native ARM64 Docker, against NewsEye/READ Austrian newspaper crops (Zenodo 3387369) · **Code:** `scripts/ocr-survey/gold.py` (`public-fetch`, `public-convert --dataset austrian`), `usnm-boinc gold trust`; [gold check](../boinc/server/gold-check.md#host-trust-for-usnm_ocr) · **Issues:** #835, #833
+**Status:** measured, not shipped; the candidate threshold failed. German results are now held from publication: see [Holding German BOINC results until Fraktur trust is calibrated](2026-11-05-german-trust-hold.md) · **Date:** 18 October 2026 · **Measured on:** the pinned `247c` Tesseract worker (Tesseract 5.5.0, `frak2021`, PSM 3, 300 DPI) on native ARM64 Docker, against NewsEye/READ Austrian newspaper crops (Zenodo 3387369) · **Code:** `scripts/ocr-survey/gold.py` (`public-fetch`, `public-convert --dataset austrian`), `usnm-boinc gold trust`; [gold check](../boinc/server/gold-check.md#host-trust-for-usnm_ocr) · **Issues:** #835, #833
 
 ## The question
 

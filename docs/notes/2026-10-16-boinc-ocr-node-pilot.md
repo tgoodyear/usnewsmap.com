@@ -1,6 +1,6 @@
 # BOINC beside the OCR worker on the nodes
 
-**Status:** superseded: the direct queue worker is retired (#966), and no node runs `usnm-ocr-worker.service` · **Date:** October 2026 · **Measured on:** node 4's worker before any BOINC install (16 October 2026), and one capped gold task beside it · **Code:** `boinc/scripts/setup_volunteer.py` (`--ocr-node`, `--dedicated-node`), `build-node-client.sh`, `build-node-client-container.sh`, `observe_node.py`, `prepare_node.py`, `client_account.py` · **Issues:** #472, #966
+**Status:** superseded: the direct queue worker is retired (#966), and no node runs `usnm-ocr-worker.service` · **Date:** 16 October 2026 · **Measured on:** node 4's worker before any BOINC install (16 October 2026), and one capped gold task beside it · **Code:** `boinc/scripts/setup_volunteer.py` (`--ocr-node`, `--dedicated-node`), `build-node-client.sh`, `build-node-client-container.sh`, `observe_node.py`, `prepare_node.py`, `client_account.py` · **Issues:** #472, #966
 
 The plan for running a capped BOINC client on an OCR node beside its queue worker, the tools written for it, and how a node was retired to BOINC only. Moved here from the BOINC server pages on 10 November 2026; the current path is in the [BOINC pages](../boinc/README.md).
 

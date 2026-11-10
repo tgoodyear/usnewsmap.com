@@ -1,6 +1,6 @@
 # Japanese NDLOCR-Lite on BOINC: first full-page validation
 
-**Status:** shipped as `usnm_ndlocr` 1.1 (app_version 26); release acceptance not recorded · **Date:** October 2026 · **Measured on:** one LoC page, `sn83025517/1945-01-01/ed-1/seq-4` (Rocky Shimpo, batch `dlc_ballston_ver01`), and the committed headline fixture; workunit 15711 · **Code:** `ocr/engines/ndlocr-lite/`, `crates/usnm-ocr-adapter`, `crates/usnm-boinc/src/ndlocr.rs`, [ndlocr-lite.md](../boinc/apps/ndlocr-lite.md) · **Issues:** #626, #699, PR #700, PR #716
+**Status:** shipped as `usnm_ndlocr` 1.1 (app_version 26); release acceptance not recorded · **Date:** 16 October 2026 · **Measured on:** one LoC page, `sn83025517/1945-01-01/ed-1/seq-4` (Rocky Shimpo, batch `dlc_ballston_ver01`), and the committed headline fixture; workunit 15711 · **Code:** `ocr/engines/ndlocr-lite/`, `crates/usnm-ocr-adapter`, `crates/usnm-boinc/src/ndlocr.rs`, [ndlocr-lite.md](../boinc/apps/ndlocr-lite.md) · **Issues:** #626, #699, PR #700, PR #716
 
 ## The question
 

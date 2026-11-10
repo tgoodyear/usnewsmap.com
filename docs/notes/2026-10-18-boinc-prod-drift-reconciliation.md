@@ -1,6 +1,6 @@
 # BOINC production drift reconciliation
 
-**Status:** record; the Azure server it describes was replaced by the on-prem server on 21 October 2026 · **Date:** October 2026 · **Measured on:** the Azure-hosted prod BOINC stack's live images, jobs and settings, 18 October 2026 · **Code:** `boinc/infra/boinc/main.bicep`, `boinc/project/html/user/work_summary.php` · **Issues:** #464, #777, #856
+**Status:** record; the Azure server it describes was replaced by the on-prem server on 21 October 2026 · **Date:** 18 October 2026 · **Measured on:** the Azure-hosted prod BOINC stack's live images, jobs and settings, 18 October 2026 · **Code:** `boinc/infra/boinc/main.bicep`, `boinc/project/html/user/work_summary.php` · **Issues:** #464, #777, #856
 
 How the live Azure server's images and settings, built from a commit outside main, were brought back into main, and the rollout gates set then. Moved here from the BOINC database TLS page on 10 November 2026. #777 and #464 are closed.
 

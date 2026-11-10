@@ -39,18 +39,20 @@ Some notes started as plans, runbooks or experiment logs elsewhere in `docs/`: t
 
 ## OCR benchmarks and reuse of LoC's OCR
 
-| Date       | Note                                                                                                       | Status on 10 November 2026                           |
-| ---------- | ---------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
-| 2026-11-05 | [Avoided-work accounting for a supersession list](2026-11-05-loc-supersession-accounting.md)               | Merged (PR #1577); no list in production             |
-| 2026-11-05 | [Pinned supersession of bulk re-recognition by verified LoC OCR](2026-11-05-loc-alternate-supersession.md) | Merged (PR #1571); off by default                    |
-| 2026-11-05 | [Binding LoC crop scores to the audited package](2026-11-05-loc-audit-binding.md)                          | Merged (PR #1553)                                    |
-| 2026-10-28 | [Reversible third-party OCR decision previews](2026-10-28-loc-alternate-decisions.md)                      | Merged (PR #1287); preview only                      |
-| 2026-10-28 | [Explicit third-party OCR staging](2026-10-28-loc-alternate-staging.md)                                    | Merged (PR #1286)                                    |
-| 2026-10-27 | [LoC reuse: safety fixtures and the ingestion boundary](2026-10-27-loc-reuse-import-contract.md)           | Contract steps merged, all off; #811 open            |
-| 2026-10-27 | [LoC re-OCR: Florida package and full repair-manifest join](2026-10-27-loc-package-audit.md)               | #809 closed on 27 October 2026                       |
-| 2026-10-18 | [Latest LoC OCR: release inventory and the benchmark coverage gap](2026-10-18-loc-refreshed-baselines.md)  | Inventory superseded by the package audit; #810 open |
-| 2026-10-18 | [OCR benchmark source, licence and coverage audit](2026-10-18-ocr-bench-source-audit.md)                   | v1.1.0 published on 18 October 2026; #738 open       |
-| 2026-10-18 | [OCR candidate feasibility (EffOCR, CHURRO, Calamari)](2026-10-18-ocr-bench-candidate-feasibility.md)      | #812 open; Surya app retired on 2 November 2026      |
+| Date       | Note                                                                                                                            | Status on 10 November 2026                           |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
+| 2026-11-05 | [Avoided-work accounting for a supersession list](2026-11-05-loc-supersession-accounting.md)                                    | Merged (PR #1577); no list in production             |
+| 2026-11-05 | [Pinned supersession of bulk re-recognition by verified LoC OCR](2026-11-05-loc-alternate-supersession.md)                      | Merged (PR #1571); off by default                    |
+| 2026-11-05 | [Binding LoC crop scores to the audited package](2026-11-05-loc-audit-binding.md)                                               | Merged (PR #1553)                                    |
+| 2026-10-28 | [Reversible third-party OCR decision previews](2026-10-28-loc-alternate-decisions.md)                                           | Merged (PR #1287); preview only                      |
+| 2026-10-28 | [Explicit third-party OCR staging](2026-10-28-loc-alternate-staging.md)                                                         | Merged (PR #1286)                                    |
+| 2026-10-27 | [LoC reuse: safety fixtures and the ingestion boundary](2026-10-27-loc-reuse-import-contract.md)                                | Contract steps merged, all off; #811 open            |
+| 2026-10-27 | [LoC re-OCR: Florida package and full repair-manifest join](2026-10-27-loc-package-audit.md)                                    | #809 closed on 27 October 2026                       |
+| 2026-10-18 | [Latest LoC OCR: release inventory and the benchmark coverage gap](2026-10-18-loc-refreshed-baselines.md)                       | Inventory superseded by the package audit; #810 open |
+| 2026-10-18 | [OCR benchmark source, licence and coverage audit](2026-10-18-ocr-bench-source-audit.md)                                        | v1.1.0 published on 18 October 2026; #738 open       |
+| 2026-10-18 | [OCR candidate feasibility (EffOCR, CHURRO, Calamari)](2026-10-18-ocr-bench-candidate-feasibility.md)                           | #812 open; Surya app retired on 2 November 2026      |
+| 2026-10-17 | [English Gold trust calibration on issue-disjoint BLN600 excerpts](2026-10-17-gold-english-trust-calibration.md)                | Promoted 17 October 2026; trust format v5 since      |
+| 2026-10-16 | [Gold bundle v1 on the 80bf worker: offline, Linux and Apple Silicon measurements](2026-10-16-gold-bundle-80bf-measurements.md) | Measured; no promotion came from it                  |
 
 ## BOINC server, releases and volunteers
 
@@ -59,6 +61,11 @@ Some notes started as plans, runbooks or experiment logs elsewhere in `docs/`: t
 | 2026-11-05 | [The feeder's restart bound and a stale-slot check](2026-11-05-feeder-restart-bound.md)                     | Merged (PR #1552); deployment not confirmed                     |
 | 2026-10-26 | [Initial Intel and AMD BOINC acceptance follow-through](2026-10-26-boinc-gpu-initial-probes.md)             | Acceptance record of 26 October 2026; GPU classes changed since |
 | 2026-10-26 | [BOINC GPU release follow-through](2026-10-26-boinc-gpu-release.md)                                         | Release record of 26 October 2026                               |
+| 2026-10-21 | [Moving the BOINC server on-prem](2026-10-21-boinc-server-onprem-cutover.md)                                | Done; prod's server on-prem since 21 October 2026               |
+| 2026-10-19 | [First AMD Vulkan release of usnm_qwen (#885)](2026-10-19-amd-vulkan-release.md)                            | Superseded by the 26 October GPU release                        |
+| 2026-10-18 | [BOINC production drift reconciliation](2026-10-18-boinc-prod-drift-reconciliation.md)                      | Record; the Azure server was replaced on 21 October 2026        |
+| 2026-10-17 | [First current-worker OCR pages through BOINC](2026-10-17-boinc-first-current-worker-pages.md)              | Record; superseded by the batch controller                      |
+| 2026-10-16 | [BOINC beside the OCR worker on the nodes](2026-10-16-boinc-ocr-node-pilot.md)                              | Superseded; the direct worker is retired (#966)                 |
 | 2026-10-15 | [BUDA ARM Mac evaluation and `Run_Podman` state-query fix](2026-10-15-boinc-cross-platform-distribution.md) | Merged (PR #544); Mac versions released 18 October 2026         |
 | 2026-10-14 | [Native ARM64 BOINC worker on the Mac](2026-10-14-buda-native-arm64.md)                                     | Shipped as `usnm_ocr` 1.5 on 18 October 2026                    |
 | 2026-10-14 | [BUDA Mac tests without a project server](2026-10-14-buda-mac-offline-tests.md)                             | PR #503 merged; BUDA not adopted (ADR-0020)                     |
@@ -74,32 +81,36 @@ Some notes started as plans, runbooks or experiment logs elsewhere in `docs/`: t
 | ---------- | ---------------------------------------------------------------------------------------------------------- | --------------------------------------------------- |
 | 2026-10-27 | [Iris performance experiment: no-change decision](2026-10-27-iris-performance-decision.md)                 | `usnm_iris` retired on 2 November 2026              |
 | 2026-10-27 | [Iris Xe crop pilot: evaluation and source-only staging](2026-10-27-iris-pilot-closeout.md)                | #703 closed; `usnm_iris` retired on 2 November 2026 |
+| 2026-10-19 | [The quality wave's page JPEG cache](2026-10-19-quality-wave-jpeg-cache.md)                                | Retired; the on-prem feed derives page JPEGs        |
 | 2026-10-16 | [BOINC OCR quality and vision-language crop pilot and calibration](2026-10-16-boinc-quality-qwen-pilot.md) | Both apps in production; see the quality page       |
 | 2026-10-16 | [Host onboarding and OCR spot checks](2026-10-16-boinc-host-trust-followups.md)                            | Reference for `usnm-boinc host-trust`               |
 | 2026-10-16 | [Iris Xe OCR pilot](2026-10-16-boinc-iris-pilot.md)                                                        | Closed 27 October 2026; retired on 2 November 2026  |
 | 2026-10-16 | [Transcription post-training pilot (`usnm_qwen_train`)](2026-10-16-boinc-transcription.md)                 | Trials never ran; retired on 2 November 2026        |
 | 2026-10-16 | [JP2 against IIIF JPEG on BOINC (`usnm_assess`)](2026-10-16-boinc-assessment.md)                           | Never ran; retired on 2 November 2026               |
+| 2026-10-16 | [Japanese NDLOCR-Lite on BOINC: first full-page validation](2026-10-16-ndlocr-lite-boinc-validation.md)    | Shipped as `usnm_ndlocr` 1.1                        |
 | 2026-10-15 | [Historical-newspaper transcription pilot](2026-10-15-transcription-pilot.md)                              | Baseline published; GPU trials never ran            |
 
 ## Qwen agreement, cost and dispatch
 
-| Date       | Note                                                                                           | Status on 10 November 2026                             |
-| ---------- | ---------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
-| 2026-11-05 | [Stopping Yiddish v1 tie-breakers](2026-11-05-qwen-yiddish-tiebreak-policy.md)                 | Merged (PR #1549); not turned on (#1477)               |
-| 2026-11-05 | [Whether Qwen dispatch leaves the Intel host fair work](2026-11-05-qwen-intel-dispatch.md)     | Intel took general admission on 8 November 2026        |
-| 2026-11-05 | [What bounds the quality feed's supply](2026-11-05-quality-supply.md)                          | Measured; #1475 open                                   |
-| 2026-11-04 | [Strict Qwen agreement on crops with no words](2026-11-04-qwen-wordless-crops.md)              | Pair log marks them (PR #1504); decision open on #1463 |
-| 2026-11-04 | [What Qwen's extra replicas cost](2026-11-04-qwen-replica-cost.md)                             | Measured; followed by the tie-breaker policy           |
-| 2026-11-04 | [Sample page ids on the Qwen wire](2026-11-04-page-id-wire-inventory.md)                       | Merged (PR #1510); #983 open                           |
-| 2026-11-04 | [The crop rule's floor against human transcriptions](2026-11-04-crop-consensus-floor-check.md) | Floor raised to 0.7 (PR #1491); rule still off         |
-| 2026-11-01 | [Why Qwen replicas come back inconclusive](2026-11-01-qwen-cross-vendor-validation.md)         | Measured; crop rule and loop guard off                 |
+| Date       | Note                                                                                                    | Status on 10 November 2026                             |
+| ---------- | ------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| 2026-11-05 | [Stopping Yiddish v1 tie-breakers](2026-11-05-qwen-yiddish-tiebreak-policy.md)                          | Merged (PR #1549); not turned on (#1477)               |
+| 2026-11-05 | [Whether Qwen dispatch leaves the Intel host fair work](2026-11-05-qwen-intel-dispatch.md)              | Intel took general admission on 8 November 2026        |
+| 2026-11-05 | [What bounds the quality feed's supply](2026-11-05-quality-supply.md)                                   | Measured; #1475 open                                   |
+| 2026-11-04 | [Strict Qwen agreement on crops with no words](2026-11-04-qwen-wordless-crops.md)                       | Pair log marks them (PR #1504); decision open on #1463 |
+| 2026-11-04 | [What Qwen's extra replicas cost](2026-11-04-qwen-replica-cost.md)                                      | Measured; followed by the tie-breaker policy           |
+| 2026-11-04 | [Sample page ids on the Qwen wire](2026-11-04-page-id-wire-inventory.md)                                | Merged (PR #1510); #983 open                           |
+| 2026-11-04 | [The crop rule's floor against human transcriptions](2026-11-04-crop-consensus-floor-check.md)          | Floor raised to 0.7 (PR #1491); rule still off         |
+| 2026-11-01 | [Why Qwen replicas come back inconclusive](2026-11-01-qwen-cross-vendor-validation.md)                  | Measured; crop rule and loop guard off                 |
+| 2026-10-18 | [Qwen 8B on Intel and NVIDIA GPUs: first measurements](2026-10-18-qwen-8b-intel-nvidia-measurements.md) | Shipped as `intel_vulkan_8b` and `nvidia_vulkan_8b`    |
 
 ## Holding results from publishing
 
-| Date       | Note                                                                                              | Status on 10 November 2026        |
-| ---------- | ------------------------------------------------------------------------------------------------- | --------------------------------- |
-| 2026-11-07 | [Serbian pages read by two engines and held from publishing](2026-11-07-serbian-trust-hold.md)    | Live since 7 November 2026        |
-| 2026-11-05 | [Holding German BOINC results until Fraktur trust is calibrated](2026-11-05-german-trust-hold.md) | Live since 6 November 2026 (#835) |
+| Date       | Note                                                                                              | Status on 10 November 2026                      |
+| ---------- | ------------------------------------------------------------------------------------------------- | ----------------------------------------------- |
+| 2026-11-07 | [Serbian pages read by two engines and held from publishing](2026-11-07-serbian-trust-hold.md)    | Live since 7 November 2026                      |
+| 2026-11-05 | [Holding German BOINC results until Fraktur trust is calibrated](2026-11-05-german-trust-hold.md) | Live since 6 November 2026 (#835)               |
+| 2026-10-18 | [German Fraktur cutover diagnostic](2026-10-18-german-fraktur-diagnostic.md)                      | Measured; threshold failed, German results held |
 
 The two policies, [`2026-11-05-german-trust-hold.json`](2026-11-05-german-trust-hold.json) and [`2026-11-07-serbian-trust-hold.json`](2026-11-07-serbian-trust-hold.json), are read by the `usnm-boinc` trust tests and the BOINC CI workflows' path filters. Don't move or edit them without changing those.
 

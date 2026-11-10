@@ -1,6 +1,6 @@
 # Gold bundle v1 on the 80bf worker: offline, Linux and Apple Silicon measurements
 
-**Status:** measured; no trust threshold or host promotion came from it. The English calibration that followed is [the 17 October note](2026-10-17-gold-english-trust-calibration.md) · **Date:** October 2026 · **Measured on:** worker `80bf2d6586fb3a9f6ef644937ddd40ca2304b1b433d3b9e657e193ba6f573ae0`, the locked bundle v1 (tar `42520de4…`, manifest `150e20d7…`); offline AMD64 and ARM64 Docker runs, then canonical BOINC results on hosts 8 and 1 · **Code:** `usnm-ocr-survey bundle-build`, `usnm-boinc gold prepare`, `gold collect`; `boinc/project/gold-engine-platforms.json` · **Issues:** #527, #526, #741, #747
+**Status:** measured; no trust threshold or host promotion came from it. The English calibration that followed is [the 17 October note](2026-10-17-gold-english-trust-calibration.md) · **Date:** 16 October 2026 · **Measured on:** worker `80bf2d6586fb3a9f6ef644937ddd40ca2304b1b433d3b9e657e193ba6f573ae0`, the locked bundle v1 (tar `42520de4…`, manifest `150e20d7…`); offline AMD64 and ARM64 Docker runs, then canonical BOINC results on hosts 8 and 1 · **Code:** `usnm-ocr-survey bundle-build`, `usnm-boinc gold prepare`, `gold collect`; `boinc/project/gold-engine-platforms.json` · **Issues:** #527, #526, #741, #747
 
 ## The question
 

@@ -1,6 +1,6 @@
 # The feeder's restart bound and a stale-slot check
 
-**Status:** measured; the bound is in the server image's source, not deployed · **Date:** November 2026 · **Measured on:** CT 230's server and database journals and the feeder log, 21 October to 5 November 2026; `bin/show_shmem` and the `app` table on 5 November, read-only · **Code:** `boinc/images/server/boinc-daemons.sh`, `feeder-slot-guard.py`; [Feeder-only refresh](../boinc/server/feeder-refresh.md#the-loops-restart-bound) · **Issues:** #1462
+**Status:** measured; the bound is in the server image's source, not deployed · **Date:** 5 November 2026 · **Measured on:** CT 230's server and database journals and the feeder log, 21 October to 5 November 2026; `bin/show_shmem` and the `app` table on 5 November, read-only · **Code:** `boinc/images/server/boinc-daemons.sh`, `feeder-slot-guard.py`; [Feeder-only refresh](../boinc/server/feeder-refresh.md#the-loops-restart-bound) · **Issues:** #1462
 
 **Outcome:** the bound merged in PR #1552 on 5 November 2026. The server image rolled on 6 November 2026 for the German hold (#835) was built from a later commit, so it probably carries the bound (UNVERIFIED: no record confirms it).
 

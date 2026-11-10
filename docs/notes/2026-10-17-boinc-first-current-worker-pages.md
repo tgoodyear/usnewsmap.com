@@ -1,6 +1,6 @@
 # First current-worker OCR pages through BOINC
 
-**Status:** record; superseded by the queue-fed controller ([batch controller](../boinc/server/batch-scheduler.md)) · **Date:** October 2026 · **Measured on:** the Azure-hosted prod BOINC server, its publish and hand-off executions, and the `ocr-local` import records, 17 to 19 October 2026 · **Code:** `boinc/scripts/batch_scheduler.py`, `crates/usnm-boinc` · **Issues:** #762, #866
+**Status:** record; superseded by the queue-fed controller ([batch controller](../boinc/server/batch-scheduler.md)) · **Date:** 17 October 2026 · **Measured on:** the Azure-hosted prod BOINC server, its publish and hand-off executions, and the `ocr-local` import records, 17 to 19 October 2026 · **Code:** `boinc/scripts/batch_scheduler.py`, `crates/usnm-boinc` · **Issues:** #762, #866
 
 These are the records of the first `usnm_ocr` 1.5 publication on the current worker (`247c`), the first fresh page a Mac client computed and the first `ocr-priority` page through the controller. They were moved here from the BOINC server pages on 10 November 2026.
 

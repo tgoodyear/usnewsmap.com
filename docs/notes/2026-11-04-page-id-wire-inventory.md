@@ -1,6 +1,6 @@
 # Sample page ids on the Qwen wire: inventory and an additive encoding
 
-**Status:** shipped in `usnm-boinc` (opt-in; no worker, image or bridge change) · **Date:** November 2026 · **Measured on:** `main` at c6b667dd, the `bundle-v1` and `bundle-v2` gold locks · **Code:** `crates/usnm-boinc/src/qwen/doc_id.rs`, `qwen/benchmark.rs`, ADR-0026 · **Issues:** #983
+**Status:** shipped in `usnm-boinc` (opt-in; no worker, image or bridge change) · **Date:** 4 November 2026 · **Measured on:** `main` at c6b667dd, the `bundle-v1` and `bundle-v2` gold locks · **Code:** `crates/usnm-boinc/src/qwen/doc_id.rs`, `qwen/benchmark.rs`, ADR-0026 · **Issues:** #983
 
 **Outcome:** merged in PR #1510 on 4 November 2026; PR #1543 (5 November) accepts every LCCN form. #983 was still open on 10 November 2026.
 

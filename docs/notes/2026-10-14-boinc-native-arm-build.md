@@ -1,6 +1,6 @@
 # Native BOINC worker builds and Mac release tooling
 
-**Status:** measured locally, not released · **Date:** October 2026 ·
+**Status:** measured locally, not released · **Date:** 14 October 2026 ·
 **Measured on:** synthetic `pilot_fixture`, repository worker Containerfile SHA-256
 `c2290fa7894870ae494d5fdbdaeea4994af23af1c9268ce0404af3b3103790e7`; Rust and model sources unchanged from `df3ddc2` ·
 **Code:** [worker workflow](../../.github/workflows/boinc-worker.yml),

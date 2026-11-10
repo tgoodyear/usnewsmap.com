@@ -1,6 +1,6 @@
 # Qwen 8B on Intel and NVIDIA GPUs: first measurements
 
-**Status:** measured, shipped as `intel_vulkan_8b` and `nvidia_vulkan_8b` · **Date:** October 2026 · **Measured on:** `ocr-bench-v1.0.0` subset `legacy/overproof-en-100` (100 crops), on Computer 9's Iris Xe and one RTX 2060 SUPER · **Code:** `boinc/apps/qwen/llama.lock`, `crates/usnm-boinc` (`qwen compare`), [Intel and NVIDIA GPUs](../boinc/apps/intel-gpu.md) · **Issues:** #786, #787, #829, #794
+**Status:** measured, shipped as `intel_vulkan_8b` and `nvidia_vulkan_8b` · **Date:** 18 October 2026 · **Measured on:** `ocr-bench-v1.0.0` subset `legacy/overproof-en-100` (100 crops), on Computer 9's Iris Xe and one RTX 2060 SUPER · **Code:** `boinc/apps/qwen/llama.lock`, `crates/usnm-boinc` (`qwen compare`), [Intel and NVIDIA GPUs](../boinc/apps/intel-gpu.md) · **Issues:** #786, #787, #829, #794
 
 ## The question
 

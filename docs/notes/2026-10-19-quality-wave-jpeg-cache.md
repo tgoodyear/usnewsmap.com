@@ -1,6 +1,6 @@
 # The quality wave's page JPEG cache
 
-**Status:** retired; the on-prem quality feed derives page JPEGs itself · **Date:** October 2026 · **Measured on:** CT 211's converter from 19 October 2026 (pages a second at 2 and 6 cores) · **Code:** `scripts/ocr-node/quality-jpeg-cache.py`, `quality-jpeg-list.py`, `usnm-quality-jpeg-cache.service`, `usnm-quality-jpeg-cache-remote.service` · **Issues:** #850, #915
+**Status:** retired; the on-prem quality feed derives page JPEGs itself · **Date:** 19 October 2026 · **Measured on:** CT 211's converter from 19 October 2026 (pages a second at 2 and 6 cores) · **Code:** `scripts/ocr-node/quality-jpeg-cache.py`, `quality-jpeg-list.py`, `usnm-quality-jpeg-cache.service`, `usnm-quality-jpeg-cache-remote.service` · **Issues:** #850, #915
 
 A cache of page JPEGs for the Azure-hosted quality wave, converted on the scan-fetch container and other LAN hosts instead of in the wave's Container Apps job. The [on-prem quality feed](../boinc/apps/quality.md#on-prem-feeder-v1-wave10-on) replaced it. Moved here from the BOINC scan-cache hand-off page on 10 November 2026; [bounded JPEG-cache replenishment](2026-10-28-jpeg-cache-replenishment.md) is the later design work.
 

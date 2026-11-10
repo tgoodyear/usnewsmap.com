@@ -1,6 +1,6 @@
 # Moving the BOINC server on-prem
 
-**Status:** done; prod's server has run on-prem since 21 October 2026 · **Date:** October 2026 · **Measured on:** a trial dump and import on 21 October 2026, and the cutover that day · **Code:** `boinc/scripts/onprem/` (`r2-relay-job.sh`, `db-dump-job.sh`, `r2-pull.sh`, `db-import.sh`), `boinc/images/server/refresh-project-code.py` · **Issues:** #942, #917
+**Status:** done; prod's server has run on-prem since 21 October 2026 · **Date:** 21 October 2026 · **Measured on:** a trial dump and import on 21 October 2026, and the cutover that day · **Code:** `boinc/scripts/onprem/` (`r2-relay-job.sh`, `db-dump-job.sh`, `r2-pull.sh`, `db-import.sh`), `boinc/images/server/refresh-project-code.py` · **Issues:** #942, #917
 
 How the project share and the database left Azure for the on-prem host. The server as it runs now is in [BOINC server on-prem](../boinc/server/onprem.md). Moved here from that page on 10 November 2026.
 

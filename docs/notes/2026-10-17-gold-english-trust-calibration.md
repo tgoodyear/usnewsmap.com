@@ -1,6 +1,6 @@
 # English Gold trust calibration on issue-disjoint BLN600 excerpts
 
-**Status:** promoted on 17 October 2026 as a v4 `eng/eng` trust list for worker `247c`; trust format v5 has since replaced v4 for publication (see the [gold check](../boinc/server/gold-check.md#host-trust-for-usnm_ocr)) · **Date:** October 2026 · **Measured on:** production worker `sha256:247c131a…`, Tesseract 5.5.0, PSM 3, 300 DPI; offline ARM runs and canonical BOINC results on hosts 1 (Apple Silicon) and 8 (Linux x86_64) · **Code:** `usnm-boinc gold trust`, `gold check`, `gold collect`; `crates/usnm-boinc` trust format v4 · **Issues:** #527, #751, #755, #761, #756
+**Status:** promoted on 17 October 2026 as a v4 `eng/eng` trust list for worker `247c`; trust format v5 has since replaced v4 for publication (see the [gold check](../boinc/server/gold-check.md#host-trust-for-usnm_ocr)) · **Date:** 17 October 2026 · **Measured on:** production worker `sha256:247c131a…`, Tesseract 5.5.0, PSM 3, 300 DPI; offline ARM runs and canonical BOINC results on hosts 1 (Apple Silicon) and 8 (Linux x86_64) · **Code:** `usnm-boinc gold trust`, `gold check`, `gold collect`; `crates/usnm-boinc` trust format v4 · **Issues:** #527, #751, #755, #761, #756
 
 ## The question
 

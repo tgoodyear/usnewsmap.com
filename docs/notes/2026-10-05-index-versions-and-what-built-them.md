@@ -1,6 +1,6 @@
 # Index versions: what built each one, and comparing them
 
-**Status:** shipped (#162, #163, #164); the first version to record its own build will be the next one released from a commit at or after #162 · **Date:** October 2026 · **Measured on:** the nine index runs `pages-v20260928-1` to `pages-v20261005-1` (`ops/index-history.json`; their outcomes from the `/v1/status` reading in #161), and the capture of `pages-v20261003-1` · **Code:** `crates/usnm-ingest/src/release.rs` (the build record), `crates/usnm-api/src/versions.rs` (`/v1/versions`), `scripts/ops/reconstruct-index-history.py`, `scripts/ops/compare-versions.py`, `ops/index-history.json`, `ops/version-snapshots/` · **Issues:** #161, #162, #163, #164
+**Status:** shipped (#162, #163, #164); the first version to record its own build will be the next one released from a commit at or after #162 · **Date:** 5 October 2026 · **Measured on:** the nine index runs `pages-v20260928-1` to `pages-v20261005-1` (`ops/index-history.json`; their outcomes from the `/v1/status` reading in #161), and the capture of `pages-v20261003-1` · **Code:** `crates/usnm-ingest/src/release.rs` (the build record), `crates/usnm-api/src/versions.rs` (`/v1/versions`), `scripts/ops/reconstruct-index-history.py`, `scripts/ops/compare-versions.py`, `ops/index-history.json`, `ops/version-snapshots/` · **Issues:** #161, #162, #163, #164
 
 **Outcome:** the second capture was of `pages-v20261006-2`, kept in `ops/version-snapshots/` on 7 October 2026 (#200). The scripts moved to `scripts/ops/` on 23 October 2026 (#1018).
 

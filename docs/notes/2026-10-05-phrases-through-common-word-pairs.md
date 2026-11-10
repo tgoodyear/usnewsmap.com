@@ -1,6 +1,6 @@
 # Phrases with common words, and the index layout around them
 
-**Status:** shipped; first full rebuild with it is `pages-v20261005-1` (`common_grams` 1), not yet measured on the live site · **Date:** October 2026 · **Measured on:** 90,745 real pages from 11 LoC batches (cost and gain, cold on 2 CPUs); the capture of `pages-v20261003-1` in `ops/version-snapshots/` (the before) · **Code:** `crates/usnm-core/src/common_grams.rs`, `crates/usnm-ingest` (release), `infra/quickwit/pages-index.yaml`; [05 §5.5.1](../design/05-search-and-storage.md), [05 §5.5.3](../design/05-search-and-storage.md), [06 §6.5](../design/06-api-design.md) · **Issues:** #154, #156, #158, #160
+**Status:** shipped; first full rebuild with it is `pages-v20261005-1` (`common_grams` 1), not yet measured on the live site · **Date:** 5 October 2026 · **Measured on:** 90,745 real pages from 11 LoC batches (cost and gain, cold on 2 CPUs); the capture of `pages-v20261003-1` in `ops/version-snapshots/` (the before) · **Code:** `crates/usnm-core/src/common_grams.rs`, `crates/usnm-ingest` (release), `infra/quickwit/pages-index.yaml`; [05 §5.5.1](../design/05-search-and-storage.md), [05 §5.5.3](../design/05-search-and-storage.md), [06 §6.5](../design/06-api-design.md) · **Issues:** #154, #156, #158, #160
 
 **Outcome:** measured on the live site in the capture of `pages-v20261006-2` on 7 October 2026 (#200): the two `"cross of gold"` searches moved by 1.3%, and 51 of the 60 searches in both captures by 1% or less. #158 closed on 8 October 2026 with the upstream fix tabled.
 
