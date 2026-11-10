@@ -21,7 +21,7 @@ REPO = ONPREM.parents[2]
 SCRIPT = ONPREM / "image-security-check.sh"
 SERVICE = ONPREM / "usnm-image-security-check.service"
 TIMER = ONPREM / "usnm-image-security-check.timer"
-DOCS = REPO / "docs" / "boinc-onprem.md"
+DOCS = REPO / "docs" / "boinc" / "server" / "onprem.md"
 IMAGES = REPO / "boinc" / "images"
 CONTAINERFILES = sorted(IMAGES.glob("server/*Containerfile")) + sorted(IMAGES.glob("bridge/*Containerfile"))
 
