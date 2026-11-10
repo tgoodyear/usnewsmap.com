@@ -2,6 +2,8 @@
 
 **Status:** shipped in `usnm-boinc` (opt-in; no worker, image or bridge change) · **Date:** November 2026 · **Measured on:** `main` at c6b667dd, the `bundle-v1` and `bundle-v2` gold locks · **Code:** `crates/usnm-boinc/src/qwen/doc_id.rs`, `qwen/benchmark.rs`, ADR-0026 · **Issues:** #983
 
+**Outcome:** merged in PR #1510 on 4 November 2026; PR #1543 (5 November) accepts every LCCN form. #983 was still open on 10 November 2026.
+
 ## The question
 
 [ADR-0026](../design/adr/0026-source-qualified-page-ids.md) names a dataset sample `sample:<dataset>/<sample id>`. `PageId` (`usnm-core/src/page_id.rs`), the Congress adapter and Surya's qualified staging (#995) already use it. Three places still don't: Qwen benchmark staging writes `benchmark-<sha256 of the crop id>`, gold bundle crops have bare ids, and the data catalog checks the `<source>:` prefix only loosely.

@@ -2,6 +2,8 @@
 
 **Status:** measured, not shipped. The loop guard and `crop-consensus-v2` are in the code and off · **Date:** November 2026 · **Measured on:** all retained `usnm_qwen` 8B results on 1 November 2026, 1,262 replicas, 572 jobs, 824 pairs; replica accounting from a BOINC database read earlier that day, before AMD's general admission · **Code:** `crates/usnm-boinc/src/qwen/{consensus,replay}.rs`, `crates/usnm-qwen-app/src/server.rs`, `boinc/scripts/qwen-auto-cohort.py` · **Issues:** #1420, #885, #1434, #1435
 
+**Outcome:** `crop-consensus-v2`'s floor was raised to 0.7 on 5 November 2026 (PR #1491, [floor check](2026-11-04-crop-consensus-floor-check.md)). No record shows the rule or the loop guard turned on by 10 November 2026.
+
 ## The question
 
 Over seven days, `usnm_qwen` had 162 valid results against 422 inconclusive. Is the validator too strict for GPU output, or do the replicas really differ? Workunit 21128, AMD's first real return, was inconclusive against Apple and Intel. Agreement between replicas is what the quality measurements rest on, so a rule that passes more isn't better unless the passes mean something.
