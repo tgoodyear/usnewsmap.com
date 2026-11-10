@@ -23,7 +23,7 @@ The current stock wrapper source parses `workdir` as the slot's container mount
 path and appends `create_args` to `docker create` (these fields are absent from
 some published job-file docs). Pin and record the wrapper's source revision and
 binary hash, and verify its behavior in the live acceptance exercise; an older
-wrapper may ignore these settings. See the linked wrapper source.
+wrapper may ignore these settings. See the [stock Docker wrapper source](https://github.com/BOINC/boinc/blob/master/samples/docker_wrapper/docker_wrapper.cpp).
 
 `job.toml` drops all capabilities except `DAC_OVERRIDE`, which allows the
 container's UID 0 to read and write the BOINC-owned slot without changing the
@@ -213,8 +213,7 @@ Two settings carry this on the server:
 (`NoScanDeletion`) fails if either guard is dropped.
 
 `config.xml` is rendered from the template on every container start, so the live
-server gets the flag when its container restarts on an image built after this
-change. The input templates in `<project>/templates/` are copied there when an
+server gets the flag when its container restarts on an image built with it. The input templates in `<project>/templates/` are copied there when an
 app version is installed (`boinc/scripts/install.py`) or by the bridge steps that
 copy their own templates before submitting; otherwise copy `boinc/apps/*_in` in
 by hand after backing up the old ones. Until both are in place,
@@ -251,8 +250,9 @@ state before and after.
   plan staged any of them. `usnm_qwen`'s `intel_vulkan_8b` class replaced the Iris pilot.
 - `usnm_qwen_train`'s two unsent results were cancelled with `bin/cancel_jobs --name`.
 - `deprecated=1` on the three apps (`project.xml` says the same), then `reread_db`.
-- New names for `usnm_quality` (tasks are bundles of about 200 pages that measure the scan
-  and compare texts) and `usnm_qwen` (GPU versions only, one page per task). `bin/xadd`
+- New `user_friendly_name`s for `usnm_quality` ("about 200 pages per task") and `usnm_qwen`
+  ("one page per task", GPU only), as `project.xml` still reads; staging packs up to 500 and
+  32 pages a task ([OCR quality](../apps/quality.md)). `bin/xadd`
   updates a changed `user_friendly_name`, so the branch's `project.xml` was copied into the
   project and `bin/xadd` run, as the `register-apps` step does.
 - The six validator and assimilator daemons of the three apps keep running with nothing to
