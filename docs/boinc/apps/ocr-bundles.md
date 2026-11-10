@@ -1,19 +1,30 @@
-# OCR bundles: several pages in one `usnm_ocr` workunit
+# OCR bundles and pinned `usnm_ocr` versions
 
-Issue [#1059](https://github.com/tgoodyear/usnewsmap.com/issues/1059). Without bundles, `usnm_ocr`
-sends one page per workunit, so every page pays for its own container start, scheduler request,
-download, upload, report, validation and assimilation. A bundle puts up to 32 pages of one
-queue into one workunit. Only the BOINC unit is shared: each page keeps its claim, export,
-ledger reservation, dispatch record, hand-off spool, trust and gold check, and publication.
+For operators of the BOINC server and controller, and for anyone changing `usnm-boinc`. This page
+covers three things that all depend on pinning a workunit to one app version:
 
-Bundling is off until a controller plan sets `pages_per_unit`. Without it, the controller,
-bridge and worker take the same single-page path as before.
+- [OCR bundles](#ocr-bundles): several pages of one queue in one `usnm_ocr` workunit (#1059).
+- [Line jobs](#line-jobs-the-docker_lines-plan-class): Cherokee line jobs on their own
+  `docker_lines` versions (#1621).
+- [Rotating a plan onto a new worker version](#rotating-a-plan-onto-a-new-worker-version): the
+  order of steps that keeps pinned work moving (#1687).
 
-## Measurement
+## OCR bundles
+
+Without bundles, every page pays for its own container start, scheduler request, download,
+upload, report, validation and assimilation. A bundle puts up to 32 pages into one workunit. Only
+the BOINC unit is shared: each page keeps its claim, export, ledger reservation, dispatch record,
+hand-off spool, trust and gold check, and publication. Validators, assimilators, the export and
+the ledger are unchanged.
+
+Bundling is off until a controller plan sets `pages_per_unit`. Without it, the controller, bridge
+and worker take the single-page path.
+
+### Measurement
 
 Measured on 24 October 2026 from CT 230's database and spool (read-only): 975 successful
-`usnm_ocr` results over 14 days, each BOINC `elapsed_time` set against the worker's own
-Tesseract time (`elapsed_ms` in its `result.json`).
+`usnm_ocr` results over 14 days, each BOINC `elapsed_time` set against the worker's own Tesseract
+time (`elapsed_ms` in its `result.json`).
 
 | Host | CPU                  | Results | Median elapsed (s) | Median Tesseract (s) | Median overhead (s) | Overhead share |
 | ---- | -------------------- | ------: | -----------------: | -------------------: | ------------------: | -------------: |
@@ -23,174 +34,109 @@ Tesseract time (`elapsed_ms` in its `result.json`).
 | 9    | i7-1185G7, 6 threads |      82 |               50.4 |                 40.8 |                 9.5 |            18% |
 | All  |                      |     975 |               87.1 |                 75.8 |                10.8 |             7% |
 
-In-task overhead is a nearly fixed 9.5–13 s a task. That leaves out what happens outside the
+In-task overhead is a nearly fixed 9.5 to 13 s a task. That leaves out what happens outside the
 task (scheduler, transfers, report, validation, assimilation and one hand-off record per
 workunit). The chosen sizes are 10 pages a unit for `ocr-bulk` and 1 for `ocr-priority`, so
-priority latency is unchanged. A bulk bundle runs about 9–10 minutes on hosts 1 and 9 and
-about 45 minutes on host 2. Staged scans average 5.2 MiB, so a 10-page bundle is about
-55 MiB to download.
+priority latency is unchanged. A bulk bundle runs about 9 to 10 minutes on hosts 1 and 9 and
+about 45 minutes on host 2. Staged scans average 5.2 MiB, so a 10-page bundle is about 55 MiB to
+download.
 
-## Layout
+### Layout
 
-The app and plan class stay the same (`usnm_ocr`, `docker`). A bundle uses its own templates
-and its workunit is named `usnm_ocrb_<bundle id>`, which `^usnm_[0-9a-f]{64}$` (a single
-page) never matches. The bundle id is the sha256 of the bundle version and the member job ids
-in order (`usnm_ocr_contract::boinc::bundle`).
+The app and plan class stay the same (`usnm_ocr`, `docker`). A bundle uses its own templates,
+`boinc/apps/usnm_ocr_bundle_in` and `usnm_ocr_bundle_out`, and its workunit is named
+`usnm_ocrb_<bundle id>`, which `^usnm_[0-9a-f]{64}$` (a single page) never matches. The bundle id
+is the sha256 of the bundle format version and the member job ids in order
+(`usnm_ocr_contract::boinc::bundle::identity`).
 
-|                             | File              | What it holds                                                                                                                       |
-| --------------------------- | ----------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| In (`usnm_ocr_bundle_in`)   | `pages`           | the scans, back to back                                                                                                             |
-|                             | `ocr_bundle.json` | each page's unchanged `Job` and its scan's offset in `pages`                                                                        |
-| Out (`usnm_ocr_bundle_out`) | `results.json`    | one entry per page: `ok` with the page's standard `ResultManifest` and the offsets of its text and ALTO, or `error` with the reason |
-|                             | `texts`           | the pages' texts, back to back (16 MiB limit)                                                                                       |
-|                             | `layouts`         | the pages' ALTO files, back to back (256 MiB limit)                                                                                 |
+|        | File              | What it holds                                                                                                                       |
+| ------ | ----------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| Input  | `pages`           | the scans, back to back                                                                                                             |
+|        | `ocr_bundle.json` | each page's unchanged `Job` and its scan's offset in `pages`                                                                        |
+| Output | `results.json`    | one entry per page: `ok` with the page's standard `ResultManifest` and the offsets of its text and ALTO, or `error` with the reason |
+|        | `texts`           | the pages' texts, back to back (16 MiB limit)                                                                                       |
+|        | `layouts`         | the pages' ALTO files, back to back (256 MiB limit)                                                                                 |
 
-A bundle holds 2 to 32 pages with one worker image, engine version, page deadline and queue.
-Its scans total at most 512 MiB.
+A bundle holds 2 to 32 Tesseract pages with one worker image, engine version, page deadline and
+queue, and its scans total at most 512 MiB (`bundle::Bundle::validate`). Retries and line jobs
+never go in a bundle: they use pinned single-page workunits.
 
-## The worker
+### Worker
 
-`usnm-boinc work` sees `ocr_bundle.json` and runs `bundle::work`. It sets up Tesseract once,
-then reads the pages in order. For each page it checks the scan's sha256, the models and the
-route, as for a single page. After each page it saves that page's outputs and
-`ocr_checkpoint.json` in the slot directory and writes `fraction_done`. A task the client
-restarts resumes at the next page. It ignores a checkpoint from another bundle, or one whose
-saved outputs changed. A page that fails (Tesseract error, output over its limit, bad ALTO,
-wrong scan, refused model) is returned as `error`, and the rest still run. Only an unusable
-unit fails the whole task: a missing or short `pages`, an invalid manifest, or no Tesseract.
+`usnm-boinc work` sees `ocr_bundle.json` and runs `bundle::work`. It sets up Tesseract once, then
+reads the pages in order. For each page it checks the scan's sha256, the models and the route, as
+for a single page. After each page it saves that page's outputs and `ocr_checkpoint.json` in the
+slot directory and writes `fraction_done`. A task the client restarts resumes at the next page. It
+ignores a checkpoint from another bundle, or one whose saved outputs changed. A page that fails
+(Tesseract error, output over its limit, bad ALTO, wrong scan, refused model) is returned as
+`error`, and the rest still run. Only an unusable unit fails the whole task: a missing or short
+`pages`, an invalid manifest, or no Tesseract.
 
-## The server
+### Server
 
-- **Submission.** `submit-remote` takes `JOB_UNITS=<id>+<id>...,<id>` and
-  `BUNDLE_APP_VERSION`. It pulls every page from the hand-off container as before, then runs
-  `usnm-boinc submit-bundle` for the ones still reserved. That command writes the bundle's
-  inputs under `<hand-off root>/bundles/<id>/` and into the download tree. It moves every
-  member to `submitting` with `bundle` set on its server record, then runs stock `create_work`
-  with `--app_version_num` set to the version whose worker reads bundles, so an older worker
-  never gets one. Delay bound and priority come from the queue as for a single page;
-  `rsc_fpops_est`, `rsc_fpops_bound` and `rsc_disk_bound` scale with the bundle. A group whose
-  scans pass 512 MiB is cut into more bundles. A group of one, and a page taken out of an
-  earlier bundle (`unbundled`), go as single-page units.
-- **Inventory.** `batch-inventory` also reads `usnm_ocrb_` workunits and spools and reports
-  them as their pages. A bundle workunit's pending and existing state, and its spool once it
-  is assimilated, go to each page whose server record names it. So the controller's counts,
-  holds and checks still work page by page.
-- **Spool-out.** For a bundled page (`put-spool --root`), `spool-out` reads that page's entry
-  from the bundle's assimilated files, reading only that page's ranges of `texts` and `layouts`, checks it against the page's
-  job, and writes the
-  standard `spool/<id>/usnm_<id>__file_{result.json,text.txt,layout.xml}`, with the bundle's
-  canonical host as the page's host. The hand-off `collect`, the trust and gold checks, and
-  publication don't change.
-- **Partial failure.** The page is requeued if its entry is `error`, if its bytes don't match
-  its manifest, or if the whole bundle failed on BOINC (`_error` or `_no_output_files`).
-  `spool-out` puts it back to `reserved` on the server, marks it `unbundled`, and writes
-  `spool/<id>/requeued`. The hand-off `collect` sees only that marker, changes nothing and
-  succeeds. The dispatch record stays `reserved`, so the next tick submits the page again as a
-  single-page unit. If that unit fails too, the page ends as a terminal failure, as it would
-  have before.
-- **Reconciliation.** An uncertain bundle submission leaves every member `submitting`, and
-  the controller stops as it does for a page. `usnm-boinc status` names the bundle's
-  workunit. Reconciling any member reconciles all of them; `--found absent` also takes them
-  out of the bundle.
-- **Validation.** `sample_trivial_validator` and `batch_collect_assimilator` are unchanged.
-  Per-page validation is the hand-off `collect`'s, as before.
+- **Submission.** The bridge's `submit-remote` takes `JOB_UNITS=<id>[+<id>...][,...]` (up to 100
+  ids, up to 32 a unit) and `BUNDLE_APP_VERSION` (`boinc/images/server/bridge-job.sh`). It copies
+  the two bundle templates into `<project>/templates/`, pulls every page from the hand-off
+  container as for a single page, then runs `usnm-boinc submit-bundle` for the pages still
+  `reserved`. That command writes the bundle's inputs under `<hand-off root>/bundles/<id>/` and
+  into the download tree, moves every member to `submitting` with `bundle` set on its server
+  record, and runs stock `create_work` with `--app_version_num` set to the version whose worker
+  reads bundles, so an older worker never gets one. Delay bound and priority come from the queue
+  as for a single page; `rsc_fpops_est`, `rsc_fpops_bound` and `rsc_disk_bound` scale with the
+  bundle. A group whose scans pass 512 MiB is cut into more bundles. A group of one, and a page
+  taken out of an earlier bundle (`unbundled`), go as single-page units.
+- **Inventory.** `batch-inventory` also reads `usnm_ocrb_` workunits and spools and reports them
+  as their pages. A bundle workunit's pending and existing state, and its spool once it is
+  assimilated, go to each page whose server record names it, so the controller's counts, holds
+  and checks still work page by page.
+- **Spool-out.** For a bundled page (`usnm-boinc handoff put-spool --root`), `spool-out` reads that
+  page's entry from the bundle's assimilated files, reading only that page's ranges of `texts` and
+  `layouts`, checks it against the page's job, and writes the standard
+  `spool/<id>/usnm_<id>__file_{result.json,text.txt,layout.xml}`, with the bundle's canonical host
+  as the page's host. The hand-off `collect`, the trust and gold checks, and publication don't
+  change.
+- **Partial failure.** The page is requeued if its entry is `error`, if its bytes don't match its
+  manifest, or if the whole bundle failed on BOINC (`_error` or `_no_output_files`). `spool-out`
+  puts it back to `reserved` on the server, marks it `unbundled`, and writes `spool/<id>/requeued`.
+  The hand-off `collect` sees only that marker, changes nothing and succeeds. The dispatch record
+  stays `reserved`, so the next tick submits the page again as a single-page unit. If that unit
+  fails too, the page ends as a terminal failure.
+- **Reconciliation.** An uncertain bundle submission leaves every member `submitting`, and the
+  controller stops as it does for a page. `usnm-boinc status` names the bundle's workunit.
+  Reconciling any member reconciles all of them; `--found absent` also takes them out of the
+  bundle.
 
-## The controller
+### Controller
 
-Two optional fields in the controller config:
+Two optional fields in the controller config (`boinc/scripts/batch_scheduler.py`):
 
 ```json
 "pages_per_unit": {"ocr-bulk": 10, "ocr-priority": 1},
 "bundle_app_version": 106
 ```
 
-`pages_per_unit` takes 1 to 32 per queue; a queue left out gets 1. `bundle_app_version` is
-required once any value is over 1. The tick groups the pages it would submit by queue (from
-each job's `reason`) and splits each group into units of at most that size. Admission stays
-counted in pages. Both fields are part of the configuration's hash, so turning bundles on
-makes a new plan, with fresh state.
+`pages_per_unit` takes 1 to 32 per queue; a queue left out gets 1, so priority pages go one per
+unit unless `ocr-priority` is set higher. `bundle_app_version` is required once any value is
+over 1. The tick groups the pages it would submit by queue (from each job's `reason`) and page
+deadline, and splits each group into units of at most that size (`units_of`). Admission stays
+counted in pages. Both fields are part of the configuration's digest, so turning bundles on or
+changing the pin makes a new plan, with fresh state.
 
 Before it submits bundles, the tick checks `bundle_app_version` against the inventory's
-`ocr_app_versions` (#1687): the `usnm_ocr` versions not deprecated in the database, and the
-app's `min_version`. It refuses, after collection and before any submission, when the pinned
-version is held, isn't published, or is outranked on a platform where it is published, since
-the scheduler would never send those units. Single-page units carry no pin and aren't checked.
-
-## Rollout runbook (waits for the maintainer's go)
-
-Claim each production step on #529 first, and release the claim afterwards. Times are US
-Eastern.
-
-1. **Merge and build.** After this PR merges (crate changes roll the prod API), build
-   the worker image from `boinc/apps/Containerfile` and the bridge image from
-   `boinc/images/bridge/Containerfile` at the merge commit. Record the worker
-   image's full digest.
-2. **Release the worker as a new `usnm_ocr` app version** (docs/boinc/apps/app-release.md):
-   for every platform the current version 105 has (`x86_64-pc-linux-gnu`,
-   `arm64-apple-darwin`, `x86_64-apple-darwin`), with the signing host, `--what-if` first.
-   Use the next version number (106 unless one is already taken; check the `app_version`
-   table). Since #1687, publish it held and release it as in
-   [Rotating a plan onto a new worker version](#rotating-a-plan-onto-a-new-worker-version).
-   Then check the feeder sends 106 for a single-page unit. The new worker runs
-   single-page units exactly as 105 did, so nothing else changes yet.
-
-   **Host trust starts over with the new worker image.** `gold/trust.json` lists trusted hosts
-   under the full worker digest ([gold-check.md](../server/gold-check.md)), so until a host
-   passes gold on the new image, `collect` holds its results. Before the server image is built,
-   add the new digest to `boinc/project/gold-engine-platforms.json` with each architecture's
-   `USNM_TESSERACT_IMAGE` (read from the published image configs). Release a `usnm_gold`
-   version whose Dockerfile pins the same worker. The English threshold carries over only if a
-   project host scores challenge `d8cd7279…` with the same per-crop edit counts on both images
-   ([boinc-native-ocr.md](native-ocr.md), "Threshold carry-over"). Then point the plan's
-   `gold_onboarding` at a campaign prepared for the new image, with `engine_base` set to its
-   amd64 engine. Gold onboarding matches hosts by the campaign's exact engine base, and the
-   controller takes one scope per language and profile, so it never reaches arm64 hosts.
-   Calibrate those with a separate campaign on the arm64 engine, submitted and promoted by
-   hand, as `current247c-arm-calibration-20261017` was for `247c`.
-
-3. **Server.** Stop CT 211's controller timer and wait for any running tick to finish. Move
-   CT 230 to the new bridge image, as in the 24 October image switch on #529 (stop the server,
-   `refresh-project-code.py apply` with a backup, point `SERVER_IMAGE` at it, start, check
-   `get_project_config` and the daemons). Install main's `onprem-step.sh` as
-   `usnm-boinc-step`. Then:
-   - `batch-inventory` from the new image must still list the in-flight single-page jobs as
-     before. Run `usnm-boinc-step` `batch-inventory` and compare `pending_jobs` with the
-     previous tick's.
-   - The bundle templates go into `<project>/templates/` on the first `JOB_UNITS` submission
-     (`submit-remote` copies them).
-4. **Hand-off image.** `collect` must understand `get-spool`'s `requeued` before any bundle can
-   fail. With `--onprem-handoff collect` (#967), collect runs from CT 230's `SERVER_IMAGE`, so
-   step 3 covers it. Prod has had no Azure hand-off job since 6 November 2026 (#308); only an
-   environment whose settings still name `USNM_BOINC_HANDOFF_IMAGE` needs it set to the new
-   bridge image.
-5. **Canary plan.** Start a new plan on CT 211, `queue-feed-<n+1>`, once the old plan has
-   drained or is left to drain under its own state. Only the plan name, image and the fields
-   below change; keep everything else as in the live config:
-
-   - `image`: the new worker image digest from step 1;
-   - `pages_per_unit`: `{"ocr-bulk": 10, "ocr-priority": 1}`;
-   - `bundle_app_version`: the version from step 2;
-   - `pages_per_host`: 20 (two bundles a host) and `max_pending`: 80, so a 10-page unit
-     doesn't hold all of admission;
-   - `batch_size`: 20, so one tick claims and submits two bulk units.
-
-   Run one `--apply` tick by hand with the timer stopped. Check that it submits
-   `usnm_ocrb_` workunits, that a host picks one up, that `fraction_done` advances page by
-   page in its BOINC Manager, and that the result spools, splits, collects and publishes each
-   page. Then resume the timer.
-
-6. **Watch.** Pages per hour, `collection_held`, and requeued pages (the server's records with
-   `unbundled`, and `requeued` markers under `spool/`). To roll back, start a plan without
-   `pages_per_unit`. Bundles already in flight finish and collect under the new images.
-   Rolling back the images too would strand them, so let them drain first.
+`ocr_app_versions` (#1687): the `usnm_ocr` versions not deprecated in the database, and the app's
+`min_version` (`pinned_version_problem`). It refuses, after collection and before any submission,
+when the pinned version is below `min_version`, held, not published, or outranked on a platform
+where it is published, since the scheduler would never send those units. Single-page units aren't
+checked. An inventory without `ocr_app_versions` (a server image from before
+#1687) gets a `boinc_batch_pin_unchecked` warning each tick, and the bundles go out unchecked.
 
 ## Line jobs: the `docker_lines` plan class
 
 Cherokee line jobs (#1621) need a newer worker than the live plan's. Publishing that worker as the
-next `docker` version outranks the live one: stock `sched_shmem.cpp` loads, per app, platform and
-plan class, only the highest undeprecated version (unless the app's `min_version` is set), so the
-units pinned to the older number go unsent (#1687, 9 November). Line jobs instead get their own
-`usnm_ocr` and `usnm_gold` versions under the `docker_lines` plan class
+next `docker` version would outrank the live one: stock `sched_shmem.cpp` loads, per app, platform
+and plan class, only the highest undeprecated version (unless the app's `min_version` is set), so
+the units pinned to the older number would go unsent (#1687, 9 November 2026). Line jobs instead
+get their own `usnm_ocr` and `usnm_gold` versions under the `docker_lines` plan class
 (`boinc/project/plan_class_spec.xml`). It loads beside `docker` and outranks nothing.
 
 How the scheduler at BOINC `22bbebe0` picks a version for a unit (`sched/sched_version.cpp`,
@@ -221,8 +167,8 @@ How the scheduler at BOINC `22bbebe0` picks a version for a unit (`sched/sched_v
   }
   ```
 
-  So a unit pinned to 106 is sent with 106 whatever the host's best version is, and a line
-  job pinned to the `docker_lines` version only with that one.
+  So a unit pinned to 106 is sent with 106 whatever the host's best version is, and a line job
+  pinned to the `docker_lines` version only with that one.
 
 - **An unpinned unit gets the fastest feasible version.** Both classes would be feasible on the
   same host, so `docker_lines` admits only batch 1621 (`min_batch` = `max_batch` = 1621;
@@ -233,48 +179,52 @@ How the scheduler at BOINC `22bbebe0` picks a version for a unit (`sched/sched_v
   version. The plan class's batch check (`wu_is_infeasible_custom`) then refuses it, and it waits
   for the next request. Pinned units are not affected: they rescan, as above.
 - **A host must have a feasible version for every pinned unit it is offered.** When a pinned unit
-  finds none, `get_app_version` caches "no version" for the whole app, and every later unit of
-  the app in that request is refused (`if (!bavp->present) return NULL;`). So `docker_lines`
-  has exactly `docker`'s host gates (`boinc/project/test_config.py` checks this). Restricting it
-  to a few hosts would make every other host skip its `docker` work whenever it met a line unit.
+  finds none, `get_app_version` caches "no version" for the whole app, and every later unit of the
+  app in that request is refused (`if (!bavp->present) return NULL;`). So `docker_lines` has
+  exactly `docker`'s host gates (`boinc/project/test_config.py` checks this). Restricting it to a
+  few hosts would make every other host skip its `docker` work whenever it met a line unit.
 - **Targeted units never enter the feeder's array.** `--target_host` makes an assignment, and
-  `sched_assign.cpp` sends it only to that host. Line jobs and their gold are submitted targeted
-  at hosts calibrated on the line worker, so no other host ever looks at them.
+  `sched_assign.cpp` sends it only to that host. Line jobs and their gold are submitted targeted at
+  hosts calibrated on the line worker, so no other host ever looks at them.
 
-`usnm-boinc` puts every line job, retries included, in batch 1621 (`LINE_BATCH`), pinned
-(`--app-version-num`, bridge `LINE_APP_VERSION`) and optionally targeted (`--target-host`,
-bridge `LINE_TARGET_HOST`). Gold for the line worker takes `gold submit --docker-lines-version N`
-(bridge `GOLD_DOCKER_LINES_VERSION`): pinned, because the live `docker` gold version also
-admits batch 1621, and the gold routing hook refuses a unit sent with another worker. Their
-results are in `results/1621`, so give `GOLD_SPOOL` and `HANDOFF_SPOOL` that directory.
+`usnm-boinc` puts every line job, retries included, in batch 1621
+(`usnm_boinc::submit::LINE_BATCH`), pinned (`--app-version-num`, bridge `LINE_APP_VERSION`) and
+optionally targeted (`--target-host`, bridge `LINE_TARGET_HOST`). Gold for the line worker takes
+`gold submit --docker-lines-version N` (bridge `GOLD_DOCKER_LINES_VERSION`): pinned, because the
+live `docker` gold version also admits batch 1621, and the gold routing hook refuses a unit sent
+with another worker. Their results are in `results/1621`, so give `GOLD_SPOOL` and `HANDOFF_SPOOL`
+that directory.
 
-The feed monitor (`feed_collect.supply`) treats the two classes as one CPU profile: both ask
-for one CPU, and each unit counts only for the version that can serve it. Targeted units count
-for none.
+The feed monitor (`feed_collect.supply`) treats the two classes as one CPU profile: both ask for
+one CPU, and each unit counts only for the version that can serve it. Targeted units count for
+none.
 
-Release the two apps with `--plan-class docker_lines --hold` and a version number neither app
-has used, so a pin can't match a deprecated `docker` row: 1.8 (108) for the Cherokee roll.
+Publish the two apps with `--plan-class docker_lines --hold` and a version number neither app has
+used, so a pin can't match a deprecated `docker` row (1.8, version 108, for the Cherokee roll).
 Release them with `app-version-hold.php --action release` once the server image has the class.
-They are their own platform and plan class group, so the release strands nothing pinned to
-106 and needs no `min_version`; the hold tool's check confirms that.
+They are their own platform and plan class group, so the release strands nothing pinned to the
+`docker` versions and needs no `min_version`; the hold tool's check confirms that.
 
 ## Rotating a plan onto a new worker version
 
-A plan pins its bundles to `bundle_app_version`. Publishing a newer `usnm_ocr` version makes
-the feeder stop loading the pinned one, so the plan's unsent bundles stop going out. Host
-trust is keyed by worker digest, so it starts over on a new image. On 9 November both
-happened during one roll (#1687, #529). Since then a new `usnm_ocr` or `usnm_gold` version is
-published held, and released in the rotation step below
-([app-release.md](app-release.md#held-versions)). Claim each production step on
-#529 first. Steps in this order:
+A plan pins its bundles to `bundle_app_version`. Publishing a newer `usnm_ocr` version makes the
+feeder stop loading the pinned one, so the plan's unsent bundles stop going out. Host trust is
+keyed by the full worker digest (`gold/trust.json`, [gold-check.md](../server/gold-check.md)), so
+it starts over on a new image, and `collect` holds results from hosts not yet trusted on it. On
+9 November 2026 both happened during one roll (#1687, #529). Since then a new `usnm_ocr` or
+`usnm_gold` version is published held, and released in the rotation step below
+([app-release.md](app-release.md#held-versions)). Claim each production step on #529 first, and
+release the claim afterwards. Steps in this order:
 
-1. **Publish held.** Release the new `usnm_ocr` and `usnm_gold` versions for every platform
-   the current ones have, with `--hold` (`--what-if` first). Hosts see no change: the
-   versions are deprecated and the live plan keeps its pin.
-2. **Server.** Switch CT 230 to a server image built from a commit that has this change and
-   binds the new worker in `gold-engine-platforms.json`. A gold release refuses without the
-   binding. An image without this change has no `ocr_app_versions` in its inventory (the
-   controller only warns) and no `app-version-hold.php` (copy it in with `podman cp`).
+1. **Publish held.** Publish the new `usnm_ocr` and `usnm_gold` versions for every platform the
+   current ones have, with `--hold` (`--what-if` first). Use a version number neither app has
+   used (check the `app_version` table). Hosts see no change: the versions are deprecated and the
+   live plan keeps its pin.
+2. **Server.** Switch CT 230 to a server image built from a commit that has #1687 and binds the
+   new worker in `boinc/project/gold-engine-platforms.json` (each architecture's engine base,
+   read from the published image configs). A gold release refuses without the binding. An image
+   from before #1687 has no `ocr_app_versions` in its inventory (the controller only warns) and
+   no `app-version-hold.php` (copy it in with `podman cp`).
 3. **Rotation window.** On the feed monitor host, defer the alerts that a rotation trips:
 
    ```sh
@@ -282,13 +232,12 @@ published held, and released in the rotation step below
      --state-dir /var/lib/usnm-boinc-feed-health --minutes 180 --reason "<#529 claim>"
    ```
 
-4. **Gold first.** Release the new `usnm_gold` versions with
-   `app-version-hold.php --action release`. In the same step, point the live plan's
-   `gold_onboarding` entry at the new worker:
-   its `campaign` prepared for the new image, `engine_base` its amd64 engine, and `image` the
-   new worker digest (`sha256:...`). Without `image` the scope onboards onto the plan's own
-   `image`, the old worker. `gold_onboarding` is outside the allocation digest, so this isn't a
-   new plan, and the plan's `image` stays the old one:
+4. **Gold first.** Release the new `usnm_gold` versions with `app-version-hold.php --action
+release`. In the same step, point the live plan's `gold_onboarding` entry at the new worker:
+   its `campaign` prepared for the new image, `engine_base` its amd64 engine, and `image` the new
+   worker digest (`sha256:...`). Without `image` the scope onboards onto the plan's own `image`,
+   the old worker. `gold_onboarding` is outside the allocation digest, so this isn't a new plan,
+   and the plan's `image` stays the old one:
 
    ```json
    "gold_onboarding": [
@@ -297,40 +246,52 @@ published held, and released in the rotation step below
    ]
    ```
 
-   Calibrate arm64 hosts by hand, as before. Wait until `gold-promote` has added the project's
-   hosts on the new digest in `gold/trust.json`. Meanwhile the live plan keeps feeding OCR on
-   the old version, and every collected result comes from a host trusted on the old image.
-   Gold units already out for the old image are refused from the release on; let them expire.
+   A project host scores the calibrated English challenge `d8cd7279…` on both images. If the
+   per-crop edit counts match, the threshold carries over ([native-ocr.md](native-ocr.md),
+   "Threshold carry-over"); if not, the new image needs its own calibration. Gold onboarding matches hosts by the
+   campaign's exact engine base, and the controller takes one scope per language and profile, so
+   it never reaches arm64 hosts. Calibrate those with a separate campaign on the arm64 engine,
+   submitted and promoted by hand, as `current247c-arm-calibration-20261017` was for `247c`.
+
+   Wait until `gold-promote` has added the project's hosts on the new digest in
+   `gold/trust.json`. Meanwhile the live plan keeps feeding OCR on the old version, and every
+   collected result comes from a host trusted on the old image. Gold units already out for the old
+   image are refused from the release on; let them expire.
 
 5. **Rotate OCR.** Stop CT 211's controller timer between ticks, then, together:
-   1. `app-version-hold.php --action min-version --min-version <old pin>`. The feeder then
-      keeps the old version loaded beside the new one, so the old plan's unsent bundles still
-      go out while it drains.
+   1. `app-version-hold.php --action min-version --min-version <old pin>`. The feeder then keeps
+      the old version loaded beside the new one, so the old plan's unsent bundles still go out
+      while it drains.
    2. `app-version-hold.php --action release` for each new `usnm_ocr` app version. It refuses
       while a change would strand unfinished units pinned to a version.
    3. Start the new plan: the live config with only the plan name, `image` and
-      `bundle_app_version` changed (`gold_onboarding` stays as step 4 set it). Archive the old
-      plan to drain.
+      `bundle_app_version` changed (`gold_onboarding` stays as step 4 set it). Archive the old plan
+      to drain.
    4. Run one `--apply` tick by hand, check that it submits bundles and that a host takes one,
       then turn the timer back on.
 6. **Close the window** once ticks are clean and `cpu_shortage` is healthy:
    `feed_status.py --rotation-end --state-dir /var/lib/usnm-boinc-feed-health`.
-7. **Later.** Once every workunit pinned to the old version has finished, raise
-   `min_version` to the new pin, or leave it. The hold tool refuses a raise that strands work.
+7. **Later.** Once every workunit pinned to the old version has finished, raise `min_version` to
+   the new pin, or leave it. The hold tool refuses a raise that strands work.
 
-**Rollback.** Once the new plan has submitted bundles pinned to the new version, holding that
-version would strand them, and `app-version-hold.php` refuses. So, in this order:
+After the rotation, watch pages per hour, `collection_held`, and requeued pages (server records
+with `unbundled`, and `requeued` markers under `spool/`).
 
-1. With the controller timer stopped, put the old plan back as the live plan and archive the
-   new one to drain. The old plan's pin is still loaded, because `min_version` is still the old
-   pin from step 5.1: leave it there.
+### Rollback
+
+Once the new plan has submitted bundles pinned to the new version, holding that version would
+strand them, and `app-version-hold.php` refuses. So, in this order:
+
+1. With the controller timer stopped, put the old plan back as the live plan and archive the new
+   one to drain. The old plan's pin is still loaded, because `min_version` is still the old pin
+   from step 5.1: leave it there.
 2. Leave the new `usnm_ocr` versions released, so the new plan's outstanding bundles go out and
    drain. Turn the timer back on.
 3. Once every workunit pinned to the new version has finished, hold the new versions. Finished
-   means no unsent or in-progress result, nothing awaiting validation or a retry, and
-   assimilated; a bundle still in progress can fail and need a replacement on the new version.
-   The hold tool's stranding check counts all of these, so preview first, then apply, with the
-   check on (no `--accept-stranded`):
+   means no unsent or in-progress result, nothing awaiting validation or a retry, and assimilated;
+   a bundle still in progress can fail and need a replacement on the new version. The hold tool's
+   stranding check counts all of these, so preview first, then apply, with the check on (no
+   `--accept-stranded`):
 
    ```sh
    podman exec usnm-boinc-server php /usr/local/lib/usnm-boinc/app-version-hold.php \
@@ -341,26 +302,24 @@ version would strand them, and `app-version-hold.php` refuses. So, in this order
      --app-version ID --action hold --apply
    ```
 
-   If it still refuses, its preview names the version, the platforms and the count of
-   unfinished workunits (`stranded_workunits`): wait and run it again. A held version stays
-   published.
+   If it still refuses, its preview names the version, the platforms and the count of unfinished
+   workunits (`stranded_workunits`): wait and run it again. A held version stays published.
 
-### What fires during a rotation
+To turn bundling off instead, start a plan without `pages_per_unit`. Bundles already in flight
+finish and collect under their own pin.
 
-| Check              | Fires when                                                                       | During a rotation                                                                                                   | With the window                                                               |
-| ------------------ | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
-| `collection`       | a source is unknown for 3 minutes                                                | the controller's timer stopped, or a tick by hand, for more than 15 minutes ("no recent completed controller tick") | a missing controller tick doesn't count; any other unknown source still fires |
-| `cpu_shortage`     | own clients have more idle CPU slots than eligible unsent results for 30 minutes | no refill while the timer is stopped, or while ticks fail                                                           | held until the window ends, then fires if still true                          |
-| `usnm_ocr_no_work` | OCR has a backlog and no new workunit for an hour                                | the same                                                                                                            | held until the window ends                                                    |
-| `controller_tick`  | two failed ticks in a row                                                        | collect stops each tick on a result from a host not yet trusted on the new image                                    | not covered: step 4 is what prevents it                                       |
+### Alerts during a rotation
 
-The window lasts at most 240 minutes, and every other check fires as usual inside it. A host
-with only an older version installed no longer makes the eligibility check unavailable
-(`collection` fired on 9 November for that): the collector counts it for the version the
-scheduler would send it.
+From `boinc/scripts/feed_status.py` (`ROTATION_DEFERRED` and the tick thresholds):
 
-## Not changed
+| Check                 | Fires when                                                                                        | During a rotation                                                                                                   | With the window                                                               |
+| --------------------- | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| `collection`          | a source is unknown for 3 minutes                                                                 | the controller's timer stopped, or a tick by hand, for more than 15 minutes ("no recent completed controller tick") | a missing controller tick doesn't count; any other unknown source still fires |
+| `cpu_shortage`        | own clients have more idle CPU slots than eligible unsent results for 30 minutes                  | no refill while the timer is stopped, or while ticks fail                                                           | held until the window ends, then fires if still true                          |
+| `usnm_ocr_no_work`    | OCR has a backlog and no new workunit for an hour                                                 | the same                                                                                                            | held until the window ends                                                    |
+| `controller_progress` | a live plan with pending work publishes nothing for two hours (with `"controller_signals": true`) | no publication while the timer is stopped                                                                           | held until the window ends                                                    |
+| `controller_tick`     | two failed or slow ticks in a row, among other patterns (#1698)                                   | collect stops each tick on a result from a host not yet trusted on the new image                                    | not covered: step 4 is what prevents it                                       |
 
-Claims, the export, the ledger, the hand-off record and its publication, trust and gold checks,
-the validators and assimilators, the plan class, and every other app. Priority pages still go
-one per unit unless `ocr-priority` is set above 1.
+The window lasts at most 240 minutes, and every other check fires as usual inside it. On 9 November 2026 `collection` fired
+because a host with only an older version installed made the eligibility check unavailable. The
+collector now counts such a host for the version the scheduler would send it.
