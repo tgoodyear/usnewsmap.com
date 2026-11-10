@@ -440,6 +440,8 @@ import json, subprocess, sys
 from pathlib import Path
 get = lambda key: sys.argv[sys.argv.index(key) + 1]
 assert '--prepare-only' in sys.argv
+# #1687: usnm_ocr and usnm_gold need a mode, held by default; other apps take none.
+assert ('--hold' in sys.argv) == (get('--app') in ('usnm_ocr', 'usnm_gold')), sys.argv
 value = json.loads(Path(get('--onprem-manifest')).read_text())
 assert value['images']['bridge'].startswith('sha256:')
 if value['release']['kind'] == 'native':

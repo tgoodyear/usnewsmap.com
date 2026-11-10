@@ -1150,6 +1150,21 @@ class AppReleaseArgs(unittest.TestCase):
         self.assertIn("podman exec usnm-boinc-server cat /usr/local/lib/usnm-boinc/gold-engine-platforms.json", text)
         self.assertIn('$HOLD || die "the running server\'s gold-engine-platforms.json binds no', text)
 
+    def test_every_caller_of_the_release_script_passes_a_mode(self):
+        # #1687: a caller that releases usnm_ocr or usnm_gold without --hold or --outrank-pinned
+        # fails at signing. Every tracked file that runs the script, other than its tests and
+        # docs, must pass release_mode_args() (or a literal mode).
+        files = subprocess.run(["git", "grep", "-l", "boinc-app-release.sh", "--", ":!*.md",
+                                ":!boinc/scripts/boinc-app-release.sh", ":!**/test_*.py"],
+                               cwd=ROOT, capture_output=True, text=True, check=True).stdout.split()
+        runs = re.compile(r"""["']boinc-app-release\.sh["'],|boinc/scripts/boinc-app-release\.sh\s+--""")
+        callers = sorted(name for name in files if runs.search(Path(ROOT, name).read_text()))
+        self.assertEqual(callers, ["boinc/scripts/bootstrap_pipeline.py", "boinc/scripts/onprem_pipeline.py"])
+        for name in callers:
+            text = Path(ROOT, name).read_text()
+            call = text.index('"boinc-app-release.sh", *args)')
+            self.assertIn("args += release_mode_args(self.config)", text[:call][-400:], name)
+
     def test_hold_flags_are_only_for_ocr_and_gold(self):
         img = "ghcr.io/tgoodyear/usnm-boinc-worker@sha256:" + "a" * 64
         settings = json.loads(Path(ROOT, "boinc/infra/boinc/env/prod.json").read_text())

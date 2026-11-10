@@ -242,8 +242,28 @@ published held, and released in the rotation step below
 7. **Later.** Once no workunit pinned to the old version is unsent or in progress, raise
    `min_version` to the new pin, or leave it. The hold tool refuses a raise that strands work.
 
-Rollback: hold the new `usnm_ocr` versions again, which brings the old one back, and revert to
-the old plan. A held version stays published.
+**Rollback.** Once the new plan has submitted bundles pinned to the new version, holding that
+version would strand them, and `app-version-hold.php` refuses. So, in this order:
+
+1. With the controller timer stopped, put the old plan back as the live plan and archive the
+   new one to drain. The old plan's pin is still loaded, because `min_version` is still the old
+   pin from step 5.1: leave it there.
+2. Leave the new `usnm_ocr` versions released, so the new plan's outstanding bundles go out and
+   drain. Turn the timer back on.
+3. Once none is unsent, hold the new versions. Preview first, then apply; the stranding check
+   stays on (no `--accept-stranded`):
+
+   ```sh
+   podman exec usnm-boinc-server php /usr/local/lib/usnm-boinc/app-version-hold.php \
+     --project /project/usnmocr --journal-dir /project/usnmocr/ops-app-versions \
+     --app-version ID --action hold
+   podman exec usnm-boinc-server php /usr/local/lib/usnm-boinc/app-version-hold.php \
+     --project /project/usnmocr --journal-dir /project/usnmocr/ops-app-versions \
+     --app-version ID --action hold --apply
+   ```
+
+   If it still refuses, its preview names the version and platforms with unsent units: wait
+   and run it again. A held version stays published.
 
 ### What fires during a rotation
 

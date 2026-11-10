@@ -125,6 +125,15 @@ def rotation_window(raw, now):
     return window
 
 
+def read_rotation(state_dir):
+    """ROTATION_FILE's text, or None when it is missing, unreadable or not UTF-8: no window, and
+    the monitor carries on."""
+    try:
+        return (Path(state_dir) / ROTATION_FILE).read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return None
+
+
 def start_rotation(state_dir, minutes, reason, now):
     if not 1 <= minutes <= ROTATION_MAX_MINUTES:
         raise ValueError(f"--minutes is 1 to {ROTATION_MAX_MINUTES}")
@@ -304,10 +313,7 @@ def monitor(config_path, state_dir):
             boot = feed_collect.run(["sysctl", "-n", "kern.boottime"], limit=1024).decode().strip()
         else:
             boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
-        try:
-            raw = (state_dir / ROTATION_FILE).read_text()
-        except OSError:
-            raw = None
+        raw = read_rotation(state_dir)
         document, state = evaluate(facts, previous, now, time.monotonic(), boot,
                                    hashlib.sha256(config_bytes).hexdigest(), rotation_window(raw, now))
         atomic_json(state_dir / "feed-health.json", document)

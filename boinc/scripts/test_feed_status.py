@@ -371,6 +371,13 @@ class DurationTest(unittest.TestCase):
                 F.main(["--rotation-start", "--rotation-end", "--state-dir", folder])
             with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
                 F.main(["--rotation-end", "--state-dir", folder, "--minutes", "5"])
+            # A file that isn't UTF-8 is no window, and doesn't stop the monitor.
+            (Path(folder) / F.ROTATION_FILE).write_bytes(b'{"reason": "\xff\xfe", "until": 1}')
+            self.assertIsNone(F.read_rotation(folder))
+            self.assertIsNone(F.rotation_window(F.read_rotation(folder), NOW))
+            (Path(folder) / F.ROTATION_FILE).write_text(json.dumps(written))
+            self.assertEqual(json.loads(F.read_rotation(folder)), written)
+            self.assertIsNone(F.read_rotation(Path(folder) / "missing"))
             out = io.StringIO()
             with contextlib.redirect_stdout(out):
                 F.main(["--rotation-end", "--state-dir", folder])
