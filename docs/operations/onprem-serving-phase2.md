@@ -4,46 +4,46 @@ Part of the [operations guide](README.md). This is the checklist for [#1101](htt
 
 Public serving moved on-prem at 02:01:07 UTC on 31 October 2026 ([cutover receipt](https://github.com/tgoodyear/usnewsmap.com/issues/955#issuecomment-6537903917)). [ADR-0029](../design/adr/0029-onprem-primary-azure-failover.md) keeps Azure as a cold spare behind a health-driven Worker, so ADR-0027's Phase 4 deletions are gone, but these measurements and gates still apply to serving on-prem.
 
-An item is done when it has evidence or a disposition the maintainer has approved. The statuses below are as of **4 November 2026**. Earlier results that came from other hardware or other conditions (the HDD benchmark, the dev container's reboot) are listed as context, not as the Phase 2 result.
+An item is done when it has evidence or a disposition the maintainer has approved. The statuses below are as of 4 November 2026; #1101 is still open and records no change since (checked 10 November 2026). Earlier results that came from other hardware or other conditions (the HDD benchmark, the dev container's reboot) are listed as context, not as the Phase 2 result.
 
 ## Categories
 
 - **Read-only**: public HTTPS and DNS checks, Cloudflare or Azure reads with a read-only credential, and inventory commands on the host. No window needed.
 - **Drill**: anything that stops a service, injects a failure, loads the production origin or the uplink, or wakes the Azure spare. It needs an approved maintenance window, the drill Worker and hostname ([cold drill](search-serving.md#cold-drill)), and `DNT: 1` on every request.
-- **Owner**: physical work or a confirmation only the owner can give (hardware, firmware settings, the ISP contract).
+- **Maintainer**: physical work or a confirmation only the maintainer can give (hardware, firmware settings, the ISP contract).
 
 Don't commit private addresses, private host names, account ids or tokens with the evidence. Name the drill hostname, the serving container and the host generically, as this page does.
 
 ## Summary
 
-| ID  | Item                                                 | Category              | Status, 4 Nov 2026                                                      |
-| --- | ---------------------------------------------------- | --------------------- | ----------------------------------------------------------------------- |
-| M1  | Cold-search latency on the NVMe vs Azure             | Drill                 | Open. HDD result only; no NVMe result published                         |
-| M2  | TTFB, assets and LCP from several regions            | Read-only             | Partial: a few samples from the operator's network                      |
-| M3  | 30 days of traffic vs Workers Free and the uplink    | Read-only             | Open. Window ends 30 Nov 2026                                           |
-| M4  | Fallback cold-cache load, no-connector response, XFF | Drill                 | Partial: ADR-0029 failover drills; the three named checks not recorded  |
-| M5  | Does `cloudflared` add an `X-Forwarded-For` entry    | Drill                 | Open                                                                    |
-| M6  | Forced upstream failure leaves no query or IP in log | Drill                 | Open. Redaction is in code; the drill isn't recorded                    |
-| M7  | Sustained upstream throughput; static home IP        | Drill + owner         | Open. Link speed only                                                   |
-| M8  | Current zone settings                                | Read-only             | Partial: public inference; Speed Brain appears on                       |
-| M9  | M.2 slot vs SATA ports                               | Read-only             | Answered: all six SATA ports enumerate with the NVMe in                 |
-| M10 | Azure certificate renewal lead time                  | Read-only             | Superseded by DNS-01 origin TLS; disposition needed                     |
-| M11 | Security Analytics / Events and the query string     | Read-only             | Open                                                                    |
-| M12 | Share of the lake's Hot reads that is the index      | Read-only             | Open; likely superseded; disposition needed                             |
-| M13 | Cloudflare Load Balancing prices                     | Read-only             | Answered: from $5 a month; not chosen (ADR-0029)                        |
-| M14 | On-prem power draw                                   | Owner                 | Open                                                                    |
-| G1  | UPS for the host and the network gear, USB shutdown  | Owner                 | Not met as far as the host shows: no UPS tooling and no UPS on USB      |
-| G2  | BIOS powers on after a power loss                    | Owner                 | Unknown                                                                 |
-| G3  | Plug-in Intel NIC                                    | Read-only, then owner | Not met: only the onboard I219-V                                        |
-| G4  | 30 days at 99.0%, fallback answers counted as down   | Read-only             | In progress; fallback counts aren't exported, so early days are unknown |
-| G5  | Rehearsed reboot                                     | Drill                 | Not met: no host boot since the cutover                                 |
-| G6  | NVMe holds the serving index (ADR-0027 decision 5)   | Read-only + decision  | Installed (2 TB, one version); decision 5's two versions don't fit      |
+| ID  | Item                                                 | Category                   | Status, 4 Nov 2026                                                      |
+| --- | ---------------------------------------------------- | -------------------------- | ----------------------------------------------------------------------- |
+| M1  | Cold-search latency on the NVMe vs Azure             | Drill                      | Open. HDD result only; no NVMe result published                         |
+| M2  | TTFB, assets and LCP from several regions            | Read-only                  | Partial: a few samples from the operator's network                      |
+| M3  | 30 days of traffic vs Workers Free and the uplink    | Read-only                  | Open. Window ends 30 Nov 2026                                           |
+| M4  | Fallback cold-cache load, no-connector response, XFF | Drill                      | Partial: ADR-0029 failover drills; the three named checks not recorded  |
+| M5  | Does `cloudflared` add an `X-Forwarded-For` entry    | Drill                      | Open                                                                    |
+| M6  | Forced upstream failure leaves no query or IP in log | Drill                      | Open. Redaction is in code; the drill isn't recorded                    |
+| M7  | Sustained upstream throughput; static home IP        | Drill + maintainer         | Open. Link speed only                                                   |
+| M8  | Current zone settings                                | Read-only                  | Partial: public inference; Speed Brain appears on                       |
+| M9  | M.2 slot vs SATA ports                               | Read-only                  | Answered: all six SATA ports enumerate with the NVMe in                 |
+| M10 | Azure certificate renewal lead time                  | Read-only                  | Superseded by DNS-01 origin TLS; disposition needed                     |
+| M11 | Security Analytics / Events and the query string     | Read-only                  | Open                                                                    |
+| M12 | Share of the lake's Hot reads that is the index      | Read-only                  | Open; likely superseded; disposition needed                             |
+| M13 | Cloudflare Load Balancing prices                     | Read-only                  | Answered: from $5 a month; not chosen (ADR-0029)                        |
+| M14 | On-prem power draw                                   | Maintainer                 | Open                                                                    |
+| G1  | UPS for the host and the network gear, USB shutdown  | Maintainer                 | Not met as far as the host shows: no UPS tooling and no UPS on USB      |
+| G2  | BIOS powers on after a power loss                    | Maintainer                 | Unknown                                                                 |
+| G3  | Plug-in Intel NIC                                    | Read-only, then maintainer | Not met: only the onboard I219-V                                        |
+| G4  | 30 days at 99.0%, fallback answers counted as down   | Read-only                  | In progress; fallback counts aren't exported, so early days are unknown |
+| G5  | Rehearsed reboot                                     | Drill                      | Not met: no host boot since the cutover                                 |
+| G6  | NVMe holds the serving index (ADR-0027 decision 5)   | Read-only + decision       | Installed (2 TB, one version); decision 5's two versions don't fit      |
 
 ## Read-only snapshot, 4 November 2026
 
-Taken between 22:40:55 and 22:42:42 UTC by the agent working #1101.
+Taken between 22:40:55 and 22:42:42 UTC.
 
-- **Public checks** ran from the operator's Mac on the home network, which is the origin's own network, through Cloudflare's Atlanta colocation (`cf-ray` suffix `ATL`). A visitor elsewhere takes a different path, so these numbers show the edge and tunnel path from here, not what visitors see. Each request sent `DNT: 1` and a `usnm-phase2-readonly` user agent. No search was sent.
+- **Public checks** ran from a machine on the home network, which is the origin's own network, through Cloudflare's Atlanta colocation (`cf-ray` suffix `ATL`). A visitor elsewhere takes a different path, so these numbers show the edge and tunnel path from here, not what visitors see. Each request sent `DNT: 1` and a `usnm-phase2-readonly` user agent. No search was sent.
 - **Host inventory** ran over SSH on the serving host with read-only commands only: `lsblk`, `zpool list`, `zpool status -x`, `lspci`, `ip -br link`, `ethtool`, `dmidecode`, `smartctl -A`, `lsusb`, `command -v`, `systemctl is-active`, `journalctl --list-boots`, `journalctl -k` (a count) and `pct list`/`pct config`.
 - Nothing was started, stopped, changed or deployed, and the Azure spare was not contacted.
 
@@ -106,7 +106,7 @@ The bundle took 70 to 93 ms in total. Three samples from one network give a medi
 
 ## Checklist
 
-Each item gives the method, the evidence to record, what it's compared against and its status. Run the drills only in an approved window, against the drill hostname unless the item needs the public one, and stop each drill and restore the service even if the measurement fails.
+Each item gives the method, the evidence to record, what it's compared against and its status. Run each drill in an approved window, against the drill hostname unless the item needs the public one, and stop each drill and restore the service even if the measurement fails.
 
 ### M1. Cold-search latency on the NVMe
 
@@ -137,7 +137,7 @@ Each item gives the method, the evidence to record, what it's compared against a
 - **Category:** drill. It stops the drill connector and wakes the spare.
 - **Method:** the [cold drill](search-serving.md#cold-drill) on the drill hostname. With the connector stopped, run `node scripts/bench-site-lcp.mjs --base-url https://<drill hostname>` (a fresh browser context is a cold browser cache) and confirm every asset loads with `X-USNM-Origin: azure`. Record the Worker's outcome record for the failed primary probe. The API logs no client addresses, and DNT turns off the page-view path that uses one, so the header order needs its own probe: a temporary app in the same Container Apps environment, behind the same ingress, reachable only through the drill Worker, that answers `/readyz` with 200 and the exact body `ready` (the Worker's readiness check), returns the request headers in its response body on every other path, and logs nothing. Confirm the echoed response came from this app, not an `azure-unready` 503. Send one DNT request with a known `X-Forwarded-For`, save the response, then delete the app and confirm it is gone.
 - **Evidence:** page load and LCP, failed requests, origin per request, the Worker's outcome reason and status, and the observed header order.
-- **Compared against:** ADR-0029 decision 1 (a ready origin is chosen before the request) and decision 4 (an explicit 503 with `Retry-After` if neither is ready).
+- **Compared against:** ADR-0029 decision 1 (a ready origin is chosen before the request) and decision 4 (a 503 with `Retry-After` if neither is ready).
 - **Status:** partial. The [cutover drills](https://github.com/tgoodyear/usnewsmap.com/issues/955#issuecomment-6537903917) had 0 of 865 synthetic requests fail, including a connector outage with both Azure apps at zero (first Azure answer after 68.3 s). They used readiness and aggregate requests, not a browser, and recorded neither the no-connector response nor the header order. Under ADR-0029 the Worker chooses by `/readyz`, not by a 530, so the maintainer may dispose of the no-connector question.
 
 ### M5. Does `cloudflared` add an `X-Forwarded-For` entry
@@ -151,16 +151,16 @@ Each item gives the method, the evidence to record, what it's compared against a
 ### M6. A forced upstream failure leaves no search or client IP in a retained log
 
 - **Category:** drill.
-- **Method:** with the health Worker in front, a failed `/readyz` sends the marked search to Azure, so it never reaches the failing proxy and a zero count proves nothing. Use a test hostname routed straight to the test container's tunnel with no Worker route. Fail one layer at a time: stop the API behind Caddy (Caddy answers 502), then point the connector's ingress at a closed loopback port (`cloudflared` answers 502). For each, send a DNT search with a random marker word and note the client's public address. Accept the log counts only with proof of delivery: the 502 from the expected layer, no `X-USNM-Origin: azure`, and that layer's error-log line for the request at that time (counted, not copied). Then search the container's and the host's journals since the start for the marker and the address (`journalctl --since <start> | grep -c <marker>`).
+- **Method:** with the health Worker in front, a failed `/readyz` sends the marked search to Azure, so it never reaches the failing proxy and a zero count proves nothing. Use a test hostname routed straight to the test container's tunnel with no Worker route. Fail one layer at a time: stop the API behind Caddy (Caddy answers 502), then point the connector's ingress at a closed loopback port (`cloudflared` answers 502). For each, send a DNT search with a random marker word and note the client's public address. Before accepting the log counts, record proof of delivery: the 502 from the expected layer, no `X-USNM-Origin: azure`, and that layer's error-log line for the request at that time (counted, not copied). Then search the container's and the host's journals since the start for the marker and the address (`journalctl --since <start> | grep -c <marker>`).
 - **Evidence:** per layer, the response status and the delivery proof, then counts per log source (zero expected), the window, and the marker's hash rather than the word. Restore the API and the ingress and remove the test route afterwards.
 - **Compared against:** [09 §9.4.2](../design/09-operations-security-cost.md#942-privacy) and ADR-0027 decision 9. ADR-0029 already records that Worker invocation logs keep client-IP headers and geolocation with the query redacted.
 - **Status:** open. `run-cloudflared.sh` cuts the query string from error lines and Caddy's error log drops the request field ([serving logs](../../scripts/onprem/serving/README.md#logs)); no drill has shown it.
 
 ### M7. Sustained upstream throughput, and whether the home IP is static
 
-- **Category:** throughput is a drill (it fills the uplink production uses); the address is an owner confirmation.
+- **Category:** throughput is a drill (it fills the uplink production uses); the address is a maintainer confirmation.
 - **Method:** a timed upload from the host to an external endpoint, capped and scheduled off-peak, while watching that the public probes stay healthy. For the address, the ISP contract, or the history of the home-IP-change runbook ([09 §9.3.1](../design/09-operations-security-cost.md#931-on-prem-serving)).
-- **Evidence:** sustained Mbit/s over at least a minute, the time and the endpoint's region; the owner's answer on the address.
+- **Evidence:** sustained Mbit/s over at least a minute, the time and the endpoint's region; the maintainer's answer on the address.
 - **Compared against:** 1 Gbit/s symmetric as recorded in [ADR-0022](../design/adr/0022-onprem-cold-storage.md), and M3's peak rates.
 - **Status:** open. The host's only NIC links at 1000 Mb/s full duplex, an upper bound.
 
@@ -171,7 +171,7 @@ Each item gives the method, the evidence to record, what it's compared against a
 - **Evidence:** each setting's value and the time read.
 - **Compared against:** ADR-0027 decision 3's list.
 - **Status:** partial: inferred from public responses only.
-  - Speed Brain looks **on**: every response carries `speculation-rules: "/cdn-cgi/speculation"`. ADR-0027 asks for it off unless the maintainer chooses it, so this needs the maintainer.
+  - Speed Brain looks on: every response carries `speculation-rules: "/cdn-cgi/speculation"`. ADR-0027 asks for it off unless the maintainer chooses it, so this needs the maintainer.
   - Always Use HTTPS is on (Cloudflare answers `http://` with a 301).
   - Rocket Loader, Email Obfuscation and Web Analytics' automatic setup show no trace in the home page's HTML, and robots.txt is the origin's. No response set `__cf_bm`, which suggests Bot Fight Mode is off but doesn't prove it.
   - HSTS is `max-age=300`, HTTP/3 is advertised and DNSSEC is on.
@@ -215,7 +215,7 @@ Each item gives the method, the evidence to record, what it's compared against a
 
 ### M14. On-prem power draw
 
-- **Category:** owner.
+- **Category:** maintainer.
 - **Method:** a wall meter on the host, or the UPS's load reading once G1 is in place, over a day that includes a rebuild.
 - **Evidence:** idle and busy watts, the meter and the window.
 - **Compared against:** the cost model ([09 §9.5](../design/09-operations-security-cost.md#on-prem-serving-955)).
@@ -223,22 +223,22 @@ Each item gives the method, the evidence to record, what it's compared against a
 
 ### G1. UPS
 
-- **Category:** owner.
+- **Category:** maintainer.
 - **Method:** install a UPS that covers the host and the network gear on the path to the internet, with a USB link to the host; install NUT (or the vendor's daemon) and test a clean shutdown in a window.
 - **Evidence:** the model, what it powers, the runtime at the host's load, `upsc` output and the shutdown test.
 - **Compared against:** the [22 October decision](https://github.com/tgoodyear/usnewsmap.com/issues/955#issuecomment-6354758689), which made a UPS a condition of the move.
-- **Status:** not met, as far as the host shows: no UPS software and no UPS on USB (snapshot above). The owner should confirm whether a UPS without a data link is in place.
+- **Status:** not met, as far as the host shows: no UPS software and no UPS on USB (snapshot above). The maintainer should confirm whether a UPS without a data link is in place.
 
 ### G2. BIOS powers on after a power loss
 
-- **Category:** owner.
+- **Category:** maintainer.
 - **Method:** in the BIOS, the setting for restoring after AC power loss; then a test in a window (cut power at the wall, restore it, and watch the host boot unattended).
 - **Evidence:** the setting and the test's time.
 - **Status:** unknown. The OS can't read this setting.
 
 ### G3. Plug-in Intel NIC
 
-- **Category:** read-only check, owner install.
+- **Category:** read-only check, maintainer install.
 - **Method:** `lspci -nn | grep -i ethernet` and `ethtool -i <iface>`; after the install, move the bridge to the new NIC in a window.
 - **Evidence:** the NIC's model and driver, and the reset count in the kernel log over 30 days.
 - **Compared against:** ADR-0027 decision 10 (the onboard NIC reset every 30 seconds for 6 minutes on 21 October 2026).
