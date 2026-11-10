@@ -1,6 +1,6 @@
 # 12: On-prem OCR Pipeline
 
-**Status (10 November 2026):** OCR runs only through BOINC ([BOINC pages](../boinc/README.md)). The direct queue worker is retired (#966, #1053): its unit, installers, nightly update and `engine-spike.sh` are removed, and nodes 3 and 4 are off, waiting to be offboarded. Steps 2 to 10 and 12 are built, Step 11's pilot ran without its report; the pickup, seeder and release run on-prem; Step 14 is not built. ADR-0015 and ADR-0016 are Proposed. · **Issue:** [#296](https://github.com/tgoodyear/usnewsmap.com/issues/296) · **Runbook:** [On-prem OCR](../operations/onprem-ocr.md) · **Code:** `infra/modules/ocr-exchange.bicep`, `infra/modules/ocr-sync-runner.bicep`, `crates/usnm-ocr-local/`, `crates/usnm-ocr-contract/`, `crates/usnm-ocr-worker/` (scan fetching and engine code), `crates/usnm-boinc/`, `crates/usnm-overlay/`, `crates/usnm-alto/`, `crates/usnm-core/src/damage/`, `ocr/engines/tesseract/`
+**Status (10 November 2026):** OCR runs only through BOINC ([BOINC pages](../boinc/README.md)). The direct queue worker is retired (#966, #1053): its unit, installers, nightly update and `engine-spike.sh` are removed, and nodes 3 and 4 were backed up and destroyed on 24 October 2026, their Arc machines deleted (#966). Steps 2 to 10 and 12 are built, Step 11's pilot ran without its report; the pickup, seeder and release run on-prem; Step 14 is not built. ADR-0015 and ADR-0016 are Proposed. · **Issue:** [#296](https://github.com/tgoodyear/usnewsmap.com/issues/296) · **Runbook:** [On-prem OCR](../operations/onprem-ocr.md) · **Code:** `infra/modules/ocr-exchange.bicep`, `infra/modules/ocr-sync-runner.bicep`, `crates/usnm-ocr-local/`, `crates/usnm-ocr-contract/`, `crates/usnm-ocr-worker/` (scan fetching and engine code), `crates/usnm-boinc/`, `crates/usnm-overlay/`, `crates/usnm-alto/`, `crates/usnm-core/src/damage/`, `ocr/engines/tesseract/`
 
 ## 12.1 Purpose and scope
 
@@ -43,7 +43,7 @@ State on `main` and in prod on 10 November 2026. Settings are from [`infra/env/p
 
 ### 12.2.1 The nodes
 
-Retired (#966). Nodes 1 and 2 ran from 10 October 2026 and were replaced on 12 October by RHEL 10.2 nodes 3 and 4 running `ocr-worker-20261012-75fab3f`. Node 4 has been off since 16 October and node 3 since 18 October (#833); both wait to be offboarded and deleted. Their CPU went to the BOINC pool. Hosts were VMs with UEFI Secure Boot and a vTPM, key-only SSH and AlmaLinux 9 or RHEL 10, provisioned outside this repository.
+Retired (#966). Nodes 1 and 2 ran from 10 October 2026 and were replaced on 12 October by RHEL 10.2 nodes 3 and 4 running `ocr-worker-20261012-75fab3f`. Node 4 was off from 16 October and node 3 from 18 October (#833); both were backed up and destroyed on 24 October 2026 and their Arc machines deleted (#966). Their CPU went to the BOINC pool. Hosts were VMs with UEFI Secure Boot and a vTPM, key-only SSH and AlmaLinux 9 or RHEL 10, provisioned outside this repository.
 
 ### 12.2.2 How the worker handles a page
 
@@ -276,7 +276,7 @@ flowchart TD
 
 ### 12.3.5 Node onboarding
 
-Retired with the worker (#966). `group.sh`, `onboard.sh`, `node-setup.sh` and `offboard.sh` stay in `scripts/ocr-node/` for rerunning against a connected node and for offboarding nodes 3 and 4; the [runbook](../operations/onprem-ocr.md#on-prem-ocr-nodes) has the commands. Onboarding used a throwaway service principal with a 2-hour secret and only Azure Connected Machine Onboarding on `rg-usnm-<env>`, which `onboard.sh` deleted and purged from Entra on exit, also on failure.
+Retired with the worker (#966). `group.sh`, `onboard.sh`, `node-setup.sh` and `offboard.sh` stay in `scripts/ocr-node/` for a new Arc host; the [runbook](../operations/onprem-ocr.md#on-prem-ocr-nodes) has the commands. Onboarding used a throwaway service principal with a 2-hour secret and only Azure Connected Machine Onboarding on `rg-usnm-<env>`, which `onboard.sh` deleted and purged from Entra on exit, also on failure.
 
 ## 12.4 Languages
 
@@ -490,7 +490,7 @@ Runbooks in [`docs/operations/README.md`](../operations/README.md): [On-prem OCR
 - **Entra only, toward Azure.** No keys, SAS tokens or stored secrets; queue URLs with a query or credentials are refused and redirects not followed; Application Insights has local auth off. The pgmq queue database, not yet used by producers, authenticates on-prem clients by certificate ([ADR-0025](adr/0025-onprem-database-client-certificates.md)).
 - **Volunteer output is untrusted.** `collect --trust` publishes a result only from a host trusted for its exact (language, profile, psm, dpi) scope; held scopes keep results unpublished ([host trust](../boinc/server/gold-check.md#host-trust-for-usnm_ocr)). Nothing a volunteer returns reaches `ocr-out` without these checks.
 - **Exchange output is untrusted.** Several identities can write `ocr-out` and any Message Sender on `ocr-deadletter` can add a letter. `ocr-sync` checks sizes before download, refuses ALTO with a DOCTYPE, accepts only requested pages, re-encodes dead letters, writes only checked bytes and deletes with If-Match (Step 8); the release rescores both texts (Step 9); rejects stay outside the lake. Revocation files keep a source's output out of the next full rebuild; until then its text in published batches stays searchable, and pulling it sooner takes a full rebuild (or Step 14's delta, if built).
-- **Node identities** still hold their roles through the group (§12.3.1) until nodes 3 and 4 are offboarded. A node that leaves the group keeps access for up to about 24 hours; removing its IP from `USNM_OCR_NODE_IPS` and provisioning cuts it off at once (with every host behind that IP, the scan archive uploader included).
+- **Node identities** hold their roles through the group (§12.3.1); nodes 3 and 4 left it when their Arc machines were deleted on 24 October 2026 (#966). A node that leaves the group keeps access for up to about 24 hours; removing its IP from `USNM_OCR_NODE_IPS` and provisioning cuts it off at once (with every host behind that IP, the scan archive uploader included).
 - **LoC.** Any 4xx other than 403, 408 and 429 is permanent; nothing works around a block (§12.2.4, LoC client rules).
 - **Search text and the lab IP.** No search text in messages (§12.2.2). The lab's public IP is only in the environment's settings, never in the repository.
 
