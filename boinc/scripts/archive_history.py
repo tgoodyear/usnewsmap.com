@@ -1214,6 +1214,7 @@ def plan_reconcile(scheduler, target, plans, container, bridge, args):
         "account": target.config["account"], "plan": target.name,
         "config_sha256": scheduler.digest(target.config), "kinds": sorted(args.kinds),
         "checked_plans": sorted(plan.name for plan in plans),
+        "checked_plan_digests": {plan.name: scheduler.digest(plan.config) for plan in plans},
         "bridge_jobs": None if bridge is None else {"listed": len(bridge),
                                                     "sha256": sha256_file(args.bridge_jobs)},
         "pages": chosen, "jobs": jobs, "blobs": plan_blobs, "state": entries,
@@ -1238,6 +1239,20 @@ def plan_reconcile(scheduler, target, plans, container, bridge, args):
                           "after": ownership(scheduler, plans, remaining, after_states)},
     }
     return manifest, summary
+
+
+def projected_ownership(scheduler, plans, target, manifest, container):
+    """ownership() on the journals and states as a planned run leaves them, from wherever a
+    stopped run got to: the run's state entries out of the draining plan's state (if still
+    there) and its jobs out of the hand-off."""
+    entries = manifest["state"]
+    state = target.state
+    if any(name in state.get(key, {}) for key in STATE_KEYS for name in entries[key]):
+        state = without(state, entries)
+    gone = set(manifest["jobs"])
+    records = [record for record in read_records(container, list_job_blobs(container))
+               if record["job"]["id"] not in gone]
+    return ownership(scheduler, plans, records, {target.name: state})
 
 
 def reconcile_dirs(archive):
@@ -1329,6 +1344,16 @@ def reconcile(args):
                 submitted = sorted(set(unsubmitted) & read_bridge_jobs(args.bridge_jobs))
                 require(not submitted, f"{len(submitted)} of run {batch.name}'s unsubmitted jobs now have a "
                                        f"bridge journal (first: {submitted[:1]}); stop and reconcile by hand")
+            # The same plans, under their locks, and every one still accepts the journals and
+            # its state as the run leaves them: checked again before anything more is changed.
+            given = {plan.name: scheduler.digest(plan.config) for plan in plans}
+            require(manifest.get("checked_plan_digests") == given,
+                    f"reconcile run {batch.name} was planned checking {sorted(manifest.get('checked_plan_digests') or {})}; "
+                    f"resume it with the same plans and configs (given: {sorted(given)})")
+            refused = {name: result["error"] for name, result in
+                       projected_ownership(scheduler, plans, target, manifest, container).items() if not result["ok"]}
+            require(not refused, f"resuming reconcile run {batch.name} would leave a plan refusing its journals: "
+                                 f"{refused}; nothing more was changed")
             progress(f"resuming reconcile run {batch.name}")
             summary = None
         else:

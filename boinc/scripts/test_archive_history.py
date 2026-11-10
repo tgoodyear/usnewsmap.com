@@ -1313,6 +1313,37 @@ class ReconcileTests(ReconcileFixture):
         self.assertEqual(receipt["run"], "0001")
         self.assertFalse(self.jobs_in_container() & {job_id(1), job_id(3)})
 
+    def stop_half_way(self):
+        self.container.fail_deletes_after = 2
+        code, _, errors = self.apply()
+        self.assertIn("injected", errors[-1]["error"])
+        self.container.fail_deletes_after = None
+        self.bridge.write_text("\n".join([job_id(4), job_id(50)]) + "\n")  # taken again
+
+    def test_a_resume_needs_the_plans_it_was_planned_with(self):
+        self.stop_half_way()
+        before = self.snapshot()
+        config_path, state_dir = self.paths[self.DRAINING]
+        code, _, errors = run(["reconcile", "--config", str(config_path), "--state-dir", str(state_dir),
+                               "--archive-dir", str(self.archive_dir), "--bridge-jobs", str(self.bridge),
+                               "--apply", "--confirm-controller-paused", "--confirm-plan-draining", *self.EXPECT])
+        self.assertEqual(code, 1)
+        self.assertIn("resume it with the same plans", errors[-1]["error"])
+        self.assertEqual(before, self.snapshot())
+
+    def test_a_resume_refuses_a_collision_made_since(self):
+        self.stop_half_way()
+        # Since the stopped attempt the live plan exported page 4, which the draining plan keeps.
+        record = journal(60, page_key(4), "reserved", plan=self.LIVE)
+        self.container.put(f"dispatch/jobs/{job_id(60)}/record.json", json.dumps(record).encode(), time.time())
+        before = self.snapshot()
+        code, _, errors = self.apply()
+        self.assertEqual(code, 1)
+        self.assertIn("would leave a plan refusing", errors[-1]["error"])
+        self.assertIn(page_key(4), errors[-1]["error"])
+        self.assertEqual(before, self.snapshot())
+        self.assertFalse((self.archive_dir / "reconcile/0001/receipts/reconcile.json").exists())
+
     def test_plans_are_checked_against_their_own_state(self):
         config_path, state_dir = self.paths[self.DRAINING]
         live_config, live_state = self.paths[self.LIVE]
