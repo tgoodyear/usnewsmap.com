@@ -606,10 +606,14 @@ podman exec usnm-boinc-server php /usr/local/lib/usnm-boinc/app-version-hold.php
 - Each change writes a journal first (`<action>-app-version-<id>-<time>-<random>.json` or
   `min-version-usnm_ocr-...`, with the value before), then makes the change, checks it and
   touches `reread_db`. Revert with the opposite action. A version already in the target state
-  is left alone and journals nothing.
+  is left alone and journals nothing, but an `--apply` still touches `reread_db` again, so
+  rerunning a run that stopped before its notice finishes it.
 - It refuses a change that would stop a pinned version number loading on any platform while
-  unsent workunits are pinned to it, and names the platforms. Wait for them to be sent, set
-  `min_version` first, or pass `--accept-stranded`.
+  workunits pinned to it are unfinished, and names the platforms. Unfinished is anything that
+  may still need a result sent: no canonical result and no error yet (unsent, in progress,
+  awaiting validation or a retry), `need_validate` set, or not yet assimilated. A result that
+  fails or times out gets a replacement, which needs the pinned version loaded. Wait for them
+  to finish, set `min_version` first, or pass `--accept-stranded`.
 - A `usnm_gold` release also needs `/usr/local/lib/usnm-boinc/gold-engine-platforms.json` (or
   `--gold-bindings FILE`) to bind the worker that the version's `Dockerfile` pins on its
   platform.

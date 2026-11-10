@@ -208,8 +208,9 @@ published held, and released in the rotation step below
      --state-dir /var/lib/usnm-boinc-feed-health --minutes 180 --reason "<#529 claim>"
    ```
 
-4. **Gold first.** Release the new `usnm_gold` versions with `app-version-hold.php --action
-   release`. In the same step, point the live plan's `gold_onboarding` entry at the new worker:
+4. **Gold first.** Release the new `usnm_gold` versions with
+   `app-version-hold.php --action release`. In the same step, point the live plan's
+   `gold_onboarding` entry at the new worker:
    its `campaign` prepared for the new image, `engine_base` its amd64 engine, and `image` the
    new worker digest (`sha256:...`). Without `image` the scope onboards onto the plan's own
    `image`, the old worker. `gold_onboarding` is outside the allocation digest, so this isn't a
@@ -226,12 +227,13 @@ published held, and released in the rotation step below
    hosts on the new digest in `gold/trust.json`. Meanwhile the live plan keeps feeding OCR on
    the old version, and every collected result comes from a host trusted on the old image.
    Gold units already out for the old image are refused from the release on; let them expire.
+
 5. **Rotate OCR.** Stop CT 211's controller timer between ticks, then, together:
    1. `app-version-hold.php --action min-version --min-version <old pin>`. The feeder then
       keeps the old version loaded beside the new one, so the old plan's unsent bundles still
       go out while it drains.
    2. `app-version-hold.php --action release` for each new `usnm_ocr` app version. It refuses
-      while a change would strand unsent units pinned to a version.
+      while a change would strand unfinished units pinned to a version.
    3. Start the new plan: the live config with only the plan name, `image` and
       `bundle_app_version` changed (`gold_onboarding` stays as step 4 set it). Archive the old
       plan to drain.
@@ -239,7 +241,7 @@ published held, and released in the rotation step below
       then turn the timer back on.
 6. **Close the window** once ticks are clean and `cpu_shortage` is healthy:
    `feed_status.py --rotation-end --state-dir /var/lib/usnm-boinc-feed-health`.
-7. **Later.** Once no workunit pinned to the old version is unsent or in progress, raise
+7. **Later.** Once every workunit pinned to the old version has finished, raise
    `min_version` to the new pin, or leave it. The hold tool refuses a raise that strands work.
 
 **Rollback.** Once the new plan has submitted bundles pinned to the new version, holding that
@@ -250,8 +252,11 @@ version would strand them, and `app-version-hold.php` refuses. So, in this order
    pin from step 5.1: leave it there.
 2. Leave the new `usnm_ocr` versions released, so the new plan's outstanding bundles go out and
    drain. Turn the timer back on.
-3. Once none is unsent, hold the new versions. Preview first, then apply; the stranding check
-   stays on (no `--accept-stranded`):
+3. Once every workunit pinned to the new version has finished, hold the new versions. Finished
+   means no unsent or in-progress result, nothing awaiting validation or a retry, and
+   assimilated; a bundle still in progress can fail and need a replacement on the new version.
+   The hold tool's stranding check counts all of these, so preview first, then apply, with the
+   check on (no `--accept-stranded`):
 
    ```sh
    podman exec usnm-boinc-server php /usr/local/lib/usnm-boinc/app-version-hold.php \
@@ -262,17 +267,18 @@ version would strand them, and `app-version-hold.php` refuses. So, in this order
      --app-version ID --action hold --apply
    ```
 
-   If it still refuses, its preview names the version and platforms with unsent units: wait
-   and run it again. A held version stays published.
+   If it still refuses, its preview names the version, the platforms and the count of
+   unfinished workunits (`stranded_workunits`): wait and run it again. A held version stays
+   published.
 
 ### What fires during a rotation
 
-| Check | Fires when | During a rotation | With the window |
-| --- | --- | --- | --- |
-| `collection` | a source is unknown for 3 minutes | the controller's timer stopped, or a tick by hand, for more than 15 minutes ("no recent completed controller tick") | a missing controller tick doesn't count; any other unknown source still fires |
-| `cpu_shortage` | own clients have more idle CPU slots than eligible unsent results for 30 minutes | no refill while the timer is stopped, or while ticks fail | held until the window ends, then fires if still true |
-| `usnm_ocr_no_work` | OCR has a backlog and no new workunit for an hour | the same | held until the window ends |
-| `controller_tick` | two failed ticks in a row | collect stops each tick on a result from a host not yet trusted on the new image | not covered: step 4 is what prevents it |
+| Check              | Fires when                                                                       | During a rotation                                                                                                   | With the window                                                               |
+| ------------------ | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| `collection`       | a source is unknown for 3 minutes                                                | the controller's timer stopped, or a tick by hand, for more than 15 minutes ("no recent completed controller tick") | a missing controller tick doesn't count; any other unknown source still fires |
+| `cpu_shortage`     | own clients have more idle CPU slots than eligible unsent results for 30 minutes | no refill while the timer is stopped, or while ticks fail                                                           | held until the window ends, then fires if still true                          |
+| `usnm_ocr_no_work` | OCR has a backlog and no new workunit for an hour                                | the same                                                                                                            | held until the window ends                                                    |
+| `controller_tick`  | two failed ticks in a row                                                        | collect stops each tick on a result from a host not yet trusted on the new image                                    | not covered: step 4 is what prevents it                                       |
 
 The window lasts at most 240 minutes, and every other check fires as usual inside it. A host
 with only an older version installed no longer makes the eligibility check unavailable

@@ -151,7 +151,10 @@ class UsnmResult {
 class BoincDb {
     static function get() { return new self; }
     function do_query($q) {
-        if (!str_contains($q, "r.server_state=2") || preg_match('/UPDATE|DELETE|INSERT/i', $q)) throw new Exception("unexpected query");
+        // Unfinished: unsent, in progress, awaiting validation, a retry or assimilation.
+        foreach (["w.assimilate_state<>2", "w.need_validate<>0", "w.canonical_resultid=0 AND w.error_mask=0"] as $term)
+            if (!str_contains($q, $term)) throw new Exception("unexpected query");
+        if (preg_match('/UPDATE|DELETE|INSERT/i', $q)) throw new Exception("unexpected query");
         preg_match('/w\.appid=([0-9]+)/', $q, $m);
         $r = new UsnmResult;
         $r->rows = array_values(array_map(fn($row) => (array)$row,
@@ -221,8 +224,8 @@ class AppVersionHold(unittest.TestCase):
         # The 9 Nov case: 90 unsent bundles pinned to 106 when 107 became the newest.
         preview = self.hold("--app-version", "85", "--action", "release")
         self.assertEqual(preview.returncode, 1)
-        self.assertEqual(json.loads(preview.stdout.splitlines()[0])["stranded_unsent"], {"106": 90})
-        self.assertIn("pinned to version 106 would no longer be sent", preview.stderr)
+        self.assertEqual(json.loads(preview.stdout.splitlines()[0])["stranded_workunits"], {"106": 90})
+        self.assertIn("pinned to version 106 (unsent, in progress, awaiting validation, a retry or assimilation) would get no more results", preview.stderr)
         self.assertNotEqual(self.hold("--app-version", "85", "--action", "release", apply=True).returncode, 0)
         self.assertEqual((self.deprecated(85), self.journals()), (1, []))
         # min_version 106 keeps 106 loaded beside 107: the release then strands nothing.
@@ -242,10 +245,19 @@ class AppVersionHold(unittest.TestCase):
         raised = self.hold("--action", "min-version", "--min-version", "107", apply=True)
         self.assertNotEqual(raised.returncode, 0)
         self.assertEqual(self.load()["apps"][0]["min_version"], 106)
-        # Releasing again changes nothing and journals nothing.
+        # Releasing again changes nothing and journals nothing, but tells the feeder again: a
+        # run that stopped between the change and its notice is finished by its retry.
         count = len(self.journals())
-        self.assertEqual(self.hold("--app-version", "85", "--action", "release", apply=True).returncode, 0)
+        (self.project / "reread_db").unlink()
+        again = self.hold("--app-version", "85", "--action", "release", apply=True)
+        self.assertEqual(again.returncode, 0, again.stderr)
+        self.assertIn("the feeder notice was sent again", again.stdout)
         self.assertEqual(len(self.journals()), count)
+        self.assertTrue((self.project / "reread_db").exists())
+        # A preview of the same never notifies.
+        (self.project / "reread_db").unlink()
+        self.assertEqual(self.hold("--app-version", "85", "--action", "release").returncode, 0)
+        self.assertFalse((self.project / "reread_db").exists())
 
     def test_accept_stranded_and_drained_work_let_a_release_through(self):
         done = self.hold("--app-version", "85", "--action", "release", "--accept-stranded", apply=True)
@@ -266,7 +278,10 @@ class AppVersionHold(unittest.TestCase):
         self.save()
         held = self.hold("--app-version", "85", "--action", "hold", apply=True)
         self.assertNotEqual(held.returncode, 0)
-        self.assertIn("pinned to version 107", held.stderr)
+        self.assertIn("unfinished workunits pinned to version 107", held.stderr)
+        self.assertIn("in progress, awaiting validation, a retry or assimilation", held.stderr)
+        self.assertEqual(self.deprecated(85), 0)
+        self.assertEqual(self.hold("--app-version", "85", "--action", "hold", "--accept-stranded", apply=True).returncode, 0)
 
     def test_gold_release_needs_the_running_servers_binding(self):
         self.assertEqual(self.hold("--app-version", "88", "--action", "release", apply=True).returncode, 0)

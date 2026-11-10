@@ -13,7 +13,7 @@ use BoincPlatform;
 // above the app's min_version when it is set, and otherwise only the highest in its platform
 // and plan class (stock sched_shmem.cpp). A workunit pinned with app_version_num gets only a
 // loaded version of that number, so a change that stops a pinned number loading strands its
-// unsent workunits: this refuses that unless --accept-stranded. A usnm_gold release also needs
+// unfinished workunits: this refuses that unless --accept-stranded. A usnm_gold release also needs
 // the running server's gold-engine-platforms.json to bind the version's worker on its platform.
 const APPS = ["usnm_ocr", "usnm_gold"];
 const BINDINGS = "/usr/local/lib/usnm-boinc/gold-engine-platforms.json";
@@ -55,14 +55,18 @@ function loaded($rows, $minimum) {
 }
 
 
-// Unsent workunits of the app pinned to each version number: {number => count}.
-function pinned_unsent($appid) {
+// Unfinished workunits of the app pinned to each version number: {number => count}. Unfinished
+// is anything that may still need a result sent: no canonical result and no error yet (unsent,
+// in progress, awaiting validation or a retry), a validation pending, or not yet assimilated.
+// A result that fails or times out gets a replacement, which needs the pinned version loaded.
+function pinned_unfinished($appid) {
     $db = BoincDb::get();
     $result = $db->do_query("SELECT /*+ MAX_EXECUTION_TIME(10000) */ w.app_version_num AS n,"
-        . " COUNT(DISTINCT w.id) AS c FROM workunit w JOIN result r ON r.workunitid=w.id"
-        . " WHERE w.appid=" . intval($appid) . " AND w.app_version_num>0 AND r.server_state=2"
+        . " COUNT(*) AS c FROM workunit w"
+        . " WHERE w.appid=" . intval($appid) . " AND w.app_version_num>0"
+        . " AND (w.assimilate_state<>2 OR w.need_validate<>0 OR (w.canonical_resultid=0 AND w.error_mask=0))"
         . " GROUP BY w.app_version_num");
-    if (!$result) refuse("unsent workunit read failed");
+    if (!$result) refuse("pinned workunit read failed");
     $out = [];
     while ($row = $result->fetch_assoc()) $out[intval($row["n"])] = intval($row["c"]);
     return $out;
@@ -140,8 +144,8 @@ if ($action === "min-version") {
     }
 }
 // A pinned number loaded now on a platform and plan class that the change stops loading there:
-// its unsent workunits are no longer sent to those hosts (on 9 Nov, every Linux host).
-$unsent = pinned_unsent(intval($app->id));
+// its unfinished workunits get no more results on those hosts (on 9 Nov, every Linux host).
+$unsent = pinned_unfinished(intval($app->id));
 $stranded = [];
 $where = [];
 foreach (loaded($versions, intval($app->min_version)) as $key => $numbers) {
@@ -154,16 +158,26 @@ foreach (loaded($versions, intval($app->min_version)) as $key => $numbers) {
 }
 $platforms = array_map(fn($id) => BoincPlatform::lookup_id($id)->name ?? "platform $id", array_keys($where));
 sort($platforms);
-$record["stranded_unsent"] = (object)$stranded;
+$record["stranded_workunits"] = (object)$stranded;
 $record["stranded_platforms"] = $platforms;
 $record["results_and_workunits_unchanged"] = true;
 echo json_encode($record + ["apply" => isset($args["apply"]), "unchanged" => $unchanged]) . "\n";
 if ($stranded && !isset($args["accept-stranded"])) {
-    refuse("unsent workunits pinned to version " . implode(", ", array_keys($stranded))
-        . " would no longer be sent to " . implode(", ", $platforms) . " hosts. Wait for them to go out, set usnm_ocr's min_version"
+    refuse("unfinished workunits pinned to version " . implode(", ", array_keys($stranded))
+        . " (unsent, in progress, awaiting validation, a retry or assimilation) would get no more results on "
+        . implode(", ", $platforms) . " hosts. Wait for them to finish, set usnm_ocr's min_version"
         . " (--action min-version), or pass --accept-stranded");
 }
-if ($unchanged || !isset($args["apply"])) {
+if (!isset($args["apply"])) {
+    exit(0);
+}
+if ($unchanged) {
+    // Already applied, perhaps by a run that stopped before the notice: no change and no new
+    // journal, but the feeder is told again.
+    if (!touch("$project/reread_db") || !file_exists("$project/reread_db")) {
+        fwrite(STDERR, "Already applied, but the feeder notice (reread_db) failed; touch it by hand\n"); exit(1);
+    }
+    echo "Already applied: $subject; the feeder notice was sent again\n";
     exit(0);
 }
 $journal = $args["journal-dir"];
@@ -179,7 +193,7 @@ if (!$complete) refuse("incomplete journal write; nothing changed");
 if (!$change() || !$check()) {
     fwrite(STDERR, "Change failed or didn't verify; inspect $path\n"); exit(1);
 }
-if (!touch("$project/reread_db")) {
-    fwrite(STDERR, "Changed, but the feeder notice (reread_db) failed; touch it by hand\n"); exit(1);
+if (!touch("$project/reread_db") || !file_exists("$project/reread_db")) {
+    fwrite(STDERR, "Changed, but the feeder notice (reread_db) failed; rerun the same --apply, which sends it again\n"); exit(1);
 }
 echo "Done: $subject, journaled in $path; the feeder rereads the database\n";
