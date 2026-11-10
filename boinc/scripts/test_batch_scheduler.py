@@ -1251,6 +1251,36 @@ class GoldOnboardingTests(unittest.TestCase):
         self.assertEqual(len(self.fake.jobs), 4)  # both other ticks refilled
         self.assertEqual(len(self.fake.steps), 4)  # two gold runs in four ticks
 
+    def test_a_failed_collect_after_a_gold_tick_does_not_keep_gold_deferred(self):
+        # Copilot on #1697: each run reloads the saved state. If the tick after a gold tick
+        # fails on a held result, its cleared marker must be saved, or gold never runs again.
+        saved = []
+
+        def run(at):
+            self.fake.now = NOW + at
+            try:
+                return batch.tick(self.config, self.state, self.fake,
+                                  lambda: saved.append(copy.deepcopy(self.state)), NOW + at,
+                                  server_status=status_xml(qwen_unsent=0, quality_unsent=0,
+                                                           quality_in_progress=0, train_unsent=0))
+            finally:
+                self.state = copy.deepcopy(saved[-1]) if saved else {}
+
+        run(0)
+        run(60)
+        for job in self.fake.jobs.values():
+            job["spool"] = "/project/usnmocr/results/batch1"
+        self.fake.hold = True
+        self.fake.admits = False
+        for at in (60 * 60, 61 * 60):  # gold tick, then the deferring tick; both fail at collect
+            with self.assertRaisesRegex(RuntimeError, "trust"):
+                run(at)
+        self.assertNotIn("gold_tick", self.state)
+        self.assertEqual(len(self.fake.steps), 4)
+        with self.assertRaisesRegex(RuntimeError, "trust"):
+            run(120 * 60)  # gold due again, and it runs
+        self.assertEqual(len(self.fake.steps), 6)
+
     def test_a_gold_run_skipped_at_the_cap_still_refills(self):
         # Only promotion ran (seconds), so the tick refills as usual.
         self.fake.other = 2000

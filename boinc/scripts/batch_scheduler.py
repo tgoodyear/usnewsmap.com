@@ -2292,6 +2292,10 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
     # A gold tick doesn't refill, so the tick after one never runs gold: with a short interval
     # (10 minutes) gold would otherwise be due on every tick and the plan would never refill.
     after_gold = bool(state.pop("gold_tick", False))
+    if after_gold:
+        # Saved now: a collect that fails on a held result would otherwise leave the marker on
+        # disk, and every later run would skip gold, the one thing that can admit the host.
+        persist()
     if not drain and not after_gold and config.get("gold_onboarding"):
         # The same caps and the same retained backlog the refill below counts, from the same
         # status. Without status there is no room for gold units (promotion still runs); the
@@ -2317,6 +2321,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         gold_ran = any(run["steps"].get("gold-onboard") != GOLD_SKIPPED_AT_CAP for run in gold_runs)
         if gold_ran:
             state["gold_tick"] = True
+            persist()
     to_collect = []
     # A gold tick collects one step's worth (STEP_IDS): a slow collect on top of gold (615 s on
     # 10 Nov, with blob-store timeouts) would take it past 15 minutes. The next tick takes the rest.
