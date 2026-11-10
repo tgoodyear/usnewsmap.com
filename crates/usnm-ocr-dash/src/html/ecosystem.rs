@@ -285,6 +285,31 @@ pub(super) fn ecosystem_panel(v: &View) -> String {
             "Serial Set collection has no fresh report.",
             "This source extracts existing PDF text; it does not use the OCR queue.",
         );
+    } else if ssets.iter().all(|s| s.state == "finished") {
+        // The done marker's record of the run that finished, not the last
+        // progress sample, which can be from before its last volumes.
+        let series: u64 = ssets.iter().map(|s| s.status.series_volumes).sum();
+        let already: u64 = ssets.iter().map(|s| s.status.already).sum();
+        let written: u64 = ssets.iter().map(|s| s.status.curated).sum();
+        let empty: u64 = ssets.iter().map(|s| s.status.empty).sum();
+        let pages: u64 = ssets.iter().map(|s| s.status.pages).sum();
+        let finished = ssets.iter().filter_map(|s| s.status.finished_at).max();
+        summary_card(
+            &mut o,
+            "Other source acquisition",
+            &format!("Serial Set collection complete: {} volumes", int(series)),
+            &format!(
+                "{} volumes curated by earlier runs; the last run wrote {} ({} extracted pages) \
+                and left out {} with no PDF. Nothing is left to fetch.{}",
+                int(already),
+                int(written),
+                int(pages),
+                int(empty),
+                finished.map_or_else(String::new, |t| format!(" Finished {}.", time(t)))
+            ),
+            "Totals from the fetch's done marker. GPO adds volumes, so a monthly fetch may \
+             add more. PDF text extraction is separate from OCR and search publication.",
+        );
     } else {
         let done: u64 = ssets.iter().map(|s| s.done).sum();
         let total: u64 = ssets.iter().map(|s| s.status.to_fetch).sum();

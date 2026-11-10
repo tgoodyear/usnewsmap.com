@@ -278,6 +278,40 @@ mod tests {
     }
 
     #[test]
+    fn a_finished_serial_set_reads_as_complete_with_the_done_markers_totals() {
+        let mut v = summary_view();
+        let status = crate::sset::SsetStatus {
+            finished: true,
+            to_fetch: 512,
+            curated: 511,
+            empty: 1,
+            pages: 611_185,
+            series_volumes: 11_919,
+            already: 11_407,
+            finished_at: Some(v.generated_at - chrono::Duration::days(4)),
+            ..Default::default()
+        };
+        v.serial_set.push(crate::view::SsetView {
+            name: "usnm-sset".into(),
+            received: v.generated_at,
+            age_secs: 0,
+            stale: false,
+            state: "finished".into(),
+            done: 512,
+            status,
+        });
+        let html = ecosystem_panel(&v);
+        assert!(html.contains("Serial Set collection complete: 11,919 volumes"));
+        assert!(html.contains("11,407 volumes curated by earlier runs"));
+        assert!(html.contains("the last run wrote 511 (611,185 extracted pages)"));
+        assert!(html.contains("Nothing is left to fetch."));
+        assert!(!html.contains("planned volumes reported"));
+        // Still running: the progress wording.
+        v.serial_set[0].state = "running".into();
+        assert!(ecosystem_panel(&v).contains("512 of 512 planned volumes reported"));
+    }
+
+    #[test]
     fn ecosystem_summaries_do_not_expose_page_or_batch_identifiers() {
         let mut v = summary_view();
         v.fetch.status = Some(crate::fetch::FetchStatus {
