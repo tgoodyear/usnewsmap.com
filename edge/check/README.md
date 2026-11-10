@@ -55,7 +55,7 @@ A task, as loaded: `id` (`<lang>/<set>/<word id>`), `lang`, `set`, then what the
 
 | Field                           | What it is                                                                                                                                          |
 | ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `name`, `title`, `intro`        | Shown on the page.                                                                                                                                  |
+| `name`, `title`, `intro`        | Shown on the page. `intro` covers the source and anything specific to the script; the answer rules every language shares are in `public/index.html`. |
 | `dir`                           | `rtl` for right-to-left scripts (Hebrew letters); the readings are then set right to left.                                                          |
 | `notes`                         | A short note per letter, shown under a reading when that letter is highlighted.                                                                     |
 | `drop_examples`, `min_examples` | Build options for `from_tap_data.py`'s example letter pictures (not served).                                                                        |
