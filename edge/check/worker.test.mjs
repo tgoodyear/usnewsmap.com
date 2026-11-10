@@ -131,3 +131,22 @@ test("an oversized body is refused while streaming, before it is buffered", asyn
   const r = await call("/api/session", { method: "POST", body: "x".repeat(5000) });
   assert.equal(r.status, 413);
 });
+
+test("a language update that keeps examples keeps the stored ones, read in the same statement", async () => {
+  const { DatabaseSync } = await import("node:sqlite");
+  const { KEEP_EXAMPLES_SQL } = await import("./worker.mjs");
+  const { readFileSync } = await import("node:fs");
+  const db = new DatabaseSync(":memory:");
+  db.exec(readFileSync(new URL("./schema.sql", import.meta.url), "utf8"));
+  const put = db.prepare("INSERT INTO languages (code, config) VALUES (?, ?)");
+  put.run("chr", JSON.stringify({ examples: { "Ꭰ": ["chr/new.png"] }, intro: "old", name: "Cherokee" }));
+  put.run("sr", JSON.stringify({ intro: "old", name: "Serbian" }));
+  const upd = db.prepare(KEEP_EXAMPLES_SQL);
+  // The body carries an older copy of the examples: the stored ones win.
+  assert.equal(upd.run(JSON.stringify({ examples: { "Ꭰ": ["chr/old.png"] }, intro: "new", name: "Cherokee" }), "chr").changes, 1);
+  assert.equal(upd.run(JSON.stringify({ intro: "new", name: "Serbian" }), "sr").changes, 1);
+  assert.equal(upd.run(JSON.stringify({ name: "Yiddish" }), "yi").changes, 0);
+  const get = (code) => JSON.parse(db.prepare("SELECT config FROM languages WHERE code = ?").get(code).config);
+  assert.deepEqual(get("chr"), { examples: { "Ꭰ": ["chr/new.png"] }, intro: "new", name: "Cherokee" });
+  assert.deepEqual(get("sr"), { intro: "new", name: "Serbian" });
+});

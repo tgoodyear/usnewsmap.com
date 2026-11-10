@@ -256,6 +256,14 @@ async function api(request, env, url) {
 // Recounts a word's answers and applies settle()'s rule in SQL, so the upsert and the recount run
 // in one D1 batch (one transaction) and a slower request can't write back stale counts.
 // worker.test.mjs checks it against settle() on SQLite.
+// The language's new configuration (?1) with the stored examples, if it has any, put back in.
+export const KEEP_EXAMPLES_SQL = `
+UPDATE languages SET config = CASE
+  WHEN json_type(config, '$.examples') IS NULL THEN json(?1)
+  ELSE json_set(json(?1), '$.examples', json(json_extract(config, '$.examples')))
+END
+WHERE code = ?2`;
+
 export const SETTLE_SQL = `
 WITH c AS (
   SELECT COUNT(*) AS n,
@@ -335,6 +343,13 @@ async function admin(request, env, url) {
   if ((m = p.match(/^\/admin\/languages\/([a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*)$/)) && request.method === "PUT") {
     const cfg = await body(request, 200000);
     if (typeof cfg.name !== "string") throw new HttpError(400, "name required");
+    // ?keep=examples (sync-languages.mjs): replace the rest but keep the stored examples, in one
+    // statement, so pictures load.sh sends meanwhile aren't overwritten with an older copy.
+    if (url.searchParams.get("keep") === "examples") {
+      const r = await env.DB.prepare(KEEP_EXAMPLES_SQL).bind(JSON.stringify(cfg), m[1]).run();
+      if (!r.meta?.changes) throw new HttpError(404, "no such language");
+      return json({ ok: true });
+    }
     await env.DB.prepare("INSERT INTO languages (code, config) VALUES (?, ?) ON CONFLICT (code) DO UPDATE SET config = excluded.config")
       .bind(m[1], JSON.stringify(cfg))
       .run();

@@ -75,7 +75,7 @@ class Dispatch(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual({key for key, value in flags.items() if value == "true"},
                          {"rust", "queue", "ocr_worker"})
-        self.assertEqual(len(flags), 28)
+        self.assertEqual(len(flags), 29)
         self.assertIn("quickwit_suites=[]", result.stdout)
         self.assertIn("images=[]", result.stdout)
         self.assertIn("boinc_qwen_models=[]", result.stdout)
@@ -84,6 +84,7 @@ class Dispatch(unittest.TestCase):
         self.assertEqual(flags["image"], "false")
         self.assertEqual(flags["contrib"], "false")
         self.assertEqual(flags["edge"], "false")
+        self.assertEqual(flags["check"], "false")
         self.assertEqual(flags["provision"], "false")
 
     def test_default_and_explicit_full_dispatch_preserve_bootstrap(self):
@@ -96,6 +97,7 @@ class Dispatch(unittest.TestCase):
                 self.assertEqual(flags["rust"], "true")
                 self.assertEqual(flags["contrib"], "true")
                 self.assertEqual(flags["edge"], "true")
+                self.assertEqual(flags["check"], "true")
                 self.assertEqual(flags["quickwit_parity"], "true")
                 self.assertEqual(flags["quickwit_pipeline"], "true")
                 self.assertIn('quickwit_suites=["parity","pipeline"]', result.stdout)
@@ -1041,11 +1043,23 @@ class BuildInputs(unittest.TestCase):
                 self.assertEqual(self.select(path), {"edge", "code", "infra"})
         self.assertEqual(self.select("edge/fallback-worker/README.md"), {"markdown"})
 
+    def test_the_check_site_runs_its_own_job_and_not_the_fallback_workers(self):
+        # #1620: check.usnewsmap.com's Worker, page, language configurations, scripts and tools.
+        for path in ["edge/check/worker.mjs", "edge/check/public/index.html", "edge/check/languages/sr.json",
+                     "edge/check/wrangler.jsonc", "edge/check/deploy.sh", "edge/check/tools/build_tasks.py"]:
+            with self.subTest(path=path):
+                selected = self.select(path)
+                self.assertIn("check", selected)
+                self.assertNotIn("edge", selected)
+        self.assertEqual(self.select("edge/check/README.md"), {"markdown"})
+        self.assertNotIn("check", self.select("edge/fallback-worker/worker.mjs"))
+
     def test_other_changes_do_not_run_the_fallback_worker_job(self):
         for path in ["crates/usnm-api/src/main.rs", "web/src/main.tsx", "scripts/onprem/serving/install.sh",
                      "scripts/ci/changes.sh", "docs/design/09-operations-security-cost.md"]:
             with self.subTest(path=path):
                 self.assertNotIn("edge", self.select(path))
+                self.assertNotIn("check", self.select(path))
 
     def test_an_edit_inside_the_edge_job_runs_that_job_only(self):
         path = ".github/workflows/ci.yml"
@@ -1336,12 +1350,28 @@ class Wiring(unittest.TestCase):
         self.assertIn("node-version: 24", job)
         self.assertIn("      - run: node --test edge/fallback-worker/*.test.mjs\n", job)
         found = sorted(p.relative_to(ROOT).as_posix() for p in (ROOT / "edge").rglob("*")
-                       if p.is_file() and re.search(r"\.test\.(mjs|js|cjs)$", p.name))
+                       if p.is_file() and re.search(r"\.test\.(mjs|js|cjs)$", p.name)
+                       and not p.relative_to(ROOT).as_posix().startswith("edge/check/"))
         self.assertTrue(found)
         for file in found:
             if re.fullmatch(r"edge/fallback-worker/[^/]+\.test\.mjs", file):
                 continue
             self.assertRegex(job, rf"(?m)^      - run: node --test (\S+ )*{re.escape(file)}( |$)", file)
+
+    def test_the_check_site_job_follows_its_output_and_runs_every_test_file(self):
+        ci = self.workflow("ci.yml")
+        self.assertIn("check: ${{ steps.f.outputs.check }}", job_text(ci, "changes"))
+        job = job_text(ci, "check-site")
+        self.assertIn("    needs: changes\n", job)
+        self.assertIn("    if: needs.changes.outputs.check == 'true'\n", job)
+        self.assertIn("node-version: 24", job)
+        found = sorted(p.relative_to(ROOT).as_posix() for p in (ROOT / "edge/check").rglob("*")
+                       if p.is_file() and re.search(r"\.test\.(mjs|js|cjs)$", p.name))
+        self.assertTrue(found)
+        for file in found:
+            self.assertRegex(job, rf"(?m)^      - run: node --test (\S+ )*{re.escape(file)}( |$)", file)
+        self.assertIn("wrangler@4.154.0 deploy --dry-run", job)
+        self.assertIn("shellcheck -x -S warning edge/check/*.sh", job)
         self.assertIn("python3 -m unittest discover -s edge/check/tools", job)
 
     def test_the_infra_jobs_stack_steps_follow_the_infra_output(self):

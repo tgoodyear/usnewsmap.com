@@ -16,8 +16,10 @@
 # check run in the infra job. Most fixtures/ocr-gold/ files count for none
 # of rust/quickwit/web/image/fixtures. The v1 lock is embedded in the Rust
 # mirror CLI, and it and reviewed selections also build the bridge.
-# edge: the Cloudflare fallback Worker (edge/: JavaScript, its Wrangler config and deploy
-# script), whose job runs its node:test tests and shellchecks the script (ADR-0027, #1098).
+# edge: the Cloudflare fallback Worker (edge/fallback-worker/: JavaScript, its Wrangler config
+# and deploy script), whose job runs its node:test tests and shellchecks the script (ADR-0027, #1098).
+# check: check.usnewsmap.com (edge/check/: its Worker, page, language configurations, scripts and
+# task-building tools; #1620), whose job tests, lints and dry-run builds them.
 # boinc_pages: the BOINC project's own web pages (boinc/project/html/), which
 # only need a PHP syntax check; a change to them alone runs nothing else.
 # contrib: the hosting for the stock BOINC server (boinc/: shell,
@@ -94,7 +96,7 @@ provision=false
 ops=false
 forced=
 all() {
-  printf 'rust=true\nquickwit=true\nquickwit_parity=true\nquickwit_pipeline=true\nquickwit_suites=["parity","pipeline"]\nweb=true\nimage=true\ne2e=true\nfixtures=true\nops=%s\ncode=true\nmarkdown=true\nprovision=%s\nocr_worker=true\nocr_dash=true\nocr_dashboard=true\nboinc_worker=true\nboinc_qwen=true\nboinc_surya=true\nboinc_ndlocr=true\nboinc_native=true\nboinc_ocr_native=true\ninfra=true\npage_language=true\ncontrib=true\nocr_gold=true\nboinc_pages=true\nedge=true\nqueue=true\nimages=["api","ingest","ja-ocr"]\nboinc_qwen_models=["2b","8b"]\nboinc_surya_variants=["cuda","vulkan"]\nboinc_worker_arches=["amd64","arm64"]\n' "$ops" "$provision" >> "$out"
+  printf 'rust=true\nquickwit=true\nquickwit_parity=true\nquickwit_pipeline=true\nquickwit_suites=["parity","pipeline"]\nweb=true\nimage=true\ne2e=true\nfixtures=true\nops=%s\ncode=true\nmarkdown=true\nprovision=%s\nocr_worker=true\nocr_dash=true\nocr_dashboard=true\nboinc_worker=true\nboinc_qwen=true\nboinc_surya=true\nboinc_ndlocr=true\nboinc_native=true\nboinc_ocr_native=true\ninfra=true\npage_language=true\ncontrib=true\nocr_gold=true\nboinc_pages=true\nedge=true\ncheck=true\nqueue=true\nimages=["api","ingest","ja-ocr"]\nboinc_qwen_models=["2b","8b"]\nboinc_surya_variants=["cuda","vulkan"]\nboinc_worker_arches=["amd64","arm64"]\n' "$ops" "$provision" >> "$out"
   echo "running everything: $1"
   exit 0
 }
@@ -106,7 +108,7 @@ if [ "${GITHUB_EVENT_NAME:-}" = workflow_dispatch ]; then
         echo "ocr-worker publication scope requires refs/heads/main" >&2
         exit 1
       }
-      for part in rust quickwit quickwit_parity quickwit_pipeline web image e2e fixtures ops code markdown provision ocr_worker ocr_dash ocr_dashboard boinc_worker boinc_qwen boinc_surya boinc_ndlocr boinc_native boinc_ocr_native infra page_language contrib ocr_gold boinc_pages edge queue; do
+      for part in rust quickwit quickwit_parity quickwit_pipeline web image e2e fixtures ops code markdown provision ocr_worker ocr_dash ocr_dashboard boinc_worker boinc_qwen boinc_surya boinc_ndlocr boinc_native boinc_ocr_native infra page_language contrib ocr_gold boinc_pages edge check queue; do
         case "$part" in rust|queue|ocr_worker) value=true ;; *) value=false ;; esac
         printf '%s=%s\n' "$part" "$value" >> "$out"
       done
@@ -305,7 +307,9 @@ contrib='^(boinc/|web/public/\.well-known/|fixtures/ocr-gold/(selections/|bundle
 ocr_gold='^(scripts/ocr-survey/|fixtures/ocr-gold/|crates/usnm-ocr-survey/tests/golden/)'
 # The fallback Worker: its source, tests, Wrangler config and deploy script (its README counts as
 # documentation, above).
-edge='^edge/'
+edge='^edge/fallback-worker/'
+# check.usnewsmap.com: everything under edge/check/ but its Markdown.
+check='^edge/check/'
 # closure_crates ROOT...: the directories of the workspace crates the roots
 # depend on, directly or not (normal, build and dev dependencies: path
 # dependencies in their manifests), from cargo metadata, so a new dependency
@@ -572,7 +576,7 @@ variants() {
 variants boinc_qwen_models "$selected_qwen" boinc_qwen_8b 2b 8b >> "$out"
 variants boinc_surya_variants "$selected_surya" boinc_surya_vulkan cuda vulkan >> "$out"
 variants boinc_worker_arches "$selected_worker" boinc_worker_arm64 amd64 arm64 both >> "$out"
-for part in page_language contrib ocr_gold edge; do
+for part in page_language contrib ocr_gold edge check; do
   if matches "${!part}" || [[ " $forced " == *" $part "* ]]; then echo "$part=true" >> "$out"; else echo "$part=false" >> "$out"; fi
 done
 echo "ops=$ops" >> "$out"

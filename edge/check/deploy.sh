@@ -8,6 +8,8 @@
 # versions; --force deploys anyway. In GitHub Actions it also does nothing unless DEPLOY_SHA is
 # still main's head (head-of-main.sh), so a slow run can't replace a newer deploy; the newer
 # commit's run compares its own tree and deploys any check change an older run skipped.
+# Every run, deployed or not, also sends languages/*.json to the site's D1 (sync-languages.mjs),
+# so a merged intro or letter note goes live and a sync a failed run missed is retried.
 # Needs az signed in with read access to the vault's secrets, git, node and curl. Secrets
 # (SESSION_KEY, ADMIN_TOKEN, TURNSTILE_SECRET) and D1 migrations are not touched here: see
 # README.md. Like edge/fallback-worker/deploy.sh, it lives with the Worker it deploys.
@@ -26,6 +28,15 @@ ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 cd "$ROOT"
 SITE=https://check.usnewsmap.com
 
+# The admin token goes to sync-languages.mjs in its environment, never on a command line.
+sync_languages() {
+  local admin
+  admin=$(az keyvault secret show --vault-name "$VAULT" -n usnm-prod-check-admin-token --query value -o tsv)
+  [ -n "$admin" ] || die "the check admin token is empty"
+  if [ "${GITHUB_ACTIONS:-false}" = true ]; then echo "::add-mask::$admin"; fi
+  CHECK_ADMIN_TOKEN="$admin" node edge/check/sync-languages.mjs --site "$SITE"
+}
+
 if [ "${GITHUB_ACTIONS:-false}" = true ]; then
   current=$(mktemp)
   GITHUB_SHA="${DEPLOY_SHA:?error: DEPLOY_SHA is required in CI}" GITHUB_OUTPUT="$current" \
@@ -43,6 +54,7 @@ tree=$(git rev-parse HEAD:edge/check)
 live=$(curl --silent --max-time 20 --retry 3 --retry-all-errors "$SITE/build.txt" || true)
 if [ "$live" = "$tree" ] && ! $FORCE; then
   echo "check.usnewsmap.com already runs edge/check $tree"
+  sync_languages
   exit 0
 fi
 echo "deploying edge/check $tree (live: ${live:-unknown})"
@@ -67,3 +79,4 @@ done
 code=$(curl --silent --output /dev/null --write-out '%{http_code}' --max-time 20 "$SITE/api/languages")
 [ "$code" = 200 ] || die "check.usnewsmap.com/api/languages answered $code after the deploy"
 echo "verified check.usnewsmap.com serves edge/check $tree"
+sync_languages
