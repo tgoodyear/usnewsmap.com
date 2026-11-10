@@ -597,6 +597,7 @@ mod tests {
             "controller_tick",
             "collection",
             "feeder_allocation",
+            "controller_cap",
         ]
         .map(|code| {
             let mut check = serde_json::json!({
@@ -612,6 +613,18 @@ mod tests {
                 check["state"] = "pending".into();
                 check["reason"] = "registry_changed".into();
                 check["app_ids"] = serde_json::json!([3, 7]);
+            } else if code == "controller_cap" {
+                check["state"] = "firing".into();
+                check["cap"] = "dispatch_journals".into();
+                check["percent"] = 96.1.into();
+            } else if code == "controller_tick" {
+                // Firing on the hourly count across a good tick: a reason, no repeats.
+                check["state"] = "firing".into();
+                check["reason"] = "handoff_failed".into();
+                check["same_error_in_a_row"] = 0.into();
+            } else if code == "usnm_ocr_no_work" {
+                check["state"] = "unknown".into();
+                check["cause"] = "source:server".into();
             }
             check
         });
@@ -629,6 +642,10 @@ mod tests {
         assert!(html.contains("not guaranteed scheduler dispatch"));
         assert!(html.contains("gpu_memory_packing"));
         assert!(html.contains("registry_changed: app IDs 3, 7"));
+        assert!(html.contains("dispatch_journals at 96.1% (alert at 85%)"));
+        assert!(html.contains("waits on source:server"));
+        assert!(html.contains("handoff_failed"));
+        assert!(!html.contains("0 in a row"));
         std::fs::remove_dir_all(dir).unwrap();
     }
 

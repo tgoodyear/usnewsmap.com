@@ -15,8 +15,15 @@ const CHECKS: [&str; 7] = [
     "controller_tick",
     "collection",
 ];
-/// Opt-in checks (#1462): each appears at most once, and no other code is accepted.
-const OPTIONAL_CHECKS: [&str; 1] = ["feeder_allocation"];
+/// Opt-in checks (#1462, #1698): each appears at most once, and no other code is accepted.
+/// Deploy a dashboard that knows a code before an evaluator config turns it on.
+const OPTIONAL_CHECKS: [&str; 5] = [
+    "feeder_allocation",
+    "controller_cap",
+    "ownership_conflict",
+    "controller_progress",
+    "tick_trend",
+];
 const MAX_BYTES: u64 = 65536;
 const MAX_AGE: i64 = 180;
 pub const MAX_SOURCE_BYTES: usize = 8 * 1024 * 1024;
@@ -101,6 +108,15 @@ pub struct Check {
     pub reason: Option<String>,
     pub seconds: Option<f64>,
     pub app_ids: Option<Vec<u64>>,
+    /// controller_tick (#1698): runs in a row that failed with the same error; sticky at 3.
+    pub same_error_in_a_row: Option<u64>,
+    pub sticky: Option<bool>,
+    /// controller_cap: the cap nearest its limit, as a percentage.
+    pub cap: Option<String>,
+    pub percent: Option<f64>,
+    pub ownership_conflicts: Option<u64>,
+    /// The source an unknown check waits on, such as "source:server".
+    pub cause: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -221,12 +237,17 @@ mod tests {
             "code": "feeder_allocation", "state": "pending", "duration_s": 60,
             "threshold_s": 600, "reason": "registry_changed", "app_ids": [3, 7]
         });
+        let signal = json!({
+            "code": "controller_cap", "state": "firing", "duration_s": 0,
+            "threshold_s": 0, "cap": "dispatch_journals", "percent": 96.1
+        });
         for edit in [
             "missing",
             "duplicate",
             "state",
             "unknown_code",
             "duplicate_optional",
+            "duplicate_signal",
             "optional_replaces_required",
         ] {
             let mut value = document(now.timestamp());
@@ -240,6 +261,7 @@ mod tests {
                     "code": "other", "state": "healthy", "duration_s": 0, "threshold_s": 0
                 })),
                 "duplicate_optional" => checks.extend([optional.clone(), optional.clone()]),
+                "duplicate_signal" => checks.extend([signal.clone(), signal.clone()]),
                 "optional_replaces_required" => checks[0] = optional.clone(),
                 _ => checks[0]["state"] = json!("fine"),
             }
@@ -250,6 +272,20 @@ mod tests {
         let view = parse(&serde_json::to_vec(&value).unwrap(), now).unwrap();
         assert_eq!(view.checks.len(), CHECKS.len() + 1);
         assert_eq!(view.checks[CHECKS.len()].app_ids, Some(vec![3, 7]));
+        // #1698: the controller's signal checks, and a cause on an unknown check.
+        let mut value = document(now.timestamp());
+        let checks = value["checks"].as_array_mut().unwrap();
+        checks[0]["state"] = json!("unknown");
+        checks[0]["cause"] = json!("source:server");
+        checks.push(signal);
+        for code in ["ownership_conflict", "controller_progress", "tick_trend"] {
+            checks
+                .push(json!({"code": code, "state": "healthy", "duration_s": 0, "threshold_s": 0}));
+        }
+        let view = parse(&serde_json::to_vec(&value).unwrap(), now).unwrap();
+        assert_eq!(view.checks.len(), CHECKS.len() + 4);
+        assert_eq!(view.checks[0].cause.as_deref(), Some("source:server"));
+        assert_eq!(view.checks[CHECKS.len()].percent, Some(96.1));
         assert!(read(Some(Path::new("/no-such-feed-file")), now).stale);
     }
 

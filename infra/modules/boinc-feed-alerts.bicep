@@ -19,17 +19,31 @@
 // Two stateful rules, split by Check, so Azure sends one email when a check
 // starts and a resolved one when it clears; the evaluator sends no
 // transitions of its own:
-// - condition: a check firing in the latest event of the last 3 minutes, or
-//   firing in any event of the last 10 (a shortage that recovers between two
-//   evaluations still alerts). A check that is unknown in the latest event
-//   counts only while that event's collection check is firing, which the
-//   evaluator holds for 180 seconds of unknown evaluations: one failed source
-//   read (a single unknown minute) sends no email, a lasting one names every
-//   unknown check. Also Check = delivery_test for a
-//   boinc_feed_delivery_test line in the last 10 minutes
-//   (feed_status.py --delivery-test), the end-to-end notification check.
-//   That line never counts as a health event: it can't change the latest
-//   state or keep the missing rule quiet.
+// - condition: a check firing in any event of the last 10 minutes (a
+//   shortage that recovers between two evaluations still alerts). A check
+//   unknown in an event of the last 10 minutes counts only while that event's
+//   collection check is firing, which the evaluator holds for 180 seconds of
+//   unknown evaluations: one failed source read (a single unknown minute)
+//   sends no email. An unknown check names the source it waits on (#1698):
+//   its row is Check = cause (source:server, source:controller,
+//   source:backlog, source:clients), so a source that goes down is one alert,
+//   not one per dependent check; one with no cause keeps its own code. An
+//   unknown check marked excused (the controller's, paused on purpose in a
+//   rotation window, #1687) stays unknown in the evidence but is no row.
+//   Optional fields (excused, uncovered, cause, reason) are absent on most
+//   checks and on older evaluators' lines; every test on them defaults the
+//   missing value (tostring gives '', coalesce a number), because a null in
+//   a where clause drops the row and would silence a real outage.
+//   collection itself is a row only while the evaluator says something it
+//   counts (uncovered) has no cause row: a model or reset problem, not a
+//   dead source. A firing controller_tick with a failure class is
+//   Check = controller_tick:<reason>, so the email names it; every other
+//   check keeps its plain code as before, which a separate Reason dimension
+//   would not (Azure keys an alert on every dimension's value).
+//   Also Check = delivery_test for a boinc_feed_delivery_test line in the
+//   last 10 minutes (feed_status.py --delivery-test), the end-to-end
+//   notification check. That line never counts as a health event: it can't
+//   change the latest state or keep the missing rule quiet.
 // - missing: no health event observed in the last 5 minutes
 //   (Check = collector_heartbeat): the evaluator stopped, its timer, the
 //   host, the agent or the association is gone, or the cap was reached.
@@ -105,30 +119,28 @@ let FeedLines = union isfuzzy=true
 | extend Observed = unixtime_seconds_todatetime(tolong(Feed.observed_at));
 let FeedEvents = FeedLines
 | where Feed.event == 'boinc_feed_health';
-FeedEvents
-| summarize arg_max(TimeGenerated, *)
 '''
 var queries = [
   {
     name: alertNames.condition
     displayName: 'BOINC feed condition'
     query: '''
-| where Observed between (ago(3m) .. now())
+FeedEvents
+| where Observed between (ago(10m) .. now())
 | mv-apply Held = Feed.checks on (
     where tostring(Held.code) == 'collection'
-    | summarize CollectionFiring = countif(tostring(Held.state) == 'firing') > 0
+    | summarize CollectionFiring = countif(tostring(Held.state) == 'firing') > 0,
+        Uncovered = max(coalesce(toint(Held.uncovered), 1))
 )
 | mv-expand Check = Feed.checks
-| where tostring(Check.state) == 'firing'
-    or (tostring(Check.state) == 'unknown' and CollectionFiring)
-| project Check = tostring(Check.code)
-| union (
-    FeedEvents
-    | where Observed between (ago(10m) .. now())
-    | mv-expand Check = Feed.checks
-    | where Check.state == 'firing'
-    | project Check = tostring(Check.code)
-)
+| extend Code = tostring(Check.code), State = tostring(Check.state),
+    Cause = tostring(Check.cause), Reason = tostring(Check.reason)
+| where (State == 'firing' and (Code != 'collection' or Uncovered > 0))
+    or (State == 'unknown' and CollectionFiring and tostring(Check.excused) != 'true')
+| project Check = case(
+    State == 'unknown' and isnotempty(Cause), Cause,
+    State == 'firing' and Code == 'controller_tick' and isnotempty(Reason), strcat(Code, ':', Reason),
+    Code)
 | distinct Check
 | union (
     FeedLines
@@ -143,6 +155,8 @@ var queries = [
     name: alertNames.missing
     displayName: 'BOINC feed missing'
     query: '''
+FeedEvents
+| summarize arg_max(TimeGenerated, *)
 | summarize Fresh = countif(Observed between (ago(5m) .. now()))
 | where Fresh == 0
 | project Check = 'collector_heartbeat'

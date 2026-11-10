@@ -165,7 +165,41 @@ fn feed_panel(v: &crate::feed::FeedView, o: &mut String) {
                     format!("{eligible} modeled candidates / {idle} resource-eligible own slots")
                 })
                 .or_else(|| check.reason.clone()),
-            "controller_tick" => check.seconds.map(|n| format!("{n:.0}s (limit 900s)")),
+            "controller_tick" => {
+                let seconds = check.seconds.map(|n| format!("{n:.0}s (limit 900s)"));
+                // A reason shows whenever there is one: the hourly rule keeps the check firing
+                // across a good tick, when the in-a-row count is 0 (#1698).
+                let reason = check
+                    .reason
+                    .as_ref()
+                    .map(|reason| match check.same_error_in_a_row {
+                        Some(repeats) if repeats > 0 => {
+                            let sticky = if check.sticky == Some(true) {
+                                ", sticky"
+                            } else {
+                                ""
+                            };
+                            format!("{reason} ({repeats} in a row{sticky})")
+                        }
+                        _ => reason.clone(),
+                    });
+                match (seconds, reason) {
+                    (Some(seconds), Some(reason)) => Some(format!("{seconds}; {reason}")),
+                    (seconds, reason) => seconds.or(reason),
+                }
+            }
+            "controller_cap" => check
+                .cap
+                .as_ref()
+                .zip(check.percent)
+                .map(|(cap, percent)| format!("{cap} at {percent:.1}% (alert at 85%)")),
+            "ownership_conflict" => check
+                .ownership_conflicts
+                .map(|n| format!("{n} claimed pages passed over")),
+            "controller_progress" => check.backlog.map(|n| format!("{n} pending")),
+            "tick_trend" => check
+                .seconds
+                .map(|n| format!("p90 {n:.0}s (warn over 630s)")),
             "usnm_ocr_no_work" | "usnm_qwen_no_work" => {
                 check.backlog.map(|n| format!("{n} backlogged"))
             }
@@ -179,6 +213,14 @@ fn feed_panel(v: &crate::feed::FeedView, o: &mut String) {
                 }
             }),
             _ => None,
+        };
+        // An unknown check names the source it waits on (#1698).
+        let detail = match (&check.state, &check.cause) {
+            (State::Unknown, Some(cause)) => Some(match detail {
+                Some(detail) => format!("{detail}; waits on {cause}"),
+                None => format!("waits on {cause}"),
+            }),
+            _ => detail,
         };
         let _ = write!(
             o,

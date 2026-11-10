@@ -26,6 +26,13 @@ ROOT = Path(__file__).resolve().parents[2]
 NOW = 1_800_000_000
 
 
+def core(tick):
+    """A controller tick without its failure reason and signals (#1698), which have their own tests."""
+    return {key: value for key, value in tick.items()
+            if key not in (*C.SIGNAL_FIELDS, "reason", "same_error_in_a_row", "failed_last_hour",
+                          "last_hour_reason")}
+
+
 @contextlib.contextmanager
 def fixture():
     root = ROOT / (".feed-fixture-" + uuid.uuid4().hex)
@@ -695,7 +702,8 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(self.observe(events, native=[(NOW - 10, entry)])["last_failure_at"], 0)
 
     def test_running_tick_uses_systemd_clock_despite_prior_suspend(self):
-        for elapsed, expected in ((10, "healthy"), (900, "healthy"), (901, "firing")):
+        # Past the 15-minute limit a running tick waits; past the 30-minute hang limit it fires (#1698).
+        for elapsed, expected in ((10, "healthy"), (901, "healthy"), (1800, "healthy"), (1801, "firing")):
             with self.subTest(elapsed=elapsed), \
                     patch.object(C.time, "CLOCK_BOOTTIME", -1, create=True), \
                     patch.object(C.time, "clock_gettime", side_effect=lambda clock:
@@ -711,13 +719,13 @@ class ControllerTests(unittest.TestCase):
         events = [(NOW - 10, {"event": "boinc_batch_failure", "schema_version": 1,
                              "at": NOW - 10, "error": "fixture early failure"})]
         failed = self.observe(events, SubState="failed", Result="exit-code")
-        self.assertEqual(failed, {"ok": False, "seconds": 20, "finished_at": NOW, "last_failure_at": NOW - 10,
+        self.assertEqual(core(failed), {"ok": False, "seconds": 20, "finished_at": NOW, "last_failure_at": NOW - 10,
                                   "controller_failure_at": NOW - 10, "maintenance_failure_at": 0,
                                   "failed_in_a_row": 1})
         events.append((NOW - 5, {"event": "boinc_batch_tick", "schema_version": 1,
                                 "at": NOW - 5, "timings": {"tick_seconds": 12}}))
         recovered = self.observe(events)
-        self.assertEqual(recovered, {"ok": True, "seconds": 12, "finished_at": NOW - 5, "last_failure_at": NOW - 10,
+        self.assertEqual(core(recovered), {"ok": True, "seconds": 12, "finished_at": NOW - 5, "last_failure_at": NOW - 10,
                                      "controller_failure_at": NOW - 10, "maintenance_failure_at": 0,
                                      "failed_in_a_row": 0})
         # One failed tick that the next recovers doesn't fire (two in a row do: test_feed_status).
@@ -754,6 +762,186 @@ class ControllerTests(unittest.TestCase):
                         self.assertEqual(checked["state"], expected)
                         previous = json.loads(json.dumps(previous))
                     self.assertEqual(tick["failed_in_a_row"], int(seconds > 900 and running))
+
+
+class FailureReasonTests(unittest.TestCase):
+    """#1698: the newest failure's class and its repeats, never its text."""
+
+    def observe(self, events):
+        return ControllerTests.observe(self, events)
+
+    def failure(self, error):
+        return {"event": "boinc_batch_failure", "schema_version": 1, "error": error,
+                "timings": {"tick_seconds": 30}}
+
+    def test_scheduler_errors_map_to_a_fixed_class(self):
+        for error, expected in (
+                ("dispatch inventory limit; reconcile drained journals", "cap_reached"),
+                ("too many claimed pages; archive drained history first", "cap_reached"),
+                ("page 1234 is already allocated to another plan (queue-feed-10); reconcile the allocation "
+                 "before export (archive_history.py reconcile, #1685)", "ownership_conflict"),
+                ("claimed a page already in this plan with a different message", "ownership_conflict"),
+                ("hand-off storage failed; inspect the execution privately before retrying", "handoff_failed"),
+                ("hand-off storage read failed: TimeoutError", "handoff_failed"),
+                ("bridge/submit failed; inspect the execution privately before retrying", "step_failed"),
+                ("handoff/collect failed; inspect the execution privately before retrying", "step_failed"),
+                ("server status fetch failed; inspect the endpoint privately", "status_fetch"),
+                ("BlockingIOError", "lock_busy"),
+                ("stale/concurrent inventory; another controller may be active", "lock_busy"),
+                ("uncertain server submission blocks fresh allocation", "uncertain_submission"),
+                ("terminal BOINC failure: p1 (job abc); dead-letter it with --dead-letter-failed (#1154) "
+                 "or reconcile it by hand", "terminal_failure"),
+                ("a result is held for review", "held_result"),
+                ("immutable allocation changed; drain/reconcile before an operator migration", "other"),
+                (None, "other"), (42, "other")):
+            with self.subTest(error=error):
+                self.assertEqual(C.failure_reason(error), expected)
+                self.assertIn(expected, C.FAILURE_REASONS)
+
+    def test_reason_and_same_error_in_a_row_without_the_text(self):
+        cap = "dispatch inventory limit; reconcile drained journals"
+        ok = {"event": "boinc_batch_tick", "timings": {"tick_seconds": 30}}
+        tick = self.observe([(NOW - 1200, ok), (NOW - 900, self.failure(cap)), (NOW - 600, self.failure(cap)),
+                             (NOW - 300, self.failure(cap))])
+        self.assertEqual((tick["failed_in_a_row"], tick["reason"], tick["same_error_in_a_row"]),
+                         (3, "cap_reached", 3))
+        self.assertNotIn("reconcile", json.dumps(tick))
+        document, _ = F.evaluate({"tick": tick}, {}, NOW, 1000, "boot", "cfg")
+        checked = next(c for c in document["checks"] if c["code"] == "controller_tick")
+        self.assertEqual((checked["state"], checked["reason"], checked["sticky"]), ("firing", "cap_reached", True))
+        self.assertNotIn("reconcile", json.dumps(document))
+        # The same error naming another page still repeats; another error stops the count.
+        conflict = "page %d is already allocated to another plan (queue-feed-10); reconcile"
+        tick = self.observe([(NOW - 900, self.failure(cap)), (NOW - 600, self.failure(conflict % 1)),
+                             (NOW - 300, self.failure(conflict % 22))])
+        self.assertEqual((tick["failed_in_a_row"], tick["reason"], tick["same_error_in_a_row"]),
+                         (3, "ownership_conflict", 2))
+        self.assertNotIn("queue-feed-10", json.dumps(tick))
+        # A slow run has no error and doesn't break the count of the failures around it.
+        slow = {"event": "boinc_batch_tick", "timings": {"tick_seconds": 901}}
+        tick = self.observe([(NOW - 900, self.failure(cap)), (NOW - 600, slow), (NOW - 300, self.failure(cap))])
+        self.assertEqual((tick["failed_in_a_row"], tick["same_error_in_a_row"]), (3, 2))
+        # A good run clears both.
+        tick = self.observe([(NOW - 600, self.failure(cap)), (NOW - 300, ok)])
+        self.assertEqual((tick["failed_in_a_row"], tick["reason"], tick["same_error_in_a_row"]), (0, None, 0))
+
+    def test_fresh_accepts_only_a_listed_class(self):
+        tick = {"ok": False, "seconds": 1, "finished_at": NOW, "failed_in_a_row": 1, "maintenance_failure_at": 0}
+        document = {"schema_version": 1, "source": "controller", "observed_at": NOW, "tick": tick}
+        C.fresh(document, NOW, "controller")  # a collector from before #1698
+        for reason in C.FAILURE_REASONS + (None,):
+            C.fresh(document | {"tick": tick | {"reason": reason, "same_error_in_a_row": 1}}, NOW, "controller")
+        for bad in ({"reason": "dispatch inventory limit; reconcile drained journals", "same_error_in_a_row": 1},
+                    {"reason": "cap_reached"}, {"reason": "cap_reached", "same_error_in_a_row": -1}):
+            with self.subTest(bad=bad), self.assertRaises((ValueError, KeyError, TypeError)):
+                C.fresh(document | {"tick": tick | bad}, NOW, "controller")
+
+
+class SignalTests(unittest.TestCase):
+    """#1698: cap warnings and the tick line's own fields, from the controller's journal."""
+
+    def observe(self, events):
+        return ControllerTests.observe(self, events)
+
+    def tick_line(self, plan, draining=False, published=0, conflicts=0, pending=10, seconds=30):
+        return {"event": "boinc_batch_tick", "schema_version": 1, "plan": plan, "draining": draining,
+                "newly_published": published, "ownership_conflicts": conflicts, "observed_pending": pending,
+                "collection_backlog": 0, "timings": {"tick_seconds": seconds}}
+
+    def warning(self, cap, count, limit=10000):
+        return {"event": "boinc_batch_cap_warning", "schema_version": 1, "cap": cap, "count": count,
+                "limit": limit, "message": f"{cap} at {count} of {limit}"}
+
+    def test_caps_keep_the_largest_share_in_the_window(self):
+        tick = self.observe([(NOW - 900, self.warning("dispatch_journals", 9608)),
+                             (NOW - 600, self.warning("dispatch_journals", 9400)),
+                             (NOW - 600, self.warning("bridge_journals", 9480)),
+                             (NOW - 500, self.warning("bad cap", 9999)),
+                             (NOW - 300, self.tick_line("queue-feed-12"))])
+        self.assertEqual(tick["caps"], {"dispatch_journals": {"count": 9608, "limit": 10000},
+                                        "bridge_journals": {"count": 9480, "limit": 10000}})
+        # A warning is not a tick: it neither ends a run nor counts as one.
+        self.assertEqual((tick["ok"], tick["failed_in_a_row"]), (True, 0))
+
+    def test_live_plans_report_conflicts_progress_and_the_tick_trend(self):
+        lines = [(NOW - 7000, self.tick_line("queue-feed-12", published=4)),
+                 (NOW - 3000, self.tick_line("queue-feed-12", conflicts=2)),
+                 (NOW - 3000, self.tick_line("queue-feed-11", draining=True, conflicts=9, pending=5400, published=1)),
+                 (NOW - 600, self.tick_line("queue-feed-12", conflicts=1, pending=7, seconds=700)),
+                 (NOW - 300, self.tick_line("queue-feed-11", draining=True, conflicts=9, pending=5400))]
+        tick = self.observe(lines)
+        # The latest live tick: a draining plan's conflicts and backlog aren't the live plan's.
+        self.assertEqual(tick["ownership_conflicts"], 1)
+        self.assertEqual(tick["progress"], {"published_at": NOW - 7000, "first_tick_at": NOW - 7000, "pending": 7})
+        # Ticks of the last hour only, every plan's.
+        self.assertEqual(tick["tick_p90_s"], 700)
+        document = {"schema_version": 1, "source": "controller", "observed_at": NOW, "tick": tick}
+        C.fresh(document, NOW, "controller")
+        facts = {"tick": tick, "controller_signals": True}
+        checks = {c["code"]: c for c in F.evaluate(facts, {}, NOW, 1000, "boot", "cfg")[0]["checks"]}
+        self.assertEqual(checks["ownership_conflict"]["state"], "firing")
+        self.assertEqual(checks["controller_progress"]["state"], "healthy")  # published 7,000 s ago
+        self.assertEqual(checks["tick_trend"]["state"], "pending")
+        checks = {c["code"]: c for c in F.evaluate(facts, {}, NOW + 200, 1000, "boot", "cfg")[0]["checks"]}
+        self.assertEqual(checks["controller_progress"]["state"], "firing")
+        # A scheduler from before #1685 reports no conflicts: not reported, never zero.
+        old = [(at, {k: v for k, v in line.items() if k != "ownership_conflicts"}) for at, line in lines]
+        tick = self.observe(old)
+        self.assertEqual((tick["ownership_conflicts"], tick["progress"]["pending"]), (None, None))
+
+    def test_failures_alternating_with_good_ticks_count_in_the_trend_and_fire(self):
+        # Copilot on #1699: an 800 s failure between 30 s successes never made a streak, and the
+        # p90 of the successes alone was 30 s. Every tick's duration counts, and so do failures
+        # within the hour.
+        lines = []
+        for i in range(12):
+            at = NOW - 3300 + 300 * i
+            if i % 2:
+                lines.append((at, self.tick_line("queue-feed-12")))
+            else:
+                lines.append((at, {"event": "boinc_batch_failure", "schema_version": 1, "error": "x",
+                                   "timings": {"tick_seconds": 800}}))
+        tick = self.observe(lines)
+        self.assertEqual((tick["failed_in_a_row"], tick["failed_last_hour"], tick["tick_p90_s"]), (0, 6, 800))
+        self.assertEqual((tick["reason"], tick["last_hour_reason"]), (None, "other"))
+        facts = {"tick": tick, "controller_signals": True}
+        checks = {c["code"]: c for c in F.evaluate(facts, {}, NOW, 1000, "boot", "cfg")[0]["checks"]}
+        self.assertEqual((checks["controller_tick"]["state"], checks["controller_tick"]["failed_last_hour"]),
+                         ("firing", 6))
+        self.assertEqual(checks["tick_trend"]["state"], "pending")
+        # Three in the hour is still below the threshold.
+        tick = self.observe(lines[6:])
+        self.assertEqual(tick["failed_last_hour"], 3)
+        checks = {c["code"]: c for c in F.evaluate({"tick": tick}, {}, NOW, 1000, "boot", "cfg")[0]["checks"]}
+        self.assertEqual(checks["controller_tick"]["state"], "healthy")
+
+    def test_fresh_rejects_malformed_signals(self):
+        tick = self.observe([(NOW - 300, self.tick_line("queue-feed-12")),
+                             (NOW - 200, self.warning("claims", 8100))])
+        document = {"schema_version": 1, "source": "controller", "observed_at": NOW, "tick": tick}
+        C.fresh(deepcopy(document), NOW, "controller")
+        for field, bad in (("caps", {"claims": {"count": 1, "limit": 0}}), ("caps", {"a b": {"count": 1, "limit": 2}}),
+                           ("caps", {"claims": {"count": 1}}), ("caps", []),
+                           ("ownership_conflicts", -1), ("ownership_conflicts", "1"),
+                           ("progress", {"published_at": None}),
+                           ("progress", {"published_at": NOW + 99, "first_tick_at": None, "pending": 0}),
+                           ("tick_p90_s", float("nan")), ("tick_p90_s", -1)):
+            with self.subTest(field=field, bad=bad), self.assertRaises((ValueError, KeyError, TypeError)):
+                C.fresh(deepcopy(document) | {"tick": tick | {field: bad}}, NOW, "controller")
+        partial = {k: v for k, v in tick.items() if k != "tick_p90_s"}
+        with self.assertRaises(KeyError):
+            C.fresh(document | {"tick": partial}, NOW, "controller")
+
+    def test_the_signal_checks_are_opt_in_in_the_config(self):
+        docs = CollectionTests.documents(self)
+        config = {"server": "/server", "controller": "/controller"}
+        with patch.object(C, "read_source", side_effect=lambda path: deepcopy(docs[path])), \
+                patch.object(C.time, "time", return_value=NOW):
+            self.assertIs(C.collect(config)["controller_signals"], False)
+            self.assertIs(C.collect(config | {"controller_signals": True})["controller_signals"], True)
+            for value in ("yes", 1, None):
+                with self.subTest(value=value), self.assertRaises(ValueError):
+                    C.collect(config | {"controller_signals": value})
 
 
 class MaintenanceTests(unittest.TestCase):
@@ -815,7 +1003,7 @@ class MaintenanceTests(unittest.TestCase):
             with self.subTest(archive=archive):
                 if paused:
                     tick, _ = self.observe(old, archive=archive)
-                    self.assertEqual(tick, {"ok": None, "seconds": 0, "finished_at": NOW, "last_failure_at": 0,
+                    self.assertEqual(core(tick), {"ok": None, "seconds": 0, "finished_at": NOW, "last_failure_at": 0,
                                             "controller_failure_at": 0, "maintenance_failure_at": 0,
                                             "failed_in_a_row": 0, "paused_by": self.ARCHIVE})
                     document, _ = F.evaluate({"tick": tick}, {}, NOW, 1000, "boot", "cfg")
