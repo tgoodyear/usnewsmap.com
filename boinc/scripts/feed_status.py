@@ -21,6 +21,9 @@ TICK_FAILURES_TO_FIRE = 2
 # past TICK_LIMIT_S only waits: an hourly 20-minute tick fired every hour. A tick that finishes
 # over TICK_LIMIT_S counts towards the two in a row, as a failure does.
 TICK_HANG_S = 2 * TICK_LIMIT_S
+# Failed or slow runs within the last hour that fire controller_tick even with good runs between
+# them (#1698): a third of a five-minute timer's runs. An hourly slow tick is one.
+TICK_FAILURES_PER_HOUR = 4
 # Runs in a row that failed with the same error: a sticky failure, which the next tick won't clear.
 STICKY_FAILURES = 3
 # The controller's own signals (#1698), opt-in with "controller_signals": true in the config.
@@ -284,11 +287,13 @@ def evaluate(facts, previous, now, monotonic, boot_id, config_id, rotation=None)
         new_maintenance = tick["maintenance_failure_at"] > maintenance_at
         maintenance_at = max(maintenance_at, tick["maintenance_failure_at"])
         tick_condition = (streak >= TICK_FAILURES_TO_FIRE or new_maintenance
+                          or tick.get("failed_last_hour", 0) >= TICK_FAILURES_PER_HOUR
                           or (tick["ok"] is None and tick["seconds"] > TICK_HANG_S))
     # The newest failure's class (feed_collect.FAILURE_REASONS), never its text (#1698).
     repeats = None if tick is None else tick.get("same_error_in_a_row")
     check("controller_tick", tick_condition,
           seconds=None if tick is None else tick["seconds"], failed_in_a_row=streak,
+          failed_last_hour=None if tick is None else tick.get("failed_last_hour"),
           reason=None if tick is None else tick.get("reason"), same_error_in_a_row=repeats,
           sticky=repeats is not None and repeats >= STICKY_FAILURES)
     if facts.get("controller_signals"):

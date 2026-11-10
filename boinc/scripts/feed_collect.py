@@ -286,6 +286,8 @@ def fresh(document, now, kind):
             # The evaluator reads both together.
             natural(tick["failed_in_a_row"])
             natural(tick.get("maintenance_failure_at"))
+        if "failed_last_hour" in tick:
+            natural(tick["failed_last_hour"])
         if "reason" in tick or "same_error_in_a_row" in tick:
             # Read together (#1698): a class from the fixed list, never error text.
             if tick.get("reason") is not None and tick.get("reason") not in FAILURE_REASONS:
@@ -1041,8 +1043,9 @@ def controller(unit, maintenance=()):
             controller_failure = max(controller_failure, finished)
         if ok:  # a failure's line was recorded above
             record(finished, seconds > TICK_LIMIT_S, invocation)
-            if time.time() - finished <= TICK_TREND_WINDOW_S:
-                recent.append(seconds)
+        # Every tick's duration, failed ones too: a failure that runs long is part of the trend.
+        if time.time() - finished <= TICK_TREND_WINDOW_S:
+            recent.append(seconds)
         latest = {"ok": ok, "seconds": seconds, "finished_at": finished}
     # Failed or slow runs since the last good one, newest first: feed_status fires on two. The
     # newest error among them names the reason, and the runs that failed with that same error
@@ -1060,10 +1063,14 @@ def controller(unit, maintenance=()):
             first, reason = error, failure_reason(errors[key])
         counting = error == first
         repeats += counting
+    # Failed or slow runs in the last hour, good runs between them or not: failures that alternate
+    # with good ticks never make a streak (#1698).
+    failed_last_hour = sum(failed and time.time() - at <= TICK_TREND_WINDOW_S for at, failed in runs.values())
     live = [plan for plan in plans.values() if not plan["draining"]]
     failures = {"last_failure_at": max(controller_failure, maintenance_failure),
                 "controller_failure_at": controller_failure, "maintenance_failure_at": maintenance_failure,
-                "failed_in_a_row": streak, "reason": reason, "same_error_in_a_row": repeats,
+                "failed_in_a_row": streak, "failed_last_hour": failed_last_hour,
+                "reason": reason, "same_error_in_a_row": repeats,
                 "caps": caps,
                 # None: no tick line in the window reports it (a scheduler from before #1685).
                 "ownership_conflicts": max((p["conflicts"] for p in live), default=0) if reported else None,

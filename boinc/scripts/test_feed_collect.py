@@ -29,7 +29,7 @@ NOW = 1_800_000_000
 def core(tick):
     """A controller tick without its failure reason and signals (#1698), which have their own tests."""
     return {key: value for key, value in tick.items()
-            if key not in (*C.SIGNAL_FIELDS, "reason", "same_error_in_a_row")}
+            if key not in (*C.SIGNAL_FIELDS, "reason", "same_error_in_a_row", "failed_last_hour")}
 
 
 @contextlib.contextmanager
@@ -887,6 +887,31 @@ class SignalTests(unittest.TestCase):
         old = [(at, {k: v for k, v in line.items() if k != "ownership_conflicts"}) for at, line in lines]
         tick = self.observe(old)
         self.assertEqual((tick["ownership_conflicts"], tick["progress"]["pending"]), (None, None))
+
+    def test_failures_alternating_with_good_ticks_count_in_the_trend_and_fire(self):
+        # Copilot on #1699: an 800 s failure between 30 s successes never made a streak, and the
+        # p90 of the successes alone was 30 s. Every tick's duration counts, and so do failures
+        # within the hour.
+        lines = []
+        for i in range(12):
+            at = NOW - 3300 + 300 * i
+            if i % 2:
+                lines.append((at, self.tick_line("queue-feed-12")))
+            else:
+                lines.append((at, {"event": "boinc_batch_failure", "schema_version": 1, "error": "x",
+                                   "timings": {"tick_seconds": 800}}))
+        tick = self.observe(lines)
+        self.assertEqual((tick["failed_in_a_row"], tick["failed_last_hour"], tick["tick_p90_s"]), (0, 6, 800))
+        facts = {"tick": tick, "controller_signals": True}
+        checks = {c["code"]: c for c in F.evaluate(facts, {}, NOW, 1000, "boot", "cfg")[0]["checks"]}
+        self.assertEqual((checks["controller_tick"]["state"], checks["controller_tick"]["failed_last_hour"]),
+                         ("firing", 6))
+        self.assertEqual(checks["tick_trend"]["state"], "pending")
+        # Three in the hour is still below the threshold.
+        tick = self.observe(lines[6:])
+        self.assertEqual(tick["failed_last_hour"], 3)
+        checks = {c["code"]: c for c in F.evaluate({"tick": tick}, {}, NOW, 1000, "boot", "cfg")[0]["checks"]}
+        self.assertEqual(checks["controller_tick"]["state"], "healthy")
 
     def test_fresh_rejects_malformed_signals(self):
         tick = self.observe([(NOW - 300, self.tick_line("queue-feed-12")),
