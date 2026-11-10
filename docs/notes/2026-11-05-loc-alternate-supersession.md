@@ -7,6 +7,8 @@ an explicit, independently pinned eligibility change that may suppress
 **future** bulk recognition of an exact page whose selected third-party
 reading still verifies. It is off by default and selects nothing on its own.
 
+**Outcome:** merged in PR #1571 on 5 November 2026, off by default (`USNM_OCR_SEED_SUPERSESSION` empty). The operator steps are in [on-prem OCR](../operations/onprem-ocr.md).
+
 ## Contract
 
 A supersession list is JSON of at most 256 KiB and 256 entries, one per page:

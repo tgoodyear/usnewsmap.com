@@ -6,6 +6,8 @@ This supersedes the unscored accuracy discussion in the
 It is the original issue's explicitly permitted **no-change experiment outcome**,
 not a claim that the positive rollout gates passed.
 
+**Outcome:** #736 closed on 27 October 2026 with no change. `usnm_iris` was retired on 2 November 2026, and Intel GPUs now run `usnm_qwen`'s `intel_vulkan_8b` class ([Intel and NVIDIA GPUs](../boinc/apps/intel-gpu.md)). `iris-campaign.py` is `boinc/scripts/iris-campaign.py`.
+
 ## What was rechecked
 
 Downloaded and checksum-verified the existing

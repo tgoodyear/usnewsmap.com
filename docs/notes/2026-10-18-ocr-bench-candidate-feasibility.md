@@ -1,6 +1,8 @@
-# OCR candidate feasibility notes — 2026-10-18
+# OCR candidate feasibility, 18 October 2026
 
 This is the independent feasibility portion of [#812](https://github.com/tgoodyear/usnewsmap.com/issues/812). It does not implement or reproduce #810's refreshed-LoC paired protocol. The adapter from #810's merged PR [#816](https://github.com/tgoodyear/usnewsmap.com/pull/816) is available, but #810 reports no verified scan/reference overlap yet, so no paired refreshed-LoC score is possible. No paid resources were used; the bounded CHURRO trial used the already-owned pve-big GPU under #794 coordination.
+
+**Outcome:** #812 was still open on 10 November 2026, and the paired refreshed-LoC comparison still waits on #810. The Surya probe section is history: `usnm_surya` was retired on 2 November 2026 ([Surya 2](../boinc/apps/surya.md#retirement-2-november-2026)), and its benchmark numbers are in #1428.
 
 ## Inputs and machine
 

@@ -4,6 +4,8 @@ Measured 27 October 2026 for [#809](https://github.com/tgoodyear/usnewsmap.com/i
 This supersedes the earlier [guide-only refresh](2026-10-18-loc-refreshed-baselines.md#coverage-refresh-27-october-2026).
 It is a bounded inventory, not an accuracy comparison or a queue-policy change.
 
+**Outcome:** #809 closed on 27 October 2026 (PR #1279). The [audit binding](2026-11-05-loc-audit-binding.md) ties this inventory to crop scoring; #810 and #811 were still open on 10 November 2026.
+
 ## What was actually inspected
 
 The official guide snapshot still reports **111 batches / 491,472 pages**, latest

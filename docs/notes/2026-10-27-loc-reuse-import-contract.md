@@ -5,6 +5,8 @@ non-production design and safety fixtures do **not** depend on finding a
 production-eligible replacement. Deferring all code work until #810 produces
 one was incorrect.
 
+**Outcome:** later steps followed in [staging](2026-10-28-loc-alternate-staging.md), [decision previews](2026-10-28-loc-alternate-decisions.md), [supersession](2026-11-05-loc-alternate-supersession.md) and [accounting](2026-11-05-loc-supersession-accounting.md), the last merged on 5 November 2026. All are off by default, and #811 was still open on 10 November 2026.
+
 ## What runs now
 
 The `loc_reuse_fixture_` tests in

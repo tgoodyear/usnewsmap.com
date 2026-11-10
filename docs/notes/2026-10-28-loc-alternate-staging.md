@@ -5,6 +5,8 @@ and the [import contract](2026-10-27-loc-reuse-import-contract.md).
 The worker allowlist is unchanged. LoC output is not relabeled as a known local
 engine, and staging is not selection, queue suppression or publication.
 
+**Outcome:** merged in PR #1286 on 27 October 2026 and followed by [decision previews](2026-10-28-loc-alternate-decisions.md).
+
 ## Executable path
 
 `usnm-ingest ocr-alternate-stage --input DIRECTORY` stages exactly one whole-page
