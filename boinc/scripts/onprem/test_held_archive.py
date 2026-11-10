@@ -202,6 +202,13 @@ class HeldArchive(unittest.TestCase):
                     f"--check-state-dir {root / 'state.queue-feed-11'}")
         self.assertTrue(tool and all(expected in line for line in tool), tool)
         self.assertFalse(any("state.empty" in line for line in tool))
+        # A trailing slash on --state-dir still finds the siblings (Copilot on #1714).
+        (root / "log").write_text("")
+        (root / "left").write_text("1")
+        done = self.run_archive("--state-dir", f"{root / 'state'}//")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        tool = [line for line in self.log() if line.startswith("tool dispatch")]
+        self.assertTrue(tool and all(expected in line for line in tool), tool)
         (root / "log").write_text("")
         (root / "left").write_text("1")
         done = self.run_archive("--check-state-dir", str(root / "state.queue-feed-11"))

@@ -64,6 +64,8 @@ while [ $# -gt 0 ]; do
     *) echo "error: unknown argument: $1" >&2; usage ;;
   esac
 done
+# Without trailing slashes, so "$STATE_DIR".* names siblings, not entries inside it.
+while [ "${STATE_DIR%/}" != "$STATE_DIR" ] && [ "$STATE_DIR" != / ]; do STATE_DIR=${STATE_DIR%/}; done
 if [ ${#CHECK_DIRS[@]} -eq 0 ]; then
   for dir in "$STATE_DIR".*; do
     [ -f "$dir/state.json" ] && CHECK_DIRS+=("$dir")
