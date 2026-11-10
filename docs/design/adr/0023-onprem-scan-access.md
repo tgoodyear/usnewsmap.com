@@ -1,6 +1,6 @@
 # ADR-0023: On-prem scans reach the BOINC bridge by outbound-only staging into Azure
 
-- **Status:** Accepted as direction (2026-10-19, maintainer); design only, nothing implemented. The gateway, Entra app registration and tunnel are unselected alternatives. See [design 16](../../notes/2026-10-19-tank-replacement-and-scan-access.md#166-scan-access-for-the-boinc-bridge-outbound-only-staging-chosen-direction)
+- **Status:** Accepted as direction (2026-10-19, maintainer); design only, nothing implemented. The gateway, Entra app registration and tunnel are unselected alternatives. See [the `tank` replacement note](../../notes/2026-10-19-tank-replacement-and-scan-access.md#166-scan-access-for-the-boinc-bridge-outbound-only-staging-chosen-direction)
 - **Date:** 2026-10
 - **Relates to:** ADR-0008, ADR-0009, ADR-0015, ADR-0018, ADR-0019, ADR-0022
 - **Amended by:** [ADR-0027](0027-onprem-serving-behind-cloudflare.md) (decision 2 allows one serving container on pve-big, reachable from the internet only through its own Cloudflare Tunnel)
@@ -15,14 +15,14 @@
 1. **Never expose `serve-scans` or any general file, S3 or NFS server.** No public gateway is built.
 2. **Outbound-only staging.** On-prem stages the pages a run needs into the Azure exchange account with the Arc identity (as the scan fetcher already does). The bridge reads them with its managed identity. Hand-off and coordination stay in Azure; nothing on `pve-big` is reachable from Azure or the internet.
 3. **Bridge read order:** staged copy, then the Azure archive (while it exists), then LoC. A missing staged page, a 404, 429, 5xx, timeout or checksum mismatch falls through; the run never waits on staging.
-4. **Implementation requirements** (future, each separately reviewed; design 16 §16.6): a durable per-run page list (today the hand-off job only consumes a manifest, and assess, Surya and quality select pages themselves); an on-prem staging writer that verifies sha256 locally and after upload, carries sha256/md5/`iiif_base`/`loc_url`, is idempotent and never deletes; a staging prefix in the exchange account (writer for Arc, read for the bridge only; no new account, key or SAS); lifecycle expiry for staging only; bridge changes in each stage; lag alerts; an uplink cap.
+4. **Implementation requirements** (future, each separately reviewed; §16.6 of the `tank` replacement note): a durable per-run page list (today the hand-off job only consumes a manifest, and assess, Surya and quality select pages themselves); an on-prem staging writer that verifies sha256 locally and after upload, carries sha256/md5/`iiif_base`/`loc_url`, is idempotent and never deletes; a staging prefix in the exchange account (writer for Arc, read for the bridge only; no new account, key or SAS); lifecycle expiry for staging only; bridge changes in each stage; lag alerts; an uplink cap.
 5. **Rollout:** shadow (stage and compare), then staging primary with archive fallback, then retire the Azure scan copy only after sha256 of every blob equals `tank`, a clean scrub, Cold-tier accounting and the maintainer's specific approval. Rollback before retirement is pointing the bridge back at the archive; after retirement it is a restore of scans and sidecar metadata to Azure with verification (blob soft delete is off on the archive, so prefix deletion is irreversible).
 
 ## Alternatives
 
 Unselected; kept for the record, none approved:
 
-- **Authenticated read-only gateway on `pve-big`** (reusing the router and integrity checks of the since-removed `usnm-scan-reader`; Entra token with issuer, tenant, own audience, `oid` and `Scans.Read` checks; restricted filesystem namespace; sidecar headers from a manifest of verified local sidecars). Needs a new Entra app registration and new internet-facing code. Specified in design 16 §16.6 as an alternative only.
+- **Authenticated read-only gateway on `pve-big`** (reusing the router and integrity checks of the since-removed `usnm-scan-reader`; Entra token with issuer, tenant, own audience, `oid` and `Scans.Read` checks; restricted filesystem namespace; sidecar headers from a manifest of verified local sidecars). Needs a new Entra app registration and new internet-facing code. Specified in §16.6 of the `tank` replacement note as an alternative only.
 - **Outbound tunnel or port forward** for such a gateway. A tunnel connector carries a non-Entra credential, so it would need an explicit ADR-0009 exception.
 - **VPN gateway:** about $139 a month, more than the saving; contradicts ADR-0015.
 - **Reuse `serve-scans`:** unauthenticated, plain HTTP, has write verbs.
