@@ -30,6 +30,10 @@
 //   not one per dependent check; one with no cause keeps its own code. An
 //   unknown check marked excused (the controller's, paused on purpose in a
 //   rotation window, #1687) stays unknown in the evidence but is no row.
+//   Optional fields (excused, uncovered, cause, reason) are absent on most
+//   checks and on older evaluators' lines; every test on them defaults the
+//   missing value (tostring gives '', coalesce a number), because a null in
+//   a where clause drops the row and would silence a real outage.
 //   collection itself is a row only while the evaluator says something it
 //   counts (uncovered) has no cause row: a model or reset problem, not a
 //   dead source. A firing controller_tick with a failure class is
@@ -126,13 +130,13 @@ FeedEvents
 | mv-apply Held = Feed.checks on (
     where tostring(Held.code) == 'collection'
     | summarize CollectionFiring = countif(tostring(Held.state) == 'firing') > 0,
-        Uncovered = max(iff(isnull(Held.uncovered), 1, toint(Held.uncovered)))
+        Uncovered = max(coalesce(toint(Held.uncovered), 1))
 )
 | mv-expand Check = Feed.checks
 | extend Code = tostring(Check.code), State = tostring(Check.state),
     Cause = tostring(Check.cause), Reason = tostring(Check.reason)
 | where (State == 'firing' and (Code != 'collection' or Uncovered > 0))
-    or (State == 'unknown' and CollectionFiring and not(tobool(Check.excused)))
+    or (State == 'unknown' and CollectionFiring and tostring(Check.excused) != 'true')
 | project Check = case(
     State == 'unknown' and isnotempty(Cause), Cause,
     State == 'firing' and Code == 'controller_tick' and isnotempty(Reason), strcat(Code, ':', Reason),

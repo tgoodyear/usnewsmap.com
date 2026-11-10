@@ -104,7 +104,7 @@ class MainTest(unittest.TestCase):
         health = condition.split("| union (", 1)[0]
         self.assertNotIn("in ('firing', 'unknown')", health)
         self.assertIn("where tostring(Held.code) == 'collection'", health)
-        self.assertIn("(State == 'unknown' and CollectionFiring and not(tobool(Check.excused)))", health)
+        self.assertIn("(State == 'unknown' and CollectionFiring and tostring(Check.excused) != 'true')", health)
         # #1698: unknown rows count over the same ten minutes as firing ones, so they don't flap.
         self.assertIn("FeedEvents\n| where Observed between (ago(10m) .. now())", health)
         self.assertNotIn("ago(3m)", health)
@@ -119,7 +119,15 @@ class MainTest(unittest.TestCase):
         # collection only when something it counts has no cause row; an older evaluator's line
         # (no uncovered) still sends it.
         self.assertIn("(Code != 'collection' or Uncovered > 0)", health)
-        self.assertIn("iff(isnull(Held.uncovered), 1, toint(Held.uncovered))", health)
+        self.assertIn("Uncovered = max(coalesce(toint(Held.uncovered), 1))", health)
+        # Copilot on #1699: a null in a where clause drops the row, so an optional field read
+        # without a default (not(tobool(...)) on a check without the field) would silence an
+        # outage. Optional fields are read only through tostring or coalesce.
+        for field in ("excused", "uncovered", "cause", "reason"):
+            for use in __import__("re").findall(r"(\w+)\((?:Check|Held)\.%s\)" % field, health):
+                self.assertIn(use, ("tostring", "toint"), field)
+        self.assertNotIn("tobool(Check.", health)
+        self.assertNotIn("toint(Held.uncovered) ", health)
         self.assertTrue(health.rstrip().endswith("| distinct Check"))
 
 
@@ -504,7 +512,7 @@ class ControllerSignalsTest(unittest.TestCase):
         self.assertEqual((checks["controller_tick"].get("excused"), checks["controller_tick"]["cause"]),
                          (None, "source:controller"))
         module = (ROOT / "infra/modules/boinc-feed-alerts.bicep").read_text()
-        self.assertIn("(State == 'unknown' and CollectionFiring and not(tobool(Check.excused)))", module)
+        self.assertIn("(State == 'unknown' and CollectionFiring and tostring(Check.excused) != 'true')", module)
 
     def test_signal_checks_are_opt_in(self):
         del self.facts["controller_signals"]

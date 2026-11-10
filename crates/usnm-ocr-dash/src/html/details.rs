@@ -167,19 +167,25 @@ fn feed_panel(v: &crate::feed::FeedView, o: &mut String) {
                 .or_else(|| check.reason.clone()),
             "controller_tick" => {
                 let seconds = check.seconds.map(|n| format!("{n:.0}s (limit 900s)"));
-                match (&check.reason, check.same_error_in_a_row) {
-                    (Some(reason), Some(repeats)) if repeats > 0 => {
-                        let sticky = if check.sticky == Some(true) {
-                            ", sticky"
-                        } else {
-                            ""
-                        };
-                        Some(format!(
-                            "{}{reason} ({repeats} in a row{sticky})",
-                            seconds.map(|s| s + "; ").unwrap_or_default()
-                        ))
-                    }
-                    _ => seconds,
+                // A reason shows whenever there is one: the hourly rule keeps the check firing
+                // across a good tick, when the in-a-row count is 0 (#1698).
+                let reason = check
+                    .reason
+                    .as_ref()
+                    .map(|reason| match check.same_error_in_a_row {
+                        Some(repeats) if repeats > 0 => {
+                            let sticky = if check.sticky == Some(true) {
+                                ", sticky"
+                            } else {
+                                ""
+                            };
+                            format!("{reason} ({repeats} in a row{sticky})")
+                        }
+                        _ => reason.clone(),
+                    });
+                match (seconds, reason) {
+                    (Some(seconds), Some(reason)) => Some(format!("{seconds}; {reason}")),
+                    (seconds, reason) => seconds.or(reason),
                 }
             }
             "controller_cap" => check
