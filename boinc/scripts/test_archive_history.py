@@ -10,6 +10,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 import sqlite3
 import tempfile
 import threading
@@ -1287,6 +1288,24 @@ class ReconcileTests(ReconcileFixture):
         self.assertIn("injected", errors[-1]["error"])
         self.assertNotIn(page_key(1), self.state_of(self.DRAINING)["claims"])
         self.container.fail_deletes_after = None
+        # Resuming needs a listing taken after the run was planned, which still doesn't name
+        # the planned unsubmitted job: a submission since changes no hand-off blob.
+        old = time.time() - DAY
+        os.utime(self.bridge, (old, old))
+        before = self.snapshot()
+        code, _, errors = self.apply()
+        self.assertEqual(code, 1)
+        self.assertIn("take the listing again", errors[-1]["error"])
+        code, _, errors = run(self.argv("--apply", "--confirm-controller-paused", "--confirm-plan-draining",
+                                        "--kind", "dead-lettered", "--kind", "journal-less",
+                                        "--expect-dead-lettered", "1", "--expect-journal-less", "1", bridge=False))
+        self.assertIn("resuming needs a fresh --bridge-jobs listing", errors[-1]["error"])
+        self.bridge.write_text("\n".join([job_id(3), job_id(4), job_id(50)]) + "\n")
+        code, _, errors = self.apply()
+        self.assertEqual(code, 1)
+        self.assertIn("now have a bridge journal", errors[-1]["error"])
+        self.assertEqual(before, self.snapshot())
+        self.bridge.write_text("\n".join([job_id(4), job_id(50)]) + "\n")
         # The resume finishes the planned run; it doesn't plan again, so the counts aren't rechecked.
         code, receipt, _ = self.apply()
         self.assertEqual(code, 0, receipt)

@@ -1315,6 +1315,20 @@ def reconcile(args):
                     and manifest["plan"] == target.name
                     and manifest["config_sha256"] == scheduler.digest(target.config),
                     f"reconcile run {batch.name} was planned for another plan")
+            # A submission changes only the bridge journal, never the hand-off blobs, so their
+            # ETags can't show that a planned unsubmitted job reached BOINC since: a listing
+            # taken after the run was planned must still not name any of them.
+            unsubmitted = sorted(job for page in manifest["pages"] if page["kind"] == "unsubmitted"
+                                 for job in page["jobs"])
+            if unsubmitted:
+                require(args.bridge_jobs is not None,
+                        f"reconcile run {batch.name} gives back unsubmitted jobs: resuming needs a fresh "
+                        "--bridge-jobs listing, taken after it was planned")
+                require(args.bridge_jobs.stat().st_mtime >= manifest["created_at"],
+                        f"{args.bridge_jobs} is older than reconcile run {batch.name}: take the listing again")
+                submitted = sorted(set(unsubmitted) & read_bridge_jobs(args.bridge_jobs))
+                require(not submitted, f"{len(submitted)} of run {batch.name}'s unsubmitted jobs now have a "
+                                       f"bridge journal (first: {submitted[:1]}); stop and reconcile by hand")
             progress(f"resuming reconcile run {batch.name}")
             summary = None
         else:

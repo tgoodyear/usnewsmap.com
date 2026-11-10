@@ -1726,6 +1726,40 @@ class QueueModeTests(unittest.TestCase):
         self.assertEqual(logged[0]["pages"], [{"page": message(1)["page"], "other_plans": ["queue-feed-10"],
                                                "own_stage": "reserved"}])
 
+    def test_fresh_claims_that_all_collide_are_reported(self):
+        # Nothing can be exported this tick, but the conflicts are still logged and alerted.
+        self.fake.rows = [self.foreign(1), self.foreign(2)]
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            event = self.tick()
+        self.assertEqual([a for a in self.fake.actions if a[0] in ("export", "submit")], [])
+        self.assertEqual(event["ownership_conflicts"], 2)
+        self.assertIn("ownership_conflict", [alert["code"] for alert in event["alerts"]])
+        logged = [json.loads(line) for line in err.getvalue().splitlines()
+                  if '"boinc_batch_ownership_conflict"' in line]
+        self.assertEqual([[entry["page"] for entry in line["pages"]] for line in logged],
+                         [[message(1)["page"], message(2)["page"]]])
+
+    def test_a_passed_over_page_takes_no_pending_slot(self):
+        # A target of one: page 1 is published here and failed in another plan, so neither job
+        # needs work, and page 2 must still be claimed, exported and submitted.
+        self.config.update(batch_size=1, pages_per_host=1)
+        self.fake.hosts = 1
+        self.tick()
+        own = self.fake.rows[0]
+        own["stage"] = "published"
+        self.fake.jobs[own["job"]["id"]]["spool"] = None
+        self.fake.assimilated.add(own["job"]["id"])
+        self.fake.rows.append(self.foreign(1, "failed"))
+        self.fake.actions.clear()
+        with contextlib.redirect_stderr(io.StringIO()):
+            event = self.tick()
+        self.assertEqual(event["ownership_conflicts"], 1)
+        self.assertEqual(event["published"], 1)
+        self.assertEqual([a for a in self.fake.actions if a[0] == "export"],
+                         [("export", "test_batch", [message(2)["page"]])])
+        self.assertEqual(len([a for a in self.fake.actions if a[0] == "submit"]), 1)
+
     def test_a_passed_over_page_still_fails_on_its_own_integrity_errors(self):
         self.fake.rows = [self.foreign(1)]
         with contextlib.redirect_stderr(io.StringIO()):

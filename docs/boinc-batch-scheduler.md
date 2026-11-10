@@ -348,7 +348,7 @@ usnm-boinc-step --env prod --target handoff --step deadline-retry \
 
 ### A page two plans claim (#1685)
 
-A queue-fed tick passes over a claimed page that another plan's journal is for. It exports, submits and collects nothing for that page, logs `boinc_batch_ownership_conflict` on stderr (the page, the other plans and this plan's own journal stage) when it first sees it in a tick, and reports `ownership_conflicts` and an `ownership_conflict` alert in `boinc_batch_tick`. The plan's own journals of the page are still checked: an image or allocation mismatch, two roots or a branching retry still stop the tick. Nothing in the controller resolves the conflict by itself, because either plan may be the one whose job counts.
+A queue-fed tick passes over a claimed page that another plan's journal is for. It exports, submits and collects nothing for that page, logs `boinc_batch_ownership_conflict` on stderr (the page, the other plans and this plan's own journal stage) when it first sees it in a tick, and reports `ownership_conflicts` and an `ownership_conflict` alert in `boinc_batch_tick`. The page takes no pending slot as missing work (its unsettled journals still count), and fresh claims are checked as soon as they are made, so a tick that can export nothing still reports them. The plan's own journals of the page are still checked: an image or allocation mismatch, two roots or a branching retry still stop the tick. Nothing in the controller resolves the conflict by itself, because either plan may be the one whose job counts.
 
 The usual cause is a draining plan's stranded page ([above](#drain-without-changing-the-allocation)). `boinc/scripts/archive_history.py reconcile` gives the draining plan's stranded claimed pages back, by kind (`--kind`, repeatable; all three by default):
 
@@ -363,7 +363,7 @@ Anything else is listed under `skipped` with its reason and left alone, as are b
 Before anything changes, every plan given (the draining one and each `--check-config`) must accept the journals and its own state as they will be, with `owned_records` as a tick runs it, no page passed over. The dry run shows both (`owned_records.before`, `owned_records.after`) and the pages two plans claim (`collisions`). A page whose draining job reached BOINC isn't given back, so a live plan that claimed it still refuses and the apply stops: collect it first, or settle it by hand.
 
 1. `systemctl stop usnm-boinc-priority-controller.timer`; wait until `systemctl is-active usnm-boinc-priority-controller.service` is inactive or failed. Every plan's tick runs from that service, so no plan ticks meanwhile.
-2. On the BOINC host, list the bridge journals into a file and copy it to the controller host: `ls /srv/usnm-boinc/project/handoff/jobs > bridge-jobs.txt`. Take it after step 1, so no submission is missed.
+2. On the BOINC host, list the bridge journals into a file and copy it to the controller host: `ls /srv/usnm-boinc/project/handoff/jobs > bridge-jobs.txt`. Take it only after the timer is stopped and the service inactive (step 1), so no submission is missed; the apply plans again under the locks against this listing.
 3. Dry-run, naming every plan on the hand-off container (each `--check-config` with its `--check-state-dir`, in order):
 
    ```sh
@@ -377,7 +377,7 @@ Before anything changes, every plan given (the draining one and each `--check-co
 
    Read `found`, `pages`, `skipped`, `collisions` and `owned_records.after` (every plan `ok`).
 
-4. Apply with the same arguments and `--apply --confirm-controller-paused --confirm-plan-draining`, plus the dry run's counts as `--expect-dead-lettered N --expect-journal-less N --expect-unsubmitted N` (one per kind asked for). It holds every plan's `controller.lock` and the controller lease, plans again and refuses if the counts differ or a plan would still refuse. The receipt is `receipts/reconcile.json`, with each plan's `owned_records` afterwards; a run stopped half way resumes when rerun.
+4. Apply with the same arguments and `--apply --confirm-controller-paused --confirm-plan-draining`, plus the dry run's counts as `--expect-dead-lettered N --expect-journal-less N --expect-unsubmitted N` (one per kind asked for). It holds every plan's `controller.lock` and the controller lease, plans again and refuses if the counts differ or a plan would still refuse. The receipt is `receipts/reconcile.json`, with each plan's `owned_records` afterwards; a run stopped half way resumes when rerun. A submission changes only the bridge journal, so the hand-off checks can't see one: a resume of a run with `unsubmitted` pages needs a new `--bridge-jobs` listing, taken after the run was planned, and refuses if it names any of them.
 5. Start the timer and check the next tick reports `ownership_conflicts: 0`.
 
 `--kind dead-lettered --kind journal-less` needs no bridge listing. The archive is the only copy of what was given back; back it up with the controller state. To undo, restore the blobs from `handoff/` and the entries from `controller/state-entries.json` with the controller paused, before any plan claims the pages again.

@@ -2135,15 +2135,17 @@ def settled(record):
     return record["stage"] in ("published", "failed") or kept_by_policy(record)
 
 
-def retained_backlog(config, records, owned, selected, pending_jobs):
+def retained_backlog(config, records, owned, selected, pending_jobs, passed=()):
     """Work the global cap counts beyond BOINC's pending workunits: journals of any plan that
     are neither settled nor pending on BOINC (uncollected results, recovered reservations),
-    and selected pages with no journal yet."""
+    and selected pages with no journal yet. `passed` are pages passed over for another plan's
+    journal (#1685): not missing work, though their unsettled journals still count."""
     uncollected = sum(
         not settled(record) and record["job"]["id"] not in pending_jobs
         for record in records
     )
-    missing = [page for page in config["pages"] if page["page"] in selected and page["page"] not in owned]
+    missing = [page for page in config["pages"] if page["page"] in selected and page["page"] not in owned
+               and page["page"] not in passed]
     return uncollected, missing
 
 
@@ -2296,7 +2298,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
                                       high_watermark=high_watermark,
                                       max_global_pending=max_global_pending,
                                       other_app_budget=other_app_budget)
-            uncollected, missing = retained_backlog(config, records, owned, selected, pending_jobs)
+            uncollected, missing = retained_backlog(config, records, owned, selected, pending_jobs, conflicts)
             in_flight = max(snapshot["pending_workunits"], ocr_workunit_counts(snapshot, pending_jobs)[0])
             room = global_room(caps, in_flight + uncollected + len(missing),
                                other_app_workunits(snapshot, caps["app"]) or 0)
@@ -2345,7 +2347,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
     cohort_mode = cohort_info["cohort_mode"]
     target = high_target
 
-    uncollected_not_pending, missing = retained_backlog(config, records, owned, selected, pending_jobs)
+    uncollected_not_pending, missing = retained_backlog(config, records, owned, selected, pending_jobs, conflicts)
     # Workunits for the global cap and other apps' share; pages for OCR admission. They differ
     # only with OCR bundles (#1059), whose pages share one workunit.
     ocr_workunits, bundled_pages = ocr_workunit_counts(snapshot, pending_jobs)
@@ -2407,6 +2409,9 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         if free > 0:
             if feed:
                 feed.fill(min(refill, free), selected, owned, now)
+                # The fresh claims are allocated now: one another plan's journal is for is passed
+                # over and reported, even when nothing else is exported (#1685).
+                owned = own(records)
             fresh = [page for page in config["pages"] if page["page"] not in selected][
                 :min(refill, free)]
             for page in fresh:
@@ -2450,7 +2455,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
                       and server.get(record["job"]["id"], {}).get("stage") in (None, "reserved")}
         backlog = sum(not settled(record) and
                       record["job"]["id"] not in pending_jobs | candidates for record in records)
-        backlog += sum(page not in owned for page in selected)
+        backlog += sum(page not in owned and page not in conflicts for page in selected)
         cohort_submit_room = max(0, target - ocr_in_flight - backlog)
         global_submit_room = max(0, global_room(cohort_info, global_in_flight + backlog, budgeted_other))
         submit_limit = min(refill, cohort_submit_room, global_submit_room)
@@ -2492,7 +2497,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         not settled(record) and record["job"]["id"] not in pending_jobs
         for record in records
     )
-    post_missing = sum(page not in owned for page in selected)
+    post_missing = sum(page not in owned and page not in conflicts for page in selected)
     post_cohort_pending = ocr_in_flight + post_uncollected_not_pending + post_missing
     if high_target == 0 or post_cohort_pending >= high_target:
         state["refilling"] = False
