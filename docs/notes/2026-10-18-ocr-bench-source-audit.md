@@ -1,10 +1,12 @@
-# OCR benchmark source/licence and actual-coverage audit — 18 October 2026
+# OCR benchmark source, licence and coverage audit, 18 October 2026
 
 For [#738](https://github.com/tgoodyear/usnewsmap.com/issues/738). This audits the
 published v1.0.0 manifest and newly staged v1.1.0 public ground truth, not the
 size of a language's newspaper collection. No production data or queues changed.
 The [annotation policy](../ocr/bench-annotation-policy.md) defines admission, damage
 and masks. No new human transcription or damage review is claimed in this pass.
+
+**Outcome:** v1.1.0 was published on 18 October 2026 (PR #847); see [Release v1.1.0](../ocr/bench.md#release-v110-additional-public-multilingual-tracks). #738 was still open on 10 November 2026.
 
 ## Included sources and rights
 

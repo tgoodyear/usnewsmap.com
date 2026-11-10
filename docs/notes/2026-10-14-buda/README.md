@@ -1,6 +1,6 @@
 # BUDA spike procedure for #481
 
-Status: not executed against a BOINC server. [ADR-0020](../../design/adr/0020-boinc-buda-evaluation.md) records the accepted decision not to adopt BUDA under the reviewed implementation. This procedure is retained only as a reference if the decision is reconsidered; it does not authorize a production or experimental deployment. See the [observations](../2026-10-14-buda-evaluation.md) and [completed Mac standalone tests](../2026-10-14-buda-mac-offline-tests.md).
+Status: not executed against a BOINC server. [ADR-0020](../../design/adr/0020-boinc-buda-evaluation.md) records the accepted decision not to adopt BUDA under the reviewed implementation. This procedure is retained only as a reference if the decision is reconsidered; it does not authorize a production or experimental deployment. See the [observations](../2026-10-14-buda-evaluation.md) and [completed Mac standalone tests](../2026-10-14-buda-mac-offline-tests.md). `usnm_assess`, named in step 1, was retired on 2 November 2026.
 
 ## Inputs and baseline
 

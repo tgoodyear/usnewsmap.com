@@ -5,6 +5,8 @@ for [#811](https://github.com/tgoodyear/usnewsmap.com/issues/811). This
 reports what a stored list would avoid. It is read-only and changes no
 scheduling.
 
+**Outcome:** merged in PR #1577 on 5 November 2026.
+
 ## Command
 
 `usnm-ingest ocr-alternate-accounting --supersession <sha256>` loads the

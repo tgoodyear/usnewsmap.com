@@ -2,6 +2,8 @@
 
 **Status:** measured, contribution proposed · **Date:** October 2026 · **Measured on:** Linux x86-64, RHEL 10.2, SELinux enforcing, BOINC 8.2.13, Podman 5.8.2, cgroup v2 · **Code:** `boinc/scripts/setup_volunteer.py`, `boinc/scripts/volunteer_preflight.py`, [volunteer guide](../boinc/volunteer/README.md) · **Issues:** [#504](https://github.com/tgoodyear/usnewsmap.com/issues/504), [#469](https://github.com/tgoodyear/usnewsmap.com/issues/469), [#484](https://github.com/tgoodyear/usnewsmap.com/issues/484)
 
+**Outcome:** the startup gate shipped in PR #505 on 15 October 2026 (#504 closed) and is part of the container setup in the [volunteer guide](../boinc/volunteer/README.md).
+
 ## The question
 
 Can a trusted volunteer attach a stock Linux BOINC client and rely on a container starting successfully to establish slot access, bounded resource use and idle-time pause? A live pilot showed that a successful container start was not enough. The client and the project's pinned wrapper both support Podman directly; Docker-group access was unnecessary.

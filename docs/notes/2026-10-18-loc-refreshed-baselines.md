@@ -2,6 +2,8 @@
 
 Archived data-file links below download the [report-data archive](https://github.com/tgoodyear/usnewsmap.com/releases/download/data-report-data-20261023-48fbb2a/report-data.tar.gz), not individual files. The [published member list](https://github.com/tgoodyear/usnewsmap.com/releases/download/data-report-data-20261023-48fbb2a/report-data.members.txt) identifies each original path. Extract the archive at the repository root to restore those paths before running the historical reproduction commands.
 
+**Outcome:** #809 closed on 27 October 2026 with the [package audit](2026-10-27-loc-package-audit.md), which supersedes this note's inventory. The paired accuracy comparison, #810, was still open on 10 November 2026.
+
 ## Coverage refresh: 27 October 2026
 
 A fresh official guide retrieval supersedes the historical latest-date and

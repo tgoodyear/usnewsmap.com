@@ -2,6 +2,8 @@
 
 **Status:** measured; nothing changed · **Date:** 5 November 2026 · **Measured on:** the BOINC database, feeder cache, scheduler log and cohort controller journal on the on-prem server, read at 12:20 UTC on 5 November, before that day's server image roll; `usnm_qwen` replicas sent from 28 October · **Code:** `boinc/scripts/qwen-dispatch-fairness.py` · **Issues:** #786, #1420
 
+**Outcome:** Intel's 8B class went to general admission on 8 November 2026 (PR #1645, [app release](../boinc/apps/app-release.md)). #786 was still open on 10 November 2026.
+
 ## The question
 
 #786 runs one Intel host as a second 8B Qwen backend. A [cohort controller](../boinc/apps/intel-gpu.md#persistent-finite-nvidiaintel-refill) opens Intel's plan class to a small window of fresh units at a time, while the AMD and Apple classes and the generally admitted NVIDIA class take any unsent native 8B (batch 8) replica. The issue's acceptance asks for evidence under ordinary work that dispatch moves past a prefix of units no host can take, and that a warm feeder cache doesn't hide work. This note measures both and asks why the Intel host has had no Qwen work since the evening of 4 November.

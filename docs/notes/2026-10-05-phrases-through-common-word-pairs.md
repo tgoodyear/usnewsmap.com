@@ -2,11 +2,13 @@
 
 **Status:** shipped; first full rebuild with it is `pages-v20261005-1` (`common_grams` 1), not yet measured on the live site · **Date:** October 2026 · **Measured on:** 90,745 real pages from 11 LoC batches (cost and gain, cold on 2 CPUs); the capture of `pages-v20261003-1` in `ops/version-snapshots/` (the before) · **Code:** `crates/usnm-core/src/common_grams.rs`, `crates/usnm-ingest` (release), `infra/quickwit/pages-index.yaml`; [05 §5.5.1](../design/05-search-and-storage.md), [05 §5.5.3](../design/05-search-and-storage.md), [06 §6.5](../design/06-api-design.md) · **Issues:** #154, #156, #158, #160
 
+**Outcome:** measured on the live site in the capture of `pages-v20261006-2` on 7 October 2026 (#200): the two `"cross of gold"` searches moved by 1.3%, and 51 of the 60 searches in both captures by 1% or less. #158 closed on 8 October 2026 with the upstream fix tabled.
+
 ## The question
 
 One search cost four to five times the rest. In the cold-search benchmark (06 §6.5) the phrase `"cross of gold"` took 65 s alone on a warm searcher. Over 1896 alone: the phrase 41 s, `cross gold` within 2 words 9 s, the phrase `"yellow fever"` 8 s and `gold` on its own 4 s. A phrase reads the positions of every word in it, and `of` is on almost every page many times over, so a phrase holding a common word reads a large part of the whole index's positions. These are the home page's own example searches ("Cross of Gold, 1896"), so visitors hit them first.
 
-The capture of the live version before the rebuild shows the same thing. `scripts/compare-versions.py capture` asked `pages-v20261003-1` the ten benchmark searches, the home page's 50 examples and three Japanese ones on 5 October 2026. The slowest, by the backend's own timing (which is the time when the result was computed, possibly earlier than the capture if a cache answered):
+The capture of the live version before the rebuild shows the same thing. `scripts/ops/compare-versions.py capture` asked `pages-v20261003-1` the ten benchmark searches, the home page's 50 examples and three Japanese ones on 5 October 2026. The slowest, by the backend's own timing (which is the time when the result was computed, possibly earlier than the capture if a cache answered):
 
 | Search                                      | Hits      | Backend time |
 | ------------------------------------------- | --------- | ------------ |
@@ -65,7 +67,7 @@ What the numbers don't show: both were measured on 11 batches on local disk, whe
 
 ## What is left
 
-- **Capture `pages-v20261005-1`** at a quiet hour with `scripts/compare-versions.py capture`, keep it under `ops/version-snapshots/`, and `diff` it against the `pages-v20261003-1` capture. Expected: the same hits for every search (the equivalence proof says so; the diff flags any search whose hits move by more than 1%), and the two "cross of gold" searches several times faster. Record the result in a follow-up note.
+- **Capture `pages-v20261005-1`** at a quiet hour with `scripts/ops/compare-versions.py capture`, keep it under `ops/version-snapshots/`, and `diff` it against the `pages-v20261003-1` capture. Expected: the same hits for every search (the equivalence proof says so; the diff flags any search whose hits move by more than 1%), and the two "cross of gold" searches several times faster. Record the result in a follow-up note.
 - **The other slow phrases.** `standard oil`, `civil service reform` and `new deal` have no word on the list, yet took 20–50 s on `pages-v20261003-1`. Whether that is the positions of frequent content words or the number of matches isn't known. It isn't the docstore: a capture asks only `/v1/aggregate`, whose engine requests ask for no hits (`max_hits: 0` in `usnm_search::quickwit`), so a capture's timings never touch the docstore. The 60,000-page splits will have moved these searches too, so measure before explaining.
-- **The docstore change on the live site.** For the same reason, no capture can show the 128 KB blocks' effect. Measuring it means timing `/v1/hits` cold on both versions, which `scripts/compare-versions.py` doesn't do; adding a hits page per search to the capture is the simplest way.
+- **The docstore change on the live site.** For the same reason, no capture can show the 128 KB blocks' effect. Measuring it means timing `/v1/hits` cold on both versions, which `scripts/ops/compare-versions.py` doesn't do; adding a hits page per search to the capture is the simplest way.
 - **The list is from one week of 1896.** Whether the commonest words of 1850 or 1950 differ enough to matter hasn't been measured; the list is versioned, so changing it is a full rebuild.

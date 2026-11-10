@@ -1,5 +1,7 @@
 # Iris Xe OCR pilot
 
+**Outcome:** the pilot closed on 27 October 2026 ([closeout](2026-10-27-iris-pilot-closeout.md), [performance decision](2026-10-27-iris-performance-decision.md)). `usnm_iris` was retired on 2 November 2026, and Intel GPUs now run `usnm_qwen`'s `intel_vulkan_8b` class ([Intel and NVIDIA GPUs](../boinc/apps/intel-gpu.md)).
+
 This is an **experimental, single-host evaluation**, not production OCR publication
 or cross-host scientific consensus. It uses `usnm_iris`, separate from the CUDA and
 llama.cpp `usnm_qwen` versions. Existing GPU jobs cannot run unchanged on Intel.

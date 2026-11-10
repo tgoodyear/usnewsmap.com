@@ -2,6 +2,8 @@
 
 **Status:** measured, not shipped; offline only, and the worker's text, the stored ALTO and BOINC are unchanged · **Date:** 5 November 2026 · **Measured on:** 21 synthetic pages rendered and read by Tesseract 5.5.0 (`deu`, PSM 3) on the build container; the committed fixtures named below · **Code:** `crates/usnm-alto/src/columns.rs`, `usnm-ocr-worker column-text`, 13 §13.4.7 · **Issues:** #925, #926
 
+**Outcome:** the offline `column-text` command merged in PR #1576 on 6 November 2026. The worker's text, the stored ALTO and BOINC are unchanged, and integration waits on #926.
+
 ## The question
 
 On some German pages our text reads a line of one column, then the same line of the next, where LoC's reads down each column (#925). Layout 3 keeps LoC's text beside ours so a phrase LoC has whole is still found (05 §5.5.7), and #1372 rebuilt three named pages offline from hand-drawn regions. Neither fixes our own text. Where does the wrong order come from: Tesseract's page segmentation, our assembly of text from its ALTO, or the order of blocks? And can it be fixed without regions drawn by hand?

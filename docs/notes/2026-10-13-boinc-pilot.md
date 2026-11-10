@@ -4,6 +4,8 @@
 file-based batch transport alongside the existing on-prem queue workers. See the
 [setup and recovery guide](../boinc/README.md).
 
+**Outcome:** the pilot became the project's OCR path. The direct queue workers it ran beside were retired (#966), and `usnm_ocr` on BOINC is now how pages are read; see [BOINC](../boinc/README.md).
+
 The first pilot shares the Tesseract 5.5.0 Containerfile, model lock, and routing.
 The central bridge checks the published reference snapshot and reserves native
 work under the OCR lock. It submits one cached scan per task, imports stock

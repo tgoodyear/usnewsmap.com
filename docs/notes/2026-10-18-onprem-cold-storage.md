@@ -1,8 +1,10 @@
-# 15. Moving cold storage on-prem
+# Moving cold storage on-prem
 
 Archived data-file links below download the [report-data archive](https://github.com/tgoodyear/usnewsmap.com/releases/download/data-report-data-20261023-48fbb2a/report-data.tar.gz), not individual files. The [published member list](https://github.com/tgoodyear/usnewsmap.com/releases/download/data-report-data-20261023-48fbb2a/report-data.members.txt) identifies each original path. Extract the archive at the repository root to restore those paths before running the historical reproduction commands.
 
-**Status:** Plan (read-only inventory and design; nothing has been moved, deleted or reconfigured) · **Date:** 18 October 2026 · **Decision record:** [ADR-0022](../design/adr/0022-onprem-cold-storage.md) · **Raw numbers:** [`docs/data/azure-storage-inventory-2026-10-18.json`](https://github.com/tgoodyear/usnewsmap.com/releases/download/data-report-data-20261023-48fbb2a/report-data.tar.gz) · **Superseded in part:** [ADR-0027](../design/adr/0027-onprem-serving-behind-cloudflare.md) moves the live index and public serving on-prem
+**Status:** Plan, formerly design document 15 (read-only inventory and design; nothing has been moved, deleted or reconfigured) · **Date:** 18 October 2026 · **Decision record:** [ADR-0022](../design/adr/0022-onprem-cold-storage.md) · **Raw numbers:** [`docs/data/azure-storage-inventory-2026-10-18.json`](https://github.com/tgoodyear/usnewsmap.com/releases/download/data-report-data-20261023-48fbb2a/report-data.tar.gz) · **Superseded in part:** [ADR-0027](../design/adr/0027-onprem-serving-behind-cloudflare.md) moves the live index and public serving on-prem
+
+**Outcome:** under #895, still open on 10 November 2026, the scans on `tank` passed a 100-scan sample check and a 20-scan restore drill from the Azure archive on 5 November 2026; the full checksum audit was split out to #1589 and is not scheduled. Serving moved on-prem under #955, closed on 1 November 2026. [ADR-0022](../design/adr/0022-onprem-cold-storage.md) is still Proposed.
 
 The maintainer's goal is to serve as much as is sensible from the on-prem host `pve-big`, and to move storage off Azure on the way. Decisions already made: Phase 1 is **cold data only**; the live Quickwit index (`usnmqwstprodffapzy`, about 1.26 TB) and the public API stay in Azure; the uplink is 1 Gbps symmetric; on-prem redundancy is a ZFS mirror only.
 

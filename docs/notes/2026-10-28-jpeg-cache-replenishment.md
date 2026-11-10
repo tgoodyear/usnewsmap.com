@@ -6,6 +6,8 @@ two retained converters**. The enabled, exhausted remote converter on the
 pve-laptop host is not the active CT215 quality follower. That follower's full
 index/set reloads do not satisfy this issue's corpus-scale bound.
 
+**Outcome:** never deployed. #911 closed on 29 October 2026 when the fixed JPEG lists were retired instead (PR #1347); the quality follower builds JPEGs from the scan server, see [the scan-cache hand-off](../boinc/server/scan-cache-handoff.md).
+
 ## Implementation
 
 [`quality-jpeg-refresh.py`](../../scripts/ocr-node/quality-jpeg-refresh.py)

@@ -1,5 +1,7 @@
 # BOINC OCR quality (`usnm_quality`) and vision-language crop (`usnm_qwen`) pilot and calibration
 
+**Status:** pilot of 16 October 2026; the dated status line is under "The question" below, after a diagnostics section added on 27 October (#1299). Both apps run in production: [OCR quality](../boinc/apps/quality.md) describes them as they are now, and since 2 November 2026 `usnm_qwen` has GPU versions only.
+
 ## Native generation diagnostics (schema 1)
 
 New native workers retain per-crop generation metadata in the atomic checkpoint
