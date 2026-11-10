@@ -17,6 +17,22 @@ REFILL_WARN_S = 6 * 3600
 TICK_LIMIT_S = 15 * 60
 # Failed or slow controller ticks in a row before controller_tick fires.
 TICK_FAILURES_TO_FIRE = 2
+# A tick still running past this may never finish, so it fires at once (#1698). One still running
+# past TICK_LIMIT_S only waits: an hourly 20-minute tick fired every hour. A tick that finishes
+# over TICK_LIMIT_S counts towards the two in a row, as a failure does.
+TICK_HANG_S = 2 * TICK_LIMIT_S
+# Runs in a row that failed with the same error: a sticky failure, which the next tick won't clear.
+STICKY_FAILURES = 3
+# The controller's own signals (#1698), opt-in with "controller_signals": true in the config.
+CONTROLLER_SIGNAL_CHECKS = ("controller_cap", "ownership_conflict", "controller_progress", "tick_trend")
+SIGNAL_FIELDS = ("caps", "ownership_conflicts", "progress", "tick_p90_s")  # feed_collect.SIGNAL_FIELDS
+CAP_FIRE_PERCENT = 85              # of any lifetime cap the controller warns about (it warns past 80)
+PROGRESS_STALL_S = 2 * 3600        # nothing published by a live plan with pending work
+# The controller source reads two hours of journal; a window that starts later than this can't
+# prove two hours without a publication (a controller that only just started, or a full journal).
+PROGRESS_COVERAGE_S = PROGRESS_STALL_S - 15 * 60
+TICK_TREND_FRACTION = 0.7          # of TICK_LIMIT_S, for the p90 of the last hour's ticks
+TICK_TREND_HOLD_S = 3600
 # Ticks are minutes apart: a failure line within a minute of a run's end, without an
 # invocation id, is that run's.
 TICK_FAILURE_SAME_S = 60
@@ -41,8 +57,21 @@ DELIVERY_TEST_EVENT = "boinc_feed_delivery_test"
 # controller source failure, every other check, and a controller tick that fails, still fire.
 ROTATION_FILE = "rotation.json"
 ROTATION_MAX_MINUTES = 240
-ROTATION_DEFERRED = ("cpu_shortage", "usnm_ocr_no_work")
+ROTATION_DEFERRED = ("cpu_shortage", "usnm_ocr_no_work", "controller_progress")
 NO_RECENT_TICK = "no_recent_controller_tick"  # feed_collect.NO_RECENT_TICK
+# Which source each check waits on (#1698). An unknown check carries the first of its sources
+# that is down as `cause` ("source:server"), and the alert rule raises one alert per cause, not one
+# per check: a server source going down turned six checks unknown, and each was its own email.
+DEPENDS = (
+    ("server", ("qwen_refill_window", "usnm_ocr_no_work", "usnm_qwen_no_work", "cpu_shortage",
+                "gpu_shortage", "feeder_allocation")),
+    ("controller", ("controller_tick",) + CONTROLLER_SIGNAL_CHECKS),
+    ("backlog", ("usnm_ocr_no_work", "usnm_qwen_no_work")),
+    ("clients", ("cpu_shortage", "gpu_shortage")),
+)
+# After a healthy evaluation the collection hold runs down at half the rate it builds, so a
+# source that fails most minutes still fires, and a single failed read never does.
+COLLECTION_DECAY = 0.5
 
 
 def atomic_text(path, value):
@@ -174,6 +203,24 @@ def evaluate(facts, previous, now, monotonic, boot_id, config_id, rotation=None)
     conditions, checks = {}, []
 
     deferred_until = rotation["until"] if rotation else None
+    # In a rotation the controller may be missing a tick on purpose; nothing else is excused.
+    excused = bool(rotation) and facts.get("sources", {}).get("controller", {}).get("reason") == NO_RECENT_TICK
+    down = set()
+    for name, source in facts.get("sources", {}).items():
+        if isinstance(source, dict) and source.get("state") != "fresh":
+            down.add("clients" if name.startswith("client") else name)
+    if "no_own_clients_configured" in facts.get("supply_errors", {}).values():
+        down.add("clients")
+    if excused:
+        down.discard("controller")
+
+    def cause(code):
+        for source, codes in DEPENDS:
+            # Admissions come from the server source's cohort record, not the backlog source.
+            if (source in down and code in codes
+                    and not (source == "backlog" and code == "usnm_qwen_no_work" and facts.get("qwen_admission"))):
+                return "source:" + source
+        return None
 
     def check(code, condition, hold=0, generation=None, **measurements):
         prior = old.get(code, {})
@@ -191,6 +238,8 @@ def evaluate(facts, previous, now, monotonic, boot_id, config_id, rotation=None)
                  "pending" if condition else "healthy")
         if deferred and condition:
             measurements["rotation_until"] = deferred_until
+        if state == "unknown" and cause(code):
+            measurements["cause"] = cause(code)
         conditions[code] = {"active": condition is True, "since": since, "generation": generation}
         checks.append({"code": code, "state": state, "duration_s": int(duration),
                        "threshold_s": hold, **measurements})
@@ -235,9 +284,15 @@ def evaluate(facts, previous, now, monotonic, boot_id, config_id, rotation=None)
         new_maintenance = tick["maintenance_failure_at"] > maintenance_at
         maintenance_at = max(maintenance_at, tick["maintenance_failure_at"])
         tick_condition = (streak >= TICK_FAILURES_TO_FIRE or new_maintenance
-                          or (tick["ok"] is None and tick["seconds"] > TICK_LIMIT_S))
+                          or (tick["ok"] is None and tick["seconds"] > TICK_HANG_S))
+    # The newest failure's class (feed_collect.FAILURE_REASONS), never its text (#1698).
+    repeats = None if tick is None else tick.get("same_error_in_a_row")
     check("controller_tick", tick_condition,
-          seconds=None if tick is None else tick["seconds"], failed_in_a_row=streak)
+          seconds=None if tick is None else tick["seconds"], failed_in_a_row=streak,
+          reason=None if tick is None else tick.get("reason"), same_error_in_a_row=repeats,
+          sticky=repeats is not None and repeats >= STICKY_FAILURES)
+    if facts.get("controller_signals"):
+        controller_signals(check, tick, now)
     guard = facts.get("feeder_allocation")
     if guard is not None:
         # Opt-in (#1462). Maintenance skips the comparison, so it is unknown, like any unproven allocation.
@@ -245,25 +300,41 @@ def evaluate(facts, previous, now, monotonic, boot_id, config_id, rotation=None)
         check("feeder_allocation", drift, FEEDER_DRIFT_HOLD_S,
               generation=guard["reason"] + ":" + ",".join(map(str, guard["app_ids"])),
               reason=guard["reason"], app_ids=guard["app_ids"])
-    # In a rotation the controller may be missing a tick on purpose; nothing else is excused.
-    excused = bool(rotation) and facts.get("sources", {}).get("controller", {}).get("reason") == NO_RECENT_TICK
     errors = [e for e in facts.get("errors", []) if not (excused and e == "controller")]
     unknown = errors or [c["code"] for c in checks if c["state"] == "unknown"
-                         and not (excused and c["code"] == "controller_tick")]
+                         and not (excused and c["code"] in ("controller_tick", *CONTROLLER_SIGNAL_CHECKS))]
+    # What a cause row in the alert doesn't already name: the alert sends collection only for these.
+    causes = {c["cause"] for c in checks if "cause" in c}
+    by_code = {c["code"]: c for c in checks}
+
+    def covered(item):
+        if item in by_code:
+            return "cause" in by_code[item]
+        group = "clients" if item.startswith("client_") or item.endswith("_no_own_clients_configured") else item
+        return "source:" + group in causes
     # Held: one failed source run (a single unknown evaluation) is not worth an email.
     # Its time is kept apart from the condition timers a reset clears, so resets that
     # recur (an evaluator running only every few minutes, configs changing) still fire.
     # It adds monotonic time within one boot only, so a wall-clock jump can't fire it
     # early; across a reboot it adds nothing for that step.
+    # A healthy evaluation runs the hold down (COLLECTION_DECAY) rather than clearing it.
     unhealthy = bool(unknown) or not continuous
-    held = previous.get("collection_elapsed") if unhealthy else None
+    held = previous.get("collection_elapsed")
     if held is not None and (type(held) not in (int, float) or not 0 <= held <= 10 ** 9):
         held = None
     step = monotonic - previous.get("monotonic", monotonic) if previous.get("boot_id") == boot_id else 0
-    elapsed = (held + (step if 0 < step <= 10 ** 9 else 0) if held is not None else 0) if unhealthy else None
+    step = step if 0 < step <= 10 ** 9 else 0
+    if unhealthy:
+        elapsed = held + step if held is not None else 0
+        carried = elapsed
+    else:
+        elapsed = None
+        carried = max(0, min(held, COLLECTION_HOLD_S) - COLLECTION_DECAY * step) if held is not None else 0
+        carried = carried if carried > 0 and previous.get("boot_id") == boot_id else None
     checks.append({"code": "collection", "state": ("firing" if elapsed >= COLLECTION_HOLD_S else "pending")
                    if unhealthy else "healthy", "duration_s": int(elapsed or 0),
-                   "threshold_s": COLLECTION_HOLD_S, "reset": not continuous})
+                   "threshold_s": COLLECTION_HOLD_S, "reset": not continuous,
+                   "uncovered": (sum(not covered(item) for item in unknown) + (not continuous)) if unhealthy else 0})
     document = {"schema_version": 1, "event": "boinc_feed_health", "observed_at": now,
                 "max_age_s": MAX_AGE, "checks": checks,
                 "sources": facts.get("sources", {}),
@@ -274,8 +345,43 @@ def evaluate(facts, previous, now, monotonic, boot_id, config_id, rotation=None)
              "time": now, "monotonic": monotonic, "conditions": conditions,
              "last_failure_at": max(failure_at, previous.get("last_failure_at", 0)),
              "maintenance_failure_at": maintenance_at,
-             "collection_elapsed": elapsed}
+             "collection_elapsed": carried}
     return document, state
+
+
+def controller_signals(check, tick, now):
+    """The controller's own signals (#1698): unknown without a controller source, and
+    not_reported from a collector that doesn't send them yet."""
+    reported = tick is not None and all(field in tick for field in SIGNAL_FIELDS)
+    reason = None if tick is None or reported else "not_reported"
+    if not reported:
+        for code in CONTROLLER_SIGNAL_CHECKS:
+            check(code, None, reason=reason)
+        return
+    caps = tick["caps"]
+    worst = max(caps, key=lambda cap: caps[cap]["count"] / caps[cap]["limit"], default=None)
+    percent = None if worst is None else round(100 * caps[worst]["count"] / caps[worst]["limit"], 1)
+    # A share under 80% isn't warned about, so no warning in the window is healthy.
+    check("controller_cap", worst is not None and caps[worst]["count"] * 100 >= caps[worst]["limit"] * CAP_FIRE_PERCENT,
+          generation=worst,
+          cap=worst, percent=percent)
+    conflicts = tick["ownership_conflicts"]
+    check("ownership_conflict", None if conflicts is None else conflicts > 0, ownership_conflicts=conflicts,
+          reason="not_reported" if conflicts is None else None)
+    progress = tick["progress"]
+    published, first, pending = progress["published_at"], progress["first_tick_at"], progress["pending"]
+    if pending is None:
+        stalled = None
+    elif published is not None:
+        stalled = pending > 0 and now - published >= PROGRESS_STALL_S
+    else:
+        stalled = pending > 0 and first is not None and now - first >= PROGRESS_COVERAGE_S
+    check("controller_progress", stalled, backlog=pending, published_at=published,
+          reason="not_reported" if pending is None else None)
+    p90 = tick["tick_p90_s"]
+    # No tick in the last hour is controller_tick's to report, not a trend.
+    check("tick_trend", p90 is not None and p90 > TICK_TREND_FRACTION * TICK_LIMIT_S, TICK_TREND_HOLD_S,
+          seconds=p90)
 
 
 def metrics(document):
@@ -285,7 +391,8 @@ def metrics(document):
         for state in ("healthy", "pending", "firing", "unknown"):
             lines.append(f'boinc_feed_check{{check={label},state="{state}"}} {int(check["state"] == state)}')
         lines.append(f'boinc_feed_condition_seconds{{check={label}}} {check["duration_s"]}')
-        for field in ("remaining_s", "backlog", "last_workunit_at", "idle_slots", "eligible_results", "seconds"):
+        for field in ("remaining_s", "backlog", "last_workunit_at", "idle_slots", "eligible_results", "seconds",
+                      "percent"):
             if check.get(field) is not None:
                 lines.append(f'boinc_feed_{field}{{check={label}}} {check[field]}')
     return "\n".join(lines) + "\n"

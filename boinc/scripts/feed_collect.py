@@ -53,6 +53,50 @@ class SupplyUnknown(ValueError):
 NO_RECENT_TICK = "no_recent_controller_tick"
 
 
+# A failed tick's error as one fixed class (#1698), first match wins. The health output carries
+# the class and how many runs in a row failed with the same error, never the text: errors can
+# name pages and jobs (the health output carries no transcripts).
+FAILURE_CLASSES = (
+    ("ownership_conflict", r"already allocated to another plan|another plan's journal"
+                           r"|already in this plan with a different message"),
+    ("cap_reached", r"dispatch inventory limit|too many claimed pages|spool entries"),
+    ("uncertain_submission", r"uncertain (BOINC|server) submission"),
+    ("terminal_failure", r"terminal BOINC failure"),
+    ("held_result", r"\bheld\b"),
+    ("lock_busy", r"^BlockingIOError$|another controller may be active"),
+    ("status_fetch", r"server status|BOINC status|server_status"),
+    ("handoff_failed", r"hand-off storage|hand-off JSON"),
+    ("step_failed", r"^(bridge|handoff)/[a-z0-9-]+ failed|cached scan push failed|batch journal inventory failed"),
+)
+FAILURE_REASONS = tuple(name for name, _ in FAILURE_CLASSES) + ("other",)
+# The controller's own warnings and tick fields (#1698), reported beside the tick.
+SIGNAL_FIELDS = ("caps", "ownership_conflicts", "progress", "tick_p90_s")
+PROGRESS_FIELDS = ("published_at", "first_tick_at", "pending")
+TICK_TREND_WINDOW_S = 3600
+MAX_CAPS = 16
+
+
+def failure_reason(error):
+    """The fixed class of a boinc_batch_failure error; anything unmatched is "other"."""
+    if not isinstance(error, str):
+        return "other"
+    for name, pattern in FAILURE_CLASSES:
+        if re.search(pattern, error):
+            return name
+    return "other"
+
+
+def same_error(error):
+    """An error with its numbers and ids masked, so a repeat naming another page still matches."""
+    return re.sub(r"[0-9a-f]{8,}|\d+", "#", error)[:500] if isinstance(error, str) else None
+
+
+def percentile(values, fraction):
+    """Nearest-rank percentile of a non-empty list."""
+    ordered = sorted(values)
+    return ordered[max(0, math.ceil(fraction * len(ordered)) - 1)]
+
+
 class NoRecentTick(SupplyUnknown):
     def __init__(self):
         super().__init__("no recent completed controller tick")
@@ -192,6 +236,27 @@ def validate_cohort(record, now):
         natural(value)
 
 
+def validate_signals(tick, now):
+    """The controller's own signals (#1698), all or none."""
+    caps, progress, p90 = tick["caps"], tick["progress"], tick["tick_p90_s"]
+    if not isinstance(caps, dict) or len(caps) > MAX_CAPS:
+        raise ValueError("invalid controller caps")
+    for name, cap in caps.items():
+        if (not isinstance(name, str) or not NAME.fullmatch(name) or not isinstance(cap, dict)
+                or set(cap) != {"count", "limit"} or natural(cap["limit"]) == 0):
+            raise ValueError("invalid controller cap")
+        natural(cap["count"])
+    if tick["ownership_conflicts"] is not None:
+        natural(tick["ownership_conflicts"])
+    if not isinstance(progress, dict) or set(progress) != set(PROGRESS_FIELDS):
+        raise ValueError("invalid controller progress")
+    for field in PROGRESS_FIELDS:
+        if progress[field] is not None and natural(progress[field]) > now and field != "pending":
+            raise ValueError("future controller progress")
+    if p90 is not None and (type(p90) not in (int, float) or not math.isfinite(p90) or p90 < 0):
+        raise ValueError("invalid controller tick trend")
+
+
 def fresh(document, now, kind):
     if not isinstance(document, dict):
         raise ValueError("source must be an object")
@@ -221,6 +286,13 @@ def fresh(document, now, kind):
             # The evaluator reads both together.
             natural(tick["failed_in_a_row"])
             natural(tick.get("maintenance_failure_at"))
+        if "reason" in tick or "same_error_in_a_row" in tick:
+            # Read together (#1698): a class from the fixed list, never error text.
+            if tick.get("reason") is not None and tick.get("reason") not in FAILURE_REASONS:
+                raise ValueError("invalid controller failure reason")
+            natural(tick.get("same_error_in_a_row"))
+        if any(field in tick for field in SIGNAL_FIELDS):
+            validate_signals(tick, now)
     if kind == "backlog":
         if not isinstance(document["backlogs"], dict):
             raise ValueError("invalid backlogs")
@@ -872,8 +944,15 @@ def controller(unit, maintenance=()):
     # A run's JSON line and systemd's failure lines for it are one run. Each JSON line ends a
     # run; a systemd line without an invocation id joins the run that ended under a minute before.
     runs = {}
+    # The error each run failed with, by the same key (a run's last failure line).
+    errors = {}
+    # The controller's own signals (#1698): the largest share of each lifetime cap it warned
+    # about in the window, each plan's latest tick, when a live plan last published, and the
+    # tick durations of the last hour.
+    caps, plans, published_at, first_live, recent = {}, {}, None, None, []
+    reported = False
 
-    def record(at, failed, invocation, joins=False):
+    def record(at, failed, invocation, joins=False, error=None):
         key = invocation
         if not key and not joins:
             key = "at-%d" % at
@@ -886,9 +965,14 @@ def controller(unit, maintenance=()):
             # A run seen first without its id (an anonymous line under a minute before) is this one.
             near = [k for k, (t, _) in runs.items() if k.startswith("at-") and 0 <= at - t <= TICK_FAILURE_SAME_S]
             if near:
-                runs[key] = runs.pop(max(near, key=lambda k: runs[k][0]))
+                moved = max(near, key=lambda k: runs[k][0])
+                runs[key] = runs.pop(moved)
+                if moved in errors:
+                    errors[key] = errors.pop(moved)
         t, was = runs.get(key, (at, False))
         runs[key] = [max(t, at), was or failed]
+        if error is not None:
+            errors[key] = error
 
     for line in raw.splitlines():
         entry = json.loads(line)
@@ -911,17 +995,39 @@ def controller(unit, maintenance=()):
             event = json.loads(entry.get("MESSAGE", ""))
         except (ValueError, TypeError):
             continue
-        if not isinstance(event, dict) or event.get("event") not in ("boinc_batch_tick", "boinc_batch_failure"):
+        if not isinstance(event, dict) or event.get("event") not in (
+                "boinc_batch_tick", "boinc_batch_failure", "boinc_batch_cap_warning"):
             continue
         # Only the controller's own ticks: a maintenance unit's lines are read for its failures.
         if maintenance and entry.get("_SYSTEMD_UNIT", unit) != unit:
             continue
         finished = int(entry["__REALTIME_TIMESTAMP"]) // 1000000
+        if event["event"] == "boinc_batch_cap_warning":
+            cap, count, limit = event.get("cap"), event.get("count"), event.get("limit")
+            if (isinstance(cap, str) and NAME.fullmatch(cap) and type(count) is int and type(limit) is int
+                    and count >= 0 and limit > 0 and (cap in caps or len(caps) < MAX_CAPS)):
+                worst = caps.get(cap)
+                if worst is None or count * worst["limit"] > worst["count"] * limit:
+                    caps[cap] = {"count": count, "limit": limit}
+            continue
         ok = event["event"] == "boinc_batch_tick"
         invocation = entry.get("_SYSTEMD_INVOCATION_ID") or entry.get("INVOCATION_ID")
         if not ok:
             controller_failure = max(controller_failure, finished)
-            record(finished, True, invocation)
+            record(finished, True, invocation, error=event.get("error"))
+        elif isinstance(event.get("plan"), str) and "ownership_conflicts" in event:
+            reported = True
+            draining = event.get("draining") is True
+            pending = sum(value for value in (event.get("observed_pending"), event.get("collection_backlog"))
+                          if type(value) is int and value >= 0)
+            conflicts = event["ownership_conflicts"]
+            plans[event["plan"][:64]] = {"draining": draining, "pending": pending,
+                                         "conflicts": conflicts if type(conflicts) is int and conflicts >= 0 else 0}
+            if not draining:
+                first_live = finished if first_live is None else min(first_live, finished)
+                published = event.get("newly_published")
+                if type(published) is int and published > 0:
+                    published_at = finished
         timings = event.get("timings")
         if not isinstance(timings, dict):
             continue
@@ -935,16 +1041,35 @@ def controller(unit, maintenance=()):
             controller_failure = max(controller_failure, finished)
         if ok:  # a failure's line was recorded above
             record(finished, seconds > TICK_LIMIT_S, invocation)
+            if time.time() - finished <= TICK_TREND_WINDOW_S:
+                recent.append(seconds)
         latest = {"ok": ok, "seconds": seconds, "finished_at": finished}
-    # Failed or slow runs since the last good one, newest first: feed_status fires on two.
-    streak = 0
-    for _, failed in sorted(runs.values(), reverse=True):
-        if not failed:
+    # Failed or slow runs since the last good one, newest first: feed_status fires on two. The
+    # newest error among them names the reason, and the runs that failed with that same error
+    # (numbers masked), newest first until another error, are same_error_in_a_row: three is a
+    # sticky failure (#1698). A slow run or one killed without a line has no error and is skipped.
+    streak, reason, repeats, first, counting = 0, None, 0, None, True
+    for key in sorted(runs, key=lambda k: runs[k][0], reverse=True):
+        if not runs[key][1]:
             break
         streak += 1
+        error = same_error(errors.get(key))
+        if error is None or not counting:
+            continue
+        if first is None:
+            first, reason = error, failure_reason(errors[key])
+        counting = error == first
+        repeats += counting
+    live = [plan for plan in plans.values() if not plan["draining"]]
     failures = {"last_failure_at": max(controller_failure, maintenance_failure),
                 "controller_failure_at": controller_failure, "maintenance_failure_at": maintenance_failure,
-                "failed_in_a_row": streak}
+                "failed_in_a_row": streak, "reason": reason, "same_error_in_a_row": repeats,
+                "caps": caps,
+                # None: no tick line in the window reports it (a scheduler from before #1685).
+                "ownership_conflicts": max((p["conflicts"] for p in live), default=0) if reported else None,
+                "progress": {"published_at": published_at, "first_tick_at": first_live,
+                             "pending": max((p["pending"] for p in live), default=0) if reported else None},
+                "tick_p90_s": round(percentile(recent, 0.9), 3) if recent else None}
     status = dict(line.split("=", 1) for line in run([
         "systemctl", "show", unit, "-p", "LoadState", "-p", "SubState", "-p", "Result",
         "-p", "ExecMainStartTimestampMonotonic", "-p", "ExecMainExitTimestampMonotonic",
@@ -1356,6 +1481,11 @@ def collect(config):
     admission = config.get("qwen_admission", False)
     if type(admission) is not bool:
         raise ValueError("qwen_admission must be true or false")
+    # Opt-in (#1698): controller_cap, ownership_conflict, controller_progress and tick_trend from the
+    # controller source's signals. Turn it on only once the dashboard accepts those checks.
+    signals = config.get("controller_signals", False)
+    if type(signals) is not bool:
+        raise ValueError("controller_signals must be true or false")
     locations = {"server": config["server"], "controller": config["controller"]}
     # The backlog source is optional until it is deployed: unknown, never healthy.
     if config.get("backlog") is not None:
@@ -1363,7 +1493,8 @@ def collect(config):
     allowed = own_clients(config)
     clients = list(allowed)
     locations.update({name: location for name, (location, _) in allowed.items()})
-    facts, documents = {"sources": {}, "errors": [], "qwen_admission": admission}, {}
+    facts, documents = {"sources": {}, "errors": [], "qwen_admission": admission,
+                        "controller_signals": signals}, {}
     if "backlog" not in locations:
         facts["sources"]["backlog"] = {"observed_at": None, "state": "unknown", "reason": "not_configured"}
         facts["errors"].append("backlog")

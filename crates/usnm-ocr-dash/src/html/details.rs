@@ -165,7 +165,35 @@ fn feed_panel(v: &crate::feed::FeedView, o: &mut String) {
                     format!("{eligible} modeled candidates / {idle} resource-eligible own slots")
                 })
                 .or_else(|| check.reason.clone()),
-            "controller_tick" => check.seconds.map(|n| format!("{n:.0}s (limit 900s)")),
+            "controller_tick" => {
+                let seconds = check.seconds.map(|n| format!("{n:.0}s (limit 900s)"));
+                match (&check.reason, check.same_error_in_a_row) {
+                    (Some(reason), Some(repeats)) if repeats > 0 => {
+                        let sticky = if check.sticky == Some(true) {
+                            ", sticky"
+                        } else {
+                            ""
+                        };
+                        Some(format!(
+                            "{}{reason} ({repeats} in a row{sticky})",
+                            seconds.map(|s| s + "; ").unwrap_or_default()
+                        ))
+                    }
+                    _ => seconds,
+                }
+            }
+            "controller_cap" => check
+                .cap
+                .as_ref()
+                .zip(check.percent)
+                .map(|(cap, percent)| format!("{cap} at {percent:.1}% (alert at 85%)")),
+            "ownership_conflict" => check
+                .ownership_conflicts
+                .map(|n| format!("{n} claimed pages passed over")),
+            "controller_progress" => check.backlog.map(|n| format!("{n} pending")),
+            "tick_trend" => check
+                .seconds
+                .map(|n| format!("p90 {n:.0}s (warn over 630s)")),
             "usnm_ocr_no_work" | "usnm_qwen_no_work" => {
                 check.backlog.map(|n| format!("{n} backlogged"))
             }
@@ -179,6 +207,14 @@ fn feed_panel(v: &crate::feed::FeedView, o: &mut String) {
                 }
             }),
             _ => None,
+        };
+        // An unknown check names the source it waits on (#1698).
+        let detail = match (&check.state, &check.cause) {
+            (State::Unknown, Some(cause)) => Some(match detail {
+                Some(detail) => format!("{detail}; waits on {cause}"),
+                None => format!("waits on {cause}"),
+            }),
+            _ => detail,
         };
         let _ = write!(
             o,

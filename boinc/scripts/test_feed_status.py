@@ -83,7 +83,6 @@ class MainTest(unittest.TestCase):
         lines = module.split("var lines = '''", 1)[1].split("'''", 1)[0]
         events = lines.split("let FeedEvents = FeedLines", 1)[1]
         self.assertIn("| where Feed.event == 'boinc_feed_health';", events)
-        self.assertIn("FeedEvents\n| summarize arg_max(TimeGenerated, *)", events)
         self.assertIn("| where Feed.schema_version == 1", lines)
         # Without a Syslog table the missing rule must still count zero events.
         self.assertIn("(datatable(TimeGenerated: datetime, SyslogMessage: string)[])",
@@ -95,17 +94,33 @@ class MainTest(unittest.TestCase):
         self.assertIn("| project Check = 'delivery_test'", test_branch)
         self.assertNotIn("FeedLines", missing.split("]", 1)[0])
         self.assertNotIn("delivery", missing.split("]", 1)[0])
+        self.assertIn("FeedEvents\n| summarize arg_max(TimeGenerated, *)", missing)
 
     def test_condition_alert_holds_unknown_behind_collection(self):
         # One failed source read must not email every check it turned unknown:
         # unknown counts only once the evaluator's held collection check fires.
         module = (ROOT / "infra/modules/boinc-feed-alerts.bicep").read_text()
         condition = module.split("var queries = [", 1)[1].split("name: alertNames.missing", 1)[0]
-        latest = condition.split("| union (", 1)[0]
-        self.assertNotIn("in ('firing', 'unknown')", latest)
-        self.assertIn("where tostring(Held.code) == 'collection'", latest)
-        self.assertIn("(tostring(Check.state) == 'unknown' and CollectionFiring)", latest)
+        health = condition.split("| union (", 1)[0]
+        self.assertNotIn("in ('firing', 'unknown')", health)
+        self.assertIn("where tostring(Held.code) == 'collection'", health)
+        self.assertIn("(State == 'unknown' and CollectionFiring)", health)
+        # #1698: unknown rows count over the same ten minutes as firing ones, so they don't flap.
+        self.assertIn("FeedEvents\n| where Observed between (ago(10m) .. now())", health)
+        self.assertNotIn("ago(3m)", health)
         self.assertEqual(F.COLLECTION_HOLD_S, 180)
+
+    def test_condition_alert_raises_one_row_per_dead_source_and_names_the_tick_reason(self):
+        module = (ROOT / "infra/modules/boinc-feed-alerts.bicep").read_text()
+        health = module.split("var queries = [", 1)[1].split("name: alertNames.missing", 1)[0]
+        health = health.split("| union (", 1)[0]
+        self.assertIn("State == 'unknown' and isnotempty(Cause), Cause,", health)
+        self.assertIn("Code == 'controller_tick' and isnotempty(Reason), strcat(Code, ':', Reason),", health)
+        # collection only when something it counts has no cause row; an older evaluator's line
+        # (no uncovered) still sends it.
+        self.assertIn("(Code != 'collection' or Uncovered > 0)", health)
+        self.assertIn("iff(isnull(Held.uncovered), 1, toint(Held.uncovered))", health)
+        self.assertTrue(health.rstrip().endswith("| distinct Check"))
 
 
 class DurationTest(unittest.TestCase):
@@ -201,8 +216,21 @@ class DurationTest(unittest.TestCase):
     def test_a_maintenance_failure_or_a_tick_running_too_long_fires_at_once(self):
         checks = self.ticks((0, {"maintenance_failure_at": NOW - 30}), (60, {"maintenance_failure_at": NOW - 30}))
         self.assertEqual([c["state"] for c in checks], ["firing", "healthy"])
-        checks = self.ticks((0, {"ok": None, "seconds": 901}), (60, {"ok": None, "seconds": 900}))
+        checks = self.ticks((0, {"ok": None, "seconds": 1801}), (60, {"ok": None, "seconds": 1800}))
         self.assertEqual([c["state"] for c in checks], ["firing", "healthy"])
+
+    def test_a_running_tick_past_the_limit_waits_for_the_hang_limit(self):
+        # #1698: an hourly 20-minute tick fired every hour. Still running past 15 minutes waits;
+        # past 30 it may never finish and fires at once.
+        self.assertEqual(F.TICK_HANG_S, 2 * F.TICK_LIMIT_S)
+        checks = self.ticks((0, {"ok": None, "seconds": 1200}), (60, {"ok": None, "seconds": 1260}),
+                            (600, {"ok": None, "seconds": F.TICK_HANG_S + 1}))
+        self.assertEqual([c["state"] for c in checks], ["healthy", "healthy", "firing"])
+        # A tick that finished slow counts as one of two in a row, as before.
+        checks = self.ticks((0, {"seconds": 1200, "failed_in_a_row": 1}),
+                            (300, {"ok": None, "seconds": 1200, "failed_in_a_row": 1}),
+                            (600, {"seconds": 1200, "failed_in_a_row": 2}))
+        self.assertEqual([c["state"] for c in checks], ["healthy", "healthy", "firing"])
 
     def test_a_collector_without_the_streak_fires_on_any_failure(self):
         self.facts["tick"] = {"ok": False, "seconds": 1, "finished_at": NOW, "last_failure_at": NOW}
@@ -224,11 +252,9 @@ class DurationTest(unittest.TestCase):
         # Contract for the retained-history branch; actual workspace query delivery
         # remains a rollout gate, not a local Kusto execution claim.
         query = (ROOT / "infra/modules/boinc-feed-alerts.bicep").read_text()
-        retained = query.split("| union (", 1)[1].split("| distinct Check", 1)[0]
+        retained = query.split("var queries = [", 1)[1].split("| distinct Check", 1)[0]
         self.assertIn("Observed between (ago(10m) .. now())", retained)
-        self.assertIn("| where Check.state == 'firing'", retained)
-        self.assertIn("| project Check = tostring(Check.code)", retained)
-        self.assertNotIn("controller_tick", retained)
+        self.assertIn("(State == 'firing' and (Code != 'collection' or Uncovered > 0))", retained)
 
     def test_feeder_allocation_is_opt_in_and_drift_fires_after_two_guard_runs(self):
         self.assertNotIn("feeder_allocation", self.tick(0))
@@ -281,7 +307,11 @@ class DurationTest(unittest.TestCase):
         self.assertEqual(checks["collection"]["state"], "firing")
         self.tick(1400)
         self.assertEqual(self.tick(1460)["collection"]["state"], "healthy")
-        for at, config in ((1520, "a"), (1580, "b"), (1640, "c"), (1700, "d")):  # configs changing every minute
+        # The hold runs down at half rate (#1698): six healthy minutes clear a full one.
+        for at in range(1520, 1880, 60):
+            self.assertEqual(self.tick(at)["collection"]["state"], "healthy")
+        self.assertIsNone(self.state["collection_elapsed"])
+        for at, config in ((1880, "a"), (1940, "b"), (2000, "c"), (2060, "d")):  # configs changing every minute
             checks = self.tick(at, config_id=config)
         self.assertEqual((checks["collection"]["state"], checks["collection"]["duration_s"]), ("firing", 180))
 
@@ -402,6 +432,206 @@ class DurationTest(unittest.TestCase):
         self.state = {"schema_version": 1, "time": "broken", "conditions": []}
         collection = self.tick(0)["collection"]
         self.assertEqual((collection["state"], collection["reset"]), ("pending", True))
+
+
+class ControllerSignalsTest(unittest.TestCase):
+    """#1698: the failure reason on controller_tick, and the opt-in controller signal checks."""
+
+    def setUp(self):
+        self.state = {}
+        self.signals = {"caps": {}, "ownership_conflicts": 0,
+                        "progress": {"published_at": NOW - 300, "first_tick_at": NOW - 7000, "pending": 40},
+                        "tick_p90_s": 120.0}
+        self.tick = {"ok": True, "seconds": 30, "finished_at": NOW, "maintenance_failure_at": 0,
+                     "failed_in_a_row": 0, "reason": None, "same_error_in_a_row": 0, **self.signals}
+        self.facts = {"enabled_until": NOW + 86400, "backlogs": {"usnm_ocr": 0, "usnm_qwen": 0},
+                      "last_workunits": {"usnm_ocr": NOW, "usnm_qwen": NOW},
+                      "supply": {"cpu": {"idle": 0, "eligible": 0}, "gpu": {"idle": 0, "eligible": 0}},
+                      "tick": self.tick, "controller_signals": True}
+
+    def checks(self, elapsed=0, **overrides):
+        args = dict(now=NOW + elapsed, monotonic=10000 + elapsed, boot_id="boot", config_id="cfg")
+        args.update(overrides)
+        self.document, self.state = F.evaluate(self.facts, self.state, **args)
+        self.state = json.loads(json.dumps(self.state))
+        return {c["code"]: c for c in self.document["checks"]}
+
+    def test_the_reason_and_a_sticky_failure_ride_on_controller_tick(self):
+        self.tick.update(ok=False, failed_in_a_row=2, reason="cap_reached", same_error_in_a_row=2)
+        checked = self.checks()["controller_tick"]
+        self.assertEqual((checked["state"], checked["reason"], checked["same_error_in_a_row"], checked["sticky"]),
+                         ("firing", "cap_reached", 2, False))
+        self.tick.update(failed_in_a_row=3, same_error_in_a_row=3)
+        self.assertIs(self.checks(60)["controller_tick"]["sticky"], True)
+        # A collector from before #1698 has no reason: none is shown, nothing else changes.
+        for key in ("reason", "same_error_in_a_row"):
+            del self.tick[key]
+        checked = self.checks(120)["controller_tick"]
+        self.assertEqual((checked["state"], checked["reason"], checked["sticky"]), ("firing", None, False))
+
+    def test_signal_checks_are_opt_in(self):
+        del self.facts["controller_signals"]
+        self.assertFalse(set(F.CONTROLLER_SIGNAL_CHECKS) & set(self.checks()))
+        self.facts["controller_signals"] = True
+        checks = self.checks(60)
+        self.assertEqual({code: checks[code]["state"] for code in F.CONTROLLER_SIGNAL_CHECKS},
+                         dict.fromkeys(F.CONTROLLER_SIGNAL_CHECKS, "healthy"))
+        self.assertEqual(checks["collection"]["state"], "healthy")
+
+    def test_a_collector_without_signals_is_not_reported_and_no_controller_source_is_unknown(self):
+        for field in F.SIGNAL_FIELDS:
+            del self.tick[field]
+        checks = self.checks()
+        for code in F.CONTROLLER_SIGNAL_CHECKS:
+            self.assertEqual((checks[code]["state"], checks[code]["reason"]), ("unknown", "not_reported"))
+            self.assertNotIn("cause", checks[code])
+        del self.facts["tick"]
+        self.facts["sources"] = {"controller": {"observed_at": None, "state": "unknown",
+                                                "reason": "unavailable_or_invalid"}}
+        self.facts["errors"] = ["controller"]
+        checks = self.checks(60)
+        for code in ("controller_tick", *F.CONTROLLER_SIGNAL_CHECKS):
+            self.assertEqual((checks[code]["state"], checks[code]["cause"]), ("unknown", "source:controller"))
+        self.assertEqual(checks["collection"]["uncovered"], 0)
+
+    def test_a_cap_fires_at_85_percent_and_names_the_worst(self):
+        self.tick["caps"] = {"claims": {"count": 8100, "limit": 10000},
+                             "dispatch_journals": {"count": 8499, "limit": 10000}}
+        checked = self.checks()["controller_cap"]
+        self.assertEqual((checked["state"], checked["cap"], checked["percent"]), ("healthy", "dispatch_journals", 85.0))
+        self.tick["caps"]["dispatch_journals"]["count"] = 8500
+        checked = self.checks(60)["controller_cap"]
+        self.assertEqual((checked["state"], checked["percent"]), ("firing", 85.0))
+        self.tick["caps"]["bridge_journals"] = {"count": 9608, "limit": 10000}
+        checked = self.checks(120)["controller_cap"]
+        self.assertEqual((checked["state"], checked["cap"], checked["percent"]), ("firing", "bridge_journals", 96.1))
+        self.assertIn('boinc_feed_percent{check="controller_cap"} 96.1', F.metrics(self.document))
+
+    def test_ownership_conflicts_fire_at_once(self):
+        self.tick["ownership_conflicts"] = 3
+        checked = self.checks()["ownership_conflict"]
+        self.assertEqual((checked["state"], checked["ownership_conflicts"]), ("firing", 3))
+        self.tick["ownership_conflicts"] = 0
+        self.assertEqual(self.checks(60)["ownership_conflict"]["state"], "healthy")
+        self.tick["ownership_conflicts"] = None
+        self.assertEqual(self.checks(120)["ownership_conflict"]["state"], "unknown")
+
+    def test_no_publication_for_two_hours_with_pending_work_fires(self):
+        progress = self.tick["progress"]
+        progress.update(published_at=NOW - F.PROGRESS_STALL_S + 1)
+        self.assertEqual(self.checks()["controller_progress"]["state"], "healthy")
+        progress.update(published_at=NOW - F.PROGRESS_STALL_S)
+        self.assertEqual(self.checks(0)["controller_progress"]["state"], "firing")
+        # None in the window: only a window that reaches back far enough proves it.
+        progress.update(published_at=None, first_tick_at=NOW - F.PROGRESS_COVERAGE_S + 1)
+        self.assertEqual(self.checks(0)["controller_progress"]["state"], "healthy")
+        progress.update(first_tick_at=NOW - F.PROGRESS_COVERAGE_S)
+        self.assertEqual(self.checks(0)["controller_progress"]["state"], "firing")
+        # Nothing pending is nothing to publish.
+        progress.update(pending=0)
+        self.assertEqual(self.checks(0)["controller_progress"]["state"], "healthy")
+        # A rotation window holds it, and it fires at the end if still true.
+        progress.update(pending=5)
+        rotation = {"reason": "#529 claim", "started_at": NOW, "until": NOW + 120}
+        checked = self.checks(60, rotation=rotation)["controller_progress"]
+        self.assertEqual((checked["state"], checked["rotation_until"]), ("pending", NOW + 120))
+        self.assertEqual(self.checks(120)["controller_progress"]["state"], "firing")
+
+    def test_a_slow_tick_trend_fires_after_an_hour(self):
+        self.tick["tick_p90_s"] = 0.7 * F.TICK_LIMIT_S
+        self.assertEqual(self.checks()["tick_trend"]["state"], "healthy")
+        self.tick["tick_p90_s"] = 0.7 * F.TICK_LIMIT_S + 1
+        for at in range(0, F.TICK_TREND_HOLD_S, 60):
+            checked = self.checks(at)["tick_trend"]
+        self.assertEqual((checked["state"], checked["seconds"]), ("pending", 631.0))
+        self.assertEqual(self.checks(F.TICK_TREND_HOLD_S)["tick_trend"]["state"], "firing")
+        self.tick["tick_p90_s"] = None  # no tick in the hour is controller_tick's to report
+        self.assertEqual(self.checks(F.TICK_TREND_HOLD_S + 60)["tick_trend"]["state"], "healthy")
+
+
+class CauseTest(unittest.TestCase):
+    """#1698: an unknown check names the source it waits on, so one dead source is one alert."""
+
+    def setUp(self):
+        self.facts = {"backlogs": {"usnm_ocr": 0, "usnm_qwen": 0},
+                      "tick": {"ok": True, "seconds": 30, "finished_at": NOW, "maintenance_failure_at": 0,
+                               "failed_in_a_row": 0},
+                      "sources": {"server": {"observed_at": None, "state": "unknown", "reason": "unavailable_or_invalid"},
+                                  "controller": {"observed_at": NOW, "state": "fresh"},
+                                  "backlog": {"observed_at": NOW, "state": "fresh"},
+                                  "client_0": {"observed_at": NOW, "state": "fresh"}},
+                      "errors": ["server"]}
+
+    def evaluate(self, previous=None):
+        document, state = F.evaluate(self.facts, previous or {}, NOW, 10000, "boot", "cfg")
+        return {c["code"]: c for c in document["checks"]}, state
+
+    def test_a_dead_server_tags_every_check_it_feeds_and_covers_collection(self):
+        checks, _ = self.evaluate()
+        server = ("qwen_refill_window", "usnm_ocr_no_work", "usnm_qwen_no_work", "cpu_shortage", "gpu_shortage")
+        for code in server:
+            self.assertEqual((checks[code]["state"], checks[code]["cause"]), ("unknown", "source:server"))
+        self.assertEqual(checks["controller_tick"]["state"], "healthy")
+        self.assertNotIn("cause", checks["controller_tick"])
+        # The first evaluation is also a reset, which no cause row names.
+        self.assertEqual(checks["collection"]["uncovered"], 1)
+        _, state = self.evaluate()
+        document, _ = F.evaluate(self.facts, state, NOW + 60, 10060, "boot", "cfg")
+        collection = next(c for c in document["checks"] if c["code"] == "collection")
+        self.assertEqual((collection["state"], collection["uncovered"]), ("pending", 0))
+
+    def test_backlog_and_clients_and_errors_no_source_explains(self):
+        self.facts["sources"]["server"] = {"observed_at": NOW, "state": "fresh"}
+        self.facts.update(enabled_until=NOW + 86400, last_workunits={"usnm_ocr": NOW, "usnm_qwen": NOW})
+        self.facts["sources"]["backlog"] = {"observed_at": None, "state": "unknown", "reason": "not_configured"}
+        self.facts["sources"]["client_0"] = {"observed_at": None, "state": "unknown", "reason": "unavailable_or_invalid"}
+        del self.facts["backlogs"]
+        self.facts["errors"] = ["backlog", "client_0", "gpu_gpu_memory_packing"]
+        checks, state = self.evaluate()
+        self.assertEqual(checks["usnm_ocr_no_work"]["cause"], "source:backlog")
+        self.assertEqual(checks["cpu_shortage"]["cause"], "source:clients")
+        checks, _ = self.evaluate({**state, "time": NOW - 60, "monotonic": 9940})
+        # The GPU model's own unknown is in no cause row: collection still names it.
+        self.assertEqual(checks["collection"]["uncovered"], 1)
+        # Under qwen_admission the Qwen check doesn't wait on the backlog source.
+        self.facts["qwen_admission"] = True
+        checks, _ = self.evaluate()
+        self.assertEqual(checks["usnm_qwen_no_work"]["state"], "unknown")
+        self.assertNotIn("cause", checks["usnm_qwen_no_work"])
+
+    def test_no_own_clients_configured_is_the_clients_cause(self):
+        self.facts["sources"]["server"] = {"observed_at": NOW, "state": "fresh"}
+        self.facts.update(enabled_until=NOW + 86400, last_workunits={"usnm_ocr": NOW, "usnm_qwen": NOW},
+                          supply_errors={"cpu": "no_own_clients_configured", "gpu": "no_own_clients_configured"},
+                          errors=["cpu_no_own_clients_configured", "gpu_no_own_clients_configured"])
+        del self.facts["sources"]["client_0"]
+        _, state = self.evaluate()
+        checks, _ = self.evaluate({**state, "time": NOW - 60, "monotonic": 9940})
+        self.assertEqual(checks["gpu_shortage"]["cause"], "source:clients")
+        self.assertEqual(checks["collection"]["uncovered"], 0)
+
+
+class CollectionDecayTest(unittest.TestCase):
+    """#1698: a healthy evaluation runs the collection hold down at half rate, not to zero."""
+
+    def run_pattern(self, pattern, minutes):
+        facts = {"enabled_until": NOW + 86400, "backlogs": {"usnm_ocr": 0, "usnm_qwen": 0},
+                 "last_workunits": {"usnm_ocr": NOW, "usnm_qwen": NOW},
+                 "supply": {"cpu": {"idle": 0, "eligible": 0}, "gpu": {"idle": 0, "eligible": 0}}}
+        state, states = {}, []
+        for minute in range(minutes):
+            healthy = pattern[minute % len(pattern)] == "h"
+            tick = {"ok": True, "seconds": 1, "finished_at": NOW, "maintenance_failure_at": 0,
+                    "failed_in_a_row": 0}
+            document, state = F.evaluate(facts | ({"tick": tick} if healthy else {}), state,
+                                         NOW + 60 * minute, 10000 + 60 * minute, "boot", "cfg")
+            states.append(next(c for c in document["checks"] if c["code"] == "collection")["state"])
+        return states
+
+    def test_a_source_down_most_minutes_fires_and_single_blips_never_do(self):
+        self.assertIn("firing", self.run_pattern("huu", 30))
+        self.assertNotIn("firing", self.run_pattern("hhhhhhhhhu", 120))
+        self.assertNotIn("firing", self.run_pattern("hhhhhu", 120))
 
 
 if __name__ == "__main__":
