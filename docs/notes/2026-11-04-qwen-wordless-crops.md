@@ -2,7 +2,7 @@
 
 **Status:** measured; the pair log now marks these crops, no rule changed, a decision is needed · **Date:** 4 November 2026 · **Measured on:** the on-prem BOINC server's `qwen/pairs.jsonl` and retained results (`qwen/seen`) for the pairs logged from 28 October 22:16 to 4 November 22:16 UTC, joined to `workunit.canonical_resultid` in a read-only transaction · **Code:** `crates/usnm-boinc/src/qwen/validate.rs`; `qwen::agree` and `boinc::dice` in `usnm-ocr-contract` · **Issues:** #1463, #1420, #1434
 
-**Outcome:** the pair-log field merged in PR #1504 on 4 November 2026 and is in the server image rolled on 5 November 2026 (#1449) by commit ancestry. The decision on #1463 was still open on 10 November 2026.
+**Outcome:** the pair-log field merged in PR #1504 on 4 November 2026 and, judging by commit ancestry, the server image rolled on 5 November 2026 (#1449) includes it. The decision on #1463 was still open on 10 November 2026.
 
 ## The question
 

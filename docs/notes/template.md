@@ -2,7 +2,7 @@
 
 **Status:** measured; nothing changed / measured, not shipped / shipped in pages-vYYYYMMDD-n or PR #… / code merged, not deployed · **Date:** D Month YYYY · **Measured on:** the index version, commit, database read or sample every number below comes from, with when it was read · **Code:** the crates, scripts and design sections · **Issues:** #…
 
-When the subject changes later (shipped, deployed, retired, superseded), add an **Outcome:** line under the status line with the date and a link to the PR, the current document or the later note. Leave the rest of the note as it was.
+When the subject changes later (shipped, deployed, retired, superseded), add an **Outcome:** line under the title or status line with the date and a link to the PR, the current document or the later note. Leave the rest of the note as it was.
 
 ## The question
 
