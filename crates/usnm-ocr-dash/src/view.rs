@@ -233,7 +233,7 @@ pub const FETCH_FRESH_SECS: i64 = 900;
 /// ten minutes).
 pub const SSET_FRESH: Duration = Duration::minutes(25);
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct SsetView {
     pub name: String,
     pub received: DateTime<Utc>,

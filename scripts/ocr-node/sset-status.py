@@ -14,7 +14,11 @@ fetched as one document and isn't counted), the rates per hour and an estimate o
 document to hundreds, so the estimate goes by documents: the volumes left
 times the average documents a volume has, at the documents-per-hour rate so
 far.
-Sets "finished" when the --done marker exists. With --push-url it also
+Sets "finished" when the --done marker exists, and then takes the totals
+from the marker (the fetch's own record of the run that finished) instead
+of the journal: the last journal sample can be from before the last
+volumes. "series_volumes" is every volume in the series, "already" those
+earlier runs wrote. With --push-url it also
 PUTs the status to the OCR dashboard (usnm-ocrdash), which takes it from this
 node's address only. Prints it too. usnm-sset-status.timer runs it every 10 minutes.
 """
@@ -49,7 +53,40 @@ def previous(path: str) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def finished_totals(done: str) -> dict:
+    """The totals the done marker records (`serialset::write_done`), as the
+    status's own fields: nothing is left once it exists. A marker that
+    can't be read gives nothing, and the journal's totals stand."""
+    marker = previous(done)
+    if "written" not in marker:
+        return {}
+    written = int(marker.get("written", 0))
+    empty = int(marker.get("empty_volumes", 0))
+    return {
+        "to_fetch": written + empty,
+        "curated": written,
+        "empty": empty,
+        "incomplete": 0,
+        "pages": int(marker.get("pages", 0)),
+        "current_volume": None,
+        "left": 0,
+        "documents_left_estimate": 0,
+        "eta_hours": None,
+        "series_volumes": int(marker.get("volumes", 0)),
+        "already": int(marker.get("already", 0)),
+        "finished_at": marker.get("finished_at"),
+    }
+
+
 def status(unit: str, done: str, out_path: str) -> dict:
+    out = journal_status(unit, done, out_path)
+    if out["finished"]:
+        out.update(finished_totals(done))
+        out["at"] = datetime.now(timezone.utc).isoformat()
+    return out
+
+
+def journal_status(unit: str, done: str, out_path: str) -> dict:
     since = started(unit)
     active = subprocess.run(["systemctl", "is-active", unit], capture_output=True, text=True).stdout.strip()
     out = {

@@ -34,6 +34,12 @@ pub struct SsetStatus {
     pub left: u64,
     pub documents_left_estimate: u64,
     pub eta_hours: Option<f64>,
+    /// From the `done` marker, once the fetch finished: every volume in the
+    /// series, those earlier runs wrote, and when the last run finished.
+    /// The other counts are then the marker's too, for that last run.
+    pub series_volumes: u64,
+    pub already: u64,
+    pub finished_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone)]
@@ -83,5 +89,14 @@ mod tests {
         // A stopped unit has little else.
         let s = parse(br#"{"unit":"u","active":"inactive","started":null}"#).unwrap();
         assert_eq!(s.to_fetch, 0);
+        // A finished one carries the done marker's totals.
+        let s = parse(
+            br#"{"unit":"u","active":"inactive","finished":true,"to_fetch":512,"curated":511,
+            "empty":1,"pages":611185,"left":0,"eta_hours":null,"series_volumes":11919,
+            "already":11407,"finished_at":"2026-11-06T17:42:05.825052050Z"}"#,
+        )
+        .unwrap();
+        assert_eq!((s.series_volumes, s.already, s.left), (11919, 11407, 0));
+        assert!(s.finished_at.is_some());
     }
 }

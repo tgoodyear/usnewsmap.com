@@ -411,7 +411,10 @@ pub fn steps(v: &View) -> BTreeMap<&'static str, StepState> {
                 format!("{} volumes, {} pages", int(st.curated), int(st.pages)),
             ),
         );
-        if st.started.is_some_and(|at| at <= v.generated_at)
+        // A finished fetch has no rate: its run-to-date average would only
+        // fall as time passes.
+        if x.state != "finished"
+            && st.started.is_some_and(|at| at <= v.generated_at)
             && st.volumes_per_hour.is_finite()
             && st.volumes_per_hour >= 0.0
         {
@@ -991,6 +994,10 @@ mod tests {
         assert_eq!(st["sset-fetch"].rate.as_deref(), Some("16.2 volumes/h*"));
         assert!(st["sset-fetch"].rate_scope.contains("run-to-date"));
         assert!(st["sset-curated"].status_line().contains("rate unknown"));
+        v.serial_set[0].state = "finished".into();
+        assert!(steps(&v)["sset-fetch"].rate.is_none());
+        assert_eq!(steps(&v)["sset-fetch"].class, "done");
+        v.serial_set[0].state = "running".into();
         v.serial_set[0].status.volumes_per_hour = f64::NAN;
         assert!(steps(&v)["sset-fetch"].rate.is_none());
         v.serial_set[0].stale = true;

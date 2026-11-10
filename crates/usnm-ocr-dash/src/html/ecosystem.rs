@@ -285,6 +285,32 @@ pub(super) fn ecosystem_panel(v: &View) -> String {
             "Serial Set collection has no fresh report.",
             "This source extracts existing PDF text; it does not use the OCR queue.",
         );
+    } else if let Some(x) = finished_sset(&ssets) {
+        // The done marker's record of the run that finished, not the last
+        // progress sample, which can be from before its last volumes. One
+        // report, the newest: reports can describe the same collection, so
+        // summing them would count it twice.
+        let st = &x.status;
+        summary_card(
+            &mut o,
+            "Other source acquisition",
+            &format!(
+                "Serial Set collection complete: {} volumes",
+                int(st.series_volumes)
+            ),
+            &format!(
+                "{} volumes already processed by earlier runs; the last run wrote {} \
+                ({} extracted pages) and left out {} as empty. Nothing is left to fetch.{}",
+                int(st.already),
+                int(st.curated),
+                int(st.pages),
+                int(st.empty),
+                st.finished_at
+                    .map_or_else(String::new, |t| format!(" Finished {}.", time(t)))
+            ),
+            "Totals from the fetch's done marker. GPO adds volumes, so a monthly fetch may \
+             add more. PDF text extraction is separate from OCR and search publication.",
+        );
     } else {
         let done: u64 = ssets.iter().map(|s| s.done).sum();
         let total: u64 = ssets.iter().map(|s| s.status.to_fetch).sum();
@@ -394,4 +420,17 @@ pub(super) fn ecosystem_panel(v: &View) -> String {
     }
     o.push_str("</section>");
     o
+}
+
+/// The report to show a finished Serial Set by: when every fresh report is
+/// finished and carries the done marker's totals (a marker that couldn't be
+/// read leaves `series_volumes` at 0), the one that finished last.
+fn finished_sset<'a>(ssets: &[&'a crate::view::SsetView]) -> Option<&'a crate::view::SsetView> {
+    if !ssets
+        .iter()
+        .all(|s| s.state == "finished" && s.status.series_volumes > 0)
+    {
+        return None;
+    }
+    ssets.iter().copied().max_by_key(|s| s.status.finished_at)
 }

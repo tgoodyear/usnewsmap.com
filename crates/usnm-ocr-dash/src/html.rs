@@ -278,6 +278,57 @@ mod tests {
     }
 
     #[test]
+    fn a_finished_serial_set_reads_as_complete_with_the_done_markers_totals() {
+        let mut v = summary_view();
+        let status = crate::sset::SsetStatus {
+            finished: true,
+            to_fetch: 512,
+            curated: 511,
+            empty: 1,
+            pages: 611_185,
+            series_volumes: 11_919,
+            already: 11_407,
+            finished_at: Some(v.generated_at - chrono::Duration::days(4)),
+            ..Default::default()
+        };
+        v.serial_set.push(crate::view::SsetView {
+            name: "usnm-sset".into(),
+            received: v.generated_at,
+            age_secs: 0,
+            stale: false,
+            state: "finished".into(),
+            done: 512,
+            status,
+        });
+        let html = ecosystem_panel(&v);
+        assert!(html.contains("Serial Set collection complete: 11,919 volumes"));
+        assert!(html.contains("11,407 volumes already processed by earlier runs"));
+        assert!(html
+            .contains("the last run wrote 511 (611,185 extracted pages) and left out 1 as empty"));
+        assert!(html.contains("Nothing is left to fetch."));
+        assert!(!html.contains("planned volumes reported"));
+        // Two reports of the same collection: one is shown, not their sum.
+        let mut older = v.serial_set[0].clone();
+        older.name = "another".into();
+        older.status.finished_at = Some(v.generated_at - chrono::Duration::days(9));
+        v.serial_set.push(older);
+        let html = ecosystem_panel(&v);
+        assert!(html.contains("Serial Set collection complete: 11,919 volumes"));
+        assert!(!html.contains("23,838"));
+        v.serial_set.pop();
+        // Finished, but the marker couldn't be read: no totals, so the
+        // progress wording, not "complete: 0 volumes".
+        v.serial_set[0].status.series_volumes = 0;
+        let html = ecosystem_panel(&v);
+        assert!(!html.contains("collection complete"));
+        assert!(html.contains("512 of 512 planned volumes reported"));
+        v.serial_set[0].status.series_volumes = 11_919;
+        // Still running: the progress wording.
+        v.serial_set[0].state = "running".into();
+        assert!(ecosystem_panel(&v).contains("512 of 512 planned volumes reported"));
+    }
+
+    #[test]
     fn ecosystem_summaries_do_not_expose_page_or_batch_identifiers() {
         let mut v = summary_view();
         v.fetch.status = Some(crate::fetch::FetchStatus {

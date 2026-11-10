@@ -101,6 +101,51 @@ class StatusJournalTests(unittest.TestCase):
             out = status_module.status("usnm-sset.service", str(Path(directory) / "done"), str(out_path))
         self.assertEqual((out["curated"], out["rejected"], out["package_only"]), (7, 0, 0))
 
+    def test_a_finished_fetch_reports_the_done_markers_totals(self):
+        # The last journal sample was taken with two volumes to go; the
+        # marker, written when the run finished, has them all.
+        def run(argv, **_):
+            stdout = {"show": "ExecMainStartTimestamp=\n", "is-active": "inactive\n"}[argv[1]]
+            return type("Done", (), {"stdout": stdout})()
+
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(status_module.subprocess, "run", side_effect=run):
+            out_path = Path(directory) / "status.json"
+            out_path.write_text(json.dumps({
+                "to_fetch": 512, "curated": 509, "empty": 1, "pages": 607977, "left": 2,
+                "current_volume": "14276_00_00", "eta_hours": 0.1, "started": "2026-11-05T03:18:58+00:00",
+                "at": "2026-11-06T17:35:14+00:00",
+            }))
+            done = Path(directory) / "done"
+            done.write_text(json.dumps({
+                "already": 11407, "empty_volumes": 1, "finished_at": "2026-11-06T17:42:05Z",
+                "pages": 611185, "volumes": 11919, "written": 511,
+            }))
+            out = status_module.status("usnm-sset.service", str(done), str(out_path))
+        self.assertTrue(out["finished"])
+        self.assertEqual(
+            (out["to_fetch"], out["curated"], out["empty"], out["pages"], out["left"]),
+            (512, 511, 1, 611185, 0),
+        )
+        self.assertEqual((out["series_volumes"], out["already"]), (11919, 11407))
+        self.assertIsNone(out["current_volume"])
+        self.assertIsNone(out["eta_hours"])
+        self.assertNotEqual(out["at"], "2026-11-06T17:35:14+00:00")
+
+    def test_an_unreadable_done_marker_keeps_the_journals_totals(self):
+        def run(argv, **_):
+            stdout = {"show": "ExecMainStartTimestamp=\n", "is-active": "inactive\n"}[argv[1]]
+            return type("Done", (), {"stdout": stdout})()
+
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(status_module.subprocess, "run", side_effect=run):
+            out_path = Path(directory) / "status.json"
+            out_path.write_text(json.dumps({"curated": 7, "left": 2}))
+            done = Path(directory) / "done"
+            done.write_text("")
+            out = status_module.status("usnm-sset.service", str(done), str(out_path))
+        self.assertTrue(out["finished"])
+        self.assertEqual((out["curated"], out["left"]), (7, 2))
 
 if __name__ == "__main__":
     unittest.main()
