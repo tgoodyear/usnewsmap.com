@@ -47,12 +47,12 @@ tasks may fail with a normal Computation error; diagnostics return automatically
 without a manual log upload.
 You can install BOINC now and register or attach later.</p>
 <p>Read the
-<a href="https://github.com/tgoodyear/usnewsmap.com/blob/main/docs/boinc-volunteer.md">volunteer
+<a href="https://github.com/tgoodyear/usnewsmap.com/blob/main/docs/boinc/volunteer/README.md">volunteer
 guide</a> for Windows, macOS and Linux setup, resource requirements and privacy
 details. The <a href="apps.php">applications page</a> lists published applications
 and platforms; publication alone does not establish end-to-end acceptance.</p>
 
 <p>Source code and design notes:
-<a href="https://github.com/tgoodyear/usnewsmap.com/blob/main/boinc/docs/README.md">boinc/docs/README.md</a>.</p>
+<a href="https://github.com/tgoodyear/usnewsmap.com/blob/main/docs/boinc/README.md">docs/boinc/README.md</a>.</p>
 HTML;
 page_tail();

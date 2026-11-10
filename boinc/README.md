@@ -2,22 +2,22 @@
 
 The BOINC operational tree: worker apps, hosting, scripts and operator documentation.
 The Rust bridge remains in [`crates/usnm-boinc`](../crates/usnm-boinc).
-Start with the [pilot documentation](docs/README.md).
+Start with the [pilot documentation](../docs/boinc/README.md).
 
-Hosting for the stock BOINC server that PR #441 (the BOINC batch OCR pilot, `usnm-boinc`) submits to. Prod's server runs on an on-prem host since 21 October 2026 ([docs/boinc-onprem.md](../docs/boinc-onprem.md)); the Bicep below, which hosts it in Azure, is the fallback, and with `"server": "onprem"` in the settings it deploys only the identities, Key Vault, VNet and static site. #441 is the client base and the bridge: a Docker-wrapper app, one cached page per task, a bridge that reserves and journals pages and publishes native output. It does not provision a server. This directory does. The decision is in [ADR-0019](../docs/design/adr/0019-boinc-server-hosting.md); the on-prem workers it sits beside are in [ADR-0015](../docs/design/adr/0015-onprem-ocr-workers.md).
+Hosting for the stock BOINC server that PR #441 (the BOINC batch OCR pilot, `usnm-boinc`) submits to. Prod's server runs on an on-prem host since 21 October 2026 ([docs/boinc/server/onprem.md](../docs/boinc/server/onprem.md)); the Bicep below, which hosts it in Azure, is the fallback, and with `"server": "onprem"` in the settings it deploys only the identities, Key Vault, VNet and static site. #441 is the client base and the bridge: a Docker-wrapper app, one cached page per task, a bridge that reserves and journals pages and publishes native output. It does not provision a server. This directory does. The decision is in [ADR-0019](../docs/design/adr/0019-boinc-server-hosting.md); the on-prem workers it sits beside are in [ADR-0015](../docs/design/adr/0015-onprem-ocr-workers.md).
 
 The production BOINC stack was deployed in Azure and checked as recorded in #470, before the move on-prem. The committed settings and Bicep are the declarative source of truth; this repository change does not re-check the live service. Each document keeps remaining unverified behavior explicit.
 
-Volunteers should start with [docs/boinc-volunteer.md](../docs/boinc-volunteer.md).
+Volunteers should start with [docs/boinc/volunteer/README.md](../docs/boinc/volunteer/README.md).
 
 ## Contents
 
 - `boinc/infra/boinc/`: the Azure fallback Bicep for the stock server (prod runs it on-prem and deploys only the identities, Key Vault, VNet and static site): a Container App (Apache, PHP and the stock daemons, one replica, no scale to zero), a MySQL flexible server, an Azure Files share, Key Vault, Log Analytics, a static site for the human pages, and a manual-trigger Container Apps Job that runs `usnm-boinc submit`. Lint and compile only.
 - `project/`: `config.xml.template` (daemons come from `apps/daemons.xml`), `project.xml` and `plan_class_spec.xml` (the `docker` plan class).
 - `apps/`: container recipes, app templates, engine locks and native app support.
-- `images/`: the server image (stock BOINC, Apache, PHP and the daemons in one container), the bridge job image and the signed app-version image; see [docs/images.md](docs/images.md).
+- `images/`: the server image (stock BOINC, Apache, PHP and the daemons in one container), the bridge job image and the signed app-version image; see [docs/images.md](../docs/boinc/apps/images.md).
 - `boinc/scripts/provision-boinc.sh` and `boinc/scripts/build-boinc-images.sh`: provision the stack and build and pin its server and bridge images. For an Azure-hosted server, secrets and project initialization run as in-VNet Container Apps Jobs. The signing and app-version release workflow remains in `boinc/scripts/boinc-app-release.sh`; its private signing key stays offline.
-- `docs/`: [design](docs/design.md), [interface](docs/interface.md) (what is assumed of #441), and [verified facts](docs/verified-facts.md) (each with its source and fetch date), and [images and deployment steps](docs/images.md).
+- `docs/`: [design](../docs/boinc/design.md), [interface](../docs/boinc/interface.md) (what is assumed of #441), and [verified facts](../docs/boinc/verified-facts.md) (each with its source and fetch date), and [images and deployment steps](../docs/boinc/apps/images.md).
 
 The Rust apps and work generator remain in the workspace crates. Later options for anonymous volunteers, and a deferred fetch idea, are one short section each in the design.
 
@@ -39,7 +39,7 @@ Source paths moved as follows:
 | `contrib-compute/images/`, `contrib-compute/infra/` | `boinc/images/`, `boinc/infra/` |
 | `ocr/boinc/`                                        | `boinc/apps/`                   |
 | `scripts/boinc/`                                    | `boinc/scripts/`                |
-| `contrib-compute/docs/`, `docs/boinc/`              | `boinc/docs/`                   |
+| `contrib-compute/docs/`, `docs/boinc/`              | `docs/boinc/`                   |
 
 Build contexts stayed the repository root where they were the root;
 only recipe and source paths changed. CI job IDs and display names stayed the same

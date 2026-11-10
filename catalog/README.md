@@ -15,7 +15,7 @@ The reference data that places a newspaper title on the map: a US gazetteer buil
 
 - `usnm-ingest` embeds all five data files with `include_str!` (`crates/usnm-ingest/src/places.rs` for the gazetteer, aliases and title places; `titles.rs` for the place and title overrides). The `geocode` and `titles-sync` subcommands use them. `crates/usnm-ingest/src/audit.rs` checks the audit fields.
 - `docker/Dockerfile.ingest` copies this directory into the build (`COPY catalog ./catalog`).
-- `scripts/ci/changes.sh` counts a change under `catalog/` as a Rust change, so the Rust job runs. `cargo test -p usnm-ingest` parses each override file into a struct that rejects unknown fields, checks the audit fields and requires the sorted order ([development guide](../docs/development.md#json-data-files)).
+- `scripts/ci/changes.sh` counts a change under `catalog/` as a Rust change, so the Rust job runs. `cargo test -p usnm-ingest` parses each override file into a struct that rejects unknown fields, checks the audit fields and requires the sorted order ([development guide](../docs/guides/development.md#json-data-files)).
 
 ## Changing it
 

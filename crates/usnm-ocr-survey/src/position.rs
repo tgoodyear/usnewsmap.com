@@ -1,5 +1,5 @@
 //! OCR engines scored by where each word sits on the page (#1438), so that reading errors and
-//! layout errors are counted apart. docs/ocr-gold-set.md#word-position-against-alto has the
+//! layout errors are counted apart. docs/ocr/gold-set.md#word-position-against-alto has the
 //! measures and what they can tell.
 //!
 //! - [`compare`]: two word-level ALTO readings of one page image, matched word by word on their

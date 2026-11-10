@@ -1,5 +1,5 @@
 //! The native `usnm_ocr` and `usnm_gold` apps (#1418): the page contract of the worker image,
-//! in a BOINC slot, with no container runtime. docs/boinc-native-ocr.md has the design.
+//! in a BOINC slot, with no container runtime. docs/boinc/apps/native-ocr.md has the design.
 //!
 //! A task is three processes, so the client's control channel keeps working while pages are
 //! read and a stop reaches everything at once:

@@ -17,7 +17,7 @@ use tokio::process::Command;
 use usnm_ocr_contract::boinc::is_sha256;
 
 pub const APP: &str = "usnm_gold";
-/// The app of native gold units (#1418, docs/boinc-native-ocr.md): its own app, so a container
+/// The app of native gold units (#1418, docs/boinc/apps/native-ocr.md): its own app, so a container
 /// unit can never be dispatched to a native version, or the reverse.
 pub const NATIVE_APP: &str = "usnm_gold_native";
 

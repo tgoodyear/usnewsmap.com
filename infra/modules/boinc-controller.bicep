@@ -1,4 +1,4 @@
-// The on-prem BOINC batch controller (#866, docs/boinc-batch-scheduler.md): the scan
+// The on-prem BOINC batch controller (#866, docs/boinc/server/batch-scheduler.md): the scan
 // fetcher's identity (CT 211's Arc machine identity) runs boinc/scripts/batch_scheduler.py,
 // which starts the hand-off job (main group) and the bridge job (BOINC group) through
 // boinc/scripts/start-boinc-bridge.sh. That launcher writes each run's settings into the job

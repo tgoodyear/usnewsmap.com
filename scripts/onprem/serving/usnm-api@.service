@@ -17,7 +17,7 @@
 # Sitemap checkpoints instead share a durable directory across colors. Their
 # create-only store uses process-unique temporary names and atomic appends.
 #
-# Host network, as on the BOINC host (docs/boinc-onprem.md), so the API
+# Host network, as on the BOINC host (docs/boinc/server/onprem.md), so the API
 # reaches the searcher and the Arc agent's identity endpoint on loopback.
 # The himds group reads the agent's challenge files. The stop timeout
 # covers the search-log and OCR-request flushes, up to 10 s each.

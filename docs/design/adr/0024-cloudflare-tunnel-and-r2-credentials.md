@@ -5,7 +5,7 @@
   Cloudflare-proxied Azure Container Apps (item 5), explicitly authorized with
   the Cloudflare/Azure cutover.
 - **Date:** 2026-10
-- **Relates to:** ADR-0009, ADR-0023; #942, #955; `docs/boinc-onprem.md`
+- **Relates to:** ADR-0009, ADR-0023; #942, #955; `docs/boinc/server/onprem.md`
 
 ## Context
 
@@ -78,7 +78,7 @@ Rules for all applicable credentials:
   token was revoked, and its key pair was deleted from both vaults. Exception 2 no longer
   applies. Exceptions 1 and 3 remain.
 - From 31 October 2026 the public bucket `usnm-boinc-models` serves the Qwen model files
-  ([docs/boinc-onprem.md](../../boinc-onprem.md)). Clients read it without credentials. This
+  ([docs/boinc/server/onprem.md](../../boinc/server/onprem.md)). Clients read it without credentials. This
   amends the decision above with one more exception: an account API token limited to writing
   objects in that bucket, expiring 31 October 2027, whose S3 form is stored in the home Key Vault
   as `cloudflare-r2-*`. It's used only from an operator's run to upload objects. No workload holds

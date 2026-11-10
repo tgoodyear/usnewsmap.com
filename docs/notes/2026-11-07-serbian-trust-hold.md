@@ -1,6 +1,6 @@
 # Serbian pages read by two engines and held from publishing
 
-**Status:** live since 7 November 2026 · **Date:** November 2026 · **Policy:** [`2026-11-07-serbian-trust-hold.json`](2026-11-07-serbian-trust-hold.json) · **Code:** `boinc/scripts/batch_scheduler.py` (`--claim-language`), `boinc/scripts/onprem/quality-feed/qwen_feed.py` (`--serbian-budget`, `--serbian-pages`), `crates/usnm-boinc/src/trust/tests.rs`; [German hold](2026-11-05-german-trust-hold.md), [gold check](../../boinc/docs/gold-check.md#host-trust-for-usnm_ocr), [the claim](../boinc-batch-scheduler.md#the-claim) · **Issues:** #835
+**Status:** live since 7 November 2026 · **Date:** November 2026 · **Policy:** [`2026-11-07-serbian-trust-hold.json`](2026-11-07-serbian-trust-hold.json) · **Code:** `boinc/scripts/batch_scheduler.py` (`--claim-language`), `boinc/scripts/onprem/quality-feed/qwen_feed.py` (`--serbian-budget`, `--serbian-pages`), `crates/usnm-boinc/src/trust/tests.rs`; [German hold](2026-11-05-german-trust-hold.md), [gold check](../boinc/server/gold-check.md#host-trust-for-usnm_ocr), [the claim](../boinc/server/batch-scheduler.md#the-claim) · **Issues:** #835
 
 ## The question
 

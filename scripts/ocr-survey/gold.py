@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The OCR gold set: select pages, cut crops, validate transcriptions, score CER (#296).
 
-Design and rules are in docs/ocr-gold-set.md. Every option is a named flag.
+Design and rules are in docs/ocr/gold-set.md. Every option is a named flag.
 
     gold.py select   --scores docs/reports/2026-10-ocr-engine-survey/data/scores.jsonl --out selection.jsonl
     gold.py select   --manifest SAMPLE/manifest-final.jsonl --out selection.jsonl [--target 60] [--seed 296]
@@ -30,11 +30,11 @@ score   CER and WER of hypotheses against the transcriptions (normalization: see
 agree   For crops with no transcription: the engines' texts for the same box compared with each other
         (pairwise CER, and each engine's mean CER against the others). This is agreement, not accuracy:
         two engines can agree and both be wrong.
-public-fetch    Downloads one public ground-truth dataset (docs/ocr-gold-set.md, "Public ground truth") into
+public-fetch    Downloads one public ground-truth dataset (docs/ocr/gold-set.md, "Public ground truth") into
         --src. Some are gigabytes, so --confirm-download is required; run it where the data is to be kept.
 public-convert  Turns the downloaded dataset into the layout `score` reads: images/ (crops), manifest.jsonl
         and crops.jsonl, with the dataset's own human transcription filled in, and copies the dataset's
-        licence files and SOURCE.json into LICENSES/. Scoring sources (docs/ocr-gold-set.md, "Source
+        licence files and SOURCE.json into LICENSES/. Scoring sources (docs/ocr/gold-set.md, "Source
         policy"): bln600, overproof-ca, reichsanzeiger, austrian, newseye-bnf, newseye-nlf-fi,
         newseye-nlf-sv and nzz. americanstories, ndl-pdm, enp-berlin and overproof-smh (text only) stay
         for comparison: they need --not-for-scoring, and their rows carry for_scoring false. Nothing a
@@ -492,7 +492,7 @@ ZENODO_FILE = "https://zenodo.org/api/records/{rec}/files/{name}/content"
 REICHSANZEIGER_IMAGES = "https://digi.bib.uni-mannheim.de/reichsanzeiger.fcgi?FIF=/reichsanzeiger/film/"
 NDL_PDM_JSON = "https://lab.ndl.go.jp/dataset/pdm_ocr_dataset/line/tosho_all_linejson.zip"
 
-# What each source says about itself, as read on 2026-10-13 (docs/ocr-gold-set.md has the sources and caveats).
+# What each source says about itself, as read on 2026-10-13 (docs/ocr/gold-set.md has the sources and caveats).
 PUBLIC: dict[str, dict] = {
     "americanstories": {
         "group": "pub-americanstories", "lang": "eng",

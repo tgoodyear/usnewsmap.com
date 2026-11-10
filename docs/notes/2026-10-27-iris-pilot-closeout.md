@@ -26,7 +26,7 @@ A fresh read-only BOINC database audit and retained-output inspection on
 failures**, all on host 9. Batch 104's broader 1,014-workunit population is
 not the denominator.
 
-The inputs are the immutable [OCR benchmark v1.0.0](../ocr-bench.md#release-v100).
+The inputs are the immutable [OCR benchmark v1.0.0](../ocr/bench.md#release-v100).
 Its content digest is
 `c5e38736b6e60610ef0dbe6d8296c3dc58f8a945d6e1cfea5aa47b03fb163800`,
 manifest SHA-256

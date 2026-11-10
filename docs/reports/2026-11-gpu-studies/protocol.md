@@ -82,7 +82,7 @@ Added on the maintainer's approval, before any reader ran on these crops under t
 
 **Readers.** NDLOCR-Lite, Qwen3-VL 8B, CHURRO, Surya, Tesseract `jpn_vert`, and dots.ocr if it runs. GOT-OCR, Granite-Docling and American Stories don't claim Japanese and aren't run on these crops. NDLOCR-Lite and Tesseract are CPU engines and run on a local node.
 
-**Measures.** Character bigrams over Japanese characters only (kana and kanji, `usnm_core::ja::is_ja`), with old forms folded by `usnm_core::ja::fold_char`, as F1. Never whitespace word bags ([why](../../boinc-ndlocr-lite.md)). The 23 references are machine-made and barely checked (#135), so a score against them is **agreement with a machine reference, not accuracy**, in every table. Pairwise F1 between readers is agreement too. This study has no measured accuracy for Japanese unless a verifiable public human transcription of these crops turns up, and the report says which it is.
+**Measures.** Character bigrams over Japanese characters only (kana and kanji, `usnm_core::ja::is_ja`), with old forms folded by `usnm_core::ja::fold_char`, as F1. Never whitespace word bags ([why](../../boinc/apps/ndlocr-lite.md)). The 23 references are machine-made and barely checked (#135), so a score against them is **agreement with a machine reference, not accuracy**, in every table. Pairwise F1 between readers is agreement too. This study has no measured accuracy for Japanese unless a verifiable public human transcription of these crops turns up, and the report says which it is.
 
 **Invented text and vertical layout.** Counted per reader:
 

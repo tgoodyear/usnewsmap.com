@@ -71,7 +71,7 @@ Who transcribes is a maintainer decision (#1479, #738). It needs two people:
    - Stop after three blocks. Leave later anchors alone.
 3. **For each line, record:**
    - `box`: `[x0, y0, x1, y1]` in scan pixels, tight around that line's print;
-   - `text`: the line as printed, in logical (typing) order, following [`diplomatic-v1`](../../../docs/ocr-bench-annotation-policy.md). Keep spelling, punctuation, hyphens, ligatures (װ ױ ײ) and points as printed. Use no bidi control characters.
+   - `text`: the line as printed, in logical (typing) order, following [`diplomatic-v1`](../../../docs/ocr/bench-annotation-policy.md). Keep spelling, punctuation, hyphens, ligatures (װ ױ ײ) and points as printed. Use no bidi control characters.
    - Read what this scan shows; don't fill in text from another copy of the page, and never guess words.
      - Write an unreadable stretch as one U+FFFD.
      - Mark a reading the reviewer confirms is uncertain with `illegible_spans`: code-point offsets with a `reason`.

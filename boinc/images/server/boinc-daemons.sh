@@ -10,7 +10,7 @@ epoch() { date +%s; }
 
 proc=/proc
 # The loop restarts a feeder it finds stopped at most restart_limit times in any restart_window
-# seconds; the next time, it holds (boinc/docs/feeder-refresh.md, "The loop's restart bound").
+# seconds; the next time, it holds (docs/boinc/server/feeder-refresh.md, "The loop's restart bound").
 restart_limit=3
 restart_window=3600
 restarts=""
@@ -43,7 +43,7 @@ local_pid_dir() {
   hold="$dir/usnm-feeder-restart-hold"
 }
 
-# stop_maintenance in the project directory (boinc/docs/server-and-apps.md, "Moving the project share") holds
+# stop_maintenance in the project directory (docs/boinc/server/server-and-apps.md, "Moving the project share") holds
 # the project stopped across container starts: bin/start would clear stop_sched and start the
 # daemons, so neither it nor the periodic start runs until an operator removes the marker.
 maintenance() {

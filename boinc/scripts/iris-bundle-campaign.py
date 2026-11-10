@@ -77,7 +77,7 @@ def prepare(source: Path, out: Path, image: str, size: int):
 
 
 def stage(url: str, sha256: str, subset: str, out: Path, image: str, size: int):
-    """Download the pinned OCR benchmark release (docs/ocr-bench.md), check it, and bundle one subset."""
+    """Download the pinned OCR benchmark release (docs/ocr/bench.md), check it, and bundle one subset."""
     import io
     import tarfile
     import urllib.request

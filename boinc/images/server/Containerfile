@@ -43,7 +43,7 @@ COPY boinc/images/server/prepare-prefs.py boinc/images/server/refresh-scheduler.
      boinc/images/server/feeder-slot-guard.py boinc/images/server/register-apps.php \
      /usr/local/lib/usnm-boinc/
 COPY boinc/scripts/qwen-amd-reservation.py /usr/local/lib/usnm-boinc/
-# Hold or release a usnm_ocr or usnm_gold app version, journaled (#1687; boinc/docs/app-release.md).
+# Hold or release a usnm_ocr or usnm_gold app version, journaled (#1687; docs/boinc/apps/app-release.md).
 COPY boinc/scripts/app-version-hold.php /usr/local/lib/usnm-boinc/
 RUN python3 /usr/local/lib/usnm-boinc/prepare-prefs.py
 # Debian's default site sets its own DocumentRoot, which would serve its page at /.

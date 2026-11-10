@@ -43,7 +43,7 @@ scripts/ops/reconstruct-index-history.py --env prod --merge ops/index-history.js
   && scripts/ops/check-index-history.py --path /tmp/h.json && mv /tmp/h.json ops/index-history.json
 ```
 
-The checker needs `fastjsonschema` (`scripts/ci/requirements-ops.txt`, installed in a hash-pinned venv in the [development guide](../docs/development.md#json-data-files)). Besides the schema it requires sorted keys at every level and an image pushed before its run started. The note [Index versions: what built each one](../docs/notes/2026-10-05-index-versions-and-what-built-them.md) explains the reconstruction.
+The checker needs `fastjsonschema` (`scripts/ci/requirements-ops.txt`, installed in a hash-pinned venv in the [development guide](../docs/guides/development.md#json-data-files)). Besides the schema it requires sorted keys at every level and an image pushed before its run started. The note [Index versions: what built each one](../docs/notes/2026-10-05-index-versions-and-what-built-them.md) explains the reconstruction.
 
 ## Version snapshots
 

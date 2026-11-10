@@ -529,7 +529,7 @@ states that are no longer in its latest-observation table.
 `quality` remains `unknown` and `verified_better_published_searchable` remains
 zero until independent quality evidence is connected to these same candidate
 page/run identities. Release selection and damage scores are not human ground
-truth. Use the existing [evaluation measures](../ocr-evaluation-measures-v1.md)
+truth. Use the existing [evaluation measures](../ocr/evaluation-measures-v1.md)
 for paired reference-based accuracy and fixed-query retrieval comparisons;
 production search evaluation also needs a pinned production adapter.
 This bounded cohort report is not corpus-wide coverage or automatic acceptance,

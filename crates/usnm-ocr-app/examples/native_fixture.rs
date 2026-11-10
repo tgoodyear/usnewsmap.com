@@ -1,6 +1,6 @@
 //! Writes a unit into a slot directory for local runs: one `--scan` makes a page, more make a
 //! bundle, and `--gold-root` makes a gold unit of a prepared campaign. For the parity runs and
-//! smoke tests in docs/boinc-native-ocr.md; the jobs are never submitted, and the inputs are
+//! smoke tests in docs/boinc/apps/native-ocr.md; the jobs are never submitted, and the inputs are
 //! whatever public files are passed in.
 use anyhow::Context;
 use clap::Parser;

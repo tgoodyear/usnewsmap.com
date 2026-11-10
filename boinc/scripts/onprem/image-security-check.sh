@@ -20,7 +20,7 @@
 # count); php8.2-common or apache2 older than its floor; or the MySQL digest baked into
 # --mysql-unit differing from what --mysql-image resolves to now (podman pull, as
 # mysql-setup.sh does). The MySQL drift is only reported: rolling it restarts the database
-# (docs/boinc-onprem.md, "Security updates").
+# (docs/boinc/server/onprem.md, "Security updates").
 #
 # --mysql-image must be a name with a tag, as the default is (a registry port is fine). The check
 # asks what the tag resolves to now, so a name with no tag (podman pulls :latest) or a reference
@@ -177,7 +177,7 @@ if [ "$SKIP_MYSQL" = false ]; then
 fi
 
 if [ "$findings" -gt 0 ]; then
-  log "FAILED: $findings finding(s). Roll the image or the database as in docs/boinc-onprem.md, \"Security updates\"."
+  log "FAILED: $findings finding(s). Roll the image or the database as in docs/boinc/server/onprem.md, \"Security updates\"."
   exit 1
 elif [ "$errors" -gt 0 ]; then
   log "FAILED: $errors check(s) could not run."

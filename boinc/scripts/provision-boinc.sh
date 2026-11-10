@@ -81,7 +81,7 @@ REGISTRY_RG=$(jq -er .rg "$names_file") || die "no rg in $names_file"
 # in stages, because each needs the last: 0, the DNS records (CNAME and asuid TXT, written by
 # this stack into the zone's group); 1, the name on the app unbound and its managed
 # certificate; 2, the name bound with the certificate. domain_stage reads where it is.
-# server: onprem (#942, docs/boinc-onprem.md): the server, its jobs, MySQL, the project storage,
+# server: onprem (#942, docs/boinc/server/onprem.md): the server, its jobs, MySQL, the project storage,
 # the workspace and the private endpoints leave this stack (the stack deletes them); only the
 # identities, the vault, the VNet and the static site stay. The master URL is the on-prem host's
 # tunnel, outside Azure DNS, so there is no custom domain to stage.
@@ -180,7 +180,7 @@ if [[ $PROJECT_SHARE == provisioned* ]]; then
     # and accepts them (files regenerated on start, such as run_state and the web cache).
     jq -e --arg ok "${BOINC_COPY_ACCEPTED:-}" 'length > 0 and (last | (.s == "Succeeded" or ($ok != "" and .n == $ok))
       and (now - ((.e // .t) | sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z") | fromdateiso8601)) < 7200)' <<< "$execs" > /dev/null ||
-      die "the latest $copy_job execution did not succeed within the last two hours: run the final pass (boinc/docs/server-and-apps.md, \"Moving the project share\") first"
+      die "the latest $copy_job execution did not succeed within the last two hours: run the final pass (docs/boinc/server/server-and-apps.md, \"Moving the project share\") first"
   elif ! grep -q ResourceNotFound <<< "$out"; then
     die "could not look up $copy_job: $out"
   fi

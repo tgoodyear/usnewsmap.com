@@ -4,7 +4,7 @@
 `run` reads each page twice at the same moment, so both builds see the same load: once with
 `usnm_ocr` in a slot directory, and once with `usnm-boinc work` from the worker image's unpacked
 root filesystem under chroot, with the image's environment. Neither needs a container runtime on
-the test host. `report` compares what they wrote. See docs/boinc-native-ocr.md.
+the test host. `report` compares what they wrote. See docs/boinc/apps/native-ocr.md.
 
 Only public scans passed in are read. Nothing is fetched or submitted.
 """
