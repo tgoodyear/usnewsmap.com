@@ -1,6 +1,6 @@
 # The crop rule's floor against human transcriptions
 
-**Status:** measured; the rule's floor went from 0.5 to 0.7 on this evidence (#1434, PR #1491), and the rule is still off · **Date:** 4 November 2026 · **Measured on:** Study 3's 612 human-transcribed crops (223 pages, five languages, six sources) from the November 2026 GPU studies (PR #1428), with Xiaomi-OCR-0 readings from five builds and Qwen 8B's readings; and a replay of all retained `usnm_qwen` 8B results on 4 November · **Code:** `crates/usnm-boinc/src/qwen/{grounded,consensus,replay}.rs` · **Issues:** #1434, #1420
+**Status:** measured; the rule's floor went from 0.5 to 0.7 on 5 November 2026 on this evidence (#1434, PR #1491), and the rule is still off · **Date:** 4 November 2026 · **Measured on:** Study 3's 612 human-transcribed crops (223 pages, five languages, six sources) from the November 2026 GPU studies (PR #1428), with Xiaomi-OCR-0 readings from five builds and Qwen 8B's readings; and a replay of all retained `usnm_qwen` 8B results on 4 November · **Code:** `crates/usnm-boinc/src/qwen/{grounded,consensus,replay}.rs` · **Issues:** #1434, #1420
 
 ## The question
 
@@ -99,7 +99,7 @@ A third replica confirms 98.1% of the crops a rescued pair vouched for at 0.5 (4
 
 ## What the collector does now
 
-`quality collect --qwen-crop-states <dir>` joins a canonical reading only on the crops an agreeing pair marked `agree`. A looped, unread or unjudged crop keeps its rows without the reading, and `crops.parquet`'s `vlm_crop_state` says which. A result no agreeing pair judged crop by crop was accepted by the strict rule and joins whole, as before. The crop-state records are part of the row-cache keys. Details are in [boinc-quality.md](../boinc/apps/quality.md).
+`quality collect --qwen-crop-states <dir>` joins a canonical reading only on the crops an agreeing pair marked `agree`. A looped, unread or unjudged crop keeps its rows without the reading, and `crops.parquet`'s `vlm_crop_state` says which. A result no agreeing pair judged crop by crop was accepted by the strict rule and joins whole, as before. The crop-state records are part of the row-cache keys. Details are in [OCR quality](../boinc/apps/quality.md).
 
 ## Limits
 

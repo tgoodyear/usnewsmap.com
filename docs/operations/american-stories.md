@@ -1,35 +1,18 @@
 # American Stories
 
-Part of the [operations guide](README.md).
+Part of the [operations guide](README.md). The `jaocr.py` commands here run on the Japanese OCR job's image through `ocr/ja-ocr/tools/start-quality.sh`, which needs the Azure jobs that prod doesn't have ([Japanese OCR](japanese-ocr.md)).
 
 ## American Stories' text
 
-The release indexes American Stories' text beside LoC's (04 §4.9, 05 §5.5.4, #218) only with `USNM_AMERICAN_STORIES` (the job's `--american-stories`), off by default. The first release with it builds a full base, so turn it on for a full rebuild, after step 4 of #218 has measured the index size and rebuild time, and with an explicit go-ahead:
+The release indexes American Stories' text beside LoC's (04 §4.9, 05 §5.5.4, #218) when `USNM_AMERICAN_STORIES` is set (the job's `--american-stories`), off by default and on in prod. Prod's text was written and indexed under #218; in prod's one-field layout it shares `text_all` with LoC's ([Full rebuild](rebuild-and-index-storage.md#full-rebuild)). The first release with the setting builds a full base. To turn it on in an environment:
 
-1. Run the writer to the end: `ocr/ja-ocr/tools/start-quality.sh --env prod --command american-stories-write` on the one-replica job. It marks each finished year with `curated/american-stories/years/{year}.json`; start it again until all 180 years have one (its log's `american stories write finished` line counts them). A release reads only the years with a marker, and a year finished after the base reaches the base's pages only at the next full rebuild.
-2. Do the [full rebuild](rebuild-and-index-storage.md#full-rebuild), with the setting added to its first provision:
-
-   ```sh
-   scripts/azure/settings.sh --env prod --key USNM_AMERICAN_STORIES --value true
-   scripts/azure/settings.sh --env prod --key USNM_INGEST_FULL --value true          # optional: the setting forces a full base anyway
-   ```
-
-   With no year marked yet, the run fails at its start, before curation and titles-sync (`--american-stories (USNM_AMERICAN_STORIES) is set, but the curated store has no finished year of American Stories' text`). Its log has `American Stories' text` (years, parts) near the start, then `American Stories' text for the batch` per batch (pages, `text_mb`: what the release holds in memory for the batch), and `American Stories' text indexed` (documents with the text, and those with only it) before the merges.
-
+1. Run the writer to the end ([below](#american-stories-text-for-our-pages)). It marks each finished year with `curated/american-stories/years/{year}.json`; start it again until all 180 years have one (its log's `american stories write finished` line counts them). A release reads only the years with a marker, and a year finished after the base reaches the base's pages at the next full rebuild.
+2. Do a [full rebuild](rebuild-and-index-storage.md#full-rebuild) with `USNM_AMERICAN_STORIES=true` (it forces a full base anyway). With no year marked yet, the run fails at its start, before curation and titles-sync (`--american-stories (USNM_AMERICAN_STORIES) is set, but the curated store has no finished year of American Stories' text`). Its log has `American Stories' text` (years, parts) near the start, then `American Stories' text for the batch` per batch (pages, `text_mb`: what the release holds in memory for the batch), and `American Stories' text indexed` (documents with the text, and those with only it) before the merges.
 3. Check the result: `current.json` has `american_stories: 1`; `reference/<version>/manifest.json` has `built_from.american_stories` and `build.features.american_stories`, and `american_stories.json` lists the parts read. On the site, a word from an American Stories headline finds pages, and a hit whose match is only there shows its snippet from that text.
 
-Keep `USNM_AMERICAN_STORIES` set afterwards: weekly deltas then write the text for their pages too. Clearing it makes the next release publish a version without `american_stories`, so searches leave the text out; setting it again rebuilds in full.
+Keep `USNM_AMERICAN_STORIES` set afterwards: deltas then write the text for their pages too. Clearing it makes the next release publish a version without `american_stories`, so searches leave the text out; setting it again rebuilds in full.
 
-To stop searching the text at once, without a release (to time cold searches without it, #251, or if it costs too much), switch the API's setting off, and on again the same way:
-
-```sh
-scripts/azure/settings.sh --env prod --key USNM_AMERICAN_STORIES_SEARCH --value false   # on again: true, or --unset for the default
-scripts/azure/provision.sh --env prod
-```
-
-The API then searches LoC's text alone, whatever `current.json` says (05 §5.5.4): no `matched_in`, no American Stories snippets or badge, no `total.american_stories_only`. The indexes keep the text, so switching back needs no rebuild. The provision changes the API container's settings, so Container Apps starts a new replica: it loads the version, runs the startup warm-up and reports ready when it ends (about 5 minutes) or the readiness cap passes (6 minutes in prod, `USNM_READY_CAP_SECS`, 06 §6.6), and the old replica serves until then. Responses computed in one state are cached under keys of their own (`…|american_stories=off` when off), so the first switch off finds none cached: the warm-up computes what its budget allows and other searches start cold. Switching back on finds the responses persisted before (in Blob) still there. Check the result in the replica's start-up log line `American Stories' text search (USNM_AMERICAN_STORIES_SEARCH)` (`setting`, `in_version`, `searched`, `text_layout`) or in `/v1/meta` (`"american_stories"`). Browsers may keep a response they fetched in the other state for up to a day (06 §6.5).
-
-On a version with one searched text field (`text_layout: 2` or `3`, [Full rebuild](rebuild-and-index-storage.md#full-rebuild)) the setting can't switch the text off: it shares the field with LoC's. The API logs `USNM_AMERICAN_STORIES_SEARCH=false has no effect on this version` and searches both texts. To leave the text out there, roll `current.json` back to a version with a field per text, or rebuild in full without `USNM_AMERICAN_STORIES`.
+**Searching without it.** On a version with a field per text, `USNM_AMERICAN_STORIES_SEARCH=false` and a provision make the API search LoC's text alone, whatever `current.json` says (05 §5.5.4): no `matched_in`, no American Stories snippets or badge, no `total.american_stories_only`. The indexes keep the text, so switching back needs no rebuild. Responses computed in each state are cached under keys of their own (`…|american_stories=off` when off), so the first switch off finds none cached. Check the API's start-up line `American Stories' text search (USNM_AMERICAN_STORIES_SEARCH)` (`setting`, `in_version`, `searched`, `text_layout`) or `/v1/meta` (`"american_stories"`). On a one-field version (`text_layout` 2 or 3, as prod's) the setting can't switch the text off: the API logs `USNM_AMERICAN_STORIES_SEARCH=false has no effect on this version` and searches both. To leave the text out there, roll `current.json` back to a version with a field per text, or rebuild without `USNM_AMERICAN_STORIES`.
 
 ## American Stories against LoC's text
 
@@ -40,7 +23,7 @@ ocr/ja-ocr/tools/start-quality.sh --env prod --command american-stories --year 1
 ocr/ja-ocr/tools/quality-rows.sh --env prod --execution <execution>    # its "american stories" rows
 ```
 
-It writes `audit/american-stories-<version>-<execution>.json`. It runs on the one-replica audit job, `caj-usnm-jaone-<env>` (`ocr/ja-ocr/solo.py` still keeps a second replica out, as for `jaocr.py mixed`). A failed run raises _Japanese OCR or audit job failed_ (severity 3), not the ingest alert.
+It writes `audit/american-stories-<version>-<execution>.json`. It runs on the one-replica audit job, `caj-usnm-jaone-<env>` (`ocr/ja-ocr/solo.py` keeps a second replica out, as for `jaocr.py mixed`).
 
 ### Indexing only where American Stories differs (`--diff`, #251)
 
@@ -69,63 +52,16 @@ It runs on the one-replica job and logs `american stories year written` per year
 
 ### Physical scan identity and existing data (#573)
 
-`p<page>` is a label, **not a scan identity**. The shared audit/writer key is
-`(LCCN, date, edition, reel, image)` from the scan filename, ignoring its archive
-directory and page label. Different images with `p1` must not be discarded as
-copies. Edition and reel remain part of identity, so equal image numbers on
-different reels do not alias.
+`p<page>` is a label, not a scan identity. The audit and the writer key a scan by `(LCCN, date, edition, reel, image)` from its filename, ignoring its archive directory and page label, so different images labelled `p1` are never discarded as copies, and equal image numbers on different reels don't alias.
 
-Unambiguous numbered issues keep their existing joins. An issue with repeated
-labels on distinct scan keys, conflicting labels on one scan, inconsistent
-label/image offsets within a reel, or any missing/zero page label requires LoC's
-`/item/<lccn>/<date>/ed-<edition>/?fo=json`. Its ordered `resources[0].files`
-JP2 paths map **reel + image** to sequence. All labels in that issue are ignored,
-including an apparently matching first `p1`; only physical keys uniquely present
-in the metadata can join. Multiple representations mapping to the same verified
-sequence are copies; the first archive member wins. Neither sorting image
-numbers nor subtracting the minimum observed image is a safe fallback: the
-archive can omit the first page, and LoC sequences need not follow image order.
-Requests use the existing rate limiter (`JAOCR_API_GAP`, default 3.5 seconds).
+Unambiguous numbered issues keep their joins. An issue with repeated labels on distinct scan keys, conflicting labels on one scan, inconsistent label-to-image offsets within a reel, or any missing or zero page label needs LoC's `/item/<lccn>/<date>/ed-<edition>/?fo=json`: its ordered `resources[0].files` JP2 paths map reel and image to sequence. All labels in that issue are then ignored, and only physical keys uniquely present in the metadata can join. Several representations mapping to the same verified sequence are copies; the first archive member wins. Neither sorting image numbers nor subtracting the smallest image is a safe fallback: the archive can omit the first page, and LoC sequences need not follow image order. Requests use the rate limiter (`JAOCR_API_GAP`, default 3.5 seconds).
 
-Unavailable/ambiguous metadata and unmatched scans are **unresolved**, not
-`duplicates`. They receive no guessed `doc_id`/indexed text. The writer retains
-names, physical keys and reasons in `american-stories/unresolved/<year>.json`;
-the audit retains the same records in its saved summary's `scans_unresolved_scans`.
-Console logs include only their counts, not the unbounded inventory, so large
-unresolved cohorts cannot truncate the log-based coverage summaries.
-`page_from_image` now counts every resolved scan using authoritative issue
-metadata, including numbered scans whose labels were ignored. Year markers
-include `identity_version: 2`. The writer freezes the IDs, counts and unresolved
-records in `american-stories/placements/<year>.json` **before writing parts**,
-so retry/resume cannot leave stale parts after a metadata outage changes the
-chosen placements. Metadata resolution is renewed only by an intentional
-placement reset; unresolved cohorts must be reviewed, not interpreted as proof
-of physical absence.
+Unavailable or ambiguous metadata and unmatched scans are unresolved, not duplicates: they get no guessed `doc_id` or indexed text. The writer keeps names, physical keys and reasons in `american-stories/unresolved/<year>.json`; the audit keeps the same records in its summary's `scans_unresolved_scans`. Console logs carry only their counts. Year markers include `identity_version: 2`. The writer freezes the ids, counts and unresolved records in `american-stories/placements/<year>.json` before writing parts, so a retry can't leave stale parts after a metadata outage changes the placements. Treat an unresolved cohort as something to review, not as proof a page is missing.
 
-**No production repair or rebuild is performed by this change.** Existing
-indexed `text_as` and completed curated years remain unchanged: markers still
-skip existing imports. The historical 1925 cohort has 4,051 label-based
-collisions, not 4,051 verified duplicate scans (#327); some indexed sequence-1
-texts belong to later physical pages. Correcting the importer alone does not
-repair those existing fields or establish a corrected coverage percentage.
+**Existing data is unchanged.** Indexed text and completed curated years written before #573 stay as they were: markers still skip them. The 1925 cohort has 4,051 label-based collisions, not 4,051 verified duplicate scans (#327); some indexed sequence-1 texts belong to later physical pages. A repair needs a scoped reimport of the affected years, coordinated with the maintainer while no release or writer reads or changes these paths, and then a full rebuild:
 
-**Coordinate any repair with the owner of #283**, while no ingest/release or
-writer is reading/changing these paths. First preserve the old per-year
-markers/parts and plan a scoped reimport of affected years. Remove the selected
-year's completion marker, **all** its title parts (including any interrupted
-old import), placement snapshot and unresolved sidecar before importing it with
-the fixed writer. Do not just delete the completion marker: a smaller new import
-could leave old tail parts that the release would still read. Verify the new
-`identity_version`, unresolved cohort and representative physical joins before
-allowing the separately approved rebuild. A metadata retry also requires this
-whole-year reset, not simply removing the placement snapshot alongside existing
-parts. No bulk reimport/reindex is authorized here.
+1. Keep the old per-year markers and parts.
+2. For each selected year, remove its completion marker, all its title parts (including any interrupted old import), its placement snapshot and its unresolved sidecar, then import it with the fixed writer. Removing only the marker isn't enough: a smaller new import could leave old tail parts that the release would still read. A metadata retry needs the same whole-year reset.
+3. Check the new `identity_version`, the unresolved cohort and representative physical joins before the separately approved rebuild.
 
-The next approved **full** rebuild under #283 will take repaired curated rows
-for years explicitly reimported first: recover resolvable missing sequences,
-replace misassigned text at previously matched sequences, and omit unresolved
-American Stories assignments (LoC text is unchanged). Without that reimport it
-will read the same old rows and **will not repair #573**; an ordinary delta does
-not replace existing base-page text. This change does not bump the Rust American
-Stories version or trigger a full rebuild. The existing reader ignores the
-additional provenance columns; the canonical `doc_id` format is unchanged.
+That rebuild then recovers resolvable missing sequences, replaces misassigned text at previously matched sequences and leaves out unresolved assignments (LoC's text is unchanged). Without the reimport it reads the same old rows and doesn't repair #573; a delta doesn't replace base-page text. This procedure authorizes no bulk reimport or reindex.

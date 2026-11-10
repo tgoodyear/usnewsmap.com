@@ -5,6 +5,7 @@
 - **Tooling:** main `fedabd04`, `scripts/ops/bench-cold-searches.py` and `scripts/ops/load-cold-searches.py`
 - **Serving version:** `pages-v20261022-1`, published 24 October 2026
 - **Searcher:** Azure Quickwit, 3.75 vCPU / 7.5 GiB; no restart or cache clearing
+- **Outcome:** #123 closed on 25 October 2026 after this acceptance. Serving has since moved on-prem ([ADR-0027](../design/adr/0027-onprem-serving-behind-cloudflare.md)), so these timings are for the Azure searcher.
 
 ## Published layout
 

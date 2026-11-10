@@ -1,5 +1,7 @@
 # Serial Set OCR audit and pilot (#814)
 
+**Outcome:** #814 closed on 27 October 2026 after the pilot was rechecked against the current scorer (PR #1272). Making the Serial Set searchable is #922, still open on 10 November 2026. The ingestion code named below is now `crates/usnm-congress/src/serialset.rs`.
+
 ## Finding
 
 The repository's Serial Set ingestion path extracts the text layer already embedded in

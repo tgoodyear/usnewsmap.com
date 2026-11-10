@@ -1,6 +1,6 @@
 # Text agreement: LoC against American Stories
 
-`usnm-ingest ocr-agreement` (#962) compares LoC's OCR text of a page with American Stories' text of the same page, for every page of an index version that has both: 15,224,177 of the 23,740,914 pages in `pages-v20261022-1`. It needs no image, makes no request to LoC and runs on the curated store alone, so it can run on a home host against the local copy of `curated`.
+`usnm-ingest ocr-agreement` ([#962](https://github.com/tgoodyear/usnewsmap.com/issues/962), PR #1062) compares LoC's OCR text of a page with American Stories' text of the same page, for every page of an index version that has both: 15,224,177 of the 23,740,914 pages in `pages-v20261022-1`. It needs no image, makes no request to LoC and runs on the curated store alone, so it can run on an on-prem host against the local copy of `curated`.
 
 It is the text part of the `usnm_quality` record ([BOINC quality](../boinc/apps/quality.md)) for two readers, run over the whole corpus instead of a staged wave.
 
@@ -26,17 +26,17 @@ American Stories' text is normalised with `usnm_core::text::normalize_ocr`, as t
 
 Everything is a pure function of the two texts and the title's languages, single-threaded per page, with floats rounded to six decimals. The version is `usnm_ocr_quality::agreement::VERSION`. It goes up whenever the numbers for the same texts would change, including the normalisation, the rounding or the table's columns, and the tables live under the version (`text-agreement/v1/`).
 
-## Feeding the hat
+## Use in the three-cornered hat
 
 `cer_sym` here is the number the `usnm_quality` app computes for the `loc`/`as` pair, rounded the same way. So the table can stand in for that pair's disagreement on any page:
 
-- With a third reader (our OCR in `curated/ocr-local`, 19,762 pages today, or a vision-language reading), `hat::solve(3, [(loc, as, cer_sym), (loc, ours, …), (as, ours, …)])` gives each reader's `est_cer` without recomputing the `loc`/`as` pair.
+- With a third reader (our OCR in `curated/ocr-local`, 19,762 pages on 24 October 2026, or a vision-language reading), `hat::solve(3, [(loc, as, cer_sym), (loc, ours, …), (as, ours, …)])` gives each reader's `est_cer` without recomputing the `loc`/`as` pair.
 - With two readers the hat is underdetermined: `d ≈ e_loc + e_as` gives the sum of the two error rates, not either one.
 - On LoC against American Stories, the whole-page `cer_sym` is mostly reading order and coverage, not misreading (below). `local_cer_sym` is the better `d` for this pair. The unit's own hat (version 1) solves on whole-page `cer_sym`; `collect` re-solves it on `local_cer_sym` for every pair (page hat version 2, [BOINC quality](../boinc/apps/quality.md#the-page-hat-version-2-962)).
 
 ## What it can and can't tell
 
-- **Agreement isn't accuracy.** Two readers that read the same smudge the same wrong way agree on it. LoC's OCR and American Stories' were made by different engines from scans of the same pages, so their errors are less correlated than two runs of one engine, but not independent: a page that is faint, torn or bled through is hard for both. A low `cer_sym` says the two texts match. It doesn't say the text is right.
+- **Agreement isn't accuracy.** Two readers that read the same smudge the same wrong way agree on it. LoC's OCR and American Stories' were made by different engines from scans of the same pages, so their errors are less correlated than two runs of one engine, but not independent: a page that is faint, torn or bled through is hard for both.
 - **The pair doesn't say which reader is wrong.** `cer_sym` is symmetric. The per-reader rates are the hint: the reader with the higher `damage_rate`, the lower `known_rate` or the lower `cover` is more likely the one that misread or dropped text. Those are single-reader signals with their own blind spots (names, numbers, ads and other languages are not in a top-5,000 list).
 - **Reading order inflates the whole-page rate.** American Stories' text is in its layout model's reading order (headlines, bylines and articles), and LoC's is in ALTO block order. When the columns or articles come out in a different order, `cer_sym` and `wer_*` are high although both readers read the words right. The word bags and the local alignment don't see order. On the first 5,427 pages of the 1% sample, the median `cer_sym` was 0.75 while the median `dice` was 0.78, so most of the whole-page distance was order and coverage.
 - **The local rate needs some agreement to start from.** A chunk is placed only by words both readers read the same, so where one reader is garbage, little places: `matched_*` is low and `local_cer_*` covers only the parts that did place. Read `local_cer_*` together with `matched_*`. A low local rate with a low matched share is not a clean page. The infix search takes the best stretch near the anchors, so it can find a slightly lower count than a full alignment would.
@@ -44,6 +44,8 @@ Everything is a pure function of the two texts and the title's languages, single
 - **Only pages with both texts.** About 36% of the corpus has no American Stories text, and those pages get no row. Pages where LoC's text is `empty` or `short` and American Stories has text get a row with LoC at zero characters (`cer_loc` 1).
 
 ## Validation plan
+
+Whether these checks have been run is not recorded in the repository (UNVERIFIED).
 
 1. **Parity with the `usnm_quality` record.** For the 214,449 pages in validated `usnm_quality` results that have an `as` reader, the table's `cer_sym`, `cer_loc`, `cer_as`, `wer_*` and `dice` must equal the record's `readers[loc].pairs[as]` exactly, whenever both read the same texts (same curated part and American Stories part). Any difference is a bug in one of the two, or a text that changed between staging and this pass.
 2. **Parity with the damage tables.** `loc_damage_rate` and `loc_function_share` must equal `audit/damage/v2`'s `damage_rate` and `function_share` for the same `doc_id` and batch version.
@@ -58,12 +60,14 @@ usnm-ingest --curated <curated dir> --reference <reference dir> --state-file <fi
   ocr-agreement --version pages-v20261022-1 --out <output dir> [--sample-pct 1] [--parallel 5]
 ```
 
+- `--out` (or `USNM_AGREEMENT_OUT`) is a directory or a Blob container URL. `--batches a,b_ver02` limits the run to those batches, `--max-runtime-secs` stops starting batches after that many seconds, and `--parallel` defaults to the number of CPUs.
+
 - `--sample-pct` scores only the pages the damage audit's sampler picks (BLAKE2b of the `doc_id`), into `text-agreement/v1/sample-<cut>/`, so a sample never stands in for the full tables.
 - Each batch version gets `<batch>_verNN.parquet` (one row per page with American Stories' text) and then `<batch>_verNN.summary.json` (fixed-bin histograms with an overflow count, `cer_sym` and `local_cer_sym` by decade, the American Stories parts read with their sha256, and each title's catalog languages). The summary marks the batch done: a rerun skips it, so a stopped run continues where it left off. A rerun keeps a batch only if its summary has this metric version, the American Stories parts the batch would read now and the same title languages. Otherwise the run stops and names the two files to delete, and it does the same for a table found without its summary. A run also refuses a curated store with no finished American Stories parts.
-- After a run over every batch, `versions/<version>.json` lists the tables and `versions/<version>.summary.json` sums the histograms with their quantiles.
+- After a run over every batch (not one limited by `--batches`), `versions/<version>.json` lists the tables and `versions/<version>.summary.json` sums the histograms with their quantiles.
 - It writes only to `--out`, never to `curated`. It logs counts and doc_ids, never text.
 
-On-prem, it runs as a systemd unit in a container that mounts the local copy of `curated` read-only. It isn't run from a workstation.
+On-prem, it runs as a systemd unit in a container that mounts the local copy of `curated` read-only (UNVERIFIED: no unit for it is in the repository). `load.py agreement` loads each finished table into the on-prem quality database ([scripts/onprem/quality/README.md](../../scripts/onprem/quality/README.md)).
 
 ## The table
 

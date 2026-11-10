@@ -6,6 +6,8 @@ and staging 20,000 distinct full-page source images. It does **not** accept
 full-page inference, authorize dispatch, establish independent-host consensus,
 or claim every crop succeeded.
 
+**Outcome:** #703 closed on 27 October 2026. `usnm_iris` was retired on 2 November 2026 and the 20,000 staged images were never dispatched to it; `usnm_qwen`'s `intel_vulkan_8b` class replaced it ([Intel and NVIDIA GPUs](../boinc/apps/intel-gpu.md)).
+
 ## What actually ran
 
 The original pilot completed 100/100 terminal-valid jobs on host 9, with no

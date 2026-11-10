@@ -2,6 +2,8 @@
 
 **Status:** measured; the pair log now marks these crops, no rule changed, a decision is needed · **Date:** 4 November 2026 · **Measured on:** the on-prem BOINC server's `qwen/pairs.jsonl` and retained results (`qwen/seen`) for the pairs logged from 28 October 22:16 to 4 November 22:16 UTC, joined to `workunit.canonical_resultid` in a read-only transaction · **Code:** `crates/usnm-boinc/src/qwen/validate.rs`; `qwen::agree` and `boinc::dice` in `usnm-ocr-contract` · **Issues:** #1463, #1420, #1434
 
+**Outcome:** the pair-log field merged in PR #1504 on 4 November 2026 and, judging by commit ancestry, the server image rolled on 5 November 2026 (#1449) includes it. The decision on #1463 was still open on 10 November 2026.
+
 ## The question
 
 The strict rule (`strict-v1`, [the validator](../boinc/apps/quality.md)) counts a crop as read when its reading isn't blank, and compares two readings by word-bag Dice. A word is a run of letters or digits. A reading with none, such as `[?]` on an illustration or a row of dashes, has an empty bag, and `dice` scores two empty bags 1.0. So two different punctuation-only readings pass at any floor, and the rule never looks at the loop guard's flags. Production WU 27224 had four such crops, one of them loop-stopped. It didn't become canonical, because its other eight crops disagreed. How often does this happen, and does it decide canonical results?

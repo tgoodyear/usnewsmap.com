@@ -5,6 +5,8 @@ For [#811](https://github.com/tgoodyear/usnewsmap.com/issues/811), after the
 evidence to the audited package's bytes. It measures no accuracy, and it makes
 no new request to the Library of Congress.
 
+**Outcome:** merged in PR #1553 on 5 November 2026; usage is in [Registered crop adapter](../ocr/bench.md#registered-crop-adapter).
+
 ## Change
 
 `loc_align.py` takes an optional `--audit-inventory`, which is the per-page

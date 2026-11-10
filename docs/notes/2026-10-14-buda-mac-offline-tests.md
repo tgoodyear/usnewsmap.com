@@ -2,6 +2,8 @@
 
 **Status:** measured; no server changes · **Date:** 2026-10-14 · **Measured on:** arm64 Mac, macOS 26.7.1, BOINC 8.2.15, Podman 5.5.2, docker_wrapper 22 · **Issues:** [#481](https://github.com/tgoodyear/usnewsmap.com/issues/481), [draft PR #503](https://github.com/tgoodyear/usnewsmap.com/pull/503)
 
+**Outcome:** PR #503 merged on 15 October 2026. The pause and restart failure was fixed by the [`Run_Podman` patch](2026-10-15-boinc-cross-platform-distribution.md), and [ADR-0020](../design/adr/0020-boinc-buda-evaluation.md) records the decision not to adopt BUDA.
+
 ## The question
 
 A follow-up, [Native ARM64 worker build and tests](2026-10-14-buda-native-arm64.md), supersedes this note's emulated OCR path. It records a native-only build environment, ARM worker executables and a new native fixture cohort.

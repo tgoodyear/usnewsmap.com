@@ -1,6 +1,6 @@
 # ADR-0025: Client certificates for on-prem databases
 
-- **Status:** Proposed (2026-10). In use by the OCR queue database (#967).
+- **Status:** Proposed (2026-10). In use by the OCR queue database (#967) and the OCR quality database ([`scripts/onprem/quality/`](../../../scripts/onprem/quality/README.md)).
 - **Date:** 2026-10
 - **Relates to:** ADR-0009, ADR-0024; #967, #972, #955; home-infra `scripts/lab/queue-ct.sh`
 

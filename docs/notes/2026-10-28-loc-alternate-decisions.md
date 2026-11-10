@@ -5,6 +5,8 @@ Follow-up to [explicit staging](2026-10-28-loc-alternate-staging.md), for
 operator-reviewed, append-only **preview**, not production selection. Normal
 imports, release readers and OCR queues do not consult this history.
 
+**Outcome:** merged in PR #1287 on 28 October 2026. A selection can now feed the opt-in [supersession list](2026-11-05-loc-alternate-supersession.md); normal imports and release readers still ignore it.
+
 ## Contract
 
 `usnm-ingest ocr-alternate-decide --decision decision.json` appends one action.

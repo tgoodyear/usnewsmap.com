@@ -2,42 +2,41 @@
 
 Donate your PC's spare time to historical-newspaper OCR at
 <https://boinc.usnewsmap.com/>. One helper script checks your PC, installs the
-official BOINC client if needed, and walks you through joining. Nothing else to
-install: no WSL, Docker, Podman or CUDA toolkit.
+official BOINC client if needed, and walks you through joining. You don't need WSL, Docker, Podman or a CUDA toolkit.
 
-**Availability:** this is a limited pilot. Work goes out in small batches, so a
-joined PC can sit idle for a while. That is normal.
+This is a pilot. Work goes out in small batches, so a joined PC can sit idle for
+a while.
 
-## 1. What you need
+## What you need
 
 - Windows 11, or Windows 10 22H2 with current updates, on an Intel or AMD
   64-bit PC. Windows on ARM and Windows Server are not supported.
-- For GPU work, an AMD GPU with at least 7 GB of video memory and a current
-  AMD graphics driver, which provides Vulkan ([AMD](../apps/amd-gpu.md)). No
-  Windows version has been released for NVIDIA or Intel GPUs yet; both get GPU
-  work on Linux ([app versions](../apps/quality.md#app-versions-and-plan-classes)). On a PC
-  without an eligible AMD GPU, add `-AllowCpuOnly` to the preview and apply
+- For GPU work, an AMD GPU with at least 7 GB of video memory and a current AMD
+  graphics driver, which provides Vulkan ([AMD](../apps/amd-gpu.md)). No Windows
+  version has been released for NVIDIA or Intel GPUs yet; both get GPU work on
+  Linux ([app versions](../apps/quality.md#app-versions-and-plan-classes)). On a
+  PC without an eligible AMD GPU, add `-AllowCpuOnly` to the preview and apply
   commands below (not to `-Status`) to offer CPU time instead. CPU work is
   optional and not always available.
-- 6 GB of RAM and 12 GiB of free disk, or 18 GiB with an eligible AMD GPU (binary gigabytes: about 13 and 19 GB as most disk tools
-  show them).
+- 6 GB of RAM and 12 GiB of free disk, or 18 GiB with an eligible AMD GPU
+  (about 12.9 and 19.3 GB as most disk tools count).
 
-## 2. Run the helper
+## Run the helper
 
 1. Download the repository as a ZIP from
-   <https://github.com/tgoodyear/usnewsmap.com> (the green **Code** button,
-   then **Download ZIP**) and extract it, or `git clone` it.
+   <https://github.com/tgoodyear/usnewsmap.com> (the green **Code** button, then
+   **Download ZIP**) and extract it, or `git clone` it.
 2. Open **PowerShell** as your normal user (not as administrator) and change to
    the extracted folder.
-3. Preview what the helper sees. This reads your PC only; it changes nothing
-   and does not use the network:
+3. Preview what the helper sees. This reads your PC only; it changes nothing and
+   doesn't use the network:
 
    ```powershell
    .\boinc\scripts\setup_windows_volunteer.ps1
    ```
 
-   If Windows refuses to run the script, run `Get-ExecutionPolicy -List`.
-   When the effective policy is `Restricted` and both `MachinePolicy` and
+   If Windows refuses to run the script, run `Get-ExecutionPolicy -List`. When
+   the effective policy is `Restricted` and both `MachinePolicy` and
    `UserPolicy` are `Undefined`, allow scripts for this window only and try
    again:
 
@@ -45,9 +44,8 @@ joined PC can sit idle for a while. That is normal.
    Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned
    ```
 
-   Any other policy was set on purpose: do not lower it; ask whoever manages
-   the PC. If the script is still blocked because the ZIP came from the
-   internet, unblock that one file:
+   If the policy is anything else, don't lower it; ask whoever manages the PC. If the script is still blocked because the ZIP came from the internet,
+   unblock that one file:
    `Unblock-File .\boinc\scripts\setup_windows_volunteer.ps1`.
 
 4. Run it for real:
@@ -57,31 +55,18 @@ joined PC can sit idle for a while. That is normal.
    ```
 
    The helper asks you to type `YES` before it downloads the official BOINC
-   installer and again before it runs it. It verifies the installer's checksum
+   installer and again before it runs it, and checks the installer's checksum
    and signature first. In the installer, open **Advanced** and keep **Service
-   install** off (a service cannot use the GPU), and at **Finish** leave
-   **Launch BOINC Manager** unchecked. If BOINC 8.2.11 or newer is already
-   installed, the helper skips this and reuses it; an older one is upgraded,
-   after you exit it.
+   install** off (a service can't use the GPU), and at **Finish** leave **Launch
+   BOINC Manager** unchecked. If BOINC 8.2.11 or newer is already installed, the
+   helper reuses it; an older one is upgraded after you exit it.
 
-5. The helper then asks before opening **BOINC Manager** and prints the steps
-   to follow there (next section). When you have done them, press Enter and it
-   confirms the PC is attached.
+5. The helper asks before opening **BOINC Manager**. There,
+   [set limits](README.md#set-limits) and
+   [join the project](README.md#join-the-project). Then press Enter in
+   PowerShell, and the helper confirms the PC is attached.
 
-## 3. Join the project in BOINC Manager
-
-1. **Options → Computing preferences**: compute only while the PC is idle and
-   not on battery, and set CPU, memory and disk limits you are comfortable
-   with. These apply to every BOINC project on this PC.
-2. Create an account at <https://boinc.usnewsmap.com/> (or sign in to yours).
-   In **Project preferences** choose whether to use the GPU, the CPU or both.
-3. In Manager, **Tools → Add project**, enter `https://boinc.usnewsmap.com/`
-   and sign in with that account. Type your password only in Manager or on the
-   project website, never into the script or a support message.
-
-If the PC is already attached, do not remove and re-add the project.
-
-## 4. Check that it works
+## Check that it works
 
 Any time later, from the same folder:
 
@@ -89,27 +74,13 @@ Any time later, from the same folder:
 .\boinc\scripts\setup_windows_volunteer.ps1 -Status
 ```
 
-It reports whether the PC is attached and how many usnewsmap tasks it holds,
-by state. "No tasks" with a **Scheduler request completed** line in Manager's
-**Event Log** (Advanced view) means you are joined and waiting for a batch. A
-task that downloads, runs and uploads is a success; its validation shows under
-**Tasks** on your account page.
+It reports whether the PC is attached and how many usnewsmap tasks it holds, by
+state. "No tasks" with a **Scheduler request completed** line in Manager's
+**Event Log** (Advanced view) means you are joined and waiting for a batch. If
+the GPU isn't listed in the Event Log at startup, update the GPU driver and
+check that BOINC wasn't installed as a service.
 
-If the GPU is not listed in the Event Log at startup, update the GPU driver
-and check that BOINC was not installed as a service.
-
-## 5. Pause, stop or leave
-
-- **Pause:** Manager's **Activity** menu, or the project's **Suspend** button.
-- **Stop taking work:** select the project and click **No new tasks**; running
-  tasks finish and report.
-- **Leave:** select the project and click **Remove**. Delete your account on
-  the website if you also want that gone.
-
-BOINC downloads signed apps and models by itself and returns results and
-diagnostics. Never copy in executables or models or edit `app_info.xml`; if a
-task fails, BOINC reports it and the project sees it.
-
-The [full volunteer reference](README.md#13-windows-windows_x86_64)
-has the helper's options, the installer pins, container apps on Windows, and
-[what the project sees from your PC](README.md#4-resources-network-and-privacy).
+[Check that it works](README.md#check-that-it-works) says what success looks
+like, and [Pause, stop or leave](README.md#pause-stop-or-leave) how to stop. The
+[Windows helper details](README.md#windows-helper-details) cover the helper's
+options and the installer pin.

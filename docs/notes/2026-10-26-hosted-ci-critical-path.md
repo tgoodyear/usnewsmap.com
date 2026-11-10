@@ -6,6 +6,8 @@
 `scripts/ci/run-unit-tests.py`, `boinc/images/ci.hcl`.
 **Issue:** #1229. **Pull request:** #1232.
 
+**Outcome:** PR #1232 merged on 26 October 2026 and #1229 closed.
+
 ## The question
 
 An on-prem comparison did not justify moving a broad set of CI jobs to

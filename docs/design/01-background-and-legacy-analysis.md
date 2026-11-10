@@ -127,8 +127,8 @@ flowchart LR
 
 These must not carry over. Anything that is still live should be revoked.
 
-- **A Google Places API key is committed** in `python/get_sn_locations.py`, and a **Mapbox public token** in `web/js/map.js` (commented out). Both were **revoked in their consoles** in October 2026. The new repository must use secret scanning (GitHub push protection) and keep no keys in source.
-- **Logging of personal data**: `log_metadata` stored the client IP, cookies and all request headers for every search in MongoDB, with no retention limit. The new application never logs raw IPs, cookies or headers. The only raw IPs that can exist are in optional platform access logs, kept at most 30 days for abuse handling (see [09](09-operations-security-cost.md)).
+- **A Google Places API key is committed** in `python/get_sn_locations.py`, and a **Mapbox public token** in `web/js/map.js` (commented out). Both were **revoked in their consoles** in October 2026. The new repository has GitHub secret scanning and push protection turned on and keeps no keys in source.
+- **Logging of personal data**: `log_metadata` stored the client IP, cookies and all request headers for every search in MongoDB, with no retention limit. The new application never logs raw IPs, cookies or headers. Raw IPs exist only in optional platform access logs, kept at most 30 days for abuse handling, and, since serving moved behind Cloudflare on 31 October 2026, in Cloudflare's sampled Security Analytics, kept up to 31 days ([09 §9.4.2](09-operations-security-cost.md#942-privacy)).
 - **Solr query injection**: user input was concatenated into Solr URLs after stripping only double quotes. Local-params syntax (e.g. `{!…}`) and field syntax could be injected. The new API parses queries into an AST and never forwards raw syntax to the engine.
 - **Plain HTTP** for the API and for LoC links. There was no TLS enforcement.
 - **CORS `*`** on the API. The new API allows only the site's origin, for GET requests without credentials.
@@ -141,5 +141,5 @@ The legacy design had several good product ideas worth keeping:
 - **Relative frequency** (hits ÷ pages published) is essential for honest interpretation, because the corpus grows about 1,000× from 1790 to 1910.
 - **Cumulative vs trailing-window playback** and the **Year/Month/Week/Day step** controls were distinctive and well liked.
 - **The no-data mask** tells users that absence on the map may mean absence of digitized papers. The new design generalizes it into a time-aware coverage layer.
-- **Links straight to the LoC page viewer with the search terms highlighted**, so LoC remains the canonical viewer and we don't need to host images.
+- **Links straight to the LoC page viewer with the search terms highlighted**, so LoC is the canonical viewer and the site doesn't host images.
 - **Embed mode** for use in articles and lectures.

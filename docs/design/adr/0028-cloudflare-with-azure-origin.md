@@ -1,6 +1,7 @@
 # ADR-0028: Cloudflare proxies the existing Azure origin
 
-- **Status:** Accepted by maintainer, 27 October 2026 ([#1274](https://github.com/tgoodyear/usnewsmap.com/issues/1274)).
+- **Status:** Superseded by [ADR-0029](0029-onprem-primary-azure-failover.md), 31 October 2026. Accepted by maintainer, 27 October 2026 ([#1274](https://github.com/tgoodyear/usnewsmap.com/issues/1274)).
+- **Later:** Since 31 October 2026 Cloudflare sends public traffic to the on-prem origin, and to Azure when on-prem's health check fails (ADR-0029). This record describes routing before that cutover.
 - **Amends:** ADR-0027 decision 3's requirement to wait for the on-prem cutover before proxying public hostnames.
 
 ## Decision

@@ -3,8 +3,8 @@
 - **Status:** Accepted
 - **Date:** 2026-09
 - **Supersedes:** the $500/month ceiling originally set in ADR-0005
-- **Amended by:** [ADR-0027](0027-onprem-serving-behind-cloudflare.md) (the availability trade-off: the 99.0% target's SLI comes from the availability test and the count of fallback answers, since one host doesn't restart in seconds)
-- **Current state (November 2026):** the single container app is no longer the origin. Public traffic is served on-prem behind Cloudflare, and the Azure app is a cold spare at zero replicas ([ADR-0029](0029-onprem-primary-azure-failover.md)).
+- **Amended by:** [ADR-0008](0008-private-networking.md) (private networking for app → data paths); [ADR-0010](0010-site-served-by-the-api.md) (decision 1: the API app serves the site, no Static Web App); [ADR-0027](0027-onprem-serving-behind-cloudflare.md) (the availability trade-off: the 99.0% target's SLI comes from the availability test and the count of fallback answers, since one host doesn't restart in seconds)
+- **Later:** Since 31 October 2026 the single container app is no longer the origin. Public traffic is served on-prem behind Cloudflare, and the Azure app is a cold spare at zero replicas ([ADR-0029](0029-onprem-primary-azure-failover.md)).
 
 ## Context
 

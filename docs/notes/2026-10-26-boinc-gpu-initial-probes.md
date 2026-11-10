@@ -5,6 +5,8 @@ On 26 October 2026 UTC, actual work followed the
 [#529](https://github.com/tgoodyear/usnewsmap.com/issues/529).
 Publication alone had not exercised the volunteer hardware.
 
+**Outcome:** the GPU classes as they stand now are in [app release](../boinc/apps/app-release.md) and [AMD GPUs](../boinc/apps/amd-gpu.md). Intel's 8B Qwen class went to general admission on 8 November 2026 (PR #1645).
+
 ## Intel: returned diagnostics, not yet accepted offload
 
 WUs **20673/20674** targeted BOINC host 9, Intel Iris Xe, client 8.2.13,

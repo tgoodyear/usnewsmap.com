@@ -3,6 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-09
 - **Amends:** ADR-0005 decision 3 ("Bicep + azd") and 08 §8.5
+- **Amended by:** [ADR-0017](0017-resource-naming.md) (a rename guard before each stack deployment)
 
 ## Context
 

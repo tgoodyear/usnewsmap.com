@@ -2,6 +2,8 @@
 
 6 November 2026, updated 9 November with the _Phoenix_ model (step 3). Follows [#1581](https://github.com/tgoodyear/usnewsmap.com/issues/1581) (the word lists and the engine tests) and [#1590](https://github.com/tgoodyear/usnewsmap.com/issues/1590) (the Georgia Historic Newspapers images).
 
+Status on 10 November 2026: since this report, `chr_phoenix` is pinned in the Tesseract engine image as a lines-only profile, and BOINC line jobs can re-read a page's Cherokee lines with it and merge the readings into LoC's text (#1678, merged 9 November). Step 4 ([#1622](https://github.com/tgoodyear/usnewsmap.com/issues/1622)) is open.
+
 ## Summary
 
 - **Volume.** usnewsmap.com searches 324 pages of the _Cherokee Phoenix_ (82 issues, 1828-03-06 to 1833-10-19). They hold about 85,000 words of Cherokee syllabary, on 191 pages. That is 32% of the 1,023 pages LoC and GHN list for the paper. Images of the other 699 pages are already on our storage, without OCR. No other Cherokee-language newspaper is in the index. The largest one outside it is the _Cherokee Advocate_ (1844–1906), 895 issues on the Gateway to Oklahoma History.

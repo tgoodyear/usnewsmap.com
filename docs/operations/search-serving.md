@@ -1,25 +1,14 @@
 # Search serving
 
-Part of the [operations guide](README.md).
+Part of the [operations guide](README.md). Public serving runs on-prem ([`scripts/onprem/serving/`](../../scripts/onprem/serving/README.md)); this page covers what applies to both it and the [Azure cold spare](#the-azure-cold-spare), and the spare itself.
 
 ## Cloudflare API schema
 
-The upload artifact is
-[`ops/api/usnewsmap-cloudflare-api-schema.yaml`](../../ops/api/usnewsmap-cloudflare-api-schema.yaml).
-It is a reviewed OpenAPI 3.0.3 **snapshot**, not an automatically deployed policy.
-The authoritative public contract is
-[`/v1/openapi.json`](https://api.usnewsmap.com/v1/openapi.json), generated as OpenAPI
-3.1 by `crates/usnm-api/src/openapi.rs`.
+The upload artifact is [`ops/api/usnewsmap-cloudflare-api-schema.yaml`](../../ops/api/usnewsmap-cloudflare-api-schema.yaml), a reviewed OpenAPI 3.0.3 snapshot. Nothing deploys it automatically. The public contract is [`/v1/openapi.json`](https://api.usnewsmap.com/v1/openapi.json), generated as OpenAPI 3.1 by `crates/usnm-api/src/openapi.rs`.
 
-The upload lists both public hosts and both `/v1` and `/api/v1` prefixes, including
-the two internal POST routes omitted from the public document. Its `x-source`
-records the source checkout revision, router hash, source URL and SHA-256 of the
-source JSON serialized with sorted keys and compact separators. The revision is
-the code used to check route coverage, **not** an attestation of the deployed
-binary.
+The upload lists both public hosts and both `/v1` and `/api/v1` prefixes, including the two internal POST routes left out of the public document. Its `x-source` records the source checkout revision, router hash, source URL and SHA-256 of the source JSON serialized with sorted keys and compact separators. The revision is the code used to check route coverage; it doesn't attest the deployed binary.
 
-Regenerate from a checkout whose API code matches the intended release, then
-review and commit the diff:
+Regenerate from a checkout whose API code matches the intended release, then review and commit the diff:
 
 ```sh
 python3 -m venv /tmp/usnm-cloudflare-schema-venv
@@ -32,168 +21,76 @@ python3 -m unittest -v scripts/ops/test_export_cloudflare_schema.py
 git diff -- ops/api/usnewsmap-cloudflare-api-schema.yaml
 ```
 
-`--source` also accepts a saved public OpenAPI JSON file. The exporter refuses
-dirty API code, an unsupported router layout, mismatched routes/methods/hosts or
-changed internal POST coverage, and replaces the output only after conversion
-succeeds. It does not prove that the live parameter semantics match the source
-revision. The offline unit tests run in the existing script-test suite; they
-exercise conversion, not the live service or Cloudflare's evaluator.
+`--source` also accepts a saved public OpenAPI JSON file. The exporter refuses dirty API code, an unsupported router layout, mismatched routes, methods or hosts, or changed internal POST coverage, and replaces the output once conversion succeeds. It doesn't prove that the live parameter semantics match the source revision; its unit tests, which run in the script-test suite, exercise conversion, not the live service or Cloudflare's evaluator.
 
-Regenerate and review after API route, parameter, parser or deployment-configuration
-changes (for example, whether queryless browsing is enabled). Committing this file
-does not upload it, register endpoints or enable enforcement. Upload the reviewed
-file manually under Cloudflare's **Web Assets > Schema validation**, with relevant
-blocking rules disabled, and inspect **Profile Analysis** before enforcing it.
-See Cloudflare's [schema-validation documentation](https://developers.cloudflare.com/api-shield/security/schema-validation/).
+Regenerate and review after a change to API routes, parameters, parsers or deployment configuration (for example, whether queryless browsing is on). Committing the file doesn't upload it, register endpoints or enable enforcement. Upload the reviewed file by hand under Cloudflare's **Web Assets > Schema validation**, with blocking rules off, and inspect **Profile Analysis** before enforcing it ([schema validation](https://developers.cloudflare.com/api-shield/security/schema-validation/)).
 
-**Deliberate limits:** comma lists are represented as strings because Cloudflare
-does not support their `explode: false` encoding. Empty optional values, signed
-integers and unpadded dates follow the origin's permissive parsing; query lengths,
-list counts, membership, repeated/unknown keys and cross-parameter rules remain
-origin checks. POST bodies are not edge-validated: the origin accepts JSON sent
-as `text/plain` or `application/json`, with limits above the Free plan's 1 KiB
-validation limit. Responses are not validated by Cloudflare. Health probes,
-static pages, implicit `HEAD` and CORS `OPTIONS` are outside this inventory:
-**do not use it as a whole-host fallthrough allowlist**. Review encoding and
-legitimate-traffic violations before adding any block rule.
+**Limits.** Comma lists are strings, because Cloudflare doesn't support their `explode: false` encoding. Empty optional values, signed integers and unpadded dates follow the origin's permissive parsing; query lengths, list counts, membership, repeated or unknown keys and cross-parameter rules stay origin checks. POST bodies aren't validated at the edge: the origin accepts JSON sent as `text/plain` or `application/json`, with limits above the Free plan's 1 KiB validation limit. Cloudflare doesn't validate responses. Health probes, static pages, implicit `HEAD` and CORS `OPTIONS` aren't in this inventory, so don't use it as a whole-host allowlist. Review encoding and legitimate-traffic violations before adding any block rule.
 
 ## Sitemap eligibility
 
-The durable sitemap publishes the four canonical application pages and only
-unfiltered canonical search URLs with both a positive current match count and
-server-rendered sample results. Curated examples and previously promoted searches
-are rechecked against the pinned index; an empty search is omitted, removed from
-the homepage's discovery links and marked `noindex`, but remains usable as an
-interactive search. New recurring searches still require finalized activity on
-two distinct days and more than 50 matches. A backend failure does not count as an
-empty search: refresh fails explicitly and retains the last complete generation.
-Its results describe that generation, not a guarantee of perpetual availability.
+The durable sitemap publishes the four canonical application pages and only unfiltered canonical search URLs with both a positive current match count and server-rendered sample results. Curated examples and previously promoted searches are rechecked against the pinned index; an empty search is left out, removed from the home page's discovery links and marked `noindex`, but stays usable as an interactive search. New recurring searches still need finalized activity on two distinct days and more than 50 matches. A backend failure doesn't count as an empty search: the refresh fails and keeps the last complete generation.
 
-Redirect aliases, filtered variants and noncanonical paths are never sitemap
-entries, including when reading older saved generations. Proximity operators use
-literal `~` in canonical paths: Cloudflare normalizes unreserved `%7E` before
-forwarding, so re-encoding it would cause a permanent self-redirect. The web
-builder's no-backend fallback sitemap lists static pages only, not unverified
-search examples.
+Redirect aliases, filtered variants and noncanonical paths are never sitemap entries, including when reading older saved generations. Proximity operators use a literal `~` in canonical paths: Cloudflare normalizes unreserved `%7E` before forwarding, so re-encoding it would cause a permanent self-redirect. The web builder's no-backend fallback sitemap lists static pages only.
 
-When verifying a release, fetch **every** sitemap URL without following redirects:
-require HTTP 200, robots.txt crawl permission, no applicable `noindex`/`none`
-directives, a self-referencing canonical and actual nonempty search content.
-Check duplicate/alternate content rather than treating a successful fetch as
-enough. Google's [URL Inspection guidance](https://support.google.com/webmasters/answer/9012289#will_i_be_indexed)
-explicitly does not guarantee indexing even for a valid live test. Google's
-selected canonical, quality assessment, manual actions, legal removals and
-Search Console temporary blocks require separate Search Console evidence;
-public HTTP checks cannot certify them. No indexing guarantee is claimed.
+When verifying a release, fetch every sitemap URL without following redirects: require HTTP 200, robots.txt crawl permission, no applicable `noindex`/`none` directives, a self-referencing canonical and nonempty search content, and check for duplicate or alternate content. Google's [URL Inspection guidance](https://support.google.com/webmasters/answer/9012289#will_i_be_indexed) doesn't guarantee indexing even for a valid live test; Google's selected canonical, quality assessment, manual actions, legal removals and temporary blocks need Search Console evidence that public HTTP checks can't give.
 
 ## Searcher caches
 
-The Quickwit searcher (a sidecar or its own app) keeps the split footers, fast fields and partial and predicate results in memory, with the capacities in `infra/quickwit/searcher.yaml` (08 §8.4). The API reads the searcher's metrics every minute and reports them as `api.searcher_cache_*` (08 §8.1.2):
+The Quickwit searcher (on-prem, `usnm-searcher.service` in the serving container; in Azure, the spare's `usnm-qw-spare-ca-prod`) keeps the split footers, fast fields and partial and predicate results in memory, with the capacities in `infra/quickwit/searcher.yaml` (08 §8.4). The API reads the searcher's metrics every minute and reports them as `api.searcher_cache_*` (08 §8.1.2) to the environment's Application Insights, which the on-prem API also writes to when `scripts/onprem/serving/gen-env.sh` finds its connection string:
 
 ```sh
-scripts/azure/logs.sh --env prod --query-name searcher-caches --span 1d        # per replica and cache: MB and items held, hits, misses, evictions, hit rate
+scripts/azure/logs.sh --env prod --query-name searcher-caches --span 1d        # per searcher and cache: MB and items held, hits, misses, evictions, hit rate
 ```
 
-The same table, and charts of MB held and of misses and evictions, are in the "usnm API (<env>)" workbook ("usnewsmap API" before the Phase 2 provision). The saved queries and these workbook panels select one reporting API replica per searcher per UTC minute, before aggregating any instruments. Remote searchers are identified by `Properties["usnm.searcher"]`, the origin of `USNM_QUICKWIT_URL` (without credentials, path or query). Loopback sidecars have no shared identity and keep their per-API-replica rows. The `Replica` column is the shared searcher's origin in app mode and the API replica in sidecar mode; chart series likewise keep sidecars separate. When the reporting replica disappears, the next minute can use another replica. Selection always keeps all rows from the chosen reporter, not just one metric row.
+The same table, and charts of MB held and of misses and evictions, are in the "usnm API (<env>)" workbook. The saved queries and the workbook select one reporting API replica per searcher per UTC minute before aggregating, so don't add the replicas' raw metrics together. Remote searchers are identified by `Properties["usnm.searcher"]`, the origin of `USNM_QUICKWIT_URL` (without credentials, path or query); loopback searchers keep their per-API-replica rows. These are sampled metrics: independently timed scrapes and a reporter's first report (which includes the searcher's lifetime totals, the warm-up included) can skew bins and hand-offs, so don't treat their sums as exact accounting. For cache gauges the table reads the latest report. Split footers are one item per split.
 
-The `usnm.searcher` property is emitted only by API images that carry it; older data without it remains per replica, since its mode cannot safely be inferred. For that older shared-app data only, filter to one reporting replica before summing. These remain sampled metrics: independently timed scrapes and a reporter's first cache-counter report (which includes the searcher's lifetime totals) can skew bins and hand-offs, so do not treat their sums as exact accounting. For cache gauges the table reads the latest report, not the sum of gauge values. Split footers are one item per split. A replica's first report counts everything since its searcher started, the warm-up included.
+**Sizing `split_footer_cache_capacity`.** Size it from the release's footer total, and check it against what the cache does after the warm-up. Evictions on their own don't show the footers don't fit: Quickwit 0.9.1 also counts replacing an entry as an eviction, and after a publish the cache drops the old version's footers. The API logs `split footer cache evictions seen` once per searcher run, without a cause. The footers don't fit when the total is above the capacity, or when footer misses and evictions keep coming hours after the warm-up, with no publish or restart in between. To size it:
 
-**Sizing `split_footer_cache_capacity`.** Size it from the release's footer total, and check it against what the cache does after the warm-up. Evictions on their own don't show the footers don't fit: Quickwit 0.9.1 also counts replacing an entry as an eviction, and after a publish the cache drops the old version's footers. The API logs `split footer cache evictions seen` once per searcher run, for the record, without a cause. The footers don't fit when the total is above the capacity, or when footer misses and evictions keep coming hours after the warm-up, with no publish or restart in between. To size it:
+1. Add up `footer_bytes` on the version's `index layout` lines, or under `indexes` in `reference/<version>/manifest.json`, over every index the version lists: the base, its deltas and the Japanese index.
+2. Set `split_footer_cache_capacity` in `infra/quickwit/searcher.yaml` to that total plus about 25% for deltas, rounded up. Quickwit reads `256MB` as 256,000,000 bytes.
+3. Check it fits the searcher's memory next to the fast field cache (1 GB), the aggregation memory limit (768 MB) and the partial request and predicate caches (32 MB each). If it doesn't, shrink the fast field cache first.
 
-1. Add up `footer_bytes` on the version's `index layout` lines (`scripts/azure/logs.sh --env prod --query-name index-layout --span 2d`, column `FooterMb`), or under `indexes` in `reference/<version>/manifest.json`, over every index the version lists: the base, its deltas and the Japanese index.
-2. Set `split_footer_cache_capacity` in `infra/quickwit/searcher.yaml` to that total plus about 25% for the deltas the next weekly releases add, rounded up. Quickwit reads `256MB` as 256,000,000 bytes, the unit `FooterMb` uses.
-3. Check it fits the sidecar's 4 GiB next to the fast field cache (1 GB), the aggregation memory limit (768 MB) and the partial request and predicate caches (32 MB each). If it doesn't, the fast field cache is the one to shrink first; then the container's memory (`infra/modules/containerapp.bicep`).
-
-The change reaches the Azure spare at its next roll (`spare-roll`, which applies `searcher.yaml` to the running app), not on merge. Confirm with `searcher-caches` a day later: after the warm-up, footer misses and evictions stay near 0 (each replica start misses about once per split), and the footer cache's MB held is about the footer total.
+The change reaches on-prem when the serving container's config is regenerated and installed (`gen-env.sh`, then `install.sh`, which restarts the searcher when its config changed; [`scripts/onprem/serving/`](../../scripts/onprem/serving/README.md)), and the spare at its next roll (`spare-roll` applies `searcher.yaml` to the running app). Confirm with `searcher-caches` a day later: after the warm-up, footer misses and evictions stay near 0 (each start misses about once per split), and the footer cache's MB held is about the footer total.
 
 ## Searcher threads
 
-The sidecar runs each split's search on its `search` thread pool, and downloads from Blob and opens the splits on its main Tokio runtime. The API reads both with the caches, every minute, and reports them as `api.searcher_pool_tasks` and `api.searcher_runtime_*` (08 §8.1.2):
+The searcher runs each split's search on its `search` thread pool, and downloads and opens the splits on its main Tokio runtime. The API reads both with the caches, every minute, and reports them as `api.searcher_pool_tasks` and `api.searcher_runtime_*` (08 §8.1.2):
 
 ```sh
-scripts/azure/logs.sh --env prod --query-name searcher-threads --span 2h       # per replica and minute: search pool ongoing and pending, main runtime threads and busy share
+scripts/azure/logs.sh --env prod --query-name searcher-threads --span 2h       # per searcher and minute: search pool ongoing and pending, main runtime threads and busy share
 ```
 
 Read it while cold searches run (`scripts/ops/load-cold-searches.py`):
 
-- `SearchPending` above 0 with `SearchOngoing` at the pool's size: searches wait for cores. The pool has `RAYON_NUM_THREADS` threads (4, set on the sidecar in `infra/modules/containerapp.bicep`; without it, one per CPU Rust counts, which rounds the 3.75 vCPU quota down to 3). Quickwit doesn't report the size; it is the most `SearchOngoing` reaches.
-- `MainBusyPercent` near 100 with the search pool below its size and nothing pending: searches wait on the main runtime. It has `QW_TOKIO_RUNTIME_NUM_THREADS` threads (4, same file; `MainThreads`).
-- Neither: look at Blob reads, and at `max_num_concurrent_split_searches` in `infra/quickwit/searcher.yaml`, which limits the split searches downloading at once.
+- `SearchPending` above 0 with `SearchOngoing` at the pool's size: searches wait for cores. The pool has `RAYON_NUM_THREADS` threads (4, set in `infra/modules/containerapp.bicep` and in `gen-env.sh`'s searcher environment; without it, one per CPU Rust counts). Quickwit doesn't report the size; it is the most `SearchOngoing` reaches.
+- `MainBusyPercent` near 100 with the search pool below its size and nothing pending: searches wait on the main runtime. It has `QW_TOKIO_RUNTIME_NUM_THREADS` threads (4, same files; `MainThreads`).
+- Neither: look at storage reads, and at `max_num_concurrent_split_searches` in `infra/quickwit/searcher.yaml`, which limits the split searches downloading at once.
 
-The pool numbers are a reading once a minute, not an average, so a short burst can fall between two. `MainBusyPercent` is busy time over the thread time the runtime had (`api.searcher_runtime_capacity_ms`), so it stays a share however the reports fall into the minutes; it is empty for a replica's first minute and after a searcher restart.
+The pool numbers are a reading once a minute, not an average, so a short burst can fall between two. `MainBusyPercent` is busy time over the thread time the runtime had (`api.searcher_runtime_capacity_ms`); it is empty for a searcher's first minute.
 
 ## Search capacity
 
-A second searcher (a Quickwit cluster, #239) is deferred until either of these holds for a week (#238, 10 October 2026): the p90 of the wait for a computation slot (`api.search_queue_wait_seconds`) above 3 s, or a replica's CPU above 3 vCPU outside releases. With alert emails set, two severity 4 alerts watch them (08 §8.1.2):
+A second searcher, a Quickwit cluster (#238, #239), was closed as not planned on 15 October 2026, to be reopened if the p90 wait for a computation slot (`api.search_queue_wait_seconds`) stays above a few seconds, or the searcher's CPU stays above 3 vCPU outside releases, for a week. With alert emails set, two severity 4 alerts watch those (08 §8.1.2):
 
-- _Search capacity: searches waiting for a slot_ emails once a day while each of the last two days had more than 10% of its searches (at least 20) wait over 3 s. The first email covers two days and each later one adds a day, so six emails in a row are the week.
-- `usnm-api-replica-cpu-alert-<env>` emails when the replicas' CPU averages over 3 vCPU for 6 hours, and again when it clears (prod only: where the app scales to zero, a window could hold only a start's samples). It averages the replicas together, so with a second replica sharing the load a hot one can sit under it: the workbook's per-replica chart is the record.
+- _Search capacity: searches waiting for a slot_, a log alert on Application Insights, emails once a day while each of the last two days had more than 10% of its searches (at least 20) wait over 3 s.
+- `usnm-api-replica-cpu-alert-<env>` reads the Container Apps CPU metric, so it watches only the Azure spare's replicas.
 
-An alert can't look back a week (a log search alert reads at most 2 days), so judge the week in the "usnm API (<env>)" workbook's Search capacity section, which covers the last 14 days by day whatever the time range. Leave out days with a release or a new index version (every search is cold then), and check `scripts/azure/logs.sh --env prod --query-name searcher-threads --span 24h` for whether the search pool or the main runtime is the one that's full. If it holds, the next step is moving Quickwit out of the API's replica (#267, [the searcher app](#searcher-app)), then the cluster in #239.
+A log search alert reads at most 2 days, so judge a week in the "usnm API (<env>)" workbook's Search capacity section (the last 14 days by day). Leave out days with a release or a new index version, when every search is cold, and check `searcher-threads` for whether the search pool or the main runtime is the one that's full.
+
+**Computation slots.** The API divides the searcher-wide visitor budget (`USNM_COMPUTE_CONCURRENCY`, default 2) by `USNM_API_MAX_REPLICAS` (default 2), rounding down, when its searcher is shared (the searcher app, or the index-account searcher with `USNM_INDEX_STORAGE_SERVE`; #364): each Azure API replica then gets 1 slot. A budget below the replica maximum is rejected; a remainder is unused. The division runs in `infra/main.bicep` from deployment parameters, so it changes only with a provision. Keep the helper outside the API module: importing it there makes ARM what-if short-circuit other modules and omit protected resources, which the rename guard refuses. Warm-ups keep their own slots, and while old and new revisions overlap they can briefly exceed the budget.
 
 ## Searcher app
 
-By default the Quickwit searcher is a sidecar in each API replica, so every new API image, which also carries the site, starts a new searcher with empty caches and a warm-up (#267). `USNM_SEARCHER_APP` runs the searcher as its own Container App instead, `usnm-search-ca-<env>`, which API and web deploys never restart. The maintainer decided on 15 October 2026 to keep the separate searcher app permanently (#365). The setting still defaults to off for environments that use the sidecar; the decision is no longer pending measurements (below).
+`USNM_SEARCHER_APP` runs the searcher as its own Container App, `usnm-search-ca-<env>`, reading the lake's `qw-index`, instead of a sidecar in each API replica (#267), so API and web deploys don't restart it. Prod used it from October 2026 until the index account's searcher took over; the legacy app was retired on 25 October 2026 (#1136), and the spare's environment needs the setting off (`USNM_SPARE_ENVIRONMENT needs USNM_DATA_ALL_NETWORKS and USNM_SEARCHER_APP=false`). The spare's searcher, `usnm-qw-spare-ca-prod`, is the index-account searcher of the same layout (`infra/modules/containerapp.bicep`): one replica, internal ingress, Blob Data Reader on the index account's `qw-index` only, scaling to zero with the API.
 
-**What it deploys** (`infra/modules/containerapp.bicep`). The searcher app runs the sidecar's container: the same image, `infra/quickwit/searcher.yaml`, 3.75 vCPU / 7.5 GiB, thread counts and startup and liveness probes, plus a readiness probe on `/health/readyz`. It listens on all interfaces and advertises its replica's address, and still runs alone (its own cluster id, no peers). Its ingress is internal only: `http://usnm-search-ca-<env>` (port 80, to Quickwit's 7280) inside the environment. It runs one replica, always in prod (elsewhere it scales to zero with the API): a second would start cold and split the cache hits; more search capacity is a cluster (#239). Its system-assigned identity has Blob Data Reader on `qw-index` alone, as the sidecar's had, and the API's user-assigned identity pulls the image. The API app keeps the `api` container alone (0.25 vCPU / 0.5 GiB), and its `USNM_QUICKWIT_URL` names the searcher app. It has no system-assigned identity or `qw-index` reader grants; its user-assigned identity is unchanged. The replica CPU alert and the workbook's replica CPU chart follow the searcher app.
+With either searcher app, CI's roll (`scripts/ci/roll-api.sh`) finds the searcher from the API's `USNM_QUICKWIT_URL`, applies a changed `searcher.yaml` to it and waits for its revision, then rolls the API, whose start warms the new searcher; otherwise it leaves the searcher alone. A new Quickwit image moves with a provision. The API sees a searcher restart in its metrics within a minute and runs a `searcher_restart` warm-up ([Cache warm-up](#cache-warm-up)).
 
-**Turn it on:**
-
-```sh
-scripts/azure/settings.sh --env prod --key USNM_SEARCHER_APP --value true
-scripts/azure/provision.sh --env prod
-scripts/azure/settings.sh --env prod --key SEARCHER_APP          # usnm-search-ca-prod
-```
-
-The provision creates the searcher app and its role first, then rolls the API onto a revision without the sidecar. On a first switch from the sidecar, removing the app-level system identity cuts off the old revision's sidecar before the new revision is ready, so schedule that switch for a maintenance window; the permanent-searcher decision applies to prod, which already uses the searcher app. The searcher's first revision can start before its role has reached Blob and restart once or twice.
-
-**The API's unused identity and grants are removed (#365).** With the searcher app kept, `apiSystemIdentity = quickwit && !searcherApp` in `infra/modules/containerapp.bicep`. The next provision removes the API's system-assigned identity and its Blob Data Reader assignments on `qw-index` in both the lake and, if configured, the separate index account. The maintainer approved this change to production infrastructure on 15 October 2026; it takes effect at the next provision. The searcher app's own identity and grants are unchanged. With `USNM_SEARCHER_APP=false`, the API retains its identity and grants even when `USNM_INDEX_STORAGE_SERVE=true` removes its sidecar: that separate cutover still needs the old revision's lake-sidecar permissions (ADR-0021). A rollback now recreates the API's identity and grants, so it must keep the searcher app until the permissions have propagated and the sidecar is ready (below).
-
-**Deploys with it on.** CI's publish (`scripts/ci/roll-api.sh`) finds the searcher app from the API's `USNM_QUICKWIT_URL`. When `searcher.yaml` changed, it applies it to the searcher app, waits for its new revision, then rolls the API, whose start warms the new searcher; otherwise it leaves the searcher app alone. A new Quickwit image still moves with a provision, and restarts the searcher alone. The API sees the restart in the searcher's metrics within a minute (its counters start again from 0) and runs a searcher-restart warm-up while it stays ready: `trigger` is `searcher_restart` in `scripts/azure/logs.sh --env prod --query-name warm-up --span 2d`. When another warm-up is running then (a start's or a publish's), that run comes after it, and a publish in the meantime waits for it; the API's log says `the searcher restarted during a warm-up; warming it again after that one`. Unlike a start's, that run bypasses both response caches for searches, including responses the API already holds, so Quickwit's own caches fill too. It keeps cached responses available to visitors, including after a failed refresh, and uses the startup budget (5 minutes by default), giving way while visitor searches are running or queued. Places and coverage still use their response caches because they need no searcher.
-
-**Measurements and decision (15 October 2026):** the maintainer chose to keep the separate searcher app permanently and approved dropping the API's unused identity and grants (#365). No new measurements are claimed here. The original comparison checklist (a week with it against a week without, leaving out days with a release or a new index version) is still useful for monitoring, though no decision waits on it.
-
-- **API to searcher latency:** `scripts/azure/logs.sh --env prod --query-name backend-latency --span 14d`, `AvgMs` and `MinMs` per endpoint. The network hop should add a few milliseconds per call to searches of seconds.
-- **Deploys:** after a merge that changes only the site, the API's log has no `the searcher restarted` line, and `scripts/azure/logs.sh --env prod --query-name searcher-caches --span 1d` shows the caches kept their contents.
-- **Idle billing of each app:** Cost Management, per resource and meter, daily: idle and active vCPU-seconds of `usnm-search-ca-prod` and of `ca-usnm-prod`, against about 180,000 idle and 14,000 to 32,000 active vCPU-seconds a day for the one app at 2.25 vCPU (3 to 8 October 2026, 09 §9.5). The searcher still polls the metastore every 30 s and answers the API's metrics read every minute; the API app now bills on its own between visitors.
-- **Capacity:** with two API replicas, both send searches to the one searcher (each with its own computation slots, 06 §6.6), and both report its metrics. `searcher-caches`, `searcher-threads` and the workbook cache panels automatically take one reporter per shared searcher per minute (see [Searcher caches](#searcher-caches)); do not add the replicas' raw metrics together. The selected capacity policy (#364) divides the configured searcher-wide visitor budget (`USNM_COMPUTE_CONCURRENCY`, default 2) by `USNM_API_MAX_REPLICAS` (default 2), rounding down: each API replica gets 1 slot by default. Provision uses the same maximum for scaling, even while only one replica actually runs. Sidecars keep the full budget per replica; a retained but unused searcher app does not trigger division. A budget that doesn't divide evenly leaves the remainder unused; a budget below the replica maximum is rejected. The partition is static, with no global lease: warm-ups keep their separate slots, and when old and new revisions overlap beyond the configured maximum they can temporarily exceed the visitor budget. The settings take effect when an operator runs a provision; a rollout of the site or API image alone doesn't apply them. Each replica also warms the searcher after it restarts, one warm-up at a time within a replica but not across them: while two replicas run (a rollout, or the HTTP rule's second replica), a searcher restart gets a warm-up from each, which compute the same misses side by side for up to the warm-up's budget (5 minutes). The searcher app runs one replica in prod and the API usually one, so that's a rollout's few minutes.
-
-Budget division runs in `infra/main.bicep` using deployment parameters only; the API module receives the allocated per-replica slots. Keep the helper outside the runtime-dependent API module: importing it there makes ARM what-if short-circuit other modules and omit protected resources, which the rename guard correctly refuses. Do not bypass that guard.
-
-**Roll back in two provisions (#362):** Keep `USNM_SEARCH_BACKEND=quickwit` and leave unrelated settings and images unchanged throughout. `USNM_SEARCHER_APP_RETAIN` keeps the searcher app and its Blob Data Reader role without routing the new API revision to it. It defaults to false and is a committed public setting, like `USNM_SEARCHER_APP`.
-
-1. Set retention and turn off routing **together**, then commit `infra/env/prod.json`, merge its pull request and pull before provisioning:
-
-   ```sh
-   scripts/azure/settings.sh --env prod --key USNM_SEARCHER_APP_RETAIN --value true
-   scripts/azure/settings.sh --env prod --key USNM_SEARCHER_APP --unset
-   scripts/azure/provision.sh --env prod
-   ```
-
-   The first provision recreates the API's system-assigned identity (a new principal) and its Blob Data Reader assignments on `qw-index`, including the separate index account when configured. The assignments depend on the API resource, so the sidecar can start before its new grants reach Blob and may restart or log authorization failures during propagation. It must not take traffic until its startup and readiness checks pass. Allow several minutes for role propagation, in addition to loading and warming (normally up to about 13 minutes); do not assume provision returning means the grants are usable. The old API revision still searches the retained app throughout. If provisioning or startup fails, leave retention on and retry the same first provision before proceeding; do not delete and recreate the identity by hand. `SEARCHER_APP` becomes empty because it describes the new API's backend, not the retained resource. CPU alerts and the workbook also return to the API.
-
-2. **Do not remove retention just because provision returned.** Check that the API's `latestRevisionName` is nonempty and equals `latestReadyRevisionName`, and that its template has both `api` and `quickwit` and `USNM_QUICKWIT_URL=http://127.0.0.1:7280`. For prod:
-
-   ```sh
-   az containerapp show --name ca-usnm-prod --resource-group rg-usnm-prod \
-     --query '{latest:properties.latestRevisionName,ready:properties.latestReadyRevisionName,containers:properties.template.containers[].{name:name,quickwitUrl:env[?name==`USNM_QUICKWIT_URL`].value}}' -o json
-   curl --fail --show-error https://api.usnewsmap.com/readyz
-   ```
-
-   Verify a real search succeeds too. In single-revision mode the ready sidecar revision takes over traffic before the old revision stops. If readiness or search fails, **leave retention on**, investigate and retry; the old revision keeps its searcher. In a scale-to-zero environment send a request to wake the API before checking readiness.
-
-3. Only after those checks, unset retention, commit and merge that **second** settings change, pull, then provision again:
-
-   ```sh
-   scripts/azure/settings.sh --env prod --key USNM_SEARCHER_APP_RETAIN --unset
-   scripts/azure/provision.sh --env prod
-   ```
-
-   The stack now deletes the unused searcher app and its role without changing the API's sidecar template or its identity. Keeping retention on longer is safe but continues billing for the extra searcher. Unsetting both settings in the first provision skips this protection and can drop search until the sidecar is ready.
+To leave the searcher app in an environment that has it on, roll back in two provisions (#362) so search never drops: first set `USNM_SEARCHER_APP_RETAIN=true` and unset `USNM_SEARCHER_APP` together, commit and provision. That recreates the API's system identity and its Blob Data Reader grants and starts a sidecar revision while the old revision still searches the retained app. Check that the API's `latestRevisionName` equals `latestReadyRevisionName`, its template has both `api` and `quickwit` with `USNM_QUICKWIT_URL=http://127.0.0.1:7280`, and `/readyz` and a real search pass. Then unset `USNM_SEARCHER_APP_RETAIN`, commit and provision again, which deletes the app and its role.
 
 ## The Azure cold spare
 
-[ADR-0029](../design/adr/0029-onprem-primary-azure-failover.md) keeps the Azure API and searcher at zero replicas for failover. `USNM_DATA_PRIVATE_ENDPOINTS=false` removes the spare's private endpoints ([ADR-0008, amendment of November 2026](../design/adr/0008-private-networking.md)). The spare's index stays Hot.
+[ADR-0029](../design/adr/0029-onprem-primary-azure-failover.md) keeps an Azure API and searcher at zero replicas for failover, in their own Container Apps environment without a VNet: `usnm-core-spare-cae-prod`, `usnm-api-spare-ca-prod` and `usnm-qw-spare-ca-prod` (#308). The lake, the index account and Cosmos accept every network (`USNM_DATA_ALL_NETWORKS`), with Entra ID roles the only way in: no keys, no SAS, no anonymous access. The index stays Hot.
 
 ### What a failover needs
 
@@ -211,35 +108,33 @@ Budget division runs in `infra/main.bicep` using deployment parameters only; the
 
 Page images come from the Library of Congress. The site itself is in the API image.
 
-### Network and tier
-
-Without private endpoints, snet-cae reaches the lake, the index account and Cosmos through service endpoints and each account's firewall rule for that subnet. Every default stays deny, with no trusted-service bypass. Entra roles remain the only way in, with no keys, no SAS and no anonymous access. The on-prem addresses keep their IP rules, so the search log copy, the OCR output copy, serving and releases are unchanged. The public-network policy lists all three accounts while the setting is off (`infra/public-accounts.bicep`), and `lakeOpen`, `indexOpen` and `cosmosOpen` still decide the IP rules alone.
+### Index access tier
 
 The maintainer kept the index Hot in November 2026, because October's releases came 2 to 12 days apart and Cool loses money at that pace. `USNM_INDEX_ACCESS_TIER` stays in the settings so this can be revisited. On the 1,086.7 GiB index, Cool saves about $0.30 a day in storage ($0.66 against $0.36). Against that:
 
 - Writes cost $0.10 per 10,000 against $0.05, so copying a version in costs $1.40 against $0.70.
 - A blob deleted within 30 days of arriving in Cool is billed for the rest of the 30, about $0.36 a day for the whole index.
-- Reads cost $0.01 per 10,000 against $0.004, and retrieval $0.01/GB against nothing, so a failover day costs $2.70-8.20 more.
+- Reads cost $0.01 per 10,000 against $0.004, and retrieval $0.01/GB against nothing, so a failover day costs $2.70 to $8.20 more.
 - Moving back to Hot costs about $11.
 
-With releases `d` days apart and each old version deleted at once, Cool saves $0.30 × `d` and costs $0.70 + $0.36 × (30 - `d`) per release. It breaks even at about 18 days. At 12 days it loses about $0.30 a day, and at 2 days about $5. Cold isn't worth it, at $0.10 per 10,000 reads.
+With releases `d` days apart and each old version deleted at once, Cool saves $0.30 × `d` and costs $0.70 + $0.36 × (30 - `d`) per release. It breaks even at about 18 days. Cold isn't worth it, at $0.10 per 10,000 reads.
 
 ### What wakes it
 
-Each wake starts the API, which starts the searcher. The API stays about 5 minutes after its last request and the searcher about 9 minutes more. These reach the Azure ingress:
+Each wake starts the API, which starts the searcher. The API stays about 5 minutes after its last request and the searcher about 9 minutes more. These reach the spare's ingress:
 
 - The Worker, when the primary doesn't answer `/readyz` with `ready` within 3 s: the minute heartbeat, `healthcheck.usnewsmap.com`, or a visitor's request after a 5xx or a failed probe. Each polls Azure's `/readyz` until it's ready, and those polls keep the app up.
 - `usnm-fallback-drill`, which has the same Azure origin. Its `dev.usnewsmap.com/*` route is removed between drills, because with the dev connector stopped any request there wakes production's spare. The Worker itself stays deployed.
 - Anything that reaches the app's default hostname directly.
-- A roll of the API (`scripts/ci/roll-api.sh`), which ends with a `/readyz` check, and each start's warm-up of about 5 minutes after it.
+- A roll of the API (`scripts/ci/roll-api.sh`), which ends with a `/readyz` check, and the start's warm-up of about 5 minutes after it.
 
-The Worker selects Azure only once the primary fails a second readiness probe, 1 second after the first, and a GET's 5xx, timeout or dropped connection reaches Azure only when the primary's readiness then fails too (#308). Otherwise the primary's 5xx passes through, or the Worker answers 503 with `Retry-After`. A real outage costs the first request at most about 4 seconds more before the Azure polling starts; the polling keeps its 180 s budget.
+The Worker selects Azure when the primary fails a second readiness probe, 1 second after the first, and a GET's 5xx, timeout or dropped connection reaches Azure if the primary's readiness then fails too (#308). Otherwise the primary's 5xx passes through, or the Worker answers 503 with `Retry-After`. A real outage costs the first request at most about 4 seconds more before the Azure polling starts; the polling keeps its 180 s budget.
+
+`/readyz` isn't recorded in Application Insights, and a request abandoned before a replica is up isn't either, so a wake can show no request. `ContainerAppSystemLogs` shows wakes as `KEDAScaleTargetActivated`, `triggered by s0-upstream_rq_total`.
 
 ### Rolling the spare
 
-Main merges don't roll the spare (#308). From 1 to 6 November 2026, 20 merges each made a new revision, and each cold-started the spare for a roll check and a start's warm-up: about half of its wakes. Pushes to `main` still publish the images to the registry and attest the API image, and on-prem serving deploys an attested image (`scripts/onprem/serving/update-api.sh`), so on-prem follows `main` as before. The spare runs the image of its last roll until the next one.
-
-Roll it onto the image on-prem follows:
+Main merges don't roll the spare (#308): from 1 to 6 November 2026, merge-driven rolls caused about half of its wakes. Pushes to `main` still publish the images to the registry and attest the API image, and on-prem serving deploys an attested image (`scripts/onprem/serving/update-api.sh`). The spare runs the image of its last roll until the next one. Roll it onto the image on-prem follows:
 
 - after an index publish to the spare, once the new version is promoted;
 - before a cold drill, then let it return to zero replicas before the drill's first step;
@@ -250,62 +145,25 @@ gh workflow run spare-roll --ref main                  # the commit usnewsmap-ap
 gh workflow run spare-roll --ref main -f tag=<commit>  # any published commit's image
 ```
 
-It runs `scripts/ci/roll-api.sh` from the image's own commit, as CI's publish did, in the concurrency group of CI's roll job, apart from publish, so it never replaces a pending publish and two rolls never interleave. `gh workflow run ci --ref main -f roll_api=true` also rolls, after a full CI run; `scripts/azure/bootstrap.sh` uses that. A provision keeps the running tag with `--api-tag live`, as before.
-
-`/readyz` isn't recorded in Application Insights, and a request abandoned before a replica is up isn't either, so a wake can show no request. `ContainerAppSystemLogs` shows wakes as `KEDAScaleTargetActivated`, `triggered by s0-upstream_rq_total`.
+It runs `scripts/ci/roll-api.sh` from the image's own commit, in the concurrency group of CI's roll job, so two rolls never interleave. It finds the app from the `prod` GitHub Environment's `USNM_API_APP` (`usnm-api-spare-ca-prod`). `gh workflow run ci --ref main -f roll_api=true` also rolls, after a full CI run; `scripts/azure/bootstrap.sh` uses that. A provision keeps the running tag with `--api-tag live`.
 
 ### Rollout
 
-The removal takes two provisions, so the subnet path is in place and checked before any endpoint goes (#1425). DNS inside the VNet keeps pointing at the endpoints until the second one.
+The spare's private endpoints were removed in two provisions on 6 November 2026 (#1425, #308): stage 1 (#1600) added `USNM_DATA_SUBNET_ACCESS`'s service-endpoint access beside the endpoints, and stage 2 (#1602) set `USNM_DATA_PRIVATE_ENDPOINTS=false`, deleting the three endpoints, their NICs and the two privatelink zones ([ADR-0008, amendment of November 2026](../design/adr/0008-private-networking.md)). Stage 2 of the [environment without a VNet](#the-spares-environment-without-a-vnet) then removed the subnet itself, so `USNM_DATA_SUBNET_ACCESS` no longer does anything in prod.
 
-1. Check that on-prem serves and no index is being published or promoted. Bring a local checkout to `origin/main`.
-2. **Stage 1, additive.** With `USNM_DATA_PRIVATE_ENDPOINTS=true` and `USNM_DATA_SUBNET_ACCESS=true` committed, run `scripts/azure/provision.sh --env prod --what-if --api-tag live`. It may add the snet-cae rules, the Cosmos service endpoint and the index account's public access, and list the index in the policy; it must delete no endpoint, zone or link. Stop on anything new. Then provision with the same flags, without `--what-if`.
-3. Check the rules with `az`, that on-prem's lake and Cosmos traffic carries on, and that a request to the index account from outside gets 403.
-4. **Stage 2, the deletes.** Commit `USNM_DATA_PRIVATE_ENDPOINTS=false` (`USNM_DATA_SUBNET_ACCESS` then has no effect). Run `scripts/azure/provision.sh --env prod --what-if --api-tag live --allow-rename=privatelink.blob.core.windows.net --allow-rename=privatelink.documents.azure.com`. It must show only the three endpoints, their NICs and zone groups, and the two zones with their links and records. Without the two flags the rename guard fails it, as it should. Then provision with the same flags, without `--what-if`.
-5. Run the cold drill below. Do nothing else until it passes.
+The pattern for changes like these: each stage is a pull request, then `scripts/azure/provision.sh --env prod --what-if --api-tag live` from a clean `origin/main`, with `--allow-rename=<name>` for each protected resource the stage deletes. Check the what-if's delete list against the plan, stop on anything new, then provision with the same flags. Don't start during an on-prem incident or while an index is being published or promoted. Provision refuses uncommitted settings; `--allow-dirty` is for an emergency that can't wait for a pull request.
 
 ### Rollback
 
-- **After stage 1:** set `USNM_DATA_SUBNET_ACCESS` to `false`, commit it, and provision with `--api-tag live`. The index account closes again, and the Cosmos filter and service endpoint go.
-- **After stage 2:** set `USNM_DATA_PRIVATE_ENDPOINTS` back to `true` in `infra/env/prod.json`, commit it, and provision with `--api-tag live`. With `USNM_DATA_SUBNET_ACCESS` still `true` the subnet rules stay while the stack recreates the endpoints and zones, which takes minutes and leaves on-prem untouched. The spare can still lose its data path for a while: the network module links the new zones before the endpoints write their records, and an empty zone answers for the account names in the VNet. Before relying on the spare again, check that the account names resolve to the endpoints from snet-cae, then run the cold drill below: `/readyz`, a search and `/v1/status`.
-
-Provision refuses uncommitted settings; `--allow-dirty` is for an emergency that can't wait for a pull request. Don't start the rollout during an on-prem incident.
+Bringing the private endpoints back needs the VNet first: set `USNM_CAE_VNET` back to `true` ([below](#the-spares-environment-without-a-vnet)), then `USNM_DATA_PRIVATE_ENDPOINTS=true`, and provision with `--api-tag live`. The network module links the new zones before the endpoints write their records, and an empty zone answers for the account names in the VNet, so the spare can lose its data path for a while: check that the account names resolve to the endpoints from inside the VNet, then run the [cold drill](#cold-drill).
 
 ### The spare's environment without a VNet
 
-The spare moves to a Container Apps environment without a VNet, so its load balancer and public IP go (#308, [ADR-0008, amendment "no VNet for the spare"](../design/adr/0008-private-networking.md#amendment-november-2026-no-vnet-for-the-spare-308)). The data lake, the index account and Cosmos then accept every network, and Entra ID roles are the only way in.
+On 6 November 2026 the spare moved to a Container Apps environment without a VNet, so its load balancer and public IP went (#308, [ADR-0008, amendment "no VNet for the spare"](../design/adr/0008-private-networking.md#amendment-november-2026-no-vnet-for-the-spare-308)). Stage 1 (#1611) added `usnm-core-spare-cae-prod` with `usnm-api-spare-ca-prod` and `usnm-qw-spare-ca-prod` beside the old environment (`USNM_SPARE_ENVIRONMENT`, `USNM_DATA_ALL_NETWORKS`) and retired the BOINC hand-off job; the cutover pointed the production Worker at the new API (`scripts/ci/deploy-edge-worker.sh` reads `usnm-api-spare-ca-prod`'s default name) and set the `prod` Environment's `USNM_API_APP`; stage 2 (#1615, `USNM_CAE_VNET=false`) deleted `cae-usnm-prod`, `ca-usnm-prod`, `usnm-qw-search-ca-prod` and `vnet-usnm-prod`.
 
-**Stage 1, additive.** With `USNM_DATA_ALL_NETWORKS=true`, `USNM_SPARE_ENVIRONMENT=true` and `USNM_BOINC_HANDOFF_IMAGE` left out of `infra/env/prod.json` committed, run `scripts/azure/provision.sh --env prod --what-if --api-tag live`.
+Without a VNet, prod can't have Azure ingest jobs, the BOINC hand-off job, the lake searcher app, the archival account or an NFS scratch share: the provision refuses them. No Azure app carries the custom domains, so the origin certificate's weekly renewal (`origin-tls`) keeps it current in Key Vault without uploading it (`AZURE_UPLOAD` in `scripts/azure/origin_tls.py`). To bind the domains to Azure again, set it, rerun `scripts/azure/origin_tls_bootstrap.py` so the renewal identity's certificate role covers `usnm-core-spare-cae-prod`, and run `origin-tls` once before relying on it ([origin TLS](origin-tls.md)).
 
-- It may add `usnm-core-spare-cae-prod`, `usnm-api-spare-ca-prod`, `usnm-qw-spare-ca-prod`, their role assignments and the new environment's diagnostic setting.
-- It may set the lake and the index account to `defaultAction: Allow`, and Cosmos to no IP rules with the VNet filter off.
-- Its only deletes may be the retired hand-off job `usnm-boinc-handoff-caj-prod`, its identity, and the grants that came with it: the ledger, exchange and queue roles, the bridge identity's roles on `boinc-handoff` and the scan archive, and the BOINC subnet's rules on the lake, the exchange account and the scan archive.
-- Stop on anything else. Then provision with the same flags, without `--what-if`.
-
-**Check the new spare cold.** With both new apps at zero replicas, request through the new API's default hostname, with `DNT: 1`:
-
-- `/readyz`, timing it;
-- an uncached `/v1/aggregate` and `/v1/hits`;
-- `/v1/meta`, which must name the version on-prem serves;
-- `/v1/status`, with `pipeline.available: true`.
-
-Then confirm that `ContainerAppConsoleLogs` shows no storage or Cosmos 403 from either new app. Time a second wake as well.
-
-**Cutover.** A pull request points the production Worker at the new API (`scripts/ci/deploy-edge-worker.sh` reads `usnm-api-spare-ca-prod`'s default name), and `edge-worker-deploy` deploys it after CI on `main`. Check `https://healthcheck.usnewsmap.com/` still answers `onprem`. Then set the `prod` GitHub Environment's `USNM_API_APP` to `usnm-api-spare-ca-prod`, so `spare-roll`, CI's roll and IndexNow find the new app.
-
-**Stage 2, the deletes.** With `USNM_CAE_VNET=false` committed, run `scripts/azure/provision.sh --env prod --what-if --api-tag live --allow-rename=cae-usnm-prod --allow-rename=vnet-usnm-prod`. The `containerEnv` and `api` modules now carry the new environment and apps under the same names, so those show no change.
-
-- It may delete `cae-usnm-prod` and its diagnostic setting, and `ca-usnm-prod` and `usnm-qw-search-ca-prod` with their system identities' role assignments.
-- It may delete `vnet-usnm-prod` and its diagnostic setting.
-- It may remove the snet-cae rules from the lake, the index account, Cosmos, the exchange account and the scan archive.
-- Azure removes the `ME_` group with its load balancer and IP when the environment goes.
-- No storage account, Cosmos account, registry, workspace or Key Vault may be on the list. Then provision with the same flags, without `--what-if`.
-
-**After stage 2:** run the cold check above again. Confirm `az network lb list` and `az network public-ip list` show nothing for `rg-usnm-prod` and its `ME_` group. The origin certificate's weekly renewal (`origin-tls`) keeps it current in Key Vault and no longer uploads it to Azure, because no Azure app carries the custom domains (`AZURE_UPLOAD` in `scripts/azure/origin_tls.py`). To bind the domains to Azure again, set it, rerun `scripts/azure/origin_tls_bootstrap.py` so the renewal identity's certificate role covers `usnm-core-spare-cae-prod`, and run `origin-tls` once before relying on it.
-
-**Rollback after stage 2:** it is a rebuild, so prefer fixing forward. Set `USNM_CAE_VNET` back to `true`, and clear the three certificate settings (`USNM_SITE_CERT_ID`, `USNM_WWW_CERT_ID`, `USNM_API_CERT_ID`), which name certificates in the deleted environment. Then provision with `--api-tag live`. That recreates the VNet and a VNet-integrated environment, with new apps under the old names and no custom domains. Check them cold as above. Then point `scripts/ci/deploy-edge-worker.sh` back at `ca-usnm-prod`, and set the `prod` Environment's `USNM_API_APP` back to `ca-usnm-prod` when the Worker switches.
-
-**Rollback after stage 1:** set the three settings back and commit them. The rename guard protects environments, so both the what-if and the provision name the one being removed: `scripts/azure/provision.sh --env prod --what-if --api-tag live --allow-rename=usnm-core-spare-cae-prod`, then the same without `--what-if`. The new environment and apps go, and the accounts close to their subnet and IP rules again. The hand-off job comes back with its image setting, but it has nothing to do while claim, collect and export run on-prem.
+**Rollback** is a rebuild, so prefer fixing forward. Set `USNM_CAE_VNET` back to `true`, and clear the three certificate settings (`USNM_SITE_CERT_ID`, `USNM_WWW_CERT_ID`, `USNM_API_CERT_ID`), which named certificates in the deleted environment. Then provision with `--api-tag live`. That recreates the VNet and a VNet-integrated environment, with new apps under the old names and no custom domains. Check them cold as in the drill, point `scripts/ci/deploy-edge-worker.sh` back at `ca-usnm-prod`, and set the `prod` Environment's `USNM_API_APP` back when the Worker switches.
 
 ### Cold drill
 
@@ -320,8 +178,8 @@ edge/fallback-worker/deploy.sh --account-id <id> --azure-origin https://<default
 
 Leave out `--health-heartbeat`: the drill Worker needs no cron. Then stop the dev connector, so the Worker's primary fails.
 
-1. Roll the spare onto the image on-prem serves ([Rolling the spare](#rolling-the-spare)) if it runs an older one. Then confirm both apps have no replicas: `az containerapp replica list` for the API's and the searcher's latest revisions. Wait until they do, and time a wake of a revision that has started once already: the first start of a new revision pulls its image cold (207 s on 6 November 2026, against about 70 s before).
-2. Poll `https://dev.usnewsmap.com/readyz`. It must answer 200 with `X-USNM-Origin: azure` inside the Worker's 180 s budget. Record the time; the last drills took about 70 s.
+1. Roll the spare onto the image on-prem serves ([Rolling the spare](#rolling-the-spare)) if it runs an older one. Then confirm both apps have no replicas (`az containerapp replica list` for the API's and the searcher's latest revisions), and time a wake of a revision that has started once already: the first start of a new revision pulls its image cold (207 s on 6 November 2026, against about 70 s otherwise).
+2. Poll `https://dev.usnewsmap.com/readyz`. It must answer 200 with `X-USNM-Origin: azure` inside the Worker's 180 s budget. Record the time.
 3. Through the same hostname, each with `X-USNM-Origin: azure`:
    - a real search on `/v1/aggregate` and `/v1/hits`, which proves the index account;
    - `/v1/meta`, which must name the version on-prem serves, and proves `reference`;
@@ -329,14 +187,14 @@ Leave out `--health-heartbeat`: the drill Worker needs no cron. Then stop the de
    - `POST /v1/beacon`, which must answer 204.
 4. Check a write: `StorageBlobLogs` shows a `PutBlob` under `cache/` from the app's identity after an uncached search of more than 500 ms.
 5. Confirm that `ContainerAppConsoleLogs` shows no storage or Cosmos 403 from the API or the searcher.
-6. Remove the route: find its id with `GET /zones/{zone_id}/workers/routes`, and send `DELETE /zones/{zone_id}/workers/routes/{route_id}` for `dev.usnewsmap.com/*`. Don't leave it for later. Then restart the dev connector.
+6. Remove the route: find its id with `GET /zones/{zone_id}/workers/routes`, and send `DELETE /zones/{zone_id}/workers/routes/{route_id}` for `dev.usnewsmap.com/*`. Then restart the dev connector.
 7. Confirm both apps return to zero with no command, usually within 20 minutes, and stay there.
 
-The drill is not a proof until every step passes against the real production Azure apps. A warm replica proves nothing, so step 1 comes first.
+Every step must pass against the production spare's apps, starting from zero replicas (step 1).
 
 ## The Quickwit image
 
-The searcher sidecar, the ingest image (whose Quickwit is the release's writer) and the ingest job's init container run our build of Quickwit v0.9.1 ([ADR-0013](../design/adr/0013-quickwit-from-our-fork.md)). `docker/Dockerfile.quickwit-patched` builds it from our fork, [`tgoodyear/quickwit`](https://github.com/tgoodyear/quickwit), at a pinned commit. `infra/quickwit-image.json` records its digest for each environment, and `infra/main.bicep` and CI's publish read it there; an environment the file doesn't list runs upstream v0.9.1.
+The serving searcher, the spare's searcher and the release writer run our build of Quickwit v0.9.1 ([ADR-0013](../design/adr/0013-quickwit-from-our-fork.md)). `docker/Dockerfile.quickwit-patched` builds it from our fork, [`tgoodyear/quickwit`](https://github.com/tgoodyear/quickwit), at a pinned commit. `infra/quickwit-image.json` records its digest for each environment, and `infra/main.bicep` and CI's publish read it there; an environment the file doesn't list runs upstream v0.9.1. On-prem hosts install the pinned build from the registry with `scripts/onprem/install-quickwit.sh --registry <ACR_NAME>`.
 
 Build it in an environment's registry, which records the digest in the file:
 
@@ -345,32 +203,32 @@ scripts/azure/build-quickwit.sh --env prod              # ACR Tasks, about an ho
 scripts/azure/build-quickwit.sh --env dev --from prod   # or import prod's build (same digest, no build)
 ```
 
-If your `az` session expires during the build, ACR still finishes it. Once it has, run the same command again: it finds the tag and records its digest without building (`--rebuild` builds again). Then commit the file in a pull request. Once it merges, CI's publish checks that the registry has the digest (it fails if not) and rebuilds the ingest image on it, which the jobs pick up at their next execution. The sidecar and the init container move with `scripts/azure/provision.sh --env <env>`, run once publish has finished.
+If your `az` session expires during the build, ACR still finishes it. Once it has, run the same command again: it finds the tag and records its digest without building (`--rebuild` builds again). Then commit the file in a pull request. Once it merges, CI's publish checks that the registry has the digest (it fails if not) and rebuilds the ingest image on it. The spare's searcher moves with `scripts/azure/provision.sh --env <env> --api-tag live`, run once publish has finished; on-prem hosts move when they install it again.
 
 **A new patch, or a Quickwit upgrade:**
 
 1. On the fork, commit to the `usnm/v0.9.1-pool` branch (for an upgrade, rebase the commit onto the new upstream tag in a new branch, such as `usnm/v0.9.2-pool`) and tag it with a new `usnm-*` tag, such as `usnm-v0.9.1-pool2`. Names starting `usnm` trigger none of Quickwit's own workflows.
 2. In `docker/Dockerfile.quickwit-patched`, set `QW_COMMIT_HASH` to the tagged commit and `QW_COMMIT_TAGS` to the tag without `usnm-` (`v0.9.1-pool2`), which is also the image's tag. For an upgrade, also take the new version's Dockerfile changes (base images, packages) and its `QW_COMMIT_DATE`, and move the `upstream` pin in `infra/quickwit-image.json` and `docker/Dockerfile.ingest`'s default to the new release (CI checks they match).
-3. `scripts/azure/build-quickwit.sh --env prod`, then commit, merge and provision, as above.
+3. `scripts/azure/build-quickwit.sh --env prod`, then commit, merge and install, as above.
 4. Re-run the cold-search test (`scripts/ops/load-cold-searches.py`) and read [the searcher's threads](#searcher-threads).
 
-**Back to upstream:** remove the environment from `environments` in `infra/quickwit-image.json` (or put its previous digest back), merge, and run `scripts/azure/provision.sh --env <env>` once publish has finished. Publish copies upstream v0.9.1 into the registry if it isn't there and rebuilds the ingest image on it. To turn pooling off in the searcher alone, without a new image, set `QW_AZURE_POOL=false` on the sidecar (`infra/modules/containerapp.bicep`) and provision.
+**Back to upstream:** remove the environment from `environments` in `infra/quickwit-image.json` (or put its previous digest back), merge, and provision once publish has finished. Publish copies upstream v0.9.1 into the registry if it isn't there and rebuilds the ingest image on it. To turn pooling off in an Azure searcher alone, without a new image, set `QW_AZURE_POOL=false` on it (`infra/modules/containerapp.bicep`) and provision.
 
 ## Cache warm-up
 
-Each API start, and each publish before it swaps the new version in, warms the caches with the home page's examples and the most frequent logged searches (06 §6.5), as does a searcher restart under a running API (`searcher_restart`, [the searcher app](#searcher-app)). They run one at a time: one that starts during another waits for its turn, and none is dropped. One line per run:
+Each API start, and each publish before it swaps the new version in, warms the caches with the home page's examples and the most frequent logged searches (06 §6.5), as does a searcher restart under a running API (`searcher_restart`). They run one at a time: one that starts during another waits for its turn, and none is dropped. One line per run:
 
 ```sh
 scripts/azure/logs.sh --env prod --query-name warm-up --span 2d                # per run: examples warm, cached, computed, skipped, ms
 ```
 
-A start isn't ready until its run ends, so in a rollout the old revision serves meanwhile and the new one takes visitors only once it's warm (06 §6.6); every prod start from 3 to 10 October 2026 used its whole 5-minute budget (`Ms` about 300000), but a start that finds everything cached is ready in seconds (below). A start still running at the readiness cap (6 minutes in prod, 1 minute where the app scales to zero) logs `warm-up still running at the readiness cap; reporting ready` and serves visitors while it finishes.
+A start isn't ready until its run ends, so in a rollout the old revision serves meanwhile and the new one takes visitors once it's warm (06 §6.6); a start that finds everything cached is ready in seconds, and one that computes uses up to its 5-minute budget (`Ms` about 300000). A start still running at the readiness cap (6 minutes in prod, 1 minute where the app scales to zero) logs `warm-up still running at the readiness cap; reporting ready` and serves visitors while it finishes.
 
 Read `Warm` against `Examples` first: equal means every example's search was in the in-process cache when the run ended (it is counted then, so evictions show). Then:
 
 - **A start that read everything:** `Cached` is the examples plus the logged searches, `Computed` and `Skipped` are 0, and `Ms` is a few seconds. This is the usual start once a version and release have been warmed once.
 - **A start that computed some:** `Computed` above 0 means searches no cache held: examples added since, or every search after a release that changed the response format (`RESPONSE_FORMAT` in `crates/usnm-api/src/routes/mod.rs`). Each takes about 11 s, so about 26 fit in the 5-minute budget. `Skipped` above 0 means the budget ran out with that many searches left; the next start reads what this one computed and goes on from there, and a visitor who opens a skipped example computes and persists it.
-- **A publish:** `Cached` is 0 or close to it (nothing is cached for a new version yet, unless a visitor computed it meanwhile), and `Computed` is the searches reached in 15 minutes. On 7 October 2026 this reached 74 of the then-100 examples. The [current catalogue has 200](../notes/2026-10-26-100-more-historical-examples.md), with unchanged budgets; one publish and one subsequent start may not reach them all. Later starts or visitors compute the rest. The older timings are not measurements of the expanded catalogue.
+- **A publish:** `Cached` is 0 or close to it (nothing is cached for a new version yet, unless a visitor computed it meanwhile), and `Computed` is the searches reached in 15 minutes. On 7 October 2026 that was 74 of the then 100 examples; there are [200 now](../notes/2026-10-26-100-more-historical-examples.md) with the same budgets, so one publish and one start may not reach them all, and later starts or visitors compute the rest.
 - **A searcher restart:** `Cached` is 0, and `Computed` counts attempted searches even when their responses were already cached. `Skipped` counts searches the startup budget did not reach, including time spent giving way. `Warm` still measures the API response cache, not Quickwit cache readiness.
 - **`GaveWayMs`** is how long a start's or searcher restart's computations waited for visitors' searches: these runs compute a search only while no visitor's is running or queued. Large values mean visitors kept the searcher busy during the start.
 - **`TimedOut` or `Failed`** above 0: the `slow warm-up query` and `warm-up query failed` lines of that run name the example (`api-errors` lists the failures).
@@ -383,18 +241,18 @@ The API keeps every search from the site, with only its filters, page count and 
 
 ```sh
 scripts/azure/settings.sh --env prod --key USNM_SEARCH_LOG_READERS \
-  --value "$(az ad signed-in-user show --query id -o tsv)"   # private: the settings store (Settings, above)
+  --value "$(az ad signed-in-user show --query id -o tsv)"   # private: the settings store
 scripts/azure/provision.sh --env prod
 scripts/azure/searches.sh --env prod --days 30      # searches per day, top queries, queries that found nothing, date spans
 ```
 
 The last two tables count searches by date span (the whole corpus range, over 10 years, 1–10 years, a year or less) and by the decade partitions they touch, bucketed as `usnm_core::decade` (pre-1820 is one). They hold counts and shares only, never queries. A search is whole range when it covers the corpus bounds the site serves (`/v1/meta`, read from the environment's `SITE_URL`); if those can't be read, the script says so and takes each version's widest search instead. They decide whether to build the next full base with `USNM_PARTITION_DECADE` (#123): only date-limited searches skip splits.
 
-Since #308 the data account accepts every network, with Entra ID roles the only way in (`USNM_DATA_ALL_NETWORKS`), so `searches.sh` runs from anywhere your `az` sign-in holds a role on `searches`. The first day file appears an hour after the first full UTC day with the log deployed.
+The lake accepts every network, with Entra ID roles the only way in (`USNM_DATA_ALL_NETWORKS`, #308), so `searches.sh` runs from anywhere your `az` sign-in holds a role on `searches`.
 
 ## Search log: the copy on tank
 
-The day files can't be rebuilt. Since 26 October 2026 (#1097), the lake's Standard_LRS copy (14-day soft delete) has a second copy: `searches/days/` on a restricted dataset on `tank`, under [ADR-0027](../design/adr/0027-onprem-serving-behind-cloudflare.md) settled decision 3. `usnm-ingest searchlog-copy` runs daily on a dedicated non-serving host with its own read-only Arc identity. All 25 source days (87,005 bytes) passed full source-hash verification and an idempotent rerun; snapshot recovery was checked privately. [`scripts/onprem/searchlog-copy/`](../../scripts/onprem/searchlog-copy/README.md) has the live acceptance details and rebuild procedure.
+The day files can't be rebuilt. Since 26 October 2026 (#1097), the lake's Standard_LRS copy (14-day soft delete) has a second copy: `searches/days/` on a restricted dataset on `tank`, under [ADR-0027](../design/adr/0027-onprem-serving-behind-cloudflare.md) settled decision 3 (`USNM_SEARCH_LOG_COPY`). `usnm-ingest searchlog-copy` runs daily on a dedicated non-serving host with its own read-only Arc identity. [`scripts/onprem/searchlog-copy/`](../../scripts/onprem/searchlog-copy/README.md) has the acceptance details and the rebuild procedure.
 
 **What it does.** Each run lists `days/` in the lake and copies every `{day}.jsonl` the dataset lacks. A day is streamed into `days/{day}.jsonl.partial`, its size checked against the listing and its sha256 against the file as written, and then linked into place as a read-only file; the link fails if the name exists, so a copy is never replaced. A day already there is compared by size (`--verify` also hashes the lake's bytes again). The tool deletes nothing from the lake or the copy: a copy that differs, or a day that has left the lake, is reported and kept, and the only file it removes is its own `.partial` from an interrupted run (a regular file: a link or directory by that name is left alone, and its day is reported missing until an operator removes it). There is no stored hash of a day file to compare with (the listing gives a size, an ETag and a creation time, and the API sends no Content-MD5 when it writes one), so the checks are of the bytes received and of the file written, and `--verify` is the check against the lake itself.
 
@@ -402,11 +260,11 @@ The day files can't be rebuilt. Since 26 October 2026 (#1097), the lake's Standa
 
 **Privacy.** The copy puts search text on the home host. [ADR-0012](../design/adr/0012-anonymous-search-log.md)'s rules carry over: no identifiers are added, and the readers are the readers of the `searches` container, no more. The tool never parses a day file; its logs, its errors and its status file hold day names, sizes and counts (and checksums when a check fails), never a search. Search text rests only in the dataset: the destination must be a mount point (otherwise the tool refuses to write), `days/` must be a real directory (a symbolic link is refused, since the service's state directory is writable and a link to it would take the text out of the dataset, and no file in it is reached through a link), the unit has a private `/tmp`, and the partial copy is a file in the dataset. Keep the dataset out of container and VM backups (a bind mount, with the backup job checked) and out of any share or export.
 
-**The alert.** A run fails, and the unit with it, when a day file is still missing from the copy, or the copy differs, more than 24 hours after the lake wrote it (`--alert-after-hours`). The journal then has the day names (`journalctl -u usnm-searchlog-copy`; the failure is a JSON line with `"outcome":"failed"`), and `/var/lib/usnm-searchlog-copy/status.json` has `ok`, `overdue_days`, `missing_days`, `mismatched_days`, `local_only_days` and `last_success`, for whatever watches the host (the data-flow observer is the place the cold-storage note names; it doesn't read this file yet). A run that stops before it can finish (the lake won't list, the dataset isn't mounted, the binary is missing or not executable) fails the unit and leaves the previous status file as it was, so `checked_at` is the last run that got through. A host that is down or a timer that is disabled runs nothing, so it doesn't fail: a watcher should treat a `checked_at` more than two days old as the alert. A day with no file in the lake (no searches that day, or one the API lost) is not a missing copy and isn't reported.
+**The alert.** A run fails, and the unit with it, when a day file is still missing from the copy, or the copy differs, more than 24 hours after the lake wrote it (`--alert-after-hours`). The journal then has the day names (`journalctl -u usnm-searchlog-copy`; the failure is a JSON line with `"outcome":"failed"`), and `/var/lib/usnm-searchlog-copy/status.json` has `ok`, `overdue_days`, `missing_days`, `mismatched_days`, `local_only_days` and `last_success`. A run that stops before it can finish (the lake won't list, the dataset isn't mounted, the binary is missing or not executable) fails the unit and leaves the previous status file as it was, so `checked_at` is the last run that got through. A host that is down or a timer that is disabled runs nothing, so it doesn't fail: a watcher should treat a `checked_at` more than two days old as the alert. A day with no file in the lake (no searches that day, or one the API lost) is not a missing copy and isn't reported.
+
+The independent `home-searchlog-watch.timer` on the Proxmox host checks this status and the copy unit and timer each hour, without reading day files, and sends failures through root's Proxmox notification route, with daily reminders while one lasts. The dashboard's data-flow observer doesn't read the status yet.
 
 **When it reports a day.**
-
-The independent `home-searchlog-watch.timer` on the Proxmox host checks this status and the copy unit/timer each hour, without reading day files. It sends failures through root's existing Proxmox notification route, deduplicating repeated failures with daily reminders. A disabled-timer drill submitted an alert and recovered after re-enablement. The dashboard observer does not yet consume this status.
 
 - _Missing_: look at the journal for why the copy failed (the identity's grant, the lake's firewall, the dataset's quota, or a link or directory named `{day}.jsonl.partial` in `days/`, which the tool leaves for an operator to remove), fix that and run `sudo systemctl start usnm-searchlog-copy`.
 - _Mismatched_: the copy is not replaced. Check it against a snapshot, and against the lake with `--verify`. When the lake's file is the right one, move the bad copy aside by hand (`mv`, as an operator; the tool never removes one) and run the copy again.

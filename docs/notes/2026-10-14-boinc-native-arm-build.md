@@ -1,6 +1,6 @@
 # Native BOINC worker builds and Mac release tooling
 
-**Status:** measured locally, not released · **Date:** October 2026 ·
+**Status:** measured locally, not released · **Date:** 14 October 2026 ·
 **Measured on:** synthetic `pilot_fixture`, repository worker Containerfile SHA-256
 `c2290fa7894870ae494d5fdbdaeea4994af23af1c9268ce0404af3b3103790e7`; Rust and model sources unchanged from `df3ddc2` ·
 **Code:** [worker workflow](../../.github/workflows/boinc-worker.yml),
@@ -8,6 +8,8 @@
 [Mac wrapper build](../../boinc/scripts/build-mac-wrapper.sh) ·
 **Issues:** [#476](https://github.com/tgoodyear/usnewsmap.com/issues/476),
 [#481](https://github.com/tgoodyear/usnewsmap.com/issues/481)
+
+**Outcome:** released on 18 October 2026 as `usnm_ocr` 1.5 for `arm64-apple-darwin` and `x86_64-apple-darwin` and `usnm_gold` 1.4 for `arm64-apple-darwin`, validated on Apple Silicon (#476); no Intel Mac was available to test. The pause and restart failure was fixed by the [`Run_Podman` patch](2026-10-15-boinc-cross-platform-distribution.md).
 
 ## The question
 

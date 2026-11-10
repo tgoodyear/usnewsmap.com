@@ -45,8 +45,8 @@ as immutable inputs alongside the report; the scorer never rewrites them.
   empty-reference CER is `null` when the aggregate denominator is zero. No WER is claimed because
   tokenization is language/script dependent. Run both rules separately if both views are needed;
   preserve their separately versioned reports.
-- Historical modernization and glyph confusions are **human-adjudicated labels**, not guessed by
-  the scorer. The optional adjudication JSONL contains `system`, `id`,
+- Historical modernization and glyph confusions are human-adjudicated labels, not guessed by
+  the scorer. The optional adjudication JSONL (`--adjudications FILE`) contains `system`, `id`,
   `decision:"human-adjudicated"`, at least two pseudonymous `qualified_readers` records (`id`,
   `qualification`), and `categories`
   chosen from `historical-modernization`, `historical-glyph`, `cross-region-contamination`, and
@@ -93,9 +93,9 @@ python3 scripts/ocr-bench/measures_v1.py \
   --report comparison.json
 ```
 
-`search-v1` pins one analyzer (`NFKC`, case-fold, Unicode `\\w+` tokenization; no stemming or
+`search-v1` pins one analyzer (`NFKC`, case-fold, Unicode `\w+` tokenization; no stemming or
 query expansion) and BM25 (`k1=1.2`, `b=0.75`), with document-ID tie-breaking. It reports
-macro query recall@k, mean reciprocal rank over the full positive-score ranking and graded
+macro query recall@k (`--search-k`, default 5), mean reciprocal rank over the full positive-score ranking and graded
 nDCG@k, overall and by query kind, plus per-query results. Zero-score documents are not ranked.
 The same relevance judgments, document IDs/fields, analyzer, ranking parameters and `k`
 are used for every text source. A production search engine's tokenizer, filters, boosts, metadata,
@@ -105,7 +105,7 @@ historical transcription. Retain the adjudication protocol and query set version
 
 ## Quality/cost decision
 
-Measure cost (e.g. actual dollars, joules, or wall time per **usable page**) independently; never
+Measure cost (for example dollars, joules, or wall time per usable page) independently; never
 assign published OCR zero cost or substitute GPU utilization for quality. Before a run, declare
 non-inferiority margins for CER, missing/error rate and regression rate on already-good pages.
 `compare_transcriptions` places each candidate's good-page regression rate in its system record.
@@ -116,5 +116,4 @@ and has lower measured cost per usable page. Compare like units, hardware
 scope and page definitions, and also inspect strata, truncation and retrieval results before
 selecting an engine. The margins are project policy, not universal defaults.
 
-All result fields and rules above are versioned; any policy change that affects scores requires a
-new measure version rather than silently altering an existing report.
+All result fields and rules above are versioned; any policy change that affects scores gets a new measure version; existing reports are not altered.

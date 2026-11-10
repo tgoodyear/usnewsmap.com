@@ -2,7 +2,7 @@
 
 The Python job that reads, with [NDLOCR-Lite](https://github.com/ndl-lab/ndlocr-lite), the pages of Japanese-language titles that the Library of Congress ships without usable text, and the audit and measurement commands that share its image. Design: [04 §4.8](../../docs/design/04-data-sources-and-ingestion.md). The write-up of the work and its measurements is [Japanese pages: OCR of the pages LoC ships without text](../../docs/notes/2026-10-05-japanese-ocr.md).
 
-Status: live. CI builds the job into the `usnewsmap-ja-ocr` image and tests it. In `prod` the Azure job is off and the OCR runs on an OCR node (`USNM_JA_OCR_JOB` is `false` and `USNM_JA_OCR_ONPREM` is `true` in `infra/env/prod.json`; [Operations](../../docs/operations/japanese-ocr.md#the-japanese-ocr-on-prem)). How many pages have been read so far is not recorded in this directory: see the note and `/v1/status`.
+Status: live. CI builds the job into the `usnewsmap-ja-ocr` image and tests it. In `prod` the Azure job is off and the OCR runs as a native service in the on-prem batch container, CT 215 (`USNM_JA_OCR_JOB` is `false` and `USNM_JA_OCR_ONPREM` is `true` in `infra/env/prod.json`; [Operations](../../docs/operations/japanese-ocr.md#the-japanese-ocr-on-prem)). How many pages have been read so far is not recorded in this directory: see the note and `/v1/status`.
 
 ## What it writes and who reads it
 
@@ -33,7 +33,7 @@ The job writes to the curated store under `ocr-ja/`: the page list (`targets-v3.
 
 - **CI.** `docker/Dockerfile.ja-ocr` copies the modules marked above into `/opt/jaocr` and sets `jaocr.py` as the entry point. The `image` job in `.github/workflows/ci.yml` builds it, runs the tests inside it and runs `scripts/ci/check-ja-ocr-image.sh`, which reads the headline in `testdata/` and requires its known text. The `publish` job pushes the image on `main`.
 - **Azure.** When `USNM_JA_OCR_JOB` is on, a Container Apps job (`caj-usnm-jaocr-<env>`, `infra/modules/ingestjobs.bicep`) runs the image, started by hand. `ocr/ja-ocr/tools/start-quality.sh` starts the audit commands as executions of it, and `ocr/ja-ocr/tools/quality-rows.sh` reads their results back from Log Analytics.
-- **On-prem.** `scripts/ocr-node/ja-ocr-onprem.sh` builds the image on an OCR node from a pinned commit and installs `usnm-ja-ocr@.service`, one unit per replica. The grants are in `infra/modules/jaocr-runner.bicep`.
+- **On-prem.** In prod the job runs natively in the batch container, installed by `scripts/ocr-node/setup-ja-native.py` ([native batch-host runtime](../../docs/operations/japanese-ocr.md#native-batch-host-runtime)). It replaced the container replicas of `scripts/ocr-node/ja-ocr-onprem.sh` (`usnm-ja-ocr@.service`, one per replica); never run both. The grants are in `infra/modules/jaocr-runner.bicep`.
 - **Settings.** The job reads `USNM_REFERENCE_URL` and `USNM_CURATED_URL` (blob container URLs or local directories) and the `JAOCR_*` variables documented in `jaocr.py`.
 
 ## Related code

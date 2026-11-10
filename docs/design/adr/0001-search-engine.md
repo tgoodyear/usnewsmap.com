@@ -3,7 +3,8 @@
 - **Status:** Proposed. Becomes final after Spike S-2 (see [10](../10-roadmap-and-risks.md#102-validation-spikes)). The correctness half of S-2 has passed on Quickwit 0.9.1 ([05 §5.5.1](../05-search-and-storage.md#551-quickwit-index-config-validated-in-s-2)), except fuzzy terms, which Quickwit doesn't support (R-15). The 1M-page benchmark is still to run.
 - **Date:** 2026-09
 - **Deciders:** Maintainer, lead engineer
-- **Current state (November 2026):** Quickwit stays the engine, but the searcher that serves runs on-prem from a local copy of the index ([ADR-0027](0027-onprem-serving-behind-cloudflare.md), [ADR-0029](0029-onprem-primary-azure-failover.md)). The Container Apps searcher on Blob Storage described here is now the Azure cold spare, at zero replicas until a failover.
+- **Amended by:** [ADR-0013](0013-quickwit-from-our-fork.md) (Quickwit built from our fork)
+- **Later:** Quickwit is still the engine. Since 31 October 2026 the searcher that answers public queries runs on-prem from a local copy of the index ([ADR-0027](0027-onprem-serving-behind-cloudflare.md), [ADR-0029](0029-onprem-primary-azure-failover.md)). The Container Apps searcher on Blob Storage described here is the Azure cold spare, at zero replicas until a failover.
 
 ## Context
 

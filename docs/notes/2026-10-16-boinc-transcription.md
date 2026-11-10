@@ -15,6 +15,8 @@ adapted checkpoint, its GGUF export, training resource measurements and accuracy
 gains are UNVERIFIED. A baseline campaign does not establish a post-training
 improvement.
 
+**Outcome:** neither trial ran. `usnm_qwen_train` was retired on 2 November 2026 and the two unsent results were cancelled ([Retiring an app](../boinc/server/server-and-apps.md#retiring-an-app)). Later adapter work is in the [GPU studies protocol](../reports/2026-11-gpu-studies/protocol.md).
+
 ## Dataset preparation
 
 Use the existing [public ground-truth fetch and conversion](../ocr/scoring-guide.md).

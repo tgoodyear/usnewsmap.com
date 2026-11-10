@@ -6,6 +6,8 @@
 **Code:** `qwen::benchmark`, `scripts/ocr-survey/transcription.py`.
 **Issue:** [#542](https://github.com/tgoodyear/usnewsmap.com/issues/542).
 
+**Outcome:** the two queued GPU trials never ran. `usnm_qwen_train` was retired on 2 November 2026 and their unsent results were cancelled ([Retiring an app](../boinc/server/server-and-apps.md#retiring-an-app)). Later adapter work is in the [GPU studies protocol](../reports/2026-11-gpu-studies/protocol.md).
+
 ## Experiment
 
 The [pilot](2026-10-16-boinc-transcription.md) uses separate BOINC apps for bounded
