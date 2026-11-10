@@ -1795,6 +1795,38 @@ class QueueModeTests(unittest.TestCase):
         self.assertEqual(event["ownership_conflicts"], 0)
         self.assertTrue([a for a in self.fake.actions if a[0] == "export" and page in a[2]])
 
+    def test_a_page_another_plan_holds_or_published_is_passed_over_without_an_alert(self):
+        # 10 Nov: queue-feed-11 kept page 1's result under a held scope; its queue message came
+        # back after its lease and the live plan claimed it. That page's work is done there.
+        page = message(1)["page"]
+        for stage, held in (("reserved", True), ("published", False)):
+            with self.subTest(stage=stage):
+                self.setUp()
+                other = self.foreign(1, stage, plan="queue-feed-11")
+                if held:
+                    other["held"] = "scope deu/frak2021 is held from publication (#835)"
+                self.fake.rows = [other]
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err):
+                    event = self.tick()
+                self.assertEqual((event["ownership_conflicts"], event["settled_elsewhere"]), (0, 1))
+                self.assertNotIn("ownership_conflict", [alert["code"] for alert in event["alerts"]])
+                self.assertNotIn("boinc_batch_ownership_conflict", err.getvalue())
+                self.assertFalse([a for a in self.fake.actions if a[0] == "export" and page in a[2]])
+                self.assertIn(page, self.state["claims"])
+
+    def test_a_conflict_over_failed_or_unsettled_work_still_alerts(self):
+        page = message(1)["page"]
+        for stage in ("failed", "submitted"):
+            with self.subTest(stage=stage):
+                self.setUp()
+                self.fake.rows = [self.foreign(1, stage, plan="queue-feed-11")]
+                with contextlib.redirect_stderr(io.StringIO()):
+                    event = self.tick()
+                self.assertEqual((event["ownership_conflicts"], event["settled_elsewhere"]), (1, 0))
+                self.assertIn("ownership_conflict", [alert["code"] for alert in event["alerts"]])
+                self.assertFalse([a for a in self.fake.actions if a[0] == "export" and page in a[2]])
+
     def test_a_passed_over_page_keeps_its_own_job_unsubmitted_and_uncollected(self):
         # #1685, 10 Nov: this plan exported page 1, then another plan's journal for it showed up.
         self.fake.hosts = 0  # claim and export only

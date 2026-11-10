@@ -1554,11 +1554,16 @@ def owned_records(config, records, deadline_retries=None, conflicts=None):
     An allocated page that another plan's journal is for is refused, naming the page and the
     plan. Given a dict as `conflicts` (a queue-fed tick, #1685), such a page is left out of the
     result instead: `conflicts[page]` names the other plans and holds this plan's own current
-    journal for it, or None. The plan's own journals of that page are checked all the same."""
+    journal for it, or None, and says whether it is `settled_elsewhere`: this plan has no
+    journal of the page, and every other plan's journal of it is published or kept by a held
+    scope. That page's work is done and owned there: a held page's queue message comes back
+    after its lease and a live plan claims it again, which is no fault (10 Nov). The plan's own
+    journals of that page are checked all the same."""
     # Each allocated page's base batch: one for the whole cohort, or the claimed page's own.
     wanted = {page["page"]: page.get("batch") or config["batch"] for page in config["pages"]}
     by_page = {}
     foreign = {}
+    foreign_done = {}
     for record in records:
         require(record["stage"] in STAGES and ID.fullmatch(record["job"]["id"]),
                 "invalid dispatch journal")
@@ -1570,6 +1575,8 @@ def owned_records(config, records, deadline_retries=None, conflicts=None):
                         f"page {page} is already allocated to another plan ({str(record['plan'])[:64]}); "
                         "reconcile the allocation before export (archive_history.py reconcile, #1685)")
                 foreign.setdefault(page, set()).add(str(record["plan"])[:64])
+                done = record["stage"] == "published" or kept_by_policy(record)
+                foreign_done[page] = foreign_done.get(page, True) and done
             continue
         require(wanted.get(page) == job["message"]["batch"],
                 "plan already exists with a different allocation/image; operator migration required")
@@ -1609,7 +1616,9 @@ def owned_records(config, records, deadline_retries=None, conflicts=None):
             current = child
         owned[page] = current
     for page, plans in foreign.items():
-        conflicts[page] = {"plans": sorted(plans), "own": owned.pop(page, None)}
+        own = owned.pop(page, None)
+        conflicts[page] = {"plans": sorted(plans), "own": own,
+                           "settled_elsewhere": own is None and foreign_done[page]}
     return owned
 
 
@@ -2228,7 +2237,8 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         owned = owned_records(config, records, state.get("deadline_retries"), found)
         conflicts.clear()
         conflicts.update(found or {})
-        fresh = sorted(set(conflicts) - reported)
+        fresh = sorted(page for page in set(conflicts) - reported
+                       if not conflicts[page]["settled_elsewhere"])
         if fresh:
             reported.update(fresh)
             try:
@@ -2581,10 +2591,13 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         "refilled": submitted,
         "blocked_by": backpressure_reason,
     }] if starvation_alert else []
-    if conflicts:
-        alerts.append({"code": "ownership_conflict", "pages": len(conflicts),
+    # A page whose work another plan has published or keeps under a held scope is passed over
+    # without an alert: nothing is wrong (its returning queue message was claimed again).
+    disputed = sorted(page for page, entry in conflicts.items() if not entry["settled_elsewhere"])
+    if disputed:
+        alerts.append({"code": "ownership_conflict", "pages": len(disputed),
                        "first": [{"page": page, "other_plans": conflicts[page]["plans"]}
-                                 for page in sorted(conflicts)[:5]]})
+                                 for page in disputed[:5]]})
     for run in gold_runs:
         for step, outcome in run["steps"].items():
             if outcome not in ("ok", GOLD_SKIPPED_AT_CAP):
@@ -2613,7 +2626,8 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         "oldest_held_seconds": oldest_held,
         "scope_held": scope_held,
         "scope_held_archived": len(state.get("archived_held", {})),
-        "ownership_conflicts": len(conflicts),
+        "ownership_conflicts": len(disputed),
+        "settled_elsewhere": len(conflicts) - len(disputed),
         "gold_onboarding": gold_runs,
         "newly_published": max(0, published - previous),
         "pages_per_hour": round(published * 3600 / max(1, now - started), 3),
