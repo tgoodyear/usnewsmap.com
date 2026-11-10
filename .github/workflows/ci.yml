@@ -65,6 +65,7 @@ jobs:
       ocr_gold: ${{ steps.f.outputs.ocr_gold }}
       boinc_pages: ${{ steps.f.outputs.boinc_pages }}
       edge: ${{ steps.f.outputs.edge }}
+      check: ${{ steps.f.outputs.check }}
       queue: ${{ steps.f.outputs.queue }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -409,11 +410,36 @@ jobs:
         env:
           WRANGLER_SEND_METRICS: "false"
       - run: shellcheck -x -S warning edge/fallback-worker/deploy.sh edge/fallback-worker/drift.sh
-      - run: node --test edge/check/worker.test.mjs edge/check/layout.test.mjs
-      - run: shellcheck -x -S warning edge/check/load.sh edge/check/set-secrets.sh edge/check/backup/backup.sh edge/check/deploy.sh
-      - run: python3 -m py_compile edge/check/tools/from_tap_data.py edge/check/tools/yiddish_lines.py
+
+  # check.usnewsmap.com (edge/check, #1620): the Worker's and page layout's node:test tests
+  # (layout.test.mjs needs Chrome, which the runner has, and fails without it since CI is set),
+  # the language configurations, a Wrangler dry-run build of what deploy.sh ships, shellcheck of
+  # its scripts and the task-building tools' unit tests. check-site-deploy.yml deploys it after
+  # this workflow passes on main.
+  check-site:
+    name: check site (check.usnewsmap.com)
+    needs: changes
+    if: needs.changes.outputs.check == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - run: node --test edge/check/worker.test.mjs edge/check/layout.test.mjs edge/check/languages.test.mjs
+      - name: Wrangler dry-run build
+        working-directory: edge/check
+        run: npx --yes wrangler@4.154.0 deploy --dry-run --outdir "$RUNNER_TEMP/check-build"
+        env:
+          WRANGLER_SEND_METRICS: "false"
+      - run: shellcheck -x -S warning edge/check/*.sh edge/check/backup/backup.sh
+      - run: python3 -m py_compile edge/check/tools/*.py
       - run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends python3-pil
-      - run: /usr/bin/python3 -m unittest discover -s edge/check/tools -v
+      # Fails if Pillow is missing rather than skipping the end-to-end build test.
+      - run: /usr/bin/python3 -c 'import PIL' && /usr/bin/python3 -m unittest discover -s edge/check/tools -v
 
   quickwit-tests:
     name: quickwit (${{ matrix.suite }})

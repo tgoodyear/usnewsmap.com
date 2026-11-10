@@ -117,6 +117,8 @@ The files go from the build host straight to the Worker; only the admin token pa
 
 CI deploys the site: after `ci` passes on main, `.github/workflows/check-site-deploy.yml` runs `edge/check/deploy.sh`, which deploys when `edge/check` differs from what is live. The site serves `/build.txt`, the git tree hash of `edge/check` it was built from, so `curl https://check.usnewsmap.com/build.txt` against `git rev-parse origin/main:edge/check` shows whether main is live. To deploy again without a change, run the workflow by hand with "force". The script also runs from a clean checkout with `az` signed in to the vault (`edge/check/deploy.sh --force`).
 
+Every run, whether it deploys or not, also sends `languages/*.json` to the site with `sync-languages.mjs`, so a merged change to a name, intro or letter note goes live with it. The site's `examples` are kept and the build options are left out, as `from_tap_data.py` does; a language the site doesn't have yet is skipped, since it needs its tasks and clips through `load.sh`. The CI identity reads `usnm-prod-check-admin-token` for this through the grant in `infra/modules/edge-worker-ci.bicep`. To see what a sync would change without sending anything: `node edge/check/sync-languages.mjs --dry-run`.
+
 Changes to an existing database are in `migrations/`, run once in order: `0001-answers-notext.sql` must run before a page with "Not text" is deployed. The D1 schema is applied with `wrangler d1 execute usnm-check --remote --file schema.sql`, or through the D1 API; every statement is idempotent.
 
 ### Secrets
@@ -133,7 +135,9 @@ Changing `SESSION_KEY` (`--rotate`) signs everyone out; their earlier answers st
 ## Tests
 
 ```sh
-node --test edge/check/worker.test.mjs edge/check/layout.test.mjs
+node --test edge/check/worker.test.mjs edge/check/layout.test.mjs edge/check/languages.test.mjs
 ```
+
+The `check site` job in `ci.yml` runs these, a Wrangler dry-run build (`npx wrangler@4.154.0 deploy --dry-run`), shellcheck of the scripts and the tools' unit tests whenever anything under `edge/check/` but its Markdown changes. `languages.test.mjs` checks each language configuration's fields and that its keys are sorted.
 
 `layout.test.mjs` renders every language's sample words in headless Chrome, one highlighted letter at a time, and fails if a highlight box overlaps another character. It skips when no Chrome is found (set `CHROME=/path/to/chrome`) unless `CI` is set.

@@ -9,6 +9,8 @@ param secretNames array = [
   'usnm-prod-cloudflare-account-id'
   // Read-only token for .github/workflows/edge-drift.yml; create it before provisioning.
   'usnm-prod-edge-drift-token'
+  // check.usnewsmap.com's /admin token: edge/check/deploy.sh sends the language configurations with it.
+  'usnm-prod-check-admin-token'
 ]
 
 resource vault 'Microsoft.KeyVault/vaults@2023-07-01' existing = {
