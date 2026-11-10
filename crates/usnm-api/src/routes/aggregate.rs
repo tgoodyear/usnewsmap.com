@@ -139,8 +139,10 @@ struct Languages {
     by: Option<&'static str>,
 }
 
-/// The pages a search is compared with (#237): those of titles that list
-/// any of `languages`, or every page when it's empty, and why. The hits are
+/// The pages a search is compared with (#237): those in any of `languages`,
+/// counted by each page's own language on versions that have it (`by` is
+/// `page`) and otherwise by the languages its title lists, or every page
+/// when `languages` is empty, and why. The hits are
 /// never filtered by it: without `lang` they count every matching page,
 /// including the few in titles catalogued in other languages.
 #[derive(Serialize, JsonSchema)]
