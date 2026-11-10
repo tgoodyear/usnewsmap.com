@@ -780,8 +780,14 @@ case "$step" in
     fi
     stamp="$(mktemp)"
     rc=0
-    usnm-boinc host-trust onboard --config "$controller" --execute || rc=$?
-    share_readable "$stamp" "$PROJ/download" "$PROJ/templates" "$PROJ/gold"
+    issued=$(usnm-boinc host-trust onboard --config "$controller" --execute) || rc=$?
+    printf '%s\n' "$issued"
+    # The walk finds every file newer than the stamp under the whole download tree, which took
+    # ~11 minutes over NFS on 10 Nov. A pass that issued no unit (it prints the hosts it issued
+    # to: []) wrote nothing there to share.
+    if [ "$rc" -ne 0 ] || [ "$issued" != "[]" ]; then
+      share_readable "$stamp" "$PROJ/download" "$PROJ/templates" "$PROJ/gold"
+    fi
     rm -f "$stamp"
     exit "$rc" ;;
   register-apps)

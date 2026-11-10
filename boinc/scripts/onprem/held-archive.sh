@@ -23,6 +23,12 @@
 #
 #   held-archive.sh [--config FILE] [--state-dir DIR] [--archive-dir DIR] [--pages N]
 #                   [--min-age-hours N] [--max-batches N] [--wait-mins N] [--tool FILE]
+#                   [--check-state-dir DIR]...
+#
+# Other plans' state directories are passed to the dispatch step as --check-state-dir, so a page
+# another plan has claimed or selected is never archived (#1713). Without --check-state-dir, every
+# sibling `<state dir>.*` with a state.json is used (the drain plans, e.g.
+# /var/lib/usnm-priority-controller.queue-feed-11).
 #
 # --tool is the archive_history.py to run (default: the one beside this script's parent, which
 # imports the controller's own batch_scheduler.py beside it).
@@ -42,6 +48,7 @@ ARCHIVE=/srv/usnm-archive
 PAGES=1000 MIN_AGE=1 MAX_BATCHES=10 WAIT_MINS=60
 UNIT=${USNM_CONTROLLER_UNIT:-usnm-boinc-priority-controller}
 LOCK=${USNM_HELD_ARCHIVE_LOCK:-/run/usnm-boinc-held-archive.lock}
+CHECK_DIRS=()
 while [ $# -gt 0 ]; do
   case $1 in
     --config) [ $# -ge 2 ] || usage; CONFIG=$2; shift 2 ;;
@@ -52,10 +59,18 @@ while [ $# -gt 0 ]; do
     --max-batches) [ $# -ge 2 ] || usage; MAX_BATCHES=$2; shift 2 ;;
     --wait-mins) [ $# -ge 2 ] || usage; WAIT_MINS=$2; shift 2 ;;
     --tool) [ $# -ge 2 ] || usage; TOOL=$2; shift 2 ;;
+    --check-state-dir) [ $# -ge 2 ] || usage; CHECK_DIRS+=("$2"); shift 2 ;;
     -h | --help) usage ;;
     *) echo "error: unknown argument: $1" >&2; usage ;;
   esac
 done
+if [ ${#CHECK_DIRS[@]} -eq 0 ]; then
+  for dir in "$STATE_DIR".*; do
+    [ -f "$dir/state.json" ] && CHECK_DIRS+=("$dir")
+  done
+fi
+CHECKS=()
+for dir in ${CHECK_DIRS[@]+"${CHECK_DIRS[@]}"}; do CHECKS+=(--check-state-dir "$dir"); done
 for n in "$PAGES" "$MIN_AGE" "$MAX_BATCHES" "$WAIT_MINS"; do
   [[ $n =~ ^[0-9]{1,5}$ ]] || die "--pages, --min-age-hours, --max-batches and --wait-mins are numbers"
 done
@@ -178,7 +193,7 @@ sys.argv = sys.argv[1:]
 runpy.run_path(sys.argv[0], run_name="__main__")
 ' "$TOOL" dispatch --include-held --min-age-hours "$MIN_AGE" --pages "$PAGES" \
     --config "$CONFIG" --state-dir "$STATE_DIR" --archive-dir "$ARCHIVE" --controller-unit "$UNIT" \
-    --apply --confirm-controller-paused > "$out" &
+    ${CHECKS[@]+"${CHECKS[@]}"} --apply --confirm-controller-paused > "$out" &
   child=$!
   status=0
   wait "$child" || status=$?
@@ -199,7 +214,8 @@ done
 # The counts after: a dry run for the journals and what is left, and the state file.
 # In the background as well, so a stop doesn't wait for it.
 python3 "$TOOL" dispatch --include-held --min-age-hours "$MIN_AGE" --pages "$PAGES" \
-  --config "$CONFIG" --state-dir "$STATE_DIR" --archive-dir "$ARCHIVE" --controller-unit "$UNIT" > "$out" &
+  --config "$CONFIG" --state-dir "$STATE_DIR" --archive-dir "$ARCHIVE" --controller-unit "$UNIT" \
+  ${CHECKS[@]+"${CHECKS[@]}"} > "$out" &
 child=$!
 status=0
 wait "$child" || status=$?

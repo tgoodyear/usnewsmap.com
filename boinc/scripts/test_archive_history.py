@@ -502,6 +502,25 @@ class HeldTests(DispatchFixture):
         code, summary, _ = run(self.argv("--include-held", "--min-age-hours", "60"))
         self.assertEqual((summary["pages"]["eligible_held"], summary["pages"]["skipped"]["held_too_recently"]), (1, 1))
 
+    def test_a_held_page_another_plan_claimed_stays(self):
+        # #1713: a live plan had claimed page 8 too. Archived, its journals gone, the live plan
+        # would export it under the same job id, whose workunit row still exists.
+        other = self.state_dir.parent / "other-plan-state"
+        other.mkdir()
+        (other / "state.json").write_text(json.dumps({"claims": {page_key(8): claim(8)}, "selected": {}}))
+        code, summary, _ = run(self.argv("--include-held", "--check-state-dir", str(other)))
+        self.assertEqual(code, 0)
+        self.assertEqual(summary["pages"]["skipped"]["claimed_by_another_plan"], 1)
+        self.assertEqual((summary["pages"]["eligible_held"], summary["batch"]["held_pages"]), (1, 1))
+        # A page only selected there stays too.
+        (other / "state.json").write_text(json.dumps({"claims": {}, "selected": {page_key(9): 1}}))
+        code, summary, _ = run(self.argv("--include-held", "--check-state-dir", str(other)))
+        self.assertEqual(summary["pages"]["skipped"]["claimed_by_another_plan"], 1)
+        # Its own state directory can't be the other plan's.
+        code, _, errors = run(self.argv("--include-held", "--check-state-dir", str(self.state_dir)))
+        self.assertNotEqual(code, 0)
+        self.assertIn("own state directory", errors[-1]["error"])
+
     def test_apply_archives_held_pages_and_restore_puts_them_back_exactly(self):
         originals = self.container.snapshot()[0]
         held_jobs = {job_id(8), job_id(9)}
