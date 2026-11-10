@@ -207,10 +207,15 @@ class BoincAppVersion {
         """A real-PHP verification over a stub update_versions that, as the stock one, holds one
         app_version INSERT; running it records the query it would send."""
         php = shutil.which('php')
-        (self.root / 'php').write_text(f'#!/bin/sh\nexec "{php}" "$@"\n')
+        # The php on PATH logs how it was called: a held copy must run through it (#1689 rerun,
+        # 10 Nov), because the registration directory can be on a noexec mount.
+        (self.root / 'php').write_text(f'#!/bin/sh\nprintf "%s\\n" "$*" >> "{self.root}/php-calls"\nexec "{php}" "$@"\n')
+        (self.root / 'php').chmod(0o755)
         update = self.project / 'bin/update_versions'
-        update.write_text('#!/bin/sh\n# ' + self.INSERT_QUERY + '\n' + '# BoincAppVersion::insert($query);\n' * inserts
-                          + 'grep -o "beta=.*" "$0" | head -1 > "$PROJ/inserted"\n')
+        update.write_text('#! /usr/bin/env php\n<?php\n// ' + self.INSERT_QUERY + '\n'
+                          + '// BoincAppVersion::insert($query);\n' * inserts
+                          + 'preg_match("/beta=.*/", file_get_contents(__FILE__), $m);\n'
+                          + 'file_put_contents(getenv("PROJ") . "/inserted", $m[0] . "\\n");\n')
         update.chmod(0o755)
         (self.project / 'html/inc/boinc_db.inc').write_text(
             '<?php\n'
@@ -244,6 +249,31 @@ class BoincAppVersion {
         self.assertTrue((self.project / 'apps/usnm_ocr/1.7/x86_64-pc-linux-gnu__docker_lines/docker_wrapper').is_file())
 
     @unittest.skipUnless(shutil.which('php'), 'PHP unavailable')
+    def test_a_held_publication_works_when_its_copy_cannot_be_executed(self):
+        # 10 Nov: the held copy's directory was on a noexec mount, so executing it failed with
+        # status 126 and nothing registered. A copy without the execute bit stands in for noexec.
+        env = self.held_fixture()
+        script = self.script.read_text().replace(
+            'fd = os.open(sys.argv[2], os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o700)',
+            'fd = os.open(sys.argv[2], os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)')
+        self.assertIn('0o600', script)
+        noexec = self.root / 'publish-noexec.sh'
+        noexec.write_text(script)
+        result = subprocess.run(['bash', str(noexec)], capture_output=True, text=True, env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.project / 'inserted').read_text().strip(), 'beta=$b, deprecated=1";')
+
+    @unittest.skipUnless(shutil.which('php'), 'PHP unavailable')
+    def test_a_held_publication_refuses_an_update_versions_that_isnt_php(self):
+        env = self.held_fixture()
+        update = self.project / 'bin/update_versions'
+        update.write_text(update.read_text().replace('#! /usr/bin/env php', '#!/bin/sh', 1))
+        result = subprocess.run(['bash', str(self.script)], capture_output=True, text=True, env=env)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("isn't a PHP script", result.stderr)
+        self.assertFalse((self.project / 'inserted').exists())
+
+    @unittest.skipUnless(shutil.which('php'), 'PHP unavailable')
     def test_a_held_publication_inserts_the_row_deprecated(self):
         # #1687: the row is born held, in update_versions' own INSERT, so no feeder reload between
         # registration and a later UPDATE can load it, and a failure after the insert leaves it held.
@@ -257,6 +287,9 @@ class BoincAppVersion {
         self.assertEqual(json.loads(journal[0].read_text())['deprecated'], 1)
         # The stock script is untouched: the patched copy lived in the private registration area.
         self.assertNotIn('deprecated=1', (self.project / 'bin/update_versions').read_text())
+        # It ran through php, not as an executable: /dev/shm in the server container is noexec.
+        calls = (self.root / 'php-calls').read_text().splitlines()
+        self.assertTrue(any(c.endswith('/update_versions.held --noconfirm') for c in calls), calls)
         # Without the hold the stock INSERT runs.
         (self.project / 'reread_db').unlink()
         live = subprocess.run(['bash', str(self.script)], capture_output=True, text=True, env={**env, 'APPVER_HOLD': '0'})
@@ -265,7 +298,7 @@ class BoincAppVersion {
         # A held rerun that finds the version registered live refuses and doesn't notify the feeder.
         (self.project / 'reread_db').unlink()
         update = self.project / 'bin/update_versions'
-        update.write_text(update.read_text().replace('grep -o', 'true || grep -o'))
+        update.write_text(update.read_text().replace('file_put_contents(', '0 && file_put_contents('))
         rerun = subprocess.run(['bash', str(self.script)], capture_output=True, text=True, env=env)
         self.assertNotEqual(rerun.returncode, 0)
         self.assertIn('is live, not held', rerun.stderr)

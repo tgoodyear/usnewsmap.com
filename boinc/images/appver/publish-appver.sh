@@ -217,7 +217,19 @@ PYHOLD
     "$APPVER_APP" "$APPVER_PLAN_CLASS" "$APPVER_PLATFORM" "$APPVER_VERSION" > "$journal" ||
     fail "can't write the publication journal; nothing registered"
 fi
-(cd "$registration" && "$update_versions" --noconfirm)
+if [ "${APPVER_HOLD:-0}" = 1 ]; then
+  # The held copy sits in the registration directory, which can be on a noexec mount (/dev/shm in
+  # the server container, 10 Nov): run it through the interpreter the stock script's shebang names.
+  shebang=$(head -n 1 "$PROJ/bin/update_versions")
+  case "$shebang" in
+    '#!/usr/bin/env php' | '#! /usr/bin/env php') interpreter=php ;;
+    '#!/'*php | '#! /'*php) interpreter=${shebang#'#!'}; interpreter=${interpreter# } ;;
+    *) fail "update_versions isn't a PHP script ($shebang); nothing registered" ;;
+  esac
+  (cd "$registration" && "$interpreter" "$update_versions" --noconfirm)
+else
+  (cd "$registration" && "$update_versions" --noconfirm)
+fi
 # PHP die(string) exits zero; the job status alone is not evidence of registration.
 verified=$(cd "$registration" && php <<'PHP'
 <?php
