@@ -8,7 +8,7 @@
 #
 # An empty value means not pinned yet: the build then installs from the snapshot, as the
 # Containerfile's defaults do. An architecture pins both or neither.
-AMD64_ENGINE_BASE=
-AMD64_TOOLS_BASE=
-ARM64_ENGINE_BASE=
-ARM64_TOOLS_BASE=
+AMD64_ENGINE_BASE=ghcr.io/tgoodyear/usnm-tesseract-base@sha256:bec61b42adfc4e6c032567b2520b90553d4fae3d0efcbf36f1df89b09e91765a
+AMD64_TOOLS_BASE=ghcr.io/tgoodyear/usnm-tesseract-base@sha256:95a2457cdd7df7aac8a59ad633d798ce4387ffdb9aba0ae68e9bddecbab5acf0
+ARM64_ENGINE_BASE=ghcr.io/tgoodyear/usnm-tesseract-base@sha256:fd8bc951435a417718deb2001a8100fed95b892f5756675ea4b20828a768b6f0
+ARM64_TOOLS_BASE=ghcr.io/tgoodyear/usnm-tesseract-base@sha256:e16eeb70d2160d28f5c62ae81b4eb385d6e32646a7180540744cb359533d673e
