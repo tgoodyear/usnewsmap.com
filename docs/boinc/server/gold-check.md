@@ -1,15 +1,11 @@
 # The gold check
 
-Part of the [BOINC batch pilot guide](../README.md).
+How a host's OCR engine is scored on public ground truth, how those scores decide which hosts' `usnm_ocr` results are published, and how the gold bundle is built.
 
 ## Gold check
 
-For an optional, aggregate-capped client beside an OCR node's existing queue
-worker, see [the dev-first OCR-node plan](ocr-node.md) (#472). It does not
-enable or attach production clients.
-
 A volunteer host can score its engine on the public gold bundle
-([ocr-gold-set.md](../../ocr/gold-set.md#volunteer-bundle), #457) and report CER and
+([the gold set](../../ocr/gold-set.md#volunteer-bundle), #457) and report CER and
 WER together with the bundle version. Two steps, because the task container
 runs with `--network=none`:
 
@@ -374,12 +370,13 @@ A native build is a different digest, so it starts with no trusted hosts. Its
 gold units run in the separate app `usnm_gold_native`, reach only the hosts
 named in `GOLD_NATIVE_HOSTS`, and are judged by the same `gold-promote` against
 the scope's existing threshold and challenge
-([boinc-native-ocr.md](../apps/native-ocr.md#trust)).
+([native OCR](../apps/native-ocr.md#trust)).
+
+How the scheduler routes gold units to hosts is described in the [gold set](../../ocr/gold-set.md) page's "Gold routing" section.
 
 There are two distinct automation entrypoints:
 
-- The opt-in [host-trust follow-up
-  controller](../../notes/2026-10-16-boinc-host-trust-followups.md) provides bounded
+- The opt-in [host-trust commands](host-trust.md) provide bounded
   discovery and first-Gold issuance, plus sampled independent-host OCR reruns and
   comparisons. Its dispatch commands require an explicit `--execute`; invoking
   those standalone commands installs no timer or assignment configuration.
@@ -409,17 +406,7 @@ image's `gold-bundle` step as root on the host:
 usnm-boinc-step --env prod --step gold-bundle --var GOLD_CAMPAIGN=v1-tess550 --wait-mins 360
 ```
 
-`"goldBundle": true` in `boinc/infra/boinc/env/<env>.json` applies to the Azure
-server only. With `"server": "azure"`, the bundle is built inside the VNet instead: set it
-in the same commit as the new digest (prod's file already sets it). After
-`boinc/scripts/provision-boinc.sh`, the stack has the gold bundle job (`usnm-boinc-gold-caj-<env>`, the stack's
-output `goldBundleJobName`). It runs the same step with `GOLD_CAMPAIGN=v1-tess550` set in
-the job itself, so it needs no override:
-
-```sh
-az containerapp job start --subscription <subscription> --resource-group usnm-boinc-rg-prod \
-  --name usnm-boinc-gold-caj-prod --query name -o tsv
-```
+On a `"server": "azure"` environment the step runs as a job inside the VNet instead ([the gold bundle job](azure.md#the-gold-bundle-job)).
 
 The step (`boinc/images/bridge/gold-bundle.sh`):
 
@@ -429,7 +416,7 @@ The step (`boinc/images/bridge/gold-bundle.sh`):
    one request at a time, a second apart, and loc.gov paced as `locfetch` paces
    it. A file that's already downloaded isn't fetched again, so a rerun resumes;
 2. runs `gold.py public-convert` for each, with the flags of the 13 October 2026
-   runs ([ocr-scoring-guide.md](../../ocr/scoring-guide.md#fetch-and-convert)): `--count 600 --per-page 1`
+   runs ([the scoring guide](../../ocr/scoring-guide.md#fetch-and-convert)): `--count 600 --per-page 1`
    for BLN600, `--count 600 --per-page 50` for Overproof, `--count 60` for the others;
 3. runs `usnm-ocr-survey bundle-build --version 1 --seed 457 --per-source 30` with
    BLN600's zip as `--original`, writing its lock beside the bundle, then
@@ -523,7 +510,7 @@ clean-host guide's command output. Do not infer cache reuse from multiple
 successful tasks or infer peak resource use from cgroup limits. Keep the
 production issuance and campaign separate from this documentation checklist.
 
-Volunteers' steps are in [boinc-volunteer.md](../volunteer/README.md).
+Volunteers' steps are in the [volunteer guide](../volunteer/README.md).
 
 ### Engine routing
 

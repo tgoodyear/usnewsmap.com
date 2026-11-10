@@ -179,8 +179,7 @@ at `-d 2`, which drops BOINC's normal-level lines such as `Starting` and
 `Executing command: feeder ...` line from `bin/start`, and each scan of the tables, at a start or a
 reread, as five `have apps for` lines from `scan_tables`. The first five `have apps for` lines after
 the last `Executing command` line are that start's own scan; any later group of five is a reread. Cached results whose app differs from the slot's app in the
-current registry's interleave confirm the second case; the
-[proposed helper](#proposed-a-dry-run---plan-refresh-mode-not-implemented) would compute that. On
+current registry's interleave confirm the second case (reproduce `weighted_interleave` by hand; no tool computes it yet). On
 5 November 2026 that comparison found none on CT 230
 ([the measurements](../../notes/2026-11-05-feeder-restart-bound.md)).
 
@@ -675,36 +674,10 @@ without the maintainer's approval for that occasion:
   `one_result_per_host_per_wu` or quorum.
 - Anything on volunteer hosts.
 
-The only automation this design allows is notification: the failed guard unit, and the read-only
-plan below when an operator asks for it. The loop's [restart bound](#the-loops-restart-bound) is no
+The only automation this design allows is notification: the failed guard unit. A read-only
+`--plan-refresh` mode for `feeder-slot-guard.py`, which would print the checks of steps 1 and 4 as
+one report, has been proposed but not built. The loop's [restart bound](#the-loops-restart-bound) is no
 repair either: it only stops the loop's own restarts, and an operator releases it.
-
-## Proposed: a dry-run `--plan-refresh` mode (not implemented)
-
-`feeder-slot-guard.py` already verifies the feeder's identity and reads the registry over verified
-TLS. A read-only `--plan-refresh` mode would turn the checks of steps 1 and 4 into one reviewed
-command. The proposal:
-
-- **Reads:** the guard check; `feeder.pid`, the process's identity and owner, and whether it holds
-  `feeder.lock`; `bin/status --verbose`; the marker files and `.usnm-publish.lock`; the active
-  `app`, `platform` and multi-host `assignment` rows; `shmem_work_items` and `feeder_query_size`
-  from `config.xml`; and `bin/show_shmem`.
-- **Computes:** the expected slot map and per-app counts, by reproducing `weighted_interleave`
-  exactly, including its handling of zero weights; the `enum_sizes`; the table limits; the sizing
-  invariant; the segment size. From `show_shmem`, it lists every cached result whose app differs
-  from the expected map for its slot. That comparison also gives rollout evidence for a feeder
-  started before the guarded image, which has no snapshot. Mapping 12-character app names back to
-  IDs must fail closed when two names share a prefix.
-- **Prints** one JSON report and the exact commands of steps 2 to 4 with the verified PID and start
-  ticks filled in.
-- **Exits** 0 only if a refresh is warranted and every precondition holds, otherwise non-zero with
-  the reasons. With `--previous-pid` and `--previous-start-ticks` after a restart, it exits 0 only
-  if the new feeder is alive, ready and matching, and is the only daemon that changed.
-- **Never** signals, starts or stops anything, writes to the project or the database, or touches a
-  trigger file. It does not take the project mutex; the operator does.
-
-It would need its own issue, tests against the feeder fixture in `boinc/scripts/db-tls/full.py`
-and review.
 
 ## Before first use
 

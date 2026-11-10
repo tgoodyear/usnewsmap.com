@@ -1,6 +1,6 @@
 # BOINC and Azure facts, checked against sources
 
-These are the facts the hosting design for the stock BOINC server depends on. The client side, the bridge and the contracts are in PR #441 (`docs/boinc/README.md`) and are not repeated here.
+These are the facts the [hosting design](design.md) for the stock BOINC server depends on, checked in October 2026 while the server ran in Azure. The client side, the bridge and the contracts came with PR #441 and are not repeated here. Where a fact has changed since, it says so.
 
 Every fact here has a source and a fetch date. All sources were read on 2026-10-13 (US Eastern).
 A fact marked UNVERIFIED was not confirmed from a source and must be tested before design
@@ -93,8 +93,7 @@ CORRECTIONS and gaps, in order of how much they affect the design:
    exception: `boinc-daemons.sh` keeps it on the container disk and links it into the
    tree. `bin/start` leaves its unlinked `start.lock` open in every daemon it starts, and on
    Azure Files that file stays delete-pending, so each later `bin/start --cron` failed with
-   ENOENT and never restarted a stopped daemon. Source: `src:sched/start`
-   and 785-819.
+   ENOENT and never restarted a stopped daemon. Source: `src:sched/start`.
 3. CORRECTED, MyISAM. Most tables are InnoDB, but `post`, `thread` and `profile` are MyISAM
    because of full-text indexes. Source: `src:db/schema.sql`. Azure Database
    for MySQL "uses the InnoDB storage engine"
@@ -105,7 +104,9 @@ CORRECTIONS and gaps, in order of how much they affect the design:
 4. CORRECTED, TLS to the DB. The unmodified BOINC clients do not request TLS, and project
    initialization failed with error 3159 when enforcement was tested (2026-10-13). The deployed
    MySQL configuration sets `require_secure_transport` to OFF; the endpoint is private to the
-   VNet. #464 tracks the development migration gate before transport enforcement can be enabled.
+   VNet. #464 patched the image's clients to require verified TLS and closed with the Azure
+   server left OFF; the on-prem database has required TLS since 21 October 2026
+   ([BOINC server on-prem](server/onprem.md)).
    The flexible server's default is
    `require_secure_transport = ON` with TLS 1.2
    (`https://learn.microsoft.com/en-us/azure/mysql/flexible-server/how-to-connect-tls-ssl`).
@@ -222,7 +223,7 @@ All read on 2026-10-13 (US Eastern): wiki commit `7e16379`, source commit `0f611
   project's `download/` tree with `dir_hier_path` and passes it to `create_work` as a local
   input file. So the scans are served by Apache from the project tree (on Azure, the Files
   share), and no SAS or second storage account is involved. The opt-in
-  `--download-base-url` (#783, server-and-apps.md) later added `--remote_file` pages.
+  `--download-base-url` (#783, [optional local page hosting](server/server-and-apps.md#optional-local-page-hosting-783)) later added `--remote_file` pages.
 - CORRECTED, upload: upload goes through the `file_upload_handler` CGI program, which checks
   an RSA-signed upload certificate in the job's file_info and writes to the local `upload/`
   tree. It cannot be redirected to blob storage. Source: `wiki:FileUpload`,

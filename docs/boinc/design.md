@@ -1,16 +1,16 @@
 # BOINC server hosting: design
 
-The production stack was deployed in Azure and checked as recorded in #470. This design
-describes the committed Bicep and scripts for hosting the server in Azure; it does not claim a
-fresh live check. Prod's server moved to an on-prem host on 21 October 2026
-([boinc-onprem.md](server/onprem.md)), which makes this design the fallback
-(`"server": "azure"`) and the record of why it was built this way.
-Facts about BOINC and Azure are in [verified-facts.md](verified-facts.md), and
-UNVERIFIED marks behavior that remains unconfirmed.
+This design, written in October 2026, describes the committed Bicep and scripts that host the
+stock BOINC server in Azure Container Apps (`boinc/infra/boinc/`). Prod ran on it from #470
+until 21 October 2026, when the server moved to an on-prem host ([BOINC server on-prem](server/onprem.md)).
+It is now the fallback (`"server": "azure"`, [the Azure server](server/azure.md)) and the record of
+why the Azure server was built this way; it does not claim a fresh live check. Facts about BOINC
+and Azure are in [verified-facts.md](verified-facts.md), and UNVERIFIED marks behavior that
+remains unconfirmed.
 
 ## 1. What this covers
 
-PR #441 (`docs/boinc/README.md`, `crates/usnm-boinc`, `boinc/apps/`) is the client side and the
+PR #441 (`crates/usnm-boinc`, `boinc/apps/`) is the client side and the
 bridge. This design does not change its model:
 
 - a Docker-wrapper app, `usnm_ocr`, whose worker image runs Tesseract directly; BOINC's
@@ -25,8 +25,7 @@ bridge. This design does not change its model:
 `boinc/infra/boinc/` is that last item: Azure hosting for the stock server and the notes on how the
 bridge reaches it. Provisioning and image builds are driven by `boinc/scripts/provision-boinc.sh`
 and `boinc/scripts/build-boinc-images.sh`. It contains no BOINC code, no work generator, no validator,
-no assimilator and no app. The interface to #441 is in
-[interface.md](interface.md).
+no assimilator and no app. The interface to #441 is [section 11](#11-interface-with-the-bridge).
 
 ## 2. Hosting on Azure
 
@@ -106,50 +105,15 @@ choose it now. Notes:
 - MyISAM. `post`, `thread` and `profile` are MyISAM in `schema.sql`. Forums and profiles are
   disabled. The production project initialization recorded in #470 succeeded against the
   configured MySQL server.
-- TLS. The deployed MySQL server keeps `require_secure_transport` OFF pending #464's
-  copied-project migration and Azure-chain acceptance. The pinned image's clients now
-  require verified TLS; this does not prove old persistent project copies were upgraded.
-  BOINC's root template and MySQL module expose `requireSecureTransport`, defaulting
-  to `false` (OFF). Normal provisioning forwards the committed environment setting
-  `requireSecureTransport` (absent means false); production explicitly remains false.
-  A separately reviewed true setting maps to ON; activation is never implicit.
-  The server has private VNet access only. Enable
-  enforcement only after the gates below and a separately coordinated #529 deployment.
-  `boinc/scripts/patch-server-db-tls.py` patches the pinned source's Python
-  `db_base`, **both** PHP connection paths, and C++ `DB_CONN`; CLI consumers pass
-  verified TLS flags. Python's Bookworm mysqlclient cannot use `ssl_mode` against
-  MariaDB, so an explicit immutable option file enforces TLS and verification.
-  All three patched paths reject an empty session cipher. The image builds a
-  dedicated bundle from Debian's DigiCert Global Root G2 **and Microsoft RSA Root
-  Certificate Authority 2017**, as required by [Azure's current rotation
-  guidance](https://learn.microsoft.com/en-us/azure/mysql/security/security-tls-how-to-connect).
-  No leaf pin, disabled verification, or silent plaintext fallback is permitted.
-  Certificate roots are verified at image build, not fetched at runtime.
-
-  **Migration gate (not yet executed):** build the new base, server and bridge
-  images together (base cache key includes patch and options). In an isolated dev
-  project and database, initialize with enforcement ON and show non-empty
-  `SHOW SESSION STATUS LIKE 'Ssl_cipher'` for Python, both PHP APIs and a C++
-  utility. Exercise the web pages, `get_project_config.php`, scheduler RPC, feeder,
-  transitioner, validator and assimilator. A wrong hostname, untrusted CA and
-  TLS-disabled test server must all fail for each client type. Existing projects
-  contain **copies**, not symlinks, of PHP, Python, daemon and CGI binaries:
-  rebuild alone is insufficient. Back up the dev project and rehearse BOINC's
-  `upgrade` or project installation from the new source with all daemons stopped,
-  preserving config, keys, apps and spool. Inventory every installed binary and
-  library against the patched image before resuming. Only after this is
-  independently verified should a separately reviewed production maintenance plan
-  migrate the project, verify live sessions while enforcement remains OFF, then
-  turn it ON. Rollback restores the complete project and matching image while
-  enforcement is OFF. Do not restart or deploy production as part of this PR. Local
-  connector mocks and patch and syntax checks are prerequisites, **not** live Azure
-  TLS acceptance or proof of uninterrupted production operation. The [local
-  disposable TLS fixture](server/db-tls-acceptance.md) exercises the actual pinned Python,
-  both PHP APIs, C++ `DB_CONN` and CLI against TLS-required MariaDB and MySQL 8.4
-  servers, including certificate, hostname and plaintext negative cases. MySQL 8.4
-  uses the same pinned image as the existing CI SQL checks and retests all five
-  consumers after a persisted database restart. Synthetic certificates do not
-  replace Azure-chain or full persisted-project migration acceptance.
+- TLS. The Azure MySQL server's `require_secure_transport` stays OFF: BOINC's root template
+  and MySQL module expose `requireSecureTransport`, defaulting to `false`, and #464 closed
+  with Azure left OFF after two activations were rolled back in October 2026. The images'
+  clients nonetheless require verified TLS through `boinc/scripts/patch-server-db-tls.py`
+  (Python `db_base`, both PHP connection paths and C++ `DB_CONN`), with a bundle of
+  DigiCert Global Root G2 and Microsoft RSA Root Certificate Authority 2017, as
+  [Azure's rotation guidance](https://learn.microsoft.com/en-us/azure/mysql/security/security-tls-how-to-connect)
+  requires. The on-prem database requires TLS. The CI fixtures are in
+  [database TLS checks](server/db-tls-acceptance.md).
 
 - CPU credits. B1ms has 20% baseline CPU. The transitioner and feeder poll constantly. If the
   credit balance drains, MySQL throttles to 20%. We alarm on the CPU-credit metric and move to
@@ -252,6 +216,10 @@ the runtime and secrets identities `AcrPull` on the app's shared registry. `brid
 `reconcile` for the job id in `JOB_ID`.
 
 ### 4.3 The hand-off and the spool
+
+The first design moved jobs and the spool by hand; the remote hand-off (#469,
+[the scan-cache hand-off](server/scan-cache-handoff.md)) replaced that with `submit-remote` and
+`spool-out` steps and the `boinc-handoff` blob container.
 
 - **Jobs go in.** `export` writes `<root>/jobs/<id>/` (the page, `request.json`, the record).
   The operator copies that folder to `handoff/jobs/<id>/` on the share. The Job runs
@@ -461,43 +429,72 @@ the images would be preferred if one exists. It is not planned until the maintai
 
 ## 9. Open questions
 
+These were open when the Azure server was retired; none blocks the on-prem server.
+
 1. Does Azure Files under Container Apps preserve the POSIX permissions and locking behavior
-   BOINC needs across all project operations? Project initialization and daemon startup succeeded
-   (#470), but the full behavior remains to be verified.
-2. Does BOINC's runtime account have all required MySQL 8.4 privileges? Project initialization
-   succeeded (#470); `require_secure_transport` is OFF in the deployed stack, and #464 tracks the
-   separate TLS migration gate before it can be enabled.
-3. Does Entra authorisation work for pulling and pushing Azure Files data from the
-   maintainer's side, or does the hand-off use the account key?
-4. ~~Does a Container Apps Job accept per-run argument overrides at start (the job id to
-   submit), or does each run need a new execution template?~~ Settled in code: an execution
-   template drops the job's settings and has no mounts, so `boinc/scripts/start-boinc-bridge.sh`
-   writes the run's settings into the job and starts it without an override (docs/boinc/server/bridge-steps.md,
-   "Start a bridge step"). UNVERIFIED against a live job.
-5. Does the BOINC client follow a redirect for `get_project_config.php`?
-6. ~~Which registry holds the worker image?~~ Public GHCR package (ADR-0019, addendum).
-7. Code-signing key custody: which offline machine, and who holds the backup?
-8. The terms of use and any change to project metadata. The production domain and master URL
-   are set; a URL change after volunteers attach would require them to reattach.
-9. ~~Who builds the server image and bridge job?~~ `boinc/scripts/build-boinc-images.sh` builds both in ACR Tasks and writes their digests to the settings (docs/images.md).
-10. ~~Should `submit` get a remote mode in #441, or is the manual hand-off enough for the pilot?~~
-    The remote hand-off (#469, [scan-cache-handoff.md](server/scan-cache-handoff.md)) replaced the
-    manual copy.
-11. What network path does the maintainer use to reach the Files share for the hand-off in
-    section 4? Secrets and project initialization are handled by in-VNet jobs; the share
-    hand-off still requires an operator path into the VNet.
-12. ~~How are the three ADR-0009 exceptions expressed in the guardrail policies?~~ Resolved
-    (ADR-0019, decision 6): group-scoped Waiver exemptions in `infra/modules/boinc-exemptions.bicep`;
-    the definitions are unchanged.
-13. ~~Does the maintainer accept `require_secure_transport = OFF` inside the private network
-    while BOINC's clients cannot use TLS?~~ The deployed setting is OFF; #464 tracks restoring
-    required TLS after its migration gate.
+   BOINC needs across all project operations? Project initialization and daemon startup
+   succeeded (#470); `bin/start`'s delete-pending `start.lock` did not ([verified-facts.md](verified-facts.md) (b)).
+2. Does BOINC's runtime account have all required MySQL 8.4 privileges beyond
+   `SELECT`/`INSERT`/`UPDATE`/`DELETE`?
+3. Does Entra authorisation work for Azure Files data access from outside Azure?
+4. Does the BOINC client follow a redirect for `get_project_config.php`?
+5. Code-signing key custody: which offline machine, and who holds the backup?
+
+Settled: the worker image is a public GHCR package (ADR-0019, addendum); `build-boinc-images.sh`
+builds the server and bridge images; `start-boinc-bridge.sh` writes each run's settings into the
+job because an execution template drops them; the ADR-0009 exceptions are group-scoped waivers
+(ADR-0019, decision 6); the remote hand-off replaced the manual share copy.
 
 ## 10. Deployment and acceptance
 
 The production deployment and checks are recorded in #470: provisioning completed, the in-VNet
 secrets and project initialization jobs succeeded, the public project configuration and status
-endpoints answered, the daemons were running, and the managed certificate was active. This
-design update does not re-run those production checks. Remaining acceptance items are the
-MySQL schema and runtime compatibility details, complete Azure Files permission and locking
-behavior, and the #464 TLS migration; see the open questions above.
+endpoints answered, the daemons were running, and the managed certificate was active.
+
+## 11. Interface with the bridge
+
+What the hosting assumes about #441's client and bridge, and what #441 can assume about the
+server. Where this and #441 differ, #441 wins. The on-prem server runs the same server and
+bridge images, so the names below hold there too; the share paths are `/srv/usnm-boinc/project`
+on the on-prem host, mounted at `/project` in its containers.
+
+### Names
+
+| Item             | Value                                                                                                                                                                                                                                                                                                                                     |
+| ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| App name         | `usnm_ocr` (`boinc/project/project.xml` registers it with `target_nresults` 1); `usnm_assess` for #456, redundancy 2 ([assessment note](../notes/2026-10-16-boinc-assessment.md)); `usnm_gold` for #462, one result per unit ([gold check](server/gold-check.md#gold-check))                                                              |
+| App type         | Docker wrapper; the worker image is built from `boinc/apps/Containerfile` and runs `usnm-boinc work`                                                                                                                                                                                                                                      |
+| App version      | installed by `boinc/scripts/install.py --project --wrapper --image --version --app <app>` (`usnm_ocr` when `--app` is left out; `usnm_assess`, `usnm_gold`) into `apps/<app>/<version>/x86_64-pc-linux-gnu__docker`                                                                                                                       |
+| Plan class       | `docker`, from `boinc/project/plan_class_spec.xml` here (minimum client 8.2.11)                                                                                                                                                                                                                                                           |
+| Workunit shape   | one page per task; templates `usnm_ocr_in` and `usnm_ocr_out` in `boinc/apps/`; inputs `page` and `request.json`. A plan with `pages_per_unit` bundles 2–32 pages per task instead, with `usnm_ocr_bundle_in`/`usnm_ocr_bundle_out`, workunit `usnm_ocrb_<id>`, inputs `pages` and `ocr_bundle.json` ([OCR bundles](apps/ocr-bundles.md)) |
+| Daemons          | `sample_trivial_validator` and `batch_collect_assimilator`, from `boinc/apps/daemons.xml`, in place of `@APP_DAEMONS@` in `boinc/project/config.xml.template`                                                                                                                                                                             |
+| Spool            | `<project>/results/<batch>/<workunit>__file_<logical name>`, written by `batch_collect_assimilator`                                                                                                                                                                                                                                       |
+| Submission       | `usnm-boinc submit --root --project --job`, which runs `bin/dir_hier_path` and `bin/create_work`                                                                                                                                                                                                                                          |
+| Publication      | `usnm-boinc collect --root --spool --job --curated-url --out-url`                                                                                                                                                                                                                                                                         |
+| Task limits      | `delay_bound` 259200 s (86400 s and workunit priority 10 for `reason` `user`, #866); `rsc_memory_bound` 1.5 GiB; `rsc_disk_bound` 1 GiB; container capped at 1536 MiB and one CPU by `job.toml`                                                                                                                                           |
+| File size limits | scan 128 MiB, ALTO 32 MiB, text 512 KiB, JSON 16 KiB (`usnm-ocr-contract/src/boinc.rs`)                                                                                                                                                                                                                                                   |
+| Client needs     | BOINC 8.2.13 or later, Docker, outbound HTTPS to the project URL, and to the registry holding the worker image. No inbound ports                                                                                                                                                                                                          |
+
+### What the hosting provides
+
+| Item                               | Where                                                                                                                   |
+| ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| A stock server in Azure            | `boinc/infra/boinc/` (Container App, MySQL, Files share, Key Vault, Log Analytics, static site)                         |
+| The `docker` plan class            | `boinc/project/plan_class_spec.xml`                                                                                     |
+| Project and daemon configuration   | `boinc/project/config.xml.template` and `boinc/project/project.xml`                                                     |
+| Where `submit` and `reconcile` run | the manual-trigger Container Apps Job in `boinc/infra/boinc/modules/bridge-job.bicep`                                   |
+| The set-up plan and deployment     | `boinc/scripts/provision-boinc.sh` and `boinc/scripts/build-boinc-images.sh`; secrets and project init run in VNet jobs |
+| The server and bridge images       | `images/server`, `images/bridge` ([images.md](apps/images.md))                                                          |
+
+### Paths on the share
+
+| Path                                  | Content                                                              |
+| ------------------------------------- | -------------------------------------------------------------------- |
+| `/project/usnmocr/download`, `upload` | BOINC's fan-out trees: staged scans and volunteers' uploads          |
+| `/project/usnmocr/results/<batch>`    | the assimilator's spool; keep until `collect` reports `published`    |
+| `/project/usnmocr/apps/usnm_ocr`      | app versions written by `install.py`, then signed                    |
+| `/project/handoff/jobs/<id>`          | an exported job, copied here for `submit`; its record is copied back |
+
+### Account creation
+
+Create an account with `boinccmd --create_account URL email password name`, or attach with an existing key: `boinccmd --project_attach URL key`. Whether account creation is open or needs an invite code is the maintainer's choice (section 5.2). Do not share one account key across unrelated deployments.
