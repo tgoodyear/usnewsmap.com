@@ -19,10 +19,13 @@ case "$APPVER_KIND" in
   container)
     APPVER_PLAN_CLASS=${APPVER_PLAN_CLASS:-docker}
     case "$APPVER_APP:$APPVER_PLAN_CLASS" in
-      usnm_ndlocr:docker|usnm_ocr:docker|usnm_assess:docker|usnm_gold:docker|usnm_quality:docker|usnm_surya:docker_mt|usnm_surya:docker_nvidia_cuda|usnm_surya:docker_intel_vulkan|usnm_qwen:docker_mt_2b|usnm_qwen:docker_nvidia_cuda_8b|usnm_qwen_train:docker_nvidia_train|usnm_iris:docker_intel_opencl_4b) ;;
+      usnm_ndlocr:docker|usnm_ocr:docker|usnm_ocr:docker_lines|usnm_assess:docker|usnm_gold:docker|usnm_gold:docker_lines|usnm_quality:docker|usnm_surya:docker_mt|usnm_surya:docker_nvidia_cuda|usnm_surya:docker_intel_vulkan|usnm_qwen:docker_mt_2b|usnm_qwen:docker_nvidia_cuda_8b|usnm_qwen_train:docker_nvidia_train|usnm_iris:docker_intel_opencl_4b) ;;
       *) fail "unsupported container app/plan class: $APPVER_APP:$APPVER_PLAN_CLASS" ;;
     esac
-    [ "$APPVER_PLATFORM" = x86_64-pc-linux-gnu ] || [ "$APPVER_PLAN_CLASS" = docker ] || fail "$APPVER_PLATFORM supports only plan class docker"
+    case "$APPVER_PLATFORM:$APPVER_PLAN_CLASS" in
+      x86_64-pc-linux-gnu:* | *:docker | *:docker_lines) ;;
+      *) fail "$APPVER_PLATFORM supports only plan classes docker and docker_lines" ;;
+    esac
     subdir="${APPVER_PLATFORM}__${APPVER_PLAN_CLASS}"
     ;;
   native)
@@ -195,11 +198,12 @@ $plan = $kind === "native" ? (getenv("APPVER_PLAN_CLASS") ?: "") : (getenv("APPV
 if (!preg_match('/^usnm_[a-z_]+$/D', $name)
     || !preg_match('/^[1-9][0-9]*\.[0-9]+$/D', $version)
     || !in_array($platformName, ["x86_64-pc-linux-gnu", "aarch64-unknown-linux-gnu", "arm64-apple-darwin", "x86_64-apple-darwin", "windows_x86_64"], true)
-    || !in_array($plan, ["", "docker", "docker_mt", "docker_nvidia_cuda", "docker_intel_vulkan", "docker_mt_2b", "docker_nvidia_cuda_8b", "docker_nvidia_train", "docker_intel_opencl_4b", "mt", "apple_gpu_8b", "nvidia_cuda_8b", "nvidia_cuda_2b", "intel_vulkan_8b", "nvidia_vulkan_8b", "nvidia_vulkan_6gb_8b", "nvidia_vulkan_2b", "amd_vulkan_8b"], true)) {
+    || !in_array($plan, ["", "docker", "docker_lines", "docker_mt", "docker_nvidia_cuda", "docker_intel_vulkan", "docker_mt_2b", "docker_nvidia_cuda_8b", "docker_nvidia_train", "docker_intel_opencl_4b", "mt", "apple_gpu_8b", "nvidia_cuda_8b", "nvidia_cuda_2b", "intel_vulkan_8b", "nvidia_vulkan_8b", "nvidia_vulkan_6gb_8b", "nvidia_vulkan_2b", "amd_vulkan_8b"], true)) {
     fwrite(STDERR, "Invalid app-version verification inputs\n"); exit(1);
 }
 $allowed = $kind === "container"
-    ? ["usnm_ndlocr:docker", "usnm_ocr:docker", "usnm_assess:docker", "usnm_gold:docker", "usnm_quality:docker",
+    ? ["usnm_ndlocr:docker", "usnm_ocr:docker", "usnm_ocr:docker_lines", "usnm_assess:docker", "usnm_gold:docker",
+       "usnm_gold:docker_lines", "usnm_quality:docker",
        "usnm_surya:docker_mt", "usnm_surya:docker_nvidia_cuda", "usnm_surya:docker_intel_vulkan", "usnm_surya:intel_vulkan_8b",
        "usnm_qwen:docker_mt_2b", "usnm_qwen:docker_nvidia_cuda_8b", "usnm_qwen_train:docker_nvidia_train",
        "usnm_iris:docker_intel_opencl_4b"]
@@ -207,7 +211,7 @@ $allowed = $kind === "container"
         ? ["usnm_quality:", "usnm_ocr_native:", "usnm_gold_native:", "usnm_qwen:mt", "usnm_qwen:apple_gpu_8b",
            "usnm_qwen:nvidia_cuda_8b", "usnm_qwen:nvidia_cuda_2b", "usnm_qwen:intel_vulkan_8b", "usnm_qwen:nvidia_vulkan_8b", "usnm_qwen:nvidia_vulkan_6gb_8b", "usnm_qwen:nvidia_vulkan_2b", "usnm_qwen:amd_vulkan_8b"] : []);
 if (!in_array("$name:$plan", $allowed, true)
-    || ($kind === "container" && $platformName !== "x86_64-pc-linux-gnu" && $plan !== "docker")) {
+    || ($kind === "container" && $platformName !== "x86_64-pc-linux-gnu" && $plan !== "docker" && $plan !== "docker_lines")) {
     fwrite(STDERR, "Unsupported app/plan class for verification\n"); exit(1);
 }
 $app = BoincApp::lookup("name='$name'");

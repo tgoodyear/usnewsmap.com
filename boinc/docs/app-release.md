@@ -481,6 +481,14 @@ fake migration.
      --build-dir /path/to/boinc-ocr-native-x86_64-pc-linux-gnu/build --signing-host HOST
    ```
 
+### A worker for line jobs only (`docker_lines`)
+
+A `usnm_ocr` or `usnm_gold` version for Cherokee line jobs goes under `--plan-class
+docker_lines`, on the same platforms and wrappers as `docker`, with a version number its app
+hasn't used. It loads beside the live `docker` version instead of outranking it, and serves
+only batch-1621 units. Why, and how line jobs and their gold are submitted, is in
+`docs/boinc-ocr-bundles.md`, "Line jobs".
+
 ## What it needs
 
 - The server and bridge images in `boinc/infra/boinc/env/<env>.json` (`boinc/scripts/build-boinc-images.sh`).

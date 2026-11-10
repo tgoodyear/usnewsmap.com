@@ -23,7 +23,9 @@
 #                               time, 5 s apart, to record their sizes, md5s and the crops'
 #                               reference counts (prepared.json); serves none of them
 #   BRIDGE_STEP=gold-submit     GOLD_ENGINE_IMAGE=sha256:... GOLD_ENGINE_BASE=<its TESSERACT_IMAGE>
-#                               [GOLD_ENGINE_VERSION=5.5.0] [GOLD_UNITS=20]
+#                               [GOLD_ENGINE_VERSION=5.5.0] [GOLD_UNITS=20] [GOLD_TARGET_HOST=<id>]
+#                               [GOLD_DOCKER_LINES_VERSION=<version_num>] (#1621: pinned to that
+#                               docker_lines usnm_gold version, batch 1621)
 #   BRIDGE_STEP=gold-onboard    GOLD_ENGINE_IMAGE=sha256:... GOLD_ENGINE_BASE=<its TESSERACT_IMAGE>
 #                               [GOLD_ENGINE_VERSION=5.5.0] [GOLD_MAX_HOSTS=10]; one host-trust
 #                               onboard pass: a gold unit for each untrusted host without one
@@ -134,6 +136,9 @@
 #                               already past reserved is left. LoC is never asked.
 #                               JOB_IDS=<id>[,<id>...] (up to 100) does a tick's jobs in one
 #                               execution, stopping at the first failure (#932).
+#                               A line job (#1621) needs LINE_APP_VERSION=<version_num>, the
+#                               docker_lines usnm_ocr version, and takes LINE_TARGET_HOST=<id>
+#                               to send it to one calibrated host; it goes in batch 1621.
 #                               JOB_UNITS=<id>[+<id>...][,...] (up to 100 ids, up to 32 a unit)
 #                               submits each +-joined group as one OCR bundle workunit (#1059,
 #                               docs/boinc-ocr-bundles.md), pinned to BUNDLE_APP_VERSION (the
@@ -622,6 +627,17 @@ submit_ocr_job() {
     [ -n "${COSMOS_ENDPOINT:-}" ] && [ -n "${CURATED_URL:-}" ] || fail "retry native stores require COSMOS_ENDPOINT and CURATED_URL"
     native_args=(--cosmos "$COSMOS_ENDPOINT" --curated-url "$CURATED_URL")
   fi
+  # A line job (#1621) is pinned to LINE_APP_VERSION, a docker_lines usnm_ocr version, and may
+  # be targeted at one calibrated host with LINE_TARGET_HOST; usnm-boinc puts it in batch 1621.
+  if [ -n "${LINE_APP_VERSION:-}" ]; then
+    [[ $LINE_APP_VERSION =~ ^[1-9][0-9]{0,8}$ ]] || fail "LINE_APP_VERSION is the docker_lines usnm_ocr version_num"
+    native_args+=(--app-version-num "$LINE_APP_VERSION")
+  fi
+  if [ -n "${LINE_TARGET_HOST:-}" ]; then
+    [ -n "${LINE_APP_VERSION:-}" ] || fail "LINE_TARGET_HOST goes with LINE_APP_VERSION"
+    [[ $LINE_TARGET_HOST =~ ^[1-9][0-9]*$ ]] || fail "LINE_TARGET_HOST must be positive"
+    native_args+=(--target-host "$LINE_TARGET_HOST")
+  fi
   exec usnm-boinc submit --root "$HANDOFF_DIR" --project "$PROJ" --job "$JOB_ID" ${native_args[@]+"${native_args[@]}"}
 }
 case "$step" in
@@ -709,6 +725,12 @@ case "$step" in
     if [ -n "${GOLD_TARGET_HOST:-}" ]; then
       [[ "$GOLD_TARGET_HOST" =~ ^[1-9][0-9]*$ ]] || fail "GOLD_TARGET_HOST must be positive"
       target_args=(--target-host "$GOLD_TARGET_HOST")
+    fi
+    # Gold for the line worker (#1621): pinned to a docker_lines usnm_gold version, batch 1621,
+    # so its results are in results/1621 (GOLD_SPOOL for gold-collect).
+    if [ -n "${GOLD_DOCKER_LINES_VERSION:-}" ]; then
+      [[ "$GOLD_DOCKER_LINES_VERSION" =~ ^[1-9][0-9]{0,8}$ ]] || fail "GOLD_DOCKER_LINES_VERSION is a docker_lines usnm_gold version_num"
+      target_args+=(--docker-lines-version "$GOLD_DOCKER_LINES_VERSION")
     fi
     usnm-boinc gold submit --root "$GOLD" --project "$PROJ" \
       --engine-image "${GOLD_ENGINE_IMAGE:?set GOLD_ENGINE_IMAGE}" \

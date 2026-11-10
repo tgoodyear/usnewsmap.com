@@ -250,6 +250,10 @@ pub struct SubmitArgs {
     /// to it, so an older worker never gets one. Required for a line job, unused otherwise.
     #[arg(long)]
     app_version_num: Option<u32>,
+    /// A line job only: send it to this one host (`--target_host`), one calibrated on the line
+    /// worker. Needs `<enable_assignment>1</enable_assignment>`.
+    #[arg(long)]
+    target_host: Option<u64>,
 }
 
 pub async fn submit(args: SubmitArgs) -> anyhow::Result<()> {
@@ -263,6 +267,7 @@ pub async fn submit(args: SubmitArgs) -> anyhow::Result<()> {
         state_file,
         cosmos,
         app_version_num,
+        target_host,
     } = args;
     let download = match (download_base_url, download_root) {
         (Some(base), Some(root)) => Some(crate::submit::Download::new(&base, &root)?),
@@ -292,13 +297,14 @@ pub async fn submit(args: SubmitArgs) -> anyhow::Result<()> {
         Some(_) => app_version_num,
         None => None,
     };
-    crate::submit::submit_pinned(
+    crate::submit::submit_placed(
         &root,
         &project,
         &job,
         download.as_ref(),
         sources.as_ref(),
         pin,
+        target_host,
     )
     .await?;
     Ok(())

@@ -176,6 +176,76 @@ Eastern.
    `pages_per_unit`. Bundles already in flight finish and collect under the new images.
    Rolling back the images too would strand them, so let them drain first.
 
+## Line jobs: the `docker_lines` plan class
+
+Cherokee line jobs (#1621) need a newer worker than the live plan's. Publishing that worker as the
+next `docker` version outranks the live one: stock `sched_shmem.cpp` loads, per app, platform and
+plan class, only the highest undeprecated version (unless the app's `min_version` is set), so the
+units pinned to the older number go unsent (#1687, 9 November). Line jobs instead get their own
+`usnm_ocr` and `usnm_gold` versions under the `docker_lines` plan class
+(`boinc/project/plan_class_spec.xml`). It loads beside `docker` and outranks nothing.
+
+How the scheduler at BOINC `22bbebe0` picks a version for a unit (`sched/sched_version.cpp`,
+`get_app_version`), and what that means here:
+
+- **A pinned unit gets only its pinned number.** The request's cache of best versions is checked
+  first. When the cached version's number differs from the unit's, the code is
+
+  ```cpp
+  if (wu.app_version_num) {
+      if (bavp->avp->version_num != wu.app_version_num) {
+          break;
+      }
+  }
+  ```
+
+  and the scan that follows skips every other number:
+
+  ```cpp
+  if (wu.app_version_num) {
+      if (av.version_num != wu.app_version_num) {
+          continue;
+      }
+  } else {
+      if (av.deprecated) {
+          continue;
+      }
+  }
+  ```
+
+  So a unit pinned to 106 is sent with 106 whatever the host's best version is, and a line
+  job pinned to the `docker_lines` version only with that one.
+- **An unpinned unit gets the fastest feasible version.** Both classes would be feasible on the
+  same host, so `docker_lines` admits only batch 1621 (`min_batch` = `max_batch` = 1621;
+  `plan_class_spec.cpp`, `wu_is_infeasible_for_plan_class`). Live single-page and gold units are
+  batch 0, so `app_plan` refuses `docker_lines` for them and they keep the `docker` version.
+- **The cache can defer an unpinned unit for one request.** If a line unit is looked at first in a
+  request, its version is cached, and a later unpinned unit of the same app is handed that cached
+  version. The plan class's batch check (`wu_is_infeasible_custom`) then refuses it, and it waits
+  for the next request. Pinned units are not affected: they rescan, as above.
+- **A host must have a feasible version for every pinned unit it is offered.** When a pinned unit
+  finds none, `get_app_version` caches "no version" for the whole app, and every later unit of
+  the app in that request is refused (`if (!bavp->present) return NULL;`). So `docker_lines`
+  has exactly `docker`'s host gates (`boinc/project/test_config.py` checks this). Restricting it
+  to a few hosts would make every other host skip its `docker` work whenever it met a line unit.
+- **Targeted units never enter the feeder's array.** `--target_host` makes an assignment, and
+  `sched_assign.cpp` sends it only to that host. Line jobs and their gold are submitted targeted
+  at hosts calibrated on the line worker, so no other host ever looks at them.
+
+`usnm-boinc` puts every line job, retries included, in batch 1621 (`LINE_BATCH`), pinned
+(`--app-version-num`, bridge `LINE_APP_VERSION`) and optionally targeted (`--target-host`,
+bridge `LINE_TARGET_HOST`). Gold for the line worker takes `gold submit --docker-lines-version N`
+(bridge `GOLD_DOCKER_LINES_VERSION`): pinned, because the live `docker` gold version also
+admits batch 1621, and the gold routing hook refuses a unit sent with another worker. Their
+results are in `results/1621`, so give `GOLD_SPOOL` and `HANDOFF_SPOOL` that directory.
+
+The feed monitor (`feed_collect.supply`) treats the two classes as one CPU profile: both ask
+for one CPU, and each unit counts only for the version that can serve it. Targeted units count
+for none.
+
+Release the two apps with `--plan-class docker_lines` and a version number neither app has
+used, so a pin can't match a deprecated `docker` row: 1.8 (108) for the Cherokee roll.
+
 ## Not changed
 
 Claims, the export, the ledger, the hand-off record and its publication, trust and gold checks,

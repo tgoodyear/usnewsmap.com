@@ -35,6 +35,10 @@ pub struct Options {
     pub project: PathBuf,
     pub units: u32,
     pub target_host: Option<u64>,
+    /// Pin the units to this `usnm_gold` version, which must be a `docker_lines` one, and put
+    /// them in its batch, [`crate::submit::LINE_BATCH`] (#1621): gold for the line worker goes
+    /// out next to the live gold version without either taking the other's units.
+    pub docker_lines_version: Option<u32>,
     pub engine: Engine,
 }
 
@@ -302,7 +306,23 @@ pub(crate) fn assignment_enabled(config: &str) -> anyhow::Result<bool> {
     Ok(settings == 1 && value.trim() == "1")
 }
 
+/// `create_work`'s pin and batch for a `docker_lines` gold version: pinned, because the live
+/// `docker` gold version also admits batch 1621 and the gold routing hook would refuse a unit
+/// sent with the wrong worker.
+pub fn docker_lines_args(version: u32) -> [String; 4] {
+    [
+        "--app_version_num".into(),
+        version.to_string(),
+        "--batch".into(),
+        crate::submit::LINE_BATCH.to_string(),
+    ]
+}
+
 pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
+    ensure!(
+        opts.docker_lines_version.is_none_or(|v| v > 0),
+        "--docker-lines-version must be positive"
+    );
     ensure!(
         (1..=1000).contains(&opts.units),
         "--units must be 1 to 1000"
@@ -415,6 +435,9 @@ pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
         let mut args = create_work_args(opts.app, &p, &j)?;
         if let Some(host) = opts.target_host {
             args.extend(["--target_host".to_string(), host.to_string()]);
+        }
+        if let Some(version) = opts.docker_lines_version {
+            args.extend(docker_lines_args(version));
         }
         let status = Command::new(project.join("bin/create_work"))
             .current_dir(&project)
@@ -551,6 +574,7 @@ pub(crate) mod tests {
             units: 1,
             engine: engine(),
             target_host: Some(0),
+            docker_lines_version: None,
         };
         assert!(run(&options)
             .await
@@ -564,6 +588,21 @@ pub(crate) mod tests {
             .to_string()
             .contains("enable_assignment"));
         assert!(!options.root.exists());
+        options.target_host = None;
+        options.docker_lines_version = Some(0);
+        assert!(run(&options)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("--docker-lines-version must be positive"));
+    }
+
+    #[test]
+    fn docker_lines_gold_is_pinned_into_the_line_batch() {
+        assert_eq!(
+            docker_lines_args(108),
+            ["--app_version_num", "108", "--batch", "1621"].map(String::from)
+        );
     }
 
     #[test]

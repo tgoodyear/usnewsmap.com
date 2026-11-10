@@ -11,6 +11,25 @@ import xml.etree.ElementTree as ET
 
 
 class DaemonConfig(unittest.TestCase):
+    def test_line_class_admits_the_docker_hosts_for_the_line_batch_only(self):
+        root = Path(__file__).parent
+        plans = {p.findtext("name"): p for p in ET.parse(root / "plan_class_spec.xml").findall("plan_class")}
+        lines, docker = plans["docker_lines"], plans["docker"]
+        # Host gates equal docker's, so no host takes one class without the other (#1621): a host
+        # left without the pinned version would cache "no version" for the whole app for that
+        # request (sched_version.cpp, get_app_version) and skip its docker work too.
+        gates = lambda p: sorted((c.tag, (c.text or "").strip()) for c in p
+                                 if c.tag not in ("name", "min_batch", "max_batch"))
+        self.assertEqual(gates(lines), gates(docker))
+        self.assertIsNone(docker.find("min_batch"))
+        self.assertEqual((lines.findtext("min_batch"), lines.findtext("max_batch")), ("1621", "1621"))
+        # No other class serves that batch, and usnm-boinc puts line jobs in it.
+        for name, plan in plans.items():
+            if name != "docker_lines" and plan.find("min_batch") is not None:
+                self.assertFalse(int(plan.findtext("min_batch")) <= 1621 <= int(plan.findtext("max_batch")), name)
+        submit = (root.parents[1] / "crates/usnm-boinc/src/submit.rs").read_text()
+        self.assertIn("pub const LINE_BATCH: u32 = 1621;", submit)
+
     def test_intel_pilot_has_distinct_eligibility_and_assigned_dispatch(self):
         root = Path(__file__).parent
         config = ET.parse(root / "config.xml.template")

@@ -182,6 +182,24 @@ class BoincAppVersion {
                 self.assertIn(f'Verified {app} 1.0 x86_64-pc-linux-gnu {plan}', result.stdout)
                 self.assertTrue((self.project / f'apps/{app}/1.0/{subdir}/docker_wrapper').is_file())
 
+    def test_line_class_publishes_on_the_docker_platforms(self):
+        # docker_lines (#1621) admits the docker hosts, Macs included.
+        for platform in ('arm64-apple-darwin', 'x86_64-apple-darwin'):
+            with self.subTest(platform=platform):
+                src = self.source / f'apps/usnm_ocr/1.8/{platform}__docker_lines'
+                src.mkdir(parents=True)
+                (src / 'docker_wrapper').write_text(f'lines-{platform}')
+                result = subprocess.run(
+                    ['bash', str(self.script)], capture_output=True, text=True,
+                    env={**os.environ, 'PROJ': str(self.project), 'APPVER_KIND': 'container',
+                         'APPVER_APP': 'usnm_ocr', 'APPVER_VERSION': '1.8', 'APPVER_PLATFORM': platform,
+                         'APPVER_PLAN_CLASS': 'docker_lines',
+                         'DB_HOST': 'db.example.org', 'DB_NAME': 'fixture', 'MASTER_HOST': 'boinc.example.org',
+                         'PATH': str(self.root) + os.pathsep + os.environ['PATH']},
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertTrue((self.project / f'apps/usnm_ocr/1.8/{platform}__docker_lines/docker_wrapper').is_file())
+
     def test_container_publication_rejects_wrong_or_legacy_model_classes(self):
         for app, plan, platform in (
             ('usnm_qwen', 'docker_mt', 'x86_64-pc-linux-gnu'),
@@ -190,6 +208,8 @@ class BoincAppVersion {
             ('usnm_ocr', 'docker_nvidia_cuda_8b', 'x86_64-pc-linux-gnu'),
             ('usnm_qwen', 'docker_mt_2b', 'aarch64-unknown-linux-gnu'),
             ('usnm_qwen', 'docker_nvidia_cuda_8b', 'windows_x86_64'),
+            ('usnm_quality', 'docker_lines', 'x86_64-pc-linux-gnu'),
+            ('usnm_ocr', 'docker_mt', 'arm64-apple-darwin'),
         ):
             with self.subTest(app=app, plan=plan, platform=platform):
                 result = subprocess.run(

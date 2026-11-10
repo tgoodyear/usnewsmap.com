@@ -438,6 +438,10 @@ pub(crate) mod tests {
         assert!(calls[0].contains(&format!("--wu_name usnm_{line}")));
         assert!(calls[0].contains("templates/usnm_ocr_in"));
         assert!(calls[0].contains("--app_version_num 107"));
+        // Only the docker_lines class (batch 1621) can serve the pin; bundles stay in batch 0.
+        assert!(calls[0].contains(&format!("--batch {}", crate::submit::LINE_BATCH)));
+        assert!(!calls[0].contains("--target_host"));
+        assert!(!calls[1].contains("--batch"));
         let staged: Job = serde_json::from_slice(
             &std::fs::read(
                 s.project
@@ -448,6 +452,35 @@ pub(crate) mod tests {
         )
         .unwrap();
         assert!(staged.lines.is_some());
+    }
+
+    #[tokio::test]
+    async fn only_a_line_job_can_be_targeted_and_only_with_assignment() {
+        let (s, ids) = Server::new(&[1, 2]);
+        let line = as_line_job(&s, &ids[0], 1);
+        let place = |id: String, host| {
+            let (root, project) = (s.root.clone(), s.project.clone());
+            async move {
+                crate::submit::submit_placed(&root, &project, &id, None, None, Some(108), host)
+                    .await
+            }
+        };
+        std::fs::write(s.project.join("config.xml"), "<boinc><config/></boinc>").unwrap();
+        assert!(place(line.clone(), Some(2)).await.is_err());
+        std::fs::write(
+            s.project.join("config.xml"),
+            "<boinc><config><enable_assignment>1</enable_assignment></config></boinc>",
+        )
+        .unwrap();
+        assert!(place(line.clone(), Some(0)).await.is_err());
+        assert!(place(ids[1].clone(), Some(2)).await.is_err());
+        assert!(s.calls().is_empty());
+        place(line.clone(), Some(2)).await.unwrap();
+        let calls = s.calls();
+        assert_eq!(calls.len(), 1);
+        assert!(calls[0].contains("--app_version_num 108"));
+        assert!(calls[0].contains("--batch 1621"));
+        assert!(calls[0].contains("--target_host 2"));
     }
 
     #[tokio::test]
@@ -466,6 +499,7 @@ pub(crate) mod tests {
         assert_eq!(calls.len(), 2);
         assert!(calls[0].contains(&format!("--wu_name usnm_{}", ids[0])));
         assert!(!calls[0].contains("--app_version_num"));
+        assert!(!calls[0].contains("--batch"));
         assert!(calls[1].contains("--app_version_num 106"));
         // One page alone is a single-page unit.
         let (s, ids) = Server::new(&[4]);

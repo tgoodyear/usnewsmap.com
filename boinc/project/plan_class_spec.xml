@@ -28,6 +28,21 @@
              8.2.12/13 are Linux hotfixes, not Mac container prerequisites. -->
         <min_core_client_version>80211</min_core_client_version>
     </plan_class>
+    <!-- Cherokee line jobs (#1621) and the gold units that calibrate hosts on their worker.
+         It admits the same hosts as `docker`, so its version loads beside the live `docker`
+         version without outranking it: stock sched_shmem.cpp keeps the highest version per
+         platform and plan class. Only workunits in batch 1621 can use it, so unpinned work
+         never runs on it. usnm-boinc puts every line job in that batch, pinned to the
+         docker_lines version, and gold submit does the same with its docker-lines option
+         (docs/boinc-ocr-bundles.md, "Line jobs"). Keep the batch in step with
+         usnm_boinc::submit::LINE_BATCH. -->
+    <plan_class>
+        <name>docker_lines</name>
+        <docker/>
+        <min_core_client_version>80211</min_core_client_version>
+        <min_batch>1621</min_batch>
+        <max_batch>1621</max_batch>
+    </plan_class>
     <!-- usnm_surya (#516, docs/boinc-surya.md). CPU: 4 to 8 threads; the scheduler reserves them
          and the stock docker_wrapper passes them to the container as cpus. Hosts with fewer than
          4 usable CPUs get no CPU version. -->
