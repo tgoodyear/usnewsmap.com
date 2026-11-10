@@ -40,8 +40,8 @@ up. An advisory lock serializes bridge processes sharing that directory.
   journals replay the exact existing rows and reserve only still-fresh pages.
   The original request time is retained at native microsecond precision.
 - Before `create_work`, submission records `submitting`. After an error or crash
-  it never automatically submits again. Inspect BOINC for `usnm_JOB_ID`. Only
-  after verifying whether it exists, run `reconcile --root DIR --job ID --found
+  it never automatically submits again. Inspect BOINC for `usnm_JOB_ID` to confirm
+  whether it exists, then run `reconcile --root DIR --job ID --found
 present` (mark submitted) or `--found absent` (permit submission again).
 - The importer snapshots the first accepted bytes before external publication.
   Fixed object names and byte comparisons recover a lost upload response or a
@@ -98,7 +98,7 @@ Replicas of one workunit go to different **hosts**
 (`one_result_per_host_per_wu`), not different accounts. The project's own hosts
 share one account, and with the per-account rule they could take only one of
 each quorum-2 pair, so they idled while the second copies waited for another
-user. The cost: a volunteer with several hosts can supply both copies of a unit.
+user. In exchange, a volunteer with several hosts can supply both copies of a unit.
 Gold units and spot checks ([Host trust](gold-check.md#host-trust-for-usnm_ocr)) are the guard against that, not
 the quorum.
 

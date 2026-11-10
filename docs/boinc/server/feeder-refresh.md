@@ -285,7 +285,7 @@ so each request is a new process that attaches to the segment by key (`attach_to
 new feeder as soon as the old one exits, instead of waiting up to five minutes for the supervisor
 loop. `maintenance_delay` itself is not part of this procedure. It changes only with a server image,
 because a new value changes the rendered `config.xml` and so the SHA-256 the Qwen auto-cohort
-controller pins ([boinc-intel-gpu.md](../apps/intel-gpu.md)).
+controller pins ([Intel and NVIDIA GPUs](../apps/intel-gpu.md)).
 
 ### Client retry behaviour
 
@@ -603,7 +603,7 @@ If the guard then reports anything but `match`, or the rest of step 4 fails, put
 once with the hold commands above and escalate. If a check fails before the release, or the failure
 needs the maintainer, the hold stays until they decide.
 
-### The rules
+### Retry rules
 
 - One refresh allows at most **one** operator retry: one more `bin/start --cron`, run once with
   `attempt=2` and the hold in place, and only after the cause is fixed and confirmed. For the
@@ -633,7 +633,7 @@ needs the maintainer, the hold stays until they decide.
   Then run step 2. If it does not exit, escalate as in step 2.
 
 - If the retry fails too, keep the hold and escalate.
-- So during a refresh the feeder is started only by step 3, by the loop's attempts before the
+- During a refresh the feeder is started only by step 3, by the loop's attempts before the
   hold and by the one retry. Nothing else starts it until the hold is released.
 
 ## Rollback
@@ -654,7 +654,7 @@ rolled back is the registry the new feeder allocated from:
   is not a substitute.
 - A start that fails for any other reason has no rollback here; escalate as above.
 
-## Never automate without approval
+## Actions that need approval
 
 The guard and its timer stay read-only reporters. None of the following may be automated, chained
 to a guard result (including through a systemd `OnFailure=` or a supervisor event), or done

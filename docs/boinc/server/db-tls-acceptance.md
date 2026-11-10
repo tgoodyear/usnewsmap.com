@@ -27,7 +27,7 @@ mysqlnd, and C++ MariaDB Connector/C. The fixture fetches and verifies BOINC
   string compatibility; unused database methods are linker-discarded. This is not
   a full configured scheduler or daemon build.
 - CLI uses the production scripts' `--ssl --ssl-verify-server-cert --ssl-ca`
-  flags. The Python connector's `ssl-enforce` option file is **not** passed to
+  flags. The Python connector's `ssl-enforce` option file is not passed to
   the CLI, which does not support that option.
 
 The database listens only on container loopback; Docker networking is disabled.
@@ -64,7 +64,7 @@ are not rewritten.
 6. Restart that database with TLS required again: all five reconnect encrypted.
 
 JSON lines identify the consumer, case and successful session cipher. Negative
-cases require a nonzero exit **and** connector-specific TLS errors. Python and PHP
+cases require a nonzero exit and connector-specific TLS errors. Python and PHP
 emit structured errors without tracebacks; C++ and CLI require anchored TLS-error
 lines. A TLS name in an authentication traceback cannot pass. mysqlnd error 2006,
 "MySQL server has gone away", counts only for the independently verified
@@ -129,7 +129,7 @@ This is not a full MySQL project lifecycle or a copied-project migration test;
 the [full-project fixture](#full-project-fixture) covers those against MariaDB.
 
 `requireSecureTransport` in the BOINC root template and MySQL module (the Azure
-server's database) defaults to **false**. Two activations on the Azure server in
+server's database) defaults to `false`. Two activations on the Azure server in
 October 2026 were rolled back, and #464 was closed with Azure left OFF; the
 on-prem database has required TLS since 21 October 2026. Turning it on for an
 Azure server again needs a reviewed configuration change through #529 and public
@@ -150,12 +150,12 @@ to that ID; it does not pull a mutable tag or publish another release.
 
 The full fixture derives from that image without rebuilding or rewriting its
 BOINC implementation. A separate native-architecture MariaDB fixture shares its
-**network-disabled** namespace with the amd64 application container. This also
+network-disabled namespace with the amd64 application container. This also
 works under an existing ARM Docker runtime with amd64 emulation: emulating
 InnoDB itself exhausted the local memory limit, whereas the native DB succeeds.
 No ports, host directories or Docker sockets are mounted into either container.
 
-It actually executes:
+It runs:
 
 - Stock `tools/make_project`, including database and schema installation (47
   tables), then the real runtime config renderer and `bin/xadd` (every app in
@@ -179,7 +179,7 @@ It actually executes:
   by the second run; units outside the policy or with a replica running must be
   untouched. The live transitioner must then mark the settled units'
   inconclusive returns NO_CHECK and make them ready to assimilate.
-- Both PHP APIs and Python from the **copied project**, not only the source
+- Both PHP APIs and Python from the copied project, not only the source
   tree, reporting actual session ciphers.
 - Wrong hostname and unrelated client CA: all three copied consumers and four
   fresh daemon processes must reject with connector-specific TLS errors;
@@ -192,7 +192,7 @@ It actually executes:
 - CA and hostname restoration followed by all public-page checks, healthy CGI
   and four encrypted daemon sessions again.
 - A database-container restart with the same database volume, followed by a
-  **fresh application container** with the persisted project. It rehydrates
+  fresh application container with the persisted project. It rehydrates
   disposable upload keys and the synthetic code-signing public key, repeats the
   complete matrix, and checks unchanged hashes of the sampled Python connector
   file, the two PHP connector files and the feeder binary. Server observation
@@ -214,7 +214,7 @@ wrapper removes only its own containers, volumes and temporary source tag. Image
 and build caches remain. CI bounds the full integration step to 15 minutes.
 `test_full_db_tls.py` checks evidence classification separately from execution.
 
-All keys and credentials are synthetic. The generated code-signing **private**
+All keys and credentials are synthetic. The generated code-signing private
 key is deleted before services start. Upload keys live outside the project
 volume and are linked from private runtime memory, with access limited to root
 and `boincadm`. This local key-store substitute does not test Key Vault,
@@ -246,7 +246,7 @@ rollback before restarting. To undo an applied refresh, stop the server and run
 the helper with `rollback` and the same project and backup arguments. The helper
 refuses concurrent code drift or corrupt backup hashes.
 
-The full server-image CI fixture now copies its synthetic project, marks a copied
+The full server-image CI fixture copies its synthetic project, marks a copied
 Python module and transitioner binary stale, applies the helper, verifies all
 mapped hashes plus real copied Python/PHP, web/CGI and four daemon TLS sessions,
 then rolls back, verifies every original code hash and unchanged configuration,

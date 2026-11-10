@@ -56,7 +56,7 @@ Sizing for the first deployment, a pilot with a few trusted clients: 1 vCPU and 
 PHP-FPM or mod_php, the scheduler CGI and about eight daemons fit in 2 GiB. UNVERIFIED until
 measured.
 
-### 2.2 Scale to zero is not viable
+### 2.2 Scale to zero
 
 The daemons are long-running processes that poll the database every few seconds. The feeder
 holds the job cache in memory. Scale to zero would stop all of them. A volunteer's scheduler
@@ -153,11 +153,8 @@ Custom-domain provisioning is declarative and staged by `boinc/scripts/provision
    `asuid` TXT verification record in the existing public zone.
 2. Provisioning advances the app's custom-domain binding and managed-certificate stages. The
    production endpoint and DigiCert managed certificate were reported working in #470.
-3. The master URL cannot change after volunteers attach; every client would have to reattach.
-4. `boinc-dev` follows the repo's dev rule: it holds nothing unless a focused experiment is
+3. `boinc-dev` follows the repo's dev rule: it holds nothing unless a focused experiment is
    running, and is torn down fully afterwards.
-
-This differs from a "static frontend" as first asked for.
 
 ## 4. Data flow and the bridge
 
@@ -259,7 +256,7 @@ The attack surface is the public scheduler CGI, `file_upload_handler` and the PH
 MySQL server has private access only. The Key Vault and Files account have public network
 access off and are reached through private endpoints in the project's VNet. The public name is
 `boinc.usnewsmap.com` with a managed certificate; #470 records a successful production health
-check. The master URL is part of every volunteer's attachment and cannot change.
+check.
 
 - The web server user runs the public PHP and shares a group with the project user (`boincadm`), so it can write `upload/`, `download/`, the logs and the page cache. `lock_code_trees` removes its write access to the project root, `html/`, `bin/`, `cgi-bin/`, `py/` and `apps/` at every start.
 - Keep the PHP surface small: disable forums, profiles, private messages and teams in
@@ -381,7 +378,7 @@ Analytics) are billed whether or not a batch is running. Pausing (2.2) saves the
 The knobs are the cohort size and how often batches go out, the MySQL tier (B1ms to B2s
 if CPU credits drain), and the retention of staged scans.
 
-## 7. Where #441 and this hosting may not fit
+## 7. Gaps between #441 and this hosting
 
 1. **Docker on the server: not needed.** The plan class `docker` only filters hosts by the
    Docker version they report (verified-facts.md (d)). The Container App and the Job run no
@@ -423,9 +420,9 @@ sampled. That belongs with the bridge's own validation, not with this hosting, a
 proposed here.
 
 A job type where a volunteer's machine fetches the scan from the Library of Congress instead
-of receiving it from us is deferred. If it were ever built, each client would run at a low
-request rate, it would not be a way around the source's limits, and a better place to get
-the images would be preferred if one exists. It is not planned until the maintainer decides.
+of receiving it from us is deferred until the maintainer decides. If built, each client would
+fetch at a low request rate within the source's limits, and a better image source would be
+used if one exists.
 
 ## 9. Open questions
 

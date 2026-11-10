@@ -99,7 +99,7 @@ A third replica confirms 98.1% of the crops a rescued pair vouched for at 0.5 (4
 
 ## What the collector does now
 
-`quality collect --qwen-crop-states <dir>` joins a canonical reading only on the crops an agreeing pair marked `agree`. A looped, unread or unjudged crop keeps its rows without the reading, and `crops.parquet`'s `vlm_crop_state` says which. A result no agreeing pair judged crop by crop was accepted by the strict rule and joins whole, as before. The crop-state records are part of the row-cache keys. Details are in [boinc-quality.md](../boinc/apps/quality.md).
+`quality collect --qwen-crop-states <dir>` joins a canonical reading only on the crops an agreeing pair marked `agree`. A looped, unread or unjudged crop keeps its rows without the reading, and `crops.parquet`'s `vlm_crop_state` says which. A result no agreeing pair judged crop by crop was accepted by the strict rule and joins whole, as before. The crop-state records are part of the row-cache keys. Details are in [OCR quality](../boinc/apps/quality.md).
 
 ## Limits
 

@@ -74,8 +74,8 @@ which runs the same command and alerts through the BOINC feed alerts.
 An unreachable container, old feeder, stale snapshot or failed verified-TLS query
 is unknown, not success. So is `feeder_restart_hold`: the server's supervisor loop
 stopped restarting a feeder that kept stopping
-([The loop's restart bound](feeder-refresh.md#the-loops-restart-bound)). The image's independent five-minute JSON event is useful
-for diagnosis. See [Allocation drift detection](../apps/app-release.md#allocation-drift-detection)
+([The loop's restart bound](feeder-refresh.md#the-loops-restart-bound)). The image also logs its own JSON event every five minutes,
+which helps diagnosis. See [Allocation drift detection](../apps/app-release.md#allocation-drift-detection)
 for the scope and limitations, and [Feeder-only refresh](feeder-refresh.md) for the
 recovery procedure.
 Neither check restarts a process or edits work.
@@ -87,7 +87,7 @@ the host's own automatic updates never reach them. Each image that serves Apache
 Debian's security updates when it is built: the server and bridge Containerfiles, the overlays
 and `security-overlay.Containerfile` run `apt-get upgrade` from the image's sources, which
 include `bookworm-security`. The build then fails if `php8.2-common` or `apache2` is older than
-`PHP_FLOOR` or `APACHE_FLOOR`, now 8.2.35-1~deb12u1 from DLA-4848-1 (21 October 2026) and
+`PHP_FLOOR` or `APACHE_FLOOR`, set to 8.2.35-1~deb12u1 from DLA-4848-1 (21 October 2026) and
 2.4.67-1~deb12u3 from DSA-6323-1 (6 June 2026). Each floor is the version of bookworm's last
 advisory for that package, so a newer build from bookworm's own suite passes it too.
 `test_security_updates.py` in `boinc/images/server` checks that every one of them

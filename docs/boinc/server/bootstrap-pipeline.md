@@ -56,7 +56,7 @@ python3 boinc/scripts/bootstrap_pipeline.py --config target/release/config.json 
   --state-dir target/release/state --onprem-host pve.example --onprem-ct 230 --dry-run
 ```
 
-Only in a separately authorized serialized window, invoke/resume the same command:
+Run or resume the same command in a separately authorized, serialized window:
 
 ```sh
 python3 boinc/scripts/bootstrap_pipeline.py --config target/release/config.json \

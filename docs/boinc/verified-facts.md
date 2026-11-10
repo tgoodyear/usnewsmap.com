@@ -2,9 +2,9 @@
 
 These are the facts the [hosting design](design.md) for the stock BOINC server depends on, checked in October 2026 while the server ran in Azure. The client side, the bridge and the contracts came with PR #441 and are not repeated here. Where a fact has changed since, it says so.
 
-Every fact here has a source and a fetch date. All sources were read on 2026-10-13 (US Eastern).
+Every fact here has a source and a fetch date. Sources were read on 2026-10-13 (US Eastern) unless a later date is given.
 A fact marked UNVERIFIED was not confirmed from a source and must be tested before design
-depends on it. A fact marked CORRECTED differs from what the request assumed.
+depends on it. A fact marked CORRECTED differs from what the design first assumed.
 
 Source snapshots:
 
@@ -158,8 +158,8 @@ All read on 2026-10-13 (US Eastern): wiki commit `7e16379`, source commit `0f611
 - The server needs no Docker. A plan class named `docker` in `<project>/plan_class_spec.xml`
   makes the scheduler send the app version only to hosts that report Docker: the check reads
   the client-reported `host.docker_version` and the client version
-  (`src:sched/plan_class_spec.cpp`). This answers the question for the
-  Azure hosting: the Container App never runs a container itself.
+  (`src:sched/plan_class_spec.cpp`). So the Container App in the Azure hosting never runs
+  a container itself.
 - Element names are CONFIRMED in `src:sched/plan_class_spec.xml.sample` (the `docker` class is
   `<plan_class><name>docker</name><docker/></plan_class>`) and in the parser
   (`src:sched/plan_class_spec.cpp`: `min_core_client_version`, `docker`).
@@ -170,14 +170,14 @@ All read on 2026-10-13 (US Eastern): wiki commit `7e16379`, source commit `0f611
   no 9.x client had been released as of 2026-10-14 (newest Linux packages: 8.2.13 stable,
   8.2.15 alpha), so a 9.0 minimum blocked every host. 8.2.13 on Debian 13 detects Docker
   (`Docker: version ...` in its event log).
-- **Platform correction, 2026-10-16:** the recommended stable Mac client is
-  **8.2.11**, which already contains Podman path detection, the installed
+- Platform correction, 2026-10-16: the recommended stable Mac client is
+  8.2.11, which already contains Podman path detection, the installed
   `Run_Podman` helper, and BOINC-owned VM initialization in upstream stable
   commit [`5511380`](https://github.com/BOINC/boinc/tree/5511380b8980935c25c3ea41df3980445419e59e).
   Releases 8.2.12/13 are Linux hotfixes, not the introduction of Mac container
-  support. Computer 1's unmodified 8.2.11 client detected Podman 6.1.4 after
+  support. An unmodified 8.2.11 Mac client detected Podman 6.1.4 after
   an idle restart. This proves runtime readiness, not live task acceptance;
-  volunteers do not need the development Mac client.
+  volunteers do not need a development build of the Mac client.
 - `boinc/scripts/install.py` (#441) installs the version under
   `apps/usnm_ocr/<version>/x86_64-pc-linux-gnu__docker`. The `__docker` suffix is the plan
   class name, so the plan class must be called `docker`.
@@ -292,12 +292,12 @@ All read on 2026-10-13 (US Eastern): wiki commit `7e16379`, source commit `0f611
 
 UNVERIFIED items that gate real work, in one list:
 
-1. Whether `ENGINE=MyISAM` tables are accepted on the flexible server.
-2. Whether BOINC's C++ and PHP clients connect when `require_secure_transport = ON`.
+1. How the flexible server represents the `ENGINE=MyISAM` tables (project initialization succeeded in #470; correction 3 in (b)).
+2. Settled by #464 (correction 4 in (b)): unmodified clients fail under `require_secure_transport = ON`; the patched clients require verified TLS.
 3. Whether Azure Files (SMB) preserves BOINC's setgid, umask and file-lock assumptions under a
    Container Apps mount, and its latency under the upload handler.
 4. Whether the BOINC client follows a redirect for `get_project_config.php`.
 5. That a plan class file copied from the sample works with the server build that is deployed (names are confirmed in source; no server was run).
 6. Whether a released `docker_wrapper` honours `workdir` and `create_args`.
-7. Whether the Container Apps Job accepts per-run argument overrides, and whether Entra
+7. Whether Entra
    authorisation works for data-plane access to Azure Files from the maintainer's side.

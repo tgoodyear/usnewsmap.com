@@ -36,7 +36,7 @@ version are explicit operator metadata, not independently verified image
 identity.
 
 `gold-run` does not download files, but it cannot sandbox an arbitrary
-executable. Run the **entire invocation** in a container with `--network=none`
+executable. Run the entire invocation in a container with `--network=none`
 (as for the stock worker), with preinstalled engine and models and a staged
 cache; never give the adapter reference text. This option is for local
 experiments, not the locked `usnm_gold` BOINC job or its trust reports.
@@ -180,8 +180,7 @@ These steps run on the on-prem host, and `boinc/scripts/onprem-step.sh` requires
 same steps with `boinc/scripts/start-boinc-bridge.sh`, where `--wait-mins` is optional.
 
 The gold units' batch is 0, so their spool is `/project/usnmocr/results/0`.
-These commands describe the code path; no production mirror or campaign is
-enabled by this change.
+These commands describe the code path.
 
 For separately authorized LoC-only transfer acceptance, `gold-mirror-loc`
 stages only the 18 original JPEGs pinned in `bundle-v1.lock.json`, without
@@ -217,13 +216,13 @@ and the page's source language and model profile match the declared calibration,
 with every crop scored, no skips, no crop with character edits at least its
 reference length, and overall CER at or below a threshold. The per-crop guard
 rejects complete loss (including empty output) even when an aggregate hides it;
-it is not a guarantee against subtler OCR errors. There is **no default
-scientific threshold**: calibrate on the first campaign for the locked image,
+it is not a guarantee against subtler OCR errors. There is no default
+scientific threshold: calibrate on the first campaign for the locked image,
 bundle, languages and scoring configuration;
 record that evidence and pass `--max-cer` (bridge: `GOLD_MAX_CER`) and
 `--manifest-sha256` (bridge: `GOLD_MANIFEST_SHA256`), `--language`
 (`GOLD_LANGUAGE`) and `--profile` (`GOLD_PROFILE`) explicitly.
-Gold currently supports PSM 3 / 300 DPI only; the trust artifact records these,
+Gold supports PSM 3 / 300 DPI only; the trust artifact records these,
 and different page configurations are refused. The collector records observed
 profiles and scoring configuration, and every scored crop in an eligible report must use the declared profile.
 A newer valid canonical report with a different/mixed profile or failed crop
@@ -248,7 +247,7 @@ pre-final snapshot is not upgraded from a later partial view, because a purged
 retry cannot otherwise be ruled out. Do not edit or relabel legacy lists.
 Deploying this guard neither chooses a threshold nor promotes hosts.
 
-A terminal attempt revokes the matching host's **quality eligibility** only
+A terminal attempt revokes the matching host's quality eligibility only
 when the authoritative BOINC row is over (`server_state=5`), reports
 `CLIENT_ERROR` (`outcome=3`), is not a cancellation (`exit_status` is neither
 202 `EXIT_ABORTED_BY_PROJECT` nor 203 `EXIT_ABORTED_VIA_GUI`), identifies a
@@ -257,9 +256,9 @@ as the all-skipped Gold worker exiting without a report) as a conservative
 eligibility failure; it is not a measured CER/WER result and must not be
 reported as OCR quality. Project and user cancellations (`exit_status=202` or `203`,
 `EXIT_ABORTED_BY_PROJECT` or `EXIT_ABORTED_VIA_GUI`) are excluded even though
-BOINC may record them as `CLIENT_ERROR`. Other outcomes—including server-side
+BOINC may record them as `CLIENT_ERROR`. Other outcomes (including server-side
 inability to send, no reply, validator/server errors, missing output artifacts,
-or rows without an attributable host/receive timestamp—do not revoke trust. They
+or rows without an attributable host/receive timestamp) do not revoke trust. They
 remain separately visible as native metadata or collection failures and require
 operator review if needed. No inference comes from spool or filesystem times,
 and no canonical report is fabricated for zero scored crops.
@@ -346,7 +345,7 @@ list goes live. The reviewed German hold and its deploy steps are in
 (`srp/srp+srp_latn`) has been held the same way since 7 November
 ([note](../../notes/2026-11-07-serbian-trust-hold.md)).
 
-Trust is keyed by the **full immutable worker digest**, not a tag, base image or
+Trust is keyed by the full immutable worker digest, not a tag, base image or
 engine version. In v5, server `received_time` orders eligible canonical reports
 and attributable terminal client errors within the calibrated scope, regardless
 of file order. The newest event wins; same-time conflicts fail closed. Missing
@@ -358,12 +357,12 @@ its receipts do not establish deployment or live acceptance of v5.
 targeted, write-ahead campaign; its persisted campaign nonce and host
 participate in the validated job identity, so fresh roots and hosts cannot
 collide in workunit or spool names and retries keep the same identity. Targeted
-jobs use protocol v2 and require a **newly built and released worker containing
-this support**; do not target old worker images that only understand v1.
+jobs use protocol v2 and require a newly built and released worker containing
+protocol v2 support; do not target old worker images that only understand v1.
 Untargeted v1 job bytes and identities remain compatible. Use a fresh campaign
 root per host and image. It refuses until the project's active XML config
 explicitly has `<enable_assignment>1</enable_assignment>`. Installing these
-commands does **not** enable assignment: first verify scheduler and assignment
+commands does not enable assignment: first verify scheduler and assignment
 behavior in dev and calibrate the first campaign.
 
 A native build is a different digest, so it starts with no trusted hosts. Its

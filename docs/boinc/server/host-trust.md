@@ -247,7 +247,7 @@ published OCR changes. The trust-checked collector remains mandatory; this audit
 adds no automatic publication gate or retroactive block. Spot checks are not
 scheduled by the controller.
 
-## Show currently held results
+## Quarantine records
 
 ```sh
 usnm-boinc host-trust quarantine --root /approved/handoff
