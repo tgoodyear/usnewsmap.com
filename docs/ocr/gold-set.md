@@ -227,7 +227,7 @@ emulation also matched those counts (report SHA-256
 it is not a substitute for the actual Linux BOINC result.
 
 At `2026-10-17T07:19:56Z`, the normal local production mutex, per-job idle
-preflight (historically all-six-idle before [#856](../boinc/server/start-guard.md#coordination-boundaries))
+preflight (historically all-six-idle before [#856](../boinc/server/azure.md#coordination-boundaries))
 and infinite controller lease guarded the global trust promotion.
 Native receipts and the unchanged old policy were rechecked before publishing.
 `/project/gold/current247c-scope-eng-20261017/` retains the before-policy
