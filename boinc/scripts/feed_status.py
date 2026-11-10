@@ -62,6 +62,8 @@ ROTATION_FILE = "rotation.json"
 ROTATION_MAX_MINUTES = 240
 ROTATION_DEFERRED = ("cpu_shortage", "usnm_ocr_no_work", "controller_progress")
 NO_RECENT_TICK = "no_recent_controller_tick"  # feed_collect.NO_RECENT_TICK
+# Own clients configured and fresh, but none can prove its capacity (#1698): feed_collect.collect.
+NO_PROVEN_CLIENTS = "no_proven_clients"
 # Which source each check waits on (#1698). An unknown check carries the first of its sources
 # that is down as `cause` ("source:server"), and the alert rule raises one alert per cause, not one
 # per check: a server source going down turned six checks unknown, and each was its own email.
@@ -212,7 +214,8 @@ def evaluate(facts, previous, now, monotonic, boot_id, config_id, rotation=None)
     for name, source in facts.get("sources", {}).items():
         if isinstance(source, dict) and source.get("state") != "fresh":
             down.add("clients" if name.startswith("client") else name)
-    if "no_own_clients_configured" in facts.get("supply_errors", {}).values():
+    # No own client configured, or none that can prove its capacity (#1698): the clients' cause.
+    if set(facts.get("supply_errors", {}).values()) & {"no_own_clients_configured", NO_PROVEN_CLIENTS}:
         down.add("clients")
     if excused:
         down.discard("controller")
@@ -265,12 +268,14 @@ def evaluate(facts, previous, now, monotonic, boot_id, config_id, rotation=None)
         no_work = None if backlog is None or latest is None or latest > now else backlog > 0
         check(app + "_no_work", no_work, NO_WORK_HOLD_S, generation=latest, backlog=backlog,
               last_workunit_at=latest)
+    # Own hosts left out because their running tasks can't be counted (#1698), only when there are any.
+    excluded = {"excluded_hosts": facts["excluded_hosts"]} if facts.get("excluded_hosts") else {}
     for resource in ("cpu", "gpu"):
         supply = facts.get("supply", {}).get(resource)
         check(resource + "_shortage", None if supply is None else supply["eligible"] < supply["idle"],
               1800, idle_slots=None if supply is None else supply["idle"],
               eligible_results=None if supply is None else supply["eligible"],
-              reason=facts.get("supply_errors", {}).get(resource))
+              reason=facts.get("supply_errors", {}).get(resource), **excluded)
     tick = facts.get("tick")
     failure_at = tick.get("last_failure_at", 0) if tick else 0
     new_failure = failure_at > previous.get("last_failure_at", 0)
@@ -321,7 +326,8 @@ def evaluate(facts, previous, now, monotonic, boot_id, config_id, rotation=None)
     def covered(item):
         if item in by_code:
             return "cause" in by_code[item]
-        group = "clients" if item.startswith("client_") or item.endswith("_no_own_clients_configured") else item
+        group = "clients" if item.startswith("client_") or item.endswith(
+            ("_no_own_clients_configured", "_" + NO_PROVEN_CLIENTS)) else item
         return "source:" + group in causes
     # Held: one failed source run (a single unknown evaluation) is not worth an email.
     # Its time is kept apart from the condition timers a reset clears, so resets that

@@ -25,6 +25,8 @@ const OPTIONAL_CHECKS: [&str; 5] = [
     "tick_trend",
 ];
 const MAX_BYTES: u64 = 65536;
+/// feed_collect's own-client limit: a shortage check can't exclude more hosts than that.
+const MAX_EXCLUDED_HOSTS: usize = 32;
 const MAX_AGE: i64 = 180;
 pub const MAX_SOURCE_BYTES: usize = 8 * 1024 * 1024;
 
@@ -117,6 +119,18 @@ pub struct Check {
     pub ownership_conflicts: Option<u64>,
     /// The source an unknown check waits on, such as "source:server".
     pub cause: Option<String>,
+    /// cpu_shortage and gpu_shortage (#1698): own hosts left out because their running tasks
+    /// can't be counted. An older evaluator doesn't send it, and an older dashboard ignores it.
+    pub excluded_hosts: Option<Vec<ExcludedHost>>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct ExcludedHost {
+    /// The evaluator's name for the client source, such as "client_2".
+    pub source: String,
+    pub host_id: u64,
+    /// Why its capacity is unproven, such as "active_task_resource_usage_unavailable".
+    pub reason: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -159,7 +173,11 @@ fn parse(bytes: &[u8], now: DateTime<Utc>) -> anyhow::Result<FeedView> {
             && CHECKS.iter().chain(&OPTIONAL_CHECKS).all(|code| {
                 let count = doc.checks.iter().filter(|c| c.code == *code).count();
                 count == 1 || count == 0 && OPTIONAL_CHECKS.contains(code)
-            }),
+            })
+            && doc.checks.iter().all(|c| c
+                .excluded_hosts
+                .as_ref()
+                .is_none_or(|hosts| hosts.len() <= MAX_EXCLUDED_HOSTS)),
         "invalid feed contract"
     );
     let stale = !(0..=MAX_AGE).contains(&(now.timestamp() - doc.observed_at));
@@ -287,6 +305,51 @@ mod tests {
         assert_eq!(view.checks[0].cause.as_deref(), Some("source:server"));
         assert_eq!(view.checks[CHECKS.len()].percent, Some(96.1));
         assert!(read(Some(Path::new("/no-such-feed-file")), now).stale);
+    }
+
+    #[test]
+    fn excluded_hosts_are_read_and_bounded() {
+        let now = Utc::now();
+        let host = json!({
+            "source": "client_2", "host_id": 10,
+            "reason": "active_task_resource_usage_unavailable"
+        });
+        let mut value = document(now.timestamp());
+        let gpu = CHECKS
+            .iter()
+            .position(|code| *code == "gpu_shortage")
+            .unwrap();
+        value["checks"][gpu]["idle_slots"] = json!(1);
+        value["checks"][gpu]["eligible_results"] = json!(1);
+        value["checks"][gpu]["excluded_hosts"] = json!([host.clone()]);
+        let view = parse(&serde_json::to_vec(&value).unwrap(), now).unwrap();
+        assert!(!view.stale);
+        assert_eq!(
+            view.checks[gpu].excluded_hosts,
+            Some(vec![ExcludedHost {
+                source: "client_2".into(),
+                host_id: 10,
+                reason: "active_task_resource_usage_unavailable".into(),
+            }])
+        );
+        // An evaluator from before #1698 sends no excluded_hosts.
+        assert!(parse(
+            &serde_json::to_vec(&document(now.timestamp())).unwrap(),
+            now
+        )
+        .unwrap()
+        .checks
+        .iter()
+        .all(|c| c.excluded_hosts.is_none()));
+        for bad in [
+            json!(vec![host.clone(); MAX_EXCLUDED_HOSTS + 1]),
+            json!([{"source": "client_2", "reason": "x"}]),
+            json!([{"source": "client_2", "host_id": -1, "reason": "x"}]),
+            json!("client_2"),
+        ] {
+            value["checks"][gpu]["excluded_hosts"] = bad;
+            assert!(parse(&serde_json::to_vec(&value).unwrap(), now).is_err());
+        }
     }
 
     #[test]
