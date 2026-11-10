@@ -1225,6 +1225,20 @@ class GoldOnboardingTests(unittest.TestCase):
         self.assertNotEqual(event["backpressure_reason"], "gold_tick")
         self.assertEqual(len(self.fake.jobs), 2)
 
+    def test_a_gold_tick_collects_at_most_one_step(self):
+        self.tick()          # gold, no refill
+        self.tick(at=60)     # refills: two jobs
+        self.assertEqual(len(self.fake.jobs), 2)
+        for job in self.fake.jobs.values():
+            job["spool"] = "/project/usnmocr/results/batch1"
+        self.fake.actions.clear()
+        with patch.object(batch, "STEP_IDS", 1):
+            self.tick(at=60 * 60)  # gold due again: one job collected, not both
+        self.assertEqual(len([a for a in self.fake.actions if a[0] == "collect"]), 1)
+        self.fake.actions.clear()
+        self.tick(at=61 * 60)      # the next tick collects the other
+        self.assertEqual(len([a for a in self.fake.actions if a[0] == "collect"]), 1)
+
     def test_a_gold_run_skipped_at_the_cap_still_refills(self):
         # Only promotion ran (seconds), so the tick refills as usual.
         self.fake.other = 2000
@@ -1686,6 +1700,24 @@ class QueueModeTests(unittest.TestCase):
         row = record(message(number)["page"], 100 + number, stage)
         row["plan"] = plan
         return row
+
+    def test_a_gold_tick_still_reports_a_conflict_found_before_its_refill(self):
+        # A gold tick skips claim and fill (#1697), so only the check at its start sees the
+        # conflict: it is still reported.
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.tick()  # claims page 1 (and others) into this plan
+        self.fake.rows.append(self.foreign(1))
+        self.config["gold_onboarding"] = [dict(GOLD)]
+        run = {"scope": "v1-tess550/eng/eng", "at": NOW, "held": False, "max_hosts": 10,
+               "steps": {"gold-onboard": "ok", "gold-promote": "ok"}}
+        self.fake.actions.clear()
+        with patch.object(batch, "gold_onboarding", return_value=([run], 0)), \
+                contextlib.redirect_stderr(io.StringIO()):
+            event = self.tick()
+        self.assertEqual(event["backpressure_reason"], "gold_tick")
+        self.assertFalse([a for a in self.fake.actions if a[0] in ("claim", "export", "submit")])
+        self.assertEqual(event["ownership_conflicts"], 1)
+        self.assertIn("ownership_conflict", [alert["code"] for alert in event["alerts"]])
 
     def test_a_page_another_plan_has_a_journal_for_is_passed_over(self):
         # #1685: a draining plan's stranded journal for page 1; its message came back and this

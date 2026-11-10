@@ -2313,6 +2313,9 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         # controller_tick's 15-minute limit, which fires while it still runs. The next tick refills.
         gold_ran = any(run["steps"].get("gold-onboard") != GOLD_SKIPPED_AT_CAP for run in gold_runs)
     to_collect = []
+    # A gold tick collects one step's worth (STEP_IDS): a slow collect on top of gold (615 s on
+    # 10 Nov, with blob-store timeouts) would take it past 15 minutes. The next tick takes the rest.
+    collect_limit = min(config["batch_size"], STEP_IDS) if gold_ran else config["batch_size"]
     for page, record in owned.items():
         job_id = record["job"]["id"]
         remote = server.get(job_id)
@@ -2322,7 +2325,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
             continue  # dead-lettered: settle_failed passed it
         if kept_by_policy(record):
             continue  # its scope is held (#835): collected again only by hand, once lifted
-        if record["stage"] != "published" and remote and remote["spool"] and len(to_collect) < config["batch_size"]:
+        if record["stage"] != "published" and remote and remote["spool"] and len(to_collect) < collect_limit:
             spool = remote["spool"]
             require(re.fullmatch(r"/[A-Za-z0-9_./-]+/results/[A-Za-z0-9_./-]+", spool)
                     and ".." not in spool, "invalid assimilator spool")
