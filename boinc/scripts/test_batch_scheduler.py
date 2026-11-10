@@ -1215,6 +1215,79 @@ class GoldOnboardingTests(unittest.TestCase):
         self.tick()
         self.assertEqual(self.fake.timings.summary()["phases"]["gold"]["count"], 2)
 
+    def test_a_gold_tick_collects_but_does_not_refill(self):
+        # A gold run takes minutes; with a refill on top the tick ran past controller_tick's
+        # 15-minute limit. The next tick, gold not due, refills.
+        event = self.tick()
+        self.assertEqual((event["backpressure_reason"], len(self.fake.jobs)), ("gold_tick", 0))
+        event = self.tick(at=5 * 60)
+        self.assertEqual(len(self.fake.steps), 2)
+        self.assertNotEqual(event["backpressure_reason"], "gold_tick")
+        self.assertEqual(len(self.fake.jobs), 2)
+
+    def test_a_gold_tick_collects_at_most_one_step(self):
+        self.tick()          # gold, no refill
+        self.tick(at=60)     # refills: two jobs
+        self.assertEqual(len(self.fake.jobs), 2)
+        for job in self.fake.jobs.values():
+            job["spool"] = "/project/usnmocr/results/batch1"
+        self.fake.actions.clear()
+        with patch.object(batch, "STEP_IDS", 1):
+            self.tick(at=60 * 60)  # gold due again: one job collected, not both
+        self.assertEqual(len([a for a in self.fake.actions if a[0] == "collect"]), 1)
+        self.fake.actions.clear()
+        self.tick(at=61 * 60)      # the next tick collects the other
+        self.assertEqual(len([a for a in self.fake.actions if a[0] == "collect"]), 1)
+
+    def test_a_short_interval_never_blocks_refill_for_good(self):
+        # Copilot on #1697: at interval_minutes=10, with ticks over 10 minutes apart, gold is due
+        # on every tick. The tick after a gold tick defers it and refills.
+        self.config["gold_onboarding"] = [dict(GOLD, interval_minutes=10)]
+        reasons = []
+        for minute in range(0, 60, 15):
+            reasons.append(self.tick(at=minute * 60)["backpressure_reason"])
+        self.assertEqual(reasons[0::2], ["gold_tick", "gold_tick"])
+        self.assertNotIn("gold_tick", reasons[1::2])
+        self.assertEqual(len(self.fake.jobs), 4)  # both other ticks refilled
+        self.assertEqual(len(self.fake.steps), 4)  # two gold runs in four ticks
+
+    def test_a_failed_collect_after_a_gold_tick_does_not_keep_gold_deferred(self):
+        # Copilot on #1697: each run reloads the saved state. If the tick after a gold tick
+        # fails on a held result, its cleared marker must be saved, or gold never runs again.
+        saved = []
+
+        def run(at):
+            self.fake.now = NOW + at
+            try:
+                return batch.tick(self.config, self.state, self.fake,
+                                  lambda: saved.append(copy.deepcopy(self.state)), NOW + at,
+                                  server_status=status_xml(qwen_unsent=0, quality_unsent=0,
+                                                           quality_in_progress=0, train_unsent=0))
+            finally:
+                self.state = copy.deepcopy(saved[-1]) if saved else {}
+
+        run(0)
+        run(60)
+        for job in self.fake.jobs.values():
+            job["spool"] = "/project/usnmocr/results/batch1"
+        self.fake.hold = True
+        self.fake.admits = False
+        for at in (60 * 60, 61 * 60):  # gold tick, then the deferring tick; both fail at collect
+            with self.assertRaisesRegex(RuntimeError, "trust"):
+                run(at)
+        self.assertNotIn("gold_tick", self.state)
+        self.assertEqual(len(self.fake.steps), 4)
+        with self.assertRaisesRegex(RuntimeError, "trust"):
+            run(120 * 60)  # gold due again, and it runs
+        self.assertEqual(len(self.fake.steps), 6)
+
+    def test_a_gold_run_skipped_at_the_cap_still_refills(self):
+        # Only promotion ran (seconds), so the tick refills as usual.
+        self.fake.other = 2000
+        event = self.tick()
+        self.assertEqual(event["gold_onboarding"][0]["steps"]["gold-onboard"], batch.GOLD_SKIPPED_AT_CAP)
+        self.assertNotEqual(event["backpressure_reason"], "gold_tick")
+
     def test_a_scope_can_onboard_onto_another_worker_than_the_plans(self):
         # #1687: before a rotation, the live plan calibrates its hosts on the new worker while it
         # still feeds OCR on the old one; `image` defaults to the plan's.
@@ -1254,6 +1327,7 @@ class GoldOnboardingTests(unittest.TestCase):
     def test_held_wait_never_exceeds_a_long_interval(self):
         self.config["gold_onboarding"] = [dict(GOLD, interval_minutes=1440)]
         self.tick()
+        self.tick(at=60)  # the gold tick doesn't refill; this one does
         for job in self.fake.jobs.values():
             job["spool"] = "/project/usnmocr/results/batch1"
         self.fake.hold = True
@@ -1267,6 +1341,7 @@ class GoldOnboardingTests(unittest.TestCase):
 
     def test_an_admitted_host_publishes_its_held_result_in_the_same_tick(self):
         self.tick()
+        self.tick(at=60)  # the gold tick doesn't refill; this one does
         for job in self.fake.jobs.values():
             job["spool"] = "/project/usnmocr/results/batch1"
         self.fake.hold = True
@@ -1286,9 +1361,10 @@ class GoldOnboardingTests(unittest.TestCase):
         self.assertIn({"code": "gold_onboarding_failed", "scope": "v1-tess550/eng/eng",
                        "step": "gold-onboard",
                        "error": event["gold_onboarding"][0]["steps"]["gold-onboard"]}, event["alerts"])
-        # The feed went on as before.
-        self.assertEqual(len(self.fake.jobs), 2)
+        # A gold tick doesn't refill, failed or not; the next one does, without retrying gold.
+        self.assertEqual(len(self.fake.jobs), 0)
         self.tick(at=5 * 60)
+        self.assertEqual(len(self.fake.jobs), 2)
         self.assertEqual(len(self.fake.steps), 2)
 
     def test_the_run_is_on_record_before_its_steps(self):
@@ -1335,7 +1411,8 @@ class GoldOnboardingTests(unittest.TestCase):
         event = self.tick(other_app_budget=995)
         self.assertEqual(self.fake.steps[0][2]["GOLD_MAX_HOSTS"], 5)
         self.assertEqual((event["global_pending"], event["global_pending_counted"]), (1005, 1000))
-        self.assertEqual(event["backpressure_reason"], "global_safety_cap")
+        # A gold tick doesn't refill at all (gold_tick comes before the cap among the reasons).
+        self.assertEqual(event["backpressure_reason"], "gold_tick")
         self.assertEqual(len(self.fake.jobs), 0)
 
     def other_plan(self, number, stage):
@@ -1389,6 +1466,7 @@ class GoldOnboardingTests(unittest.TestCase):
 
     def test_held_results_report_their_age(self):
         self.tick()
+        self.tick(at=60)  # the gold tick doesn't refill; this one does
         for job in self.fake.jobs.values():
             job["spool"] = "/project/usnmocr/results/batch1"
         self.fake.hold = True
@@ -1664,6 +1742,24 @@ class QueueModeTests(unittest.TestCase):
         row = record(message(number)["page"], 100 + number, stage)
         row["plan"] = plan
         return row
+
+    def test_a_gold_tick_still_reports_a_conflict_found_before_its_refill(self):
+        # A gold tick skips claim and fill (#1697), so only the check at its start sees the
+        # conflict: it is still reported.
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.tick()  # claims page 1 (and others) into this plan
+        self.fake.rows.append(self.foreign(1))
+        self.config["gold_onboarding"] = [dict(GOLD)]
+        run = {"scope": "v1-tess550/eng/eng", "at": NOW, "held": False, "max_hosts": 10,
+               "steps": {"gold-onboard": "ok", "gold-promote": "ok"}}
+        self.fake.actions.clear()
+        with patch.object(batch, "gold_onboarding", return_value=([run], 0)), \
+                contextlib.redirect_stderr(io.StringIO()):
+            event = self.tick()
+        self.assertEqual(event["backpressure_reason"], "gold_tick")
+        self.assertFalse([a for a in self.fake.actions if a[0] in ("claim", "export", "submit")])
+        self.assertEqual(event["ownership_conflicts"], 1)
+        self.assertIn("ownership_conflict", [alert["code"] for alert in event["alerts"]])
 
     def test_a_page_another_plan_has_a_journal_for_is_passed_over(self):
         # #1685: a draining plan's stranded journal for page 1; its message came back and this

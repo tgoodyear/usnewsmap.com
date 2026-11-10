@@ -2288,7 +2288,15 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
     # Before collection: a host admitted now has its held results published by this tick's
     # collect, which otherwise stops at the first result it must hold.
     gold_runs = []
-    if not drain and config.get("gold_onboarding"):
+    gold_ran = False
+    # A gold tick doesn't refill, so the tick after one never runs gold: with a short interval
+    # (10 minutes) gold would otherwise be due on every tick and the plan would never refill.
+    after_gold = bool(state.pop("gold_tick", False))
+    if after_gold:
+        # Saved now: a collect that fails on a held result would otherwise leave the marker on
+        # disk, and every later run would skip gold, the one thing that can admit the host.
+        persist()
+    if not drain and not after_gold and config.get("gold_onboarding"):
         # The same caps and the same retained backlog the refill below counts, from the same
         # status. Without status there is no room for gold units (promotion still runs); the
         # status read after collection fails the tick as it always has.
@@ -2308,7 +2316,16 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
                                               held=bool(held_jobs), room=room)
         # The gold units just issued are in flight too, for this tick's refill.
         snapshot = {**snapshot, "pending_workunits": snapshot["pending_workunits"] + reserved}
+        # A gold run takes about 9 minutes on CT 230: with a refill on top, the tick ran past
+        # controller_tick's 15-minute limit, which fires while it still runs. The next tick refills.
+        gold_ran = any(run["steps"].get("gold-onboard") != GOLD_SKIPPED_AT_CAP for run in gold_runs)
+        if gold_ran:
+            state["gold_tick"] = True
+            persist()
     to_collect = []
+    # A gold tick collects one step's worth (STEP_IDS): a slow collect on top of gold (615 s on
+    # 10 Nov, with blob-store timeouts) would take it past 15 minutes. The next tick takes the rest.
+    collect_limit = min(config["batch_size"], STEP_IDS) if gold_ran else config["batch_size"]
     for page, record in owned.items():
         job_id = record["job"]["id"]
         remote = server.get(job_id)
@@ -2318,7 +2335,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
             continue  # dead-lettered: settle_failed passed it
         if kept_by_policy(record):
             continue  # its scope is held (#835): collected again only by hand, once lifted
-        if record["stage"] != "published" and remote and remote["spool"] and len(to_collect) < config["batch_size"]:
+        if record["stage"] != "published" and remote and remote["spool"] and len(to_collect) < collect_limit:
             spool = remote["spool"]
             require(re.fullmatch(r"/[A-Za-z0-9_./-]+/results/[A-Za-z0-9_./-]+", spool)
                     and ".." not in spool, "invalid assimilator spool")
@@ -2405,7 +2422,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
     global_free = max(0, global_room(cohort_info, global_pending, budgeted_other))
     free = min(cohort_free, global_free)
     submitted = 0
-    if target and not held and not drain:
+    if target and not held and not drain and not gold_ran:
         if free > 0:
             if feed:
                 feed.fill(min(refill, free), selected, owned, now)
@@ -2511,6 +2528,9 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
     elif held > 0:
         backpressure = True
         backpressure_reason = "collection_backlog"
+    elif gold_ran:
+        backpressure = True
+        backpressure_reason = "gold_tick"
     elif target == 0:
         backpressure = True
         backpressure_reason = "no_active_hosts"
