@@ -775,6 +775,12 @@ class BuildInputs(unittest.TestCase):
         on = self.select("ocr/engines/tesseract/Containerfile")
         self.assertEqual(on & (BOINC_IMAGES | DASHBOARD | {"ocr_worker"}),
                          {"boinc_worker", "boinc_ocr_native", "ocr_worker"}, on)
+        # The pinned apt bases (#1681) and the script that reads them reach both images.
+        for path in ["ocr/engines/tesseract/base.lock", "scripts/ci/tesseract-base.sh"]:
+            with self.subTest(path=path):
+                on = self.select(path)
+                self.assertGreaterEqual(on, {"boinc_worker", "ocr_worker"}, on)
+                self.assertFalse(on & {"boinc_qwen", "boinc_surya", "boinc_ndlocr", "image"}, on)
         on = self.select("scripts/ci/ocr-engine-cgroup-smoke.py")
         self.assertIn("ocr_worker", on)
         self.assertNotIn("image", on)
@@ -868,6 +874,8 @@ class BuildInputs(unittest.TestCase):
             (["boinc/scripts/smoke-worker.py"], ["amd64"]),
             (["boinc/apps/Containerfile"], WORKER_ARCHES),
             (["ocr/engines/tesseract/Containerfile"], WORKER_ARCHES),
+            (["ocr/engines/tesseract/base.lock"], WORKER_ARCHES),
+            (["scripts/ci/tesseract-base.sh"], WORKER_ARCHES),
             ([".dockerignore"], WORKER_ARCHES),
             ([".github/workflows/boinc-worker.yml"], WORKER_ARCHES),
             ([".github/actions/boinc-worker-build/action.yml"], WORKER_ARCHES),

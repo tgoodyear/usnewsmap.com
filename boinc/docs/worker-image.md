@@ -35,6 +35,22 @@ docker build -f boinc/apps/Containerfile \
   -t usnm-boinc:pilot .
 ```
 
+These commands install the Debian packages from the snapshot. Once
+`ocr/engines/tesseract/base.lock` pins the apt bases for your architecture, pass
+them to both builds to skip the mirror, as CI does
+([Rebuild the apt bases](#rebuild-the-apt-bases)):
+
+```sh
+# A separate assignment, so a rejected pin, malformed lock or failed pull stops here
+# instead of leaving `bases` empty and falling back to the snapshot.
+lines=$(scripts/ci/tesseract-base.sh --arch amd64 --check-label docker) || exit 1
+bases=()
+for line in $lines; do
+  bases+=(--build-arg "$line")
+done
+# then add "${bases[@]}" to each docker build above
+```
+
 Replace the placeholder with the full engine image ID. `TESSERACT_FROM` is
 needed with Docker's BuildKit, which can't resolve a bare local image id in
 `FROM`; podman can, and it defaults to `TESSERACT_IMAGE`. Volunteers pull the
@@ -55,7 +71,8 @@ Rust bases are pinned per architecture in that workflow; no QEMU setup is used.
 Publishing starts by hand from `main` and combines both tested images into one OCI
 index only after both builds pass. Pull requests build and test without pushing, and only
 when the worker's own recipe changes; they build arm64 only when its Containerfile, the
-engine's Containerfile, `.dockerignore`, the workflow or its build action changes. A merge to
+engine's Containerfile, the apt bases' lock or `scripts/ci/tesseract-base.sh`, `.dockerignore`,
+the workflow or its build action changes. A merge to
 `main` builds both architectures without publishing (#1585). To publish:
 
 ```sh
@@ -94,6 +111,54 @@ is private, and a workflow can't change that. Once, after the first push:
 
 Later pushes keep the package public. Verify an anonymous pull on each native
 architecture before releasing Mac app versions. See the [Mac release procedure](app-release.md#mac-app-versions).
+
+### Rebuild the apt bases
+
+The engine and worker images take their Debian packages from two apt bases per
+architecture in the public GHCR package `ghcr.io/tgoodyear/usnm-tesseract-base`
+(#1681), so their builds don't contact `snapshot.debian.org`:
+
+- the engine base, the `apt-engine` stage of `ocr/engines/tesseract/Containerfile`:
+  Tesseract and its libraries, which the engine image starts `FROM`;
+- the tools base, its `apt-tools-base` stage: `curl` and `gcc` for the build stages
+  that fetch the models and compile `fpshim.c`, and the `.deb` files of `procps`
+  and the libraries it needs, which `boinc/apps/Containerfile` installs on the
+  engine image with no mirror.
+
+`ocr/engines/tesseract/base.lock` pins each by digest. The image builds pass its
+lines as `ENGINE_BASE` and `TOOLS_BASE` (`scripts/ci/tesseract-base.sh`) and check
+each base against the Containerfile: its label `org.usnewsmap.debian-snapshot` and
+its apt sources must name `SNAPSHOT`, and its label `org.usnewsmap.apt-recipe` must
+be the hash of the `apt-*` stages' text (`tesseract-base.sh --print-recipe`). A base
+from another snapshot or other packages fails the build. While an
+architecture's lines are empty, its builds install from the snapshot through the
+`apt-*` stages, the Containerfiles' defaults. Those stages are also how a base is
+built.
+
+Rebuild the bases when `SNAPSHOT` or a package the `apt-*` stages install changes:
+
+1. In the same pull request, empty the lock's lines: the old bases would fail the
+   check, and with no pins the builds install from the snapshot until new ones are
+   pinned.
+2. Run the workflow on `main`:
+
+   ```sh
+   c="base-$(date -u +%Y%m%dT%H%M%S)"
+   gh workflow run tesseract-base.yml --ref main -f correlation="$c"
+   ```
+
+   It builds both bases on each architecture's native runner, checks their labels and
+   Tesseract version, pushes them, attests their build provenance and writes their
+   package lists as an artifact. The `lock` job's summary holds the four lines for
+   `base.lock`.
+
+3. The first time only, make the package public as for the worker image above
+   (github.com/users/tgoodyear/packages/container/usnm-tesseract-base/settings),
+   and check an anonymous pull of each digest from a Docker logged out of GHCR.
+4. Check the provenance: `gh attestation verify oci://ghcr.io/tgoodyear/usnm-tesseract-base@sha256:<digest> -R tgoodyear/usnewsmap.com`.
+5. Put the four lines in `base.lock` in a pull request. Its `boinc-worker` and `ci`
+   runs build both images on both architectures from the new bases.
+6. Publish the worker image as usual once that merges.
 
 Before changing the installed worker image, stop creating new cohorts. Finish
 exporting and submitting already allocated cohorts with their original image,

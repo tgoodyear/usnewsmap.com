@@ -18,18 +18,18 @@ Data, locks, templates and image definitions for the OCR pipeline: the engine ca
 
 `engines.toml` is the catalog: for each engine and each model, its licence, author, source and credit line, which profiles (models plus languages) exist and whether the engine is cleared for production. Only Tesseract and the pinned CPU NDLOCR-Lite adapter have production profiles; the other entries are inventory. [`engines/README.md`](engines/README.md) has the schema and the licence gate.
 
-| Path            | What                                                                                                                                                      |
-| --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `engines.toml`  | The catalog                                                                                                                                               |
-| `tesseract/`    | `Containerfile`; `models.lock` (each model's URL and sha256); `fpshim.c`, preloaded so Tesseract's floating-point traps do not kill OpenJPEG on some JP2s |
-| `ndlocr-lite/`  | `Containerfile`; `models.lock` (the pinned NDLOCR-Lite commit and each model's URL and sha256); the licence and notice files                              |
-| `profiles.lock` | Each pinned profile's model digest, so a profile id always names the same model files; `usnm-ocr-worker routes check` checks it                           |
+| Path            | What                                                                                                                                                                                                                |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `engines.toml`  | The catalog                                                                                                                                                                                                         |
+| `tesseract/`    | `Containerfile`; `models.lock` (each model's URL and sha256); `base.lock` (the digests of the pinned apt bases, #1681); `fpshim.c`, preloaded so Tesseract's floating-point traps do not kill OpenJPEG on some JP2s |
+| `ndlocr-lite/`  | `Containerfile`; `models.lock` (the pinned NDLOCR-Lite commit and each model's URL and sha256); the licence and notice files                                                                                        |
+| `profiles.lock` | Each pinned profile's model digest, so a profile id always names the same model files; `usnm-ocr-worker routes check` checks it                                                                                     |
 
 Read by:
 
 - `usnm-ocr-route` embeds `engines.toml` and checks it. The on-prem worker (`usnm-ocr-worker`) embeds a copy and `tesseract/models.lock`; `usnm-ocr-adapter` embeds `ndlocr-lite/models.lock`.
 - The web app parses `engines.toml` at build time for the credits page (`web/vite.config.ts`, `web/src/credits/data.ts`). `docker/Dockerfile.api` and `docker/Dockerfile.ingest` copy it into their builds.
-- The image builds: `ci.yml` and `.github/actions/boinc-worker-build` build `tesseract/Containerfile`, and `.github/workflows/boinc-ndlocr-lite.yml` builds `ndlocr-lite/Containerfile`. `boinc/scripts/boinc-app-release.sh` builds the Tesseract image in ACR.
+- The image builds: `ci.yml` and `.github/actions/boinc-worker-build` build `tesseract/Containerfile`, and `.github/workflows/boinc-ndlocr-lite.yml` builds `ndlocr-lite/Containerfile`. `boinc/scripts/boinc-app-release.sh` builds the Tesseract image in ACR. Each passes the pinned apt bases from `tesseract/base.lock` (`scripts/ci/tesseract-base.sh`); `.github/workflows/tesseract-base.yml` builds and publishes them ([Rebuild the apt bases](../boinc/docs/worker-image.md#rebuild-the-apt-bases)).
 
 ## `routing/`
 

@@ -33,13 +33,19 @@ runs:
         TAG: ${{ inputs.tag }}
       run: |
         case "$ARCH:$(uname -m)" in amd64:x86_64|arm64:aarch64) ;; *) echo 'native runner architecture mismatch' >&2; exit 1 ;; esac
-        docker build --platform "linux/$ARCH" --build-arg "BASE=$BASE_IMAGE" \
+        # The pinned apt bases (ocr/engines/tesseract/base.lock, #1681), their snapshot label checked.
+        # None while the lock is empty: both images then install from the Debian snapshot.
+        lines=$(scripts/ci/tesseract-base.sh --arch "$ARCH" --check-label docker)
+        bases=()
+        while IFS= read -r line; do [ -z "$line" ] || bases+=(--build-arg "$line"); done <<< "$lines"
+        echo "apt bases: ${lines:-none pinned, installing from the Debian snapshot}"
+        docker build --platform "linux/$ARCH" --build-arg "BASE=$BASE_IMAGE" "${bases[@]}" \
           -f ocr/engines/tesseract/Containerfile -t usnm-ocr/tesseract:worker ocr/engines/tesseract
         engine=$(docker image inspect --format '{{.Id}}' usnm-ocr/tesseract:worker)
         [[ $engine =~ ^sha256:[0-9a-f]{64}$ ]]
         args=(--platform "linux/$ARCH" --build-arg "TESSERACT_IMAGE=$engine"
           --build-arg TESSERACT_FROM=usnm-ocr/tesseract:worker --build-arg "RUST_IMAGE=$RUST_IMAGE"
-          --build-arg "BUILD_JOBS=$(nproc)"
+          --build-arg "BUILD_JOBS=$(nproc)" "${bases[@]}"
           -f boinc/apps/Containerfile)
         docker build "${args[@]}" --target build -t usnm-boinc-build:worker .
         docker build "${args[@]}" --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \

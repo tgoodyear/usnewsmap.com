@@ -77,8 +77,8 @@
 # the crate closure on pull requests too.
 # boinc_worker_arches: the worker's architectures, as a JSON list. A pull
 # request builds amd64 alone unless the worker's recipe changed (its
-# Containerfile, the engine's Containerfile, .dockerignore, its workflow or
-# build action); main builds both (#1585).
+# Containerfile, the engine's Containerfile, the apt bases' lock or the script
+# that reads it, .dockerignore, its workflow or build action); main builds both (#1585).
 # boinc_qwen_models, boinc_surya_variants: the Qwen models and the Surya
 # variants the image workflows' check job builds, as JSON lists (#1585).
 # The two of each pair share the usnm-boinc build stage and differ only in
@@ -261,7 +261,7 @@ fixtures='^fixtures/'
 # routes the worker reads, the toolchain and the release script. The dashboard
 # shares the release but not the engine: it reads the engine catalog, the
 # Tesseract models lock and the routes only through the worker crate it links.
-ocr_worker='^(ocr/engines/tesseract/|ocr/engines/engines\.toml$|ocr/routing/|ocr/contract/fixtures/|rust-toolchain\.toml$|scripts/ci/(ocr-worker-release\.sh|ocr-engine-cgroup-smoke\.py|ocr-engine-contract/.*)$)'
+ocr_worker='^(ocr/engines/tesseract/|ocr/engines/engines\.toml$|ocr/routing/|ocr/contract/fixtures/|rust-toolchain\.toml$|scripts/ci/(ocr-worker-release\.sh|tesseract-base\.sh|ocr-engine-cgroup-smoke\.py|ocr-engine-contract/.*)$)'
 ocr_dash='^(ocr/engines/engines\.toml$|ocr/engines/tesseract/models\.lock$|rust-toolchain\.toml$)'
 # ocr-dashboard.yml builds the same binary for musl, from the same inputs.
 ocr_dashboard=$ocr_dash
@@ -269,7 +269,7 @@ ocr_dashboard=$ocr_dash
 # the checkout (COPY . .), so what each one adds to the crates is its own
 # Containerfile, its smoke tests and what they download or pin. The worker and
 # NDLOCR images also build usnm-boinc's examples (narrow_examples).
-boinc_worker='^(ocr/engines/tesseract/|ocr/engines/engines\.toml$|boinc/apps/Containerfile$|boinc/scripts/smoke-worker\.py$|rust-toolchain\.toml$|\.dockerignore$)'
+boinc_worker='^(ocr/engines/tesseract/|ocr/engines/engines\.toml$|boinc/apps/Containerfile$|boinc/scripts/smoke-worker\.py$|scripts/ci/tesseract-base\.sh$|rust-toolchain\.toml$|\.dockerignore$)'
 boinc_qwen='^(boinc/apps/qwen/|boinc/scripts/qwen_(disk|cold_cache)\.py$|rust-toolchain\.toml$|\.dockerignore$)'
 boinc_surya='^(boinc/apps/surya/|rust-toolchain\.toml$|\.dockerignore$)'
 # What sets the second Qwen model (8b) and Surya variant (vulkan) apart from the first, so a pull
@@ -280,8 +280,9 @@ boinc_surya='^(boinc/apps/surya/|rust-toolchain\.toml$|\.dockerignore$)'
 boinc_qwen_8b='^(boinc/apps/qwen/|boinc/scripts/qwen_(disk|cold_cache)\.py$)'
 boinc_surya_vulkan='^boinc/apps/surya/'
 # What the worker's arm64 build reads that amd64's doesn't already check: the two Containerfiles,
-# whose bases and Rust image differ by architecture, and the build context's filter (#1585).
-boinc_worker_arm64='^(boinc/apps/Containerfile$|ocr/engines/tesseract/Containerfile$|\.dockerignore$)'
+# whose bases and Rust image differ by architecture, the pinned apt bases, one per architecture,
+# and the script that reads them (#1681), and the build context's filter (#1585).
+boinc_worker_arm64='^(boinc/apps/Containerfile$|ocr/engines/tesseract/(Containerfile|base\.lock)$|scripts/ci/tesseract-base\.sh$|\.dockerignore$)'
 boinc_ndlocr='^(ocr/engines/ndlocr-lite/|boinc/apps/ndlocr-lite/|boinc/scripts/smoke-ndlocr(-worker)?\.py$|ocr/ja-ocr/(testdata/|alto\.py$|jaocr\.py$|undigitized\.py$)|rust-toolchain\.toml$|\.dockerignore$)'
 # The native apps (boinc-quality-native.yml) build usnm-quality-app and
 # usnm-qwen-app and test those and the two crates they share with the engines;

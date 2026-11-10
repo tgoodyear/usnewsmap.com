@@ -679,7 +679,12 @@ jobs:
           /w/usnm-ocr-worker --version
       - name: Build the Tesseract image
         run: |
-          podman build --pull=missing -f ocr/engines/tesseract/Containerfile -t usnm-ocr/tesseract:check ocr/engines/tesseract
+          # From the pinned apt bases once ocr/engines/tesseract/base.lock holds them (#1681).
+          lines=$(scripts/ci/tesseract-base.sh --arch amd64 --check-label podman)
+          bases=()
+          while IFS= read -r line; do [ -z "$line" ] || bases+=(--build-arg "$line"); done <<< "$lines"
+          echo "apt bases: ${lines:-none pinned, installing from the Debian snapshot}"
+          podman build --pull=missing "${bases[@]}" -f ocr/engines/tesseract/Containerfile -t usnm-ocr/tesseract:check ocr/engines/tesseract
           id=$(podman image inspect --format '{{.Id}}' usnm-ocr/tesseract:check)
           echo "image id sha256:$id"
           echo "sha256:$id" > dist/usnm-ocr-tesseract.image-id

@@ -1,0 +1,158 @@
+name: tesseract-base
+# The apt bases of the Tesseract engine and BOINC worker images (#1681): the apt-engine and
+# apt-tools-base stages of ocr/engines/tesseract/Containerfile, the only stages that install from
+# the Debian snapshot. A manual run on main builds both on each architecture's native runner,
+# checks them, pushes them to the public GHCR package ghcr.io/tgoodyear/usnm-tesseract-base,
+# attests their build provenance to the registry (GitHub OIDC, no secrets), and its summary gives
+# the lines to put in ocr/engines/tesseract/base.lock. The bases need rebuilding only when the
+# Containerfile's SNAPSHOT or the packages its apt stages install change. Nothing runs on a
+# pull request or a merge: the image builds check the pinned bases (scripts/ci/tesseract-base.sh).
+run-name: ${{ format('tesseract-base ({0})', inputs.correlation) }}
+on:
+  workflow_dispatch:
+    inputs:
+      correlation:
+        description: Identifies this run
+        required: false
+        default: manual
+permissions:
+  contents: read
+concurrency:
+  group: tesseract-base
+  cancel-in-progress: false
+env:
+  IMAGE: ghcr.io/tgoodyear/usnm-tesseract-base
+  # Each architecture's pinned Debian base: the same as .github/workflows/boinc-worker.yml's
+  # (scripts/ci/test_tesseract_base.py checks they match).
+  AMD64_BASE: mirror.gcr.io/library/debian@sha256:918311b7b6c4c6f68b232ba516584925f6c78ad82b6fd534b98979df6438e483
+  ARM64_BASE: docker.io/library/debian@sha256:a2ca65377c251208de42e1a2722cb949211236c161b634f6f3663754e2d06850
+jobs:
+  publish:
+    name: apt bases (${{ matrix.arch }}, build and push)
+    # Only main, so what is published went through review and branch protection.
+    if: github.ref == 'refs/heads/main'
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the two bases from the Debian snapshot
+        env:
+          ARCH: ${{ matrix.arch }}
+          BASE_IMAGE: ${{ matrix.arch == 'arm64' && env.ARM64_BASE || env.AMD64_BASE }}
+        run: |
+          case "$ARCH:$(uname -m)" in amd64:x86_64|arm64:aarch64) ;; *) echo '::error::native runner architecture mismatch'; exit 1 ;; esac
+          snapshot=$(sed -n 's/^ARG SNAPSHOT=//p' ocr/engines/tesseract/Containerfile)
+          [[ $snapshot =~ ^[0-9]{8}T[0-9]{6}Z$ ]]
+          recipe=$(scripts/ci/tesseract-base.sh --print-recipe)
+          for base in engine tools; do
+            target=apt-$base
+            [ "$base" = engine ] || target=apt-tools-base
+            docker build --platform "linux/$ARCH" --build-arg "BASE=$BASE_IMAGE" --target "$target" \
+              --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+              --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+              --label "org.usnewsmap.apt-recipe=$recipe" \
+              --label "org.opencontainers.image.description=usnewsmap Tesseract $base base (Debian snapshot $snapshot)" \
+              -f ocr/engines/tesseract/Containerfile -t "$IMAGE:$GITHUB_SHA-$base-$ARCH" ocr/engines/tesseract
+            got=$(docker image inspect --format '{{index .Config.Labels "org.usnewsmap.debian-snapshot"}}' "$IMAGE:$GITHUB_SHA-$base-$ARCH")
+            [ "$got" = "$snapshot" ] || { echo "::error::$base base is labelled '$got', not $snapshot"; exit 1; }
+            got=$(docker image inspect --format '{{index .Config.Labels "org.usnewsmap.apt-recipe"}}' "$IMAGE:$GITHUB_SHA-$base-$ARCH")
+            [ "$got" = "$recipe" ] || { echo "::error::$base base's recipe label is '$got', not $recipe"; exit 1; }
+            docker run --rm --network=none --entrypoint dpkg-query "$IMAGE:$GITHUB_SHA-$base-$ARCH" -W -f '${Package}\t${Version}\n' \
+              > "$RUNNER_TEMP/dpkg-$base-$ARCH.txt"
+          done
+          grep -qx $'tesseract-ocr\t5.5.0-1+b1' "$RUNNER_TEMP/dpkg-engine-$ARCH.txt"
+          grep -qx $'libtesseract5\t5.5.0-1+b1' "$RUNNER_TEMP/dpkg-engine-$ARCH.txt"
+          # The tools base carries procps's .debs, procps among them, for the worker image.
+          docker run --rm --network=none --entrypoint sh "$IMAGE:$GITHUB_SHA-tools-$ARCH" -c \
+            'ls /usnm/debs/procps/procps_*.deb && gcc --version && curl --version' > /dev/null
+      - name: Push, attest and record the digests
+        id: push
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          # Logged in until the cleanup step: the attestations push to the registry with these credentials.
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$ACTOR" --password-stdin
+          prefix=${ARCH^^}
+          mkdir -p "$RUNNER_TEMP/lock"
+          for base in engine tools; do
+            tag="$IMAGE:$GITHUB_SHA-$base-$ARCH"
+            docker push "$tag"
+            digest=$(docker buildx imagetools inspect "$tag" --format '{{json .Manifest}}' | jq -er .digest)
+            [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::no registry digest for $tag"; exit 1; }
+            echo "${base}_digest=$digest" >> "$GITHUB_OUTPUT"
+            echo "${prefix}_${base^^}_BASE=$IMAGE@$digest" >> "$RUNNER_TEMP/lock/$ARCH.txt"
+          done
+      - name: Attest the engine base
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.push.outputs.engine_digest }}
+          push-to-registry: true
+      - name: Attest the tools base
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.push.outputs.tools_digest }}
+          push-to-registry: true
+      - name: Summary
+        env:
+          ARCH: ${{ matrix.arch }}
+          ENGINE: ${{ steps.push.outputs.engine_digest }}
+          TOOLS: ${{ steps.push.outputs.tools_digest }}
+        run: |
+          {
+            echo "### Tesseract apt bases, $ARCH"
+            echo
+            echo "| Base | Image | Packages |"
+            echo "| --- | --- | --- |"
+            echo "| engine | \`$IMAGE@$ENGINE\` | $(wc -l < "$RUNNER_TEMP/dpkg-engine-$ARCH.txt") |"
+            echo "| tools | \`$IMAGE@$TOOLS\` | $(wc -l < "$RUNNER_TEMP/dpkg-tools-$ARCH.txt") |"
+            echo
+            echo "Provenance: \`gh attestation verify oci://$IMAGE@$ENGINE -R $GITHUB_REPOSITORY\` (and the same for the tools base)."
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: tesseract-base-${{ matrix.arch }}
+          path: |
+            ${{ runner.temp }}/dpkg-*.txt
+            ${{ runner.temp }}/lock/*.txt
+          if-no-files-found: error
+      - name: Log out of GHCR
+        if: always()
+        run: docker logout ghcr.io
+  lock:
+    name: apt bases (lock lines)
+    needs: publish
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: tesseract-base-*
+          merge-multiple: true
+          path: bases
+      - name: The lines for ocr/engines/tesseract/base.lock
+        run: |
+          lines=$(cat bases/lock/amd64.txt bases/lock/arm64.txt | sort)
+          [ "$(wc -l <<< "$lines")" -eq 4 ] || { echo "::error::expected four bases, got: $lines"; exit 1; }
+          {
+            echo "### ocr/engines/tesseract/base.lock"
+            echo
+            echo "Make the package public once (boinc/docs/worker-image.md, \"Rebuild the apt bases\"), check an anonymous pull, then pin:"
+            echo
+            echo '```'
+            echo "$lines"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -17,6 +17,7 @@ on:
       - ocr/engines/engines.toml
       - boinc/apps/Containerfile
       - boinc/scripts/smoke-worker.py
+      - scripts/ci/tesseract-base.sh
       - crates/**
       - Cargo.toml
       - Cargo.lock

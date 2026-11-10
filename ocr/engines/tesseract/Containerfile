@@ -9,24 +9,72 @@
 #
 # The base is the engine survey's, pinned by digest, and Tesseract is the
 # survey's package (Debian's 5.5.0-1+b1), so the worker reads with what the
-# survey measured. Packages come from snapshot.debian.org at a fixed time,
-# so a rebuild gets the same ones. Models come from models.lock, each
-# checked by sha256.
+# survey measured. Packages come from snapshot.debian.org at a fixed time
+# (SNAPSHOT), so a rebuild gets the same ones. Models come from models.lock,
+# each checked by sha256.
+#
+# The apt bases (#1681). The apt-* stages below are the only ones that install
+# from the snapshot. .github/workflows/tesseract-base.yml builds two of them
+# once per architecture and publishes them to GHCR: apt-engine (Tesseract) and
+# apt-tools-base (curl and gcc for the build stages, plus the .debs of procps
+# for boinc/apps/Containerfile). base.lock pins their digests, and
+# scripts/ci/tesseract-base.sh turns its lines into ENGINE_BASE and TOOLS_BASE
+# build arguments, so a build from pinned bases contacts no Debian mirror.
+# Without those arguments the defaults name the apt-* stages, and the build
+# installs from the snapshot as before: that is also how a base is rebuilt.
+# Each base records SNAPSHOT in its label org.usnewsmap.debian-snapshot and in
+# its apt sources, and the hash of the apt-* stages' text in its label
+# org.usnewsmap.apt-recipe. The build fails when the sources name another
+# snapshot, and scripts/ci/tesseract-base.sh --check-label when either label
+# differs from this file.
 ARG BASE=mirror.gcr.io/library/debian:trixie-slim@sha256:918311b7b6c4c6f68b232ba516584925f6c78ad82b6fd534b98979df6438e483
 ARG SNAPSHOT=20261001T000000Z
+ARG ENGINE_BASE=apt-engine
+ARG TOOLS_BASE=apt-tools
 # The chr_phoenix release's SHA256SUMS (ocr/models/chr-phoenix/SHA256SUMS), which pins its
 # NOTICE.md and Apache licence; the model itself is pinned by models.lock.
 ARG CHR_PHOENIX_RELEASE=https://github.com/tgoodyear/usnewsmap.com/releases/download/model-tesseract-chr-phoenix-20261109
 ARG CHR_PHOENIX_SUMS=eb309b6a2b4c8316cf58d0df11fbd90eb2caa3c383cc8a860b08eb8ed094ac3f
 
-FROM ${BASE} AS models
+FROM ${BASE} AS apt-tools
 ARG SNAPSHOT
+LABEL org.usnewsmap.debian-snapshot=${SNAPSHOT}
 RUN printf 'Types: deb\nURIs: http://snapshot.debian.org/archive/debian/%s\nSuites: trixie\nComponents: main\nSigned-By: /usr/share/keyrings/debian-archive-keyring.gpg\n' \
       "$SNAPSHOT" > /etc/apt/sources.list.d/debian.sources \
  && printf 'Acquire::Retries "5";\nAcquire::http::Timeout "60";\n' > /etc/apt/apt.conf.d/80-retries \
  && apt-get -o Acquire::Check-Valid-Until=false update \
- && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates curl \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates curl gcc libc6-dev \
  && rm -rf /var/lib/apt/lists/*
+
+FROM ${BASE} AS apt-engine
+ARG SNAPSHOT
+LABEL org.usnewsmap.debian-snapshot=${SNAPSHOT}
+RUN printf 'Types: deb\nURIs: http://snapshot.debian.org/archive/debian/%s\nSuites: trixie\nComponents: main\nSigned-By: /usr/share/keyrings/debian-archive-keyring.gpg\n' \
+      "$SNAPSHOT" > /etc/apt/sources.list.d/debian.sources \
+ && printf 'Acquire::Retries "5";\nAcquire::http::Timeout "60";\n' > /etc/apt/apt.conf.d/80-retries \
+ && apt-get -o Acquire::Check-Valid-Until=false update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      tesseract-ocr=5.5.0-1+b1 libtesseract5=5.5.0-1+b1 \
+ && rm -rf /var/lib/apt/lists/* /usr/share/tesseract-ocr/5/tessdata/*.traineddata
+
+# The worker (boinc/apps/Containerfile) adds procps to this image. These are the .debs apt
+# installs for it on top of apt-engine's packages, so the worker can install them with no
+# mirror. Its procps-debs stage downloads the same way; scripts/ci/test_tesseract_base.py
+# checks the two commands match.
+FROM apt-engine AS apt-procps
+RUN apt-get -o Acquire::Check-Valid-Until=false update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends --download-only procps \
+ && mkdir -p /usnm/debs/procps && mv /var/cache/apt/archives/*.deb /usnm/debs/procps/ \
+ && rm -rf /var/lib/apt/lists/*
+
+# The published tools base: the build stages' compiler and downloader, and procps's .debs.
+FROM apt-tools AS apt-tools-base
+COPY --from=apt-procps /usnm/debs/ /usnm/debs/
+
+FROM ${TOOLS_BASE} AS models
+ARG SNAPSHOT
+RUN grep -qxF "URIs: http://snapshot.debian.org/archive/debian/$SNAPSHOT" /etc/apt/sources.list.d/debian.sources \
+      || { echo "the base's Debian snapshot is not SNAPSHOT=$SNAPSHOT (base.lock)" >&2; exit 1; }
 COPY models.lock /models.lock
 # Each line: name, URL, sha256. Retry TLS/connect failures as well as HTTP
 # transients, within a bounded budget. A hash mismatch still fails the build.
@@ -63,26 +111,12 @@ RUN set -eu; mkdir -p /notices/chr_phoenix; cd /notices/chr_phoenix; \
 # Tesseract with SIGFPE (exit 136) before any OCR (#455). This preloaded
 # library makes feenableexcept a no-op, so the engine runs with the default
 # masked floating-point environment, as Tesseract used as a library does.
-FROM ${BASE} AS fpshim
-ARG SNAPSHOT
-RUN printf 'Types: deb\nURIs: http://snapshot.debian.org/archive/debian/%s\nSuites: trixie\nComponents: main\nSigned-By: /usr/share/keyrings/debian-archive-keyring.gpg\n' \
-      "$SNAPSHOT" > /etc/apt/sources.list.d/debian.sources \
- && printf 'Acquire::Retries "5";\nAcquire::http::Timeout "60";\n' > /etc/apt/apt.conf.d/80-retries \
- && apt-get -o Acquire::Check-Valid-Until=false update \
- && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends gcc libc6-dev \
- && rm -rf /var/lib/apt/lists/*
+FROM ${TOOLS_BASE} AS fpshim
 COPY fpshim.c /fpshim.c
 RUN gcc -O2 -shared -fPIC -Wall -Werror -o /libusnm-nofpe.so /fpshim.c
 
-FROM ${BASE}
+FROM ${ENGINE_BASE}
 ARG SNAPSHOT
-RUN printf 'Types: deb\nURIs: http://snapshot.debian.org/archive/debian/%s\nSuites: trixie\nComponents: main\nSigned-By: /usr/share/keyrings/debian-archive-keyring.gpg\n' \
-      "$SNAPSHOT" > /etc/apt/sources.list.d/debian.sources \
- && printf 'Acquire::Retries "5";\nAcquire::http::Timeout "60";\n' > /etc/apt/apt.conf.d/80-retries \
- && apt-get -o Acquire::Check-Valid-Until=false update \
- && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-      tesseract-ocr=5.5.0-1+b1 libtesseract5=5.5.0-1+b1 \
- && rm -rf /var/lib/apt/lists/* /usr/share/tesseract-ocr/5/tessdata/*.traineddata
 COPY --from=fpshim /libusnm-nofpe.so /usr/local/lib/libusnm-nofpe.so
 ENV TESSDATA_PREFIX=/opt/tessdata OMP_THREAD_LIMIT=1 LD_PRELOAD=/usr/local/lib/libusnm-nofpe.so
 COPY --from=models /models/tessdata/ /opt/tessdata/
@@ -90,7 +124,9 @@ COPY models.lock /opt/tessdata/models.lock
 COPY --from=models /notices/ /opt/tessdata/notices/
 # The output configs (txt, alto) live beside the models: without them
 # Tesseract writes text only.
-RUN cp -r /usr/share/tesseract-ocr/5/tessdata/configs /usr/share/tesseract-ocr/5/tessdata/tessconfigs /opt/tessdata/ \
+RUN grep -qxF "URIs: http://snapshot.debian.org/archive/debian/$SNAPSHOT" /etc/apt/sources.list.d/debian.sources \
+      || { echo "the base's Debian snapshot is not SNAPSHOT=$SNAPSHOT (base.lock)" >&2; exit 1; } \
+ && cp -r /usr/share/tesseract-ocr/5/tessdata/configs /usr/share/tesseract-ocr/5/tessdata/tessconfigs /opt/tessdata/ \
  && cd /opt && grep '^tessdata/' /opt/tessdata/models.lock | awk '{print $3 "  " $1}' | sha256sum --check --quiet
 USER 10001
 ENTRYPOINT ["tesseract"]

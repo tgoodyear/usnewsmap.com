@@ -340,7 +340,7 @@ digest() {
 # build_worker_in_acr: the engine (ocr/engines/tesseract) and the worker (boinc/apps/Containerfile)
 # in ACR Tasks, each keyed on the git hashes of its inputs and built only when the key is new.
 build_worker_in_acr() {
-  local engine_key worker_key engine_ref inputs
+  local engine_key worker_key engine_ref inputs lines line bases=()
   # The builds upload the working tree but are keyed on HEAD: a tree that differs from HEAD
   # (tracked or untracked) would be cached under a key that doesn't name what was built.
   [ -z "$(git status --porcelain --untracked-files=normal)" ] ||
@@ -350,12 +350,17 @@ build_worker_in_acr() {
   # The toolchain picks the compiler of the worker's cargo build, as in build-boinc-images.sh.
   if git rev-parse -q --verify HEAD:rust-toolchain.toml > /dev/null; then inputs+=(HEAD:rust-toolchain.toml); fi
   worker_key=$({ git rev-parse "${inputs[@]}"; echo "$engine_key"; } | git hash-object --stdin | cut -c1-16)
+  # The pinned apt bases, once ocr/engines/tesseract/base.lock holds them (#1681); part of the
+  # engine key, as files of ocr/engines/tesseract. The builds check each base's Debian snapshot.
+  lines=$(scripts/ci/tesseract-base.sh --arch amd64) || die "ocr/engines/tesseract/base.lock is malformed"
+  while IFS= read -r line; do [ -z "$line" ] || bases+=(--build-arg "$line"); done <<< "$lines"
   if have usnm-boinc-tesseract "$engine_key"; then
     echo "usnm-boinc-tesseract:$engine_key is in $registry"
   else
     echo "building usnm-boinc-tesseract:$engine_key in $registry"
     acr_build_verified baz_build "$registry" "usnm-boinc-tesseract:$engine_key" 7200 --platform linux/amd64 \
-      --file ocr/engines/tesseract/Containerfile ocr/engines/tesseract || die "the engine image build failed"
+      ${bases[@]+"${bases[@]}"} --file ocr/engines/tesseract/Containerfile ocr/engines/tesseract ||
+      die "the engine image build failed"
   fi
   engine_ref="$registry.azurecr.io/usnm-boinc-tesseract@$(digest usnm-boinc-tesseract "$engine_key")"
   if have usnm-boinc-worker "$worker_key"; then
@@ -363,7 +368,7 @@ build_worker_in_acr() {
   else
     echo "building usnm-boinc-worker:$worker_key in $registry (usnm-boinc release build: about 10 minutes)"
     acr_build_verified baz_build "$registry" "usnm-boinc-worker:$worker_key" 7200 --platform linux/amd64 \
-      --build-arg "TESSERACT_IMAGE=$engine_ref" --file boinc/apps/Containerfile . ||
+      --build-arg "TESSERACT_IMAGE=$engine_ref" ${bases[@]+"${bases[@]}"} --file boinc/apps/Containerfile . ||
       die "the worker image build failed"
   fi
   echo "worker image builds: $registry.azurecr.io/usnm-boinc-worker@$(digest usnm-boinc-worker "$worker_key") (ACR, not pullable by volunteers)"

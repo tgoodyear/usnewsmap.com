@@ -652,7 +652,7 @@ Built in #307 (§13.11 step 8): `provenance::mint_run_id` (strictly increasing p
 
 ### 13.8.5 Reproducibility
 
-- Base images pinned by digest; Debian packages from `snapshot.debian.org` at a fixed timestamp, or the engine built from a sha256-pinned tarball (version pins against the live mirror can't rebuild).
+- Base images pinned by digest; Debian packages from `snapshot.debian.org` at a fixed timestamp, or the engine built from a sha256-pinned tarball (version pins against the live mirror can't rebuild). The Tesseract engine and BOINC worker images take their snapshot packages from apt bases built once and pinned by digest in `ocr/engines/tesseract/base.lock`, so a build doesn't depend on the mirror being up (#1681).
 - Python: `pip --require-hashes` from a transitive lock (`pip-compile --generate-hashes`) seeded from the survey images' `pip freeze`.
 - Models pinned by sha256 in `models.lock`, checked at fetch and build, re-hashed at every adapter start, tied to the lock by the hello check. Mutable sources (the Dropbox archive American Stories and NDNP Open OCR use) are mirrored into the registry as sha256-keyed OCI artifacts.
 - `deterministic` engines get a CI golden test: three fixture pages, stored-text sha256 per image digest. `usnm-ocr-survey repro --engine <id> --pages 20` reads pages twice and compares hashes; torch on CPU and llama.cpp across thread counts may differ.
