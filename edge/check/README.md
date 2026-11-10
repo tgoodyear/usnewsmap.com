@@ -43,7 +43,7 @@ Answers are published under CC0. `GET /api/export?lang=chr` returns one JSON lin
 | `GET /api/stats?lang=<code>`              | anyone      | Tasks, settled, answers, people.                                      |
 | `GET /api/export?lang=<code>`             | anyone      | CC0 JSON lines (above).                                               |
 | `PUT /admin/clips/<key>`                  | admin token | An image (JPEG, PNG or WebP).                                         |
-| `PUT /admin/languages/<code>`             | admin token | A language's configuration.                                           |
+| `PUT /admin/languages/<code>`             | admin token | A language's configuration. With `?keep=examples` (an existing language only), the stored `examples` stay. |
 | `POST /admin/tasks`                       | admin token | JSON lines of tasks; a task already loaded keeps its answers.         |
 | `POST /admin/answers`                     | admin token | JSON lines of seed answers, `seed:` contributors only.                |
 

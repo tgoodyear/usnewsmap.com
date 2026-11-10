@@ -36,11 +36,13 @@ for (const file of files) {
 }
 
 test("a synced configuration keeps the site's examples and drops the build options", async () => {
-  const { desired, canonical } = await import("./sync-languages.mjs");
+  const { desired, canonical, sent } = await import("./sync-languages.mjs");
   const live = { examples: { "Ꭰ": ["chr/x.png"] }, intro: "old", name: "Cherokee", title: "T" };
   const want = desired({ drop_examples: "Ꮛ", intro: "new", name: "Cherokee", title: "T" }, live);
   assert.deepEqual(want, { examples: { "Ꭰ": ["chr/x.png"] }, intro: "new", name: "Cherokee", title: "T" });
   assert.equal(canonical({ b: 1, a: [2, { d: 3, c: 4 }] }), canonical({ a: [2, { c: 4, d: 3 }], b: 1 }));
   assert.notEqual(canonical(want), canonical(live));
   assert.equal(canonical(desired({ intro: "old", name: "Cherokee", title: "T" }, live)), canonical(live));
+  // The Worker keeps the stored examples itself, so sync never sends a copy of them.
+  assert.deepEqual(sent({ drop_examples: "Ꮛ", examples: {}, intro: "new", name: "Cherokee" }), { intro: "new", name: "Cherokee" });
 });
