@@ -4,6 +4,7 @@
 - **Date:** 2026-10
 - **Relates to:** ADR-0008, ADR-0009, ADR-0015, ADR-0018, ADR-0019, ADR-0022
 - **Amended by:** [ADR-0027](0027-onprem-serving-behind-cloudflare.md) (decision 2 allows one serving container on pve-big, reachable from the internet only through its own Cloudflare Tunnel)
+- **Later:** The bridge steps moved on-prem on 21 October 2026 (#942), and the Azure hand-off job was retired on 6 November 2026 (#308). Scans still reach BOINC through the scan fetcher's push into the `boinc-handoff` container (#513, [scan-cache hand-off](../../boinc/server/scan-cache-handoff.md)). The staging writer in decision 4 is not built as of 10 November 2026.
 
 ## Context
 

@@ -3,6 +3,7 @@
 - **Status:** Accepted by maintainer, 31 October 2026 UTC; rollout and measurements must be evidenced separately.
 - **Amends:** [ADR-0027](0027-onprem-serving-behind-cloudflare.md), especially decisions 6, 10 and 13 and Phases 3 to 5; [ADR-0028](0028-cloudflare-with-azure-origin.md) remains the pre-cutover routing record.
 - **Amended:** November 2026, fewer spare wakes (#308), below.
+- **Later:** On 6 November 2026 the spare moved to a Container Apps environment without a VNet (`usnm-api-spare-ca-prod`, `usnm-qw-spare-ca-prod`; #1611, #1615), and the Cloudflare Worker falls back to that API's default hostname (#1614).
 - **Authorization:** The maintainer authorized production downtime and routing changes and requires all public serving requests to use on-prem when healthy and Azure when on-prem fails. Related work: [#955](https://github.com/tgoodyear/usnewsmap.com/issues/955), [#1098](https://github.com/tgoodyear/usnewsmap.com/issues/1098), [#245](https://github.com/tgoodyear/usnewsmap.com/issues/245).
 
 ## Context

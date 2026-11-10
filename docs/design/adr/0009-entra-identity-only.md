@@ -3,6 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-09
 - **Strengthens:** ADR-0008 and 08 §8.2, which disabled keys on the data services only
+- **Amended by:** [ADR-0015](0015-onprem-ocr-workers.md) (decision 1: a client secret for Arc onboarding), [ADR-0019](0019-boinc-server-hosting.md) (decision 6: the BOINC project server) and [ADR-0024](0024-cloudflare-tunnel-and-r2-credentials.md) (Cloudflare Tunnel and R2 credentials)
 
 ## Context
 

@@ -3,6 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-09
 - **Amends:** the Blob-manifest pipeline state proposed earlier in 04/05
+- **Later:** Pipeline state is still in Cosmos as of 10 November 2026. On 30 October 2026 `usnm-state` gained a PostgreSQL document backend for on-prem use (#1373, [local pipeline documents](../../boinc/server/local-state.md)); moving the live state to it waits on #1367. Since 6 November 2026 the account takes connections from every network, still with Entra ID only (see [ADR-0008](0008-private-networking.md)).
 
 ## Context
 
