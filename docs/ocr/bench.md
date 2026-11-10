@@ -4,13 +4,7 @@ A benchmark release is one versioned archive of newspaper images and their refer
 transcriptions. Any OCR engine can be run and scored on it, and the scores can be compared
 because everyone uses the same bytes. Each release is a GitHub release of this repository,
 tagged `ocr-bench-<version>`. It has a content digest to cite and named subsets that resolve to
-the same files ([#738](https://github.com/tgoodyear/usnewsmap.com/issues/738)).
-
-Candidate licensing, model-availability and bounded local CPU findings are recorded in [the 2026-10-18 feasibility note](../notes/2026-10-18-ocr-bench-candidate-feasibility.md).
-
-The pilot's page images (`ocr/bench/serialset-pilot/images/`) and the raw native result archives under `ocr/bench/results/` are not tracked: they are the `bench-assets` set of `scripts/ops/data-assets.sh`, fetched with `scripts/ops/data-assets.sh --fetch --set bench-assets` and published by the `publish data assets` workflow ([reports/README.md](../reports/README.md), "Data"). `SHA256SUMS` and `inputs.sha256` stay in the tree and pin the bytes.
-
-`ocr/bench/yiddish-newspaper/` holds the draw and an empty transcription template for a Yiddish newspaper line set ([#1479](https://github.com/tgoodyear/usnewsmap.com/issues/1479)). It isn't a release, and it holds no references until people transcribe the lines. See [its README](../../ocr/bench/yiddish-newspaper/README.md).
+the same files ([#738](https://github.com/tgoodyear/usnewsmap.com/issues/738)). Two releases are published: [v1.0.0](#release-v100) (1,000 English and German samples) and [v1.1.0](#release-v110-additional-public-multilingual-tracks) (52 French, Finnish and Swedish samples).
 
 ## Fetch a release
 
@@ -112,9 +106,9 @@ v1.0.0 does not meet these targets from #738:
 | Tiers           | Smoke 10, acceptance 100 | `standard-1000` and `extended-10000` per track                                                           |
 | Splits          | All `public-eval`        | A held-out test track                                                                                    |
 
-Candidate sources for the missing languages are reviewed in
-[docs/ocr/gold-set.md](gold-set.md). They include the NewsEye French, Finnish and Swedish
-sets, the Austrian newspapers and NZZ. Each new language or label comes as a new release.
+v1.1.0 adds French, Finnish and Swedish. Candidate sources for the other languages are
+reviewed in [the gold set](gold-set.md#datasets-surveyed), among them the Austrian
+newspapers and NZZ. Each new language or label comes as a new release.
 
 ## Release v1.1.0: additional public multilingual tracks
 
@@ -130,9 +124,8 @@ scripts/ocr-bench/fetch --version v1.1.0 --verify --subset multilingual/all-52
 Content digest: `329c73b5fbaf56b91cd5cd5b1b0cdf131e15ec43391ac9e459e4a423a88eb01e`.
 Archive SHA-256: `0a015eb4085af36b015566f1311411d12aef802d461442bd8c3e963bff932923`.
 See `releases.json` for all six subset digests. Principal language labels are
-inherited from the publisher; damage and language-mix status are **unannotated**.
-This is a multilingual pool, not verified mixed-language samples, reviewed
-damage strata, full pages, or per-language standard/extended tiers. Source
+inherited from the publisher; damage and language-mix status are unannotated.
+It has no verified mixed-language samples, reviewed damage strata, full pages or per-language standard/extended tiers. Source
 conventions are preserved, with no new diplomatic re-transcription claimed.
 
 ## Scoring
@@ -174,35 +167,39 @@ pairs and do not change this legacy scorer or any benchmark release.
 ## How a release is built
 
 A release has two committed files: a recipe, `ocr/bench/<version>/spec.json`, and an inventory
-of its inputs, `ocr/bench/<version>/inputs.sha256`. For v1.0.0 the inputs are the ten Iris
-campaign roots on the BOINC project share. A copy of them is served from the project's public
-download directory as `usnm-ocr-bench-inputs-v1.0.0.tar`.
+of its inputs, `ocr/bench/<version>/inputs.sha256`. The inputs come as one tar. v1.1.0's recipe
+sets `inputs_url` to the GitHub release `ocr-bench-inputs-v1.1.0`. v1.0.0's inputs are the ten
+Iris campaign roots on the BOINC project share, and `scripts/ocr-bench/release-ci.sh` falls back
+to `https://boinc.usnewsmap.com/usnmocr_download/bench/usnm-ocr-bench-inputs-v1.0.0.tar` for
+them; that URL returned HTTP 404 on 10 November 2026.
 
-The `ocr-bench` workflow runs on every pull request that touches the benchmark:
+The `ocr-bench` workflow runs `release-ci.sh` on every pull request that touches
+`ocr/bench/`, `scripts/ocr-bench/` or `crates/usnm-ocr-survey/`. For each recipe:
 
-1. It downloads the inputs and checks every file against the inventory.
-2. It runs `usnm-ocr-survey bench-build`, which checks each campaign's sha256, every job and
-   every image against its campaign record.
-3. It requires the built archive, digests and subsets to equal the release's entry in
-   `releases.json`.
+- **Published release:** it fetches the release with `fetch --verify`, requires the committed
+  spec, inventory and `releases.json` entry to still match the published manifest, and runs
+  `bench-verify --index`. Published releases are never rebuilt or replaced.
+- **Unpublished release:** it downloads the inputs tar, checks every file against the inventory,
+  runs `usnm-ocr-survey bench-build` (which checks each campaign's sha256, every job and every
+  image against its campaign record), and requires the archive, digests and subsets to equal the
+  release's entry in `releases.json`. With no entry, it prints the entry to add and fails.
 
-The build is reproducible, so a second build gives the same bytes. After merge, the workflow
-publishes the GitHub release, fetches it back and verifies it. Once a release is published, its
-spec and inventory must not change. A fix or an addition is a new version, so earlier results
-stay valid for the bytes they were measured on.
+The build is reproducible, so a second build gives the same bytes. On a push to `main`, the
+workflow publishes any release that builds to its entry and has no GitHub release yet, then
+fetches it back and verifies it. A fix or an addition is a new version, so earlier results stay
+valid for the bytes they were measured on.
 
 To add a release:
 
-1. Write `ocr/bench/<version>/spec.json` and `inputs.sha256`, and stage the inputs tar.
-   A recipe may set an HTTPS `inputs_url` for a public immutable GitHub release
-   asset; absent this, the original input host is used. The committed inventory
-   still pins every input byte. Published release recipes must never change.
+1. Write `ocr/bench/<version>/spec.json` and `inputs.sha256`, and stage the inputs tar. Prefer an
+   HTTPS `inputs_url` pointing at an immutable GitHub release asset; the committed inventory
+   still pins every input byte.
 2. Open a pull request. The check job prints the release's `releases.json` entry.
 3. Review the entry, commit it and merge.
 
 ## LoC published baselines
 
-Legacy and refreshed LoC OCR are **separate pinned baselines**, not human
+Legacy and refreshed LoC OCR are separate pinned baselines, not human
 references. The [18 October inventory](../notes/2026-10-18-loc-refreshed-baselines.md)
 records current coverage, the original benchmark's coverage gap and unresolved
 rights/history checks. Neither code release dates nor matching title names prove
@@ -221,7 +218,7 @@ Optionally add `--repair-pages repair-pages.jsonl`; its explicit export schema a
 the measured manifest checksum are in the note. The full output contains
 per-sample statuses and title/language/decade repair strata. The compact summary
 omits these rows but preserves coverage, denominators and hashes. Candidate
-title/year ranges and batch-base matches are **not confirmed page coverage**.
+title/year ranges and batch-base matches are not confirmed page coverage.
 `not-listed-in-guide` is not proof of global absence; `outside-ndnp` distinguishes
 non-LoC sources.
 
@@ -247,14 +244,14 @@ measured values are in the note. `loc_archive.py` checks archive bytes and page
 count against metadata, bounds uncompressed content, never extracts paths and
 records each ALTO/text hash, canonical page ID, coordinate units and embedded
 software versions. An optional `--repair-pages` joins the actual archive page IDs
-against the same repair export. It does **not** prove source-image registration.
+against the same repair export. It does not prove source-image registration.
 All output paths are create-only.
 
 ### Registered crop adapter
 
 `loc_align.py` emits the existing scorer's `{"id","text"}` JSONL plus a
 checksummed alignment report. Choose `--baseline loc-legacy-v1` or
-`--baseline loc-refreshed-v1` and a **new output directory for each artifact set**.
+`--baseline loc-refreshed-v1` and a new output directory for each artifact set.
 Keep historical baseline files and scores untouched.
 
 For each available sample, supply one JSONL binding with the following fields:
@@ -275,7 +272,7 @@ For each available sample, supply one JSONL binding with the following fields:
 }
 ```
 
-The example scale is **not a default**. Registration is an operator-reviewed
+The example scale is not a default. Registration is an operator-reviewed
 input, not something the adapter proves from a URL. Do not create a binding from
 title/year overlap alone. The adapter verifies source-image bytes against the
 benchmark's original full-page hash, crop/reference hashes, actual JPEG
@@ -289,8 +286,8 @@ the scale explicitly after validating all word/line coordinates. It selects
 Strings whose centres are inside the exact crop, keeps XML line/word order,
 counts intersecting boundary lines and excludes HYP elements. It never guesses
 DPI, silently drops malformed coordinates or substitutes whole-page text for
-a crop. This is a crop transcription adapter, **not whole-page reading-order
-evaluation**. OCR inference cost is `unknown`, not zero.
+a crop. This is a crop transcription adapter, not whole-page reading-order
+evaluation. OCR inference cost is `unknown`, not zero.
 
 To score an audited package, add `--audit-inventory artifacts.json
 --audit-inventory-sha256 HASH` (the `loc_archive.py --out` inventory). Each
@@ -312,10 +309,21 @@ usnm-ocr-survey bench-score \
   --rule raw-v1 --report refreshed-raw.json
 ```
 
-Inspect `alignment.json` **before either score**. Every selected sample has an
+Inspect `alignment.json` before either score. Every selected sample has an
 aligned, missing or error status. Missing bindings stay in the denominator;
-alignment errors also produce a nonzero exit, rather than a success-shaped
-fallback. Do not rank engines on different successful subsets. Use a common
+alignment errors also exit nonzero. Do not rank engines on different successful subsets. Use a common
 verified paired subset and report all missing outputs and errors alongside it.
-WER remains unavailable until the shared benchmark defines its tokenization
-policy; no second scorer is introduced here.
+
+## Data beside the releases
+
+- The Serial Set pilot's page images (`ocr/bench/serialset-pilot/images/`) and the raw native
+  result archives under `ocr/bench/results/` are not tracked. They are the `bench-assets` set:
+  `scripts/ops/data-assets.sh --fetch --set bench-assets` puts them back, and the
+  `publish data assets` workflow publishes them ([reports/README.md](../reports/README.md),
+  "Data"). `SHA256SUMS` and `inputs.sha256` stay in the tree and pin the bytes.
+- `ocr/bench/yiddish-newspaper/` holds the draw and an empty transcription template for a
+  Yiddish newspaper line set ([#1479](https://github.com/tgoodyear/usnewsmap.com/issues/1479)).
+  It isn't a release and holds no references until people transcribe the lines; see
+  [its README](../../ocr/bench/yiddish-newspaper/README.md).
+- Candidate engines tried on v1.0.0 (EffOCR, CHURRO, Calamari) are in
+  [the 18 October feasibility note](../notes/2026-10-18-ocr-bench-candidate-feasibility.md).

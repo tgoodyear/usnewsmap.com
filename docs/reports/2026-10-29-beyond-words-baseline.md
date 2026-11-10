@@ -1,6 +1,8 @@
 # Beyond Words / Newspaper Navigator baseline, 29 October 2026
 
-This is an actual source-only annotation-agreement measurement for #1102, not a fixture, an OCR-engine evaluation or an accepted picture-search feature.
+A measurement for #1102 of how well Newspaper Navigator's predicted picture boxes agree with Beyond Words' verified annotations, from the published source files alone. It doesn't evaluate an OCR engine, and no picture-search feature uses it.
+
+Status on 10 November 2026: #1102 is open. The join report `usnm-ingest pictures-join` (#1559) is merged and tested on synthetic fixtures only; nothing from the picture work is deployed.
 
 ## Inputs and exclusions
 

@@ -21,7 +21,7 @@
       "type": "object"
     },
     "Cancel": {
-      "description": "How a page that runs past its deadline is stopped (13 §13.6.5).",
+      "description": "How a page that runs past its deadline is stopped (13 §13.6.3).",
       "oneOf": [
         {
           "const": "adapter",

@@ -1,11 +1,11 @@
 # ADR-0015: On-prem OCR workers with Azure Arc identities and an exchange account
 
-- **Status:** Proposed
+- **Status:** Proposed. Partly retired; see Later.
 - **Date:** 2026-10 (node grants moved to an Entra group, and monitoring with the Azure Monitor Agent into the nodes' own workspace, 2026-10-10; scans from a local cache, 2026-10-11)
 - **Extends:** ADR-0008 (private networking) and ADR-0009 (Entra identity only)
 - **Amends:** ADR-0009 §2, with one exception: a client secret for Arc onboarding, on a service principal made for one run (decision 1)
-- **Amended by:** [ADR-0027](0027-onprem-serving-behind-cloudflare.md) (the serving container has its own Arc identity, with decision 2's lockdown, outside the OCR nodes' group)
-- **Current state (November 2026):** the direct queue worker is retired (#966), and local OCR runs through BOINC only. The Arc identities, the exchange account, its Storage queues and `ocr-out` are still in use, now by the on-prem BOINC controller ([BOINC pages](../../boinc/README.md)).
+- **Amended by:** [ADR-0016](0016-pluggable-ocr-engines.md) (§6: the survey's runner and scorer move to Rust); [ADR-0027](0027-onprem-serving-behind-cloudflare.md) (the serving container has its own Arc identity, with decision 2's lockdown, outside the OCR nodes' group)
+- **Later:** Local OCR runs through BOINC only, since the direct queue worker was retired (#966, closed 26 October 2026). The Arc identities, the exchange account, its Storage queues and `ocr-out` are still in use, now by the on-prem BOINC controller ([BOINC pages](../../boinc/README.md)).
 
 ## Context
 

@@ -1,6 +1,6 @@
 # ADR-0026: Source-qualified page identifiers
 
-- **Status:** Proposed (2026-10)
+- **Status:** Proposed (2026-10). In use: `PageId` in `usnm-core`, Congress and Georgia Historic Newspapers (GHN) ids, and the Qwen sample ids (see Implementation status).
 - **Date:** 2026-10
 - **Relates to:** ADR-0016; `docs/design/14-corpus-data-flow.md` ("Identities and observations"); #968, #962
 

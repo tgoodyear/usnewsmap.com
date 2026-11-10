@@ -2,11 +2,17 @@
 
 Archived data-file links below download the [report-data archive](https://github.com/tgoodyear/usnewsmap.com/releases/download/data-report-data-20261023-48fbb2a/report-data.tar.gz), not individual files. The [published member list](https://github.com/tgoodyear/usnewsmap.com/releases/download/data-report-data-20261023-48fbb2a/report-data.members.txt) identifies each original path. Extract the archive at the repository root to restore those paths before running the historical reproduction commands.
 
-**Status: bounded 23-unit BOINC trial completed, collected and scored.**
-This supersedes the historical preflight-only receipts in #848/#852. Do not
-widen the sample or change production OCR routing on this evidence. The
-maintainer's 18 October 10:32 EDT instruction was “use boinc to orchestrate a
-trial”; all inference here was dispatched by BOINC, not a standalone substitute.
+Status on 18 October 2026: the bounded 23-unit BOINC trial ran, and its results were collected
+and scored, on 18 October 2026. This supersedes the preflight-only receipts in
+#848 and #852. At 10:32 EDT that day the maintainer asked to "use boinc to
+orchestrate a trial", so BOINC dispatched all the inference here. Don't widen
+the sample or change production OCR routing on this evidence.
+
+Status on 10 November 2026: `usnm_surya` was retired on 2 November 2026
+([retirement](../../boinc/apps/surya.md#retirement-2-november-2026)). The GPU
+studies' fair retest found Surya worse than Tesseract on human-transcribed
+crops, 23.0% CER against 9.0%
+([Study 6](../2026-11-gpu-studies/report.md#study-6-a-fair-surya-retest)).
 
 ## Signed releases and campaign
 

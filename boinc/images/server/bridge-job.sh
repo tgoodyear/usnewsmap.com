@@ -743,7 +743,7 @@ case "$step" in
   gold-onboard | gold-promote)
     # gold-onboard: one bounded host-trust onboard pass, a targeted gold unit for each untrusted
     # host without one outstanding, including hosts whose last unit failed
-    # (docs/notes/2026-10-16-boinc-host-trust-followups.md). It skips hosts the scheduler can't
+    # (docs/boinc/server/host-trust.md). It skips hosts the scheduler can't
     # send any version of the gold app to, by platform, plan class and the scheduler's reviewed
     # engine bindings (#1418). gold-promote: collect those units
     # and admit the hosts whose complete native evidence passes the scope's existing

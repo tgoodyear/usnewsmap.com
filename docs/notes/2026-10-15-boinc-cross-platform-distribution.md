@@ -2,6 +2,8 @@
 
 **Status:** measured locally; `Run_Podman` `--format` quoting fix applied in `boinc/scripts/patch-mac-wrapper.py` · **Date:** 2026-10-15 · **Measured on:** BOINC `22bbebe08e2eaac5d5e88a6d93b88e800cb6341c`, macOS 26.7.1 arm64, BOINC 8.2.15, Podman 5.5.2 · **Code:** [patch-mac-wrapper.py](../../boinc/scripts/patch-mac-wrapper.py), [build-mac-wrapper.sh](../../boinc/scripts/build-mac-wrapper.sh) · **Issues:** [#476](https://github.com/tgoodyear/usnewsmap.com/issues/476), [#481](https://github.com/tgoodyear/usnewsmap.com/issues/481), [#533](https://github.com/tgoodyear/usnewsmap.com/issues/533)
 
+**Outcome:** merged in PR #544, and #533 closed on 16 October 2026. Mac `usnm_ocr` 1.5 and `usnm_gold` 1.4 were signed and validated on Apple Silicon on 18 October 2026 (#476). The [macOS quick start](../boinc/volunteer/macos.md) now needs no Docker or Podman; only the container apps do.
+
 ## The question
 
 Our earlier notes ([BUDA evaluation](2026-10-14-buda-evaluation.md), [BUDA Mac tests without a project server](2026-10-14-buda-mac-offline-tests.md), [Native ARM64 BOINC worker on the Mac](2026-10-14-buda-native-arm64.md), and [Native BOINC worker builds and Mac release tooling](2026-10-14-boinc-native-arm-build.md)) established that Apple Silicon Macs (`arm64-apple-darwin`) can run the native `linux/arm64` OCR worker image inside BOINC's Podman VM with all cgroup v2 resource limits, read-only root filesystem, network isolation, and `CAP_DAC_OVERRIDE` enforced. Every pause and restart test failed, however: pausing a task succeeded, but restarting the paused container exited 1 on a duplicate container name.

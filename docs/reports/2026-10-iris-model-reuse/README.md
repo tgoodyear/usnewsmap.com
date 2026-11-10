@@ -1,5 +1,7 @@
 # Iris Xe: model reuse and compile cache (issue #736)
 
+Status on 10 November 2026: the compile cache shipped in `usnm_iris` 1.2 (see the addendum at the end). On 27 October 2026 the performance experiment closed with no rollout, and its [decision note](../../notes/2026-10-27-iris-performance-decision.md) scores the accuracy this report could not. `usnm_iris` was retired on 2 November 2026 (#1456), and `usnm_qwen`'s `intel_vulkan_8b` class replaced the Iris pilot ([server and apps](../../boinc/server/server-and-apps.md)).
+
 Raw per-crop results (`*.json`, with text, tokens, per-crop timings, cgroup counters), trial wall
 times (`*.time.txt`), whole-trial `intel_gpu_top` and `vmstat` samples (`telemetry.tar.gz`), and the
 generated table (`summary.md`). Regenerate the table with

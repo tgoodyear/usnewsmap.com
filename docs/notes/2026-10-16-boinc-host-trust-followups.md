@@ -1,5 +1,7 @@
 # Host onboarding and OCR spot checks
 
+**Status:** reference for the `usnm-boinc host-trust` commands as of 22 October 2026 (#527, closed 17 October; #901, PR #993). Scheduled onboarding and promotion are described in [Gold onboarding](../boinc/server/batch-scheduler.md#gold-onboarding-901).
+
 `usnm-boinc host-trust` implements #527's controller commands, **OFF by default**.
 Without `--execute`, commands only query the database and print a bounded plan;
 they create no controller root or work. They install no timer, enable no

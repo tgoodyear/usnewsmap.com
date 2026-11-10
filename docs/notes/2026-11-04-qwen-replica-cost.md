@@ -2,6 +2,8 @@
 
 **Status:** measured; nothing changed · **Date:** 4 November 2026 · **Measured on:** the 3,481 `usnm_qwen` units created from 21 October to 3 November 2026 (the first on 26 October), read from the BOINC database at 22:20 UTC on 4 November, with each unit's language and request version from its job input · **Code:** `boinc/scripts/qwen-replica-cost.py` · **Issues:** #1420, #1477
 
+**Outcome:** the follow-up policy to stop Yiddish v1 tie-breakers merged in PR #1549 on 5 November 2026 ([tie-breaker note](2026-11-05-qwen-yiddish-tiebreak-policy.md)). Intel's 8B class, closed to new hosts when this was measured, went to general admission on 8 November 2026 (PR #1645).
+
 ## The question
 
 A Qwen unit needs two replicas that agree. When the first two disagree, BOINC sends a third and then a fourth (`max_total_results` 4, one replica per host). #1420 asks what that costs: how many replicas are sent per unit that ends valid, against the two it needs, and whether a disputed unit is settled by more replicas or stays unresolved. The [validation note](2026-11-01-qwen-cross-vendor-validation.md) answered why the first pairs disagree. This note counts the cost.

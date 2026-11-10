@@ -17,7 +17,7 @@ Volunteers should start with [docs/boinc/volunteer/README.md](../docs/boinc/volu
 - `apps/`: container recipes, app templates, engine locks and native app support.
 - `images/`: the server image (stock BOINC, Apache, PHP and the daemons in one container), the bridge job image and the signed app-version image; see [docs/images.md](../docs/boinc/apps/images.md).
 - `boinc/scripts/provision-boinc.sh` and `boinc/scripts/build-boinc-images.sh`: provision the stack and build and pin its server and bridge images. For an Azure-hosted server, secrets and project initialization run as in-VNet Container Apps Jobs. The signing and app-version release workflow remains in `boinc/scripts/boinc-app-release.sh`; its private signing key stays offline.
-- `docs/`: [design](../docs/boinc/design.md), [interface](../docs/boinc/interface.md) (what is assumed of #441), and [verified facts](../docs/boinc/verified-facts.md) (each with its source and fetch date), and [images and deployment steps](../docs/boinc/apps/images.md).
+- `docs/`: [design](../docs/boinc/design.md), [interface](../docs/boinc/design.md#11-interface-with-the-bridge) (what is assumed of #441), and [verified facts](../docs/boinc/verified-facts.md) (each with its source and fetch date), and [images and deployment steps](../docs/boinc/apps/images.md).
 
 The Rust apps and work generator remain in the workspace crates. Later options for anonymous volunteers, and a deferred fetch idea, are one short section each in the design.
 

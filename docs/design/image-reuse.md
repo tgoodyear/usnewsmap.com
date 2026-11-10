@@ -1,12 +1,17 @@
 # Image reuse across newspapers
 
-**Status:** Design for review, not a rollout authorization · **Date:** 26 October 2026 · **Issue:** [#1220](https://github.com/tgoodyear/usnewsmap.com/issues/1220), Phase 3 of [#1102](https://github.com/tgoodyear/usnewsmap.com/issues/1102)
+**Status:** Design accepted when [#1220](https://github.com/tgoodyear/usnewsmap.com/issues/1220) closed on 26 October 2026. Nothing of it is built: no evaluation has run, no model is downloaded and no code exists. It is not a rollout authorization · **Date:** 26 October 2026 · **Issue:** #1220, Phase 3 of [#1102](https://github.com/tgoodyear/usnewsmap.com/issues/1102)
 
 The result should distinguish reuse of the same illustration from pictures of
 the same subject. A cluster's map and timeline show observed appearances in the
 digitized corpus, not the direction of copying or its first historical printing.
-Phase 1 caption search and Phase 2 layout evaluation remain prerequisites, not
-work this design claims to have delivered.
+It depends on #1102's Phase 1 picture layer and Phase 2 layout evaluation, which
+are not finished (#1102 is open). As of 10 November 2026 the Newspaper Navigator
+boxes can be ingested and joined to curated pages (`usnm-ingest pictures` and
+`pictures-join`, [operations: pictures](../operations/pictures.md)), and the
+Beyond Words annotation-agreement baseline is measured
+([report](../reports/2026-10-29-beyond-words-baseline.md)). The picture search
+field, filter and crops in the hit list are not built.
 
 ## Models and reproducibility
 
@@ -65,8 +70,7 @@ a missed neighbour. Add a second-stage local-feature/geometric verification
 check, with minimum matched area and inlier requirements tuned only on the
 development split. Semantic embedding similarity alone must not assert reuse.
 
-There is deliberately no production cosine cutoff selected from an unmeasured
-model. On development data, sweep thresholds and geometric-verification settings
+No production cosine cutoff is chosen from an unmeasured model. On development data, sweep thresholds and geometric-verification settings
 and choose the highest-recall combination meeting the following evidence gate.
 On each of development and held-out test, require at least 300 independent
 evaluation families and sample one asserted pair per family using a preregistered

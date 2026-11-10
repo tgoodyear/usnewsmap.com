@@ -4,6 +4,8 @@ subtitle: "Tesseract on the original JP2 and on the IIIF JPEG of the same Chroni
 date: "October 2026"
 ---
 
+Status on 10 November 2026: from 13 October 2026 the direct OCR worker fell back to the IIIF JPEG on exit 136 (#454, #458). On 14 October the crash's cause was found and fixed (#455, #488): Tesseract turns floating-point traps on, and OpenJPEG's inverse wavelet transform overflows harmlessly on many LoC JP2s, so the engine image now preloads a no-op `feenableexcept` (`ocr/engines/tesseract/fpshim.c`). With the shim, all 37 crashing JP2s read, and their text is byte-identical to OCR of an `opj_decompress` conversion. The direct worker and its fallback were retired on 24 October 2026 (#1053); OCR now runs through BOINC. The BOINC version of this comparison, `usnm_assess` (#456), never ran a workunit and was retired on 2 November 2026.
+
 This report is about OCR quality, speed and failures. It does not re-measure fetching. Fetch speed and completeness favour the JP2 route, as the earlier work for #368 and #420 found and as [12: on-prem OCR pipeline](../../design/12-onprem-ocr-pipeline.md) §12.2.4 records: the bag route moves the original file with an md5 check and no per-image IIIF render. The question here is whether Tesseract reads the JP2 as well as it reads the JPEG that LoC's IIIF server makes from it, and what happens to the pages it cannot read.
 
 # Summary

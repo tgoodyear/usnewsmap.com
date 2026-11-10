@@ -1,7 +1,11 @@
 # 14: Corpus data, runs and processing flow
 
-Status: initial catalog and dashboard deployed; source coverage remains partial.
-Tracking: [#704](https://github.com/tgoodyear/usnewsmap.com/issues/704).
+Status: the catalog (`scripts/corpus/data_catalog.py`), the observer
+(`scripts/corpus/data_flow_observer.py`) and the dashboard's "Corpus data flow"
+panel (`crates/usnm-ocr-dash`) are deployed, with an hourly refresh from the
+dashboard's throughput history. Source coverage is partial: release decisions,
+engine runs and per-file scan verification have no scheduled source.
+Tracking: [#704](https://github.com/tgoodyear/usnewsmap.com/issues/704) (open).
 
 ## Goal and boundaries
 
@@ -43,7 +47,12 @@ be established for each artifact and campaign, not inferred from a deployment.
 
 Use a source-qualified page identity. Existing Chronicling America `doc_id`
 values map to `loc:<doc_id>` without changing their native keys. Other source
-namespaces retain their original page identifiers. Source versions, crops,
+namespaces retain their original page identifiers.
+[ADR-0026](adr/0026-source-qualified-page-ids.md) (Proposed) builds on this
+section and defines the scheme, its registered sources and the rule that a bare
+id means `loc`. `usnm_core::page_id::PageId` parses the form in Rust, and the
+catalog accepts only qualified ids, writing LoC pages as `loc:<doc_id>`; most
+other stores still hold bare ids (ADR-0026, "Implementation status"). Source versions, crops,
 image renditions and text readings are related artifacts, not replacement page
 identities. A crop records its parent and coordinate convention.
 
@@ -168,21 +177,23 @@ adapter and timestamp. Until connected, the corresponding stage is unknown.
 
 ## Delivery and acceptance
 
-1. Add tested catalog ingestion, indexed read-only queries and snapshot export.
-2. Emit actual page-level run evidence through an opt-in worker path, retaining
-   failures and execution/acceptance separation.
-3. Add dashboard snapshot support and remove intentionally retired node 4 from
-   active OCR polling. Preserve host monitoring, TLS and access restrictions.
-4. Review and merge scoped PRs; deploy the dashboard on existing CT 212 with a
-   preserved binary/config rollback. Seed only evidence observed from real
-   sources, showing all unconnected stages as unknown.
-5. Activate adapters and worker emission on approved hosts without interrupting
-   allocated work. Reconcile one page through artifact, execution, validation,
-   import and index release before claiming complete pipeline coverage.
+1. Catalog ingestion, indexed read-only queries and snapshot export: built
+   (`data_catalog.py`, with `test_data_catalog.py`).
+2. Page-level run evidence from an opt-in worker path: built in
+   `usnm-ocr-worker` (`USNM_OCR_RUN_METADATA_DIR`), then retired with the direct
+   OCR worker (see [Retired worker evidence transport](#retired-worker-evidence-transport)).
+3. Dashboard snapshot support: built (the "Corpus data flow" panel,
+   `/api/pipeline.json`).
+4. Deployment on CT 212 beside the dashboard, with unconnected stages shown as
+   unknown: done in October 2026.
+5. Live adapters: the hourly `refresh-live` aggregates are connected
+   ([Current evidence](#current-evidence)). Reconciling pages through artifact,
+   execution, validation, import and index release has only one-off proofs so
+   far; #704 stays open until live producers feed those stages.
 
-Production BOINC changes remain serialized through #529. This design does not
-open a GPU cohort, promote trust, enable the periodic batch controller, resolve
-mirror licensing, or bypass existing quality/download/validator defects.
+Production BOINC changes remain serialized through #529. The catalog does not
+open a GPU cohort, promote trust, run the batch controller, resolve mirror
+licensing, or bypass quality, download or validator checks.
 
 Acceptance includes malformed/oversized evidence, idempotent replay, conflicting
 identities, interrupted transactions, out-of-order events, missing sources,
@@ -240,22 +251,16 @@ ssh root@pve-big.tjg.fyi \
 support bounded filters and pagination. `/health` means the catalog is readable,
 not that the pipeline is ready.
 
-The initial bootstrap observes 128 real cached scans and independently hashes
-one scan. It also includes one isolated local worker run to check metadata
-capture/import. That instrumentation run used the available English model,
-not a calibrated target-language experiment; its source is
-`instrumentation-smoke-eng-not-quality`. No output was submitted for acceptance,
-curated import or indexing.
+The first evidence was a bootstrap of 128 cached scans (one hashed) and one
+instrumentation worker run (source `instrumentation-smoke-eng-not-quality`),
+none of it submitted for acceptance, import or indexing. Those sources are
+listed in `HISTORICAL_SOURCES` ([Overall evidence age](#overall-evidence-age)).
 
-For subsequent worker runs, enable
-`USNM_OCR_RUN_METADATA_DIR` on a persistent, worker-writable local directory when
-deploying a compatible worker at a safe workload boundary. This is opt-in; no
-active worker was restarted for this rollout. The
-[worker contract](../../crates/usnm-ocr-worker/README.md#local-page-run-metadata-opt-in)
-describes success, failure, retry and durability semantics.
-
-Copy completed `*.json` captures through the administrative path, retaining the
-originals. Import each with a new evidence filename and stable batch/source IDs:
+The retired direct worker wrote page run captures when
+`USNM_OCR_RUN_METADATA_DIR` was set
+([worker contract](../../crates/usnm-ocr-worker/README.md#local-page-run-metadata-opt-in)).
+A retained capture is imported with a new evidence filename and stable batch and
+source IDs:
 
 ```bash
 python3 scripts/corpus/data_catalog.py --db catalog.sqlite ingest-worker \
@@ -350,19 +355,16 @@ On a copy of the deployed catalog under the unit's limits, a run took 2.3 second
 and 35 MB of memory.
 
 Its SQLite work, from the schema checks to the snapshot, has 60 seconds in all
-(`REFRESH_SECONDS`), not the two-second query deadline that bounds `serve` and the
-other subcommands; the unit's two-minute `TimeoutStartSec` still bounds the
-process. The 60 seconds cover the ingest transaction and each wait for a lock,
-including the commit's: before each wait the busy timeout is set to what is left,
-and once none is left the run fails with `catalog deadline exceeded`. Two seconds
-was too short once deployed (#1436). On CT 212 the first run failed after 2.5
-seconds and the two runs in the next 10 minutes passed in about 1.5 seconds, but
-from the next hour every hourly run failed after 2.3 to 2.5 seconds with about 0.5
-seconds of CPU. The error named no cause; a missed deadline on a cold page cache,
-which each hourly run starts on, fits those timings. A failed run now prints a
-fixed `cause` beside the error, such as `SQLITE_INTERRUPT` for a query still
-running at the deadline, `SQLITE_BUSY` for a lock still held or an errno name, and
-never the message, which can hold a path or SQL.
+(`REFRESH_SECONDS`), not the two-second query deadline (`QUERY_SECONDS`) that
+bounds `serve` and the other subcommands; the unit's two-minute
+`TimeoutStartSec` still bounds the process. Each hourly run starts on a cold page
+cache, where two seconds was too short (#1436). The 60 seconds cover the ingest
+transaction and each wait for a lock, including the commit's: before each wait
+the busy timeout is set to what is left, and once none is left the run fails
+with `catalog deadline exceeded`. A failed run prints a fixed `cause` beside the
+error, such as `SQLITE_INTERRUPT` for a query still running at the deadline,
+`SQLITE_BUSY` for a lock still held or an errno name, and never the message,
+which can hold a path or SQL.
 
 | Panel row        | Source       | Evidence                                                                                                                                                      |
 | ---------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -441,9 +443,8 @@ dashboard keeps the older hours.
 
 ### Overall evidence age
 
-The overall age and the panel's warning used to follow the oldest stage, so one
-source that had stopped for good set both for the whole panel. They now work as
-follows:
+A source that has stopped for good must not set the age of the whole panel, so
+the overall age and the panel's warning work as follows:
 
 - `HISTORICAL_SOURCES` in `data_catalog.py` lists sources that will never report
   again: one-off proofs and the retired worker receiver. Adding a source takes a

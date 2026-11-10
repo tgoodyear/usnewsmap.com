@@ -1,15 +1,11 @@
 # The gold check
 
-Part of the [BOINC batch pilot guide](../README.md).
+How a host's OCR engine is scored on public ground truth, how those scores decide which hosts' `usnm_ocr` results are published, and how the gold bundle is built.
 
 ## Gold check
 
-For an optional, aggregate-capped client beside an OCR node's existing queue
-worker, see [the dev-first OCR-node plan](ocr-node.md) (#472). It does not
-enable or attach production clients.
-
 A volunteer host can score its engine on the public gold bundle
-([ocr-gold-set.md](../../ocr/gold-set.md#volunteer-bundle), #457) and report CER and
+([the gold set](../../ocr/gold-set.md#volunteer-bundle), #457) and report CER and
 WER together with the bundle version. Two steps, because the task container
 runs with `--network=none`:
 
@@ -40,7 +36,7 @@ version are explicit operator metadata, not independently verified image
 identity.
 
 `gold-run` does not download files, but it cannot sandbox an arbitrary
-executable. Run the **entire invocation** in a container with `--network=none`
+executable. Run the entire invocation in a container with `--network=none`
 (as for the stock worker), with preinstalled engine and models and a staged
 cache; never give the adapter reference text. This option is for local
 experiments, not the locked `usnm_gold` BOINC job or its trust reports.
@@ -184,8 +180,7 @@ These steps run on the on-prem host, and `boinc/scripts/onprem-step.sh` requires
 same steps with `boinc/scripts/start-boinc-bridge.sh`, where `--wait-mins` is optional.
 
 The gold units' batch is 0, so their spool is `/project/usnmocr/results/0`.
-These commands describe the code path; no production mirror or campaign is
-enabled by this change.
+These commands describe the code path.
 
 For separately authorized LoC-only transfer acceptance, `gold-mirror-loc`
 stages only the 18 original JPEGs pinned in `bundle-v1.lock.json`, without
@@ -221,13 +216,13 @@ and the page's source language and model profile match the declared calibration,
 with every crop scored, no skips, no crop with character edits at least its
 reference length, and overall CER at or below a threshold. The per-crop guard
 rejects complete loss (including empty output) even when an aggregate hides it;
-it is not a guarantee against subtler OCR errors. There is **no default
-scientific threshold**: calibrate on the first campaign for the locked image,
+it is not a guarantee against subtler OCR errors. There is no default
+scientific threshold: calibrate on the first campaign for the locked image,
 bundle, languages and scoring configuration;
 record that evidence and pass `--max-cer` (bridge: `GOLD_MAX_CER`) and
 `--manifest-sha256` (bridge: `GOLD_MANIFEST_SHA256`), `--language`
 (`GOLD_LANGUAGE`) and `--profile` (`GOLD_PROFILE`) explicitly.
-Gold currently supports PSM 3 / 300 DPI only; the trust artifact records these,
+Gold supports PSM 3 / 300 DPI only; the trust artifact records these,
 and different page configurations are refused. The collector records observed
 profiles and scoring configuration, and every scored crop in an eligible report must use the declared profile.
 A newer valid canonical report with a different/mixed profile or failed crop
@@ -252,7 +247,7 @@ pre-final snapshot is not upgraded from a later partial view, because a purged
 retry cannot otherwise be ruled out. Do not edit or relabel legacy lists.
 Deploying this guard neither chooses a threshold nor promotes hosts.
 
-A terminal attempt revokes the matching host's **quality eligibility** only
+A terminal attempt revokes the matching host's quality eligibility only
 when the authoritative BOINC row is over (`server_state=5`), reports
 `CLIENT_ERROR` (`outcome=3`), is not a cancellation (`exit_status` is neither
 202 `EXIT_ABORTED_BY_PROJECT` nor 203 `EXIT_ABORTED_VIA_GUI`), identifies a
@@ -261,9 +256,9 @@ as the all-skipped Gold worker exiting without a report) as a conservative
 eligibility failure; it is not a measured CER/WER result and must not be
 reported as OCR quality. Project and user cancellations (`exit_status=202` or `203`,
 `EXIT_ABORTED_BY_PROJECT` or `EXIT_ABORTED_VIA_GUI`) are excluded even though
-BOINC may record them as `CLIENT_ERROR`. Other outcomes—including server-side
+BOINC may record them as `CLIENT_ERROR`. Other outcomes (including server-side
 inability to send, no reply, validator/server errors, missing output artifacts,
-or rows without an attributable host/receive timestamp—do not revoke trust. They
+or rows without an attributable host/receive timestamp) do not revoke trust. They
 remain separately visible as native metadata or collection failures and require
 operator review if needed. No inference comes from spool or filesystem times,
 and no canonical report is fabricated for zero scored crops.
@@ -350,7 +345,7 @@ list goes live. The reviewed German hold and its deploy steps are in
 (`srp/srp+srp_latn`) has been held the same way since 7 November
 ([note](../../notes/2026-11-07-serbian-trust-hold.md)).
 
-Trust is keyed by the **full immutable worker digest**, not a tag, base image or
+Trust is keyed by the full immutable worker digest, not a tag, base image or
 engine version. In v5, server `received_time` orders eligible canonical reports
 and attributable terminal client errors within the calibrated scope, regardless
 of file order. The newest event wins; same-time conflicts fail closed. Missing
@@ -362,24 +357,25 @@ its receipts do not establish deployment or live acceptance of v5.
 targeted, write-ahead campaign; its persisted campaign nonce and host
 participate in the validated job identity, so fresh roots and hosts cannot
 collide in workunit or spool names and retries keep the same identity. Targeted
-jobs use protocol v2 and require a **newly built and released worker containing
-this support**; do not target old worker images that only understand v1.
+jobs use protocol v2 and require a newly built and released worker containing
+protocol v2 support; do not target old worker images that only understand v1.
 Untargeted v1 job bytes and identities remain compatible. Use a fresh campaign
 root per host and image. It refuses until the project's active XML config
 explicitly has `<enable_assignment>1</enable_assignment>`. Installing these
-commands does **not** enable assignment: first verify scheduler and assignment
+commands does not enable assignment: first verify scheduler and assignment
 behavior in dev and calibrate the first campaign.
 
 A native build is a different digest, so it starts with no trusted hosts. Its
 gold units run in the separate app `usnm_gold_native`, reach only the hosts
 named in `GOLD_NATIVE_HOSTS`, and are judged by the same `gold-promote` against
 the scope's existing threshold and challenge
-([boinc-native-ocr.md](../apps/native-ocr.md#trust)).
+([native OCR](../apps/native-ocr.md#trust)).
+
+How the scheduler routes gold units to hosts is described in the [gold set](../../ocr/gold-set.md) page's "Gold routing" section.
 
 There are two distinct automation entrypoints:
 
-- The opt-in [host-trust follow-up
-  controller](../../notes/2026-10-16-boinc-host-trust-followups.md) provides bounded
+- The opt-in [host-trust commands](host-trust.md) provide bounded
   discovery and first-Gold issuance, plus sampled independent-host OCR reruns and
   comparisons. Its dispatch commands require an explicit `--execute`; invoking
   those standalone commands installs no timer or assignment configuration.
@@ -409,17 +405,7 @@ image's `gold-bundle` step as root on the host:
 usnm-boinc-step --env prod --step gold-bundle --var GOLD_CAMPAIGN=v1-tess550 --wait-mins 360
 ```
 
-`"goldBundle": true` in `boinc/infra/boinc/env/<env>.json` applies to the Azure
-server only. With `"server": "azure"`, the bundle is built inside the VNet instead: set it
-in the same commit as the new digest (prod's file already sets it). After
-`boinc/scripts/provision-boinc.sh`, the stack has the gold bundle job (`usnm-boinc-gold-caj-<env>`, the stack's
-output `goldBundleJobName`). It runs the same step with `GOLD_CAMPAIGN=v1-tess550` set in
-the job itself, so it needs no override:
-
-```sh
-az containerapp job start --subscription <subscription> --resource-group usnm-boinc-rg-prod \
-  --name usnm-boinc-gold-caj-prod --query name -o tsv
-```
+On a `"server": "azure"` environment the step runs as a job inside the VNet instead ([the gold bundle job](azure.md#the-gold-bundle-job)).
 
 The step (`boinc/images/bridge/gold-bundle.sh`):
 
@@ -429,7 +415,7 @@ The step (`boinc/images/bridge/gold-bundle.sh`):
    one request at a time, a second apart, and loc.gov paced as `locfetch` paces
    it. A file that's already downloaded isn't fetched again, so a rerun resumes;
 2. runs `gold.py public-convert` for each, with the flags of the 13 October 2026
-   runs ([ocr-scoring-guide.md](../../ocr/scoring-guide.md#fetch-and-convert)): `--count 600 --per-page 1`
+   runs ([the scoring guide](../../ocr/scoring-guide.md#fetch-and-convert)): `--count 600 --per-page 1`
    for BLN600, `--count 600 --per-page 50` for Overproof, `--count 60` for the others;
 3. runs `usnm-ocr-survey bundle-build --version 1 --seed 457 --per-source 30` with
    BLN600's zip as `--original`, writing its lock beside the bundle, then
@@ -523,7 +509,7 @@ clean-host guide's command output. Do not infer cache reuse from multiple
 successful tasks or infer peak resource use from cgroup limits. Keep the
 production issuance and campaign separate from this documentation checklist.
 
-Volunteers' steps are in [boinc-volunteer.md](../volunteer/README.md).
+Volunteers' steps are in the [volunteer guide](../volunteer/README.md).
 
 ### Engine routing
 

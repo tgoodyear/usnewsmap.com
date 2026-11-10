@@ -4,6 +4,8 @@ subtitle: "Which OCR readers to use on the corpus, and what it takes to run them
 date: "November 2026"
 ---
 
+Status on 10 November 2026: the statuses in [What to do next](#what-to-do-next) are as of 6 November. As checked on 10 November: `boinc/apps/qwen/llama.lock` still pins llama.cpp b8799; `crop-consensus-v2` is in `usnm-boinc qwen compare` behind a rule file ([OCR quality on BOINC](../../boinc/apps/quality.md)) and #1434 is open; no Study 11 results are in the repository; Xiaomi-OCR-0 isn't packaged for BOINC; #1488 and #1489 are fixed (#1498, #1502), and the word-box aligner isn't in `usnm-alto` yet; the Yiddish newspaper test set is #1479, open. `usnm_surya` was retired on 2 November 2026.
+
 # Summary
 
 ## What we learned

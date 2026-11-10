@@ -2,6 +2,8 @@
 
 **Status:** code merged, not enabled; measured read-only · **Date:** 5 November 2026 · **Measured on:** the 3,838 `usnm_qwen` units created from 21 October to 5 November 2026, read from the BOINC database at 12:21 UTC on 5 November · **Code:** `boinc/scripts/qwen-tiebreak-policy.py`, `boinc/scripts/qwen-replica-cost.py` · **Issues:** #1477, #1420, #1479
 
+**Outcome:** PR #1549 merged on 5 November 2026. As of 10 November 2026 no record shows the policy turned on; the decision is open on #1477.
+
 ## The question
 
 When a Qwen unit's first pair disagrees, BOINC sends a third replica and then a fourth. For Yiddish request version 1 these tie-breakers rarely settle the unit: the [replica cost note](2026-11-04-qwen-replica-cost.md) found that a third replica settled 13% of the units it reached and a fourth 6%. #1477's first option is to stop them. This note measures what that saves if it's turned on today. The code is described in [`docs/boinc/apps/quality.md`](../boinc/apps/quality.md) under "Stopping tie-breakers by language and request version".

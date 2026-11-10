@@ -2,7 +2,7 @@
 
 `usnm-ocr-worker loc-alto-words` writes every word of LoC's OCR from Chronicling America's bulk OCR archives to Parquet, one file per archive, with each word's place on the page, confidence and box ([#1424](https://github.com/tgoodyear/usnewsmap.com/issues/1424)). With it, answering a question about LoC's words means reading a few columns instead of decompressing every archive.
 
-`loc-alto-stats` is unchanged. It keeps a row a page for the damage and ranking work, and its loader reads every Parquet file in its directory, so the word files must go in a different directory.
+`loc-alto-stats` is a separate job that keeps one row per page for the damage and ranking work. Its loader reads every Parquet file in its directory, so the word files must go in a different directory.
 
 ## Running it
 

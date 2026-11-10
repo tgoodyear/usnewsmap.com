@@ -356,7 +356,7 @@ async fn suite(r: &mut Runner, corrupt: &[u8], report: &mut Report) -> anyhow::R
     report.skip(
         "deadline_cgroup",
         "nothing left in the container's cgroup.procs after a timeout isn't checked yet: \
-         it needs the engine runtime's cgroup (13 §13.6.6)",
+         it needs the engine runtime's cgroup (13 §13.6.4)",
     );
 
     // Every line on stdout was a contract message, and every result within

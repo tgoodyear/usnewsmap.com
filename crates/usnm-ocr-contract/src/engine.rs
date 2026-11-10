@@ -100,7 +100,7 @@ pub struct Profile {
     pub tunable: Vec<String>,
 }
 
-/// How a page that runs past its deadline is stopped (13 §13.6.5).
+/// How a page that runs past its deadline is stopped (13 §13.6.3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Cancel {

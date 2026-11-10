@@ -1,9 +1,10 @@
 # ADR-0008: Private networking for app → data paths
 
-- **Status:** Accepted
+- **Status:** Deprecated in prod: its private endpoints were removed on 6 November 2026 (#308). Accepted September 2026.
 - **Date:** 2026-09
 - **Amends:** ADR-0006, which had deferred all network isolation to the growth profile
 - **Amended by:** [ADR-0027](0027-onprem-serving-behind-cloudflare.md) (behind `onPremServing`, the lake's opening to the home IP is permanent while serving is on-prem, and Cosmos allows the home IP with its policy exemption)
+- **Later:** On 6 November 2026, to cut cost while the on-prem host serves traffic, prod's three private endpoints and two privatelink zones were removed (#1600, #1602) and the Azure spare moved to a Container Apps environment without a VNet (#1611, #1615). With `USNM_DATA_ALL_NETWORKS` on, the lake, the index account and Cosmos accept every network. Shared keys, Cosmos local auth and SAS stay off ([ADR-0009](0009-entra-identity-only.md)). No ADR records this change yet. `USNM_CAE_VNET` still defaults to `true`, so other environments keep the VNet.
 
 ## Context
 

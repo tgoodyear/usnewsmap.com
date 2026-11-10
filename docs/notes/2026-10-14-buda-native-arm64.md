@@ -2,6 +2,8 @@
 
 **Status:** built and tested locally; no registry publication or server changes · **Date:** 2026-10-14 · **Measured on:** macOS 26.7.1 arm64, Podman 5.5.2, BOINC 8.2.15, docker_wrapper 22, repository code at `96dff87` · **Issue:** [#481](https://github.com/tgoodyear/usnewsmap.com/issues/481)
 
+**Outcome:** native ARM Mac workers shipped as `usnm_ocr` 1.5 on 18 October 2026 (#476). The pause and restart fix is in the [`Run_Podman` note](2026-10-15-boinc-cross-platform-distribution.md), and the BUDA server spike was never run ([ADR-0020](../design/adr/0020-boinc-buda-evaluation.md)).
+
 ## The question
 
 Can the Mac run the actual OCR worker natively, rather than emulate the committed amd64 worker? This supersedes the emulated OCR path in the [earlier Mac tests](2026-10-14-buda-mac-offline-tests.md). The native engine and worker were built successfully, loaded into BOINC's Podman VM and tested with the same synthetic fixture and runtime restrictions.

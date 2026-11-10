@@ -1,219 +1,12 @@
 # BOINC server on-prem
 
-The BOINC server, its database and the bridge steps moved from Azure Container Apps to an on-prem
-container host on 21 October 2026 (#942, part of #917), and the hand-off steps followed when the Azure hand-off job was retired on 6 November 2026 (#308). This page covers what runs there and the cutover order.
-The scripts are in `boinc/scripts/onprem/`, and the step runner is `boinc/scripts/onprem-step.sh`.
-
-## Reviewed resumable release pipeline (#551)
-
-`bootstrap_pipeline.py --onprem-host HOST --onprem-ct CT` selects the local Podman
-lifecycle; omitting these arguments retains the Azure-only lifecycle. It never uses the
-environment's historical Azure image pins as on-prem deployment or signing identities.
-This is an **operator-invoked release**, not permission to run it during a protected #529
-window. Code review/CI do not authorize a live restart, signing, dispatch or acceptance.
-
-Prerequisites: the existing on-prem MySQL/project setup, configured `server.env` and
-`bridge.env`, server unit, Podman, Python 3 and installed `usnm-boinc-step`; root SSH to
-the Proxmox host/CT; an already unlocked reachable isolated signing host; GitHub workflow
-and reviewed-PR permissions; and independent, dedicated existing-client acceptance inputs
-from #548. The pipeline does not install a runtime, initialize/reset a database, unlock a
-key, copy private keys, or change topology. A missing prerequisite fails explicitly.
-
-Place the operator configuration and #548 existing-client configuration below ignored
-`target/` in a clean checkout of reviewed main. Container configuration:
-
-```json
-{
-  "env": "dev",
-  "app": "usnm_ocr",
-  "version": "1.0",
-  "platform": "x86_64-pc-linux-gnu",
-  "plan_class": "docker",
-  "signing_host": "signing.example",
-  "acceptance_config": "existing-client.json"
-}
-```
-
-A `usnm_ocr` release signs with `--hold` by default (#1687): the version is published deprecated, so release it with `app-version-hold.php --action release` ([app-release.md](../apps/app-release.md#held-versions)) before the acceptance phase, which needs it sent. `"release_mode": "outrank-pinned"`, the one optional field, publishes it live instead; it is accepted only for `usnm_ocr` and `usnm_gold`.
-
-For a native Linux x86_64 release, add `"kind": "native"`, `"binary": "worker"`,
-`"binary_sha256": "<64 lowercase hex>"`, and `"binary_source": "<40 hex source commit>"`.
-Supported native identities are `usnm_quality` with empty `plan_class`, or `usnm_qwen`
-with `mt`, `nvidia_cuda_2b`, `nvidia_cuda_8b`, `intel_vulkan_8b`,
-`nvidia_vulkan_8b`, `nvidia_vulkan_6gb_8b`, `nvidia_vulkan_2b`, or `amd_vulkan_8b`. Supply an already built binary; additional
-platforms are not claimed. A native release reviews the
-binary checksum/source instead of dispatching a container worker workflow. Native
-auxiliary payloads use `"extra_files": {"llama-server": {"path": "llama-server",
-"sha256": "<64 hex>", "source_commit": "<40 hex>"}}`; every payload checksum/source
-is included in the reviewed manifest and checked before signing. Existing native
-plan-specific required-file checks still apply. Container
-support remains OCR `docker` and Qwen `docker_mt_2b` / `docker_nvidia_cuda_8b`; do not
-select a deprecated production plan just to exercise the lifecycle.
-
-Offline parser check (no SSH, builds, signing, installation or publication):
-
-```sh
-python3 boinc/scripts/bootstrap_pipeline.py --config target/release/config.json \
-  --state-dir target/release/state --onprem-host pve.example --onprem-ct 230 --dry-run
-```
-
-Only in a separately authorized serialized window, invoke/resume the same command:
-
-```sh
-python3 boinc/scripts/bootstrap_pipeline.py --config target/release/config.json \
-  --state-dir target/release/state --onprem-host pve.example --onprem-ct 230 \
-  --authorize-runtime-install \
-  --coordination-claim https://github.com/tgoodyear/usnewsmap.com/issues/529#issuecomment-CLAIM
-```
-
-The explicit install flag authorizes installation of the **reviewed** `SERVER_IMAGE`
-pin and a server-unit restart. The runner shares the installed bridge runner's exclusive
-lock. Existing runtime prerequisites are read first; base/server/bridge-bin/bridge are
-built locally from an archived reviewed source, using the existing Containerfiles.
-Like the installed step runner, these online builds use the CT's host network; they
-do not require `/dev/net/tun` or an additional nested network stack inside an LXC.
-This does not change the separate, network-disabled signing operation.
-Each local image's immutable ID and source label is read back. Partial builds retain
-private per-stage image-ID receipts on the CT and reuse only source-verified IDs.
-An independent per-operation supervisor inherits that lock and passes it to child
-commands, so a lost SSH/helper cannot release exclusion while an operation continues.
-Installation waits for the expected container to be running. A submitted systemd job
-must finish before the supervisor releases its lock; if systemd cannot confirm this,
-exclusion remains held for operator reconciliation rather than permitting overlap.
-The rollback receipt and replacement env pin are file- and directory-fsynced before
-restart submission; a failed artifact/source check cannot modify the privileged config.
-
-Two independent review checkpoints remain mandatory:
-
-1. A version-1 manifest at
-   `boinc/infra/boinc/releases/ENV-onprem-APP-PLAN.json` (`default` for an empty
-   plan) records target host/CT, environment, exact release, source commit, local
-   `base`/`bin`/`server`/`bridge` IDs, and the public worker digest with successful
-   run/attempt/model/source receipt provenance (or native checksum/source).
-   Only this manifest may change. The pipeline opens a PR and stops. A maintainer
-   must review and merge it with successful CI and no unresolved findings.
-   The pipeline never approves or merges its own candidate.
-2. After reviewing the first manifest, installation writes `images.bridge` (the bridge
-   contains both server and bridge tools) into `/etc/usnm-boinc/server.env`, preserving
-   other host settings and a private old-pin rollback receipt. Both the server unit
-   and installed step runner consume that file. The running image is checked, not
-   just a tag. Signing transfers only this public image to the isolated signing host;
-   no Azure pull/pin fallback is allowed. `boinc-app-release.sh --prepare-only
---onprem-manifest PATH --artifact-receipt FILE` emits a versioned signed local
-   appver-ID receipt. Its source and runtime must match the candidate.
-   A second manifest-only PR adds `images.appver` and `signing_source`.
-   Publication waits for its reviewed merge and successful CI too.
-
-Publication uses the installed `usnm-boinc-step --target publish --step publish
---image sha256:...`, never a moving tag. Runtime/env/source identities are rechecked
-before publication and acceptance. The pipeline binds #1246's root-local acceptance
-transport to the reviewed running bridge ID and the staged reviewed adapter source;
-the operator's existing-client command and expected outputs are retained. The final
-durable #548 receipt must prove canonical acceptance **and cleanup**, and is checksummed
-on subsequent resumes. Fake tests are not live #548/#551 closure evidence.
-
-Exit 3 means a workflow/review checkpoint is pending; rerun the identical command
-after it completes. Exit 3 also means another step held the production step lock when
-a build, installation or verification was due to start. Nothing ran, so rerun the
-identical command later. Publication waits up to five minutes for that lock
-(`USNM_BOINC_STEP_LOCK_WAIT_SECS=300`), because the verification before it has just
-released the lock and queued steps take it first. If the lock is still held,
-publication fails like any other phase. Interrupted/failed phases persist an ambiguous intent and require
-operator reconciliation followed by `--approve-retry PHASE`. Completed phases never
-repeat automatically. A crash after `server.env` replacement can be reconciled by the
-runtime retry, which restarts and reads back the already-reviewed pin. There is no
-automatic rollback, key unlock or destructive recovery. Do not delete state to evade
-an ambiguous publication or acceptance reservation.
-Native binary/auxiliary inputs are rehashed after copying into private staging;
-only those verified copies are transferred for signing and appver construction.
-
-## Deliberate terminal OCR retry (#1159)
-
-`usnm-boinc retry` prepares **one explicitly reviewed single-page retry**, not an
-automatic recovery loop. Attempt 0 keeps its existing v1 JSON and job/workunit ID.
-Retry contract v2 binds a new attempt to its parent ID. Never edit an old request,
-signed app version, journal, assimilator marker or accepted result to force a replay.
-
-Before activation, deploy the reviewed reader to **every** strict journal consumer
-(controller, server, bridge, native sync and seeder), and sign/install a matching `usnm_ocr` worker
-supporting contract v2. Old workers reject v2; a new CLI alone is insufficient.
-Record the supporting BOINC worker's full released image digest (not its separate
-Tesseract base image digest) and
-BOINC app version number. Existing trust, routing, source budgets and validation
-still apply. Do not retry a bundle or bypass its reconciliation.
-Submission verifies its registered Dockerfile signature, requires an unambiguous
-active app/version/platform/plan mapping, and compares the signed Dockerfile's
-immutable worker `FROM` digest against `Job.engine.image`. No Podman socket or
-host image store is required. Missing registration or signature proof refuses
-submission before its uncertain state.
-
-After confirming BOINC's actual terminal disposition and that native sync has
-settled the exact previous native row as a permanent failure:
-
-```sh
-usnm-boinc retry --root /private/jobs --spool /private/assimilated \
-  --job PARENT_JOB_ID --expected-error-mask 2 \
-  --image sha256:SUPPORTING_WORKER_DIGEST --app-version-num SUPPORTING_APP_VERSION \
-  --reviewed-reason 'Reviewed terminal 0x2; supporting worker release recorded' \
-  --handoff-url /private/handoff \
-  --state-file /private/state.json \
-  --curated-url /private/curated --reference-url /private/reference
-```
-
-A page that ran out of time on every host fails again with the same deadline:
-add `--timeout-secs <1 to 3600>` to give the child a longer one (`engine.timeout_secs`,
-part of its identity). The parent keeps its own. Without it the child keeps the
-parent's, and a resumed retry must give the same value.
-
-Use `--expected-no-output-files` instead of `--expected-error-mask` only for an
-actual `_no_output_files` marker. Unknown and zero masks are refused, not treated
-as missing output. An error mask is decimal on the CLI (`2` reviews `0x2`).
-Accepted/canonical/partial output, changed terminal proof, nonterminal work and a
-newer native reservation all require reconciliation, not retry.
-Historical imports always veto retry, even if a later dead letter became the
-latest outcome. Legacy journals without terminal proof require collection of
-the unchanged actual marker; a later collect cannot overwrite the first proof.
-The permanent outcome must carry the exact parent message digest; historical
-unbound outcomes cannot authorize retry. For queue-fed parents, the exact handoff
-claim must be conclusively `dead_lettered`, not lease-lost or still outstanding.
-
-The command prints the new child ID and reserves it without submission. It
-preserves the original scan, failed journal and request-day quota attribution.
-An identical invocation resumes its durable prepared/reserved child; it never
-creates another workunit for that parent. Submit that child through the existing
-single-page `submit` path, which pins `--app_version_num` from the retry journal.
-Pass `--curated-url` and exactly one of `--state-file` or `--cosmos` again on
-submission. For both `submit` and `submit-remote`, the on-prem bridge forwards
-host-owned `COSMOS_ENDPOINT` and `CURATED_URL` from `bridge.env`; configure its
-existing identity with the native lock/ledger permissions before activation.
-Submission holds the native lease while revalidating the exact outstanding
-child, verifying the signed worker, and crossing the write-ahead/create-work
-boundary. A replaced or settled child is refused without submission.
-Uncertain submission still requires authoritative BOINC lookup and explicit
-`reconcile`; never delete its journal and repeat. A retry of a failed child needs
-a fresh terminal review naming that child.
-Preparation validates settlement under the native lease before persisting the
-child timestamp, scan and journal, then writes its reservation. An unreserved
-prepared child may refresh its timestamp after later settlement; a reserved
-replay must still match the exact outstanding native row. The controller retains
-the parent/child chain but never automatically exports or submits manual retries.
-
-If that child fails, the existing handoff `claim dead-letter` step publishes the
-child's terminal mask and new message timestamp without touching the old claim.
-Its private durable payload/sent receipt makes a completed repeat a no-op; lost
-send acknowledgement retains at-least-once delivery. Native sync fences duplicate
-old-attempt events from subsequent retries.
-
-First acceptance is one reviewed failed-page canary: preserve its original real
-mask through collect/journal/dead letter, verify the one new workunit and supporting
-app version, collect/import via ordinary validation, verify native settlement,
-and record all identities. Code tests or a merged PR do not prove this live gate.
+The BOINC server, its database, the bridge steps and the hand-off steps run on an on-prem container host, CT 230, behind a Cloudflare Tunnel. The server and bridge steps moved there from Azure Container Apps on 21 October 2026 (#942, part of #917; [the cutover](../../notes/2026-10-21-boinc-server-onprem-cutover.md)), and the hand-off steps followed when the Azure hand-off job was retired on 6 November 2026 (#308). The scripts are in `boinc/scripts/onprem/`, and the step runner is `boinc/scripts/onprem-step.sh` ([the bridge steps](bridge-steps.md)). The Azure code that remains is a fallback ([the Azure server](azure.md)).
 
 ## What runs on the host
 
 | Unit                               | What                                                                                                                                                                | Notes                                                                                                                     |
 | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `usnm-boinc-mysql.service`         | MySQL 8.4 (the same major and minor as the Azure server), from `mysql-setup.sh`                                                                                     | Host network, `bind_address=127.0.0.1`, `mysqlx=OFF`, `require_secure_transport=ON`                                       |
+| `usnm-boinc-mysql.service`         | MySQL 8.4, from `mysql-setup.sh`                                                                                                                                    | Host network, `bind_address=127.0.0.1`, `mysqlx=OFF`, `require_secure_transport=ON`                                       |
 | `usnm-boinc-server.service`        | The bridge image running `entrypoint.sh --serve`: Apache and the BOINC daemons                                                                                      | `--entrypoint` set, because the bridge image's own entrypoint is `bridge-job`                                             |
 | `usnm-boinc-step`                  | `onprem-step.sh`: one bridge step at a time, in place of the Azure bridge job                                                                                       | The controller reaches it with `step_command` over ssh, using a forced command and `--from-ssh`                           |
 | `usnm-boinc-step --target publish` | Publishes an app version from a local appver image, in place of the Azure publish job                                                                               | Root on the host only; `boinc/scripts/boinc-app-release.sh --onprem-host --onprem-ct` builds the image and runs it (#961) |
@@ -228,18 +21,34 @@ and record all identities. Code tests or a merged PR do not prove this live gate
 All containers use the host network. Podman 4.3's CNI backend has no DNS for container names, so
 `usnm-boinc-mysql` is mapped to 127.0.0.1 in `/etc/hosts` and with `--add-host`.
 
-**Identity.** The host is an Azure Arc machine in the on-prem group. `lib.sh`'s `kv_token` (its Arc
-path is #943, which this needs) and `usnm-store`'s credential both follow the Arc challenge flow when `IDENTITY_ENDPOINT` and
-`IMDS_ENDPOINT` are set with no `IDENTITY_HEADER`. The containers mount `/var/opt/azcmagent/tokens`
+**Identity.** The host is an Azure Arc machine in the on-prem group. `lib.sh`'s `kv_token` and `usnm-store`'s credential both follow the Arc challenge flow when `IDENTITY_ENDPOINT` and
+`IMDS_ENDPOINT` are set with no `IDENTITY_HEADER` (#943). The containers mount `/var/opt/azcmagent/tokens`
 read-only for the challenge file.
 
 **Database TLS.** `mysql-setup.sh` makes a private CA under `/srv/usnm-boinc/mysql-tls`. The
 server certificate's SANs are `usnm-boinc-mysql`, `localhost` and `127.0.0.1`. The containers mount `ca.pem` over
 `/usr/local/share/usnm/mysql-ca.pem`, so the TLS patch (`boinc/scripts/patch-server-db-tls.py`)
-verifies the server unchanged.
+verifies the server unchanged. The CI fixtures for that patch are in [database TLS checks](db-tls-acceptance.md).
 
-**Credentials.** The admin and runtime passwords come from the BOINC Key Vault, the same ones the
-Azure server uses. They are kept in `/etc/usnm-boinc/secrets` (0600). The root password is local.
+**Credentials.** The admin and runtime passwords come from the BOINC Key Vault and are kept in `/etc/usnm-boinc/secrets` (0600). The root password is local. A provision still gives the vault's `mysql-admin-password` a new value; the host uses its own copy in `/etc/usnm-boinc/secrets/db-admin`.
+
+**The controller's `step_command`.** The controller reaches `usnm-boinc-step` over ssh. End `step_command` with `--` after the host (`["ssh", "-i", "<key>", "-o", "BatchMode=yes", "root@<host>", "--"]`); without it, ssh reads the step's `--env` as one of its own options.
+
+### Work that ran as Azure jobs
+
+| Work                                                         | On-prem                                                                                                                                                                                                |
+| ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Bridge steps (the controller's submit, spool-out, inventory) | `usnm-boinc-step`                                                                                                                                                                                      |
+| Hand-off steps                                               | `usnm-boinc-step --target handoff` ([below](#hand-off-steps-on-prem))                                                                                                                                  |
+| Gold bundle                                                  | `usnm-boinc-step --env prod --step gold-bundle --var GOLD_CAMPAIGN=<campaign> --wait-mins 360`, run as root on the host                                                                                |
+| App version publish                                          | `boinc/scripts/boinc-app-release.sh --onprem-host <Proxmox host> --onprem-ct <id>`: builds the `appver` image in the container and runs `usnm-boinc-step --target publish` (#961)                      |
+| Quality wave                                                 | the on-prem feeder on pve-laptop (#962, [OCR quality](../apps/quality.md#on-prem-feeder-v1-wave10-on)): staged inputs reach the server through `usnm-boinc-step`; the server reads no scan data itself |
+
+### What stays in Azure
+
+With `"server": "onprem"`, `provision-boinc.sh` deploys only what the on-prem server still uses: the two identities (the main environment's Bicep reads `usnm-boinc-id-<env>`), the Key Vault the host reads, the VNet and the static site. The stack deletes the rest: the server app, its jobs and environment, MySQL, both project storage accounts, Log Analytics, the workbook and the private endpoints. The provision then checks that the on-prem server answers at the master URL.
+
+The work queues (`ocr-priority`, `ocr-bulk`, `ocr-deadletter`), `ocr-out`, the `boinc-handoff` container, Cosmos and the lake are still in Azure, reached with the host's Arc identity. Moving the hand-off state onto the host is [#1367](https://github.com/tgoodyear/usnewsmap.com/issues/1367) ([local hand-off state](local-state.md)).
 
 ## Feeder allocation guard (#1462)
 
@@ -260,13 +69,13 @@ in `systemctl --failed` and `journalctl -u usnm-feeder-slot-guard.service`.
 `maintenance` is distinct from a match and does not fail the unit. The unit sends
 no external notification; monitor failed units and missing timer runs separately,
 or enable the feed monitor's opt-in
-[`feeder_allocation` check](boundaries-and-monitoring.md#live-feed-health-1441),
+[`feeder_allocation` check](monitoring.md#live-feed-health-1441),
 which runs the same command and alerts through the BOINC feed alerts.
 An unreachable container, old feeder, stale snapshot or failed verified-TLS query
 is unknown, not success. So is `feeder_restart_hold`: the server's supervisor loop
 stopped restarting a feeder that kept stopping
-([The loop's restart bound](feeder-refresh.md#the-loops-restart-bound)). The image's independent five-minute JSON event is useful
-for diagnosis. See [Allocation drift detection](../apps/app-release.md#allocation-drift-detection)
+([The loop's restart bound](feeder-refresh.md#the-loops-restart-bound)). The image also logs its own JSON event every five minutes,
+which helps diagnosis. See [Allocation drift detection](../apps/app-release.md#allocation-drift-detection)
 for the scope and limitations, and [Feeder-only refresh](feeder-refresh.md) for the
 recovery procedure.
 Neither check restarts a process or edits work.
@@ -278,7 +87,7 @@ the host's own automatic updates never reach them. Each image that serves Apache
 Debian's security updates when it is built: the server and bridge Containerfiles, the overlays
 and `security-overlay.Containerfile` run `apt-get upgrade` from the image's sources, which
 include `bookworm-security`. The build then fails if `php8.2-common` or `apache2` is older than
-`PHP_FLOOR` or `APACHE_FLOOR`, now 8.2.35-1~deb12u1 from DLA-4848-1 (21 October 2026) and
+`PHP_FLOOR` or `APACHE_FLOOR`, set to 8.2.35-1~deb12u1 from DLA-4848-1 (21 October 2026) and
 2.4.67-1~deb12u3 from DSA-6323-1 (6 June 2026). Each floor is the version of bookworm's last
 advisory for that package, so a newer build from bookworm's own suite passes it too.
 `test_security_updates.py` in `boinc/images/server` checks that every one of them
@@ -357,54 +166,20 @@ To roll the database onto the new digest, when no bridge step is running (the re
 2. `systemctl restart usnm-boinc-mysql.service`. MySQL gets up to 110 seconds to stop cleanly (`--stop-timeout 110`).
 3. `systemctl start usnm-image-security-check.service` no longer reports drift.
 
-## Moving the data
-
-The project share's storage account allows no public access, so data leaves Azure from inside the
-BOINC environment and goes through R2 (bucket `usnm-boinc-project`, private):
-
-- `r2-relay-job.sh` copies the share as a bridge-job execution with its command overridden. It skips the html cache, logs, the `tls464-*` backups, and every upload the database no longer needs. Each pass fits in the job's timeout and resumes on the next run. `RELAY_PART` (`download`, `quality`, `project-quality`, `uploads`, `rest`) splits a full pass across executions run side by side.
-- `db-dump-job.sh` dumps the database (`--single-transaction`) to `db/<name>.sql.gz`. It also writes `db/<name>.uploads-filter`, which names the upload files of every result whose workunit isn't assimilated yet. With `RELAY_UPLOADS_FILTER` set to it, the uploads part copies exactly those.
-- On the host, `r2-pull.sh` copies the tree into `/srv/usnm-boinc/project`, and `db-import.sh --name <dump> --replace` loads a dump.
-
-The R2 token is limited to this bucket and expires once the move is done.
-
-A trial (2026-10-21) took 21 s to dump, with a 37 MB file, and 77 s to import.
-
-## The project tree after a copy
-
-The copy doesn't bring the share's ownership or modes, and the share's runtime code is older
-than the images. After each pull, before the server starts:
-
-1. `chown -R 1000:1000 /srv/usnm-boinc/project` (boincadm), `chmod -R g+rwX` on the project, and `chmod 755` on the files in `bin/` and `cgi-bin/`. The share gave every file the same permissive mode, and the web pages write `html/cache` as `www-data`, which is in the boincadm group. The daemons create a `log_<host>` directory when they start, and the scheduler and upload handler log there as `www-data`, so it needs mode 2775. The relay skips `html/cache`, but a pass run before that exclusion copies Azure's cache, so delete those files: a cached `server_status` page shows the old host's daemons as Not Running.
-2. `refresh-project-code.py apply --ack-server-stopped`, run in the bridge image with the server stopped. The share's `html/inc`, `py` and `bin` copies predate the TLS patch. The Azure database doesn't enforce TLS, so this never failed there. The on-prem database does.
-
-## Cutover order
-
-1. On Azure, make the tree still, as for the share move (`docs/boinc/server/server-and-apps.md`, "Moving the project share"): stop the priority controller and wait for running bridge executions. Then, as `boincadm` in `/project/usnmocr`, run `touch stop_maintenance`, `bin/stop`, then `touch stop_sched stop_upload`, and wait a minute for requests in flight. The scheduler and the upload handler then refuse with errors that clients retry, so no result lands on Azure after the final copy. Keep these files on Azure through the cutover.
-2. Final `db-dump-job.sh`, then the five `RELAY_PART`s side by side, with `RELAY_UPLOADS_FILTER` set to that dump's filter. Each relay execution must log `RELAY complete`.
-3. On the host: `r2-pull.sh`, `db-import.sh --replace`, then the project tree steps above.
-4. On the host, remove `stop_maintenance`, `stop_sched` and `stop_upload` (they came over in the copy) and start the server. Point `boinc.usnewsmap.com` at the tunnel (proxied CNAME).
-5. Start the controller under a new plan whose `step_command` reaches `usnm-boinc-step` (plans are immutable, so the change needs a drain). End `step_command` with `--` after the host (`["ssh", "-i", "<key>", "-o", "BatchMode=yes", "root@<host>", "--"]`). Without it, ssh reads the step's `--env` as one of its own options.
-6. After it is verified, set `"server": "onprem"` in `boinc/infra/boinc/env/<env>.json` and run `boinc/scripts/provision-boinc.sh`. It deletes the project storage accounts, their private endpoints and the rest of the Azure server (see below).
-
-The bridge steps read and write the hand-off container in the main environment's storage, so
-the on-prem group needs a role there before step 5.
-
 ## Hand-off steps on-prem
 
-`claim`, `release` and `collect` run on the host (#967
-phase 3); prod's Azure hand-off job was retired on 6 November 2026 (#308). `dead-letter` runs here too, and as root on the host it also takes an operator's
+`claim`, `release`, `collect` and `export` run on the host (#967 phase 3); prod's Azure hand-off job was retired on 6 November 2026 (#308). `dead-letter` runs here too, and as root on the host it also takes an operator's
 `SUPERSEDES_FAILED_JOB` and `CONFIRM_MESSAGE_SHA256`
-([boinc-batch-scheduler.md](batch-scheduler.md#a-retried-page-claimed-after-its-dead-letter)).
+([batch controller](batch-scheduler.md#a-retried-page-claimed-after-its-dead-letter)).
 `deadline-retry` (#1417, the same section) runs as root on the host only, never over ssh;
-the controller's export takes its `HANDOFF_DEADLINE_RETRIES`. `usnm-boinc-step --target handoff --step claim|release|collect` runs the bridge
-image's `handoff-job.sh`, the Azure job's own command, from `SERVER_IMAGE`, the image the other
+the controller's export takes its `HANDOFF_DEADLINE_RETRIES`. `usnm-boinc-step --target handoff --step <step>` runs the bridge
+image's `handoff-job.sh` from `SERVER_IMAGE`, the image the other
 bridge steps use. It runs as the host's own Arc machine identity, which ADR-0008's Cosmos
 amendment gives the hand-off job's grants. The container mounts only the Arc agent's challenge
 directory, with no project tree, database or Key Vault. It takes `HANDOFF_STEP` and only that
 step's inputs, over ssh or as root.
 
-`/etc/usnm-boinc/handoff.env` holds the Azure job's settings, without its Container Apps
+`/etc/usnm-boinc/handoff.env` holds the hand-off settings, the former Azure job's without its Container Apps
 `AZURE_CLIENT_ID`, plus the Arc endpoints, and nothing else (`usnm-boinc-step` refuses any
 other name):
 
@@ -419,12 +194,10 @@ IDENTITY_ENDPOINT=http://localhost:40342/metadata/identity/oauth2/token
 IMDS_ENDPOINT=http://localhost:40342
 ```
 
-The values are the job's environment: `az containerapp job show --name usnm-boinc-handoff-caj-<env>
---resource-group rg-usnm-<env> --query "properties.template.containers[0].env"`. The
-controller then sends the steps here with `--onprem-handoff claim --onprem-handoff collect`
-([boinc-batch-scheduler.md](batch-scheduler.md#on-prem-claim-collect-and-export-967)), and
+The controller sends the steps here with `--onprem-handoff claim --onprem-handoff collect`
+([batch controller](batch-scheduler.md#on-prem-claim-collect-and-export-967)), and
 `export` too with `--onprem-handoff export`: the controller then pushes the scans straight to this host (`--target scans --step receive`, into `/srv/usnm-boinc/project/handoff-scans`), export mounts them read-only, and `submit-remote` takes each page from them, so no scan goes through Azure (#1116).
-`texts-export` runs on the host with the local copy of curated (`boinc/scripts/texts-export-onprem.sh`, [boinc-quality.md](../apps/quality.md)).
+`texts-export` runs on the host with the local copy of curated (`boinc/scripts/texts-export-onprem.sh`, [OCR quality](../apps/quality.md)).
 
 The hand-off steps take `/run/usnm-boinc-handoff.lock`, not the step lock: they touch only Azure
 storage, Cosmos and the queues, and the controller runs one at a time. `spool-out` and
@@ -451,93 +224,21 @@ COPY usnm-boinc /usr/local/bin/usnm-boinc
 COPY handoff-job.sh /usr/local/lib/usnm-boinc/handoff-job.sh
 ```
 
-## Azure after the cutover
-
-### Local handoff journals
-
-A queue-fed priority-controller plan can set `handoff_root` to an existing local
-directory, mounted into bridge and handoff containers at `/handoff-state`. The
-controller uses filesystem locking and reads inventory and journals directly;
-Azure handoff reads are refused in this mode. Every handoff step must be routed
-on-prem. The root must contain `dispatch/jobs`, even for an empty initial queue;
-a missing inventory is an error, not an empty-backlog fallback. The root must be
-owned by the controller's service user with mode `0700`: claims hold private
-queue receipts.
-
-The on-prem runner mounts `/srv/usnm-boinc/handoff-state` read-write when present.
-An operator can select its host path with `USNM_BOINC_HANDOFF_ROOT`; SSH callers
-cannot choose a container mount. The runner independently requires a canonical,
-non-symlinked root owned by its service user with mode `0700`. The controller must
-see the same filesystem as the runner. Set
-`HANDOFF_URL=/handoff-state` in the host's handoff settings at cutover. Bridge
-calls use this fixed container path, never a caller-selected local directory.
-The controller passes `EXPECTED_HANDOFF_URL` to every on-prem handoff step.
-The runner compares it with its host-owned setting before launching anything;
-a mismatch fails without hiding queue messages or modifying either backend.
-Local handoff calls without this marker are refused.
-
-For the initial local cutover, colocate the priority controller and authoritative
-handoff root on the BOINC host. Separate containers may bind the same host
-directory, but a cross-host filesystem mount is not qualified by the local
-locking tests. Do not retain an independently writing controller on CT211.
-Before enabling the replacement timer, stop the old timer, wait for its current
-tick to exit, and verify that no old controller or bridge writer remains.
-
-Qualify the intended filesystem before switching authority: reject a second
-controller while the first holds its lock, kill the disposable lock owner and
-confirm a fresh process can recover, then replay an isolated submitted job
-through separate CLI containers without changing its stage or bytes or creating
-another job. Run these checks with networking disabled against private copies;
-they do not authorize a live cutover or substitute for actual returned-result
-collection.
-
-Stop new controller starts and wait for its current tick and bridge steps to
-finish before the final state copy. Copy and independently verify dispatch
-requests and journals, claims (including live pop receipts), spools, trust,
-scheduler inventory, and any still-needed input objects. Preserve job IDs,
-scientific identities, stage history and queue leases. Then switch both the
-controller and host settings together. Keep the Azure copy read-only for
-rollback; never run one writer against each copy.
-
-Acceptance requires real submission, returned-result collection, restart and
-duplicate-free replay using the local journals. Changing this transport alone
-does not migrate the queue backend, Cosmos or lake storage. Key Vault and
-managed-identity credential access may remain in Azure.
-
-With `"server": "onprem"`, `provision-boinc.sh` deploys only what the on-prem server still uses: the two identities (the main environment's Bicep reads `usnm-boinc-id-<env>`), the Key Vault the host reads, the VNet (its `aca` subnet is in the main environment's storage network rules) and the static site. The stack deletes the rest: the server app, its jobs and environment, MySQL, both project storage accounts, Log Analytics, the workbook and the private endpoints. The provision then checks that the on-prem server answers at the master URL. Prod moved on 2026-10-21.
-
-`mysql-admin-password` in the vault still gets a new value on every provision. It no longer matters: the on-prem host keeps its own copy in `/etc/usnm-boinc/secrets/db-admin`.
-
-Work that ran as Azure jobs, and where it runs now:
-
-| Work                                                         | On-prem                                                                                                                                                                                                     |
-| ------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Bridge steps (the controller's submit, spool-out, inventory) | `usnm-boinc-step`                                                                                                                                                                                           |
-| Gold bundle                                                  | `usnm-boinc-step --env prod --step gold-bundle --var GOLD_CAMPAIGN=<campaign> --wait-mins 360`, run as root on the host                                                                                     |
-| App version publish                                          | `boinc/scripts/boinc-app-release.sh --onprem-host <Proxmox host> --onprem-ct <id>`: builds the `appver` image in the container and runs `usnm-boinc-step --target publish` (#961)                           |
-| Quality wave                                                 | the on-prem feeder on pve-laptop (#962, [boinc-quality.md](../apps/quality.md#on-prem-feeder-v1-wave10-on)): staged inputs reach the server through `usnm-boinc-step`; the server reads no scan data itself |
-
 ## Cloudflare
 
 `boinc.usnewsmap.com` is a proxied CNAME to the tunnel. Volunteer clients and the controller are scripts, so the zone's bot checks are set up not to block them. That configuration is kept outside this repository. [ADR-0024](../../design/adr/0024-cloudflare-tunnel-and-r2-credentials.md) records the ADR-0009 exception for the Cloudflare credentials.
 
 ## LAN access (#1357)
 
-**Status: the network-wide records were rolled back on 30 October 2026, and [project-run clients](#project-run-clients) now use a hosts entry instead.** Everything else on the LAN goes through Cloudflare. Firefox failed with `SSL_ERROR_INTERNAL_ERROR_ALERT`, because the gateway still forwarded the public HTTPS record advertising Cloudflare's Encrypted Client Hello, and Caddy here can't answer its outer name, `cloudflare-ech.com`. Both local records were removed. Caddy, the certificate, its timer and the guard remain. Don't restore the records until browsers are handled and tested as well as BOINC clients. The rest of this section, up to the 30 October live acceptance, describes that setup as designed.
+**The network-wide DNS records were rolled back on 30 October 2026; [project-run clients](#project-run-clients) use a hosts entry instead.** Everything else on the LAN goes through Cloudflare. With the gateway's local records in place, Firefox failed with `SSL_ERROR_INTERNAL_ERROR_ALERT`: the gateway still forwarded the public HTTPS record advertising Cloudflare's Encrypted Client Hello, and Caddy can't answer its outer name, `cloudflare-ech.com`. Don't restore the records until browsers are handled and tested as well as BOINC clients. Caddy, the certificate, its timer and the guard remain.
 
-Home hosts don't go out to Cloudflare and back in through the tunnel. The UniFi gateway's local
-DNS answers `boinc.usnewsmap.com` with CT230's LAN IPv4 and IPv6 addresses. Its IPv4 address has a DHCP reservation. The address isn't written here. Anywhere else, the name is still Cloudflare's.
-Clients keep the master URL, scheduler, download and upload URLs, and normal certificate
-checks. The controller's `--server-status-url` is unchanged.
-
-On CT230, Debian's Caddy serves 443 with a public Let's Encrypt certificate for the name and
-reverse-proxies to `localhost:80`, Apache's only allowed path, which cloudflared also uses. There's
-no image change or server restart. `origin-tls.yml` issues the certificate (`origin_tls.py --target
+On CT 230, Debian's Caddy serves 443 with a public Let's Encrypt certificate for `boinc.usnewsmap.com` and
+reverse-proxies to `localhost:80`, Apache's only allowed path, which cloudflared also uses. `origin-tls.yml` issues the certificate (`origin_tls.py --target
 boinc-lan`, with its own ACME state) into the deploy-only secret `usnm-prod-boinc-lan-tls`. The
 host's Arc identity can read only that secret, never the DNS token or the ACME account.
 `usnm-boinc-lan-tls.timer` pulls it daily, checks name, expiry, key, chain and that it's not older
 than the installed one, and restarts Caddy when it changes. Caddy's access log,
-`/var/log/caddy/boinc-lan.log`, shows the LAN clients; Apache sees `::1` for both paths.
+`/var/log/caddy/boinc-lan.log`, shows the LAN clients; Apache sees `::1` for both paths. The certificate in use on 30 October 2026 expires 27 January 2027.
 
 ```sh
 python3 scripts/azure/origin_tls_bootstrap.py --boinc-lan   # operator, once: the secrets and grants
@@ -546,25 +247,7 @@ tar -C boinc/scripts/onprem/lan-tls -cf - . | ssh root@<Proxmox host> 'cat > /ro
 ssh root@<Proxmox host> 'pct push 230 /root/lan-tls.tar /root/lan-tls.tar && pct exec 230 -- sh -c "mkdir -p /root/lan-tls && tar -C /root/lan-tls -xf /root/lan-tls.tar && /root/lan-tls/lan-tls-setup.sh"'
 ```
 
-Then add the gateway's local A and AAAA records (using CT230's current LAN addresses).
-Wait for both cached public record types to expire before checking the cutover.
-**Rollback:** delete both local records, and clients go back
-through Cloudflare when their resolver cache expires. Caddy and the guard can stay. To remove the
-guard, `systemctl disable --now usnm-boinc-lan-guard`.
-
-### Live acceptance (30 October 2026 UTC)
-
-The public certificate expires 27 January 2027. Both local DNS record types now resolve to
-CT230; public resolvers still return Cloudflare. Direct HTTPS passes normal certificate
-validation from a LAN workstation, CT100, CT214 and CT211. Caddy recorded actual BOINC scheduler RPCs,
-downloads and uploads returning 200, including Linux and Mac clients, without changing their
-master URL or work-acquisition settings. The public tunnel still returns 200.
-
-Non-loopback port 80 is refused. Reloading nftables preserved the guard; its enabled boot
-dependencies include nftables, and nftables wants the guard. The certificate sync succeeded
-again with an unchanged certificate. The BOINC server's PID and startup timestamp did not
-change. A CT230 reboot was deliberately not performed during active work; boot ordering was
-checked with systemd instead.
+`usnm-boinc-lan-guard.service` makes port 80 answer loopback only; to remove it, `systemctl disable --now usnm-boinc-lan-guard`.
 
 ### Project-run clients
 
@@ -598,7 +281,7 @@ so losing the container stops both paths anyway. If CT230's address changes, upd
 **Rollback:** delete the entry, or restore the backup, on that client. Its next connection goes
 through Cloudflare. No restart is needed.
 
-Live acceptance (1 November 2026, all four hosts, no client restarted): real scheduler RPCs on
+Accepted on 1 November 2026 (all four hosts, no client restarted): real scheduler RPCs on
 each host and real uploads on hosts 2, 9 and 10 returned 200 in the Caddy log from each client's LAN address, and
 the validators accepted the results those uploads carried. Host 12 runs no tasks, so it proved the
 scheduler path only. In Cloudflare's analytics the LAN's public address went from 367 POSTs and

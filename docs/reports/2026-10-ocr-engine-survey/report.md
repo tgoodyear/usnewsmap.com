@@ -8,6 +8,8 @@ Round 1 of the engine survey in #296 ran five OCR engines on the same 80 sampled
 
 As §13.9 says, round 1 is indicative only. It ran on the Python harness, not on production images: Debian's Tesseract 5.5.0 without `--dpi 300`, the engines' raw text rather than the `normalize_ocr` text the overlay stores, and memory measured inside each container.
 
+Status on 10 November 2026: #296 was closed on 1 November 2026, superseded by #1415, and OCR now runs only through BOINC. The credits page (#372) shipped on 15 October 2026. Surya was retired on 2 November 2026; the [GPU studies](../2026-11-gpu-studies/report.md) retested it and found it worse than Tesseract on human-transcribed crops (23.0% CER against 9.0%). Those studies measure CER against human transcriptions; this round had none.
+
 # Summary
 
 - **No ground truth, so no CER or WER.** No crops were hand-transcribed. Accuracy is the language audit's damage metric (`ocr/ja-ocr/quality.py`): each text's damage rate and its known words, compared with LoC's text of the same page. Lower damage is better. More known words than LoC means more words a search could match.
@@ -281,7 +283,7 @@ The prefetch fetches full-size scans for both its sets, as posted on #368: a ful
 - **Licences changed after the first draft.** The tiers here follow the decisions of 11 October (#373, #377), which came after this report was first drafted.
 - **The NUC's power cutouts.** The NUC lost power while NDNP Open OCR was running on node 1. The cause turned out to be a schedule set on the Kasa smart plug the NUC is plugged into, and the schedule has since been removed. 10 of 25 pages were done, and the run resumed at 9:07 AM ET on 11 October. `run.py` skips pages that have a result, so the page that was running when the power went was read again from the start. The results have 25 rows, one per page, all `ok`, with no duplicates, and all 25 ALTO files validate. Tesseract had finished on node 1 before the cutouts.
 - **docTR's restart.** docTR started on node 2 with 3 containers of 8 threads each, which pushed the load to about 17 on 8 vCPUs. It was restarted at 2:22 AM ET with 4 containers of 2 threads each. 34 of its 60 results, including all 8 timeouts, are from the first run. The timed-out pages weren't rerun (see Next round). Its timing pass ran alone on the node with 8 threads.
-- **Memory was measured inside each container,** summed over its processes, with up to 4 containers running at once for some engines. Production would measure from the cgroup (13 §13.6.6).
+- **Memory was measured inside each container,** summed over its processes, with up to 4 containers running at once for some engines. Production would measure from the cgroup (13 §13.6.4).
 - **AlmaLinux, not RHEL.** Both nodes run AlmaLinux 9.8. The longer-term target is RHEL 10. The engines run in containers with their own userland, so the host OS probably matters little to these numbers, but nothing ran on RHEL to confirm that.
 - **Two different CPUs.** See Speed and memory.
 

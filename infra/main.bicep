@@ -341,7 +341,7 @@ param backfillOnPrem bool = false
 @description('Alert on the on-prem OCR pickup (#1139, modules/ocr-sync-alerts.bicep): a failed run, no run through the pickup for more than 2 hours, and node output left in ocr-out over 72 hours, from the metrics it sends to the environment\'s Application Insights. With ocrSyncOnPrem and alert emails.')
 param ocrSyncAlerts bool = false
 
-@description('Alert on the live BOINC feed health (#1441, modules/boinc-feed-alerts.bicep): a data collection rule that takes the evaluator host\'s local0 lines into the OCR nodes\' workspace, and two log alerts through the action group (a check firing or unknown, the evaluator\'s events missing). With ocrNodes, alert emails and boincFeedMachine. The host\'s association with the rule is made by hand (docs/boinc/server/boundaries-and-monitoring.md).')
+@description('Alert on the live BOINC feed health (#1441, modules/boinc-feed-alerts.bicep): a data collection rule that takes the evaluator host\'s local0 lines into the OCR nodes\' workspace, and two log alerts through the action group (a check firing or unknown, the evaluator\'s events missing). With ocrNodes, alert emails and boincFeedMachine. The host\'s association with the rule is made by hand (docs/boinc/server/monitoring.md).')
 param boincFeedAlerts bool = false
 
 @description('Name of the BOINC feed evaluator host\'s Arc machine in the environment\'s resource group, for boincFeedAlerts: the alerts read only its rows. Settings only, never in the repository.')
@@ -1674,7 +1674,7 @@ output OCR_KEYVAULT string = ocrNodes ? ocrVault!.outputs.name : ''
 // The nodes' data collection rule; onboard.sh associates each node with it.
 output OCR_NODE_DCR_ID string = ocrNodes ? ocrNodeMonitoring!.outputs.ruleId : ''
 // The BOINC feed evaluator's data collection rule (#1441); associate the
-// evaluator host with it by hand (docs/boinc/server/boundaries-and-monitoring.md).
+// evaluator host with it by hand (docs/boinc/server/monitoring.md).
 output BOINC_FEED_DCR_ID string = boincFeedOn ? boincFeedAlertRules!.outputs.ruleId : ''
 // The nodes' own Application Insights component: onboard.sh passes its
 // ingestion settings (not a credential: local auth is off) to the worker.

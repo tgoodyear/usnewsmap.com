@@ -1,146 +1,59 @@
-# Intel and NVIDIA GPU measurements for usnm_qwen
+# Intel and NVIDIA GPUs for usnm_qwen
 
-Plan class `intel_vulkan_8b` runs the same Qwen3-VL-8B Q4_K_M reading as the CUDA and Metal
-classes, through the pinned llama.cpp Vulkan build (`ubuntu-vulkan-x64` and `win-vulkan-x64` in
-`boinc/apps/qwen/llama.lock`). It shares the batch-8 workunits of `nvidia_cuda_8b` and
-`apple_gpu_8b`, so its readings can join the same quorum
-([#786](https://github.com/tgoodyear/usnewsmap.com/issues/786)). The class ships closed
-(`min_wu_id=2`, `max_wu_id=1`). An operator opens one audited workunit at a time with
-`boinc/scripts/native-qwen-cohort.php --plan-class intel_vulkan_8b`, as for the NVIDIA classes
-([app releases](app-release.md)).
+The native `usnm_qwen` classes for Intel and NVIDIA GPUs, how they are admitted, and how a host and device are checked. Plan-class requirements are in [OCR quality](quality.md#app-versions-and-plan-classes), releases in [Releasing an app version](app-release.md), AMD in [AMD GPUs](amd-gpu.md).
 
-### Persistent finite NVIDIA/Intel refill
+`intel_vulkan_8b` runs the same Qwen3-VL-8B Q4_K_M reading as the CUDA and Metal classes, through the pinned llama.cpp Vulkan build (`ubuntu-vulkan-x64` and `win-vulkan-x64` in `boinc/apps/qwen/llama.lock`). `nvidia_vulkan_8b` runs that Vulkan build on NVIDIA cards that BOINC detects through CUDA. Both share the batch-8 workunits of `nvidia_cuda_8b` and `apple_gpu_8b`, so their readings join the same quorum ([#786](https://github.com/tgoodyear/usnewsmap.com/issues/786)). The first measurements, on an Iris Xe and an RTX 2060 SUPER, are in [a note](../../notes/2026-10-18-qwen-8b-intel-nvidia-measurements.md):
 
-`boinc/scripts/qwen-auto-cohort.py` is an operator-enabled, finite rolling pilot,
-not general admission. The accompanying `usnm-qwen-cohort-auto.service` and
-`.timer` run one short operation per minute under the normal **nonblocking**
-project mutex. No collector, AMD acceptance, client restart or manual feed start
-is required. Lock contention exits 75 normally. An in-container 20-second
-timeout (five-second kill grace) bounds the Python/PHP process group independently
-of the host's 30-second service budget, rather than relying on killing only a
-`podman exec` client. These bound only this owned operation. Disable the timer
-and let any active oneshot finish before handing off ownership.
+| Reading of the 100 `legacy/overproof-en-100` crops | CER, `legacy-ws-v1` | Warm seconds per crop (p50) |
+| -------------------------------------------------- | ------------------: | --------------------------: |
+| `intel_vulkan_8b` on an Iris Xe (Computer 9)       |              2.209% |                        14.9 |
+| Native b8799 CUDA on an RTX 2060 SUPER             |              2.256% |                       1.518 |
+| Native b8799 Vulkan on the same RTX 2060 SUPER     |              2.241% |                       1.685 |
 
-Each refill admits at most **ten contiguous** newly produced native-8B workunits
-with two pristine ordinary replicas, quorum/target 2, no assignment, no app-version
-binding and zero error/transition/HR flags. The existing pinned Windows/Linux
-GPU artifacts, model/engine hashes, generation budgets, distinct-host gate and
-validator are not relaxed. Only one reviewed Linux Intel/NVIDIA release pair is
-authorized: `--app-version-num`, `--intel-app-version` and `--nvidia-app-version`
-(default the published 1.14 pair, Intel67/NVIDIA66) name it, and redeploying with a
-successor pair is a reviewed step. `--prompt-version` (default 1) is the one request
-version admitted; 2 (`--image-min-tokens 1024`, [quality](quality.md)) needs
-1.15 or later, and 3 and 4 (the loop guard) need 1.17 or later. A job of another
-request version fails the tick rather than being admitted. The controller does not
-open AMD or Apple, but an unbounded class of either takes any unsent replica, so it
-also reads their dispatchable versions: if one cannot read the request version, the
-owned window closes and the receipt names it in
-`open_classes_that_cannot_read_request`. A superseding release on any platform (including a
-Windows release of either opened class) or changed project config closes the
-owned window instead of silently adopting a new release. The guard checks the
-complete non-deprecated version set the feeder would dispatch: with the app's
-`min_version` at 0 the stock feeder loads only the newest version per
-platform/plan class, so older reviewed Linux rows stay superseded; a nonzero
-`min_version` that would make an older Linux row dispatchable also closes it.
+`usnm_iris` ([#703](https://github.com/tgoodyear/usnewsmap.com/issues/703), [pilot note](../../notes/2026-10-16-boinc-iris-pilot.md)) was a separate Intel experiment with a 4B INT4 model on OpenVINO, whose readings aren't comparable with the 8B quorum. It was retired on 2 November 2026 and replaced by `intel_vulkan_8b`.
 
-For `--fresh-pair --apply`, the helper takes MySQL `READ` locks on `app`,
-`workunit`, `result` and `assignment` after acquiring its policy-file lock.
-It rechecks the candidate under those database locks and holds them through
-journaling, atomic policy replacement and readback. The pinned BOINC scheduler
-updates the workunit and calls `mark_as_sent` before adding the result to its reply;
-these SQL writes cannot cross that publication interval. This works with both
-InnoDB and MyISAM and does not rely on an advisory lock the scheduler never takes.
-A final database recheck after staging the policy detects a lost session before
-rename. The receipt records `fresh_pair_guard: mysql-read-lock-v1`.
+## Admission
 
-These are table-wide locks: other apps' writes can briefly wait too. Acquisition
-times out after five seconds, and the existing 20-second process-group timeout
-still bounds the owned operation. Failures release the database and policy locks;
-preview and stop do not take database locks. No scientific row is modified.
-Deployment needs `SELECT` and `LOCK TABLES` privileges on these tables and the
-normal coordinated helper-SHA update at an idle boundary. Do not combine a refill
-with database restart/failover or filesystem maintenance; this is not a distributed
-transaction across MySQL and the policy filesystem.
+Every native Qwen GPU class ships closed (`min_wu_id=2`, `max_wu_id=1`). `boinc/scripts/native-qwen-cohort.php` opens and closes them in the plan-class policy. It previews by default and applies with `--apply`, journals the old policy under a shared lock, and changes no workunit, result, account or preference. Normal server startup refreshes the reviewed policy (`refresh-plan-policy.py`) and keeps existing bounds and general-admission markers; newly added classes start closed.
 
-The repeatable `boinc/scripts/test_qwen_publication_db.py` fixture uses actual
-concurrent MySQL connections and the real PHP entry point, with disposable BOINC
-table shapes and a thin database adapter. Set `USNM_QWEN_MYSQL_PORT` to a
-**disposable localhost** MySQL port with an empty-password root account, as in CI.
-It covers both storage engines, result/workunit/assignment writers, publication
-failure, killed publishers, lost database sessions, a writer winning before final
-revalidation, and lock-acquisition timeout.
-It does not run a full scheduler RPC or mutate a live project.
+| Class                              | Admission                                                                                                                                                    |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `nvidia_vulkan_8b`                 | General. It qualified on 17 audited units on one RTX 2060 SUPER host (13 valid, none failed) in October 2026.                                                |
+| `intel_vulkan_8b`                  | General since 8 November 2026: the refill had found no fresh pair to open since 4 November, and Intel's last 104 replicas were 102 valid and 2 inconclusive. |
+| `nvidia_cuda_8b`, `nvidia_cuda_2b` | Bounded windows only; no general-admission record.                                                                                                           |
+| `nvidia_vulkan_6gb_8b`             | Closed; one workunit at a time with `--fresh-pair` (below).                                                                                                  |
+| `nvidia_vulkan_2b`                 | Closed; no released version ([2B release](app-release.md#linux-nvidia-2b-nvidia_vulkan_2b)).                                                                 |
 
-Refill also reads actual native-8B **in-progress tasks across all windows** for
-both pilot hosts. New window size is reduced to the smaller remaining headroom
-of a ten-task-per-host buffer; a full buffer waits for actual completions.
-Thus a 500-job ramp is not permission to queue 500 unvalidated GPU tasks at once.
-This is conservative admission backpressure, not a client preference/quota
-change; report measured per-host backlog and rates rather than claiming the
-admission budget is completed work.
+The live policy file wasn't read for this table; it follows the helper's comments on `NVIDIA_GENERAL_MARKER` and `INTEL_GENERAL_MARKER` in `native-qwen-cohort.php` and the 8 November change.
 
-A window normally refills only once neither pilot host can take any replica of it.
-One-result-per-host makes that a head-of-line hazard: when a host already holds a
-replica of every remaining window unit and has no native task left, it can take
-nothing until its peer drains the rest, and a stalled peer starves it indefinitely.
-After the window has been held `--rotate-after-seconds` (default 1800, at least
-600: several native task times, so a merely slow peer keeps its window), such a
-starved host lets the controller open the next fresh window. The left-behind
-replicas are not cancelled, reassigned or edited; they stay ordinary unsent work
-for every other eligible class, and the receipt records them
-(`rotated_past_window`, `starved_hosts`, `left_unsent_replicas`).
-The read-only `boinc/scripts/qwen-dispatch-fairness.py` shows how this plays out under
-ordinary work: each host's Qwen sends by day, the unsent units each host can take, the
-blocked head in feeder order, and the feeder cache. The
-[5 November reading](../../notes/2026-11-05-qwen-intel-dispatch.md) found the queue moving past
-its blocked head and Intel idle only because no fresh pairs were left.
+```sh
+# Preview, then add --apply.
+php boinc/scripts/native-qwen-cohort.php --project /project/usnmocr --plan-class nvidia_cuda_2b --workunit ID
+php boinc/scripts/native-qwen-cohort.php --project /project/usnmocr --plan-class shared_8b --workunit FIRST --workunit-end LAST
+php boinc/scripts/native-qwen-cohort.php --project /project/usnmocr --plan-class nvidia_vulkan_8b --general
+php boinc/scripts/native-qwen-cohort.php --project /project/usnmocr --stop
+php boinc/scripts/native-qwen-cohort.php --project /project/usnmocr --stop --keep-general
+```
 
-Once the operator gives `nvidia_vulkan_8b` general admission (the helper's
-`--general` and its marker, [app releases](app-release.md)), the
-NVIDIA host takes any Qwen work on its own, and the controller owns Intel's window alone
-(#1445). It refills that window with `--plan-class intel_vulkan_8b`, and its release is
-`--stop --keep-general`, so neither ever bounds or closes NVIDIA's general admission.
-Buffer headroom, window eligibility, starvation and the pinned-release check then cover
-the Intel host and Intel's release only; the NVIDIA host's unbounded queue never fills
-the buffer or holds a window. Like an open AMD or Apple class, a generally admitted
-NVIDIA release that cannot read the request version closes Intel's window and is named in
-`open_classes_that_cannot_read_request`. With one result per host, the Intel host's
-replicas reach quorum only through another class, so Intel's window also closes unless an
-open NVIDIA, AMD or Apple release can read the request (`open_peer_readers`). The flip keeps
-the controller's state: the
-open shared window becomes Intel's. A marker beside bounds fails the tick, and an
-AMD-first reservation needs NVIDIA bounded. The receipt reports
-`nvidia_general_admission`.
+- **One workunit.** `--plan-class CLASS --workunit ID` opens one audited native workunit (Qwen identity, model batch, disk bound, quorum and target 2, two unsent results) in that class and closes the other shared classes (`nvidia_cuda_2b`, `nvidia_cuda_8b`, `intel_vulkan_8b`, `nvidia_vulkan_8b`). Stock scheduler range and batch checks enforce it.
+- **Range.** `shared_8b` opens `intel_vulkan_8b` and `nvidia_vulkan_8b` together over at most ten contiguous workunits (`--workunit-end`) and also closes the NVIDIA container class `docker_nvidia_cuda_8b` without changing its queue. `intel_vulkan_8b` alone also takes a range, which the refill controller uses beside NVIDIA's general admission.
+- **General admission.** `--general` removes the class's bounds and writes its marker (`usnm-nvidia-general-admission-v1`, `usnm-intel-general-admission-v1`), which a policy refresh keeps. Intel's needs NVIDIA's first. A window that includes the class replaces its general admission with the window's bounds.
+- **Stop.** `--stop` closes every shared class, general admission included, without cancelling results in progress. `--stop --keep-general` closes the bounded windows and keeps both markers. Neither touches the independent classes `amd_vulkan_8b`, `nvidia_vulkan_6gb_8b` and `nvidia_vulkan_2b`; close those with their own `--plan-class CLASS --stop`.
+- **Tiebreaker.** When two successful results come back inconclusive, the transitioner adds an unsent replica that no open class may be able to take. `--plan-class intel_vulkan_8b|nvidia_vulkan_8b|shared_8b --tiebreaker --workunit ID` admits that one workunit. It needs an ordinary native-8B workunit with `target_nresults` equal to its result count, exactly one unsent replica and every other result inconclusive (`validate_state=4`), and `<one_result_per_host_per_wu/>` set once in the project's `config.xml`, so the replica goes to a new host. Close the class with `--stop` once it is sent.
+- **Fresh pair with a deadline.** `--fresh-pair --admit-until UNIX` with `--expected-policy-sha256` (required for `nvidia_vulkan_6gb_8b`) rechecks a pristine quorum-two pair under the policy lock and MySQL `READ` locks on `app`, `workunit`, `result` and `assignment` (`fresh_pair_guard: mysql-read-lock-v1`), so the scheduler can't send a replica between the check and the policy change. The deadline doesn't close the window; schedule the `--stop`.
+- `--db-project PATH` reads database credentials from a separate project directory (its `config.xml` and private `html/inc`), so credentials stay off the shared filesystem; policy and journal stay under `--project`.
 
-The controller reads the producer's durable
-`/project/qwen/qwen-nonenglish-v1/audit.json` directly, not a human handoff or a
-headline count of stale ready work. It binds each WU/job identity to the actual
-downloaded job/page, native unit/submitted marker, source-quality page hash,
-archive ALTO hash/provenance, and original sampled damage metadata. Existing
-Yiddish and Serbian source cohorts are explicit bounded inputs; 1–12 crops and
-8192 UTF-8 bytes per crop remain enforced. Selection is the oldest contiguous
-eligible prefix in each bounded scan, never easiest-page selection. A durable
-cursor advances past fully stale 1000-unit slices and wraps to revisit pending
-inputs, so an assigned prefix cannot starve later fresh work. Counts explicitly
-describe the scanned slice, not the global eligible backlog. Quality/provenance file hashes
-and damage metadata are journaled; this is not a new whole-archive/GGUF readback
-or a multilingual accuracy claim.
+The server patch disables app-ID-only version memoization when plan classes have workunit bounds, so a paused batch can't block later eligible work.
 
-A window advances only when it has no **currently unsent replica eligible for
-either pilot host**. Completed/inconclusive replicas already run by both hosts
-are not fresh work. Pending normal peers/validation are left untouched; no
-canonical/status/assignment row is rewritten, no fake third replica is made,
-and no collector wait is added. Normal transitioner peers can remain pending
-outside an advanced finite window: report that unresolved inventory honestly,
-not as independently accepted jobs. An active AMD-first reserved ID is excluded;
-later disjoint NVIDIA/Intel windows may continue on either side of it.
+## Persistent finite NVIDIA/Intel refill
 
-Before installation, coordinate #529 with exact source SHA, config/helper/initial
-policy SHA, unique controller ID, minimum new WU, budget, deadline and rollback.
-Install the reviewed controller and helper at
-`/project/ops/qwen-cohort-auto/{qwen-auto-cohort.py,native-qwen-cohort.php}` on the
-persistent project bind. Install the two reviewed units in the host's normal
-systemd directory, and create `/etc/usnm-boinc/qwen-cohort-auto.env`:
+`boinc/scripts/qwen-auto-cohort.py`, run once a minute by `usnm-qwen-cohort-auto.service` and `.timer` under the nonblocking project mutex, keeps a bounded window of fresh native-8B workunits open for Intel (and for NVIDIA while NVIDIA has no general admission). With both general-admission markers it owns no window: each tick reports `no-owned-window` and changes nothing. Lock contention exits 75, and a 20-second in-container timeout bounds each tick.
+
+Each refill admits at most ten contiguous newly produced native-8B workunits with two pristine ordinary replicas, quorum and target 2, no assignment, no app-version binding and zero error, transition and HR flags, from the producer's `/project/qwen/qwen-nonenglish-v1/audit.json` (or the roots `CAMPAIGN_ARGS` names). It binds each workunit to its downloaded job and page, source-quality hash and archive ALTO hash and provenance, enforces 1 to 12 crops and 8,192 UTF-8 bytes per crop, and takes the oldest eligible prefix, never the easiest pages; a durable cursor moves past stale 1,000-unit slices. In-progress tasks count against a ten-task-per-host buffer (`--max-inflight-per-host`). A window advances once no unsent replica is eligible for a pilot host. One held longer than `--rotate-after-seconds` (default 1800, at least 600) by a host that can take none of it gives way to a fresh one, and its replicas stay ordinary unsent work (`rotated_past_window`, `starved_hosts`, `left_unsent_replicas`). `boinc/scripts/qwen-dispatch-fairness.py` shows, read-only, how this plays out ([5 November reading](../../notes/2026-11-05-qwen-intel-dispatch.md)).
+
+Only one Linux Intel and NVIDIA release pair is admitted: `--app-version-num` (default 114, that is 1.14), `--intel-app-version` (67) and `--nvidia-app-version` (66). `--prompt-version` (default 1) is the one request version admitted; version 2 needs 1.15 or later and versions 3 and 4 need 1.17 or later. The controller doesn't open AMD or Apple, but an unbounded class takes any unsent replica, so it closes its window when an open class (AMD, Apple, or NVIDIA under general admission) can't read the request version (`open_classes_that_cannot_read_request`) or no open peer class can (`open_peer_readers`). A superseding release on any platform or a changed `config.xml` also closes the window.
+
+Install the controller and helper at `/project/ops/qwen-cohort-auto/{qwen-auto-cohort.py,native-qwen-cohort.php}` and the two units in the host's systemd directory, and write `/etc/usnm-boinc/qwen-cohort-auto.env`:
 
 ```ini
 HELPER_SHA256=REVIEWED_HELPER_SHA
@@ -152,98 +65,29 @@ MAX_ADMISSIONS=500
 ENABLED_UNTIL=REVIEWED_UNIX_DEADLINE
 ```
 
-Default ramp budget is **500 unique new workunits**, not 500 replicas/readings or
-10,000 accepted jobs; the hard budget limit is 10,000, and one reviewed enablement
-lasts at most 24 hours. Increase only with measured source-eligible input,
-storage floors, actual dispatch/completion and scientific-quality evidence.
-Run a dry invocation under the same normal mutex before enabling the timer.
-Verify the real ordinary timer's immutable input receipt and actual signed
-assignments/returns afterwards; a policy change alone is not throughput.
+`MAX_ADMISSIONS` counts unique new workunits (default 500, at most 10,000), and one enablement lasts at most 24 hours. Coordinate on #529 first, run one dry invocation under the same mutex, then enable the timer. To roll back, disable the timer and, once the current window is confirmed as this controller's, run `--stop`; work in flight continues.
 
-**Window renewal (stopgap).** Until automated renewal lands (#1441),
-`usnm-qwen-window-renew.timer` runs `/usr/local/sbin/usnm-qwen-window-renew`
-(`boinc/scripts/usnm-qwen-window-renew` and its two units) at 4:31 AM and 4:31 PM
-Eastern. Each run sets `ENABLED_UNTIL` 86,000 seconds ahead, keeping the previous
-file as `qwen-cohort-auto.env.pre-autorenew`, so the deadline stays about 12 hours
-or more away. It renews only while every other line of `qwen-cohort-auto.env`
-(hashes, app versions, `CAMPAIGN_ARGS`, `MAX_ADMISSIONS` and the rest) matches the
-reviewed hash in `/etc/usnm-boinc/qwen-window-renew.sha256`; `MAX_ADMISSIONS` still
-caps the total. After reviewing a settings change, pin it again with
-`usnm-qwen-window-renew --print-pin > /etc/usnm-boinc/qwen-window-renew.sha256`.
-Until then the renewer exits with an error and the window lapses at its deadline;
-the feed monitor's `qwen_refill_window` check fires six hours before.
+**Window renewal.** Until #1441 is done, `usnm-qwen-window-renew.timer` runs `/usr/local/sbin/usnm-qwen-window-renew` (`boinc/scripts/usnm-qwen-window-renew` and its two units) at 4:31 AM and 4:31 PM Eastern. Each run checks every other line of the env file against the hash in `/etc/usnm-boinc/qwen-window-renew.sha256`; if they match, it moves `ENABLED_UNTIL` 86,000 seconds ahead and keeps the previous file as `qwen-cohort-auto.env.pre-autorenew`. After a reviewed settings change, pin it again with `usnm-qwen-window-renew --print-pin > /etc/usnm-boinc/qwen-window-renew.sha256`; until then the renewer fails and the window lapses at its deadline. The feed monitor's `qwen_refill_window` check fires six hours before.
 
-`CONFIG_SHA256` is the SHA-256 of the live `/project/usnmocr/config.xml`. `render_config`
-rewrites that file at every container start, and so do the submit, reconcile and
-`register-apps` bridge steps (`bridge-job.sh`), with the `SERVER_IMAGE` in `/etc/usnm-boinc/server.env`. A tick that
-finds a different hash releases its window and publishes `--stop`. A server image that
-renders a different `config.xml` therefore needs the timer disabled before `SERVER_IMAGE`
-changes. After the restart, take the new hash from the running server
-(`podman exec usnm-boinc-server sha256sum /project/usnmocr/config.xml`), and check the diff
-against the previous config. Then set `CONFIG_SHA256`, run a dry invocation, and enable the
-timer again. #1449's image is such an image: it drops eight retired daemons and sets
-`maintenance_delay` (#1462), so one re-pin covers both. Don't predict the
-hash from the repository, because the rendered file carries the host's secrets and paths. An
-app-version image prepared on the old `SERVER_IMAGE` renders the old file when it publishes,
-so prepare it again on the new one.
+**Config pin.** `CONFIG_SHA256` is the SHA-256 of the live `/project/usnmocr/config.xml`, which `render_config` rewrites at every container start and in the submit, reconcile and `register-apps` bridge steps. A server image that renders a different `config.xml` therefore needs the timer disabled before `SERVER_IMAGE` changes. After the restart, take the new hash from the running server (`podman exec usnm-boinc-server sha256sum /project/usnmocr/config.xml`), check the diff, set `CONFIG_SHA256`, run a dry invocation and re-enable the timer. Don't predict the hash from the repository: the rendered file holds the host's secrets and paths.
 
-The helper rechecks pristine DB state **inside the policy lock** and accepts an
-expected policy SHA and `--admit-until` deadline (checked under the lock and again
-just before the atomic rename; closing remains allowed), so a stale preview cannot overwrite a concurrent operator.
-Durable intent precedes publication; exact interrupted publications reconcile
-without duplicate admission. Unknown ownership stops rather than clobbers.
-Expiry/budget shutdown needs neither the producer audit nor DB. Rollback is to
-disable only this owned timer and use the reviewed shared-cohort `--stop` after
-checking the current window still belongs to this controller; in-flight work
-continues normally. Raw candidate/generation/quality retention and independent
-validation remain mandatory, and high backend agreement is not accuracy.
-
-`usnm_iris` ([#703](https://github.com/tgoodyear/usnewsmap.com/issues/703),
-[docs/notes/2026-10-16-boinc-iris-pilot.md](../../notes/2026-10-16-boinc-iris-pilot.md)) is a separate experiment with a different model
-(4B INT4 on OpenVINO). Its readings are not comparable with the 8B quorum. It was retired on
-2 November 2026 (last workunit 18 October) and sends no work; `usnm_qwen`'s `intel_vulkan_8b` class
-replaced it.
+`boinc/scripts/test_qwen_publication_db.py` exercises the database locks with real concurrent MySQL connections and the PHP entry point. Set `USNM_QWEN_MYSQL_PORT` to a disposable localhost MySQL with an empty-password root account, as in CI.
 
 ## How a host is chosen and checked
 
-- **Scheduler.** BOINC finds Intel GPUs through OpenCL, so the class needs `gpu_type intel` and
-  an OpenCL device with at least 7,000 MB.
-- **Resource type.** Stock BOINC infers an app version's resource from its plan-class name and
-  knows Intel only by `intel_gpu`, so it would tell clients this project has no Intel GPU apps
-  (`no_rsc_apps intel_gpu`), and they would stop asking for Intel GPU work.
-  `boinc/scripts/patch-server-intel-proc-type.py` maps every plan class naming `intel` to the
-  Intel GPU. Each such class must therefore have `gpu_type intel` (#736).
-- **App.** The app lists the Vulkan devices with its own `llama-server --list-devices` and takes
-  the Intel device BOINC assigned. BOINC numbers Intel GPUs among themselves, so device 0 is the
-  first Intel device in the list, whatever its `VulkanN` name. The app never takes a software
-  device (llvmpipe, lavapipe, SwiftShader) or a device BOINC didn't assign. It runs `llama-server`
-  with `--device VulkanN` for that device.
-- **No CPU fallback.** With no hardware Vulkan device, or less free device memory than the model
-  needs (7,000 MiB), the unit ends `no_gpu` with the reason in `diag.txt` and reads nothing.
-- **Slow device probe.** The listing has a 300 s deadline. A probe that answers without a usable
-  device ends `no_gpu` at once. A probe that does not answer in time is a cold driver load, not a
-  missing GPU: on the RTX 2060 SUPER host the same signed listing took 242 s cold and 9.4 s warm
-  under heavy disk load (#1252). The app then writes BOINC's `boinc_temporary_exit` file and
-  exits without finishing, as `boinc_temporary_exit()` does. The client restarts the same task
-  120 s later, with the driver libraries now in the page cache. A counter in the slot allows
-  three such postponements, after which the timeout ends `no_gpu`. The deadline and device
-  matching are unchanged.
+- **Scheduler.** BOINC finds Intel GPUs through OpenCL, so `intel_vulkan_8b` needs `gpu_type intel` and an OpenCL device with at least 7,000 MB. The NVIDIA Vulkan classes use BOINC's CUDA detection.
+- **Resource type.** Stock BOINC infers an app version's resource from its plan-class name and knows Intel only as `intel_gpu`, so it would tell clients the project has no Intel GPU apps (`no_rsc_apps intel_gpu`). `boinc/scripts/patch-server-intel-proc-type.py` maps every plan class whose name contains `intel` to the Intel GPU, so each such class must have `gpu_type intel` (#736).
+- **Device.** The app lists Vulkan devices with its own `llama-server --list-devices` and takes the device BOINC assigned: BOINC numbers Intel GPUs among themselves, so device 0 is the first Intel device in the list, whatever its `VulkanN` name. It never takes a software device (llvmpipe, lavapipe, SwiftShader) or one BOINC didn't assign, and runs `llama-server --device VulkanN`.
+- **No CPU fallback.** With no hardware Vulkan device, or less free device memory than the model needs (7,000 MiB), the unit ends `no_gpu` with the reason in `diag.txt` and reads nothing.
+- **Slow device probe.** The listing has a 300-second deadline. A probe that answers without a usable device ends `no_gpu` at once. One that doesn't answer in time is treated as a cold driver load: on the RTX 2060 SUPER host the same listing took 242 s cold and 9.4 s warm under heavy disk load (#1252). The app then writes BOINC's `boinc_temporary_exit` file and exits, and the client restarts the task 120 s later. A slot counter allows three such postponements before the timeout ends `no_gpu`.
 
-OpenCL is not a reliable memory gate for integrated GPUs. On Computer 9, OpenCL reported
-15,135,723,520 bytes (nearly all system RAM), while Vulkan reported a 7,917 MiB heap with
-7,125 MiB free. An integrated GPU with less RAM behind it can pass the scheduler and still be
-refused by the app.
+OpenCL isn't a reliable memory gate for integrated GPUs. On Computer 9, OpenCL reported 15,135,723,520 bytes (nearly all system RAM), while Vulkan reported a 7,917 MiB heap with 7,125 MiB free. An integrated GPU with less RAM can pass the scheduler and still be refused by the app.
 
 ## Volunteer setup
 
-- **Linux:** Mesa's Vulkan driver (`mesa-vulkan-drivers` on Debian and Ubuntu) and Intel's
-  OpenCL runtime (`intel-opencl-icd`), so that BOINC detects the GPU. `vulkaninfo --summary`
-  should list the Intel device.
-- **Windows:** The current Intel graphics driver, which includes both Vulkan and OpenCL.
-- **Memory:** An integrated GPU's memory is system RAM. One 8B unit used up to 8,609 MiB of GPU
-  buffers and process memory on Computer 9. The BOINC scheduler reserves no host memory for GPU
-  classes, so on an integrated GPU, run one unit at a time and leave headroom for other work, in
-  the project's `app_config.xml`:
+- **Linux:** Mesa's Vulkan driver (`mesa-vulkan-drivers` on Debian and Ubuntu) and Intel's OpenCL runtime (`intel-opencl-icd`), so that BOINC detects the GPU. `vulkaninfo --summary` should list the Intel device.
+- **Windows:** the current Intel graphics driver, which includes Vulkan and OpenCL.
+- **Memory:** an integrated GPU's memory is system RAM. One 8B unit used up to 8,609 MiB of GPU buffers and process memory on Computer 9. The scheduler reserves no host memory for GPU classes, so on an integrated GPU run one unit at a time, in the project's `app_config.xml`:
 
   ```xml
   <app_config>
@@ -256,169 +100,10 @@ refused by the app.
 
 ## Supported hardware
 
-| GPU                                    | Host                              | Status                                                                                        |
-| -------------------------------------- | --------------------------------- | --------------------------------------------------------------------------------------------- |
-| Iris Xe (TigerLake-LP GT2), i7-1185G7  | 16 GB RAM, Debian 13, Mesa 25.0.7 | Measured (below)                                                                              |
-| Iris Xe with 8 GB RAM                  |                                   | Not measured; likely refused if its Vulkan heap is half of RAM, as on Computer 9              |
-| NVIDIA GeForce RTX 2060 SUPER, 8 GiB   | Linux container                   | CUDA and Vulkan-on-NVIDIA measured (below)                                                    |
-| Arc A-series (A750 8 GB, A770 16 GB)   |                                   | Not measured; no Arc hardware was available for #829                                          |
-| AMD GPUs through the same Vulkan build |                                   | [Separate automatic AMD admission](amd-gpu.md); RX 9070 XT hardware acceptance pending (#885) |
-
-## Measured on Computer 9 (#787)
-
-The production `usnm_qwen` app, with plan class `intel_vulkan_8b`, read the 100 crops of
-`legacy/overproof-en-100` from OCR benchmark release `ocr-bench-v1.0.0`. That is the exact input
-of the accepted Iris pilot. The crops ran as four 25-page bundle slots, staged with
-`usnm-ocr-survey qwen-bench-stage` and collected with `qwen-bench-collect`.
-
-|                     |           Iris pilot (4B INT4, OpenVINO) |                                    `intel_vulkan_8b` (8B Q4_K_M, Vulkan) |
-| ------------------- | ---------------------------------------: | -----------------------------------------------------------------------: |
-| Crops read          |                                100 / 100 |                                                                100 / 100 |
-| CER, `legacy-ws-v1` |                                   1.975% |                                                    2.209% (614 / 27,795) |
-| CER, `raw-v1`       |                                          |                                                    2.439% (678 / 27,795) |
-| Seconds per crop    |         35.4 mean, model loaded per crop | 15.4 mean wall time with loads; 14.9 p50, 18.0 p95, 18.9 max per reading |
-| Model load          |                               every crop |           3.0 to 3.5 s per 25-crop slot with the model cached (9 s cold) |
-| Peak memory         | 8,496,205,824 bytes cgroup, largest crop |    8,609 MiB (7,020 GPU shmem + 1,589 anon), plus reclaimable page cache |
-
-Memory was sampled once a second from the host side of the container's cgroup, so GPU shared
-allocations are included and the page cache of the memory-mapped model file is counted
-separately. The run used llama.cpp b8799, Mesa 25.0.7 and a 12 GiB container.
-
-## Measured on NVIDIA GeForce RTX 2060 SUPER (#829)
-
-On 2026-10-18, the pinned production `usnm-boinc-worker` CUDA image and its `work` path ran
-Qwen3-VL-8B-Instruct-Q4_K_M on the 100 verified crops in release `ocr-bench-v1.0.0`, subset
-`legacy/overproof-en-100` (subset digest `e99edaf91b5493fcd3eaf309cea9f31dbbeb23438bab865638ab92889cd14d04`).
-The crops ran in four sequential 25-crop slots in a private container; this did not
-submit BOINC work or change shared BOINC, VM, or production configuration.
-
-| Measurement                                      |                                                                                                                                                                                                                                                                                                                                               Result |
-| ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------: |
-| Hardware / driver                                |                                                                                                                                                                                                                                                           NVIDIA GeForce RTX 2060 SUPER, Turing, compute capability 7.5, 8,192 MiB; driver 610.57.04 |
-| Runtime                                          | `docker_nvidia_cuda_8b`, CUDA 12.8.1; worker image `sha256:6676d88226f050c63ad821c220aacd1205ac9f35c964c02dbdca8b93b031193e`; embedded llama.cpp base `sha256:b0baccbe2e00b5d74e63f85f9f023c93d61d0f329475269e1e7002e87eb875ea` (build 11610, commit `091b6a7fc`); weights `sha256:969266d1c24656977e06a6efacae04deac6d5093c77227fe55ac28975035cddd` |
-| Crops read                                       |                                                                                                                                                                                                                                                                                                              100 / 100; all four slots `outcome: ok` |
-| CER, `legacy-ws-v1`                              |                                                                                                                                                                                                                                                                                                           2.137% (594 / 27,795 reference characters) |
-| CER, `raw-v1`                                    |                                                                                                                                                                                                                                                                                                           2.317% (644 / 27,795 reference characters) |
-| Cold first reading after each slot's model start |                                                                                                                                                                                                                                                                                                          70.4–101.0 s (four readings; median 96.0 s) |
-| Remaining 96 warm readings                       |                                                                                                                                                                                                                                                                                                                1.599 s p50, 1.898 s p95, 1.973 s max |
-| Model load                                       |                                                                                                                                                                                                                                                                                                                         62.3–63.8 s per 25-crop slot |
-| Total wall time                                  |                                                                                                                                                                                                                                             781 s for 100 crops; 7.81 s/crop including model loads. Summed crop-read time was 521.6 s (5.22 s/crop). |
-| Peak VRAM                                        |                                                                                                                                                                                                                                                                             6,491 MiB of 8,192 MiB sampled; the 8B model fit and all crops completed |
-| GPU utilization                                  |                                                                                                                                                                                                                                                                                  18.7% mean; 204 / 776 one-second samples (26.3%) above 0%; 95% peak |
-| Board power                                      |                                                                                                                                                                                                                                                                                               66.0 W mean and 184.7 W peak over the benchmark window |
-| Estimated electricity                            |                                                                                                                                                                                                                                 $0.26 per 1,000 pages at $0.15/kWh and 12 crops/page; GPU-board draw only, excluding host CPU and other system power |
-
-The first reading in each slot is the first request after a fresh server/model start; no host or
-filesystem caches were cleared. Thus “warm” is the other 24 readings in each slot, not a claim of
-a cold-disk test. The full wall-time and energy estimate include all four model loads.
-
-**Telemetry caveats.** All four worker result manifests report `device: cpu` and the worker did not
-parse a llama-server device line. This is the known device-label defect tracked in [#794](https://github.com/tgoodyear/usnewsmap.com/issues/794), also observed in the NVIDIA runtime receipt on
-[#559](https://github.com/tgoodyear/usnewsmap.com/issues/559). The manifests nevertheless record
-6,465–6,491 MiB of GPU memory; independent host-side `nvidia-smi` sampling during the run saw up
-to 95% GPU utilization and 184.7 W. The NVIDIA activity, CUDA plan class, and full 100-crop
-completion are the measurement evidence; the worker's `device` string is not reliable here.
-
-The private container requested 6 GiB memory and 2 CPUs, but its host did not delegate cgroup v2
-limits (`memory.max` and `cpu.max` read as `max`), so those limits were not enforced. The
-observed worker peak RSS was about 5.23 GiB. The production CUDA image is a different pinned
-llama.cpp build from the native Vulkan `llama.lock` route; the similar CER values do **not**
-establish CUDA/Vulkan equivalence. The separate native b8799 pair below supplies that backend
-comparison; it does not turn this b11610 production-image run into a same-build pair.
-No Arc hardware was available, so Arc was not measured.
-
-## Paired native b8799 CUDA / Vulkan on NVIDIA (#786, #829)
-
-On 2026-10-18, the **same RTX 2060 SUPER**, existing driver 610.57.04 and native
-`usnm_qwen` 1.6 executable read the same 100 verified `legacy/overproof-en-100` crops through
-both backends. **This is Vulkan on NVIDIA, not Intel hardware.** It tests the pinned Vulkan
-backend that Intel hosts use without needing the unavailable raw Computer 9 readings.
-
-The Vulkan archive is the exact `ubuntu-vulkan-x64` b8799 asset in `llama.lock`
-(SHA-256 `d962a8228c42c84583150e809d654f9ec995cdf9f4e02e37365293642210a309`). Because #849 did
-not document a retained raw-output location and its CT scratch was removed, CUDA was run
-again in the same window. To avoid a b11610/b8799 confound, this new CUDA run was built from
-b8799 source commit `e1a9a6dcbefccb4b864d9385ce8494f2a7f2ffcd`, using CUDA 12.8.1, GCC 13.3.0
-and architecture 75. **It is a source-pinned native benchmark build, not the production CUDA
-image or a prebuilt Linux CUDA asset from `llama.lock`.** Its banner is `b0-unknown` because
-its source archive/build container had no Git metadata; the source archive, resulting binaries,
-compiler and commands are independently pinned in the [run receipt](../../../ocr/bench/results/qwen-b8799-cuda-vulkan-rtx2060s-100-v1/run.json).
-Do not substitute its CER for #849's production-image 2.137%, or attribute the timing difference
-between those two CUDA runs solely to a backend change.
-
-Both native passes used four identical 25-crop jobs, the same Qwen3-VL-8B Q4_K_M and Q8_0
-vision-projector bytes from `weights.lock`, prompt v1, context 4096, GPU layers 99, two CPU
-threads, parallel 1, temperature 0, top-p 1, seed 42 and four output tokens per 1,000 square
-pixels. The native plan classes were `nvidia_cuda_8b` and `nvidia_vulkan_8b`; the Intel class
-would deliberately refuse the NVIDIA device. Both server logs confirm 37/37 layers offloaded
-to the GPU. Vulkan used the host's existing NVIDIA ICD with no container or driver configuration changes.
-
-| Measurement                                          |                        Native CUDA b8799 | Pinned Vulkan b8799 on NVIDIA |
-| ---------------------------------------------------- | ---------------------------------------: | ----------------------------: |
-| Successful crops / missing                           |                                  100 / 0 |                       100 / 0 |
-| CER, `legacy-ws-v1`                                  |                    2.256% (627 / 27,795) |         2.241% (623 / 27,795) |
-| CER, `raw-v1`                                        |                    2.490% (692 / 27,795) |         2.446% (680 / 27,795) |
-| Completed-pass wall / mean per crop, including loads |                       293.29 s / 2.933 s |            423.15 s / 4.232 s |
-| All 100 readings, p50 / p95                          |                        1.523 s / 1.874 s |             1.693 s / 2.112 s |
-| Remaining 96 warm readings, p50 / p95                |                        1.518 s / 1.874 s |             1.685 s / 2.047 s |
-| First read after each model start                    |                            1.630–2.076 s |               34.476–35.585 s |
-| Model load per slot                                  | 21.048 s first; 2.658–2.744 s next three |                 4.604–4.908 s |
-| Sampled peak physical VRAM, of 8,192 MiB             |                                7,013 MiB |                     6,490 MiB |
-| Sampled combined worker + server peak RSS            |                                 5.17 GiB |                      5.31 GiB |
-| Sampled GPU utilization, mean / peak                 |                              51.0% / 97% |                   39.3% / 97% |
-| Reported GPU-board power, mean / peak                |                        103.6 W / 209.1 W |              83.6 W / 185.9 W |
-| Estimated GPU-board electricity per 1,000 pages      |                                    $0.15 |                         $0.18 |
-
-The electricity estimates use 12 crops/page and $0.15/kWh, exclude host power and one-time
-build/setup costs, and are not wall-meter measurements. RSS is sampled across the worker and
-its server; the native result's `peak_rss_kib` alone describes only the small worker process.
-These were native processes, not newly resource-limited inference containers. Filesystem and
-private shader caches were not cleared: “first read” means a fresh model/server, not cold disk
-or cold shader caches. A first Vulkan attempt yielded to a newly executing unrelated CPU BOINC
-task after 75 completed readings; it was discarded, and all 100 Vulkan crops were rerun from
-fresh slots after a 15-minute idle recheck. The table uses only the uninterrupted completed
-passes, not the discarded attempt, waiting interval, CUDA build or coordination time.
-
-### Pairwise agreement and retained evidence
-
-`usnm-boinc qwen compare`, the implementation invoked by `usnm_qwen_compare`, validated the
-unmodified readings/manifests/diagnostics and accepted **all four slots / all 100 crops** at
-both the existing 0.5 probe Dice floor and an additional fixed 0.95 benchmark threshold.
-
-- **Exact text equality:** 92/100; after whitespace normalization, 95/100.
-- **Word-bag Dice:** mean 0.999792, median 1.0, minimum 0.979167; 99/100 word bags identical.
-  The only Dice below 1 was `pub-overproof-ca-053`. None fell below 0.95.
-- **Aggregate Vulkan minus CUDA CER:** −0.014391 percentage points (`legacy-ws-v1`, four fewer
-  edits) and −0.043173 points (`raw-v1`, 12 fewer edits). These are edit-weighted aggregate
-  differences, not averages of per-crop CERs.
-- Exact differences were crops 007, 018, 044, 053, 072, 081, 088 and 106 (all with prefix
-  `pub-overproof-ca-`). The [per-crop comparison](../../../ocr/bench/results/qwen-b8799-cuda-vulkan-rtx2060s-100-v1/crop-comparison.jsonl)
-  retains exact/whitespace matches, Dice, both CER edit deltas and timings for every crop;
-  [pairs.jsonl](../../../ocr/bench/results/qwen-b8799-cuda-vulkan-rtx2060s-100-v1/pairs.jsonl) and
-  `strict-pairs.jsonl` retain the actual validator decisions.
-
-The native jobs were staged once before either run. For this native-only benchmark,
-`engine.image` fingerprints the identical native executable and `engine.llama` is the allowed
-release-level `llama.lock` digest, **not a claim that CUDA/Vulkan executable bytes are identical
-or that either ran inside the production image**. Backend binaries/source are pinned separately
-in the receipt. Byte-identical result-manifest copies were given BOINC-safe upload filenames
-solely for validator logging; no job, engine or output metadata was rewritten.
-
-[All evidence](../../../ocr/bench/results/qwen-b8799-cuda-vulkan-rtx2060s-100-v1) includes both
-100-row output files, both scorer rules/reports, timing/power traces, comparison summary,
-SHA-256 inventory and `raw-native-results.tar.gz` (the archive is in the `bench-assets` set: `scripts/ops/data-assets.sh --fetch --set bench-assets`). The archive preserves byte-exact native
-outputs, server logs, staged job metadata, validator-name copies, build receipts and the
-separately labelled discarded Vulkan attempt. For offline replay, extract it into a new local
-project directory, then run `usnm-boinc qwen compare --files READINGS RESULT DIAG --files2
-READINGS RESULT DIAG --min-dice 0.95 --log replay-pairs.jsonl`, selecting the corresponding
-`native/{cuda,vulkan}/JOB/` readings/diagnostics and `native/validator-upload-names/` result
-copies. Re-score `cuda-outputs.jsonl` and `vulkan-outputs.jsonl` with `bench-score` against the
-verified v1.0.0 release under both rules.
-
-This completes #829's remaining paired-comparison measurement and supplies bounded b8799
-backend-agreement evidence for #786. It is **not** cross-vendor Intel validation, an
-independent-host production quorum receipt, or permission to widen a cohort. Arc hardware was
-unavailable and remains optional for #829; Intel rollout/audited work, Arc characterization
-and integrated-GPU host-RAM reservation remain separate #786 follow-ups. The isolated
-workspace/store/cache were removed and the GPU was explicitly released on #794 before any
-PR/review work; shared BOINC processes, preferences, caches and other sessions were untouched.
+| GPU                                    | Host                              | Status                                                                           |
+| -------------------------------------- | --------------------------------- | -------------------------------------------------------------------------------- |
+| Iris Xe (TigerLake-LP GT2), i7-1185G7  | 16 GB RAM, Debian 13, Mesa 25.0.7 | Measured                                                                         |
+| Iris Xe with 8 GB RAM                  |                                   | Not measured; likely refused if its Vulkan heap is half of RAM, as on Computer 9 |
+| NVIDIA GeForce RTX 2060 SUPER, 8 GiB   | Linux container                   | CUDA and Vulkan-on-NVIDIA measured                                               |
+| Arc A-series (A750 8 GB, A770 16 GB)   |                                   | Not measured; no Arc hardware was available for #829                             |
+| AMD GPUs through the same Vulkan build |                                   | [AMD GPUs](amd-gpu.md); RX 9070 XT hardware acceptance pending (#885)            |
