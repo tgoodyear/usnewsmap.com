@@ -554,3 +554,9 @@ python3 /root/usnm-archive/archive_history.py restore-held --batch <NNNN> \
 ```
 
 It verifies sha256, uploads with `If-None-Match: *` and the archived Content-MD5 (journal last), refuses if `MAX_JOBS` would be passed (`claims_after`, `journals_after`, `fits`), restores state entries and writes `receipts/restore-held-<time>.json`. Then collect with hand-off `collect` and `JOB_IDS`.
+
+#### Hand-off retention: held bundle scans
+
+`submit-bundle` keeps a second copy of each OCR bundle's scans, `$HANDOFF_DIR/bundles/<id>/pages`, beside the bundle's manifest `ocr_bundle.json`, and puts the same bytes into the download tree. Nothing reads the held `pages` after `create_work`: `spool-out` splits an assimilated result with `ocr_bundle.json`, and `reconcile` asks BOINC about the workunit. `archive_history.py bridge` moves the page journals and the spool outputs but never touched `bundles/`, so the copies piled up on the BOINC host's root disk, 20 to 45 MB a bundle (about 27 GB after three days of OCR, 11 November 2026).
+
+`boinc/scripts/onprem/handoff-retention/` frees them: `usnm-handoff-retention.timer` runs `handoff_retention.py prune-bundles` hourly in the BOINC host's CT. It deletes a bundle's `pages` only when it is at least two hours old and no page journal names the bundle in a stage before `submitted` (a bundle no journal names, because the archive moved them, qualifies). It keeps `ocr_bundle.json`, every page journal under `jobs/` (never deleted, only archived) and every scan. It journals each file before and after its unlink in `/var/lib/usnm-handoff-retention/journal.jsonl`, is bounded by `--max-bundles` and `--max-bytes`, and stops before deleting anything if a journal is unreadable. Dry run it with `/opt/usnm-handoff-retention/handoff-retention.sh --what-if`; the summary line shows the bundles and GiB it would free and why it kept the rest. `install.sh [--enable]` puts the code and units in the CT.
