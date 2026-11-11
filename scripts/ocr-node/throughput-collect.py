@@ -466,13 +466,18 @@ def boinc_rows(since):
 
 
 def step_events(since):
-    output = run(["podman", "events", "--stream=false", f"--since={int(since)}", "--filter", "event=start",
-                  "--filter", "event=died", "--format", "{{json .}}"])
+    """Podman's container start and died events since `since`, oldest first, read from the journal
+    by field. `podman events` scans the whole journal in the window and took minutes over 72 hours
+    of a busy server; journalctl uses the journal's field index (11 Nov 2026)."""
+    output = run(["journalctl", "--no-pager", "--quiet", "--output=json", f"--since=@{int(since)}",
+                  "PODMAN_TYPE=container", "PODMAN_EVENT=start", "PODMAN_EVENT=died"])
     events = []
     for line in output.splitlines():
         try:
-            events.append(json.loads(line))
-        except ValueError:
+            entry = json.loads(line)
+            events.append({"Name": entry["PODMAN_NAME"], "Status": entry["PODMAN_EVENT"],
+                           "Time": entry["PODMAN_TIME"]})
+        except (KeyError, TypeError, ValueError):
             continue
     return events
 
