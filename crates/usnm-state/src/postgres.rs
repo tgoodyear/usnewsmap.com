@@ -329,7 +329,7 @@ mod tests {
                 let id = format!("d{i:04}");
                 Row {
                     pk: format!("p{}", i % 3),
-                    doc: json!({"id": id, "n": i, "text": "Ünïcode ✓", "z": {"b": 1, "a": [1.5, 1e16, 2.5e-7, 1.0]}}),
+                    doc: json!({"id": id, "n": i, "text": "Ünïcode ✓", "z": {"b": 1, "a": [1.5, 1e16, 2.5e-7, 1.0, 1.2345678901234568e18]}}),
                     etag: format!("\"00{i:04}-cosmos\""),
                     id,
                 }

@@ -203,6 +203,27 @@ pub async fn queue_move(args: QueueMoveArgs) -> anyhow::Result<()> {
 mod tests {
     use super::*;
 
+    /// A location with credentials in it is refused before anything is read or printed.
+    #[tokio::test]
+    async fn docs_migrate_refuses_userinfo_before_any_receipt() {
+        for to in [
+            "postgres://role:secret@db.example.test/usnm_state?sslcert=a&sslkey=b&sslrootcert=c",
+            "postgres://role@db.example.test/usnm_state?sslcert=a&sslkey=b&sslrootcert=c",
+        ] {
+            let err = docs_migrate(DocsMigrateArgs {
+                from: "https://acct.documents.azure.com/".into(),
+                to: to.into(),
+                containers: Vec::new(),
+                verify: true,
+                page_size: 100,
+                max_ru_per_sec: 0.0,
+            })
+            .await
+            .unwrap_err();
+            assert!(!format!("{err:#}").contains("secret"), "{err:#}");
+        }
+    }
+
     #[test]
     fn receipts_name_the_database_without_its_certificate_paths() {
         assert_eq!(

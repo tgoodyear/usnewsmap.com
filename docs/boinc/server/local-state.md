@@ -60,8 +60,8 @@ Cosmos after an earlier copy stays in PostgreSQL. `--verify` reports it.
 `--verify` writes nothing. It reads both sides and compares, per container, the count and a
 SHA-256 over the entries sorted by partition key and id. Each entry is the length-prefixed
 partition key, id and ETag, then the SHA-256 of the document's canonical JSON (`migrate::canonical`:
-keys sorted, no whitespace, and a float with no fraction written as an integer, as JSONB
-returns it). The command prints the first ten differences per container
+keys sorted, no whitespace, and each number as its decimal digits and power of ten, since JSONB
+writes `1e16` out in full). The command prints the first ten differences per container
 (`missing_in_target`, `missing_in_source`, `etag`, `document`) and exits non-zero if any
 container differs. The receipt carries each container's counts, digests and request charge,
 and the start and end times.

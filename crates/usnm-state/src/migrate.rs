@@ -160,18 +160,33 @@ fn write_canonical(v: &Value, out: &mut String) {
     }
 }
 
-/// A number as the same text whichever store it came from. JSONB writes a whole float such as
-/// `1e16` out in full (`10000000000000000`), which reads back as an integer: a float with no
-/// fraction is written as that integer. Integers keep every digit; other floats use
-/// serde_json's shortest round-trip form, which JSONB's decimal text parses back to.
+/// A number as the same text whichever store it came from: its decimal value as significant
+/// digits and a power of ten (`12345e-2`, `1e16`, `0`). JSONB keeps the decimal text it was
+/// given but writes it out in full (`1e16` comes back as `10000000000000000`, read as an
+/// integer), so the digits of the text are compared, never a binary float.
 fn canonical_number(n: &serde_json::Number) -> String {
-    if n.is_i64() || n.is_u64() {
-        return n.to_string();
+    let text = n.to_string();
+    let (negative, unsigned) = match text.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, text.as_str()),
+    };
+    let (mantissa, exponent) = match unsigned.split_once(['e', 'E']) {
+        Some((m, e)) => (m, e.trim_start_matches('+').parse::<i64>().unwrap_or(0)),
+        None => (unsigned, 0),
+    };
+    let (whole, fraction) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+    let mut digits: String = format!("{whole}{fraction}")
+        .trim_start_matches('0')
+        .to_owned();
+    let mut exponent = exponent - fraction.len() as i64;
+    while digits.ends_with('0') {
+        digits.pop();
+        exponent += 1;
     }
-    match n.as_f64() {
-        Some(x) if x.fract() == 0.0 && x.abs() < 1e38 => format!("{}", x as i128),
-        _ => n.to_string(),
+    if digits.is_empty() {
+        return "0".into();
     }
+    format!("{}{digits}e{exponent}", if negative { "-" } else { "" })
 }
 
 /// A container's count and digest: SHA-256 over its entries sorted by (partition key, id), each
@@ -911,7 +926,10 @@ mod tests {
     #[test]
     fn canonical_json_sorts_keys_at_every_depth() {
         let a = json!({"b": [{"z": 1, "a": "é"}], "a": null, "n": 1.5});
-        assert_eq!(canonical(&a), r#"{"a":null,"b":[{"a":"é","z":1}],"n":1.5}"#);
+        assert_eq!(
+            canonical(&a),
+            r#"{"a":null,"b":[{"a":"é","z":1e0}],"n":15e-1}"#
+        );
         let b: Value = serde_json::from_str(r#"{"n":1.5,"a":null,"b":[{"a":"é","z":1}]}"#).unwrap();
         assert_eq!(canonical(&a), canonical(&b));
     }
@@ -926,6 +944,9 @@ mod tests {
             ("12345678901234567890", "12345678901234567890"),
             ("-3", "-3"),
             ("1e300", &format!("1{}", "0".repeat(300))),
+            ("1.2345678901234568e18", "1234567890123456800"),
+            ("-0.0", "0"),
+            ("1.5e-300", &format!("0.{}15", "0".repeat(299))),
         ] {
             let a: Value = serde_json::from_str(written).unwrap();
             let b: Value = serde_json::from_str(read_back).unwrap();
@@ -934,6 +955,9 @@ mod tests {
         let half: Value = serde_json::from_str("0.5").unwrap();
         let one: Value = serde_json::from_str("1").unwrap();
         assert_ne!(canonical(&half), canonical(&one));
+        assert_eq!(canonical(&half), "5e-1");
+        let n: Value = serde_json::from_str("[100, 1.25, -7e3]").unwrap();
+        assert_eq!(canonical(&n), "[1e2,125e-2,-7e3]");
     }
 
     #[test]
@@ -953,7 +977,12 @@ mod tests {
     /// The container list matches the one Bicep creates.
     #[test]
     fn the_containers_are_the_ones_the_infrastructure_creates() {
-        let bicep = include_str!("../../../infra/modules/cosmos.bicep");
+        // Read at test time rather than embedded, so the file isn't a build input.
+        let bicep = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../infra/modules/cosmos.bicep"
+        ))
+        .unwrap();
         let mut declared: Vec<(String, String)> = bicep
             .lines()
             .filter_map(|l| {
