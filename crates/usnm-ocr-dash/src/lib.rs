@@ -771,12 +771,15 @@ mod tests {
             .contains("a local path"));
         assert!(!body.contains("pve-big"));
         assert!(!body.contains("/etc/usnm"));
-        let (status, html) = call_on(public_router(a), "203.0.113.9", "GET", "/", "")
+        let (status, html) = call_on(public_router(a.clone()), "203.0.113.9", "GET", "/", "")
             .await
             .0;
         assert_eq!(status, StatusCode::OK);
-        assert!(html.contains("Dead-letter message bodies are not read"));
-        assert!(!html.contains("No dead letters visible"));
+        // The queues are an operational panel: on the LAN page only.
+        assert!(!html.contains("Dead-letter"));
+        let (_, lan) = call(a, "198.51.100.50", "GET", "/", "").await;
+        assert!(lan.contains("Dead-letter message bodies are not read"));
+        assert!(!lan.contains("No dead letters visible"));
     }
 
     #[tokio::test]
@@ -1132,7 +1135,8 @@ mod tests {
         .await;
         assert_eq!(s, StatusCode::NO_CONTENT);
         let (_, page) = call(a.clone(), "198.51.100.50", "GET", "/", "").await;
-        assert!(page.contains("id=\"boinc-week\""));
+        assert!(page.contains("id=\"volunteers\""));
+        assert!(page.contains("class=\"boinc-week\""));
         assert!(page.contains("Queued jobs"));
         let (_, json) = call(a.clone(), "198.51.100.50", "GET", "/api/view.json", "").await;
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -1201,6 +1205,11 @@ mod tests {
             assert!(leaks(&body).is_empty(), "{path}: {:?}", leaks(&body));
             for bad in ["pve lab", "pve-lab", "192.0.2", "CT 999"] {
                 assert!(!body.contains(bad), "{bad} in {path}");
+            }
+            // The public page is the overview: the reasons are in its JSON only.
+            if path == "/" {
+                assert!(!body.contains("bridge submit failed"));
+                continue;
             }
             assert!(body.contains("bridge submit failed"));
             assert!(!body.contains("node9"), "{path}");
@@ -1471,13 +1480,45 @@ mod tests {
             assert!(found.is_empty(), "{uri} shows {found:?}");
         }
         let ((_, page), _) = call_on(public_router(a.clone()), "203.0.113.3", "GET", "/", "").await;
-        assert!(page.contains("scan server"));
-        // The BOINC week: on the public page, as counts.
-        assert!(page.contains("id=\"boinc-week\""));
+        // The public page is the overview: six sections, in order, and
+        // none of the operational panels.
+        let at = |id: &str| {
+            page.find(&format!("id=\"{id}\""))
+                .unwrap_or_else(|| panic!("no {id}"))
+        };
+        let order = [
+            "collection",
+            "fetching",
+            "volunteers",
+            "results",
+            "accuracy",
+            "throughput",
+        ];
+        assert!(order.windows(2).all(|w| at(w[0]) < at(w[1])));
+        assert_eq!(page.matches("<section").count(), order.len());
+        for gone in [
+            "Operational details",
+            "step-throughput",
+            "Across the ecosystem",
+            "replica",
+            "workunit",
+            "controller",
+            "bridge",
+            "scan server",
+            "OCR node",
+            // App ids: the page names kinds of job in words.
+            "usnm_",
+        ] {
+            assert!(!page.contains(gone), "the public page shows {gone}");
+        }
+        // The BOINC week: as counts, its jobs in words.
         assert_eq!(page.matches("<svg class=\"wk\"").count(), 3);
-        assert!(page.contains("usnm_qwen"));
-        assert!(page.contains("queue-ocr-20261025t015125"));
-        assert!(page.contains("OCR node 1"));
+        assert!(page.contains("AI snippet reading"));
+        assert!(page.contains("jobs checking quality with an AI vision model"));
+        // The LAN keeps the operational panels under the same overview.
+        let (_, lan) = call(a.clone(), "198.51.100.50", "GET", "/", "").await;
+        assert!(lan.contains("id=\"volunteers\""));
+        assert!(lan.contains("Operational details"));
         let ((_, p), _) = call_on(
             public_router(a.clone()),
             "203.0.113.3",

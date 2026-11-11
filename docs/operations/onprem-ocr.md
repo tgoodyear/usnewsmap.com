@@ -410,7 +410,7 @@ The home-infra v2 transport reads five properties by typed `busctl get-property`
 
 ### Public view
 
-`--public-listen` / `USNM_OCRDASH_PUBLIC_LISTEN` (unset by default) adds a plain-HTTP listener for a Cloudflare Tunnel serving only GET and HEAD of `/`, `/healthz`, `/api/view.json`, `/api/pipeline.json` and `/api/fetch.json`, redacted (no workbook link, host, node or guest names, container numbers, paths, addresses or seed plan), with `Cache-Control: public, max-age=60`. No pushes, no `--allow` check: bind it to loopback or an address only cloudflared reaches.
+The public page is the six-section overview only (12 §12.2.5); the operational panels are on the LAN page, under the same overview. `--public-listen` / `USNM_OCRDASH_PUBLIC_LISTEN` (unset by default) adds a plain-HTTP listener for a Cloudflare Tunnel serving only GET and HEAD of `/`, `/healthz`, `/api/view.json`, `/api/pipeline.json` and `/api/fetch.json`, redacted (no workbook link, host, node or guest names, container numbers, paths, addresses or seed plan), with `Cache-Control: public, max-age=60`. No pushes, no `--allow` check: bind it to loopback or an address only cloudflared reaches.
 
 ### Physical cache stock (#368)
 
