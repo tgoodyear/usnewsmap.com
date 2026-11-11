@@ -2,6 +2,7 @@
 """One bounded BOINC OCR tick; offline validation unless explicitly --apply."""
 
 import argparse
+import base64
 import concurrent.futures
 import contextlib
 import copy
@@ -1735,6 +1736,9 @@ class QueueFeed:
         # exports the same job id, which BOINC already has, so their messages are kept
         # hidden here too rather than claimed as new work.
         self.sibling_archived = sibling_archived or {}
+        # Messages whose job, in any plan, is settled for good now: published, or kept by a held
+        # scope (doc id -> message sha256s). The tick sets them from the journals before it fills.
+        self.settled_messages = {}
 
     def restore(self):
         self.config["pages"] = [
@@ -1769,6 +1773,8 @@ class QueueFeed:
             if isinstance(page, str) and PAGE_KEY.fullmatch(page) and isinstance(message, str) \
                     and ID.fullmatch(message):
                 pages.setdefault(page.replace("/", "_"), set()).add(message)
+        for doc, messages in self.settled_messages.items():
+            pages.setdefault(doc, set()).update(messages)
         return {doc: sorted(messages) for doc, messages in sorted(pages.items())}
 
     def fill(self, count, selected, owned=None, now=None):
@@ -2260,6 +2266,32 @@ def sibling_archived_held(own_dir, dirs):
     return merged
 
 
+def queue_message_sha256(message):
+    """The sha256 of a journal's queue message as the queue holds it: base64 of its compact JSON,
+    fields in the journal's order, as usnm-boinc's OcrMessage::encode writes it and `claim pull`
+    hashes it. A message that doesn't come out the same (a float written differently) just
+    matches nothing."""
+    text = base64.b64encode(json.dumps(message, separators=(",", ":"), ensure_ascii=False).encode())
+    return hashlib.sha256(text).hexdigest()
+
+
+def settled_messages(records):
+    """Doc id -> the queue message sha256s of journals, of any plan, settled for good with a
+    result: published, or kept by a held scope (#835). Such a message, back after its lease, is
+    the same message that job ran: the claim step deletes it (held-pages list) rather than claim
+    it again and pass it over as settled elsewhere. A failed, pending or in-flight job's message
+    is never listed."""
+    found = {}
+    for record in records:
+        if not (record.get("stage") == "published" or kept_by_policy(record)):
+            continue
+        message = (record.get("job") or {}).get("message")
+        page = message.get("page") if isinstance(message, dict) else None
+        if isinstance(page, str) and PAGE_KEY.fullmatch(page):
+            found.setdefault(page.replace("/", "_"), set()).add(queue_message_sha256(message))
+    return found
+
+
 def kept_by_policy(record):
     """Collected and kept, not published, because the trust list holds the job's scope (#835):
     nothing is wrong with it, and collecting it again changes nothing until the hold is lifted."""
@@ -2588,6 +2620,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
     if target and not held and not drain and not gold_ran:
         if free > 0:
             if feed:
+                feed.settled_messages = settled_messages(records)
                 feed.fill(min(refill, free), selected, owned, now)
                 # The fresh claims are allocated now: one another plan's journal is for is passed
                 # over and reported, even when nothing else is exported (#1685).
