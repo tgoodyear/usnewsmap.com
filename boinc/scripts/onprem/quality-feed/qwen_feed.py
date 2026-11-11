@@ -91,12 +91,16 @@ MAX_BATCHES = 4
 
 
 def concentrate(pages, count, max_batches=MAX_BATCHES):
-    """Up to `count` of the damage-ordered `pages`, from at most `max_batches` batches: those
-    with the most candidates first, then the earliest; damage order within each batch."""
+    """Up to `count` of the damage-ordered `pages`, from at most `max_batches` archives (batch and
+    version): those with the most candidates first, then the earliest; damage order within each."""
     by_batch = {}
+    def archive(page):
+        # archive_alto.extract opens one archive per batch and version.
+        return page.get("batch"), int(page.get("batch_version") or 1)
+
     for page in pages:
-        by_batch.setdefault(page.get("batch"), []).append(page)
-    first = {batch: i for i, batch in reversed(list(enumerate(p.get("batch") for p in pages)))}
+        by_batch.setdefault(archive(page), []).append(page)
+    first = {key: i for i, key in reversed(list(enumerate(archive(p) for p in pages)))}
     order = sorted(by_batch, key=lambda b: (-len(by_batch[b]), first[b]))
     out = []
     for batch in order[:max_batches]:

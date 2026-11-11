@@ -68,12 +68,11 @@ class BoincWorkunit {
 """)
 
 
-@unittest.skipUnless(shutil.which("php"), "PHP CLI required for actual query JSON encoding")
 class ConcentrateTest(unittest.TestCase):
     def test_a_chunk_comes_from_the_most_represented_batches_in_damage_order(self):
         # #1435: one archive scan yields every page of its batch, so few batches make a fast tick.
         from qwen_feed import concentrate
-        pages = [{"batch": b, "doc_id": str(i)} for i, b in enumerate("aabcbbbddea")]
+        pages = [{"batch": b, "batch_version": 1, "doc_id": str(i)} for i, b in enumerate("aabcbbbddea")]
         self.assertEqual([p["batch"] + p["doc_id"] for p in concentrate(pages, 5)],
                          ["b2", "b4", "b5", "b6", "a0"])
         # At most max_batches batches, even when that leaves the chunk short.
@@ -81,8 +80,12 @@ class ConcentrateTest(unittest.TestCase):
         # Equal counts go by first appearance.
         self.assertEqual([p["batch"] for p in concentrate(pages[:4], 4, max_batches=1)], list("aa"))
         self.assertEqual(concentrate([], 5), [])
+        # A batch's versions are separate archives, so separate groups.
+        versions = [{"batch": "a", "batch_version": v, "doc_id": str(v)} for v in (1, 2, 2, 3)]
+        self.assertEqual([p["batch_version"] for p in concentrate(versions, 4, max_batches=1)], [2, 2])
 
 
+@unittest.skipUnless(shutil.which("php"), "PHP CLI required for actual query JSON encoding")
 class PublicationRowsPhpTest(unittest.TestCase):
     def test_real_php_empty_result_for_fresh_and_no_selected_workunits(self):
         with tempfile.TemporaryDirectory() as folder:
