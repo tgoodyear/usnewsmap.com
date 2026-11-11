@@ -2148,6 +2148,74 @@ class QueueModeTests(unittest.TestCase):
                 self.assertNotIn(("collect", row["job"]["id"]), self.fake.actions)
                 self.assertEqual(event["scope_held"], 2)
 
+    def sibling_tick(self, sibling):
+        return batch.tick(self.config, self.state, self.fake,
+                          lambda: self.saved.append(copy.deepcopy(self.state)), NOW, sibling_archived=sibling)
+
+    def test_a_page_another_plan_archived_as_held_is_not_claimed_again(self):
+        # Two plans with one worker export the same job id for a page (11 Nov 2026): the live
+        # plan keeps the message hidden when another plan archived the page as held.
+        page, row = self.held_then_archived()
+        sibling = {p: [e] for p, e in self.state.pop("archived_held").items()}
+        self.fake.waiting = [message(1)] + self.fake.waiting
+        self.fake.actions.clear()
+        self.sibling_tick(sibling)
+        self.assertNotIn(page, self.state["claims"])
+        self.assertNotIn(page, self.state.get("archived_held", {}))
+        self.assertFalse(any(a[0] == "export" and page in a[-1] for a in self.fake.actions), self.fake.actions)
+        other = message(1)
+        other["message_sha256"] = "f" * 64
+        self.fake.waiting = [other]
+        with self.assertRaisesRegex(ValueError, "different message"):
+            self.sibling_tick(sibling)
+
+    def test_a_reserved_job_another_plan_archived_as_held_is_settled_not_submitted(self):
+        # Claimed and exported before the plan knew of the other's archive: the same job id is
+        # still a BOINC row, so it is settled as held rather than a SQL/journal mismatch.
+        page, row = self.held_then_archived()
+        # Another plan archived the page under a different job too: every archived job counts.
+        sibling = {p: [{"job": "c" * 64, "message": "d" * 64}, e]
+                   for p, e in self.state.pop("archived_held").items()}
+        mine = copy.deepcopy(row)
+        mine.pop("held", None)
+        self.state["claims"][page] = {**claim_of(self.saved, page)}
+        self.state["selected"][page] = NOW
+        self.fake.rows.insert(0, mine)
+        self.fake.extra_existing = {row["job"]["id"]}
+        with self.assertRaisesRegex(ValueError, "SQL/journal mismatch"):
+            self.tick()
+        self.fake.rows[0].pop("held", None)
+        self.fake.actions.clear()
+        event = self.sibling_tick(sibling)
+        self.assertNotIn(("submit", row["job"]["id"]), self.fake.actions)
+        self.assertNotIn(("collect", row["job"]["id"]), self.fake.actions)
+        self.assertEqual(event["scope_held_elsewhere"], 1)
+        self.assertNotIn("held", self.fake.rows[0])
+        # The same job under another message (a job id leaves out queued_at) is not settled.
+        self.state["claims"][page]["message"] = "e" * 64
+        self.fake.rows[0].pop("held", None)
+        with self.assertRaisesRegex(ValueError, "SQL/journal mismatch"):
+            self.sibling_tick(sibling)
+
+    def test_check_state_dirs_merge_archived_held_and_refuse_the_own_dir(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            own, other = Path(tmp) / "own", Path(tmp) / "other"
+            own.mkdir()
+            other.mkdir()
+            entry = {"job": "a" * 64, "message": "b" * 64}
+            (other / "state.json").write_text(json.dumps({"archived_held": {"p": entry}}))
+            third = Path(tmp) / "third"
+            third.mkdir()
+            second = {"job": "c" * 64, "message": "d" * 64}
+            (third / "state.json").write_text(json.dumps({"archived_held": {"p": second}}))
+            self.assertEqual(batch.sibling_archived_held(own, [other, third]), {"p": [entry, second]})
+            with self.assertRaisesRegex(ValueError, "own state directory"):
+                batch.sibling_archived_held(own, [own])
+            for bad in ({"job": "x", "message": "b" * 64}, {"job": "a" * 64}, {"job": "a" * 64, "message": "x"}):
+                (other / "state.json").write_text(json.dumps({"archived_held": {"p": bad}}))
+                with self.assertRaisesRegex(ValueError, "no valid archived_held"):
+                    batch.sibling_archived_held(own, [other])
+
     def test_a_different_message_for_a_claimed_page_stops_the_feed(self):
         self.tick()
         other = message(1)
