@@ -249,7 +249,7 @@ resource state 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments@2024-11
 // docs-migrate reads every container: Data Reader on the database, during the migration only.
 resource migrateRead 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments@2024-11-15' = if (migrate) {
   parent: cosmos
-  name: guid(cosmos.id, principalId, cosmosDataReader, 'usnm')
+  name: guid(cosmos.id, principalId, cosmosDataReader)
   properties: {
     principalId: principalId
     roleDefinitionId: '${cosmos.id}/sqlRoleDefinitions/${cosmosDataReader}'
