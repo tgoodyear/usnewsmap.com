@@ -150,6 +150,88 @@ impl DocStore for PostgresDocs {
     }
 }
 
+/// Rows read per query when listing a container for verification.
+const ENTRY_PAGE: i64 = 1000;
+
+#[async_trait]
+impl crate::migrate::Target for PostgresDocs {
+    async fn import(
+        &self,
+        container: &str,
+        rows: &[crate::migrate::Row],
+    ) -> anyhow::Result<crate::migrate::Imported> {
+        let session = self.session().await?;
+        let pks: Vec<&str> = rows.iter().map(|r| r.pk.as_str()).collect();
+        let ids: Vec<&str> = rows.iter().map(|r| r.id.as_str()).collect();
+        let docs: Vec<&Value> = rows.iter().map(|r| &r.doc).collect();
+        let etags: Vec<&str> = rows.iter().map(|r| r.etag.as_str()).collect();
+        // A row already there is rewritten only when the source's ETag differs; `xmax = 0`
+        // tells an inserted row from an updated one.
+        let written = session
+            .client
+            .query(
+                "INSERT INTO usnm_state.documents AS d (container,pk,id,doc,etag)
+             SELECT $1, u.pk, u.id, u.doc, u.etag
+             FROM unnest($2::text[], $3::text[], $4::jsonb[], $5::text[]) AS u(pk,id,doc,etag)
+             ON CONFLICT (container,pk,id) DO UPDATE SET doc=EXCLUDED.doc, etag=EXCLUDED.etag
+             WHERE d.etag IS DISTINCT FROM EXCLUDED.etag
+             RETURNING (xmax = 0) AS inserted",
+                &[&container, &pks, &ids, &docs, &etags],
+            )
+            .await
+            .context("importing documents")?;
+        let inserted = written.iter().filter(|r| r.get::<_, bool>(0)).count() as u64;
+        let updated = written.len() as u64 - inserted;
+        Ok(crate::migrate::Imported {
+            inserted,
+            updated,
+            unchanged: rows.len() as u64 - written.len() as u64,
+        })
+    }
+
+    async fn entries(&self, container: &str) -> anyhow::Result<Vec<crate::migrate::Entry>> {
+        let session = self.session().await?;
+        let mut out = Vec::new();
+        let mut after: Option<(String, String)> = None;
+        loop {
+            let rows = match &after {
+                None => {
+                    session
+                        .client
+                        .query(
+                            "SELECT pk,id,etag,doc FROM usnm_state.documents WHERE container=$1
+                         ORDER BY pk,id LIMIT $2",
+                            &[&container, &ENTRY_PAGE],
+                        )
+                        .await?
+                }
+                Some((pk, id)) => {
+                    session
+                        .client
+                        .query(
+                            "SELECT pk,id,etag,doc FROM usnm_state.documents WHERE container=$1
+                         AND (pk,id) > ($2,$3) ORDER BY pk,id LIMIT $4",
+                            &[&container, pk, id, &ENTRY_PAGE],
+                        )
+                        .await?
+                }
+            };
+            let full = rows.len() as i64 == ENTRY_PAGE;
+            for row in &rows {
+                let (pk, id, etag): (String, String, String) =
+                    (row.get("pk"), row.get("id"), row.get("etag"));
+                let doc: Value = row.get("doc");
+                out.push(crate::migrate::Entry::new(&pk, &id, &etag, &doc));
+                after = Some((pk, id));
+            }
+            if !full {
+                break;
+            }
+        }
+        Ok(out)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -224,6 +306,99 @@ mod tests {
                 .unwrap()
                 .len(),
             2
+        );
+    }
+
+    /// The migration's import against a real database: inserts, a rerun that changes nothing,
+    /// an update only where the ETag differs, the original ETags kept, and a verification.
+    #[tokio::test]
+    async fn postgres_documents_import_keeps_etags_and_reruns_cleanly() {
+        use crate::migrate::{self, Row, Target};
+        let Ok(location) = std::env::var("USNM_TEST_DOCUMENTS") else {
+            assert!(
+                std::env::var_os("USNM_TEST_DOCUMENTS_REQUIRED").is_none(),
+                "USNM_TEST_DOCUMENTS is required"
+            );
+            eprintln!("skipping document import test: USNM_TEST_DOCUMENTS not set");
+            return;
+        };
+        let pg = PostgresDocs::new(&location).unwrap();
+        let container = format!("import-{}", crate::owner_id());
+        let rows: Vec<Row> = (0..1203)
+            .map(|i| {
+                let id = format!("d{i:04}");
+                Row {
+                    pk: format!("p{}", i % 3),
+                    doc: json!({"id": id, "n": i, "text": "Ünïcode ✓", "z": {"b": 1, "a": [1.5]}}),
+                    etag: format!("\"00{i:04}-cosmos\""),
+                    id,
+                }
+            })
+            .collect();
+        let mut imported = migrate::Imported::default();
+        for chunk in rows.chunks(500) {
+            let r = pg.import(&container, chunk).await.unwrap();
+            imported.inserted += r.inserted;
+        }
+        assert_eq!(imported.inserted, 1203);
+        let again = pg.import(&container, &rows[..500]).await.unwrap();
+        assert_eq!(
+            again,
+            migrate::Imported {
+                inserted: 0,
+                updated: 0,
+                unchanged: 500
+            }
+        );
+        let mut changed = rows[7].clone();
+        changed.doc["n"] = json!(-1);
+        changed.etag = "\"changed\"".into();
+        let r = pg
+            .import(&container, &[changed.clone(), rows[8].clone()])
+            .await
+            .unwrap();
+        assert_eq!(
+            r,
+            migrate::Imported {
+                inserted: 0,
+                updated: 1,
+                unchanged: 1
+            }
+        );
+        let got = pg
+            .get(&container, &changed.pk, &changed.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (got.doc, got.etag),
+            (changed.doc.clone(), changed.etag.clone())
+        );
+        // The pipeline's own conditional replace works on an imported ETag.
+        assert!(pg
+            .replace(&container, &rows[9].pk, &rows[9].doc, &rows[9].etag)
+            .await
+            .unwrap()
+            .is_some());
+        // Entries come back across more than one listing page, and match the source's.
+        let mut source: Vec<migrate::Entry> = rows
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != 9)
+            .map(|(i, r)| {
+                let r = if i == 7 { &changed } else { r };
+                migrate::Entry::new(&r.pk, &r.id, &r.etag, &r.doc)
+            })
+            .collect();
+        let mut target = pg.entries(&container).await.unwrap();
+        assert_eq!(target.len(), 1203);
+        migrate::digest(&mut source);
+        migrate::digest(&mut target);
+        let (n, listed) = migrate::differences(&source, &target, 10);
+        assert_eq!(n, 1, "{listed:?}");
+        assert_eq!(
+            (listed[0].id.as_str(), listed[0].kind),
+            ("d0009", "missing_in_source")
         );
     }
 }

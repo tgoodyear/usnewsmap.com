@@ -6,7 +6,7 @@
 //! routes each to its module.
 use clap::{Parser, Subcommand};
 use usnm_boinc::{
-    assess, claim, cli::job, gold, handoff, host_trust, ndlocr, quality, qwen, surya,
+    assess, claim, cli::job, cli::migrate, gold, handoff, host_trust, ndlocr, quality, qwen, surya,
 };
 
 #[derive(Parser)]
@@ -72,6 +72,12 @@ enum Commands {
     Handoff(handoff::cli::HandoffCommands),
     /// Inspect the local submission/publication journal; emits no page text.
     Status(job::StatusArgs),
+    /// Copy pipeline documents from Cosmos DB into PostgreSQL with their ETags, or verify the
+    /// two match (#1367, docs/boinc/server/local-state.md).
+    DocsMigrate(migrate::DocsMigrateArgs),
+    /// Move work-queue messages from an Azure queue to pgmq, deleting each only after its
+    /// send commits (#1367, docs/boinc/server/local-state.md).
+    QueueMove(migrate::QueueMoveArgs),
 }
 
 /// Export and claim log to stderr (stdout carries their output): warnings,
@@ -91,7 +97,11 @@ async fn main() -> anyhow::Result<()> {
     let command = Cli::parse().command;
     if matches!(
         command,
-        Commands::Export(_) | Commands::Retry(_) | Commands::Claim(_)
+        Commands::Export(_)
+            | Commands::Retry(_)
+            | Commands::Claim(_)
+            | Commands::DocsMigrate(_)
+            | Commands::QueueMove(_)
     ) {
         log_to_stderr();
     }
@@ -118,6 +128,8 @@ async fn main() -> anyhow::Result<()> {
         Commands::Ndlocr(command) => ndlocr::cli::run(command).await,
         Commands::Handoff(command) => handoff::cli::run(command).await,
         Commands::Status(args) => job::status(args),
+        Commands::DocsMigrate(args) => migrate::docs_migrate(args).await,
+        Commands::QueueMove(args) => migrate::queue_move(args).await,
     };
     if let Err(error) = &result {
         if error.downcast_ref::<qwen::retain::CaptureError>().is_some() {
@@ -290,5 +302,56 @@ mod page_deadline_tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod migrate_cli_tests {
+    use super::*;
+
+    #[test]
+    fn the_migration_commands_take_named_flags() {
+        let cli = Cli::try_parse_from([
+            "usnm-boinc",
+            "docs-migrate",
+            "--from",
+            "https://a.documents.azure.com/",
+            "--to",
+            "postgres://h/usnm_state?user=u",
+            "--container",
+            "batches",
+            "--container",
+            "ops",
+            "--verify",
+        ])
+        .unwrap();
+        let Commands::DocsMigrate(args) = cli.command else {
+            panic!("expected docs-migrate");
+        };
+        assert_eq!(args.containers, ["batches", "ops"]);
+        assert!(args.verify);
+        assert_eq!((args.page_size, args.max_ru_per_sec), (100, 200.0));
+
+        let cli = Cli::try_parse_from([
+            "usnm-boinc",
+            "queue-move",
+            "--from",
+            "https://a.queue.core.windows.net/ocr-bulk",
+            "--to",
+            "postgres://h/usnm_queue?user=u&queue=ocr-bulk",
+            "--max",
+            "10",
+            "--dry-run",
+        ])
+        .unwrap();
+        let Commands::QueueMove(args) = cli.command else {
+            panic!("expected queue-move");
+        };
+        assert_eq!(
+            (args.max, args.dry_run, args.concurrency),
+            (Some(10), true, 4)
+        );
+        // No positional arguments.
+        assert!(Cli::try_parse_from(["usnm-boinc", "queue-move", "a", "b"]).is_err());
     }
 }
