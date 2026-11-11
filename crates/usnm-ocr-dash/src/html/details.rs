@@ -203,6 +203,20 @@ fn feed_panel(v: &crate::feed::FeedView, o: &mut String) {
             "usnm_ocr_no_work" | "usnm_qwen_no_work" => {
                 check.backlog.map(|n| format!("{n} backlogged"))
             }
+            // The BOINC database's backups and replica: the reason, and the lag or age.
+            "db_replica" | "db_dump" | "db_binlog" | "db_drill" => {
+                let measure = check.seconds.map(|n| {
+                    if check.code == "db_replica" {
+                        format!("lag {n:.0}s")
+                    } else {
+                        format!("{:.1} h old", n / 3600.0)
+                    }
+                });
+                match (measure, check.reason.clone()) {
+                    (Some(measure), Some(reason)) => Some(format!("{measure}; {reason}")),
+                    (measure, reason) => measure.or(reason),
+                }
+            }
             "feeder_allocation" => check.reason.as_ref().map(|reason| {
                 let ids = check.app_ids.as_deref().unwrap_or_default();
                 if ids.is_empty() {

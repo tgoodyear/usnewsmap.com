@@ -90,6 +90,24 @@ def stage(reason):
         raise SourceFailed(reason) from None
 
 
+# The BOINC database's backups and replica (db-backup.md, db-replica.md): each part of the
+# dbbackup source reports its own failure as one fixed code, so one part down makes only its
+# own check unknown.
+DBBACKUP_FAILURES = (
+    "replica_unavailable",   # the replica's MySQL can't be reached or queried
+    "replica_not_replica",   # it answers but has no replication channel (promoted, or never set up)
+    "r2_unavailable",        # the bucket can't be listed
+    "drill_missing",         # no drill result yet
+    "drill_unreadable",      # a drill result that isn't the expected record
+)
+# The R2 listing is cached this long, so a source run each minute lists the bucket every five.
+R2_CHECK_EVERY_S = 300
+# An R2 observation older than this is not evidence.
+R2_MAX_AGE_S = 900
+DUMP_KEY = re.compile(r"dump/[0-9]{4}/[0-9]{8}T[0-9]{6}Z\.json")
+BINLOG_KEY = re.compile(r"[A-Za-z0-9_-]+\.[0-9]{6}\.gz")
+
+
 # The controller source's only error a planned rotation may excuse (#1687): no tick finished in
 # the last 15 minutes, its timer stopped or a tick running by hand. Every other controller
 # failure (transport, a malformed or stale document) keeps its own reason.
@@ -153,10 +171,10 @@ def read_file(path, limit=MAX_BYTES):
     return value
 
 
-def run(argv, cwd=None, limit=MAX_BYTES, exits=(0,), timeout=None):
+def run(argv, cwd=None, limit=MAX_BYTES, exits=(0,), timeout=None, env=None):
     """Bound reads and clean up the owned local process group before reaping."""
     process = subprocess.Popen(argv, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                               start_new_session=True)
+                               start_new_session=True, env=env)
     output = bytearray()
     try:
         with selectors.DefaultSelector() as selector:
@@ -300,6 +318,41 @@ def validate_signals(tick, now):
         raise ValueError("invalid controller tick trend")
 
 
+def validate_dbbackup(document, now):
+    """Each part is its record or {"error": <a DBBACKUP_FAILURES code>}. An R2 observation older
+    than R2_MAX_AGE_S becomes r2_unavailable: a cache that stopped refreshing proves nothing."""
+    fields = {"replica": ("io_running", "sql_running", "lag_s"),
+              "r2": ("newest_dump_at", "newest_binlog_at", "checked_at"),
+              "drill": ("pass", "finished_at")}
+    for part, keys in fields.items():
+        record = document[part]
+        if not isinstance(record, dict):
+            raise ValueError("invalid dbbackup part")
+        if "error" in record:
+            if set(record) != {"error"} or record["error"] not in DBBACKUP_FAILURES:
+                raise ValueError("invalid dbbackup failure")
+            continue
+        if set(record) != set(keys):
+            raise ValueError("invalid dbbackup record")
+    replica = document["replica"]
+    if "error" not in replica:
+        if type(replica["io_running"]) is not bool or type(replica["sql_running"]) is not bool:
+            raise ValueError("invalid replica threads")
+        if replica["lag_s"] is not None:
+            natural(replica["lag_s"])
+    r2 = document["r2"]
+    if "error" not in r2:
+        for key in ("newest_dump_at", "newest_binlog_at"):
+            if r2[key] is not None and natural(r2[key]) > now + 300:
+                raise ValueError("future backup object")
+        if not 0 <= now - natural(r2["checked_at"]) <= R2_MAX_AGE_S:
+            document["r2"] = {"error": "r2_unavailable"}
+    drill = document["drill"]
+    if "error" not in drill:
+        if type(drill["pass"]) is not bool or natural(drill["finished_at"]) > now + 300:
+            raise ValueError("invalid drill record")
+
+
 def fresh(document, now, kind):
     if not isinstance(document, dict):
         raise ValueError("source must be an object")
@@ -342,6 +395,8 @@ def fresh(document, now, kind):
             natural(tick.get("same_error_in_a_row"))
         if any(field in tick for field in SIGNAL_FIELDS):
             validate_signals(tick, now)
+    if kind == "dbbackup":
+        validate_dbbackup(document, now)
     if kind == "backlog":
         if not isinstance(document["backlogs"], dict):
             raise ValueError("invalid backlogs")
@@ -1584,6 +1639,116 @@ def supply(database, hosts, resource, resource_usage=None):
     return {"idle": sum(host_capacity.values()), "eligible": flow}
 
 
+def replica_status(cnf):
+    """SHOW REPLICA STATUS on the local replica, as the monitor user: thread states and lag only."""
+    import pymysql  # python3-pymysql, only on the replica host
+
+    with stage("replica_unavailable"):
+        connection = pymysql.connect(read_default_file=str(cnf), connect_timeout=10, read_timeout=10,
+                                     write_timeout=10, cursorclass=pymysql.cursors.DictCursor)
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute("SHOW REPLICA STATUS")
+                rows = cursor.fetchall()
+        finally:
+            connection.close()
+    if len(rows) != 1:
+        raise SourceFailed("replica_not_replica")
+    row = rows[0]
+    lag = row.get("Seconds_Behind_Source")
+    return {"io_running": row.get("Replica_IO_Running") == "Yes",
+            "sql_running": row.get("Replica_SQL_Running") == "Yes",
+            "lag_s": None if lag is None else natural(int(lag))}
+
+
+def r2_listing(rclone, bucket, r2_env, now):
+    """The newest dump manifest and the newest shipped binlog in the bucket, as Unix times."""
+    values = {}
+    for line in read_file(r2_env, 4096).decode().splitlines():
+        key, _, value = line.partition("=")
+        if key in ("R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_ENDPOINT") and value:
+            values[key] = value
+    if len(values) != 3:
+        raise SourceFailed("r2_unavailable")
+    env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "RCLONE_CONFIG_R2_TYPE": "s3",
+           "RCLONE_CONFIG_R2_PROVIDER": "Cloudflare", "RCLONE_CONFIG_R2_NO_CHECK_BUCKET": "true",
+           "RCLONE_CONFIG_R2_ACCESS_KEY_ID": values["R2_ACCESS_KEY_ID"],
+           "RCLONE_CONFIG_R2_SECRET_ACCESS_KEY": values["R2_SECRET_ACCESS_KEY"],
+           "RCLONE_CONFIG_R2_ENDPOINT": values["R2_ENDPOINT"]}
+
+    def newest(prefix, pattern, recursive):
+        # A Go time layout with its offset: rclone 1.68 has no "unix" name for it.
+        argv = [str(rclone), "--config", "/dev/null", "lsf", "--files-only", "--format", "tp",
+                "--time-format", "2006-01-02T15:04:05Z07:00"] + (["-R"] if recursive else []) + [
+                    "r2:%s/%s" % (bucket, prefix)]
+        with stage("r2_unavailable"):
+            # rclone exits 3 for a prefix with nothing under it yet.
+            output = run(argv, env=env, exits=(0, 3)).decode()
+        times = []
+        for line in output.splitlines():
+            stamp, _, name = line.partition(";")
+            if pattern.fullmatch(prefix + name if recursive else name):
+                times.append(int(datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp()))
+        latest = max(times, default=None)
+        if latest is not None and latest > now + 300:
+            raise SourceFailed("r2_unavailable")
+        return latest
+
+    dump = newest("dump/", DUMP_KEY, True)
+    uuids = set()
+    with stage("r2_unavailable"):
+        for line in run([str(rclone), "--config", "/dev/null", "lsf", "--dirs-only", "r2:%s/binlog/" % bucket],
+                        env=env, exits=(0, 3)).decode().splitlines():
+            if re.fullmatch(r"[0-9a-f-]{36}/", line):
+                uuids.add(line[:-1])
+    # A rebuilt primary ships under its new server UUID; the newest binlog of any is the one that counts.
+    binlogs = [newest("binlog/%s/" % uuid, BINLOG_KEY, False) for uuid in sorted(uuids)]
+    binlog = max((t for t in binlogs if t is not None), default=None)
+    return {"newest_dump_at": dump, "newest_binlog_at": binlog, "checked_at": now}
+
+
+def drill_result(path, now):
+    """The last restore drill's outcome, from the record restore-drill.sh leaves on the replica."""
+    try:
+        record = json.loads(read_file(path, 65536))
+    except FileNotFoundError:
+        raise SourceFailed("drill_missing") from None
+    except (OSError, ValueError):
+        raise SourceFailed("drill_unreadable") from None
+    if (not isinstance(record, dict) or type(record.get("pass")) is not bool
+            or type(record.get("finished_at")) is not int or not 0 < record["finished_at"] <= now + 300):
+        raise SourceFailed("drill_unreadable")
+    return {"pass": record["pass"], "finished_at": record["finished_at"]}
+
+
+def dbbackup(replica_cnf, rclone, bucket, r2_env, drill_file, cache, now):
+    """The dbbackup source: each part is its record, or {"error": <code>} on its own."""
+    def part(read, default):
+        try:
+            return read()
+        except SourceFailed as error:
+            return {"error": error.reason if error.reason in DBBACKUP_FAILURES else default}
+        except Exception:
+            return {"error": default}
+
+    def r2():
+        # Cached for R2_CHECK_EVERY_S, so the bucket is listed every five minutes, not each run.
+        try:
+            cached = json.loads(read_file(cache, 4096))
+            if (isinstance(cached, dict) and type(cached.get("checked_at")) is int
+                    and 0 <= now - cached["checked_at"] < R2_CHECK_EVERY_S):
+                return cached
+        except (OSError, ValueError):
+            pass
+        result = r2_listing(rclone, bucket, r2_env, now)
+        atomic_json(cache, result)
+        return result
+
+    return {"replica": part(lambda: replica_status(replica_cnf), "replica_unavailable"),
+            "r2": part(r2, "r2_unavailable"),
+            "drill": part(lambda: drill_result(drill_file, now), "drill_unreadable")}
+
+
 def own_clients(config):
     """The allowlist of own-client observations: {source name: (location, expected host id or None)}.
 
@@ -1630,11 +1795,15 @@ def collect(config):
     # The backlog source is optional until it is deployed: unknown, never healthy.
     if config.get("backlog") is not None:
         locations["backlog"] = config["backlog"]
+    # Opt-in: the BOINC database's backups and replica (db_replica, db_dump, db_binlog, db_drill).
+    # Set it only once the dashboard accepts the dbbackup source and those checks.
+    if config.get("dbbackup") is not None:
+        locations["dbbackup"] = config["dbbackup"]
     allowed = own_clients(config)
     clients = list(allowed)
     locations.update({name: location for name, (location, _) in allowed.items()})
     facts, documents = {"sources": {}, "errors": [], "qwen_admission": admission,
-                        "controller_signals": signals}, {}
+                        "controller_signals": signals, "dbbackup_checks": "dbbackup" in locations}, {}
     if "backlog" not in locations:
         facts["sources"]["backlog"] = {"observed_at": None, "state": "unknown", "reason": "not_configured"}
         facts["errors"].append("backlog")
@@ -1758,6 +1927,8 @@ def collect(config):
         facts["tick"] = documents["controller"]["tick"]
     if "backlog" in documents:
         facts["backlogs"] = documents["backlog"]["backlogs"]
+    if "dbbackup" in documents:
+        facts["dbbackup"] = {part: documents["dbbackup"][part] for part in ("replica", "r2", "drill")}
     if "server" not in documents or not clients or any(name not in documents for name in clients):
         facts.pop("supply", None)
     facts["observed_at"] = completed
@@ -1789,6 +1960,15 @@ def main(argv=None):
     p.add_argument("--requests", type=Path, required=True)
     p.add_argument("--outbox", type=Path, required=True, help="Existing Qwen campaign directory (not all apps)")
     p.add_argument("--selection", type=Path, help="Read-only mirror of the current Qwen selector's selected.jsonl")
+    p = sub.add_parser("dbbackup", help="The BOINC database's replica, R2 backups and restore drill, on the replica host")
+    p.add_argument("--replica-cnf", type=Path, required=True,
+                   help="MySQL option file for the monitor user on the local replica (REPLICATION CLIENT only)")
+    p.add_argument("--r2-env", type=Path, required=True, help="The bucket's reader key: R2_ACCESS_KEY_ID, "
+                   "R2_SECRET_ACCESS_KEY, R2_ENDPOINT")
+    p.add_argument("--rclone", type=Path, default=Path("/usr/local/lib/usnm-db-backup/rclone"))
+    p.add_argument("--bucket", default="usnm-boinc-db-backup")
+    p.add_argument("--drill-file", type=Path, default=Path("/var/lib/usnm-db-backup/last-drill.json"),
+                   help="The record restore-drill.sh leaves here after each drill")
     for p in sub.choices.values():
         p.add_argument("--output", type=Path, required=True)
         p.add_argument("--push-url", help="Existing private OCR dashboard /api/feed-source/<name>")
@@ -1802,6 +1982,9 @@ def main(argv=None):
             result.update(client(args.data_dir, args.port, args.output.with_name(args.output.stem + ".session.json")))
         elif args.source == "controller":
             result["tick"] = controller(args.unit, tuple(args.maintenance_unit))
+        elif args.source == "dbbackup":
+            result.update(dbbackup(args.replica_cnf, args.rclone, args.bucket, args.r2_env, args.drill_file,
+                                   args.output.with_name(args.output.stem + ".r2.json"), result["observed_at"]))
         else:
             result.update(backlog(args.dashboard, args.requests, args.outbox, args.selection))
     except NoRecentTick:

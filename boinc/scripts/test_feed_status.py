@@ -679,6 +679,96 @@ class CollectionDecayTest(unittest.TestCase):
         self.assertNotIn("firing", self.run_pattern("hhhhhu", 120))
 
 
+class DatabaseBackupTest(unittest.TestCase):
+    """db_replica, db_dump, db_binlog and db_drill from the dbbackup source."""
+
+    def setUp(self):
+        self.state = {}
+        self.facts = {
+            "enabled_until": NOW + 86400,
+            "backlogs": {"usnm_ocr": 0, "usnm_qwen": 0},
+            "last_workunits": {"usnm_ocr": NOW, "usnm_qwen": NOW},
+            "supply": {"cpu": {"idle": 1, "eligible": 1}, "gpu": {"idle": 1, "eligible": 1}},
+            "tick": {"ok": True, "seconds": 60},
+            "sources": {"dbbackup": {"state": "fresh", "observed_at": NOW}},
+            "dbbackup_checks": True,
+            "dbbackup": {
+                "replica": {"io_running": True, "sql_running": True, "lag_s": 0},
+                "r2": {"newest_dump_at": NOW - 3600, "newest_binlog_at": NOW - 120, "checked_at": NOW},
+                "drill": {"pass": True, "finished_at": NOW - 86400},
+            },
+        }
+
+    def tick(self, elapsed):
+        document, self.state = F.evaluate(self.facts, self.state, NOW + elapsed, 10000 + elapsed, "boot", "cfg")
+        return {c["code"]: c for c in document["checks"]}
+
+    def test_healthy_and_off_without_the_source(self):
+        checks = self.tick(0)
+        for code in F.DB_CHECKS:
+            self.assertEqual(checks[code]["state"], "healthy", code)
+        self.assertEqual(checks["db_binlog"]["seconds"], 120)
+        self.facts["dbbackup_checks"] = False
+        self.state = {}
+        self.assertFalse(set(F.DB_CHECKS) & set(self.tick(0)))
+
+    def test_stopped_threads_fire_after_five_minutes(self):
+        self.facts["dbbackup"]["replica"]["io_running"] = False
+        self.assertEqual(self.tick(0)["db_replica"]["state"], "pending")
+        for at in range(60, 300, 60):
+            self.tick(at)
+        checks = self.tick(300)
+        self.assertEqual((checks["db_replica"]["state"], checks["db_replica"]["reason"]),
+                         ("firing", "replica_io_stopped"))
+        self.facts["dbbackup"]["replica"].update(io_running=True, sql_running=False)
+        self.assertEqual(self.tick(360)["db_replica"]["state"], "pending")
+        self.facts["dbbackup"]["replica"]["sql_running"] = True
+        self.assertEqual(self.tick(420)["db_replica"]["state"], "healthy")
+
+    def test_each_age_and_lag_limit(self):
+        db = self.facts["dbbackup"]
+        db["replica"]["lag_s"] = 301
+        db["r2"].update(newest_dump_at=NOW - 26 * 3600 - 1, newest_binlog_at=NOW - 901)
+        db["drill"]["finished_at"] = NOW - 35 * 86400 - 1
+        checks = self.tick(0)
+        self.assertEqual({code: (checks[code]["state"], checks[code]["reason"]) for code in F.DB_CHECKS}, {
+            "db_replica": ("firing", "replica_lag"), "db_dump": ("firing", "dump_stale"),
+            "db_binlog": ("firing", "binlog_stale"), "db_drill": ("firing", "drill_stale")})
+        db["replica"]["lag_s"] = 300
+        db["r2"].update(newest_dump_at=NOW - 26 * 3600 + 60, newest_binlog_at=NOW - 840)
+        db["drill"]["finished_at"] = NOW - 35 * 86400 + 60
+        checks = self.tick(60)
+        self.assertTrue(all(checks[code]["state"] == "healthy" for code in F.DB_CHECKS))
+        db["drill"]["pass"] = False
+        self.assertEqual(self.tick(120)["db_drill"]["reason"], "drill_failed")
+
+    def test_missing_objects_fire_and_part_failures_are_unknown(self):
+        db = self.facts["dbbackup"]
+        db["r2"].update(newest_dump_at=None, newest_binlog_at=None)
+        db["drill"] = {"error": "drill_missing"}
+        checks = self.tick(0)
+        self.assertEqual((checks["db_dump"]["state"], checks["db_dump"]["reason"]), ("firing", "dump_missing"))
+        self.assertEqual(checks["db_binlog"]["reason"], "binlog_missing")
+        self.assertEqual((checks["db_drill"]["state"], checks["db_drill"]["reason"]), ("firing", "drill_missing"))
+        db["replica"] = {"error": "replica_unavailable"}
+        db["r2"] = {"error": "r2_unavailable"}
+        db["drill"] = {"error": "drill_unreadable"}
+        checks = self.tick(60)
+        for code, reason in (("db_replica", "replica_unavailable"), ("db_dump", "r2_unavailable"),
+                             ("db_binlog", "r2_unavailable"), ("db_drill", "drill_unreadable")):
+            self.assertEqual((checks[code]["state"], checks[code]["reason"]), ("unknown", reason))
+            self.assertNotIn("cause", checks[code])
+
+    def test_a_dead_source_is_one_cause(self):
+        del self.facts["dbbackup"]
+        self.facts["sources"]["dbbackup"] = {"state": "unknown", "observed_at": None, "reason": "unavailable_or_invalid"}
+        self.facts["errors"] = ["dbbackup"]
+        self.tick(0)
+        checks = self.tick(60)  # past the first evaluation's reset
+        for code in F.DB_CHECKS:
+            self.assertEqual((checks[code]["state"], checks[code]["cause"]), ("unknown", "source:dbbackup"))
+        self.assertEqual(checks["collection"]["uncovered"], 0)
+
 if __name__ == "__main__":
     unittest.main()
 

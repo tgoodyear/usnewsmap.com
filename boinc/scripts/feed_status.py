@@ -64,6 +64,14 @@ ROTATION_DEFERRED = ("cpu_shortage", "usnm_ocr_no_work", "controller_progress")
 NO_RECENT_TICK = "no_recent_controller_tick"  # feed_collect.NO_RECENT_TICK
 # Own clients configured and fresh, but none can prove its capacity (#1698): feed_collect.collect.
 NO_PROVEN_CLIENTS = "no_proven_clients"
+# The BOINC database's backups and replica (db-backup.md, db-replica.md), opt-in with a
+# "dbbackup" source location in the config. Each fires with a fixed reason code.
+DB_CHECKS = ("db_replica", "db_dump", "db_binlog", "db_drill")
+REPLICA_STOPPED_HOLD_S = 5 * 60   # the IO thread reconnects within seconds after a tunnel blip
+REPLICA_LAG_S = 5 * 60
+DUMP_MAX_AGE_S = 26 * 3600        # a nightly dump, with two hours of slack
+BINLOG_MAX_AGE_S = 15 * 60        # shipped every 5 minutes
+DRILL_MAX_AGE_S = 35 * 86400      # a monthly drill, with a few days of slack
 # Which source each check waits on (#1698). An unknown check carries the first of its sources
 # that is down as `cause` ("source:server"), and the alert rule raises one alert per cause, not one
 # per check: a server source going down turned six checks unknown, and each was its own email.
@@ -73,6 +81,7 @@ DEPENDS = (
     ("controller", ("controller_tick",) + CONTROLLER_SIGNAL_CHECKS),
     ("backlog", ("usnm_ocr_no_work", "usnm_qwen_no_work")),
     ("clients", ("cpu_shortage", "gpu_shortage")),
+    ("dbbackup", DB_CHECKS),
 )
 # After a healthy evaluation the collection hold runs down at half the rate it builds, so a
 # source that fails most minutes still fires, and a single failed read never does.
@@ -309,6 +318,8 @@ def evaluate(facts, previous, now, monotonic, boot_id, config_id, rotation=None)
           sticky=repeats is not None and repeats >= STICKY_FAILURES)
     if facts.get("controller_signals"):
         controller_signals(check, tick, now)
+    if facts.get("dbbackup_checks"):
+        db_checks(check, facts.get("dbbackup"), now)
     guard = facts.get("feeder_allocation")
     if guard is not None:
         # Opt-in (#1462). Maintenance skips the comparison, so it is unknown, like any unproven allocation.
@@ -364,6 +375,49 @@ def evaluate(facts, previous, now, monotonic, boot_id, config_id, rotation=None)
              "maintenance_failure_at": maintenance_at,
              "collection_elapsed": carried}
     return document, state
+
+
+def db_checks(check, parts, now):
+    """db_replica, db_dump, db_binlog and db_drill from the dbbackup source. Without the source
+    they are unknown and wait on source:dbbackup; a part that failed is unknown with its code."""
+    if parts is None:
+        for code in DB_CHECKS:
+            check(code, None)
+        return
+    replica = parts["replica"]
+    if "error" in replica:
+        check("db_replica", None, reason=replica["error"])
+    elif not replica["io_running"]:
+        check("db_replica", True, REPLICA_STOPPED_HOLD_S, generation="io", reason="replica_io_stopped",
+              seconds=replica["lag_s"])
+    elif not replica["sql_running"]:
+        check("db_replica", True, REPLICA_STOPPED_HOLD_S, generation="sql", reason="replica_sql_stopped",
+              seconds=replica["lag_s"])
+    elif replica["lag_s"] is None:
+        check("db_replica", None, reason="replica_lag_unknown")
+    else:
+        lagging = replica["lag_s"] > REPLICA_LAG_S
+        check("db_replica", lagging, generation="lag", reason="replica_lag" if lagging else None,
+              seconds=replica["lag_s"])
+    r2 = parts["r2"]
+    for code, field, limit, name in (("db_dump", "newest_dump_at", DUMP_MAX_AGE_S, "dump"),
+                                     ("db_binlog", "newest_binlog_at", BINLOG_MAX_AGE_S, "binlog")):
+        if "error" in r2:
+            check(code, None, reason=r2["error"])
+        elif r2[field] is None:
+            check(code, True, reason=name + "_missing")
+        else:
+            age = max(0, now - r2[field])
+            check(code, age > limit, reason=name + "_stale" if age > limit else None, seconds=age)
+    drill = parts["drill"]
+    if "error" in drill:
+        # No drill on record is as bad as an old one; an unreadable record proves nothing.
+        missing = drill["error"] == "drill_missing"
+        check("db_drill", True if missing else None, reason=drill["error"])
+    else:
+        age = max(0, now - drill["finished_at"])
+        reason = "drill_failed" if not drill["pass"] else "drill_stale" if age > DRILL_MAX_AGE_S else None
+        check("db_drill", reason is not None, generation=reason, reason=reason, seconds=age)
 
 
 def controller_signals(check, tick, now):

@@ -44,6 +44,9 @@ prints `Replica_IO_Running`, `Replica_SQL_Running`, `Seconds_Behind_Source` and 
 as JSON. `--counts` prints row counts per table, which the monthly restore drill compares
 against.
 
+The feed monitor's `db_replica` check alerts when either thread stays stopped for 5 minutes or
+lag passes 5 minutes ([boundaries-and-monitoring.md](boundaries-and-monitoring.md#optional-checks)).
+
 If the primary restarts or the tunnel drops, the replica retries every 10 s, for up to a million
 attempts.
 
