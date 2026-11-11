@@ -7,9 +7,10 @@
 //! 1. [`pull`] (the hand-off job's `claim` step) receives messages from the
 //!    queues it is asked for, with a lease as long as a BOINC task can take
 //!    plus a day to collect it ([`LEASE`]). A message it can use becomes a
-//!    [`Claim`] file; one it can't use goes back where it was (a copy sent,
-//!    the original deleted) for a node to read, and one whose page has been
-//!    answered already is deleted.
+//!    [`Claim`] file. One it can't use goes back where it was (a copy sent,
+//!    the original deleted) on the priority queue, and stays hidden for the
+//!    lease on a bulk queue, so it can't block the line. One whose page has
+//!    been answered already, or whose held result is settled, is deleted.
 //! 2. `usnm-boinc export --claims` turns the claim into a job whose message
 //!    is the queue's own, and checks, without writing, that the page's ledger
 //!    row is still the outstanding one ([`ocr_local::boinc::adopt`]).
@@ -27,7 +28,7 @@ use anyhow::{bail, ensure, Context};
 use chrono::{SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeSet, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     path::Path,
     time::Duration,
 };
@@ -47,8 +48,13 @@ pub mod cli;
 /// How long a claimed message stays hidden: the workunits' `delay_bound`
 /// (three days) and a day to collect. Azure's longest hide is seven days.
 pub const LEASE: Duration = Duration::from_secs(4 * 24 * 3600);
-/// Messages one `pull` peeks at on a queue before taking any.
-const PEEK: u32 = 32;
+/// The controller's list of pages whose held result is settled (#835): archived as held,
+/// here or by a plan that shared the worker (`archived_held`), each with the sha256 of the
+/// message its job came from. In the hand-off container, written before each claim.
+pub const HELD_PAGES: &str = "scheduler/held-pages.json";
+/// The most the held-pages list may be: 200,000 entries (the controller's cap) of about
+/// 150 bytes, with room to spare.
+pub const HELD_PAGES_MAX_BYTES: usize = 64 << 20;
 /// The claim file's version.
 pub const VERSION: u32 = 1;
 
@@ -116,6 +122,56 @@ pub struct Sources<'a> {
     /// stay hidden for the lease, so it stays with the nodes. `None` takes any
     /// routable language.
     pub languages: Option<&'a BTreeSet<String>>,
+    /// Pages whose held result is settled already ([`HELD_PAGES`]): doc id -> the sha256s
+    /// of their jobs' messages. That same message, back after its lease, is deleted rather
+    /// than claimed again, so it neither takes a claim nor waits in line forever.
+    pub held: Option<&'a HeldPages>,
+}
+
+/// Doc id -> the sha256s of the messages whose held results are settled ([`HELD_PAGES`]).
+pub type HeldPages = HashMap<String, BTreeSet<String>>;
+
+/// Read the held-pages list: `{"schema_version": 1, "pages": {"<doc id>": ["<sha256>", ...]}}`.
+pub fn parse_held_pages(bytes: &[u8]) -> anyhow::Result<HeldPages> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct File {
+        schema_version: u32,
+        pages: HashMap<String, BTreeSet<String>>,
+    }
+    ensure!(
+        bytes.len() <= HELD_PAGES_MAX_BYTES,
+        "{HELD_PAGES} is over {HELD_PAGES_MAX_BYTES} bytes"
+    );
+    let file: File = serde_json::from_slice(bytes).context("invalid held-pages list")?;
+    ensure!(
+        file.schema_version == 1,
+        "unsupported held-pages list version {}",
+        file.schema_version
+    );
+    for (doc_id, digests) in &file.pages {
+        ensure!(
+            usnm_store::is_safe_segment(doc_id)
+                && !digests.is_empty()
+                && digests.iter().all(|d| {
+                    d.len() == 64
+                        && d.bytes()
+                            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                }),
+            "invalid held-pages entry for {doc_id}"
+        );
+    }
+    Ok(file.pages)
+}
+
+/// Whether `text` is the message of a page whose held result is settled.
+fn settled_held(src: &Sources<'_>, doc_id: Option<&String>, text: &str) -> bool {
+    match (src.held, doc_id) {
+        (Some(held), Some(doc_id)) => held.get(doc_id).is_some_and(|digests| {
+            digests.contains(&usnm_ocr_contract::boinc::sha256(text.as_bytes()))
+        }),
+        _ => false,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -139,6 +195,16 @@ pub struct Report {
     pub released: usize,
     /// Messages deleted because their page was answered already.
     pub stale: usize,
+    /// Messages deleted because their page's held result is settled ([`HELD_PAGES`]).
+    pub held: usize,
+    /// Bulk messages not usable here, left hidden for the lease so they don't stand in
+    /// front of usable ones.
+    pub hidden: usize,
+    /// Why messages weren't usable: [`judge`]'s reason -> count.
+    pub skipped: BTreeMap<&'static str, usize>,
+    /// Whether a queue was read to its receive budget, so it may hold more usable pages
+    /// than this run reached.
+    pub budget_spent: bool,
     /// The same counts for each queue read, in the order read.
     pub queues: Vec<QueueReport>,
 }
@@ -151,6 +217,8 @@ pub struct QueueReport {
     pub received: usize,
     pub released: usize,
     pub stale: usize,
+    pub held: usize,
+    pub hidden: usize,
 }
 
 #[derive(Debug, PartialEq)]
@@ -206,11 +274,17 @@ fn judge(text: &str, src: &Sources<'_>) -> Verdict {
 }
 
 /// Take up to `opts.max` usable messages off the queues, in `opts.queues` order:
-/// a later queue fills what the earlier ones left. Bulk queues are peeked
-/// first, so one whose front holds nothing usable is not touched. Priority
-/// queues scan even past an unusable front. Each queue is read for at most
+/// a later queue fills what the earlier ones left. Each queue is read for at most
 /// `max_receives` messages of its own, so one queue's unusable messages never
 /// use up another's budget.
+///
+/// No node reads the queues any more (BOINC alone does the OCR), so nothing would ever
+/// move an unusable message off the front of a bulk queue. A bulk message that isn't
+/// usable here is therefore left hidden for the lease, and the read goes on past it
+/// (#1057's peek used to stop at an unusable front, which starved the claim once ~14,000
+/// held Serbian pages stood ahead of the local English and German ones). A priority
+/// message that isn't usable goes back for the next reader, as before. The message of a
+/// page whose held result is settled ([`Sources::held`]) is deleted.
 /// Claim files are written to `out`; the caller puts them in the container
 /// before anything else, because the pop receipts exist nowhere else.
 ///
@@ -241,18 +315,7 @@ pub async fn pull(
             queue: queue.clone(),
             ..QueueReport::default()
         });
-        match src.queue.peek(queue, PEEK).await {
-            Ok(front)
-                if queue != PRIORITY
-                    && !front
-                        .iter()
-                        .any(|t| matches!(judge(t, src), Verdict::Use(_) | Verdict::Stale)) =>
-            {
-                continue;
-            }
-            // A queue that can't peek is read anyway.
-            Ok(_) | Err(_) => {}
-        }
+        let hide_unusable = queue != PRIORITY;
         let mut sent_back = HashSet::new();
         let mut received = 0;
         while report.claims.len() < opts.max && received < opts.max_receives {
@@ -270,6 +333,17 @@ pub async fn pull(
             }
             let doc = message::decode(&msg.text).ok().map(|(_, key)| key.doc_id());
             match judge(&msg.text, src) {
+                Verdict::Use(_) if settled_held(src, doc.as_ref(), &msg.text) => {
+                    // Its OCR ran and its held result is archived: settled, not work. Its
+                    // record and archive stay as they are; restoring it later publishes
+                    // from the archive, not from this message.
+                    match src.queue.delete(&msg).await {
+                        Ok(()) => {}
+                        Err(e) if e.downcast_ref::<LeaseLost>().is_some() => {}
+                        Err(e) => return Err(e),
+                    }
+                    report.tally(Event::Held);
+                }
                 Verdict::Use(_) if doc.as_ref().is_some_and(|d| claimed.contains(d)) => {
                     // A second delivery of a page this pull already holds: the first claim
                     // covers it, and writing a second would replace the first's pop receipt.
@@ -304,12 +378,21 @@ pub async fn pull(
                     src.queue.delete(&msg).await?;
                     report.tally(Event::Stale);
                 }
-                Verdict::Skip(_) => {
-                    send_back(src.queue, &msg).await?;
-                    sent_back.insert(msg.text.clone());
-                    report.tally(Event::Released);
+                Verdict::Skip(why) => {
+                    *report.skipped.entry(why).or_default() += 1;
+                    if hide_unusable {
+                        // Hidden for the lease, then back in line: nobody else reads it.
+                        report.tally(Event::Hidden);
+                    } else {
+                        send_back(src.queue, &msg).await?;
+                        sent_back.insert(msg.text.clone());
+                        report.tally(Event::Released);
+                    }
                 }
             }
+        }
+        if received >= opts.max_receives {
+            report.budget_spent = true;
         }
     }
     Ok(())
@@ -321,6 +404,8 @@ enum Event {
     Claimed,
     Released,
     Stale,
+    Held,
+    Hidden,
 }
 
 impl Report {
@@ -340,6 +425,14 @@ impl Report {
             Event::Stale => {
                 self.stale += 1;
                 queue.stale += 1;
+            }
+            Event::Held => {
+                self.held += 1;
+                queue.held += 1;
+            }
+            Event::Hidden => {
+                self.hidden += 1;
+                queue.hidden += 1;
             }
         }
     }

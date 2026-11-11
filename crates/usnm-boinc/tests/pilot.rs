@@ -2386,6 +2386,16 @@ mod queue_feed {
         languages: Option<&BTreeSet<String>>,
         opts: &claim::Options,
     ) -> claim::Report {
+        pull_held(f, dir, languages, opts, None).await
+    }
+
+    async fn pull_held(
+        f: &Fed,
+        dir: &Path,
+        languages: Option<&BTreeSet<String>>,
+        opts: &claim::Options,
+        held: Option<&claim::HeldPages>,
+    ) -> claim::Report {
         let snapshot = Snapshot::load(&f.fx.state, f.fx.stores.reference.as_ref())
             .await
             .unwrap();
@@ -2402,6 +2412,7 @@ mod queue_feed {
                 fetched: &list,
                 installed: &usnm_boinc::installed_models(),
                 languages,
+                held,
             },
             opts,
             dir,
@@ -2591,7 +2602,7 @@ mod queue_feed {
     }
 
     #[tokio::test]
-    async fn a_page_without_a_cached_scan_is_left_alone() {
+    async fn a_page_without_a_cached_scan_is_left_hidden() {
         let f = fed(false).await;
         let report = pull(
             &f,
@@ -2599,19 +2610,126 @@ mod queue_feed {
             Duration::from_secs(3600),
         )
         .await;
-        // The front of the queue holds nothing usable, so nothing was received.
+        // Nobody else reads the bulk queue: the unusable message stays hidden for the
+        // lease rather than standing at the front, and is neither claimed nor sent back.
         assert_eq!(
-            (report.claims.len(), report.received, report.released),
-            (0, 0, 0)
+            (
+                report.claims.len(),
+                report.received,
+                report.released,
+                report.hidden
+            ),
+            (0, 1, 0, 1)
         );
-        let m =
-            f.fx.stores
-                .queue
-                .receive(BULK, Duration::from_secs(60))
-                .await
-                .unwrap()
-                .unwrap();
-        assert_eq!(m.dequeue_count, 1);
+        assert_eq!(report.skipped.get("no_cached_scan"), Some(&1));
+        assert!(f
+            .fx
+            .stores
+            .queue
+            .receive(BULK, Duration::from_secs(60))
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(f.fx.stores.queue.approximate_count(BULK).await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn an_unusable_bulk_front_does_not_block_the_pages_behind_it() {
+        // 11 Nov 2026: ~14,000 unusable messages at the front of ocr-bulk kept the claim
+        // from ever reaching the local English and German pages behind them.
+        let f = fed(true).await;
+        let mut listed: HashSet<Fetched> = [Fetched {
+            batch: "test_pilot".into(),
+            doc_id: DOC.into(),
+        }]
+        .into();
+        let queue = f.fx.stores.queue.as_ref();
+        // The fixture's own page was sent first; take it out of the line.
+        let first = queue
+            .receive(BULK, Duration::from_secs(3600))
+            .await
+            .unwrap()
+            .unwrap();
+        queue.delete(&first).await.unwrap();
+        queue_many(&f, &mut listed, BULK, Reason::Bulk, 1000..=1039, false).await;
+        queue_many(&f, &mut listed, BULK, Reason::Bulk, 2..=11, true).await;
+        let opts = claim::Options {
+            queues: vec![BULK.into()],
+            max: 5,
+            max_receives: 50,
+            lease: Duration::from_secs(3600),
+        };
+        let report = pull_options(&f, &f.fx.tmp.path().join("claims"), None, &opts).await;
+        assert_eq!(
+            (
+                report.claims.len(),
+                report.received,
+                report.hidden,
+                report.released
+            ),
+            (5, 45, 40, 0)
+        );
+        assert_eq!(report.skipped.get("no_cached_scan"), Some(&40));
+        assert!(!report.budget_spent);
+        // A budget too small to get past the front says so, for the controller to go on.
+        let g = fed(false).await;
+        let report = pull_options(
+            &g,
+            &g.fx.tmp.path().join("claims"),
+            None,
+            &claim::Options {
+                max: 1,
+                max_receives: 1,
+                ..opts.clone()
+            },
+        )
+        .await;
+        assert_eq!((report.claims.len(), report.received), (0, 1));
+        assert!(report.budget_spent);
+    }
+
+    #[tokio::test]
+    async fn a_settled_held_page_is_deleted_not_claimed() {
+        let f = fed(true).await;
+        let other = "0".repeat(64);
+        let opts = claim::Options {
+            queues: vec![BULK.into()],
+            max: 5,
+            max_receives: 10,
+            lease: Duration::from_secs(3600),
+        };
+        // Another message for the page is not the settled one: it is claimed as before.
+        let held: claim::HeldPages = [(DOC.to_string(), [other].into())].into();
+        let report = pull_held(&f, &f.fx.tmp.path().join("a"), None, &opts, Some(&held)).await;
+        assert_eq!((report.claims.len(), report.held), (1, 0));
+
+        let g = fed(true).await;
+        let digest = usnm_ocr_contract::boinc::sha256(g.message.encode().as_bytes());
+        let held: claim::HeldPages = [(DOC.to_string(), [digest].into())].into();
+        let report = pull_held(&g, &g.fx.tmp.path().join("b"), None, &opts, Some(&held)).await;
+        assert_eq!(
+            (report.claims.len(), report.held, report.received),
+            (0, 1, 1)
+        );
+        assert_eq!(report.queues[0].held, 1);
+        assert_eq!(g.fx.stores.queue.approximate_count(BULK).await.unwrap(), 0);
+    }
+
+    #[test]
+    fn held_pages_list_is_checked() {
+        let digest = "a".repeat(64);
+        let ok = format!(r#"{{"schema_version":1,"pages":{{"{DOC}":["{digest}"]}}}}"#);
+        let held = claim::parse_held_pages(ok.as_bytes()).unwrap();
+        assert!(held[DOC].contains(&digest));
+        for bad in [
+            r#"{"schema_version":2,"pages":{}}"#.to_string(),
+            format!(r#"{{"schema_version":1,"pages":{{"{DOC}":["xyz"]}}}}"#),
+            format!(r#"{{"schema_version":1,"pages":{{"{DOC}":[]}}}}"#),
+            format!(r#"{{"schema_version":1,"pages":{{"../x":["{digest}"]}}}}"#),
+            r#"{"schema_version":1,"pages":{},"extra":1}"#.to_string(),
+        ] {
+            assert!(claim::parse_held_pages(bad.as_bytes()).is_err(), "{bad}");
+        }
     }
 
     #[tokio::test]
@@ -2798,6 +2916,8 @@ mod queue_feed {
                     received: 300,
                     released: 300,
                     stale: 0,
+                    held: 0,
+                    hidden: 0,
                 },
                 claim::QueueReport {
                     queue: BULK.into(),
@@ -2805,6 +2925,8 @@ mod queue_feed {
                     received: 100,
                     released: 0,
                     stale: 0,
+                    held: 0,
+                    hidden: 0,
                 },
             ]
         );
@@ -2977,9 +3099,9 @@ mod queue_feed {
     }
 
     #[tokio::test]
-    async fn a_page_outside_the_trusted_languages_is_left_for_the_nodes() {
+    async fn a_page_outside_the_trusted_languages_is_not_claimed() {
         // The fixture page is German; trust calibrated for English only must not claim it,
-        // or collect would hold it back and the message would stay hidden for the lease.
+        // or collect would hold it back. On the bulk queue it stays hidden for the lease.
         let f = fed(true).await;
         let eng: BTreeSet<String> = ["eng".to_string()].into();
         let report = pull_languages(
@@ -2990,17 +3112,16 @@ mod queue_feed {
         )
         .await;
         assert_eq!(
-            (report.claims.len(), report.received, report.released),
-            (0, 0, 0)
+            (
+                report.claims.len(),
+                report.received,
+                report.released,
+                report.hidden
+            ),
+            (0, 1, 0, 1)
         );
-        let m =
-            f.fx.stores
-                .queue
-                .receive(BULK, Duration::from_secs(60))
-                .await
-                .unwrap()
-                .unwrap();
-        assert_eq!(m.dequeue_count, 1);
+        assert_eq!(report.skipped.get("untrusted_language"), Some(&1));
+        assert_eq!(f.fx.stores.queue.approximate_count(BULK).await.unwrap(), 1);
     }
 
     #[tokio::test]
@@ -4032,16 +4153,16 @@ mod queue_feed {
         .await;
         assert_eq!(report.claims.len(), 1);
         assert_eq!(report.claims[0].message().unwrap(), f.message);
-        // The stray went back (and went round again once), but is visible, not held for
-        // the lease: a node can read it now.
+        // No node reads the bulk queue: the stray is left hidden for the lease, read once and
+        // not cycled, and is still there to come back.
+        assert_eq!((report.received, report.hidden, report.released), (2, 1, 0));
+        assert_eq!(report.skipped.get("no_ledger_row"), Some(&1));
         assert_eq!(q.approximate_count(BULK).await.unwrap(), 2);
-        let back = q
+        assert!(q
             .receive(BULK, Duration::from_secs(60))
             .await
             .unwrap()
-            .unwrap();
-        assert_eq!(back.text, stray.encode());
-        assert_eq!(back.dequeue_count, 1);
+            .is_none());
     }
 
     #[tokio::test]

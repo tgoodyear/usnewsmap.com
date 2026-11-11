@@ -33,8 +33,10 @@
 #                         takes usable pages off the work queues, as a second consumer beside
 #                         the on-prem nodes (docs/boinc/server/batch-scheduler.md#queue-fed-work):
 #                         writes claims/<doc_id>.json, then scheduler/claims.json, which names
-#                         the pages and their scans and echoes the nonce. Messages it can't use
-#                         here go back to the queue for the nodes. Only pages on the newest
+#                         the pages and their scans and echoes the nonce. Priority messages it
+#                         can't use go back to the queue; bulk ones stay hidden for the lease,
+#                         so they don't block the line. The message of a page the controller's
+#                         scheduler/held-pages.json lists as settled held is deleted. Only pages on the newest
 #                         fetched-scans list for the manifest's version are taken, and with
 #                         CLAIM_LANGUAGES only pages in those source languages (#866)
 #   HANDOFF_STEP=release  HANDOFF_DOCS=<doc_id>[,<doc_id>...]
@@ -342,7 +344,7 @@ case "${HANDOFF_STEP:-}" in
     usnm-boinc claim pull --queue-url "$QUEUE_URL" --out-url "$OUT_URL" --curated-url "$CURATED_URL" \
       --reference-url "$REFERENCE_URL" --cosmos "$COSMOS_ENDPOINT" --manifest-version "$version" \
       --max "$max" --lease-hours "$hours" --out "$work/claims" --summary "$work/summary/claims.json" \
-      --nonce "$CLAIM_NONCE" "${queue_args[@]}" || rc=$?
+      --handoff-url "$HANDOFF_URL" --nonce "$CLAIM_NONCE" "${queue_args[@]}" || rc=$?
     # The claim files first, even after a failure: the messages are hidden now and their pop
     # receipts exist nowhere else. A message whose claim can't be written comes back to the
     # queue when its lease runs out.

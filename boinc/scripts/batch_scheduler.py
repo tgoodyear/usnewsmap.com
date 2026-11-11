@@ -634,6 +634,15 @@ EXPORT_BATCHES = 20
 # Every bridge and hand-off step takes at most STEP_IDS pages, jobs or doc ids per execution.
 # A tick may handle up to MAX_TICK_PAGES; the transport splits each list into steps of STEP_IDS.
 STEP_IDS = 100
+# A tick's claim goes on past a step that took fewer pages than it asked for when that step read
+# a queue to its receive budget (the queue may hold usable pages further back: settled held pages
+# and unusable ones are read past, not claimed), but starts no new step after this many seconds
+# of claiming, so the tick stays well inside its 15 minutes.
+CLAIM_SECONDS = 300
+# The controller's list of pages whose held result is settled (archived_held, its own and the
+# --check-state-dir plans'), each with its job's message sha256: the claim step deletes that
+# message when it comes back instead of claiming it again (usnm-boinc claim::HELD_PAGES).
+HELD_PAGES_BLOB = "scheduler/held-pages.json"
 MAX_TICK_PAGES = 500
 # --rest-journals: requests at once, and the most changed journals a tick fetches one by one
 # before it takes one az download-batch of all of them (at this rate, a minute's work).
@@ -713,6 +722,8 @@ class Transport:
             require(info.st_uid == os.geteuid() and info.st_mode & 0o777 == 0o700,
                     "local handoff root must be owned by the controller user with mode 0700")
         self.timings = timings or Timings()
+        # The last claim step's summary: whether it stopped at its receive budget.
+        self.last_claim_summary = None
         self._journal_snapshot = None
         self._journal_records = None
 
@@ -1215,8 +1226,10 @@ class Transport:
         stopping early once a step takes fewer than it asked for (the queues ran dry). A later
         step's failure keeps the claims the earlier ones made (ClaimFailed carries them all)."""
         claims = []
+        started = time.monotonic()
         while len(claims) < count:
             want = min(STEP_IDS, count - len(claims))
+            self.last_claim_summary = None
             try:
                 got = self.claim_step(want)
             except ClaimFailed as error:
@@ -1230,8 +1243,38 @@ class Transport:
                 raise
             claims += got
             if len(got) < want:
-                break
+                # The queues ran dry, unless the step stopped at its receive budget with more
+                # to read (#1750): then go on while there is time.
+                summary = self.last_claim_summary or {}
+                if summary.get("budget_spent") is not True or time.monotonic() - started > CLAIM_SECONDS:
+                    break
         return claims
+
+    def publish_held(self, pages):
+        """Put the held-pages list (doc id -> message sha256s) in the hand-off container for the
+        claim step, when it differs from the one this state directory last put there."""
+        body = (json.dumps({"schema_version": 1, "pages": pages}, sort_keys=True,
+                           separators=(",", ":")) + "\n").encode()
+        digest = hashlib.sha256(body).hexdigest()
+        marker = self.directory / "held-pages.sha256"
+        try:
+            if marker.read_text().strip() == digest:
+                return False
+        except OSError:
+            pass
+        if self.handoff_root is not None:
+            path = self.handoff_root / HELD_PAGES_BLOB
+            path.parent.mkdir(parents=True, exist_ok=True)
+            staged = path.with_name(".held-pages.json.tmp")
+            staged.write_bytes(body)
+            os.replace(staged, path)
+        else:
+            staged = self.directory / "held-pages.json"
+            staged.write_bytes(body)
+            self.az("upload", "--name", HELD_PAGES_BLOB, "--file", str(staged), "--overwrite", "true",
+                    "--content-type", "application/json", "-o", "none")
+        marker.write_text(digest + "\n")
+        return True
 
     def claim_step(self, count):
         """Take up to `count` (at most STEP_IDS) pages: one hand-off claim step."""
@@ -1256,8 +1299,18 @@ class Transport:
             if failure:
                 raise_transport_errors([failure, error])
             raise
+        self.last_claim_summary = summary
         if failure:
             raise ClaimFailed(str(failure), summary["claims"]) from failure
+        settled = {key: summary.get(key) for key in ("received", "held", "hidden", "skipped", "budget_spent")
+                   if key in summary}
+        if settled:
+            try:
+                print(json.dumps({"event": "boinc_batch_claim_step", "schema_version": 1,
+                                  "asked": count, "claimed": len(summary["claims"]), **settled},
+                                 sort_keys=True), file=sys.stderr, flush=True)
+            except (OSError, ValueError):
+                pass
         return summary["claims"]
 
     def push_pages(self, bases, skip_truncated=None):
@@ -1676,6 +1729,19 @@ class QueueFeed:
         return page, {"page": page, "doc_id": claim["doc_id"], "batch": batch,
                       "scan_base": scan, "scan": None, "message": claim.get("message_sha256")}
 
+    def held_pages(self):
+        """Doc id -> the message sha256s of this plan's and the --check-state-dir plans' archived
+        held pages: those messages, back after their lease, are settled work, not new work."""
+        pages = {}
+        entries = [(page, entry) for page, entry in self.archived_held.items()]
+        entries += [(page, entry) for page, listed in self.sibling_archived.items() for entry in listed]
+        for page, entry in entries:
+            message = entry.get("message") if isinstance(entry, dict) else None
+            if isinstance(page, str) and PAGE_KEY.fullmatch(page) and isinstance(message, str) \
+                    and ID.fullmatch(message):
+                pages.setdefault(page.replace("/", "_"), set()).add(message)
+        return {doc: sorted(messages) for doc, messages in sorted(pages.items())}
+
     def fill(self, count, selected, owned=None, now=None):
         """Make `count` more pages ready: claim them (less any already claimed but not yet
         started), push their scans, give back the ones with none and dead-letter the ones LoC
@@ -1687,6 +1753,9 @@ class QueueFeed:
         waiting = [claim for page, claim in self.claims.items() if page not in started]
         need = max(0, count - len(waiting))
         if need:
+            publish = getattr(self.transport, "publish_held", None)
+            if publish is not None:
+                publish(self.held_pages())
             try:
                 fresh = self.transport.claim(need)
             except ClaimFailed as error:

@@ -1434,6 +1434,8 @@ class HandoffAndBridgeQualitySteps(unittest.TestCase):
         self.assertTrue(calls[0].startswith("claim pull --queue-url https://usnmst.queue.core.windows.net "))
         self.assertIn("--manifest-version pages-v1", calls[0])
         self.assertIn("--max 7 --lease-hours 96", calls[0])
+        # The controller's held-pages list is read from the hand-off container.
+        self.assertIn(" --handoff-url ", calls[0])
         self.assertIn("--nonce abcdefgh12 --queue ocr-bulk --queue ocr-priority "
                       "--language eng --language fra", calls[0])
         # The pop receipts exist only in the claim files: they go up first.
