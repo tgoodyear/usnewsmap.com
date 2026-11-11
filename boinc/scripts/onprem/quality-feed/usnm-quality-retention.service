@@ -1,6 +1,6 @@
 # The quality retention step on the storage host (pve-big): frees the download copies of
-# finished usnm_quality bundle images, or hard-links them to the unit's copy where a page has
-# no original scan. Lists from CT230 on pve over the host trust; prunes as uid 101000.
+# finished usnm_quality bundle images. Lists from CT230 on pve over the host trust; prunes as
+# uid 101000.
 [Unit]
 Description=usnewsmap quality retention (download copies of finished bundles)
 Wants=network-online.target

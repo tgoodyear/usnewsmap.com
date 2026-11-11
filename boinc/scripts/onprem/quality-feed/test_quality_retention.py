@@ -21,15 +21,11 @@ class Layout:
         self.base = Path(base)
         self.download = self.base / "download"
         self.quality = self.base / "quality"
-        self.scans = self.base / "scans"
-        self.index = self.base / "index-full.jsonl"
         self.eligible = self.base / "eligible.jsonl"
         self.journal = self.base / "journal.jsonl"
-        self.scans.mkdir()
-        self.index.write_text("")
         self.eligible.write_text("")
 
-    def unit(self, n, docs, page=b"bundle-bytes", copy=None, scans=True, age=OLD):
+    def unit(self, n, docs, page=b"bundle-bytes", copy=None, age=OLD):
         job_id = f"{n:064x}"
         wu = f"usnm_quality_{job_id}"
         unit = self.quality / "camp" / "units" / f"bundle-{n:05d}-{docs[0]}"
@@ -45,22 +41,13 @@ class Layout:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(page if copy is None else copy)
         os.utime(path, (age, age))
-        with open(self.index, "a") as f:
-            for d in docs:
-                f.write(json.dumps({"doc_id": d, "batch": "dlc_test"}) + "\n")
-                if scans:
-                    lccn, date, ed, seq = qr.DOC.fullmatch(d).groups()
-                    s = self.scans / "keep" / "dlc_test" / lccn / date / str(int(ed))
-                    s.mkdir(parents=True, exist_ok=True)
-                    (s / f"{int(seq)}.jp2").write_bytes(b"jp2")
         with open(self.eligible, "a") as f:
             f.write(json.dumps({"wu_id": n, "wu_name": wu, "file": name}) + "\n")
         return path, unit
 
     def prune(self, *extra):
         argv = ["prune", "--eligible", str(self.eligible), "--download", str(self.download),
-                "--quality-root", str(self.quality), "--scan-index", str(self.index),
-                "--scan-root", str(self.scans), "--journal", str(self.journal),
+                "--quality-root", str(self.quality), "--journal", str(self.journal),
                 "--commit", "abc123", *extra]
         out = []
         real = sys.stdout.write
@@ -118,31 +105,14 @@ class QualityRetentionTest(unittest.TestCase):
         self.assertEqual(rows[1]["commit"], "abc123")
         self.assertEqual(rows[1]["path"], str(path))
 
-    def test_links_a_copy_whose_original_scan_is_missing(self):
-        path, unit = self.l.unit(1, DOCS, scans=False)
-        os.chmod(unit / "page.jpg", 0o600)
-        os.chmod(path, 0o644)
-        dry = self.l.prune()
-        self.assertEqual((dry["files"], dry["linked"]), (0, 1))
-        self.assertNotEqual(path.stat().st_ino, (unit / "page.jpg").stat().st_ino)
+    def test_deletes_a_copy_that_is_a_hard_link_to_the_unit(self):
+        path, unit = self.l.unit(1, DOCS)
+        path.unlink()
+        os.link(unit / "page.jpg", path)
         got = self.l.prune("--delete")
-        self.assertEqual((got["files"], got["linked"]), (0, 1))
-        self.assertEqual(path.read_bytes(), b"bundle-bytes")
-        self.assertEqual(path.stat().st_ino, (unit / "page.jpg").stat().st_ino)
-        self.assertEqual(path.stat().st_mode & 0o777, 0o644)
-        self.assertEqual(list(path.parent.glob(".*")), [])
-        rows = self.l.journal_rows()
-        self.assertEqual([r["action"] for r in rows], ["linking", "linked"])
-        self.assertTrue(rows[1]["never_prune"] and rows[1]["only_local_image"])
-        self.assertIn("original scan missing for 2 page(s)", rows[1]["reason"])
-        again = self.l.prune("--delete")
-        self.assertEqual(again["kept"], {"already one copy (hard link)": 1})
-
-    def test_does_not_link_a_copy_that_differs(self):
-        path, unit = self.l.unit(1, DOCS, copy=b"bundle-bytez", scans=False)
-        got = self.l.prune("--delete")
-        self.assertEqual(got["kept"], {"bytes differ from unit page.jpg": 1})
-        self.assertNotEqual(path.stat().st_ino, (unit / "page.jpg").stat().st_ino)
+        self.assertEqual((got["files"], got["bytes"]), (1, 0))
+        self.assertFalse(path.exists())
+        self.assertEqual((unit / "page.jpg").read_bytes(), b"bundle-bytes")
 
     def test_keeps_a_copy_that_differs_from_the_unit(self):
         path, _ = self.l.unit(1, DOCS, copy=b"bundle-bytez")

@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
 # The quality retention step on the storage host (pve-big): lists finished usnm_quality
-# workunits from the BOINC server (CT 230 on pve, read-only DB) and frees or links their
-# download copies with quality_retention.py prune, as the share's owner, never root.
+# workunits from the BOINC server (CT 230 on pve, read-only DB) and frees their download
+# copies with quality_retention.py prune, as the share's owner, never root.
 #
 #   quality-retention.sh [--server-host pve.tjg.fyi] [--server-ct 230]
 #     [--code /opt/usnm-quality-retention] [--state /var/lib/usnm-quality-retention]
 #     [--share /tank/boinc-bulk]
-#     [--scan-index /tank/ocr/scans/index-full.jsonl]
-#     [--scan-roots /tank/ocr/scans:/cold/ocr-scans] [--owner 101000]
+#     [--owner 101000]
 #     [--max-bytes 400000000000] [--what-if]
 #
 # <code> is root's: quality_retention.py, this script, COMMIT (the commit they were installed
@@ -17,7 +16,7 @@
 set -euo pipefail
 die() { echo "error: $*" >&2; exit 1; }
 SERVER=pve.tjg.fyi CT=230 CODE=/opt/usnm-quality-retention STATE=/var/lib/usnm-quality-retention SHARE=/tank/boinc-bulk
-INDEX=/tank/ocr/scans/index-full.jsonl ROOTS=/tank/ocr/scans:/cold/ocr-scans OWNER=101000
+OWNER=101000
 MAX_BYTES=400000000000 WHAT_IF=false
 while [ $# -gt 0 ]; do
   case $1 in
@@ -26,8 +25,6 @@ while [ $# -gt 0 ]; do
     --code) CODE=${2:-}; shift 2 ;;
     --state) STATE=${2:-}; shift 2 ;;
     --share) SHARE=${2:-}; shift 2 ;;
-    --scan-index) INDEX=${2:-}; shift 2 ;;
-    --scan-roots) ROOTS=${2:-}; shift 2 ;;
     --owner) OWNER=${2:-}; shift 2 ;;
     --max-bytes) MAX_BYTES=${2:-}; shift 2 ;;
     --what-if) WHAT_IF=true; shift ;;
@@ -52,10 +49,8 @@ chmod 0644 "$list.tmp"
 mv "$list.tmp" "$list"
 
 args=(prune --eligible "$list" --download "$SHARE/download"
-  --quality-root "$SHARE/quality" --scan-index "$INDEX" --journal "$STATE/journal.jsonl"
+  --quality-root "$SHARE/quality" --journal "$STATE/journal.jsonl"
   --commit "$commit" --max-bytes "$MAX_BYTES")
-IFS=: read -r -a roots <<< "$ROOTS"
-for r in "${roots[@]}"; do args+=(--scan-root "$r"); done
 [ "$WHAT_IF" = true ] || args+=(--delete)
 cd "$STATE"
 exec setpriv --reuid "$OWNER" --regid "$OWNER" --clear-groups python3 -I "$script" "${args[@]}"
