@@ -23,6 +23,10 @@ from pathlib import Path
 args = sys.argv[1:]
 log = Path(os.environ["FAKE_LOG"])
 log.open("a").write("tool " + " ".join(args) + "\n")
+if os.environ.get("FAKE_TICK_LOCK"):
+    import subprocess
+    free = subprocess.run(["flock", "-n", os.environ["FAKE_TICK_LOCK"], "true"]).returncode == 0
+    log.open("a").write("tick lock " + ("free" if free else "held") + "\n")
 archive = Path(args[args.index("--archive-dir") + 1])
 left = Path(os.environ["FAKE_LEFT"])
 n = int(left.read_text())
@@ -174,6 +178,30 @@ class HeldArchive(unittest.TestCase):
         self.assertNotEqual(done.returncode, 0)
         self.assertIn("the dispatch step failed", done.stderr)
         self.assertEqual((self.root / "timer").read_text().strip(), "active")
+
+    def test_a_tick_lock_is_waited_for_then_held_through_the_run(self):
+        # A drain tick queued on the shared tick lock holds it for 2 s after the controller
+        # stops; the run waits, then holds the lock for every dispatch, so no tick can lease.
+        tick = self.root / "tick.lock"
+        holder = subprocess.Popen(["flock", str(tick), "sleep", "2"])
+        try:
+            done = self.run_archive("--tick-lock", str(tick), FAKE_TICK_LOCK=str(tick))
+        finally:
+            holder.wait()
+        self.assertEqual(done.returncode, 0, done.stderr)
+        log = self.log()
+        self.assertIn("tick lock held", log)
+        self.assertNotIn("tick lock free", log)
+        self.assertEqual(log[-2:], ["systemctl start usnm-boinc-priority-controller.timer",
+                                    "systemctl start --no-block usnm-boinc-priority-controller.service"])
+        # Released once the run has exited.
+        self.assertEqual(subprocess.run(["flock", "-n", str(tick), "true"]).returncode, 0)
+
+    def test_without_a_tick_lock_nothing_is_held(self):
+        tick = self.root / "tick.lock"
+        done = self.run_archive(FAKE_TICK_LOCK=str(tick))
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertNotIn("tick lock held", self.log())
 
     def test_a_failed_restart_fails_an_otherwise_good_run(self):
         done = self.run_archive(FAKE_START_FAILS="1")
