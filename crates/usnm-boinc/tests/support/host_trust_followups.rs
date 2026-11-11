@@ -47,6 +47,10 @@ case "$*" in
     fi;;
   *"usnm_spot_"*) printf '%s\n' "${SPOT_HOST:-2}";;
   *"SELECT r.hostid"*) printf '%s\n' "${SOURCE_HOST:-1}";;
+  *"DELETE a FROM assignment"*) printf 'sql %s\n' "$*" >> "$TEST_OPS";;
+  *"FROM assignment"*) printf '%s\n' "${ASSIGNMENTS:-1}";;
+  *"error_mask"*) printf '%s\n' "${CANCELLED:-0}";;
+  *"r.server_state=4"*) printf '%s\n' "${IN_PROGRESS:-0}";;
   *"r.workunitid=w.id"*) printf '%b' "${GOLD_STATUS:-}";;
   *) exit 5;;
 esac
@@ -55,6 +59,13 @@ esac
         script(
             &bin.join("dir_hier_path"),
             "#!/bin/sh\nprintf 'download/%s\\n' \"$1\"\n",
+        );
+        script(
+            &bin.join("cancel_jobs"),
+            r#"#!/bin/sh
+printf 'cancel_jobs %s\n' "$*" >> "$TEST_OPS"
+exit "${CANCEL_STATUS:-0}"
+"#,
         );
         script(
             &bin.join("create_work"),
@@ -149,7 +160,21 @@ exit "${CREATE_STATUS:-0}"
             format!("{}:{}", self.bin.display(), std::env::var("PATH").unwrap()),
         );
         c.env("TEST_CALLS", &self.log);
+        c.env("TEST_OPS", self.ops_log());
         c
+    }
+
+    /// What cancelling a unit and deleting its assignment did, in order (not create_work).
+    fn ops_log(&self) -> PathBuf {
+        self.log.with_extension("ops")
+    }
+
+    fn ops(&self) -> Vec<String> {
+        std::fs::read_to_string(self.ops_log())
+            .unwrap_or_default()
+            .lines()
+            .map(String::from)
+            .collect()
     }
 
     fn calls(&self) -> String {
@@ -356,6 +381,158 @@ async fn onboarding_skips_hosts_no_gold_version_can_run_on() {
         .unwrap();
     success(&out);
     assert_eq!(String::from_utf8(out.stdout).unwrap().trim(), "[]");
+}
+
+#[tokio::test]
+async fn a_host_newly_skipped_for_having_no_container_runtime_loses_its_unit_and_assignment() {
+    let c = Controller::new().await;
+    let row = |id: u64, docker: u8| {
+        format!("{id}\tLinux Debian GNU/Linux\tGenuineIntel\t8.2.13\t{docker}\t0\t0\n")
+    };
+    // Host 1 is trusted. Host 5 reports a container runtime, so it gets a unit, targeted.
+    let with_docker = format!("{}{}", row(1, 1), row(5, 1));
+    let run = |rows: &str, execute: bool, env: &[(&str, &str)]| {
+        let mut command = c.command("onboard");
+        command.env("HOST_ROWS", rows);
+        command.envs(env.iter().copied());
+        if execute {
+            command.arg("--execute");
+        }
+        command.output().unwrap()
+    };
+    let out = run(&with_docker, true, &[]);
+    success(&out);
+    assert_eq!(String::from_utf8(out.stdout).unwrap().trim(), "[5]");
+    let calls = c.calls();
+    assert!(calls.contains("--target_host 5"));
+    let workunit = calls
+        .split_whitespace()
+        .skip_while(|word| *word != "--wu_name")
+        .nth(1)
+        .unwrap()
+        .to_string();
+    assert!(workunit.starts_with("usnm_gold_"), "{workunit}");
+
+    let pending = ("GOLD_STATUS", "NULL\\tNULL\\tNULL\\tNULL\\tNULL\\tNULL\\n");
+    // While host 5 can run the app, its unit is left alone, and so is a host that's still able
+    // when its unit is pending.
+    success(&run(&with_docker, true, &[pending]));
+    assert!(c.ops().is_empty());
+
+    // Then its client reports no runtime (host 13 never had a unit). Planning changes nothing.
+    let without_docker = format!("{}{}{}", row(1, 1), row(5, 0), row(13, 0));
+    let out = run(&without_docker, false, &[pending]);
+    success(&out);
+    assert_eq!(String::from_utf8(out.stdout).unwrap().trim(), "[]");
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        stderr.contains(&format!(
+            "would cancel {workunit} and delete its assignment to host 5"
+        )),
+        "{stderr}"
+    );
+    assert!(c.ops().is_empty());
+
+    // A unit a client already holds is left to finish.
+    let out = run(&without_docker, true, &[pending, ("IN_PROGRESS", "1")]);
+    success(&out);
+    assert!(String::from_utf8(out.stderr)
+        .unwrap()
+        .contains(&format!("{workunit} is in progress on host 5; leaving it")));
+    assert!(c.ops().is_empty());
+
+    // A failing cancel stops the pass before the assignment is touched: with the unit live and
+    // no assignment, any host could be sent it.
+    let out = run(&without_docker, true, &[pending, ("CANCEL_STATUS", "1")]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("cancel_jobs failed"));
+    assert_eq!(c.ops(), [format!("cancel_jobs --name {workunit}")]);
+    std::fs::remove_file(c.ops_log()).unwrap();
+
+    // Executing cancels the unit, then deletes the assignment to host 5, only.
+    let out = run(&without_docker, true, &[pending]);
+    success(&out);
+    assert_eq!(String::from_utf8(out.stdout).unwrap().trim(), "[]");
+    let ops = c.ops();
+    assert_eq!(ops.len(), 2, "{ops:?}");
+    assert_eq!(ops[0], format!("cancel_jobs --name {workunit}"));
+    assert!(ops[1].contains("DELETE a FROM assignment"), "{}", ops[1]);
+    assert!(
+        ops[1].contains(&format!("w.name='{workunit}'")),
+        "{}",
+        ops[1]
+    );
+    assert!(
+        ops[1].contains("a.target_type=1 AND a.target_id=5"),
+        "{}",
+        ops[1]
+    );
+    assert!(String::from_utf8(out.stderr).unwrap().contains(&format!(
+        "cancelled {workunit} and deleted its assignment to host 5"
+    )));
+    // Nothing was issued.
+    assert_eq!(c.calls().lines().count(), 1);
+    std::fs::remove_file(c.ops_log()).unwrap();
+
+    // The unit is now over (BOINC's DIDNT_NEED, outcome 5) and cancelled, with no assignment
+    // left: later passes do nothing.
+    let cancelled = [
+        ("GOLD_STATUS", "21\\t5\\t5\\t0\\t0\\t\\n"),
+        ("CANCELLED", "16"),
+        ("ASSIGNMENTS", "0"),
+    ];
+    success(&run(&without_docker, true, &cancelled));
+    assert!(c.ops().is_empty());
+
+    // If the delete failed last time, its row is still there: only the row goes, with no second
+    // cancel. Planning says so and changes nothing.
+    let leftover = [
+        ("GOLD_STATUS", "21\\t5\\t5\\t0\\t0\\t\\n"),
+        ("CANCELLED", "16"),
+        ("ASSIGNMENTS", "1"),
+    ];
+    let out = run(&without_docker, false, &leftover);
+    success(&out);
+    assert!(String::from_utf8(out.stderr).unwrap().contains(&format!(
+        "would delete the assignment of cancelled {workunit} to host 5"
+    )));
+    assert!(c.ops().is_empty());
+    success(&run(&without_docker, true, &leftover));
+    let ops = c.ops();
+    assert_eq!(ops.len(), 1, "{ops:?}");
+    assert!(ops[0].contains("DELETE a FROM assignment") && ops[0].contains("a.target_id=5"));
+    std::fs::remove_file(c.ops_log()).unwrap();
+
+    // A unit that failed for real (not cancelled) is not this change's business: the host is
+    // skipped, nothing is deleted.
+    let failed = [("GOLD_STATUS", "21\\t5\\t3\\t5\\t255\\t\\n")];
+    success(&run(&without_docker, true, &failed));
+    assert!(c.ops().is_empty());
+}
+
+#[tokio::test]
+async fn a_skipped_host_keeps_a_succeeded_unit_and_its_assignment() {
+    let c = Controller::new().await;
+    let row = |id: u64, docker: u8| {
+        format!("{id}\tLinux Debian GNU/Linux\tGenuineIntel\t8.2.13\t{docker}\t0\t0\n")
+    };
+    let rows = |docker| format!("{}{}", row(1, 1), row(5, docker));
+    let run = |rows: &str, env: &[(&str, &str)]| {
+        let mut command = c.command("onboard");
+        command.env("HOST_ROWS", rows).arg("--execute");
+        command.envs(env.iter().copied());
+        command.output().unwrap()
+    };
+    success(&run(&rows(1), &[]));
+    assert!(c.calls().contains("--target_host 5"));
+    success(&run(
+        &rows(0),
+        &[
+            ("GOLD_STATUS", "12\\t5\\t1\\t5\\t0\\t\\n"),
+            ("CANCELLED", "16"),
+        ],
+    ));
+    assert!(c.ops().is_empty());
 }
 
 #[tokio::test]
