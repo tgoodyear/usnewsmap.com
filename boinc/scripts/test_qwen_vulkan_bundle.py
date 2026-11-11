@@ -184,6 +184,16 @@ class WindowsBundle(unittest.TestCase):
         self.build(archive, lock, out="again")
         self.assertEqual((out / "SHA256SUMS").read_text(), (self.dir / "again/SHA256SUMS").read_text())
 
+    def test_build_serves_the_6gb_partial_offload_class_with_the_same_runtime(self):
+        # nvidia_vulkan_6gb_8b takes the same pinned runtime as nvidia_vulkan_8b; only the manifest's class differs.
+        archive, lock = self.archive()
+        full = self.build(archive, lock, out="full")
+        partial = self.build(archive, lock, plan_class="nvidia_vulkan_6gb_8b", out="partial")
+        self.assertEqual(partial["release"]["plan_class"], "nvidia_vulkan_6gb_8b")
+        self.assertEqual(partial["worker"], full["worker"])
+        bundle.verify(self.dir / "partial")
+        self.assertIn("nvidia_vulkan_6gb_8b", bundle.WIN_PLAN_CLASSES)
+
     def test_build_refuses_wrong_inputs(self):
         archive, lock = self.archive()
         with self.assertRaisesRegex(ValueError, "not a Windows Vulkan"):

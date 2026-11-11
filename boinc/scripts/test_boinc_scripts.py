@@ -1088,6 +1088,28 @@ class AppReleaseArgs(unittest.TestCase):
                                  "--binary", str(binary), "--plan-class", "amd_vulkan_8b")
             self.assertIn("--app and --plan-class for --kind native", r.stderr)
 
+    def test_native_nvidia_vulkan_8b_classes_allow_linux_and_windows_x86_64(self):
+        # nvidia_vulkan_8b and the 6 GB partial-offload class share the Windows Vulkan bundle (#1672).
+        with tempfile.TemporaryDirectory(dir=ROOT) as folder:
+            binary = Path(folder) / "usnm_qwen"
+            binary.write_bytes(b"fixture")
+            for plan in ("nvidia_vulkan_8b", "nvidia_vulkan_6gb_8b"):
+                for platform in ("x86_64-pc-linux-gnu", "windows_x86_64",
+                                 "aarch64-unknown-linux-gnu", "arm64-apple-darwin", "x86_64-apple-darwin"):
+                    with self.subTest(plan=plan, platform=platform):
+                        r = subprocess.run(
+                            [APP_RELEASE_SCRIPT, "--env", "prod", "--version", "1.0",
+                             "--signing-host", "fixture.invalid", "--app", "usnm_qwen",
+                             "--kind", "native", "--binary", str(binary),
+                             "--plan-class", plan, "--platform", platform],
+                            cwd=ROOT, capture_output=True, text=True,
+                        )
+                        self.assertNotEqual(r.returncode, 0)
+                        if platform in ("x86_64-pc-linux-gnu", "windows_x86_64"):
+                            self.assertIn("requires --extra-file llama-server", r.stderr)
+                        else:
+                            self.assertIn(f"native --plan-class {plan} is not supported", r.stderr)
+
     def test_onprem_host_and_ct_are_validated(self):
         # #961: checked with the other arguments, before the settings are read.
         r = subprocess.run(

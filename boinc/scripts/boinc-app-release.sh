@@ -201,7 +201,7 @@ else
     *) die "unsupported --platform" ;;
   esac
   case "$PLAN_CLASS:$PLATFORM" in
-    :* | mt:* | apple_gpu_8b:arm64-apple-darwin | nvidia_cuda_8b:x86_64-pc-linux-gnu | nvidia_cuda_8b:aarch64-unknown-linux-gnu | nvidia_cuda_8b:windows_x86_64 | nvidia_cuda_2b:x86_64-pc-linux-gnu | nvidia_cuda_2b:aarch64-unknown-linux-gnu | nvidia_cuda_2b:windows_x86_64 | intel_vulkan_8b:x86_64-pc-linux-gnu | intel_vulkan_8b:windows_x86_64 | nvidia_vulkan_8b:x86_64-pc-linux-gnu | nvidia_vulkan_8b:windows_x86_64 | nvidia_vulkan_6gb_8b:x86_64-pc-linux-gnu | nvidia_vulkan_2b:x86_64-pc-linux-gnu | amd_vulkan_8b:x86_64-pc-linux-gnu | amd_vulkan_8b:windows_x86_64) ;;
+    :* | mt:* | apple_gpu_8b:arm64-apple-darwin | nvidia_cuda_8b:x86_64-pc-linux-gnu | nvidia_cuda_8b:aarch64-unknown-linux-gnu | nvidia_cuda_8b:windows_x86_64 | nvidia_cuda_2b:x86_64-pc-linux-gnu | nvidia_cuda_2b:aarch64-unknown-linux-gnu | nvidia_cuda_2b:windows_x86_64 | intel_vulkan_8b:x86_64-pc-linux-gnu | intel_vulkan_8b:windows_x86_64 | nvidia_vulkan_8b:x86_64-pc-linux-gnu | nvidia_vulkan_8b:windows_x86_64 | nvidia_vulkan_6gb_8b:x86_64-pc-linux-gnu | nvidia_vulkan_6gb_8b:windows_x86_64 | nvidia_vulkan_2b:x86_64-pc-linux-gnu | amd_vulkan_8b:x86_64-pc-linux-gnu | amd_vulkan_8b:windows_x86_64) ;;
     *) die "native --plan-class $PLAN_CLASS is not supported on $PLATFORM" ;;
   esac
   for spec in "${EXTRA_FILES[@]+"${EXTRA_FILES[@]}"}"; do

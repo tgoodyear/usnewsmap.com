@@ -43,12 +43,12 @@ PLATFORM = "x86_64-pc-linux-gnu"
 LLAMA_SOURCE = {"b8799": "e1a9a6dcbefccb4b864d9385ce8494f2a7f2ffcd"}
 PLAN_CLASSES = ("nvidia_vulkan_2b", "nvidia_vulkan_6gb_8b", "nvidia_vulkan_8b", "intel_vulkan_8b")
 BINARY = f"usnm_qwen_{PLATFORM}"
-# windows_x86_64 (#1672). NVIDIA and Intel take the pinned runtime unchanged; AMD's Windows bundle
-# replaces ggml-vulkan.dll and adds its PCI identity helper (docs/boinc/apps/amd-gpu.md), so it
-# isn't built here.
+# windows_x86_64 (#1672). NVIDIA (full and 6 GB partial-offload 8B) and Intel take the pinned
+# runtime unchanged; AMD's Windows bundle replaces ggml-vulkan.dll and adds its PCI identity helper
+# (docs/boinc/apps/amd-gpu.md), so it isn't built here.
 WIN_ASSET = "win-vulkan-x64"
 WIN_PLATFORM = "windows_x86_64"
-WIN_PLAN_CLASSES = ("nvidia_vulkan_8b", "intel_vulkan_8b")
+WIN_PLAN_CLASSES = ("nvidia_vulkan_8b", "nvidia_vulkan_6gb_8b", "intel_vulkan_8b")
 WIN_BINARY = f"usnm_qwen_{WIN_PLATFORM}.exe"
 WIN_RUNTIME = re.compile(r"llama-server\.exe|ggml[A-Za-z0-9_-]*\.dll|llama\.dll|mtmd\.dll|libomp140\.x86_64\.dll")
 # The Microsoft runtime the Windows native CI job bundles and Authenticode-checks (VC_REDIST_SOURCE.json).
