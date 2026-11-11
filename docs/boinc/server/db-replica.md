@@ -64,6 +64,7 @@ attempts.
 
    Bring `server-cert.pem`, `source-host-key` and CT 230's `/srv/usnm-boinc/mysql-tls/ca.pem`
    back to the directory on pve-big.
+
 3. On pve-big, run `boinc-db-replica-ct.sh --install-cert --dir ...`.
 4. On CT 230, feed each password on stdin (32 hex characters, e.g. `openssl rand -hex 16`):
 
@@ -73,8 +74,8 @@ attempts.
    ```
 
 5. On pve-big, with `repl-password`, `clone-password` and `db-root` (CT 230's
-   `/etc/usnm-boinc/secrets/db-root`) in the directory, run `boinc-db-replica-ct.sh --clone
-   --dir ...`. It moves them into the CT and deletes them from the directory. The clone of the
+   `/etc/usnm-boinc/secrets/db-root`) in the directory, run
+   `boinc-db-replica-ct.sh --clone --dir ...`. It moves them into the CT and deletes them from the directory. The clone of the
    ~4 GB data directory takes under a minute, capped at 40 MiB/s.
 6. On CT 230, run `replica-source.sh --clone-donor off`.
 
@@ -88,8 +89,8 @@ The primary started with `gtid_mode = OFF`, so replication runs from binlog file
 Moving the primary to GTIDs is online in MySQL 8.4, with no restart, one step at a time with
 `SET PERSIST`:
 
-1. `enforce_gtid_consistency = WARN`, then watch the primary's log (`podman logs
-   usnm-boinc-mysql` on CT 230) for GTID-unsafe statements through at least one full day,
+1. `enforce_gtid_consistency = WARN`, then watch the primary's log
+   (`podman logs usnm-boinc-mysql` on CT 230) for GTID-unsafe statements through at least one full day,
    including the 00:13 UTC maintenance runs.
 2. `enforce_gtid_consistency = ON`.
 3. `gtid_mode = OFF_PERMISSIVE`, then `ON_PERMISSIVE`.
@@ -127,8 +128,8 @@ The R2 binlogs are no newer than the replica.
    timers again, and check that `Com_update` rises on the promoted server.
 5. **Back up the new primary.** The R2 dump and binlog timers on CT 230 read CT 230's own
    database, so they stop working. Until the database is home again, install `db-backup.sh` in
-   CT 237 and run it there with `--container usnm-boinc-mysql-replica --datadir
-   /srv/usnm-boinc/mysql-data --ca /srv/usnm-boinc/mysql-tls/ca.pem` (the `usnmbackup` user came
+   CT 237 and run it there with `--container usnm-boinc-mysql-replica`,
+   `--datadir /srv/usnm-boinc/mysql-data` and `--ca /srv/usnm-boinc/mysql-tls/ca.pem` (the `usnmbackup` user came
    with the clone).
 
 To move back, rebuild the primary's database on CT 230 as a replica of the promoted server, or

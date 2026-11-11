@@ -82,6 +82,9 @@ if [ "$DUMP" = latest ]; then
   DUMP=$(rclone lsf -R --files-only --include '*.json' "r2:$BUCKET/dump/" | sort | tail -1)
   [ -n "$DUMP" ] || die "no dump in r2:$BUCKET/dump/"
   DUMP=dump/${DUMP%.json}.sql.gz
+  # A manifest dated in the future can't be a real dump; refuse it rather than let it win "latest".
+  t=${DUMP##*/}; t=${t%.sql.gz}
+  [ "${t:0:8}" -le "$(date -u -d tomorrow +%Y%m%d)" ] || die "newest manifest $DUMP is dated in the future: pass --dump"
 fi
 [[ $DUMP =~ ^dump/[0-9]{4}/[0-9]{8}T[0-9]{6}Z\.sql\.gz$ ]] || die "--dump: dump/<year>/<time>.sql.gz or latest"
 mkdir -p "$WD/dl/binlog" "$WD/data"
@@ -92,7 +95,10 @@ m() { jq -er ".$1" "$WD/dl/manifest.json"; }
 DB=$(m database); UUID=$(m server_uuid); FILE=$(m binlog_file); POS=$(m binlog_pos); GTID=$(m gtid_mode)
 [[ $DB =~ ^[A-Za-z0-9_]+$ ]] && [[ $UUID =~ ^[0-9a-f-]{36}$ ]] && [[ $FILE =~ ^[A-Za-z0-9._-]+$ ]] || die "odd manifest"
 [ -n "$IMAGE" ] || IMAGE=$(m image)
-[[ $IMAGE == *@sha256:* ]] || die "image $IMAGE isn't a pullable digest: pass --image docker.io/library/mysql@sha256:..."
+# The manifest comes from the bucket, which the writer key can add to: run only the official
+# MySQL image, by digest, whatever a manifest names.
+[[ $IMAGE =~ ^docker\.io/library/mysql@sha256:[0-9a-f]{64}$ ]] ||
+  die "image $IMAGE isn't docker.io/library/mysql@sha256:<digest>: pass --image"
 
 # A dump made before GTIDs were on carries none, and binlogs after the switch carry them:
 # ON_PERMISSIVE takes both. A dump made with GTIDs on sets gtid_purged, which needs ON.
@@ -178,7 +184,9 @@ tables=$(q -N -B -e "SELECT table_name FROM information_schema.tables WHERE tabl
   sep=""
   for t in $tables; do
     [[ $t =~ ^[A-Za-z0-9_]+$ ]] || die "odd table name"
-    printf '%s"%s": %s' "$sep" "$t" "$(q -N -B -e "SELECT COUNT(*) FROM \`$DB\`.\`$t\`")"; sep=", "
+    n=$(q -N -B -e "SELECT COUNT(*) FROM \`$DB\`.\`$t\`")
+    [[ $n =~ ^[0-9]+$ ]] || die "no count for $t"
+    printf '%s"%s": %s' "$sep" "$t" "$n"; sep=", "
   done
   printf '}}\n'
 } > "$WD/counts.json"

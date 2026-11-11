@@ -3,11 +3,11 @@
 The BOINC MySQL on the BOINC host (CT 230 on pve, [onprem.md](onprem.md)) has three copies
 besides its own data directory:
 
-| Copy | Where | How far behind | Kept |
-|---|---|---|---|
-| Nightly Proxmox snapshot of CT 230 | the backup server on pve-big | up to a day | as the backup job keeps it |
-| Live replica | CT 237 on pve-big ([db-replica.md](db-replica.md)) | seconds | current only |
-| Dump and binlogs | R2 bucket `usnm-boinc-db-backup` (off site) | about 5 minutes | 30 nightly dumps, binlogs to match |
+| Copy                               | Where                                              | How far behind  | Kept                               |
+| ---------------------------------- | -------------------------------------------------- | --------------- | ---------------------------------- |
+| Nightly Proxmox snapshot of CT 230 | the backup server on pve-big                       | up to a day     | as the backup job keeps it         |
+| Live replica                       | CT 237 on pve-big ([db-replica.md](db-replica.md)) | seconds         | current only                       |
+| Dump and binlogs                   | R2 bucket `usnm-boinc-db-backup` (off site)        | about 5 minutes | 30 nightly dumps, binlogs to match |
 
 The replica protects against losing CT 230 or pve, and the R2 copy against losing the house.
 Neither protects against a bad change that replicates: for that, restore from R2 to just before
@@ -19,16 +19,16 @@ The scripts are in `boinc/scripts/onprem/db-backup/`.
 
 On CT 230 (installed by `install.sh`):
 
-- `usnm-boinc-db-dump.timer`, daily at 08:20 UTC (03:20 US Eastern in winter): `db-backup.sh
-  --dump` streams `mysqldump --single-transaction --routines --triggers --events --hex-blob
-  --source-data=2 --set-gtid-purged=AUTO` of `usnmocr` through gzip to
+- `usnm-boinc-db-dump.timer`, daily at 08:20 UTC (03:20 US Eastern in winter):
+  `db-backup.sh --dump` streams `mysqldump` of `usnmocr` (`--single-transaction`, `--routines`,
+  `--triggers`, `--events`, `--hex-blob`, `--source-data=2`, `--set-gtid-purged=AUTO`) through gzip to
   `dump/<year>/<UTC time>.sql.gz`, then writes `<same name>.json`: server UUID, `gtid_mode`, the
   binlog file and position the dump starts from, the image digest, the dump's sha256 and size.
   mysqldump holds `FLUSH TABLES WITH READ LOCK` for a moment to read those coordinates; a query
   that runs long at that moment makes everything wait behind it, hence the quiet hour. A dump is
   about 95 MB and takes about 2 minutes.
-- `usnm-boinc-db-binlog-ship.timer`, 5 minutes after each run ends: `db-backup.sh
-  --ship-binlogs` runs `FLUSH BINARY LOGS` and copies every closed binlog not yet in the bucket to
+- `usnm-boinc-db-binlog-ship.timer`, 5 minutes after each run ends:
+  `db-backup.sh --ship-binlogs` runs `FLUSH BINARY LOGS` and copies every closed binlog not yet in the bucket to
   `binlog/<server UUID>/<file>.gz`. The primary keeps binlogs for 3 days
   (`binlog_expire_logs_seconds`, `mysql-setup.sh`), so shipping can be down for up to 3 days
   before a gap opens; a run that finds a gap fails.
