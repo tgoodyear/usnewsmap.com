@@ -35,6 +35,7 @@ class Layout:
         unit = self.quality / "camp" / "units" / f"bundle-{n:05d}-{docs[0]}"
         unit.mkdir(parents=True)
         (unit / "page.jpg").write_bytes(page)
+        os.utime(unit / "page.jpg", (OLD, OLD))
         (unit / "submitted").write_text(wu)
         job = {"id": job_id, "doc_id": docs[0], "inputs": {"page": {"bytes": len(page)}},
                "pages": [{"doc_id": d} for d in docs]}
@@ -117,14 +118,28 @@ class QualityRetentionTest(unittest.TestCase):
         self.assertEqual(rows[1]["commit"], "abc123")
         self.assertEqual(rows[1]["path"], str(path))
 
-    def test_keeps_a_copy_whose_original_scan_is_missing(self):
-        path, _ = self.l.unit(1, DOCS, scans=False)
+    def test_links_a_copy_whose_original_scan_is_missing(self):
+        path, unit = self.l.unit(1, DOCS, scans=False)
+        dry = self.l.prune()
+        self.assertEqual((dry["files"], dry["linked"]), (0, 1))
+        self.assertNotEqual(path.stat().st_ino, (unit / "page.jpg").stat().st_ino)
         got = self.l.prune("--delete")
-        self.assertEqual(got["files"], 0)
-        self.assertTrue(path.exists())
-        self.assertEqual(got["kept"], {"original scan missing": 1})
-        reason = self.l.journal_rows()[0]["reason"]
-        self.assertIn("original scan missing for 2 page(s)", reason)
+        self.assertEqual((got["files"], got["linked"]), (0, 1))
+        self.assertEqual(path.read_bytes(), b"bundle-bytes")
+        self.assertEqual(path.stat().st_ino, (unit / "page.jpg").stat().st_ino)
+        self.assertEqual(list(path.parent.glob(".*")), [])
+        rows = self.l.journal_rows()
+        self.assertEqual([r["action"] for r in rows], ["linking", "linked"])
+        self.assertTrue(rows[1]["never_prune"] and rows[1]["only_local_image"])
+        self.assertIn("original scan missing for 2 page(s)", rows[1]["reason"])
+        again = self.l.prune("--delete")
+        self.assertEqual(again["kept"], {"already one copy (hard link)": 1})
+
+    def test_does_not_link_a_copy_that_differs(self):
+        path, unit = self.l.unit(1, DOCS, copy=b"bundle-bytez", scans=False)
+        got = self.l.prune("--delete")
+        self.assertEqual(got["kept"], {"bytes differ from unit page.jpg": 1})
+        self.assertNotEqual(path.stat().st_ino, (unit / "page.jpg").stat().st_ino)
 
     def test_keeps_a_copy_that_differs_from_the_unit(self):
         path, _ = self.l.unit(1, DOCS, copy=b"bundle-bytez")

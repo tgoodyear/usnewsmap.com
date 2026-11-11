@@ -22,18 +22,22 @@ per usnm_quality workunit whose assimilate_state is done and whose results are a
 (server_state 5): the workunit's id and name and its <id>_page_jpg input.
 
 `prune` runs on the storage host as the share's owner, not root. For each listed file it
-needs, or it skips the file and says why:
+needs, or it leaves the file and journals why:
   - the file in the download tree, older than an hour;
   - the submitted unit it came from (units/<unit>/submitted names the workunit) under some
     campaign of --quality-root, whose quality.json has this job id;
-  - that unit's page.jpg, the same size as the job's page input and byte for byte the same
-    as the download copy (full compare; --skip-cmp is for dry runs only);
-  - for every page of the job, its original scan in --scan-index and on disk under a
-    --scan-root (keep/ or buffer/).
-Without --delete it changes nothing and reports what it would free. With --delete it appends
-a journal line before each unlink and another after it, both fsynced, so the journal
-records every file it removed and the --commit the run came from. --max-files and --max-bytes
-bound a batch.
+  - that unit's page.jpg, a different inode of the same size as the job's page input, and
+    byte for byte the same as the download copy (full compare; --skip-cmp is for dry runs
+    only).
+If every page of the job has its original scan in --scan-index and on disk under a
+--scan-root (keep/ or buffer/), the copy is deleted. If any page lacks one, the bundle image
+is that page's only local image: the copy is replaced by a hard link to the unit's page.jpg
+(link beside it, then rename over it), so both paths stay readable on one physical copy, and
+the journal marks it only_local_image and never_prune.
+Without --delete it changes nothing on the share and reports what it would free. With
+--delete it appends a journal line before each unlink or link and another after it, both
+fsynced, so the journal records every file it changed and the --commit the run came from.
+--max-files and --max-bytes bound a batch (links count toward both).
 """
 import argparse
 import json
@@ -70,8 +74,8 @@ def list_eligible(config, db_ca, db_defaults, out):
             "WHERE a.name = %s AND w.assimilate_state = 2 AND NOT EXISTS "
             "(SELECT 1 FROM result r WHERE r.workunitid = w.id AND r.server_state <> %s)",
             (APP, RESULT_OVER))
-        tmp = out + ".tmp"
-        with open(tmp, "w") as f:
+        tmp = out + ".tmp" if out != "-" else None
+        with (open(tmp, "w") if tmp else os.fdopen(os.dup(1), "w")) as f:
             for wid, name, xml in cur:
                 if isinstance(xml, bytes):
                     xml = xml.decode("utf-8", "replace")
@@ -79,8 +83,10 @@ def list_eligible(config, db_ca, db_defaults, out):
                     f.write(json.dumps({"wu_id": int(wid), "wu_name": name, "file": file}) + "\n")
                     n += 1
             f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, out)
+            if tmp:
+                os.fsync(f.fileno())
+        if tmp:
+            os.replace(tmp, out)
     finally:
         db.close()
     return n
@@ -159,7 +165,10 @@ def same_bytes(a, b):
 
 
 def check(entry, download, units, batches, roots, cmp, now):
-    """(path, bytes, unit) for a file that may go, or a reason string to keep it."""
+    """("delete" or "link", path, bytes, unit, detail) for a file to act on, or a reason
+    string to leave it. "link" is a copy whose bundle has a page without its original: the
+    bundle image is then that page's only local image, so the copy becomes a hard link to the
+    unit's page.jpg (one physical copy, both paths readable) and is never deleted."""
     name = entry["file"]
     if not name.endswith(PAGE_SUFFIX) or not JOB_ID.fullmatch(name[:-len(PAGE_SUFFIX)]):
         return "not a quality page input"
@@ -183,18 +192,30 @@ def check(entry, download, units, batches, roots, cmp, now):
     page = os.path.join(unit, "page.jpg")
     want = ((job.get("inputs") or {}).get("page") or {}).get("bytes")
     try:
-        size = os.stat(page).st_size
+        ust = os.stat(page)
     except FileNotFoundError:
         return "unit page.jpg missing"
-    if size != st.st_size or (want is not None and want != size):
+    if (ust.st_dev, ust.st_ino) == (st.st_dev, st.st_ino):
+        return "already one copy (hard link)"
+    if ust.st_size != st.st_size or (want is not None and want != ust.st_size):
         return "size differs from unit page.jpg"
     docs = [p.get("doc_id") for p in job.get("pages") or []] or [job.get("doc_id")]
     missing = [d for d in docs if not d or not scan_present(d, batches, roots)]
-    if missing:
-        return f"original scan missing for {len(missing)} page(s), first {missing[0]}"
     if cmp and not same_bytes(path, page):
         return "bytes differ from unit page.jpg"
-    return path, st.st_size, unit
+    if missing:
+        return ("link", path, st.st_size, unit,
+                f"original scan missing for {len(missing)} page(s), first {missing[0]}")
+    return "delete", path, st.st_size, unit, None
+
+
+def link_copy(path, page):
+    """Replaces path with a hard link to page, atomically: link beside it, then rename."""
+    tmp = os.path.join(os.path.dirname(path), f".{os.path.basename(path)}.link")
+    if os.path.lexists(tmp):
+        os.unlink(tmp)
+    os.link(page, tmp)
+    os.replace(tmp, path)
 
 
 def journal_line(journal, record):
@@ -215,11 +236,13 @@ def prune(a):
     batches = scan_index(a.scan_index)
     now = time.time()
     totals = {"files": 0, "bytes": 0, "units": set()}
+    linked = {"files": 0, "bytes": 0}
     skipped = {}
     stamp = time.strftime("%Y-%m-%dT%H:%M:%S%z")
     with open(a.journal, "a") as journal:
         for entry in eligible:
-            if totals["files"] >= a.max_files or totals["bytes"] >= a.max_bytes:
+            if (totals["files"] + linked["files"] >= a.max_files
+                    or totals["bytes"] + linked["bytes"] >= a.max_bytes):
                 break
             got = check(entry, a.download, units, batches, roots, not a.skip_cmp, now)
             if isinstance(got, str):
@@ -230,20 +253,31 @@ def prune(a):
                                            "file": entry["file"], "wu_id": entry["wu_id"],
                                            "reason": got})
                 continue
-            path, size, unit = got
+            act, path, size, unit, detail = got
             record = {"time": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "commit": a.commit,
                       "file": entry["file"], "path": path, "bytes": size, "unit": unit,
                       "wu_id": entry["wu_id"], "wu_name": entry["wu_name"]}
-            if a.delete:
-                journal_line(journal, dict(record, action="deleting"))
-                os.unlink(path)
-                journal_line(journal, dict(record, action="deleted"))
-            totals["files"] += 1
-            totals["bytes"] += size
-            totals["units"].add(unit)
+            if act == "link":
+                # The bundle image is some page's only local image: one copy stays, forever.
+                record.update(reason=detail, only_local_image=True, never_prune=True)
+                if a.delete:
+                    journal_line(journal, dict(record, action="linking"))
+                    link_copy(path, os.path.join(unit, "page.jpg"))
+                    journal_line(journal, dict(record, action="linked"))
+                linked["files"] += 1
+                linked["bytes"] += size
+            else:
+                if a.delete:
+                    journal_line(journal, dict(record, action="deleting"))
+                    os.unlink(path)
+                    journal_line(journal, dict(record, action="deleted"))
+                totals["files"] += 1
+                totals["bytes"] += size
+                totals["units"].add(unit)
     summary = {"mode": "delete" if a.delete else "dry-run", "commit": a.commit,
                "eligible": len(eligible), "files": totals["files"], "bytes": totals["bytes"],
                "gib": round(totals["bytes"] / 2**30, 2), "bundles": len(totals["units"]),
+               "linked": linked["files"], "linked_gib": round(linked["bytes"] / 2**30, 2),
                "kept": skipped}
     print(json.dumps(summary, sort_keys=True))
     return summary
@@ -271,7 +305,8 @@ def main(argv=None):
     pr.add_argument("--max-bytes", type=int, default=sys.maxsize)
     a = ap.parse_args(argv)
     if a.cmd == "list":
-        print(f"{list_eligible(a.config, a.db_ca, a.db_defaults, a.out)} files listed")
+        n = list_eligible(a.config, a.db_ca, a.db_defaults, a.out)
+        print(f"{n} files listed", file=sys.stderr)
     else:
         prune(a)
 
