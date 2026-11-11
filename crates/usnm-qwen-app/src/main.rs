@@ -19,6 +19,7 @@ mod checkpoint;
 mod gpu;
 mod locks;
 mod report;
+mod retry;
 mod server;
 #[cfg(test)]
 mod test_support;
@@ -32,7 +33,8 @@ use crate::{
     gpu::{detect_gpu, gpu_used_mib, vulkan_refusal, GpuState},
     locks::{check_engine, resolve_model},
     report::{diag_block, failure_report, redacted_tail, report_failure},
-    server::{chat_completion, find_llama_server, Server, CTX_SIZE, LOAD_DEADLINE},
+    retry::{run_crop, write_temporary_exit, CropEnd, MAX_TEMPORARY_EXITS},
+    server::{chat_completion, find_llama_server, Launch, Llama, CTX_SIZE, LOAD_DEADLINE},
 };
 use anyhow::{ensure, Context};
 use std::{
@@ -314,7 +316,7 @@ pub fn run_slot_with(
                         l.job.cpu_timeout_secs
                     }))
                 });
-                run_crops(
+                match run_crops(
                     work,
                     &mut l,
                     &host,
@@ -323,7 +325,16 @@ pub fn run_slot_with(
                     deadline,
                     &control,
                     &mut diag,
-                )
+                ) {
+                    Some(done) => done,
+                    None => {
+                        // The crop kept failing and the client will restart the task, which
+                        // resumes from the checkpoint. Like a postponed probe: no result, no
+                        // boinc_finish_called.
+                        write_atomic(&diag_out, &diag.finish())?;
+                        return Ok(());
+                    }
+                }
             }
         }
         Err(e) => {
@@ -426,16 +437,16 @@ fn run_crops(
     deadline: Duration,
     control: &BoincControl,
     diag: &mut Diag,
-) -> (ResultManifest, Readings) {
+) -> Option<(ResultManifest, Readings)> {
     if control.wait_if_suspended_or_should_exit().is_break() {
-        return empty_result(
+        return Some(empty_result(
             l.job.id.clone(),
             l.job.engine.clone(),
             l.job.crops.len() as u32,
             Outcome::Failed,
             None,
             l.job.prompt_version,
-        );
+        ));
     }
 
     let (model, model_path, mmproj_path) = match resolve_model(
@@ -448,14 +459,14 @@ fn run_crops(
         Ok(m) => m,
         Err(e) => {
             diag.section("model resolution failed", &format!("{e:#}"), 1024);
-            return empty_result(
+            return Some(empty_result(
                 l.job.id.clone(),
                 l.job.engine.clone(),
                 l.job.crops.len() as u32,
                 Outcome::Failed,
                 None,
                 l.job.prompt_version,
-            );
+            ));
         }
     };
 
@@ -469,50 +480,57 @@ fn run_crops(
             .max(1)
     };
 
-    let (srv_guard, port, load_ms) = match existing_port {
-        Some(p) => (None, p, 0),
+    let launch = Launch {
+        work,
+        model_path: &model_path,
+        mmproj_path: &mmproj_path,
+        gpu,
+        threads,
+        image_min_tokens: image_min_tokens(l.job.prompt_version),
+        control,
+    };
+    let mut load_ms = 0;
+    let mut llama = match existing_port {
+        Some(p) => Llama {
+            srv: None,
+            port: p,
+            server_bin: None,
+        },
         None => {
             let server_bin = match find_llama_server(work) {
                 Ok(b) => b,
                 Err(e) => {
                     diag.section("llama-server missing", &format!("{e:#}"), 1024);
-                    return empty_result(
+                    return Some(empty_result(
                         l.job.id.clone(),
                         l.job.engine.clone(),
                         l.job.crops.len() as u32,
                         Outcome::Failed,
                         None,
                         l.job.prompt_version,
-                    );
+                    ));
                 }
             };
-            match Server::start(
-                work,
-                &server_bin,
-                &model_path,
-                &mmproj_path,
-                gpu,
-                threads,
-                LOAD_DEADLINE.min(deadline),
-                image_min_tokens(l.job.prompt_version),
-                control,
-            ) {
-                Ok((srv, ms_loaded)) => {
-                    let p = srv.port;
-                    (Some(srv), p, ms_loaded)
-                }
+            let mut llama = Llama {
+                srv: None,
+                port: 0,
+                server_bin: Some(server_bin),
+            };
+            match llama.start(&launch, LOAD_DEADLINE.min(deadline)) {
+                Ok(ms_loaded) => load_ms = ms_loaded,
                 Err(e) => {
                     diag.section("llama-server start failed", &format!("{e:#}"), 2048);
-                    return empty_result(
+                    return Some(empty_result(
                         l.job.id.clone(),
                         l.job.engine.clone(),
                         l.job.crops.len() as u32,
                         Outcome::Failed,
                         None,
                         l.job.prompt_version,
-                    );
+                    ));
                 }
             }
+            llama
         }
     };
 
@@ -542,6 +560,9 @@ fn run_crops(
             device: gpu.device_label.clone(),
             readings: Vec::with_capacity(l.job.crops.len()),
             generation_metadata: BTreeMap::new(),
+            temporary_exits: 0,
+            llama_restarts: 0,
+            restart_log: Vec::new(),
         },
     };
     let mut outcome = Outcome::Ok;
@@ -566,7 +587,6 @@ fn run_crops(
             outcome = Outcome::Timeout;
             break;
         }
-        let remaining = deadline.saturating_sub(elapsed);
         let png = match l
             .pages
             .page_for(&l.job, &l.page_bytes, crop)
@@ -580,15 +600,43 @@ fn run_crops(
             }
         };
         let t_crop = Instant::now();
-        match chat_completion(
-            port,
-            &png,
-            l.job.max_tokens(crop),
-            image_min_tokens(l.job.prompt_version),
-            loop_guard(l.job.prompt_version),
-            remaining,
-        ) {
-            Ok((text, tokens, metadata)) => {
+        let max_tokens = l.job.max_tokens(crop);
+        let min_tokens = image_min_tokens(l.job.prompt_version);
+        let guard = loop_guard(l.job.prompt_version);
+        let mut restarts_this_run = 0u32;
+        let end = run_crop(
+            &mut llama,
+            |srv| {
+                chat_completion(
+                    srv.port,
+                    &png,
+                    max_tokens,
+                    min_tokens,
+                    guard,
+                    deadline.saturating_sub(started.elapsed()),
+                )
+            },
+            |srv| srv.has_exited(),
+            |srv| srv.restart(&launch, LOAD_DEADLINE.min(deadline)),
+            || control.should_exit().is_some() || started.elapsed() >= deadline,
+            |note| {
+                restarts_this_run += 1;
+                cp.note_restart(&format!("{}: {note}", crop.id));
+                diag.section(&format!("llama-server restart ({})", crop.id), note, 1024);
+                // The restart truncates the log, so keep what the server said before it died.
+                if restarts_this_run <= 4 {
+                    if let Ok(log_text) = std::fs::read_to_string(work.join("llama-server.log")) {
+                        diag.section(
+                            "llama-server.log before restart",
+                            &redacted_tail(&log_text, 1024),
+                            1024,
+                        );
+                    }
+                }
+            },
+        );
+        match end {
+            CropEnd::Done((text, tokens, metadata)) => {
                 cp.generation_metadata.insert(crop.id.clone(), metadata);
                 cp.readings.push(Reading {
                     id: crop.id.clone(),
@@ -606,7 +654,44 @@ fn run_crops(
                 let frac = (idx + 1) as f64 / (l.job.crops.len().max(1)) as f64;
                 let _ = write_atomic(&work.join(FRACTION_FILE), format!("{frac:.4}\n").as_bytes());
             }
-            Err(e) => {
+            CropEnd::GiveUp(e)
+                if control.should_exit().is_none() && started.elapsed() < deadline =>
+            {
+                let msg = format!("{}: {e:#}", crop.id);
+                diag.section("chat completion failed", &msg, 1024);
+                // The count is saved before the client is asked, or a lost save would let a
+                // broken host restart forever.
+                let used = cp.temporary_exits;
+                if used < MAX_TEMPORARY_EXITS {
+                    cp.temporary_exits = used + 1;
+                    cp.log_note(&format!("{}: temporary exit {}", crop.id, used + 1));
+                    if cp.save(work).is_ok() && write_temporary_exit(work, used + 1, &msg).is_ok() {
+                        diag.section(
+                            "boinc control",
+                            &format!(
+                                "llama-server kept failing at crop {}; asked the client to \
+                                 restart the task (temporary exit {}/{MAX_TEMPORARY_EXITS}), \
+                                 exiting without boinc_finish_called",
+                                crop.id,
+                                used + 1
+                            ),
+                            512,
+                        );
+                        return None;
+                    }
+                    let _ = std::fs::remove_file(work.join(TEMPORARY_EXIT_FILE));
+                    diag.section("temporary exit", "could not save the exit count", 256);
+                } else {
+                    diag.section(
+                        "temporary exit",
+                        &format!("all {MAX_TEMPORARY_EXITS} temporary exits already used"),
+                        256,
+                    );
+                }
+                outcome = Outcome::Failed;
+                break;
+            }
+            CropEnd::Failed(e) | CropEnd::GiveUp(e) => {
                 if control.should_exit().is_some() {
                     outcome = Outcome::Failed;
                     break;
@@ -648,10 +733,18 @@ fn run_crops(
             loop_bits[i / 8] |= 1 << (i % 8);
         }
     }
+    let (llama_restarts, temporary_exits) = (cp.llama_restarts, cp.temporary_exits);
+    if !cp.restart_log.is_empty() {
+        diag.section(
+            "llama-server restarts (whole task)",
+            &cp.restart_log.join("\n"),
+            4096,
+        );
+    }
     for (crop, metadata) in cp.generation_metadata {
         diag.section(&format!("generation_v1/{crop}"), &metadata, 2048);
     }
-    if let Some(ref srv) = srv_guard {
+    if let Some(ref srv) = llama.srv {
         if let Ok(log_text) = std::fs::read_to_string(&srv.log_path) {
             diag.section(
                 "llama-server.log (tail)",
@@ -660,7 +753,7 @@ fn run_crops(
             );
         }
     }
-    drop(srv_guard);
+    drop(llama);
 
     let mut r_diag = BTreeMap::new();
     r_diag.insert("ctx_size".into(), CTX_SIZE.to_string());
@@ -691,6 +784,10 @@ fn run_crops(
             .map(|b| format!("{b:02x}"))
             .collect::<String>(),
     );
+    if llama_restarts > 0 || temporary_exits > 0 {
+        r_diag.insert("llama_restarts".into(), llama_restarts.to_string());
+        r_diag.insert("temporary_exits".into(), temporary_exits.to_string());
+    }
     r_diag.insert(
         "n_gpu_layers".into(),
         if gpu.use_gpu { "99" } else { "0" }.into(),
@@ -727,7 +824,7 @@ fn run_crops(
         readings_sha256: String::new(),
         unit_error: None,
     };
-    (result, readings)
+    Some((result, readings))
 }
 
 #[cfg(test)]
@@ -1191,6 +1288,9 @@ mod tests {
                 "page_one:c01".into(),
                 r#"{"schema":1,"finish_reason":"length","generation_flags":["repetition_loop_at_token_budget"]}"#.into(),
             )]),
+            temporary_exits: 0,
+            llama_restarts: 0,
+            restart_log: Vec::new(),
         };
         let mut legacy = serde_json::to_value(&cp).unwrap();
         legacy
@@ -1317,5 +1417,268 @@ mod tests {
         run_slot_with(&quit_slot, None, Some(Duration::from_secs(5))).unwrap();
         assert!(!quit_slot.join(FINISH_FILE).exists());
         assert_eq!(std::fs::read(&quit_mmap).unwrap()[0], 0);
+    }
+
+    /// How a scripted `llama-server` answers one request.
+    #[derive(Clone, Copy)]
+    enum Step {
+        Reply(&'static str),
+        /// Reads the request and hangs up without a byte, as the Intel host's server does.
+        Drop,
+        /// An HTTP error status from a live server.
+        Status(u16),
+    }
+
+    /// Answers each connection from `steps`, then hangs up on every later one. Returns the port
+    /// and the number of requests served.
+    fn spawn_scripted_llama_server(
+        steps: Vec<Step>,
+    ) -> (u16, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::atomic::Ordering::SeqCst;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let served = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = served.clone();
+        std::thread::spawn(move || {
+            let mut steps = steps.into_iter();
+            while let Ok((mut stream, _)) = listener.accept() {
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut buf = vec![0u8; 65536];
+                let mut n = 0;
+                let mut want = usize::MAX;
+                while n < want {
+                    match stream.read(&mut buf[n..]) {
+                        Ok(0) | Err(_) => break,
+                        Ok(k) => {
+                            n += k;
+                            if let Some(sep) = buf[..n].windows(4).position(|w| w == b"\r\n\r\n") {
+                                let head = String::from_utf8_lossy(&buf[..sep]).into_owned();
+                                let clen: usize = head
+                                    .lines()
+                                    .find_map(|l| {
+                                        let (k, v) = l.split_once(':')?;
+                                        k.eq_ignore_ascii_case("content-length")
+                                            .then(|| v.trim().parse().ok())?
+                                    })
+                                    .unwrap_or(0);
+                                want = sep + 4 + clen;
+                            }
+                        }
+                    }
+                }
+                count.fetch_add(1, SeqCst);
+                match steps.next().unwrap_or(Step::Drop) {
+                    Step::Drop => {}
+                    Step::Status(code) => {
+                        let _ = write!(
+                            stream,
+                            "HTTP/1.1 {code} Error\r\nContent-Length: 4\r\nConnection: close\r\n\r\nboom"
+                        );
+                    }
+                    Step::Reply(text) => {
+                        let body = serde_json::to_vec(&serde_json::json!({
+                            "choices": [{"message": {"content": text}}],
+                            "usage": {"completion_tokens": 5}
+                        }))
+                        .unwrap();
+                        let _ = write!(
+                            stream,
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            body.len()
+                        );
+                        let _ = stream.write_all(&body);
+                    }
+                }
+            }
+        });
+        (port, served)
+    }
+
+    /// A slot with a two-crop unit that runs on the CPU against a mock server.
+    fn crop_retry_slot(tmp: &Path) -> (std::path::PathBuf, Job) {
+        let slot = tmp.join("slot");
+        let job = write_qwen_unit(&slot);
+        for name in [
+            "Qwen3-VL-2B-Instruct-Q8_0.gguf",
+            "mmproj-Qwen3-VL-2B-Instruct-Q8_0.gguf",
+        ] {
+            std::fs::write(slot.join(name), FAKE_GGUF).unwrap();
+        }
+        std::fs::write(
+            slot.join("mmproj-Qwen3-VL-2B-Instruct-Q8_0.gguf"),
+            FAKE_MMPROJ,
+        )
+        .unwrap();
+        std::fs::write(
+            slot.join("init_data.xml"),
+            "<app_init_data><plan_class>mt</plan_class></app_init_data>",
+        )
+        .unwrap();
+        (slot, job)
+    }
+
+    fn load_checkpoint(slot: &Path, job: &Job) -> QwenCheckpoint {
+        QwenCheckpoint::load_valid(slot, job, "qwen3-vl-2b-q8", "cpu").unwrap()
+    }
+
+    #[test]
+    fn a_dropped_connection_is_retried_on_the_same_crop() {
+        use std::sync::atomic::Ordering::SeqCst;
+        let tmp = tempfile::tempdir().unwrap();
+        let (slot, job) = crop_retry_slot(tmp.path());
+        // Crop one loses its connection twice; crop two answers at once.
+        let (port, served) = spawn_scripted_llama_server(vec![
+            Step::Drop,
+            Step::Drop,
+            Step::Reply("first"),
+            Step::Reply("second"),
+        ]);
+        run_slot_with(&slot, Some(port), Some(Duration::from_secs(30))).unwrap();
+
+        assert_eq!(served.load(SeqCst), 4);
+        assert!(!slot.join(TEMPORARY_EXIT_FILE).exists());
+        assert_eq!(
+            std::fs::read_to_string(slot.join(FINISH_FILE)).unwrap(),
+            "0\n"
+        );
+        let result: ResultManifest =
+            serde_json::from_slice(&std::fs::read(slot.join(RESULT_FILE)).unwrap()).unwrap();
+        assert_eq!(result.outcome, Outcome::Ok);
+        let diag_bytes = std::fs::read(slot.join(DIAG_FILE)).unwrap();
+        let readings = result
+            .check(
+                &std::fs::read(slot.join(READINGS_FILE)).unwrap(),
+                &diag_bytes,
+            )
+            .unwrap();
+        assert_eq!(readings.readings[0].text, "first");
+        assert_eq!(readings.readings[1].text, "second");
+        assert_eq!(readings.diag["llama_restarts"], "2");
+        assert_eq!(readings.diag["temporary_exits"], "0");
+        let diag = String::from_utf8_lossy(&diag_bytes);
+        assert!(diag.contains("== llama-server restart (c01)"), "{diag}");
+        assert!(
+            diag.contains("== llama-server restarts (whole task)"),
+            "{diag}"
+        );
+        assert!(!slot.join(CHECKPOINT_FILE).exists());
+        let _ = job;
+    }
+
+    #[test]
+    fn a_crop_that_keeps_failing_asks_the_client_to_restart_and_resumes_from_the_checkpoint() {
+        use std::sync::atomic::Ordering::SeqCst;
+        let tmp = tempfile::tempdir().unwrap();
+        let (slot, job) = crop_retry_slot(tmp.path());
+        // Crop one is read; crop two loses its connection on all three tries.
+        let (port, served) = spawn_scripted_llama_server(vec![
+            Step::Reply("first"),
+            Step::Drop,
+            Step::Drop,
+            Step::Drop,
+        ]);
+        run_slot_with(&slot, Some(port), Some(Duration::from_secs(30))).unwrap();
+
+        assert_eq!(served.load(SeqCst), 4);
+        let exit = std::fs::read_to_string(slot.join(TEMPORARY_EXIT_FILE)).unwrap();
+        assert!(
+            exit.starts_with("60\nllama-server connection failed (1/3): c02: "),
+            "{exit}"
+        );
+        // Not finished: the client restarts the task rather than reporting it.
+        assert!(!slot.join(FINISH_FILE).exists());
+        assert!(!slot.join(RESULT_FILE).exists());
+        assert!(!slot.join(READINGS_FILE).exists());
+        let cp = load_checkpoint(&slot, &job);
+        assert_eq!(cp.readings.len(), 1);
+        assert_eq!(cp.readings[0].text, "first");
+        assert_eq!((cp.temporary_exits, cp.llama_restarts), (1, 2));
+
+        // The client restarts the task: only the missing crop is asked for.
+        let (port, served) = spawn_scripted_llama_server(vec![Step::Reply("second")]);
+        run_slot_with(&slot, Some(port), Some(Duration::from_secs(30))).unwrap();
+        assert_eq!(served.load(SeqCst), 1);
+        assert!(!slot.join(TEMPORARY_EXIT_FILE).exists());
+        assert_eq!(
+            std::fs::read_to_string(slot.join(FINISH_FILE)).unwrap(),
+            "0\n"
+        );
+        let result: ResultManifest =
+            serde_json::from_slice(&std::fs::read(slot.join(RESULT_FILE)).unwrap()).unwrap();
+        let diag_bytes = std::fs::read(slot.join(DIAG_FILE)).unwrap();
+        let readings = result
+            .check(
+                &std::fs::read(slot.join(READINGS_FILE)).unwrap(),
+                &diag_bytes,
+            )
+            .unwrap();
+        assert_eq!(readings.readings[0].text, "first");
+        assert_eq!(readings.readings[1].text, "second");
+        assert_eq!(readings.diag["temporary_exits"], "1");
+        assert_eq!(readings.diag["llama_restarts"], "2");
+        let diag = String::from_utf8_lossy(&diag_bytes);
+        assert!(diag.contains("resumed from checkpoint: 1 of 2 crops already complete"));
+        assert!(diag.contains("c02: temporary exit 1"), "{diag}");
+    }
+
+    #[test]
+    fn a_task_that_used_all_its_temporary_exits_fails_as_before() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (slot, job) = crop_retry_slot(tmp.path());
+        let cp = QwenCheckpoint {
+            v: VERSION,
+            job_id: job.id.clone(),
+            engine: job.engine.clone(),
+            model: "qwen3-vl-2b-q8".into(),
+            device: "cpu".into(),
+            readings: vec![],
+            generation_metadata: BTreeMap::new(),
+            temporary_exits: MAX_TEMPORARY_EXITS,
+            llama_restarts: 0,
+            restart_log: Vec::new(),
+        };
+        cp.save(&slot).unwrap();
+        let (port, _) = spawn_scripted_llama_server(vec![]);
+        run_slot_with(&slot, Some(port), Some(Duration::from_secs(30))).unwrap();
+
+        assert!(!slot.join(TEMPORARY_EXIT_FILE).exists());
+        assert_eq!(
+            std::fs::read_to_string(slot.join(FINISH_FILE)).unwrap(),
+            "1\n"
+        );
+        let result: ResultManifest =
+            serde_json::from_slice(&std::fs::read(slot.join(RESULT_FILE)).unwrap()).unwrap();
+        assert_eq!(result.outcome, Outcome::Failed);
+        let diag =
+            String::from_utf8_lossy(&std::fs::read(slot.join(DIAG_FILE)).unwrap()).into_owned();
+        assert!(
+            diag.contains("all 3 temporary exits already used"),
+            "{diag}"
+        );
+        assert_eq!(
+            load_checkpoint(&slot, &job).temporary_exits,
+            MAX_TEMPORARY_EXITS
+        );
+    }
+
+    #[test]
+    fn a_real_http_error_status_fails_at_once() {
+        use std::sync::atomic::Ordering::SeqCst;
+        let tmp = tempfile::tempdir().unwrap();
+        let (slot, _) = crop_retry_slot(tmp.path());
+        let (port, served) = spawn_scripted_llama_server(vec![Step::Status(500)]);
+        run_slot_with(&slot, Some(port), Some(Duration::from_secs(30))).unwrap();
+
+        assert_eq!(served.load(SeqCst), 1, "no retry");
+        assert!(!slot.join(TEMPORARY_EXIT_FILE).exists());
+        assert_eq!(
+            std::fs::read_to_string(slot.join(FINISH_FILE)).unwrap(),
+            "1\n"
+        );
+        let result: ResultManifest =
+            serde_json::from_slice(&std::fs::read(slot.join(RESULT_FILE)).unwrap()).unwrap();
+        assert_eq!(result.outcome, Outcome::Failed);
     }
 }
