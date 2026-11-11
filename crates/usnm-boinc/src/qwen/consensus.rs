@@ -696,6 +696,7 @@ mod tests {
         let opts = |rule| Compare {
             min_dice: 0.5,
             rule,
+            bundle_verdict: crate::qwen::validate::BundleVerdict::Unit,
             log: Some(&log),
             pages: None,
             crop_states: Some(&states),
@@ -747,6 +748,7 @@ mod tests {
         let opts = |crop_states| Compare {
             min_dice: 0.5,
             rule: Rule::CropConsensusV2,
+            bundle_verdict: crate::qwen::validate::BundleVerdict::Unit,
             log: None,
             pages: None,
             crop_states,

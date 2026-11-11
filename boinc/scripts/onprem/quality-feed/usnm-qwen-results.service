@@ -22,7 +22,9 @@ Environment=QUALITY_COLLECTOR=/project/ops/quality-results/usnm-boinc
 Environment=CROP_STATES_ARGS=
 # Once a root is staged with bundles (#1435), and every collector named above is from #1435 on:
 # QWEN_PAGES_ARGS="--qwen-pages /project/usnmocr/qwen/pages", so a bundle with no canonical result
-# joins the pages a pair agreed on. It changes only bundles' keys.
+# joins the pages a pair agreed on. It changes only bundles' keys. It must be set before the
+# validator's bundle verdict is page-v1: without it a collector joins a bundle that pair settled by
+# its pages with the canonical reading of every page, the disagreed ones included.
 Environment=QWEN_PAGES_ARGS=
 EnvironmentFile=-/etc/usnm/quality-results.env
 EnvironmentFile=-/etc/usnm/quality-results-qwen.env

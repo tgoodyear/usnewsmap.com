@@ -354,11 +354,11 @@ impl Cache {
                 crop_states.push((dir.clone(), job.id.clone(), records));
             }
             if let Some(dir) = opts.qwen_pages.as_ref().filter(|_| !job.pages.is_empty()) {
-                // A bundle with no canonical result joins its agreed pages
-                // from their pair records, traced through the membership to
+                // A bundle joins its agreed pages from their pair records
+                // (and, settled by its pages, only those), traced through the membership to
                 // the page units it was packed from. Only bundles' keys
                 // change, so a root of single pages needn't warm again.
-                field_bytes(&mut salt, b"qwen-pages");
+                field_bytes(&mut salt, b"qwen-pages-v2");
                 field_bytes(&mut salt, dir.as_os_str().as_encoded_bytes());
                 let unit = path.parent().context("Qwen unit directory")?;
                 let membership = unit.join(crate::qwen::stage::MEMBERSHIP_FILE);
@@ -387,6 +387,14 @@ impl Cache {
                     );
                 }
                 paths.push(membership);
+                // Whether a `page-v1` pair settled the bundle decides whether
+                // its canonical result joins the pages it did not accept.
+                if usnm_ocr_contract::boinc::is_sha256(&job.id) {
+                    paths.push(
+                        dir.join(&job.id)
+                            .join(crate::qwen::validate::UNIT_VERDICT_FILE),
+                    );
+                }
                 if job.validate().is_ok() {
                     for page in &job.pages {
                         let records =

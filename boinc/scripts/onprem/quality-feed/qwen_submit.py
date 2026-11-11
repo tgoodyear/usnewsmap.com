@@ -937,6 +937,9 @@ def main():
     ap.add_argument("--bundle-size", type=int, default=1,
                     help="Pages per native unit, 1 to 32 (#1435). Above 1 the root keeps bundling for good, "
                          "so a bundled campaign starts in a new root; never with --transaction")
+    ap.add_argument("--page-records", type=Path,
+                    help="With --bundle-size above 1, the directory `qwen compare --pages` writes: stage "
+                         "packs each page a page-v1 verdict settled as disagreed into one new bundle (#1435)")
     ap.add_argument("--prompt-version", type=int, choices=(1, 2, 3, 4), default=1,
                     help="Request version to stage; every dispatchable app version must read it")
     ap.add_argument("--max-ready", type=int, default=1000,
@@ -976,6 +979,8 @@ def main():
         ap.error("need --campaign, --engine-plan, --models and positive bounded limits")
     if not 1 <= a.bundle_size <= 32:
         ap.error("--bundle-size takes 1 to 32 pages a unit")
+    if a.page_records is not None and (a.bundle_size == 1 or not a.page_records.is_absolute()):
+        ap.error("--page-records takes an absolute directory and needs --bundle-size above 1")
     root = a.share / "qwen" / a.campaign
     quality = a.share / "quality" / a.campaign
     if a.transaction:
@@ -1011,6 +1016,8 @@ def main():
              "--engine-weights", engine["weights"], "--max-pages", str(a.max_pages),
              "--gpu-timeout-secs", "14400", "--cpu-timeout-secs", "7200", "--bundle-size", str(a.bundle_size),
              "--prompt-version", str(a.prompt_version)]
+    if a.page_records is not None:
+        stage += ["--page-records", str(a.page_records)]
     subprocess.run(stage, check=True)
     submit_binary = a.submit_binary or (a.stage_binary if a.prompt_version in GUARDED_VERSIONS else "usnm-boinc")
     subprocess.run([submit_binary, "qwen", "submit", "--root", str(root), "--project", str(a.project),

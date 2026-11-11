@@ -13,8 +13,14 @@
 //! (`qwen::agree_pages`); with `--pages`, each page's verdict and both
 //! hosts' readings of it are written once under
 //! `<pages>/<job_id>/<doc_id>/<pair>.json`, so a page both hosts agree on is
-//! kept even while another page leaves the unit inconclusive. The unit's
-//! verdict, and so BOINC's validate and canonical state, is unchanged.
+//! kept even while another page leaves the unit inconclusive. Under the
+//! default bundle verdict (`unit`) the unit's verdict, and so BOINC's
+//! validate and canonical state, still needs every page. Under `page-v1`
+//! (#1435) a bundle pair that judged every page, wrote every page record and
+//! agreed on at least half of the pages settles the unit: the pair passes,
+//! so BOINC makes it canonical and credits both results, the pages' own
+//! records say which pages are accepted, and `qwen stage --page-records`
+//! packs the disagreeing pages into a new bundle.
 use super::{DIAG_FILE, READINGS_FILE, RESULT_FILE};
 use crate::read;
 use anyhow::{ensure, Context};
@@ -71,9 +77,32 @@ pub enum Rule {
     CropConsensusV2,
 }
 
+/// What settles a bundle unit's pair.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum BundleVerdict {
+    /// The unit's rule over every page at once: one disagreeing page leaves
+    /// the unit inconclusive.
+    Unit,
+    /// Each page on its own (#1435): the pair passes once every page's
+    /// record is written and at least half of the pages agree.
+    PageV1,
+}
+
+/// Under [`BundleVerdict::PageV1`], the file the passing pair writes in
+/// `<pages>/<job_id>/`, so staging knows the unit is settled and its
+/// disagreeing pages can be packed again.
+pub const UNIT_VERDICT_FILE: &str = "unit-verdict.json";
+
+/// Whether `agreed` of `pages` judged pages settle a bundle under `page-v1`:
+/// at least one, and at least half.
+pub fn pages_settle(agreed: usize, pages: usize) -> bool {
+    agreed > 0 && 2 * agreed >= pages
+}
+
 pub struct Compare<'a> {
     pub min_dice: f64,
     pub rule: Rule,
+    pub bundle_verdict: BundleVerdict,
     pub log: Option<&'a Path>,
     pub pages: Option<&'a Path>,
     /// Under `crop-consensus-v2`, where each pair's crop states are kept.
@@ -94,6 +123,7 @@ pub fn compare(
         Compare {
             min_dice,
             rule: Rule::StrictV1,
+            bundle_verdict: BundleVerdict::Unit,
             log,
             pages,
             crop_states: None,
@@ -105,10 +135,15 @@ pub fn compare_with(a: &[PathBuf], b: &[PathBuf], opts: Compare<'_>) -> anyhow::
     let Compare {
         min_dice,
         rule,
+        bundle_verdict,
         log,
         pages,
         crop_states,
     } = opts;
+    anyhow::ensure!(
+        bundle_verdict == BundleVerdict::Unit || pages.is_some(),
+        "--bundle-verdict page-v1 needs --pages"
+    );
     // The collector reads the kept states to learn which crops a pair vouched for.
     anyhow::ensure!(
         rule != Rule::CropConsensusV2 || crop_states.is_some(),
@@ -151,13 +186,36 @@ pub fn compare_with(a: &[PathBuf], b: &[PathBuf], opts: Compare<'_>) -> anyhow::
             }
         }
     });
-    if let Some((dir, names)) = names {
+    let mut all_recorded = names.is_some();
+    if let Some((dir, names)) = &names {
         for page in &page_verdicts {
             // A page record that cannot be written leaves that page unkept;
-            // it must not change the unit's verdict.
+            // under the unit verdict it must not change the unit's verdict,
+            // and under `page-v1` the pair cannot settle the unit.
             if let Err(e) = record_page(dir, page, min_dice, [(&names[0], &la), (&names[1], &lb)]) {
                 eprintln!("{}: page record not written: {e:#}", page.doc_id);
+                all_recorded = false;
             }
+        }
+    }
+    let agreed_pages = page_verdicts.iter().filter(|p| p.agree).count();
+    // Whether this pair settled the bundle by its pages (`page-v1`).
+    let mut settled_by_pages = false;
+    if bundle_verdict == BundleVerdict::PageV1
+        && verdict.is_err()
+        && all_recorded
+        && same_crops(&la, &lb)
+        && pages_settle(agreed_pages, page_verdicts.len())
+    {
+        let (dir, names) = names.as_ref().expect("all_recorded needs names");
+        match record_unit_verdict(dir, &la.result.job_id, names, &page_verdicts) {
+            Ok(()) => {
+                verdict = Ok(());
+                settled_by_pages = true;
+            }
+            // Without the marker staging would never retry its disagreeing
+            // pages, so the unit's rule decides as before.
+            Err(e) => eprintln!("unit verdict not written, the unit's rule decides: {e:#}"),
         }
     }
     if let Some(log) = log {
@@ -171,6 +229,8 @@ pub fn compare_with(a: &[PathBuf], b: &[PathBuf], opts: Compare<'_>) -> anyhow::
             "min_dice": min_dice,
             "outcomes": [la.result.outcome, lb.result.outcome],
             "pages": page_verdicts.iter().map(|p| serde_json::json!({"doc_id": p.doc_id, "agree": p.agree, "reason": p.reason})).collect::<Vec<_>>(),
+            "bundle_verdict": match bundle_verdict { BundleVerdict::Unit => "unit", BundleVerdict::PageV1 => "page-v1" },
+            "settled_by_pages": settled_by_pages,
             "reason": verdict.as_ref().err(),
             "wordless": wordless(&crops, &la, &lb),
         });
@@ -226,6 +286,64 @@ fn wordless(crops: &[qwen::CropAgreement], a: &Loaded, b: &Loaded) -> Vec<serde_
             }))
         })
         .collect()
+}
+
+/// Whether both results read the same crops, each one once, as many as
+/// each says the unit has. Crop counts are the hosts' own, so a host that
+/// left a crop out could otherwise settle a unit whose page the ledger then
+/// never counts.
+fn same_crops(a: &Loaded, b: &Loaded) -> bool {
+    fn ids(l: &Loaded) -> Vec<&str> {
+        let mut ids: Vec<&str> = l.readings.readings.iter().map(|r| r.id.as_str()).collect();
+        ids.sort_unstable();
+        ids
+    }
+    let (x, y) = (ids(a), ids(b));
+    let unique = x.windows(2).all(|w| w[0] != w[1]);
+    unique && x == y && a.result.crops == b.result.crops && x.len() == a.result.crops as usize
+}
+
+/// Writes `<pages>/<job_id>/unit-verdict.json` for a bundle pair that
+/// settled its unit under `page-v1`: the pair, by result name, and each
+/// page's verdict. The first pair to settle the unit keeps the file; a later
+/// pair finding it there (BOINC compares later results with the canonical
+/// one) leaves it.
+fn record_unit_verdict(
+    dir: &Path,
+    job_id: &str,
+    names: &[String; 2],
+    pages: &[qwen::PageAgreement],
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        usnm_ocr_contract::boinc::is_sha256(job_id),
+        "invalid qwen job id {job_id:?}"
+    );
+    let mut pair = [names[0].as_str(), names[1].as_str()];
+    pair.sort_unstable();
+    let record = serde_json::json!({
+        "v": 1,
+        "job_id": job_id,
+        "bundle_verdict": "page-v1",
+        "results": pair,
+        "pages": pages.iter().map(|p| serde_json::json!({"doc_id": p.doc_id, "agree": p.agree})).collect::<Vec<_>>(),
+        "accuracy_established": false,
+    });
+    let parent = dir.join(job_id);
+    std::fs::create_dir_all(&parent)?;
+    let mut f = tempfile::NamedTempFile::new_in(&parent)?;
+    f.write_all(&serde_json::to_vec_pretty(&record)?)?;
+    f.as_file().sync_all()?;
+    match f.persist_noclobber(parent.join(UNIT_VERDICT_FILE)) {
+        Ok(_) => {}
+        Err(e) if e.error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(e) => return Err(e.error.into()),
+    }
+    // The pass must not outlive the marker: the file's entry in the job's
+    // directory and that directory's entry in `dir` both reach the disk
+    // before the pair is reported as agreeing, a marker found there included.
+    std::fs::File::open(&parent)?.sync_all()?;
+    std::fs::File::open(dir)?.sync_all()?;
+    Ok(())
 }
 
 /// What a page record says: `page_agreed` when both hosts read the page

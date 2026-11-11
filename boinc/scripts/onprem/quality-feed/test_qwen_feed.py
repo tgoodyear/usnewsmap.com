@@ -1964,6 +1964,21 @@ class SourceTest(unittest.TestCase):
             self.assertEqual(caught.exception.code, 2)
             self.assertIn(error, stderr.getvalue())
 
+    def test_page_records_reach_the_bundling_stage_only(self):
+        # #1435: staging packs a page-v1 verdict's disagreed pages again only when told where the records are.
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            self.assertNotIn("--page-records", self.legacy_stage(root, "--bundle-size", "8"))
+            stage = self.legacy_stage(root, "--bundle-size", "8", "--page-records", "/project/usnmocr/qwen/pages")
+            self.assertEqual(stage[stage.index("--page-records") + 1], "/project/usnmocr/qwen/pages")
+        for extra in (["--page-records", "/project/usnmocr/qwen/pages"],
+                      ["--bundle-size", "8", "--page-records", "relative/pages"]):
+            with self.subTest(extra=extra), tempfile.TemporaryDirectory() as folder, \
+                    contextlib.redirect_stderr(io.StringIO()) as stderr, self.assertRaises(SystemExit) as caught:
+                self.legacy_stage(Path(folder), *extra)
+            self.assertEqual(caught.exception.code, 2)
+            self.assertIn("--page-records", stderr.getvalue())
+
     def test_a_bundled_campaign_has_a_root_of_its_own(self):
         for units, pages, extra, error in (
                 ([DOC], False, ["--bundle-size", "8"], "a unit not named as a bundle"),
