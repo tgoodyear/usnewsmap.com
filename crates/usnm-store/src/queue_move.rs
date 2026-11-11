@@ -697,7 +697,7 @@ mod tests {
         for bad in [
             "https://stusnm.queue.core.windows.net",
             "https://stusnm.queue.core.windows.net/a/b",
-            "https://stusnm.queue.core.windows.net/ocr-bulk?sv=2020&sig=x",
+            "https://stusnm.queue.core.windows.net/ocr-bulk?comp=metadata",
         ] {
             assert!(split_azure_queue(bad).is_err(), "{bad}");
         }
