@@ -223,7 +223,8 @@ def prune(a):
                 break
             got = check(entry, a.download, units, batches, roots, not a.skip_cmp, now)
             if isinstance(got, str):
-                skipped[got] = skipped.get(got, 0) + 1
+                kind = got.split(" for ")[0]
+                skipped[kind] = skipped.get(kind, 0) + 1
                 if got != "not in download":
                     journal_line(journal, {"time": stamp, "commit": a.commit, "action": "keep",
                                            "file": entry["file"], "wu_id": entry["wu_id"],

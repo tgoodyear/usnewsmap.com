@@ -122,7 +122,8 @@ class QualityRetentionTest(unittest.TestCase):
         got = self.l.prune("--delete")
         self.assertEqual(got["files"], 0)
         self.assertTrue(path.exists())
-        reason = next(iter(got["kept"]))
+        self.assertEqual(got["kept"], {"original scan missing": 1})
+        reason = self.l.journal_rows()[0]["reason"]
         self.assertIn("original scan missing for 2 page(s)", reason)
 
     def test_keeps_a_copy_that_differs_from_the_unit(self):
