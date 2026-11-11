@@ -258,6 +258,323 @@ Release them with `app-version-hold.php --action release` once the server image 
 They are their own platform and plan class group, so the release strands nothing pinned to
 106 and needs no `min_version`; the hold tool's check confirms that.
 
+## Running Cherokee line jobs (#1621)
+
+The steps after the release, from the plan on #1621. Live since 11 November 2026:
+
+| App         | Version   | `app_version` rows                                                          |
+| ----------- | --------- | --------------------------------------------------------------------------- |
+| `usnm_ocr`  | 1.8 (108) | 91 `x86_64-pc-linux-gnu`, 92 `arm64-apple-darwin`, 94 `x86_64-apple-darwin` |
+| `usnm_gold` | 1.8 (108) | 93 `x86_64-pc-linux-gnu`                                                    |
+
+Both run worker `sha256:840487b2aaa5a696dae61ded8fdcf0217cdf683e24c14e50ef0e728406aa122c`
+(`840487b2…` below), which the server image binds in `gold-engine-platforms.json`. Its
+Tesseract base is `sha256:942f5e0261c0cf465261515440972c1ff213ad0043831d32732895bf9c5839e5` on
+x86-64 and `sha256:e27b699ef219d4fdf291d6eb2f44f49e21f838d2abf92e0b22733bc2378f36ef` on arm64.
+
+Every step runs as root in CT 230 through `usnm-boinc-step` (`boinc/scripts/onprem-step.sh`),
+which needs `--wait-mins`. Claim each production step on #529 first, and release the claim
+afterwards. CT 211's controller never touches these jobs: they belong to their own plan, and
+`batch_scheduler.py` skips every journal of another plan. So each step below is run by hand.
+Nothing here changes the live OCR plan, its pin (106) or the `docker` versions.
+
+**Before the first step**, CT 230 needs:
+
+- `<enable_assignment>1</enable_assignment>` in the project's `config.xml`, since the gold units
+  and the line jobs are targeted (`gold submit` refuses without it). Set on 11 November.
+- `usnm-boinc-step` from a main that has the line-job export (`HANDOFF_LINE_READ`, the staged
+  ALTO and manifests, the `line-report` step) and the line trust scope (#1753). Install it as
+  `onprem.md` describes.
+- A hand-off image with the same `usnm-boinc` and `handoff-job.sh`: a `SERVER_IMAGE` built from
+  that main, or an overlay named in `/etc/usnm-boinc/handoff-image`
+  ([onprem.md](../server/onprem.md), "To ship a hand-off fix without a new server image"). The
+  bridge's `gold-trust` step needs the same `usnm-boinc` in the server image.
+
+**The approved values** (the maintainer, 11 November). The evidence for each is in #1730:
+
+| Value                                         | Approved                                                                                      |
+| --------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| Line scope `max_cer` (`GOLD_MAX_CER`)         | `0.08734328574534386`, `eng`/`eng`'s                                                          |
+| Line scope challenge (`GOLD_MANIFEST_SHA256`) | `d8cd7279090a6427c0cc6f0e82573e3771c27f90df6500bf5a44b268f6e0f05f`, the English challenge     |
+| Line scope evidence (`GOLD_LINE_EVIDENCE`)    | the line in step 2 below                                                                      |
+| Hosts                                         | 2, 9 and 10                                                                                   |
+| Plan id (`HANDOFF_PLAN`)                      | `chr-lines-1621`                                                                              |
+| Test batch                                    | the 5 pages in step 3                                                                         |
+| Whether the 29 test-set pages are read        | yes, in the later exports; they are not in the 5-page test batch                              |
+| When to stop                                  | any `line_changed` verdict, any collect failure, or fewer than 4 of the 5 test pages admitted |
+
+### 1. Gold on the line worker
+
+`gold/trust.json` lists no host under `840487b2…` in any scope (checked 11 November: `eng`/`eng`
+lists hosts under `247c131a…` and `dac9c123…` only). So hosts 2, 9 and 10 each need a gold
+report on `840487b2…`. All three are x86-64 Linux containers, so the Linux-only `usnm_gold`
+108 fits them. The reports are read in the English page configuration (`eng`/`eng`, PSM 3,
+300 DPI), and they admit the hosts to the line scope only (step 2), never to `eng`/`eng`.
+
+**One fresh campaign root per host.** The first `gold submit --target-host` for a root refuses
+one that already has units ("cannot target a pre-existing campaign; use a fresh campaign
+root", `gold::submit::run`). Make one root per host under the share's `gold/` directory, named
+`[a-z0-9-]`, 41 characters at most, for example `lines8404-amd64-h2-20261112`. Copy
+`bundle.tar`, `prepared.json` and `cache/` into it from
+`current8404-amd64-calibration-20261109` (`cp -a`). Don't run `gold-prepare`: it downloads the
+bundle's originals again, and LoC is refusing our requests. `gold submit` checks `bundle.tar`
+against `prepared.json` and each cached original before it makes any unit; if it refuses, stop.
+
+**Recovering a partial submit.** Never make a new root for a host whose submit failed part way:
+that makes a second set of units for the host. Run the same submit again on the original root;
+it skips units already marked `submitted` and the retry is allowed once the root has its
+`assignment.json`. A unit left with a `submitting` marker is skipped (the run counts it as
+uncertain) until someone checks the server for its workunit, `usnm_gold_<job id>`: remove the
+marker if there is none, or rename it to `submitted` if there is.
+
+**Submit**, once per host, pinned to the `docker_lines` gold version (batch 1621):
+
+```sh
+usnm-boinc-step --env prod --target bridge --step gold-submit --wait-mins 30 \
+  --var GOLD_CAMPAIGN=lines8404-amd64-h2-20261112 \
+  --var GOLD_ENGINE_IMAGE=sha256:840487b2aaa5a696dae61ded8fdcf0217cdf683e24c14e50ef0e728406aa122c \
+  --var GOLD_ENGINE_BASE=sha256:942f5e0261c0cf465261515440972c1ff213ad0043831d32732895bf9c5839e5 \
+  --var GOLD_TARGET_HOST=2 --var GOLD_DOCKER_LINES_VERSION=108
+```
+
+`GOLD_UNITS` defaults to 20 and `GOLD_ENGINE_VERSION` to 5.5.0.
+
+**Collect** each root once its units are assimilated. The results are in `results/1621`:
+
+```sh
+usnm-boinc-step --env prod --target bridge --step gold-collect --wait-mins 30 \
+  --var GOLD_CAMPAIGN=lines8404-amd64-h2-20261112 \
+  --var GOLD_SPOOL=/project/usnmocr/results/1621 \
+  --var GOLD_LANGUAGE=eng --var GOLD_PROFILE=eng
+```
+
+### 2. The line trust scope
+
+A line-job scope lists its own hosts (#1753): those whose gold reports pass in the page
+configuration its `line_basis` names. `gold-trust` with `GOLD_LINE_SCOPE` builds it from the
+reports and writes only that entry of `gold/trust.json`. The top-level fields and every other
+scope, `eng`/`eng` included, stay byte for byte as they were. `GOLD_CAMPAIGNS` adds the other
+hosts' roots to the same build, so one run covers all three.
+
+Back up the list first:
+
+```sh
+cp -p /srv/usnm-boinc/project/gold/trust.json \
+  /srv/usnm-boinc/project/gold/trust.json.pre-chr-lines-$(date -u +%Y%m%dT%H%M%SZ)
+```
+
+Then, with the approved values:
+
+```sh
+usnm-boinc-step --env prod --target bridge --step gold-trust --wait-mins 30 \
+  --var GOLD_CAMPAIGN=lines8404-amd64-h2-20261112 \
+  --var GOLD_CAMPAIGNS=lines8404-amd64-h9-20261112,lines8404-amd64-h10-20261112 \
+  --var GOLD_MAX_CER=0.08734328574534386 \
+  --var GOLD_MANIFEST_SHA256=d8cd7279090a6427c0cc6f0e82573e3771c27f90df6500bf5a44b268f6e0f05f \
+  --var GOLD_LANGUAGE=eng --var GOLD_PROFILE=eng \
+  --var GOLD_LINE_SCOPE=chr/chr_phoenix \
+  --var "GOLD_LINE_EVIDENCE=#1621 chr_phoenix line route: test set v2 silver CER 10.2% vs LoC 18.0% (report 2026-11-cherokee step 3); e2e 9 Nov: 3 pages, 700 of 734 lines took the model, 3 admitted by line-merge-v1; hosts by English gold on 840487b2"
+```
+
+`usnm-boinc` loads and validates the list before it writes, and refuses a line policy in
+place of a page scope. Check what changed: everything but the `chr` entry must equal the
+backup.
+
+```sh
+cd /srv/usnm-boinc/project/gold
+diff <(jq -S 'del(.policies[] | select(.scope.language == "chr"))' trust.json) \
+  <(jq -S . trust.json.pre-chr-lines-<stamp>)
+jq '.policies[] | select(.scope.language == "chr")' trust.json
+```
+
+The `chr` entry must list hosts 2, 9 and 10 under `840487b2…`, PSM 13. If anything else
+differs, stop and report. Don't `mv` the backup over the list: it is a whole-file snapshot, and
+`gold-promote` or a hold may have changed the list since. Keep both copies. `spool-out` copies the share's
+`gold/trust.json` to the hand-off container, so the next `spool-out` makes the change live
+for collection.
+
+### 3. Stage the pages
+
+[`phoenix-pages.jsonl`](../../reports/2026-11-cherokee/phoenix-pages.jsonl) lists the 324
+_Phoenix_ pages: each page's batch, ALTO sha256, the lines `export --line-read chr` reads,
+whether test set v2 holds it, and the local copy of its scan (LoC's full-size IIIF JPEG) by
+sha256. It was made from LoC's two OCR archives and the scans already on our storage, without
+fetching anything ([the report](../../reports/2026-11-cherokee/report.md), "Reproducing").
+
+| Batch                   | Pages | With lines | With lines and a local scan | Of them in the test set |
+| ----------------------- | ----: | ---------: | --------------------------: | ----------------------: |
+| `dlc_misctopsn83020866` |    84 |         66 |                          66 |                      13 |
+| `dlc_misctopsn83020874` |   240 |        125 |                         124 |                      16 |
+
+The 133 pages without lines would be skipped by `export` anyway. One page with lines,
+`sn83020874/1829-03-04/ed-1/seq-2`, has no local scan; it waits until a scan can be fetched.
+The 161 pages with lines outside the test set are the pages the model's real training lines
+were cut from, so `line-report` on them isn't held-out evidence.
+
+An export takes up to 100 pages of one batch. So, in order:
+
+1. **Test batch**, 5 pages outside the test set (approved 11 November): `sn83020866/1828-03-06/ed-1/seq-1`,
+   `sn83020866/1828-03-06/ed-1/seq-3`, `sn83020866/1828-03-20/ed-1/seq-1`,
+   `sn83020866/1828-03-20/ed-1/seq-2` and `sn83020866/1828-03-20/ed-1/seq-3` (648 lines).
+2. The other 61 pages of `dlc_misctopsn83020866` (13 of them in the test set).
+3. `dlc_misctopsn83020874` in two exports of 62 (124 pages, 16 of them in the test set).
+
+The production run reads the 29 test-set pages too (approved 11 November). They stay out of
+the test batch, and `line-report` on them is production output, not a held-out score.
+
+`usnm-boinc line-stage` writes one export's staging tree on the host that holds the scan
+copies and the unpacked ALTO. It checks each scan and ALTO against the page list, gives each
+scan a sidecar in the scan fetcher's layout (its `user_agent` says it is a local copy), and
+writes a prefetch manifest of the pages. It prints the export's four `HANDOFF_` values:
+
+```sh
+usnm-boinc line-stage --pages docs/reports/2026-11-cherokee/phoenix-pages.jsonl \
+  --select <page keys, one per line> --scans <scan copies> [--scans ...] \
+  --loc-alto <the archives' ocr.xml, unpacked> --manifest-name chr-lines-1621-<n> --out <new dir>
+```
+
+Send the tree to CT 230 from that host, never through a workstation:
+
+```sh
+tar -C <tree> -c keep loc-alto manifests |
+  <to CT 230> usnm-boinc-step --env prod --target scans --step receive --wait-mins 10
+```
+
+The receive step takes only that layout. Staged files are pruned 4 days after they arrive, so
+export and submit each staged batch within 4 days.
+
+### 4. Export the line jobs
+
+```sh
+usnm-boinc-step --env prod --target handoff --step export --wait-mins 30 \
+  --var HANDOFF_LINE_READ=chr --var HANDOFF_PLAN=chr-lines-1621 \
+  --var ENGINE_IMAGE=sha256:840487b2aaa5a696dae61ded8fdcf0217cdf683e24c14e50ef0e728406aa122c \
+  --var HANDOFF_BATCH=<from line-stage> --var HANDOFF_MANIFEST=<from line-stage> \
+  --var HANDOFF_PAGES=<from line-stage> --var HANDOFF_SCANS=<from line-stage> \
+  --var EXPECTED_HANDOFF_URL=<HANDOFF_URL from handoff.env>
+```
+
+Every `--target handoff` step needs `--var EXPECTED_HANDOFF_URL=<HANDOFF_URL from handoff.env>`
+(this one, `collect` and `line-report`): with the local hand-off backend (`/handoff-state`),
+`usnm-boinc-step` refuses the step without it, and it also refuses a value that differs from
+the host's setting.
+
+With `HANDOFF_LINE_READ`, the step mounts the staging area and reads each page's scan, its
+LoC ALTO and the manifest from there; nothing comes from the hand-off container. It runs
+`usnm-boinc export --line-read chr --loc-alto ...` against Cosmos (`COSMOS_ENDPOINT` in
+`handoff.env`), writes the new journal entries back with their `line-read/` sidecars, and
+prints the job ids. Each line job keeps LoC's ALTO beside it (`lines::LOC_ALTO_FILE`).
+
+**If the export fails after it reserved some jobs**, don't run it again as it stands: a second
+run can make a different `queued_at` for the same job, which the ledger rejects, and can
+overwrite the first run's journal. A failed export prints no job ids, so find the ones it
+reserved in the hand-off store. With the local backend (`HANDOFF_URL=/handoff-state`, the path
+inside the step's container), the store is the host's `${USNM_BOINC_HANDOFF_ROOT:-/srv/usnm-boinc/handoff-state}`.
+With an Azure `HANDOFF_URL`, copy the journals down first, as root on the host, with
+`usnm-boinc handoff get --from-url <HANDOFF_URL> --prefix dispatch --to <new dir>` (the command
+`handoff-job.sh` uses), and work in `<new dir>`, which then holds `jobs/`. Then, in the store's `dispatch/` directory
+(or in `<new dir>`):
+
+```sh
+jq -r 'select(.plan == "chr-lines-1621") | "\(.job.id) \(.stage) \(.job.message.page)"' jobs/*/record.json
+```
+
+Each line is a job id, its stage and its page. Keep the jobs of this export's pages, including
+any still at `prepared`. Run the export again with the same variables plus `--var HANDOFF_JOBS=<those job ids>`, so the existing
+records load. If a write-back failed and the log has `USNM-HANDOFF-RECORD` lines, restore the
+records from them first.
+
+### 5. Submit, collect and check
+
+Run the test batch through this step and check it before any other export. Then do the same
+for each export.
+
+**Submit** each host's share of the jobs, pinned to `usnm_ocr` 108 and targeted
+(`submit_ocr_job` in `bridge-job.sh`). `JOB_IDS` takes up to 100 jobs, and every job in the
+call goes to the one `LINE_TARGET_HOST`. Split each export's jobs about evenly over hosts 2,
+9 and 10:
+
+```sh
+usnm-boinc-step --env prod --target bridge --step submit-remote --wait-mins 30 \
+  --var HANDOFF_URL=<HANDOFF_URL from handoff.env> \
+  --var JOB_IDS=<id>,<id>,... --var LINE_APP_VERSION=108 --var LINE_TARGET_HOST=2
+```
+
+The submit takes each job's page from the staging area (`handoff pull --scans`).
+
+**Spool out** each job whose workunit is assimilated. This also copies `gold/trust.json` to the
+hand-off container:
+
+```sh
+usnm-boinc-step --env prod --target bridge --step spool-out --wait-mins 30 \
+  --var HANDOFF_URL=<HANDOFF_URL from handoff.env> \
+  --var HANDOFF_SPOOLS=<id>=/project/usnmocr/results/1621,<id>=/project/usnmocr/results/1621
+```
+
+(or `JOB_ID` and `HANDOFF_SPOOL=/project/usnmocr/results/1621` for one job).
+
+**Collect** through the hand-off step. It fetches each line job's `line-read/` sidecars
+(`handoff get-line-read`), and `collect --trust` imports the result:
+
+```sh
+usnm-boinc-step --env prod --target handoff --step collect --wait-mins 60 \
+  --var EXPECTED_HANDOFF_URL=<HANDOFF_URL from handoff.env> --var JOB_IDS=<id>,<id>,...
+```
+
+Import (`import` in `lib.rs`) merges the readings into LoC's page (`lines::merge_in`). It
+writes the counts and rule `line-merge-v1`'s verdict to the job's `line-merge.json`
+(`lines::admission`, `usnm_ocr_local::rule::line_merge`). The rule admits a page when every
+line the job didn't read is LoC's text byte for byte, and at least half the lines it read took
+the model's reading (`MIN_MODEL_SHARE`). An admitted page is published to `ocr-out` with
+LoC's text kept as `text_loc`. Otherwise the result is kept under `accepted/`, the record is
+marked `held` with `line-merge-v1: line_changed` or `line-merge-v1: model_share`, and
+`collect` succeeds. A result from a host the line scope doesn't list goes to
+`quarantine/<job>/`, and `collect` fails.
+
+**Check** with the hand-off `line-report` step. It brings each job's record, accepted result and
+`line-read/` down and runs `usnm-boinc line-report` on them. It only reads, and only as root on
+the host:
+
+```sh
+usnm-boinc-step --env prod --target handoff --step line-report --wait-mins 30 \
+  --var EXPECTED_HANDOFF_URL=<HANDOFF_URL from handoff.env> --var JOB_IDS=<id>,<id>,...
+```
+
+It prints one JSON line per collected line job: `stats` (lines read, model, fallbacks by
+reason), `verdict` (rule v1, for comparison only), `line_merge` (`rule`, `verdict` `admit` /
+`line_changed` / `model_share`, `cherokee`, `model`), and `ours`/`loc` language and damage. A
+last line sums `pages`, `lines_read`, `lines_model`, `lines_fallback`, the `line-merge-v1`
+verdicts (`line_merge_verdicts`) and the rule v1 `verdicts`. Record each batch's summary on
+#1621 before the next export. Stop at any `line_changed`: it means a line the job didn't read
+changed, which is a bug, not a reading. For comparison, the e2e run of 9 November read 734
+lines on 3 test-set pages; 700 took the model's reading and all 3 pages were admitted.
+
+### 6. Into the index
+
+`ocr-sync` (its timer in CT 215) imports BOINC's `ocr-out` parts into `curated/ocr-local/`
+([onprem-ocr.md](../../operations/onprem-ocr.md), "OCR pickup: ocr-sync (#296)"). A release with
+`--ocr-local` admits a line job's page by `line-merge-v1` rather than rule v1
+(`usnm_ocr_local::rule::judge_row`). The _Phoenix_ batches are already published, and the weekly
+delta applies `ocr-local` only to the batches it indexes. So the pages reach search at a
+[full rebuild](../../operations/rebuild-and-index-storage.md#full-rebuild-on-prem)
+(`scripts/onprem/release.sh`).
+
+Open, and not needed for the run: whether these pages wait for the next planned full rebuild
+or get one of their own. The proposal is to wait.
+
+After the rebuild, open the results as a draft PR: step 4 of
+`docs/reports/2026-11-cherokee/report.md` (#1622).
+
+**Rollback.** Hold the 108 versions with `app-version-hold.php` (above), once nothing pinned to
+them is unfinished. To drop the line scope, remove only the `chr/chr_phoenix` entry from the current
+`gold/trust.json`: write the edited list to a new file beside it with `jq`, check that every
+other entry equals the current list's, then `mv` it over. Don't restore the
+`trust.json.pre-chr-lines-*` snapshot as a whole; it would undo hosts admitted and holds set
+since. Results already published stay published. A published page can be taken out of later releases
+with a create-only `curated/ocr-local/revoked/<stamp>.json` naming its `engine` or `run`;
+published text stays until a full rebuild ([onprem-ocr.md](../../operations/onprem-ocr.md),
+"Our OCR in releases (#296)").
+
 ## Rotating a plan onto a new worker version
 
 A plan pins its bundles to `bundle_app_version`. Publishing a newer `usnm_ocr` version makes
