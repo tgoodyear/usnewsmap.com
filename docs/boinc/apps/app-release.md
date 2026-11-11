@@ -455,8 +455,8 @@ fake migration.
      libraries) passed via repeatable `--extra-file LOGICAL=PATH` flags under
      `apps/usnm_qwen/<version>/<platform>__<plan_class>` for plan classes `apple_gpu_8b`
      (`arm64-apple-darwin`), `nvidia_cuda_8b` and `nvidia_cuda_2b` (`x86_64-pc-linux-gnu`,
-     `aarch64-unknown-linux-gnu`, `windows_x86_64`), `intel_vulkan_8b` and
-     `amd_vulkan_8b` (`x86_64-pc-linux-gnu`, `windows_x86_64`), `nvidia_vulkan_8b`,
+     `aarch64-unknown-linux-gnu`, `windows_x86_64`), `intel_vulkan_8b`, `nvidia_vulkan_8b` and
+     `amd_vulkan_8b` (`x86_64-pc-linux-gnu`, `windows_x86_64`),
      `nvidia_vulkan_6gb_8b` and `nvidia_vulkan_2b` (`x86_64-pc-linux-gnu`), and `mt` (all five
      platforms). Model files
      are staged separately as `<sticky/><no_delete/>` inputs in `download/` using the

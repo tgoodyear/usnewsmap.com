@@ -41,7 +41,7 @@ case "$APPVER_KIND" in
       *) fail "unsupported native app/plan class: $APPVER_APP:$APPVER_PLAN_CLASS" ;;
     esac
     case "$APPVER_PLAN_CLASS:$APPVER_PLATFORM" in
-      :*|mt:*|apple_gpu_8b:arm64-apple-darwin|nvidia_cuda_8b:x86_64-pc-linux-gnu|nvidia_cuda_8b:aarch64-unknown-linux-gnu|nvidia_cuda_8b:windows_x86_64|nvidia_cuda_2b:x86_64-pc-linux-gnu|nvidia_cuda_2b:aarch64-unknown-linux-gnu|nvidia_cuda_2b:windows_x86_64|intel_vulkan_8b:x86_64-pc-linux-gnu|intel_vulkan_8b:windows_x86_64|nvidia_vulkan_8b:x86_64-pc-linux-gnu|nvidia_vulkan_6gb_8b:x86_64-pc-linux-gnu|nvidia_vulkan_2b:x86_64-pc-linux-gnu|amd_vulkan_8b:x86_64-pc-linux-gnu|amd_vulkan_8b:windows_x86_64) ;;
+      :*|mt:*|apple_gpu_8b:arm64-apple-darwin|nvidia_cuda_8b:x86_64-pc-linux-gnu|nvidia_cuda_8b:aarch64-unknown-linux-gnu|nvidia_cuda_8b:windows_x86_64|nvidia_cuda_2b:x86_64-pc-linux-gnu|nvidia_cuda_2b:aarch64-unknown-linux-gnu|nvidia_cuda_2b:windows_x86_64|intel_vulkan_8b:x86_64-pc-linux-gnu|intel_vulkan_8b:windows_x86_64|nvidia_vulkan_8b:x86_64-pc-linux-gnu|nvidia_vulkan_8b:windows_x86_64|nvidia_vulkan_6gb_8b:x86_64-pc-linux-gnu|nvidia_vulkan_2b:x86_64-pc-linux-gnu|amd_vulkan_8b:x86_64-pc-linux-gnu|amd_vulkan_8b:windows_x86_64) ;;
       *) fail "native plan class $APPVER_PLAN_CLASS is not supported on $APPVER_PLATFORM" ;;
     esac
     case "$APPVER_APP" in

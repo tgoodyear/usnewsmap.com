@@ -283,6 +283,7 @@ class InstallTest(unittest.TestCase):
             ("intel_vulkan_8b", "x86_64-pc-linux-gnu", True, "usnm_qwen_8b_in"),
             ("intel_vulkan_8b", "windows_x86_64", True, "usnm_qwen_8b_in"),
             ("nvidia_vulkan_8b", "x86_64-pc-linux-gnu", True, "usnm_qwen_8b_in"),
+            ("nvidia_vulkan_8b", "windows_x86_64", True, "usnm_qwen_8b_in"),
             ("nvidia_vulkan_6gb_8b", "x86_64-pc-linux-gnu", True, "usnm_qwen_8b_in"),
             ("nvidia_vulkan_2b", "x86_64-pc-linux-gnu", True, "usnm_qwen_2b_in"),
             ("amd_vulkan_8b", "x86_64-pc-linux-gnu", True, "usnm_qwen_8b_in"),
@@ -315,7 +316,7 @@ class InstallTest(unittest.TestCase):
             llama_dlls = ("ggml-base.dll", "ggml.dll", "llama.dll", "mtmd.dll",
                           "ggml-cpu-x64.dll", "libomp140.x86_64.dll")
             backend = (
-                ("ggml-vulkan.dll",) if plan_class in ("intel_vulkan_8b", "amd_vulkan_8b")
+                ("ggml-vulkan.dll",) if plan_class in ("intel_vulkan_8b", "nvidia_vulkan_8b", "amd_vulkan_8b")
                 else ("ggml-cuda.dll", "cudart64_12.dll", "cublas64_12.dll", "cublasLt64_12.dll")
             )
             dll_names = runtime + llama_dlls + backend if platform == "windows_x86_64" else ()
