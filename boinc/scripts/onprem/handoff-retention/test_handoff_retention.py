@@ -169,6 +169,15 @@ class PruneBundles(unittest.TestCase):
         (self.r.root / "bundles" / "not-a-bundle").mkdir()
         self.assertEqual(self.r.run("--delete")["bundles"], 0)
 
+    def test_a_sha_named_file_or_link_in_bundles_is_kept_and_the_run_goes_on(self):
+        (self.r.root / "bundles" / f"{90:064x}").write_text("x")
+        os.symlink(self.tmp.name, self.r.root / "bundles" / f"{91:064x}")
+        _, d = self.r.bundle(1)
+        summary = self.r.run("--delete")
+        self.assertEqual(summary["bundles"], 1)
+        self.assertEqual(summary["kept"], {"bundle directory is not a directory": 2})
+        self.assertFalse((d / "pages").exists())
+
     def test_refuses_something_that_is_not_a_handoff_root(self):
         with self.assertRaises(SystemExit):
             hr.main(["prune-bundles", "--root", self.tmp.name, "--journal", "/dev/null"])

@@ -94,12 +94,16 @@ def candidates(root, min_age, now):
         path = os.path.join(directory, PAGES)
         try:
             dst = os.lstat(directory)
+        except FileNotFoundError:
+            continue
+        if not stat.S_ISDIR(dst.st_mode):
+            yield name, directory, 0, "bundle directory is not a directory"
+            continue
+        try:
             st = os.lstat(path)
         except FileNotFoundError:
             continue  # already freed
-        if not stat.S_ISDIR(dst.st_mode):
-            yield name, path, 0, "bundle directory is not a directory"
-        elif not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
+        if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
             yield name, path, 0, "pages is not a regular file with one link"
         elif now - st.st_mtime < min_age:
             yield name, path, st.st_size, "pages is newer than the minimum age"
