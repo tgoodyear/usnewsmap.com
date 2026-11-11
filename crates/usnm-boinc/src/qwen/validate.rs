@@ -334,10 +334,16 @@ fn record_unit_verdict(
     f.write_all(&serde_json::to_vec_pretty(&record)?)?;
     f.as_file().sync_all()?;
     match f.persist_noclobber(parent.join(UNIT_VERDICT_FILE)) {
-        Ok(_) => Ok(std::fs::File::open(&parent)?.sync_all()?),
-        Err(e) if e.error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
-        Err(e) => Err(e.error.into()),
+        Ok(_) => {}
+        Err(e) if e.error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(e) => return Err(e.error.into()),
     }
+    // The pass must not outlive the marker: the file's entry in the job's
+    // directory and that directory's entry in `dir` both reach the disk
+    // before the pair is reported as agreeing, a marker found there included.
+    std::fs::File::open(&parent)?.sync_all()?;
+    std::fs::File::open(dir)?.sync_all()?;
+    Ok(())
 }
 
 /// What a page record says: `page_agreed` when both hosts read the page
