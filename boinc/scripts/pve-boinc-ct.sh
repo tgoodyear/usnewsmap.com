@@ -51,9 +51,12 @@ Options:
   --account-name <name>        Account name when creating a new BOINC account (default: --name)
   --max-ncpus-pct <1-100>      BOINC max_ncpus_pct override (default: 100)
   --cpu-usage-limit <1-100>    BOINC cpu_usage_limit override (default: 100)
-  --ram-max-pct <1-100>        BOINC ram_max_used_busy/idle_pct (default: 90). Use about 45 when the
-                               CT's GPU shares system RAM (an Intel iGPU): BOINC doesn't count a
-                               GPU task's model there, and at 90 the client was OOM-killed
+  --ram-max-pct <1-100>        BOINC ram_max_used_busy/idle_pct (default: 90). For an 8B Qwen GPU
+                               task, this percentage of --memory must be at least 6144 MiB (the
+                               task's memory bound) plus about 512 MiB, e.g. 55 for 12288. When
+                               the GPU shares system RAM (an Intel iGPU), its ~7 GiB of model
+                               buffers are on top of that and BOINC doesn't count them; keep
+                               --swap and leave the host room for the whole --memory
   --what-if                    Print the provisioning plan without changing the host
 EOF
 }
