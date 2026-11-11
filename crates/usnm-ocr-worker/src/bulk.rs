@@ -19,7 +19,9 @@
 //! page instead of the archive drops the global budget to the slow rate and
 //! ends the run with an error, so a block is reported, never pressed on. A
 //! run doesn't start, and starts no further archive, while the global budget
-//! is slowed, whichever process LoC pushed back on.
+//! is slowed, whichever process LoC pushed back on. Not starting is no
+//! failure: the process logs one line and exits 0, and the timer's next run
+//! after the slow-down ends goes as usual.
 //!
 //! The downloads themselves go through [`crate::fetcher`]; LoC's rules above
 //! are its policy, `policies/loc.toml`. With a mirror
@@ -43,6 +45,7 @@ use crate::fetcher::run::RunOptions;
 use crate::fetcher::{
     Engine, EngineOptions, Fail, FileBudgets, FileJobs, HeldBack, Job, JobStore, Policies, LOC,
 };
+use crate::loc::global::{NotStarted, PacerSlowed};
 
 pub use crate::fetcher::Status;
 
@@ -303,7 +306,13 @@ pub async fn run(opts: Options, stop: watch::Receiver<bool>) -> anyhow::Result<S
     if opts.mirror.is_none() {
         // After a push-back the budget is at the slow rate for every process for a day;
         // the bulk archives wait for it to lift (or an operator's reset) rather than add to it.
-        engine.check_not_slowed(&opts.list_url).await?;
+        // That is no failure: the run doesn't start, and the next one after it lifts runs.
+        if let Err(e) = engine.check_not_slowed(&opts.list_url).await {
+            return Err(match e.downcast::<PacerSlowed>() {
+                Ok(s) => NotStarted(s).into(),
+                Err(e) => e,
+            });
+        }
     }
     let list_path = opts.out.join("datasets.json");
     if !list_path.exists() {

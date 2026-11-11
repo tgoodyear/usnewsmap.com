@@ -172,6 +172,14 @@ impl std::fmt::Debug for LocClient {
 }
 
 impl LocClient {
+    /// The host budget's slow-down in force now, if any; never with no global pacer.
+    pub fn slowed(&self) -> std::io::Result<Option<global::PacerSlowed>> {
+        match &self.global {
+            Some(g) => g.slowed(),
+            None => Ok(None),
+        }
+    }
+
     pub fn new(cfg: LocConfig) -> anyhow::Result<Self> {
         let http_here = reqwest::Client::builder()
             .user_agent(USER_AGENT)

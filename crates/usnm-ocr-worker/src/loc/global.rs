@@ -68,6 +68,66 @@ pub struct Slowed {
     pub until_ms: Option<u64>,
 }
 
+/// A budget slowed after a push-back: nothing goes to the host until the
+/// slow rate's time is up or an operator resets it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PacerSlowed {
+    /// How logs name the budget's host.
+    pub label: String,
+    pub slowed: Slowed,
+}
+
+impl PacerSlowed {
+    /// When the slow-down ends, RFC 3339, if it ends on its own.
+    pub fn until(&self) -> Option<String> {
+        let ms = i64::try_from(self.slowed.until_ms?).ok()?;
+        chrono::DateTime::from_timestamp_millis(ms)
+            .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+    }
+
+    /// The one line a job that won't start while slowed logs.
+    pub fn not_starting(&self) -> String {
+        let until = self
+            .until()
+            .unwrap_or_else(|| "`loc-pacer --reset`".to_owned());
+        format!(
+            "{} pacer slowed until {until} ({}); not starting",
+            self.label, self.slowed.why
+        )
+    }
+}
+
+impl std::fmt::Display for PacerSlowed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let until = self.until().map_or_else(
+            || "`loc-pacer --reset`".to_owned(),
+            |t| format!("{t} or `loc-pacer --reset`"),
+        );
+        write!(
+            f,
+            "the global {} pacer has been slowed since {} ({}); this waits for {until}",
+            self.label, self.slowed.at, self.slowed.why
+        )
+    }
+}
+
+impl std::error::Error for PacerSlowed {}
+
+/// A job that didn't start because its budget is slowed: it asked the host
+/// nothing, and the next start after the slow-down ends runs as usual. Only
+/// the check before a job's first request returns it; a push-back during a
+/// run still fails that run.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NotStarted(pub PacerSlowed);
+
+impl std::fmt::Display for NotStarted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0.not_starting())
+    }
+}
+
+impl std::error::Error for NotStarted {}
+
 #[derive(Debug, Clone)]
 pub struct GlobalPacer {
     path: PathBuf,
@@ -336,6 +396,14 @@ impl GlobalPacer {
     /// The state as it is now.
     pub fn state(&self) -> std::io::Result<State> {
         self.locked(|s| s.clone())
+    }
+
+    /// The slow-down in force now, if any (one whose time is up is lifted first).
+    pub fn slowed(&self) -> std::io::Result<Option<PacerSlowed>> {
+        Ok(self.state()?.slowed.map(|slowed| PacerSlowed {
+            label: self.label.clone(),
+            slowed,
+        }))
     }
 
     /// Back to the normal rate (an operator's decision).
