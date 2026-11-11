@@ -4319,12 +4319,12 @@ async fn line_merge_v1_holds_a_page_with_under_half_model_lines() {
     );
 }
 
-/// A trust list with an English page scope trusting `host` on `image`, and the line-job scope
-/// for chr_phoenix (#1621) on that basis.
-fn line_trust(image: &str, host: u64, line_cer: f64) -> usnm_boinc::trust::Trust {
+/// A trust list with an English page scope trusting host 7 on `image`, and the line-job scope
+/// for chr_phoenix (#1621) trusting `host`, from gold in the English page configuration.
+fn line_trust(image: &str, host: u64) -> usnm_boinc::trust::Trust {
     use usnm_boinc::trust::{LineBasis, Scope, ScopedPolicy, Trust};
     let eng = ScopedPolicy {
-        hosts: [(image.to_owned(), [host].into())].into(),
+        hosts: [(image.to_owned(), [7].into())].into(),
         manifest_sha256: "b".repeat(64),
         scope: Scope {
             language: "eng".into(),
@@ -4337,7 +4337,7 @@ fn line_trust(image: &str, host: u64, line_cer: f64) -> usnm_boinc::trust::Trust
         line_basis: None,
     };
     let lines = ScopedPolicy {
-        hosts: Default::default(),
+        hosts: [(image.to_owned(), [host].into())].into(),
         manifest_sha256: "b".repeat(64),
         scope: Scope {
             language: "chr".into(),
@@ -4345,7 +4345,7 @@ fn line_trust(image: &str, host: u64, line_cer: f64) -> usnm_boinc::trust::Trust
             psm: 13,
             dpi: 300,
         },
-        max_cer: line_cer,
+        max_cer: 0.1,
         hold: None,
         line_basis: Some(LineBasis {
             page_scope: eng.scope.clone(),
@@ -4401,18 +4401,18 @@ async fn a_line_job_is_collected_through_the_trust_gate() {
         }
     };
     // A page policy alone, at PSM 3, trusts no line job.
-    let mut page_only = line_trust(&image, 42, 0.1);
+    let mut page_only = line_trust(&image, 42);
     page_only.policies.clear();
-    assert!(run(page_only, 42).await.is_err());
-    // A host the basis doesn't trust, or a basis looser than the line scope allows, is refused.
-    assert!(run(line_trust(&image, 41, 0.1), 42).await.is_err());
-    assert!(run(line_trust(&image, 42, 0.05), 42).await.is_err());
+    assert!(run(page_only, 7).await.is_err());
+    // A host the line scope doesn't list is refused, even one the English scope trusts.
+    assert!(run(line_trust(&image, 41), 42).await.is_err());
+    assert!(run(line_trust(&image, 42), 7).await.is_err());
     assert_ne!(
         usnm_boinc::load(&fx.options.root, &id).unwrap().stage,
         Stage::Published
     );
-    // On its recorded basis, the line job is published.
-    let trust = line_trust(&image, 42, 0.1);
+    // From a host the line scope lists, the line job is published.
+    let trust = line_trust(&image, 42);
     let path = fx.tmp.path().join("trust.json");
     std::fs::write(&path, serde_json::to_vec(&trust).unwrap()).unwrap();
     let loaded = usnm_boinc::trust::Trust::load(&path).unwrap();

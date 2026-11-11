@@ -18,12 +18,12 @@
 //!
 //! - A **line-job scope** (#1621) is a policy for the line jobs of a line route (language `chr`,
 //!   profile `chr_phoenix`, PSM 13), which no Gold unit calibrates: Gold units are page crops
-//!   read at PSM 3. It names its basis instead ([`LineBasis`]): the calibrated page scope whose
-//!   gold-checked hosts it trusts (they run the same worker image and the same Tesseract, on a
-//!   crop of a line rather than a page), and the evidence the line route was judged on. It lists
-//!   no hosts of its own: its hosts are its basis's at the time of the check, and a hold on
-//!   either holds it. Its `max_cer` is the most its basis may allow; a looser basis trusts no
-//!   line job.
+//!   read at PSM 3. Its hosts are its own: the hosts whose gold reports on the line jobs' worker
+//!   image pass `max_cer` in the page configuration its [`LineBasis`] names (the English
+//!   challenge at PSM 3), with the evidence the line route was judged on. It is built and
+//!   replaced on its own ([`Trust::promote_line_scope`]), so calibrating hosts for line jobs
+//!   never touches a page scope, and re-promoting a page scope keeps it as it is. Host admission
+//!   (`gold-promote`) never adds to it.
 //!
 //! In native mode, BOINC's result-table host ID is authoritative and is checked against the
 //! host claimed by the uploaded report. It remains a BOINC quality signal, not an identity check.
@@ -103,13 +103,15 @@ impl Scope {
     }
 }
 
-/// Why a line-job scope (#1621) is trusted though no Gold unit calibrates it: the page scope
-/// whose gold-checked hosts it trusts, and the evidence the line route was judged on.
+/// Why a line-job scope (#1621) is trusted though no Gold unit calibrates it: the page
+/// configuration its hosts' gold reports were judged in, and the evidence the line route was
+/// judged on.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LineBasis {
-    /// A calibrated page scope in the same list, not itself held, with a `max_cer` at or below
-    /// the line scope's.
+    /// The calibrated page configuration (language, profile, PSM 3, 300 DPI) of the gold
+    /// reports that admitted the line scope's hosts. It need not be in the list: the line
+    /// scope stands on its own.
     pub page_scope: Scope,
     /// What the line route was judged on, on one line: an issue, a report, its numbers.
     pub evidence: String,
@@ -151,12 +153,6 @@ impl ScopedPolicy {
                     && basis.evidence.len() <= MAX_HOLD
                     && !basis.evidence.chars().any(char::is_control),
                 "a line-job scope needs its evidence in 1 to {MAX_HOLD} bytes on one line"
-            );
-            anyhow::ensure!(
-                self.hosts.is_empty(),
-                "line-job scope {}/{} lists no hosts: they are its page scope's",
-                self.scope.language,
-                self.scope.profile
             );
         }
         if let Some(hold) = &self.hold {
@@ -319,21 +315,34 @@ impl Trust {
                 primary_matched,
                 "scoped policies must include the primary trust scope"
             );
-            for policy in &self.policies {
-                let Some(basis) = &policy.line_basis else {
-                    continue;
-                };
-                anyhow::ensure!(
-                    self.policies
-                        .iter()
-                        .any(|p| p.line_basis.is_none() && p.scope == basis.page_scope),
-                    "line-job scope {}/{} names a page scope the list doesn't calibrate",
-                    policy.scope.language,
-                    policy.scope.profile
-                );
-            }
         }
         Ok(())
+    }
+
+    /// The line-job scope (#1621) `line_scope` whose hosts are this list's primary scope's: a
+    /// list `gold trust` just built from gold reports in a page configuration, turned into the
+    /// line scope those reports calibrate, with `evidence` for the line route. Its `max_cer` and
+    /// challenge are the page calibration's.
+    pub fn line_policy(&self, line_scope: Scope, evidence: &str) -> anyhow::Result<ScopedPolicy> {
+        self.validate()?;
+        anyhow::ensure!(
+            self.policies.is_empty(),
+            "a line-job scope is built from one page calibration"
+        );
+        let page = self.primary_policy()?;
+        let policy = ScopedPolicy {
+            hosts: page.hosts,
+            manifest_sha256: page.manifest_sha256,
+            scope: line_scope,
+            max_cer: page.max_cer,
+            hold: None,
+            line_basis: Some(LineBasis {
+                page_scope: page.scope,
+                evidence: evidence.to_owned(),
+            }),
+        };
+        policy.validate()?;
+        Ok(policy)
     }
 
     /// Returns all active calibrated `(language, profile)` policies in this trust artifact.

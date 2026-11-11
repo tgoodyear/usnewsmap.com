@@ -1,4 +1,4 @@
-use super::{immutable_image, Scope, Trust, MAX_REPORTS, TRUST_VERSION};
+use super::{immutable_image, Scope, ScopedPolicy, Trust, MAX_REPORTS, TRUST_VERSION};
 use crate::atomic;
 use anyhow::Context;
 use serde::Serialize;
@@ -45,6 +45,24 @@ impl Trust {
         }
         for policy in incoming_policies {
             let key = (policy.scope.language.clone(), policy.scope.profile.clone());
+            if let Some(have) = by_scope.get(&key) {
+                anyhow::ensure!(
+                    have.line_basis.is_some() == policy.line_basis.is_some(),
+                    "scope {}/{} is a {} scope; a {} policy can't replace it",
+                    key.0,
+                    key.1,
+                    if have.line_basis.is_some() {
+                        "line-job"
+                    } else {
+                        "page"
+                    },
+                    if policy.line_basis.is_some() {
+                        "line-job"
+                    } else {
+                        "page"
+                    },
+                );
+            }
             if let Some(held) = by_scope.get(&key).filter(|p| p.hold.is_some()) {
                 anyhow::ensure!(
                     policy.max_cer <= held.max_cer,
@@ -76,6 +94,75 @@ impl Trust {
         };
         merged.validate()?;
         merged.within_holds_of(self)?;
+        Ok(merged)
+    }
+
+    /// `self` with the line-job scope (#1621) `policy` added, or put in place of the line scope
+    /// it names. Nothing else changes: the top-level fields and every other policy stay as they
+    /// are, byte for byte. A held line scope is replaced only within its hold's `max_cer`, as
+    /// [`Trust::merge`] does for a page scope.
+    pub fn with_line_policy(&self, policy: ScopedPolicy) -> anyhow::Result<Self> {
+        self.validate()?;
+        anyhow::ensure!(
+            policy.line_basis.is_some(),
+            "scope {}/{} is not a line-job scope",
+            policy.scope.language,
+            policy.scope.profile
+        );
+        policy.validate()?;
+        let mut out = self.clone();
+        if out.policies.is_empty() {
+            out.policies.push(self.primary_policy()?);
+        }
+        let same = |p: &ScopedPolicy| {
+            p.scope.language == policy.scope.language && p.scope.profile == policy.scope.profile
+        };
+        match out.policies.iter_mut().find(|p| same(p)) {
+            Some(have) => {
+                anyhow::ensure!(
+                    have.line_basis.is_some(),
+                    "scope {}/{} is a page scope; a line-job policy can't replace it",
+                    policy.scope.language,
+                    policy.scope.profile
+                );
+                if have.hold.is_some() {
+                    anyhow::ensure!(
+                        policy.max_cer <= have.max_cer,
+                        "scope {}/{} is held until calibrated with max_cer <= {}; this policy's max_cer {} is above it",
+                        policy.scope.language,
+                        policy.scope.profile,
+                        have.max_cer,
+                        policy.max_cer
+                    );
+                }
+                *have = policy;
+            }
+            None => out.policies.push(policy),
+        }
+        out.v = TRUST_VERSION;
+        out.validate()?;
+        Ok(out)
+    }
+
+    /// Writes the list at `out` with the line-job scope `policy` added or replaced
+    /// ([`Trust::with_line_policy`]), holding the directory's lock across the read and the
+    /// write. The list must already exist and be calibrated: a line scope never makes one.
+    pub fn promote_line_scope(out: &Path, policy: ScopedPolicy) -> anyhow::Result<Self> {
+        let (out, _lock) = locked_destination(out)?;
+        let base = Self::load_for_promotion(&out)?.with_context(|| {
+            format!(
+                "{} is an uncalibrated legacy list; calibrate a page scope first",
+                out.display()
+            )
+        })?;
+        let merged = base.with_line_policy(policy)?;
+        merged.within_holds_of(&base)?;
+        let encoded = serde_json::to_vec_pretty(&merged)?;
+        anyhow::ensure!(
+            encoded.len() <= MAX_REPORTS as usize,
+            "promoted trust policy exceeds its reader limit"
+        );
+        atomic(&out, &encoded)?;
         Ok(merged)
     }
 

@@ -350,6 +350,19 @@ list goes live. The reviewed German hold and its deploy steps are in
 (`srp/srp+srp_latn`) has been held the same way since 7 November
 ([note](../../notes/2026-11-07-serbian-trust-hold.md)).
 
+A **line-job scope** (#1621) trusts the hosts that may return the Cherokee line
+jobs (`chr`/`chr_phoenix`, PSM 13), which no Gold unit reads. Its hosts are its
+own: those whose gold reports on the line jobs' worker image pass in the English
+page configuration (`eng`/`eng`, PSM 3, 300 DPI, the English challenge), with
+that configuration and a line of evidence in its `line_basis`. `gold trust
+--line-scope chr/chr_phoenix --line-evidence "<one line>"` (bridge:
+`GOLD_LINE_SCOPE`, `GOLD_LINE_EVIDENCE`) builds it from the reports and writes
+only that entry of the list at `--out`: the top-level fields and every other
+scope stay byte for byte as they were, and a re-promoted page scope keeps the
+line scope. `GOLD_CAMPAIGNS=<campaign>,...` adds more campaigns' reports to the
+same build, since targeted gold takes a fresh root per host. A line scope is
+held only by its own `hold`, and host admission (`gold-promote`) never adds to it.
+
 Trust is keyed by the **full immutable worker digest**, not a tag, base image or
 engine version. In v5, server `received_time` orders eligible canonical reports
 and attributable terminal client errors within the calibrated scope, regardless

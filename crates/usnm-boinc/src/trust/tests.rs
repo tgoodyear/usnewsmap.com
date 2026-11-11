@@ -1,4 +1,5 @@
 use super::*;
+use std::path::PathBuf;
 
 const MANIFEST: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
@@ -1483,11 +1484,12 @@ fn calibrated_srp(max_cer: f64) -> Trust {
     }
 }
 
-/// A line-job scope (#1621) at PSM 13, on the basis of the English page scope.
+/// A line-job scope (#1621) at PSM 13 trusting host 9, beside an English page scope trusting
+/// host 7, both on the same image.
 fn with_line_scope(max_cer: f64) -> Trust {
     let image = format!("sha256:{}", "a".repeat(64));
     let eng = ScopedPolicy {
-        hosts: [(image, [7].into())].into(),
+        hosts: [(image.clone(), [7].into())].into(),
         manifest_sha256: MANIFEST.into(),
         scope: scope(),
         max_cer: 0.1,
@@ -1495,14 +1497,9 @@ fn with_line_scope(max_cer: f64) -> Trust {
         line_basis: None,
     };
     let lines = ScopedPolicy {
-        hosts: BTreeMap::new(),
+        hosts: [(image, [9].into())].into(),
         manifest_sha256: MANIFEST.into(),
-        scope: Scope {
-            language: "chr".into(),
-            profile: "chr_phoenix".into(),
-            psm: 13,
-            dpi: 300,
-        },
+        scope: chr_lines(),
         max_cer,
         hold: None,
         line_basis: Some(LineBasis {
@@ -1517,6 +1514,15 @@ fn with_line_scope(max_cer: f64) -> Trust {
         max_cer: 0.1,
         policies: vec![eng, lines],
         v: TRUST_VERSION,
+    }
+}
+
+fn chr_lines() -> Scope {
+    Scope {
+        language: "chr".into(),
+        profile: "chr_phoenix".into(),
+        psm: 13,
+        dpi: 300,
     }
 }
 
@@ -1556,23 +1562,27 @@ fn psm_13_is_for_line_job_scopes_on_a_recorded_basis_only() {
     let mut primary = t.clone();
     primary.scope.as_mut().unwrap().psm = 13;
     assert!(primary.validate().is_err());
-    // A line scope lists no hosts of its own, names its evidence, and needs its page scope.
-    let mut hosts = t.clone();
-    hosts.policies[1]
-        .hosts
-        .insert(format!("sha256:{}", "a".repeat(64)), [7].into());
-    assert!(hosts.validate().is_err());
+    // A line scope names its evidence, and its basis is a page configuration.
     let mut silent = t.clone();
     silent.policies[1].line_basis.as_mut().unwrap().evidence = " ".into();
     assert!(silent.validate().is_err());
-    let mut orphan = t.clone();
-    orphan.policies[1]
+    let mut basis13 = t.clone();
+    basis13.policies[1]
+        .line_basis
+        .as_mut()
+        .unwrap()
+        .page_scope
+        .psm = 13;
+    assert!(basis13.validate().is_err());
+    // Its basis need not be in the list: the line scope stands on its own.
+    let mut elsewhere = t.clone();
+    elsewhere.policies[1]
         .line_basis
         .as_mut()
         .unwrap()
         .page_scope
         .profile = "fra".into();
-    assert!(orphan.validate().is_err());
+    elsewhere.validate().unwrap();
     // A page scope at PSM 13 is refused, line basis or not.
     let mut page13 = t.clone();
     page13.policies[1].scope.language = "eng".into();
@@ -1580,54 +1590,186 @@ fn psm_13_is_for_line_job_scopes_on_a_recorded_basis_only() {
 }
 
 #[test]
-fn line_jobs_take_their_basis_hosts_and_page_jobs_their_own() {
+fn line_jobs_take_their_own_hosts_and_page_jobs_theirs() {
     let image = format!("sha256:{}", "a".repeat(64));
     let t = with_line_scope(0.1);
     let job = line_job(&image);
-    assert_eq!(t.refuse_job(&job, Some(7)), None);
-    assert_eq!(t.trusted_hosts_for_job(&job), BTreeSet::from([7]));
-    assert!(t.refuse_job(&job, Some(8)).is_some());
-    // A basis looser than the line scope allows trusts no line job.
-    assert!(with_line_scope(0.05).refuse_job(&job, Some(7)).is_some());
-    // A hold on the basis holds its line jobs.
-    let mut held = t.clone();
-    held.policies[0].hold = Some("held".into());
-    held.policies[0].hosts.clear();
-    held.hosts.clear();
-    held.scope = Some(Scope {
-        language: "deu".into(),
-        ..scope()
-    });
-    held.policies.push(ScopedPolicy {
-        hosts: BTreeMap::new(),
-        manifest_sha256: MANIFEST.into(),
-        scope: Scope {
-            language: "deu".into(),
-            ..scope()
-        },
-        max_cer: 0.1,
-        hold: None,
-        line_basis: None,
-    });
-    held.validate().unwrap();
-    assert!(held.scope_hold(&job).is_some());
-    // Without a line scope, a PSM-3 page policy refuses every line job; the page job still
-    // goes by its page scope, as before.
-    let mut page_only = t.clone();
-    page_only.policies.clear();
-    assert!(page_only.refuse_job(&job, Some(7)).is_some());
+    assert_eq!(t.refuse_job(&job, Some(9)), None);
+    assert_eq!(t.trusted_hosts_for_job(&job), BTreeSet::from([9]));
+    // The English page scope's host isn't trusted for line jobs, nor the other way round.
+    assert!(t.refuse_job(&job, Some(7)).is_some());
     let mut page: usnm_ocr_contract::boinc::Job = serde_json::from_str(include_str!(
         "../../../usnm-ocr-contract/src/fixtures/boinc-tesseract.json"
     ))
     .unwrap();
-    page.engine.image = image;
+    page.engine.image = image.clone();
     page.id = page.identity().unwrap();
     assert_eq!(t.refuse_job(&page, Some(7)), None);
+    assert!(t.refuse_job(&page, Some(9)).is_some());
+    // A line scope's own hold holds its line jobs; nothing else does.
+    let mut held = t.clone();
+    held.policies[1].hold = Some("held".into());
+    held.policies[1].hosts.clear();
+    held.validate().unwrap();
+    assert!(held.scope_hold(&job).is_some());
+    assert!(held.refuse_job(&job, Some(9)).is_some());
+    assert!(held.scope_hold(&page).is_none());
+    // A looser English page scope changes nothing for line jobs.
+    let mut loose = t.clone();
+    loose.policies[0].max_cer = 0.5;
+    loose.max_cer = 0.5;
+    assert_eq!(loose.refuse_job(&job, Some(9)), None);
+    // Without a line scope, a PSM-3 page policy refuses every line job; the page job still
+    // goes by its page scope, as before.
+    let mut page_only = t.clone();
+    page_only.policies.clear();
+    assert!(page_only.refuse_job(&job, Some(9)).is_some());
     assert_eq!(page_only.refuse_job(&page, Some(7)), None);
-    // A line job's hosts are never admitted into its line scope.
-    assert!(t
-        .policy_for("chr", "chr_phoenix")
+    // Host admission never adds to a line scope.
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("trust.json");
+    std::fs::write(&path, serde_json::to_vec_pretty(&t).unwrap()).unwrap();
+    let err = Trust::admit_hosts(
+        &path,
+        None,
+        &chr_lines(),
+        MANIFEST,
+        0.1,
+        &image,
+        &BTreeSet::from([2]),
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("line-job scope"), "{err}");
+}
+
+/// The image line jobs run on (#1621).
+const LINE_IMAGE: &str = "sha256:840487b2aaa5a696dae61ded8fdcf0217cdf683e24c14e50ef0e728406aa122c";
+
+/// Gold reports for hosts 2, 9 and 10 on the line worker, and host 11 failing, in the English
+/// page configuration, built as `gold trust --line-scope` builds them.
+fn line_campaign(dir: &Path, cers: &[(u64, f64)]) -> (PathBuf, PathBuf) {
+    let (mut reports, mut outcomes) = (Vec::new(), Vec::new());
+    for (i, (host, cer)) in cers.iter().enumerate() {
+        let (r, o) = native_report_and_outcome(
+            char::from(b'a' + i as u8),
+            100 + i as u64,
+            LINE_IMAGE,
+            *host,
+            ADMIT_MANIFEST,
+            "eng",
+            "eng",
+            *cer,
+            1_800_000_000,
+        );
+        reports.push(r);
+        outcomes.push(o);
+    }
+    let (r, o) = (dir.join("reports.jsonl"), dir.join("outcomes.jsonl"));
+    std::fs::write(&r, reports.join("\n")).unwrap();
+    std::fs::write(&o, outcomes.join("\n")).unwrap();
+    (r, o)
+}
+
+fn line_policy_from(dir: &Path, cers: &[(u64, f64)]) -> ScopedPolicy {
+    let (r, o) = line_campaign(dir, cers);
+    Trust::build_with_outcomes(&[r], &[o], ADMIT_CER, ADMIT_MANIFEST, scope())
         .unwrap()
-        .line_basis
-        .is_some());
+        .line_policy(chr_lines(), "#1621 line jobs on the line worker")
+        .unwrap()
+}
+
+/// Promoting the line scope from a three-host campaign leaves English, and every other scope
+/// of the list as it is live, byte for byte. Re-promoting English keeps the line scope.
+#[test]
+fn a_line_scope_promotion_never_touches_english_trust() {
+    const LIVE: &[u8] = include_bytes!("../../../../docs/notes/2026-11-07-serbian-trust-hold.json");
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("trust.json");
+    std::fs::write(&path, LIVE).unwrap();
+    let live = Trust::load(&path).unwrap();
+    let live_json: serde_json::Value = serde_json::from_slice(LIVE).unwrap();
+    let campaign = tmp.path().join("campaign");
+    std::fs::create_dir(&campaign).unwrap();
+    let policy = line_policy_from(
+        &campaign,
+        &[(2, 0.0716), (9, 0.0716), (10, 0.0716), (11, 0.2)],
+    );
+    assert_eq!(policy.hosts[LINE_IMAGE], BTreeSet::from([2, 9, 10]));
+    assert_eq!(policy.scope, chr_lines());
+    assert_eq!(
+        (policy.max_cer, policy.manifest_sha256.as_str()),
+        (ADMIT_CER, ADMIT_MANIFEST)
+    );
+    let promoted = Trust::promote_line_scope(&path, policy.clone()).unwrap();
+    assert_eq!(Trust::load(&path).unwrap(), promoted);
+    // Everything but the new entry is the live list's JSON exactly.
+    let mut after: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let policies = after["policies"].as_array_mut().unwrap();
+    let before_len = live_json["policies"].as_array().unwrap().len();
+    assert_eq!(policies.len(), before_len + 1);
+    let line_entry = policies
+        .iter()
+        .position(|p| p["scope"]["language"] == "chr")
+        .unwrap();
+    policies.remove(line_entry);
+    assert_eq!(after, live_json);
+    // English jobs are trusted on exactly the hosts and images they were; the line worker
+    // gains no English host.
+    let english = job(ADMIT_IMAGE, "eng", "eng");
+    assert_eq!(
+        promoted.trusted_hosts_for_job(&english),
+        live.trusted_hosts_for_job(&english)
+    );
+    assert!(promoted
+        .trusted_hosts_for_job(&job(LINE_IMAGE, "eng", "eng"))
+        .is_empty());
+    assert_eq!(
+        promoted.policy_for("eng", "eng"),
+        live.policy_for("eng", "eng")
+    );
+    let line = line_job(LINE_IMAGE);
+    assert_eq!(
+        promoted.trusted_hosts_for_job(&line),
+        BTreeSet::from([2, 9, 10])
+    );
+    // A second line campaign replaces the line scope only.
+    let again = tmp.path().join("again");
+    std::fs::create_dir(&again).unwrap();
+    let narrower =
+        Trust::promote_line_scope(&path, line_policy_from(&again, &[(2, 0.0716)])).unwrap();
+    assert_eq!(narrower.trusted_hosts_for_job(&line), BTreeSet::from([2]));
+    assert_eq!(
+        narrower.policy_for("eng", "eng"),
+        live.policy_for("eng", "eng")
+    );
+    assert_eq!(
+        (&narrower.hosts, &narrower.scope, narrower.max_cer),
+        (&live.hosts, &live.scope, live.max_cer)
+    );
+    // Re-promoting English (`gold trust`, no line scope) keeps the line scope as it is.
+    let mut eng = calibrated_srp(ADMIT_CER);
+    eng.scope = Some(scope());
+    eng.manifest_sha256 = Some(ADMIT_MANIFEST.into());
+    let english_again = eng.promote_to(&path, None).unwrap();
+    assert_eq!(
+        english_again.policy_for("chr", "chr_phoenix"),
+        narrower.policy_for("chr", "chr_phoenix")
+    );
+    // A line policy can't take a page scope's place, nor a page policy a line scope's.
+    let mut clash = policy.clone();
+    clash.scope = Scope { psm: 13, ..scope() };
+    assert!(Trust::promote_line_scope(&path, clash).is_err());
+    let mut page_chr = calibrated_srp(0.1);
+    page_chr.scope = Some(Scope {
+        language: "chr".into(),
+        profile: "chr_phoenix".into(),
+        psm: 3,
+        dpi: 300,
+    });
+    assert!(english_again.merge(&page_chr).is_err());
+    // A line scope needs a calibrated list to go into.
+    let missing = tmp.path().join("none.json");
+    assert!(Trust::promote_line_scope(&missing, policy).is_err());
+    assert!(!missing.exists());
 }

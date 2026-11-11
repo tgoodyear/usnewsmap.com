@@ -40,6 +40,11 @@
 #   BRIDGE_STEP=gold-trust      GOLD_MAX_CER=<calibrated threshold> GOLD_MANIFEST_SHA256=<challenge hash>
 #                              GOLD_LANGUAGE=<source language> GOLD_PROFILE=<model profile>;
 #                               writes $SHARE_DIR/gold/trust.json from this campaign's complete reports
+#                               [GOLD_CAMPAIGNS=<campaign>,...] more campaigns' reports in the same build
+#                               (one fresh root per targeted host)
+#                               [GOLD_LINE_SCOPE=<language>/<profile> GOLD_LINE_EVIDENCE=<one line>]
+#                               writes the passing hosts to that line-job scope (#1621) instead,
+#                               and changes no other scope of the list
 #   BRIDGE_STEP=gold-bundle     builds the bundle v1 from its publishers onto the share, checks it
 #                               against the committed lock and writes <campaign>/bundle.tar
 #                               (gold-bundle.sh; the gold bundle job, bridge image only)
@@ -517,8 +522,26 @@ case "$step" in
     exec bash /usr/local/lib/usnm-boinc/gold-bundle.sh --share "$SHARE_DIR" --campaign "$GOLD_CAMPAIGN" ;;
   gold-trust)
     # No database or secrets: reads this campaign's reports and writes the share's trust list.
-    exec usnm-boinc gold trust --reports "$GOLD/out/reports.jsonl" \
-      --outcomes "$GOLD/out/native-outcomes.jsonl" \
+    evidence=(--reports "$GOLD/out/reports.jsonl" --outcomes "$GOLD/out/native-outcomes.jsonl")
+    if [ -n "${GOLD_CAMPAIGNS:-}" ]; then
+      [[ $GOLD_CAMPAIGNS =~ ^[a-z0-9][a-z0-9-]{0,40}(,[a-z0-9][a-z0-9-]{0,40}){0,31}$ ]] ||
+        fail "GOLD_CAMPAIGNS is 1 to 32 comma-separated campaigns, each 1-41 of [a-z0-9-]"
+      IFS=, read -r -a more <<< "$GOLD_CAMPAIGNS"
+      for c in "${more[@]}"; do
+        [ "$c" != "$GOLD_CAMPAIGN" ] || fail "GOLD_CAMPAIGNS repeats GOLD_CAMPAIGN"
+        evidence+=(--reports "$SHARE_DIR/gold/$c/out/reports.jsonl"
+          --outcomes "$SHARE_DIR/gold/$c/out/native-outcomes.jsonl")
+      done
+    fi
+    line=()
+    if [ -n "${GOLD_LINE_SCOPE:-}" ]; then
+      [[ $GOLD_LINE_SCOPE =~ ^[a-z]{3}/[A-Za-z0-9_+-]{1,64}$ ]] || fail "GOLD_LINE_SCOPE is <language>/<profile>"
+      [ -n "${GOLD_LINE_EVIDENCE:-}" ] || fail "GOLD_LINE_SCOPE needs GOLD_LINE_EVIDENCE"
+      line=(--line-scope "$GOLD_LINE_SCOPE" --line-evidence "$GOLD_LINE_EVIDENCE")
+    else
+      [ -z "${GOLD_LINE_EVIDENCE:-}" ] || fail "GOLD_LINE_EVIDENCE goes with GOLD_LINE_SCOPE"
+    fi
+    exec usnm-boinc gold trust "${evidence[@]}" ${line[@]+"${line[@]}"} \
       --max-cer "${GOLD_MAX_CER:?set GOLD_MAX_CER from campaign calibration}" \
       --manifest-sha256 "${GOLD_MANIFEST_SHA256:?set GOLD_MANIFEST_SHA256 to the calibrated challenge}" \
       --language "${GOLD_LANGUAGE:?set GOLD_LANGUAGE to the calibrated source language}" \
