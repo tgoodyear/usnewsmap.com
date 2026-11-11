@@ -278,36 +278,41 @@ async fn count_results(
     .await
 }
 
-/// What `cancel_jobs --name` does, in two steps that never revoke work a client has: each
-/// unsent result becomes over and not needed (one `UPDATE` that only matches a result still
-/// unsent, so a result the scheduler sends first stays its client's), then, if no result is in
-/// progress, the workunit is marked cancelled so the transitioner makes no more. Returns false,
-/// leaving the workunit live, when a result is in progress: a unit sent in the moment since the
-/// caller looked is the client's to finish. `cancel_jobs` takes no such condition, so it isn't
-/// run here.
+/// What `cancel_jobs --name` does, as one transaction that never revokes work a client has.
+/// It locks the workunit's results, so the scheduler can't send one while it runs (it would
+/// wait, then find it no longer unsent), marks the workunit cancelled only if no result is in
+/// progress, and then turns its unsent results into over and not needed. Returns false, with
+/// nothing changed, when a result is in progress: that unit is the client's to finish.
+/// `cancel_jobs` takes no such condition, so it isn't run here.
 async fn cancel_workunit(c: &Config, workunit: &str) -> anyhow::Result<bool> {
     checked_workunit(workunit)?;
-    query(
+    let out = query(
         c,
         &format!(
-            "UPDATE result r JOIN workunit w ON w.id=r.workunitid \
-             SET r.server_state={SERVER_STATE_OVER}, r.outcome={OUTCOME_DIDNT_NEED} \
-             WHERE w.name='{workunit}' AND r.server_state={SERVER_STATE_UNSENT}"
+            "START TRANSACTION; \
+             SELECT r.id FROM result r JOIN workunit w ON w.id=r.workunitid \
+               WHERE w.name='{workunit}' FOR UPDATE; \
+             UPDATE workunit w SET w.error_mask=w.error_mask|{WU_ERROR_CANCELLED}, \
+               w.transition_time=UNIX_TIMESTAMP() WHERE w.name='{workunit}' AND NOT EXISTS \
+               (SELECT 1 FROM result q WHERE q.workunitid=w.id AND q.server_state={SERVER_STATE_IN_PROGRESS}); \
+             SELECT ROW_COUNT(); \
+             UPDATE result r JOIN workunit w ON w.id=r.workunitid \
+               SET r.server_state={SERVER_STATE_OVER}, r.outcome={OUTCOME_DIDNT_NEED} \
+               WHERE w.name='{workunit}' AND r.server_state={SERVER_STATE_UNSENT} \
+               AND w.error_mask&{WU_ERROR_CANCELLED}<>0; \
+             COMMIT"
         ),
     )
     .await?;
-    if count_results(c, workunit, SERVER_STATE_IN_PROGRESS, None).await? > 0 {
-        return Ok(false);
-    }
-    query(
-        c,
-        &format!(
-            "UPDATE workunit SET error_mask=error_mask|{WU_ERROR_CANCELLED}, \
-             transition_time=UNIX_TIMESTAMP() WHERE name='{workunit}'"
-        ),
-    )
-    .await?;
-    Ok(true)
+    // The last line printed is the workunit update's row count.
+    let changed: i64 = out
+        .lines()
+        .last()
+        .context("the cancel printed no row count")?
+        .trim()
+        .parse()
+        .context("invalid row count from the database")?;
+    Ok(changed > 0)
 }
 
 /// A targeted unit for a host no version of the app can reach never leaves the server: the
