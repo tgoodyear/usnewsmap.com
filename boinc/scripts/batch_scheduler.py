@@ -1244,7 +1244,7 @@ class Transport:
             claims += got
             if len(got) < want:
                 # The queues ran dry, unless the step stopped at its receive budget with more
-                # to read (#1750): then go on while there is time.
+                # to read (#1751): then go on while there is time.
                 summary = self.last_claim_summary or {}
                 if summary.get("budget_spent") is not True or time.monotonic() - started > CLAIM_SECONDS:
                     break

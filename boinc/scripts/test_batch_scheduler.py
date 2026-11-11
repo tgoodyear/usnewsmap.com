@@ -2407,7 +2407,7 @@ class QueueModeTests(unittest.TestCase):
         self.assertFalse([a for a in self.fake.actions if a[0] == "deadline-retry"])
 
     def test_the_held_pages_list_goes_out_before_the_claim(self):
-        # #1750: archived held pages' messages, here and in a sibling plan, are named with their
+        # #1751: archived held pages' messages, here and in a sibling plan, are named with their
         # job's message sha256, so the claim step deletes them instead of claiming them again.
         own = {"job": "a" * 64, "message": "b" * 64}
         sibling = {"job": "c" * 64, "message": "d" * 64}
@@ -4738,7 +4738,7 @@ class StepChunkingTests(unittest.TestCase):
         self.assertEqual(asked, [30])
 
     def test_claim_goes_on_past_a_step_that_spent_its_receive_budget(self):
-        # #1750: a step that reads past settled held or unusable messages to its budget takes
+        # #1751: a step that reads past settled held or unusable messages to its budget takes
         # fewer pages than asked for while the queue still holds usable ones further back.
         t = batch.Transport(queue_config(), Path("."))
         steps = [(0, True), (40, True), (5, False), (100, False)]
