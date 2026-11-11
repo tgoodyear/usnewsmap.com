@@ -32,8 +32,57 @@ $script:InstallerUrl = 'https://boinc.berkeley.edu/dl/boinc_8.2.11_windows_x86_6
 # manifest (checked 2026-10-15); also require valid BOINC Authenticode.
 $script:InstallerHash = '3C9992CD3EAFD90A65D45FDC8BD411ABD574E657710384966672AC0E264D92CB'
 
+# Output for people reading a terminal: each message is wrapped to the window (at most
+# 100 columns) and followed by a blank line, sections get a short heading, and warnings
+# and errors are labelled. Volunteers found one-line walls of text hard to follow.
+function Get-OutputWidth {
+    $width = 100
+    try {
+        $columns = $Host.UI.RawUI.WindowSize.Width
+        if ($columns -gt 40) { $width = [Math]::Min($columns - 1, 100) }
+    } catch { }
+    return $width
+}
+
+function Format-Wrapped([string]$Text, [string]$Indent = '') {
+    $width = Get-OutputWidth
+    $lines = foreach ($paragraph in ($Text -split "`n")) {
+        $line = ''
+        foreach ($word in ($paragraph -split ' ')) {
+            if ($line -and ($line.Length + 1 + $word.Length) -gt $width) {
+                $line
+                $line = $Indent + $word
+            } elseif ($line) {
+                $line += ' ' + $word
+            } else {
+                $line = $word
+            }
+        }
+        $line
+    }
+    return ($lines -join "`n")
+}
+
+function Write-Note([string]$Text) {
+    Write-Host (Format-Wrapped $Text)
+    Write-Host ''
+}
+
+function Write-Heading([string]$Text) {
+    Write-Host ''
+    Write-Host $Text -ForegroundColor Cyan
+    Write-Host ('-' * $Text.Length) -ForegroundColor Cyan
+}
+
+function Write-Caution([string]$Text) {
+    Write-Host (Format-Wrapped "WARNING: $Text" '         ') -ForegroundColor Yellow
+    Write-Host ''
+}
+
 function Confirm-Consent([string]$Action) {
-    if ((Read-Host "$Action Type YES to consent (anything else cancels)") -cne 'YES') {
+    Write-Host ''
+    Write-Host (Format-Wrapped $Action)
+    if ((Read-Host 'Type YES to consent (anything else cancels)') -cne 'YES') {
         throw 'Cancelled. No further changes made.'
     }
 }
@@ -175,7 +224,7 @@ function Get-WindowsReadiness([string]$DataDirectory, [bool]$CpuAllowed, [bool]$
         if (-not $CpuAllowed) {
             throw 'BOINC is installed as a Windows service, which cannot access GPUs. Finish/report existing work, then use the official installer Advanced options to remove Service install before GPU volunteering. This helper will not stop/reconfigure the service. -AllowCpuOnly permits optional CPU participation without enabling GPU access.'
         }
-        Write-Warning 'Existing BOINC service detected: GPU access is unavailable in service mode. Only optional CPU participation is possible until you review the official installation.'
+        Write-Caution 'Existing BOINC service detected: GPU access is unavailable in service mode. Only optional CPU participation is possible until you review the official installation.'
         $gpu = $null
     }
     $diskGiB = 12
@@ -285,7 +334,7 @@ function Install-OfficialBoinc {
             throw 'Official BOINC download failed. Check internet/TLS/proxy access to boinc.berkeley.edu and retry. Nothing executed.'
         }
         Assert-VerifiedInstaller $installer
-        Write-Host 'In Advanced options leave Service install OFF (Windows services cannot use the GPU) and leave BOINC protected application execution at its secure default. At Finish, verify Launch BOINC Manager is unchecked; its launch is disabled on the installer command line as a safeguard. No WSL/Podman/toolkit is needed.'
+        Write-Note 'In Advanced options leave Service install OFF (Windows services cannot use the GPU) and leave BOINC protected application execution at its secure default. At Finish, verify Launch BOINC Manager is unchecked; its launch is disabled on the installer command line as a safeguard. No WSL/Podman/toolkit is needed.'
         Confirm-Consent 'Signature and SHA256 verified. Open the interactive BOINC installer now? Review its options before installing.'
         # LAUNCHPROGRAM is an upstream SecureCustomProperties MSI property.
         # Pass zero explicitly because the stock MSI defaults it to one; never
@@ -356,18 +405,19 @@ function Invoke-WindowsStatus {
     if (-not $installation) {
         throw 'BOINC is not installed. Run this helper with -Apply -InstallBoinc first (see docs/boinc/volunteer/windows.md).'
     }
-    Write-Host "BOINC $($installation.Version) at $($installation.Directory); data in $($installation.DataDirectory)."
+    Write-Heading 'usnewsmap on this computer'
+    Write-Note "BOINC $($installation.Version) at $($installation.Directory); data in $($installation.DataDirectory)."
     if (-not (Test-ProjectAttached $installation)) {
         throw 'usnewsmap is not attached to the local client. In BOINC Manager choose Tools > Add project, enter https://boinc.usnewsmap.com/ and sign in with your account, then run -Status again.'
     }
     $tasks = Get-ProjectTaskSummary $installation
     if ($tasks.Total -eq 0) {
-        Write-Host 'Attached to usnewsmap; no tasks on this computer right now. Work goes out in small batches, so this is normal. Check Manager''s Event Log for "Scheduler request completed".'
+        Write-Note 'Attached to usnewsmap; no tasks on this computer right now. Work goes out in small batches, so this is normal. Check Manager''s Event Log for "Scheduler request completed".'
     } else {
         $parts = foreach ($entry in $tasks.ByState.GetEnumerator()) { "$($entry.Value) $($entry.Key)" }
-        Write-Host "Attached to usnewsmap; $($tasks.Total) task(s) on this computer: $($parts -join ', ')."
+        Write-Note "Attached to usnewsmap; $($tasks.Total) task(s) on this computer: $($parts -join ', ')."
     }
-    Write-Host 'This is a local read-only check. Validation happens on the server; see Tasks on your account page at https://boinc.usnewsmap.com/.'
+    Write-Note 'This is a local read-only check. Validation happens on the server; see Tasks on your account page at https://boinc.usnewsmap.com/.'
 }
 
 function Open-BoincManager($Installation) {
@@ -381,26 +431,28 @@ function Invoke-WindowsOnboarding {
     $dataDirectory = Join-Path $env:ProgramData 'BOINC'
     if ($installation) { $dataDirectory = $installation.DataDirectory }
     $ready = Get-WindowsReadiness $dataDirectory $CpuAllowed (-not $installation)
+    Write-Heading 'This computer'
     if (-not $installation) {
-        Write-Host 'BOINC data location is not yet selected. Model-space verification is deferred until the installer finishes; choose a volume with sufficient space in Advanced options.'
+        Write-Note 'BOINC data location is not yet selected. Model-space verification is deferred until the installer finishes; choose a volume with sufficient space in Advanced options.'
     }
-    Write-Host "Native Windows preview: $($ready.RamGiB) GiB RAM; reserve $($ready.DiskGiB) GiB disk in BOINC preferences."
+    Write-Note "Native Windows preview: $($ready.RamGiB) GiB RAM; reserve $($ready.DiskGiB) GiB disk in BOINC preferences."
     if ($ready.Gpu) {
-        Write-Host "$($ready.Gpu.Vendor): $($ready.Gpu.Name); driver $($ready.Gpu.Driver); $($ready.Gpu.TotalMiB) MiB video memory. A task needs 7,000 MiB of it free when it starts, so close GPU-heavy apps while BOINC runs."
+        Write-Note "$($ready.Gpu.Vendor): $($ready.Gpu.Name); driver $($ready.Gpu.Driver); $($ready.Gpu.TotalMiB) MiB video memory. A task needs 7,000 MiB of it free when it starts, so close GPU-heavy apps while BOINC runs."
     } else {
-        Write-Warning 'CPU-only participation explicitly allowed. CPU app publication is not guaranteed; set CPU/GPU choices yourself in project preferences.'
+        Write-Caution 'CPU-only participation explicitly allowed. CPU app publication is not guaranteed; set CPU/GPU choices yourself in project preferences.'
     }
     if ($installation) {
-        Write-Host "Existing BOINC $($installation.Version); project data will not be moved or reset."
+        Write-Note "Existing BOINC $($installation.Version); project data will not be moved or reset."
         if ($installation.Version -lt $script:MinimumVersion) {
-            Write-Warning 'This client is below the recommended native pilot baseline (8.2.11).'
+            Write-Caution 'This client is below the recommended native pilot baseline (8.2.11).'
         }
     }
-    else { Write-Host 'BOINC is not installed. Use -Apply -InstallBoinc for the verified interactive installer.' }
-    Write-Warning 'Project participation includes production and experimental tasks, including Qwen. Operators bound pilot campaigns; work is not guaranteed. No separate experiment flag or profile update is required.'
-    Write-Host 'No WSL, Podman, Docker or CUDA toolkit is installed. The helper does not edit BOINC preferences/account files, firewall or execution policy; the optional BOINC installer applies the installation settings you review.'
+    else { Write-Note 'BOINC is not installed. Use -Apply -InstallBoinc for the verified interactive installer.' }
+    Write-Caution 'Project participation includes production and experimental tasks, including Qwen. Operators bound pilot campaigns; work is not guaranteed. No separate experiment flag or profile update is required.'
+    Write-Note 'No WSL, Podman, Docker or CUDA toolkit is installed. The helper does not edit BOINC preferences/account files, firewall or execution policy; the optional BOINC installer applies the installation settings you review.'
     if (-not $ApplyChanges) {
-        Write-Host 'CHECK ONLY: no network, downloads, client starts or attachment. Rerun with -Apply to continue interactively; -InstallBoinc additionally permits an installation prompt.'
+        Write-Heading 'Next step'
+        Write-Note 'CHECK ONLY: no network, downloads, client starts or attachment. Rerun with -Apply to continue interactively; -InstallBoinc additionally permits an installation prompt.'
         return
     }
     Test-ProjectReachable
@@ -419,6 +471,7 @@ function Invoke-WindowsOnboarding {
     }
     Confirm-Consent 'On a computer you own or have permission to use, open local BOINC Manager? Manager may start the client and resume its existing projects. Adding usnewsmap is a separate, deliberate step inside Manager.'
     Open-BoincManager $installation
+    Write-Host ''
     Write-Host @"
 Join in this order:
   1. At $script:ProjectUrl create/sign in to YOUR account.
@@ -439,14 +492,16 @@ Join in this order:
   4. In Manager's Event Log verify the GPU is detected and look for
      Scheduler request completed. Service installs cannot access Windows GPUs.
 "@
+    Write-Host ''
     [void](Read-Host 'Complete/review these steps in Manager, then press Enter to verify local attachment (Ctrl+C cancels)')
     if (-not (Test-ProjectAttached $installation)) {
         throw 'usnewsmap is not attached to the local client. In Manager add https://boinc.usnewsmap.com/ using your account, check account credentials and Event Log for network/scheduler errors, then rerun. No account or project was changed by this check.'
     }
-    Write-Host 'Local usnewsmap attachment verified. This is NOT evidence of scheduler acceptance, app availability or a completed task.'
-    Write-Host 'Experimental and production work use this SAME account, attachment, client, CPU/GPU choices, pause/resource preferences, project Update and automatic result/diagnostic return. No separate experiment enrollment; never reattach or sideload apps/models to switch cohorts.'
-    Write-Host 'In Manager check Event Log and Tasks: no work may mean a server-side cohort is closed, no published Windows app, or unmet preferences/resources. Experimental failures appear as normal Computation error and diagnostics return automatically; no manual log upload. Do not enable WSL or delete model caches to fix this.'
-    Write-Host 'Live Windows acceptance still requires task download/run, suspend/resume, upload, server validation and collection. Use No new tasks to stop new work; let existing tasks finish/report.'
+    Write-Heading 'Attached'
+    Write-Note 'Local usnewsmap attachment verified. This is NOT evidence of scheduler acceptance, app availability or a completed task.'
+    Write-Note 'Experimental and production work use this SAME account, attachment, client, CPU/GPU choices, pause/resource preferences, project Update and automatic result/diagnostic return. No separate experiment enrollment; never reattach or sideload apps/models to switch cohorts.'
+    Write-Note 'In Manager check Event Log and Tasks: no work may mean a server-side cohort is closed, no published Windows app, or unmet preferences/resources. Experimental failures appear as normal Computation error and diagnostics return automatically; no manual log upload. Do not enable WSL or delete model caches to fix this.'
+    Write-Note 'Live Windows acceptance still requires task download/run, suspend/resume, upload, server validation and collection. Use No new tasks to stop new work; let existing tasks finish/report.'
 }
 
 if ($MyInvocation.InvocationName -ne '.') {
@@ -461,7 +516,11 @@ if ($MyInvocation.InvocationName -ne '.') {
                 -CpuAllowed $AllowCpuOnly.IsPresent -Directory $BoincDirectory
         }
     } catch {
-        Write-Error $_.Exception.Message -ErrorAction Continue
+        # A plain, wrapped message instead of PowerShell's error record (CategoryInfo,
+        # FullyQualifiedErrorId), with blank lines so the next prompt stands apart.
+        Write-Host ''
+        Write-Host (Format-Wrapped "ERROR: $($_.Exception.Message)" '       ') -ForegroundColor Red
+        Write-Host ''
         exit 1
     }
 }

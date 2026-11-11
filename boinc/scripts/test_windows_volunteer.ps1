@@ -598,4 +598,29 @@ Test-Case 'declining execution after verification still cleans download' {
     Assert-True (($script:Calls -join ',') -match 'cleanup,cleanup$') 'cancelled download removed'
 }
 
+Test-Case 'long messages wrap at word boundaries within the output width' {
+    $text = (1..60 | ForEach-Object { "word$_" }) -join ' '
+    $wrapped = Format-Wrapped $text '  '
+    $lines = $wrapped -split "`n"
+    $width = Get-OutputWidth
+    Assert-True ($width -ge 40 -and $width -le 100) 'width between 40 and 100 columns'
+    Assert-True ($lines.Count -gt 1) 'long text split over several lines'
+    Assert-True (@($lines | Where-Object { $_.Length -gt $width }).Count -eq 0) 'no line wider than the width'
+    Assert-True ((($lines | ForEach-Object { $_.Trim() }) -join ' ') -eq $text) 'every word kept, in order'
+    Assert-True (@($lines | Select-Object -Skip 1 | Where-Object { -not $_.StartsWith('  ') }).Count -eq 0) 'continuation lines indented'
+    Assert-True ((Format-Wrapped "one`ntwo") -eq "one`ntwo") 'existing line breaks kept'
+}
+
+Test-Case 'a failure prints a plain ERROR block, not an error record, and exits 1' {
+    $shell = (Get-Process -Id $PID).Path
+    $missing = Join-Path ([IO.Path]::GetTempPath()) ('usnm-no-boinc-' + [guid]::NewGuid())
+    $result = Invoke-BoundedProcess $shell `
+        "-NoProfile -NonInteractive -File `"$script:Helper`" -Status -BoincDirectory `"$missing`"" `
+        $PSScriptRoot
+    $all = "$($result.Output)`n$($result.ErrorOutput)"
+    Assert-True ($result.ExitCode -eq 1) "exit code 1, got $($result.ExitCode)"
+    Assert-True ($all -match 'ERROR: ') 'labelled ERROR message'
+    Assert-True ($all -notmatch 'CategoryInfo|FullyQualifiedErrorId') 'no PowerShell error record'
+}
+
 Write-Host "$script:Passed Windows onboarding contract tests passed. Mocks are NOT live Windows/GPU/installer acceptance."
