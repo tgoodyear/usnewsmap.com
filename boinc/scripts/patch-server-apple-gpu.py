@@ -32,7 +32,10 @@ BATCH_INFEASIBLE_PATCHED = """\
         }
         return true;
     }
-    if (wu && wu->batch > 0) {
+    // A class that names its own bounds (min_batch/max_batch in plan_class_spec.xml) is judged by
+    // them alone: the stock checks above already refuse any other batch, so the table below
+    // would only second-guess the spec (and refuse a class it doesn't list, like docker_lines).
+    if (wu && wu->batch > 0 && !pc->min_batch && !pc->max_batch) {
         const int expected_batch = pc->docker
             ? (!strcmp(pc->name, "docker_mt_2b") ? 12
             : (!strcmp(pc->name, "docker_nvidia_cuda_8b") ? 18

@@ -153,7 +153,7 @@ const char* strstr(const char* a, const char* b) {
     }
     return nullptr;
 }
-struct PC { int max_batch = 0; bool docker; const char* name; int min_wu_id=0, max_wu_id=0; };
+struct PC { int max_batch = 0; bool docker; const char* name; int min_wu_id=0, max_wu_id=0; int min_batch = 0; };
 struct WU { int batch; int id=100; };
 struct { bool debug_version_select = false; } config;
 struct { template<class... T> void printf(T...) {} } log_messages;
@@ -162,21 +162,40 @@ bool infeasible(const PC* pc, const WU* wu) {
     // Unchanged pinned BOINC WU range checks precede the patched batch gate.
     if (pc->min_wu_id && wu->id < pc->min_wu_id) return true;
     if (pc->max_wu_id && wu->id > pc->max_wu_id) return true;
+    // Stock BOINC (sched/plan_class_spec.cpp at the pinned commit) checks min_batch here.
+    if (pc->min_batch && wu->batch < pc->min_batch) return true;
 GATE
 }
 int main() {
+    // Bounds as in boinc/project/plan_class_spec.xml: min_batch and max_batch are both set on
+    // the batch-bound classes and neither on docker_mt, docker_nvidia_cuda and mt.
     const PC classes[] = {
         {0, true, "docker_mt"}, {0, true, "docker_nvidia_cuda"},
-        {12, true, "docker_mt_2b"}, {18, true, "docker_nvidia_cuda_8b"},
-        {0, false, "mt"}, {8, false, "apple_gpu_8b"},
-        {8, false, "nvidia_cuda_8b"}, {2, false, "nvidia_cuda_2b"},
-        {104, true, "docker_intel_opencl_4b"}
+        {12, true, "docker_mt_2b", 0, 0, 12}, {18, true, "docker_nvidia_cuda_8b", 0, 0, 18},
+        {0, false, "mt"}, {8, false, "apple_gpu_8b", 0, 0, 8},
+        {8, false, "nvidia_cuda_8b", 0, 0, 8}, {2, false, "nvidia_cuda_2b", 0, 0, 2},
+        {104, true, "docker_intel_opencl_4b", 0, 0, 104}
     };
     const int expected[] = {1, 1, 12, 18, 2, 8, 8, 2, 104};
     const int batches[] = {1, 12, 18, 2, 8, 104};
     for (int i = 0; i < 9; ++i) {
         for (int b : batches) { WU wu{b}; assert(infeasible(&classes[i], &wu) == (b != expected[i])); }
-        WU legacy{0}; assert(!infeasible(&classes[i], &legacy));
+        // A unit with no batch: the patched table never applies, and the stock min_batch check
+        // refuses it on every class that names a minimum.
+        WU legacy{0}; assert(infeasible(&classes[i], &legacy) == (classes[i].min_batch != 0));
+    }
+    // A plain docker class has no bounds and still expects batch 1 of any numbered unit.
+    {
+        PC plain{0, true, "docker"};
+        WU one{1}, lines{1621}, none{0};
+        assert(!infeasible(&plain, &one) && infeasible(&plain, &lines) && !infeasible(&plain, &none));
+    }
+    // docker_lines (#1621) names batch 1621 as both bounds, so only that batch is feasible.
+    {
+        PC lines_class{1621, true, "docker_lines", 0, 0, 1621};
+        WU ok{1621}; assert(!infeasible(&lines_class, &ok));
+        const int refused[] = {0, 1, 12, 18, 104, 1620, 1622};
+        for (int b : refused) { WU wu{b}; assert(infeasible(&lines_class, &wu)); }
     }
     const char* native_names[] = {"nvidia_cuda_2b", "nvidia_cuda_8b"};
     const int ids[] = {0, 1, 2, 100, 2147483647};
