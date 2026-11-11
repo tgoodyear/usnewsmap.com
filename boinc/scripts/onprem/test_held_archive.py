@@ -1,4 +1,4 @@
-"""The daily held-page archive's run (#835): python3 -m unittest -v boinc/scripts/onprem/test_held_archive.py
+"""The held-page archive's run (#835): python3 -m unittest -v boinc/scripts/onprem/test_held_archive.py
 
 held-archive.sh runs against fakes: systemctl (the controller's timer and service), the step
 command (the BOINC host's bridge step, over ssh in production) and archive_history.py. Linux
