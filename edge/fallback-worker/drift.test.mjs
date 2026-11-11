@@ -58,6 +58,31 @@ test("a missing, a moved and an extra route are drift", () => {
   ]);
 });
 
+test("routes on a foreign route host are not drift", () => {
+  const s = live();
+  s.routes.push(
+    { pattern: "boinc-dev.usnewsmap.com/*", script: "cloud-boinc-web", request_limit_fail_open: false },
+    { pattern: "boinc-dev.usnewsmap.com/sched*", script: "cloud-boinc-scheduler", request_limit_fail_open: false },
+  );
+  assert.ok(expected.foreign_route_hosts.includes("boinc-dev.usnewsmap.com"));
+  assert.deepEqual(compare(expected, s), []);
+});
+
+test("an unknown route on the apex, www or api host is still drift", () => {
+  const s = live();
+  s.routes.push(
+    { pattern: "usnewsmap.com/admin/*", script: "cloud-boinc-admin" },
+    { pattern: "www.usnewsmap.com/upload*", script: "cloud-boinc-files" },
+    { pattern: "api.usnewsmap.com/sched*", script: "cloud-boinc-scheduler" },
+    { pattern: "boinc-dev.usnewsmap.com/*", script: "cloud-boinc-web" },
+  );
+  assert.deepEqual(compare(expected, s), [
+    "route usnewsmap.com/admin/*: not in zone-expected.json",
+    "route www.usnewsmap.com/upload*: not in zone-expected.json",
+    "route api.usnewsmap.com/sched*: not in zone-expected.json",
+  ]);
+});
+
 test("a missing or extra custom domain is drift", () => {
   const s = live((x) => ({
     ...x,

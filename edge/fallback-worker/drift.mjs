@@ -24,18 +24,27 @@ function differences(expected, actual, path) {
     : [`${path}: expected ${JSON.stringify(expected)}, found ${JSON.stringify(actual ?? null)}`];
 }
 
+/** The hostname a route pattern matches, such as `boinc-dev.usnewsmap.com` for `boinc-dev.usnewsmap.com/upload*`. */
+function routeHost(pattern) {
+  return pattern.split("/")[0].toLowerCase();
+}
+
 /**
  * The drift between `expected` (zone-expected.json) and `live`, the settings as read:
  * `{ tracing, observability, routes: [{pattern, script, request_limit_fail_open}],
  * domains: [{hostname, service}] }`. Routes and domains must match exactly: one the
- * file doesn't name is drift too.
+ * file doesn't name is drift too. Routes on a host in `foreign_route_hosts` belong
+ * to another project's deploy and are not compared.
  */
 export function compare(expected, live) {
   const problems = [
     ...differences(expected.tracing, live.tracing, "tracing"),
     ...differences(expected.worker_observability, live.observability, "worker.observability"),
   ];
-  const routes = Object.fromEntries((live.routes ?? []).map((r) => [r.pattern, r]));
+  const foreign = new Set((expected.foreign_route_hosts ?? []).map((h) => h.toLowerCase()));
+  const routes = Object.fromEntries(
+    (live.routes ?? []).filter((r) => !foreign.has(routeHost(r.pattern))).map((r) => [r.pattern, r]),
+  );
   for (const pattern of Object.keys(expected.routes)) {
     if (!routes[pattern]) problems.push(`route ${pattern}: missing`);
     else problems.push(...differences(expected.routes[pattern], routes[pattern], `route ${pattern}`));
