@@ -47,10 +47,15 @@ case "$*" in
     fi;;
   *"usnm_spot_"*) printf '%s\n' "${SPOT_HOST:-2}";;
   *"SELECT r.hostid"*) printf '%s\n' "${SOURCE_HOST:-1}";;
+  *"UPDATE "*) printf 'sql %s\n' "$*" >> "$TEST_OPS"; exit "${UPDATE_STATUS:-0}";;
   *"DELETE a FROM assignment"*) printf 'sql %s\n' "$*" >> "$TEST_OPS";;
   *"FROM assignment"*) printf '%s\n' "${ASSIGNMENTS:-1}";;
   *"error_mask"*) printf '%s\n' "${CANCELLED:-0}";;
-  *"r.server_state=4"*) printf '%s\n' "${IN_PROGRESS:-0}";;
+  *"r.server_state=4"*)
+    # A unit the scheduler sends while it is being cancelled shows up after the first UPDATE.
+    if grep -q "UPDATE result" "$TEST_OPS" 2>/dev/null; then printf '%s\n' "${IN_PROGRESS_AFTER:-${IN_PROGRESS:-0}}"
+    else printf '%s\n' "${IN_PROGRESS:-0}"; fi;;
+  *"r.outcome=1"*) printf '%s\n' "${SUCCEEDED:-0}";;
   *"r.workunitid=w.id"*) printf '%b' "${GOLD_STATUS:-}";;
   *) exit 5;;
 esac
@@ -59,13 +64,6 @@ esac
         script(
             &bin.join("dir_hier_path"),
             "#!/bin/sh\nprintf 'download/%s\\n' \"$1\"\n",
-        );
-        script(
-            &bin.join("cancel_jobs"),
-            r#"#!/bin/sh
-printf 'cancel_jobs %s\n' "$*" >> "$TEST_OPS"
-exit "${CANCEL_STATUS:-0}"
-"#,
         );
         script(
             &bin.join("create_work"),
@@ -441,31 +439,81 @@ async fn a_host_newly_skipped_for_having_no_container_runtime_loses_its_unit_and
         .contains(&format!("{workunit} is in progress on host 5; leaving it")));
     assert!(c.ops().is_empty());
 
+    // A success beside a replacement still unsent is a finished unit, not one to cancel.
+    let out = run(&without_docker, true, &[pending, ("SUCCEEDED", "1")]);
+    success(&out);
+    assert!(String::from_utf8(out.stderr).unwrap().contains(&format!(
+        "{workunit} has a successful result from host 5; leaving it"
+    )));
+    assert!(c.ops().is_empty());
+
     // A failing cancel stops the pass before the assignment is touched: with the unit live and
     // no assignment, any host could be sent it.
-    let out = run(&without_docker, true, &[pending, ("CANCEL_STATUS", "1")]);
+    let out = run(&without_docker, true, &[pending, ("UPDATE_STATUS", "1")]);
     assert!(!out.status.success());
-    assert!(String::from_utf8_lossy(&out.stderr).contains("cancel_jobs failed"));
-    assert_eq!(c.ops(), [format!("cancel_jobs --name {workunit}")]);
+    let ops = c.ops();
+    assert_eq!(ops.len(), 1, "{ops:?}");
+    assert!(ops[0].contains("UPDATE result"), "{}", ops[0]);
     std::fs::remove_file(c.ops_log()).unwrap();
 
-    // Executing cancels the unit, then deletes the assignment to host 5, only.
+    // The scheduler sent the unit in the moment since it was looked at: the unsent result was
+    // taken from it, but the workunit isn't marked cancelled, and the assignment stays.
+    let out = run(
+        &without_docker,
+        true,
+        &[pending, ("IN_PROGRESS_AFTER", "1")],
+    );
+    success(&out);
+    assert!(String::from_utf8(out.stderr).unwrap().contains(&format!(
+        "{workunit} was sent to host 5 as it was cancelled; leaving it"
+    )));
+    let ops = c.ops();
+    assert_eq!(ops.len(), 1, "{ops:?}");
+    assert!(ops[0].contains("UPDATE result"), "{}", ops[0]);
+    std::fs::remove_file(c.ops_log()).unwrap();
+
+    // Executing cancels the unit (its unsent results over and not needed, then the workunit
+    // marked cancelled), then deletes the assignment to host 5, only.
     let out = run(&without_docker, true, &[pending]);
     success(&out);
     assert_eq!(String::from_utf8(out.stdout).unwrap().trim(), "[]");
     let ops = c.ops();
-    assert_eq!(ops.len(), 2, "{ops:?}");
-    assert_eq!(ops[0], format!("cancel_jobs --name {workunit}"));
-    assert!(ops[1].contains("DELETE a FROM assignment"), "{}", ops[1]);
+    assert_eq!(ops.len(), 3, "{ops:?}");
     assert!(
-        ops[1].contains(&format!("w.name='{workunit}'")),
+        ops[0].contains("UPDATE result r JOIN workunit w"),
+        "{}",
+        ops[0]
+    );
+    assert!(
+        ops[0].contains("r.server_state=5, r.outcome=5"),
+        "{}",
+        ops[0]
+    );
+    assert!(
+        ops[0].contains(&format!("w.name='{workunit}' AND r.server_state=2")),
+        "{}",
+        ops[0]
+    );
+    assert!(
+        ops[1].contains("UPDATE workunit SET error_mask=error_mask|16"),
         "{}",
         ops[1]
     );
     assert!(
-        ops[1].contains("a.target_type=1 AND a.target_id=5"),
+        ops[1].contains(&format!("WHERE name='{workunit}'")),
         "{}",
         ops[1]
+    );
+    assert!(ops[2].contains("DELETE a FROM assignment"), "{}", ops[2]);
+    assert!(
+        ops[2].contains(&format!("w.name='{workunit}'")),
+        "{}",
+        ops[2]
+    );
+    assert!(
+        ops[2].contains("a.target_type=1 AND a.target_id=5"),
+        "{}",
+        ops[2]
     );
     assert!(String::from_utf8(out.stderr).unwrap().contains(&format!(
         "cancelled {workunit} and deleted its assignment to host 5"

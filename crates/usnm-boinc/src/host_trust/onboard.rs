@@ -204,8 +204,12 @@ async fn legacy_blocks_attempt(
     }
 }
 
+/// BOINC's `RESULT_SERVER_STATE_UNSENT`: the result is waiting for a client.
+const SERVER_STATE_UNSENT: i64 = 2;
 /// BOINC's `RESULT_SERVER_STATE_IN_PROGRESS`: the result has gone to a client.
 const SERVER_STATE_IN_PROGRESS: i64 = 4;
+/// BOINC's `RESULT_OUTCOME_DIDNT_NEED`: how `cancel_jobs` closes an unsent result.
+const OUTCOME_DIDNT_NEED: i64 = 5;
 /// BOINC's `WU_ERROR_CANCELLED` bit of `workunit.error_mask`, which `cancel_jobs` sets.
 const WU_ERROR_CANCELLED: i64 = 16;
 /// `assignment.target_type` of an assignment to one host.
@@ -255,22 +259,55 @@ async fn delete_host_assignments(c: &Config, workunit: &str, host: u64) -> anyho
     Ok(())
 }
 
-/// BOINC's own `cancel_jobs --name`: it marks the workunit cancelled and its unsent results
-/// not needed, so the transitioner makes no more.
-async fn cancel_workunit(c: &Config, workunit: &str) -> anyhow::Result<()> {
+/// Results of `workunit` with this server state, and (with `outcome`) this outcome.
+async fn count_results(
+    c: &Config,
+    workunit: &str,
+    server_state: i64,
+    outcome: Option<i64>,
+) -> anyhow::Result<i64> {
     checked_workunit(workunit)?;
-    let out = tokio::time::timeout(
-        std::time::Duration::from_secs(60),
-        tokio::process::Command::new(c.project.join("bin/cancel_jobs"))
-            .current_dir(&c.project)
-            .args(["--name", workunit])
-            .kill_on_drop(true)
-            .output(),
+    let outcome = outcome.map_or(String::new(), |o| format!(" AND r.outcome={o}"));
+    count(
+        c,
+        &format!(
+            "SELECT COUNT(*) FROM result r JOIN workunit w ON w.id=r.workunitid \
+             WHERE w.name='{workunit}' AND r.server_state={server_state}{outcome}"
+        ),
     )
     .await
-    .context("cancel_jobs timed out")??;
-    ensure!(out.status.success(), "cancel_jobs failed for {workunit}");
-    Ok(())
+}
+
+/// What `cancel_jobs --name` does, in two steps that never revoke work a client has: each
+/// unsent result becomes over and not needed (one `UPDATE` that only matches a result still
+/// unsent, so a result the scheduler sends first stays its client's), then, if no result is in
+/// progress, the workunit is marked cancelled so the transitioner makes no more. Returns false,
+/// leaving the workunit live, when a result is in progress: a unit sent in the moment since the
+/// caller looked is the client's to finish. `cancel_jobs` takes no such condition, so it isn't
+/// run here.
+async fn cancel_workunit(c: &Config, workunit: &str) -> anyhow::Result<bool> {
+    checked_workunit(workunit)?;
+    query(
+        c,
+        &format!(
+            "UPDATE result r JOIN workunit w ON w.id=r.workunitid \
+             SET r.server_state={SERVER_STATE_OVER}, r.outcome={OUTCOME_DIDNT_NEED} \
+             WHERE w.name='{workunit}' AND r.server_state={SERVER_STATE_UNSENT}"
+        ),
+    )
+    .await?;
+    if count_results(c, workunit, SERVER_STATE_IN_PROGRESS, None).await? > 0 {
+        return Ok(false);
+    }
+    query(
+        c,
+        &format!(
+            "UPDATE workunit SET error_mask=error_mask|{WU_ERROR_CANCELLED}, \
+             transition_time=UNIX_TIMESTAMP() WHERE name='{workunit}'"
+        ),
+    )
+    .await?;
+    Ok(true)
 }
 
 /// A targeted unit for a host no version of the app can reach never leaves the server: the
@@ -316,16 +353,14 @@ async fn retire_unreachable(
 async fn retire_unit(c: &Config, workunit: &str, host: u64, execute: bool) -> anyhow::Result<bool> {
     match query_gold_status(c, workunit).await? {
         GoldStatus::Pending => {
-            let in_progress = count(
-                c,
-                &format!(
-                    "SELECT COUNT(*) FROM result r JOIN workunit w ON w.id=r.workunitid \
-                 WHERE w.name='{workunit}' AND r.server_state={SERVER_STATE_IN_PROGRESS}"
-                ),
-            )
-            .await?;
-            if in_progress > 0 {
+            // A unit that has a result in progress, or a success beside a replacement still
+            // unsent, is a client's work: left alone.
+            if count_results(c, workunit, SERVER_STATE_IN_PROGRESS, None).await? > 0 {
                 eprintln!("{workunit} is in progress on host {host}; leaving it");
+                return Ok(false);
+            }
+            if count_results(c, workunit, SERVER_STATE_OVER, Some(OUTCOME_SUCCESS)).await? > 0 {
+                eprintln!("{workunit} has a successful result from host {host}; leaving it");
                 return Ok(false);
             }
             if !execute {
@@ -333,7 +368,10 @@ async fn retire_unit(c: &Config, workunit: &str, host: u64, execute: bool) -> an
                 return Ok(true);
             }
             // The unit first: with the assignment gone and the unit live, any host could get it.
-            cancel_workunit(c, workunit).await?;
+            if !cancel_workunit(c, workunit).await? {
+                eprintln!("{workunit} was sent to host {host} as it was cancelled; leaving it");
+                return Ok(false);
+            }
             delete_host_assignments(c, workunit, host).await?;
             eprintln!("cancelled {workunit} and deleted its assignment to host {host}");
             Ok(true)
