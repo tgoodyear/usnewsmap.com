@@ -306,7 +306,7 @@ and `--apache-floor`. Nothing in the image changes and nothing restarts. It fail
 - An upgrade the image's own apt sources offer. The journal line says `SECURITY` when it comes from the security archive and `UPDATE` otherwise: a security fix can also arrive in a point release, so both fail. Building `security-overlay.Containerfile` on the image clears them.
 - `KEPT-BACK`: a package that `apt-get upgrade` leaves alone because upgrading it needs a new package or a removal. apt prints no upgrade line for it, so the check reads the "not upgraded" count. The overlay and the Containerfiles run the same `apt-get upgrade`, so building the overlay does not clear it; install the package by name in their upgrade step, through a pull request.
 - `BELOW-FLOOR`: `php8.2-common` or `apache2` older than its floor.
-- `MYSQL-DRIFT`, below.
+- `MYSQL-DRIFT` and `MYSQL-BELOW-FLOOR`, below. A same-version rebuild of the MySQL tag (`MYSQL-REBUILD`) is an informational line and doesn't fail the unit.
 
 It exits 3, which also fails the unit, when it can't answer. Examples are a failed `apt-get update`, no security archive in the image's apt
 sources, no digest in the MySQL unit, and a failed `podman pull` or `podman image inspect` of the MySQL image. A check that couldn't run never
@@ -336,7 +336,7 @@ systemctl daemon-reload
 Run by hand with `usnm-image-security-check --php-floor <version> --apache-floor <version>`; add
 `--image <image>` to check another image (for example the overlay before step 3), `--mysql-image <name:tag>`
 to check another tag of the MySQL image (default `docker.io/library/mysql:8.4`), and `--skip-mysql`
-to leave the MySQL part out. `--mysql-image` must be a name with a tag; a registry port is fine.
+to leave the MySQL part out, and `--mysql-floor <version>` to fail while the pinned MySQL is older than a version a security advisory fixed (see below). `--mysql-image` must be a name with a tag; a registry port is fine.
 The check exits 2 for a name with no tag or with an `@digest`,
 because it asks what the tag resolves to now and neither can show a moved tag.
 
@@ -346,16 +346,24 @@ The official MySQL image is Oracle Linux based, so `bookworm-security` doesn't a
 signal is a new digest for the `8.4` tag. `mysql-setup.sh` resolves `docker.io/library/mysql:8.4` to a
 digest once and writes it into `usnm-boinc-mysql.service`, so the database stays on that image until
 someone moves it. The check pulls the tag (`podman pull -q`, then `podman image inspect` for its
-`.Digest`, as `mysql-setup.sh` does) and reports `MYSQL-DRIFT` when the digest differs from the
-unit's. It only reports, and a new digest is not always a security fix, so read the 8.4 release
-notes first.
+`.Digest`, as `mysql-setup.sh` does). A new digest alone does not fail the unit: Oracle rebuilds the
+`8.4` tag on a base-image refresh without a new MySQL release (the pin and the tag were both
+`8.4.13-1.el9` on 11 November 2026, under different digests), and a nightly failure for that
+only teaches people to ignore the alert. So the check also reads `MYSQL_VERSION` from the
+environment of the pinned image (`name@digest`) and of the tag, and:
+
+- Same version under a new digest: logs `MYSQL-REBUILD` and passes.
+- A different `MYSQL_VERSION`, or one that can't be read for either image, so a rebuild can't be shown: `MYSQL-DRIFT`, which fails the unit.
+- `--mysql-floor <version>` given and the pinned `MYSQL_VERSION` older than it: `MYSQL-BELOW-FLOOR`, which fails the unit whether or not the digest moved, until the database is rolled onto a fixed version. Set it in `usnm-image-security-check.service` through a pull request when a MySQL security advisory (Oracle's quarterly Critical Patch Update) fixes something in 8.4 that the pin predates. Without the flag there is no such check.
+
+It only reports. A new version is not always a security fix, so read the 8.4 release notes first.
 
 To roll the database onto the new digest, when no bridge step is running (the restart takes
 `usnm-boinc-server.service` down with it, because the server requires the database):
 
 1. Run `mysql-setup.sh` again on the host. It is safe to re-run: it keeps the CA, certificates, data and secrets, pulls the tag, and writes the new digest into the unit.
 2. `systemctl restart usnm-boinc-mysql.service`. MySQL gets up to 110 seconds to stop cleanly (`--stop-timeout 110`).
-3. `systemctl start usnm-image-security-check.service` no longer reports drift.
+3. `systemctl start usnm-image-security-check.service` no longer reports drift or a version below the floor.
 
 ## Moving the data
 
