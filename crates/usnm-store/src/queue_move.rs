@@ -72,6 +72,9 @@ pub enum Outcome {
     /// Sent to the target, but the source's lease had gone by the delete (the visibility
     /// timeout ran out, or another receiver took it): it will be moved again, a duplicate.
     SentLeaseLost,
+    /// Sent to the target, but the source's delete failed (a timeout or a server error): the
+    /// move stops here, and the message may be sent again by the next run.
+    SentDeleteFailed,
     /// Read with a peek (dry run); nothing sent or deleted.
     Peeked,
 }
@@ -185,10 +188,19 @@ pub async fn move_messages(
                     Ok(()) => Outcome::Moved,
                     Err(e) if e.downcast_ref::<LeaseLost>().is_some() => Outcome::SentLeaseLost,
                     Err(e) => {
-                        // Sent but not deleted: it will come again.
-                        let mut t = tally.lock().expect("tally");
-                        t.sent_lease_lost += 1;
-                        t.digest.add(hash);
+                        // Sent but not deleted: it may come again, so it is counted and logged
+                        // like a lost lease before the error stops the move.
+                        {
+                            let mut t = tally.lock().expect("tally");
+                            t.sent_lease_lost += 1;
+                            t.digest.add(hash);
+                        }
+                        record(&Record {
+                            source_id: Some(msg.id.clone()),
+                            dequeue_count: Some(msg.dequeue_count),
+                            sha256: hex(&hash),
+                            outcome: Outcome::SentDeleteFailed,
+                        });
                         return Err(e.context(format!("deleting {} from {from_queue}", msg.id)));
                     }
                 };
@@ -223,6 +235,24 @@ pub async fn move_messages(
     };
     futures::future::join_all((0..opts.concurrency.max(1)).map(|_| worker())).await;
     let t = tally.into_inner().expect("tally");
+    let source_count_after = count(from, from_queue, progress).await;
+    let mut error = first_error.into_inner().expect("error");
+    // An empty receive means nothing is visible, not that nothing is left: messages hidden
+    // under another receiver's lease stay behind. Unless --max stopped the move, a source that
+    // still counts messages makes it incomplete.
+    let stopped_at_max = opts.max.is_some_and(|max| t.received >= max);
+    if error.is_none() && !stopped_at_max {
+        match source_count_after {
+            Some(0) => {}
+            Some(n) => {
+                error = Some(format!(
+                    "{from_queue} still holds about {n} messages (hidden under other leases, or \
+                     sent again); run again once they are visible"
+                ))
+            }
+            None => error = Some(format!("could not count {from_queue} after the move")),
+        }
+    }
     let report = Report {
         dry_run: false,
         received: t.received,
@@ -234,10 +264,10 @@ pub async fn move_messages(
         duplicate_bodies: t.digest.duplicates(),
         body_digest: t.digest.sum_hex(),
         source_count_before,
-        source_count_after: count(from, from_queue, progress).await,
+        source_count_after,
         target_count_before,
         target_count_after: count(to, to_queue, progress).await,
-        error: first_error.into_inner().expect("error"),
+        error,
     };
     progress(&format!(
         "{from_queue} -> {to_queue}: {} moved, {} sent with the lease lost",
@@ -529,6 +559,100 @@ mod tests {
         assert_eq!(r.target_count_before, None);
         // Received messages stay at the source (hidden until their timeout).
         assert_eq!(from.approximate_count("ocr-bulk").await.unwrap(), 5);
+    }
+
+    #[tokio::test]
+    async fn hidden_messages_left_behind_make_the_move_incomplete() {
+        let (dir, from, _) = filled(3).await;
+        // Another receiver holds one under a long lease.
+        let held = from
+            .receive("ocr-bulk", Duration::from_secs(3600))
+            .await
+            .unwrap()
+            .unwrap();
+        let to = LocalQueue::new(dir.path().join("dst"));
+        let r = move_messages(
+            &from,
+            "ocr-bulk",
+            &to,
+            "ocr-bulk",
+            &opts(None, 1),
+            &quiet,
+            &no_record,
+        )
+        .await;
+        assert_eq!(r.moved, 2);
+        assert_eq!(r.source_count_after, Some(1));
+        assert!(
+            r.error.as_deref().unwrap().contains("still holds about 1"),
+            "{r:?}"
+        );
+        // A move stopped by --max is partial on purpose.
+        from.delete(&held).await.unwrap();
+        for t in ["x", "y"] {
+            from.send("ocr-bulk", t).await.unwrap();
+        }
+        let r = move_messages(
+            &from,
+            "ocr-bulk",
+            &to,
+            "ocr-bulk",
+            &opts(Some(1), 1),
+            &quiet,
+            &no_record,
+        )
+        .await;
+        assert_eq!((r.moved, r.error), (1, None));
+    }
+
+    /// A source whose deletes fail after the send: the record still names the message.
+    #[derive(Debug)]
+    struct NoDelete(LocalQueue);
+
+    #[async_trait::async_trait]
+    impl Queue for NoDelete {
+        async fn receive(
+            &self,
+            q: &str,
+            v: Duration,
+        ) -> anyhow::Result<Option<crate::queue::Received>> {
+            self.0.receive(q, v).await
+        }
+        async fn delete(&self, _: &crate::queue::Received) -> anyhow::Result<()> {
+            bail!("HTTP 500")
+        }
+        async fn send(&self, q: &str, t: &str) -> anyhow::Result<()> {
+            self.0.send(q, t).await
+        }
+        async fn approximate_count(&self, q: &str) -> anyhow::Result<u64> {
+            self.0.approximate_count(q).await
+        }
+    }
+
+    #[tokio::test]
+    async fn a_failed_delete_after_the_send_is_logged() {
+        let (dir, from, _) = filled(1).await;
+        let from = NoDelete(from);
+        let to = LocalQueue::new(dir.path().join("dst"));
+        let records = Mutex::new(Vec::new());
+        let log = |r: &Record| records.lock().unwrap().push(r.clone());
+        let r = move_messages(
+            &from,
+            "ocr-bulk",
+            &to,
+            "ocr-bulk",
+            &opts(None, 1),
+            &quiet,
+            &log,
+        )
+        .await;
+        assert!(r.error.as_deref().unwrap().contains("HTTP 500"), "{r:?}");
+        assert_eq!((r.moved, r.sent_lease_lost), (0, 1));
+        let records = records.into_inner().unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].outcome, Outcome::SentDeleteFailed);
+        assert!(records[0].source_id.is_some());
+        assert_eq!(to.approximate_count("ocr-bulk").await.unwrap(), 1);
     }
 
     #[tokio::test]

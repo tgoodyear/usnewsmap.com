@@ -73,7 +73,11 @@ usnm-boinc queue-move --from https://<account>.queue.core.windows.net/ocr-bulk \
 
 `queue-move` (`queue_move::move_messages`) receives each message with the visibility timeout,
 sends its text unchanged to the pgmq queue the `queue=` parameter names, and deletes it from
-Azure only after the send has committed. A failed send deletes nothing and stops the move.
+Azure only after the send has committed. A failed send deletes nothing and stops the move. A
+failed delete after a committed send also stops it; the hash log records that message as
+`sent_delete_failed`. An empty receive only means no message is visible. Unless `--max` ended
+the move, the command exits non-zero while the source still counts messages, for example ones
+hidden under another receiver's lease, so run it again once they are visible.
 Delivery is at least once: a message whose lease ran out before the delete is counted under
 `sent_lease_lost` and will be sent again. Duplicates can be found from the body hashes.
 `--hash-log` appends one line per message with its Azure id, dequeue count, body SHA-256 and

@@ -380,7 +380,11 @@ async fn pace(budget: Option<f64>, charge: f64, since: tokio::time::Instant) {
     let Some(budget) = budget.filter(|b| *b > 0.0) else {
         return;
     };
-    let due = Duration::from_secs_f64((charge / budget).clamp(0.0, 60.0));
+    // The whole debt since the start, however large: a cap here would stop pacing once the
+    // run is older than the cap.
+    let Ok(due) = Duration::try_from_secs_f64((charge / budget).max(0.0)) else {
+        return;
+    };
     let spent = since.elapsed();
     if due > spent {
         tokio::time::sleep(due - spent).await;
@@ -936,6 +940,11 @@ mod tests {
     async fn pacing_waits_for_the_budget() {
         let start = tokio::time::Instant::now();
         pace(Some(1000.0), 50.0, start).await;
+        assert!(start.elapsed() >= Duration::from_millis(50));
+        // A run older than a minute still owes what it has spent beyond the budget.
+        let long_ago = tokio::time::Instant::now() - Duration::from_secs(61);
+        let start = tokio::time::Instant::now();
+        pace(Some(200.0), 61.0 * 200.0 + 10.0, long_ago).await;
         assert!(start.elapsed() >= Duration::from_millis(50));
         let start = tokio::time::Instant::now();
         pace(None, 1e9, start).await;
