@@ -45,6 +45,18 @@ const STARTUP_CAUSE_MARKERS: &[&str] = &[
     "error:",
 ];
 const STARTUP_CAUSE_BYTES: usize = 1024;
+const STARTUP_CAUSE_LINE_BYTES: usize = 256;
+
+fn cut_at_char_boundary(s: &str, max: usize) -> &str {
+    if s.len() <= max {
+        return s;
+    }
+    let mut end = max;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
 
 /// What a failed llama-server start reports: its cause lines (redacted, at most
 /// `STARTUP_CAUSE_BYTES`) and then the last `tail_bytes` of its log, as before.
@@ -56,11 +68,15 @@ pub(crate) fn startup_failure_excerpt(log: &str, tail_bytes: usize) -> String {
         if !STARTUP_CAUSE_MARKERS.iter().any(|m| lower.contains(m)) {
             continue;
         }
-        let line = line.trim();
-        if causes.len() + line.len() + 3 > STARTUP_CAUSE_BYTES {
-            break;
+        // One long line (a dumped tensor list, an HTTP body) must not crowd out a short cause
+        // after it: each line is cut to STARTUP_CAUSE_LINE_BYTES, and one that still doesn't
+        // fit is skipped, not the end of the scan.
+        let line = cut_at_char_boundary(line.trim(), STARTUP_CAUSE_LINE_BYTES);
+        let separator = if causes.is_empty() { 0 } else { 3 };
+        if causes.len() + separator + line.len() > STARTUP_CAUSE_BYTES {
+            continue;
         }
-        if !causes.is_empty() {
+        if separator > 0 {
             causes.push_str(" | ");
         }
         causes.push_str(line);
@@ -275,6 +291,25 @@ mod tests {
             "{}",
             cause.len()
         );
+        // A long matching line first must not hide a short cause after it (both before the
+        // tail): the long one is cut, and the cause still appears.
+        let mut crowded = format!("error: {}\n", "x".repeat(1100));
+        crowded.push_str("llama_model_load: error loading model: failed to allocate buffer\n");
+        crowded.push_str(&"llama_model_loader: - kv 1: general.key str = value\n".repeat(30));
+        let excerpt = startup_failure_excerpt(&crowded, 512);
+        let cause = excerpt.split("\nlog end: ").next().unwrap();
+        assert!(
+            cause.contains("error loading model: failed to allocate buffer"),
+            "{cause}"
+        );
+        assert!(
+            cause.len() <= "cause: ".len() + STARTUP_CAUSE_BYTES,
+            "{}",
+            cause.len()
+        );
+        // Multibyte text is cut on a character boundary.
+        let wide = format!("error: {}\n", "é".repeat(400));
+        assert!(startup_failure_excerpt(&wide, 64).starts_with("cause: error: é"));
         // Nothing that names a cause: the old tail, unchanged.
         let plain = "llama_model_loader: - kv 1: x\nmain: bye\n";
         assert_eq!(
