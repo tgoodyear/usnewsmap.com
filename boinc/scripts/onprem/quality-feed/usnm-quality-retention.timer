@@ -1,0 +1,10 @@
+[Unit]
+Description=usnewsmap quality retention, every 6 hours
+
+[Timer]
+OnBootSec=30min
+OnUnitInactiveSec=6h
+RandomizedDelaySec=10min
+
+[Install]
+WantedBy=timers.target

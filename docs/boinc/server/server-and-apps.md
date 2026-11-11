@@ -211,7 +211,13 @@ keep `file_deleter` off by hand. After the restart, `pgrep -a file_deleter` in
 the container should print the command with `--preserve_wu_files`.
 
 To free space later, delete only output files or move whole scan trees to other
-kept storage; do not remove `--preserve_wu_files`.
+kept storage; do not remove `--preserve_wu_files`. Derived images are different
+(11 November 2026): they may be deleted once nothing uses them, because the rule
+covers original scans and files fetched from LoC or other hosts, not BOINC's
+transcodes. `quality_retention.py` deletes the download copies of finished
+`usnm_quality` bundle images (`<job id>_page_jpg`), whose bytes the unit directory
+also holds. It runs as its own step, so the flag stays global. See
+[Retention of derived bundle copies](../apps/quality.md#retention-of-derived-bundle-copies).
 
 ## Retiring an app
 

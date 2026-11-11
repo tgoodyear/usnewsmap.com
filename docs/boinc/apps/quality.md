@@ -429,6 +429,43 @@ boinc/scripts/onprem/quality-feed/quality-feed-install.sh --campaign v1-wave10 \
   --engine-image sha256:<worker digest> --enable
 ```
 
+#### Retention of derived bundle copies
+
+`usnm-boinc quality submit` copies each unit's `page.jpg` into the download tree as `<job id>_page_jpg`, so every bundle image is on the share twice: in `quality/<campaign>/units/bundle-*/` and in `download/`. A bundle image is a JPEG that staging re-encoded from up to 500 scans, often 200 to 800 MB. `file_deleter --preserve_wu_files` keeps the download copy after the workunit is done ([Scans are never deleted](../server/server-and-apps.md#scans-are-never-deleted)). On v1-wave10 this was most of the share's growth, about 55 to 70 GiB a day for each copy in November 2026.
+
+Derived images may be deleted once nothing uses them (11 November 2026). The keep-every-scan rule covers original scans and files fetched from LoC or other hosts, not BOINC's own transcodes. `boinc/scripts/onprem/quality-feed/quality_retention.py` deletes the download copy of a finished bundle. The unit's own `page.jpg` stays for now, because `quality collect` reads it again whenever a page's Qwen readings or the Surya digest change the unit's cache key (#1743). Single-page units are left alone, since their `page.jpg` can be LoC's own JPEG. So are `<id>_loc_xml`, `<id>_texts_json`, `<id>_quality_json`, the places file, the models, `usnm_ocr`'s JP2 inputs (LoC's bytes) and every other app's inputs.
+
+```sh
+# In the server container: usnm_quality workunits assimilated, with every result over.
+python3 -I quality_retention.py list --out /tmp/quality-retention-eligible.jsonl
+# On the storage host, as the share's owner (uid 101000), not root. Dry run first.
+setpriv --reuid 101000 --regid 101000 --clear-groups python3 -I quality_retention.py prune \
+  --eligible eligible.jsonl --download /tank/boinc-bulk/download \
+  --quality-root /tank/boinc-bulk/quality \
+  --journal journal.jsonl --commit "$(git rev-parse HEAD)" [--delete --max-bytes N]
+```
+
+`prune` deletes a listed file only when all of these hold. Otherwise it leaves the file and journals the reason:
+
+- the file is more than an hour old;
+- its submitted bundle unit (the `submitted` marker names the workunit) has a `quality.json` with the same job id and pages, and a `page.jpg` of the same size;
+- the two files are byte-for-byte the same (a full compare; `--skip-cmp` is allowed only without `--delete`), or are one inode.
+
+With `--delete`, each unlink is journalled before and after, with the commit it ran from. `--max-files` and `--max-bytes` bound a batch, and a file that would pass `--max-bytes` ends it untouched. Run `list` again before each `prune`: `db_purge` drops workunit rows 30 days after their files are marked done, and a file without a row is never listed.
+
+**Timer.** `usnm-quality-retention.timer` on the storage host runs `quality-retention.sh` every 6 hours: `list` in CT230 over the host trust (pve-big to pve), then `prune --delete` as uid 101000 with `--max-bytes` 400 GB a run, at idle I/O priority. Root keeps the code and the list in `/opt/usnm-quality-retention` and writes nowhere uid 101000 can; the journal is `/var/lib/usnm-quality-retention/journal.jsonl`. `prune` leaves single-page units alone: their `page.jpg` can be LoC's own JPEG. Install from a checkout:
+
+```sh
+# Code is root's; uid 101000 owns only the journal directory.
+install -d -m 0755 /opt/usnm-quality-retention
+install -m 0644 boinc/scripts/onprem/quality-feed/quality_retention.py /opt/usnm-quality-retention/
+install -m 0755 boinc/scripts/onprem/quality-feed/quality-retention.sh /opt/usnm-quality-retention/
+git rev-parse HEAD > /opt/usnm-quality-retention/COMMIT
+install -d -o 101000 -g 101000 -m 0750 /var/lib/usnm-quality-retention
+install -m 0644 boinc/scripts/onprem/quality-feed/usnm-quality-retention.{service,timer} /etc/systemd/system/
+systemctl daemon-reload && systemctl enable --now usnm-quality-retention.timer
+```
+
 #### Result collection
 
 `usnm-quality-results.timer` on the preparation host runs `quality_results_partial.py` two minutes after each pass, with up to 15 s jitter. A pass collects **one submitted unit** under the server's nonblocking bridge lock (each native call 150 s, remote phase 240 s) into immutable `out/{pages.parquet,crops.parquet,summary.md}` plus `coverage.json` (`campaign_complete=false`) under `/project/ops/quality-results/scoped/<campaign>/<unit-key>/snapshots/<snapshot>/`, verifies checksums and job identity, and loads with certificate-authenticated `load.py results`. No pass loads more than one scope, and the host pass lock serializes collection, transfer and loading. One service run makes up to five passes (`--units-per-run`), because each unit's lock, transfer and load round costs about two minutes whatever its size. Each pass takes the bridge lock again, with a 5 s pause between passes so a waiting bridge step gets the lock first. No pass starts after the run has used 10 minutes (`--run-budget-secs`). A busy lock after the first pass ends the run quietly; any other failure still fails it. Guarantees: `<campaign>/out` is never replaced, rows are never deleted, a pending unit loads zero rows, and the cursor advances only after a verified load, so a failure in between repeats the same upserts. A busy bridge retries next tick; no producer is preempted. Collection never submits work or alters quorum, and a successful BOINC result isn't loaded until the loader succeeds. Judge coverage from cursor and load receipts, not timer frequency.
