@@ -177,14 +177,14 @@ fn collection(v: &View, o: &mut String) {
     let held = v.fetch.total.pages;
     let ours = stage(v, "indexed");
     o.push_str("<div class=\"figures\">");
-    figure(o, &int(held), "page scans held");
+    figure(o, &int(held), "page scans fetched so far");
     figure(o, &count_or(ours), "pages where search uses our OCR text");
     o.push_str("</div>");
     warming_note(v, o);
     let _ = write!(
         o,
         "<p>Chronicling America, the Library of Congress's collection of digitized newspapers, has about \
-         24 million pages, and usnewsmap.com searches all of them. We hold the original scans of {} of \
+         24 million pages, and usnewsmap.com searches all of them. We have fetched the original scans of {} of \
          them, and our own OCR (text read from the scan by software) has replaced the Library's text on {}.",
         pct(held, LOC_PAGES),
         ours.map_or_else(|| "a number of pages not known right now".to_owned(), |n| pct(n, LOC_PAGES)),
@@ -256,6 +256,12 @@ fn warming_note(v: &View, o: &mut String) {
         o.push_str(
             "<p class=\"stale\">The dashboard has just restarted and is still reading the fetcher's \
              files, so these counts are partial for a few minutes.</p>",
+        );
+    } else if v.fetch.index_error.is_some() {
+        // Not the error itself: it names paths.
+        o.push_str(
+            "<p class=\"stale\">The fetcher's records can't be read right now, so these counts may \
+             be out of date.</p>",
         );
     }
 }
