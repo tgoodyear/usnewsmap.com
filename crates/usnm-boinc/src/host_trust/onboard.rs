@@ -87,16 +87,33 @@ fn gold_status(text: &str) -> anyhow::Result<GoldStatus> {
 }
 
 async fn query_gold_status(c: &Config, workunit: &str) -> anyhow::Result<GoldStatus> {
-    ensure!(
-        workunit
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'_'),
-        "invalid workunit"
-    );
-    gold_status(&query(c, &format!(
+    checked_workunit(workunit)?;
+    let status = gold_status(&query(c, &format!(
         "SELECT r.id, r.server_state, r.outcome, r.client_state, r.exit_status, HEX(LEFT(r.stderr_out, 65536)) \
          FROM workunit w LEFT JOIN result r ON r.workunitid=w.id WHERE w.name='{workunit}' ORDER BY r.id"
-    )).await?)
+    )).await?)?;
+    // A cancelled workunit that no client holds is over, whatever its results show: one with
+    // no result rows at all (a targeted unit the scheduler never sent) would otherwise stay
+    // pending for good and block the host's next attempt.
+    if status == GoldStatus::Pending
+        && workunit_cancelled(c, workunit).await?
+        && count_results(c, workunit, SERVER_STATE_IN_PROGRESS, None).await? == 0
+    {
+        return Ok(GoldStatus::Failed(Vec::new()));
+    }
+    Ok(status)
+}
+
+async fn workunit_cancelled(c: &Config, workunit: &str) -> anyhow::Result<bool> {
+    Ok(count(
+        c,
+        &format!(
+            "SELECT COALESCE(MAX(w.error_mask & {WU_ERROR_CANCELLED}), 0) FROM workunit w \
+             WHERE w.name='{workunit}'"
+        ),
+    )
+    .await?
+        != 0)
 }
 
 /// Where this host's next gold unit goes, or None while its latest attempt is pending,
@@ -398,15 +415,9 @@ async fn retire_unit(c: &Config, workunit: &str, host: u64, execute: bool) -> an
         }
         // Cancelled earlier, its assignment row left behind.
         GoldStatus::Failed(_) => {
-            let cancelled = count(
-                c,
-                &format!(
-                    "SELECT COALESCE(MAX(w.error_mask & {WU_ERROR_CANCELLED}), 0) FROM workunit w \
-                 WHERE w.name='{workunit}'"
-                ),
-            )
-            .await?;
-            if cancelled == 0 || host_assignments(c, workunit, host).await? == 0 {
+            if !workunit_cancelled(c, workunit).await?
+                || host_assignments(c, workunit, host).await? == 0
+            {
                 return Ok(false);
             }
             if execute {

@@ -576,6 +576,28 @@ async fn a_host_newly_skipped_for_having_no_container_runtime_loses_its_unit_and
     let failed = [("GOLD_STATUS", "21\\t5\\t3\\t5\\t255\\t\\n")];
     success(&run(&without_docker, true, &failed));
     assert!(c.ops().is_empty());
+
+    // The host regains its runtime. Its cancelled unit never had a result row, so the status
+    // query shows it pending, but a cancelled unit no client holds is over: the host gets a
+    // replacement. An uncancelled pending unit still keeps its host's place.
+    let restored = format!("{}{}", row(1, 1), row(5, 1));
+    let out = run(&restored, false, &[pending]);
+    success(&out);
+    assert_eq!(String::from_utf8(out.stdout).unwrap().trim(), "[]");
+    let cancelled_unit = [pending, ("CANCELLED", "16")];
+    let out = run(&restored, false, &cancelled_unit);
+    success(&out);
+    assert_eq!(String::from_utf8(out.stdout).unwrap().trim(), "[5]");
+    // Unless a client still holds a result of it.
+    let out = run(
+        &restored,
+        false,
+        &[pending, ("CANCELLED", "16"), ("IN_PROGRESS", "1")],
+    );
+    success(&out);
+    assert_eq!(String::from_utf8(out.stdout).unwrap().trim(), "[]");
+    success(&run(&restored, true, &cancelled_unit));
+    assert_eq!(c.calls().matches("--target_host 5").count(), 2);
 }
 
 #[tokio::test]
