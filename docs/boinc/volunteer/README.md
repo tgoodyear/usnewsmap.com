@@ -411,10 +411,7 @@ The helper asks permission before opening **BOINC Manager**, which may start its
 local client and resume existing projects. It then walks you through the same
 normal Manager flow used for production:
 
-1. Set conservative **computing preferences**: CPU and GPU only while idle, no
-   battery use, and reviewed CPU, memory and disk limits. Local Manager
-   preferences affect **all projects**; do not overwrite settings blindly.
-2. At **<https://boinc.usnewsmap.com/>**, create your own account or sign in to
+1. At **<https://boinc.usnewsmap.com/>**, create your own account or sign in to
    your existing one. Review normal **project preferences**, including CPU and
    GPU choices. Participation includes production and experimental tasks; no
    Qwen-specific enrollment or repeated profile update is needed. Existing
@@ -424,14 +421,23 @@ normal Manager flow used for production:
    still control CPU and GPU choices for the host's venue. Never enable a GPU
    you do not want to use. Do not share an account or key with another
    volunteer. Operators bound pilot campaigns server-side.
-3. In Manager choose **Tools → Add project** (or **Add project/account
-   manager**), enter `https://boinc.usnewsmap.com/`, and sign in with that same
-   account. Passwords go only into Manager or the HTTPS account site, never into
-   this script, shell history, command arguments, or a support ticket. The
-   helper neither creates accounts nor handles keys or passwords. It
+2. In Manager, complete the **Add project** wizard. It opens by itself when
+   Manager starts with no projects attached; otherwise choose **Tools → Add
+   project** (or **Add project/account manager**). Enter
+   `https://boinc.usnewsmap.com/` and sign in with that same account.
+   Passwords go only into Manager or the HTTPS account site, never into this
+   script, shell history, command arguments, or a support ticket. The helper
+   neither creates accounts nor handles keys or passwords. It
    intentionally uses Manager for attachment rather than a credential-bearing
    `boinccmd` command. If already attached, **do not remove and re-add** the
    project.
+3. Straight away, set conservative **computing preferences** (**Options →
+   Computing preferences**): CPU and GPU only while idle, no battery use, and
+   reviewed CPU, memory and disk limits. Local Manager preferences affect **all
+   projects**; do not overwrite settings blindly. Tasks can start as soon as
+   the project is attached; to keep them from running until the limits are
+   set, use **Activity → Suspend**, then **Activity → Run based on
+   preferences**.
 4. Return to PowerShell and press Enter for its **read-only local attachment
    check**. This uses `boinccmd --get_project_status` in the existing data
    directory without passing a GUI RPC password or printing raw client output.

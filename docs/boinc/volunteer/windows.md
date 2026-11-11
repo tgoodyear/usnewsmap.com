@@ -70,14 +70,19 @@ joined PC can sit idle for a while. That is normal.
 
 ## 3. Join the project in BOINC Manager
 
-1. **Options → Computing preferences**: compute only while the PC is idle and
-   not on battery, and set CPU, memory and disk limits you are comfortable
-   with. These apply to every BOINC project on this PC.
-2. Create an account at <https://boinc.usnewsmap.com/> (or sign in to yours).
+1. Create an account at <https://boinc.usnewsmap.com/> (or sign in to yours).
    In **Project preferences** choose whether to use the GPU, the CPU or both.
-3. In Manager, **Tools → Add project**, enter `https://boinc.usnewsmap.com/`
-   and sign in with that account. Type your password only in Manager or on the
-   project website, never into the script or a support message.
+2. In Manager, complete the **Add project** wizard. It opens by itself when
+   Manager starts with no projects attached; otherwise use **Tools → Add
+   project**. Enter `https://boinc.usnewsmap.com/` and sign in with that
+   account. Type your password only in Manager or on the project website,
+   never into the script or a support message.
+3. Straight away, open **Options → Computing preferences**: compute only while
+   the PC is idle and not on battery, and set CPU, memory and disk limits you
+   are comfortable with. These apply to every BOINC project on this PC. Tasks
+   can start as soon as the project is attached. To keep them from running
+   until the limits are set, choose **Activity → Suspend**, then **Activity →
+   Run based on preferences** when you are done.
 
 If the PC is already attached, do not remove and re-add the project.
 
