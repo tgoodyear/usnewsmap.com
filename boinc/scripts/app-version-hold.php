@@ -4,7 +4,8 @@ use BoincApp;
 use BoincAppVersion;
 use BoincDb;
 use BoincPlatform;
-// Hold (deprecate) or release (un-deprecate) one usnm_ocr or usnm_gold app version (#1687),
+// Hold (deprecate) or release (un-deprecate) one usnm_ocr or usnm_gold container app version (#1687)
+// or native usnm_qwen app version (#1672),
 // journaled before the change, as hold-legacy-qwen.php does for legacy Qwen. Or set usnm_ocr's
 // min_version, which keeps every version from it up loaded. It never cancels results or
 // rewrites workunits.
@@ -16,6 +17,9 @@ use BoincPlatform;
 // unfinished workunits: this refuses that unless --accept-stranded. A usnm_gold release also needs
 // the running server's gold-engine-platforms.json to bind the version's worker on its platform.
 const APPS = ["usnm_ocr", "usnm_gold"];
+// Native Qwen versions publish held too (#1672): a new platform waits for a real client run.
+const QWEN_NATIVE_CLASSES = ["nvidia_vulkan_8b", "nvidia_vulkan_6gb_8b", "nvidia_vulkan_2b", "intel_vulkan_8b",
+                             "amd_vulkan_8b", "nvidia_cuda_8b", "nvidia_cuda_2b", "apple_gpu_8b", "mt"];
 const BINDINGS = "/usr/local/lib/usnm-boinc/gold-engine-platforms.json";
 $args = getopt("", ["project:", "app-version:", "action:", "min-version:", "journal-dir:",
                     "gold-bindings:", "accept-stranded", "apply"]);
@@ -110,9 +114,11 @@ if ($action === "min-version") {
     $id = intval($args["app-version"]);
     $version = BoincAppVersion::lookup_id($id);
     $app = $version ? BoincApp::lookup_id(intval($version->appid)) : null;
-    if (!$version || !$app || !in_array($app->name, APPS, true) || !in_array($version->plan_class, ["docker", "docker_lines"], true)) {
+    $container = $app && in_array($app->name, APPS, true) && in_array($version->plan_class, ["docker", "docker_lines"], true);
+    $qwen = $app && $app->name === "usnm_qwen" && in_array($version->plan_class, QWEN_NATIVE_CLASSES, true);
+    if (!$version || !$app || !($container || $qwen)) {
         // docker_lines: the Cherokee line-job versions (#1621), batch 1621 only.
-        refuse("only usnm_ocr and usnm_gold container (docker or docker_lines) app versions");
+        refuse("only usnm_ocr and usnm_gold container (docker or docker_lines) and native usnm_qwen app versions");
     }
     $platform = BoincPlatform::lookup_id(intval($version->platformid));
     if (!$platform) refuse("app version platform missing");

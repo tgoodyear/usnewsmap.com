@@ -587,6 +587,12 @@ So `usnm_ocr` and `usnm_gold` releases take one of two flags:
   first, and verification refuses a row it finds live.
 - `--outrank-pinned` publishes it live, for an app with no pinned work.
 
+Native `usnm_qwen` versions may take `--hold` too (#1672). A class with general admission (on
+Linux, `nvidia_vulkan_8b`, `amd_vulkan_8b` and `intel_vulkan_8b`) sends a new version at once,
+so a version for a platform no real client has run yet, such as `nvidia_vulkan_8b` on
+`windows_x86_64`, goes out held and is released with `app-version-hold.php` once a client has
+downloaded, run, suspended and resumed, uploaded and validated it.
+
 For `usnm_gold` the script also reads `gold-engine-platforms.json` from the running
 `usnm-boinc-server` container. Without a binding for the worker on `--platform` it refuses,
 unless `--hold`, and then it warns. Without `"server": "onprem"` it can't read the running

@@ -328,6 +328,13 @@ class BoincAppVersion {
             self.assertNotEqual(bad.returncode, 0)
             self.assertIn('APPVER_HOLD', bad.stderr)
         self.assertIn('APPVER_HOLD=${HOLD}', (Path(__file__).resolve().parent / 'Containerfile').read_text())
+        # Native Qwen passes the hold gate (#1672); a native class-less version doesn't.
+        native = {**env, 'APPVER_KIND': 'native', 'APPVER_APP': 'usnm_qwen', 'APPVER_HOLD': '1',
+                  'APPVER_PLATFORM': 'windows_x86_64'}
+        passed = subprocess.run(['bash', str(self.script)], capture_output=True, text=True,
+                                env={**native, 'APPVER_PLAN_CLASS': 'nvidia_vulkan_8b'})
+        self.assertNotIn('APPVER_HOLD is only', passed.stderr)
+        self.assertNotIn('APPVER_HOLD must', passed.stderr)
 
     def test_container_publication_rejects_wrong_or_legacy_model_classes(self):
         for app, plan, platform in (

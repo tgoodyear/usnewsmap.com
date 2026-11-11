@@ -60,7 +60,10 @@ esac
 case "${APPVER_HOLD:-0}:$APPVER_KIND:$APPVER_APP:$APPVER_PLAN_CLASS" in
   0:*) ;;
   1:container:usnm_ocr:docker | 1:container:usnm_gold:docker | 1:container:usnm_ocr:docker_lines | 1:container:usnm_gold:docker_lines) ;;
-  1:*) fail "APPVER_HOLD is only for usnm_ocr and usnm_gold container versions" ;;
+  # Native Qwen (#1672): a version for a class with general admission is sent at once, so a new
+  # platform goes out held until a real client has run it.
+  1:native:usnm_qwen:?*) ;;
+  1:*) fail "APPVER_HOLD is only for usnm_ocr and usnm_gold container versions and native usnm_qwen versions" ;;
   *) fail "APPVER_HOLD must be 0 or 1" ;;
 esac
 [ -e "$PROJ/.usnm-initialised" ] || fail "project is not initialised"
