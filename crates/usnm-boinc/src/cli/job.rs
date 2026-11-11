@@ -481,10 +481,12 @@ pub struct LineReportArgs {
 pub fn line_report(args: LineReportArgs) -> anyhow::Result<()> {
     let rows = crate::lines::report(&args.root, args.spool.as_deref())?;
     let mut verdicts = std::collections::BTreeMap::<String, usize>::new();
+    let mut line_merge = std::collections::BTreeMap::<&str, usize>::new();
     let (mut lines, mut model) = (0, 0);
     for row in &rows {
         println!("{}", serde_json::to_string(row)?);
         *verdicts.entry(row.verdict.clone()).or_default() += 1;
+        *line_merge.entry(row.line_merge.verdict).or_default() += 1;
         lines += row.stats.lines;
         model += row.stats.model;
     }
@@ -495,8 +497,112 @@ pub fn line_report(args: LineReportArgs) -> anyhow::Result<()> {
             "lines_read": lines,
             "lines_model": model,
             "lines_fallback": lines - model,
+            "line_merge_verdicts": line_merge,
             "verdicts": verdicts,
         })
     );
+    Ok(())
+}
+
+#[derive(Args)]
+pub struct LinePagesArgs {
+    /// LoC's bulk OCR for the titles, unpacked: `<lccn>/<yyyy>/<mm>/<dd>/ed-<n>/seq-<m>/ocr.xml`.
+    #[arg(long)]
+    loc_alto: PathBuf,
+    /// `<lccn>=<versioned batch>:<reel>`, e.g. `sn83020866=dlc_misctopsn83020866_ver03:print`.
+    #[arg(long = "title", required = true)]
+    titles: Vec<crate::lines::stage::Title>,
+    /// A directory of local scan copies named `<doc_id>.jpg` (LoC's full-size IIIF JPEGs).
+    #[arg(long = "scans")]
+    scans: Vec<PathBuf>,
+    /// JSONL whose `page` fields are the frozen test set's pages (#1620).
+    #[arg(long)]
+    test_lines: Option<PathBuf>,
+    /// The line route's language.
+    #[arg(long, default_value = "chr")]
+    language: String,
+}
+
+/// One JSON line per page, sorted by page key; a summary on stderr.
+pub fn line_pages(args: LinePagesArgs) -> anyhow::Result<()> {
+    let mut test = std::collections::BTreeSet::new();
+    if let Some(path) = &args.test_lines {
+        for line in String::from_utf8(crate::read(path, 64 << 20)?)?.lines() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            let v: serde_json::Value = serde_json::from_str(line)?;
+            let page = v["page"]
+                .as_str()
+                .context("a test-set line without a page")?;
+            test.insert(page.to_owned());
+        }
+    }
+    let pages = crate::lines::stage::inventory(
+        &args.loc_alto,
+        &args.titles,
+        &args.scans,
+        &test,
+        &args.language,
+    )?;
+    for p in &pages {
+        println!("{}", serde_json::to_string(p)?);
+    }
+    let with_lines = pages.iter().filter(|p| p.lines > 0).count();
+    let ready = pages
+        .iter()
+        .filter(|p| p.lines > 0 && p.scan.is_some())
+        .count();
+    eprintln!(
+        "{} pages, {with_lines} with lines to read, {ready} of them with a local scan, {} in the test set",
+        pages.len(),
+        test.len()
+    );
+    Ok(())
+}
+
+#[derive(Args)]
+pub struct LineStageArgs {
+    /// The page list `line-pages` wrote.
+    #[arg(long)]
+    pages: PathBuf,
+    /// The page keys to stage, one per line: 1 to 100, of one batch.
+    #[arg(long)]
+    select: PathBuf,
+    /// Directories of local scan copies, as for `line-pages`.
+    #[arg(long = "scans", required = true)]
+    scans: Vec<PathBuf>,
+    /// LoC's bulk OCR, unpacked, as for `line-pages`.
+    #[arg(long)]
+    loc_alto: PathBuf,
+    /// The prefetch manifest's directory name under `manifests/`.
+    #[arg(long)]
+    manifest_name: String,
+    /// A new directory for the staging tree.
+    #[arg(long)]
+    out: PathBuf,
+}
+
+/// Writes the staging tree and prints the hand-off export's inputs as `NAME=value` lines.
+pub fn line_stage(args: LineStageArgs) -> anyhow::Result<()> {
+    let inventory = crate::lines::stage::read_inventory(&args.pages)?;
+    let select = String::from_utf8(crate::read(&args.select, 64 * 1024)?)?
+        .lines()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+        .collect();
+    let staged = crate::lines::stage::stage(
+        &inventory,
+        &select,
+        &args.scans,
+        &args.loc_alto,
+        &args.manifest_name,
+        &args.out,
+    )?;
+    println!("HANDOFF_BATCH={}", staged.batch);
+    println!("HANDOFF_MANIFEST={}", staged.manifest);
+    println!("HANDOFF_PAGES={}", staged.pages.join(","));
+    println!("HANDOFF_SCANS={}", staged.scans.join(","));
     Ok(())
 }

@@ -38,6 +38,12 @@ enum Commands {
     /// Line jobs' merged pages (#1621): lines that took the model's reading, fallbacks, and
     /// whether rule v1 would admit each page.
     LineReport(job::LineReportArgs),
+    /// The pages a line campaign reads (#1621), from LoC's bulk OCR unpacked and local scan
+    /// copies, as JSONL: each page's ALTO sha256, lines to read, test-set mark and scan copy.
+    LinePages(job::LinePagesArgs),
+    /// Stage one line export's pages (#1621) from local copies: scans with sidecars, LoC's
+    /// ALTO and a prefetch manifest, checked against the page list, for the BOINC host.
+    LineStage(job::LineStageArgs),
     /// Reconcile an uncertain submission after checking the server for its workunit name.
     Reconcile(job::ReconcileArgs),
     /// Read stock batch_collect_assimilator's spool and publish native ALTO/Parquet.
@@ -115,6 +121,8 @@ async fn main() -> anyhow::Result<()> {
         Commands::Submit(args) => job::submit(args).await,
         Commands::SubmitBundle(args) => job::submit_bundle(args).await,
         Commands::LineReport(args) => job::line_report(args),
+        Commands::LinePages(args) => job::line_pages(args),
+        Commands::LineStage(args) => job::line_stage(args),
         Commands::Reconcile(args) => job::reconcile(args),
         Commands::Collect(args) => job::collect(args).await,
         Commands::RejectOutput(args) => job::reject_output(args),

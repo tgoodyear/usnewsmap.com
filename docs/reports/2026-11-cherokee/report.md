@@ -251,14 +251,24 @@ python3 $S/chr_ocr_variant_recall.py --tar dlc_misctopsn83020866_ver03.tar.bz2 -
 
 The word lists are in the repository. The other inputs are in the release [`data-report-2026-11-cherokee-20261109-82de31f`](https://github.com/tgoodyear/usnewsmap.com/releases/tag/data-report-2026-11-cherokee-20261109-82de31f), with the source-rights notice. `scripts/ops/data-assets.sh --fetch --set report-2026-11-cherokee`, run from the repository root, checks the tarball against `ops/data-assets.json` and extracts it to `data/`, whose README describes each file:
 
-| Asset | SHA-256 |
-| --- | --- |
-| `report-2026-11-cherokee.tar.gz` | `a5cbccdc1bcad45298e64a8fa832150ba4aaebff790e5116ee35065d88b429f6` |
+| Asset                                 | SHA-256                                                            |
+| ------------------------------------- | ------------------------------------------------------------------ |
+| `report-2026-11-cherokee.tar.gz`      | `a5cbccdc1bcad45298e64a8fa832150ba4aaebff790e5116ee35065d88b429f6` |
 | `report-2026-11-cherokee.members.txt` | `8ad10ab845529fb56f2a89335faa13fa1694a97879483ace4c44961ecc09b9ad` |
 
 - `chr_confusions.py` reads the #1581 evaluation outputs in `data/eval/` (`nt-reference/nt-engine-sample/` and `region-aware/out/hybrid/`).
 - `chr_dict_compare.py` reads the dictionary comparison's readings in `data/dict-compare/out/` and the New Testament references in `data/eval/nt-reference/nt-engine-sample/refs/`.
 - `chr_checked_score.py` reads the hand-check answers and LoC text in `data/hand-check/` and stock Tesseract's readings in `data/testset-v2/baselines/`.
 - `cherokee_testset.py score` scores the readings in `data/readings/` (`chr_phoenix` rounds one and two, `chr_phoenix+eng`, stock `chr` at PSM 13) against the test set v2 crops in `data/testset-v2/crops/`. Its `SHA256SUMS` checks the crops.
+
+**The page list for the line jobs (#1621).** [`phoenix-pages.jsonl`](phoenix-pages.jsonl) lists the 324 pages, one JSON line each: the page, its batch and version, its ALTO's sha256, the lines `export --line-read chr` reads, whether test set v2 holds it, and the local copy of its scan (LoC's full-size IIIF JPEG: URL, bytes, sha256), or `null`. It was made without fetching anything, from the two archives above unpacked and the scans already on our storage:
+
+```sh
+usnm-boinc line-pages --loc-alto <the two archives' ocr.xml, unpacked> \
+  --title sn83020866=dlc_misctopsn83020866_ver03:print --title sn83020874=dlc_misctopsn83020874_ver02:print \
+  --scans <scan copies> --test-lines $D/testset-v2/crops/lines.jsonl > phoenix-pages.jsonl
+```
+
+191 pages have lines to read, and 190 of those have a local scan. The one without is `sn83020874/1829-03-04/ed-1/seq-2`. Its 29 test-set pages are marked.
 
 The search counts are from `https://api.usnewsmap.com/v1/aggregate?q=…` on the dates given.

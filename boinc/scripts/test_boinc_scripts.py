@@ -1780,6 +1780,74 @@ class HandoffAndBridgeQualitySteps(unittest.TestCase):
         self.assertEqual(r.returncode, 1)
         self.assertIn("among the scans pushed", r.stderr)
 
+    def test_handoff_line_export_reads_the_staged_pages_alto_and_manifest(self):
+        # #1621: a line export's scans, LoC ALTO and manifest all come from the staging tree.
+        mount = os.path.join(self.tmp, "scans-mount")
+        page = "sn83020866/1828-03-06/ed-1/seq-1"
+        scan = "keep/dlc_misctopsn83020866/sn83020866/1828-03-06/1/1.jpg"
+        alto = "loc-alto/sn83020866/1828/03/06/ed-1/seq-1/ocr.xml"
+        manifest = "chr-lines-a/manifest.parquet"
+        for rel, body in ((scan, "jpg"), (scan + ".json", "{}"), (alto, "<alto/>"),
+                          ("manifests/" + manifest, "PAR1")):
+            os.makedirs(os.path.dirname(os.path.join(mount, rel)), exist_ok=True)
+            Path(mount, rel).write_text(body)
+        self.stub(self.COPY_STUB + "\n" +
+                  'if [ "$1" = export ]; then\n'
+                  '  for ((i = 1; i <= $#; i++)); do\n'
+                  '    [ "${!i}" = --loc-alto ] && j=$((i + 1)) && cat "${!j}/sn83020866/1828/03/06/ed-1/seq-1/ocr.xml" >> "$STUB_LOG"\n'
+                  '    [ "${!i}" = --manifest ] && j=$((i + 1)) && cat "${!j}" >> "$STUB_LOG"\n'
+                  '  done\n'
+                  '  echo >> "$STUB_LOG"\n'
+                  'fi')
+        line = dict(HANDOFF_MANIFEST=manifest, HANDOFF_PAGES=page, HANDOFF_BATCH="dlc_misctopsn83020866",
+                    HANDOFF_SCANS=scan, HANDOFF_PLAN="chr-lines-1", ENGINE_IMAGE="sha256:" + "a" * 64,
+                    HANDOFF_LINE_READ="chr", HANDOFF_LOCAL_SCANS="1", USNM_HANDOFF_SCANS_MOUNT=mount)
+        r = self.handoff("export", **line)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        calls = self.calls()
+        # Nothing comes down from the container: not the scan, the manifest or any ALTO.
+        self.assertFalse([c for c in calls if c.startswith("handoff get")], calls)
+        (export,) = [c for c in calls if c.startswith("export ")]
+        self.assertIn("--line-read chr --loc-alto ", export)
+        self.assertIn("--batch dlc_misctopsn83020866 ", export)
+        self.assertNotIn("--claims", export)
+        self.assertIn("PAR1<alto/>", calls)
+        # Each staged file must be there, and the line read takes only what it can use.
+        os.remove(Path(mount, alto))
+        for extra, message in (({}, "no loc-alto/sn83020866/1828/03/06/ed-1/seq-1/ocr.xml"),
+                               ({"HANDOFF_LINE_READ": "eng"}, "chr"),
+                               ({"HANDOFF_CLAIMS": "1"}, "not HANDOFF_CLAIMS"),
+                               ({"HANDOFF_LOCAL_SCANS": ""}, "staged on the BOINC host"),
+                               ({"HANDOFF_PAGES": "sn83020866/1828-3-6/ed-1/seq-1"}, "page key"),
+                               ({"HANDOFF_BATCH": "", "HANDOFF_BATCHES": "dlc_misctopsn83020866"},
+                                "one batch")):
+            with self.subTest(extra=extra):
+                if os.path.exists(self.log):
+                    os.remove(self.log)
+                r = self.handoff("export", **{**line, **extra})
+                self.assertEqual(r.returncode, 1, r.stderr)
+                self.assertIn(message, r.stderr)
+                self.assertFalse([c for c in self.calls() if c.startswith("export ")])
+
+    def test_handoff_line_report_brings_each_jobs_files_down_then_reports(self):
+        self.stub(self.COPY_STUB)
+        j1, j2 = "1" * 64, "2" * 64
+        r = self.handoff("line-report", JOB_IDS=f"{j1},{j2}")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        calls = self.calls()
+        for j in (j1, j2):
+            self.assertTrue([c for c in calls if f"--path dispatch/jobs/{j}/record.json" in c], calls)
+            self.assertTrue([c for c in calls if f"--prefix dispatch/jobs/{j}/accepted" in c], calls)
+            self.assertTrue([c for c in calls if c.startswith("handoff get-line-read") and f"--job {j}" in c])
+        (report,) = [c for c in calls if c.startswith("line-report ")]
+        self.assertEqual(calls[-1], report)
+        # It only reads: nothing goes back up.
+        self.assertFalse([c for c in calls if c.startswith("handoff put")])
+        for bad in ("", "x", ",".join(["1" * 64] * 101)):
+            with self.subTest(bad=bad[:10]):
+                r = self.handoff("line-report", JOB_IDS=bad)
+                self.assertEqual(r.returncode, 1, r.stderr)
+
     def test_handoff_export_batches_goes_on_past_a_failed_batch(self):
         # #1055: one execution exports a tick's pages from all their batches, one batch at a time.
         self.stub(self.COPY_STUB + "\n" + 'case "$*" in "export "*"--batch dlc_bbb"*) exit 4 ;; esac')
