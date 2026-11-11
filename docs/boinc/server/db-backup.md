@@ -89,7 +89,9 @@ on any host with podman, and never touches another server. It:
    `REPLICATE_DO_DB = (usnmocr)`. It fails if a binlog in the run is missing;
 4. writes row counts per table (`--counts-out`).
 
-Put the reader key on the host where you restore (mode 600), with the same three lines as
+The host also needs rclone at `/usr/local/lib/usnm-db-backup/rclone` (CT 230 has it; elsewhere,
+install the release `install.sh` pins, or pass `--rclone`). Put the reader key on the host where
+you restore (mode 600), with the same three lines as
 above, using the reader names. Then:
 
 ```sh
