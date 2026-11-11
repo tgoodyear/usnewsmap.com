@@ -3,7 +3,7 @@
 Description=usnewsmap BOINC MySQL: ship closed binlogs to R2
 Wants=network-online.target
 After=network-online.target usnm-boinc-mysql.service
-Requires=usnm-boinc-mysql.service
+Requisite=usnm-boinc-mysql.service
 
 [Service]
 Type=oneshot

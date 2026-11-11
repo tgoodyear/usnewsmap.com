@@ -136,6 +136,17 @@ restore from R2 ([db-backup.md](db-backup.md)) loses less than promoting.
    `--datadir /srv/usnm-boinc/mysql-data` and `--ca /srv/usnm-boinc/mysql-tls/ca.pem` (the `usnmbackup` user came
    with the clone).
 
-To move back, rebuild the primary's database on CT 230 as a replica of the promoted server, or
-from its newest R2 dump. Then stop the writers, stop `usnm-boinc-db-failover-forward`, start
-`usnm-boinc-mysql`, and rebuild CT 237 as a replica ("Build or rebuild it").
+To move back without losing writes, CT 230 must hold everything the promoted server committed:
+
+1. Rebuild the database on CT 230 as a replica of the promoted server (the same tunnel, the
+   other way round), and let it catch up.
+2. Stop the writers on CT 230, as in step 1 of the failover.
+3. On the promoted server, read `SHOW BINARY LOGS` (the newest file and its size) or
+   `@@gtid_executed`. Wait until CT 230's replica has applied up to exactly that point, then stop
+   its replication with `STOP REPLICA; RESET REPLICA ALL`.
+4. Stop `usnm-boinc-db-failover-forward` on CT 237, start `usnm-boinc-mysql` on CT 230, and
+   start the writers again.
+5. Rebuild CT 237 as a replica ("Build or rebuild it").
+
+A rebuild from an R2 dump alone misses whatever the promoted server committed after that dump;
+use it only if step 3 can't be done, and say what was lost.

@@ -60,7 +60,11 @@ done
 install -d -m 700 "$WD"
 [ -z "$(ls -A "$WD")" ] || die "$WD isn't empty"
 WD=$(cd "$WD" && pwd)
+# One restore per container name; cleanup removes only the container this run started.
+exec 9> "/run/usnm-db-restore-$NAME.lock"
+flock -n 9 || die "another restore uses the container name $NAME"
 podman container exists "$NAME" && die "a container $NAME exists already"
+created=false
 
 R2_ACCESS_KEY_ID="" R2_SECRET_ACCESS_KEY="" R2_ENDPOINT=""
 # shellcheck disable=SC1090
@@ -74,7 +78,7 @@ started=$(date +%s)
 
 cleanup() {
   $KEEP && return 0
-  podman rm -f "$NAME" > /dev/null 2>&1 || true
+  ! $created || podman rm -f "$NAME" > /dev/null 2>&1 || true
   rm -rf "$WD/data" "$WD/dl"
 }
 trap cleanup EXIT
@@ -128,6 +132,7 @@ podman run -d --name "$NAME" --log-driver none --network host -v "$WD/data:/var/
   --skip-log-bin --gtid-mode="$mode" --enforce-gtid-consistency=ON --innodb-buffer-pool-size=1G \
   --innodb-flush-log-at-trx-commit=2 --max-allowed-packet=1G --server-id=4242 --relay-log=restore-relay \
   --relay-log-purge=OFF --skip-replica-start > /dev/null
+created=true
 wait_up() {
   for _ in $(seq 1 120); do
     # The image's entrypoint runs a temporary server without networking first; wait for the real one.
@@ -140,17 +145,23 @@ wait_up
 q() { podman exec -i "$NAME" mysql --defaults-extra-file=/dl/my.cnf --protocol=TCP "$@"; }
 
 echo "loading $DUMP" >&2
-gzip -dc "$WD/dl/dump.sql.gz" | q
+# --skip-commands: the dump comes from a writable bucket, so the client runs no local commands
+# (system, tee, pager...) from it; DELIMITER still works.
+gzip -dc "$WD/dl/dump.sql.gz" | q --skip-commands
 loaded=$(date +%s)
 
-mapfile -t logs < <(rclone lsf --files-only "r2:$BUCKET/binlog/$UUID/" | sed -n -E 's/^([A-Za-z0-9_-]+\.[0-9]{6})\.gz$/\1/p' |
-  sort | awk -v f="$FILE" '$0 >= f')
+# A checked assignment, so a listing that fails part way stops the restore.
+listing=$(rclone lsf --files-only "r2:$BUCKET/binlog/$UUID/") || die "can't list binlog/$UUID/"
+mapfile -t logs < <(sed -n -E 's/^([A-Za-z0-9_-]+\.[0-9]{6})\.gz$/\1/p' <<< "$listing" | sort | awk -v f="$FILE" '$0 >= f')
 [ "${#logs[@]}" -gt 0 ] && [ "${logs[0]}" = "$FILE" ] || die "binlog $FILE, where the dump starts, isn't in the bucket"
 if [ -n "$UNTIL" ]; then
   # Only the binlogs up to the stop point, so a gap after it doesn't matter.
   ufile=${UNTIL%%:*}
   mapfile -t logs < <(printf '%s\n' "${logs[@]}" | awk -v u="$ufile" '$0 <= u')
   [ "${logs[-1]}" = "$ufile" ] || die "--until: $ufile isn't in the bucket at or after the dump's $FILE"
+  # The dump already holds everything before its own position: a stop point before it needs an
+  # older dump.
+  [ "$ufile" != "$FILE" ] || [ "${UNTIL##*:}" -ge "$POS" ] || die "--until is before this dump's $FILE:$POS: pass an older --dump"
 fi
 prev=""
 for f in "${logs[@]}"; do
