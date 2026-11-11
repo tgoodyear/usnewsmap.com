@@ -142,11 +142,15 @@ until state=$(systemctl is-active "$UNIT.service" || true); [ "$state" = inactiv
   sleep 5
 done
 # Held until exit: resume() starts the controller again while it is still held, and that tick
-# waits on the lock for the moment this run ends.
+# waits on the lock for the moment this run ends. flock runs as a waited-for child so a stop
+# during the wait reaches on_stop at once (bash defers traps until a foreground command ends);
+# the lock belongs to fd 8's open file, so it stays held after the child exits.
 if [ -n "$TICK_LOCK" ]; then
   exec 8> "$TICK_LOCK"
-  flock -w $((deadline > SECONDS ? deadline - SECONDS : 1)) 8 ||
-    die "another tick still holds $TICK_LOCK after $WAIT_MINS minutes"
+  flock -w $((deadline > SECONDS ? deadline - SECONDS : 1)) 8 &
+  child=$!
+  wait "$child" || die "another tick still holds $TICK_LOCK after $WAIT_MINS minutes"
+  child=""
 fi
 
 sha256() { sha256sum "$1" | cut -d' ' -f1; }

@@ -8,8 +8,10 @@ only: it needs flock and sha256sum.
 import json
 import os
 import shutil
+import signal
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -179,23 +181,61 @@ class HeldArchive(unittest.TestCase):
         self.assertIn("the dispatch step failed", done.stderr)
         self.assertEqual((self.root / "timer").read_text().strip(), "active")
 
+    def hold_tick_lock(self, tick, seconds):
+        """A tick queued on the lock: it holds it for `seconds`, logs its release, and has the
+        lock before this returns."""
+        ready = self.root / "holder-ready"
+        holder = subprocess.Popen(["flock", str(tick), "sh", "-c",
+                                   f'touch "{ready}"; sleep {seconds}; echo "holder released" >> "$FAKE_LOG"'],
+                                  env={**os.environ, "FAKE_LOG": str(self.root / "log")})
+        for _ in range(500):
+            if ready.exists():
+                break
+            time.sleep(0.01)
+        self.assertTrue(ready.exists(), "the holder never took the tick lock")
+        return holder
+
     def test_a_tick_lock_is_waited_for_then_held_through_the_run(self):
-        # A drain tick queued on the shared tick lock holds it for 2 s after the controller
-        # stops; the run waits, then holds the lock for every dispatch, so no tick can lease.
+        # The run must wait for a tick already holding the lock, then hold it itself for
+        # every dispatch, and release it only once it has resumed the controller.
         tick = self.root / "tick.lock"
-        holder = subprocess.Popen(["flock", str(tick), "sleep", "2"])
-        try:
-            done = self.run_archive("--tick-lock", str(tick), FAKE_TICK_LOCK=str(tick))
-        finally:
-            holder.wait()
+        holder = self.hold_tick_lock(tick, 2)
+        done = self.run_archive("--tick-lock", str(tick), FAKE_TICK_LOCK=str(tick))
+        holder.wait()
         self.assertEqual(done.returncode, 0, done.stderr)
         log = self.log()
+        first_tool = next(i for i, line in enumerate(log) if line.startswith("tool "))
+        self.assertLess(log.index("holder released"), first_tool, log)
         self.assertIn("tick lock held", log)
         self.assertNotIn("tick lock free", log)
         self.assertEqual(log[-2:], ["systemctl start usnm-boinc-priority-controller.timer",
                                     "systemctl start --no-block usnm-boinc-priority-controller.service"])
-        # Released once the run has exited.
         self.assertEqual(subprocess.run(["flock", "-n", str(tick), "true"]).returncode, 0)
+
+    def test_a_stop_while_waiting_for_the_tick_lock_resumes_at_once(self):
+        tick = self.root / "tick.lock"
+        holder = self.hold_tick_lock(tick, 30)
+        root = self.root
+        run = subprocess.Popen(
+            ["bash", str(SCRIPT), "--config", str(root / "config.json"), "--state-dir", str(root / "state"),
+             "--archive-dir", str(root / "archive"), "--tool", str(root / "tool.py"), "--wait-mins", "1",
+             "--tick-lock", str(tick)],
+            env={**os.environ, "PATH": f"{root / 'bin'}{os.pathsep}{os.environ['PATH']}",
+                 "FAKE_LOG": str(root / "log"), "FAKE_TIMER": str(root / "timer"),
+                 "FAKE_LEFT": str(root / "left"), "USNM_HELD_ARCHIVE_LOCK": str(root / "lock")},
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            time.sleep(2)
+            started = time.monotonic()
+            run.send_signal(signal.SIGTERM)
+            run.communicate(timeout=10)
+            self.assertLess(time.monotonic() - started, 5)
+            self.assertEqual(run.returncode, 143)
+            self.assertFalse(any(line.startswith("tool ") for line in self.log()))
+            self.assertEqual((self.root / "timer").read_text().strip(), "active")
+        finally:
+            holder.kill()
+            holder.wait()
 
     def test_without_a_tick_lock_nothing_is_held(self):
         tick = self.root / "tick.lock"
