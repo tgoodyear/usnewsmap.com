@@ -83,6 +83,8 @@ pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
+        // Before the name is read as a page id: a pruned bundle's is not one.
+        crate::quality::page_dims::require_image(&page, "surya stage-crops")?;
         let page_id = PageId::new(Source::Loc, &name)?;
         let marker = dir.path(&page_id, Some("no_crops"))?;
         if marker.exists() {
@@ -95,7 +97,6 @@ pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
         )?)
         .with_context(|| format!("{name}: quality.json"))?;
         quality.validate()?;
-        crate::quality::page_dims::require_image(&page, "surya stage-crops")?;
         let bytes = read(&page.join(crate::quality::PAGE_FILE), MAX_SCAN)?;
         ensure!(
             quality.inputs.page.matches(&bytes),

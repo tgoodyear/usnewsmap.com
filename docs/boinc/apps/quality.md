@@ -470,20 +470,22 @@ podman exec usnm-boinc-server /project/ops/quality-results/usnm-boinc quality pa
 - the unit is a submitted bundle and its `page.jpg` is the size `quality.json` gives the page input;
 - `dims.json` belongs to this job (version 1, the job id, each page's doc id and slice sha256 in order), and each page's JPEG header, read at its slice, gives the recorded size;
 - the unit is fully collected: in the partial loader's state (`/project/ops/quality-results/scoped/<campaign>/` on the server, copied to `--results-root`), `inventory.json` has it `canonical-present` and `frontier.json` has loaded that fingerprint;
-- that inventory was written more than two hours after `dims.json`, so the loaded fingerprint is one collect computed with the record in place.
+- that inventory was written more than two hours after `dims.json`, so the loaded fingerprint is one collect computed with the record in place;
+- every page's scan is in the scan index (`--scan-index`), and no page is LoC's own JPEG whose original is missing. Staging passes a small grey JPEG scan through unchanged, so that slice's sha256 is the one the index gives the scan. Such a page's original must be under `keep/` or `buffer/` of a `--scan-root` at its indexed size, since files fetched from LoC are kept. Across the 3,194 v1-wave10 bundles on 11 November 2026, 6,368 of 390,079 pages were passed through, and 786 of those, in 103 bundles, had no original on disk.
 
-There is no original-scan condition: the bundle image is derived data. A `page.jpg` with other hard links (a download copy an earlier version linked) frees nothing and counts zero bytes. `prune` still frees the download copy of a pruned unit, checking it against the size and sha256 in `quality.json` instead of the unit copy.
+The image checks run after the collection checks, so a unit that isn't collected yet costs no image reads. Transcoded pages need no original-scan condition: they are derived data. A `page.jpg` with other hard links (a download copy an earlier version linked) frees nothing and counts zero bytes. `prune` still frees the download copy of a pruned unit, checking it against the size and sha256 in `quality.json` instead of the unit copy.
 
 ```sh
 setpriv --reuid 101000 --regid 101000 --clear-groups python3 -I quality_retention.py prune-units \
   --quality-root /tank/boinc-bulk/quality --campaign v1-wave10 \
   --results-root /opt/usnm-quality-retention/run/results \
+  --scan-index /tank/ocr/scans/index-full.jsonl --scan-root /tank/ocr/scans --scan-root /cold/ocr-scans \
   --journal journal.jsonl --commit "$(git rev-parse HEAD)" [--delete --max-units N --max-bytes N]
 ```
 
 `quality-retention.sh --unit-campaign NAME` copies the campaign's `inventory.json` and `frontier.json` from CT230 into `/opt/usnm-quality-retention/run/results/NAME/` (root's, world-readable), then runs `prune-units` after `prune`, bounded by `--unit-max-bytes` (400 GB by default). The installed timer does not pass the flag.
 
-A pruned unit still collects. These no longer work from it and stop with an error that says the image was pruned: `quality submit` (a submitted unit is skipped anyway), `qwen stage` and `surya stage-crops` when they read `units/` because the root has no `pages/`, and `quality estimate` on a unit directory. Restaging a page for Surya or Qwen takes its single-page unit in `pages/` (or a fresh stage), not the bundle. `quality rescore` skips bundles and `quality rehat` reads only ALTO and texts, so neither is affected.
+A pruned unit still collects. These no longer work from it and stop with an error that says the image was pruned: `quality submit` (a submitted unit is skipped anyway), `qwen stage` and `surya stage-crops` when they read `units/` because the root has no `pages/`, and `quality estimate` on a unit directory (both `surya stage-crops` and `estimate` check before anything else about the unit). Restaging a page for Surya or Qwen takes its single-page unit in `pages/` (or a fresh stage), not the bundle. `quality rescore` skips bundles and `quality rehat` reads only ALTO and texts, so neither is affected.
 
 **Timer.** `usnm-quality-retention.timer` on the storage host runs `quality-retention.sh` every 6 hours: `list` in CT230 over the host trust (pve-big to pve), then `prune --delete` as uid 101000 with `--max-bytes` 400 GB a run, at idle I/O priority. Root keeps the code and the list in `/opt/usnm-quality-retention` and writes nowhere uid 101000 can; the journal is `/var/lib/usnm-quality-retention/journal.jsonl`. `prune` leaves single-page units alone: their `page.jpg` can be LoC's own JPEG. Install from a checkout:
 

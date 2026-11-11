@@ -204,8 +204,11 @@ class UnitLayout:
         self.inventory = {}
         self.loaded = {}
         self.generated_at = time.time()
+        self.scans = self.base / "scans"
+        self.index = []
 
-    def unit(self, n, sizes=((1000, 1400), (1200, 1680)), loaded=True, dims=True, age=None):
+    def unit(self, n, sizes=((1000, 1400), (1200, 1680)), loaded=True, dims=True, age=None,
+             passthrough=()):
         docs = [f"sn{n}_1900-01-01_ed-1_seq-{i + 1}" for i in range(len(sizes))]
         name = f"bundle-{n:05d}-{docs[0]}"
         unit = self.quality / "camp" / "units" / name
@@ -217,6 +220,10 @@ class UnitLayout:
                 "bytes": len(page), "offset": len(blob),
                 "sha256": hashlib.sha256(page).hexdigest(), "source": "x"}}})
             blob += page
+        for i, p in enumerate(pages):
+            sha = p["inputs"]["page"]["sha256"] if i in passthrough else "f" * 64
+            self.index.append({"doc_id": p["doc_id"], "batch": "b_x", "sha256": sha,
+                               "bytes": p["inputs"]["page"]["bytes"]})
         job_id = f"{n:064x}"
         (unit / "page.jpg").write_bytes(blob)
         (unit / "submitted").write_text(f"usnm_quality_{job_id}")
@@ -242,8 +249,11 @@ class UnitLayout:
         (state / "inventory.json").write_text(json.dumps(
             {"schema": 1, "generated_at": self.generated_at, "units": self.inventory}))
         (state / "frontier.json").write_text(json.dumps({"schema": 1, "loaded": self.loaded}))
+        index = self.base / "index.jsonl"
+        index.write_text("".join(json.dumps(r) + "\n" for r in self.index))
         argv = ["prune-units", "--quality-root", str(self.quality), "--campaign", "camp",
                 "--results-root", str(self.results), "--journal", str(self.journal),
+                "--scan-index", str(index), "--scan-root", str(self.scans),
                 "--commit", "abc123", *extra]
         out = []
         real = sys.stdout.write
@@ -308,7 +318,9 @@ class PruneUnitsTest(unittest.TestCase):
         u1 = self.l.unit(1)
         record = json.loads((u1 / "dims.json").read_text())
         record["pages"][1]["width"] += 1
+        t = (u1 / "dims.json").stat().st_mtime
         (u1 / "dims.json").write_text(json.dumps(record))
+        os.utime(u1 / "dims.json", (t, t))
         u2 = self.l.unit(2)
         record = json.loads((u2 / "dims.json").read_text())
         record["pages"][0]["sha256"] = "0" * 64
@@ -336,6 +348,24 @@ class PruneUnitsTest(unittest.TestCase):
         size = (next(self.l.quality.rglob("page.jpg"))).stat().st_size
         self.assertEqual(self.l.prune("--delete", "--max-bytes", str(size - 1))["units"], 0)
         self.assertEqual(len(list(self.l.quality.rglob("page.jpg"))), 1)
+
+    def test_keeps_loc_bytes_without_their_original(self):
+        u1 = self.l.unit(1, passthrough=(1,))
+        u2 = self.l.unit(2, passthrough=(0,))
+        u3 = self.l.unit(3)
+        self.l.index = [r for r in self.l.index if not r["doc_id"].startswith("sn3_")]
+        # Unit 2's passed-through page has its original on disk at its size.
+        r = next(r for r in self.l.index if r["doc_id"] == "sn2_1900-01-01_ed-1_seq-1")
+        orig = self.l.scans / "keep" / "b_x" / "sn2" / "1900-01-01" / "1" / "1.jpg"
+        orig.parent.mkdir(parents=True)
+        orig.write_bytes(b"x" * r["bytes"])
+        got = self.l.prune("--delete")
+        self.assertEqual(got["units"], 1)
+        self.assertEqual(got["kept"], {
+            "a page is LoC's own JPEG and its original is not on disk": 1,
+            "a page's scan is not in the scan index": 1})
+        self.assertTrue((u1 / "page.jpg").exists() and (u3 / "page.jpg").exists())
+        self.assertFalse((u2 / "page.jpg").exists())
 
     def test_a_linked_page_counts_no_bytes(self):
         unit = self.l.unit(1)

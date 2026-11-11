@@ -38,7 +38,8 @@ so the journal records every file it removed and the --commit the run came from.
 batch before it is touched.
 
   quality_retention.py prune-units --quality-root DIR --campaign NAME --results-root DIR
-      --journal FILE [--commit SHA] [--delete] [--max-units N] [--max-bytes N]
+      --scan-index FILE --scan-root DIR [--scan-root DIR] --journal FILE [--commit SHA]
+      [--delete] [--max-units N] [--max-bytes N]
 
 `prune-units` frees the unit copy, units/bundle-*/page.jpg, of bundles that quality collect no
 longer needs (#1743). Collect takes a bundle's page sizes from its dims.json instead. It runs
@@ -51,7 +52,12 @@ on the storage host as the share's owner, like `prune`. A unit's page.jpg goes o
   - the unit is fully collected: in the partial loader's state under --results-root/NAME,
     inventory.json has it canonical-present and frontier.json has loaded that fingerprint;
   - that inventory was written more than RECORD_SETTLE_SECS after dims.json, so the loaded
-    fingerprint is one that collect computed with the record in the unit.
+    fingerprint is one that collect computed with the record in the unit;
+  - no page is LoC's own JPEG (its slice sha256 is the one --scan-index gives the page's scan:
+    staging passes a small grey JPEG through unchanged) unless that scan is on disk, at its
+    indexed size, under keep/ or buffer/ of a --scan-root, and every page's scan is in the
+    index (otherwise it can't be told apart). Files fetched from LoC are kept.
+The image checks run last, so a unit not yet collected costs no image reads.
 The same dry run, journal, --max-bytes rule and summary as `prune`; a page.jpg with other
 hard links (a download copy an earlier version linked) counts no bytes.
 """
@@ -245,7 +251,7 @@ def jpeg_size(data):
     return None
 
 
-def unit_check(unit, results):
+def unit_check(unit, results, scans):
     """(path, bytes freed, record) for a unit page.jpg to delete, or a reason to leave it."""
     name = os.path.basename(unit)
     page = os.path.join(unit, "page.jpg")
@@ -288,6 +294,23 @@ def unit_check(unit, results):
         if not (isinstance(w, int) and isinstance(h, int) and w > 0 and h > 0):
             return "dims.json gives an empty size"
         sizes.append(((w, h), slice_))
+    entry = results["inventory"].get(name)
+    if not entry or entry.get("status") != "canonical-present":
+        return "no canonical result in the inventory"
+    if not entry.get("fingerprint") or results["loaded"].get(name) != entry["fingerprint"]:
+        return "not loaded at its current fingerprint"
+    if results["generated_at"] - dst.st_mtime < RECORD_SETTLE_SECS:
+        return "inventory not newer than dims.json"
+    # A page staging passed through unchanged is LoC's own JPEG, not a transcode: the unit keeps
+    # it unless the original scan is on disk (every file fetched from LoC is kept).
+    # A page whose scan the index doesn't know can't be told apart, so its unit stays too.
+    for d, p in zip(dims["pages"], pages):
+        known = scans["index"].get(p.get("doc_id"))
+        if not known:
+            return "a page's scan is not in the scan index"
+        loc = known.get(d["sha256"])
+        if loc is not None and not original_on_disk(p["doc_id"], loc, scans["roots"]):
+            return "a page is LoC's own JPEG and its original is not on disk"
     with open(page, "rb") as f:
         for (size, slice_) in sizes:
             offset, length = slice_.get("offset"), slice_.get("bytes")
@@ -297,16 +320,41 @@ def unit_check(unit, results):
             f.seek(offset)
             if jpeg_size(f.read(min(length, JPEG_HEADER_WINDOW))) != size:
                 return "page header differs from dims.json"
-    entry = results["inventory"].get(name)
-    if not entry or entry.get("status") != "canonical-present":
-        return "no canonical result in the inventory"
-    if not entry.get("fingerprint") or results["loaded"].get(name) != entry["fingerprint"]:
-        return "not loaded at its current fingerprint"
-    if results["generated_at"] - dst.st_mtime < RECORD_SETTLE_SECS:
-        return "inventory not newer than dims.json"
     freed = st.st_size if st.st_nlink == 1 else 0
     return page, freed, {"job": job.get("id"), "nlink": st.st_nlink,
                          "fingerprint": entry["fingerprint"]}
+
+
+def scan_index(path):
+    """doc_id -> {sha256: (batch, bytes)} from the scan server's index of LoC's files."""
+    index = {}
+    with open(path) as f:
+        for line in f:
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue
+            if r.get("doc_id") and r.get("sha256") and r.get("batch"):
+                index.setdefault(r["doc_id"], {})[r["sha256"]] = (r["batch"], r.get("bytes"))
+    return index
+
+
+def original_on_disk(doc_id, loc, roots):
+    """Whether LoC's file for `doc_id` is under keep/ or buffer/ of a scan root, at its size."""
+    batch, size = loc
+    m = re.fullmatch(r"([^_/]+)_(\d{4}-\d{2}-\d{2})_ed-(\d+)_seq-(\d+)", doc_id)
+    if not m:
+        return False
+    lccn, date, ed, seq = m.groups()
+    for root in roots:
+        for tier in ("keep", "buffer"):
+            try:
+                st = os.stat(os.path.join(root, tier, batch, lccn, date, ed, seq + ".jpg"))
+            except FileNotFoundError:
+                continue
+            if size is None or st.st_size == size:
+                return True
+    return False
 
 
 def results_state(results_root, campaign):
@@ -328,6 +376,7 @@ def prune_units(a):
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", a.campaign):
         sys.exit("--campaign: a campaign name")
     results = results_state(a.results_root, a.campaign)
+    scans = {"index": scan_index(a.scan_index), "roots": a.scan_root}
     units_dir = os.path.join(a.quality_root, a.campaign, "units")
     names = sorted(n for n in os.listdir(units_dir) if n.startswith("bundle-"))
     totals = {"units": 0, "bytes": 0}
@@ -340,7 +389,7 @@ def prune_units(a):
             unit = os.path.join(units_dir, name)
             if not os.path.isdir(unit):
                 continue
-            got = unit_check(unit, results)
+            got = unit_check(unit, results, scans)
             if isinstance(got, str):
                 kept[got] = kept.get(got, 0) + 1
                 if got != "already pruned":
@@ -442,6 +491,8 @@ def main(argv=None):
     pu.add_argument("--quality-root", required=True)
     pu.add_argument("--campaign", required=True)
     pu.add_argument("--results-root", required=True)
+    pu.add_argument("--scan-index", required=True)
+    pu.add_argument("--scan-root", action="append", required=True)
     pu.add_argument("--journal", required=True)
     pu.add_argument("--commit", default="unknown")
     pu.add_argument("--delete", action="store_true")

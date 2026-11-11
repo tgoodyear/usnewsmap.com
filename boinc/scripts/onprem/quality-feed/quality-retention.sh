@@ -74,7 +74,8 @@ for f in inventory.json frontier.json; do
   mv "$results/$f.tmp" "$results/$f"
 done
 uargs=(prune-units --quality-root "$SHARE/quality" --campaign "$UNIT_CAMPAIGN"
-  --results-root "$CODE/run/results" --journal "$STATE/journal.jsonl"
+  --results-root "$CODE/run/results" --scan-index /tank/ocr/scans/index-full.jsonl
+  --scan-root /tank/ocr/scans --scan-root /cold/ocr-scans --journal "$STATE/journal.jsonl"
   --commit "$commit" --max-bytes "$UNIT_MAX_BYTES")
 [ "$WHAT_IF" = true ] || uargs+=(--delete)
 as_owner "${uargs[@]}"
