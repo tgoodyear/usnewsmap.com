@@ -120,6 +120,8 @@ class QualityRetentionTest(unittest.TestCase):
 
     def test_links_a_copy_whose_original_scan_is_missing(self):
         path, unit = self.l.unit(1, DOCS, scans=False)
+        os.chmod(unit / "page.jpg", 0o600)
+        os.chmod(path, 0o644)
         dry = self.l.prune()
         self.assertEqual((dry["files"], dry["linked"]), (0, 1))
         self.assertNotEqual(path.stat().st_ino, (unit / "page.jpg").stat().st_ino)
@@ -127,6 +129,7 @@ class QualityRetentionTest(unittest.TestCase):
         self.assertEqual((got["files"], got["linked"]), (0, 1))
         self.assertEqual(path.read_bytes(), b"bundle-bytes")
         self.assertEqual(path.stat().st_ino, (unit / "page.jpg").stat().st_ino)
+        self.assertEqual(path.stat().st_mode & 0o777, 0o644)
         self.assertEqual(list(path.parent.glob(".*")), [])
         rows = self.l.journal_rows()
         self.assertEqual([r["action"] for r in rows], ["linking", "linked"])

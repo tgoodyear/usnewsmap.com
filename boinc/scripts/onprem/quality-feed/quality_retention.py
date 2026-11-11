@@ -215,7 +215,13 @@ def check(entry, download, units, batches, roots, cmp, now):
 
 
 def link_copy(path, page):
-    """Replaces path with a hard link to page, atomically: link beside it, then rename."""
+    """Replaces path with a hard link to page, atomically: link beside it, then rename. The
+    shared inode first gains the download copy's permission bits (0644 against the unit's
+    0600), so the download path stays readable to the web server."""
+    want = os.stat(path).st_mode & 0o777
+    have = os.stat(page).st_mode & 0o777
+    if have | want != have:
+        os.chmod(page, have | want)
     tmp = os.path.join(os.path.dirname(path), f".{os.path.basename(path)}.link")
     if os.path.lexists(tmp):
         os.unlink(tmp)
