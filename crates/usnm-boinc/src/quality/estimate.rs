@@ -209,6 +209,10 @@ pub fn run(opts: &Options) -> anyhow::Result<Summary> {
         summary.pages += 1;
         let staged = tempfile::tempdir()?;
         let outcome = (|| -> anyhow::Result<()> {
+            // Before the texts: a bundle's texts.json is several documents.
+            if let Some(dir) = files.page.parent() {
+                super::page_dims::require_image(dir, "quality estimate")?;
+            }
             let texts = load_texts(&files)?;
             let job = super::stage::local_unit(&super::stage::LocalUnit {
                 page: &read(&files.page, MAX_SCAN)?,

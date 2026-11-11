@@ -269,9 +269,10 @@ Run as root on the BOINC host after the #1449 server-image roll:
 - `local-unit`: a unit from local files (`--page`, `--alto`, `--texts`, `--places`, `--function-words`, `--dir`, `--engine-image`, `--crop-seed` 522, `--k-crops` 12) for `usnm-boinc work --dir <dir>`.
 - `check`: `--init_script` (`--files <result.json> <confusions.json> <diag.txt>`, optional `--keep <dir>`).
 - `compare`: `--compare_script` (`--files <r1...> --files2 <r2...>`, optional `--log <pairs.jsonl>`).
-- `collect`: joins canonical `usnm_quality` (`--root`, `--spool`), `usnm_qwen` (`--qwen-root`, `--qwen-spool`, `--qwen-crop-states`, `--qwen-pages`) and optional `usnm_surya` crop results (`--surya-root`, `--surya-spool`; reader `surya`, #968) for `--campaign`. With a Qwen reading it recomputes the crop-level hat (`legibility.basis` `crop-hat+qwen`). Writes `pages.parquet`, `crops.parquet`, `summary.md` to `--out-dir` or `--curated-url` under `audit/quality/<campaign>/`.
+- `collect`: joins canonical `usnm_quality` (`--root`, `--spool`), `usnm_qwen` (`--qwen-root`, `--qwen-spool`, `--qwen-crop-states`, `--qwen-pages`) and optional `usnm_surya` crop results (`--surya-root`, `--surya-spool`; reader `surya`, #968) for `--campaign`. With a Qwen reading it recomputes the crop-level hat (`legibility.basis` `crop-hat+qwen`). Writes `pages.parquet`, `crops.parquet`, `summary.md` to `--out-dir` or `--curated-url` under `audit/quality/<campaign>/`. A bundle's page sizes come from its `dims.json` when it has one, so its `page.jpg` can be pruned after collection ([Unit copies](#unit-copies-1743)).
   - `--qwen-crop-states`: only vouched crops join; others keep rows without the reading, with `vlm_crop_state` `strict-v1`, `agree`, `looped`, `no_text` or `unjudged`. Records are part of the row-cache keys.
   - `--qwen-pages` (#1435, `/project/usnmocr/qwen/pages`): a bundle with no canonical result joins each page `page-ledger` calls `accepted` (`vlm_crop_state` `page-strict-v1`), using the first agreeing record by file name and the side whose result name sorts first, which must have finished and name its device (the two names must differ). The bundle's other pages keep rows without a reading. A canonical result, once present, wins. Only bundles' cache keys change.
+- `page-dims`: writes `dims.json`, the page sizes collect uses, into bundle units packed before stage wrote it (`--root`, repeatable `--unit`, `--max-units`, `--dry-run`, `--check`, `--decode`; [Unit copies](#unit-copies-1743)). Prints a JSON summary and fails if any unit failed.
 - `rehat`: recomputes page hat versions 1 and 2 from a staging root's texts (`--root`, `--out` JSON lines, `--min-readers` 3, `--threads`) with no results or scans, to compare the versions on a still-staged campaign.
 - `rescore` (#1079): reruns the text part of single-page units (`slot::text_analysis`, what the unit runs minus image and ALTO) from corrected LoC texts, no volunteer work. Flags: `--campaign`, `--root` (staging root), `--spool` (canonical results), `--loc-texts` (JSON lines `{"doc_id", "text"}` replacing `loc-hist`), `--places`, `--out-dir` (new, outside the root), `--threads`. Keeps image/layout features; writes `<out-dir>/units/<doc_id>/{quality.json, texts.json}` (which `rehat` reads) plus `pages.parquet` and `summary.md` with hat version 2. Bundles, units without results and pages without LoC text are counted and skipped.
 - `calibrate`: see [Calibration](#calibration).
@@ -433,7 +434,7 @@ boinc/scripts/onprem/quality-feed/quality-feed-install.sh --campaign v1-wave10 \
 
 `usnm-boinc quality submit` copies each unit's `page.jpg` into the download tree as `<job id>_page_jpg`, so every bundle image is on the share twice: in `quality/<campaign>/units/bundle-*/` and in `download/`. A bundle image is a JPEG that staging re-encoded from up to 500 scans, often 200 to 800 MB. `file_deleter --preserve_wu_files` keeps the download copy after the workunit is done ([Scans are never deleted](../server/server-and-apps.md#scans-are-never-deleted)). On v1-wave10 this was most of the share's growth, about 55 to 70 GiB a day for each copy in November 2026.
 
-Derived images may be deleted once nothing uses them (11 November 2026). The keep-every-scan rule covers original scans and files fetched from LoC or other hosts, not BOINC's own transcodes. `boinc/scripts/onprem/quality-feed/quality_retention.py` deletes the download copy of a finished bundle. The unit's own `page.jpg` stays for now, because `quality collect` reads it again whenever a page's Qwen readings or the Surya digest change the unit's cache key (#1743). Single-page units are left alone, since their `page.jpg` can be LoC's own JPEG. So are `<id>_loc_xml`, `<id>_texts_json`, `<id>_quality_json`, the places file, the models, `usnm_ocr`'s JP2 inputs (LoC's bytes) and every other app's inputs.
+Derived images may be deleted once nothing uses them (11 November 2026). The keep-every-scan rule covers original scans and files fetched from LoC or other hosts, not BOINC's own transcodes. `boinc/scripts/onprem/quality-feed/quality_retention.py` deletes the download copy of a finished bundle. `prune-units` in the same script then deletes the unit's own `page.jpg` once the unit is collected and `dims.json` holds its page sizes ([Unit copies](#unit-copies-1743)). Single-page units are left alone, since their `page.jpg` can be LoC's own JPEG. So are `<id>_loc_xml`, `<id>_texts_json`, `<id>_quality_json`, the places file, the models, `usnm_ocr`'s JP2 inputs (LoC's bytes) and every other app's inputs.
 
 ```sh
 # In the server container: usnm_quality workunits assimilated, with every result over.
@@ -452,6 +453,39 @@ setpriv --reuid 101000 --regid 101000 --clear-groups python3 -I quality_retentio
 - the two files are byte-for-byte the same (a full compare; `--skip-cmp` is allowed only without `--delete`), or are one inode.
 
 With `--delete`, each unlink is journalled before and after, with the commit it ran from. `--max-files` and `--max-bytes` bound a batch, and a file that would pass `--max-bytes` ends it untouched. Run `list` again before each `prune`: `db_purge` drops workunit rows 30 days after their files are marked done, and a file without a row is never listed.
+
+##### Unit copies (#1743)
+
+`quality collect` needs a bundle page's image only for its width and height: the ALTO is scaled to them, and Surya-only crops are cut in those pixels. Stage writes them to `dims.json` beside `quality.json` when it packs a bundle: per page, in bundle order, the doc id, width, height and the sha256 of the page's slice of `page.jpg`, under the bundle's job id. Collect takes a bundle's sizes from `dims.json` whenever the unit has one, and reads `page.jpg` only for bundles without one. The collection key (`collect_cache.rs`, `key_for`) of a bundle with `dims.json` names `dims.json` in place of `page.jpg`, so deleting the image later leaves the key, the cached rows and the loader's frontier as they were. Units without `dims.json` keep `page.jpg` in their key.
+
+Bundles packed before this change get the record from `usnm-boinc quality page-dims`, run in the server container like collect. It reads each page's slice once, checks it against the job's sha256 and takes the size from the JPEG header, without decoding. `--dry-run` writes nothing, `--check` also re-reads units that have a record and requires the same sizes, `--decode` also decodes each page fully and requires the header's size, and `--unit` (repeatable) and `--max-units` limit a run. Each record it writes changes that unit's collection key once, so the partial loader collects and loads the unit again (about two minutes each, [Result collection](#result-collection)). Write records in batches the loader can absorb.
+
+```sh
+podman exec usnm-boinc-server /project/ops/quality-results/usnm-boinc quality page-dims \
+  --root /project/quality/v1-wave10 --max-units 200 [--dry-run]
+```
+
+`quality_retention.py prune-units` deletes `units/bundle-*/page.jpg` when all of these hold, and otherwise leaves it and counts the reason:
+
+- the unit is a submitted bundle and its `page.jpg` is the size `quality.json` gives the page input;
+- `dims.json` belongs to this job (version 1, the job id, each page's doc id and slice sha256 in order), and each page's JPEG header, read at its slice, gives the recorded size;
+- the unit is fully collected: in the partial loader's state (`/project/ops/quality-results/scoped/<campaign>/` on the server, copied to `--results-root`), `inventory.json` has it `canonical-present` and `frontier.json` has loaded that fingerprint;
+- that inventory was written more than two hours after `dims.json`, so the loaded fingerprint is one collect computed with the record in place;
+- every page came from the on-prem feeder's hand-off (page source `handoff:scans/<doc_id>.jpg`) and its scan is in the scan index (`--scan-index`), and no page is LoC's own JPEG without a kept original. The feeder passes a small grey JPEG scan through unchanged, so that slice's sha256 is the one the index gives the scan, and such a page's original must be under `keep/` of a `--scan-root` at its indexed size. `buffer/` doesn't count, because the feeder evicts it (`quality_feed.py`, `delete_shipped`), and files fetched from LoC are kept. A page fetched from LoC directly, whose source is a URL, keeps its unit, since its bytes may be LoC's under a hash the index doesn't hold. Across the 3,195 v1-wave10 bundles on 11 November 2026, every page came from the hand-off and was in the index; 6,368 of 390,579 pages were passed through, and 513 bundles hold at least one of them without a kept original, so those bundles stay.
+
+The image checks run after the collection checks, so a unit that isn't collected yet costs no image reads. Transcoded pages need no original-scan condition: they are derived data. A `page.jpg` with other hard links (a download copy an earlier version linked) frees nothing and counts zero bytes. `prune` still frees the download copy of a pruned unit, checking it against the size and sha256 in `quality.json` instead of the unit copy.
+
+```sh
+setpriv --reuid 101000 --regid 101000 --clear-groups python3 -I quality_retention.py prune-units \
+  --quality-root /tank/boinc-bulk/quality --campaign v1-wave10 \
+  --results-root /opt/usnm-quality-retention/run/results \
+  --scan-index /tank/ocr/scans/index-full.jsonl --scan-root /tank/ocr/scans --scan-root /cold/ocr-scans \
+  --journal journal.jsonl --commit "$(git rev-parse HEAD)" [--delete --max-units N --max-bytes N]
+```
+
+`quality-retention.sh --unit-campaign NAME` copies the campaign's `inventory.json` and `frontier.json` from CT230 into `/opt/usnm-quality-retention/run/results/NAME/` (root's, world-readable), then runs `prune-units` after `prune`, bounded by `--unit-max-bytes` (400 GB by default). The installed timer does not pass the flag.
+
+A pruned unit still collects. These no longer work from it and stop with an error that says the image was pruned: `quality submit` (a submitted unit is skipped anyway), `qwen stage` and `surya stage-crops` when they read `units/` because the root has no `pages/`, and `quality estimate` on a unit directory (both `surya stage-crops` and `estimate` check before anything else about the unit). Restaging a page for Surya or Qwen takes its single-page unit in `pages/` (or a fresh stage), not the bundle. `quality rescore` skips bundles and `quality rehat` reads only ALTO and texts, so neither is affected.
 
 **Timer.** `usnm-quality-retention.timer` on the storage host runs `quality-retention.sh` every 6 hours: `list` in CT230 over the host trust (pve-big to pve), then `prune --delete` as uid 101000 with `--max-bytes` 400 GB a run, at idle I/O priority. Root keeps the code and the list in `/opt/usnm-quality-retention` and writes nowhere uid 101000 can; the journal is `/var/lib/usnm-quality-retention/journal.jsonl`. `prune` leaves single-page units alone: their `page.jpg` can be LoC's own JPEG. Install from a checkout:
 

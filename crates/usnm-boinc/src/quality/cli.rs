@@ -273,6 +273,30 @@ pub enum QualityCommands {
         #[arg(long, default_value_t = 1)]
         threads: usize,
     },
+    /// Record the page sizes of bundle units packed before stage wrote them, in each unit's
+    /// dims.json, from the JPEG headers; collect then reads no image (#1743). Prints a JSON
+    /// summary; fails when any unit failed.
+    PageDims {
+        /// The campaign's staging root (holds units/).
+        #[arg(long)]
+        root: PathBuf,
+        /// Only this unit (repeatable); every bundle unit by default.
+        #[arg(long = "unit")]
+        units: Vec<String>,
+        /// Write at most this many records in one run. Each one changes its unit's collection
+        /// key once, so the partial loader collects and loads that unit again.
+        #[arg(long, default_value_t = usize::MAX)]
+        max_units: usize,
+        /// Compute the records, write nothing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Also read the image of units that have a record and require the same sizes.
+        #[arg(long)]
+        check: bool,
+        /// Also fully decode each page and require the size its header gives.
+        #[arg(long)]
+        decode: bool,
+    },
     /// Print a Markdown table of the kept results and the logged pairs.
     Summary {
         #[arg(long)]
@@ -543,6 +567,25 @@ pub async fn run(command: QualityCommands) -> anyhow::Result<()> {
                 threads,
             })?;
             eprintln!("{s:?}");
+        }
+        QualityCommands::PageDims {
+            root,
+            units,
+            max_units,
+            dry_run,
+            check,
+            decode,
+        } => {
+            let s = x::page_dims::backfill(&x::page_dims::BackfillOptions {
+                root,
+                units,
+                max_units,
+                dry_run,
+                check,
+                decode,
+            })?;
+            println!("{}", serde_json::to_string(&s)?);
+            anyhow::ensure!(s.failed == 0, "{} units failed", s.failed);
         }
         QualityCommands::Summary { root, seen, pairs } => {
             print!("{}", x::summary::run(&root, &seen, &pairs)?)

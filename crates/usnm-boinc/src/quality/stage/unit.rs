@@ -288,7 +288,8 @@ pub fn write_unit(u: &WriteUnit) -> anyhow::Result<Job> {
 }
 
 /// Packs `page_units` (1 to [`MAX_BUNDLE_PAGES`] staged single-page unit
-/// directories) into a single multi-page bundle unit directory `dir`.
+/// directories) into a single multi-page bundle unit directory `dir`, with
+/// the pages' sizes in `dims.json` beside the job.
 pub fn write_bundle(dir: &Path, page_units: &[PathBuf]) -> anyhow::Result<Job> {
     ensure!(
         !page_units.is_empty() && page_units.len() <= MAX_BUNDLE_PAGES,
@@ -419,10 +420,13 @@ pub fn write_bundle(dir: &Path, page_units: &[PathBuf]) -> anyhow::Result<Job> {
     };
     job.id = job.identity()?;
     job.validate().context("staged bundle job")?;
+    // Collect reads the pages' sizes from here, not from the image (#1743).
+    let dims = crate::quality::page_dims::PageDims::of_blob(&job, &page_blob)?;
     atomic(&dir.join(PAGE_FILE), &page_blob)?;
     atomic(&dir.join(ALTO_FILE), &alto_blob)?;
     atomic(&dir.join(TEXTS_FILE), &texts_blob)?;
     atomic(&dir.join(PLACES_FILE), &places_bytes)?;
+    dims.write(dir)?;
     atomic(&dir.join(JOB_FILE), &serde_json::to_vec_pretty(&job)?)?;
     Ok(job)
 }

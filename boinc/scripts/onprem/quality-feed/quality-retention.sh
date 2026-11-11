@@ -7,17 +7,21 @@
 #     [--code /opt/usnm-quality-retention] [--state /var/lib/usnm-quality-retention]
 #     [--share /tank/boinc-bulk]
 #     [--owner 101000]
-#     [--max-bytes 400000000000] [--what-if]
+#     [--max-bytes 400000000000] [--unit-campaign NAME] [--unit-max-bytes 400000000000]
+#     [--what-if]
 #
 # <code> is root's: quality_retention.py, this script, COMMIT (the commit they were installed
 # from) and run/eligible.jsonl, the last list. Root writes nothing anywhere else. <state>
 # belongs to the share's owner and holds only the journal, which prune writes as that owner.
-# --what-if runs prune without --delete.
+# --what-if runs prune without --delete. --unit-campaign NAME also runs prune-units for that
+# campaign (the units' own page.jpg, #1743) after prune, as the same owner. The partial loader's
+# state (inventory.json, frontier.json) is on the server's own disk, so root copies it read-only
+# from the server container's host into <code>/run/results/NAME first, as it does the list.
 set -euo pipefail
 die() { echo "error: $*" >&2; exit 1; }
 SERVER=pve.tjg.fyi CT=230 CODE=/opt/usnm-quality-retention STATE=/var/lib/usnm-quality-retention SHARE=/tank/boinc-bulk
 OWNER=101000
-MAX_BYTES=400000000000 WHAT_IF=false
+MAX_BYTES=400000000000 WHAT_IF=false UNIT_CAMPAIGN="" UNIT_MAX_BYTES=400000000000
 while [ $# -gt 0 ]; do
   case $1 in
     --server-host) SERVER=${2:-}; shift 2 ;;
@@ -27,13 +31,17 @@ while [ $# -gt 0 ]; do
     --share) SHARE=${2:-}; shift 2 ;;
     --owner) OWNER=${2:-}; shift 2 ;;
     --max-bytes) MAX_BYTES=${2:-}; shift 2 ;;
+    --unit-campaign) UNIT_CAMPAIGN=${2:-}; shift 2 ;;
+    --unit-max-bytes) UNIT_MAX_BYTES=${2:-}; shift 2 ;;
     --what-if) WHAT_IF=true; shift ;;
     *) die "unknown argument: $1" ;;
   esac
 done
 [[ $SERVER =~ ^[a-z0-9][a-z0-9.-]*$ ]] || die "--server-host: a host name"
-[[ $CT =~ ^[0-9]+$ && $OWNER =~ ^[0-9]+$ && $MAX_BYTES =~ ^[0-9]+$ ]] ||
-  die "--server-ct, --owner and --max-bytes: numbers"
+[[ $CT =~ ^[0-9]+$ && $OWNER =~ ^[0-9]+$ && $MAX_BYTES =~ ^[0-9]+$ && $UNIT_MAX_BYTES =~ ^[0-9]+$ ]] ||
+  die "--server-ct, --owner, --max-bytes and --unit-max-bytes: numbers"
+[[ -z $UNIT_CAMPAIGN || $UNIT_CAMPAIGN =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] ||
+  die "--unit-campaign: a campaign name"
 script=$CODE/quality_retention.py
 [ -f "$script" ] || die "$script is not installed"
 [ "$(stat -c %u "$CODE" "$script")" = "$(printf '0\n0')" ] || die "$CODE and $script must be root's"
@@ -53,4 +61,21 @@ args=(prune --eligible "$list" --download "$SHARE/download"
   --commit "$commit" --max-bytes "$MAX_BYTES")
 [ "$WHAT_IF" = true ] || args+=(--delete)
 cd "$STATE"
-exec setpriv --reuid "$OWNER" --regid "$OWNER" --clear-groups python3 -I "$script" "${args[@]}"
+as_owner() { setpriv --reuid "$OWNER" --regid "$OWNER" --clear-groups python3 -I "$script" "$@"; }
+as_owner "${args[@]}"
+[ -n "$UNIT_CAMPAIGN" ] || exit 0
+results=$CODE/run/results/$UNIT_CAMPAIGN
+install -d -m 0755 "$results"
+for f in inventory.json frontier.json; do
+  ssh -o BatchMode=yes -o ConnectTimeout=15 "root@$SERVER" \
+    "pct exec $CT -- cat /srv/usnm-boinc/project/ops/quality-results/scoped/$UNIT_CAMPAIGN/$f" \
+    > "$results/$f.tmp"
+  chmod 0644 "$results/$f.tmp"
+  mv "$results/$f.tmp" "$results/$f"
+done
+uargs=(prune-units --quality-root "$SHARE/quality" --campaign "$UNIT_CAMPAIGN"
+  --results-root "$CODE/run/results" --scan-index /tank/ocr/scans/index-full.jsonl
+  --scan-root /tank/ocr/scans --scan-root /cold/ocr-scans --journal "$STATE/journal.jsonl"
+  --commit "$commit" --max-bytes "$UNIT_MAX_BYTES")
+[ "$WHAT_IF" = true ] || uargs+=(--delete)
+as_owner "${uargs[@]}"
