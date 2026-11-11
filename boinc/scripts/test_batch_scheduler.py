@@ -2191,6 +2191,11 @@ class QueueModeTests(unittest.TestCase):
         self.assertNotIn(("collect", row["job"]["id"]), self.fake.actions)
         self.assertEqual(event["scope_held_elsewhere"], 1)
         self.assertNotIn("held", self.fake.rows[0])
+        # The same job under another message (a job id leaves out queued_at) is not settled.
+        self.state["claims"][page]["message"] = "e" * 64
+        self.fake.rows[0].pop("held", None)
+        with self.assertRaisesRegex(ValueError, "SQL/journal mismatch"):
+            self.sibling_tick(sibling)
 
     def test_check_state_dirs_merge_archived_held_and_refuse_the_own_dir(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -2256,15 +2256,23 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
     # A job of this plan that another plan already ran and archived as held (same page, same
     # worker, so the same job id, whose BOINC row stays): settled as held, never submitted.
     # Marked on every read of the journals, in memory only; nothing writes them back.
-    archived_elsewhere = {entry.get("job") for entries in (sibling_archived or {}).values()
-                          for entry in entries if isinstance(entry, dict)}
+    sibling_archived = sibling_archived or {}
+
+    def archived_elsewhere(record):
+        # The same page, job and message as an archive of another plan: a job id leaves out
+        # queued_at, so a different message is another attempt, never settled here.
+        page = record["job"]["message"]["page"]
+        message = state.get("claims", {}).get(page, {}).get("message")
+        return message is not None and any(
+            entry.get("job") == record["job"]["id"] and entry.get("message") == message
+            for entry in sibling_archived.get(page, []))
     elsewhere_held = set()
 
     def read_records():
         found = transport.records()
         for record in found:
             if (record.get("plan") == config["plan"] and record.get("stage") == "reserved"
-                    and not record.get("held") and record["job"]["id"] in archived_elsewhere):
+                    and not record.get("held") and archived_elsewhere(record)):
                 record["held"] = "archived as held by another plan with the same worker"
                 elsewhere_held.add(record["job"]["id"])
         return found
