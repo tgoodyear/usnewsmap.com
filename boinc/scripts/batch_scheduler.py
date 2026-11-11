@@ -1777,6 +1777,21 @@ class QueueFeed:
             pages.setdefault(doc, set()).update(messages)
         return {doc: sorted(messages) for doc, messages in sorted(pages.items())}
 
+    def publish_settled(self):
+        """Put the held-pages list out when it changed, whether or not this tick claims (#1754).
+        `fill` publishes before a claim, but a tick that doesn't claim (the queue is full, a
+        result is held at collection, the plan drains) settles pages too, and the seeder reads
+        the same list to stop counting and retrying them. A failure here only leaves the list
+        as it was: the tick goes on, and the next one tries again."""
+        publish = getattr(self.transport, "publish_held", None)
+        if publish is None:
+            return
+        try:
+            publish(self.held_pages())
+        except (RuntimeError, OSError) as error:
+            print(json.dumps({"event": "boinc_batch_held_pages_unpublished", "schema_version": 1,
+                              "error": str(error)[:500]}), file=sys.stderr, flush=True)
+
     def fill(self, count, selected, owned=None, now=None):
         """Make `count` more pages ready: claim them (less any already claimed but not yet
         started), push their scans, give back the ones with none and dead-letter the ones LoC
@@ -2617,6 +2632,10 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
     global_free = max(0, global_room(cohort_info, global_pending, budgeted_other))
     free = min(cohort_free, global_free)
     submitted = 0
+    if feed:
+        # Every tick, so the list stays current when this one claims nothing (#1754).
+        feed.settled_messages = settled_messages(records)
+        feed.publish_settled()
     if target and not held and not drain and not gold_ran:
         if free > 0:
             if feed:

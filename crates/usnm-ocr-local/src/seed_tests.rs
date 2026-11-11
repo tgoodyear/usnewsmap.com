@@ -1484,9 +1484,10 @@ async fn settled_pages_take_no_window_slot() {
         })
         .await
         .unwrap();
-    // The recent settled page and the recent in-flight page both count; the failed one
-    // is waiting to be queued again, so it isn't in flight.
-    assert_eq!(before.in_flight, 3);
+    // The recent settled page and the recent in-flight page both count; the old one has
+    // timed out and the failed one is waiting to be queued again.
+    assert_eq!(before.in_flight, 2);
+    assert_eq!(before.settled_held, 0);
 
     let r = fx
         .seed_settled(
@@ -1498,10 +1499,11 @@ async fn settled_pages_take_no_window_slot() {
         )
         .await
         .unwrap();
-    // Only the page in flight holds a slot; the two settled ones are counted apart.
-    assert_eq!(r.in_flight, 2);
+    // Only the page in flight holds a slot; the two settled ones (the old one is a retry
+    // candidate, so it is skipped too) are counted apart.
+    assert_eq!(r.in_flight, 1);
     assert_eq!(r.settled_held, 2);
-    assert_eq!(r.window - r.in_flight.max(r.queue_depth), 98);
+    assert_eq!(r.window - r.in_flight.max(r.queue_depth), 99);
 }
 
 #[tokio::test]

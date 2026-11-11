@@ -2455,6 +2455,23 @@ class QueueModeTests(unittest.TestCase):
         self.assertFalse([a for a in published[0][1] if a[0] == "claim"])
         self.assertTrue([a for a in self.fake.actions if a[0] == "claim"])
 
+    def test_the_held_pages_list_goes_out_on_a_tick_that_claims_nothing(self):
+        # #1754: the seeder reads the list to stop counting and retrying settled pages, so a
+        # draining tick (no claim) keeps it current too, and a failed upload doesn't stop the tick.
+        self.state["archived_held"] = {"sn1/1900-01-01/ed-1/seq-1": {"job": "a" * 64, "message": "b" * 64}}
+        published = []
+        self.fake.publish_held = lambda pages: published.append(pages)
+        event = batch.tick(self.config, self.state, self.fake, lambda: None, NOW, drain=True)
+        self.assertEqual(published, [{"sn1_1900-01-01_ed-1_seq-1": ["b" * 64]}])
+        self.assertFalse([a for a in self.fake.actions if a[0] == "claim"])
+        self.assertIsInstance(event, dict)
+
+        def failing(pages):
+            raise RuntimeError("hand-off storage unavailable")
+
+        self.fake.publish_held = failing
+        batch.tick(self.config, self.state, self.fake, lambda: None, NOW, drain=True)
+
     def test_claims_made_before_a_failed_claim_step_are_kept(self):
         def failing(count):
             raise batch.ClaimFailed("claim step failed", [message(1)])
