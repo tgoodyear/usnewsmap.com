@@ -268,7 +268,8 @@ class CheckAppver(unittest.TestCase):
                 binary = self.root / "native"
                 binary.write_bytes(b"native fixture")
                 extras = ["llama-server", "llama.lock", "weights.lock",
-                          "libggml.so", "libggml-base.so", "libggml-vulkan.so"]
+                          "libggml.so", "libggml-base.so", "libggml-vulkan.so",
+                          "libllama-server-impl.so", "libllama-common.so.0"]
                 directory = install.install(
                     project, version="1.0", app="usnm_qwen", plan_class=plan_class,
                     kind="native", binary=binary, extra_files=[f"{name}={binary}" for name in extras])
