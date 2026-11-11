@@ -244,7 +244,7 @@ mod tests {
         assert!(!html.contains("Live stages current"));
     }
 
-    fn summary_view() -> View {
+    pub(super) fn summary_view() -> View {
         let dir = tempfile::tempdir().unwrap();
         crate::view::build(
             &mut crate::fetch::Fetch::new(dir.path().to_owned(), None),

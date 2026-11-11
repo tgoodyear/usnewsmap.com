@@ -66,6 +66,8 @@ section.wide svg.spark.hourly { width:288px; }
 .spark:focus-visible { outline:2px solid var(--fill); outline-offset:2px; }
 .spark rect.v { fill:var(--fill); }
 .spark rect.s2 { fill:var(--series2); }
+/* A day not every hour of which was counted. */
+.spark rect.v.part { opacity:.5; }
 .spark rect.unk { fill:var(--grid); opacity:.45; }
 /* Painted but clear, so the whole slot takes the pointer. */
 .spark rect.hit { fill:transparent; }

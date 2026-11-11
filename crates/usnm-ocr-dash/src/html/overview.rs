@@ -11,7 +11,7 @@ use chrono::{DateTime, Duration, Utc};
 use super::ecosystem::summary_stage;
 use super::fmt::{esc, int};
 use crate::boinc_week::Bucket;
-use crate::throughput::StepRate;
+use crate::throughput::{Counted, StepRate, DAY_HOURS};
 use crate::view::View;
 
 /// Chronicling America's size: about 24 million pages in 3,010 batches at
@@ -41,9 +41,6 @@ const APP_WORK: &[(&str, &str)] = &[
         "jobs checking quality with an AI vision model that reads snippets of pages",
     ),
 ];
-
-/// 7 days of 4-hour bins, as days.
-const BINS_PER_DAY: usize = 6;
 
 fn figure(o: &mut String, value: &str, label: &str) {
     let _ = write!(
@@ -90,19 +87,9 @@ fn step<'a>(v: &'a View, id: &str) -> Option<&'a StepRate> {
     v.throughput.steps.iter().find(|s| s.id == id)
 }
 
-/// A step's last 7 days, one value a day, oldest first; `None` for a day
-/// nobody observed.
-fn days(s: &StepRate) -> Vec<Option<f64>> {
-    s.bins
-        .chunks(BINS_PER_DAY)
-        .map(|c| {
-            c.iter()
-                .flatten()
-                .copied()
-                .reduce(|a, b| a + b)
-                .filter(|_| c.iter().any(Option::is_some))
-        })
-        .collect()
+/// A step's last 7 days, one a day, oldest first, from whole hours.
+fn days(s: &StepRate) -> Vec<Counted> {
+    s.days.clone()
 }
 
 /// Seven bars, a day each, ending at the last full hour. Their tips come
@@ -112,12 +99,15 @@ fn daily_bars(
     key: &str,
     label: &str,
     unit: &str,
-    values: &[Option<f64>],
+    values: &[Counted],
     start: Option<DateTime<Utc>>,
 ) {
     const H: f64 = 72.0;
     const SLOT: f64 = 40.0;
-    let top = values.iter().flatten().fold(0.0_f64, |a, v| a.max(*v));
+    let top = values
+        .iter()
+        .filter_map(|d| d.value)
+        .fold(0.0_f64, |a, v| a.max(v));
     let at = start.map_or_else(String::new, |t| {
         t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
     });
@@ -138,7 +128,7 @@ fn daily_bars(
             )
         });
         let x = i as f64 * SLOT;
-        let (what, drawn) = match v {
+        let (what, drawn) = match v.value {
             None => (
                 "unknown".to_owned(),
                 format!(
@@ -147,15 +137,25 @@ fn daily_bars(
                 ),
             ),
             Some(n) => {
-                let h = if top > 0.0 && *n > 0.0 {
+                let h = if top > 0.0 && n > 0.0 {
                     (n / top * (H - 1.0)).max(2.0)
                 } else {
                     1.0
                 };
+                let partial = v.hours_known < DAY_HOURS as u32;
                 (
-                    format!("{} {unit}", int(n.round() as u64)),
+                    if partial {
+                        format!(
+                            "{} {unit} in the {} of 24 hours counted",
+                            int(n.round() as u64),
+                            v.hours_known
+                        )
+                    } else {
+                        format!("{} {unit}", int(n.round() as u64))
+                    },
                     format!(
-                        "<rect class=\"v\" x=\"{x}\" y=\"{:.1}\" width=\"{}\" height=\"{h:.1}\"/>",
+                        "<rect class=\"v{}\" x=\"{x}\" y=\"{:.1}\" width=\"{}\" height=\"{h:.1}\"/>",
+                        if partial { " part" } else { "" },
                         H - h,
                         SLOT * 0.75
                     ),
@@ -180,6 +180,7 @@ fn collection(v: &View, o: &mut String) {
     figure(o, &int(held), "page scans held");
     figure(o, &count_or(ours), "pages where search uses our OCR text");
     o.push_str("</div>");
+    warming_note(v, o);
     let _ = write!(
         o,
         "<p>Chronicling America, the Library of Congress's collection of digitized newspapers, has about \
@@ -222,18 +223,41 @@ fn left_by_kind(v: &View) -> (u64, u64) {
     (ocr, quality)
 }
 
-/// When the fetcher holds back for the Library's site, until when.
-fn held_until(v: &View) -> Option<DateTime<Utc>> {
+/// How the fetcher is holding back for the Library's site.
+#[derive(Debug, PartialEq)]
+enum Hold {
+    Until(DateTime<Utc>),
+    /// Slowed with no end set: until the pacer is reset.
+    Indefinite,
+}
+
+fn hold(v: &View) -> Option<Hold> {
     let p = v.fetch.pacer.value.as_ref()?;
-    let slowed = p
-        .slowed
-        .as_ref()
+    let slowed = p.slowed.as_ref().filter(|s| s.is_object());
+    let slowed_until = slowed
         .and_then(|s| s.get("until_ms"))
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(0);
-    let until = p.hold_until_ms.max(slowed);
-    let at = DateTime::from_timestamp_millis(i64::try_from(until).ok()?)?;
-    (at > v.generated_at).then_some(at)
+        .and_then(serde_json::Value::as_u64);
+    let until = p.hold_until_ms.max(slowed_until.unwrap_or(0));
+    let at = i64::try_from(until)
+        .ok()
+        .and_then(DateTime::from_timestamp_millis)
+        .filter(|at| *at > v.generated_at);
+    match (at, slowed.is_some() && slowed_until.is_none()) {
+        (_, true) => Some(Hold::Indefinite),
+        (Some(at), false) => Some(Hold::Until(at)),
+        (None, false) => None,
+    }
+}
+
+/// While the dashboard reads the fetcher's files after a start, its counts
+/// grow from zero.
+fn warming_note(v: &View, o: &mut String) {
+    if v.warming.is_some() {
+        o.push_str(
+            "<p class=\"stale\">The dashboard has just restarted and is still reading the fetcher's \
+             files, so these counts are partial for a few minutes.</p>",
+        );
+    }
 }
 
 fn fetching(v: &View, o: &mut String) {
@@ -248,23 +272,32 @@ fn fetching(v: &View, o: &mut String) {
         "pages fetched in the last 24 hours",
     );
     figure(o, &count_or(left), "pages still to fetch");
-    o.push_str("</div><p>");
+    o.push_str("</div>");
+    warming_note(v, o);
+    o.push_str("<p>");
     let now = match f.activity {
         "running" => format!(
             "We are fetching page scans from the Library of Congress now, about {} pages an hour.",
             int(f.last_hour.pages)
         ),
         "queued" => "More page scans from the Library of Congress are queued, waiting to be fetched.".to_owned(),
-        "idle" if left.is_some() => "No page scans from the Library of Congress are queued right now.".to_owned(),
+        "idle" if left == Some(0) => "No page scans from the Library of Congress are queued right now.".to_owned(),
+        "idle" if left.is_some() => "The page scans still to fetch from the Library of Congress are waiting to be retried after failed attempts.".to_owned(),
         _ => "We can't tell right now whether page scans are being fetched from the Library of Congress.".to_owned(),
     };
     o.push_str(&esc(&now));
-    if let Some(until) = held_until(v) {
-        let _ = write!(
-            o,
-            " The Library's site has been limiting our requests, so fetching is slowed or paused until {}.",
-            super::fmt::time(until)
-        );
+    match hold(v) {
+        Some(Hold::Until(until)) => {
+            let _ = write!(
+                o,
+                " The Library's site has been limiting our requests, so fetching is slowed or paused until {}.",
+                super::fmt::time(until)
+            );
+        }
+        Some(Hold::Indefinite) => o.push_str(
+            " The Library's site has been limiting our requests, so fetching is slowed until further notice.",
+        ),
+        None => {}
     }
     let (ocr, quality) = left_by_kind(v);
     match (ocr, quality) {
@@ -297,7 +330,7 @@ fn fetching(v: &View, o: &mut String) {
             "Pages fetched a day, last 7 days",
             "pages",
             &days(s),
-            v.throughput.chart_start,
+            v.throughput.days_start,
         );
     }
     o.push_str("</section>");
@@ -431,17 +464,25 @@ fn throughput(v: &View, o: &mut String) {
     open(o, "throughput", "Pages per day");
     let imported = step(v, "ocr_import");
     let daily = imported.map(days).unwrap_or_default();
-    let known: Vec<f64> = daily.iter().flatten().copied().collect();
-    let total: f64 = known.iter().sum();
+    // Only days with every hour counted: a gap isn't a slow day.
+    let whole: Vec<f64> = daily
+        .iter()
+        .filter(|d| d.hours_known == DAY_HOURS as u32)
+        .filter_map(|d| d.value)
+        .collect();
+    let average = (!whole.is_empty()).then(|| whole.iter().sum::<f64>() / whole.len() as f64);
     o.push_str("<div class=\"figures\">");
     figure(
         o,
-        &if known.is_empty() {
-            "not known".to_owned()
+        &average.map_or_else(|| "not known".to_owned(), |a| int(a.round() as u64)),
+        &if whole.len() == daily.len() || whole.is_empty() {
+            "OCR pages imported a day, 7-day average".to_owned()
         } else {
-            int((total / known.len() as f64).round() as u64)
+            format!(
+                "OCR pages imported a day, average of the {} fully counted days of the last 7",
+                whole.len()
+            )
         },
-        "OCR pages imported a day, 7-day average",
     );
     o.push_str(
         "</div><p>A page goes from scan to imported text; the number above counts the last step, \
@@ -455,7 +496,7 @@ fn throughput(v: &View, o: &mut String) {
             "OCR pages imported a day, last 7 days",
             "pages",
             &daily,
-            v.throughput.chart_start,
+            v.throughput.days_start,
         );
     }
     o.push_str("<table class=\"rates\"><thead><tr><th>Last 24 hours</th><th class=\"r\">Pages</th></tr></thead><tbody>");
@@ -465,11 +506,14 @@ fn throughput(v: &View, o: &mut String) {
         ("ocr_import", "OCR pages imported"),
         ("quality_load", "Pages scored by the quality checks"),
     ] {
-        // The scan fetch's own 24 hours, as in its section, not full hours.
+        // The scan fetch's own 24 hours, as in its section, not full hours;
+        // a step's only if all 24 were counted.
         let n = if id == "scan_fetch" {
             Some(v.fetch.last_day.pages as f64)
         } else {
-            step(v, id).and_then(|s| s.last_day)
+            step(v, id)
+                .filter(|s| s.day_hours_known == DAY_HOURS as u32)
+                .and_then(|s| s.last_day)
         };
         let _ = write!(
             o,
@@ -504,17 +548,52 @@ mod tests {
     }
 
     #[test]
-    fn a_day_is_six_bins_and_unknown_only_if_all_are() {
-        let s = StepRate {
-            bins: [
-                vec![Some(1.0); 6],
-                vec![None; 6],
-                vec![None, Some(2.0), None, None, None, Some(3.0)],
-            ]
-            .concat(),
-            ..StepRate::default()
+    fn a_slowdown_with_no_end_is_said_so() {
+        let mut v = super::super::tests::summary_view();
+        let now = v.generated_at;
+        let later = (now + Duration::hours(2)).timestamp_millis() as u64;
+        let pacer = |slowed: Option<serde_json::Value>, hold_until_ms: u64| crate::view::FileView {
+            configured: true,
+            value: Some(crate::fetch::PacerState {
+                slowed,
+                hold_until_ms,
+                ..Default::default()
+            }),
+            error: None,
+            modified: None,
         };
-        assert_eq!(days(&s), [Some(6.0), None, Some(5.0)]);
+        v.fetch.pacer = pacer(None, 0);
+        assert_eq!(hold(&v), None);
+        v.fetch.pacer = pacer(None, later);
+        assert!(matches!(hold(&v), Some(Hold::Until(_))));
+        v.fetch.pacer = pacer(Some(serde_json::json!({"at": "x", "until_ms": null})), 0);
+        assert_eq!(hold(&v), Some(Hold::Indefinite));
+        v.fetch.pacer = pacer(Some(serde_json::json!({"at": "x", "until_ms": 1})), 0);
+        assert_eq!(hold(&v), None);
+    }
+
+    #[test]
+    fn a_day_with_hours_missing_is_marked_and_left_out_of_the_average() {
+        let mut v = super::super::tests::summary_view();
+        let whole = Counted {
+            value: Some(240.0),
+            hours_known: 24,
+        };
+        let part = Counted {
+            value: Some(10.0),
+            hours_known: 3,
+        };
+        v.throughput.steps = vec![StepRate {
+            id: "ocr_import",
+            days: vec![whole, whole, whole, whole, whole, whole, part],
+            ..StepRate::default()
+        }];
+        let mut o = String::new();
+        throughput(&v, &mut o);
+        assert!(o.contains(">240<"), "{o}");
+        assert!(o.contains("average of the 6 fully counted days"));
+        assert!(o.contains("in the 3 of 24 hours counted"));
+        assert!(o.contains("class=\"v part\""));
     }
 
     #[test]
