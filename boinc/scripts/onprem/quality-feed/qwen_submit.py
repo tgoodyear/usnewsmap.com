@@ -255,6 +255,10 @@ def assert_processed(root, sample):
             continue
         if (page / "too_large").exists() and any((page / f).exists() for f in ("rejected-qwen.json", "qwen.json")):
             continue
+        # An under-filled last bundle's pages wait under pages/ for the next chunk (qwen stage
+        # --max-hold-secs, #1435): staged and marked, they are this chunk's disposition.
+        if (page / "qwen.json").exists() and (page / "held").exists():
+            continue
         if bundled is None:
             # Only a bundled root's submitted units' jobs are read, not every staged one. A root
             # of single pages (no pages/) reads none, as before bundles.
@@ -274,6 +278,19 @@ def assert_processed(root, sample):
         if doc in bundled:
             continue
         raise RuntimeError(f"Chunk still has an unprocessed native source: {doc}; retain READY")
+
+
+def held_pages(root):
+    """Pages an earlier run held back from an under-filled last bundle (qwen stage
+    --max-hold-secs, #1435): they wait under pages/ with a held marker and go out with a later
+    run's bundles, so admission and submission count them with the run's own pages."""
+    return sum(1 for marker in (root / "pages").glob("*/held") if (marker.parent / "qwen.json").exists())
+
+
+def unsubmitted_units(root):
+    """Staged units with no submission marker: a run stopped after packing them. Admission and
+    submission count them, so a later run, idle or not, sends them."""
+    return sum(1 for job in (root / "units").glob("*/qwen.json") if not (job.parent / "submitted").exists())
 
 
 def assert_bundle_layout(root, bundle_size):
@@ -940,6 +957,9 @@ def main():
     ap.add_argument("--page-records", type=Path,
                     help="With --bundle-size above 1, the directory `qwen compare --pages` writes: stage "
                          "packs each page a page-v1 verdict settled as disagreed into one new bundle (#1435)")
+    ap.add_argument("--held-only", action="store_true",
+                    help="With --bundle-size above 1 and no chunk: stage and submit only the held pages "
+                         "whose hold has run out (#1435); admission counts every held page")
     ap.add_argument("--prompt-version", type=int, choices=(1, 2, 3, 4), default=1,
                     help="Request version to stage; every dispatchable app version must read it")
     ap.add_argument("--max-ready", type=int, default=1000,
@@ -979,6 +999,8 @@ def main():
         ap.error("need --campaign, --engine-plan, --models and positive bounded limits")
     if not 1 <= a.bundle_size <= 32:
         ap.error("--bundle-size takes 1 to 32 pages a unit")
+    if a.held_only and (a.bundle_size == 1 or a.sample or a.transaction or a.preflight):
+        ap.error("--held-only needs --bundle-size above 1, and no --sample, --transaction or --preflight")
     if a.page_records is not None and (a.bundle_size == 1 or not a.page_records.is_absolute()):
         ap.error("--page-records takes an absolute directory and needs --bundle-size above 1")
     root = a.share / "qwen" / a.campaign
@@ -998,6 +1020,15 @@ def main():
             raise SystemExit(error.returncode) from error
         return
     assert_bundle_layout(root, a.bundle_size)
+    # New pages this run stages; admission and submission also count the held pages that the
+    # packing may publish with them.
+    new_pages = 0 if a.held_only else a.max_pages
+    held = held_pages(root) if a.bundle_size > 1 else 0
+    unsent = unsubmitted_units(root) if a.bundle_size > 1 else 0
+    if a.held_only and not held and not unsent:
+        print(json.dumps({"campaign": a.campaign, "held_pages": 0, "status": "nothing_held"}, sort_keys=True))
+        return
+    a.max_pages = new_pages + held + unsent
     admission(a, state, root)
     if a.preflight:
         return
@@ -1013,7 +1044,7 @@ def main():
     engine = json.loads(a.engine_plan.read_text())["engine"]
     stage = [a.stage_binary, "qwen", "stage", "--quality-root", str(quality), "--root", str(root),
              "--engine-image", engine["image"], "--engine-llama", engine["llama"],
-             "--engine-weights", engine["weights"], "--max-pages", str(a.max_pages),
+             "--engine-weights", engine["weights"], "--max-pages", str(new_pages),
              "--gpu-timeout-secs", "14400", "--cpu-timeout-secs", "7200", "--bundle-size", str(a.bundle_size),
              "--prompt-version", str(a.prompt_version)]
     if a.page_records is not None:

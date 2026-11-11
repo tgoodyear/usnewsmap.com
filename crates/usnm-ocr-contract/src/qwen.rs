@@ -18,7 +18,7 @@ pub const VERSION: u32 = 1;
 /// `qwen.json`: the job holds the crops with LoC's text for each (single-page or multi-page bundle).
 pub const MAX_JOB_JSON: usize = 512 * 1024;
 /// `readings.json`.
-pub const MAX_READINGS: usize = 2 * 1024 * 1024;
+pub const MAX_READINGS: usize = 4 * 1024 * 1024;
 /// `result.json`.
 pub const MAX_RESULT_JSON: usize = 64 * 1024;
 /// `diag.txt`.

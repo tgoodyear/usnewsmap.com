@@ -222,6 +222,15 @@ class DaemonConfig(unittest.TestCase):
         self.assertEqual(root.findtext("./config/daily_result_quota"), "50000")
         self.assertEqual(root.findtext("./config/max_wus_to_send"), "64")
 
+    def test_qwen_tasks_in_progress_are_capped_per_gpu(self):
+        root = ET.parse(Path(__file__).with_name("config.xml.template"))
+        apps = root.findall("./config/max_jobs_in_progress/app")
+        self.assertEqual([a.findtext("app_name") for a in apps], ["usnm_qwen"])
+        limit = apps[0].find("gpu_limit")
+        self.assertEqual(limit.findtext("jobs"), "6")
+        self.assertIsNotNone(limit.find("per_proc"))
+        self.assertIsNone(apps[0].find("cpu_limit"))
+
     def test_project_down_replies_ask_clients_back_in_twenty_minutes(self):
         # #1462: without it, BOINC's default (sched_config.cpp L93 at 22bbebe0) tells every client
         # that asks during a feeder restart to wait an hour.

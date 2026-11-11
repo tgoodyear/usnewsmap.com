@@ -168,6 +168,8 @@ pub(super) struct Cache {
     version: Vec<u8>,
     qwen: BTreeMap<String, Vec<PathBuf>>,
     qwen_dependencies: BTreeMap<PathBuf, Dependency>,
+    /// Each Qwen job file's job id.
+    job_ids: BTreeMap<PathBuf, String>,
     /// Each Qwen job's crop-state records as listed: `(dir, job id, records)`.
     crop_states: Vec<(PathBuf, String, Vec<PathBuf>)>,
     /// Each bundle page's pair records as listed: `(dir, job id, doc id, records)`.
@@ -219,6 +221,7 @@ impl Dependency {
         Ok(hash.finalize().to_vec())
     }
 
+    #[cfg(test)]
     fn verify(&self) -> anyhow::Result<()> {
         ensure!(
             Self::hash(&self.paths, &self.salt)? == self.digest,
@@ -335,6 +338,7 @@ impl Cache {
         let mut page_records = Vec::new();
         let mut qwen: BTreeMap<String, Vec<PathBuf>> = BTreeMap::new();
         let mut qwen_dependencies = BTreeMap::new();
+        let mut job_ids = BTreeMap::new();
         let mut job_bytes = Vec::new();
         let mut inventory = jobs(&opts.qwen_root, crate::qwen::JOB_FILE)?;
         for path in &inventory {
@@ -413,6 +417,7 @@ impl Cache {
                 qwen.entry(doc.clone()).or_default().push(path.clone());
             }
             qwen_dependencies.insert(path.clone(), Dependency::salted(paths, salt)?);
+            job_ids.insert(path.clone(), job.id.clone());
             job_bytes.push((path.clone(), bytes));
         }
         let mut surya = Vec::new();
@@ -445,6 +450,7 @@ impl Cache {
             version: version.finalize().to_vec(),
             qwen,
             qwen_dependencies,
+            job_ids,
             crop_states,
             page_records,
             surya,
@@ -565,10 +571,12 @@ impl Cache {
                 "QUALITY inputs changed before campaign publication"
             );
         }
-        self.verify_readings()
+        // Staging takes the step lock the collector holds, so the job inventory is still.
+        self.verify_inventory()
     }
 
-    pub fn verify_readings(&self) -> anyhow::Result<()> {
+    /// The reading jobs are the ones keyed: none staged or removed since.
+    fn verify_inventory(&self) -> anyhow::Result<()> {
         let mut inventory = jobs(&self.qwen_root, crate::qwen::JOB_FILE)?;
         if let Some(root) = &self.surya_root {
             inventory.extend(surya_jobs(root)?);
@@ -577,6 +585,52 @@ impl Cache {
             inventory == self.inventory,
             "reading job inventory changed during collection"
         );
+        Ok(())
+    }
+
+    /// Whether every reading input of the page `doc` (its Qwen jobs'
+    /// dependencies and record listings, and Surya's results) is as it was
+    /// keyed. A unit whose
+    /// readings changed while the run collected is published but not cached,
+    /// so the next run collects it again under its new key. Checking only the
+    /// page's own inputs lets a busy root, where results land every minute,
+    /// still publish (#1435): the root-wide check failed nearly every run.
+    pub fn readings_unchanged(&self, doc: &str) -> anyhow::Result<bool> {
+        // Surya's results are one dependency for the root: any change counts.
+        if Dependency::hash(&self.surya.paths, &self.surya.salt)? != self.surya.digest {
+            return Ok(false);
+        }
+        let Some(paths) = self.qwen.get(doc) else {
+            return Ok(true);
+        };
+        for path in paths {
+            if Dependency::hash(
+                &self.qwen_dependencies[path].paths,
+                &self.qwen_dependencies[path].salt,
+            )? != self.qwen_dependencies[path].digest
+            {
+                return Ok(false);
+            }
+            let id = &self.job_ids[path];
+            for (dir, job, records) in self.crop_states.iter().filter(|c| &c.1 == id) {
+                if &crate::qwen::consensus::record_paths(dir, job)? != records {
+                    return Ok(false);
+                }
+            }
+            for (dir, job, page, records) in self.page_records.iter().filter(|r| &r.1 == id) {
+                if &crate::qwen::ledger::record_paths(dir, job, page)? != records {
+                    return Ok(false);
+                }
+            }
+        }
+        Ok(true)
+    }
+
+    /// Every reading input of the root as it was keyed (tests only: a run
+    /// checks each page's own inputs, `readings_unchanged`).
+    #[cfg(test)]
+    pub fn verify_readings(&self) -> anyhow::Result<()> {
+        self.verify_inventory()?;
         for (dir, job, records) in &self.crop_states {
             ensure!(
                 &crate::qwen::consensus::record_paths(dir, job)? == records,
