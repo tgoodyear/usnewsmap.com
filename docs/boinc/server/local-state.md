@@ -60,7 +60,8 @@ Cosmos after an earlier copy stays in PostgreSQL. `--verify` reports it.
 `--verify` writes nothing. It reads both sides and compares, per container, the count and a
 SHA-256 over the entries sorted by partition key and id. Each entry is the length-prefixed
 partition key, id and ETag, then the SHA-256 of the document's canonical JSON (`migrate::canonical`:
-keys sorted, no whitespace). The command prints the first ten differences per container
+keys sorted, no whitespace, and a float with no fraction written as an integer, as JSONB
+returns it). The command prints the first ten differences per container
 (`missing_in_target`, `missing_in_source`, `etag`, `document`) and exits non-zero if any
 container differs. The receipt carries each container's counts, digests and request charge,
 and the start and end times.
@@ -73,7 +74,9 @@ usnm-boinc queue-move --from https://<account>.queue.core.windows.net/ocr-bulk \
 
 `queue-move` (`queue_move::move_messages`) receives each message with the visibility timeout,
 sends its text unchanged to the pgmq queue the `queue=` parameter names, and deletes it from
-Azure only after the send has committed. A failed send deletes nothing and stops the move. A
+Azure only after the send has committed. A failed send deletes nothing and stops the move;
+the hash log records the message as `send_failed`, since the send may have committed before
+its reply was lost. A
 failed delete after a committed send also stops it; the hash log records that message as
 `sent_delete_failed`. An empty receive only means no message is visible. Unless `--max` ended
 the move, the command exits non-zero while the source still counts messages, for example ones

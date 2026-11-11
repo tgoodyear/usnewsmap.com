@@ -329,7 +329,7 @@ mod tests {
                 let id = format!("d{i:04}");
                 Row {
                     pk: format!("p{}", i % 3),
-                    doc: json!({"id": id, "n": i, "text": "Ünïcode ✓", "z": {"b": 1, "a": [1.5]}}),
+                    doc: json!({"id": id, "n": i, "text": "Ünïcode ✓", "z": {"b": 1, "a": [1.5, 1e16, 2.5e-7, 1.0]}}),
                     etag: format!("\"00{i:04}-cosmos\""),
                     id,
                 }
@@ -370,9 +370,10 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
+        // JSONB writes 1e16 out in full, so compare canonical forms.
         assert_eq!(
-            (got.doc, got.etag),
-            (changed.doc.clone(), changed.etag.clone())
+            (migrate::canonical(&got.doc), got.etag),
+            (migrate::canonical(&changed.doc), changed.etag.clone())
         );
         // The pipeline's own conditional replace works on an imported ETag.
         assert!(pg

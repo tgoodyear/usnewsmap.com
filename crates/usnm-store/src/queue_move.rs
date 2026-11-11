@@ -75,6 +75,9 @@ pub enum Outcome {
     /// Sent to the target, but the source's delete failed (a timeout or a server error): the
     /// move stops here, and the message may be sent again by the next run.
     SentDeleteFailed,
+    /// The send returned an error. It may still have committed (a connection lost before the
+    /// reply), so the message is logged; it is not counted as sent, and the source keeps it.
+    SendFailed,
     /// Read with a peek (dry run); nothing sent or deleted.
     Peeked,
 }
@@ -181,9 +184,15 @@ pub async fn move_messages(
                         t.previously_received += 1;
                     }
                 }
-                to.send(to_queue, &msg.text)
-                    .await
-                    .with_context(|| format!("sending {} to {to_queue}", msg.id))?;
+                if let Err(e) = to.send(to_queue, &msg.text).await {
+                    record(&Record {
+                        source_id: Some(msg.id.clone()),
+                        dequeue_count: Some(msg.dequeue_count),
+                        sha256: hex(&hash),
+                        outcome: Outcome::SendFailed,
+                    });
+                    return Err(e.context(format!("sending {} to {to_queue}", msg.id)));
+                }
                 let outcome = match from.delete(&msg).await {
                     Ok(()) => Outcome::Moved,
                     Err(e) if e.downcast_ref::<LeaseLost>().is_some() => Outcome::SentLeaseLost,
@@ -541,14 +550,16 @@ mod tests {
     #[tokio::test]
     async fn a_failed_send_deletes_nothing_and_stops() {
         let (_dir, from, _) = filled(5).await;
+        let records = Mutex::new(Vec::new());
+        let log = |r: &Record| records.lock().unwrap().push(r.clone());
         let r = move_messages(
             &from,
             "ocr-bulk",
             &Broken,
             "ocr-bulk",
-            &opts(None, 2),
+            &opts(None, 1),
             &quiet,
-            &no_record,
+            &log,
         )
         .await;
         assert!(
@@ -559,6 +570,11 @@ mod tests {
         assert_eq!(r.target_count_before, None);
         // Received messages stay at the source (hidden until their timeout).
         assert_eq!(from.approximate_count("ocr-bulk").await.unwrap(), 5);
+        // The attempt is logged in case the send committed before its reply was lost.
+        let records = records.into_inner().unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].outcome, Outcome::SendFailed);
+        assert!(records[0].source_id.is_some());
     }
 
     #[tokio::test]

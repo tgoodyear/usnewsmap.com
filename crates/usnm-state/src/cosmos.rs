@@ -440,22 +440,45 @@ impl CosmosDocs {
         let url = self
             .endpoint
             .join(&format!("dbs/{}/colls", self.database))?;
-        let resp = self
-            .send("", || self.http.request(Method::GET, url.clone()), None)
-            .await?;
-        if !resp.status().is_success() {
-            return Err(fail("list containers", &self.database, resp).await);
-        }
-        let body: Value = resp.json().await?;
         let mut out = BTreeMap::new();
-        for c in body["DocumentCollections"].as_array().into_iter().flatten() {
-            let name = c["id"].as_str().context("a container without an id")?;
-            let paths = c["partitionKey"]["paths"].as_array();
-            let path = match paths.map(Vec::as_slice) {
-                Some([p]) => p.as_str().unwrap_or_default().to_owned(),
-                _ => bail!("container `{name}` has no single partition key path"),
-            };
-            out.insert(name.to_owned(), path);
+        let mut continuation: Option<String> = None;
+        loop {
+            let cont = continuation.clone();
+            let resp = self
+                .send(
+                    "",
+                    || {
+                        let r = self.http.request(Method::GET, url.clone());
+                        match &cont {
+                            Some(c) => r.header("x-ms-continuation", c),
+                            None => r,
+                        }
+                    },
+                    None,
+                )
+                .await?;
+            if !resp.status().is_success() {
+                return Err(fail("list containers", &self.database, resp).await);
+            }
+            continuation = resp
+                .headers()
+                .get("x-ms-continuation")
+                .and_then(|v| v.to_str().ok())
+                .filter(|v| !v.is_empty())
+                .map(str::to_owned);
+            let body: Value = resp.json().await?;
+            for c in body["DocumentCollections"].as_array().into_iter().flatten() {
+                let name = c["id"].as_str().context("a container without an id")?;
+                let paths = c["partitionKey"]["paths"].as_array();
+                let path = match paths.map(Vec::as_slice) {
+                    Some([p]) => p.as_str().unwrap_or_default().to_owned(),
+                    _ => bail!("container `{name}` has no single partition key path"),
+                };
+                out.insert(name.to_owned(), path);
+            }
+            if continuation.is_none() {
+                break;
+            }
         }
         Ok(out)
     }
@@ -736,12 +759,21 @@ mod tests {
         (S::OK, out, json!({"Documents": docs}).to_string())
     }
 
-    async fn collections() -> String {
-        json!({"DocumentCollections": [
-            {"id": "ops", "partitionKey": {"paths": ["/kind"], "kind": "Hash"}},
+    /// The container list in two pages.
+    async fn collections(h: HeaderMap) -> (S, HeaderMap, String) {
+        let mut out = HeaderMap::new();
+        if h.get("x-ms-continuation").is_none() {
+            out.insert("x-ms-continuation", "page2".parse().unwrap());
+            let body = json!({"DocumentCollections": [
+                {"id": "ops", "partitionKey": {"paths": ["/kind"], "kind": "Hash"}},
+            ]});
+            return (S::OK, out, body.to_string());
+        }
+        assert_eq!(h["x-ms-continuation"], "page2");
+        let body = json!({"DocumentCollections": [
             {"id": "batches", "partitionKey": {"paths": ["/batch"], "kind": "Hash"}},
-        ]})
-        .to_string()
+        ]});
+        (S::OK, out, body.to_string())
     }
 
     #[tokio::test]

@@ -155,7 +155,22 @@ fn write_canonical(v: &Value, out: &mut String) {
             }
             out.push(']');
         }
+        Value::Number(n) => out.push_str(&canonical_number(n)),
         scalar => out.push_str(&scalar.to_string()),
+    }
+}
+
+/// A number as the same text whichever store it came from. JSONB writes a whole float such as
+/// `1e16` out in full (`10000000000000000`), which reads back as an integer: a float with no
+/// fraction is written as that integer. Integers keep every digit; other floats use
+/// serde_json's shortest round-trip form, which JSONB's decimal text parses back to.
+fn canonical_number(n: &serde_json::Number) -> String {
+    if n.is_i64() || n.is_u64() {
+        return n.to_string();
+    }
+    match n.as_f64() {
+        Some(x) if x.fract() == 0.0 && x.abs() < 1e38 => format!("{}", x as i128),
+        _ => n.to_string(),
     }
 }
 
@@ -899,6 +914,26 @@ mod tests {
         assert_eq!(canonical(&a), r#"{"a":null,"b":[{"a":"é","z":1}],"n":1.5}"#);
         let b: Value = serde_json::from_str(r#"{"n":1.5,"a":null,"b":[{"a":"é","z":1}]}"#).unwrap();
         assert_eq!(canonical(&a), canonical(&b));
+    }
+
+    #[test]
+    fn canonical_numbers_survive_a_jsonb_round_trip() {
+        // What JSONB gives back for each, as serde_json reads it.
+        for (written, read_back) in [
+            ("1e16", "10000000000000000"),
+            ("1.0", "1.0"),
+            ("2.5e-7", "0.00000025"),
+            ("12345678901234567890", "12345678901234567890"),
+            ("-3", "-3"),
+            ("1e300", &format!("1{}", "0".repeat(300))),
+        ] {
+            let a: Value = serde_json::from_str(written).unwrap();
+            let b: Value = serde_json::from_str(read_back).unwrap();
+            assert_eq!(canonical(&a), canonical(&b), "{written}");
+        }
+        let half: Value = serde_json::from_str("0.5").unwrap();
+        let one: Value = serde_json::from_str("1").unwrap();
+        assert_ne!(canonical(&half), canonical(&one));
     }
 
     #[test]
