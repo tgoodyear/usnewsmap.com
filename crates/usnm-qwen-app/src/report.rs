@@ -29,6 +29,66 @@ pub(crate) fn redacted_tail(s: &str, n: usize) -> String {
     tail(&redact_paths(s), n).to_string()
 }
 
+/// Lines of a llama-server log that state why it stopped before serving. llama.cpp logs the
+/// cause (`llama_model_load: error loading model: ...`, a Vulkan allocation failure) several
+/// lines before the generic `failed to load model` lines that end the log, so a tail alone
+/// loses it (host 13, 11 Nov 2026).
+const STARTUP_CAUSE_MARKERS: &[&str] = &[
+    "error loading model",
+    "failed to allocate",
+    "failed to open",
+    "out of memory",
+    "exception",
+    "ggml_vulkan: error",
+    "ggml_vulkan: device memory allocation",
+    "vk::",
+    "error:",
+];
+const STARTUP_CAUSE_BYTES: usize = 1024;
+const STARTUP_CAUSE_LINE_BYTES: usize = 256;
+
+fn cut_at_char_boundary(s: &str, max: usize) -> &str {
+    if s.len() <= max {
+        return s;
+    }
+    let mut end = max;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
+/// What a failed llama-server start reports: its cause lines (redacted, at most
+/// `STARTUP_CAUSE_BYTES`) and then the last `tail_bytes` of its log, as before.
+pub(crate) fn startup_failure_excerpt(log: &str, tail_bytes: usize) -> String {
+    let redacted = redact_paths(log);
+    let mut causes = String::new();
+    for line in redacted.lines() {
+        let lower = line.to_ascii_lowercase();
+        if !STARTUP_CAUSE_MARKERS.iter().any(|m| lower.contains(m)) {
+            continue;
+        }
+        // One long line (a dumped tensor list, an HTTP body) must not crowd out a short cause
+        // after it: each line is cut to STARTUP_CAUSE_LINE_BYTES, and one that still doesn't
+        // fit is skipped, not the end of the scan.
+        let line = cut_at_char_boundary(line.trim(), STARTUP_CAUSE_LINE_BYTES);
+        let separator = if causes.is_empty() { 0 } else { 3 };
+        if causes.len() + separator + line.len() > STARTUP_CAUSE_BYTES {
+            continue;
+        }
+        if separator > 0 {
+            causes.push_str(" | ");
+        }
+        causes.push_str(line);
+    }
+    let end = tail(&redacted, tail_bytes);
+    if causes.is_empty() {
+        end.to_string()
+    } else {
+        format!("cause: {causes}\nlog end: {end}")
+    }
+}
+
 /// Most of a failed task's diag.txt that its stderr carries. BOINC uploads no output files
 /// for a failed task, so this is the only way the reason reaches the server.
 pub(crate) const DIAG_EXCERPT_BYTES: usize = 6144;
@@ -192,7 +252,71 @@ pub(crate) fn failure_report(result: &ResultManifest, diag: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
+
+    #[test]
+    fn startup_failure_keeps_the_cause_the_tail_would_cut() {
+        let mut log = String::from(
+            "load_backend: loaded Vulkan backend from /home/alice/boinc/libggml-vulkan.so\n",
+        );
+        log.push_str("llama_model_load: error loading model: failed to allocate Vulkan0 buffer of size 3221225472\n");
+        for i in 0..40 {
+            log.push_str(&format!(
+                "llama_model_loader: - kv {i:3}: general.key str = value\n"
+            ));
+        }
+        log.push_str("llama_model_load_from_file_impl: failed to load model\n");
+        log.push_str("common_init_from_params: failed to load model '/home/alice/boinc/projects/model.gguf'\n");
+        log.push_str("main: exiting due to model loading error\n");
+        let excerpt = startup_failure_excerpt(&log, 512);
+        assert!(excerpt.starts_with("cause: "), "{excerpt}");
+        assert!(
+            excerpt.contains(
+                "error loading model: failed to allocate Vulkan0 buffer of size 3221225472"
+            ),
+            "{excerpt}"
+        );
+        assert!(
+            excerpt.contains("main: exiting due to model loading error"),
+            "{excerpt}"
+        );
+        assert!(!excerpt.contains("alice"), "{excerpt}");
+        // Bounded: the cause part never exceeds its budget however many cause lines there are.
+        let noisy: String = (0..500).map(|i| format!("error: line {i}\n")).collect();
+        let excerpt = startup_failure_excerpt(&noisy, 512);
+        let cause = excerpt.split("\nlog end: ").next().unwrap();
+        assert!(
+            cause.len() <= "cause: ".len() + STARTUP_CAUSE_BYTES,
+            "{}",
+            cause.len()
+        );
+        // A long matching line first must not hide a short cause after it (both before the
+        // tail): the long one is cut, and the cause still appears.
+        let mut crowded = format!("error: {}\n", "x".repeat(1100));
+        crowded.push_str("llama_model_load: error loading model: failed to allocate buffer\n");
+        crowded.push_str(&"llama_model_loader: - kv 1: general.key str = value\n".repeat(30));
+        let excerpt = startup_failure_excerpt(&crowded, 512);
+        let cause = excerpt.split("\nlog end: ").next().unwrap();
+        assert!(
+            cause.contains("error loading model: failed to allocate buffer"),
+            "{cause}"
+        );
+        assert!(
+            cause.len() <= "cause: ".len() + STARTUP_CAUSE_BYTES,
+            "{}",
+            cause.len()
+        );
+        // Multibyte text is cut on a character boundary.
+        let wide = format!("error: {}\n", "é".repeat(400));
+        assert!(startup_failure_excerpt(&wide, 64).starts_with("cause: error: é"));
+        // Nothing that names a cause: the old tail, unchanged.
+        let plain = "llama_model_loader: - kv 1: x\nmain: bye\n";
+        assert_eq!(
+            startup_failure_excerpt(plain, 512),
+            redacted_tail(plain, 512)
+        );
+    }
 
     #[test]
     fn path_redaction_covers_spaces_brackets_and_quotes() {

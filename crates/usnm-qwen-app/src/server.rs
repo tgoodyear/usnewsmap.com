@@ -3,7 +3,7 @@
 use crate::{
     gpu::{GpuState, NVIDIA_6GB_LAYERS},
     ms,
-    report::redacted_tail,
+    report::{redacted_tail, startup_failure_excerpt},
 };
 use anyhow::{bail, ensure, Context};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
@@ -652,7 +652,7 @@ impl Server {
                 let log_tail = std::fs::read_to_string(&srv.log_path).unwrap_or_default();
                 bail!(
                     "llama-server exited ({status}) before ready: {}",
-                    redacted_tail(&log_tail, 512)
+                    startup_failure_excerpt(&log_tail, 512)
                 );
             }
             if let Ok((200, _)) = http_request(port, "GET", "/health", None, Duration::from_secs(2))
@@ -664,7 +664,7 @@ impl Server {
                 bail!(
                     "llama-server did not become healthy in {}s: {}",
                     load_deadline.as_secs(),
-                    redacted_tail(&log_tail, 512)
+                    startup_failure_excerpt(&log_tail, 512)
                 );
             }
             std::thread::sleep(Duration::from_millis(200));
