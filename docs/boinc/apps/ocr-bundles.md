@@ -311,14 +311,21 @@ report on `840487b2…`. All three are x86-64 Linux containers, so the Linux-onl
 108 fits them. The reports are read in the English page configuration (`eng`/`eng`, PSM 3,
 300 DPI), and they admit the hosts to the line scope only (step 2), never to `eng`/`eng`.
 
-**One fresh campaign root per host.** `gold submit --target-host` refuses a root that already
-has units ("cannot target a pre-existing campaign; use a fresh campaign root",
-`gold::submit::run`). Make one root per host under the share's `gold/` directory, named
+**One fresh campaign root per host.** The first `gold submit --target-host` for a root refuses
+one that already has units ("cannot target a pre-existing campaign; use a fresh campaign
+root", `gold::submit::run`). Make one root per host under the share's `gold/` directory, named
 `[a-z0-9-]`, 41 characters at most, for example `lines8404-amd64-h2-20261112`. Copy
 `bundle.tar`, `prepared.json` and `cache/` into it from
 `current8404-amd64-calibration-20261109` (`cp -a`). Don't run `gold-prepare`: it downloads the
 bundle's originals again, and LoC is refusing our requests. `gold submit` checks `bundle.tar`
 against `prepared.json` and each cached original before it makes any unit; if it refuses, stop.
+
+**Recovering a partial submit.** Never make a new root for a host whose submit failed part way:
+that makes a second set of units for the host. Run the same submit again on the original root;
+it skips units already marked `submitted` and the retry is allowed once the root has its
+`assignment.json`. A unit left with a `submitting` marker is skipped (the run counts it as
+uncertain) until someone checks the server for its workunit, `usnm_gold_<job id>`: remove the
+marker if there is none, or rename it to `submitted` if there is.
 
 **Submit**, once per host, pinned to the `docker_lines` gold version (batch 1621):
 
@@ -381,7 +388,8 @@ jq '.policies[] | select(.scope.language == "chr")' trust.json
 ```
 
 The `chr` entry must list hosts 2, 9 and 10 under `840487b2…`, PSM 13. If anything else
-differs, put the backup back (`mv`), and stop. `spool-out` copies the share's
+differs, stop and report. Don't `mv` the backup over the list: it is a whole-file snapshot, and
+`gold-promote` or a hold may have changed the list since. Keep both copies. `spool-out` copies the share's
 `gold/trust.json` to the hand-off container, so the next `spool-out` makes the change live
 for collection.
 
@@ -442,8 +450,21 @@ usnm-boinc-step --env prod --target handoff --step export --wait-mins 30 \
   --var HANDOFF_LINE_READ=chr --var HANDOFF_PLAN=chr-lines-1621 \
   --var ENGINE_IMAGE=sha256:840487b2aaa5a696dae61ded8fdcf0217cdf683e24c14e50ef0e728406aa122c \
   --var HANDOFF_BATCH=<from line-stage> --var HANDOFF_MANIFEST=<from line-stage> \
-  --var HANDOFF_PAGES=<from line-stage> --var HANDOFF_SCANS=<from line-stage>
+  --var HANDOFF_PAGES=<from line-stage> --var HANDOFF_SCANS=<from line-stage> \
+  --var EXPECTED_HANDOFF_URL=<HANDOFF_URL from handoff.env>
 ```
+
+Every `--target handoff` step needs `--var EXPECTED_HANDOFF_URL=<HANDOFF_URL from handoff.env>`
+(this one, `collect` and `line-report`): with the local hand-off backend (`/handoff-state`),
+`usnm-boinc-step` refuses the step without it, and it also refuses a value that differs from
+the host's setting.
+
+**If the export fails after it reserved some jobs**, don't run it again as it stands: a second
+run can make a different `queued_at` for the same job, which the ledger rejects, and can
+overwrite the first run's journal. Run it again with the same variables plus
+`--var HANDOFF_JOBS=<the job ids the first run printed>`, so the existing records load. If the
+first run's records never reached the hand-off store (its log has `USNM-HANDOFF-RECORD`
+lines), restore them from the log first.
 
 With `HANDOFF_LINE_READ`, the step mounts the staging area and reads each page's scan, its
 LoC ALTO and the manifest from there; nothing comes from the hand-off container. It runs
@@ -484,7 +505,8 @@ usnm-boinc-step --env prod --target bridge --step spool-out --wait-mins 30 \
 (`handoff get-line-read`), and `collect --trust` imports the result:
 
 ```sh
-usnm-boinc-step --env prod --target handoff --step collect --wait-mins 60 --var JOB_IDS=<id>,<id>,...
+usnm-boinc-step --env prod --target handoff --step collect --wait-mins 60 \
+  --var EXPECTED_HANDOFF_URL=<HANDOFF_URL from handoff.env> --var JOB_IDS=<id>,<id>,...
 ```
 
 Import (`import` in `lib.rs`) merges the readings into LoC's page (`lines::merge_in`). It
@@ -502,7 +524,8 @@ marked `held` with `line-merge-v1: line_changed` or `line-merge-v1: model_share`
 the host:
 
 ```sh
-usnm-boinc-step --env prod --target handoff --step line-report --wait-mins 30 --var JOB_IDS=<id>,<id>,...
+usnm-boinc-step --env prod --target handoff --step line-report --wait-mins 30 \
+  --var EXPECTED_HANDOFF_URL=<HANDOFF_URL from handoff.env> --var JOB_IDS=<id>,<id>,...
 ```
 
 It prints one JSON line per collected line job: `stats` (lines read, model, fallbacks by
@@ -531,8 +554,11 @@ After the rebuild, open the results as a draft PR: step 4 of
 `docs/reports/2026-11-cherokee/report.md` (#1622).
 
 **Rollback.** Hold the 108 versions with `app-version-hold.php` (above), once nothing pinned to
-them is unfinished. Put the `trust.json.pre-chr-lines-*` backup back to drop the line scope;
-results already published stay published. A published page can be taken out of later releases
+them is unfinished. To drop the line scope, remove only the `chr/chr_phoenix` entry from the current
+`gold/trust.json`: write the edited list to a new file beside it with `jq`, check that every
+other entry equals the current list's, then `mv` it over. Don't restore the
+`trust.json.pre-chr-lines-*` snapshot as a whole; it would undo hosts admitted and holds set
+since. Results already published stay published. A published page can be taken out of later releases
 with a create-only `curated/ocr-local/revoked/<stamp>.json` naming its `engine` or `run`;
 published text stays until a full rebuild ([onprem-ocr.md](../../operations/onprem-ocr.md),
 "Our OCR in releases (#296)").
