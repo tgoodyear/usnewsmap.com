@@ -85,10 +85,11 @@ rclone() { "$RCLONE" --config /dev/null --retries 5 --low-level-retries 10 "$@";
 # The MySQL clients come from the server's own image, so they always match it. --log-driver
 # none: otherwise podman copies the container's stdout, the whole dump, into the journal.
 IMG=$(podman inspect "$CONTAINER" --format '{{.Image}}') || die "no container $CONTAINER"
-(umask 077; printf '[client]\nuser=usnmbackup\npassword=%s\nhost=%s\nssl-mode=VERIFY_IDENTITY\nssl-ca=/tls/ca.pem\n' \
-  "$(cat "$PASSWORD_FILE")" "$CONTAINER" > "$w/my.cnf")
+# 127.0.0.1 is in every certificate the database CA signs (the primary's and the replica's).
+(umask 077; printf '[client]\nuser=usnmbackup\npassword=%s\nhost=127.0.0.1\nssl-mode=VERIFY_IDENTITY\nssl-ca=/tls/ca.pem\n' \
+  "$(cat "$PASSWORD_FILE")" > "$w/my.cnf")
 client() {
-  podman run --rm -i --log-driver none --network host --add-host "$CONTAINER:127.0.0.1" \
+  podman run --rm -i --log-driver none --network host \
     -v "$w/my.cnf:/run/my.cnf:ro" -v "$CA:/tls/ca.pem:ro" "$IMG" "$1" --defaults-extra-file=/run/my.cnf "${@:2}"
 }
 sql() { client mysql -N -B -e "$1"; }
@@ -101,19 +102,26 @@ if [ "$MODE" = --dump ]; then
   ts=$(date -u +%Y%m%dT%H%M%SZ); key=dump/${ts:0:4}/$ts
   gtid=$(sql 'SELECT @@gtid_mode')
   started=$(date +%s)
-  set -o pipefail
+  # Spooled to disk first (about 100 MB), so the checksum, size and coordinates are read from
+  # the finished file before anything is uploaded.
+  install -d -m 700 "$STATE"; spool=$STATE/dump.sql.gz
+  rm -f "$spool"
   client mysqldump --single-transaction --quick --routines --triggers --events --hex-blob \
       --default-character-set=utf8mb4 --source-data=2 --set-gtid-purged=AUTO --databases "$DB" |
-    tee -p >(head -c 262144 > "$w/head") | gzip -6 | tee -p >(sha256sum > "$w/sha") >(wc -c > "$w/size") |
-    rclone rcat "r2:$BUCKET/$key.sql.gz" --s3-chunk-size 64M
-  wait
+    gzip -6 > "$spool"
+  gzip -t "$spool"
+  { gzip -dc "$spool" || true; } | head -c 262144 > "$w/head"
+  sha256sum < "$spool" | cut -d' ' -f1 > "$w/sha"; stat -c %s "$spool" > "$w/size"
+  rclone copyto "$spool" "r2:$BUCKET/$key.sql.gz" --s3-chunk-size 64M
+  rm -f "$spool"
   # mysqldump writes the coordinates as a comment near the top, e.g.
   # -- CHANGE REPLICATION SOURCE TO SOURCE_LOG_FILE='binlog.000011', SOURCE_LOG_POS=123;
   file=$(sed -n "s/^-- CHANGE REPLICATION SOURCE TO SOURCE_LOG_FILE='\([^']*\)', SOURCE_LOG_POS=\([0-9]*\);.*/\1/p" "$w/head" | head -1)
   pos=$(sed -n "s/^-- CHANGE REPLICATION SOURCE TO SOURCE_LOG_FILE='\([^']*\)', SOURCE_LOG_POS=\([0-9]*\);.*/\2/p" "$w/head" | head -1)
   [ -n "$file" ] && [ -n "$pos" ] || die "no binlog coordinates in the dump"
   grep -q '^-- MySQL dump' "$w/head" || die "the dump doesn't start like a mysqldump"
-  sha=$(cut -d' ' -f1 < "$w/sha"); size=$(tr -d ' ' < "$w/size")
+  sha=$(cat "$w/sha"); size=$(cat "$w/size")
+  [[ $sha =~ ^[0-9a-f]{64}$ ]] && [[ $size =~ ^[0-9]+$ ]] || die "no checksum or size for the dump"
   version=$(sql 'SELECT VERSION()')
   # The name the server's container was started with (mysql@sha256:..., by mysql-setup.sh), so
   # a restore elsewhere pulls the same build.
@@ -141,6 +149,17 @@ rc=0; listing=$(rclone lsf "r2:$BUCKET/binlog/$UUID/") || rc=$?
 declare -A have=()
 while IFS= read -r o; do [ -z "$o" ] || have[$o]=1; done <<< "$listing"
 install -d -m 700 "$STATE"
+# A gap: the newest binlog in the bucket and the oldest one still here aren't consecutive, and
+# nothing between them is anywhere (the primary purged them before they were shipped). Dumps
+# from before the gap can't roll forward past it; the next dump starts a new unbroken run.
+num() { local n=${1%.gz}; echo $((10#${n##*.})); }
+newest=-1
+for o in "${!have[@]}"; do [[ $o =~ \.[0-9]{6}\.gz$ ]] && [ "$(num "$o")" -gt "$newest" ] && newest=$(num "$o"); done
+oldest=$(num "${logs[0]}")
+gap=""
+if [ "$newest" -ge 0 ] && [ "$oldest" -gt $((newest + 1)) ]; then
+  gap="binlogs $((newest + 1)) to $((oldest - 1)) were purged before they were shipped"
+fi
 shipped=0 bytes=0
 for f in "${logs[@]}"; do
   [[ $f =~ ^[A-Za-z0-9._-]+$ ]] || die "odd binlog name"
@@ -152,4 +171,6 @@ for f in "${logs[@]}"; do
   bytes=$(( bytes + $(stat -c %s "$STATE/$f.gz") )); shipped=$(( shipped + 1 ))
   rm -f "$STATE/$f.gz"
 done
-report "$(printf '"shipped": %s, "bytes": %s, "newest_closed": "%s", "server_uuid": "%s"' "$shipped" "$bytes" "${logs[-1]}" "$UUID")"
+report "$(printf '"shipped": %s, "bytes": %s, "newest_closed": "%s", "server_uuid": "%s", "gap": "%s"' "$shipped" "$bytes" "${logs[-1]}" "$UUID" "$gap")"
+# Shipping what is here still helps the next dump; the run fails so the gap is seen.
+[ -z "$gap" ] || die "$gap: dumps before binlog $oldest can't roll forward past it"

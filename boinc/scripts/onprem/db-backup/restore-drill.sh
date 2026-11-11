@@ -40,6 +40,9 @@ done
 [ -r "$R2_ENV" ] || usage
 [[ $CTID =~ ^[0-9]+$ ]] && [[ $COMPARE =~ ^[0-9]+$ ]] && [[ $TROWS =~ ^[0-9]+$ ]] && [[ $TPCT =~ ^[0-9]+$ ]] || die "numbers only"
 [ "$(id -u)" = 0 ] && command -v pct > /dev/null || die "run as root on the Proxmox host"
+# One drill at a time (the timer and a run by hand), then a CT id nothing else holds.
+exec 9> /run/usnm-boinc-db-restore-drill.lock
+flock -n 9 || die "another drill is running"
 pct status "$CTID" > /dev/null 2>&1 && die "CT $CTID exists: the drill only uses a CT it makes"
 HERE=$(cd "$(dirname "$0")" && pwd)
 pin() { sed -n "s/^$1=//p" "$HERE/install.sh"; }
@@ -57,12 +60,12 @@ teardown() {
   pct stop "$CTID" > /dev/null 2>&1 || true
   pct destroy "$CTID" --purge > /dev/null 2>&1 || echo "warning: couldn't destroy CT $CTID" >&2
 }
-trap 'teardown; rm -rf "$w"' EXIT
-
 pct create "$CTID" "$TEMPLATE" --hostname usnm-boinc-db-drill --unprivileged 1 --features nesting=1,keyctl=1 \
   --cores 2 --memory 4096 --swap 512 --rootfs "$STORAGE:30" --onboot 0 --ostype debian \
   --net0 "name=eth0,bridge=$BRIDGE,ip=dhcp,type=veth" \
   --description "Scratch CT for the BOINC MySQL restore drill; destroyed when it ends. usnewsmap.com boinc/scripts/onprem/db-backup/restore-drill.sh" > /dev/null
+# Armed only now that this run made the CT, so a failed create never destroys another's.
+trap 'teardown; rm -rf "$w"' EXIT
 pct start "$CTID"
 for _ in $(seq 30); do in_ct getent hosts deb.debian.org > /dev/null 2>&1 && break; sleep 2; done
 in_ct bash -c 'DEBIAN_FRONTEND=noninteractive apt-get -qq update && DEBIAN_FRONTEND=noninteractive apt-get -qq install -y podman jq openssl curl python3 ca-certificates > /dev/null' ||

@@ -109,8 +109,12 @@ run the daemons: CT 230 itself, or a rebuilt BOINC host. If CT 230 or pve is dow
 whole, BOINC is down whatever the database does: rebuild the BOINC host first, then point it
 here the same way.
 
-Writes that hadn't reached the replica are lost: up to `Seconds_Behind_Source` (normally 0).
-The R2 binlogs are no newer than the replica.
+Writes that hadn't reached the replica are lost, and `Seconds_Behind_Source` doesn't measure
+them: it reads 0 when the applier has drained what the receiver fetched, even if the receiver
+stalled long ago. Before promoting, run `--status` and compare `Source_Log_File` (the newest binlog
+the receiver fetched) with the newest binlog in R2 (`binlog/<server UUID>/`) and, if CT 230 is
+reachable, with `SHOW BINARY LOGS` there. If R2 or CT 230 has later binlogs than the replica, a
+restore from R2 ([db-backup.md](db-backup.md)) loses less than promoting.
 
 1. **Stop the writers.** Stop the BOINC daemons in `usnm-boinc-server` on CT 230 (the project's
    `bin/stop`) and the timers that write (feeds, bridge steps). Stop

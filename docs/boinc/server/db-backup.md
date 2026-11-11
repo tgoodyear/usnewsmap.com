@@ -103,8 +103,8 @@ is in `<workdir>/dl/root`.
 
 ### Undo a bad change
 
-Restore with `--keep` to a scratch host first and find where the change starts. The relay logs
-are the binlogs under another name, and the applier has stopped, so:
+Restore with `--keep` to a scratch host first and find where the change starts. A kept restore
+leaves the relay logs (the binlogs under another name) and its stopped replay channel, so:
 
 ```sql
 SHOW RELAYLOG EVENTS IN 'restore-relay.000123' LIMIT 200;
@@ -121,10 +121,13 @@ Use this when CT 230's data is lost and the replica can't be promoted. Promoting
 1. Stop the BOINC daemons and `usnm-boinc-mysql` on CT 230.
 2. Restore with `--keep` on CT 230 itself, to another port and work directory, and check the
    counts.
-3. Stop the restored container, move its data directory to `/srv/usnm-boinc/mysql-data`
-   (`chown -R 999:999`), and start `usnm-boinc-mysql`.
-4. Run `mysql-setup.sh` again: it recreates the `usnmboincadmin` and `usnmboincrun` users with
-   their Key Vault passwords. Run `install.sh` again for `usnmbackup`, and
+3. On the restored server, run `RESET REPLICA ALL` (a kept restore leaves its replay channel
+   and relay logs in place). Stop the restored container, move its data directory to
+   `/srv/usnm-boinc/mysql-data` (`chown -R 999:999`), copy `<workdir>/dl/root` (the restored
+   server's root password) over `/etc/usnm-boinc/secrets/db-root`, and start
+   `usnm-boinc-mysql`.
+4. Run `mysql-setup.sh` again: with that root password it recreates the `usnmboincadmin` and
+   `usnmboincrun` users with their Key Vault passwords. Run `install.sh` again for `usnmbackup`, and
    `replica-source.sh --users` for the replica's user.
 5. Start the daemons, then rebuild the replica from the new primary.
 

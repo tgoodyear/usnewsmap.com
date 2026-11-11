@@ -12,7 +12,8 @@
 # --r2-env        R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_ENDPOINT: the bucket's reader key
 #                 (home Key Vault usnm-boinc-db-backup-r2-reader-*)
 # --workdir       an empty directory with room for about 3x the database
-# --dump          a dump key, dump/<year>/<time>.sql.gz, or latest (default)
+# --dump          a dump key, dump/<year>/<time>.sql.gz, or latest (default): the newest dump
+#                 whose first binlog has been shipped
 # --until         stop the replay before binlog position POS of file BINLOG (e.g.
 #                 binlog.000123:4567): for undoing a bad change. Find the position with --keep
 #                 and SHOW RELAYLOG EVENTS on the restored server (db-backup.md). Without it,
@@ -21,8 +22,8 @@
 # --name          its container's name (usnm-boinc-mysql-restore)
 # --image         the MySQL image (default: the one the manifest names)
 # --counts-out    write {"tables": {name: rows}, ...} here after the restore
-# --keep          leave the restored server running; without it, it is stopped and its data
-#                 removed at the end
+# --keep          leave the restored server running, with its relay logs and stopped replication
+#                 channel; without it, it is stopped and its data removed at the end
 #
 # It checks the dump's sha256 against its manifest and loads it. Then it rolls forward with the
 # server's own replication applier, as the image has no mysqlbinlog: every shipped binlog from
@@ -79,12 +80,24 @@ cleanup() {
 trap cleanup EXIT
 
 if [ "$DUMP" = latest ]; then
-  DUMP=$(rclone lsf -R --files-only --include '*.json' "r2:$BUCKET/dump/" | sort | tail -1)
-  [ -n "$DUMP" ] || die "no dump in r2:$BUCKET/dump/"
-  DUMP=dump/${DUMP%.json}.sql.gz
-  # A manifest dated in the future can't be a real dump; refuse it rather than let it win "latest".
-  t=${DUMP##*/}; t=${t%.sql.gz}
-  [ "${t:0:8}" -le "$(date -u -d tomorrow +%Y%m%d)" ] || die "newest manifest $DUMP is dated in the future: pass --dump"
+  # The newest dump whose first binlog has been shipped: a dump taken minutes ago starts in a
+  # binlog that is still open on the primary, so it can't be rolled forward yet.
+  mkdir -p "$WD/dl"
+  pick=""
+  while IFS= read -r m; do
+    t=${m##*/}; t=${t%.json}
+    [[ $t =~ ^[0-9]{8}T[0-9]{6}Z$ ]] || continue
+    # A manifest dated in the future can't be a real dump; skip it rather than let it win.
+    [ "${t:0:8}" -le "$(date -u -d tomorrow +%Y%m%d)" ] || { echo "skipping future-dated $m" >&2; continue; }
+    rclone copyto "r2:$BUCKET/dump/$m" "$WD/dl/candidate.json"
+    u=$(jq -r .server_uuid "$WD/dl/candidate.json"); f=$(jq -r .binlog_file "$WD/dl/candidate.json")
+    [[ $u =~ ^[0-9a-f-]{36}$ ]] && [[ $f =~ ^[A-Za-z0-9._-]+$ ]] || continue
+    if rclone lsf --files-only "r2:$BUCKET/binlog/$u/$f.gz" 2> /dev/null | grep -qxF "$f.gz"; then pick=$m; break; fi
+    echo "skipping $m: its binlog $f isn't shipped yet" >&2
+  done < <(rclone lsf -R --files-only --include '*.json' "r2:$BUCKET/dump/" | sort -r)
+  rm -f "$WD/dl/candidate.json"
+  [ -n "$pick" ] || die "no dump in r2:$BUCKET/dump/ whose first binlog is shipped"
+  DUMP=dump/${pick%.json}.sql.gz
 fi
 [[ $DUMP =~ ^dump/[0-9]{4}/[0-9]{8}T[0-9]{6}Z\.sql\.gz$ ]] || die "--dump: dump/<year>/<time>.sql.gz or latest"
 mkdir -p "$WD/dl/binlog" "$WD/data"
@@ -129,6 +142,12 @@ loaded=$(date +%s)
 
 mapfile -t logs < <(rclone lsf --files-only "r2:$BUCKET/binlog/$UUID/" | sed -n 's/\.gz$//p' | sort | awk -v f="$FILE" '$0 >= f')
 [ "${#logs[@]}" -gt 0 ] && [ "${logs[0]}" = "$FILE" ] || die "binlog $FILE, where the dump starts, isn't in the bucket"
+if [ -n "$UNTIL" ]; then
+  # Only the binlogs up to the stop point, so a gap after it doesn't matter.
+  ufile=${UNTIL%%:*}
+  mapfile -t logs < <(printf '%s\n' "${logs[@]}" | awk -v u="$ufile" '$0 <= u')
+  [ "${logs[-1]}" = "$ufile" ] || die "--until: $ufile isn't in the bucket at or after the dump's $FILE"
+fi
 prev=""
 for f in "${logs[@]}"; do
   n=$((10#${f##*.}))
@@ -158,25 +177,28 @@ CHANGE REPLICATION FILTER REPLICATE_DO_DB = ($DB);
 START REPLICA SQL_THREAD$until_sql;
 SQL
 last=restore-relay.${logs[-1]##*.}
-st=""
+st="" finished=false
 field() { sed -n "s/^ *$1: //p" <<< "$st" | head -1; }
 for _ in $(seq 1 2400); do
   st=$(q -e 'SHOW REPLICA STATUS\G')
   [ "$(field Last_SQL_Errno)" = 0 ] || die "the replay stopped: $(field Last_SQL_Error)"
   if [ -n "$UNTIL" ]; then
-    [ "$(field Replica_SQL_Running)" = No ] && break
+    [ "$(field Replica_SQL_Running)" = No ] && { finished=true; break; }
   else
     # The server opens a fresh relay log of its own after the last one it was given, so done is
     # "read everything" in that file or a later one.
     cur=$(field Relay_Log_File)
     [ "${cur##*.}" \> "${last##*.}" ] || [ "$cur" = "$last" ] || { sleep 3; continue; }
-    [[ $(field Replica_SQL_Running_State) == *"read all relay log"* ]] && break
+    [[ $(field Replica_SQL_Running_State) == *"read all relay log"* ]] && { finished=true; break; }
   fi
   sleep 3
 done
 [ "$(field Last_SQL_Errno)" = 0 ] || die "the replay stopped: $(field Last_SQL_Error)"
+$finished || die "the replay didn't finish in 2 hours (at $(field Relay_Log_File):$(field Relay_Log_Pos))"
 applied="$(field Relay_Log_File):$(field Relay_Log_Pos)"
-q -e 'STOP REPLICA; RESET REPLICA ALL'
+# With --keep the relay logs stay for SHOW RELAYLOG EVENTS; RESET REPLICA ALL would delete them.
+# Run it before the restored data serves anything (db-backup.md).
+if $KEEP; then q -e 'STOP REPLICA'; else q -e 'STOP REPLICA; RESET REPLICA ALL'; fi
 
 tables=$(q -N -B -e "SELECT table_name FROM information_schema.tables WHERE table_schema='$DB' AND table_type='BASE TABLE' ORDER BY 1")
 {
