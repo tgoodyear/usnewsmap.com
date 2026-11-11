@@ -41,7 +41,7 @@ case "$APPVER_KIND" in
       *) fail "unsupported native app/plan class: $APPVER_APP:$APPVER_PLAN_CLASS" ;;
     esac
     case "$APPVER_PLAN_CLASS:$APPVER_PLATFORM" in
-      :*|mt:*|apple_gpu_8b:arm64-apple-darwin|nvidia_cuda_8b:x86_64-pc-linux-gnu|nvidia_cuda_8b:aarch64-unknown-linux-gnu|nvidia_cuda_8b:windows_x86_64|nvidia_cuda_2b:x86_64-pc-linux-gnu|nvidia_cuda_2b:aarch64-unknown-linux-gnu|nvidia_cuda_2b:windows_x86_64|intel_vulkan_8b:x86_64-pc-linux-gnu|intel_vulkan_8b:windows_x86_64|nvidia_vulkan_8b:x86_64-pc-linux-gnu|nvidia_vulkan_6gb_8b:x86_64-pc-linux-gnu|nvidia_vulkan_2b:x86_64-pc-linux-gnu|amd_vulkan_8b:x86_64-pc-linux-gnu|amd_vulkan_8b:windows_x86_64) ;;
+      :*|mt:*|apple_gpu_8b:arm64-apple-darwin|nvidia_cuda_8b:x86_64-pc-linux-gnu|nvidia_cuda_8b:aarch64-unknown-linux-gnu|nvidia_cuda_8b:windows_x86_64|nvidia_cuda_2b:x86_64-pc-linux-gnu|nvidia_cuda_2b:aarch64-unknown-linux-gnu|nvidia_cuda_2b:windows_x86_64|intel_vulkan_8b:x86_64-pc-linux-gnu|intel_vulkan_8b:windows_x86_64|nvidia_vulkan_8b:x86_64-pc-linux-gnu|nvidia_vulkan_8b:windows_x86_64|nvidia_vulkan_6gb_8b:x86_64-pc-linux-gnu|nvidia_vulkan_2b:x86_64-pc-linux-gnu|amd_vulkan_8b:x86_64-pc-linux-gnu|amd_vulkan_8b:windows_x86_64) ;;
       *) fail "native plan class $APPVER_PLAN_CLASS is not supported on $APPVER_PLATFORM" ;;
     esac
     case "$APPVER_APP" in
@@ -60,7 +60,10 @@ esac
 case "${APPVER_HOLD:-0}:$APPVER_KIND:$APPVER_APP:$APPVER_PLAN_CLASS" in
   0:*) ;;
   1:container:usnm_ocr:docker | 1:container:usnm_gold:docker | 1:container:usnm_ocr:docker_lines | 1:container:usnm_gold:docker_lines) ;;
-  1:*) fail "APPVER_HOLD is only for usnm_ocr and usnm_gold container versions" ;;
+  # Native Qwen (#1672): a version for a class with general admission is sent at once, so a new
+  # platform goes out held until a real client has run it.
+  1:native:usnm_qwen:?*) ;;
+  1:*) fail "APPVER_HOLD is only for usnm_ocr and usnm_gold container versions and native usnm_qwen versions" ;;
   *) fail "APPVER_HOLD must be 0 or 1" ;;
 esac
 [ -e "$PROJ/.usnm-initialised" ] || fail "project is not initialised"

@@ -92,7 +92,7 @@ NATIVE_PLAN_CLASSES = {
     ("usnm_qwen", "nvidia_cuda_2b"): ("x86_64-pc-linux-gnu", "aarch64-unknown-linux-gnu", "windows_x86_64"),
     # Intel GPUs through llama.cpp Vulkan (#786); llama.lock pins only x86_64 Vulkan builds.
     ("usnm_qwen", "intel_vulkan_8b"): ("x86_64-pc-linux-gnu", "windows_x86_64"),
-    ("usnm_qwen", "nvidia_vulkan_8b"): ("x86_64-pc-linux-gnu",),
+    ("usnm_qwen", "nvidia_vulkan_8b"): ("x86_64-pc-linux-gnu", "windows_x86_64"),
     ("usnm_qwen", "nvidia_vulkan_6gb_8b"): ("x86_64-pc-linux-gnu",),
     # The 2B model fully offloaded on 6 GB NVIDIA cards through the pinned Linux Vulkan build (#1234).
     ("usnm_qwen", "nvidia_vulkan_2b"): ("x86_64-pc-linux-gnu",),
@@ -298,7 +298,7 @@ def install(
                         "ggml-cpu-x64.dll", "libomp140.x86_64.dll",
                         "cudart64_12.dll", "cublas64_12.dll", "cublasLt64_12.dll",
                     )
-                if plan_class in ("intel_vulkan_8b", "amd_vulkan_8b"):
+                if plan_class in ("intel_vulkan_8b", "nvidia_vulkan_8b", "amd_vulkan_8b"):
                     # vulkan-1.dll, the Vulkan loader, comes with the GPU driver.
                     required_extras += (
                         "ggml-vulkan.dll", "ggml-base.dll", "ggml.dll", "llama.dll", "mtmd.dll",

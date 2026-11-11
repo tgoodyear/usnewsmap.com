@@ -1181,7 +1181,9 @@ class AppReleaseArgs(unittest.TestCase):
                                 "fixture.invalid", "--app", "usnm_qwen", "--plan-class", "docker_mt_2b",
                                 "--worker-image", img, "--hold", "--what-if"],
                                cwd=ROOT, env=env, capture_output=True, text=True)
-        self.assertIn("--hold and --outrank-pinned are for usnm_ocr and usnm_gold", r.stderr)
+        # A container Qwen version still can't be held; native Qwen can (#1672).
+        self.assertIn("--hold is for usnm_ocr and usnm_gold container versions and native usnm_qwen versions",
+                      r.stderr)
 
     def test_onprem_publish_builds_on_the_host_and_skips_acr(self):
         text = Path(APP_RELEASE_SCRIPT).read_text()

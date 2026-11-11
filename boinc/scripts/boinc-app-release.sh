@@ -201,7 +201,7 @@ else
     *) die "unsupported --platform" ;;
   esac
   case "$PLAN_CLASS:$PLATFORM" in
-    :* | mt:* | apple_gpu_8b:arm64-apple-darwin | nvidia_cuda_8b:x86_64-pc-linux-gnu | nvidia_cuda_8b:aarch64-unknown-linux-gnu | nvidia_cuda_8b:windows_x86_64 | nvidia_cuda_2b:x86_64-pc-linux-gnu | nvidia_cuda_2b:aarch64-unknown-linux-gnu | nvidia_cuda_2b:windows_x86_64 | intel_vulkan_8b:x86_64-pc-linux-gnu | intel_vulkan_8b:windows_x86_64 | nvidia_vulkan_8b:x86_64-pc-linux-gnu | nvidia_vulkan_6gb_8b:x86_64-pc-linux-gnu | nvidia_vulkan_2b:x86_64-pc-linux-gnu | amd_vulkan_8b:x86_64-pc-linux-gnu | amd_vulkan_8b:windows_x86_64) ;;
+    :* | mt:* | apple_gpu_8b:arm64-apple-darwin | nvidia_cuda_8b:x86_64-pc-linux-gnu | nvidia_cuda_8b:aarch64-unknown-linux-gnu | nvidia_cuda_8b:windows_x86_64 | nvidia_cuda_2b:x86_64-pc-linux-gnu | nvidia_cuda_2b:aarch64-unknown-linux-gnu | nvidia_cuda_2b:windows_x86_64 | intel_vulkan_8b:x86_64-pc-linux-gnu | intel_vulkan_8b:windows_x86_64 | nvidia_vulkan_8b:x86_64-pc-linux-gnu | nvidia_vulkan_8b:windows_x86_64 | nvidia_vulkan_6gb_8b:x86_64-pc-linux-gnu | nvidia_vulkan_2b:x86_64-pc-linux-gnu | amd_vulkan_8b:x86_64-pc-linux-gnu | amd_vulkan_8b:windows_x86_64) ;;
     *) die "native --plan-class $PLAN_CLASS is not supported on $PLATFORM" ;;
   esac
   for spec in "${EXTRA_FILES[@]+"${EXTRA_FILES[@]}"}"; do
@@ -274,7 +274,9 @@ esac
 case "$KIND:$APP" in
   container:usnm_ocr | container:usnm_gold)
     $HOLD || $OUTRANK_PINNED || die "$APP $VERSION outranks the older $APP versions of $PLATFORM: units pinned to them stop being sent (#1687). Give --hold to publish it deprecated and release it with the plan rotation (docs/boinc/apps/app-release.md, \"Held versions\"), or --outrank-pinned to publish it live" ;;
-  *) if $HOLD || $OUTRANK_PINNED; then die "--hold and --outrank-pinned are for usnm_ocr and usnm_gold container versions"; fi ;;
+  # Native Qwen may go out held (#1672): a class with general admission sends a new version at once.
+  native:usnm_qwen) ! $OUTRANK_PINNED || die "--outrank-pinned is for usnm_ocr and usnm_gold container versions" ;;
+  *) if $HOLD || $OUTRANK_PINNED; then die "--hold is for usnm_ocr and usnm_gold container versions and native usnm_qwen versions; --outrank-pinned only for the former"; fi ;;
 esac
 if [ -n "$ONPREM_MANIFEST$ARTIFACT_RECEIPT" ]; then
   [ "$SERVER_MODE" = onprem ] && $PREPARE_ONLY && [ -f "$ONPREM_MANIFEST" ] && [ -n "$ARTIFACT_RECEIPT" ] ||

@@ -455,8 +455,8 @@ fake migration.
      libraries) passed via repeatable `--extra-file LOGICAL=PATH` flags under
      `apps/usnm_qwen/<version>/<platform>__<plan_class>` for plan classes `apple_gpu_8b`
      (`arm64-apple-darwin`), `nvidia_cuda_8b` and `nvidia_cuda_2b` (`x86_64-pc-linux-gnu`,
-     `aarch64-unknown-linux-gnu`, `windows_x86_64`), `intel_vulkan_8b` and
-     `amd_vulkan_8b` (`x86_64-pc-linux-gnu`, `windows_x86_64`), `nvidia_vulkan_8b`,
+     `aarch64-unknown-linux-gnu`, `windows_x86_64`), `intel_vulkan_8b`, `nvidia_vulkan_8b` and
+     `amd_vulkan_8b` (`x86_64-pc-linux-gnu`, `windows_x86_64`),
      `nvidia_vulkan_6gb_8b` and `nvidia_vulkan_2b` (`x86_64-pc-linux-gnu`), and `mt` (all five
      platforms). Model files
      are staged separately as `<sticky/><no_delete/>` inputs in `download/` using the
@@ -586,6 +586,28 @@ So `usnm_ocr` and `usnm_gold` releases take one of two flags:
   (`publish-held-<app>-<version>-<platform>-<time>.json`) goes under `<project>/ops-app-versions/`
   first, and verification refuses a row it finds live.
 - `--outrank-pinned` publishes it live, for an app with no pinned work.
+
+Native `usnm_qwen` versions may take `--hold` too (#1672). A class with general admission (on
+Linux, `nvidia_vulkan_8b`, `amd_vulkan_8b` and `intel_vulkan_8b`) sends a new version at once,
+so a version for a platform no real client has run yet, such as `nvidia_vulkan_8b` on
+`windows_x86_64`, goes out held and is released with `app-version-hold.php` once a client has
+downloaded, run, suspended and resumed, uploaded and validated it.
+
+A held version can't be sent, so the client run needs a short qualification window. The class
+has no per-platform admission, so for `nvidia_vulkan_8b` the window is the release itself,
+isolated by checking who could receive it:
+
+1. In the BOINC database, list the hosts that could take it: `os_name` Windows, an NVIDIA
+   (CUDA) GPU in `serialnum`, and an RPC within the last week. Go on only if the test host
+   (the project's Windows 11 VM with the RTX 2060 SUPER) is the only one. On 10 Nov 2026 the
+   one Windows host besides it reported no GPU.
+2. Release with `app-version-hold.php --action release --apply`, and confirm the test host gets
+   `usnm_qwen` work on that version.
+3. On the test host, check download, the run itself, suspend and resume (BOINC Manager or
+   `boinccmd --task ... suspend`), upload, and that the result validates against its quorum.
+4. If any check fails, hold the version again at once (`--action hold --apply`). If they all
+   pass, it stays released, and the Windows helper (`setup_windows_volunteer.ps1`) and docs
+   admit NVIDIA.
 
 For `usnm_gold` the script also reads `gold-engine-platforms.json` from the running
 `usnm-boinc-server` container. Without a binding for the worker on `--platform` it refuses,

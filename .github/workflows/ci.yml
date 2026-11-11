@@ -221,6 +221,9 @@ jobs:
         run: python3 -m unittest -v boinc/images/server/test_batch_inventory.py
         env:
           USNM_WORK_VOLUME_MYSQL_PORT: '3307'
+      - name: Held app versions are held and released, native Qwen included (#1672)
+        working-directory: .
+        run: python3 -m unittest -v boinc/scripts/test_app_version_hold.py
       - name: Fresh Qwen publication excludes concurrent database writers
         working-directory: .
         run: python3 -m unittest -v boinc/scripts/test_qwen_publication_db.py
