@@ -296,9 +296,9 @@ boinc/scripts/boinc-app-release.sh --env prod --app usnm_qwen --version VERSION 
 
 The server must first run a build with this class in its `plan_class_spec.xml`.
 
-For `windows_x86_64` (`nvidia_vulkan_8b` or `intel_vulkan_8b`, #1672), `build-windows` takes
-the `llama.lock`-pinned `win-vulkan-x64` zip unchanged (`llama-server.exe`, every `ggml*.dll`,
-`llama.dll`, `mtmd.dll` and `libomp140.x86_64.dll`). It adds the merged commit's
+For `windows_x86_64` (`nvidia_vulkan_8b`, `nvidia_vulkan_6gb_8b` or `intel_vulkan_8b`, #1672),
+`build-windows` takes the `llama.lock`-pinned `win-vulkan-x64` zip unchanged (`llama-server.exe`,
+every `ggml*.dll`, `llama.dll`, `mtmd.dll` and `libomp140.x86_64.dll`). It adds the merged commit's
 `boinc-native-windows_x86_64` artifact: `usnm_qwen_windows_x86_64.exe` and the signed
 app-local Microsoft runtime DLLs, each checked against the artifact's `SHA256SUMS` and
 `GIT_COMMIT`. Windows AMD isn't built this way: its bundle replaces `ggml-vulkan.dll` and adds
@@ -472,9 +472,9 @@ fake migration.
      libraries) passed via repeatable `--extra-file LOGICAL=PATH` flags under
      `apps/usnm_qwen/<version>/<platform>__<plan_class>` for plan classes `apple_gpu_8b`
      (`arm64-apple-darwin`), `nvidia_cuda_8b` and `nvidia_cuda_2b` (`x86_64-pc-linux-gnu`,
-     `aarch64-unknown-linux-gnu`, `windows_x86_64`), `intel_vulkan_8b`, `nvidia_vulkan_8b` and
-     `amd_vulkan_8b` (`x86_64-pc-linux-gnu`, `windows_x86_64`),
-     `nvidia_vulkan_6gb_8b` and `nvidia_vulkan_2b` (`x86_64-pc-linux-gnu`), and `mt` (all five
+     `aarch64-unknown-linux-gnu`, `windows_x86_64`), `intel_vulkan_8b`, `nvidia_vulkan_8b`,
+     `nvidia_vulkan_6gb_8b` and `amd_vulkan_8b` (`x86_64-pc-linux-gnu`, `windows_x86_64`),
+     `nvidia_vulkan_2b` (`x86_64-pc-linux-gnu`), and `mt` (all five
      platforms). Model files
      are staged separately as `<sticky/><no_delete/>` inputs in `download/` using the
      plan-class-specific model input templates (`usnm_qwen_8b_in` for 8B classes and
@@ -632,6 +632,18 @@ The first release went this way on 10 Nov 2026: app version 90 (`usnm_qwen` 1.18
 resumed mid-run. Both uploaded and validated against the AMD Windows host's results, and
 both became canonical. The release script in the running server image predated #1719, so
 the copy from `main` went in with `podman cp`, as described below.
+
+`nvidia_vulkan_6gb_8b` on `windows_x86_64` is built and published the same way, with
+`--plan-class nvidia_vulkan_6gb_8b`. The class has no general admission; its units go out
+only through its own `native-qwen-cohort.php` window ([quality](quality.md), "6 GB
+profile"). The Windows pilot runs first on the same Windows 11 test VM with its 8 GB
+RTX 2060 SUPER. That card also meets `nvidia_vulkan_8b`, which has general admission, so the
+scheduler may send it the full-offload version instead. For each pilot result, check which app
+version it ran (`result.app_version_id`, or the plan class in the client's task list), and
+count only `nvidia_vulkan_6gb_8b` results. A pass on the VM shows that the Windows bundle runs
+the partial-offload path. It doesn't show that a real 6 GB card has the 5,120 MiB free the app
+needs. The Windows helper (`setup_windows_volunteer.ps1`) and the volunteer docs admit 6 GB
+cards only after the pilot.
 
 For `usnm_gold` the script also reads `gold-engine-platforms.json` from the running
 `usnm-boinc-server` container. Without a binding for the worker on `--platform` it refuses,

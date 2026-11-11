@@ -331,10 +331,12 @@ class BoincAppVersion {
         # Native Qwen passes the hold gate (#1672); a native class-less version doesn't.
         native = {**env, 'APPVER_KIND': 'native', 'APPVER_APP': 'usnm_qwen', 'APPVER_HOLD': '1',
                   'APPVER_PLATFORM': 'windows_x86_64'}
-        passed = subprocess.run(['bash', str(self.script)], capture_output=True, text=True,
-                                env={**native, 'APPVER_PLAN_CLASS': 'nvidia_vulkan_8b'})
-        self.assertNotIn('APPVER_HOLD is only', passed.stderr)
-        self.assertNotIn('APPVER_HOLD must', passed.stderr)
+        for plan in ('nvidia_vulkan_8b', 'nvidia_vulkan_6gb_8b'):
+            passed = subprocess.run(['bash', str(self.script)], capture_output=True, text=True,
+                                    env={**native, 'APPVER_PLAN_CLASS': plan})
+            self.assertNotIn('APPVER_HOLD is only', passed.stderr)
+            self.assertNotIn('APPVER_HOLD must', passed.stderr)
+            self.assertNotIn('is not supported on', passed.stderr)
 
     def test_container_publication_rejects_wrong_or_legacy_model_classes(self):
         for app, plan, platform in (
@@ -495,6 +497,40 @@ class BoincAppVersion { static function enum($query) {
                     self.assertNotEqual(result.returncode, 0)
                     self.assertIn('is not supported on', result.stderr)
                     self.assertFalse((self.project / f'apps/usnm_qwen/1.0/{subdir}').exists())
+
+    @unittest.skipUnless(shutil.which('php'), 'PHP unavailable')
+    def test_native_nvidia_vulkan_8b_classes_publish_on_linux_and_windows_x86_64(self):
+        # nvidia_vulkan_8b and the 6 GB partial-offload class share the Windows Vulkan bundle (#1672).
+        (self.root / 'php').unlink(missing_ok=True)
+        for plan in ('nvidia_vulkan_8b', 'nvidia_vulkan_6gb_8b'):
+            (self.project / 'html/inc/boinc_db.inc').write_text(f'''<?php
+class BoincApp {{ static function lookup($query) {{ return (object)["id"=>1]; }} }}
+class BoincPlatform {{ static function lookup($query) {{ return (object)["id"=>2]; }} }}
+class BoincAppVersion {{ static function enum($query) {{
+    if (strpos($query, "plan_class='{plan}'") === false) exit(9);
+    return [(object)["id"=>3]];
+}} }}
+''')
+            for platform in ('x86_64-pc-linux-gnu', 'windows_x86_64',
+                             'aarch64-unknown-linux-gnu', 'arm64-apple-darwin', 'x86_64-apple-darwin'):
+                with self.subTest(plan=plan, platform=platform):
+                    subdir = f'{platform}__{plan}'
+                    src = self.source / f'apps/usnm_qwen/1.0/{subdir}'
+                    src.mkdir(parents=True)
+                    (src / 'usnm_qwen').write_text('native-fixture')
+                    env = {**os.environ, 'PROJ': str(self.project), 'APPVER_KIND': 'native',
+                           'APPVER_APP': 'usnm_qwen', 'APPVER_VERSION': '1.0',
+                           'APPVER_PLATFORM': platform, 'APPVER_PLAN_CLASS': plan,
+                           'DB_HOST': 'fixture', 'DB_NAME': 'fixture', 'MASTER_HOST': 'fixture',
+                           'PATH': str(self.root) + os.pathsep + os.environ['PATH']}
+                    result = subprocess.run(['bash', str(self.script)], capture_output=True, text=True, env=env)
+                    if platform in ('x86_64-pc-linux-gnu', 'windows_x86_64'):
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertIn(f'Verified usnm_qwen 1.0 {platform} {plan}', result.stdout)
+                    else:
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertIn('is not supported on', result.stderr)
+                        self.assertFalse((self.project / f'apps/usnm_qwen/1.0/{subdir}').exists())
 
     @unittest.skipUnless(shutil.which('php'), 'PHP unavailable')
     def test_native_ocr_apps_publish_only_on_linux_x86_64(self):
