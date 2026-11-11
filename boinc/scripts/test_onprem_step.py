@@ -617,7 +617,7 @@ class OnpremStep(unittest.TestCase):
                 self.assertNotEqual(done.returncode, 0)
                 self.assertIn(message, done.stderr)
 
-    def run_for_real(self, *args, lock_wait=None, flock_script="exit 0\n"):
+    def run_for_real(self, *args, lock_wait=None, flock_script="exit 0\n", extra_env=None):
         # A fake podman copies the env file it is given; flock always gets the lock.
         bin_dir = Path(self.conf.name, "bin")
         bin_dir.mkdir(exist_ok=True)
@@ -637,6 +637,7 @@ class OnpremStep(unittest.TestCase):
                "USNM_BOINC_STEP_RUN": str(run_dir)}
         if lock_wait is not None:
             env["USNM_BOINC_STEP_LOCK_WAIT_SECS"] = lock_wait
+        env.update(extra_env or {})
         done = subprocess.run(["bash", str(SCRIPT), *args], env=env, capture_output=True, text=True, timeout=30)
         return done, captured.read_text() if captured.exists() else None
 
@@ -817,6 +818,78 @@ class OnpremStep(unittest.TestCase):
                                    "--step", "claim", "--wait-mins", "1")
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertNotIn("/etc/usnm/queue", Path(self.conf.name, "podman-args").read_text())
+
+    def test_line_export_reads_the_pages_staged_on_this_host(self):
+        # #1621: a line export takes its scans, ALTO and manifest from the staging tree, like a
+        # queue-fed export; any other cohort export still reads the container's copies.
+        self.write_handoff_env()
+        stage = Path(self.conf.name, "stage")
+        stage.mkdir()
+        export = ("--env", "prod", "--target", "handoff", "--step", "export", "--wait-mins", "1",
+                  "--var", "HANDOFF_PAGES=sn83020866/1828-03-06/ed-1/seq-1",
+                  "--var", "HANDOFF_BATCH=dlc_misctopsn83020866", "--var", "HANDOFF_PLAN=chr-lines-1",
+                  "--var", "HANDOFF_MANIFEST=chr-lines-a/manifest.parquet",
+                  "--var", "ENGINE_IMAGE=sha256:" + "c" * 64,
+                  "--var", "HANDOFF_SCANS=keep/dlc_misctopsn83020866/sn83020866/1828-03-06/1/1.jpg")
+        for extra, local in ((("--var", "HANDOFF_LINE_READ=chr"), True), ((), False),
+                             (("--var", "HANDOFF_CLAIMS=1"), True)):
+            with self.subTest(extra=extra):
+                done, envfile = self.run_for_real(*export, *extra,
+                                                  extra_env={"USNM_BOINC_SCAN_STAGE": str(stage)})
+                self.assertEqual(done.returncode, 0, done.stderr)
+                arguments = Path(self.conf.name, "podman-args").read_text().splitlines()
+                self.assertEqual(f"{stage}:/scans:ro" in arguments, local)
+                self.assertEqual("HANDOFF_LOCAL_SCANS=1" in envfile.splitlines(), local)
+        # Over ssh too, as a hand-off export input.
+        done = self.run_step(ssh="usnm-boinc-step --env prod --target handoff --step export "
+                                 "--var HANDOFF_LINE_READ=chr --what-if")
+        self.assertEqual(done.returncode, 0, done.stderr)
+
+    def test_line_report_is_an_operators_step_taking_only_job_ids(self):
+        self.write_handoff_env()
+        ids = "a" * 64 + "," + "b" * 64
+        done = self.run_step("--env", "prod", "--target", "handoff", "--step", "line-report",
+                             "--var", "JOB_IDS=" + ids, "--what-if")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn("HANDOFF_STEP=line-report", done.stdout)
+        done = self.run_step("--env", "prod", "--target", "handoff", "--step", "line-report",
+                             "--var", "JOB_ID=" + "a" * 64, "--what-if")
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("takes only", done.stderr)
+        done = self.run_step(ssh="usnm-boinc-step --env prod --target handoff --step line-report "
+                                 "--var JOB_IDS=" + "a" * 64 + " --what-if")
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("isn't allowed over ssh", done.stderr)
+
+    def test_scans_receive_takes_a_line_exports_alto_and_manifest(self):
+        with tempfile.TemporaryDirectory() as d:
+            stage = os.path.join(d, "stage")
+            alto = "loc-alto/sn83020866/1828/03/06/ed-1/seq-1/ocr.xml"
+            manifest = "manifests/chr-lines-a/manifest.parquet"
+            done = self.receive([("keep/dlc_misctopsn83020866/sn83020866/1828-03-06/1/1.jpg", b"scan"),
+                                 ("keep/dlc_misctopsn83020866/sn83020866/1828-03-06/1/1.jpg.json", b"{}"),
+                                 (alto, b"<alto/>"), (manifest, b"PAR1")], stage)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertIn(b"received 4 files", done.stdout)
+            self.assertEqual(Path(stage, alto).read_bytes(), b"<alto/>")
+            self.assertEqual(Path(stage, manifest).read_bytes(), b"PAR1")
+            for name in ("loc-alto/sn1/1828/03/06/ed-1/seq-1/other.xml", "loc-alto/../x/ocr.xml",
+                         "manifests/a/b/manifest.parquet", "manifests/.x/manifest.parquet",
+                         "manifests/a/manifest.json"):
+                with self.subTest(name=name):
+                    done = self.receive([(name, b"x")], stage)
+                    self.assertNotEqual(done.returncode, 0)
+            done = self.receive([(alto, b"x" * (32 * 1024 * 1024 + 1))], stage)
+            self.assertNotEqual(done.returncode, 0)
+            # Pruned at four days, like the scans.
+            old = Path(stage, "loc-alto/sn83020866/1828/03/13/ed-1/seq-1/ocr.xml")
+            old.parent.mkdir(parents=True)
+            old.write_bytes(b"old")
+            os.utime(old, (0, 0))
+            done = self.receive([(manifest, b"PAR1")], stage)
+            self.assertIn(b"pruned 1", done.stdout)
+            self.assertFalse(old.exists())
+            self.assertTrue(Path(stage, alto).exists())
 
     def test_handoff_env_without_a_final_newline(self):
         # The last setting still counts, and it doesn't run into HANDOFF_STEP.

@@ -28,6 +28,8 @@ use usnm_core::ids::PageKey;
 use usnm_ocr_contract::boinc::{self, Job, LineBox, ResultManifest};
 use usnm_ocr_worker::engine::{LineReading, Tesseract};
 
+pub mod stage;
+
 /// Padding around a line box, in scan pixels, left and right.
 pub const PAD_X: u32 = 12;
 /// Padding around a line box, in scan pixels, above and below.

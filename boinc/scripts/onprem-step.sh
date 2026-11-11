@@ -30,7 +30,7 @@
 # keep submits and publishing waiting, and an hour's native publication, which holds the step lock
 # for 10 minutes, doesn't fail a tick after the lock wait.
 #
-# --target handoff --step claim|release|dead-letter|deadline-retry|collect|export runs the hand-off
+# --target handoff --step claim|release|dead-letter|deadline-retry|collect|export|line-report runs the hand-off
 # job's command (#967 phase 3),
 # boinc/images/bridge/handoff-job.sh from the same bridge image, in place of the
 # Azure hand-off job (infra/modules/boinc-handoff-job.bicep). Its settings are the job's own,
@@ -44,11 +44,14 @@
 #
 # --target scans --step receive (#1116) reads a tar of scans from stdin, as the controller's push
 # sends them over ssh: copies of the scan fetcher's files, named keep/<batch>/<lccn>/<date>/<ed>/
-# <seq>.<jp2|jpg> with their .json sidecars. Only that layout is taken (regular files, size
-# capped); each is written to $USNM_BOINC_SCAN_STAGE (default /srv/usnm-boinc/project/
-# handoff-scans) through a temporary name, and staged files older than 4 days are pruned. The
-# hand-off export reads them (mounted read-only as /scans), and the bridge's submit takes a job's
-# page from them, so no scan goes through Azure. The BOINC host never reads /tank/ocr itself.
+# <seq>.<jp2|jpg> with their .json sidecars. A line export's staging tree (#1621, usnm-boinc
+# line-stage) adds each page's LoC ALTO, loc-alto/<lccn>/<yyyy>/<mm>/<dd>/ed-<n>/seq-<m>/ocr.xml,
+# and its prefetch manifest, manifests/<name>/manifest.parquet. Only that layout is taken
+# (regular files, size capped); each is written to $USNM_BOINC_SCAN_STAGE (default
+# /srv/usnm-boinc/project/handoff-scans) through a temporary name, and staged files older than 4
+# days are pruned. The hand-off export reads them (mounted read-only as /scans), and the
+# bridge's submit takes a job's page from them, so no scan goes through Azure. The BOINC host
+# never reads /tank/ocr itself.
 #
 # --target archive --step bridge --var ARCHIVE_BATCH=<NNNN> (#835) runs archive_history.py's
 # bridge step for one batch the controller host's held-page archive dispatched
@@ -93,7 +96,9 @@ HANDOFF_DEAD_LETTER_OPERATOR_VARS="SUPERSEDES_FAILED_JOB CONFIRM_MESSAGE_SHA256 
 # Its other choice, retrying that page with another page deadline (#1417): root on the host only.
 HANDOFF_DEADLINE_RETRY_VARS=" SUPERSEDES_FAILED_JOB TIMEOUT_SECS CONFIRM_MESSAGE_SHA256 "
 HANDOFF_COLLECT_VARS=" JOB_ID JOB_IDS HOST_ID COLLECT_PARALLEL "
-HANDOFF_EXPORT_VARS=" HANDOFF_PAGES HANDOFF_BATCH HANDOFF_BATCHES HANDOFF_PLAN HANDOFF_MANIFEST ENGINE_IMAGE HANDOFF_SCANS HANDOFF_JOBS HANDOFF_CLAIMS HANDOFF_DEADLINE_RETRIES "
+# The line jobs' check (#1621), as root on the host: it only reads.
+HANDOFF_LINE_REPORT_VARS=" JOB_IDS "
+HANDOFF_EXPORT_VARS=" HANDOFF_PAGES HANDOFF_BATCH HANDOFF_BATCHES HANDOFF_PLAN HANDOFF_MANIFEST ENGINE_IMAGE HANDOFF_SCANS HANDOFF_JOBS HANDOFF_CLAIMS HANDOFF_DEADLINE_RETRIES HANDOFF_LINE_READ "
 # handoff.env must set these, as the Azure job sets them (its AZURE_CLIENT_ID is Container
 # Apps' identity; the Arc identity needs none).
 HANDOFF_HOST_VARS=" HANDOFF_URL COSMOS_ENDPOINT CURATED_URL REFERENCE_URL OUT_URL QUEUE_URL IDENTITY_ENDPOINT IMDS_ENDPOINT "
@@ -151,9 +156,11 @@ case $TARGET in
       die "--target publish needs --image <appver image>" ;;
   handoff)
     [ -z "$APPVER_IMAGE" ] || die "--image is for --target publish"
-    case $STEP in claim | release | dead-letter | deadline-retry | collect | export) ;; *) die "--target handoff runs claim, release, dead-letter, deadline-retry, collect or export on-prem; $STEP stays in Azure" ;; esac
+    case $STEP in claim | release | dead-letter | deadline-retry | collect | export | line-report) ;; *) die "--target handoff runs claim, release, dead-letter, deadline-retry, collect, export or line-report on-prem; $STEP stays in Azure" ;; esac
     [ "$STEP" != deadline-retry ] || [ "${USNM_BOINC_STEP_FROM_SSH:-}" != 1 ] ||
-      die "--step deadline-retry is an operator's, as root on the host; it isn't allowed over ssh" ;;
+      die "--step deadline-retry is an operator's, as root on the host; it isn't allowed over ssh"
+    [ "$STEP" != line-report ] || [ "${USNM_BOINC_STEP_FROM_SSH:-}" != 1 ] ||
+      die "--step line-report is an operator's, as root on the host; it isn't allowed over ssh" ;;
   *) die "--target $TARGET does not run on-prem; only bridge, publish, handoff, scans and archive steps do" ;;
 esac
 [[ $STEP =~ ^[a-z][a-z-]{0,40}$ ]] || die "--step is a bridge step name, such as register-apps or submit"
@@ -187,6 +194,9 @@ signal.alarm(wait * 60)
 lock = open(lock_path, "w")
 fcntl.flock(lock, fcntl.LOCK_EX)
 name_re = re.compile(r"keep/[a-z]{2,10}_[A-Za-z0-9_]+/[A-Za-z0-9_-]+/[0-9]{4}-[0-9]{2}-[0-9]{2}/[0-9]{1,4}/[0-9]{1,5}\.(jp2|jpg)(\.json)?")
+# A line export (#1621): LoC ALTO for each page, and a prefetch manifest of the pages.
+alto_re = re.compile(r"loc-alto/[a-z0-9]{1,16}/[0-9]{4}/[0-9]{2}/[0-9]{2}/ed-[0-9]{1,4}/seq-[0-9]{1,5}/ocr\.xml")
+manifest_re = re.compile(r"manifests/[A-Za-z0-9][A-Za-z0-9_-]{0,63}/manifest\.parquet")
 count = total = members = 0
 with tarfile.open(fileobj=sys.stdin.buffer, mode="r|", tarinfo=Member) as tar:
     for m in tar:
@@ -197,9 +207,14 @@ with tarfile.open(fileobj=sys.stdin.buffer, mode="r|", tarinfo=Member) as tar:
             sys.exit("error: more tar entries than a push sends")
         if m.isdir():
             continue
-        if not m.isreg() or not name_re.fullmatch(m.name):
-            sys.exit(f"error: {m.name!r} is not a staged scan or sidecar")
-        cap = 64 * 1024 if m.name.endswith(".json") else 64 * 1024 * 1024
+        if m.isreg() and alto_re.fullmatch(m.name):
+            cap = 32 * 1024 * 1024
+        elif m.isreg() and manifest_re.fullmatch(m.name):
+            cap = 16 * 1024 * 1024
+        elif m.isreg() and name_re.fullmatch(m.name):
+            cap = 64 * 1024 if m.name.endswith(".json") else 64 * 1024 * 1024
+        else:
+            sys.exit(f"error: {m.name!r} is not a staged scan, sidecar, LoC ALTO or line manifest")
         count += 1
         total += m.size
         if m.size > cap or count > 1000 or total > 32 * 1024 ** 3:
@@ -223,14 +238,15 @@ with tarfile.open(fileobj=sys.stdin.buffer, mode="r|", tarinfo=Member) as tar:
 # Prune what no job needs any more: a scan is read until its job is submitted, and the lease is 36 hours.
 cutoff = time.time() - 4 * 86400
 pruned = 0
-for root, dirs, files in os.walk(os.path.join(stage, "keep"), topdown=False):
-    for f in files:
-        p = os.path.join(root, f)
-        if os.lstat(p).st_mtime < cutoff:
-            os.unlink(p)
-            pruned += 1
-    if root != os.path.join(stage, "keep") and not os.listdir(root):
-        os.rmdir(root)
+for top in ("keep", "loc-alto", "manifests"):
+    for root, dirs, files in os.walk(os.path.join(stage, top), topdown=False):
+        for f in files:
+            p = os.path.join(root, f)
+            if os.lstat(p).st_mtime < cutoff:
+                os.unlink(p)
+                pruned += 1
+        if root != os.path.join(stage, top) and not os.listdir(root):
+            os.rmdir(root)
 print(f"received {count} files ({total} bytes), pruned {pruned}")
 ' "$STAGE" "$RUN_DIR/usnm-boinc-scans.lock" "$WAIT_MINS" || die "the scans were not all received"
   exit 0
@@ -446,6 +462,7 @@ if [ "$TARGET" = handoff ]; then
     deadline-retry) SSH_ALLOWED=$HANDOFF_DEADLINE_RETRY_VARS ;;
     collect) SSH_ALLOWED=$HANDOFF_COLLECT_VARS ;;
     export) SSH_ALLOWED=$HANDOFF_EXPORT_VARS ;;
+    line-report) SSH_ALLOWED=$HANDOFF_LINE_REPORT_VARS ;;
   esac
   SSH_ALLOWED+=" EXPECTED_HANDOFF_URL "
 fi
@@ -561,9 +578,13 @@ echo "running $STEP as $name for up to $step_timeout seconds after lock acquisit
 rc=0
 if [ "$TARGET" = handoff ]; then
   # export takes the scans the controller pushed here (#1116), read-only, instead of the
-  # container's copies.
-  # Queue-fed exports only: a cohort export's scans still go to the container.
-  if [ "$STEP" = export ] && [ -d "$STAGE" ] && [[ " ${VARS[*]-} " == *" HANDOFF_CLAIMS=1 "* ]]; then
+  # container's copies. Queue-fed exports, and line exports (#1621), whose pages, ALTO and
+  # manifest are staged here: any other cohort export's scans still go to the container.
+  local_export=false
+  for v in ${VARS[@]+"${VARS[@]}"}; do
+    case $v in HANDOFF_CLAIMS=1 | HANDOFF_LINE_READ=?*) local_export=true ;; esac
+  done
+  if [ "$STEP" = export ] && [ -d "$STAGE" ] && $local_export; then
     echo "HANDOFF_LOCAL_SCANS=1" >> "$envfile"
     run+=(-v "$STAGE:/scans:ro")
   fi

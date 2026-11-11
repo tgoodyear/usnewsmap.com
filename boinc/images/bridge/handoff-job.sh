@@ -24,6 +24,10 @@
 #                         deadline-retry, #1417): their journals and deadline-retry/ records come
 #                         down too, and the page's job takes the recorded deadline
 #                         (usnm-boinc export --deadline-retry)
+#                         [HANDOFF_LINE_READ=chr] line jobs (#1621) of cohort pages staged on the
+#                         BOINC host (HANDOFF_LOCAL_SCANS=1, from usnm-boinc line-stage): each
+#                         page's scan, its LoC ALTO (loc-alto/) and the manifest come from the
+#                         staging tree (usnm-boinc export --line-read --loc-alto)
 #                         copies scans/ and the manifest down, runs usnm-boinc export (the
 #                         ocr-sync lease in Cosmos, the native ledger reservation) and writes
 #                         back the journal entries it touched; prints the job ids
@@ -60,6 +64,11 @@
 #                         newer message with another page deadline; prints the message's sha256
 #                         and changes nothing, or with its sha256 confirmed records the retry,
 #                         which the controller then exports (same section of the doc)
+#   HANDOFF_STEP=line-report JOB_IDS=<id>[,<id>...] (up to 100 line jobs, #1621) copies each job's
+#                         record, accepted result and line-read/ sidecars down and prints
+#                         usnm-boinc line-report on them: a JSON line per collected line job (its
+#                         merge counts and rule line-merge-v1's verdict), then a summary. Reads
+#                         only; a job not yet collected prints nothing
 #   HANDOFF_STEP=collect  JOB_ID [HOST_ID=<the canonical result's host id>], or JOB_IDS=<id>[,<id>...]
 #                         (up to 100, one execution for a tick's results, #932) and
 #                         [COLLECT_PARALLEL=<1 to 8, default 1>] jobs collected at once (#1447)
@@ -159,6 +168,7 @@ fi
 # the end so the controller sees it.
 if [ "${HANDOFF_STEP:-}" = export ] && [ -n "${HANDOFF_BATCHES:-}" ]; then
   [ -z "${HANDOFF_BATCH:-}" ] || fail "set HANDOFF_BATCH or HANDOFF_BATCHES, not both"
+  [ -z "${HANDOFF_LINE_READ:-}" ] || fail "HANDOFF_LINE_READ exports one batch: set HANDOFF_BATCH"
   [[ ${HANDOFF_PAGES:-} =~ ^[A-Za-z0-9/_,-]+$ ]] || fail "HANDOFF_PAGES is a comma-separated list of page keys"
   IFS=, read -r -a all_pages <<< "$HANDOFF_PAGES"
   IFS=, read -r -a all_batches <<< "$HANDOFF_BATCHES"
@@ -214,6 +224,13 @@ case "${HANDOFF_STEP:-}" in
       [[ $HANDOFF_MANIFEST != *..* ]] || fail "HANDOFF_MANIFEST is a path under manifests/"
     [[ ${HANDOFF_PAGES:-} =~ ^[A-Za-z0-9/_,-]+$ ]] || fail "HANDOFF_PAGES is a comma-separated list of page keys"
     : "${HANDOFF_BATCH:?set HANDOFF_BATCH}" "${HANDOFF_PLAN:?set HANDOFF_PLAN}" "${ENGINE_IMAGE:?set ENGINE_IMAGE}"
+    if [ -n "${HANDOFF_LINE_READ:-}" ]; then
+      # Line jobs (#1621): cohort pages whose scans, ALTO and manifest were staged on this host.
+      [ "$HANDOFF_LINE_READ" = chr ] || fail "HANDOFF_LINE_READ is a line route's language: chr"
+      [ "${HANDOFF_CLAIMS:-}" != 1 ] || fail "HANDOFF_LINE_READ is for cohort pages, not HANDOFF_CLAIMS"
+      [ "${HANDOFF_LOCAL_SCANS:-}" = 1 ] && [ -n "${HANDOFF_SCANS:-}" ] ||
+        fail "HANDOFF_LINE_READ reads the pages staged on the BOINC host: HANDOFF_SCANS, on-prem"
+    fi
     # On the BOINC host (#1116) the scans the controller pushed are mounted at /scans: export
     # reads them there, and the jobs' pages (the scans themselves) don't go back up.
     scans_dir="$work/scans"
@@ -253,8 +270,14 @@ case "${HANDOFF_STEP:-}" in
             --to "$root/jobs/$id/record.json"
         done
       fi
-      # A queue-fed export builds its jobs from the claims, not the manifest (#1115).
-      if [ "${HANDOFF_CLAIMS:-}" != 1 ]; then
+      # A queue-fed export builds its jobs from the claims, not the manifest (#1115). A line
+      # export's manifest was staged with its pages.
+      if [ -n "${HANDOFF_LINE_READ:-}" ]; then
+        staged="$local_scans/manifests/$HANDOFF_MANIFEST"
+        [ -f "$staged" ] && [ ! -L "$staged" ] || fail "no manifests/$HANDOFF_MANIFEST among the files staged on this host"
+        mkdir -p "$(dirname "$work/manifests/$HANDOFF_MANIFEST")"
+        cp "$staged" "$work/manifests/$HANDOFF_MANIFEST"
+      elif [ "${HANDOFF_CLAIMS:-}" != 1 ]; then
         usnm-boinc handoff get-file --from-url "$HANDOFF_URL" --path "manifests/$HANDOFF_MANIFEST" \
           --to "$work/manifests/$HANDOFF_MANIFEST"
       fi
@@ -268,6 +291,21 @@ case "${HANDOFF_STEP:-}" in
       fail "no manifests/$HANDOFF_MANIFEST in the hand-off container"
     tr ',' '\n' <<< "$HANDOFF_PAGES" > "$work/pages.txt"
     claim_args=()
+    if [ -n "${HANDOFF_LINE_READ:-}" ]; then
+      # Each page's LoC ALTO, as usnm-boinc's lines::loc_alto_path names it.
+      IFS=, read -r -a pages <<< "$HANDOFF_PAGES"
+      [ "${#pages[@]}" -le 100 ] || fail "HANDOFF_PAGES is at most 100 pages"
+      for page in "${pages[@]}"; do
+        [[ $page =~ ^([a-z0-9]+)/([0-9]{4})-([0-9]{2})-([0-9]{2})/(ed-[0-9]{1,4})/(seq-[0-9]{1,5})$ ]] ||
+          fail "HANDOFF_PAGES has a page key that isn't <lccn>/<yyyy-mm-dd>/ed-<n>/seq-<m>: $page"
+        alto="loc-alto/${BASH_REMATCH[1]}/${BASH_REMATCH[2]}/${BASH_REMATCH[3]}/${BASH_REMATCH[4]}/${BASH_REMATCH[5]}/${BASH_REMATCH[6]}/ocr.xml"
+        [ -f "$local_scans/$alto" ] && [ ! -L "$local_scans/$alto" ] ||
+          fail "no $alto among the files staged on this host"
+        mkdir -p "$(dirname "$work/$alto")"
+        cp "$local_scans/$alto" "$work/$alto"
+      done
+      claim_args=(--line-read "$HANDOFF_LINE_READ" --loc-alto "$work/loc-alto")
+    fi
     if [ "${HANDOFF_CLAIMS:-}" = 1 ]; then
       IFS=, read -r -a pages <<< "$HANDOFF_PAGES"
       [ "${#pages[@]}" -le 100 ] || fail "HANDOFF_PAGES is at most 100 queue-fed pages"
@@ -417,6 +455,17 @@ case "${HANDOFF_STEP:-}" in
     fi
     usnm-boinc claim deadline-retry --handoff-url "$HANDOFF_URL" --curated-url "$CURATED_URL" \
       --supersedes-failed-job "$SUPERSEDES_FAILED_JOB" --timeout-secs "$TIMEOUT_SECS" ${confirm[@]+"${confirm[@]}"} ;;
+  line-report)
+    [[ ${JOB_IDS:-} =~ ^[0-9a-f]{64}(,[0-9a-f]{64}){0,99}$ ]] || fail "JOB_IDS is 1 to 100 comma-separated job ids"
+    IFS=, read -r -a ids <<< "$JOB_IDS"
+    for id in "${ids[@]}"; do
+      usnm-boinc handoff get-file --from-url "$HANDOFF_URL" --path "dispatch/jobs/$id/record.json" \
+        --to "$root/jobs/$id/record.json"
+      usnm-boinc handoff get --from-url "$HANDOFF_URL" --prefix "dispatch/jobs/$id/accepted" \
+        --to "$root/jobs/$id/accepted"
+      usnm-boinc handoff get-line-read --from-url "$HANDOFF_URL" --root "$root" --job "$id"
+    done
+    usnm-boinc line-report --root "$root" ;;
   collect)
     [[ ${JOB_ID:-} =~ ^[0-9a-f]{64}$ ]] || fail "JOB_ID is a job id (64 hex)"
     usnm-boinc handoff get-file --from-url "$HANDOFF_URL" --path "dispatch/jobs/$JOB_ID/record.json" \
@@ -491,5 +540,5 @@ case "${HANDOFF_STEP:-}" in
     fi
     usnm-boinc quality texts-export --curated-url "$CURATED_URL" --out-dir "$work/texts" "${doc_args[@]}"
     usnm-boinc handoff put --from "$work/texts" --to-url "$HANDOFF_URL" --prefix texts ;;
-  *) fail "HANDOFF_STEP must be export, claim, release, dead-letter, deadline-retry, collect or texts-export" ;;
+  *) fail "HANDOFF_STEP must be export, claim, release, dead-letter, deadline-retry, collect, line-report or texts-export" ;;
 esac
