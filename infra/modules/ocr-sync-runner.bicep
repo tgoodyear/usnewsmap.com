@@ -28,6 +28,11 @@
 // grant also creates under pages/ (add/action only: curation writes each attempt
 // create-only, and nothing there can be overwritten), and Data
 // Contributor on `batches` and `issues` (the work queue and the issues it curates).
+// With `migrate` (stateMigration, #1367), the move of pipeline state and work queues
+// on-prem: Cosmos DB Built-in Data Reader on the whole `usnm` database (`usnm-boinc
+// docs-migrate` lists every container and reads them all), and Message Processor on
+// ocr-priority and ocr-bulk (`usnm-boinc queue-move` receives and deletes there). Off once
+// the cutover is done.
 // Nothing for a raw store: prod keeps none (USNM_RETAIN_RAW, USNM_ARCHIVE_ACCOUNT unset).
 param storageName string
 param exchangeName string
@@ -40,6 +45,8 @@ param principalId string
 param promote bool = false
 @description('Also backfill curation: create under curated/pages/, Cosmos batches and issues.')
 param backfill bool = false
+@description('Also the on-prem state migration (#1367): Cosmos read on every container, Message Processor on ocr-priority and ocr-bulk.')
+param migrate bool = false
 @description('The lake role\'s name, a GUID (ocr-sync-runner-role.bicep).')
 param lakeRoleName string
 @description('The exchange role\'s name, a GUID (ocr-sync-runner-role.bicep).')
@@ -50,6 +57,7 @@ var queueMessageProcessor = '8a0f0c08-91a1-4084-bc3d-661d67233fed'
 var queueMessageSender = 'c6a89b2d-59bc-44d0-9896-0f6e12d7b80a'
 var queueDataReader = '19e7f393-937e-4f77-808e-94535e297925'
 var cosmosDataContributor = '00000000-0000-0000-0000-000000000002'
+var cosmosDataReader = '00000000-0000-0000-0000-000000000001'
 var metricsPublisher = '3913510d-42f4-4e42-8a64-420c390055eb'
 var acrPull = '7f951dda-4ed3-4680-a7ca-43fe172d538d'
 
@@ -234,6 +242,30 @@ resource state 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments@2024-11
       principalId: principalId
       roleDefinitionId: '${cosmos.id}/sqlRoleDefinitions/${cosmosDataContributor}'
       scope: '${cosmos.id}/dbs/usnm/colls/${c}'
+    }
+  }
+]
+
+// docs-migrate reads every container: Data Reader on the database, during the migration only.
+resource migrateRead 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments@2024-11-15' = if (migrate) {
+  parent: cosmos
+  name: guid(cosmos.id, principalId, cosmosDataReader)
+  properties: {
+    principalId: principalId
+    roleDefinitionId: '${cosmos.id}/sqlRoleDefinitions/${cosmosDataReader}'
+    scope: '${cosmos.id}/dbs/usnm'
+  }
+}
+
+// queue-move receives and deletes on the work queues: ocr-priority and ocr-bulk.
+resource migrateQueues 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
+  for i in range(0, 2): if (migrate) {
+    scope: queues[i]
+    name: guid(queues[i].id, principalId, queueMessageProcessor)
+    properties: {
+      principalId: principalId
+      principalType: 'ServicePrincipal'
+      roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', queueMessageProcessor)
     }
   }
 ]

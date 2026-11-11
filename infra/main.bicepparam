@@ -96,6 +96,7 @@ param ocrSyncOnPrem = bool(readEnvironmentVariable('USNM_OCR_SYNC_ONPREM', 'fals
 param batchHost = readEnvironmentVariable('USNM_BATCH_HOST', '')
 param ingestOnPrem = bool(readEnvironmentVariable('USNM_INGEST_ONPREM', 'false'))
 param backfillOnPrem = bool(readEnvironmentVariable('USNM_BACKFILL_ONPREM', 'false'))
+param stateMigration = bool(readEnvironmentVariable('USNM_STATE_MIGRATION', 'false'))
 param ocrSyncAlerts = bool(readEnvironmentVariable('USNM_OCR_SYNC_ALERTS', 'false'))
 param boincFeedAlerts = bool(readEnvironmentVariable('USNM_BOINC_FEED_ALERTS', 'false'))
 param boincFeedMachine = readEnvironmentVariable('USNM_BOINC_FEED_MACHINE', '')
