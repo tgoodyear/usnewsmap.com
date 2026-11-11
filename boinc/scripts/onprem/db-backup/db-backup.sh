@@ -140,7 +140,8 @@ fi
 
 # --ship-binlogs
 $FLUSH && sql 'FLUSH BINARY LOGS'
-mapfile -t logs < <(sql 'SHOW BINARY LOGS' | cut -f1)
+binlogs=$(sql 'SHOW BINARY LOGS') || die "SHOW BINARY LOGS failed"
+mapfile -t logs < <(cut -f1 <<< "$binlogs")
 [ "${#logs[@]}" -ge 2 ] || { report '"shipped": 0, "note": "no closed binlog yet"'; exit 0; }
 unset 'logs[-1]'   # the open one
 for f in "${logs[@]}"; do [[ $f =~ ^[A-Za-z0-9_-]+\.[0-9]{6}$ ]] || die "odd binlog name"; done
