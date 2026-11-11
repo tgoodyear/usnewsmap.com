@@ -24,9 +24,12 @@ function differences(expected, actual, path) {
     : [`${path}: expected ${JSON.stringify(expected)}, found ${JSON.stringify(actual ?? null)}`];
 }
 
-/** The hostname a route pattern matches, such as `boinc-dev.usnewsmap.com` for `boinc-dev.usnewsmap.com/upload*`. */
+/**
+ * The hostname a route pattern matches, such as `boinc-dev.usnewsmap.com` for
+ * `boinc-dev.usnewsmap.com/upload*` or `https://boinc-dev.usnewsmap.com/upload*`.
+ */
 function routeHost(pattern) {
-  return pattern.split("/")[0].toLowerCase();
+  return pattern.replace(/^[a-z][a-z0-9+.-]*:\/\//i, "").split("/")[0].toLowerCase();
 }
 
 /**
