@@ -2406,6 +2406,35 @@ class QueueModeTests(unittest.TestCase):
         self.assertFalse(feed.deadline_retry(newer["page"], feed.checked(newer)[1], owned))
         self.assertFalse([a for a in self.fake.actions if a[0] == "deadline-retry"])
 
+    def test_queue_message_sha256_matches_the_claim_steps(self):
+        # A live queue-feed-11 journal's message and the sha256 `claim pull` recorded for the
+        # same queue message (11 Nov 2026).
+        message = {"v": 1, "page": "sn85055101/1940-04-13/ed-1/seq-4", "batch": "dlc_eastliberty",
+                   "language": "srp", "reason": "bulk", "score": 0.3160919540229885,
+                   "queued_at": "2026-11-08T01:06:34.682771Z"}
+        self.assertEqual(batch.queue_message_sha256(message),
+                         "c30f441fed818ac9684a0be2117747dc927cf07c7c2762c86399384791524023")
+
+    def test_only_settled_journals_messages_are_listed(self):
+        def record(n, stage, held=None, plan="queue-feed-11"):
+            m = {"v": 1, "page": f"sn1/1900-01-01/ed-1/seq-{n}", "batch": "b_x", "language": "srp",
+                 "reason": "bulk", "queued_at": "2026-11-08T01:06:34.682771Z"}
+            return {"plan": plan, "stage": stage, "job": {"id": f"{n:064x}", "message": m},
+                    **({"held": held} if held else {})}
+
+        records = [record(1, "published"), record(2, "reserved", held="scope held"),
+                   record(3, "reserved"), record(4, "submitted"), record(5, "failed"),
+                   record(6, "failed", held="scope held"), record(7, "reserved", "held", plan="queue-feed-13")]
+        found = batch.settled_messages(records)
+        self.assertEqual(sorted(found), ["sn1_1900-01-01_ed-1_seq-1", "sn1_1900-01-01_ed-1_seq-2",
+                                         "sn1_1900-01-01_ed-1_seq-7"])
+        self.assertEqual(found["sn1_1900-01-01_ed-1_seq-2"],
+                         {batch.queue_message_sha256(records[1]["job"]["message"])})
+        feed = batch.QueueFeed(self.config, {}, self.fake, lambda: None)
+        feed.settled_messages = found
+        self.assertEqual(feed.held_pages()["sn1_1900-01-01_ed-1_seq-1"],
+                         sorted(found["sn1_1900-01-01_ed-1_seq-1"]))
+
     def test_the_held_pages_list_goes_out_before_the_claim(self):
         # #1751: archived held pages' messages, here and in a sibling plan, are named with their
         # job's message sha256, so the claim step deletes them instead of claiming them again.
