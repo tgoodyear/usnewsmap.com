@@ -199,9 +199,15 @@ def check(entry, download, units, cmp, now):
     except FileNotFoundError:
         if not os.path.exists(os.path.join(unit, DIMS_FILE)):
             return "unit page.jpg missing"
-        # prune-units freed the unit's copy: the download copy must be the job's own input.
+        # prune-units freed the unit's copy: the download copy must be the job's own input, and
+        # the record collect reads must be valid for it (else the copy may be needed to redo it).
+        got = read_dims(unit, job)
+        if isinstance(got, str):
+            return "unit page.jpg missing and " + got
         if want != st.st_size:
             return "size differs from the job's page input"
+        if not headers_match(path, got[2], st.st_size):
+            return "page header differs from dims.json"
         if cmp and file_sha256(path) != ((job.get("inputs") or {}).get("page") or {}).get("sha256"):
             return "bytes differ from the job's page input"
         return path, st.st_size, unit
@@ -254,26 +260,10 @@ def jpeg_size(data):
     return None
 
 
-def unit_check(unit, results, scans):
-    """(path, bytes freed, record) for a unit page.jpg to delete, or a reason to leave it."""
-    name = os.path.basename(unit)
-    page = os.path.join(unit, "page.jpg")
-    try:
-        st = os.stat(page)
-    except FileNotFoundError:
-        return "already pruned"
-    if not os.path.isfile(os.path.join(unit, "submitted")):
-        return "not submitted"
-    try:
-        with open(os.path.join(unit, "quality.json"), "rb") as f:
-            job = json.load(f)
-    except (OSError, ValueError):
-        return "quality.json unreadable"
+def read_dims(unit, job):
+    """(record, its stat, [((width, height), page slice)]) when the unit's dims.json belongs to
+    `job`, or why not."""
     pages = job.get("pages") or []
-    if not pages or not name.startswith("bundle-"):
-        return "not a bundle"
-    if ((job.get("inputs") or {}).get("page") or {}).get("bytes") != st.st_size:
-        return "page.jpg is not the size quality.json gives"
     dims_path = os.path.join(unit, DIMS_FILE)
     try:
         dst = os.stat(dims_path)
@@ -297,6 +287,47 @@ def unit_check(unit, results, scans):
         if not (isinstance(w, int) and isinstance(h, int) and w > 0 and h > 0):
             return "dims.json gives an empty size"
         sizes.append(((w, h), slice_))
+    return dims, dst, sizes
+
+
+def headers_match(path, sizes, file_size):
+    """Whether each page's JPEG header in `path`, read at its slice, gives the recorded size."""
+    with open(path, "rb") as f:
+        for (size, slice_) in sizes:
+            offset, length = slice_.get("offset"), slice_.get("bytes")
+            if not (isinstance(offset, int) and isinstance(length, int)
+                    and 0 <= offset and offset + length <= file_size):
+                return False
+            f.seek(offset)
+            if jpeg_size(f.read(min(length, JPEG_HEADER_WINDOW))) != size:
+                return False
+    return True
+
+
+def unit_check(unit, results, scans):
+    """(path, bytes freed, record) for a unit page.jpg to delete, or a reason to leave it."""
+    name = os.path.basename(unit)
+    page = os.path.join(unit, "page.jpg")
+    if not os.path.isfile(os.path.join(unit, "submitted")):
+        return "not submitted"
+    try:
+        st = os.stat(page)
+    except FileNotFoundError:
+        return "already pruned"
+    try:
+        with open(os.path.join(unit, "quality.json"), "rb") as f:
+            job = json.load(f)
+    except (OSError, ValueError):
+        return "quality.json unreadable"
+    pages = job.get("pages") or []
+    if not pages or not name.startswith("bundle-"):
+        return "not a bundle"
+    if ((job.get("inputs") or {}).get("page") or {}).get("bytes") != st.st_size:
+        return "page.jpg is not the size quality.json gives"
+    got = read_dims(unit, job)
+    if isinstance(got, str):
+        return got
+    dims, dst, sizes = got
     entry = results["inventory"].get(name)
     if not entry or entry.get("status") != "canonical-present":
         return "no canonical result in the inventory"
@@ -320,15 +351,8 @@ def unit_check(unit, results, scans):
         loc = known.get(d["sha256"])
         if loc is not None and not original_on_disk(p["doc_id"], loc, scans["roots"]):
             return "a page is LoC's own JPEG and its original is not in keep/"
-    with open(page, "rb") as f:
-        for (size, slice_) in sizes:
-            offset, length = slice_.get("offset"), slice_.get("bytes")
-            if not (isinstance(offset, int) and isinstance(length, int)
-                    and 0 <= offset and offset + length <= st.st_size):
-                return "page slice out of range"
-            f.seek(offset)
-            if jpeg_size(f.read(min(length, JPEG_HEADER_WINDOW))) != size:
-                return "page header differs from dims.json"
+    if not headers_match(page, sizes, st.st_size):
+        return "page header differs from dims.json"
     freed = st.st_size if st.st_nlink == 1 else 0
     return page, freed, {"job": job.get("id"), "nlink": st.st_nlink,
                          "fingerprint": entry["fingerprint"]}

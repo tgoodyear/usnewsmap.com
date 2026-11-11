@@ -161,29 +161,39 @@ class QualityRetentionTest(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self.l.prune("--delete", "--skip-cmp")
 
-    def test_a_pruned_unit_still_frees_its_download_copy(self):
-        path, unit = self.l.unit(1, DOCS)
+    def pruned(self, sha=None, record=True):
+        """A one-page bundle whose page.jpg prune-units freed, with its download copy."""
+        page = jpeg(100, 50)
+        path, unit = self.l.unit(1, DOCS[:1], page=page)
         job = json.loads((unit / "quality.json").read_text())
-        job["inputs"]["page"]["sha256"] = hashlib.sha256(b"bundle-bytes").hexdigest()
+        digest = hashlib.sha256(page).hexdigest()
+        job["inputs"]["page"]["sha256"] = sha or digest
+        job["pages"][0]["inputs"] = {"page": {"bytes": len(page), "offset": 0, "sha256": digest}}
         (unit / "quality.json").write_text(json.dumps(job))
         (unit / "page.jpg").unlink()
-        (unit / "dims.json").write_text("{}")
+        dims = {"job": job["id"], "v": 1, "pages": [
+            {"doc_id": DOCS[0], "height": 50, "sha256": digest, "width": 100}]}
+        (unit / "dims.json").write_text(json.dumps(dims) if record else "{}")
+        return path, page
+
+    def test_a_pruned_unit_still_frees_its_download_copy(self):
+        path, page = self.pruned()
         self.assertEqual(self.l.prune("--skip-cmp")["files"], 1)
         got = self.l.prune("--delete")
-        self.assertEqual((got["files"], got["bytes"]), (1, len(b"bundle-bytes")))
+        self.assertEqual((got["files"], got["bytes"]), (1, len(page)))
         self.assertFalse(path.exists())
 
     def test_a_pruned_unit_keeps_a_download_copy_that_is_not_its_input(self):
-        path, unit = self.l.unit(1, DOCS)
-        job = json.loads((unit / "quality.json").read_text())
-        job["inputs"]["page"]["sha256"] = "0" * 64
-        (unit / "quality.json").write_text(json.dumps(job))
-        (unit / "page.jpg").unlink()
-        (unit / "dims.json").write_text("{}")
+        path, _ = self.pruned(sha="0" * 64)
         got = self.l.prune("--delete")
         self.assertEqual(got["kept"], {"bytes differ from the job's page input": 1})
         self.assertTrue(path.exists())
 
+    def test_a_unit_without_a_valid_record_keeps_its_last_image(self):
+        path, _ = self.pruned(record=False)
+        got = self.l.prune("--delete")
+        self.assertEqual(got["kept"], {"unit page.jpg missing and dims.json is not this job's": 1})
+        self.assertTrue(path.exists())
 
 def jpeg(width, height, pad=0):
     """The first bytes of a baseline JPEG: SOI, an APP0 block of `pad` bytes, SOF0."""
