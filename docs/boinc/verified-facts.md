@@ -182,6 +182,13 @@ All read on 2026-10-13 (US Eastern): wiki commit `7e16379`, source commit `0f611
   class name, so the plan class must be called `docker`.
 - Files for Docker apps (`Dockerfile`, `job.toml`, `version.xml`) are app files, signed like any
   other (g).
+- **GPU RAM ceiling, checked 2026-11-11:** `PLAN_CLASS_SPEC::parse` in
+  `sched/plan_class_spec.cpp` at the pinned commit `22bbebe` (`boinc/images/base/Containerfile`)
+  reads `min_gpu_ram_mb` and `gpu_ram_used_mb` but no `max_gpu_ram_mb`, and skips unknown tags
+  without an error, so `<max_gpu_ram_mb>` in stock BOINC caps nothing. The GPU RAM it compares
+  is `min_gpu_ram_mb * MEGA` (`lib/util.h`: 1024 x 1024, so the "MB" is MiB) against the
+  device total (`totalGlobalMem` for CUDA). `boinc/scripts/patch-server-gpu-ram-cap.py` adds
+  `max_gpu_ram_mb` the same way, for `nvidia_vulkan_6gb_8b`.
 
 ## (e) Validation and assimilation
 

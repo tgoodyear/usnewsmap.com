@@ -18,8 +18,13 @@ AMD_GENERAL_MARKER = "usnm-amd-general-admission-v1"
 NVIDIA_GENERAL_MARKER = "usnm-nvidia-general-admission-v1"
 # Classes an operator can open to all of the app's work (native-qwen-cohort.php --general).
 INTEL_GENERAL_MARKER = "usnm-intel-general-admission-v1"
+# nvidia_vulkan_6gb_8b is independent like AMD: it rides on no other class's admission.
+NVIDIA_6GB_GENERAL_MARKER = "usnm-nvidia-6gb-general-admission-v1"
 GENERAL_MARKERS = {"amd_vulkan_8b": AMD_GENERAL_MARKER, "nvidia_vulkan_8b": NVIDIA_GENERAL_MARKER,
-                   "intel_vulkan_8b": INTEL_GENERAL_MARKER}
+                   "intel_vulkan_8b": INTEL_GENERAL_MARKER,
+                   "nvidia_vulkan_6gb_8b": NVIDIA_6GB_GENERAL_MARKER}
+GENERAL_LABELS = {"amd_vulkan_8b": "AMD", "nvidia_vulkan_8b": "NVIDIA", "intel_vulkan_8b": "Intel",
+                  "nvidia_vulkan_6gb_8b": "NVIDIA 6 GB"}
 AMD_FIRST_MARKER = "usnm-amd-first-reservation-v1"
 
 
@@ -50,8 +55,7 @@ def merge_policy(source: bytes, current: bytes) -> bytes:
                        and (node.text or "").strip() == marker]
             if markers:
                 if len(markers) != 1 or any(fields) or name not in reviewed:
-                    label = {"amd_vulkan_8b": "AMD", "intel_vulkan_8b": "Intel"}.get(name, "NVIDIA")
-                    raise ValueError(f"Invalid explicit {label} general admission")
+                    raise ValueError(f"Invalid explicit {GENERAL_LABELS[name]} general admission")
                 for node in list(reviewed[name]):
                     if node.tag in ("min_wu_id", "max_wu_id") or (
                             node.tag is ET.Comment and (node.text or "").strip() == marker):

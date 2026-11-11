@@ -418,6 +418,21 @@ class EligibilityTests(unittest.TestCase):
         db["plans"]["intel"]["gpu_ram_used_mb"] = "1000"
         self.assertEqual(C.supply(db, [h], "gpu"), {"idle": 2, "eligible": 2})
 
+    def test_maximum_gpu_ram_excludes_cards_above_the_ceiling(self):
+        # nvidia_vulkan_6gb_8b's max_gpu_ram_mb, in the scheduler's MiB: a 6 GB card is
+        # eligible and an 8 GB card, which the full 8B class takes, is not.
+        db, h = database(), host()
+        h.update(cpus=2, idle_cpu=2, gpu_devices={"intel_gpu": 1})
+        db["plans"]["intel"].update(min_gpu_ram_mb="5500", max_gpu_ram_mb="6999")
+        for memory, eligible in ((6144 * 1048576, 1), (6999 * 1048576, 1),
+                                 (7000 * 1048576, 0), (8192 * 1048576, 0)):
+            with self.subTest(memory=memory):
+                h["gpu_memory"] = {"intel_gpu": memory}
+                profile = C.host_profile(h, h["versions"][0], db)
+                self.assertEqual(profile is not None, bool(eligible))
+                if eligible:
+                    self.assertEqual(C.supply(db, [h], "gpu"), {"idle": 1, "eligible": 1})
+
     def test_gpu_shortage_uses_resource_eligible_capacity_with_empty_or_plentiful_stock(self):
         db, h = database(), host()
         stock = [dict(db["units"][0], id=i) for i in range(2, 10)]

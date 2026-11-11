@@ -225,6 +225,30 @@ controller owns no window: each tick reports `no-owned-window` and changes nothi
 8 November 2026, after the fresh-pair window had found nothing to open since 4 November and
 Intel's last 104 replicas were 102 valid and 2 inconclusive.
 
+`nvidia_vulkan_6gb_8b` (partial offload for 6 GB NVIDIA cards) takes general admission on its
+own, independent of NVIDIA's and Intel's, as `amd_vulkan_8b` does. Its marker is
+`usnm-nvidia-6gb-general-admission-v1`, and a policy refresh keeps it. Its plan class has
+`<max_gpu_ram_mb>6999</max_gpu_ram_mb>`, one below `nvidia_vulkan_8b`'s 7000 floor, so a card
+the full 8B class admits never gets the 6 GB version. That matters for throughput: on the RTX
+2060 SUPER the Windows 6 GB build read 25 of 25 crops (23 identical to Linux Vulkan, 3
+character edits in 7,217) at a median 24.6 s per crop, against 1.8 s with full offload, about
+13 times slower. Stock BOINC has no `max_gpu_ram_mb` (its plan class parser skips unknown
+tags), so the base image patches the scheduler (`boinc/scripts/patch-server-gpu-ram-cap.py`).
+The helper refuses `--general` for this class unless the live scheduler binary
+(`cgi-bin/cgi` under `--project`) has that patch. Preview, then apply with the preview's
+digest:
+
+```sh
+php boinc/scripts/native-qwen-cohort.php --project /project/usnmocr --plan-class nvidia_vulkan_6gb_8b --general
+php boinc/scripts/native-qwen-cohort.php --project /project/usnmocr --plan-class nvidia_vulkan_6gb_8b --general \
+  --expected-policy-sha256 BEFORE_SHA256 --apply
+```
+
+`--plan-class nvidia_vulkan_6gb_8b --stop --apply` closes it and removes the marker. The
+operator stop, `--stop --keep-general` and every other class's window leave it open. The
+bounded fresh-pair window (`--workunit ID --fresh-pair --admit-until UNIX`) still works, and
+opening one replaces general admission with that window's bounds.
+
 `intel_vulkan_8b`, like `shared_8b`, takes a range of up to ten workunits (`--workunit-end`).
 With both, the automatic refill keeps an Intel-only window beside NVIDIA's general admission
 ([Intel GPU](intel-gpu.md#persistent-finite-nvidiaintel-refill)).
@@ -634,16 +658,15 @@ both became canonical. The release script in the running server image predated #
 the copy from `main` went in with `podman cp`, as described below.
 
 `nvidia_vulkan_6gb_8b` on `windows_x86_64` is built and published the same way, with
-`--plan-class nvidia_vulkan_6gb_8b`. The class has no general admission; its units go out
-only through its own `native-qwen-cohort.php` window ([quality](quality.md), "6 GB
-profile"). The Windows pilot runs first on the same Windows 11 test VM with its 8 GB
-RTX 2060 SUPER. That card also meets `nvidia_vulkan_8b`, which has general admission, so the
-scheduler may send it the full-offload version instead. For each pilot result, check which app
-version it ran (`result.app_version_id`, or the plan class in the client's task list), and
-count only `nvidia_vulkan_6gb_8b` results. A pass on the VM shows that the Windows bundle runs
-the partial-offload path. It doesn't show that a real 6 GB card has the 5,120 MiB free the app
-needs. The Windows helper (`setup_windows_volunteer.ps1`) and the volunteer docs admit 6 GB
-cards only after the pilot.
+`--plan-class nvidia_vulkan_6gb_8b`. The Windows build was checked on the Windows 11 test VM's
+8 GB RTX 2060 SUPER: 25 of 25 crops read, 23 identical to Linux Vulkan, 3 character edits in
+7,217, median 24.6 s per crop against 1.8 s with full offload. That card is above the class's
+`max_gpu_ram_mb` (6999), so once the patched scheduler is live it never gets this version
+again; a later check of the partial-offload path needs a card with 5,500 to 6,999 MB, or a
+build run by hand. The class takes general admission as described above. The Windows helper
+(`setup_windows_volunteer.ps1`) and the volunteer docs admit NVIDIA cards from 5,500 MB and
+say that a 6 GB-class card runs this slower build and needs 5,120 MiB free when a task starts.
+A real 6 GB card having that much free is still unmeasured.
 
 For `usnm_gold` the script also reads `gold-engine-platforms.json` from the running
 `usnm-boinc-server` container. Without a binding for the worker on `--platform` it refuses,

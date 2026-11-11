@@ -12,8 +12,11 @@ joined PC can sit idle for a while. That is normal.
 
 - Windows 11, or Windows 10 22H2 with current updates, on an Intel or AMD
   64-bit PC. Windows on ARM and Windows Server are not supported.
-- For GPU work, an AMD or NVIDIA GPU with at least 7 GB of video memory and a
-  current graphics driver, which provides Vulkan ([AMD](../apps/amd-gpu.md)). No
+- For GPU work, an AMD GPU with at least 7 GB of video memory or an NVIDIA GPU
+  with at least 5.5 GB, and a current graphics driver, which provides Vulkan
+  ([AMD](../apps/amd-gpu.md)). An NVIDIA card under 7 GB (a 6 GB card) runs a
+  slower build that keeps part of the model on the CPU, about 13 times slower per
+  page, and needs 5,120 MiB of video memory free when a task starts. No
   Windows version is currently available for Intel GPUs; they get GPU work on
   Linux ([app versions](../apps/quality.md#app-versions-and-plan-classes)). On a PC
   without an eligible AMD or NVIDIA GPU, add `-AllowCpuOnly` to the preview and apply

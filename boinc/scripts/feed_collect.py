@@ -1374,7 +1374,7 @@ def host_profile(host, version, database):
         raise ValueError("account-gated plan requires evidence")
     known = {"name", "project_prefs_tag", "min_wu_id", "max_wu_id", "min_batch", "max_batch",
              "docker", "gpu_type", "cuda", "opencl", "min_core_client_version",
-             "min_ncpus", "max_threads", "avg_ncpus", "min_gpu_ram_mb",
+             "min_ncpus", "max_threads", "avg_ncpus", "min_gpu_ram_mb", "max_gpu_ram_mb",
              "gpu_ram_used_mb", "ngpus", "min_cuda_version", "min_nvidia_compcap", "min_opencl_version"}
     if set(plan) - known:
         raise ValueError("unsupported scheduler eligibility gate")
@@ -1385,7 +1385,7 @@ def host_profile(host, version, database):
         "min_wu_id", "max_wu_id", "min_batch", "max_batch", "max_threads",
         "min_core_client_version", "min_cuda_version", "min_nvidia_compcap", "min_opencl_version")}
     numbers = {key: float(plan.get(key, "1" if key == "ngpus" else "0")) for key in (
-        "min_ncpus", "avg_ncpus", "min_gpu_ram_mb", "gpu_ram_used_mb", "ngpus")}
+        "min_ncpus", "avg_ncpus", "min_gpu_ram_mb", "max_gpu_ram_mb", "gpu_ram_used_mb", "ngpus")}
     if (any(value < 0 for value in integers.values())
             or any(not math.isfinite(value) or value < 0 for value in numbers.values())):
         raise ValueError("unmodeled scheduler resource policy")
@@ -1432,6 +1432,10 @@ def host_profile(host, version, database):
         if not numbers["avg_ncpus"]:
             raise ValueError("unmodeled GPU CPU demand")
         if numbers["min_gpu_ram_mb"] * 1e6 > host.get("gpu_memory", {}).get(gpu, 0):
+            return None
+        # The patched scheduler's ceiling (patch-server-gpu-ram-cap.py), in BOINC's MEGA (MiB):
+        # nvidia_vulkan_6gb_8b stays off cards the full 8B class admits.
+        if numbers["max_gpu_ram_mb"] and host.get("gpu_memory", {}).get(gpu, 0) > numbers["max_gpu_ram_mb"] * 1048576:
             return None
         if gpu_task_memory(numbers) and (
                 host.get("gpu_devices", {}).get(gpu) != 1

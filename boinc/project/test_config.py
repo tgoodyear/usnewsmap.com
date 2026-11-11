@@ -213,6 +213,26 @@ class DaemonConfig(unittest.TestCase):
             self.assertEqual(small.findtext(tag), value)
         self.assertIsNotNone(small.find("cuda"))
         self.assertIsNone(small.find("docker"))
+        # #1234: partial-offload 8B for 6 GB NVIDIA cards, about 13x slower than full offload,
+        # so it stops below the full 8B class's floor and never reaches a card that can run it.
+        six = plans["nvidia_vulkan_6gb_8b"]
+        full = plans["nvidia_vulkan_8b"]
+        for tag, value in (("gpu_type", "nvidia"), ("ngpus", "1"), ("min_batch", "8"),
+                           ("max_batch", "8"), ("min_gpu_ram_mb", "5500"),
+                           ("max_gpu_ram_mb", "6999"), ("gpu_ram_used_mb", "5500"),
+                           ("avg_ncpus", "2")):
+            self.assertEqual(six.findtext(tag), value)
+        self.assertIsNotNone(six.find("cuda"))
+        self.assertIsNone(six.find("docker"))
+        self.assertEqual(int(six.findtext("max_gpu_ram_mb")) + 1, int(full.findtext("min_gpu_ram_mb")))
+        self.assertIsNone(full.find("max_gpu_ram_mb"))
+        # Only the 6 GB class carries a cap, which the patched scheduler enforces.
+        capped = [name for name, plan in plans.items() if plan.find("max_gpu_ram_mb") is not None]
+        self.assertEqual(capped, ["nvidia_vulkan_6gb_8b"])
+        patch = (root.parent / "scripts/patch-server-gpu-ram-cap.py").read_text()
+        self.assertIn('parse_double("max_gpu_ram_mb", max_gpu_ram_mb)', patch)
+        base = (root.parent / "images/base/Containerfile").read_text()
+        self.assertIn("patch-server-gpu-ram-cap.py --source /usr/local/boinc/sched/plan_class_spec.cpp", base)
 
     def test_high_throughput_scheduler_dispatch_limits(self):
         root = ET.parse(Path(__file__).with_name("config.xml.template"))

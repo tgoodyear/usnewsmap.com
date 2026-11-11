@@ -76,6 +76,7 @@ have() { baz acr repository show --name "$registry" --image "$1:$2" -o none 2> /
 # Keys are git object hashes of the committed tree, so they name exactly what was built.
 base_inputs=(HEAD:boinc/images/base/Containerfile HEAD:boinc/scripts/patch-server-apple-gpu.py
   HEAD:boinc/scripts/patch-server-intel-proc-type.py
+  HEAD:boinc/scripts/patch-server-gpu-ram-cap.py
   HEAD:boinc/scripts/patch-server-stage-work.py
   HEAD:boinc/scripts/test_stage_work.py
   HEAD:boinc/scripts/patch-server-feeder-guard.py HEAD:boinc/scripts/usnm-feeder-guard.h

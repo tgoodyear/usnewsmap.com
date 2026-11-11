@@ -199,8 +199,14 @@
     </plan_class>
     <plan_class>
         <name>nvidia_vulkan_6gb_8b</name>
-        <!-- Separate, closed partial-offload pilot; never relax the full-offload classes.
-             The app requires 5120 MiB free, offloads 24 layers and keeps the projector on CPU. -->
+        <!-- Partial offload for 6 GB NVIDIA cards; never relax the full-offload classes. The app
+             requires 5120 MiB free, offloads 24 layers and keeps the projector on CPU. On an RTX
+             2060 SUPER the Windows build read 25 of 25 crops at a median 24.6 s per crop against
+             1.8 s fully offloaded, so max_gpu_ram_mb stops below nvidia_vulkan_8b's 7000 MB floor:
+             a card that can run the full 8B class never gets this one. The cap needs the patched
+             scheduler (boinc/scripts/patch-server-gpu-ram-cap.py); stock BOINC skips the tag.
+             Closed on installation; an operator opens it to all work with the cohort helper's
+             general admission, or one fresh pair at a time (docs/boinc/apps/app-release.md). -->
         <min_wu_id>2</min_wu_id>
         <max_wu_id>1</max_wu_id>
         <gpu_type>nvidia</gpu_type>
@@ -208,6 +214,7 @@
         <!-- Native execution on 8.2.9 was qualified for this profile in #1234. -->
         <min_core_client_version>80209</min_core_client_version>
         <min_gpu_ram_mb>5500</min_gpu_ram_mb>
+        <max_gpu_ram_mb>6999</max_gpu_ram_mb>
         <gpu_ram_used_mb>5500</gpu_ram_used_mb>
         <ngpus>1</ngpus>
         <min_batch>8</min_batch>

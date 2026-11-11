@@ -1,3 +1,4 @@
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -509,6 +510,129 @@ foreach ([["batch"=>8,"rsc_disk_bound"=>19327352832], ["batch"=>8], ["rsc_disk_b
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(self.target.read_bytes(), original)
                 self.assertFalse((self.root / ".native-qwen-cohort.lock").exists())
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_six_gb_general_admission_needs_capped_scheduler_survives_restart_and_stop_closes_it(self):
+        (self.root / "config.xml").write_text("<boinc/>")
+        helper = ROOT / "boinc/scripts/native-qwen-cohort.php"
+        base = ["php", str(helper), "--project", str(self.root)]
+        command = base + ["--plan-class", "nvidia_vulkan_6gb_8b", "--general"]
+        bounds = lambda node: (node.findtext("min_wu_id"), node.findtext("max_wu_id"))
+        original = self.target.read_bytes()
+        # Stock BOINC skips <max_gpu_ram_mb>: without the patched scheduler binary nothing opens.
+        (self.root / "cgi-bin").mkdir()
+        for scheduler in (None, b"stock scheduler without the cap"):
+            with self.subTest(scheduler=scheduler):
+                if scheduler is not None:
+                    (self.root / "cgi-bin/cgi").write_bytes(scheduler)
+                refused = subprocess.run(command + ["--apply"], text=True, capture_output=True)
+                self.assertNotEqual(refused.returncode, 0)
+                self.assertIn("max_gpu_ram_mb", refused.stderr)
+                self.assertEqual(self.target.read_bytes(), original)
+                self.assertFalse((self.root / "ops-issue-559").exists())
+        (self.root / "cgi-bin/cgi").write_bytes(b"\0parse_double max_gpu_ram_mb\0")
+        # Preview first; its digest guards the apply.
+        preview = json.loads(subprocess.run(command, text=True, capture_output=True, check=True).stdout)
+        self.assertEqual(preview["admission_mode"], "general")
+        self.assertEqual(preview["general_admission"], ["nvidia_vulkan_6gb_8b"])
+        self.assertEqual(self.target.read_bytes(), original)
+        stale = subprocess.run(command + ["--expected-policy-sha256", "0" * 64, "--apply"],
+                               text=True, capture_output=True)
+        self.assertIn("Policy changed since reviewed preview", stale.stderr)
+        subprocess.run(command + ["--expected-policy-sha256", preview["before_sha256"], "--apply"],
+                       text=True, capture_output=True, check=True)
+        opened = self.target.read_bytes()
+        self.assertEqual(hashlib.sha256(opened).hexdigest(), preview["after_sha256"])
+        _, old = POLICY.parse_policy(original)
+        _, new = POLICY.parse_policy(opened)
+        def fields(node):
+            return [(c.tag, (c.text or "").strip()) for c in node if isinstance(c.tag, str)]
+        for name, node in old.items():
+            if name != "nvidia_vulkan_6gb_8b":
+                self.assertEqual(fields(node), fields(new[name]), name)
+        small = new["nvidia_vulkan_6gb_8b"]
+        self.assertEqual(fields(small), [f for f in fields(old["nvidia_vulkan_6gb_8b"])
+                                         if f[0] not in ("min_wu_id", "max_wu_id")])
+        self.assertEqual((small.findtext("min_gpu_ram_mb"), small.findtext("max_gpu_ram_mb")), ("5500", "6999"))
+        self.assertIn(POLICY.NVIDIA_6GB_GENERAL_MARKER, opened.decode())
+        # Idempotent, and a restart keeps it exactly as it keeps the other general admissions.
+        subprocess.run(command + ["--apply"], text=True, capture_output=True, check=True)
+        self.assertEqual(self.target.read_bytes(), opened)
+        POLICY.refresh(self.source, self.target)
+        self.assertFalse(POLICY.refresh(self.source, self.target))
+        _, restarted = POLICY.parse_policy(self.target.read_bytes())
+        self.assertEqual(bounds(restarted["nvidia_vulkan_6gb_8b"]), (None, None))
+        self.assertEqual(fields(restarted["nvidia_vulkan_6gb_8b"]), fields(small))
+        self.assertIn(POLICY.NVIDIA_6GB_GENERAL_MARKER, self.target.read_text())
+        # Independent of NVIDIA's: other classes' windows, NVIDIA general admission and the default
+        # operator stop all leave it open.
+        for step in (["--plan-class", "shared_8b", "--workunit", "200", "--workunit-end", "209"],
+                     ["--plan-class", "nvidia_vulkan_8b", "--general"], ["--stop"],
+                     ["--plan-class", "nvidia_vulkan_8b", "--stop"]):
+            with self.subTest(step=step):
+                xml = self.target.read_text()
+                php = f"require {json.dumps(str(helper))}; echo " + (
+                    f"native_qwen_general_xml({json.dumps(xml)}, 'nvidia_vulkan_8b');" if "--general" in step
+                    else f"native_qwen_cohort_xml({json.dumps(xml)}, "
+                         + (f"'shared_8b', 200, 209);" if "shared_8b" in step
+                            else f"{json.dumps(step[1]) if len(step) > 1 else json.dumps('nvidia_cuda_2b')}, 0);"))
+                self.target.write_text(subprocess.run(["php", "-r", php], text=True, capture_output=True,
+                                                      check=True).stdout)
+                POLICY.refresh(self.source, self.target)
+                node = ET.parse(self.target).find("plan_class[name='nvidia_vulkan_6gb_8b']")
+                self.assertEqual(bounds(node), (None, None))
+                self.assertIn(POLICY.NVIDIA_6GB_GENERAL_MARKER, self.target.read_text())
+        # Its own stop closes it, and a restart keeps it closed.
+        subprocess.run(base + ["--plan-class", "nvidia_vulkan_6gb_8b", "--stop", "--apply"],
+                       text=True, capture_output=True, check=True)
+        POLICY.refresh(self.source, self.target)
+        node = ET.parse(self.target).find("plan_class[name='nvidia_vulkan_6gb_8b']")
+        self.assertEqual(bounds(node), ("2", "1"))
+        self.assertNotIn(POLICY.NVIDIA_6GB_GENERAL_MARKER, self.target.read_text())
+        self.assertFalse(POLICY.refresh(self.source, self.target))
+        # --keep-general stays NVIDIA/Intel-only.
+        refused = subprocess.run(base + ["--plan-class", "nvidia_vulkan_6gb_8b", "--stop", "--keep-general"],
+                                 text=True, capture_output=True)
+        self.assertIn("usage:", refused.stderr)
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_six_gb_general_promotes_only_from_closed_or_one_workunit(self):
+        helper = ROOT / "boinc/scripts/native-qwen-cohort.php"
+        def general(low, high):
+            root = ET.fromstring(self.source.read_bytes())
+            node = root.find("plan_class[name='nvidia_vulkan_6gb_8b']")
+            node.find("min_wu_id").text, node.find("max_wu_id").text = low, high
+            return subprocess.run(["php", "-r", f"require {json.dumps(str(helper))}; echo native_qwen_general_xml("
+                                   + json.dumps(ET.tostring(root, encoding="unicode"))
+                                   + ", 'nvidia_vulkan_6gb_8b');"], text=True, capture_output=True)
+        for low, high in (("2", "1"), ("300", "300")):
+            with self.subTest(bounds=(low, high)):
+                result = general(low, high)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn(POLICY.NVIDIA_6GB_GENERAL_MARKER, result.stdout)
+        for low, high in (("300", "301"), ("1", "1"), ("0", "0")):
+            with self.subTest(bounds=(low, high)):
+                self.assertIn("Invalid nvidia_vulkan_6gb_8b admission state", general(low, high).stdout
+                              + general(low, high).stderr)
+
+    def test_six_gb_general_marker_malformed_states_fail_closed(self):
+        for count, bounds in ((1, ("2", "1")), (2, None), (1, ("300", None))):
+            with self.subTest(markers=count, bounds=bounds):
+                root = ET.fromstring(self.source.read_bytes())
+                node = root.find("plan_class[name='nvidia_vulkan_6gb_8b']")
+                for tag in ("min_wu_id", "max_wu_id"):
+                    node.remove(node.find(tag))
+                for _ in range(count):
+                    node.append(ET.Comment(POLICY.NVIDIA_6GB_GENERAL_MARKER))
+                if bounds:
+                    for tag, value in zip(("min_wu_id", "max_wu_id"), bounds):
+                        if value is not None:
+                            ET.SubElement(node, tag).text = value
+                self.target.write_bytes(ET.tostring(root))
+                before = self.target.read_bytes()
+                with self.assertRaisesRegex(ValueError, "explicit NVIDIA 6 GB general"):
+                    POLICY.refresh(self.source, self.target)
+                self.assertEqual(self.target.read_bytes(), before)
 
     def test_failed_replace_retains_original_and_cleans_only_owned_staging(self):
         before = self.target.read_bytes()

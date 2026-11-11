@@ -18,11 +18,25 @@ const AMD_GENERAL_MARKER = "usnm-amd-general-admission-v1";
 // window found none to open after 4 November while Intel's last 104 replicas were 102 valid.
 const NVIDIA_GENERAL_MARKER = "usnm-nvidia-general-admission-v1";
 const INTEL_GENERAL_MARKER = "usnm-intel-general-admission-v1";
+// nvidia_vulkan_6gb_8b (partial offload for 6 GB NVIDIA cards) is independent like AMD. Its
+// max_gpu_ram_mb keeps it off cards nvidia_vulkan_8b admits, which needs the patched scheduler
+// (boinc/scripts/patch-server-gpu-ram-cap.py): stock BOINC skips the tag and caps nothing.
+const NVIDIA_6GB_GENERAL_MARKER = "usnm-nvidia-6gb-general-admission-v1";
 const GENERAL_MARKERS = [
     "amd_vulkan_8b" => AMD_GENERAL_MARKER,
     "nvidia_vulkan_8b" => NVIDIA_GENERAL_MARKER,
     "intel_vulkan_8b" => INTEL_GENERAL_MARKER,
+    "nvidia_vulkan_6gb_8b" => NVIDIA_6GB_GENERAL_MARKER,
 ];
+
+// The live scheduler binary must parse max_gpu_ram_mb before the 6 GB class opens generally.
+function native_qwen_gpu_ram_cap_guard($project) {
+    $cgi = "$project/cgi-bin/cgi";
+    $binary = is_file($cgi) && !is_link($cgi) ? file_get_contents($cgi) : false;
+    if ($binary === false || strpos($binary, "max_gpu_ram_mb") === false) {
+        throw new RuntimeException("The scheduler at $cgi does not support max_gpu_ram_mb: deploy the patched base image first");
+    }
+}
 
 function native_qwen_general_xml($xml, $plan_class = "amd_vulkan_8b") {
     if (!isset(GENERAL_MARKERS[$plan_class])) throw new RuntimeException("No general admission for $plan_class");
@@ -46,8 +60,8 @@ function native_qwen_general_xml($xml, $plan_class = "amd_vulkan_8b") {
         || !preg_match('/^[1-9][0-9]*$/D', $low->item(0)->nodeValue)
         || !preg_match('/^[1-9][0-9]*$/D', $high->item(0)->nodeValue)
         || !(($low->item(0)->nodeValue === "2" && $high->item(0)->nodeValue === "1")
-            || (intval($low->item(0)->nodeValue) > 1 && ($plan_class === "amd_vulkan_8b"
-                // AMD's window is one workunit; NVIDIA's can be a shared_8b range (up to ten).
+            || (intval($low->item(0)->nodeValue) > 1 && (in_array($plan_class, INDEPENDENT_QWEN_CLASSES, true)
+                // AMD's and 6 GB's windows are one workunit; NVIDIA's can be a shared_8b range (up to ten).
                 ? $low->item(0)->nodeValue === $high->item(0)->nodeValue
                 : intval($high->item(0)->nodeValue) >= intval($low->item(0)->nodeValue)
                     && intval($high->item(0)->nodeValue) - intval($low->item(0)->nodeValue) < 10)))) {
@@ -109,8 +123,8 @@ function native_qwen_cohort_xml($xml, $plan_class, $workunit_id, $last_id = null
                 }
                 // A window for another class leaves this one generally admitted, as does
                 // --stop --keep-general; --stop, or a window for this class itself, replaces
-                // general admission with bounds.
-                if ($name !== "amd_vulkan_8b" && (($workunit_id > 1 && !$open_here) || $keep_general)) continue;
+                // general admission with bounds. Independent classes are only in their own scope.
+                if (!in_array($name, INDEPENDENT_QWEN_CLASSES, true) && (($workunit_id > 1 && !$open_here) || $keep_general)) continue;
                 $node->removeChild($markers->item(0));
                 $node->appendChild($doc->createElement("min_wu_id"));
                 $node->appendChild($doc->createElement("max_wu_id"));
@@ -355,6 +369,7 @@ function native_qwen_cohort_write($project, $plan_class, $workunit_id, $apply, $
         }
         if ($publication_guard !== null) $unlock_database = $publication_guard();
         if ($revalidate !== null) $revalidate();
+        if ($general && $plan_class === "nvidia_vulkan_6gb_8b") native_qwen_gpu_ram_cap_guard($project);
         // Lock waits/DB revalidation can cross an automatic admission deadline; closing stays allowed.
         $admission_expired = function() use ($admit_until, $workunit_id) {
             if ($admit_until !== null && $workunit_id > 1 && time() >= $admit_until) {
@@ -454,10 +469,11 @@ function native_qwen_cohort_main() {
             || !isset($options["workunit"]) || isset($options["workunit-end"])))
         || ($fresh_pair && ($stop || $general || $ordinary_canary || $tiebreaker
             || !in_array($plan_class, array_merge(TIEBREAKER_QWEN_CLASSES, ["nvidia_vulkan_6gb_8b"]), true)))
-        || (!$stop && $plan_class === "nvidia_vulkan_6gb_8b" && (!$fresh_pair || $admit_until === null))
+        // A bounded 6 GB window is a fresh pair with a deadline; --general opens it to all work.
+        || (!$stop && !$general && $plan_class === "nvidia_vulkan_6gb_8b" && (!$fresh_pair || $admit_until === null))
         || ($expected_sha256 !== null && !preg_match('/^[a-f0-9]{64}$/D', $expected_sha256))
         || ($admit_until !== null && ($stop || $general || !preg_match('/^[1-9][0-9]*$/D', $admit_until)))) {
-        throw new RuntimeException("usage: --project PATH [--db-project PATH] [--stop [--keep-general] | --plan-class amd_vulkan_8b|nvidia_vulkan_8b|intel_vulkan_8b --general | --plan-class amd_vulkan_8b --ordinary-canary --workunit ID | --plan-class intel_vulkan_8b|nvidia_vulkan_8b|shared_8b --tiebreaker --workunit ID | --plan-class ".implode("|", NATIVE_QWEN_CLASSES)."|shared_8b --workunit ID [--workunit-end ID (".implode("|", RANGE_QWEN_CLASSES).")]] [--fresh-pair] [--expected-policy-sha256 SHA256] [--admit-until UNIX] [--apply]");
+        throw new RuntimeException("usage: --project PATH [--db-project PATH] [--stop [--keep-general] | --plan-class ".implode("|", array_keys(GENERAL_MARKERS))." --general | --plan-class amd_vulkan_8b --ordinary-canary --workunit ID | --plan-class intel_vulkan_8b|nvidia_vulkan_8b|shared_8b --tiebreaker --workunit ID | --plan-class ".implode("|", NATIVE_QWEN_CLASSES)."|shared_8b --workunit ID [--workunit-end ID (".implode("|", RANGE_QWEN_CLASSES).")]] [--fresh-pair] [--expected-policy-sha256 SHA256] [--admit-until UNIX] [--apply]");
     }
     $id = ($stop || $general) ? 0 : intval($options["workunit"]);
     $last_id = isset($options["workunit-end"]) ? intval($options["workunit-end"]) : $id;
