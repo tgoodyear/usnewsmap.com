@@ -31,6 +31,9 @@ IMAGE = "localhost/usnm-boinc-bridge:4b7405f115cc"
 MYSQL_TAG = "docker.io/library/mysql:8.4"
 PINNED = "sha256:" + "a" * 64
 MOVED = "sha256:" + "b" * 64
+# What the pinned image and the tag report as MYSQL_VERSION: Oracle rebuilt 8.4 under a new digest
+# without a new release (the pin 76f03588..., the tag a81d0439..., both 8.4.13-1.el9).
+MYSQL_VERSION = "8.4.13-1.el9"
 
 # apt-get -s -q upgrade, as apt 2.6 prints it on bookworm, now oldstable (Inst lines copied from a
 # run against the archive on 24 October 2026). Only the Inst lines matter.
@@ -92,8 +95,22 @@ case "$1" in
     exec sh -c "$3" ;;
   pull) [ ! -e "$STUB_DIR/pull-fails" ] || exit 125 ;;
   image) [ "$2" = inspect ] || exit 125
-         [ ! -e "$STUB_DIR/inspect-fails" ] || { echo "Error: no such image" >&2; exit 125; }
-         cat "$STUB_DIR/mysql-digest" ;;
+         case "$*" in
+           # The image's environment: the pinned image is named by its digest, the tag by its tag.
+           *Config.Env*)
+             [ ! -e "$STUB_DIR/env-inspect-fails" ] || { echo "Error: no such image" >&2; exit 125; }
+             case "$3" in
+               *@sha256:*) which=pinned ;;
+               *) which=tag ;;
+             esac
+             echo "$3" >> "$STUB_DIR/env-inspected"
+             [ ! -e "$STUB_DIR/env-inspect-fails-$which" ] || { echo "Error: no such image" >&2; exit 125; }
+             echo "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+             [ ! -e "$STUB_DIR/mysql-version-$which" ] || echo "MYSQL_VERSION=$(cat "$STUB_DIR/mysql-version-$which")"
+             echo "MYSQL_SHELL_VERSION=8.4.13-1.el9" ;;
+           *) [ ! -e "$STUB_DIR/inspect-fails" ] || { echo "Error: no such image" >&2; exit 125; }
+              cat "$STUB_DIR/mysql-digest" ;;
+         esac ;;
   *) exit 125 ;;
 esac
 """,
@@ -116,7 +133,8 @@ class ImageSecurityCheck(unittest.TestCase):
         self.server_env.write_text(f"SERVER_IMAGE={IMAGE}\n")
         self.mysql_unit = self.tmp / "usnm-boinc-mysql.service"
         self.set_mysql_unit(PINNED)
-        self.state(simulation=SIM_NONE, policy=POLICY, mysql_digest=PINNED)
+        self.state(simulation=SIM_NONE, policy=POLICY, mysql_digest=PINNED,
+                   mysql_version_pinned=MYSQL_VERSION, mysql_version_tag=MYSQL_VERSION)
         self.installed(php=PHP_FLOOR, apache=APACHE_FLOOR)
         self.bash = shutil.which("bash")
 
@@ -124,7 +142,8 @@ class ImageSecurityCheck(unittest.TestCase):
         self._tmp.cleanup()
 
     def state(self, **files):
-        """What the stubs answer: simulation (apt-get -s upgrade), policy (apt-cache policy), mysql_digest."""
+        """What the stubs answer: simulation (apt-get -s upgrade), policy (apt-cache policy), mysql_digest,
+        and mysql_version_pinned and mysql_version_tag (the MYSQL_VERSION of the pinned image and of the tag)."""
         for name, text in files.items():
             (self.stub_dir / name.replace("_", "-")).write_text(text if text.endswith("\n") else text + "\n")
 
@@ -332,12 +351,125 @@ class ImageSecurityCheck(unittest.TestCase):
         self.assertEqual((self.stub_dir / "ran-image").read_text().strip(), "localhost/usnm-boinc-bridge:next")
 
     # MySQL.
-    def test_a_moved_mysql_tag_is_reported_not_rolled(self):
-        self.state(mysql_digest=MOVED)
+    def test_a_tag_moved_to_a_new_mysql_version_is_reported_not_rolled(self):
+        self.state(mysql_digest=MOVED, mysql_version_tag="8.4.14-1.el9")
         done = self.run_check()
         self.assertEqual(done.returncode, 1)
-        self.assertIn(f"MYSQL-DRIFT {MYSQL_TAG} is {MOVED} now; the unit runs {PINNED}", done.stdout)
+        self.assertIn(f"MYSQL-DRIFT {MYSQL_TAG} is {MOVED} now (MySQL 8.4.14-1.el9); "
+                      f"the unit runs {PINNED} (MySQL {MYSQL_VERSION})", done.stdout)
+        self.assertNotIn("MYSQL-REBUILD", done.stdout)
         self.assertEqual(self.podman_subcommands(), {"run", "pull", "image"})
+
+    def test_a_same_version_rebuild_of_the_tag_is_information_not_a_failure(self):
+        self.state(mysql_digest=MOVED)
+        done = self.run_check()
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertIn(f"MYSQL-REBUILD {MYSQL_TAG} is {MOVED} now, a rebuild of MySQL {MYSQL_VERSION}; "
+                      f"the unit runs {PINNED}, the same version (informational)", done.stdout)
+        self.assertNotIn("MYSQL-DRIFT", done.stdout)
+        self.assertNotIn("FAILED", done.stdout)
+        self.assertIn("OK:", done.stdout)
+        self.assertEqual(self.podman_subcommands(), {"run", "pull", "image"})
+
+    def test_the_pinned_image_is_read_by_its_digest_and_the_tag_by_its_tag(self):
+        self.state(mysql_digest=MOVED)
+        self.assertEqual(self.run_check().returncode, 0)
+        self.assertEqual((self.stub_dir / "env-inspected").read_text().split(),
+                         [f"docker.io/library/mysql@{PINNED}", MYSQL_TAG])
+
+    def test_a_current_pin_needs_no_version_to_pass(self):
+        # Same digest, so the same image: the versions are never asked of the tag.
+        done = self.run_check()
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertEqual((self.stub_dir / "env-inspected").read_text().split(), [f"docker.io/library/mysql@{PINNED}"])
+
+    def test_a_rebuild_whose_version_can_not_be_read_is_still_drift(self):
+        # Nothing shows the rebuild is the same release, so it fails as before, and says why.
+        cases = [
+            ("the tag has no MYSQL_VERSION", {"mysql_version_tag": MYSQL_VERSION}, "mysql-version-tag"),
+            ("the pinned image has no MYSQL_VERSION", {}, "mysql-version-pinned"),
+            ("the tag can't be inspected", {}, "env-inspect-fails-tag"),
+            ("the pinned image can't be inspected", {}, "env-inspect-fails-pinned"),
+        ]
+        for name, state, breaks in cases:
+            with self.subTest(name):
+                self.state(mysql_digest=MOVED, **state)
+                for leftover in self.stub_dir.glob("env-inspect-fails*"):
+                    leftover.unlink()
+                if breaks.startswith("env-inspect-fails"):
+                    (self.stub_dir / breaks).write_text("")
+                else:
+                    (self.stub_dir / breaks).unlink()
+                done = self.run_check()
+                self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+                self.assertIn("MYSQL-DRIFT", done.stdout)
+                self.assertIn("unknown", done.stdout)
+                self.assertNotIn("MYSQL-REBUILD", done.stdout)
+                self.state(mysql_version_pinned=MYSQL_VERSION, mysql_version_tag=MYSQL_VERSION)
+
+    def test_a_different_mysql_version_string_is_a_different_version(self):
+        # A packaging revision is a different build of MySQL: only an exact match is a rebuild.
+        self.state(mysql_digest=MOVED, mysql_version_tag="8.4.13-2.el9")
+        done = self.run_check()
+        self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+        self.assertIn("MYSQL-DRIFT", done.stdout)
+
+    def test_only_the_mysql_version_variable_is_the_version(self):
+        # MYSQL_SHELL_VERSION is in the stub's environment too, and must not stand in for it.
+        self.state(mysql_digest=MOVED)
+        (self.stub_dir / "mysql-version-tag").unlink()
+        self.assertEqual(self.run_check().returncode, 1)
+
+    # --mysql-floor: a security advisory's fixed version.
+    def test_a_pin_older_than_the_floor_fails_even_when_the_digest_is_current(self):
+        done = self.run_check("--mysql-floor", "8.4.14-1.el9")
+        self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+        self.assertIn(f"MYSQL-BELOW-FLOOR the unit runs MySQL {MYSQL_VERSION} ({PINNED}), "
+                      "older than the floor 8.4.14-1.el9", done.stdout)
+        self.assertIn("FAILED: 1 finding(s)", done.stdout)
+
+    def test_a_rebuild_does_not_clear_a_floor_the_pin_is_below(self):
+        self.state(mysql_digest=MOVED)
+        done = self.run_check("--mysql-floor", "8.4.14-1.el9")
+        self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+        self.assertIn("MYSQL-BELOW-FLOOR", done.stdout)
+        self.assertIn("MYSQL-REBUILD", done.stdout)
+        self.assertIn("FAILED: 1 finding(s)", done.stdout)
+
+    def test_a_new_version_in_the_tag_with_a_floor_is_one_finding_for_the_pin_and_one_for_the_move(self):
+        self.state(mysql_digest=MOVED, mysql_version_tag="8.4.14-1.el9")
+        done = self.run_check("--mysql-floor", "8.4.14-1.el9")
+        self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+        self.assertIn("MYSQL-BELOW-FLOOR", done.stdout)
+        self.assertIn("MYSQL-DRIFT", done.stdout)
+        self.assertIn("FAILED: 2 finding(s)", done.stdout)
+
+    def test_a_pin_at_or_past_the_floor_passes(self):
+        # Versions are compared as numbers (8.4.9 is older than 8.4.13), not as text.
+        for floor in (MYSQL_VERSION, "8.4.9-1.el9", "8.0.40-1.el9", "8.4.13"):
+            with self.subTest(floor=floor):
+                self.state(mysql_digest=MOVED)
+                done = self.run_check("--mysql-floor", floor)
+                self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+                self.assertNotIn("BELOW-FLOOR", done.stdout)
+                self.assertIn("MYSQL-REBUILD", done.stdout)
+
+    def test_a_floor_the_pinned_version_cannot_be_compared_with_is_not_a_clean_run(self):
+        (self.stub_dir / "mysql-version-pinned").unlink()
+        done = self.run_check("--mysql-floor", MYSQL_VERSION)
+        self.assertEqual(done.returncode, 3, done.stdout + done.stderr)
+        self.assertIn("COULD-NOT-CHECK no MYSQL_VERSION for the pinned image", done.stdout)
+
+    def test_without_a_floor_the_pinned_version_is_not_judged(self):
+        self.state(mysql_version_pinned="5.7.1")
+        done = self.run_check()
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertNotIn("FLOOR", done.stdout)
+
+    def test_skip_mysql_ignores_the_floor(self):
+        done = self.run_check("--skip-mysql", "--mysql-floor", "9.9.9")
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertEqual(self.podman_subcommands(), {"run"})
 
     def test_a_unit_without_a_digest_is_not_a_clean_run(self):
         self.mysql_unit.write_text("[Service]\nExecStart=/usr/bin/podman run docker.io/library/mysql:8.4\n")
@@ -393,10 +525,14 @@ class ImageSecurityCheck(unittest.TestCase):
                 self.assertIn(f"MySQL {image} is still {PINNED}", done.stdout)
                 self.assertIn(f"podman pull -q {image}", self.calls())
 
-                self.state(mysql_digest=MOVED)
+                self.state(mysql_digest=MOVED, mysql_version_tag="8.4.14-1.el9")
                 done = self.run_check("--mysql-image", image)
                 self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
-                self.assertIn(f"MYSQL-DRIFT {image} is {MOVED} now; the unit runs {PINNED}", done.stdout)
+                self.assertIn(f"MYSQL-DRIFT {image} is {MOVED} now (MySQL 8.4.14-1.el9); the unit runs {PINNED}", done.stdout)
+                self.assertIn(f"@{PINNED}", (self.stub_dir / "env-inspected").read_text())
+                self.assertIn(f"{name}@{PINNED}", (self.stub_dir / "env-inspected").read_text())
+                (self.stub_dir / "env-inspected").unlink()
+                self.state(mysql_version_tag=MYSQL_VERSION)
 
     def test_a_mysql_image_without_a_tag_or_with_a_digest_is_refused(self):
         # The drift check compares what podman pull gives for the tag with the unit's pin. With a
@@ -461,7 +597,7 @@ class ImageSecurityCheck(unittest.TestCase):
         self.assertEqual(self.podman_subcommands(), {"run"})
 
     def test_package_findings_and_mysql_drift_are_counted_together(self):
-        self.state(simulation=SIM_HEAD + SECURITY_INST + SIM_SUMMARY, mysql_digest=MOVED)
+        self.state(simulation=SIM_HEAD + SECURITY_INST + SIM_SUMMARY, mysql_digest=MOVED, mysql_version_tag="8.4.14-1.el9")
         done = self.run_check()
         self.assertEqual(done.returncode, 1)
         self.assertIn("FAILED: 2 finding(s)", done.stdout)
@@ -480,6 +616,9 @@ class ImageSecurityCheck(unittest.TestCase):
             (["--php-floor", PHP_FLOOR, "--apache-floor", "$(id)"], "--apache-floor: a Debian version"),
             (good + ["--image", "a b"], "--image: an image name"),
             (good + ["--mysql-image", "x;y"], "--mysql-image: an image name"),
+            (good + ["--mysql-floor", "8.4;id"], "--mysql-floor: a MySQL version"),
+            (good + ["--mysql-floor", "latest"], "--mysql-floor: a MySQL version"),
+            (good + ["--mysql-floor"], "--mysql-floor needs a value"),
         ]
         for args, message in cases:
             with self.subTest(args=args):
@@ -493,6 +632,8 @@ class ImageSecurityCheck(unittest.TestCase):
         self.assertEqual(done.returncode, 2)
         self.assertIn("--php-floor VERSION --apache-floor VERSION", done.stderr)
         self.assertIn("--mysql-image must be a name with a tag", done.stderr)
+        self.assertIn("--mysql-floor VERSION", done.stderr)
+        self.assertIn("MYSQL-REBUILD", done.stderr)
 
 
 class Units(unittest.TestCase):
