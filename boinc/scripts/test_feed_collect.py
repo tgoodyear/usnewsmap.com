@@ -2263,8 +2263,8 @@ class DbBackupTests(unittest.TestCase):
 echo x >> %s
 case "$*" in
   *--dirs-only*) echo 'c09909ee-ccf7-11f1-9d4c-8a409c169b6c/'; echo 'not-a-uuid/' ;;
-  *r2:bucket/dump/*) echo '%s;2026/20261111T082000Z.json'; echo '%s;2026/20261111T082000Z.sql.gz'; echo '%s;2099/evil.json' ;;
-  *r2:bucket/binlog/*) echo '%s;binlog.000041.gz'; echo '%s;binlog.000042.gz'; echo '%s;binlog.1+a[x].gz' ;;
+  *--use-server-modtime*r2:bucket/dump/*) echo '%s;2026/20261111T082000Z.json'; echo '%s;2026/20261111T082000Z.sql.gz'; echo '%s;2099/evil.json' ;;
+  *--use-server-modtime*r2:bucket/binlog/*) echo '%s;binlog.000041.gz'; echo '%s;binlog.000042.gz'; echo '%s;binlog.1+a[x].gz' ;;
 esac
 """ % (calls, *(stamp(t) for t in (NOW - 7200, NOW - 7000, NOW + 99999, NOW - 900, NOW - 120, NOW + 99999))))
             rclone.chmod(0o755)

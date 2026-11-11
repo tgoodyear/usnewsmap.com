@@ -102,6 +102,8 @@ DBBACKUP_FAILURES = (
 )
 # The R2 listing is cached this long, so a source run each minute lists the bucket every five.
 R2_CHECK_EVERY_S = 300
+# About 9,000 binlogs at 32 days' retention: a listing of 10 pages.
+R2_LIST_TIMEOUT = 30
 # An R2 observation older than this is not evidence.
 R2_MAX_AGE_S = 900
 DUMP_KEY = re.compile(r"dump/[0-9]{4}/[0-9]{8}T[0-9]{6}Z\.json")
@@ -1677,13 +1679,14 @@ def r2_listing(rclone, bucket, r2_env, now):
            "RCLONE_CONFIG_R2_ENDPOINT": values["R2_ENDPOINT"]}
 
     def newest(prefix, pattern, recursive):
-        # A Go time layout with its offset: rclone 1.68 has no "unix" name for it.
-        argv = [str(rclone), "--config", "/dev/null", "lsf", "--files-only", "--format", "tp",
+        # A Go time layout with its offset: rclone 1.68 has no "unix" name for it. The upload time
+        # from the listing itself (--use-server-modtime), not a HEAD request per object.
+        argv = [str(rclone), "--config", "/dev/null", "lsf", "--files-only", "--format", "tp", "--use-server-modtime",
                 "--time-format", "2006-01-02T15:04:05Z07:00"] + (["-R"] if recursive else []) + [
                     "r2:%s/%s" % (bucket, prefix)]
         with stage("r2_unavailable"):
             # rclone exits 3 for a prefix with nothing under it yet.
-            output = run(argv, env=env, exits=(0, 3)).decode()
+            output = run(argv, env=env, exits=(0, 3), timeout=R2_LIST_TIMEOUT).decode()
         times = []
         for line in output.splitlines():
             stamp, _, name = line.partition(";")

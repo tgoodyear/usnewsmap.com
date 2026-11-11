@@ -385,8 +385,12 @@ def db_checks(check, parts, now):
             check(code, None)
         return
     replica = parts["replica"]
+    lag = replica.get("lag_s")
     if "error" in replica:
         check("db_replica", None, reason=replica["error"])
+    elif lag is not None and lag > REPLICA_LAG_S:
+        # Lag already over the limit fires at once, whatever the threads do now.
+        check("db_replica", True, generation="lag", reason="replica_lag", seconds=lag)
     elif not replica["io_running"]:
         check("db_replica", True, REPLICA_STOPPED_HOLD_S, generation="io", reason="replica_io_stopped",
               seconds=replica["lag_s"])
@@ -396,9 +400,7 @@ def db_checks(check, parts, now):
     elif replica["lag_s"] is None:
         check("db_replica", None, reason="replica_lag_unknown")
     else:
-        lagging = replica["lag_s"] > REPLICA_LAG_S
-        check("db_replica", lagging, generation="lag", reason="replica_lag" if lagging else None,
-              seconds=replica["lag_s"])
+        check("db_replica", False, generation="lag", seconds=lag)
     r2 = parts["r2"]
     for code, field, limit, name in (("db_dump", "newest_dump_at", DUMP_MAX_AGE_S, "dump"),
                                      ("db_binlog", "newest_binlog_at", BINLOG_MAX_AGE_S, "binlog")):

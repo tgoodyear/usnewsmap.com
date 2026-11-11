@@ -724,6 +724,10 @@ class DatabaseBackupTest(unittest.TestCase):
         self.assertEqual(self.tick(360)["db_replica"]["state"], "pending")
         self.facts["dbbackup"]["replica"]["sql_running"] = True
         self.assertEqual(self.tick(420)["db_replica"]["state"], "healthy")
+        # Lag over the limit fires at once, even with a thread stopped.
+        self.facts["dbbackup"]["replica"].update(io_running=False, lag_s=301)
+        self.assertEqual((self.tick(480)["db_replica"]["state"], self.tick(540)["db_replica"]["reason"]),
+                         ("firing", "replica_lag"))
 
     def test_each_age_and_lag_limit(self):
         db = self.facts["dbbackup"]

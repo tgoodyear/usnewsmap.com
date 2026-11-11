@@ -52,10 +52,21 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 pin() { sed -n "s/^$1=//p" "$HERE/install.sh"; }
 RV=$(pin RCLONE_VERSION) RS=$(pin RCLONE_SHA256)
 in_ct() { pct exec "$CTID" -- env -u XDG_RUNTIME_DIR LANG=C.UTF-8 LC_ALL=C.UTF-8 "$@"; }
-w=$(mktemp -d); trap 'rm -rf "$w"' EXIT
+w=$(mktemp -d)
+recorded=false
+finish() {
+  local status=$?
+  $recorded || record false
+  [ "${1:-}" != teardown ] || teardown
+  rm -rf "$w"
+  exit "$status"
+}
+trap finish EXIT
 started=$(date +%s)
-# The outcome for the monitor; a drill that can't record it still reports on stdout.
+# The outcome for the monitor; a drill that can't record it still reports on stdout. Any exit
+# before a result was recorded (a failed pct create or push under set -e) records a failure.
 record() {
+  recorded=true
   printf '{"pass": %s, "finished_at": %s}\n' "$1" "$(date +%s)" > "$w/last-drill.json"
   pct exec "$COMPARE" -- mkdir -p /var/lib/usnm-db-backup &&
     pct push "$COMPARE" "$w/last-drill.json" /var/lib/usnm-db-backup/last-drill.json --perms 644 ||
@@ -77,7 +88,7 @@ pct create "$CTID" "$TEMPLATE" --hostname usnm-boinc-db-drill --unprivileged 1 -
   --net0 "name=eth0,bridge=$BRIDGE,ip=dhcp,type=veth" \
   --description "Scratch CT for the BOINC MySQL restore drill; destroyed when it ends. usnewsmap.com boinc/scripts/onprem/db-backup/restore-drill.sh" > /dev/null
 # Armed only now that this run made the CT, so a failed create never destroys another's.
-trap 'teardown; rm -rf "$w"' EXIT
+trap 'finish teardown' EXIT
 pct start "$CTID"
 for _ in $(seq 30); do in_ct getent hosts deb.debian.org > /dev/null 2>&1 && break; sleep 2; done
 in_ct bash -c 'DEBIAN_FRONTEND=noninteractive apt-get -qq update && DEBIAN_FRONTEND=noninteractive apt-get -qq install -y podman jq openssl curl python3 ca-certificates > /dev/null' ||
