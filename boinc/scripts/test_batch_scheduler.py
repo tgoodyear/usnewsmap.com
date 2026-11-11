@@ -2156,7 +2156,7 @@ class QueueModeTests(unittest.TestCase):
         # Two plans with one worker export the same job id for a page (11 Nov 2026): the live
         # plan keeps the message hidden when another plan archived the page as held.
         page, row = self.held_then_archived()
-        sibling = self.state.pop("archived_held")
+        sibling = {p: [e] for p, e in self.state.pop("archived_held").items()}
         self.fake.waiting = [message(1)] + self.fake.waiting
         self.fake.actions.clear()
         self.sibling_tick(sibling)
@@ -2173,7 +2173,9 @@ class QueueModeTests(unittest.TestCase):
         # Claimed and exported before the plan knew of the other's archive: the same job id is
         # still a BOINC row, so it is settled as held rather than a SQL/journal mismatch.
         page, row = self.held_then_archived()
-        sibling = self.state.pop("archived_held")
+        # Another plan archived the page under a different job too: every archived job counts.
+        sibling = {p: [{"job": "c" * 64, "message": "d" * 64}, e]
+                   for p, e in self.state.pop("archived_held").items()}
         mine = copy.deepcopy(row)
         mine.pop("held", None)
         self.state["claims"][page] = {**claim_of(self.saved, page)}
@@ -2197,7 +2199,11 @@ class QueueModeTests(unittest.TestCase):
             other.mkdir()
             entry = {"job": "a" * 64, "message": "b" * 64}
             (other / "state.json").write_text(json.dumps({"archived_held": {"p": entry}}))
-            self.assertEqual(batch.sibling_archived_held(own, [other]), {"p": entry})
+            third = Path(tmp) / "third"
+            third.mkdir()
+            second = {"job": "c" * 64, "message": "d" * 64}
+            (third / "state.json").write_text(json.dumps({"archived_held": {"p": second}}))
+            self.assertEqual(batch.sibling_archived_held(own, [other, third]), {"p": [entry, second]})
             with self.assertRaisesRegex(ValueError, "own state directory"):
                 batch.sibling_archived_held(own, [own])
             (other / "state.json").write_text(json.dumps({"archived_held": {"p": {"job": "x"}}}))

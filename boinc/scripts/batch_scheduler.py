@@ -1720,7 +1720,13 @@ class QueueFeed:
         errors = []
         for item in fresh:
             page, claim = self.checked(item)
-            archived = self.archived_held.get(page) or self.sibling_archived.get(page)
+            archived = self.archived_held.get(page)
+            if archived is None and page in self.sibling_archived:
+                # Any other plan's archive of the page with this message stands for it; one
+                # with another message is two attempts at once, as below.
+                others = self.sibling_archived[page]
+                archived = next((entry for entry in others if entry.get("message") == claim["message"]),
+                                others[0])
             if page not in self.claims and archived is not None:
                 # Its held result is archived (#835): the same message, hidden again for a fresh
                 # lease, stands for the archived job, as for a claim still here. A different
@@ -2137,8 +2143,9 @@ def gold_onboarding(config, state, transport, persist, now, *, held, room):
 
 
 def sibling_archived_held(own_dir, dirs):
-    """The archived_held entries of other plans' state directories (--check-state-dir), merged:
-    page -> {"job", "message", ...}. Each must hold a readable state.json."""
+    """The archived_held entries of other plans' state directories (--check-state-dir): page ->
+    every entry ({"job", "message", ...}) any of them holds for it, so no plan's archive is
+    dropped when two archived a page under different jobs. Each must hold a readable state.json."""
     own = Path(own_dir).resolve()
     merged = {}
     for directory in dirs:
@@ -2150,7 +2157,7 @@ def sibling_archived_held(own_dir, dirs):
                     for entry in entries.values()),
                 f"{directory}/state.json has no valid archived_held")
         for page, entry in entries.items():
-            merged.setdefault(page, entry)
+            merged.setdefault(page, []).append(entry)
     return merged
 
 
@@ -2249,8 +2256,8 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
     # A job of this plan that another plan already ran and archived as held (same page, same
     # worker, so the same job id, whose BOINC row stays): settled as held, never submitted.
     # Marked on every read of the journals, in memory only; nothing writes them back.
-    archived_elsewhere = {entry.get("job") for entry in (sibling_archived or {}).values()
-                          if isinstance(entry, dict)}
+    archived_elsewhere = {entry.get("job") for entries in (sibling_archived or {}).values()
+                          for entry in entries if isinstance(entry, dict)}
     elsewhere_held = set()
 
     def read_records():
@@ -2885,9 +2892,11 @@ def main(argv=None):
                 tick_kwargs["refill_cap"] = args.refill_cap
             if args.other_app_budget is not None:
                 tick_kwargs["other_app_budget"] = args.other_app_budget
-            if args.check_state_dir:
-                tick_kwargs["sibling_archived"] = sibling_archived_held(args.state_dir, args.check_state_dir)
             with transport.lock():
+                # Read under the lock the archive takes too, so the other plans' archives agree
+                # with the journals this tick lists.
+                if args.check_state_dir:
+                    tick_kwargs["sibling_archived"] = sibling_archived_held(args.state_dir, args.check_state_dir)
                 event = tick(config, state, transport, lambda: save(path, state), **tick_kwargs)
             # Again after the lease is released, so the line counts the release too.
             event["timings"] = timings.summary()
