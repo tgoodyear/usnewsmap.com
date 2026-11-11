@@ -54,6 +54,8 @@ if "df" in args:
         print(os.environ.get("SHIP_TEST_BULK_FREE", "100"))
     if "/srv/usnm-boinc/project/usnmocr/download" in args:
         print(os.environ.get("SHIP_TEST_BULK_FREE", "100"))
+elif any("/pages/*/held" in arg for arg in args):
+    sys.exit(int(os.environ.get("SHIP_TEST_HELD_EXIT", "1")))
 elif "lvs" in args:
     print(json.dumps({"report": [{"lv": [{"lv_size": os.environ.get(
         "SHIP_TEST_POOL_FREE_BYTES", str(100 * 1024**3)), "data_percent": "0"}]}]}))
@@ -234,6 +236,30 @@ elif "python3" in args and "-" in args:
                 self.assertEqual(result.returncode, 1, result.stderr)
                 self.assertIn("--qwen-page-records", result.stderr)
                 self.assertFalse((self.root / "calls.jsonl").exists())
+
+    def test_held_pages_are_published_on_a_run_with_no_chunk(self):
+        # #1435: with bundles and nothing READY, held pages whose hold ran out still go out.
+        def ship(extra, held):
+            (self.root / "calls.jsonl").unlink(missing_ok=True)
+            (self.root / "outbox/test").mkdir(parents=True, exist_ok=True)
+            env = dict(self.env, SHIP_TEST_HELD_EXIT="0" if held else "1")
+            result = subprocess.run(
+                ["bash", str(HERE / "quality-ship.sh"), "--campaign", "test",
+                 "--engine-image", "sha256:" + "a" * 64, "--outbox", str(self.root / "outbox"),
+                 "--qwen-engine-plan", "/project/plan.json", "--qwen-models", "/project/models",
+                 *self.GUARDED, *extra], env=env, capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            path = self.root / "calls.jsonl"
+            return self.native_calls() if path.exists() else []
+        drain = ship(["--qwen-bundle-size", "32", "--qwen-page-records", "/project/usnmocr/qwen/pages"], True)
+        self.assertEqual(len(drain), 1)
+        self.assertIn("--held-only", drain[0])
+        self.assertEqual(drain[0][drain[0].index("--campaign") + 1], "guard-v3")
+        self.assertEqual(drain[0][drain[0].index("--bundle-size") + 1], "32")
+        self.assertIn("--page-records", drain[0])
+        # Nothing held, or no bundles: no call.
+        self.assertEqual(ship(["--qwen-bundle-size", "32"], False), [])
+        self.assertEqual(ship([], True), [])
 
     def test_stage_and_submit_do_not_wait_for_the_step_window(self):
         # The stage has its own lock on the host, and only native publication reads the clock.

@@ -1935,6 +1935,11 @@ class SourceTest(unittest.TestCase):
             (page / "rejected-qwen.json").touch()
             submit.assert_processed(root, sample)
 
+    def legacy_calls(self, root, *extra):
+        """Every subprocess argv the legacy path runs."""
+        self.legacy_stage(root, *extra)
+        return self._calls
+
     def legacy_stage(self, root, *extra, units=(), pages=False):
         """The stage command the legacy path runs for a root with these single-page units."""
         plan = root / "plan.json"
@@ -1958,6 +1963,7 @@ class SourceTest(unittest.TestCase):
                 mock.patch.object(submit, "audit", return_value={}), \
                 contextlib.redirect_stdout(io.StringIO()):
             submit.main()
+        self._calls = [c.args[0] for c in run.call_args_list]
         return run.call_args_list[0].args[0] if run.call_args_list else None
 
     def test_bundle_size_defaults_to_one_page_per_unit(self):
@@ -1993,6 +1999,36 @@ class SourceTest(unittest.TestCase):
                 self.legacy_stage(Path(folder), *extra)
             self.assertEqual(caught.exception.code, 2)
             self.assertIn("--page-records", stderr.getvalue())
+
+    def test_held_pages_count_in_admission_and_submission_but_not_staging(self):
+        # #1435: held pages may go out with this run's bundles, so they are reserved and submitted for.
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            for doc in ("sn1_1900-01-01_ed-1_seq-1", "sn1_1900-01-01_ed-1_seq-2"):
+                page = root / "qwen" / "qwen-test" / "pages" / doc
+                page.mkdir(parents=True)
+                (page / "qwen.json").write_text(json.dumps({"id": doc, "doc_id": doc}))
+                (page / "held").write_text("1000\n")
+            # A marker without a staged job is not counted.
+            (root / "qwen" / "qwen-test" / "pages" / "stray").mkdir()
+            (root / "qwen" / "qwen-test" / "pages" / "stray" / "held").write_text("1\n")
+            self.assertEqual(submit.held_pages(root / "qwen" / "qwen-test"), 2)
+            calls = self.legacy_calls(root, "--bundle-size", "8", "--max-pages", "5")
+            stage, publish = calls[0], calls[1]
+            self.assertEqual(stage[stage.index("--max-pages") + 1], "5")
+            self.assertEqual(publish[publish.index("--max-units") + 1], "7")
+            calls = self.legacy_calls(root, "--bundle-size", "8", "--held-only")
+            self.assertEqual(calls[0][calls[0].index("--max-pages") + 1], "0")
+            self.assertEqual(calls[1][calls[1].index("--max-units") + 1], "2")
+        with tempfile.TemporaryDirectory() as folder:
+            # Nothing held: nothing staged or submitted.
+            self.assertEqual(self.legacy_calls(Path(folder), "--bundle-size", "8", "--held-only"), [])
+        for extra in (["--held-only"], ["--bundle-size", "8", "--held-only", "--preflight"]):
+            with self.subTest(extra=extra), tempfile.TemporaryDirectory() as folder, \
+                    contextlib.redirect_stderr(io.StringIO()) as stderr, self.assertRaises(SystemExit) as caught:
+                self.legacy_stage(Path(folder), *extra)
+            self.assertEqual(caught.exception.code, 2)
+            self.assertIn("--held-only", stderr.getvalue())
 
     def test_a_bundled_campaign_has_a_root_of_its_own(self):
         for units, pages, extra, error in (

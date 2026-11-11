@@ -280,6 +280,13 @@ def assert_processed(root, sample):
         raise RuntimeError(f"Chunk still has an unprocessed native source: {doc}; retain READY")
 
 
+def held_pages(root):
+    """Pages an earlier run held back from an under-filled last bundle (qwen stage
+    --max-hold-secs, #1435): they wait under pages/ with a held marker and go out with a later
+    run's bundles, so admission and submission count them with the run's own pages."""
+    return sum(1 for marker in (root / "pages").glob("*/held") if (marker.parent / "qwen.json").exists())
+
+
 def assert_bundle_layout(root, bundle_size):
     """A bundled campaign has a root of its own. A root staged with bundles can't go back to
     single pages, and bundling a root that already holds single-page units would mix both. Any
@@ -944,6 +951,9 @@ def main():
     ap.add_argument("--page-records", type=Path,
                     help="With --bundle-size above 1, the directory `qwen compare --pages` writes: stage "
                          "packs each page a page-v1 verdict settled as disagreed into one new bundle (#1435)")
+    ap.add_argument("--held-only", action="store_true",
+                    help="With --bundle-size above 1 and no chunk: stage and submit only the held pages "
+                         "whose hold has run out (#1435); admission counts every held page")
     ap.add_argument("--prompt-version", type=int, choices=(1, 2, 3, 4), default=1,
                     help="Request version to stage; every dispatchable app version must read it")
     ap.add_argument("--max-ready", type=int, default=1000,
@@ -983,6 +993,8 @@ def main():
         ap.error("need --campaign, --engine-plan, --models and positive bounded limits")
     if not 1 <= a.bundle_size <= 32:
         ap.error("--bundle-size takes 1 to 32 pages a unit")
+    if a.held_only and (a.bundle_size == 1 or a.sample or a.transaction or a.preflight):
+        ap.error("--held-only needs --bundle-size above 1, and no --sample, --transaction or --preflight")
     if a.page_records is not None and (a.bundle_size == 1 or not a.page_records.is_absolute()):
         ap.error("--page-records takes an absolute directory and needs --bundle-size above 1")
     root = a.share / "qwen" / a.campaign
@@ -1002,6 +1014,14 @@ def main():
             raise SystemExit(error.returncode) from error
         return
     assert_bundle_layout(root, a.bundle_size)
+    # New pages this run stages; admission and submission also count the held pages that the
+    # packing may publish with them.
+    new_pages = 0 if a.held_only else a.max_pages
+    held = held_pages(root) if a.bundle_size > 1 else 0
+    if a.held_only and not held:
+        print(json.dumps({"campaign": a.campaign, "held_pages": 0, "status": "nothing_held"}, sort_keys=True))
+        return
+    a.max_pages = new_pages + held
     admission(a, state, root)
     if a.preflight:
         return
@@ -1017,7 +1037,7 @@ def main():
     engine = json.loads(a.engine_plan.read_text())["engine"]
     stage = [a.stage_binary, "qwen", "stage", "--quality-root", str(quality), "--root", str(root),
              "--engine-image", engine["image"], "--engine-llama", engine["llama"],
-             "--engine-weights", engine["weights"], "--max-pages", str(a.max_pages),
+             "--engine-weights", engine["weights"], "--max-pages", str(new_pages),
              "--gpu-timeout-secs", "14400", "--cpu-timeout-secs", "7200", "--bundle-size", str(a.bundle_size),
              "--prompt-version", str(a.prompt_version)]
     if a.page_records is not None:

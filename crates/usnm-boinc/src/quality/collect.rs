@@ -1290,9 +1290,6 @@ pub fn collect(opts: &Options) -> anyhow::Result<Collected> {
         (None, None) => BTreeMap::new(),
         _ => anyhow::bail!("--surya-root and --surya-spool go together"),
     };
-    if let Some(cache) = &cache {
-        cache.verify_readings()?;
-    }
     let dir = units(&opts.root);
     let mut unit_dirs: Vec<PathBuf> = if dir.exists() {
         std::fs::read_dir(&dir)?
@@ -1493,7 +1490,10 @@ pub fn collect(opts: &Options) -> anyhow::Result<Collected> {
             }
         }
         if let (Some(cache), Some(key)) = (&cache, &key) {
-            cache.verify_readings()?;
+            if !cache.readings_unchanged(&job.doc_id)? {
+                // Published from what was read, collected again next run.
+                continue;
+            }
             anyhow::ensure!(
                 &cache.key(&unit, &job, &files)? == key,
                 "{wu}: collection inputs changed; no part published"
@@ -2821,6 +2821,11 @@ pub(super) mod tests {
         let other = result(&results, &job, "d", words);
         compare(&a, &other, 0.5, None, Some(&records)).unwrap();
         assert!(cache.verify_readings().is_err());
+        // The run checks the page's own inputs: it publishes the page but caches no part.
+        assert!(!cache.readings_unchanged(&ours).unwrap());
+        assert!(cache
+            .readings_unchanged("sn00000000_1900-01-01_ed-9_seq-9")
+            .unwrap());
 
         // A membership that no longer matches the bundle keeps no page.
         let membership = bundle.join(crate::qwen::stage::MEMBERSHIP_FILE);

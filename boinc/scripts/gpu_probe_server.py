@@ -138,7 +138,7 @@ TEMPLATE_QWEN_OUT = """<output_template>
     <name><OUTFILE_0/></name>
     <generated_locally/>
     <upload_when_present/>
-    <max_nbytes>2097152</max_nbytes>
+    <max_nbytes>4194304</max_nbytes>
     <url><UPLOAD_URL/></url>
   </file_info>
   <file_info>
