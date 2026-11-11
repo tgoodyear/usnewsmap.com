@@ -149,6 +149,7 @@ impl Fixture {
             quarantine: store(root, "quarantine"),
             requests: None,
             queue: Arc::new(LocalQueue::new(root.join("queue"))),
+            handoff: None,
         };
         let options = ExportOptions {
             manifest: root.join("manifest.parquet"),

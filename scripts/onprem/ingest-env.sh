@@ -58,6 +58,9 @@ if [ -n "$queue" ]; then
   line USNM_OCR_QUEUE_URL "$queue"
   line USNM_OCR_OUT_URL "${out}ocr-out"
   line USNM_OCR_QUARANTINE_URL "${out}ocr-quarantine"
+  # The controller's held-pages lists (scheduler/held-pages/), which the seeder leaves settled
+  # pages out by (#1754); read only. The Arc identity reads boinc-handoff as an on-prem host.
+  line USNM_OCR_HANDOFF_URL "${out}boinc-handoff"
   line USNM_OCR_REQUESTS_URL "${blob}ocr-requests"
   line USNM_OCR_USER_DAILY_MAX "$(aget USNM_OCR_USER_DAILY_MAX)"
   # The seeder's settings (infra/main.bicepparam's ocrSeed); empty ones are left out, so
