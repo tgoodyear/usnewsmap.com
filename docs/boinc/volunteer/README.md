@@ -378,7 +378,7 @@ or work around an enforced Group Policy; ask your administrator instead.
   current AMD graphics driver, which provides Vulkan (`amd_vulkan_8b`,
   [AMD](../apps/amd-gpu.md)). It is the only Windows GPU class with a live version
   ([app versions](../apps/quality.md#app-versions-and-plan-classes)); no Windows
-  version has been released for NVIDIA or Intel GPUs yet, though both get GPU
+  version is currently available for NVIDIA or Intel GPUs, though both get GPU
   work on Linux. The helper reads each display adapter's
   vendor and memory size from the Windows registry and checks for the driver's
   `vulkan-1.dll`. It cannot see free video memory; the app needs 7,000 MiB free

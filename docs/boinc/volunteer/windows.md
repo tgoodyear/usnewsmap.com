@@ -14,7 +14,7 @@ joined PC can sit idle for a while. That is normal.
   64-bit PC. Windows on ARM and Windows Server are not supported.
 - For GPU work, an AMD GPU with at least 7 GB of video memory and a current
   AMD graphics driver, which provides Vulkan ([AMD](../apps/amd-gpu.md)). No
-  Windows version has been released for NVIDIA or Intel GPUs yet; both get GPU
+  Windows version is currently available for NVIDIA or Intel GPUs; both get GPU
   work on Linux ([app versions](../apps/quality.md#app-versions-and-plan-classes)). On a PC
   without an eligible AMD GPU, add `-AllowCpuOnly` to the preview and apply
   commands below (not to `-Status`) to offer CPU time instead. CPU work is
