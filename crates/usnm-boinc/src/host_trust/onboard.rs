@@ -1,5 +1,7 @@
 //! Host onboarding: one gold unit outstanding per untrusted host and campaign.
-use super::{attempt_root, campaign_roots, capability, query, Config, MAX_ATTEMPTS};
+use super::{
+    attempt_root, campaign_roots, capability, query, submitted_attempts, Config, MAX_ATTEMPTS,
+};
 use crate::{atomic, gold, read, trust::Trust, Lock};
 use anyhow::{ensure, Context};
 use serde::Serialize;
@@ -85,16 +87,33 @@ fn gold_status(text: &str) -> anyhow::Result<GoldStatus> {
 }
 
 async fn query_gold_status(c: &Config, workunit: &str) -> anyhow::Result<GoldStatus> {
-    ensure!(
-        workunit
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'_'),
-        "invalid workunit"
-    );
-    gold_status(&query(c, &format!(
+    checked_workunit(workunit)?;
+    let status = gold_status(&query(c, &format!(
         "SELECT r.id, r.server_state, r.outcome, r.client_state, r.exit_status, HEX(LEFT(r.stderr_out, 65536)) \
          FROM workunit w LEFT JOIN result r ON r.workunitid=w.id WHERE w.name='{workunit}' ORDER BY r.id"
-    )).await?)
+    )).await?)?;
+    // A cancelled workunit that no client holds is over, whatever its results show: one with
+    // no result rows at all (a targeted unit the scheduler never sent) would otherwise stay
+    // pending for good and block the host's next attempt.
+    if status == GoldStatus::Pending
+        && workunit_cancelled(c, workunit).await?
+        && count_results(c, workunit, SERVER_STATE_IN_PROGRESS, None).await? == 0
+    {
+        return Ok(GoldStatus::Failed(Vec::new()));
+    }
+    Ok(status)
+}
+
+async fn workunit_cancelled(c: &Config, workunit: &str) -> anyhow::Result<bool> {
+    Ok(count(
+        c,
+        &format!(
+            "SELECT COALESCE(MAX(w.error_mask & {WU_ERROR_CANCELLED}), 0) FROM workunit w \
+             WHERE w.name='{workunit}'"
+        ),
+    )
+    .await?
+        != 0)
 }
 
 /// Where this host's next gold unit goes, or None while its latest attempt is pending,
@@ -202,6 +221,217 @@ async fn legacy_blocks_attempt(
     }
 }
 
+/// BOINC's `RESULT_SERVER_STATE_UNSENT`: the result is waiting for a client.
+const SERVER_STATE_UNSENT: i64 = 2;
+/// BOINC's `RESULT_SERVER_STATE_IN_PROGRESS`: the result has gone to a client.
+const SERVER_STATE_IN_PROGRESS: i64 = 4;
+/// BOINC's `RESULT_OUTCOME_DIDNT_NEED`: how `cancel_jobs` closes an unsent result.
+const OUTCOME_DIDNT_NEED: i64 = 5;
+/// BOINC's `WU_ERROR_CANCELLED` bit of `workunit.error_mask`, which `cancel_jobs` sets.
+const WU_ERROR_CANCELLED: i64 = 16;
+/// `assignment.target_type` of an assignment to one host.
+const TARGET_HOST: i64 = 1;
+
+async fn count(c: &Config, sql: &str) -> anyhow::Result<i64> {
+    query(c, sql)
+        .await?
+        .trim()
+        .parse()
+        .context("invalid count from the database")
+}
+
+fn checked_workunit(workunit: &str) -> anyhow::Result<()> {
+    ensure!(
+        workunit
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_'),
+        "invalid workunit"
+    );
+    Ok(())
+}
+
+/// Assignment rows that target `host` with `workunit`.
+async fn host_assignments(c: &Config, workunit: &str, host: u64) -> anyhow::Result<i64> {
+    checked_workunit(workunit)?;
+    count(
+        c,
+        &format!(
+            "SELECT COUNT(*) FROM assignment a JOIN workunit w ON w.id=a.workunitid \
+         WHERE w.name='{workunit}' AND a.target_type={TARGET_HOST} AND a.target_id={host}"
+        ),
+    )
+    .await
+}
+
+async fn delete_host_assignments(c: &Config, workunit: &str, host: u64) -> anyhow::Result<()> {
+    checked_workunit(workunit)?;
+    query(
+        c,
+        &format!(
+            "DELETE a FROM assignment a JOIN workunit w ON w.id=a.workunitid \
+         WHERE w.name='{workunit}' AND a.target_type={TARGET_HOST} AND a.target_id={host}"
+        ),
+    )
+    .await?;
+    Ok(())
+}
+
+/// Results of `workunit` with this server state, and (with `outcome`) this outcome.
+async fn count_results(
+    c: &Config,
+    workunit: &str,
+    server_state: i64,
+    outcome: Option<i64>,
+) -> anyhow::Result<i64> {
+    checked_workunit(workunit)?;
+    let outcome = outcome.map_or(String::new(), |o| format!(" AND r.outcome={o}"));
+    count(
+        c,
+        &format!(
+            "SELECT COUNT(*) FROM result r JOIN workunit w ON w.id=r.workunitid \
+             WHERE w.name='{workunit}' AND r.server_state={server_state}{outcome}"
+        ),
+    )
+    .await
+}
+
+/// What `cancel_jobs --name` does, as one transaction that never revokes work a client has or
+/// cancels a unit that has succeeded. It locks the workunit's results, so the scheduler can't
+/// flip one while it runs (it would wait, then find it no longer unsent), marks the workunit
+/// cancelled only if no result is in progress or successful, and then turns its unsent results
+/// into over and not needed. Returns false, with nothing changed, when a result is in progress
+/// or successful: that unit is the client's, or finished. `cancel_jobs` takes no such
+/// condition, so it isn't run here.
+///
+/// The scheduler's targeted path can still create and send a result of its own, between its
+/// check and the insert, as this commits. That needs the host to have regained a runtime
+/// within the same moment, after its row said it had none. The caller looks again afterwards.
+async fn cancel_workunit(c: &Config, workunit: &str) -> anyhow::Result<bool> {
+    checked_workunit(workunit)?;
+    let out = query(
+        c,
+        &format!(
+            "START TRANSACTION; \
+             SELECT r.id FROM result r JOIN workunit w ON w.id=r.workunitid \
+               WHERE w.name='{workunit}' FOR UPDATE; \
+             UPDATE workunit w SET w.error_mask=w.error_mask|{WU_ERROR_CANCELLED}, \
+               w.transition_time=UNIX_TIMESTAMP() WHERE w.name='{workunit}' AND NOT EXISTS \
+               (SELECT 1 FROM result q WHERE q.workunitid=w.id AND (q.server_state={SERVER_STATE_IN_PROGRESS} \
+                OR (q.server_state={SERVER_STATE_OVER} AND q.outcome={OUTCOME_SUCCESS}))); \
+             SELECT ROW_COUNT(); \
+             UPDATE result r JOIN workunit w ON w.id=r.workunitid \
+               SET r.server_state={SERVER_STATE_OVER}, r.outcome={OUTCOME_DIDNT_NEED} \
+               WHERE w.name='{workunit}' AND r.server_state={SERVER_STATE_UNSENT} \
+               AND w.error_mask&{WU_ERROR_CANCELLED}<>0; \
+             COMMIT"
+        ),
+    )
+    .await?;
+    // The last line printed is the workunit update's row count.
+    let changed: i64 = out
+        .lines()
+        .last()
+        .context("the cancel printed no row count")?
+        .trim()
+        .parse()
+        .context("invalid row count from the database")?;
+    Ok(changed > 0)
+}
+
+/// A targeted unit for a host no version of the app can reach never leaves the server: the
+/// scheduler logs "App version for assigned WU not found" for its assignment on every request,
+/// and the unit holds a place under the safety cap until its deadline (#1418). So when a host
+/// is newly skipped for that, this campaign's outstanding unit for it is cancelled and its
+/// assignment row deleted. Both belong to this campaign's own attempts, found under its
+/// onboarding roots, never to another campaign's units for the host.
+///
+/// A unit is only retired while none of its results is in progress: one a client holds is left
+/// to finish. The workunit is cancelled before the assignment goes, since an unassigned unit
+/// would be open to any host. A cancelled unit whose assignment row is still there (the delete
+/// failed last time) only has the row deleted. Returns the workunits retired.
+async fn retire_unreachable(
+    c: &Config,
+    roots: &[&Path],
+    hosts: &[u64],
+    execute: bool,
+) -> anyhow::Result<Vec<String>> {
+    let mut retired = Vec::new();
+    for &host in hosts {
+        for root in roots {
+            for attempt in submitted_attempts(&root.join(host.to_string()))? {
+                let unit = gold::submit::units_dir(&attempt).join("0000");
+                let job: gold::job::Job = serde_json::from_slice(&read(
+                    &unit.join(gold::job::JOB_FILE),
+                    gold::job::MAX_JSON,
+                )?)?;
+                let workunit = job.workunit();
+                if job.assignment.as_ref().map(|a| a.host_id) != Some(host) {
+                    eprintln!("{workunit} is not assigned to host {host}; leaving it");
+                    continue;
+                }
+                if retire_unit(c, &workunit, host, execute).await? {
+                    retired.push(workunit);
+                }
+            }
+        }
+    }
+    Ok(retired)
+}
+
+async fn retire_unit(c: &Config, workunit: &str, host: u64, execute: bool) -> anyhow::Result<bool> {
+    match query_gold_status(c, workunit).await? {
+        GoldStatus::Pending => {
+            // A unit that has a result in progress, or a success beside a replacement still
+            // unsent, is a client's work: left alone.
+            if count_results(c, workunit, SERVER_STATE_IN_PROGRESS, None).await? > 0 {
+                eprintln!("{workunit} is in progress on host {host}; leaving it");
+                return Ok(false);
+            }
+            if count_results(c, workunit, SERVER_STATE_OVER, Some(OUTCOME_SUCCESS)).await? > 0 {
+                eprintln!("{workunit} has a successful result from host {host}; leaving it");
+                return Ok(false);
+            }
+            if !execute {
+                eprintln!("would cancel {workunit} and delete its assignment to host {host}");
+                return Ok(true);
+            }
+            // The unit first: with the assignment gone and the unit live, any host could get it.
+            if !cancel_workunit(c, workunit).await? {
+                eprintln!("{workunit} was sent to host {host} as it was cancelled; leaving it");
+                return Ok(false);
+            }
+            delete_host_assignments(c, workunit, host).await?;
+            eprintln!("cancelled {workunit} and deleted its assignment to host {host}");
+            // A result the scheduler's targeted path created as the cancel committed is in
+            // progress now. Its client drops the cancelled unit, and the host's next onboarding
+            // pass issues another, as for any failed attempt: said, not hidden.
+            if count_results(c, workunit, SERVER_STATE_IN_PROGRESS, None).await? > 0 {
+                eprintln!(
+                    "warning: {workunit} was sent to host {host} as it was cancelled; \
+                     the host will drop it and be issued another unit"
+                );
+            }
+            Ok(true)
+        }
+        // Cancelled earlier, its assignment row left behind.
+        GoldStatus::Failed(_) => {
+            if !workunit_cancelled(c, workunit).await?
+                || host_assignments(c, workunit, host).await? == 0
+            {
+                return Ok(false);
+            }
+            if execute {
+                delete_host_assignments(c, workunit, host).await?;
+                eprintln!("deleted the assignment of cancelled {workunit} to host {host}");
+            } else {
+                eprintln!("would delete the assignment of cancelled {workunit} to host {host}");
+            }
+            Ok(true)
+        }
+        GoldStatus::Unknown | GoldStatus::Succeeded => Ok(false),
+    }
+}
+
 /// Whether this campaign may reach `host`: every host, unless it's a native campaign.
 fn in_campaign(c: &Config, host: &u64) -> bool {
     c.native_hosts.is_empty() || c.native_hosts.contains(host)
@@ -228,6 +458,7 @@ pub async fn onboard(c: &Config, execute: bool) -> anyhow::Result<Vec<u64>> {
     let inventory = capability::inventory(c).await?;
     let trusted_hosts =
         trust.campaign_trusted_hosts(&c.engine.image, &prepared.manifest_sha256, scope);
+    let (campaign_root, legacy_root) = campaign_roots(c, &prepared, scope)?;
     let mut pending: Vec<_> = inventory
         .into_iter()
         .filter(|h| in_campaign(c, &h.id))
@@ -251,9 +482,14 @@ pub async fn onboard(c: &Config, execute: bool) -> anyhow::Result<Vec<u64>> {
             );
         }
         pending = able;
+        let skipped: Vec<u64> = unable.iter().map(|h| h.id).collect();
+        let mut roots = vec![campaign_root.as_path()];
+        if legacy_root != campaign_root {
+            roots.push(&legacy_root);
+        }
+        retire_unreachable(c, &roots, &skipped, execute).await?;
     }
     let pending: Vec<u64> = pending.into_iter().map(|h| h.id).collect();
-    let (campaign_root, legacy_root) = campaign_roots(c, &prepared, scope)?;
     // Hosts are visited in id order and the pass stops at max_hosts, so hosts with an
     // outstanding unit never starve newly discovered ones.
     let mut plans = Vec::new();
