@@ -204,6 +204,7 @@ pub fn compare_with(a: &[PathBuf], b: &[PathBuf], opts: Compare<'_>) -> anyhow::
     if bundle_verdict == BundleVerdict::PageV1
         && verdict.is_err()
         && all_recorded
+        && same_crops(&la, &lb)
         && pages_settle(agreed_pages, page_verdicts.len())
     {
         let (dir, names) = names.as_ref().expect("all_recorded needs names");
@@ -285,6 +286,21 @@ fn wordless(crops: &[qwen::CropAgreement], a: &Loaded, b: &Loaded) -> Vec<serde_
             }))
         })
         .collect()
+}
+
+/// Whether both results read the same crops, each one once, as many as
+/// each says the unit has. Crop counts are the hosts' own, so a host that
+/// left a crop out could otherwise settle a unit whose page the ledger then
+/// never counts.
+fn same_crops(a: &Loaded, b: &Loaded) -> bool {
+    fn ids(l: &Loaded) -> Vec<&str> {
+        let mut ids: Vec<&str> = l.readings.readings.iter().map(|r| r.id.as_str()).collect();
+        ids.sort_unstable();
+        ids
+    }
+    let (x, y) = (ids(a), ids(b));
+    let unique = x.windows(2).all(|w| w[0] != w[1]);
+    unique && x == y && a.result.crops == b.result.crops && x.len() == a.result.crops as usize
 }
 
 /// Writes `<pages>/<job_id>/unit-verdict.json` for a bundle pair that

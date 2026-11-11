@@ -28,6 +28,8 @@ const MAX_RECORD: usize = 4 * 1024 * 1024;
 pub(crate) const ACCEPTED: &str = "accepted";
 /// The status of a page whose every pair record so far disagreed.
 pub(crate) const DISAGREED: &str = "disagreed";
+/// The status of a page with no counted pair record yet.
+pub(crate) const PENDING: &str = "pending";
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct PageStatus {
@@ -303,7 +305,7 @@ fn page_records(
     } else if !disagreed.is_empty() {
         DISAGREED
     } else {
-        "pending"
+        PENDING
     };
     agreed.extend(disagreed);
     Ok((status, agreed))

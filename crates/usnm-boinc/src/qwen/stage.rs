@@ -437,6 +437,7 @@ pub async fn run_selected(opts: &Options, members: Option<&Path>) -> anyhow::Res
             &units_dir,
             bundle_size,
             opts.page_records.as_deref(),
+            opts.max_pages.saturating_sub(summary.staged),
             held,
         )?;
         summary.bundles = bundles;
@@ -504,12 +505,17 @@ fn pack_bundles(
     units_dir: &Path,
     bundle_size: usize,
     page_records: Option<&Path>,
+    // The most pages packed again in this call, so a run publishes no more
+    // pages than it was admitted for.
+    retry_budget: usize,
     // The root's bundle lock (see `run`), held for the whole call.
     _held: &crate::Lock,
 ) -> anyhow::Result<(usize, usize)> {
     let mut bundled_docs = BTreeSet::new();
-    // The bundles holding each page, and each bundle's pages, for retries.
-    let mut holders: BTreeMap<String, Vec<(PathBuf, Job)>> = BTreeMap::new();
+    // With page records only: each bundle once, and the bundles holding
+    // each page by index, for retries.
+    let mut bundles: Vec<(PathBuf, Job)> = Vec::new();
+    let mut holders: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     let mut existing_sets: BTreeSet<Vec<String>> = BTreeSet::new();
     let mut single_docs = BTreeSet::new();
     let mut existing_bundles = 0usize;
@@ -543,11 +549,11 @@ fn pack_bundles(
                         let mut set = docs.clone();
                         set.sort_unstable();
                         existing_sets.insert(set);
-                        for doc in docs {
-                            holders
-                                .entry(doc)
-                                .or_default()
-                                .push((p.clone(), job.clone()));
+                        if page_records.is_some() {
+                            for doc in docs {
+                                holders.entry(doc).or_default().push(bundles.len());
+                            }
+                            bundles.push((p.clone(), job));
                         }
                     }
                 }
@@ -557,7 +563,10 @@ fn pack_bundles(
     let retry = match page_records {
         Some(dir) => {
             holders.retain(|doc, _| !single_docs.contains(doc));
-            retry_pages(units_dir, dir, &holders)?
+            retry_pages(units_dir, dir, &bundles, &holders)?
+                .into_iter()
+                .take(retry_budget)
+                .collect()
         }
         None => BTreeSet::new(),
     };
@@ -640,15 +649,17 @@ fn pack_bundles(
     Ok((created, too_large))
 }
 
-/// The pages to pack again (#1435): each page held only by bundles, fewer
-/// than [`MAX_PAGE_ATTEMPTS`], every one of which a `page-v1` pair settled
-/// (`unit-verdict.json`) while the page ledger calls the page `disagreed`
-/// there. A page still pending in any of its bundles waits; an accepted one
-/// is done.
+/// The pages to pack again (#1435), in doc order: each page held only by
+/// bundles, fewer than [`MAX_PAGE_ATTEMPTS`], every one of which a `page-v1`
+/// pair settled (`unit-verdict.json`) while the page ledger does not call the
+/// page `accepted` there: `disagreed`, or `pending` because no record of it
+/// counts, which no later pair of a settled unit will write. A page in an
+/// unsettled bundle waits; an accepted one is done.
 fn retry_pages(
     units_dir: &Path,
     page_records: &Path,
-    holders: &BTreeMap<String, Vec<(PathBuf, Job)>>,
+    bundles: &[(PathBuf, Job)],
+    holders: &BTreeMap<String, Vec<usize>>,
 ) -> anyhow::Result<BTreeSet<String>> {
     let root = units_dir.parent().context("units directory has no root")?;
     let mut statuses: BTreeMap<PathBuf, BTreeMap<String, &'static str>> = BTreeMap::new();
@@ -658,7 +669,7 @@ fn retry_pages(
             continue;
         }
         let mut all_disagreed = true;
-        for (unit, job) in held {
+        for (unit, job) in held.iter().map(|&i| &bundles[i]) {
             let settled = page_records
                 .join(&job.id)
                 .join(super::validate::UNIT_VERDICT_FILE)
@@ -674,7 +685,10 @@ fn retry_pages(
                     .collect();
                 statuses.insert(unit.clone(), pages);
             }
-            if statuses[unit].get(doc).copied() != Some(super::ledger::DISAGREED) {
+            if !matches!(
+                statuses[unit].get(doc).copied(),
+                Some(super::ledger::DISAGREED | super::ledger::PENDING)
+            ) {
                 all_disagreed = false;
                 break;
             }
@@ -1947,7 +1961,16 @@ pub(crate) mod tests {
             page_unit(&page_dir, d, 2);
         }
         let records = tmp.path().join("qwen/pages");
-        let pack = || pack_bundles(&page_dir, &units_dir, 8, Some(&records), &held(&units_dir));
+        let pack = || {
+            pack_bundles(
+                &page_dir,
+                &units_dir,
+                8,
+                Some(&records),
+                8,
+                &held(&units_dir),
+            )
+        };
         let bundle_jobs = || {
             let mut dirs: Vec<PathBuf> = std::fs::read_dir(&units_dir)
                 .unwrap()
@@ -2016,6 +2039,19 @@ pub(crate) mod tests {
         // Without that record the second page is disagreed and packed again, with a new page.
         std::fs::remove_dir_all(records.join(&first.id).join(&second)).unwrap();
         compare_with(&a, &b, opts(BundleVerdict::PageV1)).unwrap();
+        // A run with no page budget left packs nothing again.
+        assert_eq!(
+            pack_bundles(
+                &page_dir,
+                &units_dir,
+                8,
+                Some(&records),
+                0,
+                &held(&units_dir)
+            )
+            .unwrap(),
+            (0, 0)
+        );
         page_unit(&page_dir, &docs[4], 2);
         assert_eq!(pack().unwrap(), (1, 0));
         let retry = bundle_jobs().remove(1);
@@ -2058,6 +2094,70 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_result_short_of_a_crop_does_not_settle_a_bundle_by_pages() {
+        use crate::qwen::{
+            ledger::tests::result,
+            validate::{compare_with, BundleVerdict, Compare, Rule, UNIT_VERDICT_FILE},
+        };
+        use usnm_ocr_contract::{boinc::sha256, qwen::ResultManifest};
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("root");
+        let page_dir = root.join("pages");
+        let units_dir = units(&root);
+        std::fs::create_dir_all(&units_dir).unwrap();
+        for i in 1..=2 {
+            page_unit(&page_dir, &format!("sn83045462_1890-05-03_ed-1_seq-{i}"), 2);
+        }
+        let records = tmp.path().join("qwen/pages");
+        assert_eq!(
+            pack_bundles(
+                &page_dir,
+                &units_dir,
+                8,
+                Some(&records),
+                8,
+                &held(&units_dir)
+            )
+            .unwrap(),
+            (1, 0)
+        );
+        let dir = std::fs::read_dir(&units_dir)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let job: Job = serde_json::from_slice(&std::fs::read(dir.join(JOB_FILE)).unwrap()).unwrap();
+        let words = |doc: &str, crop: &str| format!("{doc} {crop} the ship sailed for england");
+        let a = result(tmp.path(), &job, "a", words);
+        let b = result(tmp.path(), &job, "b", words);
+        // b leaves out the second page's last crop and says the unit has one crop fewer.
+        let mut readings: Readings =
+            serde_json::from_slice(&std::fs::read(&b[0]).unwrap()).unwrap();
+        readings.readings.pop();
+        let bytes = serde_json::to_vec(&readings).unwrap();
+        let mut manifest: ResultManifest =
+            serde_json::from_slice(&std::fs::read(&b[1]).unwrap()).unwrap();
+        manifest.crops -= 1;
+        manifest.read -= 1;
+        manifest.readings_bytes = bytes.len() as u64;
+        manifest.readings_sha256 = sha256(&bytes);
+        std::fs::write(&b[0], &bytes).unwrap();
+        std::fs::write(&b[1], serde_json::to_vec(&manifest).unwrap()).unwrap();
+        let opts = Compare {
+            min_dice: 0.5,
+            rule: Rule::StrictV1,
+            bundle_verdict: BundleVerdict::PageV1,
+            log: None,
+            pages: Some(&records),
+            crop_states: None,
+        };
+        // One page of two agreed, but the two results did not read the same crops.
+        assert!(compare_with(&a, &b, opts).is_err());
+        assert!(!records.join(&job.id).join(UNIT_VERDICT_FILE).exists());
+    }
+
+    #[test]
     fn pages_settle_at_half() {
         use crate::qwen::validate::pages_settle;
         assert!(!pages_settle(0, 0));
@@ -2085,7 +2185,7 @@ pub(crate) mod tests {
         page_unit(&page_dir, big, 40);
 
         assert_eq!(
-            pack_bundles(&page_dir, &units_dir, 16, None, &held(&units_dir)).unwrap(),
+            pack_bundles(&page_dir, &units_dir, 16, None, 0, &held(&units_dir)).unwrap(),
             (2, 1)
         );
         assert!(page_dir.join(big).join(TOO_LARGE).exists());
@@ -2102,7 +2202,7 @@ pub(crate) mod tests {
 
         // A rerun publishes nothing more.
         assert_eq!(
-            pack_bundles(&page_dir, &units_dir, 16, None, &held(&units_dir)).unwrap(),
+            pack_bundles(&page_dir, &units_dir, 16, None, 0, &held(&units_dir)).unwrap(),
             (0, 0)
         );
     }
@@ -2128,7 +2228,7 @@ pub(crate) mod tests {
             std::fs::write(&path, serde_json::to_vec_pretty(&job).unwrap()).unwrap();
         }
         assert_eq!(
-            pack_bundles(&page_dir, &units_dir, 32, None, &held(&units_dir)).unwrap(),
+            pack_bundles(&page_dir, &units_dir, 32, None, 0, &held(&units_dir)).unwrap(),
             (3, 0)
         );
         let mut sizes = Vec::new();
@@ -2200,7 +2300,7 @@ pub(crate) mod tests {
             }
         }
         assert_eq!(
-            pack_bundles(&page_dir, &units_dir, 16, None, &held(&units_dir)).unwrap(),
+            pack_bundles(&page_dir, &units_dir, 16, None, 0, &held(&units_dir)).unwrap(),
             (2, 0)
         );
         let mut seen = Vec::new();
