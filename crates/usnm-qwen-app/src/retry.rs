@@ -68,7 +68,12 @@ pub(crate) fn run_crop<S, T>(
             "restart {retries}/{MAX_CROP_RETRIES} after: {err:#}"
         ));
         // A restart that fails reports the failure again, so it spends a retry like any other.
-        result = restart(state).and_then(|()| attempt(state));
+        // The time and BOINC's wishes are checked again once it is up: loading can take minutes.
+        result = match restart(state) {
+            Ok(()) if stop() => return CropEnd::Failed(err),
+            Ok(()) => attempt(state),
+            Err(e) => Err(e),
+        };
     }
 }
 
@@ -230,6 +235,30 @@ mod tests {
         let (end, m, _) = run(vec![broken], false, true);
         assert!(matches!(end, CropEnd::Failed(_)));
         assert_eq!((m.attempts, m.restarts), (1, 0));
+    }
+
+    #[test]
+    fn a_stop_that_arrives_during_the_restart_ends_the_crop_without_another_attempt() {
+        let mut m = Mock::default();
+        let stop = std::cell::Cell::new(false);
+        let end = run_crop(
+            &mut m,
+            |m| {
+                m.attempts += 1;
+                Err::<(), _>(broken())
+            },
+            |m| m.exited,
+            |m| {
+                m.restarts += 1;
+                // The load took the rest of the time, or BOINC asked the task to exit.
+                stop.set(true);
+                Ok(())
+            },
+            || stop.get(),
+            |_| {},
+        );
+        assert!(matches!(end, CropEnd::Failed(_)));
+        assert_eq!((m.attempts, m.restarts), (1, 1));
     }
 
     #[test]

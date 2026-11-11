@@ -617,7 +617,12 @@ fn run_crops(
                 )
             },
             |srv| srv.has_exited(),
-            |srv| srv.restart(&launch, LOAD_DEADLINE.min(deadline)),
+            |srv| {
+                srv.restart(
+                    &launch,
+                    LOAD_DEADLINE.min(deadline.saturating_sub(started.elapsed())),
+                )
+            },
             || control.should_exit().is_some() || started.elapsed() >= deadline,
             |note| {
                 restarts_this_run += 1;

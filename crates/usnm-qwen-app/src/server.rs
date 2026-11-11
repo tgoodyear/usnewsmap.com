@@ -220,18 +220,25 @@ pub fn http_request(
         .and_then(|c| c.parse().ok())
         .ok_or_else(|| transport("empty or garbled HTTP status line"))?;
     let mut payload = raw[sep + 4..].to_vec();
+    // The body of an error status is only for the message: a short or badly chunked one must not
+    // hide the status, which is what says the server is alive and refused.
+    let strict = status == 200;
     if head.lines().any(|l| {
         l.to_ascii_lowercase()
             .contains("transfer-encoding: chunked")
     }) {
-        payload = unchunk(&payload).map_err(|e| transport(&format!("{e:#}")))?;
+        match unchunk(&payload) {
+            Ok(p) => payload = p,
+            Err(e) if strict => return Err(transport(&format!("{e:#}"))),
+            Err(_) => {}
+        }
     } else if let Some(want) = head.lines().find_map(|l| {
         let (k, v) = l.split_once(':')?;
         k.eq_ignore_ascii_case("content-length")
             .then(|| v.trim().parse::<usize>().ok())?
     }) {
         // The server died partway through the body, or the reply was cut at the size limit.
-        if payload.len() < want && raw.len() < 1024 * 1024 {
+        if strict && payload.len() < want && raw.len() < 1024 * 1024 {
             return Err(transport("HTTP body shorter than its Content-Length"));
         }
     }
@@ -371,6 +378,11 @@ fn read_stream(mut events: impl BufRead, deadline: Instant) -> anyhow::Result<St
             }
             return Ok(out);
         }
+        // A line with no newline is the stream's last bytes: unless the reply was complete, the
+        // connection broke inside an event, and a half event is not worth parsing.
+        if !line.ends_with('\n') && out.finish_reason.is_none() && line.trim() != "data: [DONE]" {
+            return Err(transport("completion stream ended mid-event"));
+        }
         out.digest.update(line.as_bytes());
         out.bytes += line.len();
         ensure!(out.bytes <= MAX_STREAM, "completion stream over size limit");
@@ -493,8 +505,9 @@ fn guarded_completion(
 }
 
 fn reply_error<T>(status: u16, body: impl Read) -> anyhow::Result<T> {
+    // Best effort: the status is the failure, and the body only explains it.
     let mut text = Vec::new();
-    body.take(64 * 1024).read_to_end(&mut text)?;
+    let _ = body.take(64 * 1024).read_to_end(&mut text);
     Err(anyhow::Error::new(HttpStatus(format!(
         "llama-server status {status}: {}",
         redacted_tail(&String::from_utf8_lossy(&text), 256)
@@ -1104,6 +1117,45 @@ mod completion_tests {
             b"HTTP/1.1 200 OK\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"half\"}}]}\n\n";
         let e = ask(serve_once(Some(partial)), true);
         assert_eq!(classify(&e), FailureClass::Transport, "{e:#}");
+    }
+
+    #[test]
+    fn an_error_status_stays_a_status_when_its_body_is_cut_short_or_garbled() {
+        let cases: [&'static [u8]; 3] = [
+            b"HTTP/1.1 503 Unavailable\r\nContent-Length: 500\r\n\r\nloading mo",
+            b"HTTP/1.1 503 Unavailable\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\nbad",
+            b"HTTP/1.1 503 Unavailable\r\nTransfer-Encoding: chunked\r\n\r\n10\r\nshort",
+        ];
+        for reply in cases {
+            for guard in [false, true] {
+                let e = ask(serve_once(Some(reply)), guard);
+                assert_eq!(classify(&e), FailureClass::Status, "guard {guard}: {e:#}");
+                assert!(
+                    format!("{e:#}").contains("llama-server status 503"),
+                    "{e:#}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_stream_cut_inside_an_event_is_a_transport_failure() {
+        let cut: &'static [u8] =
+            b"HTTP/1.1 200 OK\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: {\"choices\":";
+        let e = ask(serve_once(Some(cut)), true);
+        assert_eq!(classify(&e), FailureClass::Transport, "{e:#}");
+        // A finished reply with trailing junk is still a reading.
+        let done: &'static [u8] = b"HTTP/1.1 200 OK\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]";
+        let (text, ..) = chat_completion(
+            serve_once(Some(done)),
+            b"png",
+            64,
+            None,
+            true,
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        assert_eq!(text, "ok");
     }
 
     #[test]
