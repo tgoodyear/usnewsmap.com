@@ -34,10 +34,14 @@ pub enum ClaimCommands {
         queues: Vec<String>,
         #[arg(long, default_value_t = 10)]
         max: usize,
-        /// Most messages received from each queue, usable or not (default: three times
+        /// Most messages received from each queue, usable or not (default: ten times
         /// --max). Each queue has its own budget (#1057).
         #[arg(long)]
         max_receives: Option<usize>,
+        /// The hand-off container: the plans' lists under `scheduler/held-pages/` name the
+        /// pages whose held result is settled, and their messages are deleted, not claimed.
+        #[arg(long)]
+        handoff_url: Option<String>,
         /// Hours a claimed message stays hidden.
         #[arg(long, default_value_t = 96)]
         lease_hours: u64,
@@ -154,6 +158,7 @@ pub async fn run(command: ClaimCommands) -> anyhow::Result<()> {
             queues,
             max,
             max_receives,
+            handoff_url,
             lease_hours,
             languages,
             out,
@@ -185,8 +190,13 @@ pub async fn run(command: ClaimCommands) -> anyhow::Result<()> {
             let reference = usnm_store::open(&reference_url)?;
             let exchange_out = usnm_store::open(&out_url)?;
             let queue = usnm_store::queue::open(&queue_url)?;
+            let handoff = handoff_url.as_deref().map(usnm_store::open).transpose()?;
+            let held = match &handoff {
+                Some(h) => x::load_held_pages(h.as_ref()).await?,
+                None => None,
+            };
             // The lock keeps the ledger as it is while messages are judged against it.
-            let held = usnm_ocr_local::boinc::Held::take(&state).await?;
+            let lock = usnm_ocr_local::boinc::Held::take(&state).await?;
             let mut report = x::Report::default();
             let pulled = async {
                 let snapshot =
@@ -204,11 +214,12 @@ pub async fn run(command: ClaimCommands) -> anyhow::Result<()> {
                         fetched: &fetched,
                         installed: &installed,
                         languages: (!languages.is_empty()).then_some(&languages),
+                        held: held.as_ref(),
                     },
                     &x::Options {
                         queues,
                         max,
-                        max_receives: max_receives.unwrap_or(max * 3).max(max),
+                        max_receives: max_receives.unwrap_or(max * 10).max(max),
                         lease: std::time::Duration::from_secs(lease_hours * 3600),
                     },
                     &out,
@@ -217,7 +228,7 @@ pub async fn run(command: ClaimCommands) -> anyhow::Result<()> {
                 .await
             }
             .await;
-            let unlocked = held.release(&state).await;
+            let unlocked = lock.release(&state).await;
             let mut claims = Vec::new();
             for claim in &report.claims {
                 let m = claim.message()?;
@@ -239,21 +250,30 @@ pub async fn run(command: ClaimCommands) -> anyhow::Result<()> {
                 "received": report.received,
                 "released": report.released,
                 "stale": report.stale,
+                "held": report.held,
+                "hidden": report.hidden,
+                "skipped": report.skipped,
+                "budget_spent": report.budget_spent,
                 "claims": claims,
             });
             crate::atomic(&summary, &serde_json::to_vec_pretty(&body)?)?;
             eprintln!(
-                "claimed {}, sent back {}, deleted {} answered, of {} received",
+                "claimed {}, sent back {}, deleted {} answered, deleted {} held, left {} hidden, of {} received",
                 report.claims.len(),
                 report.released,
                 report.stale,
+                report.held,
+                report.hidden,
                 report.received
             );
             for q in &report.queues {
                 eprintln!(
-                    "  {}: claimed {}, sent back {}, deleted {} answered, of {} received",
-                    q.queue, q.claimed, q.released, q.stale, q.received
+                    "  {}: claimed {}, sent back {}, deleted {} answered, deleted {} held, left {} hidden, of {} received",
+                    q.queue, q.claimed, q.released, q.stale, q.held, q.hidden, q.received
                 );
+            }
+            if !report.skipped.is_empty() {
+                eprintln!("  not usable here: {:?}", report.skipped);
             }
             // The summary says what was taken even when the run then failed.
             pulled?;

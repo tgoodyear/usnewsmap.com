@@ -2406,6 +2406,26 @@ class QueueModeTests(unittest.TestCase):
         self.assertFalse(feed.deadline_retry(newer["page"], feed.checked(newer)[1], owned))
         self.assertFalse([a for a in self.fake.actions if a[0] == "deadline-retry"])
 
+    def test_the_held_pages_list_goes_out_before_the_claim(self):
+        # #1751: archived held pages' messages, here and in a sibling plan, are named with their
+        # job's message sha256, so the claim step deletes them instead of claiming them again.
+        own = {"job": "a" * 64, "message": "b" * 64}
+        sibling = {"job": "c" * 64, "message": "d" * 64}
+        self.state = {"archived_held": {"sn1/1900-01-01/ed-1/seq-1": own}}
+        published = []
+        self.fake.publish_held = lambda pages: published.append((pages, list(self.fake.actions)))
+        feed = batch.QueueFeed(self.config, self.state, self.fake, lambda: None,
+                               sibling_archived={"sn1/1900-01-01/ed-1/seq-1": [sibling],
+                                                 "sn2/1900-01-01/ed-1/seq-2": [sibling, {"job": "e"}]})
+        self.assertEqual(feed.held_pages(), {"sn1_1900-01-01_ed-1_seq-1": ["b" * 64, "d" * 64],
+                                             "sn2_1900-01-01_ed-1_seq-2": ["d" * 64]})
+        feed.fill(1, set())
+        self.assertEqual(len(published), 1)
+        self.assertEqual(published[0][0], feed.held_pages())
+        # Published before the claim step ran.
+        self.assertFalse([a for a in published[0][1] if a[0] == "claim"])
+        self.assertTrue([a for a in self.fake.actions if a[0] == "claim"])
+
     def test_claims_made_before_a_failed_claim_step_are_kept(self):
         def failing(count):
             raise batch.ClaimFailed("claim step failed", [message(1)])
@@ -4716,6 +4736,79 @@ class StepChunkingTests(unittest.TestCase):
         with patch.object(t, "claim_step", side_effect=step_claim):
             self.assertEqual(len(t.claim(30)), 30)
         self.assertEqual(asked, [30])
+
+    def test_claim_goes_on_past_a_step_that_spent_its_receive_budget(self):
+        # #1751: a step that reads past settled held or unusable messages to its budget takes
+        # fewer pages than asked for while the queue still holds usable ones further back.
+        t = batch.Transport(queue_config(), Path("."))
+        steps = [(0, True), (40, True), (5, False), (100, False)]
+        asked = []
+
+        def step_claim(count):
+            got, spent = steps[len(asked)]
+            asked.append(count)
+            t.last_claim_summary = {"budget_spent": spent}
+            return [message(len(asked) * 1000 + i) for i in range(got)]
+
+        with patch.object(t, "claim_step", side_effect=step_claim):
+            got = t.claim(150)
+        self.assertEqual(asked, [100, 100, 100])
+        self.assertEqual(len(got), 45)
+        # Out of time: no new step however the last one ended, even a full one; its claims stay.
+        for first in ((0, True), (100, False)):
+            with self.subTest(first=first):
+                asked.clear()
+                steps[0] = first
+                clock = iter([0, batch.CLAIM_SECONDS + 1])
+                with patch.object(t, "claim_step", side_effect=step_claim), \
+                        patch.object(batch.time, "monotonic", side_effect=lambda: next(clock)):
+                    self.assertEqual(len(t.claim(150)), first[0])
+                self.assertEqual(asked, [100])
+
+    def test_held_pages_list_is_put_once_per_change(self):
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        t = batch.Transport(queue_config(), directory)
+        plan = queue_config()["plan"]
+        calls, bodies = [], {}
+        listed = []
+
+        def az(*args):
+            calls.append(args)
+            if args[0] == "upload":
+                bodies[args[2]] = json.loads((directory / "held-pages.json").read_text())
+                listed.append(args[2]) if args[2] not in listed else None
+            elif args[0] == "list":
+                return json.dumps(listed + [f"scheduler/held-pages/{plan}0.0000.json"])
+            elif args[0] == "delete":
+                listed.remove(args[2])
+            return ""
+
+        with patch.object(t, "az", side_effect=az), patch.object(batch, "HELD_PAGES_PER_PART", 2):
+            self.assertTrue(t.publish_held({"d": ["a" * 64]}))
+            self.assertFalse(t.publish_held({"d": ["a" * 64]}))
+            self.assertTrue(t.publish_held({"d": ["a" * 64], "e": ["b" * 64], "f": ["c" * 64]}))
+            self.assertEqual(sorted(listed), [f"scheduler/held-pages/{plan}.0000.json",
+                                              f"scheduler/held-pages/{plan}.0001.json"])
+            self.assertEqual(bodies[f"scheduler/held-pages/{plan}.0001.json"],
+                             {"schema_version": 1, "pages": {"f": ["c" * 64]}})
+            # A shorter list takes the plan's surplus part away, and only the plan's own.
+            self.assertTrue(t.publish_held({"d": ["a" * 64]}))
+        self.assertEqual(listed, [f"scheduler/held-pages/{plan}.0000.json"])
+        deleted = [c[2] for c in calls if c[0] == "delete"]
+        self.assertEqual(deleted, [f"scheduler/held-pages/{plan}.0001.json"])
+
+    def test_held_pages_parts_in_a_local_handoff(self):
+        root = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
+        root.chmod(0o700)
+        state = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        t = batch.Transport(queue_config(), state)
+        t.handoff_root = root
+        plan = queue_config()["plan"]
+        with patch.object(batch, "HELD_PAGES_PER_PART", 1):
+            t.publish_held({"d": ["a" * 64], "e": ["b" * 64]})
+            t.publish_held({"d": ["a" * 64]})
+        self.assertEqual(sorted(p.name for p in (root / "scheduler/held-pages").glob("*.json")),
+                         [f"{plan}.0000.json"])
 
     def test_a_later_claim_failure_keeps_every_earlier_claim(self):
         t = batch.Transport(queue_config(), Path("."))
