@@ -1109,9 +1109,15 @@ mod tests {
         // The ship collector's address isn't the BOINC server's.
         assert_eq!(push("198.51.100.14").await.0, StatusCode::FORBIDDEN);
         assert_eq!(push("203.0.113.3").await.0, StatusCode::FORBIDDEN);
-        let named = body.replacen("\"accounts\":4", "\"accounts\":4,\"users\":[\"tgoodyear\"]", 1);
+        let named = body.replacen(
+            "\"accounts\":4",
+            "\"accounts\":4,\"users\":[\"tgoodyear\"]",
+            1,
+        );
         assert_eq!(
-            call(a.clone(), "198.51.100.15", "PUT", "/api/boinc-week", &named).await.0,
+            call(a.clone(), "198.51.100.15", "PUT", "/api/boinc-week", &named)
+                .await
+                .0,
             StatusCode::BAD_REQUEST
         );
         assert_eq!(push("198.51.100.15").await.0, StatusCode::NO_CONTENT);
@@ -1130,7 +1136,10 @@ mod tests {
         assert!(page.contains("Queued jobs"));
         let (_, json) = call(a.clone(), "198.51.100.50", "GET", "/api/view.json", "").await;
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(v["boinc_week"]["week"]["buckets"].as_array().unwrap().len(), 56);
+        assert_eq!(
+            v["boinc_week"]["week"]["buckets"].as_array().unwrap().len(),
+            56
+        );
         // Never pushed on the public listener.
         let ((s, _), _) = call_on(
             public_router(a),
@@ -1140,7 +1149,8 @@ mod tests {
             &body,
         )
         .await;
-        assert_eq!(s, StatusCode::NOT_FOUND);
+        // `/api/{part}` is GET only there.
+        assert_eq!(s, StatusCode::METHOD_NOT_ALLOWED);
     }
 
     #[tokio::test]

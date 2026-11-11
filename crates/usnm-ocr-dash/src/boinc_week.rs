@@ -202,7 +202,8 @@ fn read_file(path: &Path) -> anyhow::Result<Option<Stored>> {
         Err(e) => return Err(e.into()),
     };
     let mut bytes = Vec::new();
-    file.take(2 * MAX_BYTES as u64 + 1).read_to_end(&mut bytes)?;
+    file.take(2 * MAX_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)?;
     ensure!(bytes.len() <= 2 * MAX_BYTES, "too large");
     let stored: Stored = serde_json::from_slice(&bytes)?;
     check(&stored.week, stored.received + Duration::minutes(1))?;
@@ -259,15 +260,27 @@ pub(crate) mod tests {
         assert!(refused(&|d| d["buckets"][0]["users"] = json!(["tgoodyear"])));
         assert!(refused(&|d| d["buckets"][0]["hostid"] = json!(12)));
         assert!(refused(&|d| d["host"] = json!("pve")));
-        assert!(refused(&|d| d["buckets"][0]["queued"]["pve-big.tjg.fyi"] = json!(1)));
-        assert!(refused(&|d| d["buckets"][0]["completed"]["Issue559 acceptance"] = json!(1)));
-        assert!(refused(&|d| d["buckets"][0]["completed"]["192.0.2.7"] = json!(1)));
-        assert!(refused(&|d| d["buckets"][0]["accounts"] = json!("boinc-test")));
+        assert!(refused(
+            &|d| d["buckets"][0]["queued"]["pve-big.tjg.fyi"] = json!(1)
+        ));
+        assert!(refused(
+            &|d| d["buckets"][0]["completed"]["Issue559 acceptance"] = json!(1)
+        ));
+        assert!(refused(
+            &|d| d["buckets"][0]["completed"]["192.0.2.7"] = json!(1)
+        ));
+        assert!(refused(
+            &|d| d["buckets"][0]["accounts"] = json!("boinc-test")
+        ));
         // And the rest holds together.
         assert!(refused(&|d| d["schema"] = json!(2)));
         assert!(refused(&|d| d["bucket_hours"] = json!(4)));
-        assert!(refused(&|d| d["generated_at"] = json!(now.timestamp() + 3600)));
-        assert!(refused(&|d| d["buckets"][1]["start"] = d["buckets"][0]["start"].clone()));
+        assert!(refused(
+            &|d| d["generated_at"] = json!(now.timestamp() + 3600)
+        ));
+        assert!(refused(
+            &|d| d["buckets"][1]["start"] = d["buckets"][0]["start"].clone()
+        ));
         assert!(refused(&|d| d["buckets"][0]["volunteers"] = json!(5)));
         assert!(refused(&|d| d["buckets"] = json!([])));
     }
