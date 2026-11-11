@@ -69,8 +69,10 @@ class PatchServerGpuRamCapTest(unittest.TestCase):
 struct { bool debug_version_select = false; } config;
 struct { template<class... T> void printf(T...) {} } log_messages;
 const int MSG_NORMAL = 0;
-bool admits(double min_gpu_ram_mb, double max_gpu_ram_mb, double gpu_ram) {
-    bool cpp = true;
+struct COPROC { int count; };
+bool admits(double min_gpu_ram_mb, double max_gpu_ram_mb, double gpu_ram, int count = 1) {
+    COPROC cp{count};
+    COPROC* cpp = &cp;
     if (cpp) {
 CHECK
     }
@@ -88,6 +90,10 @@ int main() {
     assert(!admits(7000, 0, 6999 * MEGA));
     assert(admits(7000, 0, 7000 * MEGA));
     assert(admits(7000, 0, 24576 * MEGA));       // no max: unchanged behavior
+    // A mixed 6/8 GiB pool: either card may be the representative; a capped class refuses both.
+    assert(!admits(5500, 6999, 6144 * MEGA, 2));
+    assert(!admits(5500, 6999, 8192 * MEGA, 2));
+    assert(admits(7000, 0, 8192 * MEGA, 2));     // uncapped classes keep multi-GPU hosts
 }
 """.replace("CHECK", module.CHECK_PATCHED)
         with tempfile.TemporaryDirectory() as folder:

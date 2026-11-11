@@ -531,6 +531,22 @@ foreach ([["batch"=>8,"rsc_disk_bound"=>19327352832], ["batch"=>8], ["rsc_disk_b
                 self.assertEqual(self.target.read_bytes(), original)
                 self.assertFalse((self.root / "ops-issue-559").exists())
         (self.root / "cgi-bin/cgi").write_bytes(b"\0parse_double max_gpu_ram_mb\0")
+        # A patched scheduler with a policy not yet refreshed (no ceiling, or another value):
+        # opening would make every 7 GB card eligible, so nothing opens.
+        for ceiling in (None, "8000"):
+            with self.subTest(ceiling=ceiling):
+                text = original.decode()
+                start = text.index("<name>nvidia_vulkan_6gb_8b</name>")
+                cap = text.index("<max_gpu_ram_mb>6999</max_gpu_ram_mb>", start)
+                replacement = "" if ceiling is None else f"<max_gpu_ram_mb>{ceiling}</max_gpu_ram_mb>"
+                self.target.write_text(text[:cap] + replacement
+                                       + text[cap + len("<max_gpu_ram_mb>6999</max_gpu_ram_mb>"):])
+                stale_policy = self.target.read_bytes()
+                refused = subprocess.run(command + ["--apply"], text=True, capture_output=True)
+                self.assertNotEqual(refused.returncode, 0)
+                self.assertIn("exactly one max_gpu_ram_mb of 6999", refused.stderr)
+                self.assertEqual(self.target.read_bytes(), stale_policy)
+        self.target.write_bytes(original)
         # Preview first; its digest guards the apply.
         preview = json.loads(subprocess.run(command, text=True, capture_output=True, check=True).stdout)
         self.assertEqual(preview["admission_mode"], "general")

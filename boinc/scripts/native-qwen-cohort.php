@@ -29,12 +29,24 @@ const GENERAL_MARKERS = [
     "nvidia_vulkan_6gb_8b" => NVIDIA_6GB_GENERAL_MARKER,
 ];
 
-// The live scheduler binary must parse max_gpu_ram_mb before the 6 GB class opens generally.
-function native_qwen_gpu_ram_cap_guard($project) {
+const NVIDIA_6GB_MAX_GPU_RAM_MB = "6999";
+
+// Before the 6 GB class opens generally, the live scheduler binary must parse max_gpu_ram_mb
+// and the policy being edited must carry the reviewed ceiling: at startup the patched binary
+// can be in place before the policy is refreshed, and without the ceiling every 7 GB card
+// would be eligible for the partial-offload version.
+function native_qwen_gpu_ram_cap_guard($project, $xml) {
     $cgi = "$project/cgi-bin/cgi";
     $binary = is_file($cgi) && !is_link($cgi) ? file_get_contents($cgi) : false;
     if ($binary === false || strpos($binary, "max_gpu_ram_mb") === false) {
         throw new RuntimeException("The scheduler at $cgi does not support max_gpu_ram_mb: deploy the patched base image first");
+    }
+    $doc = new DOMDocument();
+    if (!$doc->loadXML($xml, LIBXML_NONET)) throw new RuntimeException("Invalid plan XML");
+    $caps = (new DOMXPath($doc))->query("//plan_class[name='nvidia_vulkan_6gb_8b']/max_gpu_ram_mb");
+    if ($caps->length !== 1 || trim($caps->item(0)->textContent) !== NVIDIA_6GB_MAX_GPU_RAM_MB) {
+        throw new RuntimeException("nvidia_vulkan_6gb_8b needs exactly one max_gpu_ram_mb of "
+            . NVIDIA_6GB_MAX_GPU_RAM_MB . " in the live policy: refresh the plan policy first");
     }
 }
 
@@ -369,7 +381,7 @@ function native_qwen_cohort_write($project, $plan_class, $workunit_id, $apply, $
         }
         if ($publication_guard !== null) $unlock_database = $publication_guard();
         if ($revalidate !== null) $revalidate();
-        if ($general && $plan_class === "nvidia_vulkan_6gb_8b") native_qwen_gpu_ram_cap_guard($project);
+        if ($general && $plan_class === "nvidia_vulkan_6gb_8b") native_qwen_gpu_ram_cap_guard($project, $original);
         // Lock waits/DB revalidation can cross an automatic admission deadline; closing stays allowed.
         $admission_expired = function() use ($admit_until, $workunit_id) {
             if ($admit_until !== null && $workunit_id > 1 && time() >= $admit_until) {

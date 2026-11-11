@@ -6,6 +6,11 @@ skips unknown tags without an error, so <max_gpu_ram_mb> alone would cap nothing
 patch a GPU plan class with max_gpu_ram_mb rejects a GPU reporting more RAM than that, measured
 as min_gpu_ram_mb is (MiB of the CUDA, OpenCL or Apple total). nvidia_vulkan_6gb_8b uses it
 to stay off the cards that nvidia_vulkan_8b admits (#1234).
+
+The scheduler sees one representative device's RAM per GPU type, and BOINC's correlate can
+group a 6 GiB and an 8 GiB card and pick either as representative, so a capped class also
+refuses a pool of more than one device: the partial-offload version must never run on a card
+the full 8B class could use.
 """
 from __future__ import annotations
 
@@ -33,6 +38,15 @@ CHECK_ORIGINAL = """\
         }
 """
 CHECK_PATCHED = CHECK_ORIGINAL + """\
+        if (max_gpu_ram_mb && cpp->count > 1) {
+            if (config.debug_version_select) {
+                log_messages.printf(MSG_NORMAL,
+                    "[version] plan_class_spec: GPU RAM max set, %d devices in the pool\\n",
+                    cpp->count
+                );
+            }
+            return false;
+        }
         if (max_gpu_ram_mb && gpu_ram > max_gpu_ram_mb * MEGA) {
             if (config.debug_version_select) {
                 log_messages.printf(MSG_NORMAL,
