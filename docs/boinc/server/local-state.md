@@ -97,6 +97,12 @@ The integration tests run against the queue fixture (`scripts/onprem/queue/ci-fi
 `postgres_documents_import_keeps_etags_and_reruns_cleanly` with `USNM_TEST_DOCUMENTS`, and
 `queue_move_into_pgmq_live` with `USNM_TEST_PGMQ`.
 
+Both commands run from the batch container as its own Arc identity. Set
+`USNM_STATE_MIGRATION` and provision for the cutover: it grants that identity Cosmos DB
+Built-in Data Reader on the `usnm` database and Message Processor on `ocr-priority` and
+`ocr-bulk` (`infra/modules/ocr-sync-runner.bicep`). Turn it off and provision again once
+the cutover is done.
+
 ## Local lake mounts
 
 The on-prem handoff runner accepts `CURATED_URL=/lake-state/curated`,
