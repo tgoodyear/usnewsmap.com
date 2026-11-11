@@ -392,10 +392,11 @@ def db_checks(check, parts, now):
         # Lag already over the limit fires at once, whatever the threads do now.
         check("db_replica", True, generation="lag", reason="replica_lag", seconds=lag)
     elif not replica["io_running"]:
-        check("db_replica", True, REPLICA_STOPPED_HOLD_S, generation="io", reason="replica_io_stopped",
+        # One timer for "a thread stopped": IO flapping while SQL stays stopped doesn't restart it.
+        check("db_replica", True, REPLICA_STOPPED_HOLD_S, generation="stopped", reason="replica_io_stopped",
               seconds=replica["lag_s"])
     elif not replica["sql_running"]:
-        check("db_replica", True, REPLICA_STOPPED_HOLD_S, generation="sql", reason="replica_sql_stopped",
+        check("db_replica", True, REPLICA_STOPPED_HOLD_S, generation="stopped", reason="replica_sql_stopped",
               seconds=replica["lag_s"])
     elif replica["lag_s"] is None:
         check("db_replica", None, reason="replica_lag_unknown")

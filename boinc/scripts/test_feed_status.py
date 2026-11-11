@@ -720,13 +720,24 @@ class DatabaseBackupTest(unittest.TestCase):
         checks = self.tick(300)
         self.assertEqual((checks["db_replica"]["state"], checks["db_replica"]["reason"]),
                          ("firing", "replica_io_stopped"))
-        self.facts["dbbackup"]["replica"].update(io_running=True, sql_running=False)
-        self.assertEqual(self.tick(360)["db_replica"]["state"], "pending")
         self.facts["dbbackup"]["replica"]["sql_running"] = True
-        self.assertEqual(self.tick(420)["db_replica"]["state"], "healthy")
+        self.facts["dbbackup"]["replica"]["io_running"] = True
+        self.assertEqual(self.tick(360)["db_replica"]["state"], "healthy")
+        # SQL stopped throughout while IO flaps: one timer, so it still fires at five minutes.
+        replica = self.facts["dbbackup"]["replica"]
+        replica.update(sql_running=False, lag_s=None)
+        for at in range(420, 720, 60):
+            replica["io_running"] = (at // 60) % 2 == 0
+            self.tick(at)
+        replica["io_running"] = True
+        checks = self.tick(720)
+        self.assertEqual((checks["db_replica"]["state"], checks["db_replica"]["reason"]),
+                         ("firing", "replica_sql_stopped"))
+        replica.update(sql_running=True, lag_s=0)
+        self.assertEqual(self.tick(780)["db_replica"]["state"], "healthy")
         # Lag over the limit fires at once, even with a thread stopped.
         self.facts["dbbackup"]["replica"].update(io_running=False, lag_s=301)
-        self.assertEqual((self.tick(480)["db_replica"]["state"], self.tick(540)["db_replica"]["reason"]),
+        self.assertEqual((self.tick(840)["db_replica"]["state"], self.tick(900)["db_replica"]["reason"]),
                          ("firing", "replica_lag"))
 
     def test_each_age_and_lag_limit(self):
