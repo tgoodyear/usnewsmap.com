@@ -343,6 +343,31 @@ class BoincTests(unittest.TestCase):
         self.assertAlmostEqual(w.series["step_seconds.spool-out"][2], 60, delta=1)
         self.assertNotIn("step_seconds.collect", w.series)
 
+    def test_step_events_come_from_the_journals_podman_fields(self):
+        line = lambda **fields: json.dumps({"SYSLOG_IDENTIFIER": "podman", "PODMAN_TYPE": "container", **fields})
+        output = "\n".join([
+            line(PODMAN_EVENT="start", PODMAN_NAME="usnm-boinc-step-20261111T081449Z-quality-stage",
+                 PODMAN_TIME="2026-11-11T08:14:50.123456789Z"),
+            line(PODMAN_EVENT="died", PODMAN_NAME="usnm-boinc-step-20261111T081449Z-quality-stage",
+                 PODMAN_TIME="2026-11-11T08:26:16.532032173Z"),
+            line(PODMAN_EVENT="died"),
+            "not json",
+        ])
+        with patch.object(collector, "run", return_value=output) as run:
+            events = collector.step_events(NOW - 3 * HOUR)
+        command = run.call_args[0][0]
+        self.assertEqual(command[0], "journalctl")
+        self.assertIn(f"--since=@{NOW - 3 * HOUR}", command)
+        self.assertNotIn("podman", command)
+        for match in ("PODMAN_TYPE=container", "PODMAN_EVENT=start", "PODMAN_EVENT=died"):
+            self.assertIn(match, command)
+        self.assertEqual(events, [
+            {"Name": "usnm-boinc-step-20261111T081449Z-quality-stage", "Status": "start",
+             "Time": "2026-11-11T08:14:50.123456789Z"},
+            {"Name": "usnm-boinc-step-20261111T081449Z-quality-stage", "Status": "died",
+             "Time": "2026-11-11T08:26:16.532032173Z"},
+        ])
+
 
 class DocumentTests(unittest.TestCase):
     def test_hours_before_the_source_begins_are_null_not_zero(self):
