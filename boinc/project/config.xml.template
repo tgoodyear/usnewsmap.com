@@ -48,15 +48,13 @@
              about 20 minutes (docs/boinc/server/feeder-refresh.md, Client retry behaviour; #1462). -->
         <maintenance_delay>1200</maintenance_delay>
         <max_wus_in_progress>32</max_wus_in_progress>
-        <!-- usnm_qwen: at most 6 tasks in progress per GPU (#1435). A bundle runs 3 to 50
-             minutes, so a few cover a host between scheduler requests, and a host cannot queue
-             hundreds of units, which held each one's pair for hours behind that queue. -->
-        <max_jobs_in_progress>
-            <app>
-                <app_name>usnm_qwen</app_name>
-                <gpu_limit><jobs>6</jobs><per_proc/></gpu_limit>
-            </app>
-        </max_jobs_in_progress>
+        <!-- At most 6 GPU tasks in progress per GPU (#1435): a Qwen bundle runs 3 to 80 minutes,
+             so a few cover a host between scheduler requests, and a host cannot queue hundreds
+             of units, which held each one's pair for hours behind that queue. It is the flat
+             form, for every GPU app: bin/start's Python config reader (py/Boinc/boincxml.py)
+             cannot read an element of <config> that holds elements, so the per-app
+             <max_jobs_in_progress> stopped every daemon when the server started. -->
+        <max_wus_in_progress_gpu>6</max_wus_in_progress_gpu>
         <daily_result_quota>50000</daily_result_quota>
         <max_wus_to_send>64</max_wus_to_send>
         <resend_lost_results>1</resend_lost_results>
