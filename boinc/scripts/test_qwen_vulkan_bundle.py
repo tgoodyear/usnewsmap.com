@@ -125,9 +125,6 @@ class Bundle(unittest.TestCase):
             self.build(archive, lock, "missing")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class WindowsBundle(unittest.TestCase):
     """build-windows (#1672): the pinned win-vulkan-x64 zip plus the Windows native CI artifact."""
@@ -209,3 +206,7 @@ class WindowsBundle(unittest.TestCase):
         archive, lock = self.archive(extra=("../ggml-evil.dll",))
         with self.assertRaisesRegex(ValueError, "unexpected archive member"):
             self.build(archive, lock, out="unsafe")
+
+
+if __name__ == "__main__":
+    unittest.main()
