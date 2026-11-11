@@ -383,6 +383,17 @@ Per step: the last full hour, last 24 hours, seconds per page, known limit and a
 
 Collectors recompute whole hours, so reruns correct rather than add. The `boinc` queries are read-only, aggregate-only and stop at five seconds; run it with `USNM_THROUGHPUT_HOURS=72` (quorums settle late) and journal sources with 3. Backfill once with `--hours 336` (`db_purge` keeps results 30 days). History is `throughput.json` in the state directory (two weeks, a few hundred KB). Uncovered hours are unknown. A source silent 45 minutes is stale, and its rates turn unknown as the hours pass. `usnm_quality` and `usnm_qwen` count workunits, not pages, while their load rows count pages. Lock hold time covers step containers only, so it is a minimum: the result loaders and native Qwen submission hold the lock without a container.
 
+### BOINC week
+
+The chart of the BOINC server's last seven days comes from `scripts/ocr-node/boinc-week-collect.py`, installed on the BOINC server as `/usr/local/bin/usnm-boinc-week-collect` with `usnm-boinc-week-collect.service` and `.timer` (every five minutes). Settings in `/etc/usnm/boinc-week-collect.env`:
+
+```sh
+USNM_BOINC_WEEK_PUSH_URL=http://<dashboard>/api/boinc-week
+USNM_BOINC_WEEK_PROJECT_USERS=<the project's own BOINC user ids, comma-separated>
+```
+
+The dashboard takes the push only from the address configured for the `boinc` throughput source (`--throughput-push boinc=<host>`) and keeps the last document in its state directory (`boinc-week.json`). A run by hand with `--out FILE` and no `--push-url` writes the document without sending it. It is at `boinc_week` in `/api/view.json`.
+
 ### Corpus data flow snapshot (#704)
 
 The optional "Corpus data flow" panel polls a local metadata-only `corpus-catalog` JSON file (15 s default), served at `/api/pipeline.json` and as `pipeline` in `/api/view.json`. No database, cloud or credentials. Counts come hourly from the throughput history ([14: Current evidence](../design/14-corpus-data-flow.md#current-evidence)) and are not whole-corpus totals; zero can mean no catalog. The producer publishes atomically, covers absent sources with coverage and issues, and never includes OCR text or storage URIs. Set `--pipeline-snapshot` / `USNM_OCRDASH_PIPELINE_SNAPSHOT`, and `--pipeline-max-age-secs` / `USNM_OCRDASH_PIPELINE_MAX_AGE_SECS` (default 900; 1–604800). Open panels and scroll positions survive refresh.

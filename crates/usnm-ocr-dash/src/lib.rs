@@ -4,6 +4,7 @@
 //! and serves one HTML page and the same data as JSON. It never shows page
 //! text: pages appear by doc_id, with counts, sizes, times and engine tags.
 
+pub mod boinc_week;
 pub mod diagrams;
 pub mod feed;
 pub mod fetch;
@@ -48,6 +49,8 @@ pub struct App {
     pub ssets: Mutex<Ssets>,
     pub queues: Mutex<queues::Queues>,
     pub throughput: Mutex<throughput::Throughput>,
+    /// The BOINC server's last seven days, as last pushed.
+    pub boinc_week: Mutex<boinc_week::BoincWeek>,
     pub seed_plan_path: Option<PathBuf>,
     pub seed_plan: Mutex<Option<BTreeMap<String, String>>>,
     pub settings: Settings,
@@ -145,6 +148,7 @@ impl App {
             now,
         );
         v.pipeline = self.pipeline.lock().expect("pipeline lock").view(now);
+        v.boinc_week = self.boinc_week.lock().expect("boinc week lock").view(now);
         v.feed = feed::read(self.settings.feed_health_path.as_deref(), now);
         v.throughput = throughput::view(
             &self.throughput.lock().expect("throughput lock"),
@@ -360,6 +364,44 @@ async fn put_throughput(
     }
 }
 
+/// The BOINC server pushes its week: only from the address its `boinc`
+/// throughput collector pushes from.
+async fn put_boinc_week(
+    State(app): State<Arc<App>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    body: Bytes,
+) -> Response {
+    let ip = peer.ip().to_canonical();
+    if !app
+        .throughput_pushers
+        .get("boinc")
+        .is_some_and(|a| a.contains(ip))
+    {
+        tracing::info!(peer = %ip, "refused a BOINC week push");
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let now = Utc::now();
+    let week = match boinc_week::parse(&body, now) {
+        Ok(w) => w,
+        Err(e) => return (StatusCode::BAD_REQUEST, format!("{e:#}\n")).into_response(),
+    };
+    let saved = tokio::task::spawn_blocking(move || {
+        app.boinc_week
+            .lock()
+            .expect("boinc week lock")
+            .put(week, now)
+    })
+    .await;
+    match saved {
+        Ok(Ok(())) => StatusCode::NO_CONTENT.into_response(),
+        Ok(Err(e)) => {
+            tracing::error!(error = format!("{e:#}"), "can't save the BOINC week");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
 async fn put_feed_source(
     State(app): State<Arc<App>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -410,6 +452,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/host/{name}", put(put_host))
         .route("/api/sset/{name}", put(put_sset))
         .route("/api/throughput/{source}", put(put_throughput))
+        .route("/api/boinc-week", put(put_boinc_week))
         .route(
             "/api/feed-source/{source}",
             put(put_feed_source).layer(DefaultBodyLimit::max(feed::MAX_SOURCE_BYTES)),
@@ -452,7 +495,8 @@ pub fn public_router(app: Arc<App>) -> Router {
 /// with the same path and query, except
 /// the hosts' stats pushes (`PUT /api/host/{name}`), the Serial Set status
 /// push (`PUT /api/sset/{name}`) and the throughput counters
-/// (`PUT /api/throughput/{source}`), which carry no secret,
+/// (`PUT /api/throughput/{source}`) and the BOINC week (`PUT /api/boinc-week`),
+/// which carry no secret,
 /// are checked by address, and come from `curl` that doesn't follow
 /// redirects. The same `--allow` as the page.
 pub fn redirect_router(app: Arc<App>, authority: &str) -> Router {
@@ -468,6 +512,10 @@ pub fn redirect_router(app: Arc<App>, authority: &str) -> Router {
         .route(
             "/api/throughput/{source}",
             put(put_throughput).fallback(redirect.clone()),
+        )
+        .route(
+            "/api/boinc-week",
+            put(put_boinc_week).fallback(redirect.clone()),
         )
         .route(
             "/api/feed-source/{source}",
@@ -496,6 +544,7 @@ mod tests {
             ssets: Mutex::new(Ssets::default()),
             queues: Mutex::new(queues::Queues::default()),
             throughput: Mutex::new(throughput::Throughput::default()),
+            boinc_week: Mutex::new(boinc_week::BoincWeek::default()),
             feed_pushers: BTreeMap::new(),
             feed_source_dir: Mutex::new(None),
             seed_plan_path: None,
@@ -1048,6 +1097,63 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_boinc_week_comes_from_the_boinc_collector_address_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut a = app(dir.path());
+        Arc::get_mut(&mut a).unwrap().throughput_pushers.insert(
+            "boinc".to_owned(),
+            Allow::new(vec!["198.51.100.15".parse().unwrap()]),
+        );
+        let body = serde_json::to_string(&boinc_week::tests::document(Utc::now())).unwrap();
+        let push = |from| call(a.clone(), from, "PUT", "/api/boinc-week", &body);
+        // The ship collector's address isn't the BOINC server's.
+        assert_eq!(push("198.51.100.14").await.0, StatusCode::FORBIDDEN);
+        assert_eq!(push("203.0.113.3").await.0, StatusCode::FORBIDDEN);
+        let named = body.replacen(
+            "\"accounts\":4",
+            "\"accounts\":4,\"users\":[\"tgoodyear\"]",
+            1,
+        );
+        assert_eq!(
+            call(a.clone(), "198.51.100.15", "PUT", "/api/boinc-week", &named)
+                .await
+                .0,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(push("198.51.100.15").await.0, StatusCode::NO_CONTENT);
+        // Plain HTTP takes it too.
+        let ((s, _), _) = call_on(
+            redirect_router(a.clone(), "ocr.example.org"),
+            "198.51.100.15",
+            "PUT",
+            "/api/boinc-week",
+            &body,
+        )
+        .await;
+        assert_eq!(s, StatusCode::NO_CONTENT);
+        let (_, page) = call(a.clone(), "198.51.100.50", "GET", "/", "").await;
+        assert!(page.contains("id=\"boinc-week\""));
+        assert!(page.contains("Queued jobs"));
+        let (_, json) = call(a.clone(), "198.51.100.50", "GET", "/api/view.json", "").await;
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            v["boinc_week"]["week"]["buckets"].as_array().unwrap().len(),
+            56
+        );
+        // Never pushed on the public listener.
+        let ((s, _), _) = call_on(
+            public_router(a),
+            "198.51.100.15",
+            "PUT",
+            "/api/boinc-week",
+            &body,
+        )
+        .await;
+        // `/api/{part}` is GET only there.
+        assert_eq!(s, StatusCode::METHOD_NOT_ALLOWED);
+    }
+
+    #[tokio::test]
     async fn failure_reasons_and_limits_are_scrubbed_on_the_public_listener() {
         let dir = tempfile::tempdir().unwrap();
         let a = app(dir.path());
@@ -1156,6 +1262,7 @@ mod tests {
             ssets: Mutex::new(Ssets::default()),
             queues: Mutex::new(queues::Queues::default()),
             throughput: Mutex::new(throughput::Throughput::default()),
+            boinc_week: Mutex::new(boinc_week::BoincWeek::default()),
             feed_pushers: BTreeMap::new(),
             feed_source_dir: Mutex::new(None),
             seed_plan_path: None,
@@ -1174,6 +1281,11 @@ mod tests {
             sset_pushers: BTreeMap::new(),
             throughput_pushers: BTreeMap::new(),
         });
+        {
+            let week = boinc_week::tests::document(now);
+            let week = boinc_week::parse(&serde_json::to_vec(&week).unwrap(), now).unwrap();
+            a.boinc_week.lock().unwrap().put(week, now).unwrap();
+        }
         let guest = |vmid, kind: &str, name: &str, node: &str| PveGuest {
             vmid,
             kind: kind.into(),
@@ -1295,6 +1407,15 @@ mod tests {
             "usnm-release",
             "usnm-sset.service",
             "seed.env",
+            // The BOINC project's own accounts, and any account or host id.
+            "tgoodyear",
+            "boinc-test",
+            "boinc-volunteer",
+            "Issue559",
+            "userid",
+            "hostid",
+            "user_id",
+            "host_id",
         ]
         .iter()
         .filter(|p| body.contains(*p))
@@ -1351,6 +1472,10 @@ mod tests {
         }
         let ((_, page), _) = call_on(public_router(a.clone()), "203.0.113.3", "GET", "/", "").await;
         assert!(page.contains("scan server"));
+        // The BOINC week: on the public page, as counts.
+        assert!(page.contains("id=\"boinc-week\""));
+        assert_eq!(page.matches("<svg class=\"wk\"").count(), 3);
+        assert!(page.contains("usnm_qwen"));
         assert!(page.contains("queue-ocr-20261025t015125"));
         assert!(page.contains("OCR node 1"));
         let ((_, p), _) = call_on(

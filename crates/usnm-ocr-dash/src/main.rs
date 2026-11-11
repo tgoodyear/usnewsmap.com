@@ -248,6 +248,7 @@ async fn main() -> anyhow::Result<()> {
             cli.queue_url.as_deref(),
         )?),
         throughput: Mutex::new(usnm_ocr_dash::throughput::Throughput::open(&cli.state_dir)),
+        boinc_week: Mutex::new(usnm_ocr_dash::boinc_week::BoincWeek::open(&cli.state_dir)),
         seed_plan_path: cli.seed_plan.clone(),
         seed_plan: Mutex::new(None),
         settings: Settings {

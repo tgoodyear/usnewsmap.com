@@ -1,9 +1,9 @@
 pub(super) const STYLE: &str = r#"
 :root { --surface:#fcfcfb; --plane:#f9f9f7; --ink:#0b0b0b; --ink2:#52514e; --muted:#898781;
-  --grid:#e1e0d9; --track:#e1e0d9; --fill:#2a78d6; --series2:#eb6834; --good:#0ca30c; --warning:#fab219; --critical:#d03b3b;
+  --grid:#e1e0d9; --track:#e1e0d9; --fill:#2a78d6; --series2:#eb6834; --series3:#1baf7a; --good:#0ca30c; --warning:#fab219; --critical:#d03b3b;
   --ring:rgba(11,11,11,0.10); }
 @media (prefers-color-scheme: dark) { :root { --surface:#1a1a19; --plane:#0d0d0d; --ink:#ffffff; --ink2:#c3c2b7;
-  --grid:#2c2c2a; --track:#383835; --fill:#3987e5; --series2:#d95926; --ring:rgba(255,255,255,0.10); } }
+  --grid:#2c2c2a; --track:#383835; --fill:#3987e5; --series2:#d95926; --series3:#199e70; --ring:rgba(255,255,255,0.10); } }
 * { box-sizing: border-box; }
 body { margin:0; padding:16px 20px 40px; background:var(--plane); color:var(--ink);
   font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
@@ -75,6 +75,30 @@ section.wide svg.spark.hourly { width:288px; }
 .bar-tip:empty { display:none; }
 .key { display:inline-block; width:10px; height:10px; border-radius:2px; background:var(--fill); margin-right:4px; }
 .key.s2 { background:var(--series2); }
+/* The BOINC week: three charts on one time axis, one crosshair and tip. */
+.wk-charts h3 { margin:12px 0 0; }
+.wk-charts .note { margin:0 0 2px; }
+section.wide svg.wk { display:block; width:100%; height:auto; margin:0; }
+svg.wk text { fill:var(--muted); font-size:11px; }
+svg.wk .wk-grid { stroke:var(--grid); }
+svg.wk .wk-axis { stroke:var(--muted); }
+svg.wk .wk-line { fill:none; stroke-width:2; stroke-linejoin:round; }
+svg.wk .s1 { stroke:var(--fill); } svg.wk .s2 { stroke:var(--series2); } svg.wk .s3 { stroke:var(--series3); }
+svg.wk circle.s1 { fill:var(--fill); } svg.wk circle.s2 { fill:var(--series2); } svg.wk circle.s3 { fill:var(--series3); }
+svg.wk .wk-dot { stroke:var(--surface); stroke-width:2; }
+svg.wk .wk-bar { fill:var(--fill); }
+svg.wk .wk-partial { opacity:.5; }
+svg.wk .wk-x { stroke:var(--muted); }
+.wk-key { width:14px; height:3px; vertical-align:middle; margin-left:10px; }
+.wk-key:first-child { margin-left:0; }
+.key.s3 { background:var(--series3); }
+.week-tip { position:fixed; z-index:10; display:none; min-width:200px; max-width:min(320px,calc(100vw - 16px)); padding:8px 10px;
+  border-radius:6px; pointer-events:none; background:var(--surface); color:var(--ink); border:1px solid var(--ring);
+  box-shadow:0 2px 8px rgba(0,0,0,.15); font-size:12px; }
+.week-tip b { display:block; margin-bottom:4px; }
+.week-tip .r { display:flex; justify-content:space-between; gap:12px; color:var(--ink2); }
+.week-tip .r.app { padding-left:12px; }
+.week-tip .r span:last-child { color:var(--ink); font-variant-numeric:tabular-nums; }
 .mobile-flow { display:none; }
 .diagram-hint { display:none; }
 .sub, .ecosystem-card, .kv td { overflow-wrap:anywhere; }
@@ -264,6 +288,59 @@ document.addEventListener('keydown', (e) => {
   e.preventDefault();
   if (bars[to]) showTip(bars[to]);
 });
+// The BOINC week: one crosshair across its three charts, and a tip with the
+// bucket's numbers by app, written by the server into the panel.
+const weekTip = document.createElement('div');
+weekTip.className = 'week-tip';
+weekTip.setAttribute('role', 'status');
+document.body.append(weekTip);
+const weekData = new WeakMap();
+const weekOf = (section) => {
+  const el = section.querySelector('.wk-data');
+  if (!el) return null;
+  if (!weekData.has(el)) {
+    try { weekData.set(el, JSON.parse(el.textContent)); } catch { weekData.set(el, null); }
+  }
+  return weekData.get(el);
+};
+const hideWeek = () => {
+  if (weekTip.style.display !== 'block') return;
+  weekTip.style.display = 'none';
+  document.querySelectorAll('svg.wk .wk-x, svg.wk .wk-dot').forEach(e => e.setAttribute('display', 'none'));
+};
+const showWeek = (e) => {
+  const svg = e.target.closest?.('svg.wk');
+  const section = svg?.closest('section');
+  const d = section && weekOf(section);
+  if (!d) return hideWeek();
+  const box = svg.getBoundingClientRect();
+  const x = (e.clientX - box.left) * svg.viewBox.baseVal.width / box.width;
+  const i = Math.floor((x - d.left) / d.step);
+  if (i < 0 || i >= d.n) return hideWeek();
+  const cx = d.left + d.step * (i + 0.5);
+  for (const s of section.querySelectorAll('svg.wk')) {
+    const line = s.querySelector('.wk-x');
+    line.setAttribute('x1', cx);
+    line.setAttribute('x2', cx);
+    line.setAttribute('display', '');
+    const ys = s.dataset.ys ? s.dataset.ys.split(';') : [];
+    s.querySelectorAll('.wk-dot').forEach((dot, k) => {
+      dot.setAttribute('cx', cx);
+      dot.setAttribute('cy', (ys[k] || '').split(',')[i]);
+      dot.setAttribute('display', '');
+    });
+  }
+  weekTip.innerHTML = d.tips[i];
+  weekTip.style.display = 'block';
+  const w = weekTip.offsetWidth, h = weekTip.offsetHeight;
+  weekTip.style.left = (e.clientX + 16 + w > innerWidth ? Math.max(8, e.clientX - w - 16) : e.clientX + 16) + 'px';
+  weekTip.style.top = Math.max(8, Math.min(e.clientY + 12, innerHeight - h - 8)) + 'px';
+};
+document.addEventListener('pointermove', showWeek);
+document.addEventListener('pointerdown', showWeek);
+document.addEventListener('scroll', hideWeek, true);
+document.addEventListener('pointerout', (e) => { if (!e.relatedTarget) hideWeek(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hideWeek(); });
 const panelGroups = ['.dashboard', '.diagnostics > .grid'];
 const childPanels = (grid) => [...grid.children].filter(s => s.matches('section:not(#operational-details)'));
 const panels = (root = document) => panelGroups.flatMap(selector => childPanels(root.querySelector(selector)));

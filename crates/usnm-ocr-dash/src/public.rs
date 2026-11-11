@@ -324,6 +324,16 @@ pub fn redact(v: &mut View) {
     // Its keys and values are free-form settings.
     v.next.seed_plan = None;
 
+    // The BOINC week is counts and app names by construction
+    // ([`crate::boinc_week::parse`]); its note is free text.
+    scrub_opt(&mut v.boinc_week.error);
+    if let Some(w) = &mut v.boinc_week.week {
+        for b in &mut w.buckets {
+            b.queued = crate::boinc_week::known_apps_only(&b.queued);
+            b.completed = crate::boinc_week::known_apps_only(&b.completed);
+        }
+    }
+
     let p = &mut v.pipeline;
     scrub_opt(&mut p.last_error);
     for f in &mut p.stage_freshness {
