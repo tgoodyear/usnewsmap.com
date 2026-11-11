@@ -11,6 +11,7 @@ mod boinc_week;
 mod details;
 mod ecosystem;
 mod fmt;
+mod overview;
 mod throughput;
 
 use assets::{SCRIPT, STYLE};
@@ -28,19 +29,33 @@ pub fn render(v: &View) -> String {
          <noscript><meta http-equiv=\"refresh\" content=\"{}\"></noscript>\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
          <title>USNewsMap processing</title><style>{STYLE}</style></head><body data-refresh=\"{}\">\
-         <h1>USNewsMap processing</h1><div class=\"sub\">Source acquisition, local OCR, volunteer compute and evaluation. \
-         Read-only; no page text. Made {}; refreshes every {}s. \
-         JSON: <a href=\"/api/view.json\">/api/view.json</a>.</div><div class=\"grid dashboard\">",
+         <h1>USNewsMap processing</h1><div class=\"sub\">{} Updated {}; refreshes every {} seconds.{}</div>\
+         <div class=\"grid dashboard\">",
         v.refresh_secs,
         v.refresh_secs,
+        if v.public {
+            "How the usnewsmap.com newspaper collection stands, and the work to improve its text."
+        } else {
+            "Source acquisition, local OCR, volunteer compute and evaluation. Read-only; no page text."
+        },
         time(now),
-        v.refresh_secs
+        v.refresh_secs,
+        if v.public {
+            ""
+        } else {
+            " JSON: <a href=\"/api/view.json\">/api/view.json</a>."
+        },
     );
+    o.push_str(&overview::sections(v));
+    if v.public {
+        // The public page is the overview alone.
+        let _ = write!(o, "</div><script>{SCRIPT}</script></body></html>");
+        return o;
+    }
     if let Some(w) = &v.warming {
         o.push_str(&warming_panel(w));
     }
     o.push_str(&ecosystem_panel(v));
-    o.push_str(&boinc_week::panel(&v.boinc_week));
     o.push_str(&throughput::panel(&v.throughput));
     o.push_str(&crate::diagrams::section(v));
     o.push_str("<section class=\"wide\" id=\"operational-details\"><h2>Operational details</h2>\
@@ -274,6 +289,9 @@ mod tests {
         v.fetch.publish.value = None;
         v.fetch.publish.error = Some("cannot read /var/lib/private/publisher.json".into());
         crate::public::redact(&mut v);
+        // The public page has no operational panels: render the redacted
+        // view's as the LAN would.
+        v.public = false;
         let html = render(&v);
         assert!(html.contains("Publisher metadata unknown"));
         assert!(!html.contains("/var/lib/private"));

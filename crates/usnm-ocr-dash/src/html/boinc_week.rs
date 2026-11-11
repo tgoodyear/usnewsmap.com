@@ -223,22 +223,43 @@ fn row(o: &mut String, label: &str, value: &str, app: bool) {
     );
 }
 
-fn by_app(o: &mut String, apps: &std::collections::BTreeMap<String, u64>) {
-    let mut apps: Vec<_> = apps.iter().filter(|(_, n)| **n > 0).collect();
-    apps.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
-    for (name, n) in apps {
-        row(o, name, &int(*n), true);
+/// A kind of job, by its app, in a word or two.
+pub(super) fn app_label(app: &str) -> &'static str {
+    match app {
+        "usnm_ocr" => "Page OCR",
+        "usnm_quality" => "Text comparison",
+        "usnm_qwen" => "AI snippet reading",
+        "usnm_gold" | "usnm_gold_native" => "Test jobs",
+        "usnm_ndlocr" => "Japanese OCR",
+        "usnm_surya" => "Retired engine trial",
+        _ => "Other",
     }
 }
 
-/// Counts by app for the table: `usnm_qwen 1,700, usnm_ocr 5`, largest first.
+/// Counts by kind of job, largest first: what [`by_app`] puts in a tip.
+fn kinds(apps: &std::collections::BTreeMap<String, u64>) -> Vec<(&'static str, u64)> {
+    let mut kinds: std::collections::BTreeMap<&str, u64> = std::collections::BTreeMap::new();
+    for (app, n) in apps {
+        *kinds.entry(app_label(app)).or_default() += n;
+    }
+    let mut kinds: Vec<_> = kinds.into_iter().filter(|(_, n)| *n > 0).collect();
+    kinds.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+    kinds
+}
+
+/// The same for the table: `AI snippet reading 1,700, Page OCR 5`.
 fn in_words(apps: &std::collections::BTreeMap<String, u64>) -> String {
-    let mut apps: Vec<_> = apps.iter().filter(|(_, n)| **n > 0).collect();
-    apps.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
-    apps.iter()
-        .map(|(name, n)| format!("{name} {}", int(**n)))
+    kinds(apps)
+        .iter()
+        .map(|(name, n)| format!("{name} {}", int(*n)))
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+fn by_app(o: &mut String, apps: &std::collections::BTreeMap<String, u64>) {
+    for (name, n) in kinds(apps) {
+        row(o, name, &int(n), true);
+    }
 }
 
 /// A bucket's tip: its window, then each chart's numbers, apps under their totals.
@@ -252,8 +273,13 @@ fn tip(buckets: &[Bucket], i: usize) -> String {
     row(&mut o, "Queued", &int(b.queued_total()), false);
     by_app(&mut o, &b.queued);
     row(&mut o, "Volunteers", &int(b.volunteers), false);
-    row(&mut o, "Volunteer machines", &int(b.volunteer_hosts), false);
-    row(&mut o, "All machines", &int(b.hosts), false);
+    row(
+        &mut o,
+        "Volunteer computers",
+        &int(b.volunteer_hosts),
+        false,
+    );
+    row(&mut o, "All computers", &int(b.hosts), false);
     row(&mut o, "Completed", &int(b.completed_total()), false);
     by_app(&mut o, &b.completed);
     o
@@ -269,15 +295,14 @@ fn data(buckets: &[Bucket], step: f64) -> String {
         .replace('>', "\\u003e")
 }
 
-pub(super) fn panel(v: &WeekView) -> String {
+/// The charts, their notes and the table, for a section of the overview.
+pub(super) fn charts(v: &WeekView) -> String {
     let mut o = String::with_capacity(64 * 1024);
-    o.push_str(
-        "<section class=\"wide\" id=\"boinc-week\"><h2>BOINC, last 7 days in 3-hour buckets</h2>",
-    );
+    o.push_str("<div class=\"boinc-week\">");
     let Some(w) = v.week.as_ref().filter(|w| !w.buckets.is_empty()) else {
         let _ = write!(
             o,
-            "<p class=\"muted\">No counts from the BOINC server yet.</p>{}</section>",
+            "<p class=\"muted\">No counts from the BOINC server yet.</p>{}</div>",
             v.error
                 .as_deref()
                 .map_or_else(String::new, |e| format!("<p class=\"err\">{}</p>", esc(e)))
@@ -291,13 +316,11 @@ pub(super) fn panel(v: &WeekView) -> String {
         w.generated_utc_offset_minutes
             .unwrap_or(last.utc_offset_minutes),
     );
-    let done: u64 = b.iter().map(Bucket::completed_total).sum();
     let _ = write!(
         o,
-        "<p class=\"sub\">{} to {} ET · {} jobs completed · counted {}",
+        "<p class=\"note\">The last 7 days in 3-hour steps, {} to {} ET. Counted {}.",
         when(&b[0]).format("%a %b %-d, %-I %p"),
         generated.format("%a %b %-d, %-I:%M %p"),
-        int(done),
         v.generated_at.map_or_else(String::new, time),
     );
     if v.stale {
@@ -313,8 +336,9 @@ pub(super) fn panel(v: &WeekView) -> String {
     let completed = |x: &Bucket| x.completed_total();
 
     o.push_str(
-        "<div class=\"wk-charts\"><h3>Queued jobs</h3>\
-         <p class=\"note\">Unsent results waiting at the end of each bucket</p>",
+        "<div class=\"wk-charts table-wide\" tabindex=\"0\" role=\"region\" aria-label=\"BOINC week charts\">\
+         <h3>Queued jobs</h3>\
+         <p class=\"note\">Jobs waiting for a volunteer's computer</p>",
     );
     let c = Chart {
         buckets: b,
@@ -324,17 +348,17 @@ pub(super) fn panel(v: &WeekView) -> String {
     };
     c.open(
         &mut o,
-        "Queued jobs, a week in 3-hour buckets",
+        "Queued jobs, the last 7 days in 3-hour steps",
         &c.ys(&[&queued]),
     );
     c.line(&mut o, "s1", queued);
     c.close(&mut o, &["s1"]);
 
     o.push_str(
-        "<h3>Active volunteers and machines</h3><p class=\"note\">\
+        "<h3>Active volunteers and computers</h3><p class=\"note\">\
          <span class=\"key wk-key\"></span>Volunteers \
-         <span class=\"key wk-key s2\"></span>Volunteer machines \
-         <span class=\"key wk-key s3\"></span>All machines (incl. project hosts)</p>",
+         <span class=\"key wk-key s2\"></span>Volunteer computers \
+         <span class=\"key wk-key s3\"></span>All computers, the project's own included</p>",
     );
     let top = nice(max(&volunteers).max(max(&volunteer_hosts)).max(max(&hosts)));
     let c = Chart {
@@ -345,7 +369,7 @@ pub(super) fn panel(v: &WeekView) -> String {
     };
     c.open(
         &mut o,
-        "Active volunteers, volunteer machines and all machines, a week in 3-hour buckets",
+        "Active volunteers, volunteer computers and all computers, the last 7 days in 3-hour steps",
         &c.ys(&[&volunteers, &volunteer_hosts, &hosts]),
     );
     c.line(&mut o, "s1", volunteers);
@@ -354,7 +378,7 @@ pub(super) fn panel(v: &WeekView) -> String {
     c.close(&mut o, &["s1", "s2", "s3"]);
 
     o.push_str(
-        "<h3>Completed jobs</h3><p class=\"note\">Successful results reported in each bucket</p>",
+        "<h3>Completed jobs</h3><p class=\"note\">Jobs a computer returned successfully</p>",
     );
     let c = Chart {
         buckets: b,
@@ -362,7 +386,11 @@ pub(super) fn panel(v: &WeekView) -> String {
         top: nice(max(&completed)),
         axis: true,
     };
-    c.open(&mut o, "Completed jobs, a week in 3-hour buckets", "");
+    c.open(
+        &mut o,
+        "Completed jobs, the last 7 days in 3-hour steps",
+        "",
+    );
     c.bars(&mut o, completed);
     c.close(&mut o, &[]);
     let _ = write!(
@@ -372,19 +400,18 @@ pub(super) fn panel(v: &WeekView) -> String {
     );
 
     o.push_str(
-        "<p class=\"note\">Counted every five minutes from the BOINC server's result table, which keeps 30 days. \
-         Active means sent or reported a result in the bucket. The project's own accounts and their machines \
-         are left out of the volunteer counts. A result cancelled before it was sent leaves the queue at its \
-         last change, so the queue is approximate. Times are US Eastern; the last bucket is still filling \
-         and its bar is faded. Hover or tap a chart for a bucket's numbers by app.</p>",
+        "<p class=\"note\">A volunteer or computer counts as active if it was sent a job or returned one \
+         in those 3 hours. The project's own accounts and computers don't count as volunteers. The newest \
+         3 hours are still filling, so their bar is faded and the figures above leave them out. Hover or \
+         tap a chart for the numbers by kind of job.</p>",
     );
 
     o.push_str(
         "<details data-refresh-key=\"boinc-week-table\"><summary>Table view</summary>\
          <div class=\"scroll table-wide\" tabindex=\"0\" role=\"region\" aria-label=\"BOINC week table\">\
-         <table><thead><tr><th>Bucket (ET)</th><th class=\"r\">Queued</th><th class=\"r\">Volunteers</th>\
-         <th class=\"r\">Volunteer machines</th><th class=\"r\">All machines</th><th class=\"r\">Completed</th>\
-         <th>Queued by app</th><th>Completed by app</th></tr></thead><tbody>",
+         <table><thead><tr><th>3-hour period (ET)</th><th class=\"r\">Queued</th><th class=\"r\">Volunteers</th>\
+         <th class=\"r\">Volunteer computers</th><th class=\"r\">All computers</th><th class=\"r\">Completed</th>\
+         <th>Queued, by kind</th><th>Completed, by kind</th></tr></thead><tbody>",
     );
     for (i, x) in b.iter().enumerate() {
         let _ = write!(
@@ -402,7 +429,7 @@ pub(super) fn panel(v: &WeekView) -> String {
             esc(&in_words(&x.completed)),
         );
     }
-    o.push_str("</tbody></table></div></details></section>");
+    o.push_str("</tbody></table></div></details></div>");
     o
 }
 
@@ -440,15 +467,15 @@ mod tests {
             week: Some(week),
             ..WeekView::default()
         };
-        let html = panel(&v);
-        assert!(html.contains("id=\"boinc-week\""));
+        let html = charts(&v);
+        assert!(html.contains("class=\"boinc-week\""));
         assert_eq!(html.matches("<svg class=\"wk\"").count(), 3);
         assert_eq!(html.matches("class=\"wk-line").count(), 4);
         assert_eq!(html.matches("class=\"wk-bar").count(), 56);
         assert_eq!(html.matches("wk-bar wk-partial").count(), 1);
         assert_eq!(html.matches("<tr><td>").count(), 56);
         // The table has what the tips have, for keyboards and screen readers.
-        assert!(html.contains("<td>usnm_qwen 1,700</td>"));
+        assert!(html.contains("<td>AI snippet reading 1,700</td>"));
         // Day labels on the last chart only, one a day.
         assert!(html.matches("<text x=").count() >= 7);
         let data = html.split("class=\"wk-data\">").nth(1).unwrap();
@@ -458,10 +485,13 @@ mod tests {
         assert_eq!(d["n"], 56);
         let tip = d["tips"][55].as_str().unwrap();
         assert!(tip.contains("(so far)"));
-        assert!(tip.contains("usnm_qwen"));
-        assert!(tip.contains("All machines"));
+        assert!(tip.contains("AI snippet reading"));
+        assert!(!tip.contains("usnm_"));
+        assert_eq!(app_label("usnm_surya"), "Retired engine trial");
+        assert_eq!(app_label("usnm_new_thing"), "Other");
+        assert!(tip.contains("All computers"));
         assert!(!html.contains("stale"));
-        let none = panel(&WeekView::default());
+        let none = charts(&WeekView::default());
         assert!(none.contains("No counts from the BOINC server yet"));
     }
 }

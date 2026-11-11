@@ -75,8 +75,24 @@ section.wide svg.spark.hourly { width:288px; }
 .bar-tip:empty { display:none; }
 .key { display:inline-block; width:10px; height:10px; border-radius:2px; background:var(--fill); margin-right:4px; }
 .key.s2 { background:var(--series2); }
+/* The overview: a few numbers, a sentence and at most one chart a section. */
+section.overview { max-width:1100px; }
+section.overview > p { max-width:62em; }
+.figures { display:flex; flex-wrap:wrap; gap:10px 32px; margin:2px 0 8px; }
+.fig { display:flex; flex-direction:column; min-width:9em; }
+.fig .n, .flow .n { font-size:24px; font-weight:650; font-variant-numeric:tabular-nums; line-height:1.2; }
+.fig .l, .flow .l { color:var(--ink2); font-size:13px; max-width:16em; }
+.flow { display:flex; flex-wrap:wrap; gap:8px 0; list-style:none; padding:0; margin:4px 0 8px; }
+.flow li { display:flex; flex-direction:column; min-width:10em; max-width:15em; padding-right:34px; position:relative; }
+.flow li + li::before { content:"→"; position:absolute; left:-26px; top:2px; font-size:20px; color:var(--muted); }
+.flow li + li { margin-left:26px; }
+section.wide svg.spark.daily { display:block; width:100%; max-width:420px; height:auto; margin:2px 0 10px; }
+table.rates { width:auto; min-width:min(100%,360px); }
+table.rates td:first-child { padding-right:24px; }
 /* The BOINC week: three charts on one time axis, one crosshair and tip. */
-.wk-charts h3 { margin:12px 0 0; }
+.wk-charts { overflow-x:auto; }
+.wk-charts h3 { margin:12px 0 0; position:sticky; left:0; }
+.wk-charts .note { position:sticky; left:0; }
 .wk-charts .note { margin:0 0 2px; }
 section.wide svg.wk { display:block; width:100%; height:auto; margin:0; }
 svg.wk text { fill:var(--muted); font-size:11px; }
@@ -200,6 +216,13 @@ code { font-size:12.5px; overflow-wrap:anywhere; } a { color:var(--fill); }
   .steps .detail-body { position:static; max-width:none; grid-template-columns:minmax(0,1fr); }
   .steps .detail-block table.windows { width:100%; table-layout:fixed; }
   .steps .detail-block table.windows th, .steps .detail-block table.windows td { white-space:normal; padding-right:6px; }
+  .fig .n, .flow .n { font-size:21px; }
+  .figures { gap:8px 20px; }
+  .fig { min-width:0; flex:1 1 40%; }
+  .flow { flex-direction:column; }
+  .flow li + li { margin-left:0; padding-top:18px; }
+  .flow li + li::before { content:"↓"; left:0; top:-4px; font-size:16px; }
+  section.wide svg.wk { min-width:600px; }
 }
 "#;
 
@@ -339,9 +362,11 @@ const showWeek = (e) => {
 document.addEventListener('pointermove', showWeek);
 document.addEventListener('pointerdown', showWeek);
 document.addEventListener('scroll', hideWeek, true);
-document.addEventListener('pointerout', (e) => { if (!e.relatedTarget) hideWeek(); });
+// A tap ends with a pointerout too: only a mouse leaving the window hides the tip.
+document.addEventListener('pointerout', (e) => { if (!e.relatedTarget && e.pointerType === 'mouse') hideWeek(); });
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hideWeek(); });
-const panelGroups = ['.dashboard', '.diagnostics > .grid'];
+// The public page has no operational details.
+const panelGroups = ['.dashboard', '.diagnostics > .grid'].filter(selector => document.querySelector(selector));
 const childPanels = (grid) => [...grid.children].filter(s => s.matches('section:not(#operational-details)'));
 const panels = (root = document) => panelGroups.flatMap(selector => childPanels(root.querySelector(selector)));
 const titleOf = (s) => (s.querySelector('h2') || {}).textContent || '';
@@ -349,6 +374,8 @@ const panelKey = (s) => s.id || titleOf(s);
 let rawSub = (document.querySelector('.sub time') || {outerHTML: ''}).outerHTML;
 const raw = new WeakMap(panels().map(s => [s, s.outerHTML]));
 localTimes(document);
+// On a narrow screen the week's charts scroll: start at the newest.
+document.querySelectorAll('.wk-charts').forEach(e => { e.scrollLeft = e.scrollWidth; });
 
 const selecting = (el) => {
   const sel = window.getSelection();
@@ -456,6 +483,7 @@ const update = async () => {
   }
 };
 const diagnostics = document.querySelector('.diagnostics');
+if (diagnostics) {
 // Closed details may reset descendant offsets even without replacing the elements.
 const diagnosticScrolls = () => diagnostics.querySelectorAll('section, .scroll');
 diagnostics.querySelector(':scope > summary').addEventListener('click', () => {
@@ -478,6 +506,7 @@ new MutationObserver(() => {
     if (diagnostics.open) update();
   });
 }).observe(diagnostics, {attributes:true, attributeFilter:['open']});
+}
 const every = Math.max(5, Number(document.body.dataset.refresh) || 30) * 1000;
 setInterval(update, every);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) update(); });

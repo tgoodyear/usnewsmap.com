@@ -536,7 +536,7 @@ const ROWS: &[Row] = &[
 ];
 
 /// One step's numbers.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct StepRate {
     pub id: &'static str,
     pub label: &'static str,
