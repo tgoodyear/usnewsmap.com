@@ -24,8 +24,9 @@ A bundle's `pages` goes only when:
   - no job journal under <root>/jobs names the bundle (`bundle`) in a stage before
     `submitted`: a `prepared`, `reserved` or `submitting` member is still being submitted.
     A bundle no journal names, because archive_history.py moved them, qualifies.
-The journals are all read first; one that is unreadable stops the run before anything is
-deleted. Without --delete it changes nothing and reports what it would free. With --delete
+The journals are all read first; a job directory that is not a directory, or whose record.json
+is missing or unreadable, stops the run before anything is deleted. Only a job directory that has
+vanished (the archive moved it) is skipped. Without --delete it changes nothing and reports what it would free. With --delete
 it appends a journal line before each unlink and another after it, both fsynced, with the
 --commit the run came from. --max-bundles (default 5000) and --max-bytes (default 200 GB)
 bound a run; a file that would pass --max-bytes ends the run before it is touched. Run it as
@@ -57,13 +58,20 @@ def bundle_stages(root):
     jobs = os.path.join(root, "jobs")
     held = {}
     for name in sorted(os.listdir(jobs)):
-        path = os.path.join(jobs, name, "record.json")
+        directory = os.path.join(jobs, name)
+        try:
+            mode = os.lstat(directory).st_mode
+        except FileNotFoundError:
+            continue  # moved to the archive between the listing and now
+        if not stat.S_ISDIR(mode):
+            sys.exit(f"error: {directory} is not a directory; nothing deleted")
+        path = os.path.join(directory, "record.json")
         try:
             with open(path) as f:
                 record = json.load(f)
-        except FileNotFoundError:
-            continue  # moved to the archive between the listing and the read
         except (OSError, ValueError) as e:
+            # A job directory without its record is unreadable recovery state, not an
+            # archived job (the archive moves the whole directory).
             sys.exit(f"error: {path} is unreadable ({e}); nothing deleted")
         bundle = record.get("bundle") if isinstance(record, dict) else None
         if bundle:

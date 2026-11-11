@@ -124,6 +124,24 @@ class PruneBundles(unittest.TestCase):
             self.r.run("--delete")
         self.assertTrue((d / "pages").exists())
 
+    def test_a_job_directory_without_its_record_stops_the_run(self):
+        _, d = self.r.bundle(1)
+        job = self.r.job(1)
+        (job / "record.json").unlink()
+        with self.assertRaises(SystemExit):
+            self.r.run("--delete")
+        self.assertTrue((d / "pages").exists())
+        (job / "record.json").symlink_to(Path(self.tmp.name) / "missing")
+        with self.assertRaises(SystemExit):
+            self.r.run("--delete")
+
+    def test_a_stray_file_in_jobs_stops_the_run(self):
+        _, d = self.r.bundle(1)
+        (self.r.root / "jobs" / "stray").write_text("x")
+        with self.assertRaises(SystemExit):
+            self.r.run("--delete")
+        self.assertTrue((d / "pages").exists())
+
     def test_bounds(self):
         for n in range(1, 5):
             self.r.bundle(n, pages=b"x" * 10)
