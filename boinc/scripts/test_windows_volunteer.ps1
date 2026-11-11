@@ -611,6 +611,19 @@ Test-Case 'long messages wrap at word boundaries within the output width' {
         Assert-True (@($lines | Select-Object -Skip 1 | Where-Object { -not $_.StartsWith('  ') }).Count -eq 0) "continuation lines indented at $width"
     }
     Assert-True ((Format-Wrapped "one`ntwo") -eq "one`ntwo") 'existing line breaks kept'
+    # A real message with a path, and a path longer than the line: nothing overflows at
+    # 30 or 100 columns, and no character is lost.
+    $path = 'C:\Users\volunteer\AppData\Local\Programs\BOINC\projects\boinc.usnewsmap.com\usnm_qwen_1.18_windows_x86_64__nvidia_vulkan_8b'
+    foreach ($message in @('ERROR: This helper is for native Windows only. See docs/boinc/volunteer/README.md for Linux/macOS.',
+                           "ERROR: No BOINC installation at $path. Supply its existing program directory.")) {
+        foreach ($width in @(30, 100)) {
+            $lines = (Format-Wrapped $message '       ' $width) -split "`n"
+            Assert-True (@($lines | Where-Object { $_.Length -gt $width }).Count -eq 0) "no line wider than $width"
+            $joined = (($lines | ForEach-Object { $_.TrimStart() }) -join '') -replace ' ', ''
+            Assert-True ($joined -eq ($message -replace ' ', '')) "nothing lost at $width"
+        }
+    }
+    Assert-True (-not ((Format-Wrapped 'aaaa bbbb cccc dddd' '       ' 12) -split "`n" | Select-Object -Skip 1 | Where-Object { $_.StartsWith(' ') })) 'indent dropped when it would take over a third of a narrow line'
 }
 
 Test-Case 'a failure prints a plain ERROR block, not an error record, and exits 1' {

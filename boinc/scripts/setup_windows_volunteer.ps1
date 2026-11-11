@@ -47,16 +47,23 @@ function Get-OutputWidth {
 
 function Format-Wrapped([string]$Text, [string]$Indent = '', [int]$Width = 0) {
     $width = if ($Width -gt 0) { $Width } else { Get-OutputWidth }
+    # On a very narrow console an indent would leave too little room: drop it.
+    if ($Indent.Length * 3 -gt $width) { $Indent = '' }
     $lines = foreach ($paragraph in ($Text -split "`n")) {
         $line = ''
         foreach ($word in ($paragraph -split ' ')) {
-            if ($line -and ($line.Length + 1 + $word.Length) -gt $width) {
-                $line
-                $line = $Indent + $word
-            } elseif ($line) {
+            $start = if ($line) { $Indent } else { '' }
+            if ($line -and ($line.Length + 1 + $word.Length) -le $width) {
                 $line += ' ' + $word
-            } else {
-                $line = $word
+                continue
+            }
+            if ($line) { $line }
+            # A word longer than the line (a long path) is split at the width rather
+            # than left for the terminal to wrap without the indent.
+            $line = $start + $word
+            while ($line.Length -gt $width) {
+                $line.Substring(0, $width)
+                $line = $Indent + $line.Substring($width)
             }
         }
         $line
