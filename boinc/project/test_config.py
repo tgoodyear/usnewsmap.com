@@ -3,6 +3,7 @@
 from pathlib import Path
 import math
 import os
+import re
 import shlex
 import subprocess
 import tempfile
@@ -253,6 +254,14 @@ class DaemonConfig(unittest.TestCase):
         root = ET.parse(Path(__file__).with_name("config.xml.template"))
         nested = [child.tag for child in root.find("./config") if len(child)]
         self.assertEqual(nested, [])
+
+    def test_no_comment_spells_a_config_tag_the_feed_monitor_counts(self):
+        # feed_collect.py reads one_result_per_host_per_wu only when the file holds exactly one
+        # <config> start tag and one such setting; a comment that spelled either one made every
+        # feed server observation fail with one_result_per_host_missing (2026-11-11).
+        text = Path(__file__).with_name("config.xml.template").read_text()
+        self.assertEqual(len(re.findall(r"<config[\s>/]", text)), 1)
+        self.assertEqual(len(re.findall(r"<one_result_per_host_per_wu[\s>/]", text)), 1)
 
     def test_project_down_replies_ask_clients_back_in_twenty_minutes(self):
         # #1462: without it, BOINC's default (sched_config.cpp L93 at 22bbebe0) tells every client
