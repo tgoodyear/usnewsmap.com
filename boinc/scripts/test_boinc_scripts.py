@@ -2233,10 +2233,10 @@ class BoincLockAndPveClient(unittest.TestCase):
         self.assertIn("--features nesting=1,keyctl=1", r.stdout)
         self.assertIn("ram_max_pct=90", r.stdout)
         self.assertIn("restarts on failure", r.stdout)
-        low = subprocess.run([PVE_BOINC_CT_SCRIPT, "--ram-max-pct", "45", "--what-if"],
+        low = subprocess.run([PVE_BOINC_CT_SCRIPT, "--ram-max-pct", "55", "--what-if"],
                              cwd=ROOT, capture_output=True, text=True)
         self.assertEqual(low.returncode, 0, low.stderr)
-        self.assertIn("ram_max_pct=45", low.stdout)
+        self.assertIn("ram_max_pct=55", low.stdout)
 
         for bad in (
             ["--ctid", "50", "--what-if"],
