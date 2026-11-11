@@ -46,8 +46,8 @@ fn nice(max: u64) -> u64 {
 /// The gridlines' values: fifths of the top (quarters of a 2), else halves.
 fn ticks(top: u64) -> Vec<u64> {
     let lead = top / 10u64.pow(top.max(1).ilog10());
-    let parts = if lead == 2 && top % 25 != 0 { 4 } else { 5 };
-    match [parts, 2].into_iter().find(|n| top % n == 0) {
+    let parts = if lead == 2 && !top.is_multiple_of(25) { 4 } else { 5 };
+    match [parts, 2].into_iter().find(|n| top.is_multiple_of(*n)) {
         Some(n) => (0..=n).map(|i| top / n * i).collect(),
         None => vec![0, top],
     }
