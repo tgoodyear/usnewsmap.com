@@ -1100,6 +1100,21 @@ class BoincDb {static $q=0;static function get(){return new self();}
         # A closed class takes nothing, whatever its version.
         self.assertEqual(R.unreadable_by_open_classes(self.policy.read_bytes(), [amd], 0, 2), [])
 
+    def test_generally_admitted_six_gb_class_is_an_open_reader(self):
+        small = {"id": 90, "version_num": 116, "platformid": 1, "plan_class": "nvidia_vulkan_6gb_8b"}
+        # Closed (min_wu_id 2, max_wu_id 1) as shipped: it takes nothing.
+        self.assertEqual(R.unreadable_by_open_classes(self.policy.read_bytes(), [small], 0, 3), [])
+        root = ET.fromstring(self.policy.read_bytes())
+        node = root.find("plan_class[name='nvidia_vulkan_6gb_8b']")
+        for tag in ("min_wu_id", "max_wu_id"):
+            node.remove(node.find(tag))
+        payload = ET.tostring(root)
+        self.assertEqual(R.unreadable_by_open_classes(payload, [small], 0, 2), [])
+        self.assertEqual(R.unreadable_by_open_classes(payload, [small], 0, 3),
+                         [["nvidia_vulkan_6gb_8b", 1, 116]])
+        self.assertEqual(R.open_reader_versions(payload, [{**small, "version_num": 118}], 0),
+                         [["nvidia_vulkan_6gb_8b", 1, 118]])
+
     def campaign_rows(self, *specs):
         rows, audits = [], {}
         for number, language, campaign, version in specs:

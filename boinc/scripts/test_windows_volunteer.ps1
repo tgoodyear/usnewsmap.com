@@ -297,8 +297,49 @@ Test-Case 'an NVIDIA GPU with 7,000 MB and Vulkan is admitted (#1672)' {
     )
     $ready = Get-WindowsReadiness $PSScriptRoot $false
     Assert-True ($ready.Gpu.Vendor -eq 'NVIDIA' -and $ready.DiskGiB -eq 18) 'NVIDIA chosen with the 8B reserve'
-    Set-Gpus @([pscustomobject]@{ Name = 'NVIDIA small'; Vendor = 'NVIDIA'; Driver = '1'; TotalMiB = 6144 })
-    Assert-Throws { Get-WindowsReadiness $PSScriptRoot $false } 'AMD or NVIDIA GPU with at least 7,000 MB'
+    Set-Gpus @([pscustomobject]@{ Name = 'NVIDIA small'; Vendor = 'NVIDIA'; Driver = '1'; TotalMiB = 5120 })
+    Assert-Throws { Get-WindowsReadiness $PSScriptRoot $false } 'NVIDIA GPU with at least 5,500 MB'
+}
+
+Test-Case 'a 6 GB-class NVIDIA GPU is admitted for the partial-offload build; AMD still needs 7,000 MB (#1234)' {
+    Set-ReadinessMocks
+    foreach ($mib in @(5500, 6144, 6999)) {
+        Set-Gpus @([pscustomobject]@{ Name = 'NVIDIA GeForce GTX 1660 SUPER'; Vendor = 'NVIDIA'; Driver = '1'; TotalMiB = $mib })
+        $ready = Get-WindowsReadiness $PSScriptRoot $false
+        Assert-True ($ready.Gpu.TotalMiB -eq $mib -and $ready.DiskGiB -eq 18) "NVIDIA $mib MiB admitted with the 8B reserve"
+    }
+    Set-Gpus @([pscustomobject]@{ Name = 'NVIDIA tiny'; Vendor = 'NVIDIA'; Driver = '1'; TotalMiB = 5499 })
+    Assert-Throws { Get-WindowsReadiness $PSScriptRoot $false } 'NVIDIA GPU with at least 5,500 MB'
+    Set-Gpus @([pscustomobject]@{ Name = 'AMD 6 GB'; Vendor = 'AMD'; Driver = '1'; TotalMiB = 6144 })
+    Assert-Throws { Get-WindowsReadiness $PSScriptRoot $false } 'AMD GPU with at least 7,000 MB'
+    # The larger card wins, so a host with both gets the full-offload class.
+    Set-Gpus @(
+        [pscustomobject]@{ Name = 'NVIDIA 6 GB'; Vendor = 'NVIDIA'; Driver = '1'; TotalMiB = 6144 },
+        [pscustomobject]@{ Name = 'NVIDIA 8 GB'; Vendor = 'NVIDIA'; Driver = '1'; TotalMiB = 8192 }
+    )
+    Assert-True ((Get-WindowsReadiness $PSScriptRoot $false).Gpu.Name -eq 'NVIDIA 8 GB') 'largest NVIDIA adapter reported'
+}
+
+Test-Case 'the GPU summary names the slower build and 5,120 MiB only for a 6 GB-class NVIDIA card' {
+    foreach ($case in @(
+        @{ Vendor = 'NVIDIA'; MiB = 6144; Want = '5,120 MiB'; Not = '7,000 MiB of it free' },
+        @{ Vendor = 'NVIDIA'; MiB = 8192; Want = '7,000 MiB of it free'; Not = 'partial-offload' },
+        @{ Vendor = 'AMD'; MiB = 16304; Want = '7,000 MiB of it free'; Not = 'partial-offload' }
+    )) {
+        Set-FlowMocks
+        $script:Case = $case
+        Set-Mock Get-WindowsReadiness {
+            param($DataDirectory, $CpuAllowed, $DeferDiskCheck)
+            return [pscustomobject]@{
+                RamGiB = 16; DiskGiB = 18
+                Gpu = [pscustomobject]@{ Name = 'test'; Vendor = $script:Case.Vendor; Driver = '1'; TotalMiB = $script:Case.MiB }
+            }
+        }
+        $printed = (Invoke-WindowsOnboarding $false $false $false '' 6>&1 | ForEach-Object { "$_" }) -join ' '
+        $printed = $printed -replace '\s+', ' '
+        Assert-True ($printed.Contains($case.Want)) "$($case.Vendor) $($case.MiB): '$($case.Want)' printed"
+        Assert-True (-not $printed.Contains($case.Not)) "$($case.Vendor) $($case.MiB): '$($case.Not)' not printed"
+    }
 }
 
 Test-Case 'Intel GPUs are told no Windows version is available and need explicit CPU participation' {

@@ -214,18 +214,21 @@ function Get-WindowsReadiness([string]$DataDirectory, [bool]$CpuAllowed, [bool]$
 
     # Windows GPU work is the amd_vulkan_8b and nvidia_vulkan_8b plan classes: an
     # AMD or NVIDIA GPU with >= 7,000 MB device memory and the driver's Vulkan
-    # loader (#1672). No Windows version is currently available for the Intel class;
-    # when one is, admit it here. Keep this in step with the live app versions.
+    # loader (#1672). NVIDIA cards from 5,500 MB up to that get nvidia_vulkan_6gb_8b,
+    # the slower partial-offload build (#1234). No Windows version is currently
+    # available for the Intel class; when one is, admit it here. Keep this in step
+    # with the live app versions.
     $gpus = @(Get-GpuAdapters)
     $gpu = $null
     if (Test-VulkanLoader) {
-        $gpu = $gpus | Where-Object { $_.Vendor -in @('AMD', 'NVIDIA') -and $_.TotalMiB -ge 7000 } |
+        $gpu = $gpus | Where-Object { ($_.Vendor -eq 'AMD' -and $_.TotalMiB -ge 7000) -or
+                ($_.Vendor -eq 'NVIDIA' -and $_.TotalMiB -ge 5500) } |
             Sort-Object TotalMiB -Descending | Select-Object -First 1
     }
     if (-not $gpu -and -not $CpuAllowed) {
         $found = 'none detected'
         if ($gpus) { $found = ($gpus | ForEach-Object { "$($_.Name) ($($_.Vendor), $($_.TotalMiB) MiB)" }) -join '; ' }
-        throw "No eligible GPU for Windows GPU work, which needs an AMD or NVIDIA GPU with at least 7,000 MB of video memory and a current AMD or NVIDIA driver with Vulkan. Found: $found. No Windows version is currently available for Intel GPUs; on Linux they can get GPU work now (docs/boinc/volunteer/linux.md). For optional CPU participation, rerun with -AllowCpuOnly; no CPU preferences are changed automatically."
+        throw "No eligible GPU for Windows GPU work, which needs an AMD GPU with at least 7,000 MB of video memory or an NVIDIA GPU with at least 5,500 MB, and a current AMD or NVIDIA driver with Vulkan. Found: $found. No Windows version is currently available for Intel GPUs; on Linux they can get GPU work now (docs/boinc/volunteer/linux.md). For optional CPU participation, rerun with -AllowCpuOnly; no CPU preferences are changed automatically."
     }
     $service = Get-Service -Name BOINC -ErrorAction SilentlyContinue
     if ($service) {
@@ -445,7 +448,11 @@ function Invoke-WindowsOnboarding {
     }
     Write-Note "Native Windows preview: $($ready.RamGiB) GiB RAM; reserve $($ready.DiskGiB) GiB disk in BOINC preferences."
     if ($ready.Gpu) {
-        Write-Note "$($ready.Gpu.Vendor): $($ready.Gpu.Name); driver $($ready.Gpu.Driver); $($ready.Gpu.TotalMiB) MiB video memory. A task needs 7,000 MiB of it free when it starts, so close GPU-heavy apps while BOINC runs."
+        if ($ready.Gpu.Vendor -eq 'NVIDIA' -and $ready.Gpu.TotalMiB -lt 7000) {
+            Write-Note "$($ready.Gpu.Vendor): $($ready.Gpu.Name); driver $($ready.Gpu.Driver); $($ready.Gpu.TotalMiB) MiB video memory. A 6 GB-class NVIDIA card runs the slower partial-offload build, about 13 times slower per page than a card with 7,000 MB or more. A task needs 5,120 MiB of it free when it starts, so close GPU-heavy apps while BOINC runs."
+        } else {
+            Write-Note "$($ready.Gpu.Vendor): $($ready.Gpu.Name); driver $($ready.Gpu.Driver); $($ready.Gpu.TotalMiB) MiB video memory. A task needs 7,000 MiB of it free when it starts, so close GPU-heavy apps while BOINC runs."
+        }
     } else {
         Write-Caution 'CPU-only participation explicitly allowed. CPU app publication is not guaranteed; set CPU/GPU choices yourself in project preferences.'
     }

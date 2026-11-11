@@ -40,8 +40,10 @@ EXTRA_LANGUAGES = ()
 # The first app version that reads each request version.
 REQUEST_MIN_APP = {1: 0, 2: 115, 3: 117, 4: 117}
 # Classes this controller does not open: with no workunit bounds they take any unsent replica.
-# nvidia_vulkan_8b is one only while generally admitted; bounded, it has min_wu_id.
-UNBOUNDED_READERS = ("amd_vulkan_8b", "apple_gpu_8b", "nvidia_vulkan_8b", "intel_vulkan_8b")
+# nvidia_vulkan_8b and nvidia_vulkan_6gb_8b are ones only while generally admitted; bounded,
+# they have min_wu_id.
+UNBOUNDED_READERS = ("amd_vulkan_8b", "apple_gpu_8b", "nvidia_vulkan_8b", "intel_vulkan_8b",
+                     "nvidia_vulkan_6gb_8b")
 # The helper's explicit marker: NVIDIA takes any Qwen work and this controller refills Intel alone.
 NVIDIA_GENERAL_MARKER = "usnm-nvidia-general-admission-v1"
 # With Intel's marker too (the helper requires NVIDIA's first), this controller owns no window.

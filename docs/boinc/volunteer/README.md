@@ -374,15 +374,18 @@ or work around an enforced Group Policy; ask your administrator instead.
 - Use Intel/AMD **x64 Windows 11**, or Windows 10 22H2 with current ESU security
   updates. This helper does not support Windows ARM, 32-bit Windows, older desktop
   Windows, or Windows Server.
-- For GPU work, use an AMD or NVIDIA GPU with at least **7,000 MB** of video
-  memory and a current driver, which provides Vulkan (`amd_vulkan_8b`,
-  [AMD](../apps/amd-gpu.md), or `nvidia_vulkan_8b`). These are the Windows GPU classes
-  with a live version ([app versions](../apps/quality.md#app-versions-and-plan-classes));
+- For GPU work, use an AMD GPU with at least **7,000 MB** of video memory or an
+  NVIDIA GPU with at least **5,500 MB**, and a current driver, which provides Vulkan
+  (`amd_vulkan_8b`, [AMD](../apps/amd-gpu.md), `nvidia_vulkan_8b`, or
+  `nvidia_vulkan_6gb_8b` for NVIDIA cards under 7,000 MB). These are the Windows GPU classes
+  ([app versions](../apps/quality.md#app-versions-and-plan-classes));
   no Windows version is currently available for Intel GPUs, though they get GPU
   work on Linux. The helper reads each display adapter's
   vendor and memory size from the Windows registry and checks for the driver's
   `vulkan-1.dll`. It cannot see free video memory; the app needs 7,000 MiB free
-  when a task starts, so close GPU-heavy applications. Hardware checks are not a
+  when a task starts (5,120 MiB for the 6 GB class), so close GPU-heavy applications.
+  The 6 GB class keeps part of the model on the CPU and is about 13 times slower per
+  page than full offload; a card with 7,000 MB or more always gets the full build. Hardware checks are not a
   guarantee that a particular GPU and driver can execute work.
 - Have at least **6 GiB host RAM** and allow **12 GiB disk**, or **18 GiB** with
   an eligible AMD or NVIDIA GPU for the 8B model. The data volume must have the reported
