@@ -190,8 +190,9 @@ pub async fn run(command: ClaimCommands) -> anyhow::Result<()> {
             let reference = usnm_store::open(&reference_url)?;
             let exchange_out = usnm_store::open(&out_url)?;
             let queue = usnm_store::queue::open(&queue_url)?;
-            let held = match &handoff_url {
-                Some(url) => x::load_held_pages(usnm_store::open(url)?.as_ref()).await?,
+            let handoff = handoff_url.as_deref().map(usnm_store::open).transpose()?;
+            let held = match &handoff {
+                Some(h) => x::load_held_pages(h.as_ref()).await?,
                 None => None,
             };
             // The lock keeps the ledger as it is while messages are judged against it.

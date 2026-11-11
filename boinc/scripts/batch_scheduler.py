@@ -640,11 +640,14 @@ STEP_IDS = 100
 # of claiming, so the tick stays well inside its 15 minutes.
 CLAIM_SECONDS = 300
 # Each plan's list of pages whose held result is settled (archived_held, its own and the
-# --check-state-dir plans'), each with its job's message sha256, as <prefix><plan>.json: the claim
+# --check-state-dir plans'), each with its job's message sha256, as <prefix><plan>.<NNNN>.json: the claim
 # step reads every plan's list and deletes such a message when it comes back instead of claiming
 # it again (usnm-boinc claim::HELD_PAGES_PREFIX). One file per plan, so no plan's list replaces
 # another's.
 HELD_PAGES_PREFIX = "scheduler/held-pages/"
+# Pages in one part of a plan's held-pages list: about 7 MB, well inside the reader's 64 MiB a
+# part, so the 200,000 archived pages of each of several plans never make a part it refuses.
+HELD_PAGES_PER_PART = 50000
 MAX_TICK_PAGES = 500
 # --rest-journals: requests at once, and the most changed journals a tick fetches one by one
 # before it takes one az download-batch of all of them (at this rate, a minute's work).
@@ -1257,29 +1260,48 @@ class Transport:
 
     def publish_held(self, pages):
         """Put this plan's held-pages list (doc id -> message sha256s) in the hand-off container
-        for the claim step, when it differs from the one this state directory last put there.
-        Only this plan writes its own list, under the hand-off container's controller lease."""
-        body = (json.dumps({"schema_version": 1, "pages": pages}, sort_keys=True,
-                           separators=(",", ":")) + "\n").encode()
-        name = f"{HELD_PAGES_PREFIX}{self.config['plan']}.json"
-        digest = hashlib.sha256(name.encode() + b"\n" + body).hexdigest()
+        for the claim step, when it differs from the one this state directory last put there:
+        in parts of at most HELD_PAGES_PER_PART pages, <prefix><plan>.<NNNN>.json, each well
+        inside the reader's 64 MiB, and then the plan's parts from a longer list go. Only this
+        plan writes its own parts, under the hand-off container's controller lease."""
+        plan = self.config["plan"]
+        items = sorted(pages.items())
+        parts = {}
+        for number, start in enumerate(range(0, len(items), HELD_PAGES_PER_PART)):
+            parts[f"{HELD_PAGES_PREFIX}{plan}.{number:04d}.json"] = (json.dumps(
+                {"schema_version": 1, "pages": dict(items[start:start + HELD_PAGES_PER_PART])},
+                sort_keys=True, separators=(",", ":")) + "\n").encode()
+        digest = hashlib.sha256(b"".join(name.encode() + b"\n" + body
+                                         for name, body in parts.items())).hexdigest()
         marker = self.directory / "held-pages.sha256"
         try:
             if marker.read_text().strip() == digest:
                 return False
         except OSError:
             pass
+        mine = f"{HELD_PAGES_PREFIX}{plan}."
         if self.handoff_root is not None:
-            path = self.handoff_root / name
-            path.parent.mkdir(parents=True, exist_ok=True)
-            staged = path.with_name(".held-pages.json.tmp")
-            staged.write_bytes(body)
-            os.replace(staged, path)
+            directory = self.handoff_root / HELD_PAGES_PREFIX
+            directory.mkdir(parents=True, exist_ok=True)
+            for name, body in parts.items():
+                staged = directory / ".held-pages.tmp"
+                staged.write_bytes(body)
+                os.replace(staged, self.handoff_root / name)
+            there = [f"{HELD_PAGES_PREFIX}{path.name}" for path in directory.glob(f"{plan}.*.json")]
+            for name in there:
+                if name not in parts:
+                    (self.handoff_root / name).unlink()
         else:
             staged = self.directory / "held-pages.json"
-            staged.write_bytes(body)
-            self.az("upload", "--name", name, "--file", str(staged), "--overwrite", "true",
-                    "--content-type", "application/json", "-o", "none")
+            for name, body in parts.items():
+                staged.write_bytes(body)
+                self.az("upload", "--name", name, "--file", str(staged), "--overwrite", "true",
+                        "--content-type", "application/json", "-o", "none")
+            there = json.loads(self.az("list", "--prefix", mine, "--num-results", "*",
+                                       "--query", "[].name", "-o", "json") or "[]")
+            for name in there:
+                if name not in parts and name.startswith(mine) and name.endswith(".json"):
+                    self.az("delete", "--name", name, "-o", "none")
         marker.write_text(digest + "\n")
         return True
 

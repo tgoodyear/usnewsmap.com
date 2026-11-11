@@ -57,7 +57,7 @@ pub const HELD_PAGES_PREFIX: &str = "scheduler/held-pages/";
 /// 150 bytes, with room to spare.
 pub const HELD_PAGES_MAX_BYTES: usize = 64 << 20;
 /// The most held-pages lists a claim reads (one per plan).
-pub const HELD_PAGES_MAX_LISTS: usize = 64;
+pub const HELD_PAGES_MAX_LISTS: usize = 1024;
 /// The claim file's version.
 pub const VERSION: u32 = 1;
 

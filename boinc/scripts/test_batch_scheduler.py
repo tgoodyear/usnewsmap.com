@@ -4768,16 +4768,47 @@ class StepChunkingTests(unittest.TestCase):
     def test_held_pages_list_is_put_once_per_change(self):
         directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
         t = batch.Transport(queue_config(), directory)
-        uploads = []
-        with patch.object(t, "az", side_effect=lambda *args: uploads.append(args)):
+        plan = queue_config()["plan"]
+        calls, bodies = [], {}
+        listed = []
+
+        def az(*args):
+            calls.append(args)
+            if args[0] == "upload":
+                bodies[args[2]] = json.loads((directory / "held-pages.json").read_text())
+                listed.append(args[2]) if args[2] not in listed else None
+            elif args[0] == "list":
+                return json.dumps(listed + [f"scheduler/held-pages/{plan}0.0000.json"])
+            elif args[0] == "delete":
+                listed.remove(args[2])
+            return ""
+
+        with patch.object(t, "az", side_effect=az), patch.object(batch, "HELD_PAGES_PER_PART", 2):
             self.assertTrue(t.publish_held({"d": ["a" * 64]}))
             self.assertFalse(t.publish_held({"d": ["a" * 64]}))
-            self.assertTrue(t.publish_held({"d": ["a" * 64], "e": ["b" * 64]}))
-        self.assertEqual(len(uploads), 2)
-        self.assertEqual(uploads[0][:3], ("upload", "--name",
-                                          f"scheduler/held-pages/{queue_config()['plan']}.json"))
-        body = json.loads((directory / "held-pages.json").read_text())
-        self.assertEqual(body, {"schema_version": 1, "pages": {"d": ["a" * 64], "e": ["b" * 64]}})
+            self.assertTrue(t.publish_held({"d": ["a" * 64], "e": ["b" * 64], "f": ["c" * 64]}))
+            self.assertEqual(sorted(listed), [f"scheduler/held-pages/{plan}.0000.json",
+                                              f"scheduler/held-pages/{plan}.0001.json"])
+            self.assertEqual(bodies[f"scheduler/held-pages/{plan}.0001.json"],
+                             {"schema_version": 1, "pages": {"f": ["c" * 64]}})
+            # A shorter list takes the plan's surplus part away, and only the plan's own.
+            self.assertTrue(t.publish_held({"d": ["a" * 64]}))
+        self.assertEqual(listed, [f"scheduler/held-pages/{plan}.0000.json"])
+        deleted = [c[2] for c in calls if c[0] == "delete"]
+        self.assertEqual(deleted, [f"scheduler/held-pages/{plan}.0001.json"])
+
+    def test_held_pages_parts_in_a_local_handoff(self):
+        root = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
+        root.chmod(0o700)
+        state = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        t = batch.Transport(queue_config(), state)
+        t.handoff_root = root
+        plan = queue_config()["plan"]
+        with patch.object(batch, "HELD_PAGES_PER_PART", 1):
+            t.publish_held({"d": ["a" * 64], "e": ["b" * 64]})
+            t.publish_held({"d": ["a" * 64]})
+        self.assertEqual(sorted(p.name for p in (root / "scheduler/held-pages").glob("*.json")),
+                         [f"{plan}.0000.json"])
 
     def test_a_later_claim_failure_keeps_every_earlier_claim(self):
         t = batch.Transport(queue_config(), Path("."))
