@@ -211,7 +211,13 @@ keep `file_deleter` off by hand. After the restart, `pgrep -a file_deleter` in
 the container should print the command with `--preserve_wu_files`.
 
 To free space later, delete only output files or move whole scan trees to other
-kept storage; do not remove `--preserve_wu_files`.
+kept storage; do not remove `--preserve_wu_files`. There is one exception, decided
+11 November 2026. The download copies of finished `usnm_quality` bundle images
+(`<job id>_page_jpg`) are JPEGs re-encoded from scans the scan server keeps, and
+the unit directory holds the same bytes. `quality_retention.py` frees those copies
+once the workunit is over, after checking every page's original. It runs as its own
+step, so the flag stays global. See
+[Retention of derived bundle copies](../apps/quality.md#retention-of-derived-bundle-copies).
 
 ## Retiring an app
 

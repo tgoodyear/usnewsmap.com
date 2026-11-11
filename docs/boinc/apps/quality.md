@@ -428,6 +428,34 @@ boinc/scripts/onprem/quality-feed/quality-feed-install.sh --campaign v1-wave10 \
   --engine-image sha256:<worker digest> --enable
 ```
 
+#### Retention of derived bundle copies
+
+`usnm-boinc quality submit` copies each unit's `page.jpg` into the download tree as `<job id>_page_jpg`, so every bundle image is on the share twice: in `quality/<campaign>/units/bundle-*/` and in `download/`. A bundle image is a re-encoded JPEG of up to 500 pages, often 200 to 800 MB. `file_deleter --preserve_wu_files` keeps the download copy after the workunit is done ([Scans are never deleted](../server/server-and-apps.md#scans-are-never-deleted)). On v1-wave10 this was most of the share's growth, about 55 to 70 GiB a day for each copy in November 2026.
+
+`boinc/scripts/onprem/quality-feed/quality_retention.py` frees the download copy. Only that copy: the unit's own `page.jpg` stays, because `quality collect` reads it again whenever a page's Qwen readings or the Surya digest change the unit's cache key. Its `<id>_loc_xml`, `<id>_texts_json`, `<id>_quality_json`, the places file, the models, `usnm_ocr`'s JP2 inputs (LoC's bytes) and every other app's inputs also stay.
+
+```sh
+# In the server container: usnm_quality workunits assimilated, with every result over.
+python3 -I quality_retention.py list --out /tmp/quality-retention-eligible.jsonl
+# On the storage host, as the share's owner (uid 101000), not root. Dry run first.
+setpriv --reuid 101000 --regid 101000 --clear-groups python3 -I quality_retention.py prune \
+  --eligible eligible.jsonl --download /tank/boinc-bulk/download \
+  --quality-root /tank/boinc-bulk/quality --scan-index /tank/ocr/scans/index-full.jsonl \
+  --scan-root /tank/ocr/scans --scan-root /cold/ocr-scans \
+  --journal journal.jsonl --commit "$(git rev-parse HEAD)" [--delete --max-bytes N]
+```
+
+`prune` removes a listed file only when all of these hold. Otherwise it keeps the file and journals the reason:
+
+- the file is more than an hour old;
+- its submitted unit (the `submitted` marker names the workunit) has a `quality.json` with the same job id and a `page.jpg` of the same size;
+- every page of the job has its original scan in the scan index and on disk under `keep/` or `buffer/` of a scan root;
+- the two files are byte-for-byte the same (a full compare; `--skip-cmp` is allowed only without `--delete`).
+
+A bundle with a page whose original is gone keeps its download copy. Such pages exist: buffer scans deleted before 8 November 2026 left only a `.jp2.done` marker. With `--delete`, each removal is journalled before and after the unlink, with the commit it ran from. `--max-files` and `--max-bytes` bound a batch.
+
+Run `list` again before each `prune`. `db_purge` drops workunit rows 30 days after their files are marked done, and a file without a row is never listed.
+
 #### Result collection
 
 `usnm-quality-results.timer` on the preparation host runs `quality_results_partial.py` two minutes after each pass, with up to 15 s jitter. A pass collects **one submitted unit** under the server's nonblocking bridge lock (each native call 150 s, remote phase 240 s) into immutable `out/{pages.parquet,crops.parquet,summary.md}` plus `coverage.json` (`campaign_complete=false`) under `/project/ops/quality-results/scoped/<campaign>/<unit-key>/snapshots/<snapshot>/`, verifies checksums and job identity, and loads with certificate-authenticated `load.py results`. No pass loads more than one scope, and the host pass lock serializes collection, transfer and loading. One service run makes up to five passes (`--units-per-run`), because each unit's lock, transfer and load round costs about two minutes whatever its size. Each pass takes the bridge lock again, with a 5 s pause between passes so a waiting bridge step gets the lock first. No pass starts after the run has used 10 minutes (`--run-budget-secs`). A busy lock after the first pass ends the run quietly; any other failure still fails it. Guarantees: `<campaign>/out` is never replaced, rows are never deleted, a pending unit loads zero rows, and the cursor advances only after a verified load, so a failure in between repeats the same upserts. A busy bridge retries next tick; no producer is preempted. Collection never submits work or alters quorum, and a successful BOINC result isn't loaded until the loader succeeds. Judge coverage from cursor and load receipts, not timer frequency.
