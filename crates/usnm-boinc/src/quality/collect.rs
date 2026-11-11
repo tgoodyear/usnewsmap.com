@@ -992,8 +992,11 @@ impl QwenPage {
 /// Every submitted `usnm_qwen` unit by doc id (supporting both single-page
 /// and multi-page bundle units), with its readings where the result is in.
 /// With `page_records`, the directory `qwen compare --pages` writes, a
-/// bundle with no canonical result yet gives each page two hosts agreed on
-/// its readings from the agreeing pair's record (#1435).
+/// bundle with no canonical result yet, or one a `page-v1` pair settled,
+/// gives each page two hosts agreed on its readings from the agreeing pair's
+/// record (#1435); a bundle settled by its pages joins no other page, its
+/// canonical result included. A page packed into a later bundle keeps an
+/// earlier bundle's readings until the later one accepts it.
 fn qwen_pages(
     root: &Path,
     spool: &Path,
@@ -1046,8 +1049,15 @@ fn qwen_pages(
                 },
             );
         } else {
+            // A bundle a `page-v1` pair settled is canonical with pages the
+            // pair disagreed on: only its accepted pages are joined.
+            let by_pages = page_records.is_some_and(|dir| {
+                dir.join(&job.id)
+                    .join(crate::qwen::validate::UNIT_VERDICT_FILE)
+                    .is_file()
+            });
             let mut agreed = match page_records {
-                Some(dir) if readings.is_none() => {
+                Some(dir) if readings.is_none() || by_pages => {
                     crate::qwen::ledger::accepted_readings(root, &unit, &job, dir)
                         .with_context(|| format!("{wu}: page records"))?
                 }
@@ -1055,6 +1065,7 @@ fn qwen_pages(
             };
             for bp in &job.pages {
                 if let Some(page_readings) = agreed.remove(&bp.doc_id) {
+                    // An accepted page wins over the page in any other bundle.
                     out.insert(
                         bp.doc_id.clone(),
                         QwenPage {
@@ -1065,8 +1076,13 @@ fn qwen_pages(
                     );
                     continue;
                 }
+                if out.get(&bp.doc_id).is_some_and(|p| p.readings.is_some()) {
+                    // A page packed again (#1435) keeps what an earlier
+                    // bundle gave it until this one accepts it.
+                    continue;
+                }
                 let prefix = format!("{}:", bp.doc_id);
-                let page_readings = readings.as_ref().map(|r| {
+                let page_readings = readings.as_ref().filter(|_| !by_pages).map(|r| {
                     let mut pr = r.clone();
                     pr.readings = r
                         .readings
@@ -2834,6 +2850,48 @@ pub(super) mod tests {
             .all(|r| r.vlm_text.as_deref() == Some("the canonical reading")));
         assert!(c.crops.iter().all(|r| r.vlm_crop_state.is_none()));
         assert_eq!(c.crops, fresh(&opts).crops);
+
+        // A `page-v1` pair settles the bundle (one page of two agreed): its
+        // canonical result no longer joins, only the accepted pages do.
+        let canonical_key = key(&opts);
+        crate::qwen::validate::compare_with(
+            &a,
+            &b,
+            crate::qwen::validate::Compare {
+                min_dice: 0.5,
+                rule: crate::qwen::validate::Rule::StrictV1,
+                bundle_verdict: crate::qwen::validate::BundleVerdict::PageV1,
+                log: None,
+                pages: Some(&records),
+                crop_states: None,
+            },
+        )
+        .unwrap();
+        assert_ne!(key(&opts), canonical_key);
+        let c = collect(&opts).unwrap();
+        let rows = vlm_rows(&c);
+        assert_eq!(rows.len(), page_crops);
+        assert!(rows
+            .iter()
+            .all(|r| r.vlm_text.as_deref() == Some("the council reads this crop")));
+        assert!(c
+            .crops
+            .iter()
+            .all(|r| r.vlm_crop_state.as_deref() == Some("page-strict-v1")));
+        // Without the later pairs' agreeing records the page is disagreed and,
+        // the bundle being settled by its pages, joins nothing.
+        let page_dir = records.join(&job.id).join(&ours);
+        for e in std::fs::read_dir(&page_dir).unwrap() {
+            let path = e.unwrap().path();
+            let r: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            if r["status"] == crate::qwen::validate::PAGE_AGREED {
+                std::fs::remove_file(&path).unwrap();
+            }
+        }
+        let c = collect(&opts).unwrap();
+        assert!(vlm_rows(&c).is_empty());
+        assert_eq!(c.summary.with_readings, 0);
     }
 
     #[tokio::test]

@@ -214,6 +214,27 @@ elif "python3" in args and "-" in args:
                 self.assertIn("--qwen-bundle-size", result.stderr)
                 self.assertFalse((self.root / "calls.jsonl").exists())
 
+    def test_page_records_reach_the_bundled_publication_only(self):
+        # #1435: the preflight never stages, so only the publishing call names the records.
+        pages = "/project/usnmocr/qwen/pages"
+        for extra, langs, expected in ((["--qwen-bundle-size", "32", "--qwen-page-records", pages], "srp\n", pages),
+                                       (["--qwen-bundle-size", "32", "--qwen-page-records", pages], "yid\n", None),
+                                       (["--qwen-bundle-size", "32"], "srp\n", None)):
+            with self.subTest(extra=extra, langs=langs):
+                (self.root / "calls.jsonl").unlink(missing_ok=True)
+                result = self.run_ship([*self.GUARDED, *extra], langs=langs)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                preflight, publish = self.native_calls()
+                self.assertNotIn("--page-records", preflight)
+                self.assertEqual(publish[publish.index("--page-records") + 1] if expected else None, expected)
+        for extra in (["--qwen-page-records", pages], ["--qwen-bundle-size", "8", "--qwen-page-records", "pages"]):
+            with self.subTest(extra=extra):
+                (self.root / "calls.jsonl").unlink(missing_ok=True)
+                result = self.run_ship([*self.GUARDED, *extra])
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn("--qwen-page-records", result.stderr)
+                self.assertFalse((self.root / "calls.jsonl").exists())
+
     def test_stage_and_submit_do_not_wait_for_the_step_window(self):
         # The stage has its own lock on the host, and only native publication reads the clock.
         self.stub("date", "#!/bin/bash\nexit 9\n")

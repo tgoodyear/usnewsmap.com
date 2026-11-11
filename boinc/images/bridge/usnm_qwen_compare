@@ -9,6 +9,11 @@
 # under <project>/qwen/crop-states, where `quality collect --qwen-crop-states` reads which crops a
 # pair vouched for (#1434). Removing the file restores the strict rule. A `usnm-boinc` next to this
 # script's target is used in place of the image's, so a pinned build can validate.
+#
+# A bundle unit needs every page to agree unless <project>/qwen/bundle-verdict holds `page-v1`
+# (#1435): then a pair that judged and recorded every page and agreed on at least half of them
+# settles the unit, and `qwen stage --page-records` packs its disagreeing pages again. A binary
+# that does not know `--bundle-verdict` keeps the unit verdict. Removing the file restores it.
 [ "$#" -eq 6 ] || { echo "usnm_qwen_compare: expected 6 files, got $#" >&2; exit 2; }
 dir="${USNM_QWEN_DIR:-$(cd .. && pwd)/qwen}"
 bin=/usr/local/bin/usnm-boinc
@@ -16,13 +21,25 @@ here="$(dirname "$(readlink -f "$0")")"
 [ -x "$here/usnm-boinc" ] && bin="$here/usnm-boinc"
 rule=strict-v1
 [ -f "$dir/validator-rule" ] && read -r rule < "$dir/validator-rule"
+bundle=unit
+[ -f "$dir/bundle-verdict" ] && read -r bundle < "$dir/bundle-verdict"
+case "$bundle" in
+  page-v1)
+    if "$bin" qwen compare --help 2>/dev/null | grep -q -- --bundle-verdict; then
+      set -- "$@" --bundle-verdict page-v1
+    else
+      echo "usnm_qwen_compare: $bin does not know --bundle-verdict; using unit" >&2
+    fi ;;
+  unit) ;;
+  *) echo "usnm_qwen_compare: unknown bundle verdict '$bundle' in $dir/bundle-verdict; using unit" >&2 ;;
+esac
 case "$rule" in
   crop-consensus-v2)
     exec "$bin" qwen compare --files "$1" "$2" "$3" --files2 "$4" "$5" "$6" \
       --log "$dir/pairs.jsonl" --pages "$dir/pages" \
-      --rule crop-consensus-v2 --crop-states "$dir/crop-states" ;;
+      --rule crop-consensus-v2 --crop-states "$dir/crop-states" ${7:+"$7"} ${8:+"$8"} ;;
   strict-v1) ;;
   *) echo "usnm_qwen_compare: unknown rule '$rule' in $dir/validator-rule; using strict-v1" >&2 ;;
 esac
 exec "$bin" qwen compare --files "$1" "$2" "$3" --files2 "$4" "$5" "$6" \
-  --log "$dir/pairs.jsonl" --pages "$dir/pages"
+  --log "$dir/pairs.jsonl" --pages "$dir/pages" ${7:+"$7"} ${8:+"$8"}

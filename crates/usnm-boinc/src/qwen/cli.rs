@@ -81,6 +81,10 @@ pub enum QwenCommands {
         /// each bundle's qwen.json within the 512 KiB the workers read.
         #[arg(long, default_value_t = 1)]
         bundle_size: usize,
+        /// With bundles, `qwen compare --pages`'s directory: pack again each page a
+        /// `page-v1` verdict settled as disagreed, once (#1435).
+        #[arg(long)]
+        page_records: Option<PathBuf>,
     },
     /// Hand staged units to create_work, two results each.
     Submit {
@@ -169,6 +173,10 @@ pub enum QwenCommands {
         /// The rule that decides the pair. `strict-v1` is the rule in force.
         #[arg(long, value_enum, default_value_t = super::validate::Rule::StrictV1)]
         rule: super::validate::Rule,
+        /// What settles a bundle unit: `unit` (every page) or `page-v1`
+        /// (each page on its own; needs `--pages`).
+        #[arg(long, value_enum, default_value_t = super::validate::BundleVerdict::Unit)]
+        bundle_verdict: super::validate::BundleVerdict,
         /// Under `crop-consensus-v2`, keep each pair's crop states here.
         #[arg(long)]
         crop_states: Option<PathBuf>,
@@ -275,6 +283,7 @@ pub async fn run(command: QwenCommands) -> anyhow::Result<()> {
             prompt_version,
             max_pages,
             bundle_size,
+            page_records,
         } => {
             let s = x::stage::run_selected(
                 &x::stage::Options {
@@ -292,6 +301,7 @@ pub async fn run(command: QwenCommands) -> anyhow::Result<()> {
                     prompt_version,
                     max_pages,
                     bundle_size,
+                    page_records,
                 },
                 members.as_deref(),
             )
@@ -369,6 +379,7 @@ pub async fn run(command: QwenCommands) -> anyhow::Result<()> {
             log,
             pages,
             rule,
+            bundle_verdict,
             crop_states,
         } => x::validate::compare_with(
             &files,
@@ -376,6 +387,7 @@ pub async fn run(command: QwenCommands) -> anyhow::Result<()> {
             x::validate::Compare {
                 min_dice,
                 rule,
+                bundle_verdict,
                 log: log.as_deref(),
                 pages: pages.as_deref(),
                 crop_states: crop_states.as_deref(),
