@@ -4754,13 +4754,16 @@ class StepChunkingTests(unittest.TestCase):
             got = t.claim(150)
         self.assertEqual(asked, [100, 100, 100])
         self.assertEqual(len(got), 45)
-        # Out of time: no new step however the last one ended.
-        asked.clear()
-        clock = iter([0, batch.CLAIM_SECONDS + 1])
-        with patch.object(t, "claim_step", side_effect=step_claim), \
-                patch.object(batch.time, "monotonic", side_effect=lambda: next(clock)):
-            self.assertEqual(t.claim(150), [])
-        self.assertEqual(asked, [100])
+        # Out of time: no new step however the last one ended, even a full one; its claims stay.
+        for first in ((0, True), (100, False)):
+            with self.subTest(first=first):
+                asked.clear()
+                steps[0] = first
+                clock = iter([0, batch.CLAIM_SECONDS + 1])
+                with patch.object(t, "claim_step", side_effect=step_claim), \
+                        patch.object(batch.time, "monotonic", side_effect=lambda: next(clock)):
+                    self.assertEqual(len(t.claim(150)), first[0])
+                self.assertEqual(asked, [100])
 
     def test_held_pages_list_is_put_once_per_change(self):
         directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
@@ -4771,7 +4774,8 @@ class StepChunkingTests(unittest.TestCase):
             self.assertFalse(t.publish_held({"d": ["a" * 64]}))
             self.assertTrue(t.publish_held({"d": ["a" * 64], "e": ["b" * 64]}))
         self.assertEqual(len(uploads), 2)
-        self.assertEqual(uploads[0][:3], ("upload", "--name", "scheduler/held-pages.json"))
+        self.assertEqual(uploads[0][:3], ("upload", "--name",
+                                          f"scheduler/held-pages/{queue_config()['plan']}.json"))
         body = json.loads((directory / "held-pages.json").read_text())
         self.assertEqual(body, {"schema_version": 1, "pages": {"d": ["a" * 64], "e": ["b" * 64]}})
 

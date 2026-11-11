@@ -2713,6 +2713,59 @@ mod queue_feed {
         );
         assert_eq!(report.queues[0].held, 1);
         assert_eq!(g.fx.stores.queue.approximate_count(BULK).await.unwrap(), 0);
+
+        // Settled whether or not this claim could use it: an English-only claim reading a
+        // German page's settled message deletes it too, rather than hiding it again.
+        let h = fed(true).await;
+        let digest = usnm_ocr_contract::boinc::sha256(h.message.encode().as_bytes());
+        let held: claim::HeldPages = [(DOC.to_string(), [digest].into())].into();
+        let eng: BTreeSet<String> = ["eng".to_string()].into();
+        let report = pull_held(
+            &h,
+            &h.fx.tmp.path().join("c"),
+            Some(&eng),
+            &opts,
+            Some(&held),
+        )
+        .await;
+        assert_eq!((report.claims.len(), report.held, report.hidden), (0, 1, 0));
+        assert!(report.skipped.is_empty());
+        assert_eq!(h.fx.stores.queue.approximate_count(BULK).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn every_plans_held_pages_list_is_read() {
+        let f = fed(true).await;
+        let (a, b, c) = ("a".repeat(64), "b".repeat(64), "c".repeat(64));
+        assert!(claim::load_held_pages(f.handoff.as_ref())
+            .await
+            .unwrap()
+            .is_none());
+        for (plan, body) in [
+            (
+                "queue-feed-13",
+                format!(r#"{{"schema_version":1,"pages":{{"{DOC}":["{a}"]}}}}"#),
+            ),
+            (
+                "queue-feed-10",
+                format!(r#"{{"schema_version":1,"pages":{{"{DOC}":["{b}"],"other":["{c}"]}}}}"#),
+            ),
+        ] {
+            f.handoff
+                .put(
+                    &format!("{}{plan}.json", claim::HELD_PAGES_PREFIX),
+                    body.into_bytes(),
+                    "application/json",
+                )
+                .await
+                .unwrap();
+        }
+        let held = claim::load_held_pages(f.handoff.as_ref())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(held[DOC], [a, b].into());
+        assert_eq!(held["other"], [c].into());
     }
 
     #[test]

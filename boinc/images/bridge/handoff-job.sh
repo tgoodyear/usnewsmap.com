@@ -35,8 +35,8 @@
 #                         writes claims/<doc_id>.json, then scheduler/claims.json, which names
 #                         the pages and their scans and echoes the nonce. Priority messages it
 #                         can't use go back to the queue; bulk ones stay hidden for the lease,
-#                         so they don't block the line. The message of a page the controller's
-#                         scheduler/held-pages.json lists as settled held is deleted. Only pages on the newest
+#                         so they don't block the line. The message of a page a plan's
+#                         scheduler/held-pages/<plan>.json lists as settled held is deleted. Only pages on the newest
 #                         fetched-scans list for the manifest's version are taken, and with
 #                         CLAIM_LANGUAGES only pages in those source languages (#866)
 #   HANDOFF_STEP=release  HANDOFF_DOCS=<doc_id>[,<doc_id>...]

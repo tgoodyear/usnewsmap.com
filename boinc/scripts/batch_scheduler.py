@@ -639,10 +639,12 @@ STEP_IDS = 100
 # and unusable ones are read past, not claimed), but starts no new step after this many seconds
 # of claiming, so the tick stays well inside its 15 minutes.
 CLAIM_SECONDS = 300
-# The controller's list of pages whose held result is settled (archived_held, its own and the
-# --check-state-dir plans'), each with its job's message sha256: the claim step deletes that
-# message when it comes back instead of claiming it again (usnm-boinc claim::HELD_PAGES).
-HELD_PAGES_BLOB = "scheduler/held-pages.json"
+# Each plan's list of pages whose held result is settled (archived_held, its own and the
+# --check-state-dir plans'), each with its job's message sha256, as <prefix><plan>.json: the claim
+# step reads every plan's list and deletes such a message when it comes back instead of claiming
+# it again (usnm-boinc claim::HELD_PAGES_PREFIX). One file per plan, so no plan's list replaces
+# another's.
+HELD_PAGES_PREFIX = "scheduler/held-pages/"
 MAX_TICK_PAGES = 500
 # --rest-journals: requests at once, and the most changed journals a tick fetches one by one
 # before it takes one az download-batch of all of them (at this rate, a minute's work).
@@ -1242,20 +1244,25 @@ class Transport:
                     raise ClaimFailed(message, claims) from error
                 raise
             claims += got
+            if time.monotonic() - started > CLAIM_SECONDS:
+                # Out of time: keep what was taken and start no new step.
+                break
             if len(got) < want:
                 # The queues ran dry, unless the step stopped at its receive budget with more
                 # to read (#1751): then go on while there is time.
                 summary = self.last_claim_summary or {}
-                if summary.get("budget_spent") is not True or time.monotonic() - started > CLAIM_SECONDS:
+                if summary.get("budget_spent") is not True:
                     break
         return claims
 
     def publish_held(self, pages):
-        """Put the held-pages list (doc id -> message sha256s) in the hand-off container for the
-        claim step, when it differs from the one this state directory last put there."""
+        """Put this plan's held-pages list (doc id -> message sha256s) in the hand-off container
+        for the claim step, when it differs from the one this state directory last put there.
+        Only this plan writes its own list, under the hand-off container's controller lease."""
         body = (json.dumps({"schema_version": 1, "pages": pages}, sort_keys=True,
                            separators=(",", ":")) + "\n").encode()
-        digest = hashlib.sha256(body).hexdigest()
+        name = f"{HELD_PAGES_PREFIX}{self.config['plan']}.json"
+        digest = hashlib.sha256(name.encode() + b"\n" + body).hexdigest()
         marker = self.directory / "held-pages.sha256"
         try:
             if marker.read_text().strip() == digest:
@@ -1263,7 +1270,7 @@ class Transport:
         except OSError:
             pass
         if self.handoff_root is not None:
-            path = self.handoff_root / HELD_PAGES_BLOB
+            path = self.handoff_root / name
             path.parent.mkdir(parents=True, exist_ok=True)
             staged = path.with_name(".held-pages.json.tmp")
             staged.write_bytes(body)
@@ -1271,7 +1278,7 @@ class Transport:
         else:
             staged = self.directory / "held-pages.json"
             staged.write_bytes(body)
-            self.az("upload", "--name", HELD_PAGES_BLOB, "--file", str(staged), "--overwrite", "true",
+            self.az("upload", "--name", name, "--file", str(staged), "--overwrite", "true",
                     "--content-type", "application/json", "-o", "none")
         marker.write_text(digest + "\n")
         return True

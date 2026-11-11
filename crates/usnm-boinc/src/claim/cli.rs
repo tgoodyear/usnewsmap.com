@@ -38,7 +38,7 @@ pub enum ClaimCommands {
         /// --max). Each queue has its own budget (#1057).
         #[arg(long)]
         max_receives: Option<usize>,
-        /// The hand-off container: its `scheduler/held-pages.json`, when there, names the
+        /// The hand-off container: the plans' lists under `scheduler/held-pages/` name the
         /// pages whose held result is settled, and their messages are deleted, not claimed.
         #[arg(long)]
         handoff_url: Option<String>,
@@ -191,10 +191,7 @@ pub async fn run(command: ClaimCommands) -> anyhow::Result<()> {
             let exchange_out = usnm_store::open(&out_url)?;
             let queue = usnm_store::queue::open(&queue_url)?;
             let held = match &handoff_url {
-                Some(url) => match usnm_store::open(url)?.get(x::HELD_PAGES).await? {
-                    Some(bytes) => Some(x::parse_held_pages(&bytes)?),
-                    None => None,
-                },
+                Some(url) => x::load_held_pages(usnm_store::open(url)?.as_ref()).await?,
                 None => None,
             };
             // The lock keeps the ledger as it is while messages are judged against it.
