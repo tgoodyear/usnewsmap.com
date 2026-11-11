@@ -101,9 +101,16 @@ def select_frontier(inventory, state):
         raise ValueError("invalid completion frontier progress")
     dirty = [n for n in names if inventory[n]["fingerprint"]
              and inventory[n]["fingerprint"] != loaded.get(n)]
-    lane = "priority" if dirty and state.get("turns", 0) % 4 != 3 else "fair"
+    # Two passes in four go to units never loaded, when there are any, so a collector change
+    # that makes every unit dirty at once doesn't hold back first loads. The third goes to a
+    # unit loaded before at another fingerprint, when there is one, so a unit that keeps
+    # failing its first load can't stop the reloads either. The fourth is the fair visit.
+    turn = state.get("turns", 0) % 4
+    fresh = [n for n in dirty if n not in loaded]
+    first = fresh if turn in (0, 1) else [n for n in dirty if n in loaded]
+    lane = "priority" if dirty and turn != 3 else "fair"
     selected, through = select_unit(
-        dirty if lane == "priority" else names,
+        (first or dirty) if lane == "priority" else names,
         state.get(lane + "_after", ""), state.get(lane + "_through", ""),
     )
     updated = {**state, "schema": 1, "loaded": {n: v for n, v in loaded.items() if n in inventory},

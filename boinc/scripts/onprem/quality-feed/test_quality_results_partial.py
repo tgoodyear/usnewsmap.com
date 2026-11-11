@@ -275,6 +275,25 @@ class PartialTest(unittest.TestCase):
         self.assertIn("old-124", seen)
         self.assertIn("pending", seen)
 
+    def test_completion_frontier_loads_new_units_before_reloads(self):
+        ready = lambda key: {"status": "canonical-present", "fingerprint": key * 64}
+        inventory = {f"a-{i:03}": ready("a") for i in range(50)}
+        state = {"schema": 1, "loaded": {n: v["fingerprint"] for n, v in inventory.items()}}
+        inventory = {n: ready("b") for n in inventory}  # A collector change dirties every unit.
+        for i in range(10):
+            inventory[f"z-new-{i}"] = ready("c")  # First collected after the change.
+        picks = []
+        for _ in range(8):
+            selected, _, lane, state = partial.select_frontier(inventory, state)
+            state = json.loads(json.dumps(state))
+            picks.append(selected)
+            if lane == "priority" and not selected.startswith("z-new-1"):
+                state["loaded"][selected] = inventory[selected]["fingerprint"]
+        # Two passes in four take new units, one a reload, one the fair lane. z-new-1 keeps
+        # failing and is retried, but the reloads go on.
+        self.assertEqual(picks, ["z-new-0", "z-new-1", "a-000", "a-000",
+                                 "z-new-1", "z-new-2", "a-001", "a-001"])
+
     def test_frontier_ack_is_only_persisted_after_verified_nonempty_load(self):
         self.args.completion_frontier = True
         self.args.inventory_refresh_secs = 3600
