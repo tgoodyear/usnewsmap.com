@@ -28,7 +28,7 @@ use anyhow::{bail, ensure, Context};
 use chrono::{SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
     path::Path,
     time::Duration,
 };
@@ -48,16 +48,12 @@ pub mod cli;
 /// How long a claimed message stays hidden: the workunits' `delay_bound`
 /// (three days) and a day to collect. Azure's longest hide is seven days.
 pub const LEASE: Duration = Duration::from_secs(4 * 24 * 3600);
-/// Each plan's list of pages whose held result is settled (#835): archived as held, by the
-/// plan or by one that shared its worker (`archived_held`), each with the sha256 of the
-/// message its job came from. `<prefix><plan>.json` in the hand-off container, written by
-/// that plan's controller before it claims; a claim reads every plan's list.
-pub const HELD_PAGES_PREFIX: &str = "scheduler/held-pages/";
-/// The most one held-pages list may be: 200,000 entries (the controller's cap) of about
-/// 150 bytes, with room to spare.
-pub const HELD_PAGES_MAX_BYTES: usize = 64 << 20;
-/// The most held-pages lists a claim reads (one per plan).
-pub const HELD_PAGES_MAX_LISTS: usize = 1024;
+// The held-pages lists' names, format and reader live in usnm-ocr-local, so the seeder reads
+// the same lists the claim does (#1754).
+pub use usnm_ocr_local::held_pages::{
+    load_held_pages, parse_held_pages, HeldPages, HELD_PAGES_MAX_BYTES, HELD_PAGES_MAX_LISTS,
+    HELD_PAGES_PREFIX,
+};
 /// The claim file's version.
 pub const VERSION: u32 = 1;
 
@@ -129,70 +125,6 @@ pub struct Sources<'a> {
     /// of their jobs' messages. That same message, back after its lease, is deleted rather
     /// than claimed again, so it neither takes a claim nor waits in line forever.
     pub held: Option<&'a HeldPages>,
-}
-
-/// Doc id -> the sha256s of the messages whose held results are settled ([`HELD_PAGES_PREFIX`]).
-pub type HeldPages = HashMap<String, BTreeSet<String>>;
-
-/// Every plan's held-pages list under [`HELD_PAGES_PREFIX`], merged; `None` when there is none.
-pub async fn load_held_pages(handoff: &dyn ObjectStore) -> anyhow::Result<Option<HeldPages>> {
-    let mut names: Vec<String> = handoff
-        .list(HELD_PAGES_PREFIX.trim_end_matches('/'))
-        .await?
-        .into_iter()
-        .filter(|n| n.starts_with(HELD_PAGES_PREFIX) && n.ends_with(".json"))
-        .collect();
-    names.sort();
-    ensure!(
-        names.len() <= HELD_PAGES_MAX_LISTS,
-        "{} held-pages lists under {HELD_PAGES_PREFIX}, more than {HELD_PAGES_MAX_LISTS}",
-        names.len()
-    );
-    let mut merged: Option<HeldPages> = None;
-    for name in names {
-        let Some(bytes) = handoff.get(&name).await? else {
-            continue;
-        };
-        let pages = parse_held_pages(&bytes).with_context(|| format!("held-pages list {name}"))?;
-        let all = merged.get_or_insert_with(HeldPages::new);
-        for (doc_id, digests) in pages {
-            all.entry(doc_id).or_default().extend(digests);
-        }
-    }
-    Ok(merged)
-}
-
-/// Read one held-pages list: `{"schema_version": 1, "pages": {"<doc id>": ["<sha256>", ...]}}`.
-pub fn parse_held_pages(bytes: &[u8]) -> anyhow::Result<HeldPages> {
-    #[derive(Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct File {
-        schema_version: u32,
-        pages: HashMap<String, BTreeSet<String>>,
-    }
-    ensure!(
-        bytes.len() <= HELD_PAGES_MAX_BYTES,
-        "a held-pages list is over {HELD_PAGES_MAX_BYTES} bytes"
-    );
-    let file: File = serde_json::from_slice(bytes).context("invalid held-pages list")?;
-    ensure!(
-        file.schema_version == 1,
-        "unsupported held-pages list version {}",
-        file.schema_version
-    );
-    for (doc_id, digests) in &file.pages {
-        ensure!(
-            usnm_store::is_safe_segment(doc_id)
-                && !digests.is_empty()
-                && digests.iter().all(|d| {
-                    d.len() == 64
-                        && d.bytes()
-                            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-                }),
-            "invalid held-pages entry for {doc_id}"
-        );
-    }
-    Ok(file.pages)
 }
 
 /// Whether `text` is the message of a page whose held result is settled.

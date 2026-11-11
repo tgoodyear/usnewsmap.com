@@ -55,6 +55,7 @@ pub mod alternate;
 pub mod alternate_decisions;
 pub mod checks;
 pub mod enqueue;
+pub mod held_pages;
 pub mod ledger;
 pub mod ocr_damage;
 pub mod ocr_prefetch;
