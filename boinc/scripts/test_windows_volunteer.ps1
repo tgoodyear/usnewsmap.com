@@ -598,4 +598,44 @@ Test-Case 'declining execution after verification still cleans download' {
     Assert-True (($script:Calls -join ',') -match 'cleanup,cleanup$') 'cancelled download removed'
 }
 
+Test-Case 'long messages wrap at word boundaries within the output width' {
+    $text = (1..60 | ForEach-Object { "word$_" }) -join ' '
+    $default = Get-OutputWidth
+    Assert-True ($default -ge 1 -and $default -le 100) 'width at most 100 columns'
+    foreach ($width in @(100, 60, 30)) {
+        # 30 columns: a narrow console still wraps to its own width, not the 100 fallback.
+        $lines = (Format-Wrapped $text '  ' $width) -split "`n"
+        Assert-True ($lines.Count -gt 1) "long text split over several lines at $width"
+        Assert-True (@($lines | Where-Object { $_.Length -gt $width }).Count -eq 0) "no line wider than $width"
+        Assert-True ((($lines | ForEach-Object { $_.Trim() }) -join ' ') -eq $text) "every word kept, in order, at $width"
+        Assert-True (@($lines | Select-Object -Skip 1 | Where-Object { -not $_.StartsWith('  ') }).Count -eq 0) "continuation lines indented at $width"
+    }
+    Assert-True ((Format-Wrapped "one`ntwo") -eq "one`ntwo") 'existing line breaks kept'
+    # A real message with a path, and a path longer than the line: nothing overflows at
+    # 30 or 100 columns, and no character is lost.
+    $path = 'C:\Users\volunteer\AppData\Local\Programs\BOINC\projects\boinc.usnewsmap.com\usnm_qwen_1.18_windows_x86_64__nvidia_vulkan_8b'
+    foreach ($message in @('ERROR: This helper is for native Windows only. See docs/boinc/volunteer/README.md for Linux/macOS.',
+                           "ERROR: No BOINC installation at $path. Supply its existing program directory.")) {
+        foreach ($width in @(30, 100)) {
+            $lines = (Format-Wrapped $message '       ' $width) -split "`n"
+            Assert-True (@($lines | Where-Object { $_.Length -gt $width }).Count -eq 0) "no line wider than $width"
+            $joined = (($lines | ForEach-Object { $_.TrimStart() }) -join '') -replace ' ', ''
+            Assert-True ($joined -eq ($message -replace ' ', '')) "nothing lost at $width"
+        }
+    }
+    Assert-True (-not ((Format-Wrapped 'aaaa bbbb cccc dddd' '       ' 12) -split "`n" | Select-Object -Skip 1 | Where-Object { $_.StartsWith(' ') })) 'indent dropped when it would take over a third of a narrow line'
+}
+
+Test-Case 'a failure prints a plain ERROR block, not an error record, and exits 1' {
+    $shell = (Get-Process -Id $PID).Path
+    $missing = Join-Path ([IO.Path]::GetTempPath()) ('usnm-no-boinc-' + [guid]::NewGuid())
+    $result = Invoke-BoundedProcess $shell `
+        "-NoProfile -NonInteractive -File `"$script:Helper`" -Status -BoincDirectory `"$missing`"" `
+        $PSScriptRoot
+    $all = "$($result.Output)`n$($result.ErrorOutput)"
+    Assert-True ($result.ExitCode -eq 1) "exit code 1, got $($result.ExitCode)"
+    Assert-True ($all -match 'ERROR: ') 'labelled ERROR message'
+    Assert-True ($all -notmatch 'CategoryInfo|FullyQualifiedErrorId') 'no PowerShell error record'
+}
+
 Write-Host "$script:Passed Windows onboarding contract tests passed. Mocks are NOT live Windows/GPU/installer acceptance."
