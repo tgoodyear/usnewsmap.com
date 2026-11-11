@@ -98,9 +98,9 @@ The integration tests run against the queue fixture (`scripts/onprem/queue/ci-fi
 `queue_move_into_pgmq_live` with `USNM_TEST_PGMQ`.
 
 Both commands run from the batch container as its own Arc identity. Set
-`USNM_STATE_MIGRATION` and provision for the cutover: it grants that identity Cosmos DB
-Built-in Data Reader on the `usnm` database and Message Processor on `ocr-priority` and
-`ocr-bulk` (`infra/modules/ocr-sync-runner.bicep`). Turn it off and provision again once
+`USNM_STATE_MIGRATION` and provision for the cutover: it grants that identity Message
+Processor on `ocr-priority` and `ocr-bulk` for `queue-move`. Pipeline state stays in Cosmos,
+so prod doesn't run `docs-migrate` (`infra/modules/ocr-sync-runner.bicep`). Turn it off and provision again once
 the cutover is done.
 
 ## Local lake mounts

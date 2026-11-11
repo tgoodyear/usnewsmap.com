@@ -338,7 +338,7 @@ param ingestOnPrem bool = false
 @description('Let batchHost run backfill curation (`usnm-ingest curate --enqueue`, `enqueue`; #917), in place of caj-usnm-backfill: its curated grant also creates under pages/ (create-only), and Cosmos Data Contributor on `batches` and `issues`. Needs ocrSyncOnPrem. Off (the default) until a backfill is needed.')
 param backfillOnPrem bool = false
 
-@description('Let batchHost move pipeline state and work queues on-prem (#1367, `usnm-boinc docs-migrate`, `queue-move`): Cosmos Data Reader on the `usnm` database and Message Processor on ocr-priority and ocr-bulk. Off once the cutover is done.')
+@description('Let batchHost move the work queues on-prem (#1367, `usnm-boinc queue-move`): Message Processor on ocr-priority and ocr-bulk; pipeline state stays in Cosmos. Off once the cutover is done.')
 param stateMigration bool = false
 
 @description('Alert on the on-prem OCR pickup (#1139, modules/ocr-sync-alerts.bicep): a failed run, no run through the pickup for more than 2 hours, and node output left in ocr-out over 72 hours, from the metrics it sends to the environment\'s Application Insights. With ocrSyncOnPrem and alert emails.')
