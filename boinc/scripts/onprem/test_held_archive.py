@@ -187,13 +187,25 @@ class HeldArchive(unittest.TestCase):
         ready = self.root / "holder-ready"
         holder = subprocess.Popen(["flock", str(tick), "sh", "-c",
                                    f'touch "{ready}"; sleep {seconds}; echo "holder released" >> "$FAKE_LOG"'],
-                                  env={**os.environ, "FAKE_LOG": str(self.root / "log")})
+                                  env={**os.environ, "FAKE_LOG": str(self.root / "log")},
+                                  start_new_session=True)
+        # flock, sh and sleep together: killing only the flock wrapper would leave its children
+        # holding the lock and writing into a removed directory after tearDown.
+        self.addCleanup(self.end_group, holder)
         for _ in range(500):
             if ready.exists():
                 break
             time.sleep(0.01)
         self.assertTrue(ready.exists(), "the holder never took the tick lock")
         return holder
+
+    @staticmethod
+    def end_group(process):
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.wait()
 
     def test_a_tick_lock_is_waited_for_then_held_through_the_run(self):
         # The run must wait for a tick already holding the lock, then hold it itself for
@@ -234,8 +246,9 @@ class HeldArchive(unittest.TestCase):
             self.assertFalse(any(line.startswith("tool ") for line in self.log()))
             self.assertEqual((self.root / "timer").read_text().strip(), "active")
         finally:
-            holder.kill()
-            holder.wait()
+            if run.poll() is None:
+                run.kill()
+                run.wait()
 
     def test_without_a_tick_lock_nothing_is_held(self):
         tick = self.root / "tick.lock"
