@@ -385,7 +385,7 @@ or work around an enforced Group Policy; ask your administrator instead.
   when a task starts, so close GPU-heavy applications. Hardware checks are not a
   guarantee that a particular GPU and driver can execute work.
 - Have at least **6 GiB host RAM** and allow **12 GiB disk**, or **18 GiB** with
-  an eligible AMD GPU for the 8B model. The data volume must have the reported
+  an eligible AMD or NVIDIA GPU for the 8B model. The data volume must have the reported
   free space, and BOINC's own disk allowance must also permit it. Prefer a
   desktop with comfortable spare RAM and VRAM rather than using your last
   available resources.

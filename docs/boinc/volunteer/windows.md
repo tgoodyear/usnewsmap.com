@@ -19,7 +19,7 @@ joined PC can sit idle for a while. That is normal.
   without an eligible AMD or NVIDIA GPU, add `-AllowCpuOnly` to the preview and apply
   commands below (not to `-Status`) to offer CPU time instead. CPU work is
   optional and not always available.
-- 6 GB of RAM and 12 GiB of free disk, or 18 GiB with an eligible AMD GPU (binary gigabytes: about 13 and 19 GB as most disk tools
+- 6 GB of RAM and 12 GiB of free disk, or 18 GiB with an eligible AMD or NVIDIA GPU (binary gigabytes: about 13 and 19 GB as most disk tools
   show them).
 
 ## 2. Run the helper
