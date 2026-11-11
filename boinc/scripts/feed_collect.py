@@ -5,6 +5,7 @@ Run source collectors beside their existing services. The evaluator reads their
 atomic files (or existing private HTTP mirrors), never invokes a remote shell.
 """
 import argparse
+import contextlib
 from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime
 import http.client
@@ -29,6 +30,11 @@ MAX_ROWS = 8000
 MAX_MATCH_EDGES = 100000
 MAX_PROFILE_CHECKS = 1000000
 TIMEOUT = 15
+# The server source's database inventory: four reads of at most 5 s each (the MAX_EXECUTION_TIME
+# hints in PHP), plus the container exec and PHP start-up. Under memory pressure on the server
+# host the old 2 s statement limit failed many minutes (11 Nov 2026), so the inventory gets its
+# own deadline.
+INVENTORY_TIMEOUT = 25
 NAME = re.compile(r"[a-zA-Z0-9_-]{1,80}")
 SOURCE_UNKNOWN_REASONS = ("task_resource_usage_unavailable", "active_task_resource_usage_unavailable")
 # An own client reporting another BOINC host than its configured binding.
@@ -45,6 +51,43 @@ SYSTEMD_FAILURE_FIELDS = {
 
 class SupplyUnknown(ValueError):
     """A bounded model cannot prove a feasible concurrent allocation."""
+
+
+# Why the server source failed, as one fixed code naming the stage, never error text. The
+# PHP inventory reports its own failures (PHP_FAILURES) on its last output line and exits 3.
+PHP_FAILURES = ("scheduler_config_invalid", "one_result_per_host_missing", "database_unavailable",
+                "database_query_timeout", "database_query_failed", "database_row_limit", "config_changed",
+                "inventory_php_error")
+PHP_FAILURE_EXIT = 3
+SERVER_FAILURES = PHP_FAILURES + (
+    "policy_unreadable",         # plan_class_spec.xml can't be read
+    "policy_invalid",            # duplicate, nested or unnamed plan classes
+    "policy_changed",            # plan_class_spec.xml changed during the observation
+    "inventory_timeout",         # the container exec or PHP ran past INVENTORY_TIMEOUT
+    "inventory_command_failed",  # podman or php failed without a report
+    "inventory_invalid",         # output that isn't the expected inventory
+    "preferences_invalid",       # an account's project preferences can't be read
+    "window_invalid",            # no single ENABLED_UNTIL in the cohort env file
+)
+
+
+class SourceFailed(ValueError):
+    """A source failure with a fixed reason code from SERVER_FAILURES."""
+
+    def __init__(self, reason):
+        super().__init__(reason)
+        self.reason = reason
+
+
+@contextlib.contextmanager
+def stage(reason):
+    """Any failure inside is `reason`; one already classified keeps its own."""
+    try:
+        yield
+    except SourceFailed:
+        raise
+    except Exception:
+        raise SourceFailed(reason) from None
 
 
 # The controller source's only error a planned rotation may excuse (#1687): no tick finished in
@@ -110,7 +153,7 @@ def read_file(path, limit=MAX_BYTES):
     return value
 
 
-def run(argv, cwd=None, limit=MAX_BYTES, exits=(0,)):
+def run(argv, cwd=None, limit=MAX_BYTES, exits=(0,), timeout=None):
     """Bound reads and clean up the owned local process group before reaping."""
     process = subprocess.Popen(argv, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                                start_new_session=True)
@@ -118,7 +161,7 @@ def run(argv, cwd=None, limit=MAX_BYTES, exits=(0,)):
     try:
         with selectors.DefaultSelector() as selector:
             selector.register(process.stdout, selectors.EVENT_READ)
-            deadline = time.monotonic() + TIMEOUT
+            deadline = time.monotonic() + (TIMEOUT if timeout is None else timeout)
             while True:
                 left = deadline - time.monotonic()
                 if left <= 0 or not selector.select(left):
@@ -268,6 +311,8 @@ def fresh(document, now, kind):
             raise SupplyUnknown(document["error"])
         if kind == "controller" and document["error"] == NO_RECENT_TICK:
             raise SupplyUnknown(NO_RECENT_TICK)
+        if kind == "server" and document["error"] in SERVER_FAILURES:
+            raise SourceFailed(document["error"])
         raise ValueError("source unavailable")
     if kind == "controller":
         tick = document["tick"]
@@ -416,10 +461,17 @@ def window(path):
 # The BOINC connection and TLS settings remain in boinc_db.inc/config.xml.
 # No result text, project credentials, user names or host addresses are exported.
 PHP = r"""
+// A failure is one fixed code on the last output line (feed_collect.PHP_FAILURES), never its text.
+function feed_fail($code) {
+    echo "\n", json_encode(['feed_failure' => $code]), "\n";
+    exit(3);
+}
+// php -r never calls set_exception_handler for a top-level throw, so the body is one try.
+try {
 function feed_config() {
     $raw = @file_get_contents('../../config.xml', false, null, 0, 8388609);
     if ($raw === false || strlen($raw) > 8388608 || preg_match('/<!DOCTYPE|<!ENTITY/i', $raw)) {
-        throw new Exception('invalid scheduler config');
+        throw new Exception('scheduler_config_invalid');
     }
     return $raw;
 }
@@ -427,7 +479,7 @@ $feed_config_before = feed_config();
 libxml_use_internal_errors(true);
 $feed_config_xml = simplexml_load_string($feed_config_before, 'SimpleXMLElement', LIBXML_NONET);
 libxml_clear_errors();
-if ($feed_config_xml === false) throw new Exception('invalid scheduler config');
+if ($feed_config_xml === false) throw new Exception('scheduler_config_invalid');
 // Match native_qwen_one_result_per_host's raw tokens without deploying that operator helper.
 $feed_flags = $feed_config_xml->xpath('/boinc/config/one_result_per_host_per_wu');
 if (count($feed_flags) !== 1 ||
@@ -436,34 +488,39 @@ if (count($feed_flags) !== 1 ||
     preg_match_all('/<config[\s>\/]/', $feed_config_before) !== 1 ||
     preg_match('/<config>(?:(?!<\/config>).)*(?:<one_result_per_host_per_wu\s*\/>|'
         .'<one_result_per_host_per_wu>\s*1\s*<\/one_result_per_host_per_wu>)/s', $feed_config_before) !== 1) {
-    throw new Exception('requires one-result-per-host scheduling');
+    throw new Exception('one_result_per_host_missing');
 }
 require_once 'boinc_db.inc';
 $db = BoincDb::get(true);
+if (!$db) throw new Exception('database_unavailable');
 function rows($sql) {
     global $db;
     $r = $db->do_query($sql);
-    if (!$r) throw new Exception('read failed');
+    if (!$r) {
+        // ER_QUERY_TIMEOUT: the statement ran past its MAX_EXECUTION_TIME hint.
+        $errno = method_exists($db, 'base_errno') ? $db->base_errno() : 0;
+        throw new Exception($errno == 3024 ? 'database_query_timeout' : 'database_query_failed');
+    }
     $out = [];
     while ($row = $r->fetch_assoc()) {
-        if (count($out) >= 8000) throw new Exception('row limit');
+        if (count($out) >= 8000) throw new Exception('database_row_limit');
         $out[] = $row;
     }
     return $out;
 }
 if (!$db->do_query('SET SESSION TRANSACTION READ ONLY') ||
-    !$db->do_query('START TRANSACTION WITH CONSISTENT SNAPSHOT')) throw new Exception('read transaction');
-$apps = rows("SELECT /*+ MAX_EXECUTION_TIME(2000) */ a.name,a.id,a.min_version,
+    !$db->do_query('START TRANSACTION WITH CONSISTENT SNAPSHOT')) throw new Exception('database_unavailable');
+$apps = rows("SELECT /*+ MAX_EXECUTION_TIME(5000) */ a.name,a.id,a.min_version,
     COALESCE(MAX(w.create_time),0) AS last_workunit
     FROM app a LEFT JOIN workunit w ON a.id=w.appid
     WHERE a.name IN ('usnm_ocr','usnm_qwen') GROUP BY a.id");
-$versions = rows("SELECT /*+ MAX_EXECUTION_TIME(2000) */ a.name AS app,
+$versions = rows("SELECT /*+ MAX_EXECUTION_TIME(5000) */ a.name AS app,
     av.id,av.version_num,av.plan_class,p.name AS platform
     FROM app_version av JOIN app a ON a.id=av.appid JOIN platform p ON p.id=av.platformid
     WHERE av.deprecated=0 AND a.name IN ('usnm_ocr','usnm_qwen')");
-$preferences = rows("SELECT /*+ MAX_EXECUTION_TIME(2000) */ h.id,h.venue,u.project_prefs
+$preferences = rows("SELECT /*+ MAX_EXECUTION_TIME(5000) */ h.id,h.venue,u.project_prefs
     FROM host h JOIN user u ON u.id=h.userid LIMIT 8001");
-$units = rows("SELECT /*+ MAX_EXECUTION_TIME(2000) */ a.name AS app,w.id,w.batch,
+$units = rows("SELECT /*+ MAX_EXECUTION_TIME(5000) */ a.name AS app,w.id,w.batch,
     w.app_version_num,w.hr_class,w.rsc_memory_bound,w.rsc_disk_bound,
     COUNT(*) AS unsent,
     (SELECT COUNT(*) FROM assignment x WHERE x.workunitid=w.id) AS assignments,
@@ -475,8 +532,13 @@ $units = rows("SELECT /*+ MAX_EXECUTION_TIME(2000) */ a.name AS app,w.id,w.batch
         AND w.canonical_resultid=0 AND w.error_mask=0
     GROUP BY w.id LIMIT 8001");
 $db->do_query('ROLLBACK');
-if ($feed_config_before !== feed_config()) throw new Exception('config changed during observation');
+if ($feed_config_before !== feed_config()) throw new Exception('config_changed');
 echo json_encode(['apps'=>$apps,'versions'=>$versions,'units'=>$units,'preferences'=>$preferences], JSON_THROW_ON_ERROR);
+} catch (Throwable $e) {
+    $codes = ['scheduler_config_invalid', 'one_result_per_host_missing', 'database_unavailable',
+              'database_query_timeout', 'database_query_failed', 'database_row_limit', 'config_changed'];
+    feed_fail(in_array($e->getMessage(), $codes, true) ? $e->getMessage() : 'inventory_php_error');
+}
 """
 
 
@@ -538,36 +600,73 @@ def feeder_allocation(guard, project, container=None, container_project="/projec
         return dict(GUARD_UNAVAILABLE)
 
 
-def server(project, env_file, container=None, container_project="/project/usnmocr", feeder_guard=None,
-           cohort_unit=None, cohort_timer=None):
-    # PHP validates config in its own namespace; only inventory crosses the container boundary.
-    before = read_file(project / "plan_class_spec.xml")
+def inventory(project, container=None, container_project="/project/usnmocr"):
+    """The PHP database inventory, or SourceFailed with the stage that failed."""
     command = ["php", "-r", PHP]
     if container:
         command = ["podman", "exec", "--workdir", container_project + "/html/inc", container, *command]
-    data = json.loads(run(command, cwd=None if container else project / "html/inc"))
-    if before != read_file(project / "plan_class_spec.xml"):
-        raise ValueError("policy changed during observation")
+    try:
+        output = run(command, cwd=None if container else project / "html/inc",
+                     exits=(0, PHP_FAILURE_EXIT), timeout=INVENTORY_TIMEOUT)
+    except TimeoutError:
+        raise SourceFailed("inventory_timeout") from None
+    except Exception:
+        raise SourceFailed("inventory_command_failed") from None
+    # BOINC's do_query echoes a line of its own before a failure report, so read the last line.
+    lines = output.strip().splitlines()
+    try:
+        report = json.loads(lines[-1]) if lines else None
+    except ValueError:
+        report = None
+    if isinstance(report, dict) and set(report) == {"feed_failure"}:
+        raise SourceFailed(report["feed_failure"] if report["feed_failure"] in PHP_FAILURES
+                           else "inventory_php_error")
+    with stage("inventory_invalid"):
+        data = json.loads(output)
+        if not isinstance(data, dict) or not all(isinstance(data.get(key), list)
+                                                 for key in ("apps", "versions", "units", "preferences")):
+            raise ValueError("invalid inventory")
+    return data
+
+
+def server(project, env_file, container=None, container_project="/project/usnmocr", feeder_guard=None,
+           cohort_unit=None, cohort_timer=None):
+    # PHP validates config in its own namespace; only inventory crosses the container boundary.
+    # Each stage's failure is its own fixed code (SERVER_FAILURES), so a failing minute says where.
+    with stage("policy_unreadable"):
+        before = read_file(project / "plan_class_spec.xml")
+    data = inventory(project, container, container_project)
+    with stage("policy_unreadable"):
+        after = read_file(project / "plan_class_spec.xml")
+    if before != after:
+        raise SourceFailed("policy_changed")
     plans = {}
-    for node in xml(before).findall("plan_class"):
-        name = node.findtext("name")
-        if not name or name in plans:
-            raise ValueError("invalid plan classes")
-        plans[name] = {child.tag: child.text or "" for child in node}
-        if len(plans[name]) != len(node) or any(len(child) for child in node):
-            raise ValueError("ambiguous or unsupported policy")
-    for row in data["units"]:
-        row["hosts"] = list(set(map(int, json.loads(row["hosts"])))) if row["hosts"] else []
-        for field in ("id", "batch", "app_version_num", "hr_class", "unsent", "assignments"):
-            row[field] = int(row[field])
-        for field in ("rsc_memory_bound", "rsc_disk_bound"):
-            row[field] = float(row[field])
-    for row in data["versions"]:
-        row["id"], row["version_num"] = int(row["id"]), int(row["version_num"])
-    data["host_preferences"] = host_preferences(data.pop("preferences"), data["apps"])
-    data["last_workunits"] = {r["name"]: int(r["last_workunit"]) for r in data["apps"]}
-    data["minimum_versions"] = {r["name"]: int(r["min_version"]) for r in data.pop("apps")}
-    data |= {"plans": plans, "enabled_until": window(env_file)}
+    with stage("policy_invalid"):
+        for node in xml(before).findall("plan_class"):
+            name = node.findtext("name")
+            if not name or name in plans:
+                raise ValueError("invalid plan classes")
+            plans[name] = {child.tag: child.text or "" for child in node}
+            if len(plans[name]) != len(node) or any(len(child) for child in node):
+                raise ValueError("ambiguous or unsupported policy")
+    with stage("inventory_invalid"):
+        for row in data["units"]:
+            row["hosts"] = list(set(map(int, json.loads(row["hosts"])))) if row["hosts"] else []
+            for field in ("id", "batch", "app_version_num", "hr_class", "unsent", "assignments"):
+                row[field] = int(row[field])
+            for field in ("rsc_memory_bound", "rsc_disk_bound"):
+                row[field] = float(row[field])
+        for row in data["versions"]:
+            row["id"], row["version_num"] = int(row["id"]), int(row["version_num"])
+        preferences, apps = data.pop("preferences"), data["apps"]
+    with stage("preferences_invalid"):
+        data["host_preferences"] = host_preferences(preferences, apps)
+    with stage("inventory_invalid"):
+        data["last_workunits"] = {r["name"]: int(r["last_workunit"]) for r in data["apps"]}
+        data["minimum_versions"] = {r["name"]: int(r["min_version"]) for r in data.pop("apps")}
+    with stage("window_invalid"):
+        enabled_until = window(env_file)
+    data |= {"plans": plans, "enabled_until": enabled_until}
     if feeder_guard:
         data["feeder_allocation"] = feeder_allocation(feeder_guard, project, container, container_project)
     if cohort_unit:
@@ -1553,6 +1652,9 @@ def collect(config):
                 if isinstance(error, SupplyUnknown) and str(error) in (*SOURCE_UNKNOWN_REASONS, BINDING_MISMATCH,
                                                                      NO_RECENT_TICK):
                     reason = str(error)
+                elif isinstance(error, SourceFailed) and error.reason in SERVER_FAILURES:
+                    # The server's own fixed code for the stage that failed, as in its document.
+                    reason = error.reason
                 else:
                     reason = "http_protocol_error" if isinstance(error, http.client.HTTPException) else "unavailable_or_invalid"
                 facts["sources"][name] = {"observed_at": None, "state": "unknown", "reason": reason}
@@ -1701,6 +1803,8 @@ def main(argv=None):
         result["error"] = NO_RECENT_TICK
     except SupplyUnknown as error:
         result["error"] = str(error) if str(error) in SOURCE_UNKNOWN_REASONS else "source unavailable"
+    except SourceFailed as error:
+        result["error"] = error.reason if error.reason in SERVER_FAILURES else "source unavailable"
     except Exception:
         # Source errors must replace the last success; never publish stderr, paths or credentials.
         result["error"] = "source unavailable"
