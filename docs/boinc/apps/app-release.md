@@ -593,6 +593,22 @@ so a version for a platform no real client has run yet, such as `nvidia_vulkan_8
 `windows_x86_64`, goes out held and is released with `app-version-hold.php` once a client has
 downloaded, run, suspended and resumed, uploaded and validated it.
 
+A held version can't be sent, so the client run needs a short qualification window. The class
+has no per-platform admission, so for `nvidia_vulkan_8b` the window is the release itself,
+isolated by checking who could receive it:
+
+1. In the BOINC database, list the hosts that could take it: `os_name` Windows, an NVIDIA
+   (CUDA) GPU in `serialnum`, and an RPC within the last week. Go on only if the test host
+   (the project's Windows 11 VM with the RTX 2060 SUPER) is the only one. On 10 Nov 2026 the
+   one Windows host besides it reported no GPU.
+2. Release with `app-version-hold.php --action release --apply`, and confirm the test host gets
+   `usnm_qwen` work on that version.
+3. On the test host, check download, the run itself, suspend and resume (BOINC Manager or
+   `boinccmd --task ... suspend`), upload, and that the result validates against its quorum.
+4. If any check fails, hold the version again at once (`--action hold --apply`). If they all
+   pass, it stays released, and the Windows helper (`setup_windows_volunteer.ps1`) and docs
+   admit NVIDIA.
+
 For `usnm_gold` the script also reads `gold-engine-platforms.json` from the running
 `usnm-boinc-server` container. Without a binding for the worker on `--platform` it refuses,
 unless `--hold`, and then it warns. Without `"server": "onprem"` it can't read the running
