@@ -241,7 +241,7 @@
         <!-- An integrated GPU reports shared system RAM as GPU RAM (a Ryzen 7800X3D's 2-CU Radeon
              reports 12 GB), so the RAM floor admits it. Peak FLOPS keeps the 8B model on
              discrete cards: about 0.6 TFLOPS for that iGPU, 20 to 30 for an RX 9070 XT or 7900 XTX. -->
-        <min_gpu_peak_flops>2.5e12</min_gpu_peak_flops>
+        <min_gpu_peak_flops>1.5e12</min_gpu_peak_flops>
         <min_gpu_ram_mb>7000</min_gpu_ram_mb>
         <gpu_ram_used_mb>6500</gpu_ram_used_mb>
         <ngpus>1</ngpus>

@@ -199,7 +199,7 @@ class DaemonConfig(unittest.TestCase):
                            ("max_batch", "8"), ("min_gpu_ram_mb", "7000"),
                            ("gpu_ram_used_mb", "6500"), ("avg_ncpus", "2"),
                            # An iGPU's shared RAM passes the RAM floor; peak FLOPS keeps it out.
-                           ("min_gpu_peak_flops", "2.5e12")):
+                           ("min_gpu_peak_flops", "1.5e12")):
             self.assertEqual(amd.findtext(tag), value)
         self.assertIsNotNone(amd.find("opencl"))
         self.assertIsNone(amd.find("cuda"))
