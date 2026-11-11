@@ -33,6 +33,7 @@ pub struct View {
     pub feed: crate::feed::FeedView,
     pub pipeline: crate::pipeline::PipelineView,
     pub throughput: crate::throughput::ThroughputView,
+    pub boinc_week: crate::boinc_week::WeekView,
     pub generated_at: DateTime<Utc>,
     pub refresh_secs: u64,
     /// While the dashboard's first read of the fetcher's files after a
@@ -669,6 +670,7 @@ pub fn build(
         feed: crate::feed::FeedView::default(),
         pipeline: crate::pipeline::PipelineView::default(),
         throughput: crate::throughput::ThroughputView::default(),
+        boinc_week: crate::boinc_week::WeekView::default(),
         generated_at: now,
         refresh_secs: s.refresh_secs,
         warming: fetch.warming.clone(),

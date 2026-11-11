@@ -7,6 +7,7 @@ use std::fmt::Write as _;
 use crate::view::View;
 
 mod assets;
+mod boinc_week;
 mod details;
 mod ecosystem;
 mod fmt;
@@ -39,6 +40,7 @@ pub fn render(v: &View) -> String {
         o.push_str(&warming_panel(w));
     }
     o.push_str(&ecosystem_panel(v));
+    o.push_str(&boinc_week::panel(&v.boinc_week));
     o.push_str(&throughput::panel(&v.throughput));
     o.push_str(&crate::diagrams::section(v));
     o.push_str("<section class=\"wide\" id=\"operational-details\"><h2>Operational details</h2>\
