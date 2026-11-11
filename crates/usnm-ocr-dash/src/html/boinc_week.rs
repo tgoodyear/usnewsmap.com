@@ -231,6 +231,16 @@ fn by_app(o: &mut String, apps: &std::collections::BTreeMap<String, u64>) {
     }
 }
 
+/// Counts by app for the table: `usnm_qwen 1,700, usnm_ocr 5`, largest first.
+fn in_words(apps: &std::collections::BTreeMap<String, u64>) -> String {
+    let mut apps: Vec<_> = apps.iter().filter(|(_, n)| **n > 0).collect();
+    apps.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+    apps.iter()
+        .map(|(name, n)| format!("{name} {}", int(**n)))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// A bucket's tip: its window, then each chart's numbers, apps under their totals.
 fn tip(buckets: &[Bucket], i: usize) -> String {
     let b = &buckets[i];
@@ -243,12 +253,7 @@ fn tip(buckets: &[Bucket], i: usize) -> String {
     by_app(&mut o, &b.queued);
     row(&mut o, "Volunteers", &int(b.volunteers), false);
     row(&mut o, "Volunteer machines", &int(b.volunteer_hosts), false);
-    row(
-        &mut o,
-        "All accounts / machines",
-        &format!("{} / {}", int(b.accounts), int(b.hosts)),
-        false,
-    );
+    row(&mut o, "All machines", &int(b.hosts), false);
     row(&mut o, "Completed", &int(b.completed_total()), false);
     by_app(&mut o, &b.completed);
     o
@@ -281,7 +286,11 @@ pub(super) fn panel(v: &WeekView) -> String {
     };
     let b = &w.buckets;
     let last = &b[b.len() - 1];
-    let generated = local(w.generated_at, last.utc_offset_minutes);
+    let generated = local(
+        w.generated_at,
+        w.generated_utc_offset_minutes
+            .unwrap_or(last.utc_offset_minutes),
+    );
     let done: u64 = b.iter().map(Bucket::completed_total).sum();
     let _ = write!(
         o,
@@ -375,13 +384,13 @@ pub(super) fn panel(v: &WeekView) -> String {
          <div class=\"scroll table-wide\" tabindex=\"0\" role=\"region\" aria-label=\"BOINC week table\">\
          <table><thead><tr><th>Bucket (ET)</th><th class=\"r\">Queued</th><th class=\"r\">Volunteers</th>\
          <th class=\"r\">Volunteer machines</th><th class=\"r\">All machines</th><th class=\"r\">Completed</th>\
-         </tr></thead><tbody>",
+         <th>Queued by app</th><th>Completed by app</th></tr></thead><tbody>",
     );
     for (i, x) in b.iter().enumerate() {
         let _ = write!(
             o,
             "<tr><td>{}{}</td><td class=\"r\">{}</td><td class=\"r\">{}</td><td class=\"r\">{}</td>\
-             <td class=\"r\">{}</td><td class=\"r\">{}</td></tr>",
+             <td class=\"r\">{}</td><td class=\"r\">{}</td><td>{}</td><td>{}</td></tr>",
             esc(&window(b, i)),
             if x.partial { " (so far)" } else { "" },
             int(x.queued_total()),
@@ -389,6 +398,8 @@ pub(super) fn panel(v: &WeekView) -> String {
             int(x.volunteer_hosts),
             int(x.hosts),
             int(x.completed_total()),
+            esc(&in_words(&x.queued)),
+            esc(&in_words(&x.completed)),
         );
     }
     o.push_str("</tbody></table></div></details></section>");
@@ -436,6 +447,8 @@ mod tests {
         assert_eq!(html.matches("class=\"wk-bar").count(), 56);
         assert_eq!(html.matches("wk-bar wk-partial").count(), 1);
         assert_eq!(html.matches("<tr><td>").count(), 56);
+        // The table has what the tips have, for keyboards and screen readers.
+        assert!(html.contains("<td>usnm_qwen 1,700</td>"));
         // Day labels on the last chart only, one a day.
         assert!(html.matches("<text x=").count() >= 7);
         let data = html.split("class=\"wk-data\">").nth(1).unwrap();
@@ -446,7 +459,7 @@ mod tests {
         let tip = d["tips"][55].as_str().unwrap();
         assert!(tip.contains("(so far)"));
         assert!(tip.contains("usnm_qwen"));
-        assert!(tip.contains("All accounts / machines"));
+        assert!(tip.contains("All machines"));
         assert!(!html.contains("stale"));
         let none = panel(&WeekView::default());
         assert!(none.contains("No counts from the BOINC server yet"));

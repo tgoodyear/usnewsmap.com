@@ -33,6 +33,10 @@ pub struct Week {
     pub schema: u32,
     /// When the server counted them, in epoch seconds.
     pub generated_at: i64,
+    /// US Eastern's offset from UTC at `generated_at`; the last bucket's
+    /// if not sent.
+    #[serde(default)]
+    pub generated_utc_offset_minutes: Option<i32>,
     pub bucket_hours: u32,
     pub buckets: Vec<Bucket>,
 }
@@ -68,13 +72,47 @@ impl Bucket {
     }
 }
 
-/// An app's short name (`usnm_quality`): lowercase, digits and `_`.
+/// The project's BOINC apps, live and retired. The public view shows any
+/// other key as [`OTHER_APP`], so a name that only looks like an app can't
+/// reach it.
+pub const KNOWN_APPS: &[&str] = &[
+    "usnm_assess",
+    "usnm_gold",
+    "usnm_gold_native",
+    "usnm_iris",
+    "usnm_ndlocr",
+    "usnm_ocr",
+    "usnm_quality",
+    "usnm_qwen",
+    "usnm_qwen_train",
+    "usnm_surya",
+];
+pub const OTHER_APP: &str = "other";
+
+/// An app's short name: `usnm_` and lowercase, digits and `_`.
 pub fn app_ok(s: &str) -> bool {
-    !s.is_empty()
-        && s.len() <= 40
-        && s.as_bytes()[0].is_ascii_lowercase()
-        && s.bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+    s.len() <= 40
+        && s.strip_prefix("usnm_").is_some_and(|rest| {
+            !rest.is_empty()
+                && rest
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+        })
+}
+
+/// Counts by app with every app not in [`KNOWN_APPS`] folded into
+/// [`OTHER_APP`].
+pub fn known_apps_only(apps: &BTreeMap<String, u64>) -> BTreeMap<String, u64> {
+    let mut out = BTreeMap::new();
+    for (app, n) in apps {
+        let key = if KNOWN_APPS.contains(&app.as_str()) {
+            app.as_str()
+        } else {
+            OTHER_APP
+        };
+        *out.entry(key.to_owned()).or_insert(0) += n;
+    }
+    out
 }
 
 /// A pushed document, checked. Anything but counts and app names is refused.
@@ -95,6 +133,11 @@ fn check(w: &Week, now: DateTime<Utc>) -> anyhow::Result<()> {
     ensure!(
         w.generated_at > 0 && w.generated_at <= now.timestamp() + 60,
         "generated_at is in the future"
+    );
+    ensure!(
+        w.generated_utc_offset_minutes
+            .is_none_or(|m| (-720..=840).contains(&m)),
+        "bad UTC offset"
     );
     let mut last = 0;
     for b in &w.buckets {
@@ -270,6 +313,13 @@ pub(crate) mod tests {
             &|d| d["buckets"][0]["completed"]["192.0.2.7"] = json!(1)
         ));
         assert!(refused(
+            &|d| d["buckets"][0]["queued"]["tgoodyear"] = json!(1)
+        ));
+        assert!(refused(
+            &|d| d["buckets"][0]["completed"]["hostid_12"] = json!(1)
+        ));
+        assert!(refused(&|d| d["generated_utc_offset_minutes"] = json!(5000)));
+        assert!(refused(
             &|d| d["buckets"][0]["accounts"] = json!("boinc-test")
         ));
         // And the rest holds together.
@@ -283,6 +333,21 @@ pub(crate) mod tests {
         ));
         assert!(refused(&|d| d["buckets"][0]["volunteers"] = json!(5)));
         assert!(refused(&|d| d["buckets"] = json!([])));
+    }
+
+    #[test]
+    fn apps_not_on_the_list_are_other() {
+        let apps: BTreeMap<String, u64> = [
+            ("usnm_qwen".to_owned(), 3),
+            ("usnm_tgoodyear".to_owned(), 1),
+            ("usnm_hostid_12".to_owned(), 2),
+        ]
+        .into();
+        let kept = known_apps_only(&apps);
+        assert_eq!(
+            kept,
+            [("other".to_owned(), 3), ("usnm_qwen".to_owned(), 3)].into()
+        );
     }
 
     #[test]

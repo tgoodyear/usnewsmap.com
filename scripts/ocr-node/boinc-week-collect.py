@@ -58,7 +58,8 @@ $read = function ($sql) use ($db) {
   while ($row = $found->fetch_row()) $rows[] = array_map('intval', $row);
   return $rows;
 };
-$db->do_query('SET SESSION TRANSACTION READ ONLY');
+// One read-only snapshot for every query, so the queue's two scans see the same rows.
+if (!$db->do_query('START TRANSACTION READ ONLY, WITH CONSISTENT SNAPSHOT')) throw new Exception('no snapshot');
 $apps = [];
 $found = $db->do_query("SELECT id, name FROM app");
 while ($row = $found->fetch_row()) $apps[(int)$row[0]] = $row[1];
@@ -75,6 +76,7 @@ $active = $read("SELECT /*+ MAX_EXECUTION_TIME(5000) */ h, userid, hostid FROM (
     SELECT FLOOR(sent_time/3600)*3600 h, userid, hostid FROM result WHERE sent_time >= $from AND hostid > 0
     UNION SELECT FLOOR(received_time/3600)*3600, userid, hostid FROM result
       WHERE received_time >= $from AND hostid > 0) x LIMIT 200000");
+$db->do_query('COMMIT');
 echo json_encode(['active' => $active, 'apps' => $apps, 'completed' => $completed,
   'entered' => $entered, 'left' => $left]);
 """
@@ -163,7 +165,8 @@ def aggregate(rows, now, project_users):
         b["volunteer_hosts"] = len(volunteer_hosts)
         b["completed"] = dict(sorted(b["completed"].items()))
         b["queued"] = dict(sorted(b["queued"].items()))
-    return {"bucket_hours": BUCKET_HOURS, "buckets": buckets, "generated_at": int(now), "schema": SCHEMA}
+    return {"bucket_hours": BUCKET_HOURS, "buckets": buckets, "generated_at": int(now),
+            "generated_utc_offset_minutes": offset_minutes(now), "schema": SCHEMA}
 
 
 def boinc_rows(since):

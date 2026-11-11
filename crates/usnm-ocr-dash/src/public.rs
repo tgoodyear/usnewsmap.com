@@ -329,8 +329,8 @@ pub fn redact(v: &mut View) {
     scrub_opt(&mut v.boinc_week.error);
     if let Some(w) = &mut v.boinc_week.week {
         for b in &mut w.buckets {
-            b.queued.retain(|app, _| crate::boinc_week::app_ok(app));
-            b.completed.retain(|app, _| crate::boinc_week::app_ok(app));
+            b.queued = crate::boinc_week::known_apps_only(&b.queued);
+            b.completed = crate::boinc_week::known_apps_only(&b.completed);
         }
     }
 

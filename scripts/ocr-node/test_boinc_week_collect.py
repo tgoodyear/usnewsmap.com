@@ -69,6 +69,7 @@ class AggregateTests(unittest.TestCase):
         self.assertEqual((full["accounts"], full["hosts"], full["volunteers"], full["volunteer_hosts"]), (3, 4, 2, 3))
         self.assertEqual((last["accounts"], last["hosts"], last["volunteers"], last["volunteer_hosts"]), (1, 1, 0, 0))
         self.assertEqual(full["utc_offset_minutes"], -300)
+        self.assertEqual(doc["generated_utc_offset_minutes"], -300)
         # Counts and app names only.
         text = json.dumps(doc)
         for word in ("userid", "hostid", "Not An App"):
