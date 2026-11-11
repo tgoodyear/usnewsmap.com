@@ -2005,6 +2005,41 @@ class HandoffAndBridgeQualitySteps(unittest.TestCase):
                 self.assertEqual(r.returncode, 1, r.stderr)
                 self.assertFalse([c for c in self.calls() if c.startswith(("submit ", "handoff put-spool"))])
 
+    def test_bridge_gold_trust_writes_a_line_scope_from_several_campaigns(self):
+        # #1621: one fresh campaign root per targeted host, built together into the line scope.
+        self.stub("")
+        bridge, env = self.bridge_copy()
+        share = env["PROJECT_DIR"]
+        base = {**env, "BRIDGE_STEP": "gold-trust", "GOLD_CAMPAIGN": "lines8404-h2",
+                "GOLD_MAX_CER": "0.08734328574534386", "GOLD_MANIFEST_SHA256": "d" * 64,
+                "GOLD_LANGUAGE": "eng", "GOLD_PROFILE": "eng"}
+        line = {"GOLD_CAMPAIGNS": "lines8404-h9,lines8404-h10", "GOLD_LINE_SCOPE": "chr/chr_phoenix",
+                "GOLD_LINE_EVIDENCE": "#1621 line jobs, report step 3"}
+        r = subprocess.run([bridge], cwd=ROOT, env={**base, **line}, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        (call,) = [c for c in self.calls() if c.startswith("gold trust ")]
+        for c in ("lines8404-h2", "lines8404-h9", "lines8404-h10"):
+            self.assertIn(f"--reports {share}/gold/{c}/out/reports.jsonl", call)
+            self.assertIn(f"--outcomes {share}/gold/{c}/out/native-outcomes.jsonl", call)
+        self.assertIn("--line-scope chr/chr_phoenix --line-evidence #1621 line jobs, report step 3", call)
+        self.assertIn(f"--out {share}/gold/trust.json", call)
+        # Without the line variables, the page scope as before.
+        os.remove(self.log)
+        r = subprocess.run([bridge], cwd=ROOT, env=base, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        (call,) = [c for c in self.calls() if c.startswith("gold trust ")]
+        self.assertNotIn("--line-scope", call)
+        self.assertEqual(call.count("--reports "), 1)
+        for bad in ({"GOLD_LINE_EVIDENCE": "x"}, {"GOLD_LINE_SCOPE": "chr/chr_phoenix"},
+                    {"GOLD_LINE_SCOPE": "chr", "GOLD_LINE_EVIDENCE": "x"},
+                    {"GOLD_CAMPAIGNS": "lines8404-h2"}, {"GOLD_CAMPAIGNS": "../x"}):
+            with self.subTest(bad=bad):
+                if os.path.exists(self.log):
+                    os.remove(self.log)
+                r = subprocess.run([bridge], cwd=ROOT, env={**base, **bad}, capture_output=True, text=True)
+                self.assertEqual(r.returncode, 1, r.stderr)
+                self.assertFalse([c for c in self.calls() if c.startswith("gold trust")])
+
     def test_bridge_quality_and_qwen_steps(self):
         share = os.path.join(self.tmp, "share")
         proj = os.path.join(share, "usnmocr")

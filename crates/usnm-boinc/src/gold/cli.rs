@@ -104,11 +104,26 @@ pub enum GoldCommands {
         #[arg(long)]
         profile: String,
         /// Optional existing trust.json to merge this calibrated scope into.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "line_scope")]
         merge: Option<PathBuf>,
+        /// Write the passing hosts to this line-job scope (#1621), `<language>/<profile>` at
+        /// PSM 13, instead of the page scope the reports are in: only that scope of the list at
+        /// `--out` changes, and `--out` must already hold a calibrated list.
+        #[arg(long, requires = "line_evidence", value_parser = parse_line_scope)]
+        line_scope: Option<(String, String)>,
+        /// What the line route was judged on, on one line (issue, report, numbers).
+        #[arg(long, requires = "line_scope")]
+        line_evidence: Option<String>,
         #[arg(long)]
         out: PathBuf,
     },
+}
+
+fn parse_line_scope(s: &str) -> Result<(String, String), String> {
+    let (language, profile) = s
+        .split_once('/')
+        .ok_or_else(|| "a line scope is <language>/<profile>".to_owned())?;
+    Ok((language.to_owned(), profile.to_owned()))
 }
 
 pub async fn run(command: GoldCommands) -> anyhow::Result<()> {
@@ -226,6 +241,8 @@ pub async fn run(command: GoldCommands) -> anyhow::Result<()> {
             language,
             profile,
             merge,
+            line_scope,
+            line_evidence,
             out,
         } => {
             let built = crate::trust::Trust::build_with_outcomes(
@@ -240,7 +257,21 @@ pub async fn run(command: GoldCommands) -> anyhow::Result<()> {
                     dpi: 300,
                 },
             )?;
-            let t = built.promote_to(&out, merge.as_deref())?;
+            let t = match (line_scope, line_evidence) {
+                (Some((language, profile)), Some(evidence)) => {
+                    let scope = crate::trust::Scope {
+                        language,
+                        profile,
+                        psm: usnm_ocr_contract::boinc::LINE_PSM,
+                        dpi: 300,
+                    };
+                    crate::trust::Trust::promote_line_scope(
+                        &out,
+                        built.line_policy(scope, &evidence)?,
+                    )?
+                }
+                _ => built.promote_to(&out, merge.as_deref())?,
+            };
             for policy in t.effective_policies()? {
                 if let Some(hold) = &policy.hold {
                     eprintln!(

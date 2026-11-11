@@ -98,31 +98,13 @@ impl Trust {
 
     /// The policy for `job`'s exact `(language, profile, psm, dpi)`: a page job's by its page
     /// language, a line job's (#1621) by its line language, in a line-job scope only. A line
-    /// scope's view carries its basis's hosts, and its basis's hold if it has none of its own;
-    /// none when its basis is missing or allows more than the line scope's `max_cer`.
+    /// scope trusts its own hosts, and is held only by its own hold: no page scope changes it.
     fn job_policy(&self, job: &usnm_ocr_contract::boinc::Job) -> Option<PolicyView<'_>> {
         let view = self.policy_view(job.route_language(), &job.engine.profile)?;
-        if view.line_basis.is_some() != job.lines.is_some()
-            || view.scope.psm != job.engine.psm
-            || view.scope.dpi != job.engine.dpi
-        {
-            return None;
-        }
-        let Some(basis) = view.line_basis else {
-            return Some(view);
-        };
-        let page = self.policy_view(&basis.page_scope.language, &basis.page_scope.profile)?;
-        if *page.scope != basis.page_scope
-            || page.line_basis.is_some()
-            || page.max_cer > view.max_cer
-        {
-            return None;
-        }
-        Some(PolicyView {
-            hosts: page.hosts,
-            hold: view.hold.or(page.hold),
-            ..view
-        })
+        (view.line_basis.is_some() == job.lines.is_some()
+            && view.scope.psm == job.engine.psm
+            && view.scope.dpi == job.engine.dpi)
+            .then_some(view)
     }
 
     /// Returns the hosts trusted for `job`'s exact `(language, profile, psm, dpi)` and image.
