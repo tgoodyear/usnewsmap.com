@@ -353,7 +353,7 @@
     },
     "USNM_STATE_MIGRATION": {
       "x-usnm-visibility": "public",
-      "description": "Let USNM_BATCH_HOST move pipeline state and work queues on-prem (#1367, usnm-boinc docs-migrate and queue-move): Cosmos Data Reader on the usnm database, Message Processor on ocr-priority and ocr-bulk. Needs USNM_OCR_SYNC_ONPREM. Off once the cutover is done.",
+      "description": "Let USNM_BATCH_HOST move the work queues on-prem (#1367, usnm-boinc queue-move): Message Processor on ocr-priority and ocr-bulk; pipeline state stays in Cosmos. Needs USNM_OCR_SYNC_ONPREM. Off once the cutover is done.",
       "type": "boolean"
     },
     "USNM_OCR_SYNC_ALERTS": {
