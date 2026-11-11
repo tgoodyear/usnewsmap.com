@@ -988,7 +988,12 @@ mod cli_tests {
         std::env::set_var(NAMES[1], "7000");
         let b = bucket(&[]).unwrap().unwrap();
         assert_eq!((b.root.as_str(), b.gap), (root, Duration::from_secs(7)));
-        std::env::set_var(NAMES[1], "999");
+        std::env::set_var(NAMES[1], "500");
+        assert_eq!(
+            bucket(&[]).unwrap().unwrap().gap,
+            Duration::from_millis(500)
+        );
+        std::env::set_var(NAMES[1], "499");
         assert!(bucket(&[]).is_err());
         std::env::set_var(NAMES[0], "");
         assert!(bucket(&[]).unwrap().is_none(), "empty: off");
