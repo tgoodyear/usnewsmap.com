@@ -27,18 +27,38 @@ needs, or it leaves the file and journals why:
     under some campaign of --quality-root, whose quality.json has this job id and pages;
   - that unit's page.jpg, the same size as the job's page input and byte for byte the same
     as the download copy (full compare; --skip-cmp is for dry runs only), or the same inode.
+    When prune-units already removed the unit's page.jpg, the copy must instead be the size
+    and (full read; --skip-cmp skips it) sha256 that quality.json gives the page input.
 Derived images may be deleted once nothing uses them (rule of 11 November 2026), so the
-copy is deleted whether or not the pages' original scans are still on disk; the unit's
-page.jpg keeps the image while quality collect reads it (#1743).
+copy is deleted whether or not the pages' original scans are still on disk.
 Without --delete it changes nothing on the share and reports what it would free. With
 --delete it appends a journal line before each unlink and another after it, both fsynced,
 so the journal records every file it removed and the --commit the run came from.
 --max-files and --max-bytes bound a batch; a file that would pass --max-bytes ends the
 batch before it is touched.
+
+  quality_retention.py prune-units --quality-root DIR --campaign NAME --results-root DIR
+      --journal FILE [--commit SHA] [--delete] [--max-units N] [--max-bytes N]
+
+`prune-units` frees the unit copy, units/bundle-*/page.jpg, of bundles that quality collect no
+longer needs (#1743). Collect takes a bundle's page sizes from its dims.json instead. It runs
+on the storage host as the share's owner, like `prune`. A unit's page.jpg goes only when:
+  - the unit is a submitted bundle whose quality.json lists its pages, and page.jpg is the
+    size quality.json gives the page input;
+  - its dims.json belongs to this job (version 1, the job id, every page's doc id and slice
+    sha256 in order) and every page's JPEG header, read at its slice, gives the size the
+    record gives;
+  - the unit is fully collected: in the partial loader's state under --results-root/NAME,
+    inventory.json has it canonical-present and frontier.json has loaded that fingerprint;
+  - that inventory was written more than RECORD_SETTLE_SECS after dims.json, so the loaded
+    fingerprint is one that collect computed with the record in the unit.
+The same dry run, journal, --max-bytes rule and summary as `prune`; a page.jpg with other
+hard links (a download copy an earlier version linked) counts no bytes.
 """
 import argparse
 import json
 import os
+import hashlib
 import re
 import sys
 import time
@@ -49,6 +69,13 @@ JOB_ID = re.compile(r"[0-9a-f]{64}")
 MIN_AGE_SECS = 3600
 CHUNK = 8 << 20
 RESULT_OVER = 5
+DIMS_FILE = "dims.json"
+DIMS_VERSION = 1
+MAX_DIMS_JSON = 1 << 20
+# A full inventory refresh may run for its budget (an hour) before it writes inventory.json.
+RECORD_SETTLE_SECS = 2 * 3600
+# A bundle page's JPEG header (staging re-encodes the pages, so no large EXIF or ICC blocks).
+JPEG_HEADER_WINDOW = 1 << 20
 
 
 def list_eligible(config, db_ca, db_defaults, out):
@@ -161,7 +188,14 @@ def check(entry, download, units, cmp, now):
     try:
         ust = os.stat(page)
     except FileNotFoundError:
-        return "unit page.jpg missing"
+        if not os.path.exists(os.path.join(unit, DIMS_FILE)):
+            return "unit page.jpg missing"
+        # prune-units freed the unit's copy: the download copy must be the job's own input.
+        if want != st.st_size:
+            return "size differs from the job's page input"
+        if cmp and file_sha256(path) != ((job.get("inputs") or {}).get("page") or {}).get("sha256"):
+            return "bytes differ from the job's page input"
+        return path, st.st_size, unit
     if ust.st_size != st.st_size or (want is not None and want != ust.st_size):
         return "size differs from unit page.jpg"
     if (ust.st_dev, ust.st_ino) == (st.st_dev, st.st_ino):
@@ -171,6 +205,169 @@ def check(entry, download, units, cmp, now):
     if cmp and not same_bytes(path, page):
         return "bytes differ from unit page.jpg"
     return path, st.st_size, unit
+
+
+def file_sha256(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        while True:
+            x = f.read(CHUNK)
+            if not x:
+                return h.hexdigest()
+            h.update(x)
+
+
+def jpeg_size(data):
+    """(width, height) from a JPEG's frame header in `data`, its first bytes, or None."""
+    if data[:2] != b"\xff\xd8":
+        return None
+    i = 2
+    while i + 4 <= len(data):
+        if data[i] != 0xFF:
+            return None
+        marker = data[i + 1]
+        if marker == 0xFF:
+            i += 1
+            continue
+        if marker == 0x01 or 0xD0 <= marker <= 0xD7:
+            i += 2
+            continue
+        length = int.from_bytes(data[i + 2:i + 4], "big")
+        if 0xC0 <= marker <= 0xCF and marker not in (0xC4, 0xC8, 0xCC):
+            if i + 9 > len(data):
+                return None
+            height = int.from_bytes(data[i + 5:i + 7], "big")
+            width = int.from_bytes(data[i + 7:i + 9], "big")
+            return (width, height) if width and height else None
+        if marker == 0xDA or length < 2:
+            return None
+        i += 2 + length
+    return None
+
+
+def unit_check(unit, results):
+    """(path, bytes freed, record) for a unit page.jpg to delete, or a reason to leave it."""
+    name = os.path.basename(unit)
+    page = os.path.join(unit, "page.jpg")
+    try:
+        st = os.stat(page)
+    except FileNotFoundError:
+        return "already pruned"
+    if not os.path.isfile(os.path.join(unit, "submitted")):
+        return "not submitted"
+    try:
+        with open(os.path.join(unit, "quality.json"), "rb") as f:
+            job = json.load(f)
+    except (OSError, ValueError):
+        return "quality.json unreadable"
+    pages = job.get("pages") or []
+    if not pages or not name.startswith("bundle-"):
+        return "not a bundle"
+    if ((job.get("inputs") or {}).get("page") or {}).get("bytes") != st.st_size:
+        return "page.jpg is not the size quality.json gives"
+    dims_path = os.path.join(unit, DIMS_FILE)
+    try:
+        dst = os.stat(dims_path)
+        with open(dims_path, "rb") as f:
+            dims = json.loads(f.read(MAX_DIMS_JSON + 1))
+    except FileNotFoundError:
+        return "no dims.json"
+    except (OSError, ValueError):
+        return "dims.json unreadable"
+    if (not isinstance(dims, dict) or dims.get("v") != DIMS_VERSION
+            or dims.get("job") != job.get("id")
+            or not isinstance(dims.get("pages"), list) or len(dims["pages"]) != len(pages)):
+        return "dims.json is not this job's"
+    sizes = []
+    for d, p in zip(dims["pages"], pages):
+        slice_ = ((p.get("inputs") or {}).get("page")) or {}
+        if (not isinstance(d, dict) or d.get("doc_id") != p.get("doc_id")
+                or d.get("sha256") != slice_.get("sha256")):
+            return "dims.json is not this job's"
+        w, h = d.get("width"), d.get("height")
+        if not (isinstance(w, int) and isinstance(h, int) and w > 0 and h > 0):
+            return "dims.json gives an empty size"
+        sizes.append(((w, h), slice_))
+    with open(page, "rb") as f:
+        for (size, slice_) in sizes:
+            offset, length = slice_.get("offset"), slice_.get("bytes")
+            if not (isinstance(offset, int) and isinstance(length, int)
+                    and 0 <= offset and offset + length <= st.st_size):
+                return "page slice out of range"
+            f.seek(offset)
+            if jpeg_size(f.read(min(length, JPEG_HEADER_WINDOW))) != size:
+                return "page header differs from dims.json"
+    entry = results["inventory"].get(name)
+    if not entry or entry.get("status") != "canonical-present":
+        return "no canonical result in the inventory"
+    if not entry.get("fingerprint") or results["loaded"].get(name) != entry["fingerprint"]:
+        return "not loaded at its current fingerprint"
+    if results["generated_at"] - dst.st_mtime < RECORD_SETTLE_SECS:
+        return "inventory not newer than dims.json"
+    freed = st.st_size if st.st_nlink == 1 else 0
+    return page, freed, {"job": job.get("id"), "nlink": st.st_nlink,
+                         "fingerprint": entry["fingerprint"]}
+
+
+def results_state(results_root, campaign):
+    """The partial loader's inventory and loaded fingerprints for `campaign`."""
+    base = os.path.join(results_root, campaign)
+    with open(os.path.join(base, "inventory.json"), "rb") as f:
+        inventory = json.load(f)
+    with open(os.path.join(base, "frontier.json"), "rb") as f:
+        frontier = json.load(f)
+    if (inventory.get("schema") != 1 or not isinstance(inventory.get("units"), dict)
+            or not isinstance(inventory.get("generated_at"), (int, float))
+            or frontier.get("schema") != 1 or not isinstance(frontier.get("loaded", {}), dict)):
+        sys.exit("unexpected partial loader state under " + base)
+    return {"inventory": inventory["units"], "loaded": frontier.get("loaded", {}),
+            "generated_at": inventory["generated_at"]}
+
+
+def prune_units(a):
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", a.campaign):
+        sys.exit("--campaign: a campaign name")
+    results = results_state(a.results_root, a.campaign)
+    units_dir = os.path.join(a.quality_root, a.campaign, "units")
+    names = sorted(n for n in os.listdir(units_dir) if n.startswith("bundle-"))
+    totals = {"units": 0, "bytes": 0}
+    kept = {}
+    kept_bytes = {}
+    with open(a.journal, "a") as journal:
+        for name in names:
+            if totals["units"] >= a.max_units or totals["bytes"] >= a.max_bytes:
+                break
+            unit = os.path.join(units_dir, name)
+            if not os.path.isdir(unit):
+                continue
+            got = unit_check(unit, results)
+            if isinstance(got, str):
+                kept[got] = kept.get(got, 0) + 1
+                if got != "already pruned":
+                    try:
+                        kept_bytes[got] = kept_bytes.get(got, 0) + os.stat(
+                            os.path.join(unit, "page.jpg")).st_size
+                    except OSError:
+                        pass
+                continue
+            path, freed, info = got
+            if totals["bytes"] + freed > a.max_bytes:
+                break
+            record = {"time": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "commit": a.commit,
+                      "kind": "unit-page", "campaign": a.campaign, "unit": name,
+                      "path": path, "bytes": freed, **info}
+            if a.delete:
+                journal_line(journal, dict(record, action="deleting"))
+                os.unlink(path)
+                journal_line(journal, dict(record, action="deleted"))
+            totals["units"] += 1
+            totals["bytes"] += freed
+    summary = {"mode": "delete" if a.delete else "dry-run", "commit": a.commit,
+               "campaign": a.campaign, "bundles": len(names), "units": totals["units"],
+               "bytes": totals["bytes"], "gib": round(totals["bytes"] / 2**30, 2),
+               "kept": kept, "kept_gib": {k: round(v / 2**30, 2) for k, v in kept_bytes.items()}}
+    print(json.dumps(summary, sort_keys=True))
+    return summary
 
 
 def journal_line(journal, record):
@@ -241,8 +438,19 @@ def main(argv=None):
     pr.add_argument("--skip-cmp", action="store_true")
     pr.add_argument("--max-files", type=int, default=sys.maxsize)
     pr.add_argument("--max-bytes", type=int, default=sys.maxsize)
+    pu = sub.add_parser("prune-units")
+    pu.add_argument("--quality-root", required=True)
+    pu.add_argument("--campaign", required=True)
+    pu.add_argument("--results-root", required=True)
+    pu.add_argument("--journal", required=True)
+    pu.add_argument("--commit", default="unknown")
+    pu.add_argument("--delete", action="store_true")
+    pu.add_argument("--max-units", type=int, default=sys.maxsize)
+    pu.add_argument("--max-bytes", type=int, default=sys.maxsize)
     a = ap.parse_args(argv)
-    if a.cmd == "list":
+    if a.cmd == "prune-units":
+        prune_units(a)
+    elif a.cmd == "list":
         n = list_eligible(a.config, a.db_ca, a.db_defaults, a.out)
         print(f"{n} files listed", file=sys.stderr)
     else:
