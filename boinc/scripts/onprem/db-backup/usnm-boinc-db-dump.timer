@@ -1,0 +1,12 @@
+# Starts usnm-boinc-db-dump.service at 08:20 UTC (03:20 US Eastern in winter), when scheduler
+# traffic is near its daily low. install.sh enables it.
+[Unit]
+Description=usnewsmap BOINC MySQL: nightly dump to R2
+
+[Timer]
+OnCalendar=*-*-* 08:20:00 UTC
+RandomizedDelaySec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

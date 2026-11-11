@@ -1,0 +1,14 @@
+# Nightly mysqldump of the BOINC database to R2 (db-backup.sh --dump). install.sh installs it.
+[Unit]
+Description=usnewsmap BOINC MySQL: nightly dump to R2
+Wants=network-online.target
+After=network-online.target usnm-boinc-mysql.service
+Requisite=usnm-boinc-mysql.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/usnm-db-backup/db-backup.sh --dump
+SyslogIdentifier=usnm-boinc-db-dump
+TimeoutStartSec=2h
+Nice=10
+IOSchedulingClass=idle

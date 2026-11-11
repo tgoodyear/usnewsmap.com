@@ -1,0 +1,14 @@
+# The monthly restore drill (restore-drill.sh) on pve-big: restores the newest R2 dump and its
+# binlogs into a scratch CT, compares row counts with the replica, and destroys the CT.
+# docs/boinc/server/db-backup.md installs it.
+[Unit]
+Description=usnewsmap BOINC MySQL: monthly restore drill from R2
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/usnm-db-backup-drill/restore-drill.sh --r2-env /etc/usnm-db-backup/r2-reader.env
+SyslogIdentifier=usnm-boinc-db-restore-drill
+TimeoutStartSec=3h
+Nice=10
