@@ -275,6 +275,44 @@ class PartialTest(unittest.TestCase):
         self.assertIn("old-124", seen)
         self.assertIn("pending", seen)
 
+    def test_completion_frontier_loads_new_units_before_reloads(self):
+        ready = lambda key: {"status": "canonical-present", "fingerprint": key * 64}
+        inventory = {f"a-{i:03}": ready("a") for i in range(50)}
+        state = {"schema": 1, "loaded": {n: v["fingerprint"] for n, v in inventory.items()}}
+        inventory = {n: ready("b") for n in inventory}  # A collector change dirties every unit.
+        for i in range(10):
+            inventory[f"z-new-{i}"] = ready("c")  # First collected after the change.
+        picks = []
+        for _ in range(8):
+            selected, _, lane, state = partial.select_frontier(inventory, state)
+            state = json.loads(json.dumps(state))  # Restart at every pass.
+            picks.append(selected)
+            if lane == "priority":
+                state["loaded"][selected] = inventory[selected]["fingerprint"]
+        # Two passes in four take new units, one a reload, one the fair lane.
+        self.assertEqual(picks, ["z-new-0", "z-new-1", "a-000", "a-000",
+                                 "z-new-2", "z-new-3", "a-001", "a-001"])
+
+    def test_completion_frontier_failures_stay_in_their_cohort(self):
+        ready = lambda key: {"status": "canonical-present", "fingerprint": key * 64}
+        old = {f"a-{i:03}": ready("a") for i in range(6)}
+        state = {"schema": 1, "loaded": {n: v["fingerprint"] for n, v in old.items()}}
+        inventory = {n: ready("b") for n in old}
+        inventory.update({f"z-new-{i}": ready("c") for i in range(4)})
+        failing = {"a-000", "z-new-0", "z-new-1"}  # Never acknowledged.
+        picks = []
+        for _ in range(16):
+            selected, _, lane, state = partial.select_frontier(inventory, state)
+            state = json.loads(json.dumps(state))  # Restart at every pass.
+            if lane == "priority":
+                picks.append(selected)
+                if selected not in failing:
+                    state["loaded"][selected] = inventory[selected]["fingerprint"]
+        # Failing first loads don't keep z-new-2 and z-new-3 waiting, and a failing reload
+        # doesn't keep the other reloads waiting.
+        self.assertTrue({"z-new-2", "z-new-3"} <= set(picks[:6]))
+        self.assertTrue({"a-001", "a-002", "a-003"} <= set(picks))
+
     def test_frontier_ack_is_only_persisted_after_verified_nonempty_load(self):
         self.args.completion_frontier = True
         self.args.inventory_refresh_secs = 3600

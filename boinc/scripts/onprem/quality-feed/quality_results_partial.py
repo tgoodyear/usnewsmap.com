@@ -97,18 +97,31 @@ def select_frontier(inventory, state):
             or any(not UNIT.fullmatch(n) or not re.fullmatch(r"[a-f0-9]{64}", v)
                    for n, v in loaded.items())
             or any(state.get(key) and not UNIT.fullmatch(state[key])
-                   for key in ("priority_after", "priority_through", "fair_after", "fair_through"))):
+                   for key in ("priority_after", "priority_through", "reload_after",
+                               "reload_through", "fair_after", "fair_through"))):
         raise ValueError("invalid completion frontier progress")
     dirty = [n for n in names if inventory[n]["fingerprint"]
              and inventory[n]["fingerprint"] != loaded.get(n)]
-    lane = "priority" if dirty and state.get("turns", 0) % 4 != 3 else "fair"
+    # Two passes in four go to units never loaded, when there are any, so a collector change
+    # that makes every unit dirty at once doesn't hold back first loads. The third goes to a
+    # unit loaded before at another fingerprint, when there is one, so a unit that keeps
+    # failing its first load can't stop the reloads either. The fourth is the fair visit. Each
+    # cohort has its own cursor ("priority" for first loads, "reload" for reloads), so a unit
+    # that keeps failing in one cohort is retried in turn with the rest of that cohort only.
+    turn = state.get("turns", 0) % 4
+    fresh = [n for n in dirty if n not in loaded]
+    changed = [n for n in dirty if n in loaded]
+    if not dirty or turn == 3:
+        lane, cursor, pool = "fair", "fair", names
+    elif (turn in (0, 1) and fresh) or not changed:
+        lane, cursor, pool = "priority", "priority", fresh
+    else:
+        lane, cursor, pool = "priority", "reload", changed
     selected, through = select_unit(
-        dirty if lane == "priority" else names,
-        state.get(lane + "_after", ""), state.get(lane + "_through", ""),
-    )
+        pool, state.get(cursor + "_after", ""), state.get(cursor + "_through", ""))
     updated = {**state, "schema": 1, "loaded": {n: v for n, v in loaded.items() if n in inventory},
                "turns": (state.get("turns", 0) + 1) % 4,
-               lane + "_after": selected, lane + "_through": through}
+               cursor + "_after": selected, cursor + "_through": through}
     return selected, names[-1], lane, updated
 
 
