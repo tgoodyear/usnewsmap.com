@@ -1111,10 +1111,17 @@ fn qwen_pages(
                 // A page packed again (#1435) keeps what an earlier bundle
                 // gave it until this one accepts it: by its page records, or
                 // by a canonical result vouching for every crop of the page.
-                let accepts = page_readings.is_some()
-                    && page_vouch
-                        .as_ref()
-                        .is_none_or(|v| bp.crops.iter().all(|c| v.vouches(&c.id)));
+                // A result that did not run (two agreeing `NoGpu` results, say)
+                // reads no crop, so it accepts nothing.
+                let accepts = page_readings.as_ref().is_some_and(|r| {
+                    r.outcome == qwen::Outcome::Ok
+                        && bp
+                            .crops
+                            .iter()
+                            .all(|c| r.readings.iter().any(|x| x.id == c.id))
+                }) && page_vouch
+                    .as_ref()
+                    .is_none_or(|v| bp.crops.iter().all(|c| v.vouches(&c.id)));
                 if !accepts && out.get(&bp.doc_id).is_some_and(|p| p.readings.is_some()) {
                     continue;
                 }
@@ -2962,6 +2969,29 @@ pub(super) mod tests {
         let late = result(&results, &job, "c", words);
         compare_with(&a, &late, page_v1()).unwrap();
         assert_eq!(rows(&opts), ["the retry reading".to_owned()].into());
+        // A canonical result that read none of the page's crops (a timed-out pair) replaces nothing.
+        let mut empty: qwen::Readings =
+            serde_json::from_slice(&std::fs::read(&canonical[0]).unwrap()).unwrap();
+        empty.readings.clear();
+        empty.outcome = qwen::Outcome::Timeout;
+        let bytes = serde_json::to_vec(&empty).unwrap();
+        let mut manifest: qwen::ResultManifest =
+            serde_json::from_slice(&std::fs::read(&canonical[1]).unwrap()).unwrap();
+        manifest.read = 0;
+        manifest.readings_bytes = bytes.len() as u64;
+        manifest.readings_sha256 = usnm_ocr_contract::boinc::sha256(&bytes);
+        manifest.outcome = qwen::Outcome::Timeout;
+        let spool = |name: &str| {
+            opts.qwen_spool
+                .join(format!("{}__file_{name}", retry.workunit()))
+        };
+        let names = crate::qwen::outputs();
+        std::fs::write(spool(names[0]), &bytes).unwrap();
+        std::fs::write(spool(names[1]), serde_json::to_vec(&manifest).unwrap()).unwrap();
+        assert_eq!(
+            rows(&opts),
+            ["the council reads this crop".to_owned()].into()
+        );
     }
 
     #[tokio::test]
