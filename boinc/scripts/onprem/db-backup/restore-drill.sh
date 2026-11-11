@@ -15,6 +15,10 @@
 # --tolerance-rows or --tolerance-pct percent, whichever is larger; a table missing on either
 # side fails. Then it destroys the scratch CT (not with --keep-ct).
 #
+# It leaves {"pass", "finished_at"} in /var/lib/usnm-db-backup/last-drill.json in the replica CT
+# (--compare-ct), where the feed monitor's dbbackup source reads it for db_drill
+# (boundaries-and-monitoring.md). A drill that stops early records a failure there too.
+#
 # Ends with one JSON line (event boinc_db_restore_drill, "pass": true or false) and exits 1
 # when the drill fails, so the unit fails.
 set -euo pipefail
@@ -48,9 +52,28 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 pin() { sed -n "s/^$1=//p" "$HERE/install.sh"; }
 RV=$(pin RCLONE_VERSION) RS=$(pin RCLONE_SHA256)
 in_ct() { pct exec "$CTID" -- env -u XDG_RUNTIME_DIR LANG=C.UTF-8 LC_ALL=C.UTF-8 "$@"; }
-w=$(mktemp -d); trap 'rm -rf "$w"' EXIT
+w=$(mktemp -d)
+recorded=false
+finish() {
+  local status=$?
+  $recorded || record false
+  [ "${1:-}" != teardown ] || teardown
+  rm -rf "$w"
+  exit "$status"
+}
+trap finish EXIT
 started=$(date +%s)
+# The outcome for the monitor; a drill that can't record it still reports on stdout. Any exit
+# before a result was recorded (a failed pct create or push under set -e) records a failure.
+record() {
+  recorded=true
+  printf '{"pass": %s, "finished_at": %s}\n' "$1" "$(date +%s)" > "$w/last-drill.json"
+  pct exec "$COMPARE" -- mkdir -p /var/lib/usnm-db-backup &&
+    pct push "$COMPARE" "$w/last-drill.json" /var/lib/usnm-db-backup/last-drill.json --perms 644 ||
+    echo "warning: couldn't record the drill in CT $COMPARE" >&2
+}
 fail() {
+  record false
   printf '{"event": "boinc_db_restore_drill", "pass": false, "error": %s}\n' "$(jq -Rn --arg e "$*" '$e')"
   exit 1
 }
@@ -65,7 +88,7 @@ pct create "$CTID" "$TEMPLATE" --hostname usnm-boinc-db-drill --unprivileged 1 -
   --net0 "name=eth0,bridge=$BRIDGE,ip=dhcp,type=veth" \
   --description "Scratch CT for the BOINC MySQL restore drill; destroyed when it ends. usnewsmap.com boinc/scripts/onprem/db-backup/restore-drill.sh" > /dev/null
 # Armed only now that this run made the CT, so a failed create never destroys another's.
-trap 'teardown; rm -rf "$w"' EXIT
+trap 'finish teardown' EXIT
 pct start "$CTID"
 for _ in $(seq 30); do in_ct getent hosts deb.debian.org > /dev/null 2>&1 && break; sleep 2; done
 in_ct bash -c 'DEBIAN_FRONTEND=noninteractive apt-get -qq update && DEBIAN_FRONTEND=noninteractive apt-get -qq install -y podman jq openssl curl python3 ca-certificates > /dev/null' ||
@@ -91,6 +114,7 @@ result=$(jq -n --slurpfile r "$w/restored.json" --slurpfile c "$w/replica.json" 
     largest: ($rows_ | map(select(.diff != null)) | max_by(.diff)), dump: $r[0].dump,
     binlogs: $r[0].binlogs, last_binlog: $r[0].last_binlog }')
 pass=$(jq '.failed | length == 0' <<< "$result")
+record "$pass"
 jq -c --argjson pass "$pass" --argjson secs "$(( $(date +%s) - started ))" --arg restore "$(tail -1 "$w/restore.log")" \
   '{event: "boinc_db_restore_drill", pass: $pass, seconds: $secs} + . + {restore: ($restore | fromjson? // $restore)}' <<< "$result"
 [ "$pass" = true ]

@@ -15,14 +15,19 @@ const CHECKS: [&str; 7] = [
     "controller_tick",
     "collection",
 ];
-/// Opt-in checks (#1462, #1698): each appears at most once, and no other code is accepted.
-/// Deploy a dashboard that knows a code before an evaluator config turns it on.
-const OPTIONAL_CHECKS: [&str; 5] = [
+/// Opt-in checks (#1462, #1698, and the BOINC database's backups and replica): each appears
+/// at most once, and no other code is accepted. Deploy a dashboard that knows a code before an
+/// evaluator config turns it on.
+const OPTIONAL_CHECKS: [&str; 9] = [
     "feeder_allocation",
     "controller_cap",
     "ownership_conflict",
     "controller_progress",
     "tick_trend",
+    "db_replica",
+    "db_dump",
+    "db_binlog",
+    "db_drill",
 ];
 const MAX_BYTES: u64 = 65536;
 /// feed_collect's own-client limit: a shortage check can't exclude more hosts than that.
@@ -35,6 +40,7 @@ pub fn source_kind(name: &str) -> Option<&'static str> {
         "server" => Some("server"),
         "controller" => Some("controller"),
         "backlog" => Some("backlog"),
+        "dbbackup" => Some("dbbackup"),
         _ if name.starts_with("client-")
             && name.len() <= 60
             && name.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-') =>
@@ -376,6 +382,36 @@ mod tests {
         )
         .is_err());
         assert!(save_source(&root, "../escape", b"{}", now).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn database_backup_checks_and_source_are_accepted_once() {
+        let now = Utc::now();
+        let mut value = document(now.timestamp());
+        for code in ["db_replica", "db_dump", "db_binlog", "db_drill"] {
+            value["checks"].as_array_mut().unwrap().push(json!({
+                "code": code, "state": "firing", "duration_s": 0, "threshold_s": 0,
+                "reason": "dump_stale", "seconds": 100000.0
+            }));
+        }
+        let view = parse(&serde_json::to_vec(&value).unwrap(), now).unwrap();
+        assert_eq!(view.checks.len(), CHECKS.len() + 4);
+        value["checks"].as_array_mut().unwrap().push(json!({
+            "code": "db_dump", "state": "healthy", "duration_s": 0, "threshold_s": 0
+        }));
+        assert!(parse(&serde_json::to_vec(&value).unwrap(), now).is_err());
+        assert_eq!(source_kind("dbbackup"), Some("dbbackup"));
+        let root = std::env::temp_dir().join(format!("usnm-feed-dbbackup-{}", std::process::id()));
+        let source =
+            json!({"schema_version": 1, "source": "dbbackup", "observed_at": now.timestamp()});
+        save_source(
+            &root,
+            "dbbackup",
+            &serde_json::to_vec(&source).unwrap(),
+            now,
+        )
+        .unwrap();
         std::fs::remove_dir_all(root).unwrap();
     }
 }

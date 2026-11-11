@@ -2198,6 +2198,102 @@ with socket.create_connection({listener.getsockname()!r}, timeout=2) as connecti
                         process.wait()
 
 
+class DbBackupTests(unittest.TestCase):
+    """The dbbackup source: replica threads, the newest R2 objects and the last drill."""
+
+    def doc(self, **parts):
+        value = {"schema_version": 1, "source": "dbbackup", "observed_at": NOW,
+                 "replica": {"io_running": True, "sql_running": True, "lag_s": 0},
+                 "r2": {"newest_dump_at": NOW - 3600, "newest_binlog_at": NOW - 60, "checked_at": NOW - 100},
+                 "drill": {"pass": True, "finished_at": NOW - 86400}}
+        value.update(parts)
+        return value
+
+    def test_validation_keeps_fixed_codes_and_expires_an_old_listing(self):
+        self.assertEqual(C.fresh(self.doc(), NOW, "dbbackup")["r2"]["checked_at"], NOW - 100)
+        old = C.fresh(self.doc(r2={"newest_dump_at": NOW, "newest_binlog_at": NOW,
+                                   "checked_at": NOW - C.R2_MAX_AGE_S - 1}), NOW, "dbbackup")
+        self.assertEqual(old["r2"], {"error": "r2_unavailable"})
+        failed = C.fresh(self.doc(replica={"error": "replica_unavailable"}, drill={"error": "drill_missing"}),
+                         NOW, "dbbackup")
+        self.assertEqual(failed["drill"], {"error": "drill_missing"})
+        for bad in ({"replica": {"error": "Access denied for user"}},
+                    {"replica": {"io_running": "Yes", "sql_running": True, "lag_s": 0}},
+                    {"r2": {"newest_dump_at": NOW + 3600, "newest_binlog_at": NOW, "checked_at": NOW}},
+                    {"drill": {"pass": True, "finished_at": NOW, "log": "text"}},
+                    {"drill": {"error": "drill_missing", "detail": "x"}}):
+            with self.subTest(bad=bad), self.assertRaises((ValueError, KeyError, TypeError)):
+                C.fresh(self.doc(**bad), NOW, "dbbackup")
+
+    def test_collect_passes_the_parts_on_only_when_configured(self):
+        with fixture() as root:
+            docs = {"server": {"schema_version": 1, "source": "server", "observed_at": NOW, **database(),
+                               "enabled_until": NOW + 86400, "last_workunits": {"usnm_ocr": NOW, "usnm_qwen": NOW}},
+                    "controller": {"schema_version": 1, "source": "controller", "observed_at": NOW,
+                                   "tick": {"ok": True, "seconds": 20, "finished_at": NOW}},
+                    "dbbackup": self.doc()}
+            for name, value in docs.items():
+                (root / (name + ".json")).write_text(json.dumps(value))
+            config = {name: str(root / (name + ".json")) for name in ("server", "controller")}
+            with patch.object(C.time, "time", return_value=NOW):
+                facts = C.collect(config)
+                self.assertFalse(facts["dbbackup_checks"])
+                self.assertNotIn("dbbackup", facts)
+                config["dbbackup"] = str(root / "dbbackup.json")
+                facts = C.collect(config)
+                self.assertTrue(facts["dbbackup_checks"])
+                self.assertEqual(facts["dbbackup"]["drill"], {"pass": True, "finished_at": NOW - 86400})
+                (root / "dbbackup.json").write_text("{}")
+                facts = C.collect(config)
+                self.assertEqual(facts["sources"]["dbbackup"]["state"], "unknown")
+                self.assertNotIn("dbbackup", facts)
+
+    def test_source_reads_r2_every_five_minutes_and_reports_each_part_on_its_own(self):
+        from datetime import datetime, timedelta, timezone
+
+        def stamp(t):
+            # rclone's --time-format layout, in another zone than UTC.
+            return datetime.fromtimestamp(t, timezone(timedelta(hours=-5))).isoformat()
+
+        with fixture() as root:
+            calls = root / "calls"
+            rclone = root / "rclone"
+            # A stand-in for rclone lsf: the dump tree, the binlog UUIDs, one UUID's binlogs.
+            rclone.write_text("""#!/bin/sh
+echo x >> %s
+case "$*" in
+  *--dirs-only*) echo 'c09909ee-ccf7-11f1-9d4c-8a409c169b6c/'; echo 'not-a-uuid/' ;;
+  *--use-server-modtime*r2:bucket/dump/*) echo '%s;2026/20261111T082000Z.json'; echo '%s;2026/20261111T082000Z.sql.gz'; echo '%s;2099/evil.json' ;;
+  *--use-server-modtime*r2:bucket/binlog/*) echo '%s;binlog.000041.gz'; echo '%s;binlog.000042.gz'; echo '%s;binlog.1+a[x].gz' ;;
+esac
+""" % (calls, *(stamp(t) for t in (NOW - 7200, NOW - 7000, NOW + 99999, NOW - 900, NOW - 120, NOW + 99999))))
+            rclone.chmod(0o755)
+            env = root / "r2.env"
+            env.write_text("R2_ACCESS_KEY_ID=a\nR2_SECRET_ACCESS_KEY=b\nR2_ENDPOINT=https://r2.example\n")
+            drill = root / "drill.json"
+            cache = root / "dbbackup.r2.json"
+            result = C.dbbackup(root / "missing.cnf", rclone, "bucket", env, drill, cache, NOW)
+            self.assertEqual(result["replica"], {"error": "replica_unavailable"})
+            self.assertEqual(result["r2"], {"newest_dump_at": NOW - 7200, "newest_binlog_at": NOW - 120,
+                                            "checked_at": NOW})
+            self.assertEqual(result["drill"], {"error": "drill_missing"})
+            self.assertEqual(len(calls.read_text().splitlines()), 3)
+            drill.write_text(json.dumps({"pass": False, "finished_at": NOW - 60, "event": "boinc_db_restore_drill"}))
+            again = C.dbbackup(root / "missing.cnf", rclone, "bucket", env, drill, cache, NOW + 299)
+            self.assertEqual(again["r2"]["checked_at"], NOW)
+            self.assertEqual(again["drill"], {"pass": False, "finished_at": NOW - 60})
+            self.assertEqual(len(calls.read_text().splitlines()), 3)
+            C.dbbackup(root / "missing.cnf", rclone, "bucket", env, drill, cache, NOW + 300)
+            self.assertEqual(len(calls.read_text().splitlines()), 6)
+            drill.write_text("not json")
+            self.assertEqual(C.dbbackup(root / "missing.cnf", rclone, "bucket", env, drill, cache, NOW + 300)["drill"],
+                             {"error": "drill_unreadable"})
+            env.write_text("R2_ACCESS_KEY_ID=a\n")
+            cache.unlink()
+            self.assertEqual(C.dbbackup(root / "missing.cnf", rclone, "bucket", env, drill, cache, NOW)["r2"],
+                             {"error": "r2_unavailable"})
+            C.fresh({"schema_version": 1, "source": "dbbackup", "observed_at": NOW, **result}, NOW, "dbbackup")
+
 if __name__ == "__main__":
     unittest.main()
 

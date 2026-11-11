@@ -5,6 +5,7 @@
 #
 #   replica-source.sh --tunnel --pubkey FILE
 #   replica-source.sh --users --password-stdin
+#   replica-source.sh --monitor-user --password-stdin
 #   replica-source.sh --clone-donor on --password-stdin
 #   replica-source.sh --clone-donor off
 #   replica-source.sh --sign-csr FILE --out FILE
@@ -15,6 +16,9 @@
 # (db-replica.md), which only works once this host's MySQL is stopped: no shell, no other
 # forwards. It prints this host's ed25519 host key for the replica's known_hosts.
 # --users makes usnmrepl@127.0.0.1 (REPLICATION SLAVE, TLS only) with the password on stdin.
+# --monitor-user makes usnmmonitor@127.0.0.1 (REPLICATION CLIENT only, TLS only), which the feed
+# monitor's dbbackup source uses on the replica for SHOW REPLICA STATUS; it reaches the replica
+# by replication.
 # --clone-donor on installs the clone plugin (it stays installed) and makes usnmclone@127.0.0.1
 # (BACKUP_ADMIN, TLS only) with the password on stdin, for the replica's one-time
 # CLONE INSTANCE; --clone-donor off drops that user again.
@@ -31,6 +35,7 @@ while [ $# -gt 0 ]; do
     --tunnel) DO=tunnel; shift ;;
     --pubkey) PUBKEY=${2:?}; shift 2 ;;
     --users) DO=users; shift ;;
+    --monitor-user) DO=monitor; shift ;;
     --clone-donor) DO=clone; CLONE=${2:?}; shift 2 ;;
     --password-stdin) PW_STDIN=true; shift ;;
     --sign-csr) DO=sign; CSR=${2:?}; shift 2 ;;
@@ -77,6 +82,15 @@ ALTER USER 'usnmrepl'@'127.0.0.1' IDENTIFIED BY '$pw' REQUIRE SSL;
 GRANT REPLICATION SLAVE ON *.* TO 'usnmrepl'@'127.0.0.1';
 SQL
     echo "usnmrepl ready"
+    ;;
+  monitor)
+    pw=$(password)
+    rootsql <<SQL
+CREATE USER IF NOT EXISTS 'usnmmonitor'@'127.0.0.1' IDENTIFIED BY '$pw' REQUIRE SSL;
+ALTER USER 'usnmmonitor'@'127.0.0.1' IDENTIFIED BY '$pw' REQUIRE SSL;
+GRANT REPLICATION CLIENT ON *.* TO 'usnmmonitor'@'127.0.0.1';
+SQL
+    echo "usnmmonitor ready"
     ;;
   clone)
     case $CLONE in

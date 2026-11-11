@@ -140,6 +140,11 @@ and destroys the CT. The replica runs a few minutes ahead of the newest shipped 
 table passes within 500 rows or 2%, whichever is larger. It logs one `boinc_db_restore_drill`
 line with `"pass"`; a failed drill fails the unit.
 
+Each drill also leaves `{"pass", "finished_at"}` in `/var/lib/usnm-db-backup/last-drill.json` in
+the replica CT. The feed monitor alerts on it (`db_drill`), and on the newest dump and binlog in
+R2 (`db_dump`, `db_binlog`); see
+[boundaries-and-monitoring.md](boundaries-and-monitoring.md#optional-checks).
+
 Install on pve-big, from a checkout of reviewed main:
 
 ```sh
