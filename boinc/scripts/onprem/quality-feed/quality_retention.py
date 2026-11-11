@@ -53,10 +53,11 @@ on the storage host as the share's owner, like `prune`. A unit's page.jpg goes o
     inventory.json has it canonical-present and frontier.json has loaded that fingerprint;
   - that inventory was written more than RECORD_SETTLE_SECS after dims.json, so the loaded
     fingerprint is one that collect computed with the record in the unit;
-  - no page is LoC's own JPEG (its slice sha256 is the one --scan-index gives the page's scan:
-    staging passes a small grey JPEG through unchanged) unless that scan is on disk, at its
-    indexed size, under keep/ or buffer/ of a --scan-root, and every page's scan is in the
-    index (otherwise it can't be told apart). Files fetched from LoC are kept.
+  - every page came from the on-prem feeder's hand-off (source handoff:scans/<doc_id>.jpg)
+    and its scan is in --scan-index, and no page is LoC's own JPEG (its slice sha256 is the
+    indexed scan's: the feeder passes a small grey JPEG through unchanged) unless that scan
+    is under keep/ of a --scan-root at its indexed size. buffer/ doesn't count; the feeder
+    evicts it. Files fetched from LoC are kept.
 The image checks run last, so a unit not yet collected costs no image reads.
 The same dry run, journal, --max-bytes rule and summary as `prune`; a page.jpg with other
 hard links (a download copy an earlier version linked) counts no bytes.
@@ -82,6 +83,8 @@ MAX_DIMS_JSON = 1 << 20
 RECORD_SETTLE_SECS = 2 * 3600
 # A bundle page's JPEG header (staging re-encodes the pages, so no large EXIF or ICC blocks).
 JPEG_HEADER_WINDOW = 1 << 20
+# The page source the on-prem feeder's hand-off gives each page (quality stage, handoff scans).
+HANDOFF_SOURCE = "handoff:scans/{doc_id}.jpg"
 
 
 def list_eligible(config, db_ca, db_defaults, out):
@@ -303,14 +306,20 @@ def unit_check(unit, results, scans):
         return "inventory not newer than dims.json"
     # A page staging passed through unchanged is LoC's own JPEG, not a transcode: the unit keeps
     # it unless the original scan is on disk (every file fetched from LoC is kept).
-    # A page whose scan the index doesn't know can't be told apart, so its unit stays too.
+    # Only the on-prem feeder's pages have known provenance: it reads each scan from the scan
+    # server (checked against the index) and either transcodes it or passes it through. A page
+    # fetched from LoC directly (its source a URL), or whose scan the index doesn't know, could
+    # be LoC's own JPEG under another hash, so its unit stays.
     for d, p in zip(dims["pages"], pages):
+        source = ((p.get("inputs") or {}).get("page") or {}).get("source", "")
+        if source != HANDOFF_SOURCE.format(doc_id=p.get("doc_id")):
+            return "a page did not come from the feeder's hand-off"
         known = scans["index"].get(p.get("doc_id"))
         if not known:
             return "a page's scan is not in the scan index"
         loc = known.get(d["sha256"])
         if loc is not None and not original_on_disk(p["doc_id"], loc, scans["roots"]):
-            return "a page is LoC's own JPEG and its original is not on disk"
+            return "a page is LoC's own JPEG and its original is not in keep/"
     with open(page, "rb") as f:
         for (size, slice_) in sizes:
             offset, length = slice_.get("offset"), slice_.get("bytes")
@@ -340,20 +349,20 @@ def scan_index(path):
 
 
 def original_on_disk(doc_id, loc, roots):
-    """Whether LoC's file for `doc_id` is under keep/ or buffer/ of a scan root, at its size."""
+    """Whether LoC's file for `doc_id` is under keep/ of a scan root, at its size. buffer/ is
+    not enough: the feeder evicts buffer scans (quality_feed.py, delete_shipped)."""
     batch, size = loc
     m = re.fullmatch(r"([^_/]+)_(\d{4}-\d{2}-\d{2})_ed-(\d+)_seq-(\d+)", doc_id)
     if not m:
         return False
     lccn, date, ed, seq = m.groups()
     for root in roots:
-        for tier in ("keep", "buffer"):
-            try:
-                st = os.stat(os.path.join(root, tier, batch, lccn, date, ed, seq + ".jpg"))
-            except FileNotFoundError:
-                continue
-            if size is None or st.st_size == size:
-                return True
+        try:
+            st = os.stat(os.path.join(root, "keep", batch, lccn, date, ed, seq + ".jpg"))
+        except FileNotFoundError:
+            continue
+        if size is not None and st.st_size == size:
+            return True
     return False
 
 

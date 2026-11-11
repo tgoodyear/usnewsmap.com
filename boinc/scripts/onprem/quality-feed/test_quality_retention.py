@@ -218,7 +218,8 @@ class UnitLayout:
             page = jpeg(w, h, pad=n * 7)
             pages.append({"doc_id": doc, "inputs": {"page": {
                 "bytes": len(page), "offset": len(blob),
-                "sha256": hashlib.sha256(page).hexdigest(), "source": "x"}}})
+                "sha256": hashlib.sha256(page).hexdigest(),
+                "source": f"handoff:scans/{doc}.jpg"}}})
             blob += page
         for i, p in enumerate(pages):
             sha = p["inputs"]["page"]["sha256"] if i in passthrough else "f" * 64
@@ -349,11 +350,21 @@ class PruneUnitsTest(unittest.TestCase):
         self.assertEqual(self.l.prune("--delete", "--max-bytes", str(size - 1))["units"], 0)
         self.assertEqual(len(list(self.l.quality.rglob("page.jpg"))), 1)
 
-    def test_keeps_loc_bytes_without_their_original(self):
+    def test_keeps_loc_bytes_without_a_kept_original_and_unknown_provenance(self):
         u1 = self.l.unit(1, passthrough=(1,))
         u2 = self.l.unit(2, passthrough=(0,))
         u3 = self.l.unit(3)
         self.l.index = [r for r in self.l.index if not r["doc_id"].startswith("sn3_")]
+        u4 = self.l.unit(4)
+        job = json.loads((u4 / "quality.json").read_text())
+        job["pages"][1]["inputs"]["page"]["source"] = "https://tile.loc.gov/x/default.jpg"
+        (u4 / "quality.json").write_text(json.dumps(job))
+        # Unit 5's passed-through page has its original only in buffer/, which the feeder evicts.
+        u5 = self.l.unit(5, passthrough=(0,))
+        r5 = next(r for r in self.l.index if r["doc_id"] == "sn5_1900-01-01_ed-1_seq-1")
+        buf = self.l.scans / "buffer" / "b_x" / "sn5" / "1900-01-01" / "1" / "1.jpg"
+        buf.parent.mkdir(parents=True)
+        buf.write_bytes(b"x" * r5["bytes"])
         # Unit 2's passed-through page has its original on disk at its size.
         r = next(r for r in self.l.index if r["doc_id"] == "sn2_1900-01-01_ed-1_seq-1")
         orig = self.l.scans / "keep" / "b_x" / "sn2" / "1900-01-01" / "1" / "1.jpg"
@@ -362,9 +373,11 @@ class PruneUnitsTest(unittest.TestCase):
         got = self.l.prune("--delete")
         self.assertEqual(got["units"], 1)
         self.assertEqual(got["kept"], {
-            "a page is LoC's own JPEG and its original is not on disk": 1,
-            "a page's scan is not in the scan index": 1})
-        self.assertTrue((u1 / "page.jpg").exists() and (u3 / "page.jpg").exists())
+            "a page is LoC's own JPEG and its original is not in keep/": 2,
+            "a page's scan is not in the scan index": 1,
+            "a page did not come from the feeder's hand-off": 1})
+        for u in (u1, u3, u4, u5):
+            self.assertTrue((u / "page.jpg").exists())
         self.assertFalse((u2 / "page.jpg").exists())
 
     def test_a_linked_page_counts_no_bytes(self):
