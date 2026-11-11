@@ -459,18 +459,26 @@ Every `--target handoff` step needs `--var EXPECTED_HANDOFF_URL=<HANDOFF_URL fro
 `usnm-boinc-step` refuses the step without it, and it also refuses a value that differs from
 the host's setting.
 
-**If the export fails after it reserved some jobs**, don't run it again as it stands: a second
-run can make a different `queued_at` for the same job, which the ledger rejects, and can
-overwrite the first run's journal. Run it again with the same variables plus
-`--var HANDOFF_JOBS=<the job ids the first run printed>`, so the existing records load. If the
-first run's records never reached the hand-off store (its log has `USNM-HANDOFF-RECORD`
-lines), restore them from the log first.
-
 With `HANDOFF_LINE_READ`, the step mounts the staging area and reads each page's scan, its
 LoC ALTO and the manifest from there; nothing comes from the hand-off container. It runs
 `usnm-boinc export --line-read chr --loc-alto ...` against Cosmos (`COSMOS_ENDPOINT` in
 `handoff.env`), writes the new journal entries back with their `line-read/` sidecars, and
 prints the job ids. Each line job keeps LoC's ALTO beside it (`lines::LOC_ALTO_FILE`).
+
+**If the export fails after it reserved some jobs**, don't run it again as it stands: a second
+run can make a different `queued_at` for the same job, which the ledger rejects, and can
+overwrite the first run's journal. A failed export prints no job ids, so find the ones it
+reserved in the hand-off store. As root on the host, in the directory `HANDOFF_URL` names
+(`/handoff-state` for the local backend):
+
+```sh
+jq -r 'select(.plan == "chr-lines-1621") | "\(.job.id) \(.stage) \(.job.message.page)"' dispatch/jobs/*/record.json
+```
+
+Each line is a job id, its stage and its page. Keep the jobs of this export's pages, including
+any still at `prepared`. Run the export again with the same variables plus `--var HANDOFF_JOBS=<those job ids>`, so the existing
+records load. If a write-back failed and the log has `USNM-HANDOFF-RECORD` lines, restore the
+records from them first.
 
 ### 5. Submit, collect and check
 
