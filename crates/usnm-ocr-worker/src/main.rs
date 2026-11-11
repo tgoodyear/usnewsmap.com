@@ -465,7 +465,7 @@ enum Command {
         #[arg(long, env = "USNM_PREFETCH_LOC_BUCKET")]
         loc_bucket: Option<String>,
         /// From the end of one request to LoC's bucket to the start of the
-        /// next; at least 1000.
+        /// next; at least 500.
         #[arg(long, env = "USNM_PREFETCH_LOC_BUCKET_GAP_MS", default_value_t = 2000)]
         loc_bucket_gap_ms: u64,
         /// Requests to LoC's bucket at once, 1 to 16. Above 1, the gap runs

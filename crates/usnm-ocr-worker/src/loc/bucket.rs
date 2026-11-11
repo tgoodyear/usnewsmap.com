@@ -79,8 +79,9 @@ const METS_TIMEOUT: Duration = Duration::from_secs(30);
 /// The uploader's md5 of an object.
 const META_MD5: &str = "x-amz-meta-md5";
 /// The shortest gap between requests to the bucket `--loc-bucket-gap-ms`
-/// may set: 1 s, the maintainer's of 25 October 2026 (6 s before).
-pub const MIN_GAP: Duration = Duration::from_secs(1);
+/// may set: 500 ms, the maintainer's of 11 November 2026 (1 s from 25
+/// October, 6 s before), to double the quality feed's supply (#1475).
+pub const MIN_GAP: Duration = Duration::from_millis(500);
 /// The gap when `--loc-bucket-gap-ms` isn't given: 2 s, the maintainer's
 /// first step of 25 October 2026 towards 1 s.
 pub const DEFAULT_GAP: Duration = Duration::from_secs(2);
@@ -687,7 +688,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(c.root, ROOT);
-        assert_eq!(c.gap, Duration::from_secs(1));
+        assert_eq!(c.gap, Duration::from_millis(500));
         // Path-style, and a longer gap.
         let c = BucketConfig::at(
             "https://s3.us-east-1.amazonaws.com/ndnp-batches",
@@ -718,8 +719,8 @@ mod tests {
         ] {
             assert!(BucketConfig::at(root, gap).is_err(), "{root}");
         }
-        // Nothing under 1 s apart.
-        for ms in [0, 10, 999] {
+        // Nothing under 500 ms apart.
+        for ms in [0, 10, 499] {
             assert!(
                 BucketConfig::at(ROOT, Duration::from_millis(ms)).is_err(),
                 "{ms}"
