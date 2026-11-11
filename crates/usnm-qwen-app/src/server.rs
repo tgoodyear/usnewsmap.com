@@ -1033,12 +1033,23 @@ mod completion_tests {
         let port = listener.local_addr().unwrap().port();
         std::thread::spawn(move || {
             let (mut s, _) = listener.accept().unwrap();
+            // The whole request first: closing with unread bytes would reset the connection and
+            // discard the reply.
             let mut seen = Vec::new();
             let mut buf = [0u8; 4096];
-            while !seen.windows(4).any(|w| w == b"\r\n\r\n") {
+            let mut want = usize::MAX;
+            while seen.len() < want {
                 match s.read(&mut buf) {
                     Ok(0) | Err(_) => break,
                     Ok(n) => seen.extend_from_slice(&buf[..n]),
+                }
+                if let Some(sep) = seen.windows(4).position(|w| w == b"\r\n\r\n") {
+                    let head = String::from_utf8_lossy(&seen[..sep]).to_ascii_lowercase();
+                    let len = head
+                        .lines()
+                        .find_map(|l| l.strip_prefix("content-length:")?.trim().parse().ok())
+                        .unwrap_or(0usize);
+                    want = sep + 4 + len;
                 }
             }
             if let Some(reply) = reply {
