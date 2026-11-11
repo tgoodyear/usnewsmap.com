@@ -553,10 +553,10 @@ pub fn line_pages(args: LinePagesArgs) -> anyhow::Result<()> {
         .iter()
         .filter(|p| p.lines > 0 && p.scan.is_some())
         .count();
+    let test_set = pages.iter().filter(|p| p.test_set).count();
     eprintln!(
-        "{} pages, {with_lines} with lines to read, {ready} of them with a local scan, {} in the test set",
-        pages.len(),
-        test.len()
+        "{} pages, {with_lines} with lines to read, {ready} of them with a local scan, {test_set} in the test set",
+        pages.len()
     );
     Ok(())
 }

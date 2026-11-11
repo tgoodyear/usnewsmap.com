@@ -308,13 +308,15 @@ pub fn stage(
         "stage 1 to 100 pages at a time (one export)"
     );
     ensure!(
-        !manifest_name.is_empty()
-            && manifest_name.len() <= 64
+        manifest_name.len() <= 64
             && manifest_name
                 .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_'))
-            && !manifest_name.starts_with('.'),
-        "invalid manifest name"
+                .next()
+                .is_some_and(|b| b.is_ascii_alphanumeric())
+            && manifest_name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_')),
+        "a manifest name is 1 to 64 of [A-Za-z0-9_-], starting with a letter or digit, as the BOINC host's receive takes"
     );
     ensure!(
         !out.exists(),
@@ -618,6 +620,18 @@ mod tests {
             boinc::sha256(&std::fs::read(staged_alto).unwrap()),
             inv[0].alto_sha256
         );
+        // Only names the BOINC host's receive takes.
+        for bad in ["chr.lines", "-chr", "_chr", ""] {
+            assert!(stage(
+                &inv,
+                &BTreeSet::from([page.clone()]),
+                std::slice::from_ref(&scans),
+                &alto,
+                bad,
+                &tmp.path().join("bad-name"),
+            )
+            .is_err());
+        }
         // Not again into the same directory.
         assert!(stage(
             &inv,
