@@ -468,11 +468,15 @@ prints the job ids. Each line job keeps LoC's ALTO beside it (`lines::LOC_ALTO_F
 **If the export fails after it reserved some jobs**, don't run it again as it stands: a second
 run can make a different `queued_at` for the same job, which the ledger rejects, and can
 overwrite the first run's journal. A failed export prints no job ids, so find the ones it
-reserved in the hand-off store. As root on the host, in the directory `HANDOFF_URL` names
-(`/handoff-state` for the local backend):
+reserved in the hand-off store. With the local backend (`HANDOFF_URL=/handoff-state`, the path
+inside the step's container), the store is the host's `${USNM_BOINC_HANDOFF_ROOT:-/srv/usnm-boinc/handoff-state}`.
+With an Azure `HANDOFF_URL`, copy the journals down first, as root on the host, with
+`usnm-boinc handoff get --from-url <HANDOFF_URL> --prefix dispatch --to <new dir>` (the command
+`handoff-job.sh` uses), and work in `<new dir>`, which then holds `jobs/`. Then, in the store's `dispatch/` directory
+(or in `<new dir>`):
 
 ```sh
-jq -r 'select(.plan == "chr-lines-1621") | "\(.job.id) \(.stage) \(.job.message.page)"' dispatch/jobs/*/record.json
+jq -r 'select(.plan == "chr-lines-1621") | "\(.job.id) \(.stage) \(.job.message.page)"' jobs/*/record.json
 ```
 
 Each line is a job id, its stage and its page. Keep the jobs of this export's pages, including
