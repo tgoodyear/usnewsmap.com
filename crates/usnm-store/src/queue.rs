@@ -197,19 +197,55 @@ fn check_id(id: &str) -> anyhow::Result<()> {
     }
 }
 
-/// The text of the first `<tag>…</tag>` in `xml`, with XML's five entities decoded.
-fn xml_value(xml: &str, tag: &str) -> Option<String> {
+/// The raw text of the first `<tag>…</tag>` in `xml`, entities left as they are.
+fn xml_raw<'a>(xml: &'a str, tag: &str) -> Option<&'a str> {
     let open = format!("<{tag}>");
     let close = format!("</{tag}>");
     let rest = xml.split_once(open.as_str())?.1;
-    let v = rest.split_once(close.as_str())?.0;
-    Some(
-        v.replace("&lt;", "<")
-            .replace("&gt;", ">")
-            .replace("&quot;", "\"")
-            .replace("&apos;", "'")
-            .replace("&amp;", "&"),
-    )
+    Some(rest.split_once(close.as_str())?.0)
+}
+
+/// The text of the first `<tag>…</tag>` in `xml`, its entities decoded once.
+fn xml_value(xml: &str, tag: &str) -> Option<String> {
+    xml_raw(xml, tag).map(xml_unescape)
+}
+
+/// XML's five named entities and numeric character references, decoded in one pass, so
+/// `&amp;lt;` becomes `&lt;` and nothing is decoded twice. Anything else is kept as written.
+fn xml_unescape(v: &str) -> String {
+    let mut out = String::with_capacity(v.len());
+    let mut rest = v;
+    while let Some(at) = rest.find('&') {
+        out.push_str(&rest[..at]);
+        rest = &rest[at..];
+        let decoded = rest.find(';').and_then(|end| {
+            let c = match &rest[1..end] {
+                "lt" => '<',
+                "gt" => '>',
+                "quot" => '"',
+                "apos" => '\'',
+                "amp" => '&',
+                n if n.starts_with("#x") || n.starts_with("#X") => {
+                    char::from_u32(u32::from_str_radix(&n[2..], 16).ok()?)?
+                }
+                n if n.starts_with('#') => char::from_u32(n[1..].parse().ok()?)?,
+                _ => return None,
+            };
+            Some((c, end + 1))
+        });
+        match decoded {
+            Some((c, len)) => {
+                out.push(c);
+                rest = &rest[len..];
+            }
+            None => {
+                out.push('&');
+                rest = &rest[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 fn xml_escape(s: &str) -> String {
@@ -220,10 +256,11 @@ fn xml_escape(s: &str) -> String {
 
 /// The first message in a Get Messages response, if any.
 fn parse_received(queue: &str, xml: &str) -> anyhow::Result<Option<Received>> {
-    let Some(msg) = xml_value(xml, "QueueMessage") else {
+    // The envelope's own text stays encoded: each field is decoded once, by itself.
+    let Some(msg) = xml_raw(xml, "QueueMessage") else {
         return Ok(None);
     };
-    let field = |t: &str| xml_value(&msg, t).with_context(|| format!("message has no {t}"));
+    let field = |t: &str| xml_value(msg, t).with_context(|| format!("message has no {t}"));
     let id = field("MessageId")?;
     check_id(&id)?;
     Ok(Some(Received {
@@ -672,6 +709,31 @@ mod tests {
         assert_eq!(m.dequeue_count, 3);
         assert_eq!(m.text, "eyJ2IjoxfQ==");
         assert_eq!(parse_received(BULK, "<QueueMessagesList />").unwrap(), None);
+    }
+
+    /// Bodies holding markup and entity text come back exactly as sent: the envelope isn't
+    /// decoded before its fields, so nothing is decoded twice or cut short.
+    #[test]
+    fn message_text_is_decoded_once() {
+        for body in [
+            "{\"a\":\"&lt; literal\"}",
+            "x</MessageText>y",
+            "&amp;amp; <b>&#x41;</b> \"q\" 'a' ü\r\n",
+            "& alone; &unknown;",
+        ] {
+            let xml = format!(
+                "<QueueMessagesList><QueueMessage><MessageId>m1</MessageId>\
+                 <PopReceipt>r</PopReceipt><DequeueCount>1</DequeueCount>\
+                 <MessageText>{}</MessageText></QueueMessage></QueueMessagesList>",
+                xml_escape(body)
+            );
+            let m = parse_received(BULK, &xml).unwrap().unwrap();
+            assert_eq!(m.text, body, "{xml}");
+            assert_eq!(parse_peeked(&xml), vec![body.to_owned()]);
+        }
+        // Numeric references, as a service may write a carriage return.
+        assert_eq!(xml_unescape("a&#xD;b&#65;&#x1F600;"), "a\rbA\u{1F600}");
+        assert_eq!(xml_unescape("&#xZZ; &#; &"), "&#xZZ; &#; &");
     }
 
     #[test]

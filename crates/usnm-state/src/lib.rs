@@ -7,6 +7,7 @@
 
 pub mod cosmos;
 pub mod docs;
+pub mod migrate;
 pub mod ocr_local;
 pub mod postgres;
 pub mod state;

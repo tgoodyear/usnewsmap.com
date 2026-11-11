@@ -203,7 +203,7 @@ async fn fail(op: &str, container: &str, resp: Response) -> anyhow::Error {
 }
 
 /// Strip the system properties Cosmos adds, so items round-trip cleanly.
-fn clean(mut doc: Value) -> (Value, String) {
+pub(crate) fn clean(mut doc: Value) -> (Value, String) {
     let etag = doc["_etag"].as_str().unwrap_or_default().to_owned();
     if let Some(o) = doc.as_object_mut() {
         o.retain(|k, _| !k.starts_with('_'));
@@ -369,40 +369,113 @@ fn projection(fields: &[Field]) -> anyhow::Result<String> {
 impl CosmosDocs {
     /// Run a query across partitions and return every page of results.
     async fn query(&self, container: &str, body: &Value) -> anyhow::Result<Vec<Value>> {
-        let url = self.docs_url(container, None)?;
         let mut out = Vec::new();
+        let mut continuation: Option<String> = None;
+        loop {
+            let (page, next) = self
+                .query_page(container, body, continuation.as_deref(), None)
+                .await?;
+            out.extend(page);
+            continuation = next;
+            if continuation.is_none() {
+                break;
+            }
+        }
+        Ok(out)
+    }
+
+    /// One page of a cross-partition query: its items as Cosmos returns
+    /// them (system properties included) and the continuation for the next
+    /// page, if there is one. `max_items` caps the page
+    /// (`x-ms-max-item-count`); `None` takes the service's default.
+    pub async fn query_page(
+        &self,
+        container: &str,
+        body: &Value,
+        continuation: Option<&str>,
+        max_items: Option<u32>,
+    ) -> anyhow::Result<(Vec<Value>, Option<String>)> {
+        let url = self.docs_url(container, None)?;
+        let resp = self
+            .send(
+                container,
+                || {
+                    let mut r = self
+                        .http
+                        .post(url.clone())
+                        .header("content-type", "application/query+json")
+                        .header("x-ms-documentdb-isquery", "True")
+                        .header("x-ms-documentdb-query-enablecrosspartition", "True")
+                        .body(body.to_string());
+                    if let Some(c) = continuation {
+                        r = r.header("x-ms-continuation", c);
+                    }
+                    if let Some(n) = max_items {
+                        r = r.header("x-ms-max-item-count", n.to_string());
+                    }
+                    r
+                },
+                None,
+            )
+            .await?;
+        if !resp.status().is_success() {
+            return Err(fail("query", container, resp).await);
+        }
+        let next = resp
+            .headers()
+            .get("x-ms-continuation")
+            .and_then(|v| v.to_str().ok())
+            .filter(|v| !v.is_empty())
+            .map(str::to_owned);
+        let page: Value = resp.json().await?;
+        Ok((
+            page["Documents"].as_array().cloned().unwrap_or_default(),
+            next,
+        ))
+    }
+
+    /// Every container in the database, each with its partition key path
+    /// (`/batch`): a metadata read, which the data reader role allows.
+    pub async fn containers(&self) -> anyhow::Result<BTreeMap<String, String>> {
+        let url = self
+            .endpoint
+            .join(&format!("dbs/{}/colls", self.database))?;
+        let mut out = BTreeMap::new();
         let mut continuation: Option<String> = None;
         loop {
             let cont = continuation.clone();
             let resp = self
                 .send(
-                    container,
+                    "",
                     || {
-                        let mut r = self
-                            .http
-                            .post(url.clone())
-                            .header("content-type", "application/query+json")
-                            .header("x-ms-documentdb-isquery", "True")
-                            .header("x-ms-documentdb-query-enablecrosspartition", "True")
-                            .body(body.to_string());
-                        if let Some(c) = &cont {
-                            r = r.header("x-ms-continuation", c);
+                        let r = self.http.request(Method::GET, url.clone());
+                        match &cont {
+                            Some(c) => r.header("x-ms-continuation", c),
+                            None => r,
                         }
-                        r
                     },
                     None,
                 )
                 .await?;
             if !resp.status().is_success() {
-                return Err(fail("query", container, resp).await);
+                return Err(fail("list containers", &self.database, resp).await);
             }
             continuation = resp
                 .headers()
                 .get("x-ms-continuation")
                 .and_then(|v| v.to_str().ok())
+                .filter(|v| !v.is_empty())
                 .map(str::to_owned);
-            let page: Value = resp.json().await?;
-            out.extend(page["Documents"].as_array().cloned().unwrap_or_default());
+            let body: Value = resp.json().await?;
+            for c in body["DocumentCollections"].as_array().into_iter().flatten() {
+                let name = c["id"].as_str().context("a container without an id")?;
+                let paths = c["partitionKey"]["paths"].as_array();
+                let path = match paths.map(Vec::as_slice) {
+                    Some([p]) => p.as_str().unwrap_or_default().to_owned(),
+                    _ => bail!("container `{name}` has no single partition key path"),
+                };
+                out.insert(name.to_owned(), path);
+            }
             if continuation.is_none() {
                 break;
             }
@@ -667,5 +740,78 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("429"), "{err}");
+    }
+
+    /// Pages of `SELECT * FROM c`: two items per page, the continuation an offset.
+    async fn paged_query(h: HeaderMap) -> (S, HeaderMap, String) {
+        assert_eq!(h["x-ms-max-item-count"], "2");
+        let from: usize = h
+            .get("x-ms-continuation")
+            .map_or(0, |v| v.to_str().unwrap().parse().unwrap());
+        let docs: Vec<Value> = (from..(from + 2).min(5))
+            .map(|i| json!({"id": format!("d{i}"), "kind": "k", "_etag": format!("\"e{i}\""), "_ts": 1}))
+            .collect();
+        let mut out = HeaderMap::new();
+        out.insert("x-ms-request-charge", "1.5".parse().unwrap());
+        if from + 2 < 5 {
+            out.insert("x-ms-continuation", (from + 2).to_string().parse().unwrap());
+        }
+        (S::OK, out, json!({"Documents": docs}).to_string())
+    }
+
+    /// The container list in two pages.
+    async fn collections(h: HeaderMap) -> (S, HeaderMap, String) {
+        let mut out = HeaderMap::new();
+        if h.get("x-ms-continuation").is_none() {
+            out.insert("x-ms-continuation", "page2".parse().unwrap());
+            let body = json!({"DocumentCollections": [
+                {"id": "ops", "partitionKey": {"paths": ["/kind"], "kind": "Hash"}},
+            ]});
+            return (S::OK, out, body.to_string());
+        }
+        assert_eq!(h["x-ms-continuation"], "page2");
+        let body = json!({"DocumentCollections": [
+            {"id": "batches", "partitionKey": {"paths": ["/batch"], "kind": "Hash"}},
+        ]});
+        (S::OK, out, body.to_string())
+    }
+
+    #[tokio::test]
+    async fn pages_and_containers_for_a_migration() {
+        use crate::migrate::Source;
+        let app = Router::new()
+            .route("/dbs/usnm/colls", get(collections))
+            .route("/dbs/usnm/colls/{c}/docs", post(paged_query));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let c = CosmosDocs::new(
+            &format!("http://127.0.0.1:{}/", addr.port()),
+            "usnm",
+            Arc::new(Credential::new(StaticToken("tok".into()))),
+        )
+        .unwrap();
+        let found = Source::containers(&c).await.unwrap();
+        assert_eq!(found["ops"], "/kind");
+        assert_eq!(found["batches"], "/batch");
+        let mut ids = Vec::new();
+        let mut cont: Option<String> = None;
+        let mut pages = 0;
+        loop {
+            let page = c.page("ops", cont.as_deref(), 2).await.unwrap();
+            pages += 1;
+            for v in page.docs {
+                assert!(v.doc.get("_ts").is_none() && v.doc.get("_etag").is_none());
+                ids.push((v.doc["id"].as_str().unwrap().to_owned(), v.etag));
+            }
+            cont = page.continuation;
+            if cont.is_none() {
+                break;
+            }
+        }
+        assert_eq!(pages, 3);
+        assert_eq!(ids.len(), 5);
+        assert_eq!(ids[4], ("d4".to_owned(), "\"e4\"".to_owned()));
+        assert_eq!(Source::request_charge(&c), 4.5);
     }
 }
