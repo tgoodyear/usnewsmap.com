@@ -63,10 +63,11 @@ class Result {
     function fetch_assoc() { return array_shift($this->rows); }
 }
 class BoincDb {
-    static function get($read) { if (!$read) throw new Exception(); return new BoincDb(); }
+    static $instance = null;
+    static function get_aux($dbnum) { if ($dbnum !== 1) throw new Exception(); self::$instance = new BoincDb(); }
     function do_query($sql) {
         if (preg_match('/^(SET SESSION TRANSACTION READ ONLY|START TRANSACTION WITH CONSISTENT SNAPSHOT|ROLLBACK)$/',$sql)) return true;
-        if (!str_starts_with($sql,'SELECT /*+ MAX_EXECUTION_TIME(2000) */')) throw new Exception('not a bounded read');
+        if (!str_starts_with($sql,'SELECT /*+ MAX_EXECUTION_TIME(5000) */')) throw new Exception('not a bounded read');
         if (str_contains($sql,'COALESCE(MAX')) return new Result([
             ['name'=>'usnm_ocr','id'=>'1','min_version'=>'0','last_workunit'=>'1799999990'],
             ['name'=>'usnm_qwen','id'=>'6','min_version'=>'117','last_workunit'=>'1799999995']]);
@@ -1747,11 +1748,12 @@ with socket.create_connection({listener.getsockname()!r}, timeout=2) as connecti
             real_run = C.run
             outputs = []
 
-            def container_run(argv, cwd=None):
+            def container_run(argv, cwd=None, **limits):
                 self.assertEqual(argv[:5], ["podman", "exec", "--workdir",
                                            "/project/usnmocr/html/inc", "fixture-server"])
                 self.assertIsNone(cwd)
-                output = real_run(argv[5:], cwd=root / "html/inc")
+                self.assertEqual(limits, {"exits": (0, C.PHP_FAILURE_EXIT), "timeout": C.INVENTORY_TIMEOUT})
+                output = real_run(argv[5:], cwd=root / "html/inc", **limits)
                 outputs.append(output)
                 self.assertNotIn(b"fixture-only-secret", output)
                 self.assertNotIn(b"<boinc", output)
@@ -1771,14 +1773,16 @@ with socket.create_connection({listener.getsockname()!r}, timeout=2) as connecti
             output = root / "status.json"
             args = ["server", "--project", str(root), "--window-env", str(root / "window.env"),
                     "--output", str(output)]
+            # Each failure is its fixed code, never the PHP error text.
             configs = {
-                "missing": None,
-                "disabled": "<boinc><config><one_result_per_host_per_wu>0</one_result_per_host_per_wu></config></boinc>",
-                "absent": "<boinc><config/></boinc>",
-                "malformed": "<boinc><config>fixture-only-secret",
-                "oversized": " " * (C.MAX_BYTES + 1),
+                "missing": (None, "scheduler_config_invalid"),
+                "disabled": ("<boinc><config><one_result_per_host_per_wu>0</one_result_per_host_per_wu></config></boinc>",
+                             "one_result_per_host_missing"),
+                "absent": ("<boinc><config/></boinc>", "one_result_per_host_missing"),
+                "malformed": ("<boinc><config>fixture-only-secret", "scheduler_config_invalid"),
+                "oversized": (" " * (C.MAX_BYTES + 1), "scheduler_config_invalid"),
             }
-            for name, config in configs.items():
+            for name, (config, reason) in configs.items():
                 with self.subTest(config=name):
                     F.atomic_json(output, {"old": "success"})
                     if config is None:
@@ -1786,7 +1790,7 @@ with socket.create_connection({listener.getsockname()!r}, timeout=2) as connecti
                     else:
                         (root / "config.xml").write_text(config)
                     self.assertEqual(C.main(args), 1)
-                    self.assertEqual(json.loads(output.read_text())["error"], "source unavailable")
+                    self.assertEqual(json.loads(output.read_text())["error"], reason)
                     self.assertNotIn("fixture-only-secret", output.read_text())
                     self.assertNotIn("old", json.loads(output.read_text()))
 
@@ -1814,8 +1818,88 @@ with socket.create_connection({listener.getsockname()!r}, timeout=2) as connecti
         with server_fixture() as root:
             with (root / "html/inc/boinc_db.inc").open("a") as source:
                 source.write("file_put_contents('../../config.xml', '<boinc/>');\n")
-            with self.assertRaisesRegex(ValueError, "source command failed"):
+            with self.assertRaisesRegex(C.SourceFailed, "^config_changed$"):
                 C.server(root, root / "window.env")
+
+    def test_php_server_names_the_failed_database_stage(self):
+        # A failed read is its fixed code after BOINC's own "Database Error" line (11 Nov 2026).
+        cases = {
+            "timeout": ("return $this->fail(3024);", "database_query_timeout"),
+            "other": ("return $this->fail(1146);", "database_query_failed"),
+            "row limit": ("return new Result(array_fill(0, 8001, ['id'=>'1']));", "database_row_limit"),
+            # PHP 8.1+ mysqli throws instead of do_query() returning false.
+            "thrown timeout": ("throw new mysqli_sql_exception('timed out', 3024);", "database_query_timeout"),
+            "thrown other": ("throw new mysqli_sql_exception('no such table', 1146);", "database_query_failed"),
+        }
+        for name, (units, reason) in cases.items():
+            with self.subTest(case=name), server_fixture() as root:
+                inc = root / "html/inc/boinc_db.inc"
+                inc.write_text(inc.read_text().replace(
+                    "        return new Result([]);\n    }",
+                    "        if (str_contains($sql,'COUNT(*) AS unsent')) { " + units + " }\n"
+                    "        return new Result([]);\n    }\n"
+                    "    private $errno = 0;\n"
+                    "    function fail($errno) { $this->errno = $errno; echo \"Database Error<br>\\n\"; return null; }\n"
+                    "    function base_errno() { return $this->errno; }")
+                    + "\nif (!class_exists('mysqli_sql_exception')) { class mysqli_sql_exception extends RuntimeException {} }\n")
+                with self.assertRaisesRegex(C.SourceFailed, "^%s$" % reason):
+                    C.server(root, root / "window.env")
+                output = root / "status.json"
+                self.assertEqual(C.main(["server", "--project", str(root), "--window-env", str(root / "window.env"),
+                                         "--output", str(output)]), 1)
+                self.assertEqual(json.loads(output.read_text())["error"], reason)
+
+    def test_php_server_reports_an_unreachable_database_without_an_error_page(self):
+        # get() would print BOINC's error page and exit 0; get_aux() leaves a null instance.
+        with server_fixture() as root:
+            inc = root / "html/inc/boinc_db.inc"
+            inc.write_text(inc.read_text().replace("self::$instance = new BoincDb();", "self::$instance = null;"))
+            with self.assertRaisesRegex(C.SourceFailed, "^database_unavailable$"):
+                C.server(root, root / "window.env")
+
+    def test_server_stages_outside_php_have_their_own_codes(self):
+        with server_fixture() as root:
+            real_run = C.run
+            for error, reason in ((TimeoutError("source timeout"), "inventory_timeout"),
+                                  (ValueError("source command failed"), "inventory_command_failed")):
+                with self.subTest(reason=reason), patch.object(C, "run", side_effect=error):
+                    with self.assertRaisesRegex(C.SourceFailed, "^%s$" % reason):
+                        C.server(root, root / "window.env")
+            for output, reason in ((b"not json", "inventory_invalid"), (b"[]", "inventory_invalid"),
+                                   (b'{"feed_failure": "text from elsewhere"}', "inventory_php_error")):
+                with self.subTest(output=output), patch.object(C, "run", return_value=output):
+                    with self.assertRaisesRegex(C.SourceFailed, "^%s$" % reason):
+                        C.server(root, root / "window.env")
+            (root / "window.env").write_text("ENABLED_UNTIL=1\nENABLED_UNTIL=2\n")
+            with self.assertRaisesRegex(C.SourceFailed, "^window_invalid$"):
+                C.server(root, root / "window.env")
+            (root / "window.env").write_text("ENABLED_UNTIL=1800086400\n")
+
+            def rewrite_policy(argv, **limits):
+                (root / "plan_class_spec.xml").write_text("<plan_classes/>")
+                return real_run(argv, **limits)
+            with patch.object(C, "run", side_effect=rewrite_policy):
+                with self.assertRaisesRegex(C.SourceFailed, "^policy_changed$"):
+                    C.server(root, root / "window.env")
+            (root / "plan_class_spec.xml").write_text("<plan_classes><plan_class><name>a</name></plan_class>"
+                                                      "<plan_class><name>a</name></plan_class></plan_classes>")
+            with self.assertRaisesRegex(C.SourceFailed, "^policy_invalid$"):
+                C.server(root, root / "window.env")
+            (root / "plan_class_spec.xml").unlink()
+            with self.assertRaisesRegex(C.SourceFailed, "^policy_unreadable$"):
+                C.server(root, root / "window.env")
+
+    def test_the_evaluator_carries_the_server_failure_code_and_nothing_else(self):
+        for error, reason in (("database_query_timeout", "database_query_timeout"),
+                              ("source unavailable", "unavailable_or_invalid"),
+                              ("free text from a host", "unavailable_or_invalid")):
+            with self.subTest(error=error):
+                document = {"schema_version": 1, "source": "server", "observed_at": NOW, "error": error}
+                with patch.object(C, "read_source", return_value=document), \
+                        patch.object(C.time, "time", return_value=NOW):
+                    facts = C.collect({"server": "/server", "controller": "/controller"})
+                self.assertEqual(facts["sources"]["server"], {"observed_at": None, "state": "unknown",
+                                                              "reason": reason})
 
     def test_loopback_rpc_reads_only_and_never_uses_volunteer_hosts(self):
         with client_rpc_fixture() as (root, port, answers, operations):
