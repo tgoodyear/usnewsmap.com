@@ -597,7 +597,7 @@ LoC budgets (code: `crates/usnm-ocr-worker/src/loc/global.rs`, `crates/usnm-boin
 | -------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Host-wide LoC pacer (all LoC requests on the host, via the fetcher's state file) | 20 a minute (3 s gap); 12 a minute (5 s) for 24 hours after a 429, 403 or challenge page; reset with `usnm-ocr-worker loc-pacer --file <f> --reset` |
 | `quality stage` / other staging (`--gap-secs`)                                   | default 5 s (12 a minute), minimum 3 s; also inside the host pacer when `USNM_LOC_GLOBAL_PACER` is set                                              |
-| LoC's `ndnp-batches` bucket (`--loc-bucket-gap-ms`)                              | default 2 s, minimum 500 ms; separate from the host pacer                                                                                              |
+| LoC's `ndnp-batches` bucket (`--loc-bucket-gap-ms`)                              | default 2 s, minimum 500 ms; separate from the host pacer                                                                                           |
 
 ### The full image pass and the piggyback (#962)
 
