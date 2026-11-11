@@ -483,7 +483,7 @@ setpriv --reuid 101000 --regid 101000 --clear-groups python3 -I quality_retentio
   --journal journal.jsonl --commit "$(git rev-parse HEAD)" [--delete --max-units N --max-bytes N]
 ```
 
-`quality-retention.sh --unit-campaign NAME` copies the campaign's `inventory.json` and `frontier.json` from CT230 into `/opt/usnm-quality-retention/run/results/NAME/` (root's, world-readable), then runs `prune-units` after `prune`, bounded by `--unit-max-bytes` (400 GB by default). The installed timer does not pass the flag.
+`quality-retention.sh --unit-campaign NAME` copies the campaign's `inventory.json` and `frontier.json` from CT230 into `/opt/usnm-quality-retention/run/results/NAME/` (root's, world-readable), then runs `prune-units` after `prune`, bounded by `--unit-max-bytes` (400 GB by default). The installed timer passes `--unit-campaign v1-wave10`. It needs the collector from #1747 or later at `/project/ops/quality-results/usnm-boinc` (deployed 11 November 2026), because an older collector still reads the image. Add another campaign only once its units have `dims.json` and that collector collects them.
 
 A pruned unit still collects. These no longer work from it and stop with an error that says the image was pruned: `quality submit` (a submitted unit is skipped anyway), `qwen stage` and `surya stage-crops` when they read `units/` because the root has no `pages/`, and `quality estimate` on a unit directory (both `surya stage-crops` and `estimate` check before anything else about the unit). Restaging a page for Surya or Qwen takes its single-page unit in `pages/` (or a fresh stage), not the bundle. `quality rescore` skips bundles and `quality rehat` reads only ALTO and texts, so neither is affected.
 
