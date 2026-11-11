@@ -12,11 +12,11 @@ joined PC can sit idle for a while. That is normal.
 
 - Windows 11, or Windows 10 22H2 with current updates, on an Intel or AMD
   64-bit PC. Windows on ARM and Windows Server are not supported.
-- For GPU work, an AMD GPU with at least 7 GB of video memory and a current
-  AMD graphics driver, which provides Vulkan ([AMD](../apps/amd-gpu.md)). No
-  Windows version is currently available for NVIDIA or Intel GPUs; both get GPU
-  work on Linux ([app versions](../apps/quality.md#app-versions-and-plan-classes)). On a PC
-  without an eligible AMD GPU, add `-AllowCpuOnly` to the preview and apply
+- For GPU work, an AMD or NVIDIA GPU with at least 7 GB of video memory and a
+  current graphics driver, which provides Vulkan ([AMD](../apps/amd-gpu.md)). No
+  Windows version is currently available for Intel GPUs; they get GPU work on
+  Linux ([app versions](../apps/quality.md#app-versions-and-plan-classes)). On a PC
+  without an eligible AMD or NVIDIA GPU, add `-AllowCpuOnly` to the preview and apply
   commands below (not to `-Status`) to offer CPU time instead. CPU work is
   optional and not always available.
 - 6 GB of RAM and 12 GiB of free disk, or 18 GiB with an eligible AMD GPU (binary gigabytes: about 13 and 19 GB as most disk tools

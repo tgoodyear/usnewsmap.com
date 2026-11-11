@@ -273,18 +273,27 @@ Test-Case 'AMD GPU without the Vulkan loader is not eligible' {
     Set-ReadinessMocks
     Set-Gpus @([pscustomobject]@{ Name = 'AMD large'; Vendor = 'AMD'; Driver = '1'; TotalMiB = 16304 })
     Set-Mock Test-VulkanLoader { return $false }
-    Assert-Throws { Get-WindowsReadiness $PSScriptRoot $false } 'current AMD driver with Vulkan'
+    Assert-Throws { Get-WindowsReadiness $PSScriptRoot $false } 'current AMD or NVIDIA driver with Vulkan'
     $ready = Get-WindowsReadiness $PSScriptRoot $true
     Assert-True ($null -eq $ready.Gpu -and $ready.DiskGiB -eq 12) 'unusable GPU does not raise the disk reserve'
 }
 
-Test-Case 'NVIDIA and Intel GPUs are told no Windows version is available and need explicit CPU participation' {
+Test-Case 'an NVIDIA GPU with 7,000 MB and Vulkan is admitted (#1672)' {
     Set-ReadinessMocks
     Set-Gpus @(
-        [pscustomobject]@{ Name = 'NVIDIA big'; Vendor = 'NVIDIA'; Driver = '1'; TotalMiB = 24564 },
-        [pscustomobject]@{ Name = 'Intel Arc'; Vendor = 'Intel'; Driver = '1'; TotalMiB = 16384 }
+        [pscustomobject]@{ Name = 'NVIDIA GeForce RTX 2060 SUPER'; Vendor = 'NVIDIA'; Driver = '1'; TotalMiB = 8192 },
+        [pscustomobject]@{ Name = 'Intel UHD'; Vendor = 'Intel'; Driver = '1'; TotalMiB = 16384 }
     )
-    Assert-Throws { Get-WindowsReadiness $PSScriptRoot $false } 'No Windows version is currently available for NVIDIA or Intel'
+    $ready = Get-WindowsReadiness $PSScriptRoot $false
+    Assert-True ($ready.Gpu.Vendor -eq 'NVIDIA' -and $ready.DiskGiB -eq 18) 'NVIDIA chosen with the 8B reserve'
+    Set-Gpus @([pscustomobject]@{ Name = 'NVIDIA small'; Vendor = 'NVIDIA'; Driver = '1'; TotalMiB = 6144 })
+    Assert-Throws { Get-WindowsReadiness $PSScriptRoot $false } 'AMD or NVIDIA GPU with at least 7,000 MB'
+}
+
+Test-Case 'Intel GPUs are told no Windows version is available and need explicit CPU participation' {
+    Set-ReadinessMocks
+    Set-Gpus @([pscustomobject]@{ Name = 'Intel Arc'; Vendor = 'Intel'; Driver = '1'; TotalMiB = 16384 })
+    Assert-Throws { Get-WindowsReadiness $PSScriptRoot $false } 'No Windows version is currently available for Intel'
     $ready = Get-WindowsReadiness $PSScriptRoot $true
     Assert-True ($null -eq $ready.Gpu -and $ready.DiskGiB -eq 12) 'CPU-only reserve; no GPU claimed'
 }

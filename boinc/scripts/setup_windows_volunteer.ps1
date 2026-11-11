@@ -155,20 +155,20 @@ function Get-WindowsReadiness([string]$DataDirectory, [bool]$CpuAllowed, [bool]$
     $ramGiB = [math]::Round(([double]$os.TotalVisibleMemorySize * 1KB / 1GB), 1)
     if ($ramGiB -lt 6) { throw 'Native Qwen onboarding requires at least 6 GiB host RAM. Use a larger host or ask the operator about CPU-quality-only participation.' }
 
-    # Windows GPU work is the amd_vulkan_8b plan class only: an AMD GPU with
-    # >= 7,000 MB device memory and the driver's Vulkan loader. No Windows
-    # version is currently available for the NVIDIA or Intel classes; when one is,
-    # admit that vendor here. Keep this in step with the live app versions.
+    # Windows GPU work is the amd_vulkan_8b and nvidia_vulkan_8b plan classes: an
+    # AMD or NVIDIA GPU with >= 7,000 MB device memory and the driver's Vulkan
+    # loader (#1672). No Windows version is currently available for the Intel class;
+    # when one is, admit it here. Keep this in step with the live app versions.
     $gpus = @(Get-GpuAdapters)
     $gpu = $null
     if (Test-VulkanLoader) {
-        $gpu = $gpus | Where-Object { $_.Vendor -eq 'AMD' -and $_.TotalMiB -ge 7000 } |
+        $gpu = $gpus | Where-Object { $_.Vendor -in @('AMD', 'NVIDIA') -and $_.TotalMiB -ge 7000 } |
             Sort-Object TotalMiB -Descending | Select-Object -First 1
     }
     if (-not $gpu -and -not $CpuAllowed) {
         $found = 'none detected'
         if ($gpus) { $found = ($gpus | ForEach-Object { "$($_.Name) ($($_.Vendor), $($_.TotalMiB) MiB)" }) -join '; ' }
-        throw "No eligible GPU for Windows GPU work, which needs an AMD GPU with at least 7,000 MB of video memory and a current AMD driver with Vulkan. Found: $found. No Windows version is currently available for NVIDIA or Intel GPUs; on Linux they can get GPU work now (docs/boinc/volunteer/linux.md). For optional CPU participation, rerun with -AllowCpuOnly; no CPU preferences are changed automatically."
+        throw "No eligible GPU for Windows GPU work, which needs an AMD or NVIDIA GPU with at least 7,000 MB of video memory and a current AMD or NVIDIA driver with Vulkan. Found: $found. No Windows version is currently available for Intel GPUs; on Linux they can get GPU work now (docs/boinc/volunteer/linux.md). For optional CPU participation, rerun with -AllowCpuOnly; no CPU preferences are changed automatically."
     }
     $service = Get-Service -Name BOINC -ErrorAction SilentlyContinue
     if ($service) {
@@ -256,7 +256,7 @@ function Get-GpuAdapters {
 }
 
 function Test-VulkanLoader {
-    # AMD's driver installs the Vulkan loader; the app does not ship one.
+    # The AMD and NVIDIA drivers install the Vulkan loader; the app does not ship one.
     return (Test-Path -LiteralPath (Join-Path $env:SystemRoot 'System32\vulkan-1.dll') -PathType Leaf)
 }
 
@@ -386,7 +386,7 @@ function Invoke-WindowsOnboarding {
     }
     Write-Host "Native Windows preview: $($ready.RamGiB) GiB RAM; reserve $($ready.DiskGiB) GiB disk in BOINC preferences."
     if ($ready.Gpu) {
-        Write-Host "AMD: $($ready.Gpu.Name); driver $($ready.Gpu.Driver); $($ready.Gpu.TotalMiB) MiB video memory. A task needs 7,000 MiB of it free when it starts, so close GPU-heavy apps while BOINC runs."
+        Write-Host "$($ready.Gpu.Vendor): $($ready.Gpu.Name); driver $($ready.Gpu.Driver); $($ready.Gpu.TotalMiB) MiB video memory. A task needs 7,000 MiB of it free when it starts, so close GPU-heavy apps while BOINC runs."
     } else {
         Write-Warning 'CPU-only participation explicitly allowed. CPU app publication is not guaranteed; set CPU/GPU choices yourself in project preferences.'
     }
@@ -432,7 +432,7 @@ Before adding a project:
      enter $script:ProjectUrl and sign in to the SAME account.
      Enter passwords ONLY in Manager/the HTTPS project site. Never paste account
      keys or gui_rpc_auth.cfg here. Already attached? Do NOT remove/re-add it.
-  4. In Manager's Event Log verify the AMD GPU is detected and look for
+  4. In Manager's Event Log verify the GPU is detected and look for
      Scheduler request completed. Service installs cannot access Windows GPUs.
 "@
     [void](Read-Host 'Complete/review these steps in Manager, then press Enter to verify local attachment (Ctrl+C cancels)')

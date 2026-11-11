@@ -374,11 +374,11 @@ or work around an enforced Group Policy; ask your administrator instead.
 - Use Intel/AMD **x64 Windows 11**, or Windows 10 22H2 with current ESU security
   updates. This helper does not support Windows ARM, 32-bit Windows, older desktop
   Windows, or Windows Server.
-- For GPU work, use an AMD GPU with at least **7,000 MB** of video memory and a
-  current AMD graphics driver, which provides Vulkan (`amd_vulkan_8b`,
-  [AMD](../apps/amd-gpu.md)). It is the only Windows GPU class with a live version
-  ([app versions](../apps/quality.md#app-versions-and-plan-classes)); no Windows
-  version is currently available for NVIDIA or Intel GPUs, though both get GPU
+- For GPU work, use an AMD or NVIDIA GPU with at least **7,000 MB** of video
+  memory and a current driver, which provides Vulkan (`amd_vulkan_8b`,
+  [AMD](../apps/amd-gpu.md), or `nvidia_vulkan_8b`). These are the Windows GPU classes
+  with a live version ([app versions](../apps/quality.md#app-versions-and-plan-classes));
+  no Windows version is currently available for Intel GPUs, though they get GPU
   work on Linux. The helper reads each display adapter's
   vendor and memory size from the Windows registry and checks for the driver's
   `vulkan-1.dll`. It cannot see free video memory; the app needs 7,000 MiB free
