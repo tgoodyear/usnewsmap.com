@@ -25,7 +25,7 @@ A bundle's `pages` goes only when:
     `submitted`: a `prepared`, `reserved` or `submitting` member is still being submitted.
     A bundle no journal names, because archive_history.py moved them, qualifies.
 The journals are all read first; a job directory that is not a directory, or whose record.json
-is missing or unreadable, stops the run before anything is deleted. Only a job directory that has
+is missing, unreadable or not a job record (an object with a stage), stops the run before anything is deleted. Only a job directory that has
 vanished (the archive moved it) is skipped. Without --delete it changes nothing and reports what it would free. With --delete
 it appends a journal line before each unlink and another after it, both fsynced, with the
 --commit the run came from. --max-bundles (default 5000) and --max-bytes (default 200 GB)
@@ -73,7 +73,11 @@ def bundle_stages(root):
             # A job directory without its record is unreadable recovery state, not an
             # archived job (the archive moves the whole directory).
             sys.exit(f"error: {path} is unreadable ({e}); nothing deleted")
-        bundle = record.get("bundle") if isinstance(record, dict) else None
+        if not isinstance(record, dict) or not isinstance(record.get("stage"), str):
+            sys.exit(f"error: {path} is not a job record; nothing deleted")
+        bundle = record.get("bundle")
+        if bundle is not None and not isinstance(bundle, str):
+            sys.exit(f"error: {path} names a bundle that is not a string; nothing deleted")
         if bundle:
             held.setdefault(bundle, set()).add(str(record.get("stage")))
     return held

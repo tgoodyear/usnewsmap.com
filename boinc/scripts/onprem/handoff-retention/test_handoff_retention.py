@@ -135,6 +135,18 @@ class PruneBundles(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self.r.run("--delete")
 
+    def test_a_record_that_is_not_a_job_stops_the_run(self):
+        _, d = self.r.bundle(1)
+        for body in ("null", "[]", '"x"', "{}", '{"stage": "submitted", "bundle": 5}'):
+            job = self.r.job(1)
+            (job / "record.json").write_text(body)
+            with self.assertRaises(SystemExit, msg=body):
+                self.r.run("--delete")
+            self.assertTrue((d / "pages").exists())
+            (job / "record.json").unlink()
+            (job / "page").unlink()
+            job.rmdir()
+
     def test_a_stray_file_in_jobs_stops_the_run(self):
         _, d = self.r.bundle(1)
         (self.r.root / "jobs" / "stray").write_text("x")
