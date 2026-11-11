@@ -98,6 +98,17 @@ Test-Case 'existing client uses same consent/Manager/status path without install
     Assert-True (($script:Calls -join ',') -eq 'readiness,network,consent,manager,prompt,status') 'existing installation reused, no reattach/install'
 }
 
+Test-Case 'Manager steps attach first, then set computing preferences straight away' {
+    Set-FlowMocks
+    $printed = (Invoke-WindowsOnboarding $true $true $false '' 6>&1 | ForEach-Object { "$_" }) -join "`n"
+    $account = $printed.IndexOf('create/sign in to YOUR account')
+    $wizard = $printed.IndexOf('Add project wizard')
+    $preferences = $printed.IndexOf('Options > Computing preferences')
+    Assert-True ($account -ge 0 -and $wizard -gt $account -and $preferences -gt $wizard) 'account, then Add project wizard, then computing preferences'
+    Assert-True ($printed -match 'opens by itself') 'first-launch wizard named'
+    Assert-True ($printed -match 'Activity > Suspend') 'way to hold tasks until limits are set'
+}
+
 Test-Case 'declined Manager consent never launches client' {
     Set-FlowMocks
     Set-Mock Confirm-Consent { param($Action) throw 'Cancelled' }

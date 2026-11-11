@@ -420,18 +420,22 @@ function Invoke-WindowsOnboarding {
     Confirm-Consent 'On a computer you own or have permission to use, open local BOINC Manager? Manager may start the client and resume its existing projects. Adding usnewsmap is a separate, deliberate step inside Manager.'
     Open-BoincManager $installation
     Write-Host @"
-Before adding a project:
-  1. In Manager's computing preferences choose idle-only CPU/GPU, no battery use,
-     conservative CPU/memory limits and enough BOINC disk allowance. These local
-     preferences affect ALL projects; review rather than overwrite existing limits.
-  2. At $script:ProjectUrl create/sign in to YOUR account.
+Join in this order:
+  1. At $script:ProjectUrl create/sign in to YOUR account.
      Review project preferences: GPU-only volunteers disable Use CPU; CPU is optional.
      Participation includes production and experimental work. Your normal CPU/GPU
      choices and resource limits apply to both; there is no experiment checkbox.
-  3. In BOINC Manager: Tools > Add project (or Add project/account manager),
-     enter $script:ProjectUrl and sign in to the SAME account.
+  2. In BOINC Manager complete the Add project wizard. It opens by itself when no
+     project is attached; otherwise use Tools > Add project (or Add project/account
+     manager). Enter $script:ProjectUrl and sign in to the SAME account.
      Enter passwords ONLY in Manager/the HTTPS project site. Never paste account
      keys or gui_rpc_auth.cfg here. Already attached? Do NOT remove/re-add it.
+  3. Straight away, in Options > Computing preferences choose idle-only CPU/GPU,
+     no battery use, conservative CPU/memory limits and enough BOINC disk allowance.
+     These local preferences affect ALL projects; review rather than overwrite
+     existing limits. Tasks can start as soon as the project is attached; to keep
+     them from running, use Activity > Suspend, then Activity > Run based on
+     preferences.
   4. In Manager's Event Log verify the GPU is detected and look for
      Scheduler request completed. Service installs cannot access Windows GPUs.
 "@
