@@ -1,0 +1,11 @@
+# Starts usnm-boinc-db-restore-drill.service on the 3rd of each month at 14:40 UTC.
+[Unit]
+Description=usnewsmap BOINC MySQL: monthly restore drill from R2
+
+[Timer]
+OnCalendar=*-*-03 14:40:00 UTC
+RandomizedDelaySec=20min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

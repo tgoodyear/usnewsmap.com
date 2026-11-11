@@ -64,3 +64,4 @@ baselines and adapted models with `usnm_qwen`.
 - [The AMD #885 release](apps/amd-885-release.md): the record of the scoped AMD Vulkan production release.
 - [The bootstrap pipeline](server/bootstrap-pipeline.md): the reviewed orchestration of the existing BOINC scripts (#551).
 - [Database TLS acceptance](server/db-tls-acceptance.md): the local BOINC database TLS checks.
+- [Database backups](server/db-backup.md) and [replica](server/db-replica.md): nightly dumps and binlogs in R2, the restore and its monthly drill, the live replica on pve-big and the failover.

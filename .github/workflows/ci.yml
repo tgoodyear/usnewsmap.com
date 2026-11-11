@@ -273,6 +273,7 @@ jobs:
           persist-credentials: false
       - run: python3 -m unittest -v boinc/scripts/test_db_tls_fixture.py
       - run: shellcheck -x -S warning boinc/scripts/check-db-tls.sh
+      - run: shellcheck -x -S warning boinc/scripts/onprem/db-backup/*.sh
       - run: boinc/scripts/check-db-tls.sh
 
   boinc-mysql84-db-tls:

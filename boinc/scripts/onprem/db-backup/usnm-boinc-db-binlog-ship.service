@@ -1,0 +1,14 @@
+# Copies closed binlogs to R2 (db-backup.sh --ship-binlogs). install.sh installs it.
+[Unit]
+Description=usnewsmap BOINC MySQL: ship closed binlogs to R2
+Wants=network-online.target
+After=network-online.target usnm-boinc-mysql.service
+Requires=usnm-boinc-mysql.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/usnm-db-backup/db-backup.sh --ship-binlogs
+SyslogIdentifier=usnm-boinc-db-binlog-ship
+TimeoutStartSec=30min
+Nice=10
+IOSchedulingClass=idle

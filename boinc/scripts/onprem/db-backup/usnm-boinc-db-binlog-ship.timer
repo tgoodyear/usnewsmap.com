@@ -1,0 +1,11 @@
+# Starts usnm-boinc-db-binlog-ship.service 5 minutes after the last run ends, so at most about
+# 5 minutes of changes are only on this host. install.sh enables it.
+[Unit]
+Description=usnewsmap BOINC MySQL: ship binlogs to R2 every 5 minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitInactiveSec=5min
+
+[Install]
+WantedBy=timers.target
