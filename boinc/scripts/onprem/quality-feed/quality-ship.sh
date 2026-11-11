@@ -382,7 +382,7 @@ in_window() {
   local now; now=$(date +%M:%S)
   [ "$((10#${now%:*}))" -lt "$STEP_WINDOW" ]
 }
-if [ -n "$QWEN_PLAN" ] && [ -n "$QWEN_BUNDLE" ] && [ "$shipped" -eq 0 ] && in_window &&
+if [ "$WHAT_IF" = false ] && [ -n "$QWEN_PLAN" ] && [ -n "$QWEN_BUNDLE" ] && [ "$shipped" -eq 0 ] && in_window &&
   in_ct sh -c 'ls "$1"/pages/*/held >/dev/null 2>&1' sh "/srv/usnm-boinc/project/qwen/$QWEN_ROOT"; then
   wait_for_step_window
   if in_ct flock -w "$LOCK_WAIT" -E 75 /run/usnm-boinc-step.lock \

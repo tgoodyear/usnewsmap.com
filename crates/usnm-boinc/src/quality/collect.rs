@@ -1490,7 +1490,11 @@ pub fn collect(opts: &Options) -> anyhow::Result<Collected> {
             }
         }
         if let (Some(cache), Some(key)) = (&cache, &key) {
-            if !cache.readings_unchanged(&job.doc_id)? {
+            let mut unchanged = cache.readings_unchanged(&job.doc_id)?;
+            for bp in &job.pages {
+                unchanged = unchanged && cache.readings_unchanged(&bp.doc_id)?;
+            }
+            if !unchanged {
                 // Published from what was read, collected again next run.
                 continue;
             }

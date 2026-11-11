@@ -260,6 +260,8 @@ elif "python3" in args and "-" in args:
         # Nothing held, or no bundles: no call.
         self.assertEqual(ship(["--qwen-bundle-size", "32"], False), [])
         self.assertEqual(ship([], True), [])
+        # Never on a dry run.
+        self.assertEqual(ship(["--qwen-bundle-size", "32", "--what-if"], True), [])
 
     def test_stage_and_submit_do_not_wait_for_the_step_window(self):
         # The stage has its own lock on the host, and only native publication reads the clock.

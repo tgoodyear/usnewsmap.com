@@ -589,12 +589,17 @@ impl Cache {
     }
 
     /// Whether every reading input of the page `doc` (its Qwen jobs'
-    /// dependencies and record listings) is as it was keyed. A unit whose
+    /// dependencies and record listings, and Surya's results) is as it was
+    /// keyed. A unit whose
     /// readings changed while the run collected is published but not cached,
     /// so the next run collects it again under its new key. Checking only the
     /// page's own inputs lets a busy root, where results land every minute,
     /// still publish (#1435): the root-wide check failed nearly every run.
     pub fn readings_unchanged(&self, doc: &str) -> anyhow::Result<bool> {
+        // Surya's results are one dependency for the root: any change counts.
+        if Dependency::hash(&self.surya.paths, &self.surya.salt)? != self.surya.digest {
+            return Ok(false);
+        }
         let Some(paths) = self.qwen.get(doc) else {
             return Ok(true);
         };

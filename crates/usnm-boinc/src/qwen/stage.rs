@@ -581,9 +581,14 @@ fn pack_bundles(
     let retry = match page_records {
         Some(dir) => {
             holders.retain(|doc, _| !single_docs.contains(doc));
-            retry_pages(units_dir, dir, &bundles, &holders)?
-                .into_iter()
-                .take(retry_budget)
+            // A retry already held from an earlier run was counted then; only new ones
+            // take this run's budget.
+            let (held, new): (BTreeSet<String>, BTreeSet<String>) =
+                retry_pages(units_dir, dir, &bundles, &holders)?
+                    .into_iter()
+                    .partition(|doc| page_dir.join(doc).join(HELD_FILE).exists());
+            held.into_iter()
+                .chain(new.into_iter().take(retry_budget))
                 .collect()
         }
         None => BTreeSet::new(),
@@ -623,13 +628,6 @@ fn pack_bundles(
             jobs.clear();
             return Ok(());
         }
-        for d in dirs.iter() {
-            // Bundled now, so no longer held.
-            match std::fs::remove_file(d.join(HELD_FILE)) {
-                Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
-                _ => {}
-            }
-        }
         created += 1;
         let first_doc = dirs[0]
             .file_name()
@@ -638,6 +636,14 @@ fn pack_bundles(
         let idx = existing_bundles + created;
         let dir = units_dir.join(format!("bundle-{idx:05}-{first_doc}"));
         write_bundle(&dir, dirs)?;
+        for d in dirs.iter() {
+            // Bundled now, so no longer held. Only once the bundle is written, so a run that
+            // stops before leaves the pages marked for the idle drain to find.
+            match std::fs::remove_file(d.join(HELD_FILE)) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+                _ => {}
+            }
+        }
         dirs.clear();
         jobs.clear();
         Ok(())
@@ -2121,8 +2127,37 @@ pub(crate) mod tests {
             .unwrap(),
             (0, 0)
         );
+        // Packed alone it is under half a bundle, so it is held.
+        assert_eq!(
+            pack_bundles(
+                &page_dir,
+                &units_dir,
+                8,
+                Some(&records),
+                8,
+                Hold { secs: 3600, now: 1 },
+                &held(&units_dir)
+            )
+            .unwrap(),
+            (0, 0)
+        );
+        assert!(page_dir.join(&second).join(HELD_FILE).exists());
+        // Held, it was counted already: a run with no retry budget still packs it.
         page_unit(&page_dir, &docs[4], 2);
-        assert_eq!(pack().unwrap(), (1, 0));
+        assert_eq!(
+            pack_bundles(
+                &page_dir,
+                &units_dir,
+                8,
+                Some(&records),
+                0,
+                NO_HOLD,
+                &held(&units_dir)
+            )
+            .unwrap(),
+            (1, 0)
+        );
+        assert!(!page_dir.join(&second).join(HELD_FILE).exists());
         let retry = bundle_jobs().remove(1);
         let retried: Vec<&str> = retry.pages.iter().map(|p| p.doc_id.as_str()).collect();
         assert_eq!(retried, [docs[1].as_str(), docs[4].as_str()]);
