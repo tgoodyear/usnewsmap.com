@@ -1362,7 +1362,7 @@ class SourceRequestTest(unittest.TestCase):
                     state=root, outbox=root, campaign="test", prep_ct=215, server_ct=230,
                     server_host="server", archive_host="archive", scan_server="http://scan",
                     archives="/archives", alto_export="/cache", min_free_gb=50, max_ready=1000,
-                    max_unresolved=2000, max_pending=3, chunk_pages=100, reserve_mib=64,
+                    max_unresolved=2000, max_pending=3, chunk_pages=100, max_archives=4, reserve_mib=64,
                     yiddish_budget=None, german_budget=None, german_pages=None,
                     serbian_budget=None, serbian_pages=None)
                 index = b"".join((json.dumps(p) + "\n").encode() for p in (old, fresh))
@@ -2258,7 +2258,7 @@ class SourceTest(unittest.TestCase):
                                       archive_host="archive.example", archives="/archives",
                                       alto_export="/cache", scan_server="http://scan.example",
                                       outbox=Path(folder), min_free_gb=50, max_ready=1000,
-                                      max_pending=3, chunk_pages=100, max_unresolved=2000, reserve_mib=64,
+                                      max_pending=3, chunk_pages=100, max_archives=4, max_unresolved=2000, reserve_mib=64,
                                       yiddish_budget=None, german_budget=None, german_pages=None,
                     serbian_budget=None, serbian_pages=None)
             page = {"doc_id": DOC, "damage_rate": 0.9}
@@ -2438,7 +2438,7 @@ class SourceTest(unittest.TestCase):
         args = types.SimpleNamespace(
             state=root, outbox=root, campaign="test", prep_ct=215, server_ct=230, server_host="server",
             archive_host="archive", scan_server="http://scan", archives="/archives", alto_export="/cache",
-            min_free_gb=50, max_ready=1000, max_unresolved=2000, max_pending=3, chunk_pages=100,
+            min_free_gb=50, max_ready=1000, max_unresolved=2000, max_pending=3, chunk_pages=100, max_archives=4,
             reserve_mib=64, yiddish_budget=budget, german_budget=german_budget, german_pages=german_pages,
             serbian_budget=serbian_budget, serbian_pages=serbian_pages)
         filters, prepared = [], []
