@@ -1,10 +1,20 @@
 FROM mirror.gcr.io/library/almalinux:9@sha256:9819dc675b67b595c2b59e42be7763fca1a8bb217fa5944e04daa22e9a64db16
-# A mirror that stops sending data must fail over to another one (#1179): bound each
-# request, drop a transfer below minrate, and retry, rather than stalling the whole build.
-# The overall timeout fails loudly well inside the CI job limit; output is not quiet.
-RUN timeout 600 dnf -y -v --setopt=timeout=30 --setopt=minrate=20000 --setopt=retries=5 \
-      install git gcc-c++ make autoconf automake libtool pkgconf-pkg-config \
-      libcurl-devel openssl-devel zlib-devel ca-certificates tar gzip file diffutils \
+# A slow mirror must not fail the build (#1179, #1716). minrate is per transfer: a mirror
+# sending under 1 MB/s for `timeout` seconds is dropped and dnf moves to the next one from
+# the mirrorlist. The old 20 kB floor let a 60-120 kB/s mirror spend most of 600 s on the
+# 33 MB AppStream metadata. Each attempt is bounded; a failed attempt drops the cached
+# metadata so the next one starts again from the mirrorlist. Output is not quiet.
+RUN for attempt in 1 2 3; do \
+      rc=0; \
+      timeout 200 dnf -y -v --setopt=timeout=30 --setopt=minrate=1M --setopt=retries=5 \
+        install git gcc-c++ make autoconf automake libtool pkgconf-pkg-config \
+        libcurl-devel openssl-devel zlib-devel ca-certificates tar gzip file diffutils \
+        || rc=$?; \
+      [ "$rc" = 0 ] && break; \
+      echo "dnf install attempt $attempt failed with exit $rc" >&2; \
+      [ "$attempt" = 3 ] && exit "$rc"; \
+      dnf clean all; \
+    done \
  && dnf clean all
 COPY boinc/scripts/build-node-client.sh /checks/build-node-client.sh
 CMD ["/bin/bash", "-ec", "test \"$(cat /sys/fs/cgroup/memory.max)\" = 1610612736; test \"$(cat /sys/fs/cgroup/cpu.max)\" = '100000 100000'; bash /checks/build-node-client.sh --out /build; cat /sys/fs/cgroup/memory.max > /build/runtime-memory-max; cat /sys/fs/cgroup/cpu.max > /build/runtime-cpu-max"]
