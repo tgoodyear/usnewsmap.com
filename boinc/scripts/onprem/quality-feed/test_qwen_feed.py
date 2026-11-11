@@ -68,6 +68,23 @@ class BoincWorkunit {
 """)
 
 
+class ConcentrateTest(unittest.TestCase):
+    def test_a_chunk_comes_from_the_most_represented_batches_in_damage_order(self):
+        # #1435: one archive scan yields every page of its batch, so few batches make a fast tick.
+        from qwen_feed import concentrate
+        pages = [{"batch": b, "batch_version": 1, "doc_id": str(i)} for i, b in enumerate("aabcbbbddea")]
+        self.assertEqual([p["batch"] + p["doc_id"] for p in concentrate(pages, 5)],
+                         ["b2", "b4", "b5", "b6", "a0"])
+        # At most max_batches batches, even when that leaves the chunk short.
+        self.assertEqual([p["batch"] for p in concentrate(pages, 20, max_batches=2)], list("bbbbaaa"))
+        # Equal counts go by first appearance.
+        self.assertEqual([p["batch"] for p in concentrate(pages[:4], 4, max_batches=1)], list("aa"))
+        self.assertEqual(concentrate([], 5), [])
+        # A batch's versions are separate archives, so separate groups.
+        versions = [{"batch": "a", "batch_version": v, "doc_id": str(v)} for v in (1, 2, 2, 3)]
+        self.assertEqual([p["batch_version"] for p in concentrate(versions, 4, max_batches=1)], [2, 2])
+
+
 @unittest.skipUnless(shutil.which("php"), "PHP CLI required for actual query JSON encoding")
 class PublicationRowsPhpTest(unittest.TestCase):
     def test_real_php_empty_result_for_fresh_and_no_selected_workunits(self):
@@ -2498,7 +2515,7 @@ class SourceTest(unittest.TestCase):
             self.assertEqual(pages, [p["doc_id"] for p in yiddish[:30]])
             # The budget survives a restart: the next ticks take everything else, without Yiddish.
             filters, pages = self.budget_tick(root, 30, yiddish[30:], others)
-            self.assertEqual(filters, [(None, "yid", 100)])
+            self.assertEqual(filters, [(None, "yid", 1000)])
             self.assertEqual(pages, [p["doc_id"] for p in others])
 
     def test_failed_budget_reservation_can_retry_without_spending_another_page(self):
@@ -2513,7 +2530,7 @@ class SourceTest(unittest.TestCase):
             self.assertEqual(chosen, [DOC])
             self.assertEqual(json.loads((root / "yiddish-budget.json").read_text()), [DOC])
             filters, chosen = self.budget_tick(root, 1, [page], [other], retryable=())
-            self.assertEqual(filters, [(None, "yid", 100)])
+            self.assertEqual(filters, [(None, "yid", 1000)])
             self.assertEqual(chosen, [other["doc_id"]])
             self.assertEqual(json.loads((root / "yiddish-budget.json").read_text()), [DOC])
 
@@ -2546,7 +2563,7 @@ class SourceTest(unittest.TestCase):
             # The budget is full again, so the next tick takes no Yiddish.
             filters, chosen = self.budget_tick(root, 4, yiddish, others, quarantine=quarantine,
                                                finished=[done], older=older, newer=newer)
-            self.assertEqual(filters, [(None, "yid", 100)])
+            self.assertEqual(filters, [(None, "yid", 1000)])
             self.assertEqual(chosen, [others[0]["doc_id"]])
             self.assertEqual(sorted(json.loads(budget.read_text())), sorted(reserved[1:] + [replacement]))
 
@@ -2573,7 +2590,7 @@ class SourceTest(unittest.TestCase):
             self.assertEqual(pages, [yiddish[0]["doc_id"]])
             # With the budget spent the request carries on, without Yiddish.
             filters, pages = self.budget_tick(root, 1, [], [other])
-            self.assertEqual(filters, [(None, "yid", 100)])
+            self.assertEqual(filters, [(None, "yid", 1000)])
             self.assertEqual(pages, [DOC])
 
     def test_a_source_request_never_spends_past_the_budget(self):
@@ -2588,7 +2605,7 @@ class SourceTest(unittest.TestCase):
                         {"request_id": source.digest(spec), "spec": spec, "pages": [page],
                          "pages_sha256": source.digest([page])})
             filters, chosen = self.budget_tick(root, 1, [page], [])
-            self.assertEqual(filters, [(None, "yid", 100), (None, "yid", 100)])
+            self.assertEqual(filters, [(None, "yid", 1000), (None, "yid", 1000)])
             self.assertEqual(chosen, [])
             self.assertEqual(json.loads((root / "yiddish-budget.json").read_text()), ["spent"])
 
@@ -2597,7 +2614,7 @@ class SourceTest(unittest.TestCase):
                   for n in range(1, 4)]
         with tempfile.TemporaryDirectory() as folder:
             filters, pages = self.budget_tick(Path(folder), 30, [], others)
-            self.assertEqual(filters, [("yid", None, 30), (None, "yid", 100)])
+            self.assertEqual(filters, [("yid", None, 30), (None, "yid", 1000)])
             self.assertEqual(pages, [p["doc_id"] for p in others])
 
     def test_german_budget_comes_after_a_spent_yiddish_budget_and_never_more(self):
@@ -2616,7 +2633,7 @@ class SourceTest(unittest.TestCase):
             self.assertEqual(json.loads((root / "yiddish-budget.json").read_text()), ["spent"])
             # Spent: the normal order carries on without Yiddish or German.
             filters, pages = self.budget_tick(root, 1, [], german[5:] + others, german_budget=5)
-            self.assertEqual(filters, [(None, ("yid", "deu"), 100)])
+            self.assertEqual(filters, [(None, ("yid", "deu"), 1000)])
             self.assertEqual(pages, [p["doc_id"] for p in others])
 
     def test_german_pages_limit_the_german_budget_to_a_list(self):
@@ -2648,7 +2665,7 @@ class SourceTest(unittest.TestCase):
             # Spent: the normal order carries on without Yiddish, German or Serbian.
             filters, pages = self.budget_tick(root, 1, [], serbian[5:] + others, german_budget=1,
                                               serbian_budget=5)
-            self.assertEqual(filters, [(None, ("yid", "deu", "srp"), 100)])
+            self.assertEqual(filters, [(None, ("yid", "deu", "srp"), 1000)])
             self.assertEqual(pages, [p["doc_id"] for p in others])
 
     def test_serbian_pages_limit_the_serbian_budget_to_a_list(self):
@@ -2668,7 +2685,7 @@ class SourceTest(unittest.TestCase):
                  for n, lang in enumerate(("yid", "srp"), 1)]
         with tempfile.TemporaryDirectory() as folder:
             filters, chosen = self.budget_tick(Path(folder), None, pages[:1], pages[1:])
-            self.assertEqual(filters, [(None, None, 100)])
+            self.assertEqual(filters, [(None, None, 1000)])
             self.assertEqual(chosen, [p["doc_id"] for p in pages])
 
     def test_select_filters_by_language(self):

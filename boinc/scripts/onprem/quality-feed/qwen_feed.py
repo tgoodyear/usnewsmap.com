@@ -81,6 +81,35 @@ def available_source_index(lines, inventory):
     return b"".join(selected), total, len(selected)
 
 
+# Pages are read from the archive host's bz2 batch archives (archive_alto.py), one whole archive
+# per batch, at about one archive a few minutes. Damage order spread a chunk over two dozen
+# batches, so a tick extracted a handful of pages (8 of 100 in 44 minutes, 11 November). The
+# chunk is drawn from the most-represented batches among the top damage-ordered candidates
+# instead (#1435).
+CANDIDATES_PER_PAGE = 10
+MAX_BATCHES = 4
+
+
+def concentrate(pages, count, max_batches=MAX_BATCHES):
+    """Up to `count` of the damage-ordered `pages`, from at most `max_batches` archives (batch and
+    version): those with the most candidates first, then the earliest; damage order within each."""
+    by_batch = {}
+    def archive(page):
+        # archive_alto.extract opens one archive per batch and version.
+        return page.get("batch"), int(page.get("batch_version") or 1)
+
+    for page in pages:
+        by_batch.setdefault(archive(page), []).append(page)
+    first = {key: i for i, key in reversed(list(enumerate(archive(p) for p in pages)))}
+    order = sorted(by_batch, key=lambda b: (-len(by_batch[b]), first[b]))
+    out = []
+    for batch in order[:max_batches]:
+        out.extend(by_batch[batch][:count - len(out)])
+        if len(out) >= count:
+            break
+    return out
+
+
 def budget_spent(path):
     """Pages already prepared under a language budget, across restarts."""
     return json.loads(path.read_text()) if path.exists() else []
@@ -661,7 +690,9 @@ def _tick(a):
         command(ct + ["tee", work + "/index.jsonl"], selected_index)
         phase("retained_archive_filter", indexed_pages=total, retained_archive_pages=retained,
               source_request=request_id)
-        raw, pages = select(count, *filters)
+        raw, pages = select(count * CANDIDATES_PER_PAGE, *filters)
+        pages = concentrate(pages, count)
+        raw = "".join(json.dumps(p) + "\n" for p in pages).encode()
         if pages or request_id is None:
             break
         phase("source_request_no_eligible_pages", source_request=request_id)
