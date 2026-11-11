@@ -532,7 +532,7 @@ python3 /root/usnm-archive/archive_history.py dispatch --include-held --min-age-
   --archive-dir /srv/usnm-archive
 ```
 
-`usnm-boinc-held-archive.timer` on the controller host runs this daily at 08:30 UTC ([`held-archive.sh`](../../../boinc/scripts/onprem/held-archive.sh), unit files in `boinc/scripts/onprem/`):
+`usnm-boinc-held-archive.timer` on the controller host runs this every 4 hours, at 00:30, 04:30, 08:30, 12:30, 16:30 and 20:30 UTC. Once a day was too slow: a main plan at a 150-page refill cap adds about 450 journals an hour and reached 90% of the 10,000 journal cap between runs. A run that is still going when the next one is due delays it; systemd doesn't start a second copy ([`held-archive.sh`](../../../boinc/scripts/onprem/held-archive.sh), unit files in `boinc/scripts/onprem/`):
 
 1. Stop the controller timer and wait for a tick (exit if it was already stopped).
 2. Bridge any batch with a dispatch receipt but no `receipts/bridge.json`.

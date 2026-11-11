@@ -1,11 +1,13 @@
 [Unit]
-Description=Archive the held pages' history once a day (#835)
+Description=Archive the held pages' history every 4 hours (#835)
 
 [Timer]
-# 08:30 UTC, about 3:30 AM US Eastern.
-OnCalendar=*-*-* 08:30:00 UTC
+# 00:30, 04:30, 08:30, 12:30, 16:30 and 20:30 UTC. A main plan at a 150-page refill cap adds
+# about 450 journals an hour, so a daily run let it reach 90% of the 10,000 journal cap
+# between runs (controller_cap, 11 Nov 2026).
+OnCalendar=*-*-* 00/4:30:00 UTC
 AccuracySec=1min
-# A run missed while CT 211 was down runs when it is back: a missed day could leave more
+# A run missed while CT 211 was down runs when it is back: a missed run could leave more
 # journals than the cap.
 Persistent=true
 
