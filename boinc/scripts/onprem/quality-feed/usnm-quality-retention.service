@@ -8,7 +8,7 @@ After=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/var/lib/usnm-quality-retention/quality-retention.sh --max-bytes 400000000000
+ExecStart=/opt/usnm-quality-retention/quality-retention.sh --max-bytes 400000000000
 Nice=10
 IOSchedulingClass=idle
 TimeoutStartSec=5h

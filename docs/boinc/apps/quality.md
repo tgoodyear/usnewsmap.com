@@ -455,14 +455,15 @@ If every page of the job has its original scan in the scan index and on disk und
 
 Run `list` again before each `prune`. `db_purge` drops workunit rows 30 days after their files are marked done, and a file without a row is never listed.
 
-**Timer.** `usnm-quality-retention.timer` on the storage host runs `quality-retention.sh` every 6 hours: `list` in CT230 over the host trust (pve-big to pve), then `prune --delete` as uid 101000 with `--max-bytes` 400 GB a run, at idle I/O priority. Install from a checkout:
+**Timer.** `usnm-quality-retention.timer` on the storage host runs `quality-retention.sh` every 6 hours: `list` in CT230 over the host trust (pve-big to pve), then `prune --delete` as uid 101000 with `--max-bytes` 400 GB a run, at idle I/O priority. Root keeps the code and the list in `/opt/usnm-quality-retention` and writes nowhere uid 101000 can; the journal is `/var/lib/usnm-quality-retention/journal.jsonl`. `prune` leaves single-page units alone: their `page.jpg` can be LoC's own JPEG. Install from a checkout:
 
 ```sh
-d=/var/lib/usnm-quality-retention
-install -d -o 101000 -g 101000 -m 0750 $d
-install -o 101000 -g 101000 -m 0644 boinc/scripts/onprem/quality-feed/quality_retention.py $d/
-install -m 0755 boinc/scripts/onprem/quality-feed/quality-retention.sh $d/
-git rev-parse HEAD > $d/COMMIT
+# Code is root's; uid 101000 owns only the journal directory.
+install -d -m 0755 /opt/usnm-quality-retention
+install -m 0644 boinc/scripts/onprem/quality-feed/quality_retention.py /opt/usnm-quality-retention/
+install -m 0755 boinc/scripts/onprem/quality-feed/quality-retention.sh /opt/usnm-quality-retention/
+git rev-parse HEAD > /opt/usnm-quality-retention/COMMIT
+install -d -o 101000 -g 101000 -m 0750 /var/lib/usnm-quality-retention
 install -m 0644 boinc/scripts/onprem/quality-feed/usnm-quality-retention.{service,timer} /etc/systemd/system/
 systemctl daemon-reload && systemctl enable --now usnm-quality-retention.timer
 ```

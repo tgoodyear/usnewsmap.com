@@ -37,7 +37,8 @@ the journal marks it only_local_image and never_prune.
 Without --delete it changes nothing on the share and reports what it would free. With
 --delete it appends a journal line before each unlink or link and another after it, both
 fsynced, so the journal records every file it changed and the --commit the run came from.
---max-files and --max-bytes bound a batch (links count toward both).
+--max-files and --max-bytes bound a batch (links count toward both); a file that would pass
+--max-bytes ends the batch before it is touched.
 """
 import argparse
 import json
@@ -189,6 +190,10 @@ def check(entry, download, units, batches, roots, cmp, now):
         return "unit quality.json unreadable"
     if job.get("id") != name[:-len(PAGE_SUFFIX)]:
         return "unit job id differs"
+    # Only bundle images are re-encoded derived copies; a single-page unit can hold LoC's
+    # own JPEG unchanged, so it is out of scope.
+    if not job.get("pages") or not os.path.basename(unit).startswith("bundle-"):
+        return "not a bundle"
     page = os.path.join(unit, "page.jpg")
     want = ((job.get("inputs") or {}).get("page") or {}).get("bytes")
     try:
@@ -199,7 +204,7 @@ def check(entry, download, units, batches, roots, cmp, now):
         return "already one copy (hard link)"
     if ust.st_size != st.st_size or (want is not None and want != ust.st_size):
         return "size differs from unit page.jpg"
-    docs = [p.get("doc_id") for p in job.get("pages") or []] or [job.get("doc_id")]
+    docs = [p.get("doc_id") for p in job["pages"]]
     missing = [d for d in docs if not d or not scan_present(d, batches, roots)]
     if cmp and not same_bytes(path, page):
         return "bytes differ from unit page.jpg"
@@ -254,6 +259,8 @@ def prune(a):
                                            "reason": got})
                 continue
             act, path, size, unit, detail = got
+            if totals["bytes"] + linked["bytes"] + size > a.max_bytes:
+                break
             record = {"time": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "commit": a.commit,
                       "file": entry["file"], "path": path, "bytes": size, "unit": unit,
                       "wu_id": entry["wu_id"], "wu_name": entry["wu_name"]}

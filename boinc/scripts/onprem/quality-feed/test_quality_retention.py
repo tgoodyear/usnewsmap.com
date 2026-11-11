@@ -167,6 +167,21 @@ class QualityRetentionTest(unittest.TestCase):
         self.assertEqual(got["files"], 2)
         self.assertEqual(sum(1 for _ in self.l.download.rglob("*_page_jpg")), 1)
 
+    def test_byte_limit_is_checked_before_each_file(self):
+        path, _ = self.l.unit(1, DOCS)
+        got = self.l.prune("--delete", "--max-bytes", "5")
+        self.assertEqual(got["files"], 0)
+        self.assertTrue(path.exists())
+
+    def test_leaves_single_page_units(self):
+        path, unit = self.l.unit(1, DOCS[:1])
+        job = json.loads((unit / "quality.json").read_text())
+        job["pages"] = []
+        (unit / "quality.json").write_text(json.dumps(job))
+        got = self.l.prune("--delete")
+        self.assertEqual(got["kept"], {"not a bundle": 1})
+        self.assertTrue(path.exists())
+
     def test_skip_cmp_is_refused_with_delete(self):
         self.l.unit(1, DOCS)
         with self.assertRaises(SystemExit):
