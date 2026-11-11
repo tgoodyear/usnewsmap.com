@@ -91,7 +91,7 @@ if [ "$DUMP" = latest ]; then
     [ "${t:0:8}" -le "$(date -u -d tomorrow +%Y%m%d)" ] || { echo "skipping future-dated $m" >&2; continue; }
     rclone copyto "r2:$BUCKET/dump/$m" "$WD/dl/candidate.json"
     u=$(jq -r .server_uuid "$WD/dl/candidate.json"); f=$(jq -r .binlog_file "$WD/dl/candidate.json")
-    [[ $u =~ ^[0-9a-f-]{36}$ ]] && [[ $f =~ ^[A-Za-z0-9._-]+$ ]] || continue
+    [[ $u =~ ^[0-9a-f-]{36}$ ]] && [[ $f =~ ^[A-Za-z0-9_-]+\.[0-9]{6}$ ]] || continue
     if rclone lsf --files-only "r2:$BUCKET/binlog/$u/$f.gz" 2> /dev/null | grep -qxF "$f.gz"; then pick=$m; break; fi
     echo "skipping $m: its binlog $f isn't shipped yet" >&2
   done < <(rclone lsf -R --files-only --include '*.json' "r2:$BUCKET/dump/" | sort -r)
@@ -106,7 +106,10 @@ rclone copyto "r2:$BUCKET/$DUMP" "$WD/dl/dump.sql.gz"
 m() { jq -er ".$1" "$WD/dl/manifest.json"; }
 [ "$(sha256sum < "$WD/dl/dump.sql.gz" | cut -d' ' -f1)" = "$(m sha256)" ] || die "the dump's sha256 doesn't match its manifest"
 DB=$(m database); UUID=$(m server_uuid); FILE=$(m binlog_file); POS=$(m binlog_pos); GTID=$(m gtid_mode)
-[[ $DB =~ ^[A-Za-z0-9_]+$ ]] && [[ $UUID =~ ^[0-9a-f-]{36}$ ]] && [[ $FILE =~ ^[A-Za-z0-9._-]+$ ]] || die "odd manifest"
+# The bucket is writable with the writer key, so every name and number from it is checked
+# before it reaches arithmetic, a path or SQL.
+[[ $DB =~ ^[A-Za-z0-9_]+$ ]] && [[ $UUID =~ ^[0-9a-f-]{36}$ ]] && [[ $FILE =~ ^[A-Za-z0-9_-]+\.[0-9]{6}$ ]] &&
+  [[ $POS =~ ^[0-9]+$ ]] || die "odd manifest"
 [ -n "$IMAGE" ] || IMAGE=$(m image)
 # The manifest comes from the bucket, which the writer key can add to: run only the official
 # MySQL image, by digest, whatever a manifest names.
@@ -140,7 +143,8 @@ echo "loading $DUMP" >&2
 gzip -dc "$WD/dl/dump.sql.gz" | q
 loaded=$(date +%s)
 
-mapfile -t logs < <(rclone lsf --files-only "r2:$BUCKET/binlog/$UUID/" | sed -n 's/\.gz$//p' | sort | awk -v f="$FILE" '$0 >= f')
+mapfile -t logs < <(rclone lsf --files-only "r2:$BUCKET/binlog/$UUID/" | sed -n -E 's/^([A-Za-z0-9_-]+\.[0-9]{6})\.gz$/\1/p' |
+  sort | awk -v f="$FILE" '$0 >= f')
 [ "${#logs[@]}" -gt 0 ] && [ "${logs[0]}" = "$FILE" ] || die "binlog $FILE, where the dump starts, isn't in the bucket"
 if [ -n "$UNTIL" ]; then
   # Only the binlogs up to the stop point, so a gap after it doesn't matter.

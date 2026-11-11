@@ -143,6 +143,7 @@ $FLUSH && sql 'FLUSH BINARY LOGS'
 mapfile -t logs < <(sql 'SHOW BINARY LOGS' | cut -f1)
 [ "${#logs[@]}" -ge 2 ] || { report '"shipped": 0, "note": "no closed binlog yet"'; exit 0; }
 unset 'logs[-1]'   # the open one
+for f in "${logs[@]}"; do [[ $f =~ ^[A-Za-z0-9_-]+\.[0-9]{6}$ ]] || die "odd binlog name"; done
 # rclone exits 3 when the prefix has nothing in it yet; any other failure stops the run.
 rc=0; listing=$(rclone lsf "r2:$BUCKET/binlog/$UUID/") || rc=$?
 [ "$rc" = 0 ] || [ "$rc" = 3 ] || die "can't list binlog/$UUID/ (rclone exit $rc)"
@@ -154,7 +155,7 @@ install -d -m 700 "$STATE"
 # from before the gap can't roll forward past it; the next dump starts a new unbroken run.
 num() { local n=${1%.gz}; echo $((10#${n##*.})); }
 newest=-1
-for o in "${!have[@]}"; do [[ $o =~ \.[0-9]{6}\.gz$ ]] && [ "$(num "$o")" -gt "$newest" ] && newest=$(num "$o"); done
+for o in "${!have[@]}"; do [[ $o =~ ^[A-Za-z0-9_-]+\.[0-9]{6}\.gz$ ]] && [ "$(num "$o")" -gt "$newest" ] && newest=$(num "$o"); done
 oldest=$(num "${logs[0]}")
 gap=""
 if [ "$newest" -ge 0 ] && [ "$oldest" -gt $((newest + 1)) ]; then
