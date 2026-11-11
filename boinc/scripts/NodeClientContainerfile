@@ -1,12 +1,15 @@
 FROM mirror.gcr.io/library/almalinux:9@sha256:9819dc675b67b595c2b59e42be7763fca1a8bb217fa5944e04daa22e9a64db16
 # A slow mirror must not fail the build (#1179, #1716). minrate is per transfer: a mirror
-# sending under 1 MB/s for `timeout` seconds is dropped and dnf moves to the next one from
-# the mirrorlist. The old 20 kB floor let a 60-120 kB/s mirror spend most of 600 s on the
-# 33 MB AppStream metadata. Each attempt is bounded; a failed attempt drops the cached
-# metadata so the next one starts again from the mirrorlist. Output is not quiet.
+# sending under 1 MB/s for `timeout` seconds is dropped and dnf moves to the next one in
+# the mirrorlist. The old 20 kB/s floor let a 60-120 kB/s mirror spend most of 600 s on
+# the 34 MB AppStream metadata. librepo can go back to a dropped mirror for later files,
+# so the timeout is short and downloads run in parallel. Each attempt is bounded, and a
+# failed attempt drops the cached metadata so the next one starts from the mirrorlist
+# again. The worst case is 720 s of dnf, inside the 20 minute job limit. Output is not quiet.
 RUN for attempt in 1 2 3; do \
       rc=0; \
-      timeout 200 dnf -y -v --setopt=timeout=30 --setopt=minrate=1M --setopt=retries=5 \
+      timeout 240 dnf -y -v --setopt=timeout=15 --setopt=minrate=1M --setopt=retries=5 \
+        --setopt=max_parallel_downloads=10 \
         install git gcc-c++ make autoconf automake libtool pkgconf-pkg-config \
         libcurl-devel openssl-devel zlib-devel ca-certificates tar gzip file diffutils \
         || rc=$?; \
