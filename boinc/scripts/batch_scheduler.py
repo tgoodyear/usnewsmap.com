@@ -1638,7 +1638,7 @@ class QueueFeed:
     published: its journal belongs to this plan, and `owned_records` refuses a journal for a
     page the plan doesn't know."""
 
-    def __init__(self, config, state, transport, persist):
+    def __init__(self, config, state, transport, persist, sibling_archived=None):
         self.config = config
         self.transport = transport
         self.persist = persist
@@ -1649,6 +1649,10 @@ class QueueFeed:
         self.archived_held = state.get("archived_held", {})
         require(isinstance(self.archived_held, dict) and len(self.archived_held) <= MAX_ARCHIVED_HELD,
                 "invalid or oversized archived_held state")
+        # Other plans' archived held pages (--check-state-dir): a plan with the same worker
+        # exports the same job id, which BOINC already has, so their messages are kept
+        # hidden here too rather than claimed as new work.
+        self.sibling_archived = sibling_archived or {}
 
     def restore(self):
         self.config["pages"] = [
@@ -1716,7 +1720,7 @@ class QueueFeed:
         errors = []
         for item in fresh:
             page, claim = self.checked(item)
-            archived = self.archived_held.get(page)
+            archived = self.archived_held.get(page) or self.sibling_archived.get(page)
             if page not in self.claims and archived is not None:
                 # Its held result is archived (#835): the same message, hidden again for a fresh
                 # lease, stands for the archived job, as for a claim still here. A different
@@ -2132,6 +2136,24 @@ def gold_onboarding(config, state, transport, persist, now, *, held, room):
     return runs, reserved
 
 
+def sibling_archived_held(own_dir, dirs):
+    """The archived_held entries of other plans' state directories (--check-state-dir), merged:
+    page -> {"job", "message", ...}. Each must hold a readable state.json."""
+    own = Path(own_dir).resolve()
+    merged = {}
+    for directory in dirs:
+        directory = Path(directory).resolve()
+        require(directory != own, "--check-state-dir names this plan's own state directory")
+        entries = json.loads((directory / "state.json").read_text()).get("archived_held", {})
+        require(isinstance(entries, dict) and len(entries) <= MAX_ARCHIVED_HELD and
+                all(isinstance(entry, dict) and isinstance(entry.get("job"), str) and ID.fullmatch(entry["job"])
+                    for entry in entries.values()),
+                f"{directory}/state.json has no valid archived_held")
+        for page, entry in entries.items():
+            merged.setdefault(page, entry)
+    return merged
+
+
 def kept_by_policy(record):
     """Collected and kept, not published, because the trust list holds the job's scope (#835):
     nothing is wrong with it, and collecting it again changes nothing until the hold is lifted."""
@@ -2171,7 +2193,7 @@ def held_results(state, held_jobs, now):
 
 def tick(config, state, transport, persist, now=None, *, drain=False, dead_letter_failed=False,
          low_watermark=None, high_watermark=None, max_global_pending=None, server_status=None,
-         refill_cap=None, other_app_budget=None):
+         refill_cap=None, other_app_budget=None, sibling_archived=None):
     if config.get("app") == SURYA_APP_NAME:
         require(refill_cap is None, "--refill-cap is for OCR plans")
         require(other_app_budget is None, "--other-app-budget is for OCR plans")
@@ -2181,7 +2203,8 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
     # Claims, exports and submits per tick (#1447). Collection still takes up to batch_size, so a
     # shorter tick doesn't leave held results that stop the next refill.
     refill = config["batch_size"] if refill_cap is None else min(config["batch_size"], refill_cap)
-    feed = QueueFeed(config, state, transport, persist) if config.get("source") == "queue" else None
+    feed = (QueueFeed(config, state, transport, persist, sibling_archived)
+            if config.get("source") == "queue" else None)
     if feed:
         feed.restore()
     snapshot = transport.inventory()
@@ -2223,7 +2246,23 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
     spool = snapshot.get("spool_entries"), snapshot.get("spool_entries_limit")
     if all(type(value) is int for value in spool) and spool[1] > 0:
         warn_near_cap("spool_entries", *spool, now)
-    records = transport.records()
+    # A job of this plan that another plan already ran and archived as held (same page, same
+    # worker, so the same job id, whose BOINC row stays): settled as held, never submitted.
+    # Marked on every read of the journals, in memory only; nothing writes them back.
+    archived_elsewhere = {entry.get("job") for entry in (sibling_archived or {}).values()
+                          if isinstance(entry, dict)}
+    elsewhere_held = set()
+
+    def read_records():
+        found = transport.records()
+        for record in found:
+            if (record.get("plan") == config["plan"] and record.get("stage") == "reserved"
+                    and not record.get("held") and record["job"]["id"] in archived_elsewhere):
+                record["held"] = "archived as held by another plan with the same worker"
+                elsewhere_held.add(record["job"]["id"])
+        return found
+
+    records = read_records()
     # Here rather than in journal_inventory, which a tick runs several times.
     warn_near_cap("dispatch_journals", len(records), MAX_JOBS, now)
     # A queue-fed plan passes over a claimed page another plan's journal is for (#1685): it
@@ -2357,7 +2396,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
             transport.collect(job_id, spool)
     count = len(to_collect)
     if count:
-        records = transport.records()
+        records = read_records()
         owned = own(records)
     settle_failed(owned)
     status = _extract_status(snapshot, transport, server_status=server_status, drain=drain)
@@ -2468,7 +2507,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
                 require(len(journals) <= STEP_IDS,
                         "too many existing journals for selected pages; reconcile history")
                 transport.export(group, journals)
-            records = transport.records()
+            records = read_records()
             owned = own(records)
             stuck = sorted(page["page"] for page in export if retried(page))
             require(not stuck, f"the deadline retry of {', '.join(stuck)} exported no job of its own; "
@@ -2626,6 +2665,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         "oldest_held_seconds": oldest_held,
         "scope_held": scope_held,
         "scope_held_archived": len(state.get("archived_held", {})),
+        "scope_held_elsewhere": len(elsewhere_held),
         "ownership_conflicts": len(disputed),
         "settled_elsewhere": len(conflicts) - len(disputed),
         "gold_onboarding": gold_runs,
@@ -2716,6 +2756,10 @@ def main(argv=None):
     parser.add_argument("--batch-export", action="store_true",
                         help="export a tick's pages from all their batches in one hand-off execution "
                              "(needs a hand-off image whose export takes HANDOFF_BATCHES)")
+    parser.add_argument("--check-state-dir", action="append", default=[], type=Path, metavar="DIR",
+                        help="another plan's state directory, read only: pages it archived as held "
+                             "(archived_held) are kept hidden here and their jobs settled as held, "
+                             "as for this plan's own (needed when the plans share a worker); repeat")
     parser.add_argument("--claim-language", action="append", default=[], metavar="LANG",
                         help="claim pages in this source language too, beside the configuration's "
                              "claim_languages, without changing the allocation digest; repeat for more. "
@@ -2841,6 +2885,8 @@ def main(argv=None):
                 tick_kwargs["refill_cap"] = args.refill_cap
             if args.other_app_budget is not None:
                 tick_kwargs["other_app_budget"] = args.other_app_budget
+            if args.check_state_dir:
+                tick_kwargs["sibling_archived"] = sibling_archived_held(args.state_dir, args.check_state_dir)
             with transport.lock():
                 event = tick(config, state, transport, lambda: save(path, state), **tick_kwargs)
             # Again after the lease is released, so the line counts the release too.
