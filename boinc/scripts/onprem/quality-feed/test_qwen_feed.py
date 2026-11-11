@@ -2023,6 +2023,16 @@ class SourceTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             # Nothing held: nothing staged or submitted.
             self.assertEqual(self.legacy_calls(Path(folder), "--bundle-size", "8", "--held-only"), [])
+        with tempfile.TemporaryDirectory() as folder:
+            # A bundle packed by a run that stopped before submitting is sent by the drain, and counted.
+            unit = Path(folder) / "qwen" / "qwen-test" / "units" / "bundle-00001-x"
+            unit.mkdir(parents=True)
+            (unit / "qwen.json").write_text(json.dumps({"id": "b" * 64, "doc_id": "x", "pages": [{"doc_id": "x"}]}))
+            self.assertEqual(submit.unsubmitted_units(Path(folder) / "qwen" / "qwen-test"), 1)
+            calls = self.legacy_calls(Path(folder), "--bundle-size", "8", "--held-only")
+            self.assertEqual(calls[1][calls[1].index("--max-units") + 1], "1")
+            (unit / "submitted").touch()
+            self.assertEqual(submit.unsubmitted_units(Path(folder) / "qwen" / "qwen-test"), 0)
         for extra in (["--held-only"], ["--bundle-size", "8", "--held-only", "--preflight"]):
             with self.subTest(extra=extra), tempfile.TemporaryDirectory() as folder, \
                     contextlib.redirect_stderr(io.StringIO()) as stderr, self.assertRaises(SystemExit) as caught:

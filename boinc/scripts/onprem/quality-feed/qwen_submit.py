@@ -287,6 +287,12 @@ def held_pages(root):
     return sum(1 for marker in (root / "pages").glob("*/held") if (marker.parent / "qwen.json").exists())
 
 
+def unsubmitted_units(root):
+    """Staged units with no submission marker: a run stopped after packing them. Admission and
+    submission count them, so a later run, idle or not, sends them."""
+    return sum(1 for job in (root / "units").glob("*/qwen.json") if not (job.parent / "submitted").exists())
+
+
 def assert_bundle_layout(root, bundle_size):
     """A bundled campaign has a root of its own. A root staged with bundles can't go back to
     single pages, and bundling a root that already holds single-page units would mix both. Any
@@ -1018,10 +1024,11 @@ def main():
     # packing may publish with them.
     new_pages = 0 if a.held_only else a.max_pages
     held = held_pages(root) if a.bundle_size > 1 else 0
-    if a.held_only and not held:
+    unsent = unsubmitted_units(root) if a.bundle_size > 1 else 0
+    if a.held_only and not held and not unsent:
         print(json.dumps({"campaign": a.campaign, "held_pages": 0, "status": "nothing_held"}, sort_keys=True))
         return
-    a.max_pages = new_pages + held
+    a.max_pages = new_pages + held + unsent
     admission(a, state, root)
     if a.preflight:
         return

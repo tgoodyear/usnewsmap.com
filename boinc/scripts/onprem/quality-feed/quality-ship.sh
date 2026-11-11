@@ -376,14 +376,16 @@ done
 log "shipped $shipped chunk(s)"
 # With bundles and no chunk this run, publish held pages whose hold has run out (#1435), so a
 # feed that stops sending chunks doesn't leave them waiting. Admission counts every held page.
-# Only inside a step window (it never waits for one) and only when a page is held.
+# Only inside a step window (it never waits for one), and only when a page is held or a staged
+# unit was never submitted (a run stopped after packing it).
 in_window() {
   [ "$STEP_WINDOW" -gt 0 ] || return 0
   local now; now=$(date +%M:%S)
   [ "$((10#${now%:*}))" -lt "$STEP_WINDOW" ]
 }
 if [ "$WHAT_IF" = false ] && [ -n "$QWEN_PLAN" ] && [ -n "$QWEN_BUNDLE" ] && [ "$shipped" -eq 0 ] && in_window &&
-  in_ct sh -c 'ls "$1"/pages/*/held >/dev/null 2>&1' sh "/srv/usnm-boinc/project/qwen/$QWEN_ROOT"; then
+  in_ct sh -c 'for d in "$1"/units/*/; do [ -e "$d/qwen.json" ] && [ ! -e "$d/submitted" ] && exit 0; done
+    ls "$1"/pages/*/held >/dev/null 2>&1' sh "/srv/usnm-boinc/project/qwen/$QWEN_ROOT"; then
   wait_for_step_window
   if in_ct flock -w "$LOCK_WAIT" -E 75 /run/usnm-boinc-step.lock \
     podman exec usnm-boinc-server python3 /project/ops/qwen-feed/qwen_submit.py \
