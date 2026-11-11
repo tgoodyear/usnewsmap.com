@@ -54,7 +54,11 @@ case "$*" in
   *"DELETE a FROM assignment"*) printf 'sql %s\n' "$*" >> "$TEST_OPS";;
   *"FROM assignment"*) printf '%s\n' "${ASSIGNMENTS:-1}";;
   *"error_mask"*) printf '%s\n' "${CANCELLED:-0}";;
-  *"r.server_state=4"*) printf '%s\n' "${IN_PROGRESS:-0}";;
+  *"r.server_state=4"*)
+    # After the assignment is deleted, a unit the scheduler's targeted path sent as the cancel
+    # committed shows up in progress.
+    if grep -q "DELETE a FROM" "$TEST_OPS" 2>/dev/null; then printf '%s\n' "${IN_PROGRESS_AFTER:-${IN_PROGRESS:-0}}"
+    else printf '%s\n' "${IN_PROGRESS:-0}"; fi;;
   *"r.outcome=1"*) printf '%s\n' "${SUCCEEDED:-0}";;
   *"r.workunitid=w.id"*) printf '%b' "${GOLD_STATUS:-}";;
   *) exit 5;;
@@ -466,6 +470,26 @@ async fn a_host_newly_skipped_for_having_no_container_runtime_loses_its_unit_and
     assert_eq!(c.ops().len(), 1, "{:?}", c.ops());
     std::fs::remove_file(c.ops_log()).unwrap();
 
+    // A result the scheduler's targeted path created as the cancel committed: said, not hidden.
+    let out = run(
+        &without_docker,
+        true,
+        &[pending, ("IN_PROGRESS_AFTER", "1")],
+    );
+    success(&out);
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(stderr.contains(&format!(
+        "cancelled {workunit} and deleted its assignment to host 5"
+    )));
+    assert!(
+        stderr.contains(&format!(
+            "warning: {workunit} was sent to host 5 as it was cancelled"
+        )),
+        "{stderr}"
+    );
+    assert_eq!(c.ops().len(), 2, "{:?}", c.ops());
+    std::fs::remove_file(c.ops_log()).unwrap();
+
     // Executing cancels the unit in one transaction that locks its results, marks it cancelled
     // only if none is in progress, and turns its unsent results over and not needed; then it
     // deletes the assignment to host 5, only.
@@ -487,7 +511,7 @@ async fn a_host_newly_skipped_for_having_no_container_runtime_loses_its_unit_and
     );
     assert!(
         cancel.contains(
-            "AND NOT EXISTS (SELECT 1 FROM result q WHERE q.workunitid=w.id AND q.server_state=4)"
+            "AND NOT EXISTS (SELECT 1 FROM result q WHERE q.workunitid=w.id AND (q.server_state=4 OR (q.server_state=5 AND q.outcome=1)))"
         ),
         "{cancel}"
     );

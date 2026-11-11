@@ -278,12 +278,17 @@ async fn count_results(
     .await
 }
 
-/// What `cancel_jobs --name` does, as one transaction that never revokes work a client has.
-/// It locks the workunit's results, so the scheduler can't send one while it runs (it would
-/// wait, then find it no longer unsent), marks the workunit cancelled only if no result is in
-/// progress, and then turns its unsent results into over and not needed. Returns false, with
-/// nothing changed, when a result is in progress: that unit is the client's to finish.
-/// `cancel_jobs` takes no such condition, so it isn't run here.
+/// What `cancel_jobs --name` does, as one transaction that never revokes work a client has or
+/// cancels a unit that has succeeded. It locks the workunit's results, so the scheduler can't
+/// flip one while it runs (it would wait, then find it no longer unsent), marks the workunit
+/// cancelled only if no result is in progress or successful, and then turns its unsent results
+/// into over and not needed. Returns false, with nothing changed, when a result is in progress
+/// or successful: that unit is the client's, or finished. `cancel_jobs` takes no such
+/// condition, so it isn't run here.
+///
+/// The scheduler's targeted path can still create and send a result of its own, between its
+/// check and the insert, as this commits. That needs the host to have regained a runtime
+/// within the same moment, after its row said it had none. The caller looks again afterwards.
 async fn cancel_workunit(c: &Config, workunit: &str) -> anyhow::Result<bool> {
     checked_workunit(workunit)?;
     let out = query(
@@ -294,7 +299,8 @@ async fn cancel_workunit(c: &Config, workunit: &str) -> anyhow::Result<bool> {
                WHERE w.name='{workunit}' FOR UPDATE; \
              UPDATE workunit w SET w.error_mask=w.error_mask|{WU_ERROR_CANCELLED}, \
                w.transition_time=UNIX_TIMESTAMP() WHERE w.name='{workunit}' AND NOT EXISTS \
-               (SELECT 1 FROM result q WHERE q.workunitid=w.id AND q.server_state={SERVER_STATE_IN_PROGRESS}); \
+               (SELECT 1 FROM result q WHERE q.workunitid=w.id AND (q.server_state={SERVER_STATE_IN_PROGRESS} \
+                OR (q.server_state={SERVER_STATE_OVER} AND q.outcome={OUTCOME_SUCCESS}))); \
              SELECT ROW_COUNT(); \
              UPDATE result r JOIN workunit w ON w.id=r.workunitid \
                SET r.server_state={SERVER_STATE_OVER}, r.outcome={OUTCOME_DIDNT_NEED} \
@@ -379,6 +385,15 @@ async fn retire_unit(c: &Config, workunit: &str, host: u64, execute: bool) -> an
             }
             delete_host_assignments(c, workunit, host).await?;
             eprintln!("cancelled {workunit} and deleted its assignment to host {host}");
+            // A result the scheduler's targeted path created as the cancel committed is in
+            // progress now. Its client drops the cancelled unit, and the host's next onboarding
+            // pass issues another, as for any failed attempt: said, not hidden.
+            if count_results(c, workunit, SERVER_STATE_IN_PROGRESS, None).await? > 0 {
+                eprintln!(
+                    "warning: {workunit} was sent to host {host} as it was cancelled; \
+                     the host will drop it and be issued another unit"
+                );
+            }
             Ok(true)
         }
         // Cancelled earlier, its assignment row left behind.
