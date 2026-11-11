@@ -2154,6 +2154,7 @@ def sibling_archived_held(own_dir, dirs):
         entries = json.loads((directory / "state.json").read_text()).get("archived_held", {})
         require(isinstance(entries, dict) and len(entries) <= MAX_ARCHIVED_HELD and
                 all(isinstance(entry, dict) and isinstance(entry.get("job"), str) and ID.fullmatch(entry["job"])
+                    and isinstance(entry.get("message"), str) and ID.fullmatch(entry["message"])
                     for entry in entries.values()),
                 f"{directory}/state.json has no valid archived_held")
         for page, entry in entries.items():

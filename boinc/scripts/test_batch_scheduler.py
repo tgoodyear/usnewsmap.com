@@ -2211,9 +2211,10 @@ class QueueModeTests(unittest.TestCase):
             self.assertEqual(batch.sibling_archived_held(own, [other, third]), {"p": [entry, second]})
             with self.assertRaisesRegex(ValueError, "own state directory"):
                 batch.sibling_archived_held(own, [own])
-            (other / "state.json").write_text(json.dumps({"archived_held": {"p": {"job": "x"}}}))
-            with self.assertRaisesRegex(ValueError, "no valid archived_held"):
-                batch.sibling_archived_held(own, [other])
+            for bad in ({"job": "x", "message": "b" * 64}, {"job": "a" * 64}, {"job": "a" * 64, "message": "x"}):
+                (other / "state.json").write_text(json.dumps({"archived_held": {"p": bad}}))
+                with self.assertRaisesRegex(ValueError, "no valid archived_held"):
+                    batch.sibling_archived_held(own, [other])
 
     def test_a_different_message_for_a_claimed_page_stops_the_feed(self):
         self.tick()
