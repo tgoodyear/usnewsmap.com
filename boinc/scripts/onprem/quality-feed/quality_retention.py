@@ -56,8 +56,8 @@ on the storage host as the share's owner, like `prune`. A unit's page.jpg goes o
   - every page came from the on-prem feeder's hand-off (source handoff:scans/<doc_id>.jpg)
     and its scan is in --scan-index, and no page is LoC's own JPEG (its slice sha256 is the
     indexed scan's: the feeder passes a small grey JPEG through unchanged) unless that scan
-    is under keep/ of a --scan-root at its indexed size. buffer/ doesn't count; the feeder
-    evicts it. Files fetched from LoC are kept.
+    is under keep/ of a --scan-root at its indexed size. buffer/ doesn't count (as when the
+    feeder evicted it; none is deleted now). Files fetched from LoC are kept.
 The image checks run last, so a unit not yet collected costs no image reads.
 The same dry run, journal, --max-bytes rule and summary as `prune`; a page.jpg with other
 hard links (a download copy an earlier version linked) counts no bytes.
@@ -374,7 +374,7 @@ def scan_index(path):
 
 def original_on_disk(doc_id, loc, roots):
     """Whether LoC's file for `doc_id` is under keep/ of a scan root, at its size. buffer/ is
-    not enough: the feeder evicts buffer scans (quality_feed.py, delete_shipped)."""
+    not counted (a choice from when the feeder evicted buffer scans; none is deleted now)."""
     batch, size = loc
     m = re.fullmatch(r"([^_/]+)_(\d{4}-\d{2}-\d{2})_ed-(\d+)_seq-(\d+)", doc_id)
     if not m:
