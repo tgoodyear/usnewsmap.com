@@ -85,6 +85,11 @@ pub enum QwenCommands {
         /// `page-v1` verdict settled as disagreed, once (#1435).
         #[arg(long)]
         page_records: Option<PathBuf>,
+        /// With bundles, hold a run's under-filled last bundle (under half the
+        /// pages and crops) for the next run's pages, up to this many seconds;
+        /// 0 publishes it at once (#1435).
+        #[arg(long, default_value_t = 21_600)]
+        max_hold_secs: u64,
     },
     /// Hand staged units to create_work, two results each.
     Submit {
@@ -284,6 +289,7 @@ pub async fn run(command: QwenCommands) -> anyhow::Result<()> {
             max_pages,
             bundle_size,
             page_records,
+            max_hold_secs,
         } => {
             let s = x::stage::run_selected(
                 &x::stage::Options {
@@ -302,6 +308,7 @@ pub async fn run(command: QwenCommands) -> anyhow::Result<()> {
                     max_pages,
                     bundle_size,
                     page_records,
+                    max_hold_secs,
                 },
                 members.as_deref(),
             )

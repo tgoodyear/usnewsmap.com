@@ -255,6 +255,10 @@ def assert_processed(root, sample):
             continue
         if (page / "too_large").exists() and any((page / f).exists() for f in ("rejected-qwen.json", "qwen.json")):
             continue
+        # An under-filled last bundle's pages wait under pages/ for the next chunk (qwen stage
+        # --max-hold-secs, #1435): staged and marked, they are this chunk's disposition.
+        if (page / "qwen.json").exists() and (page / "held").exists():
+            continue
         if bundled is None:
             # Only a bundled root's submitted units' jobs are read, not every staged one. A root
             # of single pages (no pages/) reads none, as before bundles.

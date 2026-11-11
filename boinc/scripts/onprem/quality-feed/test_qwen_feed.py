@@ -1871,6 +1871,21 @@ class SourceTest(unittest.TestCase):
                 for name in files:
                     (unit / name).unlink()
 
+    def test_a_held_page_is_processed_while_it_waits_for_a_bundle(self):
+        # #1435: qwen stage holds an under-filled last bundle's pages under pages/, marked "held".
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            sample = root / "sample.jsonl"
+            sample.write_text(json.dumps({"doc_id": DOC}) + "\n")
+            page = root / "pages" / DOC
+            page.mkdir(parents=True)
+            (page / "held").write_text("1000\n")
+            # A marker with no staged job is not a disposition.
+            with self.assertRaisesRegex(RuntimeError, "retain READY"):
+                submit.assert_processed(root, sample)
+            (page / "qwen.json").write_text(json.dumps({"id": DOC, "doc_id": DOC}))
+            submit.assert_processed(root, sample)
+
     def test_a_bundled_page_is_processed_once_its_bundle_is_submitted(self):
         other = "sn1_1900-01-02_ed-1_seq-4"
         with tempfile.TemporaryDirectory() as folder:

@@ -50,7 +50,18 @@ pub struct Options {
     /// with the page disagreed is packed into a new bundle, up to
     /// [`MAX_PAGE_ATTEMPTS`] bundles a page.
     pub page_records: Option<PathBuf>,
+    /// With bundles, how long (seconds) a run's under-filled last bundle,
+    /// under half of `bundle_size` pages and of [`MAX_BUNDLE_CROPS`] crops,
+    /// is held back for the next run's pages to fill (#1435). Each held page
+    /// carries a [`HELD_FILE`] marker with the time it was first held; once
+    /// the oldest has waited this long the bundle is published as it is.
+    /// 0 publishes every bundle at once.
+    pub max_hold_secs: u64,
 }
+
+/// The marker of a staged page held back from an under-filled bundle: the
+/// Unix time it was first held.
+pub const HELD_FILE: &str = "held";
 
 /// The most bundles one page is packed into under `page_records`: its
 /// first, and one retry with a fresh pair of hosts' readings.
@@ -438,6 +449,12 @@ pub async fn run_selected(opts: &Options, members: Option<&Path>) -> anyhow::Res
             bundle_size,
             opts.page_records.as_deref(),
             opts.max_pages.saturating_sub(summary.staged),
+            Hold {
+                secs: opts.max_hold_secs,
+                now: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)?
+                    .as_secs(),
+            },
             held,
         )?;
         summary.bundles = bundles;
@@ -508,6 +525,7 @@ fn pack_bundles(
     // The most pages packed again in this call, so a run publishes no more
     // pages than it was admitted for.
     retry_budget: usize,
+    hold: Hold,
     // The root's bundle lock (see `run`), held for the whole call.
     _held: &crate::Lock,
 ) -> anyhow::Result<(usize, usize)> {
@@ -605,6 +623,13 @@ fn pack_bundles(
             jobs.clear();
             return Ok(());
         }
+        for d in dirs.iter() {
+            // Bundled now, so no longer held.
+            match std::fs::remove_file(d.join(HELD_FILE)) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+                _ => {}
+            }
+        }
         created += 1;
         let first_doc = dirs[0]
             .file_name()
@@ -645,8 +670,41 @@ fn pack_bundles(
         chunk_dirs.push(u);
         chunk_jobs.push(pj);
     }
+    let under_filled = !chunk_jobs.is_empty()
+        && 2 * chunk_jobs.len() < bundle_size
+        && 2 * crop_count < MAX_BUNDLE_CROPS;
+    if hold.secs > 0 && under_filled && !hold.expired(&chunk_dirs)? {
+        return Ok((created, too_large));
+    }
     flush(&mut chunk_dirs, &mut chunk_jobs)?;
     Ok((created, too_large))
+}
+
+/// How long `pack_bundles` holds an under-filled last bundle, and the time.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Hold {
+    pub secs: u64,
+    pub now: u64,
+}
+
+impl Hold {
+    /// Marks every page of the held bundle that is not marked yet and says
+    /// whether the longest-held page has waited `secs`. A marker that can't
+    /// be read counts as held from now.
+    fn expired(&self, dirs: &[PathBuf]) -> anyhow::Result<bool> {
+        let mut oldest = self.now;
+        for d in dirs {
+            let marker = d.join(HELD_FILE);
+            let since = std::fs::read_to_string(&marker)
+                .ok()
+                .and_then(|t| t.trim().parse::<u64>().ok());
+            match since {
+                Some(t) => oldest = oldest.min(t),
+                None => atomic(&marker, format!("{}\n", self.now).as_bytes())?,
+            }
+        }
+        Ok(self.now.saturating_sub(oldest) >= self.secs)
+    }
 }
 
 /// The pages to pack again (#1435), in doc order: each page held only by
@@ -1391,6 +1449,7 @@ pub(crate) mod tests {
             max_pages: 20,
             bundle_size: 1,
             page_records: None,
+            max_hold_secs: 0,
         };
         run(&opts).await.unwrap();
         let out = units(&opts.root).join("sn83045462_1890-05-03_ed-1_seq-1");
@@ -1418,6 +1477,7 @@ pub(crate) mod tests {
             max_pages: 20,
             bundle_size: 1,
             page_records: None,
+            max_hold_secs: 0,
         };
         let unit = units(&opts.root).join(source.file_name().unwrap());
         std::fs::create_dir_all(&unit).unwrap();
@@ -1481,6 +1541,7 @@ pub(crate) mod tests {
             max_pages: 20,
             bundle_size: 2,
             page_records: None,
+            max_hold_secs: 0,
         };
         let unit = units(&opts.root).join(source.file_name().unwrap());
         std::fs::create_dir_all(&unit).unwrap();
@@ -1547,6 +1608,7 @@ pub(crate) mod tests {
             max_pages: 1,
             bundle_size: 1,
             page_records: None,
+            max_hold_secs: 0,
         };
         let members = tmp.path().join("members.json");
         atomic(&members, &serde_json::to_vec(&[selected]).unwrap()).unwrap();
@@ -1588,6 +1650,7 @@ pub(crate) mod tests {
             max_pages: 20,
             bundle_size: 1,
             page_records: None,
+            max_hold_secs: 0,
         };
         let s = run(&opts).await.unwrap();
         assert_eq!((s.staged, s.no_crops, s.already), (1, 0, 0));
@@ -1733,6 +1796,7 @@ pub(crate) mod tests {
                 max_pages: 1,
                 bundle_size,
                 page_records: None,
+                max_hold_secs: 0,
             };
             for invalid in [
                 Options {
@@ -1852,6 +1916,7 @@ pub(crate) mod tests {
             max_pages: 20,
             bundle_size: 2,
             page_records: None,
+            max_hold_secs: 0,
         };
         let s = run(&opts).await.unwrap();
         assert_eq!(
@@ -1908,6 +1973,8 @@ pub(crate) mod tests {
     fn held(units_dir: &Path) -> crate::Lock {
         crate::Lock::take(&bundle_lock(units_dir).unwrap()).unwrap()
     }
+
+    const NO_HOLD: Hold = Hold { secs: 0, now: 0 };
 
     pub(crate) fn page_unit(page_dir: &Path, doc_id: &str, crops: usize) {
         let (jpeg, _) = synthetic_page();
@@ -1968,6 +2035,7 @@ pub(crate) mod tests {
                 8,
                 Some(&records),
                 8,
+                NO_HOLD,
                 &held(&units_dir),
             )
         };
@@ -2047,6 +2115,7 @@ pub(crate) mod tests {
                 8,
                 Some(&records),
                 0,
+                NO_HOLD,
                 &held(&units_dir)
             )
             .unwrap(),
@@ -2116,6 +2185,7 @@ pub(crate) mod tests {
                 8,
                 Some(&records),
                 8,
+                NO_HOLD,
                 &held(&units_dir)
             )
             .unwrap(),
@@ -2158,6 +2228,75 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn an_under_filled_last_bundle_waits_for_more_pages_up_to_the_hold() {
+        let tmp = tempfile::tempdir().unwrap();
+        let page_dir = tmp.path().join("pages");
+        let units_dir = tmp.path().join("units");
+        std::fs::create_dir_all(&units_dir).unwrap();
+        let doc = |i: usize| format!("sn83045462_1890-05-03_ed-1_seq-{i}");
+        // Short LoC text, so only the page count closes a bundle.
+        let page = |i: usize| {
+            page_unit(&page_dir, &doc(i), 2);
+            let path = page_dir.join(doc(i)).join(JOB_FILE);
+            let mut job: Job = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            for c in &mut job.crops {
+                c.loc_text = "a".into();
+            }
+            job.id = job.identity().unwrap();
+            std::fs::write(&path, serde_json::to_vec_pretty(&job).unwrap()).unwrap();
+        };
+        let pack = |now: u64| {
+            pack_bundles(
+                &page_dir,
+                &units_dir,
+                16,
+                None,
+                0,
+                Hold { secs: 3600, now },
+                &held(&units_dir),
+            )
+            .unwrap()
+        };
+        let bundles = || std::fs::read_dir(&units_dir).unwrap().count();
+        // Three pages of a target of sixteen: held, each marked with the time.
+        for i in 1..=3 {
+            page(i);
+        }
+        assert_eq!(pack(1_000), (0, 0));
+        assert_eq!(bundles(), 0);
+        for i in 1..=3 {
+            let marker = std::fs::read_to_string(page_dir.join(doc(i)).join(HELD_FILE)).unwrap();
+            assert_eq!(marker.trim(), "1000");
+        }
+        // Two more pages: still under half, and the first marks keep their time.
+        for i in 4..=5 {
+            page(i);
+        }
+        assert_eq!(pack(2_000), (0, 0));
+        let marker = std::fs::read_to_string(page_dir.join(doc(1)).join(HELD_FILE)).unwrap();
+        assert_eq!(marker.trim(), "1000");
+        // Once the oldest has waited the hold, the bundle goes as it is and the marks go.
+        assert_eq!(pack(4_600), (1, 0));
+        assert_eq!(bundles(), 1);
+        assert!((1..=5).all(|i| !page_dir.join(doc(i)).join(HELD_FILE).exists()));
+        // Half the target or more is published at once.
+        for i in 6..=13 {
+            page(i);
+        }
+        assert_eq!(pack(4_600), (1, 0));
+        assert!((6..=13).all(|i| !page_dir.join(doc(i)).join(HELD_FILE).exists()));
+        // A full bundle goes, and only the under-filled rest waits.
+        for i in 14..=33 {
+            page(i);
+        }
+        assert_eq!(pack(5_000), (1, 0));
+        let waiting: Vec<usize> = (14..=33)
+            .filter(|&i| page_dir.join(doc(i)).join(HELD_FILE).exists())
+            .collect();
+        assert_eq!(waiting.len(), 4);
+    }
+
+    #[test]
     fn pages_settle_at_half() {
         use crate::qwen::validate::pages_settle;
         assert!(!pages_settle(0, 0));
@@ -2185,7 +2324,16 @@ pub(crate) mod tests {
         page_unit(&page_dir, big, 40);
 
         assert_eq!(
-            pack_bundles(&page_dir, &units_dir, 16, None, 0, &held(&units_dir)).unwrap(),
+            pack_bundles(
+                &page_dir,
+                &units_dir,
+                16,
+                None,
+                0,
+                NO_HOLD,
+                &held(&units_dir)
+            )
+            .unwrap(),
             (2, 1)
         );
         assert!(page_dir.join(big).join(TOO_LARGE).exists());
@@ -2202,7 +2350,16 @@ pub(crate) mod tests {
 
         // A rerun publishes nothing more.
         assert_eq!(
-            pack_bundles(&page_dir, &units_dir, 16, None, 0, &held(&units_dir)).unwrap(),
+            pack_bundles(
+                &page_dir,
+                &units_dir,
+                16,
+                None,
+                0,
+                NO_HOLD,
+                &held(&units_dir)
+            )
+            .unwrap(),
             (0, 0)
         );
     }
@@ -2214,9 +2371,9 @@ pub(crate) mod tests {
         let units_dir = tmp.path().join("units");
         std::fs::create_dir_all(&units_dir).unwrap();
         // 32 crops a page with short LoC text: the manifest stays small, but
-        // each crop may come back as 8 KiB of text escaped to 16 KiB, so three
-        // pages (96 crops) fit in 2 MiB of readings and four (128) do not.
-        for i in 1..=8 {
+        // each crop may come back as 8 KiB of text escaped to 16 KiB, so seven
+        // pages (224 crops) fit in 4 MiB of readings and eight (256) do not.
+        for i in 1..=16 {
             let doc = format!("sn83045462_1890-05-03_ed-1_seq-{i}");
             page_unit(&page_dir, &doc, 32);
             let path = page_dir.join(&doc).join(JOB_FILE);
@@ -2228,7 +2385,16 @@ pub(crate) mod tests {
             std::fs::write(&path, serde_json::to_vec_pretty(&job).unwrap()).unwrap();
         }
         assert_eq!(
-            pack_bundles(&page_dir, &units_dir, 32, None, 0, &held(&units_dir)).unwrap(),
+            pack_bundles(
+                &page_dir,
+                &units_dir,
+                32,
+                None,
+                0,
+                NO_HOLD,
+                &held(&units_dir)
+            )
+            .unwrap(),
             (3, 0)
         );
         let mut sizes = Vec::new();
@@ -2239,7 +2405,7 @@ pub(crate) mod tests {
             sizes.push(job.pages.len());
         }
         sizes.sort_unstable();
-        assert_eq!(sizes, [2, 3, 3]);
+        assert_eq!(sizes, [2, 7, 7]);
     }
 
     #[test]
@@ -2300,7 +2466,16 @@ pub(crate) mod tests {
             }
         }
         assert_eq!(
-            pack_bundles(&page_dir, &units_dir, 16, None, 0, &held(&units_dir)).unwrap(),
+            pack_bundles(
+                &page_dir,
+                &units_dir,
+                16,
+                None,
+                0,
+                NO_HOLD,
+                &held(&units_dir)
+            )
+            .unwrap(),
             (2, 0)
         );
         let mut seen = Vec::new();

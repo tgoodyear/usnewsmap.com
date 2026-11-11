@@ -1190,6 +1190,7 @@ pub(crate) mod tests {
             max_pages: 2,
             bundle_size: 1,
             page_records: None,
+            max_hold_secs: 0,
         })
         .await
         .unwrap();
