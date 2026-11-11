@@ -296,6 +296,23 @@ boinc/scripts/boinc-app-release.sh --env prod --app usnm_qwen --version VERSION 
 
 The server must first run a build with this class in its `plan_class_spec.xml`.
 
+For `windows_x86_64` (`nvidia_vulkan_8b` or `intel_vulkan_8b`, #1672), `build-windows` takes
+the `llama.lock`-pinned `win-vulkan-x64` zip unchanged (`llama-server.exe`, every `ggml*.dll`,
+`llama.dll`, `mtmd.dll` and `libomp140.x86_64.dll`). It adds the merged commit's
+`boinc-native-windows_x86_64` artifact: `usnm_qwen_windows_x86_64.exe` and the signed
+app-local Microsoft runtime DLLs, each checked against the artifact's `SHA256SUMS` and
+`GIT_COMMIT`. Windows AMD isn't built this way: its bundle replaces `ggml-vulkan.dll` and adds
+the PCI identity helper ([AMD](amd-gpu.md)). Publish it held (`--hold`) until the qualification
+window above has passed:
+
+```sh
+python3 boinc/scripts/qwen_vulkan_bundle.py build-windows --archive llama-b8799-bin-win-vulkan-x64.zip \
+  --artifact boinc-native-windows_x86_64 --source-commit COMMIT --plan-class nvidia_vulkan_8b --out target/qwen-win
+mapfile -t inputs < <(python3 boinc/scripts/qwen_vulkan_bundle.py args --bundle "$PWD/target/qwen-win")
+boinc/scripts/boinc-app-release.sh --env prod --app usnm_qwen --version VERSION --kind native \
+  --plan-class nvidia_vulkan_8b --platform windows_x86_64 "${inputs[@]}" --hold --signing-host HOST ... --what-if
+```
+
 These native-only classes admit stable BOINC 8.2.11+ (the 6 GB and 2B profiles 8.2.9) and
 do not require a container runtime. The ordinary OCR `docker` class also admits stable 8.2.11 when
 its platform runtime is available; do not require a development Mac client for it.

@@ -125,5 +125,88 @@ class Bundle(unittest.TestCase):
             self.build(archive, lock, "missing")
 
 
+
+class WindowsBundle(unittest.TestCase):
+    """build-windows (#1672): the pinned win-vulkan-x64 zip plus the Windows native CI artifact."""
+    RUNTIME = ["llama-server.exe", "ggml-vulkan.dll", "ggml-base.dll", "ggml.dll", "ggml-cpu-x64.dll",
+               "ggml-cpu-haswell.dll", "llama.dll", "mtmd.dll", "libomp140.x86_64.dll"]
+    CRT = ["msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll", "concrt140.dll"]
+
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory(prefix=".qwen-win-bundle-", dir=ROOT)
+        self.dir = Path(self.folder.name)
+        self.artifact = self.dir / "artifact"
+        self.artifact.mkdir()
+        files = {bundle.WIN_BINARY: b"MZ qwen", **{n: n.encode() * 2 for n in self.CRT},
+                 "usnm-amd-device-map.exe": b"MZ amd", "usnm_quality_windows_x86_64.exe": b"MZ quality"}
+        for name, data in files.items():
+            (self.artifact / name).write_bytes(data)
+        (self.artifact / "GIT_COMMIT").write_text(COMMIT + "\n")
+        (self.artifact / "SHA256SUMS").write_text("".join(
+            f"{hashlib.sha256(data).hexdigest()}  {name}\n" for name, data in files.items()))
+
+    def tearDown(self):
+        self.folder.cleanup()
+
+    def archive(self, skip=(), extra=()):
+        import zipfile
+        path = self.dir / "llama-b8799-bin-win-vulkan-x64.zip"
+        with zipfile.ZipFile(path, "w") as packed:
+            for name in [*self.RUNTIME, "llama-cli.exe", "rpc-server.exe"]:
+                if name not in skip:
+                    packed.writestr(name, name.encode() * 3)
+            for name in extra:
+                packed.writestr(name, b"x")
+        lock = self.dir / "llama.lock"
+        lock.write_text(json.dumps({"repository": "ggml-org/llama.cpp", "tag": "b8799", "assets": {
+            "win-vulkan-x64": {"file": path.name, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}}}))
+        return path, lock
+
+    def build(self, archive, lock, plan_class="nvidia_vulkan_8b", out="out"):
+        return bundle.build_windows(archive, self.artifact, COMMIT, self.dir / out, plan_class, lock)
+
+    def test_build_takes_the_runtime_unchanged_and_the_ci_runtime_dlls(self):
+        archive, lock = self.archive()
+        release = self.build(archive, lock)
+        out = self.dir / "out"
+        names = set(release["worker"]["extra_files"])
+        self.assertEqual(names, {*self.RUNTIME, *self.CRT, "llama.lock", "weights.lock"})
+        self.assertNotIn("llama-cli.exe", names)
+        self.assertNotIn("usnm-amd-device-map.exe", names)
+        self.assertEqual((out / "extra/ggml-vulkan.dll").read_bytes(), b"ggml-vulkan.dll" * 3)
+        self.assertEqual(release["release"]["platform"], "windows_x86_64")
+        self.assertEqual(release["worker"]["extra_files"]["msvcp140.dll"]["source_commit"], COMMIT)
+        self.assertEqual(release["worker"]["extra_files"]["ggml.dll"]["source_commit"], bundle.LLAMA_SOURCE["b8799"])
+        bundle.verify(out)
+        args = bundle.release_args(out)
+        self.assertEqual(args[:2], ["--binary", str(out.resolve() / bundle.WIN_BINARY)])
+        # Same inputs, same bytes.
+        self.build(archive, lock, out="again")
+        self.assertEqual((out / "SHA256SUMS").read_text(), (self.dir / "again/SHA256SUMS").read_text())
+
+    def test_build_refuses_wrong_inputs(self):
+        archive, lock = self.archive()
+        with self.assertRaisesRegex(ValueError, "not a Windows Vulkan"):
+            self.build(archive, lock, plan_class="amd_vulkan_8b", out="amd")
+        (self.artifact / "msvcp140.dll").write_bytes(b"changed")
+        with self.assertRaisesRegex(ValueError, "msvcp140.dll does not match"):
+            self.build(archive, lock, out="crt")
+        (self.artifact / "msvcp140.dll").write_bytes(b"msvcp140.dll" * 2)
+        (self.artifact / "GIT_COMMIT").write_text("b" * 40)
+        with self.assertRaisesRegex(ValueError, "GIT_COMMIT"):
+            self.build(archive, lock, out="commit")
+        (self.artifact / "GIT_COMMIT").write_text(COMMIT)
+        archive, lock = self.archive(skip=("mtmd.dll",))
+        with self.assertRaisesRegex(ValueError, "lacks mtmd.dll"):
+            self.build(archive, lock, out="missing")
+        archive, lock = self.archive()
+        lock.write_text(lock.read_text().replace(hashlib.sha256(archive.read_bytes()).hexdigest(), "0" * 64))
+        with self.assertRaisesRegex(ValueError, "not the llama.lock-pinned"):
+            self.build(archive, lock, out="unpinned")
+        archive, lock = self.archive(extra=("../ggml-evil.dll",))
+        with self.assertRaisesRegex(ValueError, "unexpected archive member"):
+            self.build(archive, lock, out="unsafe")
+
+
 if __name__ == "__main__":
     unittest.main()
