@@ -432,6 +432,7 @@ The values are the job's environment: `az containerapp job show --name usnm-boin
 controller then sends the steps here with `--onprem-handoff claim --onprem-handoff collect`
 ([boinc-batch-scheduler.md](batch-scheduler.md#on-prem-claim-collect-and-export-967)), and
 `export` too with `--onprem-handoff export`: the controller then pushes the scans straight to this host (`--target scans --step receive`, into `/srv/usnm-boinc/project/handoff-scans`), export mounts them read-only, and `submit-remote` takes each page from them, so no scan goes through Azure (#1116).
+`handoff-scans` is a mount of the storage host's `tank/boinc-bulk/handoff-scans` (the same share as `download/` and `quality/`; an `mpN` entry for the CT, as for those), not the CT's root disk: a staged tree plateaus at about four days of pushes (45 GB on 11 November 2026) and the root disk sits on a thin pool that cannot grow. Every staged scan is a copy of one under `keep/` or `buffer/` of `/tank/ocr/scans`; receive's four-day prune frees only the staged copy. The held `pages` of each OCR bundle is freed by the [hand-off retention step](batch-scheduler.md#hand-off-retention-held-bundle-scans).
 `texts-export` runs on the host with the local copy of curated (`boinc/scripts/texts-export-onprem.sh`, [boinc-quality.md](../apps/quality.md)).
 
 The hand-off steps take `/run/usnm-boinc-handoff.lock`, not the step lock: they touch only Azure
