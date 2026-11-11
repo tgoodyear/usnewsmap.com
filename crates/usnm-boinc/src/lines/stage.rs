@@ -29,6 +29,9 @@ use usnm_ocr_worker::{
 pub const STAGE_ALTO_DIR: &str = "loc-alto";
 /// Where a staging tree keeps its prefetch manifest: `manifests/<name>/manifest.parquet`.
 pub const STAGE_MANIFEST_DIR: &str = "manifests";
+/// The largest scan `onprem-step.sh --target scans --step receive` takes; its ALTO limit is
+/// [`boinc::MAX_ALTO`].
+pub const STAGE_MAX_SCAN: u64 = 64 * 1024 * 1024;
 /// The scan's sidecar `user_agent`: these copies weren't fetched by the scan fetcher.
 pub const LOCAL_COPY: &str = "usnm-boinc line-stage (local copy of LoC's IIIF JPEG)";
 
@@ -370,6 +373,12 @@ pub fn stage(
         let src = copies
             .get(&e.doc_id)
             .with_context(|| format!("no local scan of {} among the scan directories", e.page))?;
+        ensure!(
+            copy.bytes <= STAGE_MAX_SCAN,
+            "{}'s scan is {} bytes; the BOINC host takes at most {STAGE_MAX_SCAN}",
+            e.page,
+            copy.bytes
+        );
         let bytes = crate::read(src, boinc::MAX_SCAN)?;
         ensure!(
             bytes.len() as u64 == copy.bytes && boinc::sha256(&bytes) == copy.sha256,
@@ -632,6 +641,19 @@ mod tests {
             )
             .is_err());
         }
+        // Nor a scan larger than the BOINC host takes.
+        let mut big = inv.clone();
+        big[0].scan.as_mut().unwrap().bytes = STAGE_MAX_SCAN + 1;
+        let err = stage(
+            &big,
+            &BTreeSet::from([page.clone()]),
+            std::slice::from_ref(&scans),
+            &alto,
+            "x",
+            &tmp.path().join("big"),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("takes at most"), "{err}");
         // Not again into the same directory.
         assert!(stage(
             &inv,
