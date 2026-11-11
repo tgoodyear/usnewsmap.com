@@ -290,17 +290,17 @@ Nothing here changes the live OCR plan, its pin (106) or the `docker` versions.
   ([onprem.md](../server/onprem.md), "To ship a hand-off fix without a new server image"). The
   bridge's `gold-trust` step needs the same `usnm-boinc` in the server image.
 
-**The values to approve before anything runs.** The evidence for each is in #1730:
+**The approved values** (the maintainer, 11 November). The evidence for each is in #1730:
 
-| Value                                         | Proposed                                                                                      |
+| Value                                         | Approved                                                                                      |
 | --------------------------------------------- | --------------------------------------------------------------------------------------------- |
 | Line scope `max_cer` (`GOLD_MAX_CER`)         | `0.08734328574534386`, `eng`/`eng`'s                                                          |
 | Line scope challenge (`GOLD_MANIFEST_SHA256`) | `d8cd7279090a6427c0cc6f0e82573e3771c27f90df6500bf5a44b268f6e0f05f`, the English challenge     |
-| Line scope evidence (`GOLD_LINE_EVIDENCE`)    | one line naming #1621, the report's step 3 and the e2e run (step 5 below)                     |
+| Line scope evidence (`GOLD_LINE_EVIDENCE`)    | the line in step 2 below                                                                      |
 | Hosts                                         | 2, 9 and 10                                                                                   |
 | Plan id (`HANDOFF_PLAN`)                      | `chr-lines-1621`                                                                              |
 | Test batch                                    | the 5 pages in step 3                                                                         |
-| Whether the 29 test-set pages are read        | QUESTION for the maintainer: the plan reads "the 324", which includes them                    |
+| Whether the 29 test-set pages are read        | yes, in the later exports; they are not in the 5-page test batch                              |
 | When to stop                                  | any `line_changed` verdict, any collect failure, or fewer than 4 of the 5 test pages admitted |
 
 ### 1. Gold on the line worker
@@ -366,7 +366,7 @@ usnm-boinc-step --env prod --target bridge --step gold-trust --wait-mins 30 \
   --var GOLD_MANIFEST_SHA256=d8cd7279090a6427c0cc6f0e82573e3771c27f90df6500bf5a44b268f6e0f05f \
   --var GOLD_LANGUAGE=eng --var GOLD_PROFILE=eng \
   --var GOLD_LINE_SCOPE=chr/chr_phoenix \
-  --var "GOLD_LINE_EVIDENCE=<the approved line>"
+  --var "GOLD_LINE_EVIDENCE=#1621 chr_phoenix line route: test set v2 silver CER 10.2% vs LoC 18.0% (report 2026-11-cherokee step 3); e2e 9 Nov: 3 pages, 700 of 734 lines took the model, 3 admitted by line-merge-v1; hosts by English gold on 840487b2"
 ```
 
 `usnm-boinc` loads and validates the list before it writes, and refuses a line policy in
@@ -405,11 +405,14 @@ were cut from, so `line-report` on them isn't held-out evidence.
 
 An export takes up to 100 pages of one batch. So, in order:
 
-1. **Test batch**, 5 pages outside the test set: `sn83020866/1828-03-06/ed-1/seq-1`,
+1. **Test batch**, 5 pages outside the test set (approved 11 November): `sn83020866/1828-03-06/ed-1/seq-1`,
    `sn83020866/1828-03-06/ed-1/seq-3`, `sn83020866/1828-03-20/ed-1/seq-1`,
    `sn83020866/1828-03-20/ed-1/seq-2` and `sn83020866/1828-03-20/ed-1/seq-3` (648 lines).
-2. The other 61 pages of `dlc_misctopsn83020866` (48 without the test set).
-3. `dlc_misctopsn83020874` in two exports of 62 (108 pages in all without the test set).
+2. The other 61 pages of `dlc_misctopsn83020866` (13 of them in the test set).
+3. `dlc_misctopsn83020874` in two exports of 62 (124 pages, 16 of them in the test set).
+
+The production run reads the 29 test-set pages too (approved 11 November). They stay out of
+the test batch, and `line-report` on them is production output, not a held-out score.
 
 `usnm-boinc line-stage` writes one export's staging tree on the host that holds the scan
 copies and the unpacked ALTO. It checks each scan and ALTO against the page list, gives each
@@ -521,8 +524,8 @@ delta applies `ocr-local` only to the batches it indexes. So the pages reach sea
 [full rebuild](../../operations/rebuild-and-index-storage.md#full-rebuild-on-prem)
 (`scripts/onprem/release.sh`).
 
-QUESTION for the maintainer: whether these pages wait for the next planned full rebuild or
-get one of their own. The proposal is to wait.
+Open, and not needed for the run: whether these pages wait for the next planned full rebuild
+or get one of their own. The proposal is to wait.
 
 After the rebuild, open the results as a draft PR: step 4 of
 `docs/reports/2026-11-cherokee/report.md` (#1622).
