@@ -52,8 +52,9 @@
              so a few cover a host between scheduler requests, and a host cannot queue hundreds
              of units, which held each one's pair for hours behind that queue. It is the flat
              form, for every GPU app: bin/start's Python config reader (py/Boinc/boincxml.py)
-             cannot read an element of <config> that holds elements, so the per-app
-             <max_jobs_in_progress> stopped every daemon when the server started. -->
+             cannot read a setting that holds elements, so the per-app
+             max_jobs_in_progress stopped every daemon when the server started. The feed monitor
+             counts the literal config start tag in this file, so no comment here may spell it. -->
         <max_wus_in_progress_gpu>6</max_wus_in_progress_gpu>
         <daily_result_quota>50000</daily_result_quota>
         <max_wus_to_send>64</max_wus_to_send>
