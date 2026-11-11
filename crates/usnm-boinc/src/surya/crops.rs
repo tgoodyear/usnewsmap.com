@@ -95,6 +95,7 @@ pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
         )?)
         .with_context(|| format!("{name}: quality.json"))?;
         quality.validate()?;
+        crate::quality::page_dims::require_image(&page, "surya stage-crops")?;
         let bytes = read(&page.join(crate::quality::PAGE_FILE), MAX_SCAN)?;
         ensure!(
             quality.inputs.page.matches(&bytes),

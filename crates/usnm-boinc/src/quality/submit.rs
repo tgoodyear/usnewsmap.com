@@ -140,6 +140,7 @@ pub async fn run_selected(
         }
         let job: Job = serde_json::from_slice(&read(&unit.join(JOB_FILE), MAX_JOB_JSON)?)?;
         job.validate()?;
+        super::page_dims::require_image(&unit, "quality submit")?;
         for (file, input) in [
             (super::PAGE_FILE, &job.inputs.page),
             (super::ALTO_FILE, &job.inputs.alto),

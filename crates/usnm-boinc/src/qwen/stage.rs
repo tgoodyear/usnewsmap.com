@@ -352,6 +352,7 @@ pub async fn run_selected(opts: &Options, members: Option<&Path>) -> anyhow::Res
         let quality: QualityJob = serde_json::from_slice(&quality_bytes)
             .with_context(|| format!("{name}: quality.json"))?;
         quality.validate()?;
+        crate::quality::page_dims::require_image(&page, "qwen stage")?;
         let bytes = read(&page.join(crate::quality::PAGE_FILE), MAX_SCAN)?;
         ensure!(
             quality.inputs.page.matches(&bytes),
@@ -770,6 +771,12 @@ pub fn cut(page: &[u8], alto: &[u8], seed: u64, k: u32) -> anyhow::Result<Vec<Cr
     let (w, h) = image::load_from_memory(page)
         .context("decoding page.jpg")?
         .dimensions();
+    cut_dims((w, h), alto, seed, k)
+}
+
+/// [`cut`] for a page of `(width, height)` pixels: the recipe needs only
+/// the size, so collect can cut from a bundle's `dims.json` (#1743).
+pub fn cut_dims((w, h): (u32, u32), alto: &[u8], seed: u64, k: u32) -> anyhow::Result<Vec<Crop>> {
     let parsed = crate::quality::parse_alto(alto, f64::from(w), f64::from(h))?;
     Ok(crops::select(&parsed, seed, k as usize)
         .into_iter()

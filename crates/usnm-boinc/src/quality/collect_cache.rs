@@ -511,6 +511,17 @@ impl Cache {
         .iter()
         .map(|name| unit.join(name))
         .collect::<Vec<_>>();
+        // A bundle with a dims.json gives collect its pages' sizes from that, not
+        // from page.jpg (#1743), so the record is the input and the image is not:
+        // pruning the image after collection leaves the key as it was. Units
+        // without one keep the image in their key, as before.
+        if !job.pages.is_empty() && unit.join(super::page_dims::DIMS_FILE).try_exists()? {
+            for path in inputs.iter_mut() {
+                if *path == unit.join(super::PAGE_FILE) {
+                    *path = unit.join(super::page_dims::DIMS_FILE);
+                }
+            }
+        }
         // Qualified doc IDs can place optional bundle ALTO sidecars below the unit directory.
         inputs.extend(
             job.pages

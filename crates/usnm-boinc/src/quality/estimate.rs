@@ -210,6 +210,9 @@ pub fn run(opts: &Options) -> anyhow::Result<Summary> {
         let staged = tempfile::tempdir()?;
         let outcome = (|| -> anyhow::Result<()> {
             let texts = load_texts(&files)?;
+            if let Some(dir) = files.page.parent() {
+                super::page_dims::require_image(dir, "quality estimate")?;
+            }
             let job = super::stage::local_unit(&super::stage::LocalUnit {
                 page: &read(&files.page, MAX_SCAN)?,
                 alto: &read(&files.alto, MAX_ALTO)?,

@@ -1139,22 +1139,32 @@ fn qwen_pages(
     Ok(out)
 }
 
-/// The crops to join for a page: the `usnm_qwen` unit's when there is one,
-/// else, when Surya crop units exist, the recipe's cut from the page and
-/// ALTO with the quality job's seed and count (the same cut `stage-crops`
-/// made), so Surya's rows are not lost to a campaign without Qwen.
+/// The crops to join for a page and the page's size in pixels: the
+/// `usnm_qwen` unit's crops when there is one, else, when Surya crop units
+/// exist, the recipe's cut from the ALTO at the page's size with the
+/// quality job's seed and count (the same cut `stage-crops` made), so
+/// Surya's rows are not lost to a campaign without Qwen. `dims` gives the
+/// size, from the image or a bundle's `dims.json`; it is asked only when
+/// there are crops.
+/// A page's crops and its `(width, height)` in pixels.
+type PageCrops = (Vec<Crop>, (u32, u32));
+
 fn crops_for_page(
     q: Option<&QwenPage>,
     surya: Option<&BTreeMap<String, crate::surya::collect::CropText>>,
-    page: &[u8],
+    dims: impl FnOnce() -> anyhow::Result<(u32, u32)>,
     alto: &[u8],
     crop_seed: u64,
     k_crops: u32,
-) -> anyhow::Result<Option<Vec<Crop>>> {
+) -> anyhow::Result<Option<PageCrops>> {
     Ok(match (q, surya) {
-        (Some(q), _) => Some(q.crops.clone()),
+        (Some(q), _) => Some((q.crops.clone(), dims()?)),
         (None, Some(s)) if !s.is_empty() => {
-            Some(crate::qwen::stage::cut(page, alto, crop_seed, k_crops)?)
+            let d = dims()?;
+            Some((
+                crate::qwen::stage::cut_dims(d, alto, crop_seed, k_crops)?,
+                d,
+            ))
         }
         (None, _) => None,
     })
@@ -1369,17 +1379,19 @@ pub fn collect(opts: &Options) -> anyhow::Result<Collected> {
             }
             pages.extend(unit_rows);
             let page = read(&unit.join(PAGE_FILE), MAX_SCAN)?;
-            if let Some(crops) = crops_for_page(
+            let page_dims = || -> anyhow::Result<(u32, u32)> {
+                Ok(image::load_from_memory(&page)
+                    .with_context(|| format!("{wu}: page.jpg"))?
+                    .dimensions())
+            };
+            if let Some((crops, (w, h))) = crops_for_page(
                 q,
                 surya_crops,
-                &page,
+                page_dims,
                 &alto_bytes,
                 job.crop_seed,
                 job.k_crops,
             )? {
-                let (w, h) = image::load_from_memory(&page)
-                    .with_context(|| format!("{wu}: page.jpg"))?
-                    .dimensions();
                 let loc = parse_alto(&alto_bytes, f64::from(w), f64::from(h))?;
                 let ours = if unit.join(OURS_FILE).exists() {
                     Some(parse_alto(
@@ -1415,10 +1427,20 @@ pub fn collect(opts: &Options) -> anyhow::Result<Collected> {
                 got.result.pages.len(),
                 job.pages.len()
             );
-            let bundle_page = read(&unit.join(PAGE_FILE), MAX_BUNDLE_SCAN)?;
+            // The pages' sizes from dims.json when the unit has one; only
+            // units packed before it was written read page.jpg (#1743).
+            let dims =
+                super::page_dims::load(&unit, &job).with_context(|| format!("{wu}: dims.json"))?;
+            let bundle_page = match &dims {
+                Some(_) => None,
+                None => Some(
+                    read(&unit.join(PAGE_FILE), MAX_BUNDLE_SCAN)
+                        .with_context(|| format!("{wu}: no dims.json, and page.jpg"))?,
+                ),
+            };
             let bundle_alto = read(&unit.join(ALTO_FILE), MAX_BUNDLE_ALTO)?;
             let bundle_texts = read(&unit.join(TEXTS_FILE), MAX_BUNDLE_TEXTS)?;
-            for (bp, pr) in job.pages.iter().zip(&got.result.pages) {
+            for (i, (bp, pr)) in job.pages.iter().zip(&got.result.pages).enumerate() {
                 anyhow::ensure!(
                     bp.doc_id == pr.doc_id,
                     "{wu}: bundle page doc_id mismatch ({} vs {})",
@@ -1452,15 +1474,26 @@ pub fn collect(opts: &Options) -> anyhow::Result<Collected> {
                     summary.hat_v1_kept += 1;
                 }
                 pages.extend(unit_rows);
-                let p_bytes = bp.inputs.page.extract(&bundle_page, "page")?;
+                let p_bytes = match &bundle_page {
+                    Some(b) => Some(bp.inputs.page.extract(b, "page")?),
+                    None => None,
+                };
                 let a_bytes = bp.inputs.alto.extract(&bundle_alto, "alto")?;
-                if let Some(crops) =
-                    crops_for_page(q, surya_crops, p_bytes, a_bytes, bp.crop_seed, bp.k_crops)?
+                let page_dims = || -> anyhow::Result<(u32, u32)> {
+                    match (&dims, p_bytes) {
+                        (Some(d), _) => d
+                            .get(i)
+                            .with_context(|| format!("{wu} ({}): dims.json", bp.doc_id)),
+                        (None, Some(p)) => Ok(image::load_from_memory(p)
+                            .with_context(|| format!("{wu} ({}): page.jpg", bp.doc_id))?
+                            .dimensions()),
+                        (None, None) => anyhow::bail!("{wu} ({}): no page size", bp.doc_id),
+                    }
+                };
+                if let Some((crops, (w, h))) =
+                    crops_for_page(q, surya_crops, page_dims, a_bytes, bp.crop_seed, bp.k_crops)?
                 {
                     let t_bytes = bp.inputs.texts.extract(&bundle_texts, "texts")?;
-                    let (w, h) = image::load_from_memory(p_bytes)
-                        .with_context(|| format!("{wu} ({}): page.jpg", bp.doc_id))?
-                        .dimensions();
                     let loc = parse_alto(a_bytes, f64::from(w), f64::from(h))?;
                     let ours_path = unit.join(format!("{}.ours.xml", bp.doc_id));
                     let ours = if ours_path.exists() {
@@ -3075,5 +3108,149 @@ pub(super) mod tests {
             &[],
         );
         assert!(cache.verify_readings().is_err());
+    }
+
+    /// A bundle unit collects the same rows from its dims.json as from its
+    /// image, with the image or after it is pruned; with neither, collect
+    /// says it needs page.jpg. Pruning leaves the unit's keys as they were.
+    #[tokio::test]
+    async fn bundle_pages_collect_the_same_from_dims_json_without_the_image() {
+        use crate::quality::page_dims::{PageDims, DIMS_FILE};
+        let tmp = tempfile::tempdir().unwrap();
+        let qroot = tmp.path().join("quality");
+        let (unit, job) = crate::quality::page_dims::tests::bundle(&qroot);
+        std::fs::write(unit.join("submitted"), b"").unwrap();
+        crate::quality::work::run(&unit).await.unwrap();
+        let spool = tmp.path().join("spool");
+        canonical(&unit, &job, &spool);
+        // A Surya row on a crop of each page, so each page is cut at its own size.
+        let (sroot, sspool) = (tmp.path().join("surya"), tmp.path().join("surya-spool"));
+        let page_blob = std::fs::read(unit.join(PAGE_FILE)).unwrap();
+        let alto_blob = std::fs::read(unit.join(ALTO_FILE)).unwrap();
+        let mut cut = Vec::new();
+        for bp in &job.pages {
+            let crops = crate::qwen::stage::cut(
+                bp.inputs.page.extract(&page_blob, "page").unwrap(),
+                bp.inputs.alto.extract(&alto_blob, "alto").unwrap(),
+                bp.crop_seed,
+                bp.k_crops,
+            )
+            .unwrap();
+            let mut base = crate::surya::work::tests::job();
+            base.doc_id = bp.doc_id.clone();
+            let cj = crate::surya::collect::tests::crop_job(
+                &base,
+                &crops[0].id,
+                crops[0].rect,
+                &crops[0].stratum,
+            );
+            crate::surya::collect::tests::unit_with_result(
+                &sroot,
+                &sspool,
+                &cj,
+                &[(
+                    usnm_ocr_contract::surya::InputMode::Whole,
+                    usnm_ocr_contract::surya::Outcome::Ok,
+                    "Surya read this line\n",
+                )],
+            );
+            cut.push(crops);
+        }
+        // The two pages differ in size, so their crops differ.
+        assert_ne!(cut[0][0].rect, cut[1][0].rect);
+        let opts = Options {
+            campaign: "t".into(),
+            root: qroot,
+            spool,
+            qwen_root: tmp.path().join("no-qwen"),
+            qwen_spool: tmp.path().join("no-qwen"),
+            qwen_crop_states: None,
+            qwen_pages: None,
+            surya_root: Some(sroot),
+            surya_spool: Some(sspool),
+            out_dir: None,
+            curated_url: None,
+            cache: None,
+            max_dirty_units: 8,
+        };
+        let cached = Options {
+            cache: Some(tmp.path().join("cache")),
+            ..opts.clone()
+        };
+        let parts = || {
+            std::fs::read_dir(tmp.path().join("cache"))
+                .unwrap()
+                .filter(|e| e.as_ref().unwrap().path().is_file())
+                .count()
+        };
+        let name = unit.file_name().unwrap().to_str().unwrap().to_owned();
+        let key = |o: &Options| inventory(o, None).unwrap()[&name].fingerprint.clone();
+
+        // A bundle packed before stage wrote dims.json reads its image.
+        let staged = std::fs::read(unit.join(DIMS_FILE)).unwrap();
+        std::fs::remove_file(unit.join(DIMS_FILE)).unwrap();
+        let legacy = collect(&opts).unwrap();
+        assert_eq!((legacy.summary.pages, legacy.summary.with_surya), (2, 2));
+        for (bp, crops) in job.pages.iter().zip(&cut) {
+            let rows: Vec<&CropRow> = legacy
+                .crops
+                .iter()
+                .filter(|r| r.doc_id == bp.doc_id)
+                .collect();
+            assert_eq!(rows.len(), crops.len() * bp.readers.len() + 1);
+            let s_row = rows.iter().find(|r| r.reader == SURYA).unwrap();
+            assert_eq!(
+                (s_row.x0, s_row.y0, s_row.x1, s_row.y1),
+                (
+                    crops[0].rect[0],
+                    crops[0].rect[1],
+                    crops[0].rect[2],
+                    crops[0].rect[3]
+                )
+            );
+        }
+        let legacy_key = key(&cached);
+
+        // Backfilled: the same rows from the record; the key now names
+        // the record instead of the image.
+        PageDims::of_file(&job, &unit.join(PAGE_FILE), false)
+            .unwrap()
+            .write(&unit)
+            .unwrap();
+        assert_eq!(std::fs::read(unit.join(DIMS_FILE)).unwrap(), staged);
+        let with_dims = collect(&cached).unwrap();
+        assert_eq!(with_dims.summary, legacy.summary);
+        assert_eq!(with_dims.pages, legacy.pages);
+        assert_eq!(with_dims.crops, legacy.crops);
+        let dims_key = key(&cached);
+        assert_ne!(dims_key, legacy_key);
+        let stored = parts();
+        assert!(stored > 0);
+
+        // Pruned: the same rows, the same keys, the stored part reused.
+        std::fs::remove_file(unit.join(PAGE_FILE)).unwrap();
+        assert_eq!(key(&cached), dims_key);
+        let pruned = collect(&cached).unwrap();
+        assert_eq!(parts(), stored);
+        assert_eq!(pruned.pages, legacy.pages);
+        assert_eq!(pruned.crops, legacy.crops);
+        let fresh = collect(&opts).unwrap();
+        assert_eq!(fresh.pages, legacy.pages);
+        assert_eq!(fresh.crops, legacy.crops);
+
+        // The record is in the key: another record is another key.
+        let mut other: PageDims = serde_json::from_slice(&staged).unwrap();
+        other.pages[1].width += 2;
+        other.write(&unit).unwrap();
+        assert_ne!(key(&cached), dims_key);
+        // A record for other bytes is refused, not used.
+        other.pages[1].sha256 = "0".repeat(64);
+        other.write(&unit).unwrap();
+        let e = format!("{:#}", collect(&opts).err().unwrap());
+        assert!(e.contains("dims.json"), "{e}");
+        // Neither record nor image: collect names what it needs.
+        std::fs::remove_file(unit.join(DIMS_FILE)).unwrap();
+        let e = format!("{:#}", collect(&opts).err().unwrap());
+        assert!(e.contains("page.jpg"), "{e}");
     }
 }

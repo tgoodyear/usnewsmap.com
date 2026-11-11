@@ -21,6 +21,8 @@
 //! - [`rescore`] computes a campaign's text part again on the server from
 //!   corrected LoC texts, keeping the units' scan features (#1079).
 //! - [`summary`] reads the validator's copies back into one table.
+//! - [`page_dims`] records a bundle's page sizes, so collect needs no
+//!   image (#1743).
 use std::path::{Path, PathBuf};
 pub use usnm_ocr_quality::slot::{
     inputs, outputs, parse_alto, ALTO_FILE, CONFUSIONS_FILE, DIAG_FILE, JOB_FILE, PAGE_FILE,
@@ -32,6 +34,7 @@ pub mod cli;
 pub mod collect;
 mod collect_cache;
 pub mod estimate;
+pub mod page_dims;
 pub mod rehat;
 pub mod rescore;
 pub mod sample;
