@@ -63,7 +63,8 @@ class Result {
     function fetch_assoc() { return array_shift($this->rows); }
 }
 class BoincDb {
-    static function get($read) { if (!$read) throw new Exception(); return new BoincDb(); }
+    static $instance = null;
+    static function get_aux($dbnum) { if ($dbnum !== 1) throw new Exception(); self::$instance = new BoincDb(); }
     function do_query($sql) {
         if (preg_match('/^(SET SESSION TRANSACTION READ ONLY|START TRANSACTION WITH CONSISTENT SNAPSHOT|ROLLBACK)$/',$sql)) return true;
         if (!str_starts_with($sql,'SELECT /*+ MAX_EXECUTION_TIME(5000) */')) throw new Exception('not a bounded read');
@@ -1826,6 +1827,9 @@ with socket.create_connection({listener.getsockname()!r}, timeout=2) as connecti
             "timeout": ("return $this->fail(3024);", "database_query_timeout"),
             "other": ("return $this->fail(1146);", "database_query_failed"),
             "row limit": ("return new Result(array_fill(0, 8001, ['id'=>'1']));", "database_row_limit"),
+            # PHP 8.1+ mysqli throws instead of do_query() returning false.
+            "thrown timeout": ("throw new mysqli_sql_exception('timed out', 3024);", "database_query_timeout"),
+            "thrown other": ("throw new mysqli_sql_exception('no such table', 1146);", "database_query_failed"),
         }
         for name, (units, reason) in cases.items():
             with self.subTest(case=name), server_fixture() as root:
@@ -1836,13 +1840,22 @@ with socket.create_connection({listener.getsockname()!r}, timeout=2) as connecti
                     "        return new Result([]);\n    }\n"
                     "    private $errno = 0;\n"
                     "    function fail($errno) { $this->errno = $errno; echo \"Database Error<br>\\n\"; return null; }\n"
-                    "    function base_errno() { return $this->errno; }"))
+                    "    function base_errno() { return $this->errno; }")
+                    + "\nif (!class_exists('mysqli_sql_exception')) { class mysqli_sql_exception extends RuntimeException {} }\n")
                 with self.assertRaisesRegex(C.SourceFailed, "^%s$" % reason):
                     C.server(root, root / "window.env")
                 output = root / "status.json"
                 self.assertEqual(C.main(["server", "--project", str(root), "--window-env", str(root / "window.env"),
                                          "--output", str(output)]), 1)
                 self.assertEqual(json.loads(output.read_text())["error"], reason)
+
+    def test_php_server_reports_an_unreachable_database_without_an_error_page(self):
+        # get() would print BOINC's error page and exit 0; get_aux() leaves a null instance.
+        with server_fixture() as root:
+            inc = root / "html/inc/boinc_db.inc"
+            inc.write_text(inc.read_text().replace("self::$instance = new BoincDb();", "self::$instance = null;"))
+            with self.assertRaisesRegex(C.SourceFailed, "^database_unavailable$"):
+                C.server(root, root / "window.env")
 
     def test_server_stages_outside_php_have_their_own_codes(self):
         with server_fixture() as root:

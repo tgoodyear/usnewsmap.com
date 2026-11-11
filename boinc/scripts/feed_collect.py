@@ -466,6 +466,10 @@ function feed_fail($code) {
     echo "\n", json_encode(['feed_failure' => $code]), "\n";
     exit(3);
 }
+// ER_QUERY_TIMEOUT (3024): a statement ran past its MAX_EXECUTION_TIME hint.
+function feed_db_code($errno) {
+    return intval($errno) === 3024 ? 'database_query_timeout' : 'database_query_failed';
+}
 // php -r never calls set_exception_handler for a top-level throw, so the body is one try.
 try {
 function feed_config() {
@@ -491,16 +495,14 @@ if (count($feed_flags) !== 1 ||
     throw new Exception('one_result_per_host_missing');
 }
 require_once 'boinc_db.inc';
-$db = BoincDb::get(true);
+// get() prints an error page and exits when it can't connect; get_aux() leaves a null instance.
+BoincDb::get_aux(1);
+$db = BoincDb::$instance;
 if (!$db) throw new Exception('database_unavailable');
 function rows($sql) {
     global $db;
     $r = $db->do_query($sql);
-    if (!$r) {
-        // ER_QUERY_TIMEOUT: the statement ran past its MAX_EXECUTION_TIME hint.
-        $errno = method_exists($db, 'base_errno') ? $db->base_errno() : 0;
-        throw new Exception($errno == 3024 ? 'database_query_timeout' : 'database_query_failed');
-    }
+    if (!$r) throw new Exception(feed_db_code(method_exists($db, 'base_errno') ? $db->base_errno() : 0));
     $out = [];
     while ($row = $r->fetch_assoc()) {
         if (count($out) >= 8000) throw new Exception('database_row_limit');
@@ -535,6 +537,9 @@ $db->do_query('ROLLBACK');
 if ($feed_config_before !== feed_config()) throw new Exception('config_changed');
 echo json_encode(['apps'=>$apps,'versions'=>$versions,'units'=>$units,'preferences'=>$preferences], JSON_THROW_ON_ERROR);
 } catch (Throwable $e) {
+    // PHP 8.1+ mysqli throws on a failed query (its code is the MySQL error number) rather
+    // than do_query() returning false.
+    if ($e instanceof mysqli_sql_exception) feed_fail(feed_db_code($e->getCode()));
     $codes = ['scheduler_config_invalid', 'one_result_per_host_missing', 'database_unavailable',
               'database_query_timeout', 'database_query_failed', 'database_row_limit', 'config_changed'];
     feed_fail(in_array($e->getMessage(), $codes, true) ? $e->getMessage() : 'inventory_php_error');
