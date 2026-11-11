@@ -39,13 +39,14 @@ function Get-OutputWidth {
     $width = 100
     try {
         $columns = $Host.UI.RawUI.WindowSize.Width
-        if ($columns -gt 40) { $width = [Math]::Min($columns - 1, 100) }
+        # Any real width counts, however narrow; 100 only when there is none.
+        if ($columns -gt 1) { $width = [Math]::Min($columns - 1, 100) }
     } catch { }
     return $width
 }
 
-function Format-Wrapped([string]$Text, [string]$Indent = '') {
-    $width = Get-OutputWidth
+function Format-Wrapped([string]$Text, [string]$Indent = '', [int]$Width = 0) {
+    $width = if ($Width -gt 0) { $Width } else { Get-OutputWidth }
     $lines = foreach ($paragraph in ($Text -split "`n")) {
         $line = ''
         foreach ($word in ($paragraph -split ' ')) {

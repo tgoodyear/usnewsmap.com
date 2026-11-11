@@ -600,14 +600,16 @@ Test-Case 'declining execution after verification still cleans download' {
 
 Test-Case 'long messages wrap at word boundaries within the output width' {
     $text = (1..60 | ForEach-Object { "word$_" }) -join ' '
-    $wrapped = Format-Wrapped $text '  '
-    $lines = $wrapped -split "`n"
-    $width = Get-OutputWidth
-    Assert-True ($width -ge 40 -and $width -le 100) 'width between 40 and 100 columns'
-    Assert-True ($lines.Count -gt 1) 'long text split over several lines'
-    Assert-True (@($lines | Where-Object { $_.Length -gt $width }).Count -eq 0) 'no line wider than the width'
-    Assert-True ((($lines | ForEach-Object { $_.Trim() }) -join ' ') -eq $text) 'every word kept, in order'
-    Assert-True (@($lines | Select-Object -Skip 1 | Where-Object { -not $_.StartsWith('  ') }).Count -eq 0) 'continuation lines indented'
+    $default = Get-OutputWidth
+    Assert-True ($default -ge 1 -and $default -le 100) 'width at most 100 columns'
+    foreach ($width in @(100, 60, 30)) {
+        # 30 columns: a narrow console still wraps to its own width, not the 100 fallback.
+        $lines = (Format-Wrapped $text '  ' $width) -split "`n"
+        Assert-True ($lines.Count -gt 1) "long text split over several lines at $width"
+        Assert-True (@($lines | Where-Object { $_.Length -gt $width }).Count -eq 0) "no line wider than $width"
+        Assert-True ((($lines | ForEach-Object { $_.Trim() }) -join ' ') -eq $text) "every word kept, in order, at $width"
+        Assert-True (@($lines | Select-Object -Skip 1 | Where-Object { -not $_.StartsWith('  ') }).Count -eq 0) "continuation lines indented at $width"
+    }
     Assert-True ((Format-Wrapped "one`ntwo") -eq "one`ntwo") 'existing line breaks kept'
 }
 
