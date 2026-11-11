@@ -4,7 +4,7 @@
     boinc-week-collect.py --push-url http://<dashboard>/api/boinc-week
         [--project-users 2,3,5,6] [--out FILE] [--now EPOCH]
 
-Reads the BOINC database on the server's own connection settings (three bounded, read-only
+Reads the BOINC database on the server's own connection settings (four bounded, read-only
 aggregate queries over the `result` table, which db_purge keeps for 30 days) and writes one small
 JSON document of 56 buckets, aligned to US Eastern 00:00, 03:00, ... The last bucket ends at the
 next boundary and is partial. Per bucket:
