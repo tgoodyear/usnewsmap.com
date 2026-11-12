@@ -26,7 +26,7 @@ Environment=CROP_STATES_ARGS=
 # validator's bundle verdict is page-v1: without it a collector joins a bundle that pair settled by
 # its pages with the canonical reading of every page, the disagreed ones included.
 Environment=QWEN_PAGES_ARGS=
-# Once every collector named above is from #PRNUM on: WARM_ARGS="--warm-without-lock", so the step
+# Once every collector named above is from #1817 on: WARM_ARGS="--warm-without-lock", so the step
 # lock is held only to publish (a locked run is bounded to about 3 minutes) and the row parts are
 # computed before it without the lock. Older collectors reject `--warm-only`.
 Environment=WARM_ARGS=

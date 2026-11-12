@@ -10,7 +10,7 @@ With --warm-without-lock the lock is held only to publish. The row parts are com
 without it, by `quality collect --warm-only` (parts are keyed on the hashes of their inputs, so
 nothing needs keeping still), and the locked collection then finds them cached: it re-keys the
 units, checks nothing changed and writes the tables, under a compute budget and a hard timeout
-that bound how long the lock is held (#PRNUM).
+that bound how long the lock is held (#1817).
 """
 import argparse
 import datetime
@@ -293,7 +293,7 @@ def main(argv=None):
                         help="bounded collection-only step-lock admission, 0 (nonblocking) to 60 seconds")
     parser.add_argument("--warm-without-lock", action="store_true",
                         help="compute row parts first without the step lock (`quality collect "
-                             "--warm-only`, so the collector must be from #PRNUM on); the lock is then "
+                             "--warm-only`, so the collector must be from #1817 on); the lock is then "
                              "held only to publish. Needs --incremental")
     parser.add_argument("--warm-budget-secs", type=int, default=1500,
                         help="most seconds of warming rounds per root before the locked collection")
