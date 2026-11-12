@@ -476,7 +476,7 @@ async function nextReading(env, l, c, url) {
       row = await pick("t.settled = 0 AND t.outcome = 'adjudicate' AND json_extract(t.body, '$.calibration') IS NULL", "random()");
       if (row) stage = "adjudicate";
     }
-    if (!row) row = await pick("t.settled = 0 AND t.outcome IS NULL AND json_extract(t.body, '$.calibration') IS NULL", "t.n DESC, random()");
+    if (!row) row = await pick("t.settled = 0 AND t.outcome IS NULL AND json_extract(t.body, '$.calibration') IS NULL", "COALESCE(json_extract(t.body, '$.priority'), 0), t.n DESC, random()");
   }
   const answered = scores.length + mine;
   if (!row) return { task: null, answered };

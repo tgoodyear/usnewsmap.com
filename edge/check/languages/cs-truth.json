@@ -1,7 +1,7 @@
 {
-  "intro": "These crops come from Czech-language newspapers printed in the United States between the 1870s and the 1950s, held by the Library of Congress. Keep the accents and hooks on letters (á č ě š ž ů and so on) as printed, and any old spellings.",
+  "intro": "These crops come from Czech-language newspapers printed in the United States between the 1870s and the 1950s, held by the Library of Congress. Keep the accents and hooks on letters (á č ě š ž ů and so on) as printed, and old spellings.",
   "kind": "transcribe",
   "name": "Czech: type the crops",
-  "rules": "Type every printed line, one line of your text for each, in reading order. Keep the printed spelling, capital letters, punctuation and hyphens, even where they look wrong, and don't join a word split across lines. If the crop cuts a line at its edge, type only the letters wholly inside it. Where you can't read a letter or a stretch of letters, press the button that inserts � instead of guessing. If nothing at all is legible, press Nothing legible. Two people type each one on their own; if they differ, a third person compares both with the print and settles it. A few items have a known text, to check your typing.",
+  "rules": "Type each printed line on its own line, in reading order. Keep the printed spelling, capital letters, punctuation and hyphens, even where they look wrong, and don't join a word split across lines. If the crop cuts a line at its edge, type only the letters wholly inside it. Where you can't read a letter or a stretch of letters, press the button that inserts � instead of guessing. If nothing at all is legible, press Nothing legible. Two people type each one independently. If they differ, a third person compares both with the print and settles it. A few items have a known text that checks your typing.",
   "title": "Czech: type the crops"
 }

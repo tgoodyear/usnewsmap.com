@@ -137,6 +137,20 @@ usnm-glyphs add-checked --bank bank --out bank-checked --export check-chr-rare.j
   --index check-glyph-index.jsonl --images images --exclude-manifest testset/v2/manifest.json
 ```
 
+## Transcription tasks
+
+A language whose configuration has `kind: "transcribe"` asks people to type what a printed line or crop shows (#738, #968, #1479). Nothing from any engine is shown, so the settled text is human truth by #738's rule. `tools/transcribe_tasks.py` makes the tasks and clips from `{id, image, page, source, label, unit, crop_id}` rows and refuses any row with machine text (`a`, `b`, `hints`, `text`, `loc`). Load them with `load.sh` as for any language.
+
+- **Settling.** The first two readers, by time, type blind. If their texts match exactly (after trimming spaces, bidi marks and control characters; no Unicode normalisation), the task settles as `agreed`. If they differ, a third person sees the two human readings, in an order fixed by the task id, picks or edits, and the task settles as `adjudicated`. A person never reads a task twice. `settle: "single"` makes one counted reading settle a task, for a set read by one person.
+- **Calibration.** A task row loaded with a `truth` field (a text from a human source, never an engine) becomes a calibration task: the truth goes to a table the page never reads. A person's first 3 tasks in such a language are calibration, then one in 6. A person whose mean error rate on calibration tasks is over `calibration.max_cer` (default 0.1) has their readings stored but not counted. A language with no calibration tasks counts everyone; its quality control is the second reader and the adjudication.
+- **Order.** A task's `priority` (lower first, default 0) is served before others; within it, tasks nearest to settling come first. `/api/next` serves tasks needing adjudication first to people who pass calibration.
+- **Export.** `GET /api/export?lang=<code>` gives one JSON line per task: its readings (readers by a one-way id, never a session id), `settled`, `outcome` (`agreed`, `adjudicated`, `single`, `adjudicate` while waiting), `text`, `method`, `crop_id`, `line` (the clip key). Calibration tasks are left out.
+- **Maintainer sets.** `readers_prefix: "maintainer:"` in a configuration limits a set to sessions from `mint-maintainer-link.sh`, and `unlisted: true` keeps it off the index.
+- **Tables.** `readings`, `truths`, `calibration` and `reader_scores`; `migrations/0002-transcriptions.sql` adds them (nothing existing changes).
+- **Promotion.** `scripts/ocr-bench/human_truth.py promote` re-derives each settlement from the raw readings and writes the inputs of a new ocr-bench release tier; see [docs/ocr/bench.md](../../docs/ocr/bench.md). `tools/export_gold_crops.py` writes a gold.py `crops.jsonl` from an export.
+
+Sets: `yi-truth` (349 protocol lines of the newspaper test set, 40 calibration lines from the YIVO corpus), `cs-truth`, `sr-truth`, `pl-truth`, `ru-truth` (the 40 gold crops each, `cze-01`..`cze-40` and so on, the first 10 being #968's frozen crops), and `de-968` (the 154 German crops of the damage-band comparison).
+
 ## Loading a language
 
 On the build host (pve-big for Cherokee and Yiddish), make the files. For Cherokee:

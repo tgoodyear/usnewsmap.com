@@ -159,3 +159,16 @@ test("a single-reader set settles on one reading and takes readings from the mai
   const list = await (await worker.fetch(new Request("https://check.usnewsmap.com/api/languages"), e, {})).json();
   assert.deepEqual(list, []); // unlisted
 });
+
+test("tasks with a lower priority number are served first", async () => {
+  const e = env(fakeDb());
+  await admin(e, "/admin/languages/de-968", JSON.stringify({ name: "German", kind: "transcribe" }), "PUT");
+  const mk = (id, priority) => JSON.stringify({ id: "de-968/s/" + id, lang: "de-968", set: "s", kind: "transcribe", line: id + ".jpg", priority });
+  await admin(e, "/admin/tasks", [mk("late", 4), mk("first", 0), mk("mid", 2)].join("\n"));
+  const seen = [];
+  for (let i = 0; i < 3; i++) {
+    const n = await (await as(e, "r", "/api/next?lang=de-968&skip=" + seen.join(","))).json();
+    seen.push(n.task.id);
+  }
+  assert.deepEqual(seen, ["de-968/s/first", "de-968/s/mid", "de-968/s/late"]);
+});

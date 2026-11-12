@@ -273,6 +273,19 @@ scripts/ocr-survey/gold.py cut --selection fixtures/ocr-gold/selection.jsonl --s
 
 The 40 Czech, Serbian, Polish and Russian crops (ten each) were cut on 22 October 2026 with `gold.py cut`'s box rule at seed 296. Polish and Russian have five pages each, so each of those pages gives a second, non-overlapping box. Their manifest and the empty transcription template are in `fixtures/ocr-gold/cze-srp-pol-rus/` (`manifest.jsonl`, `crops.jsonl`; the crop images are not committed), and the crops are out for transcription. Surya reads the same boxes as BOINC crop units, so its character error rate can be scored once the transcriptions come back: see [Surya on the gold crops](../boinc/apps/surya.md#surya-on-the-gold-crops-968).
 
+**Extension to 40 per language (12 November 2026, #968).** Each of the four languages grew from 10 crops to 40 (ids `cze-11` to `cze-40`, and the same for `srp`, `pol` and `rus`); the first 40 crops are frozen and keep their ids, boxes and checksums. The extra 120 rows are in `manifest-extra.jsonl` (no engine text) and `crops-extra.jsonl` (the empty transcription template, with LoC's ALTO text as `hints` like the first template). The survey sample has only 80 pages and one title each for Czech and Serbian, so the pool is every issue loc.gov lists for the language in Chronicling America (7,279 Czech, 12,140 Serbian, 18,234 Polish and 2,704 Russian issues). `scripts/ocr-survey/gold_extend.py` reproduces the choice: for each language a seeded greedy order (seed 296, derived as `296:extend:<lang>`) takes the next issue from the decade with the fewest crops so far, frozen crops counted, and in it from the title with the fewest, never an issue already used. One page per issue is drawn at random, and its box comes from the same rule as `gold.py cut`, seeded per page as `296:gold-box:<page_id>`. A page whose box reads as English (12% or more English function words, which catches the English columns of bilingual papers) or has no 600-pixel line is skipped for the next page of the issue, then the next issue. The issue listing changes as loc.gov changes, so the extra manifest, not the script, is the record of what was cut. The text of a box is never used except for that English check.
+
+Counts of all 40 per language, by decade, with the number of titles:
+
+| Language | Decades (crops)                                                                 | Titles |
+| -------- | ------------------------------------------------------------------------------- | -----: |
+| Czech    | 1870s 5, 1880s 5, 1890s 5, 1900s 4, 1910s 4, 1920s 4, 1930s 4, 1940s 5, 1950s 4 |      9 |
+| Serbian  | 1900s 6, 1910s 6, 1920s 6, 1930s 6, 1940s 5, 1950s 5, 1960s 6                   |      1 |
+| Polish   | 1880s 6, 1890s 6, 1900s 5, 1910s 6, 1920s 5, 1930s 6, 1940s 6                   |     20 |
+| Russian  | 1910s 4, 1920s 18, 1930s 18                                                     |      5 |
+
+Serbian is one title (the catalog lists no other digitized one) and Russian has only five titles, nearly all of them issues from the 1920s and 1930s. The crop images (about 12.6 MB for the 160) are over the 10 MB limit above, so they are rebuilt with `gold.py fetch --manifest` on the combined manifest rather than committed. The page checksum in each row pins the pixels.
+
 ## Japanese crops
 
 The 24 Japanese crops of the [#128](https://github.com/tgoodyear/usnewsmap.com/issues/128) comparison are not in the 60. Reference texts exist for them outside the repository: 23 files, and one more set aside. What their files and logs show about provenance:

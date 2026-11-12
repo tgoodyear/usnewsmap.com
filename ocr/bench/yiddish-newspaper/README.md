@@ -2,7 +2,7 @@
 
 Step 3 of [#1479](https://github.com/tgoodyear/usnewsmap.com/issues/1479) needs 300–500 newspaper lines, transcribed by people from the LoC Yiddish titles. They'll be used to score stock Tesseract `yid`, the Jochre-trained `yidj2` and Jochre 3. Step 4, whether `yidj2` replaces `yid`, is decided on this newspaper score, not on Study 10's book score.
 
-**Status:** pages drawn, nothing transcribed. Nothing here is ground truth yet.
+**Status:** pages drawn; the 349 protocol lines are on check.usnewsmap.com as `yi-truth` for blind transcription, with two matching readings or an adjudication to settle each. Nothing here is ground truth until they settle.
 
 | File                                                                                        | What it is                                                                                                                            |
 | ------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |

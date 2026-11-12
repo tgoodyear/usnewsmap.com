@@ -1,5 +1,5 @@
 {
-  "intro": "These crops come from German-language daily newspapers printed in Iowa, held by the Library of Congress. They are the human reference for the German comparison (#968): type each one from the print alone. Nothing from any machine is shown or filled in. Zoom in by clicking the image.",
+  "intro": "These crops come from German-language daily newspapers printed between 1868 and 1916 and held by the Library of Congress. Most come from one newspaper (101 of 154 crops). Type each crop from the print alone: nothing from any machine is shown or filled in. Click the image to zoom. If the print uses the long s (ſ), type it as printed. The buttons insert ſ, umlauts and ß.",
   "keys": [
     "ſ",
     "ä",
@@ -16,10 +16,7 @@
   ],
   "kind": "transcribe",
   "name": "German: type the crops",
-  "readers_prefix": "maintainer:",
-  "rules": "Type what is printed, one line of your text for each printed line, in reading order. Keep the printed spelling, capital letters, punctuation and hyphens, and keep ſ (long s) where it is printed; the buttons insert ſ, umlauts and ß. Don't join a word split across lines at a hyphen. If the crop cuts a line at its edge, type only the letters wholly inside it. Type [?] for one letter you can't read, or [?x] for a letter you read as x with doubt. Never skip printed text. Your reading settles the crop.",
-  "settle": "single",
+  "rules": "Type each printed line on its own line, in reading order. Keep the printed spelling, capital letters, punctuation and hyphens, even where they look wrong, and don't join a word split across lines. If the crop cuts a line at its edge, type only the letters wholly inside it. Where you can't read a letter, type [?] instead of guessing. Where you read a letter as x but doubt it, type [?x]. Never skip printed text. Two people type each crop independently. If they differ, a third person compares both with the print and settles it.",
   "title": "German: type the crops",
-  "unknown_mark": "[?]",
-  "unlisted": true
+  "unknown_mark": "[?]"
 }
