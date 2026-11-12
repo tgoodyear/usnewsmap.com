@@ -58,7 +58,13 @@ jobs:
           targets: x86_64-unknown-linux-musl
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Install musl linker
-        run: sudo apt-get update -q && sudo apt-get install -y -q musl-tools
+        run: |
+          for attempt in 1 2 3; do
+            sudo apt-get -o Acquire::Retries=3 update -q \
+              && sudo apt-get -o Acquire::Retries=3 install -y -q musl-tools && break
+            [ "$attempt" = 3 ] && exit 1
+            sleep $((attempt * 10))
+          done
       - name: Build dashboard only
         run: cargo build --locked --release -p usnm-ocr-dash --target x86_64-unknown-linux-musl
       - name: Record artifact identity

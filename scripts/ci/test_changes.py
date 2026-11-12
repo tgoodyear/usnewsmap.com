@@ -772,6 +772,15 @@ class BuildInputs(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertGreaterEqual(self.select(path), jobs)
 
+    def test_the_native_build_runs_for_its_apt_base_and_the_script_that_reads_it(self):
+        # The native build's apt base (#1683): its lock is under boinc/apps/native/, and the script
+        # that reads both locks starts the native build too (boinc-iris.yml isn't selector-gated).
+        for path in ["boinc/apps/native/base.lock", "scripts/ci/apt-base.sh"]:
+            with self.subTest(path=path):
+                on = self.select(path)
+                self.assertIn("boinc_ocr_native", on)
+                self.assertFalse(on & {"boinc_worker", "boinc_qwen", "boinc_surya", "boinc_ndlocr", "image"}, on)
+
     def test_the_tesseract_image_runs_the_worker_image_and_release_only(self):
         # The native OCR build also runs: it's checked against this image's Tesseract version.
         on = self.select("ocr/engines/tesseract/Containerfile")
