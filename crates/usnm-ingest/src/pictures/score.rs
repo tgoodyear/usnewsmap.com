@@ -306,42 +306,69 @@ pub struct Predictions {
     pub counts: InputCounts,
 }
 
-/// For each `Illustration` element of an ALTO file, in document order,
-/// whether it is written with a finite `HPOS` and `VPOS` and a positive
-/// `WIDTH` and `HEIGHT`.
-fn written_illustrations(xml: &[u8]) -> anyhow::Result<Vec<bool>> {
-    let text = std::str::from_utf8(xml).context("not UTF-8")?;
-    let mut reader = quick_xml::Reader::from_str(text);
-    let mut out = Vec::new();
-    loop {
-        match reader.read_event().context("not well-formed XML")? {
-            Event::Eof => return Ok(out),
-            Event::Start(e) | Event::Empty(e) if e.local_name().as_ref() == "Illustration" => {
-                let (mut x, mut y, mut w, mut h) = (None, None, None, None);
-                for a in e.attributes().with_checks(true) {
-                    let a = a.context("a bad attribute")?;
-                    let value = a
-                        .normalized_value(quick_xml::XmlVersion::Implicit1_0)
-                        .ok()
-                        .and_then(|v| v.trim().parse::<f64>().ok())
-                        .filter(|v| v.is_finite());
-                    match a.key.as_ref() {
-                        "HPOS" => x = value,
-                        "VPOS" => y = value,
-                        "WIDTH" => w = value,
-                        "HEIGHT" => h = value,
-                        _ => {}
-                    }
-                }
-                out.push(
-                    x.is_some()
-                        && y.is_some()
-                        && w.is_some_and(|v| v > 0.0)
-                        && h.is_some_and(|v| v > 0.0),
-                );
-            }
-            _ => {}
+/// Whether an `Illustration` start tag is written with a finite `HPOS` and
+/// `VPOS` and a positive `WIDTH` and `HEIGHT`, and the tag without those four
+/// attributes.
+fn inspect_illustration(
+    e: &quick_xml::events::BytesStart<'_>,
+) -> anyhow::Result<(bool, quick_xml::events::BytesStart<'static>)> {
+    let (mut x, mut y, mut w, mut h) = (None, None, None, None);
+    let mut bare = quick_xml::events::BytesStart::new(e.name().as_ref().to_owned());
+    for a in e.attributes().with_checks(true) {
+        let a = a.context("a bad attribute")?;
+        let key = a.key.as_ref();
+        let raw = a
+            .normalized_value(quick_xml::XmlVersion::Implicit1_0)
+            .context("a bad attribute value")?;
+        let number = raw.trim().parse::<f64>().ok().filter(|v| v.is_finite());
+        match key {
+            "HPOS" => x = number,
+            "VPOS" => y = number,
+            "WIDTH" => w = number,
+            "HEIGHT" => h = number,
+            _ => bare.push_attribute((key, raw.as_ref())),
         }
+    }
+    let ok = x.is_some() && y.is_some() && w.is_some_and(|v| v > 0.0) && h.is_some_and(|v| v > 0.0);
+    Ok((ok, bare))
+}
+
+/// The ALTO file with the box taken off every `Illustration` that is not
+/// written with a usable one, so the strict reader does not stop the run on
+/// it (it would also give the element the page's own box), and, for each
+/// `Illustration` in an ALTO namespace in document order, whether its box was
+/// usable. Elements in another namespace (foreign XML under `Tags`) are not
+/// counted, as the reader does not count them.
+fn checked_illustrations(xml: &[u8]) -> anyhow::Result<(Vec<u8>, Vec<bool>)> {
+    use quick_xml::name::{Namespace, ResolveResult};
+    let text = std::str::from_utf8(xml).context("not UTF-8")?;
+    let mut reader = quick_xml::NsReader::from_str(text);
+    let mut writer = quick_xml::Writer::new(Vec::new());
+    let mut valid = Vec::new();
+    loop {
+        let (ns, event) = reader
+            .read_resolved_event()
+            .context("not well-formed XML")?;
+        let alto = matches!(
+            &ns,
+            ResolveResult::Bound(Namespace(uri))
+                if usnm_alto::NAMESPACES.iter().any(|(n, _)| n == uri)
+        );
+        let event = match event {
+            Event::Eof => return Ok((writer.into_inner(), valid)),
+            Event::Start(e) if alto && e.local_name().as_ref() == "Illustration" => {
+                let (ok, bare) = inspect_illustration(&e)?;
+                valid.push(ok);
+                Event::Start(if ok { e } else { bare })
+            }
+            Event::Empty(e) if alto && e.local_name().as_ref() == "Illustration" => {
+                let (ok, bare) = inspect_illustration(&e)?;
+                valid.push(ok);
+                Event::Empty(if ok { e } else { bare })
+            }
+            other => other,
+        };
+        writer.write_event(event).context("rewriting")?;
     }
 }
 
@@ -361,12 +388,13 @@ pub fn read_alto(dir: &Path, gold: &Gold) -> anyhow::Result<Predictions> {
             }
             Err(e) => return Err(e).with_context(|| format!("reading `{}`", path.display())),
         };
+        // The reader gives a block with no usable box the page's own and
+        // refuses a box that is not a number, so the boxes as written are
+        // checked first.
+        let (xml, written) =
+            checked_illustrations(&xml).with_context(|| format!("reading `{}`", path.display()))?;
         let page = usnm_alto::parse(&xml, &ParseOptions::default())
             .with_context(|| format!("reading `{}`", path.display()))?;
-        // The reader gives a block with no usable box the page's own, so the
-        // boxes as written are checked here.
-        let written =
-            written_illustrations(&xml).with_context(|| format!("reading `{}`", path.display()))?;
         let blocks: Vec<_> = page
             .blocks
             .iter()
@@ -411,7 +439,13 @@ struct NavigatorLine {
     /// Read as any JSON, so one bad coordinate is counted, not fatal.
     #[serde(rename = "box")]
     region: Option<serde_json::Value>,
-    score: Option<serde_json::Value>,
+    #[serde(default = "full_score")]
+    score: serde_json::Value,
+}
+
+/// The score of a line that has none.
+fn full_score() -> serde_json::Value {
+    serde_json::Value::from(1.0)
 }
 
 /// Read Newspaper Navigator boxes from the JSON Lines file `path`, keeping
@@ -434,11 +468,7 @@ pub fn read_navigator(path: &Path, gold: &Gold, min_score: f64) -> anyhow::Resul
         }
         out.counts.predictions_read += 1;
         let found = out.pages.entry(key).or_default();
-        let score = match &l.score {
-            None | Some(serde_json::Value::Null) => Some(1.0),
-            Some(v) => v.as_f64().filter(|s| s.is_finite()),
-        };
-        let Some(score) = score else {
+        let Some(score) = l.score.as_f64().filter(|s| s.is_finite()) else {
             out.counts.predictions_unusable += 1;
             continue;
         };
@@ -786,7 +816,12 @@ mod tests {
                    <Illustration ID="b" HPOS="0" VPOS="1500" WIDTH="100" HEIGHT="100"/>
                    <Illustration ID="c" HPOS="2000" VPOS="0" WIDTH="100" HEIGHT="100"/>
                    <Illustration ID="d" HPOS="0" VPOS="0" WIDTH="-1" HEIGHT="10"/>
-                   <Illustration ID="e" HPOS="0" VPOS="0" HEIGHT="10"/>"#,
+                   <Illustration ID="e" HPOS="0" VPOS="0" HEIGHT="10"/>
+                   <Illustration ID="f" HPOS="NaN" VPOS="0" WIDTH="10" HEIGHT="10"/>
+                   <Illustration ID="g" HPOS="0" VPOS="0" WIDTH="bad" HEIGHT="10"/>
+                   <Tags><OtherTag><XmlData>
+                     <x:Illustration xmlns:x="urn:other" HPOS="0" VPOS="0" WIDTH="5" HEIGHT="5"/>
+                   </XmlData></OtherTag></Tags>"#,
             ),
         );
         // Image 2 has no file; image 3 has a file with no illustration.
@@ -797,9 +832,9 @@ mod tests {
             InputCounts {
                 pages_with_input: 2,
                 pages_without_input: 1,
-                predictions_read: 5,
+                predictions_read: 7,
                 predictions_below_min_score: 0,
-                predictions_unusable: 3,
+                predictions_unusable: 5,
                 predictions_off_annotated_pages: 0,
             }
         );
@@ -865,6 +900,8 @@ mod tests {
                 "\n",
                 r#"{"page": 2, "box": [0.1, 0.1, 0.4, 0.5], "score": "high"}"#,
                 "\n",
+                r#"{"page": 2, "box": [0.1, 0.1, 0.4, 0.5], "score": null}"#,
+                "\n",
                 r#"{"page": 4, "box": [0.0, 0.0, 0.5, 0.5], "score": 0.8}"#,
                 "\n",
                 r#"{"page": 99, "box": [0.0, 0.0, 0.5, 0.5], "score": 0.8}"#,
@@ -873,8 +910,8 @@ mod tests {
         )
         .unwrap();
         let all = read_navigator(&path, &gold, 0.0).unwrap();
-        assert_eq!(all.counts.predictions_read, 6);
-        assert_eq!(all.counts.predictions_unusable, 3);
+        assert_eq!(all.counts.predictions_read, 7);
+        assert_eq!(all.counts.predictions_unusable, 4);
         assert_eq!(
             all.counts.predictions_off_annotated_pages, 2,
             "an unknown page and one captured after the cutoff"
