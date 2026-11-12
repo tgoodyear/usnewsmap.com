@@ -46,10 +46,10 @@ One `gold.py`-format directory per set (`manifest.jsonl`, `crops.jsonl`, `images
 | Reader | Where it runs | Settings |
 | --- | --- | --- |
 | LoC ALTO | On our side, no BOINC | `scripts/ocr-survey/loc_column.py`, below. `en-op` only |
-| Tesseract (version recorded at run time; 5.5.0 today, 5.5.4 after #1835) | BOINC, CPU hosts, hypothesis-mode unit | `eng`, `fra`, `fin`, `swe`, or `frak2021` for German, by the set's language. PSM 6 primary, PSM 3 secondary. 300 DPI, LSTM engine |
-| Qwen3-VL 8B Q4_K_M | BOINC `usnm_qwen`, GPU and CPU hosts | The production request version (3, with the loop guard) on the llama.cpp b12084 runtime of #1774. No language hint |
-| Qwen3-VL 2B Q8_0 | BOINC `usnm_qwen`, GPU and CPU hosts | As 8B, with a per-unit model pin (plan step 5) so both read the same staged crops |
-| Xiaomi-OCR-0, Q8_0 GGUF | BOINC `usnm_qwen`, GPU and CPU hosts | As shipped by #1776: Study 9's region prompt, at most 2,048 output tokens, the `stop` guard. Marked pending in the results until that release exists; no production release is made for this comparison |
+| Tesseract (version recorded at run time; 5.5.0 today, 5.5.4 after #1835) | Local dev node, CPU | `eng`, `fra`, `fin`, `swe`, or `frak2021` for German, by the set's language. PSM 6 primary, PSM 3 secondary. 300 DPI, LSTM engine |
+| Qwen3-VL 8B Q4_K_M | BOINC `usnm_qwen`, GPU hosts | Request version 3 (the loop guard, `stop`) on the llama.cpp b12084 runtime of #1774, staged with an explicit request version. No language hint |
+| Qwen3-VL 2B Q8_0 | BOINC `usnm_qwen`, GPU hosts | As 8B, staged with the 2B model pin so both read the same crops |
+| Xiaomi-OCR-0, Q8_0 GGUF | BOINC `usnm_qwen`, GPU hosts | As shipped by #1776: request version 5, Study 9's region prompt, at most 2,048 output tokens, no loop guard. Marked pending in the results until that release exists; no production release is made for this comparison |
 | American Stories | Published dataset text, no host | `en-op` only: the dataset's article text for the same Chronicling America pages, matched to each crop by box. Reported on the crops it aligns to, with the unaligned crops scored as empty beside it, as for LoC |
 
 **Tesseract PSM.** PSM 6 is primary because every earlier crop comparison used it, Tesseract's 3.68% and 9.0% included. PSM 3 is what gold units run, so it's secondary. Each set uses one language profile. Study 3's combined `fra+fin+swe` profile isn't repeated.
@@ -63,25 +63,19 @@ One `gold.py`-format directory per set (`manifest.jsonl`, `crops.jsonl`, `images
 
 ## How readers run
 
-Every reader except LoC runs on BOINC volunteer hosts. Hosts are untrusted. They get public crop images and public models, and never a reference transcription. Every score is computed on the server.
+The vision-language readers run on BOINC volunteer hosts. Hosts are untrusted. They get public crop images and public models, and never a reference transcription. Every score is computed on the server.
 
 - **Qwen 8B, Qwen 2B and Xiaomi-OCR-0** use `usnm-boinc qwen benchmark-stage` and `benchmark-collect`. Stage writes one unit per crop with the crop bytes and the source notice. The references stay in the server's `benchmark.json`, and the unit's `loc_text` is empty. Collect reads the canonical results back and scores them. One campaign per reader and set.
-- **Tesseract** needs a hypothesis-mode unit: a unit that returns the text for each crop at a given language, profile and PSM, scored on the server the same way. Gold units can't be used. They run PSM 3 only, and they ship the references so that hosts score themselves.
+- **Tesseract** has no hypothesis-mode BOINC unit, and gold units can't be used: they run PSM 3 only and ship the references so that hosts score themselves. It runs on a local dev node with `scripts/ocr-survey/tesseract_crops.py`, from the pinned traineddata, and is scored by the same scorer.
 - **LoC** runs `loc_column.py` over `en-op`'s manifest. It needs no host.
 
 These must be in place before staging:
 
-1. `usnm_qwen` on b12084 (#1774), with the per-unit model pin.
+1. `usnm_qwen` on b12084 (#1774), and `qwen benchmark-stage` options that select and freeze the request version and the model pin in each staged job. Today it stages request version 1 with no model pin, which can't stage guarded Qwen or Xiaomi jobs.
 2. Xiaomi-OCR-0 in `usnm_qwen` (#1776).
-3. The Tesseract hypothesis-mode unit.
-4. The benchmark stage's source notice accepts BLN600's licence, CC BY-NC-ND 4.0. Today it accepts BY-NC-SA, BY-NC, BY-SA, BY and CC0 today. The images go out unchanged, which ND allows.
+3. The benchmark stage accepts BLN600's licence, CC BY-NC-ND 4.0, for original files only. Today it rejects every NoDerivatives licence before the source notice is built. The exception is for crops whose manifest row records "original file, unchanged" with a crop checksum equal to the source file's, and the rejection stays for cropped or re-encoded ND images. Until it ships, `en-bln` isn't staged.
 
-**Host classes.** Each campaign is submitted twice with the same staged inputs: once to GPU plan classes and once to CPU plan classes. Tesseract runs on CPU only. Quorum and validation are those of the app's production units, and the canonical result of each unit is the one scored. The plan class of the app version that produced it records the host class.
-
-- The primary table uses the GPU batch for Qwen 8B, Qwen 2B and Xiaomi-OCR-0, and the CPU batch for Tesseract.
-- The secondary table scores the CPU batch of the three vision-language readers, with the paired difference between the two classes on the crops both read.
-
-If the CPU batch of a reader doesn't finish within 14 days of submission, it's reported with what returned, and the gap goes in the departures log.
+**Host classes.** The vision-language readers run on GPU plan classes only. No `usnm_qwen` CPU app version is live (the Compute Coordinator, 12 November 2026), so a CPU unit would never dispatch. Quorum and validation are those of the app's production units, and the canonical result of each unit is the one scored. Tesseract runs on CPU on our own dev nodes, not BOINC, with the version and traineddata hashes recorded. There is no CPU-host comparison for the vision-language readers: if a CPU app version is released, a CPU batch needs its own campaigns, with host-class workunit identities distinct from the GPU ones, and joins by amendment.
 
 ## LoC column
 
@@ -108,13 +102,13 @@ On each language's primary set:
 2. Xiaomi-OCR-0 against Qwen 8B, and Qwen 2B against Qwen 8B.
 3. On `en-op`, each reader against LoC.
 
-Secondary: the same on each second-use set; Tesseract PSM 3 against PSM 6; the CPU batch against the GPU batch per reader; `raw-v1` CER; WER.
+Secondary: the same on each second-use set; Tesseract PSM 3 against PSM 6; `raw-v1` CER; WER.
 
 ## Decision rules
 
 1. **Better.** Reader A is better than reader B on a set when the paired pooled CER difference A − B has 95% limits below zero. A set with under 5 source pages decides nothing and is reported as descriptive.
 2. **Reader per language.** The recommended reader for a language is the one with the lowest pooled CER on its primary set among readers better than Tesseract PSM 6 by rule 1. If none is, Tesseract stays. If the lowest reader isn't better by rule 1 than one or more other candidates, the smallest model among the lowest and those candidates is recommended, in the order Xiaomi-OCR-0, Qwen 2B, Qwen 8B, because it costs less host time. A recommended reader with more major hallucinations than Tesseract on that set has its flagged crops read by a person before any change to production.
-3. **CPU hosts.** A vision-language reader is a CPU-host reader for a language only if its CPU batch is better than Tesseract PSM 6 by rule 1 on that language's primary set.
+3. **CPU hosts.** Not assessed. The vision-language readers run on GPU hosts only, so this comparison makes no claim about CPU hosts.
 4. **LoC.** A reader improves on LoC's text for Chronicling America pages when it is better than LoC by rule 1 on `en-op`. `en-op` is second use, 18 pages from 5 titles printed 1871 to 1922, so this supports re-reading pages like those and says nothing about the rest of the corpus.
 5. **Held out over second use.** A result on second-use sets alone decides nothing. Where a held-out set and a second-use set point different ways, the held-out result decides and the disagreement is reported.
 6. **German.** Every German set has been read before, so German results are provisional: `de-rz81` is labelled "Study 11 use" and the others "second use". They stand until the German transcriptions of plan step 8 can confirm them.
@@ -124,7 +118,7 @@ CHURRO isn't a reader in this comparison. The Czech, Serbian, Polish, Russian an
 
 ## Budget
 
-Volunteer hosts only. No rented GPUs, and the local RTX 2060 SUPER isn't used.
+Volunteer hosts for the vision-language readers, and our own CPU dev nodes for Tesseract. No rented GPUs, and the local RTX 2060 SUPER isn't used.
 
 ## Freeze record
 
@@ -147,4 +141,5 @@ Filled in and committed before the first unit is submitted.
 
 Each entry: the date, what changed, why, and whether any result had been seen.
 
-None yet.
+- **12 November 2026, before any run.** The vision-language readers are GPU only, and Tesseract runs locally, not on BOINC, as the Compute Coordinator ruled: no Qwen CPU app version is live and there is no hypothesis-mode Tesseract unit. The CPU-host tables and rule 3 are dropped. No result had been seen.
+- **12 November 2026, before any run.** The NewsEye exclusion list is every page of the publisher's validation archives (a superset of `all-52` and of Study 5's Finnish crops), and the held-out draw is from the training archives. Study 2's train and validation rows aren't in the GPU studies' data release, and Study 2's adapter isn't a reader here. No result had been seen.
