@@ -2686,6 +2686,17 @@ class PlanTickTests(unittest.TestCase):
             plans = self.observe({self.QUEUE: {"events": [(NOW - 30, event)]}})
             self.assertEqual(plans[0]["tick"]["failed_in_a_row"], failed)
 
+    def test_a_successful_surya_tick_clears_the_streak_and_sets_the_plan_state(self):
+        surya = {"event": "boinc_surya_tick", "plan": "s", "draining": False, "timings": {"tick_seconds": 40}}
+        plan = self.failing(runs=2, events=[(NOW - 20, surya)])
+        (entry,) = self.observe({self.QUEUE: plan})
+        self.assertEqual((entry["state"], entry["tick"]["failed_in_a_row"]), ("active", 0))
+        slow = {**surya, "timings": {"tick_seconds": 1900}}
+        (entry,) = self.observe({self.QUEUE: {"events": [(NOW - 20, slow)]}})
+        self.assertEqual(entry["tick"]["failed_in_a_row"], 1)
+        (entry,) = self.observe({self.QUEUE: {"events": [(NOW - 20, {**surya, "draining": True})]}})
+        self.assertEqual((entry["kind"], entry["state"]), ("drain", "draining"))
+
     def test_a_plan_in_both_layouts_is_two_entries_and_the_document_still_validates(self):
         units = {self.NATIVE: self.healthy(native=True), self.NATIVE_AFTER: self.healthy(native=True)}
         plans = self.observe(units, main=self.MAIN_AFTER)

@@ -169,6 +169,8 @@ TIMESPAN_UNITS = {"us": 1e-6, "ms": 1e-3, "s": 1, "sec": 1, "min": 60, "h": 3600
                   "w": 604800}
 # What a plan is, from its unit or its last tick; and the state its last tick shows. Only these
 # fixed words leave the host: a plan's name never does, and neither does a paused plan's reason.
+# A tick's summary line: a queue or native plan's, and a Surya plan's (batch_scheduler.py).
+TICK_EVENTS = ("boinc_batch_tick", "boinc_surya_tick")
 PLAN_KINDS = ("queue", "native", "drain")
 PLAN_STATES = ("active", "paused", "draining", "drained", "idle", "unknown")
 PLANS_ERROR = "plans_unavailable"
@@ -1263,7 +1265,7 @@ def controller(unit, maintenance=(), fresh_s=900, slow_s=TICK_LIMIT_S):
         except (ValueError, TypeError):
             continue
         if not isinstance(event, dict) or event.get("event") not in (
-                "boinc_batch_tick", "boinc_batch_failure", "boinc_batch_cap_warning"):
+                *TICK_EVENTS, "boinc_batch_failure", "boinc_batch_cap_warning"):
             continue
         # Only the controller's own ticks: a maintenance unit's lines are read for its failures.
         if maintenance and entry.get("_SYSTEMD_UNIT", unit) != unit:
@@ -1277,7 +1279,7 @@ def controller(unit, maintenance=(), fresh_s=900, slow_s=TICK_LIMIT_S):
                 if worst is None or count * worst["limit"] > worst["count"] * limit:
                     caps[cap] = {"count": count, "limit": limit}
             continue
-        ok = event["event"] == "boinc_batch_tick"
+        ok = event["event"] in TICK_EVENTS
         invocation = entry.get("_SYSTEMD_INVOCATION_ID") or entry.get("INVOCATION_ID")
         if not ok:
             controller_failure = max(controller_failure, finished)
@@ -1451,10 +1453,14 @@ def plan_journal(unit, now):
         except (ValueError, TypeError):
             continue
         at = int(entry["__REALTIME_TIMESTAMP"]) // 1000000
-        if isinstance(event, dict) and event.get("event") == "boinc_batch_tick" and at >= newest_at:
+        if isinstance(event, dict) and event.get("event") in TICK_EVENTS and at >= newest_at:
             newest, newest_at = event, at
     if newest is None:
         return None, "idle", None
+    if newest["event"] == "boinc_surya_tick":
+        # No pending counts in a Surya tick: a draining one can't be told from a finished drain.
+        drain = newest.get("draining") is True
+        return ("drain" if drain else None), ("draining" if drain else "active"), None
     kind = "native" if isinstance(newest.get("native"), dict) else "drain" if newest.get("draining") is True else None
     paused = (newest.get("native") or {}).get("paused") if kind == "native" else None
     if isinstance(paused, dict):
