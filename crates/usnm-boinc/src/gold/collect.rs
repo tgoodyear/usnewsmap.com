@@ -190,10 +190,20 @@ fn cancelled_without_success(w: &str) -> String {
     )
 }
 
+/// Written in a unit's directory once BOINC has said its workunit is cancelled with no
+/// successful result. BOINC purges old workunits (30 days by default), after which the database
+/// no longer says; the terminal marker in the spool stays, and without this the unit would fail
+/// its host's collection again.
+const CANCELLED_FILE: &str = "cancelled";
+
 /// This campaign's submitted workunits that were cancelled with no successful result, as
 /// `cancel_jobs` and the onboarding retirement of an unreachable host's unit leave them. Such a
 /// unit is no evidence from its host, for or against: the host stays as it was and is judged on
 /// its other units. It is not a failure of the collection.
+///
+/// BOINC is asked for every submitted workunit and is the authority while the workunit exists.
+/// A cancelled one is also recorded in its unit directory, and a workunit BOINC no longer has
+/// counts as cancelled only if it was recorded so: a missing workunit is not a cancelled one.
 pub async fn cancelled_workunits(
     root: &Path,
     config: &NativeConfig,
@@ -204,18 +214,67 @@ pub async fn cancelled_workunits(
         return Ok(BTreeSet::new());
     }
     let sql = format!(
-        "SELECT w.name FROM workunit w WHERE w.name IN ({}) AND {} ORDER BY w.name",
+        "SELECT w.name, IF({}, 1, 0) FROM workunit w WHERE w.name IN ({}) ORDER BY w.name",
+        cancelled_without_success("w"),
         quoted_names(&jobs),
-        cancelled_without_success("w")
     );
     let stdout = mysql_rows(config, &sql).await?;
-    let mut cancelled = BTreeSet::new();
-    for name in stdout.lines().map(str::trim).filter(|l| !l.is_empty()) {
+    settle_cancelled(root, &jobs, &parse_cancelled_rows(&stdout, &jobs)?)
+}
+
+/// Rows of `name, 1|0` for the workunits BOINC still has: whether each is cancelled.
+fn parse_cancelled_rows(
+    text: &str,
+    jobs: &BTreeMap<String, Job>,
+) -> anyhow::Result<BTreeMap<String, bool>> {
+    let mut seen = BTreeMap::new();
+    for line in text.lines().filter(|l| !l.trim().is_empty()) {
+        let (name, flag) = line
+            .split_once('\t')
+            .context("invalid Gold cancelled-unit row")?;
         anyhow::ensure!(
             jobs.contains_key(name),
             "unknown Gold workunit in cancelled units"
         );
-        cancelled.insert(name.to_owned());
+        let cancelled = match flag.trim() {
+            "1" => true,
+            "0" => false,
+            _ => anyhow::bail!("invalid Gold cancelled-unit flag"),
+        };
+        anyhow::ensure!(
+            seen.insert(name.to_owned(), cancelled).is_none(),
+            "duplicate Gold workunit in cancelled units"
+        );
+    }
+    Ok(seen)
+}
+
+/// The cancelled units, given what BOINC said of those it still has (`seen`): a cancelled one
+/// is recorded in its unit directory, one BOINC has and calls live is not, and one it no longer
+/// has is cancelled if it was recorded so.
+fn settle_cancelled(
+    root: &Path,
+    jobs: &BTreeMap<String, Job>,
+    seen: &BTreeMap<String, bool>,
+) -> anyhow::Result<BTreeSet<String>> {
+    let mut cancelled = BTreeSet::new();
+    for (workunit, job) in jobs {
+        let recorded = submit::units_dir(root)
+            .join(format!("{:04}", job.unit))
+            .join(CANCELLED_FILE);
+        let is_cancelled = match seen.get(workunit) {
+            Some(true) => {
+                if !recorded.is_file() {
+                    atomic(&recorded, workunit.as_bytes())?;
+                }
+                true
+            }
+            Some(false) => false,
+            None => recorded.is_file(),
+        };
+        if is_cancelled {
+            cancelled.insert(workunit.clone());
+        }
     }
     Ok(cancelled)
 }
@@ -421,9 +480,12 @@ fn run_inner(
                 );
             }
         }
+        // A cancelled unit is no evidence, so a result saved from before it was cancelled (a
+        // client error, say) no longer counts against its host, and what is left is complete.
+        by_result.retain(|(workunit, _), _| !cancelled.contains(workunit));
         validate_complete_result_sets(&by_result.values().cloned().collect::<Vec<_>>())?;
         let mut fresh = BTreeSet::new();
-        for row in rows {
+        for row in rows.iter().filter(|row| !cancelled.contains(&row.workunit)) {
             let key = (row.workunit.clone(), row.result_id);
             anyhow::ensure!(fresh.insert(key.clone()), "duplicate native BOINC result");
             if let Some(saved) = by_result.get(&key) {
@@ -945,6 +1007,116 @@ mod tests {
         )
         .unwrap();
         assert!(built.hosts.is_empty());
+    }
+
+    #[test]
+    fn a_cancelled_units_saved_outcomes_are_dropped_and_its_status_outlives_the_purge() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("project");
+        let (initial, _) = tests::setup(&validate::expected_dir(&project));
+        let prepared = submit::tests::prepared();
+        let image = submit::tests::engine();
+        let jobs = vec![
+            submit::job(&prepared, &image, 0).unwrap(),
+            submit::job(&prepared, &image, 1).unwrap(),
+        ];
+        validate::add_jobs(&validate::expected_dir(&project), &prepared, &jobs).unwrap();
+        let expected =
+            validate::load_expected(&validate::expected_dir(&project), &initial.manifest_sha256)
+                .unwrap();
+        let root = tmp.path().join("root");
+        for job in &jobs {
+            save_job(&root, job);
+        }
+        let spool = tmp.path().join("spool");
+        std::fs::create_dir_all(&spool).unwrap();
+        save_report(&spool, &jobs[0], &expected, 7, "eng");
+        std::fs::write(
+            spool.join(format!("{}_error", jobs[1].workunit())),
+            "0x10\n",
+        )
+        .unwrap();
+        let config = NativeConfig {
+            mysql_defaults_file: PathBuf::new(),
+            mysql_ca_file: PathBuf::new(),
+            database: "synthetic".into(),
+            language: "eng".into(),
+            profile: "eng".into(),
+        };
+        // Unit 1 failed on host 7 and was collected so, then it was cancelled.
+        let out = tmp.path().join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        let failed = native(&jobs[1], 102, 7, 3, 200, false, ("eng", "eng"));
+        std::fs::write(
+            out.join("native-outcomes.jsonl"),
+            format!("{}\n", serde_json::to_string(&failed).unwrap()),
+        )
+        .unwrap();
+        let options = Options {
+            root: root.clone(),
+            project,
+            spool,
+            out: out.clone(),
+        };
+        let first = vec![native(&jobs[0], 101, 7, 1, 100, true, ("eng", "eng"))];
+        let kept = jobs[1].workunit();
+        // Before it is known cancelled, the saved error is evidence like any other.
+        run_with_native(&options, &first, &config).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(out.join("native-outcomes.jsonl"))
+                .unwrap()
+                .lines()
+                .count(),
+            2
+        );
+        let cancelled = BTreeSet::from([kept.clone()]);
+        // Its fresh rows are not used either, in case a caller passes them.
+        let both = vec![first[0].clone(), failed.clone()];
+        let summary = run_with_native_cancelled(&options, &both, &config, &cancelled).unwrap();
+        assert_eq!((summary.collected, summary.cancelled), (1, 1));
+        let outcomes = std::fs::read_to_string(out.join("native-outcomes.jsonl")).unwrap();
+        assert_eq!(outcomes.lines().count(), 1);
+        assert!(!outcomes.contains(&kept));
+
+        // BOINC says the unit is cancelled: it is recorded, and still is once BOINC purges it.
+        let by_name: BTreeMap<_, _> = jobs.iter().map(|j| (j.workunit(), j.clone())).collect();
+        let said = BTreeMap::from([(jobs[0].workunit(), false), (kept.clone(), true)]);
+        assert_eq!(settle_cancelled(&root, &by_name, &said).unwrap(), cancelled);
+        let purged = BTreeMap::new();
+        assert_eq!(
+            settle_cancelled(&root, &by_name, &purged).unwrap(),
+            cancelled
+        );
+        // A workunit BOINC has lost that was never seen cancelled is not a cancelled one.
+        let fresh_root = tmp.path().join("fresh-root");
+        for job in &jobs {
+            save_job(&fresh_root, job);
+        }
+        assert!(settle_cancelled(&fresh_root, &by_name, &purged)
+            .unwrap()
+            .is_empty());
+        // While BOINC has the workunit and calls it live, a stale record doesn't count.
+        let live = BTreeMap::from([(kept.clone(), false)]);
+        assert!(settle_cancelled(&root, &by_name, &live).unwrap().is_empty());
+    }
+
+    #[test]
+    fn cancelled_unit_rows_are_checked() {
+        let prepared = submit::tests::prepared();
+        let job = submit::job(&prepared, &submit::tests::engine(), 0).unwrap();
+        let jobs = BTreeMap::from([(job.workunit(), job.clone())]);
+        let name = job.workunit();
+        assert_eq!(
+            parse_cancelled_rows(&format!("{name}\t1\n"), &jobs).unwrap(),
+            BTreeMap::from([(name.clone(), true)])
+        );
+        assert_eq!(
+            parse_cancelled_rows(&format!("{name}\t0\n"), &jobs).unwrap(),
+            BTreeMap::from([(name.clone(), false)])
+        );
+        assert!(parse_cancelled_rows("usnm_gold_other\t1\n", &jobs).is_err());
+        assert!(parse_cancelled_rows(&format!("{name}\t2\n"), &jobs).is_err());
+        assert!(parse_cancelled_rows(&name, &jobs).is_err());
     }
 
     #[test]
