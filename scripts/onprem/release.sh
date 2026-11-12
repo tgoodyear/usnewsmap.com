@@ -246,7 +246,7 @@ case "$STEP" in
     [ -n "$APP_URL" ] || die "--step prune needs --app-url (the app that serves the version)"
     [ -n "$VERSION" ] || die "--step prune needs --index-version (the version the app serves)"
     [ -x "$QUICKWIT" ] || die "no quickwit at $QUICKWIT"
-    command -v jq > /dev/null || die "--step prune needs jq"
+    command -v jq > /dev/null 2>&1 || die "--step prune needs jq"
     # After a release is verified: the app answers on the version. Its own errors say why not.
     "$0" --run-dir "$RUN" --step ready --app-url "$APP_URL" --index-version "$VERSION"
     # Pipeline state is a fresh file: prune reads the serving version's run from its snapshot, and
@@ -266,7 +266,9 @@ case "$STEP" in
     # Both versions to keep must be known, and nothing newer: a hand rollback leaves a published
     # version newer than the serving one, whose run this fresh state doesn't show. Prune also leaves
     # newer indexes alone (newer_than_serving), but a release's own prune waits for the roll-forward.
-    serving=$(jq -r '.kept.serving // empty' <<< "$report") || die "no prune report in $RUN/prune-dry-run.log"
+    jq -e 'type == "object" and (.kept | type) == "object" and (.dry_run | type) == "boolean"' <<< "$report" > /dev/null 2>&1 ||
+      die "no prune report (a JSON object with kept and dry_run) ends $RUN/prune-dry-run.log: nothing is deleted"
+    serving=$(jq -r '.kept.serving // empty' <<< "$report")
     rollback=$(jq -r '.kept.rollback // empty' <<< "$report")
     newer=$(jq -r '(.kept.newer // []) | length' <<< "$report")
     was_dry=$(jq -r '.dry_run' <<< "$report")

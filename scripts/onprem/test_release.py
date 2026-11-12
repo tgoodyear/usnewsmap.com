@@ -354,6 +354,9 @@ class Prune(Ready):
         self.assertIn("dry_run=false", p.stderr)
         self.write_report("")
         p = self.prune("--delete")
+        self.assertIn("no prune report", p.stderr)
+        self.write_report('{"x": 1}')
+        p = self.prune("--delete")
         self.assertEqual(p.returncode, 1)
         self.assertTrue(all("--delete" not in c for c in self.calls()))
 

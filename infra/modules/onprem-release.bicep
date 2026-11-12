@@ -63,6 +63,8 @@ var referenceCondition = join(
 
 // ABAC (condition version 2.0): deletes only of blobs under an index prefix
 // prune may delete (PREFIXES in prune.rs).
+// Same form as referenceCondition. The prune role has the delete data action and no other, so
+// the first clause (any other action) has nothing to match; it is what the form needs to be valid.
 var pruneCondition = join(
   [
     '('
