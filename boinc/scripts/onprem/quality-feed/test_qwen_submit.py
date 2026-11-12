@@ -107,6 +107,16 @@ class PhaseTest(unittest.TestCase):
                 page_records=None), self.share / "qwen/camp", self.share / "quality/camp", 1)
         self.assertEqual(seen, [("stage", "held")])
 
+    def test_a_transaction_defers_rather_than_wait_for_a_long_staging(self):
+        import fcntl
+        (self.share / "qwen").mkdir(exist_ok=True)
+        with (self.share / "qwen" / ".stage-roots.lock").open("a") as held:
+            fcntl.flock(held, fcntl.LOCK_EX)
+            with contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaises(SystemExit) as stop, qwen_submit.stage_roots_lock(self.share, wait_secs=0):
+                    pass
+        self.assertEqual(stop.exception.code, 75)
+
     def test_a_phase_is_not_a_preflight_or_a_transaction(self):
         argv = ["qwen_submit.py", "--share", str(self.share), "--campaign", "camp", "--engine-plan", str(self.plan),
                 "--models", "/models", "--phase", "publish", "--preflight"]

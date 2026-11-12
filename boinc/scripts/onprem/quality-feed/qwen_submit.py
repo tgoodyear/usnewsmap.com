@@ -6,6 +6,7 @@ uses the existing Rust stage/submit commands and shared pinned models, never a n
 quorum, retry identity or manually generated BOINC result.
 """
 import argparse
+import contextlib
 import fcntl
 import hashlib
 import json
@@ -930,14 +931,36 @@ def retire_parent(a):
     print(json.dumps({"retired_parent": a.retire_parent}))
 
 
+@contextlib.contextmanager
+def stage_roots_lock(share, wait_secs=None):
+    """One lock for every root's duplicate-page check and staging, taken by `--phase prepare` and by
+    a subset transaction (the step lock no longer orders them). With `wait_secs`, a lock still held
+    after that long exits 75 (deferred) instead of waiting: a transaction holds the step lock, and a
+    preparation can stage for minutes."""
+    (share / "qwen").mkdir(parents=True, exist_ok=True)
+    with (share / "qwen" / ".stage-roots.lock").open("a") as lock:
+        if wait_secs is None:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+        else:
+            deadline = time.monotonic() + wait_secs
+            while True:
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        print(json.dumps({"status": "deferred", "reason": "staging_in_progress"}), flush=True)
+                        raise SystemExit(75) from None
+                    time.sleep(1)
+        yield
+
+
 def stage_root(a, root, quality, new_pages):
     """The pages this run stages into `root`, after the checks that no page is English, unclassified
     or already in another root. The checks and the staging hold one lock for every root: the bridge
     step lock used to keep two campaigns' shippers from staging one page into two roots, and
     `--phase prepare` no longer holds it."""
-    (a.share / "qwen").mkdir(parents=True, exist_ok=True)
-    with (a.share / "qwen" / ".stage-roots.lock").open("a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+    with stage_roots_lock(a.share):
         _stage_root(a, root, quality, new_pages)
 
 
@@ -1054,7 +1077,8 @@ def main():
         if a.max_ready > 1000 or a.max_unresolved > 2000 or a.min_free_gb < 50:
             ap.error("subset transactions retain the 1000/2000 watermarks and 50 GiB floor")
         try:
-            run_transaction(a)
+            with stage_roots_lock(a.share, wait_secs=30):
+                run_transaction(a)
         except subprocess.CalledProcessError as error:
             raise SystemExit(error.returncode) from error
         return
