@@ -1043,9 +1043,14 @@ mod tests {
             Target::Native8b,
             Target::Native2b,
         ] {
-            assert!(create_work_args_with_lock(&x, t, &lock).is_err(), "{t:?}");
+            assert!(
+                create_work_args_with_lock(&x, t, EMBEDDED_WEIGHTS_LOCK).is_err(),
+                "{t:?}"
+            );
         }
-        assert!(create_work_args_with_lock(&qwen, Target::NativeXiaomi, &lock).is_err());
+        assert!(
+            create_work_args_with_lock(&qwen, Target::NativeXiaomi, EMBEDDED_WEIGHTS_LOCK).is_err()
+        );
         // Qwen pins go only to the targets that carry the pinned model (#968).
         let mut q2 = qwen.clone();
         q2.model = Some("qwen3-vl-2b-q8".into());
