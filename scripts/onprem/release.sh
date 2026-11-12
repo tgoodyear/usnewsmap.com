@@ -243,6 +243,7 @@ case "$STEP" in
   prune)
     [ "${USNM_RELEASE_PRUNE:-false}" = true ] ||
       die "--step prune is off: set USNM_RELEASE_PRUNE=true once the host has the prune role (USNM_ONPREM_RELEASE_PRUNE; docs/operations/rebuild-and-index-storage.md, \"Prune from the on-prem release\")"
+    ! { $DRY_RUN && $DELETE; } || die "--step prune: --dry-run and --delete conflict; without --delete the step is a dry run"
     [ -n "$APP_URL" ] || die "--step prune needs --app-url (the app that serves the version)"
     [ -n "$VERSION" ] || die "--step prune needs --index-version (the version the app serves)"
     [ -x "$QUICKWIT" ] || die "no quickwit at $QUICKWIT"

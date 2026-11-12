@@ -360,6 +360,15 @@ class Prune(Ready):
         self.assertEqual(p.returncode, 1)
         self.assertTrue(all("--delete" not in c for c in self.calls()))
 
+    def test_dry_run_and_delete_conflict(self):
+        p = self.prune("--dry-run", "--delete")
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("--dry-run and --delete conflict", p.stderr)
+        self.assertEqual(self.calls(), [])
+        p = self.prune("--dry-run")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertTrue(all("--delete" not in c for c in self.calls()))
+
     def test_it_needs_quickwit_and_the_version(self):
         p = self.prune(USNM_QUICKWIT_BIN=os.path.join(self.dir, "missing"))
         self.assertEqual((p.returncode, "no quickwit at" in p.stderr), (1, True), p.stderr)
