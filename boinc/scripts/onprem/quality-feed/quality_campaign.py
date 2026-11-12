@@ -78,7 +78,8 @@ Per language and stopped cells. --languages keeps only pages whose page_lang is 
 both lists, so each language (or group) can be its own campaign, worst first, and English's
 1.67M pages don't stand in front of every other language's. --stop-cells reads the stop.json
 quality_gain.py writes and leaves out every page of a band, language and decade cell it
-stopped: the gain there was measured below the threshold (#1415: 0.02). Both are counted in summary.json
+stopped: the gain there was measured below the threshold (#1415: 0.02). Its bands must be
+this build's (--worst-above, --moderate-above, --min-occurrences), or it is refused. Both are counted in summary.json
 under excluded, as "language not listed" and "stopped cell".
 
 Files, under --out-dir/<campaign>/:
@@ -528,7 +529,7 @@ def build(a):
     scans = read_index(a.index)
     ocr_held = ocr_pages(a.ocr_state)
     languages = set(a.languages.split(",")) if a.languages else None
-    stopped = read_stop_cells(a.stop_cells)
+    stopped = read_stop_cells(a.stop_cells, filters)
 
     def excluded_by(r):
         if languages is not None and r["page_lang"] not in languages:
@@ -637,18 +638,24 @@ def build(a):
     return summary
 
 
-def read_stop_cells(path):
-    """(band, language, decade) cells quality_gain.py stopped, from its stop.json."""
+def read_stop_cells(path, filters):
+    """(band, language, decade) cells quality_gain.py stopped, from its stop.json. Its bands
+    must be this build's, or a band name would mean other pages here."""
     if not path:
         return set()
     try:
         with open(path) as f:
             got = json.load(f)
-        return {(c["band"], c["lang"], int(c["decade"])) for c in got["cells"]}
+        cells = {(c["band"], c["lang"], int(c["decade"])) for c in got["cells"]}
+        theirs = got["filters"]
     except FileNotFoundError:
         sys.exit(f"--stop-cells {path}: no such file")
     except (ValueError, KeyError, TypeError):
         sys.exit(f"--stop-cells {path}: not a quality_gain.py stop.json")
+    ours = {**cut_of(filters), "worst_above": literal(filters.worst_above)}
+    if theirs != ours:
+        sys.exit(f"--stop-cells {path}: measured with bands {theirs}, this build's are {ours}")
+    return cells
 
 
 def parser():

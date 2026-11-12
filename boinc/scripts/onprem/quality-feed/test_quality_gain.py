@@ -64,6 +64,28 @@ class GainTest(unittest.TestCase):
         _, stop = self.run_on(rows, "--readers", "ours-tesseract,xiaomi-ocr-0")
         self.assertEqual(stop["cells"], [])
 
+    def test_a_reader_with_no_pages_in_a_cell_keeps_it_open(self):
+        rows = [page(i, loc=0.15, ours=0.15) for i in range(40)]
+        _, stop = self.run_on(rows, "--readers", "ours-tesseract,xiaomi-ocr-0")
+        self.assertEqual(stop["cells"], [])
+        _, stop = self.run_on(rows)
+        self.assertEqual(len(stop["cells"]), 1)
+        self.assertEqual(stop["filters"], {"min_occurrences": 50, "moderate_above": "0.1", "worst_above": "0.25"})
+
+    def test_plan_weights_carry_the_cell_to_its_band(self):
+        # 20 pages from a big title gaining 0.03 (weight 100), 20 from a small one gaining 0 (weight 1).
+        rows = [page(i, loc=0.15, ours=0.12) for i in range(20)] + [page(100 + i, loc=0.15, ours=0.15) for i in range(20)]
+        plan = self.d / "plan.jsonl"
+        plan.write_text("".join(json.dumps({"doc_id": f"sn{i}_1900-01-01_ed-1_seq-1", "weight": 100 if i < 100 else 1}) + "\n"
+                                for i in list(range(20)) + list(range(100, 120))))
+        cells, _ = self.run_on(rows, "--plan", str(plan))
+        self.assertAlmostEqual(float(cells[0]["mean_drop"]), 0.0297, places=4)
+
+    def test_the_latest_output_is_taken_before_unscored_ones_are_dropped(self):
+        sql = qg.export_sql(["ours-tesseract"])
+        self.assertLess(sql.index("ORDER BY doc_id, reader, ocred_at DESC"), sql.index("WHERE damage_rate IS NOT NULL"))
+        self.assertIn("excluded_estimates", sql)
+
     def test_the_cer_pair_is_reported_when_both_have_one(self):
         cells, _ = self.run_on([page(i, cer=(0.3, 0.25)) for i in range(3)] + [page(9)])
         self.assertEqual(int(cells[0]["cer_pairs"]), 3)

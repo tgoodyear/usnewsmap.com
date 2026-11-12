@@ -33,7 +33,17 @@ here by name once it has a quality.readers row and loaded outputs; nothing else 
 unknown name stops the run, so a typo isn't read as "no pages".
 
 --plan restricts the pages to those in one or more of quality_campaign.py's plan.jsonl files,
-so a campaign's own gain is measured apart from earlier re-reads.
+so a campaign's own gain is measured apart from earlier re-reads. A moderate sample's rows
+carry `weight`, and with --plan the cell's mean and interval are weighted by it, so a cell
+estimates its band's gain rather than the sample's.
+
+A cell is stopped (in stop.json) only when every requested reader stopped there; a reader with
+no pages in the cell is still measuring it. stop.json records the band filters it was made
+with, and quality_campaign.py refuses it under other filters.
+
+The CER pair comes from one unit: the page's unit chosen as quality.page_signals chooses it
+(hat version 2 first, then the newest, leaving out campaigns in quality.excluded_estimates),
+LoC's estimate and the reader's both from that unit.
 
 Files, under --out-dir:
 
@@ -63,21 +73,33 @@ EXPORT_SQL = """
 BEGIN TRANSACTION READ ONLY;
 COPY (
   WITH wanted(reader) AS (VALUES {readers}),
-  o AS (
+  latest AS (
+    -- The newest output of each reader, scored or not: an unscored newest run isn't
+    -- replaced by an older scored one.
     SELECT DISTINCT ON (doc_id, reader) doc_id, reader, damage_rate
     FROM quality.ocr_outputs
-    WHERE damage_rate IS NOT NULL AND reader IN (SELECT reader FROM wanted)
+    WHERE reader IN (SELECT reader FROM wanted)
     ORDER BY doc_id, reader, ocred_at DESC
+  ), o AS (
+    SELECT * FROM latest WHERE damage_rate IS NOT NULL
+  ), hat AS (
+    -- The page's unit, as quality.page_signals picks it: hat version 2 first, then the
+    -- newest, among campaigns whose estimates aren't excluded.
+    SELECT DISTINCT ON (u.doc_id) u.campaign, u.doc_id
+    FROM quality.unit_pages u JOIN quality.campaigns c USING (campaign)
+    WHERE u.outcome = 'ok' AND u.doc_id IN (SELECT doc_id FROM o)
+      AND NOT EXISTS (SELECT FROM quality.excluded_estimates x WHERE x.campaign = u.campaign)
+    ORDER BY u.doc_id, u.hat_version DESC, c.loaded_at DESC
   ), l AS (
-    SELECT DISTINCT ON (doc_id) doc_id, est_cer FROM quality.reader_scores
-    WHERE reader IN ('loc', 'loc-hist') AND est_cer IS NOT NULL
-      AND doc_id IN (SELECT doc_id FROM o)
-    ORDER BY doc_id, (reader = 'loc') DESC, campaign DESC
+    SELECT DISTINCT ON (r.doc_id) r.doc_id, r.est_cer
+    FROM hat JOIN quality.reader_scores r USING (campaign, doc_id)
+    WHERE r.reader IN ('loc', 'loc-hist') AND r.est_cer IS NOT NULL
+    ORDER BY r.doc_id, (r.reader = 'loc-hist') DESC
   ), r AS (
-    SELECT DISTINCT ON (doc_id, reader) doc_id, reader, est_cer FROM quality.reader_scores
-    WHERE est_cer IS NOT NULL AND reader IN (SELECT reader FROM wanted)
-      AND doc_id IN (SELECT doc_id FROM o)
-    ORDER BY doc_id, reader, campaign DESC
+    -- The reader's estimate from the same unit as LoC's, so the two are a pair.
+    SELECT r.doc_id, r.reader, r.est_cer
+    FROM hat JOIN quality.reader_scores r USING (campaign, doc_id)
+    WHERE r.est_cer IS NOT NULL AND r.reader IN (SELECT reader FROM wanted)
   )
   SELECT o.doc_id, o.reader, coalesce(s.lang, 'none') AS lang, s.decade, d.head + d.near AS occurrences,
          s.damage_rate AS loc_damage, o.damage_rate AS ours_damage, l.est_cer AS loc_est_cer,
@@ -150,12 +172,27 @@ def read_pages(path):
 
 
 def plan_docs(paths):
-    docs = set()
+    """doc_id -> weight: the moderate sample's `weight` (the inverse of the page's chance of
+    being drawn), 1 for a page of the worst list, which takes every page."""
+    docs = {}
     for path in paths:
         with open(path) as f:
             for line in f:
-                docs.add(json.loads(line)["doc_id"])
+                row = json.loads(line)
+                docs[row["doc_id"]] = float(row.get("weight", 1.0))
     return docs
+
+
+def weighted(xs, ws):
+    """The weighted mean and its standard error (the ratio estimator's linearised variance),
+    with an effective SD so the decision rule reads it as it reads an unweighted cell."""
+    n = len(xs)
+    total = math.fsum(ws)
+    m = math.fsum(w * x for x, w in zip(xs, ws)) / total
+    if n < 2:
+        return m, None
+    var = n / (n - 1) * math.fsum((w * (x - m)) ** 2 for x, w in zip(xs, ws)) / total ** 2
+    return m, math.sqrt(var * n)
 
 
 def mean_sd(xs):
@@ -181,12 +218,13 @@ def decide(n, mean, sd, min_gain, cell_pages):
     return "measuring"
 
 
-def cells_of(pages, filters):
-    cells = collections.defaultdict(lambda: {"drop": [], "cer": []})
+def cells_of(pages, filters, weights=None):
+    cells = collections.defaultdict(lambda: {"drop": [], "cer": [], "w": []})
     for p in pages:
         band = quality_campaign.band_of(p["loc_damage"], p["occurrences"], filters) or "low"
         c = cells[(p["reader"], band, p["lang"], p["decade"])]
         c["drop"].append(p["loc_damage"] - p["ours_damage"])
+        c["w"].append(weights.get(p["doc_id"], 1.0) if weights else 1.0)
         if p["loc_est_cer"] is not None and p["ours_est_cer"] is not None:
             c["cer"].append(p["loc_est_cer"] - p["ours_est_cer"])
     return cells
@@ -210,9 +248,9 @@ def measure(a):
     only = plan_docs(a.plan) if a.plan else None
     pages = [p for p in read_pages(source) if p["reader"] in readers and (only is None or p["doc_id"] in only)]
     rows = []
-    for (reader, band, lang, decade), c in sorted(cells_of(pages, filters).items()):
+    for (reader, band, lang, decade), c in sorted(cells_of(pages, filters, only).items()):
         n = len(c["drop"])
-        mean, sd = mean_sd(c["drop"])
+        mean, sd = weighted(c["drop"], c["w"]) if only else mean_sd(c["drop"])
         half = Z95 * sd / math.sqrt(n) if sd is not None else None
         cer_mean, _ = mean_sd(c["cer"])
         rows.append({"reader": reader, "band": band, "lang": lang, "decade": decade, "n": n,
@@ -232,9 +270,16 @@ def measure(a):
     for r in rows:
         if r["band"] in a.stop_bands:
             by_cell[(r["band"], r["lang"], r["decade"])].add(r["decision"])
-    stopped = sorted(k for k, d in by_cell.items() if d == {"stop"})
+    seen = collections.defaultdict(set)
+    for r in rows:
+        if r["band"] in a.stop_bands and r["decision"] == "stop":
+            seen[(r["band"], r["lang"], r["decade"])].add(r["reader"])
+    # Every requested reader must have stopped there: a reader with no pages in the cell is
+    # still measuring it.
+    stopped = sorted(k for k, d in by_cell.items() if d == {"stop"} and seen[k] == set(readers))
     stop = {"cells": [{"band": b, "decade": d, "lang": l} for b, l, d in stopped], "min_gain": a.min_gain,
-            "readers": readers, "bands": sorted(a.stop_bands)}
+            "readers": readers, "bands": sorted(a.stop_bands),
+            "filters": {**quality_campaign.cut_of(filters), "worst_above": quality_campaign.literal(filters.worst_above)}}
     quality_campaign.write_atomic(os.path.join(a.out_dir, "stop.json"),
                                   (json.dumps(stop, indent=1, sort_keys=True) + "\n").encode())
     decisions = collections.Counter((r["band"], r["decision"]) for r in rows)

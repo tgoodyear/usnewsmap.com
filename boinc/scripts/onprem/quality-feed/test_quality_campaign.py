@@ -118,6 +118,9 @@ class OrderTest(Built):
         self.assertEqual([p["seq"] for p in lines(self.d / "out/w/plan.jsonl")], [9, 10])
 
 
+FILTERS = {"min_occurrences": 50, "moderate_above": "0.1", "worst_above": "0.25"}
+
+
 class LanguageAndStopTest(Built):
     def test_languages_keep_only_the_listed_pages_in_both_lists(self):
         s = self.build(fixture(), "--languages", "ger")
@@ -128,13 +131,19 @@ class LanguageAndStopTest(Built):
 
     def test_stopped_cells_leave_only_their_band(self):
         stop = self.d / "stop.json"
-        stop.write_text(json.dumps({"cells": [{"band": "moderate", "lang": "ger", "decade": 1890}]}))
+        stop.write_text(json.dumps({"cells": [{"band": "moderate", "lang": "ger", "decade": 1890}], "filters": FILTERS}))
         s = self.build(fixture(), "--stop-cells", str(stop))
         sample = lines(self.d / "out/w-moderate/plan.jsonl")
         self.assertFalse([p for p in sample if (p["page_lang"], p["decade"]) == ("ger", 1890)])
         self.assertTrue([p for p in sample if (p["page_lang"], p["decade"]) == ("ger", 1900)])
         self.assertEqual(s["worst"]["pages"], 30)
         self.assertEqual(s["stop_cells"]["cells"], 1)
+
+    def test_a_stop_file_of_other_bands_is_refused(self):
+        stop = self.d / "stop.json"
+        stop.write_text(json.dumps({"cells": [], "filters": {**FILTERS, "worst_above": "0.5"}}))
+        with self.assertRaises(SystemExit):
+            self.build(fixture(), "--stop-cells", str(stop))
 
     def test_a_bad_language_list_or_stop_file_is_refused(self):
         with self.assertRaises(SystemExit):
