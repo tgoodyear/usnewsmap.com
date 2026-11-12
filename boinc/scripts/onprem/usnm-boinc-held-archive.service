@@ -9,6 +9,9 @@ Type=oneshot
 # imports the controller's batch_scheduler.py beside it.
 WorkingDirectory=/opt/usnm
 Environment=USNM_SETTINGS_HOME=/root/.config/usnewsmap
+# The tick lock every plan's tick runs under (controller/controller-tick.sh), held through the
+# run so no plan's tick takes the controller's lease meanwhile (#1766, #1690).
+Environment=USNM_HELD_ARCHIVE_TICK_LOCK=/run/usnm-boinc-controller-tick.lock
 ExecStart=/usr/bin/bash /opt/usnm/boinc/scripts/onprem/held-archive.sh
 # A batch of 1,000 pages takes about 15 minutes, and a run does at most 10. On a stop or a
 # timeout only the script gets SIGTERM: it interrupts the archive tool, waits for it to release

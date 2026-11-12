@@ -975,7 +975,8 @@ jobs:
         run: |
           shellcheck -x -S warning boinc/scripts/start-boinc-bridge.sh boinc/scripts/provision-boinc.sh boinc/scripts/boinc-app-release.sh \
             boinc/scripts/onprem/image-security-check.sh boinc/scripts/onprem/lan-tls/*.sh \
-            boinc/scripts/onprem/feed-monitor/*.sh scripts/ci/feed-monitor-release.sh
+            boinc/scripts/onprem/feed-monitor/*.sh scripts/ci/feed-monitor-release.sh \
+            boinc/scripts/onprem/controller/*.sh
           sudo python3 -m unittest -v boinc/scripts/onprem/test_lan_tls_sync.py
       # Every setting infra/main.bicepparam reads is in the schema, and the
       # committed files hold only known public ones, typed and sorted (#295).

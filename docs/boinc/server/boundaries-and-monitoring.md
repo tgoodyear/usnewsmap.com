@@ -143,7 +143,8 @@ SOURCE_ARGS="server --project [host-project-path] --window-env /etc/usnm-boinc/q
 # Optional feeder allocation check (#1462), after a server image that ships the guard:
 # append --feeder-guard /usr/local/lib/usnm-boinc/feeder-slot-guard.py to the server SOURCE_ARGS.
 PUSH_URL="http://[existing-dashboard]/api/feed-source/server"
-# controller: SOURCE_ARGS="controller --unit usnm-boinc-priority-controller.service --maintenance-unit usnm-boinc-held-archive.service"
+# controller: SOURCE_ARGS="controller --unit usnm-boinc-priority-controller@main.service --maintenance-unit usnm-boinc-held-archive.service"
+# (--unit is the live plan's own unit, #1690; a host still on the shared service names usnm-boinc-priority-controller.service.)
 # (--maintenance-unit, #835: the daily held-page archive pauses the controller; its failures fire `controller_tick` at once.)
 # backlog: SOURCE_ARGS="backlog --dashboard https://[dashboard-name]/api/view.json --requests [qwen-state]/requests --outbox [outbox]/[qwen-campaign] --selection [read-only-selected.jsonl]"
 # each own client: SOURCE_ARGS="client --data-dir [existing-boinc-data-dir]"
