@@ -5,6 +5,7 @@ import fcntl
 import os
 from pathlib import Path
 import re
+import sys
 import time
 import uuid
 import xml.etree.ElementTree as ET
@@ -26,6 +27,41 @@ GENERAL_MARKERS = {"amd_vulkan_8b": AMD_GENERAL_MARKER, "nvidia_vulkan_8b": NVID
 GENERAL_LABELS = {"amd_vulkan_8b": "AMD", "nvidia_vulkan_8b": "NVIDIA", "intel_vulkan_8b": "Intel",
                   "nvidia_vulkan_6gb_8b": "NVIDIA 6 GB"}
 AMD_FIRST_MARKER = "usnm-amd-first-reservation-v1"
+# Any admission marker an operator tool can leave in the config. A refresh that does not
+# recognise one would drop it with the rest of the old plan class, so it stops instead.
+ADMISSION_MARKER = re.compile(r"usnm-[a-z0-9]+(?:-[a-z0-9]+)*-admission-[a-z0-9]+(?:[-.][a-z0-9]+)*")
+KNOWN_ADMISSION_MARKERS = frozenset(GENERAL_MARKERS.values())
+
+
+def reject_unknown_admission_markers(root: ET.Element) -> None:
+    for node in root.iter():
+        if node.tag is not ET.Comment:
+            continue
+        for marker in ADMISSION_MARKER.findall(node.text or ""):
+            if marker not in KNOWN_ADMISSION_MARKERS:
+                raise ValueError(
+                    f"Unknown admission marker {marker} in the current plan policy: this image "
+                    "cannot preserve it (is it older than the tool that wrote it?); "
+                    "refusing to refresh, config left untouched")
+
+
+def admission_state(node: ET.Element) -> str:
+    comments = {(child.text or "").strip() for child in node if child.tag is ET.Comment}
+    marked = sorted(marker for marker in KNOWN_ADMISSION_MARKERS if marker in comments)
+    if marked:
+        return "general (" + ", ".join(marked) + ")"
+    low, high = node.findtext("min_wu_id"), node.findtext("max_wu_id")
+    if low is None and high is None:
+        return "no workunit bounds"
+    return "closed" if (low, high) == ("2", "1") else f"workunits {low}-{high}"
+
+
+def admission_changes(current: bytes, merged: bytes) -> list[str]:
+    _, before = parse_policy(current)
+    _, after = parse_policy(merged)
+    return [f"{name}: admission {admission_state(before[name])} -> {admission_state(after[name])}"
+            for name in sorted(before.keys() & after.keys())
+            if admission_state(before[name]) != admission_state(after[name])]
 
 
 def parse_policy(payload: bytes) -> tuple[ET.Element, dict[str, ET.Element]]:
@@ -44,6 +80,7 @@ def parse_policy(payload: bytes) -> tuple[ET.Element, dict[str, ET.Element]]:
 def merge_policy(source: bytes, current: bytes) -> bytes:
     root, reviewed = parse_policy(source)
     old_root, existing = parse_policy(current)
+    reject_unknown_admission_markers(old_root)
     for name in COHORT_CLASSES:
         if name not in existing:
             continue
@@ -119,7 +156,7 @@ def merge_policy(source: bytes, current: bytes) -> bytes:
     return ET.tostring(root, encoding="utf-8", xml_declaration=True) + b"\n"
 
 
-def refresh(source: Path, target: Path) -> bool:
+def refresh(source: Path, target: Path, log=None) -> bool:
     lock_path = target.with_name(".native-qwen-cohort.lock")
     if target.is_symlink() or lock_path.is_symlink():
         raise ValueError("Refusing symlinked cohort policy or lock")
@@ -130,6 +167,9 @@ def refresh(source: Path, target: Path) -> bool:
         payload = merge_policy(payload, current if current is not None else payload)
         if current == payload:
             return False
+        if current is not None and log is not None:
+            for line in admission_changes(current, payload):
+                log(line)
         staged = target.with_name(".usnm-plan-policy-" + uuid.uuid4().hex)
         created = False
         try:
@@ -151,7 +191,11 @@ def main() -> None:
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--target", type=Path, required=True)
     args = parser.parse_args()
-    changed = refresh(args.source, args.target)
+    try:
+        changed = refresh(args.source, args.target,
+                          log=lambda line: print("Admission changed by refresh: " + line, file=sys.stderr))
+    except ValueError as error:
+        sys.exit(f"refresh-plan-policy: {error}")
     print("Plan policy refreshed; bounded admission preserved" if changed else "Plan policy matches image and admission")
 
 
