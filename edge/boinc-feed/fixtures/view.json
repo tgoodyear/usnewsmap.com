@@ -1,14 +1,14 @@
 {
- "generated_at": "2026-11-12T04:57:39.759017825Z",
+ "generated_at": "2026-03-14T12:00:00Z",
  "warming": null,
  "fetch": {
   "activity": "queued",
   "index_error": null,
   "last_day": {
-   "bytes": 122740088016,
-   "mb_per_s": 1.42,
-   "pages": 24064,
-   "pages_per_hour": 1002.7
+   "bytes": 100000000000,
+   "mb_per_s": 1.2,
+   "pages": 24000,
+   "pages_per_hour": 1000
   },
   "last_hour": {
    "bytes": 0,
@@ -19,30 +19,30 @@
   "queue": [
    {
     "error": null,
-    "fetched": 2319,
+    "fetched": 2000,
     "kind": "quality",
     "marked_at": null,
-    "name": "queue-quality-queued-1",
+    "name": "queue-example-1",
     "pages": 4000,
     "path": "",
     "state": "queued"
    },
    {
     "error": null,
-    "fetched": 992,
+    "fetched": 500,
     "kind": "quality",
     "marked_at": null,
-    "name": "queue-quality-queued-2",
+    "name": "queue-example-2",
     "pages": 1000,
     "path": "",
     "state": "queued"
    },
    {
     "error": null,
-    "fetched": 3,
+    "fetched": 0,
     "kind": "quality",
     "marked_at": null,
-    "name": "queue-quality-queued-3",
+    "name": "queue-example-3",
     "pages": 1000,
     "path": "",
     "state": "queued"
@@ -52,8 +52,8 @@
     "fetched": 0,
     "kind": "ocr",
     "marked_at": null,
-    "name": "queue-ocr-queued-1",
-    "pages": 75,
+    "name": "queue-example-4",
+    "pages": 100,
     "path": "",
     "state": "queued"
    },
@@ -61,19 +61,19 @@
     "error": null,
     "fetched": 2000,
     "kind": "quality",
-    "marked_at": "2026-11-03T13:38:35.772868885Z",
-    "name": "queue-quality-fetched-1",
+    "marked_at": "2026-03-10T00:00:00Z",
+    "name": "queue-example-5",
     "pages": 2000,
     "path": "",
     "state": "fetched"
    },
    {
     "error": null,
-    "fetched": 976,
+    "fetched": 900,
     "kind": "ocr",
-    "marked_at": "2026-10-24T19:19:31.591704558Z",
-    "name": "queue-ocr-fetched-1",
-    "pages": 976,
+    "marked_at": "2026-03-09T00:00:00Z",
+    "name": "queue-example-6",
+    "pages": 900,
     "path": "",
     "state": "fetched"
    },
@@ -82,7 +82,7 @@
     "fetched": 400,
     "kind": "quality",
     "marked_at": null,
-    "name": "queue-quality-fetching-1",
+    "name": "queue-example-7",
     "pages": 1000,
     "path": "",
     "state": "fetching"
@@ -92,7 +92,7 @@
     "fetched": 0,
     "kind": "ocr",
     "marked_at": null,
-    "name": "queue-ocr-cooling-1",
+    "name": "queue-example-8",
     "pages": 250,
     "path": "",
     "state": "cooling"
@@ -101,358 +101,362 @@
   "queue_configured": true,
   "queue_error": null,
   "queue_summary": {
-   "cooling": 0,
-   "fetched": 488,
-   "fetching": 0,
-   "manifests": 2103,
-   "pages": 2236987,
-   "pages_fetched": 645896,
-   "pages_left": 1591058,
-   "queued": 1615
+   "cooling": 1,
+   "fetched": 40,
+   "fetching": 1,
+   "manifests": 200,
+   "pages": 1200000,
+   "pages_fetched": 590000,
+   "pages_left": 610000,
+   "queued": 158
   },
   "total": {
-   "bytes": 2948287406020,
-   "pages": 618868
+   "bytes": 1000000000000,
+   "pages": 500000
   }
  },
  "boinc_week": {
   "error": null,
-  "generated_at": "2026-11-12T04:53:54Z",
-  "received": "2026-11-12T04:53:56.358377228Z",
+  "generated_at": "2026-03-14T11:56:00Z",
+  "received": "2026-03-14T11:56:00Z",
   "stale": false,
   "week": {
    "bucket_hours": 3,
-   "generated_at": 1794459234,
-   "schema": 1,
-   "generated_utc_offset_minutes": -300,
    "buckets": [
     {
      "completed": {
-      "usnm_ocr": 68,
-      "usnm_quality": 36,
-      "usnm_qwen": 130
+      "usnm_ocr": 10,
+      "usnm_quality": 5,
+      "usnm_qwen": 100,
+      "usnm_gold": 4
      },
-     "hosts": 7,
+     "hosts": 5,
      "partial": false,
      "queued": {
       "usnm_ndlocr": 1,
-      "usnm_ocr": 63,
-      "usnm_qwen": 1601,
+      "usnm_ocr": 20,
+      "usnm_qwen": 300,
       "usnm_surya": 4
      },
-     "start": 1794351600,
-     "utc_offset_minutes": -300,
+     "start": 1773381600,
+     "utc_offset_minutes": 0,
      "volunteers": 3
     },
     {
      "completed": {
-      "usnm_ocr": 69,
-      "usnm_quality": 49,
-      "usnm_qwen": 215
+      "usnm_ocr": 11,
+      "usnm_quality": 6,
+      "usnm_qwen": 110
      },
-     "hosts": 9,
+     "hosts": 6,
      "partial": false,
      "queued": {
       "usnm_ndlocr": 1,
-      "usnm_ocr": 110,
-      "usnm_quality": 2,
-      "usnm_qwen": 1590,
+      "usnm_ocr": 20,
+      "usnm_qwen": 300,
       "usnm_surya": 4
      },
-     "start": 1794362400,
-     "utc_offset_minutes": -300,
+     "start": 1773392400,
+     "utc_offset_minutes": 0,
      "volunteers": 4
     },
     {
      "completed": {
-      "usnm_ocr": 103,
-      "usnm_quality": 48,
-      "usnm_qwen": 550
-     },
-     "hosts": 8,
-     "partial": false,
-     "queued": {
-      "usnm_ndlocr": 1,
-      "usnm_ocr": 29,
-      "usnm_qwen": 846,
-      "usnm_surya": 4
-     },
-     "start": 1794373200,
-     "utc_offset_minutes": -300,
-     "volunteers": 4
-    },
-    {
-     "completed": {
-      "usnm_ocr": 63,
-      "usnm_quality": 43,
-      "usnm_qwen": 435
-     },
-     "hosts": 9,
-     "partial": false,
-     "queued": {
-      "usnm_ndlocr": 1,
-      "usnm_ocr": 1,
-      "usnm_qwen": 450,
-      "usnm_surya": 4
-     },
-     "start": 1794384000,
-     "utc_offset_minutes": -300,
-     "volunteers": 5
-    },
-    {
-     "completed": {
-      "usnm_ocr": 36,
-      "usnm_quality": 33,
-      "usnm_qwen": 322
+      "usnm_ocr": 12,
+      "usnm_quality": 7,
+      "usnm_qwen": 120
      },
      "hosts": 7,
      "partial": false,
      "queued": {
       "usnm_ndlocr": 1,
-      "usnm_ocr": 1,
-      "usnm_qwen": 33,
+      "usnm_ocr": 20,
+      "usnm_qwen": 300,
       "usnm_surya": 4
      },
-     "start": 1794394800,
-     "utc_offset_minutes": -300,
+     "start": 1773403200,
+     "utc_offset_minutes": 0,
+     "volunteers": 5
+    },
+    {
+     "completed": {
+      "usnm_ocr": 13,
+      "usnm_quality": 8,
+      "usnm_qwen": 130,
+      "usnm_gold": 4
+     },
+     "hosts": 5,
+     "partial": false,
+     "queued": {
+      "usnm_ndlocr": 1,
+      "usnm_ocr": 20,
+      "usnm_qwen": 300,
+      "usnm_surya": 4
+     },
+     "start": 1773414000,
+     "utc_offset_minutes": 0,
+     "volunteers": 3
+    },
+    {
+     "completed": {
+      "usnm_ocr": 14,
+      "usnm_quality": 9,
+      "usnm_qwen": 140
+     },
+     "hosts": 6,
+     "partial": false,
+     "queued": {
+      "usnm_ndlocr": 1,
+      "usnm_ocr": 20,
+      "usnm_qwen": 300,
+      "usnm_surya": 4
+     },
+     "start": 1773424800,
+     "utc_offset_minutes": 0,
      "volunteers": 4
     },
     {
      "completed": {
-      "usnm_ocr": 74,
-      "usnm_quality": 42,
-      "usnm_qwen": 240
+      "usnm_ocr": 15,
+      "usnm_quality": 10,
+      "usnm_qwen": 150
      },
-     "hosts": 9,
+     "hosts": 7,
      "partial": false,
      "queued": {
       "usnm_ndlocr": 1,
-      "usnm_ocr": 2,
+      "usnm_ocr": 20,
+      "usnm_qwen": 300,
       "usnm_surya": 4
      },
-     "start": 1794405600,
-     "utc_offset_minutes": -300,
+     "start": 1773435600,
+     "utc_offset_minutes": 0,
      "volunteers": 5
     },
     {
      "completed": {
-      "usnm_ocr": 71,
-      "usnm_quality": 70,
-      "usnm_qwen": 8
+      "usnm_ocr": 16,
+      "usnm_quality": 11,
+      "usnm_qwen": 160,
+      "usnm_gold": 4
      },
-     "hosts": 9,
+     "hosts": 5,
      "partial": false,
      "queued": {
       "usnm_ndlocr": 1,
+      "usnm_ocr": 20,
+      "usnm_qwen": 300,
       "usnm_surya": 4
      },
-     "start": 1794416400,
-     "utc_offset_minutes": -300,
+     "start": 1773446400,
+     "utc_offset_minutes": 0,
+     "volunteers": 3
+    },
+    {
+     "completed": {
+      "usnm_ocr": 17,
+      "usnm_quality": 12,
+      "usnm_qwen": 170
+     },
+     "hosts": 6,
+     "partial": false,
+     "queued": {
+      "usnm_ndlocr": 1,
+      "usnm_ocr": 20,
+      "usnm_qwen": 300,
+      "usnm_surya": 4
+     },
+     "start": 1773457200,
+     "utc_offset_minutes": 0,
+     "volunteers": 4
+    },
+    {
+     "completed": {
+      "usnm_ocr": 18,
+      "usnm_quality": 13,
+      "usnm_qwen": 180
+     },
+     "hosts": 7,
+     "partial": false,
+     "queued": {
+      "usnm_ndlocr": 1,
+      "usnm_ocr": 20,
+      "usnm_qwen": 300,
+      "usnm_surya": 4
+     },
+     "start": 1773468000,
+     "utc_offset_minutes": 0,
      "volunteers": 5
     },
     {
      "completed": {
-      "usnm_ocr": 24,
-      "usnm_quality": 22,
-      "usnm_qwen": 95
-     },
-     "hosts": 9,
-     "partial": false,
-     "queued": {
-      "usnm_ndlocr": 1,
-      "usnm_ocr": 59,
-      "usnm_qwen": 326,
-      "usnm_surya": 4
-     },
-     "start": 1794427200,
-     "utc_offset_minutes": -300,
-     "volunteers": 5
-    },
-    {
-     "completed": {
-      "usnm_gold": 38,
-      "usnm_ocr": 26,
+      "usnm_ocr": 19,
       "usnm_quality": 14,
-      "usnm_qwen": 69
+      "usnm_qwen": 190,
+      "usnm_gold": 4
      },
-     "hosts": 7,
-     "partial": false,
-     "queued": {
-      "usnm_ndlocr": 1,
-      "usnm_ocr": 75,
-      "usnm_qwen": 332,
-      "usnm_surya": 4
-     },
-     "start": 1794438000,
-     "utc_offset_minutes": -300,
-     "volunteers": 3
-    },
-    {
-     "completed": {
-      "usnm_gold": 11,
-      "usnm_ocr": 82,
-      "usnm_quality": 17,
-      "usnm_qwen": 68
-     },
-     "hosts": 9,
+     "hosts": 5,
      "partial": true,
      "queued": {
       "usnm_ndlocr": 1,
-      "usnm_ocr": 63,
-      "usnm_qwen": 371,
+      "usnm_ocr": 20,
+      "usnm_qwen": 300,
       "usnm_surya": 4
      },
-     "start": 1794448800,
-     "utc_offset_minutes": -300,
-     "volunteers": 5
+     "start": 1773478800,
+     "utc_offset_minutes": 0,
+     "volunteers": 3
     }
-   ]
+   ],
+   "generated_at": 1773489360,
+   "generated_utc_offset_minutes": 0,
+   "schema": 1
   }
  },
  "throughput": {
-  "chart_start": "2026-11-05T08:00:00Z",
-  "days_start": "2026-11-05T04:00:00Z",
-  "hours_start": "2026-11-11T04:00:00Z",
+  "chart_start": "2026-03-07T16:00:00Z",
+  "days_start": "2026-03-07T12:00:00Z",
   "error": null,
-  "results_last_hour": 45,
-  "valid_last_hour": 30,
+  "hours_start": "2026-03-13T12:00:00Z",
+  "results_last_hour": 100,
   "sources": [
    {
     "name": "controller",
-    "observed_at": "2026-11-12T04:57:01Z",
+    "observed_at": "2026-03-14T11:57:00Z",
     "stale": false
    },
    {
     "name": "ship",
-    "observed_at": "2026-11-12T04:55:12Z",
+    "observed_at": "2026-03-14T11:55:00Z",
     "stale": false
    },
    {
     "name": "boinc",
-    "observed_at": "2026-11-12T04:52:42Z",
+    "observed_at": "2026-03-14T11:53:00Z",
     "stale": false
    },
    {
     "name": "batch",
-    "observed_at": "2026-11-12T04:57:10Z",
+    "observed_at": "2026-03-14T11:58:00Z",
     "stale": false
    }
   ],
   "steps": [
    {
+    "day_hours_known": 24,
+    "days": [
+     {
+      "hours_known": 24,
+      "value": 20000
+     },
+     {
+      "hours_known": 24,
+      "value": 22000
+     },
+     {
+      "hours_known": 24,
+      "value": 25000
+     },
+     {
+      "hours_known": 24,
+      "value": 18000
+     },
+     {
+      "hours_known": 24,
+      "value": 26000
+     },
+     {
+      "hours_known": 24,
+      "value": 30000
+     },
+     {
+      "hours_known": 24,
+      "value": 24000
+     }
+    ],
     "id": "scan_fetch",
     "label": "Scan fetch",
-    "unit": "pages",
-    "last_hour": 0,
-    "last_day": 26735,
+    "last_day": 24000,
+    "last_hour": 1000,
+    "unit": "pages"
+   },
+   {
     "day_hours_known": 24,
     "days": [
      {
       "hours_known": 24,
-      "value": 30846
+      "value": 1000
      },
      {
       "hours_known": 24,
-      "value": 25336
+      "value": 1200
      },
      {
       "hours_known": 24,
-      "value": 29674
+      "value": 900
      },
      {
       "hours_known": 24,
-      "value": 15856
+      "value": 100
      },
      {
       "hours_known": 24,
-      "value": 38306
+      "value": 300
      },
      {
       "hours_known": 24,
-      "value": 47829
+      "value": 500
      },
      {
       "hours_known": 24,
-      "value": 26735
+      "value": 400
      }
-    ]
-   },
-   {
+    ],
     "id": "ocr_import",
     "label": "OCR pages imported",
-    "unit": "pages",
-    "last_hour": 31,
-    "last_day": 379,
-    "day_hours_known": 24,
-    "days": [
-     {
-      "hours_known": 24,
-      "value": 1387
-     },
-     {
-      "hours_known": 24,
-      "value": 2928
-     },
-     {
-      "hours_known": 24,
-      "value": 1881
-     },
-     {
-      "hours_known": 24,
-      "value": 125
-     },
-     {
-      "hours_known": 24,
-      "value": 284
-     },
-     {
-      "hours_known": 24,
-      "value": 559
-     },
-     {
-      "hours_known": 24,
-      "value": 379
-     }
-    ]
+    "last_day": 400,
+    "last_hour": 20,
+    "unit": "pages"
    },
    {
-    "id": "quality_load",
-    "label": "Quality results loaded",
-    "unit": "pages",
-    "last_hour": 974,
-    "last_day": 19406,
     "day_hours_known": 24,
     "days": [
      {
       "hours_known": 24,
-      "value": 2914
+      "value": 15000
      },
      {
       "hours_known": 24,
-      "value": 2349
+      "value": 16000
      },
      {
       "hours_known": 24,
-      "value": 2939
+      "value": 14000
      },
      {
       "hours_known": 24,
-      "value": 0
+      "value": 18000
      },
      {
       "hours_known": 24,
-      "value": 9547
+      "value": 17000
      },
      {
       "hours_known": 24,
-      "value": 7002
+      "value": 19000
      },
      {
       "hours_known": 24,
-      "value": 19406
+      "value": 20000
      }
-    ]
+    ],
+    "id": "quality_load",
+    "label": "Quality results loaded",
+    "last_day": 20000,
+    "last_hour": 800,
+    "unit": "pages"
    }
-  ]
+  ],
+  "valid_last_hour": 80
  }
 }

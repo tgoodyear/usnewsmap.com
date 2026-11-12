@@ -1,460 +1,460 @@
 {
- "age_secs": 3459,
+ "age_secs": 3600,
  "last_error": null,
- "retrieved_at": "2026-11-12T04:57:26.244700044Z",
+ "retrieved_at": "2026-03-14T12:00:00Z",
  "stale": false,
  "snapshot": {
-  "generated_at": "2026-11-12T04:52:54.193086Z",
-  "observed_at": "2026-11-12T04:00:00Z",
-  "producer": "corpus-catalog",
+  "generated_at": "2026-03-14T11:55:00Z",
+  "observed_at": "2026-03-14T11:00:00Z",
+  "producer": "example-catalog",
   "schema_version": 1,
   "stages": [
    {
-    "count": 645896,
-    "detail": "Pages of the fetch queue's manifests in the fetch index, by any run; not per-file checksum or Azure mirror verification.",
+    "count": 400000,
+    "detail": "An example detail.",
     "id": "scan_cached",
     "label": "Queued pages fetched",
-    "observed_at": "2026-11-12T04:52:51.348931Z",
+    "observed_at": "2026-03-14T11:55:00Z",
     "state": "observed"
    },
    {
-    "count": 2236987,
-    "detail": "Every queue-ocr-* and queue-quality-* manifest on the scan store, fetched or not; not the entire corpus.",
+    "count": 1000000,
+    "detail": "An example detail.",
     "id": "scan_planned",
     "label": "Pages in fetch-queue manifests",
-    "observed_at": "2026-11-12T04:52:51.348931Z",
+    "observed_at": "2026-03-14T11:55:00Z",
     "state": "observed"
    },
    {
-    "count": 1591058,
-    "detail": "In manifests the queue will still run (queued, fetching or cooling off); not a fetch command or allocation.",
+    "count": 600000,
+    "detail": "An example detail.",
     "id": "scan_remaining",
     "label": "Queued pages not yet fetched",
-    "observed_at": "2026-11-12T04:52:51.348931Z",
+    "observed_at": "2026-03-14T11:55:00Z",
     "state": "observed"
    },
    {
-    "count": 618868,
-    "detail": "Unique pages in the fetch index, from every plan and queued manifest.",
+    "count": 500000,
+    "detail": "An example detail.",
     "id": "scan_total",
     "label": "Scans fetched, all runs",
-    "observed_at": "2026-11-12T04:52:51.348931Z",
+    "observed_at": "2026-03-14T11:55:00Z",
     "state": "observed"
    },
    {
-    "count": 439,
-    "detail": "Public server-status observation; source cache age unavailable. Result replicas, not pages or GPU eligibility.",
+    "count": 400,
+    "detail": "An example detail.",
     "id": "boinc_unsent",
     "label": "BOINC unsent result replicas",
-    "observed_at": "2026-11-12T04:52:50.637981Z",
+    "observed_at": "2026-03-14T11:54:00Z",
     "state": "observed"
    },
    {
-    "count": 165,
-    "detail": "Public server-status observation; source cache age unavailable. Result replicas, not pages or GPU eligibility.",
+    "count": 150,
+    "detail": "An example detail.",
     "id": "boinc_in_progress",
     "label": "BOINC assigned result replicas",
-    "observed_at": "2026-11-12T04:52:50.637981Z",
+    "observed_at": "2026-03-14T11:54:00Z",
     "state": "observed"
    },
    {
-    "count": 63,
-    "detail": "Public server-status observation; source cache age unavailable. Result replicas, not pages or GPU eligibility.",
+    "count": 60,
+    "detail": "An example detail.",
     "id": "boinc_usnm_ocr_unsent",
     "label": "usnm_ocr: unsent replicas",
-    "observed_at": "2026-11-12T04:52:50.637981Z",
+    "observed_at": "2026-03-14T11:54:00Z",
     "state": "observed"
    },
    {
-    "count": 21,
-    "detail": "Public server-status observation; source cache age unavailable. Result replicas, not pages or GPU eligibility.",
+    "count": 20,
+    "detail": "An example detail.",
     "id": "boinc_usnm_ocr_in_progress",
     "label": "usnm_ocr: assigned replicas",
-    "observed_at": "2026-11-12T04:52:50.637981Z",
+    "observed_at": "2026-03-14T11:54:00Z",
     "state": "observed"
    },
    {
     "count": 0,
-    "detail": "Public server-status observation; source cache age unavailable. Result replicas, not pages or GPU eligibility.",
+    "detail": "An example detail.",
     "id": "boinc_usnm_gold_unsent",
     "label": "usnm_gold: unsent replicas",
-    "observed_at": "2026-11-12T04:52:50.637981Z",
+    "observed_at": "2026-03-14T11:54:00Z",
     "state": "observed"
    },
    {
-    "count": 22,
-    "detail": "Public server-status observation; source cache age unavailable. Result replicas, not pages or GPU eligibility.",
+    "count": 10,
+    "detail": "An example detail.",
     "id": "boinc_usnm_gold_in_progress",
     "label": "usnm_gold: assigned replicas",
-    "observed_at": "2026-11-12T04:52:50.637981Z",
+    "observed_at": "2026-03-14T11:54:00Z",
     "state": "observed"
    },
    {
-    "count": 0,
-    "detail": "Public server-status observation; source cache age unavailable. Result replicas, not pages or GPU eligibility.",
+    "count": 5,
+    "detail": "An example detail.",
     "id": "boinc_usnm_quality_unsent",
     "label": "usnm_quality: unsent replicas",
-    "observed_at": "2026-11-12T04:52:50.637981Z",
+    "observed_at": "2026-03-14T11:54:00Z",
     "state": "observed"
    },
    {
-    "count": 4,
-    "detail": "Public server-status observation; source cache age unavailable. Result replicas, not pages or GPU eligibility.",
+    "count": 30,
+    "detail": "An example detail.",
     "id": "boinc_usnm_quality_in_progress",
     "label": "usnm_quality: assigned replicas",
-    "observed_at": "2026-11-12T04:52:50.637981Z",
+    "observed_at": "2026-03-14T11:54:00Z",
     "state": "observed"
    },
    {
-    "count": 371,
-    "detail": "Public server-status observation; source cache age unavailable. Result replicas, not pages or GPU eligibility.",
+    "count": 300,
+    "detail": "An example detail.",
     "id": "boinc_usnm_qwen_unsent",
     "label": "usnm_qwen: unsent replicas",
-    "observed_at": "2026-11-12T04:52:50.637981Z",
+    "observed_at": "2026-03-14T11:54:00Z",
     "state": "observed"
    },
    {
-    "count": 118,
-    "detail": "Public server-status observation; source cache age unavailable. Result replicas, not pages or GPU eligibility.",
+    "count": 80,
+    "detail": "An example detail.",
     "id": "boinc_usnm_qwen_in_progress",
     "label": "usnm_qwen: assigned replicas",
-    "observed_at": "2026-11-12T04:52:50.637981Z",
+    "observed_at": "2026-03-14T11:54:00Z",
     "state": "observed"
    },
    {
     "count": 1,
-    "detail": "Public server-status observation; source cache age unavailable. Result replicas, not pages or GPU eligibility.",
+    "detail": "An example detail.",
     "id": "boinc_usnm_ndlocr_unsent",
     "label": "usnm_ndlocr: unsent replicas",
-    "observed_at": "2026-11-12T04:52:50.637981Z",
+    "observed_at": "2026-03-14T11:54:00Z",
     "state": "observed"
    },
    {
     "count": 0,
-    "detail": "Public server-status observation; source cache age unavailable. Result replicas, not pages or GPU eligibility.",
+    "detail": "An example detail.",
     "id": "boinc_usnm_ndlocr_in_progress",
     "label": "usnm_ndlocr: assigned replicas",
-    "observed_at": "2026-11-12T04:52:50.637981Z",
+    "observed_at": "2026-03-14T11:54:00Z",
     "state": "observed"
    },
    {
     "count": 0,
-    "detail": "Public server-status observation; source cache age unavailable. Result replicas, not pages or GPU eligibility.",
+    "detail": "An example detail.",
     "id": "boinc_usnm_gold_native_unsent",
     "label": "usnm_gold_native: unsent replicas",
-    "observed_at": "2026-11-12T04:52:50.637981Z",
+    "observed_at": "2026-03-14T11:54:00Z",
     "state": "observed"
    },
    {
     "count": 0,
-    "detail": "Public server-status observation; source cache age unavailable. Result replicas, not pages or GPU eligibility.",
+    "detail": "An example detail.",
     "id": "boinc_usnm_gold_native_in_progress",
     "label": "usnm_gold_native: assigned replicas",
-    "observed_at": "2026-11-12T04:52:50.637981Z",
+    "observed_at": "2026-03-14T11:54:00Z",
     "state": "observed"
    },
    {
     "count": 0,
-    "detail": "Public server-status observation; source cache age unavailable. Result replicas, not pages or GPU eligibility.",
+    "detail": "An example detail.",
     "id": "boinc_usnm_ocr_native_unsent",
     "label": "usnm_ocr_native: unsent replicas",
-    "observed_at": "2026-11-12T04:52:50.637981Z",
+    "observed_at": "2026-03-14T11:54:00Z",
     "state": "observed"
    },
    {
     "count": 0,
-    "detail": "Public server-status observation; source cache age unavailable. Result replicas, not pages or GPU eligibility.",
+    "detail": "An example detail.",
     "id": "boinc_usnm_ocr_native_in_progress",
     "label": "usnm_ocr_native: assigned replicas",
-    "observed_at": "2026-11-12T04:52:50.637981Z",
+    "observed_at": "2026-03-14T11:54:00Z",
     "state": "observed"
    },
    {
-    "count": 21290,
-    "detail": "Serving index pages-v20261026-1, published 2026-10-28T01:01:29Z: pages whose searchable text is our OCR (sources.ocr_local). Not a count of OCR runs or accepted readings.",
+    "count": 20000,
+    "detail": "An example detail.",
     "id": "indexed",
     "label": "Pages searchable with our OCR",
-    "observed_at": "2026-11-12T04:52:53.829713Z",
+    "observed_at": "2026-03-14T11:55:00Z",
     "state": "observed"
    },
    {
-    "count": 17974,
-    "detail": "ocr-sync's approximate depth of ocr-bulk at its last run in the newest reported hour, leased messages included. ocr-priority's depth is not logged, so this is not every queued page. [source=throughput-live; observed_at=2026-11-12T04:00:00.000000000Z]",
+    "count": 15000,
+    "detail": "An example detail.",
     "id": "queued",
     "label": "Pages in the ocr-bulk queue",
-    "max_age_secs": 10800,
-    "observed_at": "2026-11-12T04:00:00Z",
-    "state": "observed"
+    "observed_at": "2026-03-14T11:00:00Z",
+    "state": "observed",
+    "max_age_secs": 10800
    },
    {
-    "count": 843,
-    "detail": "The controller's cohort_pending at its last tick in the newest reported hour: pages at BOINC, held for collection, or selected with no job yet. [source=throughput-live; observed_at=2026-11-12T04:00:00.000000000Z]",
+    "count": 800,
+    "detail": "An example detail.",
     "id": "allocated",
     "label": "OCR pages at BOINC or awaiting collection",
-    "max_age_secs": 10800,
-    "observed_at": "2026-11-12T04:00:00Z",
-    "state": "observed"
+    "observed_at": "2026-03-14T11:00:00Z",
+    "state": "observed",
+    "max_age_secs": 10800
    },
    {
-    "count": 20933,
-    "detail": "Last 336 hours, 336 reported. From the BOINC database, by when the canonical result returned. A bundled workunit holds an unknown number of pages, so this counts workunits. Validation, not collection or import. [source=throughput-live; observed_at=2026-11-12T04:00:00.000000000Z]",
+    "count": 12000,
+    "detail": "Last 336 hours, 336 reported. An example detail.",
     "id": "validated",
     "label": "BOINC OCR workunits with a canonical result, last 14 days",
-    "max_age_secs": 10800,
-    "observed_at": "2026-11-12T04:00:00Z",
-    "state": "observed"
+    "observed_at": "2026-03-14T11:00:00Z",
+    "state": "observed",
+    "max_age_secs": 10800
    },
    {
-    "count": 9494,
-    "detail": "Last 336 hours, 336 reported. Jobs the hand-off marked published: results that passed its collection checks. Includes jobs superseded by an earlier import, which publish nothing. Not import or release selection. [source=throughput-live; observed_at=2026-11-12T04:00:00.000000000Z]",
+    "count": 9000,
+    "detail": "Last 336 hours, 336 reported. An example detail.",
     "id": "collected",
     "label": "OCR pages collected through hand-off checks, last 14 days",
-    "max_age_secs": 10800,
-    "observed_at": "2026-11-12T04:00:00Z",
-    "state": "observed"
+    "observed_at": "2026-03-14T11:00:00Z",
+    "state": "observed",
+    "max_age_secs": 10800
    },
    {
-    "count": 14126,
-    "detail": "Last 336 hours, 336 reported. From ocr-sync's log, after each committed import record. Structural import into ocr-local, not release selection or search. [source=throughput-live; observed_at=2026-11-12T04:00:00.000000000Z]",
+    "count": 7000,
+    "detail": "Last 336 hours, 336 reported. An example detail.",
     "id": "imported",
     "label": "OCR pages in committed imports, last 14 days",
-    "max_age_secs": 10800,
-    "observed_at": "2026-11-12T04:00:00Z",
-    "state": "observed"
+    "observed_at": "2026-03-14T11:00:00Z",
+    "state": "observed",
+    "max_age_secs": 10800
    },
    {
-    "count": 6,
-    "detail": "Last 336 hours, 336 reported. Parts ocr-sync rejected and dead letters it archived. Attempts, not pages lost. [source=throughput-live; observed_at=2026-11-12T04:00:00.000000000Z]",
+    "count": 5,
+    "detail": "Last 336 hours, 336 reported. An example detail.",
     "id": "rejected",
     "label": "OCR parts rejected or dead-lettered, last 14 days",
-    "max_age_secs": 10800,
-    "observed_at": "2026-11-12T04:00:00Z",
-    "state": "observed"
+    "observed_at": "2026-03-14T11:00:00Z",
+    "state": "observed",
+    "max_age_secs": 10800
    },
    {
-    "count": 575775,
-    "detail": "Last 336 hours, 336 reported. Pages of finished units loaded into the quality database, from the loaders' logs. Scores, not OCR acceptance. [source=throughput-live; observed_at=2026-11-12T04:00:00.000000000Z]",
+    "count": 500000,
+    "detail": "Last 336 hours, 336 reported. An example detail.",
     "id": "quality_loaded",
     "label": "Quality and Qwen pages loaded, last 14 days",
-    "max_age_secs": 10800,
-    "observed_at": "2026-11-12T04:00:00Z",
-    "state": "observed"
+    "observed_at": "2026-03-14T11:00:00Z",
+    "state": "observed",
+    "max_age_secs": 10800
    },
    {
     "count": 1,
-    "detail": "Imported page evidence only; source age is independent of live aggregate refresh.",
-    "historical": true,
+    "detail": "An example detail.",
     "id": "artifact_verified",
     "label": "Cataloged verified locations",
-    "observed_at": "2026-10-17T19:07:23.495179Z",
-    "state": "observed"
+    "observed_at": "2026-03-01T00:00:00Z",
+    "state": "observed",
+    "historical": true
    },
    {
-    "count": 3650,
-    "detail": "Imported page evidence only; source age is independent of live aggregate refresh.",
-    "historical": true,
+    "count": 1000,
+    "detail": "An example detail.",
     "id": "run_history",
     "label": "Cataloged engine runs",
-    "observed_at": "2026-10-16T21:07:33.775368Z",
-    "state": "observed"
+    "observed_at": "2026-03-01T00:00:00Z",
+    "state": "observed",
+    "historical": true
    },
    {
     "count": 1,
-    "detail": "Independent source observations; not inferred from engine success.",
-    "historical": true,
+    "detail": "An example detail.",
     "id": "accepted",
     "label": "Cataloged acceptance observations",
-    "observed_at": "2026-10-24T05:19:12.039053Z",
-    "state": "observed"
+    "observed_at": "2026-03-01T00:00:00Z",
+    "state": "observed",
+    "historical": true
    }
   ]
  },
  "stage_freshness": [
   {
-   "age_secs": 287,
+   "age_secs": 300,
    "historical": false,
    "id": "scan_cached",
    "stale": false
   },
   {
-   "age_secs": 287,
+   "age_secs": 300,
    "historical": false,
    "id": "scan_planned",
    "stale": false
   },
   {
-   "age_secs": 287,
+   "age_secs": 300,
    "historical": false,
    "id": "scan_remaining",
    "stale": false
   },
   {
-   "age_secs": 287,
+   "age_secs": 300,
    "historical": false,
    "id": "scan_total",
    "stale": false
   },
   {
-   "age_secs": 288,
+   "age_secs": 360,
    "historical": false,
    "id": "boinc_unsent",
    "stale": false
   },
   {
-   "age_secs": 288,
+   "age_secs": 360,
    "historical": false,
    "id": "boinc_in_progress",
    "stale": false
   },
   {
-   "age_secs": 288,
+   "age_secs": 360,
    "historical": false,
    "id": "boinc_usnm_ocr_unsent",
    "stale": false
   },
   {
-   "age_secs": 288,
+   "age_secs": 360,
    "historical": false,
    "id": "boinc_usnm_ocr_in_progress",
    "stale": false
   },
   {
-   "age_secs": 288,
+   "age_secs": 360,
    "historical": false,
    "id": "boinc_usnm_gold_unsent",
    "stale": false
   },
   {
-   "age_secs": 288,
+   "age_secs": 360,
    "historical": false,
    "id": "boinc_usnm_gold_in_progress",
    "stale": false
   },
   {
-   "age_secs": 288,
+   "age_secs": 360,
    "historical": false,
    "id": "boinc_usnm_quality_unsent",
    "stale": false
   },
   {
-   "age_secs": 288,
+   "age_secs": 360,
    "historical": false,
    "id": "boinc_usnm_quality_in_progress",
    "stale": false
   },
   {
-   "age_secs": 288,
+   "age_secs": 360,
    "historical": false,
    "id": "boinc_usnm_qwen_unsent",
    "stale": false
   },
   {
-   "age_secs": 288,
+   "age_secs": 360,
    "historical": false,
    "id": "boinc_usnm_qwen_in_progress",
    "stale": false
   },
   {
-   "age_secs": 288,
+   "age_secs": 360,
    "historical": false,
    "id": "boinc_usnm_ndlocr_unsent",
    "stale": false
   },
   {
-   "age_secs": 288,
+   "age_secs": 360,
    "historical": false,
    "id": "boinc_usnm_ndlocr_in_progress",
    "stale": false
   },
   {
-   "age_secs": 288,
+   "age_secs": 360,
    "historical": false,
    "id": "boinc_usnm_gold_native_unsent",
    "stale": false
   },
   {
-   "age_secs": 288,
+   "age_secs": 360,
    "historical": false,
    "id": "boinc_usnm_gold_native_in_progress",
    "stale": false
   },
   {
-   "age_secs": 288,
+   "age_secs": 360,
    "historical": false,
    "id": "boinc_usnm_ocr_native_unsent",
    "stale": false
   },
   {
-   "age_secs": 288,
+   "age_secs": 360,
    "historical": false,
    "id": "boinc_usnm_ocr_native_in_progress",
    "stale": false
   },
   {
-   "age_secs": 285,
+   "age_secs": 300,
    "historical": false,
    "id": "indexed",
    "stale": false
   },
   {
-   "age_secs": 3459,
+   "age_secs": 3600,
    "historical": false,
    "id": "queued",
    "stale": false
   },
   {
-   "age_secs": 3459,
+   "age_secs": 3600,
    "historical": false,
    "id": "allocated",
    "stale": false
   },
   {
-   "age_secs": 3459,
+   "age_secs": 3600,
    "historical": false,
    "id": "validated",
    "stale": false
   },
   {
-   "age_secs": 3459,
+   "age_secs": 3600,
    "historical": false,
    "id": "collected",
    "stale": false
   },
   {
-   "age_secs": 3459,
+   "age_secs": 3600,
    "historical": false,
    "id": "imported",
    "stale": false
   },
   {
-   "age_secs": 3459,
+   "age_secs": 3600,
    "historical": false,
    "id": "rejected",
    "stale": false
   },
   {
-   "age_secs": 3459,
+   "age_secs": 3600,
    "historical": false,
    "id": "quality_loaded",
    "stale": false
   },
   {
-   "age_secs": 2195415,
+   "age_secs": 1166400,
    "historical": true,
    "id": "artifact_verified",
-   "stale": true
+   "stale": false
   },
   {
-   "age_secs": 2274605,
+   "age_secs": 1166400,
    "historical": true,
    "id": "run_history",
-   "stale": true
+   "stale": false
   },
   {
-   "age_secs": 1640307,
+   "age_secs": 1166400,
    "historical": true,
    "id": "accepted",
-   "stale": true
+   "stale": false
   }
  ]
 }

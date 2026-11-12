@@ -198,17 +198,17 @@ test("the fixtures map to a feed the project site accepts", () => {
 test("jobs in flight are the BOINC replica counts, with the dashboard's labels", () => {
   const s = card(buildFeed(pipeline(), view(), NOW), "Jobs in flight");
   const f = figures(s);
-  assert.equal(f["BOINC unsent result replicas"].value, 439);
-  assert.equal(f["BOINC assigned result replicas"].value, 165);
-  assert.equal(f["usnm_ocr: unsent replicas"].value, 63);
-  assert.equal(f["usnm_qwen: assigned replicas"].value, 118);
+  assert.equal(f["BOINC unsent result replicas"].value, 400);
+  assert.equal(f["BOINC assigned result replicas"].value, 150);
+  assert.equal(f["usnm_ocr: unsent replicas"].value, 60);
+  assert.equal(f["usnm_qwen: assigned replicas"].value, 80);
   assert.equal(f["usnm_gold: unsent replicas"].value, 0, "a real 0 stays 0");
-  assert.equal(f["usnm_quality: assigned replicas"].value, 4);
+  assert.equal(f["usnm_quality: assigned replicas"].value, 30);
   assert.equal(f["BOINC unsent result replicas"].note, "Result replicas, not pages or GPU eligibility.");
   assert.equal(f["BOINC assigned result replicas"].note, "Assigned does not mean actively computing.");
   assert.equal(f["usnm_ocr: unsent replicas"].note, undefined);
   // The oldest of the stages' own observation times.
-  assert.equal(s.updated, Math.floor(Date.parse("2026-11-12T04:52:50.637981Z") / 1000));
+  assert.equal(s.updated, Math.floor(Date.parse("2026-03-14T11:54:00Z") / 1000));
 });
 
 test("the pipeline lists the stages in order, and a 14-day window moves to the unit", () => {
@@ -216,15 +216,15 @@ test("the pipeline lists the stages in order, and a 14-day window moves to the u
   assert.deepEqual(
     s.figures.map((f) => [f.label, f.value, f.unit]),
     [
-      ["Pages in the ocr-bulk queue", 17974, "pages"],
-      ["OCR pages at BOINC or awaiting collection", 843, "pages"],
-      ["BOINC OCR workunits with a canonical result", 20933, "workunits, last 14 days"],
-      ["OCR pages collected through hand-off checks", 9494, "pages, last 14 days"],
-      ["OCR pages in committed imports", 14126, "pages, last 14 days"],
-      ["OCR parts rejected or dead-lettered", 6, "parts, last 14 days"],
+      ["Pages in the ocr-bulk queue", 15000, "pages"],
+      ["OCR pages at BOINC or awaiting collection", 800, "pages"],
+      ["BOINC OCR workunits with a canonical result", 12000, "workunits, last 14 days"],
+      ["OCR pages collected through hand-off checks", 9000, "pages, last 14 days"],
+      ["OCR pages in committed imports", 7000, "pages, last 14 days"],
+      ["OCR parts rejected or dead-lettered", 5, "parts, last 14 days"],
     ],
   );
-  assert.equal(s.updated, Math.floor(Date.parse("2026-11-12T04:00:00Z") / 1000));
+  assert.equal(s.updated, Math.floor(Date.parse("2026-03-14T11:00:00Z") / 1000));
   assert.equal(s.stale_after_secs, 10800);
   assert.match(s.figures[2].note, /counts workunits/);
   assert.equal(s.figures[5].note, "Attempts, not pages lost.");
@@ -250,9 +250,9 @@ test("done and volunteers give the dashboard's own sums", () => {
   const v = view();
   const doc = buildFeed(pipeline(), v, NOW);
   const d = figures(card(doc, "What's been done"));
-  assert.equal(d["Page scans fetched so far"].value, 618868);
-  assert.equal(d["Pages searchable with our OCR"].value, 21290);
-  assert.equal(d["Quality and Qwen pages loaded"].value, 575775);
+  assert.equal(d["Page scans fetched so far"].value, 500000);
+  assert.equal(d["Pages searchable with our OCR"].value, 20000);
+  assert.equal(d["Quality and Qwen pages loaded"].value, 500000);
   assert.equal(d["Quality and Qwen pages loaded"].unit, "pages, last 14 days");
 
   const buckets = v.boinc_week.week.buckets.filter((b) => !b.partial).slice(-8);
@@ -288,13 +288,13 @@ test("throughput gives the last-24-hours table, the 7-day average and two daily 
   const s = card(buildFeed(pipeline(), v, NOW), "Throughput");
   const f = figures(s);
   assert.equal(f["Scans fetched"].value, v.fetch.last_day.pages);
-  assert.equal(f["OCR pages imported"].value, 379);
-  assert.equal(f["Pages scored by the quality checks"].value, 19406);
+  assert.equal(f["OCR pages imported"].value, 400);
+  assert.equal(f["Pages scored by the quality checks"].value, 20000);
   const days = v.throughput.steps.find((x) => x.id === "ocr_import").days.map((d) => d.value);
   assert.equal(f["OCR pages imported a day"].value, Math.round(days.reduce((a, b) => a + b, 0) / days.length));
   assert.equal(f["OCR pages imported a day"].unit, "7-day average");
-  assert.equal(f["Results back in the last full hour"].value, 45);
-  assert.equal(f["Valid results in the last full hour"].value, 30);
+  assert.equal(f["Results back in the last full hour"].value, 100);
+  assert.equal(f["Valid results in the last full hour"].value, 80);
   assert.equal(s.series.length, 2);
   const start = Math.floor(Date.parse(v.throughput.days_start) / 1000);
   for (const r of s.series) {
@@ -320,8 +320,8 @@ test("a missing pipeline snapshot leaves the stage figures unknown and keeps the
     assert.ok(allNull(card(doc, "Jobs in flight")) && allNull(card(doc, "Pipeline")));
     assert.equal(card(doc, "Jobs in flight").updated, undefined, "no observation time to claim");
     assert.equal(figures(card(doc, "What's been done"))["Pages searchable with our OCR"].value, null);
-    assert.equal(figures(card(doc, "What's been done"))["Page scans fetched so far"].value, 618868);
-    assert.equal(figures(card(doc, "What's next"))["Pages still to fetch"].value, 1591058);
+    assert.equal(figures(card(doc, "What's been done"))["Page scans fetched so far"].value, 500000);
+    assert.equal(figures(card(doc, "What's next"))["Pages still to fetch"].value, 610000);
     assert.ok(card(doc, "Throughput").series.length === 2);
   }
 });
@@ -332,8 +332,8 @@ test("a missing dashboard view leaves the fetch, volunteer and throughput figure
     validateFeed(JSON.stringify(doc), NOW);
     for (const title of ["What's next", "Volunteers", "Throughput"]) assert.ok(allNull(card(doc, title)), title);
     assert.equal(card(doc, "Throughput").series, undefined);
-    assert.equal(figures(card(doc, "Pipeline"))["Pages in the ocr-bulk queue"].value, 17974);
-    assert.equal(figures(card(doc, "What's been done"))["Pages searchable with our OCR"].value, 21290);
+    assert.equal(figures(card(doc, "Pipeline"))["Pages in the ocr-bulk queue"].value, 15000);
+    assert.equal(figures(card(doc, "What's been done"))["Pages searchable with our OCR"].value, 20000);
     assert.equal(figures(card(doc, "What's been done"))["Page scans fetched so far"].value, null);
   }
 });
@@ -347,7 +347,7 @@ test("a stage the dashboard would not show is unknown: stale, historical, unobse
     nocount: (p) => delete p.snapshot.stages.find((x) => x.id === "queued").count,
     nullcount: (p) => (p.snapshot.stages.find((x) => x.id === "queued").count = null),
     negative: (p) => (p.snapshot.stages.find((x) => x.id === "queued").count = -3),
-    stringcount: (p) => (p.snapshot.stages.find((x) => x.id === "queued").count = "17974"),
+    stringcount: (p) => (p.snapshot.stages.find((x) => x.id === "queued").count = "15000"),
     nofreshness: (p) => (p.stage_freshness = p.stage_freshness.filter((x) => x.id !== "queued")),
     nostage: (p) => (p.snapshot.stages = p.snapshot.stages.filter((x) => x.id !== "queued")),
   };
@@ -356,7 +356,7 @@ test("a stage the dashboard would not show is unknown: stale, historical, unobse
     edit(p);
     const s = card(buildFeed(p, view(), NOW), "Pipeline");
     assert.equal(figures(s)["Pages in the ocr-bulk queue"].value, null, name);
-    assert.equal(figures(s)["OCR pages at BOINC or awaiting collection"].value, 843, name);
+    assert.equal(figures(s)["OCR pages at BOINC or awaiting collection"].value, 800, name);
   }
 });
 
@@ -368,7 +368,7 @@ test("a 14-day total with fewer than all its hours reported is unknown", () => {
   const doc = buildFeed(p, view(), NOW);
   assert.equal(figures(card(doc, "Pipeline"))["OCR pages in committed imports"].value, null);
   assert.equal(figures(card(doc, "What's been done"))["Quality and Qwen pages loaded"].value, null);
-  assert.equal(figures(card(doc, "Pipeline"))["OCR pages collected through hand-off checks"].value, 9494);
+  assert.equal(figures(card(doc, "Pipeline"))["OCR pages collected through hand-off checks"].value, 9000);
   validateFeed(JSON.stringify(doc), NOW);
 });
 
@@ -387,7 +387,7 @@ test("a stage label from the dashboard is used, and one that does not fit is sho
 
 test("the fetch figures are unknown while the dashboard warms up or cannot read the fetcher's records", () => {
   const edits = {
-    warming: (v) => (v.warming = { since: "2026-11-12T04:57:00Z" }),
+    warming: (v) => (v.warming = { since: "2026-03-14T11:59:00Z" }),
     index_error: (v) => (v.fetch.index_error = "unreadable"),
   };
   for (const [name, edit] of Object.entries(edits)) {
@@ -397,7 +397,7 @@ test("the fetch figures are unknown while the dashboard warms up or cannot read 
     assert.ok(allNull(card(doc, "What's next")), name);
     assert.equal(figures(card(doc, "What's been done"))["Page scans fetched so far"].value, null, name);
     assert.equal(figures(card(doc, "Throughput"))["Scans fetched"].value, null, name);
-    assert.equal(figures(card(doc, "Throughput"))["OCR pages imported"].value, 379, name);
+    assert.equal(figures(card(doc, "Throughput"))["OCR pages imported"].value, 400, name);
   }
 });
 
@@ -411,7 +411,7 @@ test("the queue's figures need a configured queue without an error", () => {
   const v = view();
   delete v.fetch.queue;
   const f = figures(card(buildFeed(pipeline(), v, NOW), "What's next"));
-  assert.equal(f["Pages still to fetch"].value, 1591058, "the total does not need the list");
+  assert.equal(f["Pages still to fetch"].value, 610000, "the total does not need the list");
   assert.equal(f["Pages still to fetch for our OCR"].value, null);
   assert.equal(f["Pages still to fetch for the quality checks"].value, null);
   v.fetch.queue = [{ state: "queued", kind: "ocr", pages: "many", fetched: 0 }];
@@ -423,7 +423,7 @@ test("no pace, no days: a last day without fetches gives no estimate", () => {
   v.fetch.last_day.pages = 0;
   const f = figures(card(buildFeed(pipeline(), v, NOW), "What's next"));
   assert.equal(f["Days to fetch the rest at the last day's pace"].value, null);
-  assert.equal(f["Pages still to fetch"].value, 1591058);
+  assert.equal(f["Pages still to fetch"].value, 610000);
   assert.equal(figures(card(buildFeed(pipeline(), v, NOW), "Throughput"))["Scans fetched"].value, 0, "a real 0 stays 0");
 });
 
@@ -470,7 +470,7 @@ test("a throughput error or a missing day start gives no throughput figures or c
   delete w.throughput.days_start;
   s = card(buildFeed(pipeline(), w, NOW), "Throughput");
   assert.equal(s.series, undefined);
-  assert.equal(figures(s)["OCR pages imported"].value, 379);
+  assert.equal(figures(s)["OCR pages imported"].value, 400);
 });
 
 test("a time the clock cannot have reached is no observation time, and the feed still validates", () => {
@@ -636,7 +636,7 @@ test("one endpoint down keeps the other's sections; both down is a 502 that is n
     const response = await ask(createHandler({ fetchImpl, cache: null }));
     assert.equal(response.status, 200);
     const doc = validateFeed(await response.text(), Math.floor(Date.now() / 1000));
-    assert.equal(figures(card(doc, "Pipeline"))["Pages in the ocr-bulk queue"].value, 17974);
+    assert.equal(figures(card(doc, "Pipeline"))["Pages in the ocr-bulk queue"].value, 15000);
     assert.ok(allNull(card(doc, "What's next")));
   }
   const { fetchImpl } = upstreamStub({ pipelineBody: new Response("x", { status: 500 }), viewBody: new Response("x", { status: 500 }) });
@@ -662,7 +662,7 @@ test("a slow upstream is given up on at the limit, and the answer keeps the othe
   assert.equal(response.status, 200);
   const doc = JSON.parse(await response.text());
   assert.ok(allNull(card(doc, "Volunteers")));
-  assert.equal(figures(card(doc, "Jobs in flight"))["BOINC unsent result replicas"].value, 439);
+  assert.equal(figures(card(doc, "Jobs in flight"))["BOINC unsent result replicas"].value, 400);
 });
 
 test("an oversized upstream document is refused", async (t) => {
