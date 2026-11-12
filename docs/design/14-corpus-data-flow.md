@@ -492,9 +492,13 @@ imported, selected for a release or is in search. Those stay with `ingest-import
 
 What is checked offline, against fixtures built from the contract crate's real job
 fixture and the bridge's field lists (a test compares them to the Rust structs):
-the record's shape, that a first-attempt page job's id is the hash the bridge
-computes from its fields, and that a result manifest matches its job as
-`ResultManifest::matches` requires, short of re-hashing the output files.
+the record's shape, the checks of `Job::validate` and the retry journal that
+need no other data (job version against attempt and line read, page and line
+settings, engine against language route, scan URL and size, a retry's journal),
+that a first-attempt page job's id is the hash the bridge computes from its fields,
+and that a result manifest matches its job as `ResultManifest::matches` requires,
+short of re-hashing the output files. A symlink, a named pipe or an oversized
+file anywhere in what it reads fails the batch.
 
 What it cannot prove without live data:
 

@@ -2201,14 +2201,21 @@ class BoincJournalTests(unittest.TestCase):
         retry = copy.deepcopy(failed)
         retry.update(v=2, attempt=1, retry_of=failed["id"], id="d" * 64)  # Retries' ids aren't recomputed.
         lines = copy.deepcopy(self.job)
-        lines.update(v=3, id="e" * 64, lines={"language": "chr", "psm": 7, "lines": [
+        lines["message"]["language"] = "eng"
+        lines.update(v=3, id="e" * 64, lines={"language": "chr", "psm": 13, "lines": [
             {"id": "l1", "box": [0, 0, 10, 10]}]})
-        lines["engine"].update(psm=7)
+        lines["engine"].update(psm=13)
         bundled = self.other_job("sn00000001/1900-01-01/ed-1/seq-4")
         self.write(self.record(failed, stage="failed", error="BOINC workunit failed for good",
                                terminal={"error_mask": 4, "no_output_files": False,
                                          "marker_sha256": "33" * 32}))
-        self.write(self.record(retry, stage="reserved", retry={"previous_job": "x"}))
+        ledger = {"batch_version": 1, "reason": "bulk", "language": "eng", "plan": "plan-a", "attempt": 1,
+                  "request_day": None, "queued_at": "2026-10-10T12:00:00.000000Z"}
+        self.write(self.record(retry, stage="reserved", retry={
+            "previous_job": failed["id"], "previous_attempt": 0, "previous_workunit": "usnm_" + failed["id"],
+            "previous_ledger": ledger, "terminal": {"error_mask": 4, "no_output_files": False,
+                                                    "marker_sha256": "33" * 32},
+            "previous_error": "failed", "app_version_num": 7, "reviewed_reason": "reviewed"}))
         self.write(self.record(lines, stage="prepared"))
         self.write(self.record(bundled, stage="submitted", bundle="f" * 64, held="trust scope held"))
         self.assertEqual(self.ingest()["inserted"], 4)
@@ -2346,6 +2353,93 @@ class BoincJournalTests(unittest.TestCase):
         stages = lib.split("pub enum Stage {", 1)[1].split("}", 1)[0]
         self.assertEqual(c.BOINC_STAGES, tuple(w.lower() for w in re.findall(r"^\s+(\w+),", stages, re.MULTILINE)))
         self.assertEqual({"error_mask", "no_output_files", "marker_sha256"}, fields(lib, "TerminalFailure"))
+        self.assertEqual(c.BOINC_RETRY_FIELDS, fields((ROOT / "crates/usnm-boinc/src/retry.rs").read_text(), "Retry"))
+        # Field order matters to the job hash: the adapter's order lists are the structs' orders.
+        for name, order in (("Scan", c.BOINC_SCAN_ORDER), ("Engine", c.BOINC_ENGINE_ORDER)):
+            body = contract.split("pub struct " + name + " {", 1)[1].split("\n}", 1)[0]
+            self.assertEqual(tuple(re.findall(r"^    pub (\w+):", body, re.MULTILINE)), order)
+        self.assertEqual(c.BOINC_LINE_PSM, int(re.search(r"LINE_PSM: u8 = (\d+)", contract).group(1)))
+        self.assertEqual(c.BOINC_LINE_LANGUAGES, tuple(re.findall(
+            r'"(\w+)"', re.search(r"LINE_LANGUAGES: &\[&str\] = &\[(.*?)\]", contract).group(1))))
+
+    def test_a_reordered_but_unchanged_job_keeps_its_identity(self):
+        job = json.loads(BOINC_JOB.read_text())
+        job["scan"] = dict(sorted(job["scan"].items()))
+        job["engine"] = dict(sorted(job["engine"].items()))
+        self.write(self.record(job))
+        self.assertEqual(self.ingest()["inserted"], 1)
+
+    def test_findings_the_bridge_would_reject_fail_the_batch(self):
+        def case(mutate):
+            shutil.rmtree(self.journal, ignore_errors=True)
+            job, record = copy.deepcopy(self.job), self.record()
+            mutate(job, record)
+            job["id"] = c.boinc_job_identity(job)
+            record["job"] = job
+            self.write(record)
+        def unsupported_version(job, record):
+            job["v"] = 99
+        def retry_missing_its_journal(job, record):
+            job.update(v=2, attempt=1, retry_of="d" * 64)
+        def retry_with_partial_journal(job, record):
+            job.update(v=2, attempt=1, retry_of="d" * 64)
+            record["retry"] = {"previous_job": "d" * 64}
+        def line_job_with_the_wrong_psm(job, record):
+            job.update(v=3, lines={"language": "chr", "psm": 7, "lines": [{"id": "a", "box": [0, 0, 5, 5]}]})
+            job["engine"]["psm"] = 7
+        def line_job_with_no_lines(job, record):
+            job.update(v=3, lines={"language": "chr", "psm": 13, "lines": []})
+            job["engine"]["psm"] = 13
+        def page_job_with_the_wrong_psm(job, record):
+            job["engine"]["psm"] = 6
+        def japanese_page_on_tesseract(job, record):
+            job["message"]["language"] = "jpn"
+        def scan_off_loc(job, record):
+            job["scan"]["url"] = "https://example.com/x.jp2"
+        for mutate in (unsupported_version, retry_missing_its_journal, retry_with_partial_journal,
+                       line_job_with_the_wrong_psm, line_job_with_no_lines, page_job_with_the_wrong_psm,
+                       japanese_page_on_tesseract, scan_off_loc):
+            with self.subTest(mutate.__name__), self.assertRaises(c.CatalogError):
+                case(mutate)
+                self.ingest("bad-" + mutate.__name__.replace("_", "-"))
+
+    def test_a_null_lines_field_is_a_page_job_and_keeps_its_hash_check(self):
+        job = copy.deepcopy(self.job)
+        job["lines"] = None
+        self.write(self.record(job))
+        self.assertEqual(self.ingest()["inserted"], 1)
+        self.assertIs(self.runs()[0]["data"]["line_job"], False)
+        shutil.rmtree(self.journal)
+        job["id"] = "a" * 64  # A forged id is rejected, not waved through as a line job.
+        self.write(self.record(job))
+        with self.assertRaises(c.CatalogError):
+            self.ingest("forged")
+
+    def test_a_slash_separated_page_id_is_not_accepted(self):
+        self.write(self.record())
+        self.ingest()
+        good = self.runs()[0]["data"]
+        wrapper = {"schema_version": 1, "batch_id": "b1", "event_id": "h1", "kind": "boinc_run",
+                   "source": "hand", "observed_at": T0, "payload": good}
+        with self.assertRaises(c.CatalogError):
+            c.validate_event(dict(wrapper, page_id="loc:sn00000001/1900-01-01/ed-1/seq-1"))
+
+    def test_a_named_pipe_and_a_symlinked_accepted_directory_fail_rather_than_hang(self):
+        self.write(self.record())
+        directory = self.journal / "jobs" / self.job["id"]
+        (directory / "record.json").unlink()
+        os.mkfifo(directory / "record.json")
+        with self.assertRaises(c.CatalogError):
+            self.ingest()
+        (directory / "record.json").unlink()
+        (directory / "record.json").write_text(json.dumps(self.record()))
+        outside = self.work / "outside"
+        outside.mkdir()
+        (outside / "result.json").write_text(json.dumps(self.result()))
+        shutil.rmtree(directory / "accepted")
+        (directory / "accepted").symlink_to(outside)
+        with self.assertRaises(c.CatalogError):
+            self.ingest("linked")
 
 
 if __name__ == "__main__":

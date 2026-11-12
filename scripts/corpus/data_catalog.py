@@ -116,6 +116,13 @@ BOINC_RESULT_FIELDS = {"v", "job_id", "scan_sha256", "engine", "text_sha256", "a
 BOINC_RUN_FIELDS = ("job_id", "workunit", "status", "plan", "attempt", "retry_of", "bundle",
                     "line_job", "batch", "reason", "language", "queued_at", "batch_version",
                     "engine", "scan_sha256", "scan_bytes", "held", "failure", "has_error", "result")
+BOINC_SCAN_ORDER = ("url", "iiif_base", "sha256", "bytes", "md5")
+BOINC_ENGINE_ORDER = ("kind", "image", "version", "profile", "models", "psm", "dpi", "timeout_secs")
+BOINC_LINE_PSM, BOINC_MAX_LINES, BOINC_MAX_LINE_ID, BOINC_MAX_COORD = 13, 2000, 32, 100000
+BOINC_LINE_LANGUAGES = ("chr",)
+BOINC_MAX_SCAN = 128 * 1024 * 1024
+BOINC_RETRY_FIELDS = {"previous_job", "previous_attempt", "previous_workunit", "previous_ledger",
+                      "terminal", "previous_error", "app_version_num", "reviewed_reason"}
 BOINC_PAGE = re.compile(r"([A-Za-z0-9-]+)/(\d{4}-\d\d-\d\d)/(ed-[1-9]\d*)/(seq-[1-9]\d*)\Z")
 BOINC_JOB_ID = re.compile(r"[0-9a-f]{64}\Z")
 BOINC_RECORD_BYTES = 1024 * 1024  # The bridge reads record.json up to twice its 512 KiB request limit.
@@ -929,7 +936,8 @@ def boinc_uint(value, low, high):
 def check_boinc_run(p, page_id):
     """The allowlisted projection of one bridge journal record, as boinc_run evidence carries it."""
     obj(p, BOINC_RUN_FIELDS)
-    require(page_id.startswith("loc:") and BOINC_PAGE.fullmatch(page_id[4:].replace("_", "/", 3)),
+    require(page_id.startswith("loc:") and "/" not in page_id and
+            BOINC_PAGE.fullmatch(page_id[4:].replace("_", "/", 3)),
             "boinc_run page_id must be loc:<doc_id>")
     require(isinstance(p["job_id"], str) and BOINC_JOB_ID.fullmatch(p["job_id"]), "invalid BOINC job id")
     require(p["workunit"] == ("usnm_" + p["job_id"] if p["bundle"] is None else "usnm_ocrb_" + str(p["bundle"])),
@@ -977,23 +985,85 @@ def check_boinc_run(p, page_id):
 
 def boinc_job_identity(job):
     """The job id the bridge computes for a first-attempt page job (Job::identity): SHA-256 of the
-    compact JSON of (v, page, batch, language, reason, score, batch_version, scan, engine)."""
-    message, engine = job["message"], dict(job["engine"])
-    if engine.get("kind") == "tesseract":
-        del engine["kind"]  # Skipped when serializing the default kind.
+    compact JSON of (v, page, batch, language, reason, score, batch_version, scan, engine), with
+    the nested objects in the Rust structs' field order, not the file's."""
+    message, scan, engine = job["message"], job["scan"], job["engine"]
+    ordered_engine = {key: engine[key] for key in BOINC_ENGINE_ORDER if key in engine}
+    if ordered_engine.get("kind") == "tesseract":
+        del ordered_engine["kind"]  # Skipped when serializing the default kind.
     legacy = [job["v"], message["page"], message["batch"], message["language"], message["reason"],
-              message.get("score"), job["batch_version"], job["scan"], engine]
+              message.get("score"), job["batch_version"], {key: scan[key] for key in BOINC_SCAN_ORDER},
+              ordered_engine]
     return hashlib.sha256(json.dumps(legacy, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
 
 
 def read_boinc_file(path, limit):
     """A regular file under the journal, not through a symlink, up to `limit` bytes."""
-    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0))
     with os.fdopen(fd, "rb") as stream:
         require(stat.S_ISREG(os.fstat(stream.fileno()).st_mode), "BOINC journal file must be regular")
         raw = stream.read(limit + 1)
     require(len(raw) <= limit, "BOINC journal file over size limit")
     return load_json(raw)
+
+
+def check_boinc_job(job, record):
+    """The checks of Job::validate and retry::validate that need no other data than the record."""
+    message, scan, engine = job["message"], job["scan"], job["engine"]
+    require(isinstance(message["page"], str) and BOINC_PAGE.fullmatch(message["page"]), "invalid BOINC page")
+    token(message["batch"])
+    require(isinstance(message["language"], str) and re.fullmatch(r"[a-z]{3}", message["language"]),
+            "invalid BOINC language")
+    require(message["reason"] in ("user", "bulk"), "invalid BOINC reason")
+    score = message.get("score")
+    require(score is None or (type(score) in (int, float) and math.isfinite(score) and 0 <= score <= 1),
+            "invalid BOINC score")
+    timestamp(message["queued_at"])
+    boinc_uint(job["batch_version"], 1, 32767)
+    attempt, retry_of, lines = job.get("attempt", 0), job.get("retry_of"), job.get("lines")
+    boinc_uint(attempt, 0, 2147483646)
+    is_retry = attempt > 0
+    require(job["v"] == (1, 2, 3, 4)[2 * (lines is not None) + is_retry] if type(job["v"]) is int else False,
+            "unsupported BOINC job version or attempt")
+    require((is_retry and isinstance(retry_of, str) and BOINC_JOB_ID.fullmatch(retry_of) and
+             retry_of != job["id"]) or (not is_retry and retry_of is None), "invalid BOINC retry_of")
+    retry = record.get("retry")
+    require((retry is None) == (not is_retry), "retry job lacks its reservation journal, or the reverse")
+    if is_retry:
+        require(isinstance(retry, dict) and set(retry) == BOINC_RETRY_FIELDS and
+                retry["previous_job"] == retry_of and
+                type(retry["previous_attempt"]) is int and retry["previous_attempt"] + 1 == attempt and
+                retry["previous_workunit"] == "usnm_" + retry_of and record.get("bundle") is None,
+                "invalid retry journal")
+    require(isinstance(job["id"], str) and BOINC_JOB_ID.fullmatch(job["id"]), "invalid BOINC job id")
+    sha(scan["sha256"])
+    boinc_uint(scan["bytes"], 1, BOINC_MAX_SCAN)
+    for key in ("url", "iiif_base"):
+        require(isinstance(scan[key], str) and scan[key].startswith("https://tile.loc.gov/") and
+                len(scan[key]) <= 512 and not re.search(r"[\s\x00-\x1f]", scan[key]), "invalid scan URL")
+    require(scan["md5"] is None or (isinstance(scan["md5"], str) and re.fullmatch(r"[0-9a-fA-F]{32}", scan["md5"])),
+            "invalid scan md5")
+    route = lines["language"] if lines is not None else message["language"]
+    require(engine.get("kind", "tesseract") == ("ndlocr-lite" if route == "jpn" else "tesseract"),
+            "engine does not match language route")
+    if lines is None:
+        require(engine["psm"] == 3 and engine["dpi"] == 300, "pilot uses PSM 3 and DPI 300")
+        return
+    require(isinstance(lines, dict) and set(lines) == {"language", "psm", "lines"} and
+            lines["language"] in BOINC_LINE_LANGUAGES and lines["psm"] == BOINC_LINE_PSM and
+            isinstance(lines["lines"], list) and 1 <= len(lines["lines"]) <= BOINC_MAX_LINES,
+            "invalid BOINC line read")
+    seen = set()
+    for line in lines["lines"]:
+        require(isinstance(line, dict) and set(line) == {"id", "box"} and isinstance(line["id"], str) and
+                re.fullmatch(r"[A-Za-z0-9_-]{1,%d}" % BOINC_MAX_LINE_ID, line["id"]) and
+                line["id"] not in seen and isinstance(line["box"], list) and len(line["box"]) == 4 and
+                all(type(v) is int and 0 <= v <= BOINC_MAX_COORD for v in line["box"]) and
+                line["box"][0] < line["box"][2] and line["box"][1] < line["box"][3],
+                "invalid BOINC line box")
+        seen.add(line["id"])
+    require(engine["psm"] == BOINC_LINE_PSM and engine["dpi"] == 300 and
+            engine.get("kind", "tesseract") == "tesseract", "line jobs use PSM 13 and DPI 300")
 
 
 def adapt_boinc_record(record, job_dir_id, result=None):
@@ -1012,9 +1082,9 @@ def adapt_boinc_record(record, job_dir_id, result=None):
                                           "timeout_secs"} <= set(engine) <= BOINC_ENGINE_FIELDS,
             "unexpected BOINC engine fields")
     require(job["id"] == job_dir_id, "journal identity mismatch")
-    require(isinstance(message["page"], str) and BOINC_PAGE.fullmatch(message["page"]), "invalid BOINC page")
+    check_boinc_job(job, record)
     attempt = job.get("attempt", 0)
-    if attempt == 0 and job.get("retry_of") is None and "lines" not in job:
+    if attempt == 0 and job.get("retry_of") is None and job.get("lines") is None:
         require(job["id"] == boinc_job_identity(job), "job identity mismatch")
     require(record["stage"] in BOINC_STAGES, "invalid BOINC bridge stage")
     page_id = "loc:" + message["page"].replace("/", "_")
@@ -1023,7 +1093,7 @@ def adapt_boinc_record(record, job_dir_id, result=None):
     projection = {
         "job_id": job["id"], "workunit": "usnm_" + job["id"], "status": record["stage"],
         "plan": record["plan"], "attempt": attempt, "retry_of": job.get("retry_of"),
-        "bundle": record.get("bundle"), "line_job": "lines" in job, "batch": message["batch"],
+        "bundle": record.get("bundle"), "line_job": job.get("lines") is not None, "batch": message["batch"],
         "reason": message["reason"], "language": message["language"],
         "queued_at": message["queued_at"], "batch_version": job["batch_version"],
         "engine": {"kind": kind, "image": engine["image"], "version": engine["version"],
@@ -1066,7 +1136,9 @@ def ingest_boinc_journal(db, journal, evidence_out, batch_id, source, observed_a
         if not (job_dir / "record.json").exists():
             skipped += 1
             continue
-        result_path = job_dir / "accepted" / "result.json"
+        accepted = job_dir / "accepted"
+        require(not accepted.is_symlink(), "journal accepted directory must not be a symlink")
+        result_path = accepted / "result.json"
         record = read_boinc_file(job_dir / "record.json", BOINC_RECORD_BYTES)
         result = read_boinc_file(result_path, BOINC_RESULT_BYTES) if result_path.exists() else None
         page_id, projection = adapt_boinc_record(record, entry, result)
