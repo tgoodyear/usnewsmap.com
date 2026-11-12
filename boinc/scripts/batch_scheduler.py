@@ -642,6 +642,39 @@ def timed(phase):
     return wrap
 
 
+class StepLockTimeout(RuntimeError):
+    """A step that never started: the BOINC host's step lock stayed held for the whole lock wait
+    (`onprem-step.sh` refused before running anything)."""
+
+
+# Steps that take the host's shared step lock (usnm-boinc-step.lock), where a Qwen ship or collect
+# holds it for 5 to 17 minutes. With --step-lock-wait-secs they ask for a longer wait than the
+# host's own default (300 s), per step, so the other steps keep the host's setting.
+LONG_LOCK_STEPS = {("bridge", "submit-remote"), ("bridge", "gold-onboard"), ("bridge", "gold-promote")}
+MAX_STEP_LOCK_WAIT_SECS = 1200
+# A native plan retries a submit that only timed out on the step lock this many ticks in a row
+# before it pauses like any other failed submit.
+NATIVE_LOCK_RETRY_LIMIT = 6
+LOCK_TIMEOUT_LINE = re.compile(
+    r"error: another bridge step (still holds the lock after \d+s|is running on this host\b.*)")
+
+
+SSH_NOTICE_LINE = re.compile(r"Warning: Permanently added .*|Connection to .* closed\.?")
+
+
+def step_lock_timeout(returncode, stderr):
+    """True when a failed step's stderr says only that onprem-step.sh gave up on the lock, before
+    it started a container: that one line, alone or with ssh's own notices."""
+    if returncode != 1 or not isinstance(stderr, str):
+        return False
+    lines = [line.strip() for line in stderr.splitlines() if line.strip()]
+    # Besides that line, only ssh's own notices: any other line (flock's "No locks available",
+    # a step's output) means something else went wrong.
+    others = [line for line in lines if not LOCK_TIMEOUT_LINE.fullmatch(line)]
+    return (len(others) == len(lines) - 1
+            and all(SSH_NOTICE_LINE.fullmatch(line) for line in others))
+
+
 class ClaimFailed(RuntimeError):
     """The claim step failed after taking messages: `claims` are the ones it did take."""
 
@@ -718,8 +751,11 @@ class Transport:
     def __init__(self, config, directory, *, status_url=None, status_file=None,
                  batch_submit=False, batch_spool_out=False, batch_collect=False, batch_export=False,
                  onprem_handoff=(), timings=None, rest_journals=False, collect_parallel=1,
-                 skip_truncated=False, extra_claim_languages=()):
+                 skip_truncated=False, extra_claim_languages=(), step_lock_wait_secs=0):
         self.config = config
+        # --step-lock-wait-secs: how long LONG_LOCK_STEPS wait for the host's step lock (0: the host's own).
+        require(0 <= step_lock_wait_secs <= MAX_STEP_LOCK_WAIT_SECS, "invalid --step-lock-wait-secs")
+        self.step_lock_wait_secs = step_lock_wait_secs
         # Languages the claim takes beside the configuration's claim_languages (--claim-language):
         # a flag, so adding one doesn't change the allocation digest. It can only widen an
         # explicit list; without claim_languages the claim takes every routable language anyway.
@@ -841,6 +877,9 @@ class Transport:
             self.timings.command(kind, seconds, used, passed, execution_route)
         if not passed:
             self.retain_failure(label, returncode=done.returncode, stdout=done.stdout, stderr=done.stderr)
+            if step_lock_timeout(done.returncode, done.stderr):
+                raise StepLockTimeout(f"{label} failed: the BOINC host's step lock stayed held; "
+                                      "nothing ran")
             raise RuntimeError(f"{label} failed; inspect the execution privately before retrying")
         return done.stdout
 
@@ -938,12 +977,20 @@ class Transport:
             command = self.config["step_command"]
         if target == "handoff" and onprem:
             variables["EXPECTED_HANDOFF_URL"] = self.handoff_url
+        wait_mins, timeout, extra = 30, 2100, []
+        if (onprem and self.config.get("step_command") and self.step_lock_wait_secs
+                and (target, step) in LONG_LOCK_STEPS):
+            # The wait comes out of --wait-mins, so it is added to it: the step keeps its 30
+            # minutes after the lock is won. The command's own timeout follows.
+            wait_mins += -(-self.step_lock_wait_secs // 60)
+            timeout += self.step_lock_wait_secs + 60
+            extra = ["--lock-wait-secs", str(self.step_lock_wait_secs)]
         argv = command + ["--env", self.config["env"],
-                          "--target", target, "--step", step, "--wait-mins", "30"]
+                          "--target", target, "--step", step, "--wait-mins", str(wait_mins)] + extra
         for key, value in variables.items():
             argv += ["--var", f"{key}={value}"]
         route = "onprem" if onprem and self.config.get("step_command") else "azure"
-        self.run(argv, f"{target}/{step}", execution_route=f"{route}/{target}/{step}")
+        self.run(argv, f"{target}/{step}", timeout=timeout, execution_route=f"{route}/{target}/{step}")
 
     @timed("inventory")
     def inventory(self):
@@ -2544,6 +2591,24 @@ def assign_native_hosts(job_ids, slots, outstanding):
     return units
 
 
+def native_submit_untouched(transport, job_ids, clock):
+    """True only when a fresh inventory proves the server holds nothing for these jobs: no BOINC
+    workunit named usnm_<job> and no bridge journal. Anything unreadable, or a workunit list cut
+    at its limit, is not proof. `clock()` is the time now, read after the inventory: the failed
+    step may have waited the lock for 20 minutes, so the tick's own start says nothing."""
+    try:
+        snapshot = transport.inventory()
+        limit = snapshot.get("existing_jobs_limit", MAX_JOBS)
+        existing, pending, journals = snapshot["existing_jobs"], snapshot["pending_jobs"], snapshot["jobs"]
+        if (snapshot["schema_version"] != 1 or not -60 <= clock() - snapshot["created_at"] <= 3600
+                or not isinstance(existing, list) or not isinstance(pending, list)
+                or not isinstance(journals, dict) or type(limit) is not int or len(existing) >= limit):
+            return False
+        return not set(job_ids) & (set(existing) | set(pending) | set(journals))
+    except (ValueError, KeyError, TypeError, OSError, RuntimeError):
+        return False
+
+
 def tick(config, state, transport, persist, now=None, *, drain=False, dead_letter_failed=False,
          low_watermark=None, high_watermark=None, max_global_pending=None, server_status=None,
          refill_cap=None, other_app_budget=None, sibling_archived=None, sibling_claims=None,
@@ -2558,8 +2623,10 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
     # publish pauses it rather than stopping the tick.
     native = config.get("app") == NATIVE_APP_NAME
     require(native or not resume_native, f"--resume-native is for {NATIVE_APP_NAME} plans")
-    if resume_native and state.pop("native_paused", None) is not None:
-        persist()
+    if resume_native:
+        cleared = [state.pop("native_paused", None), state.pop("native_lock_retry", None)]
+        if any(value is not None for value in cleared):
+            persist()
     # Claims, exports and submits per tick (#1447). Collection still takes up to batch_size, so a
     # shorter tick doesn't leave held results that stop the next refill.
     refill = config["batch_size"] if refill_cap is None else min(config["batch_size"], refill_cap)
@@ -2569,6 +2636,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         feed.restore()
     snapshot = transport.inventory()
     now = time.time() if now is None else now
+    tick_started = time.monotonic()
     require(snapshot["schema_version"] == 1 and -60 <= now - snapshot["created_at"] <= 3600,
             "inventory is not fresh")
     if feed:
@@ -3009,16 +3077,41 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
             persist()
             to_submit = [job_id for job_id, _ in units]
             if units:
+                lock_retry = False
                 try:
                     transport.submit_native(units)
+                    if state.pop("native_lock_retry", None) is not None:
+                        persist()
                 except RuntimeError as error:
                     # Refused by trust at submission, or failed: that job and the ones after it
                     # were not created. The plan pauses with an alert (an uncertain one stops
                     # the next tick before any submission, as for every plan).
-                    state["native_paused"] = {"at": int(now), "reason": f"native submission failed ({error})",
-                                              "jobs": to_submit[:5]}
-                    persist()
-                    native_paused = state["native_paused"]
+                    reason = f"native submission failed ({error})"
+                    if isinstance(error, StepLockTimeout):
+                        # Only the host's step lock kept it from starting. When the server
+                        # provably holds nothing for these jobs, they stay reserved and the next
+                        # tick submits them again, up to NATIVE_LOCK_RETRY_LIMIT ticks in a row.
+                        tries = (state.get("native_lock_retry") or {}).get("count", 0) + 1
+                        if tries <= NATIVE_LOCK_RETRY_LIMIT and native_submit_untouched(
+                                transport, [job_id for job_id, _ in units],
+                                lambda: now + (time.monotonic() - tick_started)):
+                            state["native_lock_retry"] = {"at": int(now), "count": tries,
+                                                          "jobs": to_submit[:5]}
+                            persist()
+                            print(json.dumps({
+                                "event": "boinc_native_submit_lock_retry", "schema_version": 1,
+                                "plan": config["plan"], "count": tries, "jobs": len(units),
+                                "message": "step lock timeout, no workunit or bridge journal "
+                                           "for these jobs: submitted again next tick"},
+                                sort_keys=True), file=sys.stderr, flush=True)
+                            lock_retry = True
+                        else:
+                            reason += (f"; {tries} step-lock timeouts in a row" if tries > NATIVE_LOCK_RETRY_LIMIT
+                                       else "; could not prove that no workunit was created")
+                    if not lock_retry:
+                        state["native_paused"] = {"at": int(now), "reason": reason, "jobs": to_submit[:5]}
+                        persist()
+                        native_paused = state["native_paused"]
                     to_submit = []
         elif hasattr(transport, "submit_batch"):
             if max(config.get("pages_per_unit", {}).values(), default=1) > 1:
@@ -3268,6 +3361,10 @@ def main(argv=None):
                         help=f"a {NATIVE_APP_NAME} plan paused on a native result it could not publish, or "
                              "a refused submission (#1780): clear the pause and go on; a result still held "
                              "pauses it again")
+    parser.add_argument("--step-lock-wait-secs", type=int, default=0, metavar="SECONDS",
+                        help="how long submit-remote and the gold steps wait for the BOINC host's step lock "
+                             f"(0 to {MAX_STEP_LOCK_WAIT_SECS}; default 0: the host's own wait). Sent to "
+                             "usnm-boinc-step as --lock-wait-secs, so install a launcher that takes it first")
     parser.add_argument("--rest-journals", action="store_true",
                         help="list and fetch journals over the storage REST API with az's token")
     parser.add_argument("--onprem-handoff", action="append", choices=sorted(ONPREM_HANDOFF), default=[],
@@ -3384,6 +3481,7 @@ def main(argv=None):
                 collect_parallel=args.collect_parallel, timings=timings,
                 skip_truncated=args.skip_truncated_scans,
                 extra_claim_languages=tuple(args.claim_language),
+                step_lock_wait_secs=args.step_lock_wait_secs,
             )
             tick_kwargs = {"drain": args.drain, "dead_letter_failed": args.dead_letter_failed}
             if args.resume_native:

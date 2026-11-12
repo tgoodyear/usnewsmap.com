@@ -13,8 +13,9 @@
 #
 # One step at a time, as the Azure job's start guard allows: a second caller fails while a step
 # holds the lock. The host may opt into bounded queuing with
-# USNM_BOINC_STEP_LOCK_WAIT_SECS (0..300; default 0). Waiting consumes the --wait-mins
-# budget rather than extending it. --what-if prints the settings and runs nothing.
+# USNM_BOINC_STEP_LOCK_WAIT_SECS (0..300; default 0). A caller may ask for longer for one step
+# with --lock-wait-secs N (0..1200), which replaces that setting for the step. Waiting consumes
+# the --wait-mins budget rather than extending it. --what-if prints the settings and runs nothing.
 # --target is bridge, publish or handoff.
 #
 # quality-stage is the exception to that lock (#1415): it takes a lock of its own, so one stage
@@ -109,6 +110,7 @@ CONTROL_VARS='^(BASH.*|ENV|SHELLOPTS|BASHOPTS|PS[0-9]|PROMPT_COMMAND|IFS|PATH|CD
 CONF=${USNM_BOINC_CONF:-/etc/usnm-boinc}
 # Where the step lock and the step's env file go (a scratch directory in the tests).
 RUN_DIR=${USNM_BOINC_STEP_RUN:-/run}
+LOCK_WAIT_ARG=""
 ENV_NAME="" STEP="" WAIT_MINS="" WHAT_IF=false TARGET=bridge FROM_SSH=false NARGS=$# APPVER_IMAGE=""
 VARS=()
 while [ $# -gt 0 ]; do
@@ -123,6 +125,10 @@ while [ $# -gt 0 ]; do
       [ $# -ge 2 ] || usage
       [[ $2 =~ ^[0-9]+$ ]] && [ $((10#$2)) -ge 1 ] || die "--wait-mins is a number of minutes"
       WAIT_MINS=$((10#$2)); shift 2 ;;
+    --lock-wait-secs)
+      [ $# -ge 2 ] || usage
+      [[ $2 =~ ^[0-9]{1,4}$ ]] && [ $((10#$2)) -le 1200 ] || die "--lock-wait-secs is 0..1200"
+      LOCK_WAIT_ARG=$((10#$2)); shift 2 ;;
     --what-if) WHAT_IF=true; shift ;;
     -h | --help) usage ;;
     *) die "unknown argument: $1" ;;
@@ -523,6 +529,7 @@ lock_wait=${USNM_BOINC_STEP_LOCK_WAIT_SECS:-0}
 [[ $lock_wait =~ ^[0-9]{1,3}$ ]] || die "USNM_BOINC_STEP_LOCK_WAIT_SECS must be 0..300"
 lock_wait=$((10#$lock_wait))
 [ "$lock_wait" -le 300 ] || die "USNM_BOINC_STEP_LOCK_WAIT_SECS must be 0..300"
+[ -z "$LOCK_WAIT_ARG" ] || lock_wait=$LOCK_WAIT_ARG
 step_timeout=$((WAIT_MINS * 60))
 [ "$lock_wait" -lt "$step_timeout" ] || die "lock wait must be shorter than --wait-mins"
 lock_file=usnm-boinc-step.lock
