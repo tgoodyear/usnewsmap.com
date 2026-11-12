@@ -8,6 +8,7 @@ on:
   pull_request:
     paths:
       - ".github/workflows/ocr-bench.yml"
+      - "rust-toolchain.toml"
       - "ocr/bench/**"
       - "scripts/ocr-bench/**"
       - "crates/usnm-ocr-survey/**"
@@ -15,6 +16,7 @@ on:
     branches: [main]
     paths:
       - ".github/workflows/ocr-bench.yml"
+      - "rust-toolchain.toml"
       - "ocr/bench/**"
       - "scripts/ocr-bench/**"
       - "crates/usnm-ocr-survey/**"

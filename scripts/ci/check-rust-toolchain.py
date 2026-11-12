@@ -48,36 +48,51 @@ def read_pin(root: Path, findings: list[str]) -> str | None:
     return channel
 
 
-def check_workflow(rel: str, text: str, pin: str | None, findings: list[str]) -> None:
-    lines = text.splitlines()
-    reads_file = False
-    for number, line in enumerate(lines, 1):
-        if re.match(r"^\s*(-\s+)?id:\s*rust-toolchain\s*$", line):
-            # The step's own lines, up to the next step at the same indent.
-            block = []
-            for follow in lines[number:]:
-                if re.match(r"^\s*-\s", follow) and len(follow) - len(follow.lstrip()) <= len(line) - len(line.lstrip()) - 2:
-                    break
-                block.append(follow)
-            reads_file = "rust-toolchain.toml" in " ".join(block[:6])
-        match = ACTION.match(line)
-        if not match:
+def steps_of(lines: list[str]):
+    """Yield (job boundary seen before it, first line number, lines) for each list item `- ...`.
+
+    A step runs from its `- ` line to the next line indented no deeper than the dash. A job key at
+    two spaces of indent (workflows) ends the job's step outputs, which are job-local.
+    """
+    number = 0
+    new_job = True
+    while number < len(lines):
+        line = lines[number]
+        if re.match(r"^  [\w-]+:\s*$", line) or re.match(r"^runs:\s*$", line):
+            new_job = True
+        dash = re.match(r"^(\s*)-\s", line)
+        if not dash:
+            number += 1
             continue
-        indent = len(match.group(1))
-        value = None
-        for follow in lines[number:]:
-            if follow.strip() and len(follow) - len(follow.lstrip()) <= indent:
-                break
-            found = re.match(r"^\s*toolchain:\s*(.*?)\s*$", follow)
-            if found:
-                value = found.group(1)
-                break
-        where = f"{rel}:{number}"
+        indent = len(dash.group(1))
+        end = number + 1
+        while end < len(lines) and (not lines[end].strip() or len(lines[end]) - len(lines[end].lstrip()) > indent):
+            end += 1
+        yield new_job, number + 1, lines[number:end]
+        new_job = False
+        number = end
+
+
+def check_workflow(rel: str, text: str, pin: str | None, findings: list[str]) -> None:
+    reads_file = False
+    for new_job, first, step in steps_of(text.splitlines()):
+        if new_job:
+            reads_file = False
+        body = "\n".join(step)
+        if re.search(r"^\s*(-\s+)?id:\s*rust-toolchain\s*$", body, re.M) and "rust-toolchain.toml" in re.sub(
+                r"^.*\bid:.*$", "", body, flags=re.M):
+            reads_file = True
+        uses = re.search(r"^\s*(?:-\s+)?uses:\s*dtolnay/rust-toolchain@", body, re.M)
+        if not uses:
+            continue
+        found = re.search(r"^\s*toolchain:\s*(.*?)\s*$", body, re.M)
+        value = found.group(1) if found else None
+        where = f"{rel}:{first}"
         if value is None:
             findings.append(f"{where}: dtolnay/rust-toolchain without a toolchain input")
         elif value == EXPRESSION:
             if not reads_file:
-                findings.append(f"{where}: toolchain reads steps.rust-toolchain, but no earlier step with id rust-toolchain reads rust-toolchain.toml")
+                findings.append(f"{where}: toolchain reads steps.rust-toolchain, but no earlier step of this job with id rust-toolchain reads rust-toolchain.toml")
         elif pin is None or value != pin:
             findings.append(f"{where}: toolchain {value!r} is not {EXPRESSION} or the pinned {pin}")
 

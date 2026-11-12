@@ -85,6 +85,21 @@ class Toolchain(unittest.TestCase):
         found = self.findings(workflow=WORKFLOW.replace("rust-toolchain.toml)", "x.toml)"))
         self.assertEqual(len(found), 1)
 
+    def test_a_named_step_is_checked(self):
+        named = WORKFLOW.replace("      - uses: dtolnay", "      - name: Install Rust\n        uses: dtolnay").replace(
+            "${{ steps.rust-toolchain.outputs.channel }}", "stable")
+        found = self.findings(workflow=named)
+        self.assertEqual(len(found), 1)
+        self.assertIn("'stable' is not", found[0])
+        self.assertEqual(self.findings(workflow=WORKFLOW.replace("      - uses: dtolnay", "      - name: Install Rust\n        uses: dtolnay")), [])
+
+    def test_the_reading_step_is_per_job(self):
+        second = "  other:\n    steps:\n      - uses: actions/checkout@v4\n" + WORKFLOW.split("      - uses: actions/checkout@v4\n", 1)[1].replace(READ, "")
+        found = self.findings(workflow=WORKFLOW + second)
+        self.assertEqual(len(found), 1)
+        self.assertIn("no earlier step of this job", found[0])
+        self.assertEqual(self.findings(workflow=WORKFLOW + second.replace("      - uses: dtolnay", READ + "      - uses: dtolnay")), [])
+
     def test_a_missing_toolchain_input_is_refused(self):
         found = self.findings(workflow=WORKFLOW.replace(
             "          toolchain: ${{ steps.rust-toolchain.outputs.channel }}\n", ""))
