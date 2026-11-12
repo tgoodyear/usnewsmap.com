@@ -1822,6 +1822,9 @@ fn a_ledger_counts_by_utc_day_and_a_file_ledger_survives_a_restart() {
     assert_eq!(mem.add("2026-11-12", 7).unwrap(), 12);
     assert_eq!(mem.used("2026-11-13").unwrap(), 0);
     assert_eq!(mem.add("2026-11-13", 1).unwrap(), 1);
+    // A late count for the earlier day is dropped, not allowed to undo the new day's total.
+    assert_eq!(mem.add("2026-11-12", 50).unwrap(), 1);
+    assert_eq!(mem.used("2026-11-13").unwrap(), 1);
 
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("x.bytes");
@@ -1836,6 +1839,8 @@ fn a_ledger_counts_by_utc_day_and_a_file_ledger_survives_a_restart() {
     assert_eq!(again.used("2026-11-13").unwrap(), 0);
     assert_eq!(again.add("2026-11-13", 3).unwrap(), 3);
     assert_eq!(again.used("2026-11-12").unwrap(), 0);
+    assert_eq!(again.add("2026-11-12", 50).unwrap(), 3);
+    assert_eq!(again.used("2026-11-13").unwrap(), 3);
     // A file that can't be read is an error, never a fresh day.
     std::fs::write(&path, "not json").unwrap();
     assert!(again.used("2026-11-13").is_err());

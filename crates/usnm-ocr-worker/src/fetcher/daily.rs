@@ -36,6 +36,10 @@ impl ByteLedger for MemoryLedger {
 
     fn add(&self, day: &str, n: u64) -> std::io::Result<u64> {
         let mut l = self.0.lock().expect("ledger lock");
+        // A late count for an earlier day never overwrites a later day's total.
+        if l.0.as_str() > day {
+            return Ok(l.1);
+        }
         if l.0 != day {
             *l = (day.to_owned(), 0);
         }
@@ -118,6 +122,10 @@ impl ByteLedger for FileLedger {
     fn add(&self, day: &str, n: u64) -> std::io::Result<u64> {
         self.locked(|| {
             let mut d = self.read()?;
+            // A late count for an earlier day never overwrites a later day's total.
+            if d.day.as_str() > day {
+                return Ok(d.bytes);
+            }
             if d.day != day {
                 d = Day {
                     day: day.to_owned(),
@@ -142,6 +150,8 @@ pub struct DailyBytes {
     clock: Clock,
     /// Bytes seen since the last count went to the ledger.
     pending: AtomicU64,
+    /// Bytes a ledger write failed to record; the host counts as spent until they are.
+    unrecorded: AtomicU64,
 }
 
 impl std::fmt::Debug for DailyBytes {
@@ -161,6 +171,7 @@ impl DailyBytes {
             ledger,
             clock,
             pending: AtomicU64::new(0),
+            unrecorded: AtomicU64::new(0),
         }
     }
 
@@ -175,13 +186,14 @@ impl DailyBytes {
 
     /// Put the bytes noted so far in the ledger, under today's date.
     pub fn flush(&self) {
-        let n = self.pending.swap(0, Ordering::Relaxed);
+        let n =
+            self.pending.swap(0, Ordering::Relaxed) + self.unrecorded.swap(0, Ordering::Relaxed);
         if n == 0 {
             return;
         }
         if let Err(e) = self.ledger.add(&self.today(), n) {
             // Kept, to try again; until it is recorded the host counts as spent.
-            self.pending.fetch_add(n, Ordering::Relaxed);
+            self.unrecorded.fetch_add(n, Ordering::Relaxed);
             tracing::warn!(host = %self.label, bytes = n, error = %e, "can't record bytes against the daily budget");
         }
     }
@@ -190,7 +202,7 @@ impl DailyBytes {
     /// spent, or the ledger can't say (a budget that can't be read isn't taken as unspent).
     pub fn spent(&self) -> Option<String> {
         self.flush();
-        if self.pending.load(Ordering::Relaxed) > 0 {
+        if self.unrecorded.load(Ordering::Relaxed) > 0 {
             return Some(format!(
                 "{} daily byte budget can't be updated; nothing more from it until the count is recorded",
                 self.label
