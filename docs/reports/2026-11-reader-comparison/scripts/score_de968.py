@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Ours (live frak2021 ALTO) against LoC per damage band on the German band crops (#835, #968).
 
+Parked: the crops have no human transcriptions and no truth source is planned (12 November 2026).
+
     score_de968.py --dir DE968_DIR --gpu-study BIN --out OUT_DIR [--live LIVE.tsv]
 
 Reads DIR/crops/crops.jsonl (filled in with human transcriptions, validated), DIR/crops/manifest.jsonl,
