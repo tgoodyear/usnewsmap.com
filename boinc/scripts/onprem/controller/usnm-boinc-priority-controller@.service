@@ -16,3 +16,5 @@ ExecStart=/usr/bin/bash /opt/usnm/boinc/scripts/onprem/controller/controller-tic
 # (Transport.lock takes an infinite lease), and every plan then fails until it is broken by hand
 # (#1698). feed health fires controller_tick on a tick still running past its hang limit instead.
 TimeoutStartSec=infinity
+# As the shared and drain services ran: a tick yields the CPU to the BOINC host's other work.
+Nice=10
