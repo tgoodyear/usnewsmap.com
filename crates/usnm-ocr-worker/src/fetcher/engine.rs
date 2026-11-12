@@ -643,11 +643,12 @@ impl Engine {
             let Some(chunk) = chunk else {
                 return Ok(bytes::Bytes::from(body));
             };
+            // Counted as it arrives, whether or not it is kept.
+            gate.note_bytes(chunk.len() as u64);
             if body.len() + chunk.len() > max {
                 return Err(Fail::Refused(format!("{url}: response over {max} bytes")));
             }
             body.extend_from_slice(&chunk);
-            gate.note_bytes(chunk.len() as u64);
             let mut wait = stop.clone();
             tokio::select! {
                 () = gate.cap.take(chunk.len() as u64) => {}

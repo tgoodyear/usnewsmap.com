@@ -1839,6 +1839,14 @@ fn a_ledger_counts_by_utc_day_and_a_file_ledger_survives_a_restart() {
     // A file that can't be read is an error, never a fresh day.
     std::fs::write(&path, "not json").unwrap();
     assert!(again.used("2026-11-13").is_err());
+    // Nor is an empty one, which a crash could leave: damaged, not fresh.
+    std::fs::write(&path, "").unwrap();
+    assert!(again.used("2026-11-13").is_err());
+    assert!(again.add("2026-11-13", 1).is_err());
+    // A reading never changes the file.
+    std::fs::remove_file(&path).unwrap();
+    assert_eq!(again.used("2026-11-13").unwrap(), 0);
+    assert!(!path.exists());
 }
 
 type Moving = Arc<std::sync::Mutex<chrono::DateTime<chrono::Utc>>>;
@@ -1985,4 +1993,73 @@ async fn an_unreadable_ledger_stops_the_host() {
         s.failed
     );
     assert_eq!(r.s.hits("/loc/a.tar.bz2"), 0);
+}
+
+/// A ledger that fails while `broken` is set.
+#[derive(Debug, Default)]
+struct Flaky {
+    broken: std::sync::atomic::AtomicBool,
+    inner: MemoryLedger,
+}
+
+impl ByteLedger for Flaky {
+    fn used(&self, day: &str) -> std::io::Result<u64> {
+        self.inner.used(day)
+    }
+
+    fn add(&self, day: &str, n: u64) -> std::io::Result<u64> {
+        if self.broken.load(Ordering::SeqCst) {
+            return Err(std::io::Error::other("disk full"));
+        }
+        self.inner.add(day, n)
+    }
+}
+
+/// Bytes that couldn't be recorded aren't forgotten: the host counts as spent until they are.
+#[test]
+fn bytes_a_ledger_failed_to_record_are_kept_and_stop_the_host() {
+    let ledger = Arc::new(Flaky::default());
+    let (_now, clock) = moving("2026-11-12T12:00:00Z");
+    let d = DailyBytes::new("x", 100, ledger.clone(), clock);
+    assert_eq!(d.spent(), None);
+    ledger.broken.store(true, Ordering::SeqCst);
+    d.note(10);
+    let why = d.spent().expect("stopped while unrecorded");
+    assert!(why.contains("can't be updated"), "{why}");
+    // Still stopped on the next look, with nothing lost.
+    assert!(d.spent().is_some());
+    ledger.broken.store(false, Ordering::SeqCst);
+    assert_eq!(d.spent(), None);
+    assert_eq!(ledger.used("2026-11-12").unwrap(), 10);
+    d.note(95);
+    assert!(d.spent().unwrap().contains("105 of 100 bytes"));
+}
+
+/// Bodies read through the engine count against the budget.
+#[tokio::test]
+async fn read_capped_counts_every_byte_it_receives() {
+    let r = Rig::new().await;
+    r.s.put("/list.json", vec![b'x'; 40]);
+    let dir = r.dir.path().join("budgets");
+    let p = test_policy("budgeted", "127.0.0.1", "daily_byte_budget = 1000\n");
+    let (_now, clock) = moving("2026-11-12T12:00:00Z");
+    let engine = engine_with(p, &dir).with_clock(clock);
+    let (_tx, rx) = no_stop();
+    let url = format!("{}/list.json", r.root);
+    let far = Instant::now() + Duration::from_secs(60);
+    let resp = engine.open(&url, None, &rx, far).await.unwrap();
+    assert_eq!(
+        engine
+            .read_capped(&url, resp, 100, &rx)
+            .await
+            .unwrap()
+            .len(),
+        40
+    );
+    let ledger = FileLedger::new(dir.join("budgeted.bytes.json"));
+    assert_eq!(ledger.used("2026-11-12").unwrap(), 40);
+    // A length over the ceiling is refused before any body arrives, so nothing more counts.
+    let resp = engine.open(&url, None, &rx, far).await.unwrap();
+    assert!(engine.read_capped(&url, resp, 10, &rx).await.is_err());
+    assert_eq!(ledger.used("2026-11-12").unwrap(), 40);
 }

@@ -50,8 +50,10 @@ struct Day {
     bytes: u64,
 }
 
-/// A ledger in a file, under an exclusive `flock`. It holds only the current
-/// day: the first count of a new day replaces the old one.
+/// A ledger in a file. It holds only the current day: the first count of a new
+/// day replaces the old one. Every operation holds an exclusive `flock` on
+/// `<file>.lock`, and a count is written to a temporary file and renamed into
+/// place, so a crash leaves the old count or the new one, never a cut-off file.
 #[derive(Debug)]
 pub struct FileLedger {
     path: PathBuf,
@@ -62,54 +64,69 @@ impl FileLedger {
         Self { path }
     }
 
-    fn with<T>(&self, f: impl FnOnce(&mut Day) -> T) -> std::io::Result<T> {
-        use std::io::{Read, Seek, Write};
+    fn sibling(&self, suffix: &str) -> PathBuf {
+        let mut name = self.path.as_os_str().to_owned();
+        name.push(suffix);
+        PathBuf::from(name)
+    }
+
+    /// Runs `f` with the ledger locked.
+    fn locked<T>(&self, f: impl FnOnce() -> std::io::Result<T>) -> std::io::Result<T> {
         if let Some(dir) = self.path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        let mut file = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
+        let lock = std::fs::OpenOptions::new()
             .create(true)
             .truncate(false)
-            .open(&self.path)?;
-        rustix::fs::flock(&file, rustix::fs::FlockOperation::LockExclusive)
+            .write(true)
+            .open(self.sibling(".lock"))?;
+        rustix::fs::flock(&lock, rustix::fs::FlockOperation::LockExclusive)
             .map_err(std::io::Error::from)?;
-        let mut text = String::new();
-        file.read_to_string(&mut text)?;
-        // A file that can't be read is an error, never a fresh day: a budget that
-        // forgets what it spent is no budget.
-        let mut day: Day = if text.trim().is_empty() {
-            Day::default()
-        } else {
-            serde_json::from_str(&text)
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?
-        };
-        let out = f(&mut day);
-        let body = serde_json::to_vec(&day).map_err(std::io::Error::other)?;
-        file.set_len(0)?;
-        file.rewind()?;
-        file.write_all(&body)?;
+        f()
+    }
+
+    /// The day on file. No file is a fresh ledger; a file that is empty or can't be
+    /// read is damaged, and is an error, never a fresh day: a budget that forgot
+    /// what it spent is no budget.
+    fn read(&self) -> std::io::Result<Day> {
+        match std::fs::read_to_string(&self.path) {
+            Ok(text) => serde_json::from_str(&text)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Day::default()),
+            Err(e) => Err(e),
+        }
+    }
+
+    fn write(&self, day: &Day) -> std::io::Result<()> {
+        use std::io::Write;
+        let tmp = self.sibling(".tmp");
+        let mut file = std::fs::File::create(&tmp)?;
+        file.write_all(&serde_json::to_vec(day).map_err(std::io::Error::other)?)?;
         file.sync_all()?;
-        Ok(out)
+        std::fs::rename(&tmp, &self.path)
     }
 }
 
 impl ByteLedger for FileLedger {
     fn used(&self, day: &str) -> std::io::Result<u64> {
-        self.with(|d| if d.day == day { d.bytes } else { 0 })
+        self.locked(|| {
+            let d = self.read()?;
+            Ok(if d.day == day { d.bytes } else { 0 })
+        })
     }
 
     fn add(&self, day: &str, n: u64) -> std::io::Result<u64> {
-        self.with(|d| {
+        self.locked(|| {
+            let mut d = self.read()?;
             if d.day != day {
-                *d = Day {
+                d = Day {
                     day: day.to_owned(),
                     bytes: 0,
                 };
             }
             d.bytes = d.bytes.saturating_add(n);
-            d.bytes
+            self.write(&d)?;
+            Ok(d.bytes)
         })
     }
 }
@@ -163,6 +180,8 @@ impl DailyBytes {
             return;
         }
         if let Err(e) = self.ledger.add(&self.today(), n) {
+            // Kept, to try again; until it is recorded the host counts as spent.
+            self.pending.fetch_add(n, Ordering::Relaxed);
             tracing::warn!(host = %self.label, bytes = n, error = %e, "can't record bytes against the daily budget");
         }
     }
@@ -171,6 +190,12 @@ impl DailyBytes {
     /// spent, or the ledger can't say (a budget that can't be read isn't taken as unspent).
     pub fn spent(&self) -> Option<String> {
         self.flush();
+        if self.pending.load(Ordering::Relaxed) > 0 {
+            return Some(format!(
+                "{} daily byte budget can't be updated; nothing more from it until the count is recorded",
+                self.label
+            ));
+        }
         let day = self.today();
         match self.ledger.used(&day) {
             Ok(used) if used >= self.limit => Some(format!(
