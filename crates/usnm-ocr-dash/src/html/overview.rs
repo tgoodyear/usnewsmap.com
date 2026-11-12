@@ -180,7 +180,7 @@ fn daily_bars(
         let y = |n: f64| TOP + (H - TOP) * (1.0 - n / scale as f64);
         let _ = write!(
         o,
-        "<svg class=\"spark daily {class}\" viewBox=\"0 0 {units} {}\" role=\"img\" tabindex=\"0\" data-chart=\"{key}\" \
+        "<svg class=\"spark daily {class}\" viewBox=\"0 0 {units} {}\" role=\"img\" tabindex=\"0\" data-chart=\"{key}-{class}\" \
          data-start=\"{at}\" data-hours=\"24\" aria-label=\"{}. Left and right arrow keys step through the days.\">",
         H + AXIS,
         esc(label)
@@ -789,6 +789,8 @@ mod tests {
         assert_eq!(o.matches("<g class=\"bar\">").count(), 14);
         assert_eq!(o.matches("class=\"unk\"").count(), 2);
         assert_eq!(o.matches("class=\"v part\"").count(), 2);
+        // Each width has its own key, so a refresh restores focus to the shown one.
+        assert!(o.contains("data-chart=\"k-wide\"") && o.contains("data-chart=\"k-narrow\""));
         assert!(o.contains("data-start=\"2026-11-05T00:00:00Z\""));
         assert!(o.contains("Nov 5 00:00 to Nov 6 00:00 UTC: 30,000 pages"));
         // A day with none draws no bar; the scale still reaches the biggest.
