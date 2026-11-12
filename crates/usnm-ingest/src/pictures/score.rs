@@ -336,7 +336,7 @@ fn inspect_illustration(
 /// The ALTO file with the box taken off every `Illustration` that is not
 /// written with a usable one, so the strict reader does not stop the run on
 /// it (it would also give the element the page's own box), and, for each
-/// `Illustration` in an ALTO namespace in document order, whether its box was
+/// `Illustration` in the document's own ALTO namespace, in document order,, whether its box was
 /// usable. Elements in another namespace (foreign XML under `Tags`) are not
 /// counted, as the reader does not count them.
 fn checked_illustrations(xml: &[u8]) -> anyhow::Result<(Vec<u8>, Vec<bool>)> {
@@ -345,15 +345,24 @@ fn checked_illustrations(xml: &[u8]) -> anyhow::Result<(Vec<u8>, Vec<bool>)> {
     let mut reader = quick_xml::NsReader::from_str(text);
     let mut writer = quick_xml::Writer::new(Vec::new());
     let mut valid = Vec::new();
+    let mut root: Option<Option<String>> = None;
     loop {
         let (ns, event) = reader
             .read_resolved_event()
             .context("not well-formed XML")?;
-        let alto = matches!(
-            &ns,
-            ResolveResult::Bound(Namespace(uri))
-                if usnm_alto::NAMESPACES.iter().any(|(n, _)| n == uri)
-        );
+        // The reader takes only the root's namespace as the document's own.
+        if root.is_none() && matches!(event, Event::Start(_) | Event::Empty(_)) {
+            root = Some(match &ns {
+                ResolveResult::Bound(Namespace(uri)) => Some(uri.to_string()),
+                _ => None,
+            });
+        }
+        let alto = match (&ns, &root) {
+            (ResolveResult::Bound(Namespace(uri)), Some(Some(r))) => {
+                uri == r && usnm_alto::NAMESPACES.iter().any(|(n, _)| n == uri)
+            }
+            _ => false,
+        };
         let event = match event {
             Event::Eof => return Ok((writer.into_inner(), valid)),
             Event::Start(e) if alto && e.local_name().as_ref() == "Illustration" => {
@@ -821,6 +830,7 @@ mod tests {
                    <Illustration ID="g" HPOS="0" VPOS="0" WIDTH="bad" HEIGHT="10"/>
                    <Tags><OtherTag><XmlData>
                      <x:Illustration xmlns:x="urn:other" HPOS="0" VPOS="0" WIDTH="5" HEIGHT="5"/>
+                     <v4:Illustration xmlns:v4="http://www.loc.gov/standards/alto/ns-v4#" HPOS="0" VPOS="0" WIDTH="5" HEIGHT="5"/>
                    </XmlData></OtherTag></Tags>"#,
             ),
         );
