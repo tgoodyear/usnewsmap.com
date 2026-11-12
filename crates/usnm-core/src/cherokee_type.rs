@@ -285,15 +285,47 @@ fn syllabary_words(text: &str) -> impl Iterator<Item = &str> {
         .filter(|w| !w.is_empty())
 }
 
+/// Which rule decides a line job's reading against LoC's text: `line-merge-v1` (#1621) counts
+/// only syllabary letters, `line-merge-v2` (#1666) also credits the Latin words a reading that
+/// routed words by script holds, since LoC's text has a few syllabary letters in place of each.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MergeRule {
+    V1,
+    V2,
+}
+
+/// The letters of the words in `text` that are Latin: words with a Latin letter in them and no
+/// syllabary letter. A line job that routes words by script (#1666) reads them with the English
+/// engine.
+fn latin_letters(text: &str) -> usize {
+    text.split_whitespace()
+        .filter(|w| !w.chars().any(is_syllabary))
+        .map(|w| w.chars().filter(char::is_ascii_alphabetic).count())
+        .sum()
+}
+
 /// Why the model's reading `read` of a line fails against LoC's `loc`, or `None` when it
 /// replaces LoC's: it is empty, it has under half LoC's syllabary letters, or it has fewer
 /// New Testament words than LoC's.
 pub fn reading_fails(loc: &str, read: &str) -> Option<Fallback> {
+    reading_fails_with(MergeRule::V1, loc, read)
+}
+
+/// [`reading_fails`] under `rule`. Under [`MergeRule::V2`] the Latin letters of the reading
+/// count as syllabary letters in the half-as-many test, because a Latin word LoC read as
+/// syllabary has about as many syllabary letters as it has Latin ones.
+pub fn reading_fails_with(rule: MergeRule, loc: &str, read: &str) -> Option<Fallback> {
     if read.trim().is_empty() {
         return Some(Fallback::Empty);
     }
     let letters = |t: &str| t.chars().filter(|c| is_syllabary(*c)).count();
-    if letters(read) * 2 < letters(loc) {
+    // A reading with no syllabary letter at all gets no credit: on a line LoC read as Cherokee,
+    // all-Latin output is more likely a misfire than an English line.
+    let credit = match rule {
+        MergeRule::V2 if letters(read) > 0 => latin_letters(read),
+        _ => 0,
+    };
+    if (letters(read) + credit) * 2 < letters(loc) {
         return Some(Fallback::FewLetters);
     }
     let known_words = |t: &str| syllabary_words(t).filter(|w| is_known(w)).count();
@@ -336,6 +368,11 @@ impl MergedLines {
 /// its reading: the model's reading replaces LoC's text unless [`reading_fails`]. Every other
 /// line, English included, stays as LoC read it.
 pub fn merge_lines(lines: &[(&str, Option<&str>)]) -> MergedLines {
+    merge_lines_with(MergeRule::V1, lines)
+}
+
+/// [`merge_lines`] under `rule`.
+pub fn merge_lines_with(rule: MergeRule, lines: &[(&str, Option<&str>)]) -> MergedLines {
     let (mut out, mut sources) = (
         Vec::with_capacity(lines.len()),
         Vec::with_capacity(lines.len()),
@@ -343,7 +380,7 @@ pub fn merge_lines(lines: &[(&str, Option<&str>)]) -> MergedLines {
     for (loc, read) in lines {
         let (text, source) = match read {
             None => (*loc, LineSource::Loc),
-            Some(read) => match reading_fails(loc, read) {
+            Some(read) => match reading_fails_with(rule, loc, read) {
                 None => (read.trim(), LineSource::Model),
                 Some(why) => (*loc, LineSource::Fallback(why)),
             },
@@ -465,6 +502,38 @@ mod tests {
         assert_eq!(reading_fails("ᎦᏙᎯ ᎦᎪᎯ", "ᎦᏙᎯ, ᎦᎪᎯ."), None);
         // A line LoC read as no syllabary at all: any non-empty reading replaces it.
         assert_eq!(reading_fails("Tbe cify", "ᎦᎪᎯ"), None);
+    }
+
+    #[test]
+    fn rule_v2_credits_the_latin_words_a_reading_routed_by_script() {
+        use MergeRule::{V1, V2};
+        // LoC read "ᎠᎴ" and a transliteration as nine syllabary letters; the line job read the
+        // first word as syllabary and the second as Latin.
+        let (loc, read) = ("ᎠᎴ ᏣᎳᎩᏂᏯᎳᏗ", "ᎠᎴ (Cherokee)");
+        assert_eq!(
+            reading_fails_with(V1, loc, read),
+            Some(Fallback::FewLetters)
+        );
+        assert_eq!(reading_fails_with(V2, loc, read), None);
+        // Latin letters outside a Latin word are not credited, and neither is a reading that
+        // is all Latin.
+        assert_eq!(
+            reading_fails_with(V2, loc, "ᎠᎴ ᏣᎳ1"),
+            Some(Fallback::FewLetters)
+        );
+        assert_eq!(
+            reading_fails_with(V2, loc, "(Cherokee Academy)"),
+            Some(Fallback::FewLetters)
+        );
+        // The other tests are rule v1's.
+        for (loc, read) in [("ᎦᎪᎯ", "ᎦᏙᎯ"), ("ᎦᏙᎯ", "ᎦᎪᎯ"), ("ᎦᎪᎯ", "")]
+        {
+            assert_eq!(reading_fails_with(V1, loc, read), reading_fails(loc, read));
+            assert_eq!(reading_fails_with(V2, loc, read), reading_fails(loc, read));
+        }
+        let lines = [("ᎠᎴ ᏣᎳᎩᏂᏯᎳᏗ", Some("ᎠᎴ (Cherokee)"))];
+        assert_eq!(merge_lines(&lines).lines, ["ᎠᎴ ᏣᎳᎩᏂᏯᎳᏗ"]);
+        assert_eq!(merge_lines_with(V2, &lines).lines, ["ᎠᎴ (Cherokee)"]);
     }
 
     #[test]

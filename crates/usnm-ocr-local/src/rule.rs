@@ -124,13 +124,10 @@ pub fn judge(
 }
 
 /// The rule that decides a row read with `ocr_engine`: [`line_merge::VERSION`] for a line
-/// job's page, else rule v1 (`v1`).
+/// job's page, [`line_merge::VERSION_V2`] when its words were routed by script (#1666), else
+/// rule v1 (`v1`).
 pub fn rule_for(ocr_engine: &str) -> &'static str {
-    if line_merge::is_line_job(ocr_engine) {
-        line_merge::VERSION
-    } else {
-        "v1"
-    }
+    line_merge::version_for(ocr_engine).unwrap_or("v1")
 }
 
 /// [`judge`] for a row read with `ocr_engine`, and the rule that decided. A line job's page
@@ -145,7 +142,7 @@ pub fn judge_row(
 ) -> (Scores, Scores, Result<(), Keep>, &'static str) {
     let (ours, loc, v1) = judge(ours_text, loc_text, title_languages);
     match rule_for(ocr_engine) {
-        line_merge::VERSION => (ours, loc, Ok(()), line_merge::VERSION),
+        rule @ (line_merge::VERSION | line_merge::VERSION_V2) => (ours, loc, Ok(()), rule),
         rule => (ours, loc, v1, rule),
     }
 }
@@ -153,10 +150,16 @@ pub fn judge_row(
 /// Rule `line-merge-v1` (#1621), for a line job's page: admitted when every line the job
 /// didn't read is LoC's text byte for byte, and the model's reading was taken on at least
 /// [`MIN_MODEL_SHARE`](line_merge::MIN_MODEL_SHARE) of the lines it read.
+///
+/// `line-merge-v2` (#1666) is the same page test for a job that routed each word by script. It
+/// differs only in how a line's reading is held against LoC's text before the page is judged
+/// (`usnm_core::cherokee_type::MergeRule::V2`), so a page's v1 results stay as they were.
 pub mod line_merge {
     use super::Keep;
 
     pub const VERSION: &str = "line-merge-v1";
+    /// The rule for a line job whose profile is [`usnm_ocr_contract::boinc::LINE_WORDS_PROFILE`].
+    pub const VERSION_V2: &str = "line-merge-v2";
     pub const MIN_MODEL_SHARE: f64 = 0.5;
 
     /// One line of a line job's page, in reading order: LoC's text from LoC's ALTO, ours as
@@ -207,17 +210,32 @@ pub mod line_merge {
     /// Whether a row read with `ocr_engine` is a line job's page: its tag's profile is one the
     /// engine catalog marks `lines_only`, in the tag's engine family.
     pub fn is_line_job(ocr_engine: &str) -> bool {
+        version_for(ocr_engine).is_some()
+    }
+
+    /// The line-merge rule that decides a row read with `ocr_engine`: [`VERSION_V2`] when its
+    /// profile is the one that reads each word in its script, [`VERSION`] for another
+    /// `lines_only` profile, and none for a page job.
+    pub fn version_for(ocr_engine: &str) -> Option<&'static str> {
         let Ok(usnm_core::ocr_engine::EngineTag::Tag(tag)) =
             usnm_core::ocr_engine::EngineTag::parse(ocr_engine)
         else {
-            return false;
+            return None;
         };
-        usnm_ocr_route::ENGINES.engine.iter().any(|e| {
+        let lines = usnm_ocr_route::ENGINES.engine.iter().any(|e| {
             e.family == tag.family()
                 && e.profile
                     .iter()
                     .any(|p| p.lines_only && p.id == tag.profile())
-        })
+        });
+        match (
+            lines,
+            tag.profile() == usnm_ocr_contract::boinc::LINE_WORDS_PROFILE,
+        ) {
+            (false, _) => None,
+            (true, true) => Some(VERSION_V2),
+            (true, false) => Some(VERSION),
+        }
     }
 }
 
@@ -232,6 +250,7 @@ pub fn record() -> Value {
         },
         "line_merge": {
             "version": line_merge::VERSION,
+            "version_words": line_merge::VERSION_V2,
             "min_model_share": line_merge::MIN_MODEL_SHARE,
             "other_lines": "LoC's ALTO text, byte for byte",
         },
@@ -459,6 +478,18 @@ mod tests {
             line_merge::verdict(&[line("a", "a", None)]).1,
             Err(Keep::ModelShare)
         );
+    }
+
+    #[test]
+    fn a_words_route_page_is_decided_by_line_merge_v2() {
+        const WORDS: &str = "tesseract/5.5.0 profile=chr_phoenix+eng image=sha256:3f9a0c1d2e4b \
+            models=sha256:843614a53083 route=boinc@r1 contract=0";
+        assert_eq!(rule_for(WORDS), line_merge::VERSION_V2);
+        assert!(line_merge::is_line_job(WORDS));
+        let (_, _, v, rule) = judge_row(WORDS, LOC_GARBLED, Some(LOC_GARBLED), &["eng"]);
+        assert_eq!((v, rule), (Ok(()), line_merge::VERSION_V2));
+        // The v1 profile keeps its rule, so its pages' results stay reproducible.
+        assert_eq!(rule_for(PHOENIX), line_merge::VERSION);
     }
 
     #[test]

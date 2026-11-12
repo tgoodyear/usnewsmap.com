@@ -86,6 +86,12 @@ BOINC line job (`usnm-boinc export --line-read chr`) routes to it and reads
 LoC's Cherokee line boxes one crop at a time at PSM 13
 (`crates/usnm-boinc/src/lines.rs`).
 
+`chr_phoenix+eng` (#1666) is a second `lines_only` profile for `chr`, listed after
+`chr_phoenix`, so the route for `chr` is still `chr_phoenix`. Only a line job that names it
+(`usnm-boinc export --line-read chr --line-words`) gets it. The line is read with
+`chr_phoenix`, and the words that look Latin are read again with `eng`
+(`crates/usnm-boinc/src/lines/script.rs`). Its pages are decided by rule `line-merge-v2`.
+
 ## Credits data shape
 
 - `production_licenses`: array of licence identifier strings approved by the

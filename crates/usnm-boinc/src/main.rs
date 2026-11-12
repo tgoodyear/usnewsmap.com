@@ -41,6 +41,10 @@ enum Commands {
     /// The pages a line campaign reads (#1621), from LoC's bulk OCR unpacked and local scan
     /// copies, as JSONL: each page's ALTO sha256, lines to read, test-set mark and scan copy.
     LinePages(job::LinePagesArgs),
+    /// Read line crops with the host's Tesseract (#1666), as a line job's worker does: the line
+    /// model alone, or with --words each word in its script. For measuring on the Cherokee
+    /// test set; one JSON line per crop.
+    LineCrops(job::LineCropsArgs),
     /// Stage one line export's pages (#1621) from local copies: scans with sidecars, LoC's
     /// ALTO and a prefetch manifest, checked against the page list, for the BOINC host.
     LineStage(job::LineStageArgs),
@@ -123,6 +127,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::LineReport(args) => job::line_report(args),
         Commands::LinePages(args) => job::line_pages(args),
         Commands::LineStage(args) => job::line_stage(args),
+        Commands::LineCrops(args) => job::line_crops(args).await,
         Commands::Reconcile(args) => job::reconcile(args),
         Commands::Collect(args) => job::collect(args).await,
         Commands::RejectOutput(args) => job::reject_output(args),
