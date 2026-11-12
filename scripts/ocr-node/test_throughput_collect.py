@@ -24,14 +24,15 @@ def window(hours=3):
     return collector.Window(NOW, hours)
 
 
-def tick(at, plan="p", selected=10, published=2, seconds=30.0, **extra):
+def tick(at, plan="p", selected=10, published=2, seconds=30.0, total=None, **extra):
     return json.dumps({"event": "boinc_batch_tick", "at": at, "plan": plan, "selected": selected,
-                       "newly_published": published, "high_watermark": 300, "max_global_pending": 2000,
+                       "newly_published": published, **({} if total is None else {"published": total}), "high_watermark": 300, "max_global_pending": 2000,
                        "timings": {"tick_seconds": seconds}, **extra})
 
 
-def collected(at, plan, pages):
-    return json.dumps({"event": "boinc_batch_collected", "at": at, "plan": plan, "pages": pages})
+def collected(at, plan, pages, total=None):
+    return json.dumps({"event": "boinc_batch_collected", "at": at, "plan": plan, "pages": pages,
+                       **({} if total is None else {"published": total})})
 
 
 def sync_line(message, **fields):
@@ -227,13 +228,13 @@ class ControllerTests(unittest.TestCase):
     def test_a_finished_tick_adds_only_what_its_collect_did_not_count(self):
         w = window()
         at = THIS_HOUR + 100
-        entries = [(at + 20, "u", collected(at, "live", 30)),
-                   (at + 60, "u", tick(at, plan="live", published=30)),
+        entries = [(at + 20, "u", collected(at, "live", 30, 30)),
+                   (at + 60, "u", tick(at, plan="live", published=30, total=30)),
                    # Four pages settled by reconciliation, not by collect.
-                   (at + 360, "u", collected(at + 300, "live", 5)),
-                   (at + 400, "u", tick(at + 300, plan="live", published=9)),
-                   # A controller that doesn't log collect yet: the tick's own count.
-                   (at + 700, "u", tick(at + 600, plan="live", published=7))]
+                   (at + 360, "u", collected(at + 300, "live", 5, 35)),
+                   (at + 400, "u", tick(at + 300, plan="live", published=9, total=39)),
+                   # A tick with nothing logged before it for its plan: its own count.
+                   (at + 700, "u", tick(at + 600, plan="other", published=7))]
         collector.collect_controller(w, entries)
         self.assertEqual(w.series["ocr_collect_pages"][2], 30 + 5 + 4 + 7)
 
@@ -241,9 +242,9 @@ class ControllerTests(unittest.TestCase):
         w = window()
         at = THIS_HOUR + 10
         unit = "usnm-boinc-priority-controller.service"
-        entries = [(at + 5, unit, collected(at, "live", 8)), (at + 9, unit, collected(at, "old", 3)),
-                   (at + 10, unit, tick(at, plan="live", published=8)),
-                   (at + 11, unit, tick(at, plan="old", published=3))]
+        entries = [(at + 5, unit, collected(at, "live", 8, 8)), (at + 9, unit, collected(at, "old", 3, 3)),
+                   (at + 10, unit, tick(at, plan="live", published=8, total=8)),
+                   (at + 11, unit, tick(at, plan="old", published=3, total=3))]
         collector.collect_controller(w, entries)
         self.assertEqual(w.series["ocr_collect_pages"][2], 11)
         self.assertEqual(w.series["ticks_ok"][2], 2)
@@ -251,9 +252,9 @@ class ControllerTests(unittest.TestCase):
     def test_new_layout_only(self):
         w = window()
         at = THIS_HOUR + 10
-        entries = [(at + 5, "usnm-boinc-priority-controller@main.service", collected(at, "live", 8)),
-                   (at + 6, "usnm-boinc-priority-controller@old-1.service", collected(at + 1, "old-1", 3)),
-                   (at + 7, "usnm-boinc-native-feed@native-3.service", collected(at + 2, "native-3", 2))]
+        entries = [(at + 5, "usnm-boinc-priority-controller@main.service", collected(at, "live", 8, 8)),
+                   (at + 6, "usnm-boinc-priority-controller@old-1.service", collected(at + 1, "old-1", 3, 3)),
+                   (at + 7, "usnm-boinc-native-feed@native-3.service", collected(at + 2, "native-3", 2, 2))]
         collector.collect_controller(w, entries)
         self.assertEqual(w.series["ocr_collect_pages"][2], 13)
 
@@ -262,12 +263,12 @@ class ControllerTests(unittest.TestCase):
         at = THIS_HOUR + 10
         # The migration hour: the same tick in the shared unit's journal and the plan's own,
         # and a line the journal gives twice.
-        entries = [(at + 5, "usnm-boinc-priority-controller.service", collected(at, "live", 8)),
-                   (at + 6, "usnm-boinc-priority-controller@main.service", collected(at, "live", 8)),
-                   (at + 7, "usnm-boinc-priority-controller@main.service", collected(at, "live", 8)),
-                   (at + 8, "usnm-boinc-priority-controller@main.service", tick(at, plan="live", published=8)),
-                   (at + 9, "usnm-boinc-priority-controller.service", tick(at, plan="live", published=8)),
-                   (at + 400, "usnm-boinc-priority-controller@main.service", collected(at + 300, "live", 2))]
+        entries = [(at + 5, "usnm-boinc-priority-controller.service", collected(at, "live", 8, 8)),
+                   (at + 6, "usnm-boinc-priority-controller@main.service", collected(at, "live", 8, 8)),
+                   (at + 7, "usnm-boinc-priority-controller@main.service", collected(at, "live", 8, 8)),
+                   (at + 8, "usnm-boinc-priority-controller@main.service", tick(at, plan="live", published=8, total=8)),
+                   (at + 9, "usnm-boinc-priority-controller.service", tick(at, plan="live", published=8, total=8)),
+                   (at + 400, "usnm-boinc-priority-controller@main.service", collected(at + 300, "live", 2, 10))]
         collector.collect_controller(w, entries)
         self.assertEqual(w.series["ocr_collect_pages"][2], 10)
         self.assertEqual(w.series["ticks_ok"][2], 1)
@@ -275,8 +276,8 @@ class ControllerTests(unittest.TestCase):
     def test_a_drain_unit_counts_and_adds_no_queue_reading(self):
         w = window()
         at = THIS_HOUR + 10
-        entries = [(at, "usnm-boinc-drain.service", collected(at, "old-1", 6)),
-                   (at + 5, "usnm-boinc-drain.service", tick(at, plan="old-1", published=6, draining=True,
+        entries = [(at, "usnm-boinc-drain.service", collected(at, "old-1", 6, 6)),
+                   (at + 5, "usnm-boinc-drain.service", tick(at, plan="old-1", published=6, total=6, draining=True,
                                                                cohort_pending=999)),
                    (at + 10, "usnm-boinc-priority-controller@main.service",
                     tick(at + 8, plan="live", published=0, cohort_pending=40))]
@@ -299,20 +300,30 @@ class ControllerTests(unittest.TestCase):
     def test_pages_a_failed_tick_collected_are_not_counted_again_when_the_next_finishes(self):
         w = window()
         at = THIS_HOUR + 100
-        entries = [(at + 20, "u", collected(at, "live", 2)),
+        entries = [(at + 20, "u", collected(at, "live", 2, 2)),
                    (at + 40, "u", json.dumps({"event": "boinc_batch_failure", "at": at, "error": "x"})),
                    # The next tick collects nothing; its summary still carries the earlier two.
-                   (at + 400, "u", tick(at + 300, plan="live", published=2)),
-                   (at + 700, "u", tick(at + 600, plan="live", published=1))]
+                   (at + 400, "u", tick(at + 300, plan="live", published=2, total=2)),
+                   (at + 700, "u", tick(at + 600, plan="live", published=1, total=3))]
+        collector.collect_controller(w, entries)
+        self.assertEqual(w.series["ocr_collect_pages"][2], 3)
+
+    def test_a_tick_whose_summary_was_lost_does_not_hide_the_next_ones_pages(self):
+        w = window()
+        at = THIS_HOUR + 100
+        # The first tick collected two pages and published them, then failed to release its
+        # lease: no summary. The second settled one more page outside collect.
+        entries = [(at + 20, "u", collected(at, "live", 2, 2)),
+                   (at + 700, "u", tick(at + 600, plan="live", published=1, total=3))]
         collector.collect_controller(w, entries)
         self.assertEqual(w.series["ocr_collect_pages"][2], 3)
 
     def test_a_plan_that_disappears_keeps_its_pages_and_does_not_break_the_others(self):
         w = window()
         gone, at = "usnm-boinc-priority-controller@retired.service", THIS_HOUR - HOUR + 10
-        entries = [(at, gone, collected(at, "retired", 9)),
-                   (at + 5, gone, tick(at, plan="retired", published=9)),
-                   (at + 3600, "usnm-boinc-priority-controller@main.service", collected(at + 3600, "live", 4))]
+        entries = [(at, gone, collected(at, "retired", 9, 9)),
+                   (at + 5, gone, tick(at, plan="retired", published=9, total=9)),
+                   (at + 3600, "usnm-boinc-priority-controller@main.service", collected(at + 3600, "live", 4, 4))]
         collector.collect_controller(w, entries)
         self.assertEqual(w.series["ocr_collect_pages"], [0, 9, 4])
         self.assertEqual(w.series["ocr_claim_pages"], [0, 0, 0])

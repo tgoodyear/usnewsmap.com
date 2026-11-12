@@ -2768,10 +2768,17 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         pages = sum(1 for record in found
                     if record["job"]["id"] in wanted and record.get("stage") == "published")
         if pages:
+            # `published` is the tick summary's cumulative count as of now, so a reader can tell
+            # what a later summary adds beyond the pages collect already reported.
+            conflicting = {} if feed else None
+            mine = owned_records(config, found, state.get("deadline_retries"), conflicting)
+            total = sum(record["stage"] == "published" for record in mine.values()) + sum(
+                bool(conflict["own"]) and conflict["own"]["stage"] == "published"
+                for conflict in (conflicting or {}).values())
             try:
                 print(json.dumps({"event": "boinc_batch_collected", "schema_version": 1,
-                                  "at": int(now), "plan": config["plan"], "pages": pages},
-                                 sort_keys=True), file=sys.stderr, flush=True)
+                                  "at": int(now), "plan": config["plan"], "pages": pages,
+                                  "published": total}, sort_keys=True), file=sys.stderr, flush=True)
             except (OSError, ValueError):
                 pass
 
@@ -2786,7 +2793,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         if to_collect:
             try:
                 report_collected(read_records())
-            except (RuntimeError, OSError):
+            except (RuntimeError, OSError, ValueError, KeyError):
                 pass
         # A native plan goes on below, if the failure left a result unpublished.
         if not native:

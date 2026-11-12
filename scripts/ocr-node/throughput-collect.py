@@ -257,16 +257,17 @@ def limits_now(event):
 def collect_controller(window, entries):
     """The controller units' journal. Pages collected are counted from each collect's own
     `boinc_batch_collected` line, logged as soon as collect ends, so a tick that fails or never
-    finishes still counts them. A finished tick's `newly_published` runs from the plan's last
-    finished tick, so it counts only what exceeds the collects counted since then: a tick from a
-    controller that doesn't log them yet counts all of it, and pages a failed tick collected are
-    not counted again when the next one finishes. A line read twice, or two units running the
+    finishes still counts them. A finished tick adds its cumulative `published` beyond the
+    last one known for the plan, from an earlier tick or from a collect's own line (which carries
+    it), so pages a failed tick collected are not counted again when the next one finishes. With
+    nothing known before (a controller that doesn't log collects yet, or a plan whose lines are
+    older than the lookback) it adds `newly_published`. A line read twice, or two units running the
     same plan, count once. Only the live plan's ticks (not a draining or native plan's, whose
     pending work and limits are another queue's) set the queue reading and the limits."""
     for name in ("ticks_ok", "ticks_failed", "tick_seconds", "tick_busy_seconds", "ocr_claim_pages",
                  "ocr_collect_pages"):
         window.declare(name)
-    selected, limits, collected, unsettled, ticks = {}, {}, set(), {}, set()
+    selected, limits, collected, known, ticks = {}, {}, set(), {}, set()
     for logged, _, message in entries:
         event = json_event(message)
         if event is None or type(event.get("at")) is not int:
@@ -276,7 +277,8 @@ def collect_controller(window, entries):
         if kind == "boinc_batch_collected":
             if (plan, at) not in collected:
                 collected.add((plan, at))
-                unsettled[plan] = unsettled.get(plan, 0) + number(event.get("pages"))
+                if type(event.get("published")) is int:
+                    known[plan] = event["published"]
                 window.add("ocr_collect_pages", logged, number(event.get("pages")))
         elif kind == "boinc_batch_phase":
             phase = event.get("phase")
@@ -304,8 +306,13 @@ def collect_controller(window, entries):
                 # it was running.
                 window.spread("tick_busy_seconds", at - seconds, at)
             if good:
-                window.add("ocr_collect_pages", at, max(0, number(event.get("newly_published"))
-                                                        - unsettled.pop(plan, 0)))
+                total = event.get("published")
+                if plan in known and type(total) is int:
+                    window.add("ocr_collect_pages", at, max(0, total - known[plan]))
+                else:
+                    window.add("ocr_collect_pages", at, number(event.get("newly_published")))
+                if type(total) is int:
+                    known[plan] = total
                 # A new plan starts its count again.
                 if plan in selected:
                     window.add("ocr_claim_pages", at, max(0, number(event.get("selected")) - selected[plan]))

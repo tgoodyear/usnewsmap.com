@@ -445,8 +445,8 @@ class SchedulerTests(unittest.TestCase):
             event = self.tick()
         lines = [json.loads(line) for line in err.getvalue().splitlines() if line.startswith("{")]
         collected = [line for line in lines if line["event"] == "boinc_batch_collected"]
-        self.assertEqual([(line["pages"], line["plan"], line["at"]) for line in collected],
-                         [(event["newly_published"], self.config["plan"], event["at"])])
+        self.assertEqual([(line["pages"], line["plan"], line["at"], line["published"]) for line in collected],
+                         [(event["newly_published"], self.config["plan"], event["at"], event["published"])])
         quiet = io.StringIO()
         with contextlib.redirect_stderr(quiet):
             self.tick()
