@@ -1,0 +1,462 @@
+{
+ "generated_at": "2026-03-14T12:00:00Z",
+ "warming": null,
+ "fetch": {
+  "activity": "queued",
+  "index_error": null,
+  "last_day": {
+   "bytes": 100000000000,
+   "mb_per_s": 1.2,
+   "pages": 24000,
+   "pages_per_hour": 1000
+  },
+  "last_hour": {
+   "bytes": 0,
+   "mb_per_s": 0,
+   "pages": 0,
+   "pages_per_hour": 0
+  },
+  "queue": [
+   {
+    "error": null,
+    "fetched": 2000,
+    "kind": "quality",
+    "marked_at": null,
+    "name": "queue-example-1",
+    "pages": 4000,
+    "path": "",
+    "state": "queued"
+   },
+   {
+    "error": null,
+    "fetched": 500,
+    "kind": "quality",
+    "marked_at": null,
+    "name": "queue-example-2",
+    "pages": 1000,
+    "path": "",
+    "state": "queued"
+   },
+   {
+    "error": null,
+    "fetched": 0,
+    "kind": "quality",
+    "marked_at": null,
+    "name": "queue-example-3",
+    "pages": 1000,
+    "path": "",
+    "state": "queued"
+   },
+   {
+    "error": null,
+    "fetched": 0,
+    "kind": "ocr",
+    "marked_at": null,
+    "name": "queue-example-4",
+    "pages": 100,
+    "path": "",
+    "state": "queued"
+   },
+   {
+    "error": null,
+    "fetched": 2000,
+    "kind": "quality",
+    "marked_at": "2026-03-10T00:00:00Z",
+    "name": "queue-example-5",
+    "pages": 2000,
+    "path": "",
+    "state": "fetched"
+   },
+   {
+    "error": null,
+    "fetched": 900,
+    "kind": "ocr",
+    "marked_at": "2026-03-09T00:00:00Z",
+    "name": "queue-example-6",
+    "pages": 900,
+    "path": "",
+    "state": "fetched"
+   },
+   {
+    "error": null,
+    "fetched": 400,
+    "kind": "quality",
+    "marked_at": null,
+    "name": "queue-example-7",
+    "pages": 1000,
+    "path": "",
+    "state": "fetching"
+   },
+   {
+    "error": null,
+    "fetched": 0,
+    "kind": "ocr",
+    "marked_at": null,
+    "name": "queue-example-8",
+    "pages": 250,
+    "path": "",
+    "state": "cooling"
+   }
+  ],
+  "queue_configured": true,
+  "queue_error": null,
+  "queue_summary": {
+   "cooling": 1,
+   "fetched": 40,
+   "fetching": 1,
+   "manifests": 200,
+   "pages": 1200000,
+   "pages_fetched": 590000,
+   "pages_left": 610000,
+   "queued": 158
+  },
+  "total": {
+   "bytes": 1000000000000,
+   "pages": 500000
+  }
+ },
+ "boinc_week": {
+  "error": null,
+  "generated_at": "2026-03-14T11:56:00Z",
+  "received": "2026-03-14T11:56:00Z",
+  "stale": false,
+  "week": {
+   "bucket_hours": 3,
+   "buckets": [
+    {
+     "completed": {
+      "usnm_ocr": 10,
+      "usnm_quality": 5,
+      "usnm_qwen": 100,
+      "usnm_gold": 4
+     },
+     "hosts": 5,
+     "partial": false,
+     "queued": {
+      "usnm_ndlocr": 1,
+      "usnm_ocr": 20,
+      "usnm_qwen": 300,
+      "usnm_surya": 4
+     },
+     "start": 1773381600,
+     "utc_offset_minutes": 0,
+     "volunteers": 3
+    },
+    {
+     "completed": {
+      "usnm_ocr": 11,
+      "usnm_quality": 6,
+      "usnm_qwen": 110
+     },
+     "hosts": 6,
+     "partial": false,
+     "queued": {
+      "usnm_ndlocr": 1,
+      "usnm_ocr": 20,
+      "usnm_qwen": 300,
+      "usnm_surya": 4
+     },
+     "start": 1773392400,
+     "utc_offset_minutes": 0,
+     "volunteers": 4
+    },
+    {
+     "completed": {
+      "usnm_ocr": 12,
+      "usnm_quality": 7,
+      "usnm_qwen": 120
+     },
+     "hosts": 7,
+     "partial": false,
+     "queued": {
+      "usnm_ndlocr": 1,
+      "usnm_ocr": 20,
+      "usnm_qwen": 300,
+      "usnm_surya": 4
+     },
+     "start": 1773403200,
+     "utc_offset_minutes": 0,
+     "volunteers": 5
+    },
+    {
+     "completed": {
+      "usnm_ocr": 13,
+      "usnm_quality": 8,
+      "usnm_qwen": 130,
+      "usnm_gold": 4
+     },
+     "hosts": 5,
+     "partial": false,
+     "queued": {
+      "usnm_ndlocr": 1,
+      "usnm_ocr": 20,
+      "usnm_qwen": 300,
+      "usnm_surya": 4
+     },
+     "start": 1773414000,
+     "utc_offset_minutes": 0,
+     "volunteers": 3
+    },
+    {
+     "completed": {
+      "usnm_ocr": 14,
+      "usnm_quality": 9,
+      "usnm_qwen": 140
+     },
+     "hosts": 6,
+     "partial": false,
+     "queued": {
+      "usnm_ndlocr": 1,
+      "usnm_ocr": 20,
+      "usnm_qwen": 300,
+      "usnm_surya": 4
+     },
+     "start": 1773424800,
+     "utc_offset_minutes": 0,
+     "volunteers": 4
+    },
+    {
+     "completed": {
+      "usnm_ocr": 15,
+      "usnm_quality": 10,
+      "usnm_qwen": 150
+     },
+     "hosts": 7,
+     "partial": false,
+     "queued": {
+      "usnm_ndlocr": 1,
+      "usnm_ocr": 20,
+      "usnm_qwen": 300,
+      "usnm_surya": 4
+     },
+     "start": 1773435600,
+     "utc_offset_minutes": 0,
+     "volunteers": 5
+    },
+    {
+     "completed": {
+      "usnm_ocr": 16,
+      "usnm_quality": 11,
+      "usnm_qwen": 160,
+      "usnm_gold": 4
+     },
+     "hosts": 5,
+     "partial": false,
+     "queued": {
+      "usnm_ndlocr": 1,
+      "usnm_ocr": 20,
+      "usnm_qwen": 300,
+      "usnm_surya": 4
+     },
+     "start": 1773446400,
+     "utc_offset_minutes": 0,
+     "volunteers": 3
+    },
+    {
+     "completed": {
+      "usnm_ocr": 17,
+      "usnm_quality": 12,
+      "usnm_qwen": 170
+     },
+     "hosts": 6,
+     "partial": false,
+     "queued": {
+      "usnm_ndlocr": 1,
+      "usnm_ocr": 20,
+      "usnm_qwen": 300,
+      "usnm_surya": 4
+     },
+     "start": 1773457200,
+     "utc_offset_minutes": 0,
+     "volunteers": 4
+    },
+    {
+     "completed": {
+      "usnm_ocr": 18,
+      "usnm_quality": 13,
+      "usnm_qwen": 180
+     },
+     "hosts": 7,
+     "partial": false,
+     "queued": {
+      "usnm_ndlocr": 1,
+      "usnm_ocr": 20,
+      "usnm_qwen": 300,
+      "usnm_surya": 4
+     },
+     "start": 1773468000,
+     "utc_offset_minutes": 0,
+     "volunteers": 5
+    },
+    {
+     "completed": {
+      "usnm_ocr": 19,
+      "usnm_quality": 14,
+      "usnm_qwen": 190,
+      "usnm_gold": 4
+     },
+     "hosts": 5,
+     "partial": true,
+     "queued": {
+      "usnm_ndlocr": 1,
+      "usnm_ocr": 20,
+      "usnm_qwen": 300,
+      "usnm_surya": 4
+     },
+     "start": 1773478800,
+     "utc_offset_minutes": 0,
+     "volunteers": 3
+    }
+   ],
+   "generated_at": 1773489360,
+   "generated_utc_offset_minutes": 0,
+   "schema": 1
+  }
+ },
+ "throughput": {
+  "chart_start": "2026-03-07T16:00:00Z",
+  "days_start": "2026-03-07T12:00:00Z",
+  "error": null,
+  "hours_start": "2026-03-13T12:00:00Z",
+  "results_last_hour": 100,
+  "sources": [
+   {
+    "name": "controller",
+    "observed_at": "2026-03-14T11:57:00Z",
+    "stale": false
+   },
+   {
+    "name": "ship",
+    "observed_at": "2026-03-14T11:55:00Z",
+    "stale": false
+   },
+   {
+    "name": "boinc",
+    "observed_at": "2026-03-14T11:53:00Z",
+    "stale": false
+   },
+   {
+    "name": "batch",
+    "observed_at": "2026-03-14T11:58:00Z",
+    "stale": false
+   }
+  ],
+  "steps": [
+   {
+    "day_hours_known": 24,
+    "days": [
+     {
+      "hours_known": 24,
+      "value": 20000
+     },
+     {
+      "hours_known": 24,
+      "value": 22000
+     },
+     {
+      "hours_known": 24,
+      "value": 25000
+     },
+     {
+      "hours_known": 24,
+      "value": 18000
+     },
+     {
+      "hours_known": 24,
+      "value": 26000
+     },
+     {
+      "hours_known": 24,
+      "value": 30000
+     },
+     {
+      "hours_known": 24,
+      "value": 24000
+     }
+    ],
+    "id": "scan_fetch",
+    "label": "Scan fetch",
+    "last_day": 24000,
+    "last_hour": 1000,
+    "unit": "pages"
+   },
+   {
+    "day_hours_known": 24,
+    "days": [
+     {
+      "hours_known": 24,
+      "value": 1000
+     },
+     {
+      "hours_known": 24,
+      "value": 1200
+     },
+     {
+      "hours_known": 24,
+      "value": 900
+     },
+     {
+      "hours_known": 24,
+      "value": 100
+     },
+     {
+      "hours_known": 24,
+      "value": 300
+     },
+     {
+      "hours_known": 24,
+      "value": 500
+     },
+     {
+      "hours_known": 24,
+      "value": 400
+     }
+    ],
+    "id": "ocr_import",
+    "label": "OCR pages imported",
+    "last_day": 400,
+    "last_hour": 20,
+    "unit": "pages"
+   },
+   {
+    "day_hours_known": 24,
+    "days": [
+     {
+      "hours_known": 24,
+      "value": 15000
+     },
+     {
+      "hours_known": 24,
+      "value": 16000
+     },
+     {
+      "hours_known": 24,
+      "value": 14000
+     },
+     {
+      "hours_known": 24,
+      "value": 18000
+     },
+     {
+      "hours_known": 24,
+      "value": 17000
+     },
+     {
+      "hours_known": 24,
+      "value": 19000
+     },
+     {
+      "hours_known": 24,
+      "value": 20000
+     }
+    ],
+    "id": "quality_load",
+    "label": "Quality results loaded",
+    "last_day": 20000,
+    "last_hour": 800,
+    "unit": "pages"
+   }
+  ],
+  "valid_last_hour": 80
+ }
+}

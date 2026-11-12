@@ -396,7 +396,8 @@ jobs:
 
   # The fallback Worker in front of the tunnel (ADR-0027, #1098): its node:test tests, which
   # run offline on Node's own test runner, native Cache API/HTMLRewriter integration with
-  # pinned Wrangler, and shellcheck of its deploy script. No package.json or npm cache.
+  # pinned Wrangler, and shellcheck of its deploy script. No package.json or npm cache. The BOINC
+  # dashboard feed Worker (edge/boinc-feed) has only its node:test tests, run here by path.
   edge:
     name: edge (fallback worker tests)
     needs: changes
@@ -410,6 +411,7 @@ jobs:
         with:
           node-version: 24
       - run: node --test edge/fallback-worker/*.test.mjs
+      - run: node --test edge/boinc-feed/worker.test.mjs
       - run: npx --yes --package=wrangler@4.154.0 --call 'node edge/fallback-worker/native-integration.mjs'
         env:
           WRANGLER_SEND_METRICS: "false"
