@@ -239,8 +239,8 @@ else
   case "$APP" in
     usnm_ocr_native | usnm_gold_native)
       case "$PLATFORM" in
-        x86_64-pc-linux-gnu | arm64-apple-darwin | x86_64-apple-darwin) ;;
-        *) die "native $APP is built only for x86_64-pc-linux-gnu, arm64-apple-darwin and x86_64-apple-darwin" ;;
+        x86_64-pc-linux-gnu | arm64-apple-darwin | x86_64-apple-darwin | windows_x86_64) ;;
+        *) die "native $APP is built only for x86_64-pc-linux-gnu, arm64-apple-darwin, x86_64-apple-darwin and windows_x86_64" ;;
       esac
       check_args=(--platform "$PLATFORM")
       for spec in "${EXTRA_FILES[@]+"${EXTRA_FILES[@]}"}"; do check_args+=(--extra-file "$spec"); done

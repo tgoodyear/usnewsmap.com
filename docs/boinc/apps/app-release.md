@@ -509,8 +509,9 @@ fake migration.
      `.github/workflows/boinc-ocr-native.yml` builds the worker, the static Tesseract and the
      locked models into one directory with its manifest, `usnm_native_build.json`, and uploads it
      as an artifact, one per platform. `--build-dir` takes that directory whole, for
-     `x86_64-pc-linux-gnu`, `arm64-apple-darwin` or `x86_64-apple-darwin` (`--platform`), with no
-     plan class. Before anything reaches the signing host,
+     `x86_64-pc-linux-gnu`, `arm64-apple-darwin`, `x86_64-apple-darwin` or `windows_x86_64`
+     (`--platform`), with no plan class. The Windows build isn't made yet: the tooling accepts it,
+     and CI has no job for it (#1779). Before anything reaches the signing host,
      `boinc/scripts/check-native-ocr-build.py --platform` refuses a build for another platform, one
      whose executables aren't that platform's, one whose Tesseract isn't the version
      `ocr/engines/tesseract/Containerfile` installs, whose models aren't exactly

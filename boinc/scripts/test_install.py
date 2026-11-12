@@ -461,16 +461,17 @@ class InstallTest(unittest.TestCase):
         self.assertIsNone(files["tessdata_eng.traineddata"].find("copy_file"))
         self.assertEqual(sorted(p.name for p in (self.project / "templates").iterdir()), ["usnm_gold_out"])
 
-    def test_native_ocr_stages_on_macos_and_not_on_windows(self):
+    def test_native_ocr_stages_on_macos_and_windows_and_not_on_linux_arm64(self):
         worker, build, digest = self.native_ocr_build()
-        for platform in ("arm64-apple-darwin", "x86_64-apple-darwin"):
+        for platform in ("arm64-apple-darwin", "x86_64-apple-darwin", "windows_x86_64"):
             with self.subTest(platform=platform):
                 target = module.install(self.project, None, None, "1.0", app="usnm_ocr_native", kind="native",
                                         platform=platform, binary=worker, bundle_dir=build)
                 self.assertEqual(target.name, platform)
-                self.assertTrue((target / f"usnm_ocr_native_1.0_{platform}").is_file())
+                ext = ".exe" if platform == "windows_x86_64" else ""
+                self.assertTrue((target / f"usnm_ocr_native_1.0_{platform}{ext}").is_file())
                 self.assertTrue((target / f"usnm_native_build_{digest}.json").is_file())
-        for platform in ("windows_x86_64", "aarch64-unknown-linux-gnu"):
+        for platform in ("aarch64-unknown-linux-gnu",):
             with self.subTest(platform=platform), self.assertRaisesRegex(ValueError, "not supported on"):
                 module.install(self.project, None, None, "1.1", app="usnm_gold_native", kind="native",
                                platform=platform, binary=worker, bundle_dir=build)
@@ -590,8 +591,11 @@ class InstallTest(unittest.TestCase):
              "--build-dir replaces --binary and --extra-file"),
             (["--app", "usnm_ocr_native", "--kind", "native", "--build-dir", str(build), "--plan-class", "mt"],
              "--app and --plan-class for --kind native must be"),
-            (["--app", "usnm_gold_native", "--kind", "native", "--build-dir", str(build), "--platform", "windows_x86_64"],
+            (["--app", "usnm_gold_native", "--kind", "native", "--build-dir", str(build), "--platform", "aarch64-unknown-linux-gnu"],
              "native usnm_gold_native is built only for x86_64-pc-linux-gnu"),
+            # Windows is accepted; the fixture's manifest isn't a Windows build.
+            (["--app", "usnm_gold_native", "--kind", "native", "--build-dir", str(build), "--platform", "windows_x86_64"],
+             "is not a build manifest for windows_x86_64"),
             # The fixture's engine and models aren't the container worker's.
             (["--app", "usnm_ocr_native", "--kind", "native", "--build-dir", str(build)],
              "the native OCR build isn't the container worker's engine and models"),
