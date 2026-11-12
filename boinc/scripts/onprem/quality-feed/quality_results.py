@@ -318,7 +318,7 @@ def main(argv=None):
                         help="most seconds of warming rounds per root before the locked collection")
     parser.add_argument("--warm-round-secs", type=int, default=600,
                         help="compute budget of one warming round; each round also reads every input once")
-    parser.add_argument("--locked-compute-secs", type=int, default=45,
+    parser.add_argument("--locked-compute-secs", type=int, default=20,
                         help="with --warm-without-lock: start no dirty unit under the lock after this long")
     parser.add_argument("--locked-timeout-secs", type=int, default=150,
                         help="with --warm-without-lock: TERM for the collection under the lock, "

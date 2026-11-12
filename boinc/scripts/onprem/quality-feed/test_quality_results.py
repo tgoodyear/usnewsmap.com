@@ -198,7 +198,7 @@ class ResultsTest(unittest.TestCase):
         args.warm_without_lock = True
         args.warm_budget_secs = 1500
         args.warm_round_secs = 600
-        args.locked_compute_secs = 45
+        args.locked_compute_secs = 20
         args.locked_timeout_secs = 150
         args.collector = "/project/ops/qwen-feed/new/usnm-boinc"
         directory = tempfile.TemporaryDirectory(dir=HERE)
@@ -237,7 +237,7 @@ class ResultsTest(unittest.TestCase):
             self.assertIn("--cache /project/quality/v1-test/collected-parts", warm)
         self.assertIn("flock -w 60 -E 75 /run/usnm-boinc-step.lock", publish)
         self.assertIn("timeout --signal=TERM --kill-after=30s 150s", publish)
-        self.assertIn("--max-dirty-units 8 --max-compute-secs 45", publish)
+        self.assertIn("--max-dirty-units 8 --max-compute-secs 20", publish)
         self.assertNotIn("--warm-only", publish)
         self.assertIn("--out-dir /project/quality/v1-test/out", publish)
         self.assertEqual(len(calls), 6)  # two warm rounds, publish, pull, load, cleanup
