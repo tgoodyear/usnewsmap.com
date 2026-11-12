@@ -55,4 +55,4 @@ The serving version `pages-v20261026-1` used rule v1 to replace LoC's text on 21
   --out-dir /var/tmp/usnm-gain-$(date -u +%Y%m%d) --dsn-file /etc/usnm/quality-reader/dsn
 ```
 
-Run it in the `usnm-batch` container (CT 215). This run's output is `/var/tmp/usnm-wf1415-gain2/` there, with input SHA-256 `fc9f1e3f…` in `summary.json`. The output files aren't in the tree. The campaign lists built with its first run's stop list are in `/srv/usnm-lake/wf1415-20261112/` in the same container (`/tank/usnm-lake/wf1415-20261112` on pve-big), one `<lang>/wf1415-<lang>/` directory per language, with that run's `gain/` beside them.
+Run it in the `usnm-batch` container (CT 215). This run's output is `/srv/usnm-lake/wf1415-20261112/gain2/` there (`cells.csv`, `input.json`, `pages.csv`, `stop.json`, `summary.json`), with input SHA-256 `fc9f1e3f…` in `summary.json`. The output files aren't in the tree. The campaign lists built with its first run's stop list are in `/srv/usnm-lake/wf1415-20261112/` in the same container (`/tank/usnm-lake/wf1415-20261112` on pve-big), one `<lang>/wf1415-<lang>/` directory per language, with that run's `gain/` beside them.
