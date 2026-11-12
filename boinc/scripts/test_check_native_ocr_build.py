@@ -148,10 +148,11 @@ class CheckNativeOcrBuild(unittest.TestCase):
 
     def test_a_windows_build_is_checked_for_a_pe32_plus_x86_64_executable(self):
         def pe(machine=module.IMAGE_FILE_MACHINE_AMD64, magic=module.PE_OPTIONAL_MAGIC_64,
-               characteristics=module.IMAGE_FILE_EXECUTABLE_IMAGE, pe_offset=0x80):
+               characteristics=module.IMAGE_FILE_EXECUTABLE_IMAGE, pe_offset=0x80,
+               optional_size=240, sections=1):
             dos = b"MZ" + bytes(58) + struct.pack("<I", pe_offset)
-            coff = struct.pack("<HHIIIHH", machine, 1, 0, 0, 0, 240, characteristics)
-            return dos + bytes(pe_offset - 64) + b"PE\0\0" + coff + struct.pack("<H", magic) + bytes(64)
+            coff = struct.pack("<HHIIIHH", machine, sections, 0, 0, 0, optional_size, characteristics)
+            return dos + bytes(pe_offset - 64) + b"PE\0\0" + coff + struct.pack("<H", magic) + bytes(optional_size - 2 + 40 * sections)
         for name in ("usnm_ocr", "usnm_tesseract"):
             self.files[name] = pe() + name.encode()
             (self.build / name).write_bytes(self.files[name])
@@ -164,12 +165,14 @@ class CheckNativeOcrBuild(unittest.TestCase):
         self.write_manifest(platform="x86_64-pc-linux-gnu")
         self.assertIn("is not a build manifest for windows_x86_64", self.run_check(platform="windows_x86_64")[1])
         # An ELF or Mach-O file, a 32-bit or ARM image, a DLL and a truncated file are refused.
+        pe_len = len(pe())
         bad = (ELF, b"MZ", pe(machine=0x14C), pe(machine=0xAA64), pe(magic=0x10B), pe(characteristics=0),
                pe(characteristics=module.IMAGE_FILE_EXECUTABLE_IMAGE | module.IMAGE_FILE_DLL),
-               pe()[:100], struct.pack("<IIII", module.MH_MAGIC_64, 0, 0, module.MH_EXECUTE))
+               pe()[:100], pe()[:154], pe()[:pe_len - 1], pe(sections=0), pe(optional_size=100),
+               pe(sections=2)[:-1], struct.pack("<IIII", module.MH_MAGIC_64, 0, 0, module.MH_EXECUTE))
         for i, data in enumerate(bad):
             with self.subTest(i=i):
-                self.files["usnm_tesseract"] = data + b"engine"
+                self.files["usnm_tesseract"] = data
                 (self.build / "usnm_tesseract").write_bytes(self.files["usnm_tesseract"])
                 self.write_manifest(platform="windows_x86_64")
                 self.assertIn("usnm_tesseract is not an x86-64 PE32+ executable",

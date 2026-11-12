@@ -44,6 +44,7 @@ MH_EXECUTE = 2
 CPU_TYPE_X86_64, CPU_TYPE_ARM64 = 0x01000007, 0x0100000C
 IMAGE_FILE_MACHINE_AMD64 = 0x8664
 PE_OPTIONAL_MAGIC_64 = 0x20B
+PE32_PLUS_FIXED_SIZE, SECTION_HEADER_SIZE = 112, 40
 IMAGE_FILE_EXECUTABLE_IMAGE, IMAGE_FILE_DLL = 0x2, 0x2000
 MACH_O_CPU = {"arm64-apple-darwin": CPU_TYPE_ARM64, "x86_64-apple-darwin": CPU_TYPE_X86_64}
 
@@ -137,6 +138,8 @@ def is_mach_o_executable(path: Path, cpu: int) -> bool:
 def is_x86_64_pe_executable(path: Path) -> bool:
     """A PE32+ x86-64 executable: not a DLL, a 32-bit image or an object file."""
     with path.open("rb") as f:
+        size = f.seek(0, 2)
+        f.seek(0)
         dos = f.read(64)
         if len(dos) != 64 or dos[:2] != b"MZ":
             return False
@@ -145,8 +148,12 @@ def is_x86_64_pe_executable(path: Path) -> bool:
         head = f.read(4 + 20 + 2)
     if len(head) != 26 or head[:4] != b"PE\0\0":
         return False
-    machine, _, _, _, _, _, characteristics = struct.unpack_from("<HHIIIHH", head, 4)
+    machine, sections, _, _, _, optional_size, characteristics = struct.unpack_from("<HHIIIHH", head, 4)
     (magic,) = struct.unpack_from("<H", head, 24)
+    # The optional header (at least PE32+'s fixed part) and the section table must be in the file.
+    if (sections == 0 or optional_size < PE32_PLUS_FIXED_SIZE
+            or size < pe_offset + 24 + optional_size + SECTION_HEADER_SIZE * sections):
+        return False
     return (machine == IMAGE_FILE_MACHINE_AMD64 and magic == PE_OPTIONAL_MAGIC_64
             and bool(characteristics & IMAGE_FILE_EXECUTABLE_IMAGE) and not characteristics & IMAGE_FILE_DLL)
 
