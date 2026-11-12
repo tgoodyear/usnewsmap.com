@@ -88,15 +88,21 @@ section.overview > p { max-width:62em; }
 .flow li { display:flex; flex-direction:column; min-width:10em; max-width:15em; padding-right:34px; position:relative; }
 .flow li + li::before { content:"→"; position:absolute; left:-26px; top:2px; font-size:20px; color:var(--muted); }
 .flow li + li { margin-left:26px; }
-section.wide svg.spark.daily { display:block; width:100%; max-width:420px; height:auto; margin:2px 0 10px; }
+section.wide svg.spark.daily { display:block; width:100%; max-width:380px; height:auto; margin:2px 0 10px; }
+/* The daily bars' scale and day names, in the week charts' style. */
+svg.daily text { fill:var(--muted); font-size:11px; }
+svg.daily .wk-grid { stroke:var(--grid); }
+svg.daily .wk-axis { stroke:var(--muted); }
 table.rates { width:auto; min-width:min(100%,360px); }
 table.rates td:first-child { padding-right:24px; }
-/* The BOINC week: three charts on one time axis, one crosshair and tip. */
-.wk-charts { overflow-x:auto; }
-.wk-charts h3 { margin:12px 0 0; position:sticky; left:0; }
-.wk-charts .note { position:sticky; left:0; }
+/* The BOINC week: three charts on one time axis, one crosshair and tip. Each
+   is drawn twice, a wide one and, for a phone, a narrow one with text the size
+   of the page's own; only one shows. A horizontal drag along a chart moves
+   the tip, a vertical one scrolls the page. */
+.wk-charts h3 { margin:12px 0 0; }
 .wk-charts .note { margin:0 0 2px; }
-section.wide svg.wk { display:block; width:100%; height:auto; margin:0; }
+section.wide svg.wk { display:block; width:100%; min-width:0; height:auto; margin:0; touch-action:pan-y; }
+section.wide svg.wk.narrow { display:none; }
 svg.wk text { fill:var(--muted); font-size:11px; }
 svg.wk .wk-grid { stroke:var(--grid); }
 svg.wk .wk-axis { stroke:var(--muted); }
@@ -224,7 +230,8 @@ code { font-size:12.5px; overflow-wrap:anywhere; } a { color:var(--fill); }
   .flow { flex-direction:column; }
   .flow li + li { margin-left:0; padding-top:18px; }
   .flow li + li::before { content:"↓"; left:0; top:-4px; font-size:16px; }
-  section.wide svg.wk { min-width:600px; }
+  section.wide svg.wk.wide { display:none; }
+  section.wide svg.wk.narrow { display:block; }
 }
 "#;
 
@@ -339,11 +346,12 @@ const showWeek = (e) => {
   const d = section && weekOf(section);
   if (!d) return hideWeek();
   const box = svg.getBoundingClientRect();
+  // Each chart carries its own geometry: the wide and narrow ones differ.
   const x = (e.clientX - box.left) * svg.viewBox.baseVal.width / box.width;
-  const i = Math.floor((x - d.left) / d.step);
+  const i = Math.floor((x - Number(svg.dataset.left)) / Number(svg.dataset.step));
   if (i < 0 || i >= d.n) return hideWeek();
-  const cx = d.left + d.step * (i + 0.5);
   for (const s of section.querySelectorAll('svg.wk')) {
+    const cx = Number(s.dataset.left) + Number(s.dataset.step) * (i + 0.5);
     const line = s.querySelector('.wk-x');
     line.setAttribute('x1', cx);
     line.setAttribute('x2', cx);
@@ -376,8 +384,6 @@ const panelKey = (s) => s.id || titleOf(s);
 let rawSub = (document.querySelector('.sub time') || {outerHTML: ''}).outerHTML;
 const raw = new WeakMap(panels().map(s => [s, s.outerHTML]));
 localTimes(document);
-// On a narrow screen the week's charts scroll: start at the newest.
-document.querySelectorAll('.wk-charts').forEach(e => { e.scrollLeft = e.scrollWidth; });
 
 const selecting = (el) => {
   const sel = window.getSelection();
