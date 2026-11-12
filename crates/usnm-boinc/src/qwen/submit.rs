@@ -666,6 +666,7 @@ async fn run_selected_with_lock(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg_attr(not(unix), allow(unused_imports))]
     use usnm_ocr_contract::boinc::sha256;
 
     #[cfg(unix)]

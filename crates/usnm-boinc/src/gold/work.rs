@@ -82,7 +82,7 @@ pub async fn run(work: &Path) -> anyhow::Result<()> {
         bundle: work.join(BUNDLE_FILE),
         cache: work.to_path_buf(),
         work: scratch.path().to_path_buf(),
-        tesseract: "tesseract".into(),
+        tesseract: crate::worker::engine_program(),
         command: None,
         psm: job.engine.psm,
         dpi: job.engine.dpi.into(),

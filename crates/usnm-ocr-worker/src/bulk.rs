@@ -217,7 +217,7 @@ pub(crate) fn hold_lock(path: &Path) -> anyhow::Result<std::fs::File> {
         .truncate(false)
         .write(true)
         .open(path)?;
-    rustix::fs::flock(&lock, rustix::fs::FlockOperation::NonBlockingLockExclusive)
+    lock.try_lock()
         .map_err(|_| anyhow::anyhow!("another run holds {}", path.display()))?;
     Ok(lock)
 }

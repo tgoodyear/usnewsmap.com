@@ -379,7 +379,7 @@ pub(super) fn lock(path: &Path) -> anyhow::Result<std::fs::File> {
         .write(true)
         .open(path)
         .with_context(|| format!("opening {}", path.display()))?;
-    rustix::fs::flock(&f, rustix::fs::FlockOperation::NonBlockingLockExclusive).map_err(|_| {
+    f.try_lock().map_err(|_| {
         anyhow::anyhow!(
             "another prefetch holds {}: one fetching process at a time",
             path.display()

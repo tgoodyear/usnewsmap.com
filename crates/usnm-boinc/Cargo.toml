@@ -48,5 +48,20 @@ tokio = { workspace = true, features = ["test-util"] }
 axum.workspace = true
 usnm-ocr-worker = { path = "../usnm-ocr-worker", features = ["standin"] }
 
-[lints]
-workspace = true
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
+
+# Not `workspace = true`: native/win.rs calls the Win32 job object API, which is unsafe. It is
+# the only module that allows it (as usnm-ocr-quality's slot control does).
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }

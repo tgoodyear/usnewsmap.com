@@ -16,3 +16,10 @@ ocr/fraktur-pilot/SHA256SUMS text eol=lf
 # The reviewed German trust hold (#835): a test checks it byte for byte (include_bytes!) and its
 # sha256 is the one to verify after installing it on the BOINC server.
 docs/notes/2026-11-05-german-trust-hold.json text eol=lf
+# The native OCR build reads these: the worker embeds the model lock and the notices' SHA256SUMS
+# (include_str!) and compares the sums with the engine Containerfile's pin, and the Windows job's
+# shell steps read the lock line by line, where a carriage return would be part of a hash.
+ocr/engines/tesseract/models.lock text eol=lf
+ocr/engines/tesseract/Containerfile text eol=lf
+ocr/models/chr-phoenix/* text eol=lf
+boinc/apps/native/*.lock text eol=lf

@@ -84,8 +84,7 @@ impl FileLedger {
             .truncate(false)
             .write(true)
             .open(self.sibling(".lock"))?;
-        rustix::fs::flock(&lock, rustix::fs::FlockOperation::LockExclusive)
-            .map_err(std::io::Error::from)?;
+        lock.lock()?;
         f()
     }
 

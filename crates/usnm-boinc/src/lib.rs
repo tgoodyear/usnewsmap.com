@@ -35,7 +35,11 @@ pub mod gold;
 pub mod handoff;
 pub mod host_trust;
 pub mod lines;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "macos",
+    all(target_os = "windows", target_arch = "x86_64")
+))]
 pub mod native;
 pub mod ndlocr;
 pub mod quality;
@@ -52,7 +56,10 @@ pub mod worker;
 /// Bounded regular-file reads, also used for untrusted volunteer output.
 pub fn read(path: &Path, max: usize) -> anyhow::Result<Vec<u8>> {
     ensure!(
-        std::fs::symlink_metadata(path)?.file_type().is_file(),
+        std::fs::symlink_metadata(path)
+            .with_context(|| format!("reading {}", path.display()))?
+            .file_type()
+            .is_file(),
         "not a regular file"
     );
     let mut options = OpenOptions::new();
@@ -62,7 +69,9 @@ pub fn read(path: &Path, max: usize) -> anyhow::Result<Vec<u8>> {
         use std::os::unix::fs::OpenOptionsExt;
         options.custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32);
     }
-    let f = options.open(path)?;
+    let f = options
+        .open(path)
+        .with_context(|| format!("reading {}", path.display()))?;
     ensure!(
         f.metadata()?.is_file() && f.metadata()?.len() <= max as u64,
         "file over size limit"
@@ -73,7 +82,11 @@ pub fn read(path: &Path, max: usize) -> anyhow::Result<Vec<u8>> {
     Ok(bytes)
 }
 /// As [`read`], for a file the BOINC client may have placed behind a symlink.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "macos",
+    all(target_os = "windows", target_arch = "x86_64")
+))]
 pub(crate) fn read_following(path: &Path, max: usize) -> anyhow::Result<Vec<u8>> {
     let f = File::open(path).with_context(|| format!("reading {}", path.display()))?;
     ensure!(
@@ -170,6 +183,8 @@ pub(crate) fn atomic_with_permissions(
     }
     f.as_file().sync_all()?;
     f.persist(path).map_err(|e| e.error)?;
+    // Windows can't open a directory as a file, so its entry isn't synced there.
+    #[cfg(unix)]
     File::open(parent)?.sync_all()?;
     Ok(())
 }
@@ -187,8 +202,13 @@ impl Lock {
             .read(true)
             .write(true)
             .open(root.join(".lock"))?;
-        rustix::fs::flock(&f, rustix::fs::FlockOperation::NonBlockingLockExclusive)
-            .context("another BOINC bridge process owns this state directory")?;
+        f.try_lock().map_err(|error| match error {
+            std::fs::TryLockError::WouldBlock => {
+                anyhow::anyhow!("another BOINC bridge process owns this state directory")
+            }
+            std::fs::TryLockError::Error(error) => anyhow::Error::from(error)
+                .context("another BOINC bridge process owns this state directory"),
+        })?;
         Ok(Self { _file: f })
     }
 }
@@ -196,7 +216,7 @@ impl Drop for Lock {
     fn drop(&mut self) {
         // A concurrent fork can retain this open file description until exec.
         // Closing only our descriptor would leave its lock held in that child.
-        let _ = rustix::fs::flock(&self._file, rustix::fs::FlockOperation::Unlock);
+        let _ = self._file.unlock();
     }
 }
 
@@ -227,6 +247,43 @@ impl Drop for ProcessGroup {
         if let Err(error) = self.kill() {
             eprintln!("{error:#}");
         }
+    }
+}
+
+/// `path` without the `\\?\` prefix that `canonicalize` gives on Windows, where a program's
+/// working directory and arguments don't take it. Any other path is returned as it is.
+pub(crate) fn plain_path(path: std::path::PathBuf) -> std::path::PathBuf {
+    #[cfg(windows)]
+    {
+        let text = path.to_string_lossy();
+        if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+            return std::path::PathBuf::from(format!(r"\\{rest}"));
+        }
+        if let Some(rest) = text.strip_prefix(r"\\?\") {
+            // Only a drive path: other verbatim paths (devices, volumes by GUID) stay as they are.
+            let bytes = rest.as_bytes();
+            if bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && &bytes[1..3] == b":\\" {
+                return std::path::PathBuf::from(rest);
+            }
+        }
+    }
+    path
+}
+
+/// Starts a command in a process group of its own where the platform has them, so a stop
+/// reaches its children. A no-op elsewhere.
+pub(crate) trait OwnProcessGroup {
+    fn in_own_process_group(&mut self) -> &mut Self;
+}
+
+impl OwnProcessGroup for std::process::Command {
+    fn in_own_process_group(&mut self) -> &mut Self {
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt as _;
+            self.process_group(0);
+        }
+        self
     }
 }
 

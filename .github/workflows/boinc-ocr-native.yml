@@ -8,6 +8,7 @@ on:
       - .github/workflows/boinc-ocr-native.yml
       - boinc/apps/native/**
       - boinc/scripts/smoke-native-ocr.sh
+      - boinc/scripts/smoke-native-ocr.ps1
       - scripts/ci/apt-base.sh
       - boinc/scripts/check-native-ocr-build.py
       - boinc/scripts/install.py
@@ -163,7 +164,7 @@ jobs:
             usnm_tesseract.packages
           if-no-files-found: error
   # The macOS builds (docs/boinc/apps/native-ocr.md, Native usnm_ocr on more platforms): the same
-  # worker, and Tesseract built from the sources boinc/apps/native/macos-sources.lock pins. Each
+  # worker, and Tesseract built from the sources boinc/apps/native/static-sources.lock pins. Each
   # runner builds for its own architecture. Each build is its own identity: nothing here compares
   # it with the Linux build or with the container's.
   macos:
@@ -260,6 +261,116 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: boinc-ocr-native-${{ matrix.boinc_platform }}
+          path: |
+            build/
+            build.txt
+            engine/usnm_tesseract.sources
+          if-no-files-found: error
+  # The Windows build (docs/boinc/apps/native-ocr.md, Native usnm_ocr on more platforms, #1779): the
+  # same worker, with a job object where the Unix builds have process groups and rlimits, and
+  # Tesseract built with MSVC from the sources boinc/apps/native/static-sources.lock pins. The
+  # worker and the engine use the static C runtime, so both import only Windows's own DLLs. It
+  # builds and smoke-tests; nothing here compares it with the other builds.
+  windows:
+    needs: inputs
+    if: needs.inputs.outputs.build == 'true'
+    runs-on: windows-2022
+    env:
+      RUSTFLAGS: -D warnings -C target-feature=+crt-static
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable branch
+        with:
+          toolchain: stable
+          targets: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Test the native worker
+        run: cargo test --locked --target x86_64-pc-windows-msvc -p usnm-boinc --lib "native::"
+      - name: Build the worker
+        run: >-
+          cargo build --release --locked --target x86_64-pc-windows-msvc
+          -p usnm-ocr-app --bin usnm_ocr --example native_fixture
+      - name: Check the worker imports only system DLLs
+        shell: pwsh
+        run: boinc/apps/native/check-windows-imports.ps1 -Exe target/x86_64-pc-windows-msvc/release/usnm_ocr.exe
+      - name: Build Tesseract from the pinned sources
+        shell: pwsh
+        run: |
+          boinc/apps/native/build-tesseract-windows.ps1 -Out engine -Work "$env:RUNNER_TEMP\tesseract"
+          New-Item -ItemType Directory build | Out-Null
+          Copy-Item engine/usnm_tesseract.exe build/usnm_tesseract
+          Get-Content engine/usnm_tesseract.sources
+      - name: Fetch the locked models
+        shell: bash
+        run: |
+          mkdir tessdata
+          grep '^tessdata/' ocr/engines/tesseract/models.lock | while read -r name url sum; do
+            curl -fsSL --retry 10 --retry-all-errors --retry-delay 5 -o "$name" "$url"
+            echo "$sum  $name" | sha256sum --check --quiet
+            cp "$name" "build/tessdata_${name#tessdata/}"
+          done
+      - name: Fetch the models' notices
+        shell: bash
+        run: |
+          base=$(sed -n 's/^ARG CHR_PHOENIX_RELEASE=//p' ocr/engines/tesseract/Containerfile)
+          sums=$(sed -n 's/^ARG CHR_PHOENIX_SUMS=//p' ocr/engines/tesseract/Containerfile)
+          mkdir -p tessdata/notices/chr_phoenix
+          cd tessdata/notices/chr_phoenix
+          for name in SHA256SUMS NOTICE.md LICENSE-Apache-2.0.txt; do
+            curl -fsSL --retry 10 --retry-all-errors --retry-delay 5 -o "$name" "$base/$name"
+          done
+          echo "$sums  SHA256SUMS" | sha256sum --check --quiet
+          grep -E '  (NOTICE\.md|LICENSE-Apache-2\.0\.txt)$' SHA256SUMS > checked
+          [ "$(wc -l < checked)" -eq 2 ]
+          sha256sum --check --quiet checked
+          for name in NOTICE.md LICENSE-Apache-2.0.txt; do
+            cp "$name" "$GITHUB_WORKSPACE/build/notice_chr_phoenix_$name"
+          done
+      # The build directory holds each file by its open name, with no extension: the manifest is
+      # made from the engine under the name Windows will run, and the worker is copied in under
+      # its open name.
+      - name: Make the build manifest
+        shell: bash
+        run: |
+          worker=target/x86_64-pc-windows-msvc/release/usnm_ocr.exe
+          "$worker" manifest --worker "$worker" --tesseract engine/usnm_tesseract.exe \
+            --tessdata tessdata --out build/usnm_native_build.json | tee build.txt
+          cp "$worker" build/usnm_ocr
+      - name: Read a page, and refuse a job for another build
+        shell: pwsh
+        run: >-
+          boinc/scripts/smoke-native-ocr.ps1 -Build build
+          -Fixture target/x86_64-pc-windows-msvc/release/examples/native_fixture.exe
+      # The signatures need the private key, so a stand-in verifier accepts any. Python here is a
+      # Windows program: it takes relative paths, and the verifier's as a Windows path, since
+      # cmd.exe runs it.
+      - name: Check and stage the build as a release would
+        shell: bash
+        run: |
+          platform=windows_x86_64
+          extras=()
+          for f in build/*; do [ "${f##*/}" = usnm_ocr ] || extras+=(--extra-file "${f##*/}=$f"); done
+          python boinc/scripts/check-native-ocr-build.py --platform "$platform" --binary build/usnm_ocr \
+            "${extras[@]}" | tee -a build.txt
+          mkdir release
+          echo unused > release/code_sign_public
+          printf '@exit /b 0\r\n' > release/crypt_prog.cmd
+          for app in usnm_ocr_native usnm_gold_native; do
+            mkdir -p "release/$app" "release/$app-sigs"
+            touch "release/$app/config.xml"
+            python boinc/scripts/install.py --project "release/$app" --kind native --app "$app" \
+              --version 1.0 --platform "$platform" --binary build/usnm_ocr --bundle-dir build
+            d="release/$app/apps/$app/1.0/$platform"
+            for f in "$d"/*; do [ "${f##*/}" = version.xml ] || echo unsigned > "release/$app-sigs/${f##*/}.sig"; done
+            python boinc/images/appver/check_appver.py --kind native --app "$app" \
+              --platform "$platform" --version-dir "$d" --sigs "release/$app-sigs" \
+              --public-key release/code_sign_public --crypt-prog "$(cygpath -w "$PWD/release/crypt_prog.cmd")"
+          done
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: boinc-ocr-native-windows_x86_64
           path: |
             build/
             build.txt

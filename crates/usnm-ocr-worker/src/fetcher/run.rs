@@ -6,7 +6,6 @@
 //! source go on with it, and the rest wait for a later run. Running out of
 //! disk, or too many verification failures, stops the whole run.
 
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
@@ -42,7 +41,7 @@ pub struct RunOptions {
 }
 
 fn free_bytes(path: &Path) -> u64 {
-    rustix::fs::statvfs(path).map_or(0, |s| s.f_bavail.saturating_mul(s.f_frsize))
+    crate::disk::free_bytes(path).unwrap_or(0)
 }
 
 fn now() -> String {
@@ -423,11 +422,7 @@ pub async fn run(
     stop: watch::Receiver<bool>,
 ) -> anyhow::Result<Status> {
     // A hard link gives a file its name, so find out now rather than after a download.
-    let dev = |p: &Path| {
-        std::fs::metadata(p)
-            .map(|m| m.dev())
-            .with_context(|| p.display().to_string())
-    };
+    let dev = |p: &Path| crate::disk::filesystem_id(p).with_context(|| p.display().to_string());
     anyhow::ensure!(
         dev(&opts.part_dir)? == dev(&opts.out)?,
         "{} and {} have to be on one filesystem",

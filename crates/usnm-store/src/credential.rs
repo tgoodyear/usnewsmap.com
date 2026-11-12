@@ -12,8 +12,11 @@
 //! `USNM_TOKEN_CACHE` set, processes share them too ([`FileCache`]).
 
 use std::fmt;
+#[cfg(unix)]
 use std::io::{Read, Write};
+#[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+#[cfg(unix)]
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -117,6 +120,8 @@ pub fn from_env_for(resource: &'static str) -> Arc<Credential> {
         // Never shared: the CLI's account can change under it (az login, AZURE_CONFIG_DIR).
         _ => (Box::new(AzureCli { resource }), None),
     };
+    // The shared cache needs `flock` and Unix file modes: Windows fetches its own tokens.
+    #[cfg(unix)]
     let source: Box<dyn TokenSource> = match (var("USNM_TOKEN_CACHE"), identity) {
         (Some(dir), Some(identity)) => Box::new(FileCache::new(
             dir,
@@ -125,6 +130,8 @@ pub fn from_env_for(resource: &'static str) -> Arc<Credential> {
         )),
         _ => source,
     };
+    #[cfg(not(unix))]
+    let _ = identity;
     Arc::new(Credential {
         source,
         cached: Mutex::new(None),
@@ -133,9 +140,11 @@ pub fn from_env_for(resource: &'static str) -> Arc<Credential> {
 
 /// How long [`FileCache`] waits for another process's fetch before fetching
 /// on its own: longer than the two 15-second requests of an Arc fetch.
+#[cfg(unix)]
 const CACHE_LOCK_WAIT: Duration = Duration::from_secs(45);
 
 /// The largest token file read: a token is a few kilobytes.
+#[cfg(unix)]
 const CACHE_FILE_MAX_BYTES: u64 = 64 * 1024;
 
 /// A managed or Arc identity's tokens shared between processes through a
@@ -147,6 +156,7 @@ const CACHE_FILE_MAX_BYTES: u64 = 64 * 1024;
 /// expires. The directory must be this user's, with no access for group or
 /// others, and the files are 0600: they hold bearer tokens. When the directory
 /// or a file can't be used, the token is fetched as without the cache.
+#[cfg(unix)]
 #[derive(Debug)]
 pub struct FileCache {
     dir: PathBuf,
@@ -154,12 +164,14 @@ pub struct FileCache {
     inner: Box<dyn TokenSource>,
 }
 
+#[cfg(unix)]
 #[derive(serde::Serialize, serde::Deserialize)]
 struct CachedToken {
     access_token: String,
     expires_on: u64,
 }
 
+#[cfg(unix)]
 impl FileCache {
     /// `key` names the identity and resource: tokens are shared only between
     /// sources with the same key.
@@ -268,6 +280,7 @@ impl FileCache {
     }
 }
 
+#[cfg(unix)]
 #[async_trait]
 impl TokenSource for FileCache {
     async fn fetch(&self) -> Result<AccessToken, StoreError> {
@@ -770,10 +783,12 @@ mod tests {
             .is_ok());
     }
 
+    #[cfg(unix)]
     /// A [`Counting`] source that takes a while, as the Arc agent's two requests do.
     #[derive(Debug)]
     struct Slow(Arc<AtomicU32>);
 
+    #[cfg(unix)]
     #[async_trait]
     impl TokenSource for Slow {
         async fn fetch(&self) -> Result<AccessToken, StoreError> {
@@ -782,6 +797,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     /// A directory for [`FileCache`]: this user's only, as `mktemp -d` makes.
     fn private_dir() -> tempfile::TempDir {
         use std::os::unix::fs::PermissionsExt;
@@ -793,10 +809,12 @@ mod tests {
 
     /// A credential sharing tokens through `dir`. Each stands for a process:
     /// it opens the lock file itself.
+    #[cfg(unix)]
     fn shared(dir: &std::path::Path, key: &str, source: impl TokenSource + 'static) -> Credential {
         Credential::new(FileCache::new(dir, key, Box::new(source)))
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn processes_share_a_token_through_the_cache() {
         let dir = private_dir();
@@ -821,6 +839,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_shared_token_near_expiry_is_fetched_again() {
         let dir = private_dir();
@@ -831,6 +850,7 @@ mod tests {
         assert_eq!(token(3600).token().await.unwrap(), "t1");
     }
 
+    #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn processes_fetching_at_once_wait_for_one_fetch() {
         let dir = private_dir();
@@ -847,6 +867,7 @@ mod tests {
         assert_eq!(n.load(Ordering::SeqCst), 1);
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_directory_others_can_reach_is_not_used() {
         use std::os::unix::fs::{DirBuilderExt, PermissionsExt};

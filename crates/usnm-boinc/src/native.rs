@@ -11,6 +11,10 @@
 //! - [`exec_engine`] is what `tesseract` resolves to in the unit. It sets the limits the
 //!   container's `job.toml` gets from its cgroup and execs the bundled engine.
 //!
+//! Windows has no process groups, rlimits or exec, so there the unit and everything it starts
+//! run in a job object (`win`): kill-on-close takes the place of the parent-death signal, the
+//! job's per-process limits those of `exec_engine`, and the unit runs the engine directly.
+//!
 //! A job names its build by `engine.image`, and host trust is keyed to that digest, so this
 //! worker refuses any job that doesn't name exactly this build. Here the digest is the sha256
 //! of the build manifest, which lists every file of the build.
@@ -20,17 +24,21 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
     ops::ControlFlow,
-    os::unix::process::CommandExt as _,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     time::{Duration, Instant},
 };
 use usnm_ocr_contract::boinc::{self, bundle, is_sha256, Job};
+#[cfg(unix)]
+use usnm_ocr_quality::slot::ChildAction;
 use usnm_ocr_quality::slot::{
-    resolve_slot_file, write_atomic, write_mmap_channel, BoincControl, ChildAction,
-    APP_STATUS_OFFSET, FINISH_FILE, FRACTION_FILE, MMAP_FILE,
+    resolve_slot_file, write_atomic, write_mmap_channel, BoincControl, APP_STATUS_OFFSET,
+    FINISH_FILE, FRACTION_FILE, MMAP_FILE,
 };
 use usnm_ocr_worker::engine;
+
+#[cfg(windows)]
+mod win;
 
 /// The manifest's open name in the slot.
 pub const MANIFEST_FILE: &str = "usnm_native_build.json";
@@ -62,19 +70,27 @@ pub const PLATFORM: &str = "aarch64-unknown-linux-gnu";
 pub const PLATFORM: &str = "arm64-apple-darwin";
 #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
 pub const PLATFORM: &str = "x86_64-apple-darwin";
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+pub const PLATFORM: &str = "windows_x86_64";
 const MAX_MANIFEST: usize = 64 << 10;
 const MAX_BUILD_FILE: u64 = 256 << 20;
 
-/// What the container's `job.toml` allows (`--memory=1536m --memory-swap=1536m`). Here it bounds
-/// address space, which is stricter than the cgroup's resident limit.
+/// What the container's `job.toml` allows (`--memory=1536m --memory-swap=1536m`). On Linux it
+/// bounds address space, which is stricter than the cgroup's resident limit; on Windows the job
+/// bounds the committed memory of each process.
 pub const MEMORY_BYTES: u64 = 1536 << 20;
 /// The container's scratch tmpfs (`--tmpfs=/tmp:rw,size=512m`), as a limit on any one file.
+#[cfg(unix)]
 pub const FILE_BYTES: u64 = 512 << 20;
+#[cfg(unix)]
 const OPEN_FILES: u64 = 256;
 /// Where the slot holds the engine's view of the build.
 const ENGINE_DIR: &str = "usnm_engine";
 const TMP_DIR: &str = "usnm_tmp";
-const REAL_TESSERACT_ENV: &str = "USNM_TESSERACT_REAL";
+/// The engine's path, which the unit runs directly on Windows and the `tesseract` link execs on
+/// Unix.
+pub(crate) const REAL_TESSERACT_ENV: &str = "USNM_TESSERACT_REAL";
+#[cfg(unix)]
 const PARENT_ENV: &str = "USNM_TASK_PID";
 /// These two carry the output configs the engine image copies from Debian's package.
 const CONFIGS: [(&str, &str); 2] = [
@@ -334,12 +350,14 @@ fn load_build(work: &Path) -> anyhow::Result<(Build, BTreeMap<String, PathBuf>)>
     let mut paths = BTreeMap::new();
     for (name, want) in &build.manifest.files {
         let path = if name == WORKER_FILE {
-            std::env::current_exe()?
+            crate::plain_path(std::env::current_exe()?)
         } else {
             // The pointer file, or a real link: the client makes either.
-            resolve_slot_file(work, name)
-                .canonicalize()
-                .with_context(|| format!("the build's {name}"))?
+            crate::plain_path(
+                resolve_slot_file(work, name)
+                    .canonicalize()
+                    .with_context(|| format!("the build's {name}"))?,
+            )
         };
         let got = digest(&path).with_context(|| format!("the build's {name}"))?;
         ensure!(got == *want, "the build's {name} differs from its manifest");
@@ -359,6 +377,7 @@ fn link_file(from: &Path, to: &Path) -> anyhow::Result<()> {
 
 /// Lays out the engine in the slot: the models and configs as `TESSDATA_PREFIX` expects them,
 /// the engine, and a `tesseract` link back to this executable.
+#[cfg(unix)]
 fn prepare_engine(
     work: &Path,
     paths: &BTreeMap<String, PathBuf>,
@@ -385,6 +404,34 @@ fn prepare_engine(
     Ok((dir, real))
 }
 
+/// Lays out the engine in the slot: the models and configs as `TESSDATA_PREFIX` expects them,
+/// and the engine as `usnm_tesseract.exe`, which the unit runs directly. The `.exe` name is
+/// what Windows needs to start it: the build's file is named by its open name, with none.
+#[cfg(windows)]
+fn prepare_engine(
+    work: &Path,
+    paths: &BTreeMap<String, PathBuf>,
+) -> anyhow::Result<(PathBuf, PathBuf)> {
+    let dir = work.join(ENGINE_DIR);
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir)?;
+    }
+    let tessdata = dir.join("tessdata");
+    std::fs::create_dir_all(tessdata.join("configs"))?;
+    for (name, path) in paths {
+        if let Some(file) = name.strip_prefix(MODEL_PREFIX) {
+            link_file(path, &tessdata.join(file))?;
+        }
+    }
+    for (name, text) in CONFIGS {
+        std::fs::write(tessdata.join("configs").join(name), text)?;
+    }
+    let real = dir.join(format!("{TESSERACT_FILE}.exe"));
+    link_file(&paths[TESSERACT_FILE], &real)?;
+    Ok((dir, real))
+}
+
+#[cfg(unix)]
 fn control(work: &Path) -> BoincControl {
     let control = BoincControl::start(work);
     control.set_child_hook(Some(std::sync::Arc::new(|pgid, action| {
@@ -403,10 +450,27 @@ fn control(work: &Path) -> BoincControl {
     control
 }
 
+/// The client's stops reach every process of the unit's job, the engine with the unit.
+#[cfg(windows)]
+fn control(work: &Path) -> BoincControl {
+    let control = BoincControl::start(work);
+    control.set_child_hook(Some(std::sync::Arc::new(|unit, action| {
+        win::signal_group(unit, action);
+    })));
+    control
+}
+
+#[cfg(unix)]
 fn kill_group(child: &mut Child) -> std::io::Result<()> {
     if let Some(pid) = rustix::process::Pid::from_raw(child.id() as i32) {
         let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
     }
+    child.wait().map(|_| ())
+}
+
+#[cfg(windows)]
+fn kill_group(child: &mut Child) -> std::io::Result<()> {
+    win::terminate_group(child);
     child.wait().map(|_| ())
 }
 
@@ -497,7 +561,11 @@ fn supervise(
 
 /// One task in the slot `work`: the process the BOINC client starts.
 pub fn run_slot(work: &Path) -> anyhow::Result<()> {
-    let work = work.canonicalize()?;
+    let work = crate::plain_path(work.canonicalize()?);
+    // A crash of the unit or the engine shows no dialog nobody is there to close, which the
+    // job's own flag then ends. The mode is inherited by every process started below.
+    #[cfg(windows)]
+    win::silence_crash_dialogs();
     let control = control(&work);
     let unit = read_unit(&work)?;
     let (build, paths) = load_build(&work)?;
@@ -511,21 +579,51 @@ pub fn run_slot(work: &Path) -> anyhow::Result<()> {
             std::fs::remove_dir_all(&tmp)?;
         }
         std::fs::create_dir_all(&tmp)?;
-        Ok(Command::new(&worker)
-            .arg("unit")
-            .current_dir(&work)
-            .env_clear()
-            .env("PATH", &engine_dir)
-            .env("TESSDATA_PREFIX", engine_dir.join("tessdata"))
-            .env("OMP_THREAD_LIMIT", "1")
-            .env("TMPDIR", &tmp)
-            .env("USNM_TESSERACT_IMAGE", &build.base)
-            .env(REAL_TESSERACT_ENV, &real)
-            .env(PARENT_ENV, std::process::id().to_string())
-            .env(CPU_DEADLINE_ENV, unit.timeout_secs.to_string())
-            .process_group(0)
-            .stdin(Stdio::null())
-            .spawn()?)
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt as _;
+            Ok(Command::new(&worker)
+                .arg("unit")
+                .current_dir(&work)
+                .env_clear()
+                .env("PATH", &engine_dir)
+                .env("TESSDATA_PREFIX", engine_dir.join("tessdata"))
+                .env("OMP_THREAD_LIMIT", "1")
+                .env("TMPDIR", &tmp)
+                .env("USNM_TESSERACT_IMAGE", &build.base)
+                .env(REAL_TESSERACT_ENV, &real)
+                .env(PARENT_ENV, std::process::id().to_string())
+                .env(CPU_DEADLINE_ENV, unit.timeout_secs.to_string())
+                .process_group(0)
+                .stdin(Stdio::null())
+                .spawn()?)
+        }
+        #[cfg(windows)]
+        {
+            let mut unit_command = Command::new(&worker);
+            unit_command
+                .arg("unit")
+                .current_dir(&work)
+                .env_clear()
+                // Without the first two, Windows programs can fail to start or to find system DLLs.
+                .envs(
+                    ["SystemRoot", "windir", "RUST_BACKTRACE"]
+                        .into_iter()
+                        .filter_map(|name| Some((name, std::env::var_os(name)?))),
+                )
+                .env("TESSDATA_PREFIX", engine_dir.join("tessdata"))
+                .env("OMP_THREAD_LIMIT", "1")
+                .env("TMP", &tmp)
+                .env("TEMP", &tmp)
+                .env("USNM_TESSERACT_IMAGE", &build.base)
+                .env(REAL_TESSERACT_ENV, &real)
+                .env(CPU_DEADLINE_ENV, unit.timeout_secs.to_string())
+                .stdin(Stdio::null());
+            Ok(win::spawn_in_job(
+                &mut unit_command,
+                &win::Limits::engine(unit.timeout_secs),
+            )?)
+        }
     };
     match supervise(&work, &start, &control, unit.restart_after_suspend)? {
         Ended::Stopped(reason) => eprintln!("stopped by the client: {reason}"),
@@ -541,16 +639,21 @@ pub fn run_slot(work: &Path) -> anyhow::Result<()> {
 /// The unit, in the child [`run_slot`] starts: what `usnm-boinc work` does in the container.
 pub async fn run_unit(work: &Path) -> anyhow::Result<()> {
     // The client can kill the parent alone, even with this group stopped, when only a signal
-    // from the kernel still reaches it. The engine sets the same in `exec_engine`.
+    // from the kernel still reaches it. The engine sets the same in `exec_engine`. On Windows
+    // the job object, whose handle the parent holds, does this (`win`).
     #[cfg(target_os = "linux")]
     rustix::process::set_parent_process_death_signal(Some(rustix::process::Signal::KILL))?;
-    let parent = std::env::var(PARENT_ENV)?;
-    ensure!(parent == parent_pid(), "the task's parent has gone");
-    #[cfg(target_os = "macos")]
-    watch_parent(parent);
+    #[cfg(unix)]
+    {
+        let parent = std::env::var(PARENT_ENV)?;
+        ensure!(parent == parent_pid(), "the task's parent has gone");
+        #[cfg(target_os = "macos")]
+        watch_parent(parent);
+    }
     crate::worker::run(work).await
 }
 
+#[cfg(unix)]
 fn parent_pid() -> String {
     rustix::process::getppid()
         .map(|pid| pid.as_raw_pid().to_string())
@@ -576,13 +679,22 @@ fn watch_parent(parent: String) {
     });
 }
 
+/// Whether this process was started through the `tesseract` link. Windows has none: the unit
+/// runs the engine itself.
+#[cfg(windows)]
+pub fn is_engine_launch() -> bool {
+    false
+}
+
 /// Whether this process was started through the `tesseract` link.
+#[cfg(unix)]
 pub fn is_engine_launch() -> bool {
     std::env::args_os()
         .next()
         .is_some_and(|arg| Path::new(&arg).file_name() == Some("tesseract".as_ref()))
 }
 
+#[cfg(unix)]
 fn limit(resource: rustix::process::Resource, soft: u64, hard: u64) -> anyhow::Result<()> {
     use rustix::process::{getrlimit, setrlimit, Rlimit};
     // A host's hard limit below ours stands: only root could raise it.
@@ -598,6 +710,7 @@ fn limit(resource: rustix::process::Resource, soft: u64, hard: u64) -> anyhow::R
 }
 
 /// Becomes the engine, under the limits of one read. Only returns on failure.
+#[cfg(unix)]
 pub fn exec_engine() -> anyhow::Error {
     let setup = || -> anyhow::Result<std::ffi::OsString> {
         use rustix::process::Resource;
@@ -625,6 +738,7 @@ pub fn exec_engine() -> anyhow::Error {
         limit(Resource::Core, 0, 0)?;
         Ok(real)
     };
+    use std::os::unix::process::CommandExt as _;
     match setup() {
         Ok(real) => Command::new(real)
             .args(std::env::args_os().skip(1))

@@ -538,20 +538,38 @@ fn load_state(path: &Path) -> anyhow::Result<HashMap<String, Stamp>> {
 
 /// The stamp of a scan's file.
 fn stat(path: &Path) -> Option<Stamp> {
-    use std::os::unix::fs::MetadataExt;
     let md = std::fs::metadata(path).ok()?;
-    let ns = |sec: i64, nsec: i64| {
-        u64::try_from(sec)
-            .ok()?
-            .checked_mul(1_000_000_000)?
-            .checked_add(u64::try_from(nsec).ok()?)
-    };
-    Some((
-        md.len(),
-        ns(md.mtime(), md.mtime_nsec())?,
-        md.ino(),
-        ns(md.ctime(), md.ctime_nsec())?,
-    ))
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let ns = |sec: i64, nsec: i64| {
+            u64::try_from(sec)
+                .ok()?
+                .checked_mul(1_000_000_000)?
+                .checked_add(u64::try_from(nsec).ok()?)
+        };
+        Some((
+            md.len(),
+            ns(md.mtime(), md.mtime_nsec())?,
+            md.ino(),
+            ns(md.ctime(), md.ctime_nsec())?,
+        ))
+    }
+    // Windows has no inode or change time in `std`: the size and the modified and creation
+    // times stand in, which is enough to notice a replaced or rewritten scan.
+    #[cfg(not(unix))]
+    {
+        let ns = |t: std::io::Result<std::time::SystemTime>| {
+            u64::try_from(
+                t.ok()?
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .ok()?
+                    .as_nanos(),
+            )
+            .ok()
+        };
+        Some((md.len(), ns(md.modified())?, 0, ns(md.created())?))
+    }
 }
 
 fn is_scan(path: &Path) -> bool {

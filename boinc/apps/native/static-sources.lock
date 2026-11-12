@@ -1,9 +1,10 @@
-# The sources of the macOS Tesseract (build-tesseract-macos.sh), one per line, in build order:
+# The sources of the macOS and Windows Tesseract (build-tesseract-macos.sh, build-tesseract-windows.ps1),
+# one per line, in build order:
 #   name  git URL  tag  commit
 # Each is fetched at its commit and checked out, and the build refuses a checkout whose HEAD isn't
 # that commit. The versions are the ones the Linux build links from Debian (Containerfile), so
-# both report the same Tesseract and library versions. Debian's patches aren't applied, so the
-# macOS build is its own identity (docs/boinc/apps/native-ocr.md).
+# all three report the same Tesseract and library versions. Debian's patches aren't applied, so each
+# of the macOS and Windows builds is its own identity (docs/boinc/apps/native-ocr.md).
 zlib          https://github.com/madler/zlib                   v1.3.1   51b7f2abdade71cd9bb0e7a373ef2610ec6f9daf
 libjpeg-turbo https://github.com/libjpeg-turbo/libjpeg-turbo   2.1.5    3b19db4e6e7493a748369974819b4c5fa84c7614
 libpng        https://github.com/pnggroup/libpng               v1.6.48  ea127968204cc5d10f3fc9250c306b9e8cbd9b80

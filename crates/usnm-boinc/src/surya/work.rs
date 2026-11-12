@@ -16,12 +16,11 @@
 //! 3. `result.json` (outcomes, times, memory, the device llama-server used)
 //!    and `diag.txt` (bounded to [`MAX_DIAG`]).
 use super::{outputs, DIAG_FILE, JOB_FILE, PAGE_FILE, RESULT_FILE};
-use crate::{atomic, read};
+use crate::{atomic, read, OwnProcessGroup as _};
 use anyhow::{ensure, Context};
 use std::{
     collections::BTreeMap,
     fmt::Write as _,
-    os::unix::process::CommandExt as _,
     path::Path,
     process::{Command, Stdio},
     time::{Duration, Instant},
@@ -247,6 +246,7 @@ pub(crate) fn container_info(host: &mut Host, diag: &mut Diag) {
             let _ = writeln!(body, "{l}");
         }
     }
+    #[cfg(unix)]
     let _ = writeln!(
         body,
         "uid {} gid {}",
@@ -605,6 +605,10 @@ pub(crate) fn others(pgid: i32) -> Vec<i32> {
 
 /// As pid 1, collects orphans that exited (llama-server once its parent is
 /// gone), so they leave /proc.
+#[cfg(not(unix))]
+pub(crate) fn reap() {}
+
+#[cfg(unix)]
 pub(crate) fn reap() {
     if std::process::id() == 1 {
         while let Ok(Some(_)) = rustix::process::wait(rustix::process::WaitOptions::NOHANG) {}
@@ -613,6 +617,10 @@ pub(crate) fn reap() {
 
 /// Kills the runner's process group and, in a container, every other
 /// process (llama-server among them).
+#[cfg(not(unix))]
+pub(crate) fn kill_all(_pgid: i32) {}
+
+#[cfg(unix)]
 pub(crate) fn kill_all(pgid: i32) {
     if let Some(p) = rustix::process::Pid::from_raw(pgid) {
         let _ = rustix::process::kill_process_group(p, rustix::process::Signal::KILL);
@@ -809,7 +817,7 @@ fn run_mode(
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(std::fs::File::create(&stderr_path)?)
-        .process_group(0)
+        .in_own_process_group()
         .spawn()
         .context("starting python3")?;
     let pgid = i32::try_from(child.id()).context("pid")?;
@@ -858,7 +866,10 @@ fn run_mode(
     };
     let engine_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     let code = status.code();
+    #[cfg(unix)]
     let signal = std::os::unix::process::ExitStatusExt::signal(&status);
+    #[cfg(not(unix))]
+    let signal: Option<i32> = None;
     let outcome = Outcome::of(code, timed_out);
     let text = if outcome == Outcome::Ok {
         let t = read(&out, MAX_TEXT)
@@ -1088,6 +1099,7 @@ fn run_blocking(work: &Path) -> anyhow::Result<()> {
         &serde_json::to_vec_pretty(&result)?,
     )?;
     atomic(&work.join("fraction_done"), b"1.0\n")?;
+    #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
         for name in outputs().into_iter().chain(["fraction_done"]) {

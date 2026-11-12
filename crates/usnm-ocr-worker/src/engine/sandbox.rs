@@ -194,6 +194,7 @@ pub(super) fn claim_slot(scratch: &Path) -> anyhow::Result<PageDir> {
     for i in 0..SLOTS {
         let slot = start.wrapping_add(i) % SLOTS;
         let path = scratch.join(format!("slot-{slot}"));
+        #[cfg_attr(not(unix), allow(unused_mut))]
         let mut builder = std::fs::DirBuilder::new();
         #[cfg(unix)]
         {
