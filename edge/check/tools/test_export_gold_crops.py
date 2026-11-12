@@ -11,6 +11,9 @@ class T(unittest.TestCase):
         self.assertEqual(done, 1)
         self.assertEqual((out[0]["transcription"], out[0]["transcriber"], out[0]["reviewer"]), ("Die ſchöne [?]", "maintainer", None))
         self.assertIsNone(out[1]["transcription"])
+        exp[0].update(method="near-agree", inter_cer=0.004, readings=[{"text": "Die ſchöne \ufffd"}, {"text": "Die ſchöne ?"}])
+        out, _ = merge(tpl, exp)
+        self.assertEqual((out[0]["settle_method"], out[0]["inter_reader_cer"], len(out[0]["readings"]), out[0]["reviewer"]), ("near-agree", 0.004, 2, "check.usnewsmap.com second reader"))
 
 
 if __name__ == "__main__":

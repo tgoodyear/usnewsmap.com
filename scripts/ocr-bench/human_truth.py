@@ -111,7 +111,8 @@ def decide(row, hints, ranges):
     """(keep, reason, outcome, text, readers)"""
     outcome, text, unreadable, readers = derive(row["readings"])
     if outcome is None:
-        return False, "not-settled", None, None, []
+        # a near-agree unit has two close readings but no single exact text: a benchmark reference needs one
+        return False, "near-agree-not-promoted" if row.get("outcome") == "near-agree" else "not-settled", None, None, []
     if row.get("outcome") not in (None, outcome) or (row.get("settled") and row.get("text") is not None and normalize(row["text"]) != text):
         return False, "export-disagrees-with-readings", outcome, text, readers
     if unreadable:

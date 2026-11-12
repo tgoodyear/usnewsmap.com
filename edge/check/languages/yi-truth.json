@@ -1,8 +1,9 @@
 {
+  "agree_cer": 0.01,
   "dir": "rtl",
   "intro": "These lines come from Yiddish daily newspapers printed in New York between 1910 and 1953 and held by the Library of Congress: Der Morgen Zshurnal, the Yidishes Tageblatt and Der Tog. Type each line in Hebrew letters, as you read it from right to left. Keep the small marks on letters, and the joined letters װ, ױ and ײ, as printed. The pages were picked from ones our quality check rated as heavily damaged, so many lines are worn.",
   "kind": "transcribe",
   "name": "Yiddish: type the lines",
-  "rules": "Type what is printed, exactly. Keep the printed spelling, capital letters, punctuation and hyphens, even where they look wrong. Don't correct, modernize or translate. Where you can't read a letter or a stretch of letters, press the button that inserts � instead of guessing. If nothing at all is legible, press Nothing legible. Two people type each one independently. If they differ, a third person compares both with the print and settles it. A few items have a known text that checks your typing.",
+  "rules": "Type what is printed, exactly. Keep the printed spelling, capital letters, punctuation and hyphens, even where they look wrong. Don't correct, modernize or translate. Where you can't read a letter or a stretch of letters, press the button that inserts � instead of guessing. If nothing at all is legible, press Nothing legible. Two people type each one independently. If their typing differs by more than 1%, a third person compares both with the print and settles it. A few items have a known text that checks your typing.",
   "title": "Yiddish: type the lines"
 }

@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import worker, { signSession } from "./worker.mjs";
-import { cer, editDistance, normalizeReading, qualified, settleReadings, wantCalibration } from "./transcribe.mjs";
+import { cer, editDistance, interCer, normalizeReading, qualified, settleReadings, wantCalibration } from "./transcribe.mjs";
 
 test("readings are normalised only in whitespace, bidi marks and controls", () => {
   assert.equal(normalizeReading("  א‏ב  \r\n\r\n ג  ד \n\n"), "אב\n\nג ד");
@@ -195,4 +195,23 @@ test("adjudication candidates are the first two counted readings, and a later ba
   for (let i = 4; i <= 9; i++) await admin(e, "/admin/tasks", JSON.stringify({ id: "yi-truth/s/cal" + i, lang: "yi-truth", set: "s", kind: "transcribe", line: "c.png", truth: "abcdefghij" }));
   for (let i = 4; i <= 9; i++) await post(e, "good1", "/api/readings", { task: "yi-truth/s/cal" + i, text: "zzzzzzzzzz" });
   assert.equal(e.DB.raw.prepare("SELECT outcome FROM tasks WHERE id = ?").get(id).outcome, null);
+});
+
+test("near-agree settles two close readings of a long crop and keeps both", async () => {
+  assert.equal(interCer("abcdefghij", "abcdefghij"), 0);
+  assert.equal(interCer("abcdefghij", "abcdefghiX"), 0.1);
+  const a = r("a", "x".repeat(99) + "y", 1), b = r("b", "x".repeat(100), 2);
+  assert.equal(settleReadings([a, b]).outcome, "adjudicate"); // exact by default
+  const s = settleReadings([a, b], "pair", 0.01);
+  assert.deepEqual([s.outcome, s.method, s.text], ["near-agree", "near-agree", a.text]);
+  assert.equal(settleReadings([r("a", "x".repeat(97) + "yyy", 1), b], "pair", 0.01).outcome, "adjudicate");
+  assert.equal(settleReadings([r("a", "", 1, true), r("b", "x", 2)], "pair", 0.5).outcome, "adjudicate");
+
+  const e = env(fakeDb());
+  await admin(e, "/admin/languages/de-968", JSON.stringify({ name: "German", kind: "transcribe", agree_cer: 0.01 }), "PUT");
+  await admin(e, "/admin/tasks", JSON.stringify({ id: "de-968/s/c1", lang: "de-968", set: "s", kind: "transcribe", line: "x.jpg", crop_id: "de968-0-01" }));
+  await post(e, "a", "/api/readings", { task: "de-968/s/c1", text: "x".repeat(99) + "y" });
+  await post(e, "b", "/api/readings", { task: "de-968/s/c1", text: "x".repeat(100) });
+  const row = JSON.parse((await (await worker.fetch(new Request("https://check.usnewsmap.com/api/export?lang=de-968"), e, {})).text()).trim());
+  assert.deepEqual([row.settled, row.outcome, row.method, row.inter_cer, row.readings.length, row.crop_id], [true, "near-agree", "near-agree", 0.01, 2, "de968-0-01"]);
 });

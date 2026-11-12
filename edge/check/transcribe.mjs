@@ -4,7 +4,8 @@
 //
 // Settling rule (README.md, "Transcription tasks"):
 //   - two people (the first two, in time order) read a task blind;
-//   - if their texts match exactly, the task settles as `agreed`;
+//   - if their texts match exactly, the task settles as `agreed`; in a language with `agree_cer`, two readings
+//     within that distance of each other settle as `near-agree` (both readings are kept and exported);
 //   - if they differ, a third person sees only those two human readings, picks or edits, and the task
 //     settles as `adjudicated`;
 //   - a reading from someone whose calibration score is bad doesn't count.
@@ -44,6 +45,12 @@ export function editDistance(a, b) {
   return prev[y.length];
 }
 
+// How far apart two readings are: edit distance over the longer one's length (diplomatic-v1: exact code points).
+export function interCer(a, b) {
+  const n = Math.max(Array.from(a).length, Array.from(b).length);
+  return n === 0 ? 0 : editDistance(a, b) / n;
+}
+
 export function cer(reading, truth) {
   const t = Array.from(normalizeReading(truth)).length;
   const d = editDistance(normalizeReading(reading), normalizeReading(truth));
@@ -52,7 +59,7 @@ export function cer(reading, truth) {
 
 // readings: [{contributor, text, unreadable, at}] that count (already filtered to qualified people),
 // in any order. Returns the task's new state.
-export function settleReadings(readings, mode = "pair") {
+export function settleReadings(readings, mode = "pair", agreeCer = 0) {
   const all = [...readings].sort((p, q) => p.at - q.at || (p.contributor < q.contributor ? -1 : 1));
   const [a, b, adj] = all;
   const n = all.length;
@@ -61,6 +68,11 @@ export function settleReadings(readings, mode = "pair") {
   if (!a || !b) return { n, settled: 0, outcome: null };
   const same = a.unreadable === b.unreadable && a.text === b.text;
   if (same) return { n, settled: 1, outcome: "agreed", text: a.text, unreadable: a.unreadable ? 1 : 0, method: "agreed" };
+  // Long crops: two readings within agreeCer of each other settle as near-agree. The first reading is the text;
+  // the export carries both readings and their distance, so a scorer can score against each.
+  if (agreeCer > 0 && !a.unreadable && !b.unreadable && interCer(a.text, b.text) <= agreeCer) {
+    return { n, settled: 1, outcome: "near-agree", text: a.text, unreadable: 0, method: "near-agree" };
+  }
   if (adj) return { n, settled: 1, outcome: "adjudicated", text: adj.text, unreadable: adj.unreadable ? 1 : 0, method: "adjudicated" };
   return { n, settled: 0, outcome: "adjudicate" };
 }

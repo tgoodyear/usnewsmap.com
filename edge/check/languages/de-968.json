@@ -1,4 +1,5 @@
 {
+  "agree_cer": 0.01,
   "intro": "These crops come from German-language daily newspapers printed between 1868 and 1916 and held by the Library of Congress. Most come from one newspaper (101 of 154 crops). Type each crop from the print alone: nothing from any machine is shown or filled in. Click the image to zoom. If the print uses the long s (ſ), type it as printed. The buttons insert ſ, umlauts and ß.",
   "keys": [
     "ſ",
@@ -16,7 +17,7 @@
   ],
   "kind": "transcribe",
   "name": "German: type the crops",
-  "rules": "Type each printed line on its own line, in reading order. Keep the printed spelling, capital letters, punctuation and hyphens, even where they look wrong, and don't join a word split across lines. If the crop cuts a line at its edge, type only the letters wholly inside it. Where you can't read a letter, type [?] instead of guessing. Where you read a letter as x but doubt it, type [?x]. Never skip printed text. Two people type each crop independently. If they differ, a third person compares both with the print and settles it.",
+  "rules": "Type each printed line on its own line, in reading order. Keep the printed spelling, capital letters, punctuation and hyphens, even where they look wrong, and don't join a word split across lines. If the crop cuts a line at its edge, type only the letters wholly inside it. Where you can't read a letter, type [?] instead of guessing. Where you read a letter as x but doubt it, type [?x]. Never skip printed text. Two people type each crop independently. If their typing differs by more than 1%, a third person compares both with the print and settles it.",
   "title": "German: type the crops",
   "unknown_mark": "[?]"
 }

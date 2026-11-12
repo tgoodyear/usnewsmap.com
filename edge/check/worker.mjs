@@ -7,7 +7,7 @@ const SESSION_DAYS = 30;
 const SETTLE_MIN = 3; // answers before a word can settle
 const DISPUTE_AT = 7; // answers after which a word that never agreed is closed as disputed
 const enc = new TextEncoder();
-import { MAX_LINES, MAX_TEXT, CAL_MAX_CER, cer, flip, normalizeReading, qualified, readerId, settleReadings, wantCalibration } from "./transcribe.mjs";
+import { MAX_LINES, MAX_TEXT, CAL_MAX_CER, cer, flip, interCer, normalizeReading, qualified, readerId, settleReadings, wantCalibration } from "./transcribe.mjs";
 
 export default {
   async fetch(request, env, ctx) {
@@ -537,7 +537,7 @@ export async function resettle(env, taskId, l, at = Date.now()) {
   const cfg = await langConfig(env, l);
   for (let attempt = 0; attempt < 4; attempt++) {
     const { counted, signature } = await countedReadings(env, taskId, l, cfg);
-    const s = settleReadings(counted, cfg.settle === "single" ? "single" : "pair");
+    const s = settleReadings(counted, cfg.settle === "single" ? "single" : "pair", cfg.agree_cer || 0);
     const stmts = [
       env.DB.prepare(`UPDATE tasks SET n = ?2, settled = ?3, outcome = ?4 WHERE id = ?1 AND ${SIGNATURE_SQL} = ?5`).bind(taskId, s.n, s.settled, s.outcome, signature),
     ];
@@ -583,6 +583,7 @@ async function exportReadings(env, l) {
       id: t.id, set: t.set_name, kind: "transcribe", page: b.page, source: b.source, label: b.label, line: b.line, unit: b.unit, box: b.box, crop_id: b.crop_id,
       readings: mine.map((r) => ({ reader: ids.get(r.contributor), text: r.unreadable ? null : r.text, unreadable: !!r.unreadable, at: r.at, ...ok.get(r.contributor) })),
       settled: !!t.settled, outcome: t.outcome,
+      inter_cer: t.method === "near-agree" || t.outcome === "adjudicate" || t.method === "adjudicated" ? pairCer(mine, ids, ok) : undefined,
       text: t.settled ? (t.truth_unreadable ? null : t.truth) : undefined, method: t.method || undefined,
     }));
   }
@@ -594,4 +595,11 @@ async function exportReadings(env, l) {
       "x-license": "CC0-1.0",
     },
   });
+}
+
+// The distance between the first two counted readings of a task (the pair settlement compares).
+function pairCer(readings, ids, ok) {
+  const two = readings.filter((r) => ok.get(r.contributor)?.qualified).slice(0, 2);
+  if (two.length < 2 || two.some((r) => r.unreadable)) return undefined;
+  return interCer(two[0].text, two[1].text);
 }

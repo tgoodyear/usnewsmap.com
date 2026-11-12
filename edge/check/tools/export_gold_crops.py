@@ -34,8 +34,13 @@ def merge(template, export):
         if e:
             r["transcription"] = e["text"].replace("\ufffd", "[?]")  # gold.py marks an unreadable letter [?]
             single = e.get("method") == "single"
-            r["transcriber"] = "maintainer" if single else e.get("method")
-            r["reviewer"] = None if single else "check.usnewsmap.com adjudication"
+            r["transcriber"] = "maintainer" if single else "check.usnewsmap.com reader"
+            r["reviewer"] = None if single else "check.usnewsmap.com " + ("second reader" if e.get("method") == "near-agree" else "adjudication")
+            if e.get("method") in ("near-agree", "adjudicated"):
+                # both readings and their distance stay with the row, so a scorer can score against each and report the noise floor
+                r["readings"] = [x["text"].replace("\ufffd", "[?]") for x in e.get("readings", []) if x.get("text") is not None]
+                r["inter_reader_cer"] = e.get("inter_cer")
+                r["settle_method"] = e["method"]
             done += 1
         out.append(r)
     return out, done
