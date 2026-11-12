@@ -72,6 +72,11 @@ pub fn check(files: &[PathBuf], keep: Option<&Path>) -> anyhow::Result<()> {
 pub enum Rule {
     /// Every crop at the Dice floor: the rule in force.
     StrictV1,
+    /// The strict rule where a crop with no word on either side (#1463)
+    /// is neutral, not agreement: a pair or bundle page agrees only when at
+    /// least one crop with a word on some side passed the Dice floor. Off
+    /// until the validator wrapper passes it.
+    StrictV2,
     /// Crop by crop; see [`super::consensus`]. Not in force until the
     /// validator wrapper passes it.
     CropConsensusV2,
@@ -150,7 +155,18 @@ pub fn compare_with(a: &[PathBuf], b: &[PathBuf], opts: Compare<'_>) -> anyhow::
         "--rule crop-consensus-v2 needs --crop-states"
     );
     let (la, lb) = (load(a)?, load(b)?);
-    let (crops, strict) = qwen::agree(&la.result, &la.readings, &lb.result, &lb.readings, min_dice);
+    let (crops, mut strict) =
+        qwen::agree(&la.result, &la.readings, &lb.result, &lb.readings, min_dice);
+    let worded = (rule == Rule::StrictV2).then(|| worded_crops(&crops, &la, &lb));
+    if let Some(worded) = &worded {
+        let finished = [&la, &lb].iter().all(|l| {
+            l.result.outcome == usnm_ocr_contract::qwen::Outcome::Ok
+                && l.result.unit_error.is_none()
+        });
+        if strict.is_ok() && finished && worded.is_empty() {
+            strict = Err("no crop with a word on either side".into());
+        }
+    }
     let consensus = (rule == Rule::CropConsensusV2).then(|| {
         super::consensus::judge(&la, &lb, super::consensus::Params::IN_RULE, strict.clone())
     });
@@ -168,7 +184,10 @@ pub fn compare_with(a: &[PathBuf], b: &[PathBuf], opts: Compare<'_>) -> anyhow::
             basis = Some(super::consensus::Basis::StrictV1);
         }
     }
-    let page_verdicts = qwen::agree_pages(&la.result, &lb.result, &crops, min_dice);
+    let mut page_verdicts = qwen::agree_pages(&la.result, &lb.result, &crops, min_dice);
+    if let Some(worded) = &worded {
+        demote_wordless_pages(&mut page_verdicts, worded);
+    }
     let names = pages.filter(|_| !page_verdicts.is_empty()).and_then(|dir| {
         match (
             crate::quality::validate::result_name(&a[1]),
@@ -234,6 +253,9 @@ pub fn compare_with(a: &[PathBuf], b: &[PathBuf], opts: Compare<'_>) -> anyhow::
             "reason": verdict.as_ref().err(),
             "wordless": wordless(&crops, &la, &lb),
         });
+        if rule == Rule::StrictV2 {
+            line["rule"] = "strict-v2".into();
+        }
         if let Some(judged) = &consensus {
             line["rule"] = "crop-consensus-v2".into();
             line["basis"] = serde_json::to_value(basis.unwrap_or(judged.basis))?;
@@ -251,6 +273,42 @@ pub fn compare_with(a: &[PathBuf], b: &[PathBuf], opts: Compare<'_>) -> anyhow::
         f.write_all(format!("{line}\n").as_bytes())?;
     }
     verdict.map_err(|e| anyhow::anyhow!(e))
+}
+
+/// The ids of the crops both results read where at least one reading has a
+/// letter or digit: what `strict-v2` counts as agreement. The rest are
+/// neutral (#1463).
+fn worded_crops<'a>(
+    crops: &'a [qwen::CropAgreement],
+    a: &Loaded,
+    b: &Loaded,
+) -> std::collections::HashSet<&'a str> {
+    let no_word = |l: &Loaded, id: &str| {
+        l.readings
+            .readings
+            .iter()
+            .find(|r| r.id == id)
+            .is_none_or(|r| !r.text.chars().any(char::is_alphanumeric))
+    };
+    crops
+        .iter()
+        .filter(|c| c.read == (true, true) && !(no_word(a, &c.id) && no_word(b, &c.id)))
+        .map(|c| c.id.as_str())
+        .collect()
+}
+
+/// Under `strict-v2`, a page that agreed only on crops with no word on
+/// either side no longer agrees.
+fn demote_wordless_pages(
+    pages: &mut [qwen::PageAgreement],
+    worded: &std::collections::HashSet<&str>,
+) {
+    for p in pages.iter_mut().filter(|p| p.agree) {
+        if !p.crops.iter().any(|c| worded.contains(c.id.as_str())) {
+            p.agree = false;
+            p.reason = Some(format!("{}: no crop with a word on either side", p.doc_id));
+        }
+    }
 }
 
 /// The crops both results read where neither reading has a letter or digit
@@ -816,5 +874,114 @@ pub(crate) mod tests {
             assert_eq!(line["agree"], strict.is_ok(), "{c02:?}");
             assert_eq!(line["wordless"], serde_json::json!(wordless), "{c02:?}");
         }
+    }
+
+    #[test]
+    fn strict_v2_does_not_count_wordless_crops_as_agreement_1463() {
+        let opts = |rule| Compare {
+            min_dice: 0.5,
+            rule,
+            bundle_verdict: BundleVerdict::Unit,
+            log: None,
+            pages: None,
+            crop_states: None,
+        };
+        let run = |tmp: &Path, a: &[(&str, &str)], b: &[(&str, &str)], rule| {
+            let (fa, fb) = (write(tmp, "a", a), write(tmp, "b", b));
+            compare_with(&fa, &fb, opts(rule)).map_err(|e| e.to_string())
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        // A worded crop plus a wordless one that differs: the wordless crop is neutral.
+        let (a, b) = (
+            [("c01", WORDS), ("c02", ". , ;")],
+            [("c01", WORDS), ("c02", "* * * —")],
+        );
+        assert!(run(tmp.path(), &a, &b, Rule::StrictV1).is_ok());
+        assert!(run(tmp.path(), &a, &b, Rule::StrictV2).is_ok());
+        // No word on any crop: strict-v1 accepts, strict-v2 does not.
+        let (a, b) = (
+            [("c01", "[?]"), ("c02", ". ,")],
+            [("c01", "* *"), ("c02", "--")],
+        );
+        assert!(run(tmp.path(), &a, &b, Rule::StrictV1).is_ok());
+        assert_eq!(
+            run(tmp.path(), &a, &b, Rule::StrictV2).unwrap_err(),
+            "no crop with a word on either side"
+        );
+        // Identical [?] on every crop is no better.
+        let (a, b) = (
+            [("c01", "[?]"), ("c02", "[?]")],
+            [("c01", "[?]"), ("c02", "[?]")],
+        );
+        assert!(run(tmp.path(), &a, &b, Rule::StrictV2).is_err());
+        // Whitespace-only on both sides (nothing read) is not agreement either.
+        let (a, b) = ([("c01", " "), ("c02", "\n")], [("c01", "\t"), ("c02", " ")]);
+        assert!(run(tmp.path(), &a, &b, Rule::StrictV1).is_ok());
+        assert!(run(tmp.path(), &a, &b, Rule::StrictV2).is_err());
+        // A worded crop that disagrees still fails, as before.
+        let (a, b) = (
+            [("c01", WORDS), ("c02", "[?]")],
+            [("c01", "other words entirely"), ("c02", "[?]")],
+        );
+        assert!(run(tmp.path(), &a, &b, Rule::StrictV2).is_err());
+        // One side worded, the other wordless: fails under both rules.
+        let (a, b) = (
+            [("c01", WORDS), ("c02", "one two")],
+            [("c01", WORDS), ("c02", "* * *")],
+        );
+        assert!(run(tmp.path(), &a, &b, Rule::StrictV1).is_err());
+        assert!(run(tmp.path(), &a, &b, Rule::StrictV2).is_err());
+    }
+
+    #[test]
+    fn strict_v2_keeps_a_wordless_loop_flagged_crop_neutral_and_logs_its_rule_1463() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (a, b) = wordless_pair(tmp.path(), ("[?] [?]", "[?]"));
+        loop_bits(&a, "02");
+        loop_bits(&b, "00");
+        let log = tmp.path().join("pairs.jsonl");
+        let opts = Compare {
+            min_dice: 0.5,
+            rule: Rule::StrictV2,
+            bundle_verdict: BundleVerdict::Unit,
+            log: Some(&log),
+            pages: None,
+            crop_states: None,
+        };
+        // c01 has words, so the pair agrees; loop flags are #1463's other question.
+        compare_with(&a, &b, opts).unwrap();
+        let line = last_line(&log);
+        assert_eq!(line["rule"], "strict-v2");
+        assert_eq!(line["agree"], true);
+        assert_eq!(line["wordless"][0]["id"], "c02");
+    }
+
+    #[test]
+    fn strict_v2_demotes_a_bundle_page_that_agreed_only_on_wordless_crops_1463() {
+        let page = |doc: &str, ids: &[&str]| qwen::PageAgreement {
+            doc_id: doc.into(),
+            agree: true,
+            crops: ids
+                .iter()
+                .map(|id| qwen::CropAgreement {
+                    dice: Some(1.0),
+                    id: format!("{doc}:{id}"),
+                    read: (true, true),
+                })
+                .collect(),
+            reason: None,
+        };
+        let mut pages = vec![page("p1", &["c01", "c02"]), page("p2", &["c01", "c02"])];
+        let worded: std::collections::HashSet<&str> = ["p1:c01"].into();
+        demote_wordless_pages(&mut pages, &worded);
+        assert!(pages[0].agree && pages[0].reason.is_none());
+        assert!(!pages[1].agree);
+        assert_eq!(
+            pages[1].reason.as_deref(),
+            Some("p2: no crop with a word on either side")
+        );
+        // With one agreeing page of two, page-v1 would still settle the unit
+        // on p1; with none it cannot.
+        assert!(pages_settle(1, 2) && !pages_settle(0, 2));
     }
 }
