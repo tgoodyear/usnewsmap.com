@@ -772,6 +772,10 @@ pub struct SeedReport {
     pub refill_below: u64,
     /// `ocr-bulk`'s approximate message count, hidden ones included.
     pub queue_depth: u64,
+    /// `queue_depth` less the settled pages' hidden messages (`settled_held`): the depth the
+    /// refill check and the window use (#1613).
+    #[serde(default)]
+    pub queue_ready: u64,
     /// Bulk pages the ledger has outstanding (not timed out or waiting out
     /// an `unroutable` dead letter).
     pub in_flight: u64,
@@ -1241,17 +1245,22 @@ pub(super) async fn seed(
         .values()
         .filter(|q| in_flight(q, &ledger, now) && !settled.has(&q.doc_id))
         .count() as u64;
-    report.refill = report.queue_depth < report.refill_below;
+    // A held page's message stays hidden on the queue and is counted in its depth; it is
+    // not work waiting for a worker (#1613).
+    report.queue_ready = report.queue_depth.saturating_sub(report.settled_held);
+    report.refill = report.queue_ready < report.refill_below;
     if !report.refill && !opts.dry_run {
         tracing::info!(
             plan = opts.plan,
             queue_depth = report.queue_depth,
+            settled_held = report.settled_held,
+            queue_ready = report.queue_ready,
             refill_below = report.refill_below,
             "ocr-bulk is full enough; nothing seeded"
         );
         return Ok(report);
     }
-    let outstanding = report.in_flight.max(report.queue_depth);
+    let outstanding = report.in_flight.max(report.queue_ready);
     let mut free = report
         .window
         .saturating_sub(outstanding)
@@ -1715,6 +1724,8 @@ pub(super) async fn seed(
         window = report.window,
         in_flight = report.in_flight,
         queue_depth = report.queue_depth,
+        settled_held = report.settled_held,
+        queue_ready = report.queue_ready,
         skipped = ?report.skipped,
         supersession = ?report.supersession,
         ledger = ?report.ledger,
