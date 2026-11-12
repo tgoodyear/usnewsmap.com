@@ -291,7 +291,7 @@ boinc_ndlocr='^(ocr/engines/ndlocr-lite/|boinc/apps/ndlocr-lite/|boinc/scripts/s
 # usnm-ocr-contract's tests read the v1 contract files. The Linux NVIDIA 2B release inputs
 # are assembled by qwen_vulkan_bundle.py within the disk policy's bundle bound and checked
 # against the 6 GB release's runtime (#1234).
-boinc_native='^(ocr/contract/|boinc/apps/qwen/(amd-device-map\.cpp|disk-policy\.json)$|boinc/scripts/(test_amd_device_map\.py|patch_amd_vulkan_identity\.py|build_amd_vulkan_runtime\.ps1|(test_)?qwen_vulkan_bundle\.py)$|boinc/infra/boinc/releases/prod-onprem-usnm_qwen-nvidia_vulkan_6gb_8b\.json$|rust-toolchain\.toml$)'
+boinc_native='^(ocr/contract/|boinc/apps/qwen/(amd-device-map\.cpp|disk-policy\.json|libgomp\.lock)$|boinc/apps/qwen/licenses/|boinc/scripts/(test_amd_device_map\.py|patch_amd_vulkan_identity\.py|build_amd_vulkan_runtime\.ps1|(test_)?qwen_vulkan_bundle\.py)$|boinc/infra/boinc/releases/prod-onprem-usnm_qwen-nvidia_vulkan_6gb_8b\.json$|rust-toolchain\.toml$)'
 # The native OCR app (boinc-ocr-native.yml) builds usnm-ocr-app and the static Tesseract,
 # fetches the locked models for its smoke test, and checks and stages the build as a release
 # would, against the container engine's version.
