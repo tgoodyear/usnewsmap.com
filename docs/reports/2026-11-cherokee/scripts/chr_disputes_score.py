@@ -15,8 +15,8 @@ Reports, as JSON on standard output:
   and the paired difference (re-read minus LoC), each with a 95% interval from a page bootstrap (pages drawn with
   replacement). `equal_error_assumption` adds the lines whose only problem is a "neither", each such word counted as one
   letter wrong for both readings: an assumption, not a bound, since it makes those lines' difference zero. `worst_case`
-  is the bound: how far the difference could move if those lines were counted and each went as badly as it could for
-  one reading and as well as it could for the other.
+  is the bound on net letter errors (re-read minus LoC) if those lines were counted: each "neither" word moves it by at
+  most the distance between the two readings, whatever the print says.
 - `by_kind`: the same counts for news lines and lines that reprint the New Testament.
 
 Only lines where the readings differ are loaded. Each reading can differ from the checked text only in the disputed word, and
@@ -71,9 +71,10 @@ def line_states(manifest: list, export: list) -> list:
             rec["state"] = "open"
             rec["why"] = [r["outcome"] for r in rows if r["outcome"] in SETTLED_OTHER]
             rec["letters"] = len("".join(m["ours"]))
-            # Neither reading matches the print there, so each is wrong by at least one letter and by at most
-            # the longer reading's length: the room the unknown transcription leaves.
-            rec["room"] = sum(max(len(m["ours"][k]), len(m["loc"][k])) - 1 for k, r in zip(m["words"], rows) if r["outcome"] == "neither")
+            # Neither reading matches the print there. Whatever the print says, the two readings' errors on
+            # the word differ by at most the distance between the readings (the triangle inequality), so each
+            # such word can move the net error by that much either way.
+            rec["swing"] = sum(edit_distance(m["ours"][k], m["loc"][k]) for k, r in zip(m["words"], rows) if r["outcome"] == "neither")
         else:
             rec["state"] = "resolved"
             checked = list(m["loc"])
@@ -109,19 +110,21 @@ def score(recs: list, neither_as_error: bool = False) -> dict:
 
 
 def worst_case(recs: list) -> dict:
-    """The re-read's error minus LoC's if the lines that settled on "neither" are counted, and each such word
-    went as badly for one reading as it could for it and as well as it could for the other. Neither reading matches the
-    print there, so each is wrong by at least one letter and by at most the longer reading's length; the transcription
-    is unknown, so the difference on such a line can lie anywhere in plus or minus that room. Lines with other open
-    outcomes stay out. No sampling is involved: this is how far the lines left out could move the difference."""
+    """How far the lines that settled on "neither" could move the re-read's net letter errors (its errors minus
+    LoC's). Neither reading matches the print on such a word, and the print is unknown, but the two readings'
+    errors on a word differ by at most the distance between the readings, whatever the print says (triangle
+    inequality), so the net error over those lines lies within plus or minus the sum of those distances. Nothing
+    is assumed about the print's length. `net_letter_errors` adds that range to the resolved lines' net error;
+    `approx_difference` divides it by the resolved letters plus the re-read's letters on the added lines, which is only
+    approximate because the print's length there is unknown. Lines with other open outcomes stay out."""
     base = score(recs)
     extra = [r for r in recs if r["state"] == "open" and set(r["why"]) == {"neither"}]
+    net = (base["chr_phoenix"] - base["loc"]) * base["letters"] if base["letters"] else 0.0
+    swing = sum(r["swing"] for r in extra)
     n = base["letters"] + sum(r["letters"] for r in extra)
-    if not n:
-        return {"lines": 0, "difference": None}
-    diff = (base["chr_phoenix"] - base["loc"]) * base["letters"] if base["letters"] else 0.0
-    room = sum(r["room"] for r in extra)
-    return {"lines": base["lines"] + len(extra), "letters": n, "difference": [(diff - room) / n, (diff + room) / n]}
+    return {"lines": base["lines"] + len(extra), "resolved_net_letter_errors": round(net),
+            "net_letter_errors": [round(net) - swing, round(net) + swing],
+            "approx_difference": [(net - swing) / n, (net + swing) / n] if n else None}
 
 
 def percentile(values: list, q: float):

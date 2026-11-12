@@ -61,12 +61,12 @@ class Score(unittest.TestCase):
         b = rep["score"]["equal_error_assumption"]
         self.assertEqual(b["lines"], 4)
         self.assertAlmostEqual(b["chr_phoenix"], 2 / 28)
-        # The "neither" word is 3 letters in each reading, so each reading could be 0 to 2 letters further wrong there:
-        # the difference of -1/21 over 21 letters can move by 2 in either direction over 28 letters.
+        # Resolved lines net -1 letter error (1 against LoC's 2); the "neither" word's readings are one letter apart,
+        # so it can move the net error by one either way, over 28 letters (21 resolved, 7 on the open line).
         w = rep["score"]["worst_case"]
-        self.assertEqual(w["lines"], 4)
-        self.assertAlmostEqual(w["difference"][0], (-1 - 2) / 28)
-        self.assertAlmostEqual(w["difference"][1], (-1 + 2) / 28)
+        self.assertEqual((w["lines"], w["resolved_net_letter_errors"], w["net_letter_errors"]), (4, -1, [-2, 0]))
+        self.assertAlmostEqual(w["approx_difference"][0], -2 / 28)
+        self.assertAlmostEqual(w["approx_difference"][1], 0.0)
         self.assertEqual(rep["by_kind"]["scripture"]["resolved"], 1)
         self.assertEqual(rep["pages_with_resolved_lines"], 2)
         self.assertIn("3 of 10 held-out lines resolved", rep["summary"])

@@ -203,6 +203,7 @@ def rare_candidates(lines: list, known: set, freq: collections.Counter, part: di
                 continue
             a = lw["text"]
             b = ours[k]["text"] if pair else a
+            first = len(out)  # a word gives one candidate: the first of these that applies
             if a != b:
                 sm = difflib.SequenceMatcher(None, a, b, autojunk=False)
                 hit = [c for op, i1, i2, j1, j2 in sm.get_opcodes() if op != "equal" for c in a[i1:i2] + b[j1:j2] if c in RARE]
@@ -216,7 +217,7 @@ def rare_candidates(lines: list, known: set, freq: collections.Counter, part: di
                 if pick:
                     out.append({"line": ln, "k": k, "letter": c, "kind": "agree", "a": a, "b": a[:i] + pick + a[i + 1:],
                                 "a_is": "ocr", "b_is": "word_list" if known_alts else "confusion"})
-            if a not in known and len(a) >= 3 and freq[a] <= max_freq and not any(c in RARE for c in a):
+            if len(out) == first and a not in known and len(a) >= 3 and freq[a] <= max_freq and not any(c in RARE for c in a):
                 found = next(((r, a[:i] + r + a[i + 1:]) for i in range(len(a)) for r in RARE if a[:i] + r + a[i + 1:] in known), None)
                 if found:
                     out.append({"line": ln, "k": k, "letter": found[0], "kind": "word-list", "a": a, "b": found[1], "a_is": "ocr", "b_is": "word_list"})

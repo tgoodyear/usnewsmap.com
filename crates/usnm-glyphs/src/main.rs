@@ -490,6 +490,22 @@ fn add_checked(
     let mut picks: Vec<(String, String, String, String, String)> = Vec::new();
     for r in read_jsonl(export)? {
         count("tasks");
+        // A task the starting bank already holds must still stand: if it has since lost its consensus (late
+        // answers can unsettle it) or settled differently, its glyphs are stale and the bank can't be extended.
+        let id = r["id"].as_str().unwrap_or_default();
+        if let Some((was_outcome, was_word)) = already.get(id) {
+            let outcome = r["outcome"].as_str().unwrap_or_default();
+            let shown = r[outcome].as_str().unwrap_or_default();
+            let letters: String = shown.chars().filter(|c| is_syllabary(*c)).collect();
+            anyhow::ensure!(
+                r["settled"] == true && was_outcome == outcome && *was_word == letters,
+                "{id} is in the bank as {was_outcome} {was_word} but the export has it as {} {letters}; \
+                 start again from a bank without it",
+                if r["settled"] == true { outcome } else { "unsettled" }
+            );
+            count("already_in_bank");
+            continue;
+        }
         if r["settled"] != true {
             count("unsettled");
             continue;
@@ -499,7 +515,6 @@ fn add_checked(
             count("no_winner");
             continue;
         }
-        let id = r["id"].as_str().unwrap_or_default();
         let key = id.rsplit('/').next().unwrap_or_default();
         let Some(w) = words.get(key) else {
             count("not_in_index");
@@ -518,15 +533,6 @@ fn add_checked(
         let letters: String = shown.chars().filter(|c| is_syllabary(*c)).collect();
         if letters.is_empty() {
             count("no_letters");
-            continue;
-        }
-        if let Some((was_outcome, was_word)) = already.get(id) {
-            anyhow::ensure!(
-                was_outcome == outcome && *was_word == letters,
-                "{id} is in the bank as {was_outcome} {was_word} but settled as {outcome} {letters}; \
-                 start again from a bank without it"
-            );
-            count("already_in_bank");
             continue;
         }
         picks.push((
@@ -783,6 +789,20 @@ mod tests {
             &out,
             &dir.join("out3"),
             &dir.join("export-changed.jsonl"),
+            &[dir.join("index-in.jsonl")],
+            &images,
+            None
+        )
+        .is_err());
+        // A word whose consensus was withdrawn since is refused too.
+        write_lines(
+            &dir.join("export-unsettled.jsonl"),
+            &[task("l1~0", false, json!(null), "ᎠᎴᏀ")],
+        );
+        assert!(add_checked(
+            &out,
+            &dir.join("out4"),
+            &dir.join("export-unsettled.jsonl"),
             &[dir.join("index-in.jsonl")],
             &images,
             None

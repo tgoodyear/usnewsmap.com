@@ -81,6 +81,13 @@ class Rare(unittest.TestCase):
         out = pl.rare_candidates([ln], set(), collections.Counter(), {})
         self.assertEqual([(c["kind"], c["a_is"], c["b_is"]) for c in out], [("ours-loc", "loc", "chr_phoenix")])
 
+    def test_a_word_gives_one_candidate(self):
+        # LoC's ᎥᎵᏍᎩᏂ against ours ᎺᎵᏍᎩᏂ is an `ours-loc` pair, and putting Ꮊ into LoC's word also makes a New
+        # Testament form: only the first counts, so the task and its glyph-index entry are unique.
+        ln = line(["ᎥᎵᏍᎩᏂ", "ᎠᎴ"], ["ᎺᎵᏍᎩᏂ", "ᎠᎴ"])
+        out = pl.rare_candidates([ln], self.known, collections.Counter(), {})
+        self.assertEqual([(c["k"], c["kind"]) for c in out], [(0, "ours-loc")])
+
     def test_both_read_the_letter_and_a_known_swap_exists(self):
         ln = line(["ᎠᏯ" + ME + "ᎴᎵ"], ["ᎠᏯ" + ME + "ᎴᎵ"])
         part = {ME: collections.Counter({"Ꭵ": 3})}
