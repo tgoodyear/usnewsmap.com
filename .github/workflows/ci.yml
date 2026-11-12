@@ -925,6 +925,10 @@ jobs:
         run: scripts/ci/no-shared-keys.sh
       - name: Scripts and CLIs take named arguments, not positional ones (#277)
         run: scripts/ci/no-positional-args.py
+      # rust-toolchain.toml is the one place the Rust version is written; this fails a workflow or
+      # image tag that names another. Its unit test runs with the others below.
+      - name: Rust toolchain pin agrees across workflows and images
+        run: scripts/ci/check-rust-toolchain.py
       # The Surya image's pins live in boinc/apps/surya/engine.lock and the NDLOCR-Lite commit in its
       # models.lock; this checks the places that can't read them (the Containerfiles, the adapter's
       # COMMIT, the engine catalog). Its unit test runs with the others below.

@@ -4,7 +4,7 @@ How to run and test US News Map locally. Nothing here needs an Azure account or 
 
 ## Run the API and the site
 
-Requires a stable Rust toolchain (see `rust-toolchain.toml`). The web app also needs Node.js 24.
+Requires the Rust toolchain pinned in `rust-toolchain.toml`; `rustup` installs it the first time `cargo` runs in the checkout (see [Rust toolchain](#rust-toolchain)). The web app also needs Node.js 24.
 
 ```sh
 cargo test --workspace                 # unit + API integration tests against the fixtures
@@ -196,7 +196,25 @@ What CI runs and CONTRIBUTING.md does not list:
 | `container image builds` | `docker build -f docker/Dockerfile.api .` (see [`docker/README.md`](../../docker/README.md)), then `scripts/ci/check-api-image.sh --image IMAGE`; the ingest and Japanese OCR images have `check-ingest-image.sh` and `check-ja-ocr-image.sh` beside it.                                                                                                                                                                                        |
 | `contrib-compute`        | The checks in [`boinc/README.md`](../../boinc/README.md#checks). The other BOINC jobs and the OCR worker jobs build containers for minutes; let CI run them.                                                                                                                                                                                                                                                                                    |
 
-**Shared steps.** Steps that three or more `ci.yml` jobs repeat are composite actions in `.github/actions/`, pinned by commit like the workflow steps: `setup-rust` (the stable toolchain and the Cargo cache), `setup-node-web` (Node 24 with the npm cache) and `build-check-image` (build one image into the local Docker daemon, without pushing, with a build cache of its own). The BOINC image workflows have actions of their own there.
+**Shared steps.** Steps that three or more `ci.yml` jobs repeat are composite actions in `.github/actions/`, pinned by commit like the workflow steps: `setup-rust` (the pinned Rust toolchain and the Cargo cache), `setup-node-web` (Node 24 with the npm cache) and `build-check-image` (build one image into the local Docker daemon, without pushing, with a build cache of its own). The BOINC image workflows have actions of their own there.
+
+### Rust toolchain
+
+`rust-toolchain.toml` pins one exact release (`channel = "1.100.0"`) with the `rustfmt` and `clippy` components, so a new stable release cannot turn `main` red without a code change. It is the only place the version is written:
+
+- Every workflow step that installs Rust reads `channel` from that file: `setup-rust` and the jobs in `boinc-ocr-native.yml`, `boinc-quality-native.yml`, `ocr-bench.yml` and `ocr-dashboard.yml` have a step with id `rust-toolchain` that reads it and pass the result to `dtolnay/rust-toolchain`. The cross-compilation targets (musl, Windows, macOS) differ by job, so each job adds its own `targets:` and the file lists none.
+- `docker/Dockerfile.*` and the `boinc/` Containerfiles build on `rust:1-bookworm` (some by digest) and copy the tree, `rust-toolchain.toml` included. `rustup` in the image installs the pinned version when `cargo` first runs, so the file pins them too. A Rust image tag that names a release must name the pinned one.
+- `scripts/ci/check-rust-toolchain.py` (the `infra` job, with a test in `scripts/ci/test_check_rust_toolchain.py`) fails CI when the channel is not an exact release, a workflow step names another version, a step reads the file without the reading step, or an image tag names a different release. Run it with no arguments, or with `--root DIR` for another tree.
+- The build containers keep their own default toolchain (`stable`, whatever it is at the time). `rustup` picks up `rust-toolchain.toml` on its own and installs the pinned version into the container the first time `cargo` runs in a copy, then reuses it. This holds for `dev-ct-run.sh` too: it does not copy `.cargo`, but the toolchain file is in the tree it copies, and the command runs from the copy's root. `cargo --version` there shows the pinned release, not the container's default.
+
+To bump the toolchain, change these in one pull request:
+
+1. Edit `channel` in `rust-toolchain.toml`. Nothing else names the version.
+2. Run `cargo fmt --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings` and `cargo test --workspace --locked` on the new release, and fix what a newer rustc or clippy now reports in the same pull request, so `main` stays green. A new release can also change library behaviour (a Unicode table update broke two `usnm-core` tests in 1.100.0), so run the tests too. Check [the release notes](https://github.com/rust-lang/rust/blob/master/RELEASES.md) for the new version.
+3. Run `scripts/ci/check-rust-toolchain.py`. If it reports an image tag, update that tag to the same release.
+4. State the old and new version in the description.
+
+To find out whether a new stable exists, run `rustup check` (it prints the current stable version), or look at the Rust blog's release announcements (a new stable comes out every six weeks). Dependabot's `rust-toolchain` ecosystem in `.github/dependabot.yml` opens a weekly pull request that edits `channel`; it does not run clippy fixes, so that pull request needs step 2 before it merges.
 
 ### Script tests
 

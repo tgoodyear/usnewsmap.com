@@ -1,6 +1,6 @@
 name: setup-rust
 description: >-
-  The stable Rust toolchain and the Cargo build cache, as the Rust jobs of .github/workflows/ci.yml
+  The Rust toolchain pinned in rust-toolchain.toml and the Cargo build cache, as the Rust jobs of .github/workflows/ci.yml
   set them up. A job that calls this runs after its checkout.
 inputs:
   components:
@@ -19,9 +19,13 @@ runs:
       run: |
         echo 'CARGO_PROFILE_DEV_DEBUG=0' >> "$GITHUB_ENV"
         echo 'CARGO_PROFILE_TEST_DEBUG=0' >> "$GITHUB_ENV"
+    - name: Read the Rust version from rust-toolchain.toml
+      id: rust-toolchain
+      shell: bash
+      run: echo "channel=$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
     - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable branch
       with:
-        toolchain: stable
+        toolchain: ${{ steps.rust-toolchain.outputs.channel }}
         components: ${{ inputs.components }}
     - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       with:
