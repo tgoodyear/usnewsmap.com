@@ -124,17 +124,20 @@ pub(crate) fn identity_of(_meta: &Metadata) -> Option<Identity> {
 /// and FUSE filesystems report whatever the server or daemon says; overlay copies up.
 #[cfg(target_os = "linux")]
 pub(crate) fn trusted_fs(f: &File) -> bool {
+    // The magic is 32 bits; `f_type` is wider on 64-bit targets.
+    rustix::fs::fstatfs(f).is_ok_and(|st| trusted_fs_magic(st.f_type as u32))
+}
+
+/// Linux `statfs` magic numbers of the filesystems [`trusted_fs`] accepts.
+#[cfg(target_os = "linux")]
+pub(crate) fn trusted_fs_magic(magic: u32) -> bool {
     const EXT4: u32 = 0xEF53;
     const XFS: u32 = 0x5846_5342;
     const BTRFS: u32 = 0x9123_683E;
     const ZFS: u32 = 0x2FC1_2FC1;
     const F2FS: u32 = 0xF2F5_2010;
     const TMPFS: u32 = 0x0102_1994;
-    rustix::fs::fstatfs(f).is_ok_and(|st| {
-        // The magic is 32 bits; `f_type` is wider on 64-bit targets.
-        let magic = st.f_type as u32;
-        matches!(magic, EXT4 | XFS | BTRFS | ZFS | F2FS | TMPFS)
-    })
+    matches!(magic, EXT4 | XFS | BTRFS | ZFS | F2FS | TMPFS)
 }
 
 #[cfg(target_os = "macos")]
@@ -146,8 +149,14 @@ pub(crate) fn trusted_fs(f: &File) -> bool {
             .take_while(|&&c| c != 0)
             .map(|&c| c as u8)
             .collect();
-        matches!(name.as_slice(), b"apfs" | b"hfs")
+        trusted_fs_name(&name)
     })
+}
+
+/// macOS `f_fstypename` values of the filesystems [`trusted_fs`] accepts.
+#[cfg(target_os = "macos")]
+pub(crate) fn trusted_fs_name(name: &[u8]) -> bool {
+    matches!(name, b"apfs" | b"hfs")
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
@@ -307,7 +316,18 @@ pub(crate) fn hash_and_record(
     let started = epoch_ns(SystemTime::now());
     let (got, stable) = hash_file(path)?;
     if got != want {
-        return Ok((got, "not written: mismatch"));
+        // A record left from an earlier good hash must not vouch for these bytes later
+        // (silent corruption that kept the identity, caught here by a forced hash).
+        let removed = record_path(path).is_some_and(|rp| {
+            std::fs::symlink_metadata(&rp).is_ok_and(|m| !m.is_dir())
+                && std::fs::remove_file(&rp).is_ok()
+        });
+        let outcome = if removed {
+            "not written: mismatch, old record removed"
+        } else {
+            "not written: mismatch"
+        };
+        return Ok((got, outcome));
     }
     let Some(identity) = stable else {
         return Ok((got, "not written: no stable identity"));
@@ -357,6 +377,12 @@ pub(crate) fn check(
     policy: Policy,
 ) -> anyhow::Result<(Option<String>, WeightsCheck)> {
     let start = Instant::now();
+    // A symlinked model keeps its record beside the real file, so every alias shares it.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    let real = std::fs::canonicalize(path).ok();
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    let real: Option<PathBuf> = None;
+    let path = real.as_deref().unwrap_or(path);
     let miss = if force_full {
         "forced"
     } else {
@@ -799,32 +825,117 @@ mod tests {
             );
         }
 
+        #[cfg(target_os = "linux")]
         #[test]
-        fn the_live_policy_trusts_the_usual_local_filesystems() {
-            // CI and the builders run on ext4, ZFS or APFS. This pins that the live check
-            // recognises them rather than silently always hashing.
-            let fx = fixture();
-            assert!(trusted_fs(&File::open(&fx.path).unwrap()));
+        fn the_filesystem_list_is_the_documented_one() {
+            for magic in [
+                0xEF53,
+                0x5846_5342,
+                0x9123_683E,
+                0x2FC1_2FC1,
+                0xF2F5_2010,
+                0x0102_1994,
+            ] {
+                assert!(trusted_fs_magic(magic), "{magic:#x}");
+            }
+            // overlayfs, NFS, FUSE, SMB2, CIFS, vfat, exFAT
+            for magic in [
+                0x794C_7630,
+                0x6969,
+                0x6573_5546,
+                0xFE53_4D42,
+                0xFF53_4D42,
+                0x4D44,
+                0x2011_BAB0,
+            ] {
+                assert!(!trusted_fs_magic(magic), "{magic:#x}");
+            }
+        }
+
+        #[cfg(target_os = "macos")]
+        #[test]
+        fn the_filesystem_list_is_the_documented_one() {
+            for name in [&b"apfs"[..], &b"hfs"[..]] {
+                assert!(trusted_fs_name(name));
+            }
+            let others: [&[u8]; 7] = [
+                b"msdos", b"exfat", b"nfs", b"smbfs", b"macfuse", b"apfsx", b"",
+            ];
+            for name in others {
+                assert!(!trusted_fs_name(name));
+            }
         }
 
         #[test]
-        fn a_symlinked_model_is_checked_through_its_target() {
+        fn the_live_policy_checks_the_filesystem_first() {
+            // Whatever the temporary directory sits on, an untrusted filesystem is a full
+            // hash before any record is read, and a trusted one gets as far as the record.
+            let fx = fixture();
+            let trusted = trusted_fs(&File::open(&fx.path).unwrap());
+            let want = if trusted {
+                "no_record"
+            } else {
+                "filesystem_unsupported"
+            };
+            assert_eq!(
+                lookup("model.gguf", &fx.path, &fx.want, Policy::LIVE),
+                Err(want)
+            );
+        }
+
+        #[test]
+        fn symlinked_aliases_share_the_record_beside_the_real_file() {
             let fx = verified();
-            let link = fx.dir.join("link.gguf");
-            std::os::unix::fs::symlink(&fx.path, &link).unwrap();
-            // The link has no record of its own; once verified it hits, and re-pointing it
-            // at different bytes misses on identity.
-            let (_, c) = check("model.gguf", &link, &fx.want, false, TEST).unwrap();
-            assert_eq!(miss_of(&c), "no_record");
-            let (_, c) = check("model.gguf", &link, &fx.want, false, TEST).unwrap();
-            assert_eq!(c.kind, CheckKind::CacheHit);
+            // Two slots link the same model: both hit the record beside it, and neither
+            // link gets a record of its own.
+            let links = [fx.dir.join("slot1.gguf"), fx.dir.join("slot2.gguf")];
+            for link in &links {
+                std::os::unix::fs::symlink(&fx.path, link).unwrap();
+                let (got, c) = check("model.gguf", link, &fx.want, false, TEST).unwrap();
+                assert_eq!(c.kind, CheckKind::CacheHit);
+                assert_eq!(got, None);
+                assert!(!record_path(link).unwrap().exists());
+            }
+            // Re-pointed at different bytes, a link is checked against those bytes.
             let other = fx.dir.join("other.gguf");
             std::fs::write(&other, b"different weights, same name").unwrap();
-            std::fs::remove_file(&link).unwrap();
-            std::os::unix::fs::symlink(&other, &link).unwrap();
-            let (got, c) = check("model.gguf", &link, &fx.want, false, TEST).unwrap();
-            assert_eq!(miss_of(&c), "identity_changed");
+            std::fs::remove_file(&links[0]).unwrap();
+            std::os::unix::fs::symlink(&other, &links[0]).unwrap();
+            let (got, c) = check("model.gguf", &links[0], &fx.want, false, TEST).unwrap();
+            assert_eq!(miss_of(&c), "no_record");
             assert_ne!(got.as_deref(), Some(fx.want.as_str()));
+        }
+
+        #[test]
+        fn a_mismatch_removes_the_old_record() {
+            // Corruption that kept size and timestamps: only a forced hash sees it, and the
+            // record must not let the next unforced check skip the file.
+            let fx = verified();
+            let rp = record_path(&fx.path).unwrap();
+            let rec = std::fs::read(&rp).unwrap();
+            std::fs::write(&fx.path, b"corrupted weights, same length!!!!!").unwrap();
+            // Put the record back as if the identity hadn't moved.
+            let mut v: serde_json::Value = serde_json::from_slice(&rec).unwrap();
+            {
+                use std::os::unix::fs::MetadataExt as _;
+                let m = std::fs::metadata(&fx.path).unwrap();
+                v["size"] = m.size().into();
+                v["mtime_ns"] = (m.mtime() * 1_000_000_000 + m.mtime_nsec()).into();
+                v["ctime_ns"] = (m.ctime() * 1_000_000_000 + m.ctime_nsec()).into();
+            }
+            std::fs::write(&rp, serde_json::to_vec(&v).unwrap()).unwrap();
+            assert_eq!(run(&fx, &fx.want).1.kind, CheckKind::CacheHit);
+            let (got, c) = check("model.gguf", &fx.path, &fx.want, true, TEST).unwrap();
+            assert_ne!(got.as_deref(), Some(fx.want.as_str()));
+            assert_eq!(
+                c.kind,
+                CheckKind::FullHash {
+                    miss: "forced",
+                    record: "not written: mismatch, old record removed"
+                }
+            );
+            assert!(!rp.exists());
+            assert_eq!(miss_of(&run(&fx, &fx.want).1), "no_record");
         }
     }
 

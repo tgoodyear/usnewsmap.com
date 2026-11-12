@@ -122,14 +122,14 @@ Depends only on `usnm-ocr-quality` and the contract types in `usnm-ocr-contract`
 
 Before reading, native `usnm_qwen` checks the chosen model and projector against `weights.lock` (`verify_weights` in `crates/usnm-qwen-app/src/locks.rs`). A pinned unit whose files fail the check is refused with `model pin refused` (`resolve_pinned`). Hashing the 8B pair costs about 30 s per task on a CPU without SHA extensions ([profile](https://github.com/tgoodyear/usnewsmap.com/issues/1722)), so after a full hash matches, the app writes a record beside the file and skips the hash while the record still describes it (`crates/usnm-qwen-app/src/verified.rs`).
 
-**The record.** `<file>.usnm-verified`, next to the file the slot entry resolves to (for the sticky GGUFs, the copy in the project directory). JSON with `v` (1), `file` (the name in `weights.lock`), `pin` (the digest `weights.lock` gave), `sha256` (the digest computed) and the file's `dev`, `ino`, `size`, `mtime_ns` and `ctime_ns`. It is written with a temporary file and a rename, and only when all of these hold:
+**The record.** `<file>.usnm-verified`, next to the file the slot entry resolves to, after following symlinks (for the sticky GGUFs, the copy in the project directory), so every slot that links the same file shares one record. JSON with `v` (1), `file` (the name in `weights.lock`), `pin` (the digest `weights.lock` gave), `sha256` (the digest computed) and the file's `dev`, `ino`, `size`, `mtime_ns` and `ctime_ns`. It is written with a temporary file and a rename, and only when all of these hold:
 
 - the full hash equals the pin;
 - the file's identity was the same before and after the read, through the open handle and through the path;
 - the file last changed at least 3 s (`RACY_MARGIN`) before the hash began, so a rewrite in the same timestamp tick can't leave the same identity behind;
 - the platform and filesystem are on the trusted list below.
 
-A failed write leaves no record and the task goes on.
+A failed write leaves no record and the task goes on. A full hash that does not match removes any record already beside the file, so a file found bad by a forced hash is never skipped afterwards.
 
 **A cache hit** needs every one of these; anything else is a full hash with the old code path and the old error message:
 
