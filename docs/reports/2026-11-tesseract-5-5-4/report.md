@@ -5,6 +5,7 @@ Issue [#1835](https://github.com/tgoodyear/usnewsmap.com/issues/1835), steps 1 t
 ## Result in brief
 
 - **The output changes.** Text differs between 5.5.0 and 5.5.4 on all 63 reads (33 pages, 30 challenge crops). The 5.5.0 build made from the upstream tarball through the same recipe, and a plain upstream build of 5.5.4, rule out the build as the cause: see [Build](#build). The issue's premise that nothing changes the recogniser does not hold for our pages.
+- **Why: two changes in 5.5.1, nothing later.** 5.5.1, 5.5.2, 5.5.3 and 5.5.4 give the same text and block layout on the small set; the difference is in 5.5.0 to 5.5.1. The character differences come from 5.5.1 restoring the original random number generator (the LSTM pads each line image with random values). The paragraph and column differences come from upstream's rewrite of its list classes in the same release, which changed how lists are sorted; the exact commit isn't found. See [Why the output differs](#why-the-output-differs).
 - **Accuracy barely moves on the challenge and is mixed on pages.** On the 30 calibrated English crops the character error rate goes from 7.16% to 6.81% (17 crops better, 12 worse, 1 equal); one crop (193) accounts for 280 of the 288 edits saved. On 6 English pages with a human reference it goes from 10.8% to 12.1% (1 page better, 5 worse; one page, asgold-005, goes from 33.0% to 53.5%). On German pages the two differ by under 0.1 point.
 - **ALTO changes in every class.** The version moved to its own element on all 63 files, 5.5.0's confidence formatting is gone, and paragraph and block counts differ on 34 of 63 files.
 - **5.5.4 is faster on dense English pages**, by about a third on the densest: see [Timing](#timing).
@@ -17,9 +18,10 @@ New files, all outside the default build:
 
 | File | What it is |
 | --- | --- |
-| `boinc/apps/native/tesseract-upstream.lock` | Version, tarball URL, commit and sha256 for 5.5.0 and 5.5.4, the same discipline as `macos-sources.lock`. |
+| `boinc/apps/native/tesseract-upstream.lock` | Version, tarball URL, commit and sha256 for 5.5.0 to 5.5.4, the same discipline as `macos-sources.lock`. |
 | `boinc/apps/native/Containerfile.upstream` | Builds `usnm_tesseract` from a locked tarball. It starts from the default Containerfile's `apt-native` stage, so Leptonica, the image libraries, the compiler and every other package are the same. |
-| `boinc/scripts/build-native-tesseract-upstream.sh` | `--version 5.5.4 --out FILE`: builds the `apt-native` stage, then `Containerfile.upstream`. `--network host` is for build hosts where podman's default network doesn't start. |
+| `boinc/scripts/build-native-tesseract-upstream.sh` | `--version 5.5.4 --out FILE`: builds the `apt-native` stage, then `Containerfile.upstream`. `--network host` is for build hosts where podman's default network doesn't start. `--main-std c++20` is for 5.5.3 only: its headers don't compile as C++17 (5.5.4 fixes that), so `main()` is compiled as C++20 for that one release. |
+| `boinc/scripts/bisect-tesseract-step.sh`, `bisect-tesseract-test.sh` | One command per step of a `git bisect` over upstream commits: build the commit in a persistent tree inside the same base image, read a set of pages, compare a signature of one page with a reference. [Why the output differs](#why-the-output-differs) uses them. |
 
 The recipe deletes Debian's `libtesseract` and its headers, then builds `libtesseract.a` from the tarball with Debian's `debian/rules` options: `--disable-tessdata-prefix`, hardening `+all`, `-g -fPIC`, the `TESSDATA_PREFIX` define, and `-lleptonica -Wl,-z,defs` in `LDFLAGS`. `main()` is compiled and the binary is linked exactly as in the default Containerfile, with the same `stubs.c`. The tarball is checked against its sha256 and against the commit in its tar header.
 
@@ -114,6 +116,81 @@ Run on the build container with `cargo test --locked -p usnm-alto -p usnm-corpus
 Nothing fails. Two readers see the change in the version element. `usnm-ocr-worker`'s `loc_software.rs` maps a `softwareName` containing `tesseract` to the Tesseract family, which `Tesseract` still does, and reads `softwareVersion` separately. `usnm-corpus-signals`' `confidence.rs` keeps the first 64 characters of the first `softwareName`, so for 5.5.4 it holds `Tesseract` and no version. The worker reads the engine's own ALTO with `usnm_alto::parse` (`contract.rs`), which doesn't look at the software element.
 
 
+## Why the output differs
+
+Step 1 of the follow-up: where does the difference come from? Everything below was run on the build container on 13 November, on a small set: `asgold-005` (the page whose CER went from 33.0% to 53.5%), challenge crop 193 (the one that improved most), and three pages whose text differs only a little: crop 046 (`eng`), and `cg-009-frak` and `cg-010-frak` (`frak2021`).
+
+### It is not run-to-run noise
+
+Each of the five items was read twice by 5.5.0 and twice by 5.5.4. For both versions the two runs have identical text and identical ALTO.
+
+### Layout or recognition
+
+Words are matched between versions by position (centres within 30 px), then compared.
+
+| Item | Words 5.5.0 / 5.5.4 | At the same place | Same place, other text | Only in 5.5.0 / 5.5.4 | At the same place but out of reading order | Paragraphs 5.5.0 / 5.5.4 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `asgold-005` | 1154 / 1161 | 1130 | 82 | 24 / 31 | 205 | 44 / 60 |
+| crop 193 | 703 / 690 | 686 | 52 | 17 / 4 | 29 | 40 / 32 |
+| crop 046 | 472 / 472 | 472 | 6 | 0 / 0 | 0 | 6 / 6 |
+| `cg-009-frak` | 1037 / 1035 | 1033 | 30 | 4 / 2 | 0 | 26 / 26 |
+| `cg-010-frak` | 506 / 503 | 502 | 46 | 4 / 1 | 0 | 46 / 42 |
+
+- **The three ordinary pages are recognition only.** Same lines, same boxes, different characters, in both directions: `Beech-street` and `Beech.street`, `lüchtige` and `tüchtige`, `dringend` and `driangend`. `crop 046` and `cg-009-frak` have identical block layout in both versions.
+- **`asgold-005` is layout.** The 5.5.4 CER is 3,114 character edits against 1,920 for 5.5.0, on 5,825 reference characters. The recognition changes (82 words) account for almost nothing of the 1,194 extra edits: re-reading with only the random number generator changed (below) moves the page from 1,920 to 1,915 edits. The rest is reading order. 5.5.0 finds 32 blocks and 44 paragraphs, 5.5.4 finds 43 blocks and 60 paragraphs, and 205 words that sit in the same place come out in a different order. Lines wider than 1,400 px go from 18 to 23.
+- **Crop 193 is mostly layout too.** 280 of the 288 edits the challenge saves are on this crop (2,162 to 1,882). Paragraphs go from 40 to 32 and 29 words are reordered; 17 short fragments (`|`, `e`, `a`, `CC` and similar, near the left edge and rules) that 5.5.0 reads are gone in 5.5.4.
+
+### What is on the page
+
+`asgold-005` is a newspaper page from the American Stories gold set (3,517 by 4,889 px), with several columns separated by thin vertical rules. In the lower half (y from about 2,300 to 4,330, x from about 1,200 to 3,000) there are two columns side by side: the middle one carries the continuation of a first-person account of a man carried out to sea on the ice; the right one starts with the headline "Battle with Walrus." and is a separate story about walrus on the island. A rule runs between them at x of about 2,120.
+
+5.5.0 reads the two columns separately. 5.5.4 builds blocks and lines about 1,800 px wide that cross the rule and join a line of the middle column to the line of the right column beside it, so the text interleaves ("the Diomedes Islands. At his home he" followed by recognition debris from the other column), and the walrus story's lines are no longer contiguous (lines 182 to 197 of 5.5.0's text, scattered between lines 137 and 166 of 5.5.4's). On this page 5.5.0 is correct and 5.5.4 is wrong. Crop 193 goes the other way in the numbers, so the layout change is not uniformly worse: it is different, and on the one page checked by eye it is a regression.
+
+### Which release
+
+The same five items through every release, built by the same recipe (5.5.1 to 5.5.3 are pinned in the lock):
+
+| Version | Text and block layout compared with 5.5.4 |
+| --- | --- |
+| 5.5.0 | text differs on all five; block layout on three (`asgold-005`, crop 193, `cg-010-frak`) |
+| 5.5.1 | identical on all five |
+| 5.5.2 | identical on all five |
+| 5.5.3 | identical on all five |
+
+5.5.1 to 5.5.3 are identical to each other except for the version element. Between 5.5.3 and 5.5.4 the text and blocks do not change; only the `WC` formatting and at most 3 paragraph boxes per item do (upstream's paragraph bounding box fix and its `WC` fix). So the paragraph restart change of 5.5.4 (a speed change), its unclassified-word certainty change and its paragraph box fix do not affect text or layout here. The cause is in the 59 commits between 5.5.0 and 5.5.1.
+
+### The recognition change: the random number generator
+
+The 5.5.0 source in `src/ccutil/helpers.h` has `TRand` on `std::minstd_rand`. That came in with commit `2252936f` ("Use linear congruential random number generator from C++11", 31 December 2020), so it is in every 5.0.0 release up to 5.5.0. In 5.5.1, `32fee194` tried to fix it and `5af6cacf` ("Restore original congruential random number generator") reverted all of it, back to the generator Tesseract 4 used. The intermediate generator of `32fee194` gives a third output on `asgold-005`, which is why a plain bisect on layout stops at that commit instead of the list series; the bisect below holds the generator at 5.5.1's. The upstream commit message for the first of those names issues 4146, 4148 and 4270, the crashes in `pageres.cpp` the issue mentions.
+
+What it changes: in recognition, `LSTMRecognizer` pads the start and end of every line image with random values drawn from this generator (`NetworkIO::Randomize`, called from `Input::PreparePixInput`; the seed comes from `sample_iteration_`, which is fixed at recognition time). A different generator gives different padding, so the network sees slightly different input and produces slightly different characters and confidences.
+
+Evidence it is the whole recognition change: 5.5.0 with only `helpers.h` and `imagedata.cpp` taken from 5.5.1 (the generator and the one call site that seeds from a string) gives the same text and the same ALTO (apart from the version element; ids ignored) as the 5.5.1 release on crop 046 and `cg-009-frak`, the two items whose layout doesn't change. On the others it keeps 5.5.0's layout and changes only characters (`asgold-005`: 32 blocks, 44 paragraphs, no reordering, 42 of 1,148 words with other text).
+
+Is either generator right? Neither is more accurate: it is padding noise. Over the page and crop set the changes are symmetric (crop edits 5,929 to 5,641 with 17 better and 12 worse; `frak2021` 5 better, 5 worse, 3 equal), and the generator alone moves `asgold-005`, crop 193 and crop 046 by 5, 1 and 1 edits. 5.5.1's generator is the one Tesseract used before 5.0.0. No configuration variable or flag selects the generator or its seed: the seed is computed in `LSTMRecognizer::SetRandomSeed`.
+
+### The layout change: the list classes
+
+Bisecting 5.5.0 to 5.5.1 on the layout of `asgold-005` (the hash of its block boxes), with the generator held at 5.5.1's so it doesn't interfere, 32fee194 is good and 66cf74f2 is bad. Between them are 17 commits, from November 2024, that rewrite the intrusive list classes as templates (`3088d2ee` "Make CLIST templated" to `66cf74f2` "Make one-time comparator a lambda"). The intermediate commits don't build (the series removes `clst.cpp` while `Makefile.am` still names it), so the bisect can't go further: the change is in that series, and the exact commit is not identified. The bisects used about a dozen builds in all.
+
+What the series does to behaviour: `1355287d` ("Update sorting routines for lists") replaces the lists' `qsort` with `std::sort` on a vector of pointers. `std::sort` is not stable and is a different algorithm from the `qsort` the build's glibc provides. Elements that compare equal, such as blobs with the same horizontal position, can end up in another order, and the order feeds column and block finding. Two experiments on 5.5.1 test this:
+
+| Build | `asgold-005` paragraphs | `asgold-005` blocks |
+| --- | ---: | ---: |
+| 5.5.0 | 44 | 32 |
+| 5.5.1 (`std::sort`) | 60 | 43 |
+| 5.5.1 with `std::stable_sort` | 56 | 43 |
+| 5.5.1 with `qsort` | 56 | 43 |
+
+So the sort is one cause of the paragraph change (60 to 56), and not the whole of it: neither alternative restores 5.5.0's 44 paragraphs, and the block count stays at 43. Something else in the list series, not found, changes how blocks are formed. No configuration variable restores the old behaviour: the list sort is compiled in.
+
+### What follows for us
+
+- 5.5.1 and later do not read the same as 5.5.0, and the later releases do not change that again. Moving to 5.5.4 means moving to 5.5.1's reading of the page.
+- The character changes are noise in both directions. The layout change is a regression on the page checked by eye, and on 5 of 6 English pages with a reference. If layout matters more than the speed gain, 5.5.0 with the generator left alone remains the safer build; the speed gain of 5.5.4 comes with this change, since both are in the same source.
+- A fix would have to be upstream's, or a patch to the list sort carried by us. Neither is attempted here, and nothing has been reported upstream.
+- Not done: finding the exact commit inside the list series (it needs a build that applies the series piece by piece), and checking other pages for the layout change beyond the five items.
+
 ## Timing
 
 User CPU seconds from `getrusage` of each run (`time`'s user column), not wall time: the build container's load average was between 20 and 35 on 4 cores throughout. Each page was read three times by each version, the runs of one page alternating (5.5.0 first, then 5.5.4 first, then 5.5.0 first), three pages at a time with `OMP_THREAD_LIMIT=1`. The paragraph count is the number of `TextBlock` elements in that version's ALTO. The speed fix in 5.5.4 is said to depend on paragraph count, but the paragraph counts here are near each other for both versions, and the gain does not track them: `cg-005-frak` has 154 and 156 paragraphs and runs in 0.74 of the time, `asgold-001` has 152 and 180 and takes 0.83.
@@ -145,7 +222,7 @@ How far to trust it:
 - Step 1 (build) and step 2 (compare) are done for the profiles and sets above; step 3 (time) is done with the limits above. Nothing in the issue body is ticked.
 - The recogniser's output changes in 5.5.4. The issue says nothing changes the recogniser; for our pages that is not the case, so the upgrade is not a drop-in. The re-calibration, parity, gold and host-trust steps all apply, and `chr_phoenix` and `yidj2` should be re-scored.
 - On the 6 English pages with a reference, 5.5.4 is worse on 5. This is a small sample with reading-order effects in the CER, but `asgold-005` (33.0% to 53.5%, with 44 and 60 paragraphs) should be looked at before 5.5.4 is chosen.
-- Not covered: the 56 parity pages themselves, `srp+srp_latn` and the single-model profiles other than `eng` and `frak2021`, JPEG-versus-JP2 within a profile, a second CPU model, the crash signatures of the issue's fourth bullet, and a second 5.5.4 build run to check that the build is reproducible. 5.5.0's own build is reproducible (two builds gave the same sha256).
+- Not covered: the 56 parity pages themselves, `srp+srp_latn` and the single-model profiles other than `eng` and `frak2021`, JPEG-versus-JP2 within a profile, a second CPU model, the crash signatures of the issue's fourth bullet, and a second 5.5.4 build run to check that the build is reproducible, and the exact commit of the layout change. 5.5.0's own build is reproducible (two builds gave the same sha256).
 
 ## Reproducing
 

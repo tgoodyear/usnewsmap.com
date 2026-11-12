@@ -24,6 +24,9 @@ ARG TESSERACT_VERSION
 ARG TESSERACT_URL
 ARG TESSERACT_COMMIT
 ARG TESSERACT_SHA256
+# The C++ standard main() is compiled with. The default build uses c++17. 5.5.3's headers need c++20
+# (their constexpr FCOORD operators don't compile as C++17; 5.5.4 fixes that), so only 5.5.3 sets it.
+ARG MAIN_STD=c++17
 RUN test -n "$TESSERACT_VERSION" && test -n "$TESSERACT_URL" && test -n "$TESSERACT_COMMIT" && test -n "$TESSERACT_SHA256"
 ADD --checksum=sha256:${TESSERACT_SHA256} ${TESSERACT_URL} /src/tesseract-upstream.tar.gz
 COPY stubs.c /src/stubs.c
@@ -54,7 +57,7 @@ RUN set -eu; cd /src/main/tesseract; ./autogen.sh >/dev/null; \
     grep -q 'define HAVE_TIFFIO_H' include/config_auto.h; \
     mkdir /out; \
     gcc -O2 -Wall -Werror -c /src/stubs.c -o /src/stubs.o; \
-    g++ -O2 -std=c++17 -fopenmp -DHAVE_CONFIG_H -DTESSDATADIR='"/nonexistent"' \
+    g++ -O2 -std=${MAIN_STD} -fopenmp -DHAVE_CONFIG_H -DTESSDATADIR='"/nonexistent"' \
       -I. -Iinclude -Isrc/api -Isrc/arch -Isrc/ccmain -Isrc/ccstruct -Isrc/ccutil -Isrc/classify \
       -Isrc/cutil -Isrc/dict -Isrc/lstm -Isrc/textord -Isrc/viewer -Isrc/wordrec \
       -I/usr/include/leptonica \

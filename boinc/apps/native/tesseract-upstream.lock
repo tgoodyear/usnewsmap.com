@@ -6,4 +6,7 @@
 # tesseract_5.5.0.orig.tar.gz, so a 5.5.0 built this way differs from the default build only in
 # how libtesseract is built (docs/reports/2026-11-tesseract-5-5-4.md).
 5.5.0 https://github.com/tesseract-ocr/tesseract/archive/refs/tags/5.5.0.tar.gz 64eab6c457b2337dd690746a5fde5c222b40d5f8 f2fb34ca035b6d087a42875a35a7a5c4155fa9979c6132365b1e5a28ebc3fc11
+5.5.1 https://github.com/tesseract-ocr/tesseract/archive/refs/tags/5.5.1.tar.gz 3b7c70e34dea179549ed3e995872e2e019eb8477 a7a3f2a7420cb6a6a94d80c24163e183cf1d2f1bed2df3bbc397c81808a57237
+5.5.2 https://github.com/tesseract-ocr/tesseract/archive/refs/tags/5.5.2.tar.gz 6e1d56a847e697de07b38619356550e5cf4e8633 6235ea0dae45ea137f59c09320406f5888383741924d98855bd2ce0d16b54f21
+5.5.3 https://github.com/tesseract-ocr/tesseract/archive/refs/tags/5.5.3.tar.gz db0ec62f81b0737fbbe184d8fea40af5738f8eef 9218e62793116d42a9f6d14cd9348518b27f382096eea3d0f2d1a24616bb5884
 5.5.4 https://github.com/tesseract-ocr/tesseract/archive/refs/tags/5.5.4.tar.gz 7e548e6eff172f38f97664afe7f7ce40db36c8d6 a8dbf8b8c8ee427ff6ad1d99116502feaf59440af1adb893caf60a6576826cf4
