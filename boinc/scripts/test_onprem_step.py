@@ -654,6 +654,34 @@ class OnpremStep(unittest.TestCase):
         self.assertGreater(timeout, 0)
         self.assertLessEqual(timeout, 59)
 
+    def test_a_steps_own_lock_wait_replaces_the_hosts_and_is_bounded(self):
+        # 20 minutes' wait inside a 50-minute budget, with the host's setting at 300.
+        args = ("--env", "prod", "--step", "submit-remote", "--wait-mins", "50", "--lock-wait-secs", "1200")
+        done, _ = self.run_for_real(*args, lock_wait="300")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(Path(self.conf.name, "flock-args").read_text().splitlines(), ["-w", "1200", "9"])
+        # 0 means no wait at all, whatever the host's setting says.
+        done, _ = self.run_for_real(*args[:-1], "0", lock_wait="300")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(Path(self.conf.name, "flock-args").read_text().splitlines(), ["-n", "9"])
+        self.assertTrue(Path(self.conf.name, "podman-args").exists())
+        for wait, message in (("1201", "0..1200"), ("-1", "0..1200"), ("1.5", "0..1200"), ("x", "0..1200")):
+            with self.subTest(wait=wait):
+                Path(self.conf.name, "podman-args").unlink(missing_ok=True)
+                Path(self.conf.name, "envfile").unlink(missing_ok=True)
+                done, captured = self.run_for_real(*args[:-1], wait)
+                self.assertNotEqual(done.returncode, 0)
+                self.assertIn(message, done.stderr)
+                self.assertIsNone(captured)
+                self.assertFalse(Path(self.conf.name, "podman-args").exists())
+        # Never as long as the step's own budget (here 10 minutes).
+        Path(self.conf.name, "envfile").unlink(missing_ok=True)
+        done, captured = self.run_for_real("--env", "prod", "--step", "submit-remote", "--wait-mins", "10",
+                                           "--lock-wait-secs", "1200")
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("shorter", done.stderr)
+        self.assertIsNone(captured)
+
     def test_lock_timeout_and_invalid_wait_never_start_a_container(self):
         args = ("--env", "prod", "--step", "submit", "--wait-mins", "1")
         for wait, message in (("2", "still holds the lock"), ("60", "shorter"),
@@ -710,7 +738,7 @@ class OnpremStep(unittest.TestCase):
                                                    flock_script=script)
                 self.assertEqual(done.returncode, 0, done.stderr)
                 self.assertIn(f"BRIDGE_STEP={step}", captured)
-        Path(self.conf.name, "envfile").unlink()
+        Path(self.conf.name, "envfile").unlink(missing_ok=True)
         with (directory / "usnm-boinc-handoff.lock").open("w") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             done, captured = self.run_for_real(*claim, flock_script=script)
@@ -766,7 +794,7 @@ class OnpremStep(unittest.TestCase):
             done, captured = self.run_for_real(*stage, flock_script=script)
             self.assertEqual(done.returncode, 0, done.stderr)
             self.assertIn("BRIDGE_STEP=quality-stage", captured)
-            Path(self.conf.name, "envfile").unlink()
+            Path(self.conf.name, "envfile").unlink(missing_ok=True)
             done, captured = self.run_for_real(*submit, flock_script=script)
             self.assertIn("another bridge step is running", done.stderr)
             self.assertIsNone(captured)

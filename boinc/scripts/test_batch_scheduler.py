@@ -1881,6 +1881,99 @@ class NativePlanTests(unittest.TestCase):
         self.tick()
         self.assertEqual(self.native_submissions(), [])
 
+    def lock_timeout_on_submit(self, created=()):
+        """The next submission fails as onprem-step.sh does when the lock stays held; `created`
+        says what the failed step nevertheless left on the server."""
+        def submit_native(units):
+            self.fake.actions.append(("submit-native", list(units)))
+            for job_id, _ in units:
+                if job_id in created:
+                    self.fake.jobs[job_id] = {"stage": "submitted", "spool": None}
+            raise batch.StepLockTimeout("bridge/submit-remote failed: the BOINC host's step lock stayed held; nothing ran")
+        self.fake.submit_native = submit_native
+
+    def test_a_step_lock_timeout_that_created_nothing_is_retried_next_tick(self):
+        self.lock_timeout_on_submit()
+        event = self.tick()
+        self.assertNotIn("native_paused", self.state)
+        self.assertNotEqual(event["backpressure_reason"], "native_paused")
+        self.assertEqual(self.fake.jobs, {})
+        self.assertEqual(self.state["native_lock_retry"]["count"], 1)
+        tried = [job for job, _ in self.native_submissions()]
+        self.assertTrue(tried)
+        # The jobs stay reserved: the next tick (lock free) submits the same ones, and clears the mark.
+        del self.fake.submit_native
+        self.fake.actions.clear()
+        self.tick()
+        self.assertEqual([job for job, _ in self.native_submissions()], tried)
+        self.assertNotIn("native_lock_retry", self.state)
+        self.assertNotIn("native_paused", self.state)
+
+    def test_a_step_lock_timeout_pauses_if_any_workunit_or_journal_exists(self):
+        for kind in ("journal", "workunit"):
+            with self.subTest(kind=kind):
+                self.setUp()
+                first = {}
+                original = self.fake.inventory
+
+                def inventory(first=first, original=original, kind=kind):
+                    snapshot = original()
+                    if kind == "workunit":
+                        # A workunit row without a bridge journal.
+                        snapshot["existing_jobs"] = sorted(set(snapshot["existing_jobs"]) | set(self.fake.touched))
+                    return snapshot
+                self.fake.touched = set()
+                self.fake.inventory = inventory
+                real = self.fake.submit_native
+
+                def submit_native(units, kind=kind):
+                    self.fake.actions.append(("submit-native", list(units)))
+                    self.fake.touched = {units[0][0]}
+                    if kind == "journal":
+                        self.fake.jobs[units[0][0]] = {"stage": "submitting", "spool": None}
+                    raise batch.StepLockTimeout("lock held")
+                self.fake.submit_native = submit_native
+                event = self.tick()
+                self.assertEqual(event["backpressure_reason"], "native_paused")
+                self.assertIn("could not prove", self.state["native_paused"]["reason"])
+                self.assertNotIn("native_lock_retry", self.state)
+
+    def test_a_step_lock_timeout_pauses_when_the_inventory_cannot_prove_it(self):
+        self.lock_timeout_on_submit()
+        calls = []
+        original = self.fake.inventory
+
+        def inventory():
+            calls.append(1)
+            if len(calls) > 1:
+                raise RuntimeError("inventory failed")
+            return original()
+        self.fake.inventory = inventory
+        event = self.tick()
+        self.assertEqual(event["backpressure_reason"], "native_paused")
+        self.assertIn("could not prove", self.state["native_paused"]["reason"])
+
+    def test_other_submit_failures_still_pause_even_with_nothing_created(self):
+        def submit_native(units):
+            raise RuntimeError("bridge/submit-remote failed; inspect the execution privately before retrying")
+        self.fake.submit_native = submit_native
+        event = self.tick()
+        self.assertEqual(event["backpressure_reason"], "native_paused")
+        self.assertNotIn("native_lock_retry", self.state)
+
+    def test_repeated_step_lock_timeouts_pause_after_the_limit(self):
+        self.lock_timeout_on_submit()
+        for count in range(1, batch.NATIVE_LOCK_RETRY_LIMIT + 1):
+            self.tick()
+            self.assertNotIn("native_paused", self.state)
+            self.assertEqual(self.state["native_lock_retry"]["count"], count)
+        event = self.tick()
+        self.assertEqual(event["backpressure_reason"], "native_paused")
+        self.assertIn("step-lock timeouts in a row", self.state["native_paused"]["reason"])
+        # --resume-native clears the count too.
+        self.tick(resume_native=True)
+        self.assertNotIn("native_paused", self.state)
+
     def test_reservations_a_refused_batch_left_take_no_hosts_room(self):
         # Host 5 refused: its batch's jobs stay reserved, assigned on record. With host 5 taken
         # off the list and the plan resumed, they all go to host 13, which has nothing out.
@@ -3398,6 +3491,70 @@ class TimingsTests(unittest.TestCase):
             transport.step("bridge", "batch-inventory")
         self.assertIn("azure/bridge/batch-inventory",
                       transport.timings.summary()["execution_routes"])
+
+    LOCK_LINE = "error: another bridge step still holds the lock after 300s\n"
+
+    def failing_step(self, stderr, returncode=1, **options):
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        cfg = queue_config()
+        cfg["step_command"] = ["ssh", "boinc.example", "--"]
+        transport = batch.Transport(cfg, directory, **options)
+        done = subprocess.CompletedProcess([], returncode, "", stderr)
+        calls = []
+
+        def fake(argv, **kwargs):
+            calls.append((argv, kwargs))
+            return done
+        with patch.object(batch.subprocess, "run", side_effect=fake):
+            try:
+                transport.step("bridge", "submit-remote", JOB_IDS="a")
+                error = None
+            except RuntimeError as failure:
+                error = failure
+        return error, calls
+
+    def test_only_a_lone_lock_refusal_is_a_step_lock_timeout(self):
+        error, _ = self.failing_step(self.LOCK_LINE)
+        self.assertIsInstance(error, batch.StepLockTimeout)
+        error, _ = self.failing_step("Warning: Permanently added host\n" + self.LOCK_LINE)
+        self.assertIsInstance(error, batch.StepLockTimeout)
+        error, _ = self.failing_step("error: another bridge step is running on this host - wait for it to end first\n")
+        self.assertIsInstance(error, batch.StepLockTimeout)
+        for stderr, code in (
+            (self.LOCK_LINE + "running submit-remote as usnm-boinc-step-x for up to 100 seconds\n", 1),
+            ("running submit-remote as x for up to 9 seconds\n" + self.LOCK_LINE, 1),
+            (self.LOCK_LINE + self.LOCK_LINE, 1),
+            (self.LOCK_LINE, 255),
+            ("error: step deadline expired while waiting for the bridge lock\n", 1),
+            ("trust refuses host 13\n", 1),
+            ("", 1),
+        ):
+            with self.subTest(stderr=stderr, code=code):
+                error, _ = self.failing_step(stderr, returncode=code)
+                self.assertNotIsInstance(error, batch.StepLockTimeout)
+                self.assertIsNotNone(error)
+
+    def test_a_longer_lock_wait_is_asked_of_submit_remote_and_gold_only(self):
+        _, ((argv, kwargs),) = self.failing_step("", returncode=0, step_lock_wait_secs=1200)
+        self.assertEqual(argv[argv.index("--wait-mins") + 1], "50")
+        self.assertEqual(argv[argv.index("--lock-wait-secs") + 1], "1200")
+        self.assertEqual(kwargs["timeout"], 2100 + 1260)
+        _, ((argv, kwargs),) = self.failing_step("", returncode=0)
+        self.assertNotIn("--lock-wait-secs", argv)
+        self.assertEqual((argv[argv.index("--wait-mins") + 1], kwargs["timeout"]), ("30", 2100))
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        cfg = queue_config()
+        cfg["step_command"] = ["ssh", "boinc.example", "--"]
+        transport = batch.Transport(cfg, directory, step_lock_wait_secs=1200)
+        with patch.object(batch.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "", "")) as run:
+            for step in ("gold-onboard", "gold-promote", "collect", "spool-out", "batch-inventory"):
+                transport.step("bridge", step)
+        asked = {call.args[0][call.args[0].index("--step") + 1]: "--lock-wait-secs" in call.args[0]
+                 for call in run.call_args_list}
+        self.assertEqual(asked, {"gold-onboard": True, "gold-promote": True, "collect": False,
+                                 "spool-out": False, "batch-inventory": False})
+        with self.assertRaises(ValueError):
+            batch.Transport(cfg, directory, step_lock_wait_secs=1201)
 
     def test_scan_route_records_the_actual_queue_destination(self):
         for choices, route in (((), "azure/scans"), (("export",), "onprem/scans")):
