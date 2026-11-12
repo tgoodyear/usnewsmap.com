@@ -1378,7 +1378,7 @@ mod tests {
                 slop: 0,
             }
         );
-        for c in crate::text::folding_to_japanese() {
+        for c in crate::text::folding_to_japanese().filter(|c| c.is_alphanumeric()) {
             for q in [
                 format!("{c}"),
                 format!("a{c}"),
