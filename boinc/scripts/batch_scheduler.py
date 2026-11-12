@@ -39,6 +39,11 @@ MAX_ARCHIVED_HELD = 200000
 MAX_EXISTING_WORKUNITS_CEILING = 200000
 MAX_GLOBAL_PENDING = 100000
 DEFAULT_MAX_GLOBAL_PENDING = 1000
+# The sanity bound on a counter in BOINC's server status (parse_server_status). The counters are
+# observations, not limits: a large backlog in another app (a Qwen or quality wave) is still a
+# good status, and capping its counters at MAX_GLOBAL_PENDING failed every OCR tick (#1698). A
+# counter above this is garbage, not a backlog.
+MAX_STATUS_COUNT = 10_000_000
 # The feeder's shared-memory work slots (shmem_work_items in boinc/project/config.xml.template).
 # With --other-app-budget, every app's unassimilated work, counted in full, stays under it (#1474).
 FEEDER_SHMEM_SLOTS = 4096
@@ -240,7 +245,7 @@ def parse_zero_work_replies(raw):
     if raw is None:
         return 0
     if type(raw) is int:
-        return _nonneg_int(raw, MAX_GLOBAL_PENDING, "invalid zero_work_requests count")
+        return _nonneg_int(raw, MAX_STATUS_COUNT, "invalid zero_work_requests count")
     if isinstance(raw, list):
         require(len(raw) <= MAX_JOBS, "oversized zero_work_hosts list")
         return len(raw)
@@ -280,7 +285,7 @@ def parse_server_status(raw):
                 require(not required, f"missing BOINC status <{tag}>")
                 return None
             require(value.isascii() and value.isdecimal(), f"invalid BOINC status <{tag}>")
-            return _nonneg_int(int(value), MAX_GLOBAL_PENDING, f"out-of-range BOINC status <{tag}>")
+            return _nonneg_int(int(value), MAX_STATUS_COUNT, f"out-of-range BOINC status <{tag}>")
 
         apps_nodes = container.findall("tasks_by_app/app")
         if not apps_nodes and container is not root:
@@ -327,8 +332,8 @@ def parse_server_status(raw):
             name = item["name"]
             require(APP_NAME.fullmatch(name) and name not in apps, "invalid/duplicate BOINC app")
             require("unsent" in item and "in_progress" in item, "missing BOINC app queue counters")
-            unsent = _nonneg_int(item["unsent"], MAX_GLOBAL_PENDING, "invalid app unsent count")
-            in_progress = _nonneg_int(item["in_progress"], MAX_GLOBAL_PENDING,
+            unsent = _nonneg_int(item["unsent"], MAX_STATUS_COUNT, "invalid app unsent count")
+            in_progress = _nonneg_int(item["in_progress"], MAX_STATUS_COUNT,
                                       "invalid app in_progress count")
             apps[name] = {"unsent": unsent, "in_progress": in_progress, "runnable": unsent + in_progress}
     elif isinstance(raw_apps, dict):
@@ -337,8 +342,8 @@ def parse_server_status(raw):
             require(isinstance(name, str) and APP_NAME.fullmatch(name) and isinstance(item, dict),
                     "invalid BOINC app entry")
             require("unsent" in item and "in_progress" in item, "missing BOINC app queue counters")
-            unsent = _nonneg_int(item["unsent"], MAX_GLOBAL_PENDING, "invalid app unsent count")
-            in_progress = _nonneg_int(item["in_progress"], MAX_GLOBAL_PENDING,
+            unsent = _nonneg_int(item["unsent"], MAX_STATUS_COUNT, "invalid app unsent count")
+            in_progress = _nonneg_int(item["in_progress"], MAX_STATUS_COUNT,
                                       "invalid app in_progress count")
             apps[name] = {"unsent": unsent, "in_progress": in_progress, "runnable": unsent + in_progress}
     else:
@@ -355,9 +360,9 @@ def parse_server_status(raw):
     return {
         "apps": apps,
         "results_ready_to_send": (sum(a["unsent"] for a in apps.values())
-                                  if ready is None else _nonneg_int(ready)),
+                                  if ready is None else _nonneg_int(ready, MAX_STATUS_COUNT)),
         "results_in_progress": (sum(a["in_progress"] for a in apps.values())
-                                if in_prog is None else _nonneg_int(in_prog)),
+                                if in_prog is None else _nonneg_int(in_prog, MAX_STATUS_COUNT)),
         "zero_work_requests": zero_work,
         "cohorts": cohorts,
     }
