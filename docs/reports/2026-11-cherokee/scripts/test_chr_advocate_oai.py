@@ -88,8 +88,9 @@ class Tests(unittest.TestCase):
         self.assertGreaterEqual(c.sleeps[0], 3.0)
 
     def test_delay_floor(self):
-        with self.assertRaises(m.HarvestError):
-            harvester([], delay=2.0)
+        for bad in (2.0, float("nan"), -1.0):
+            with self.assertRaises(m.HarvestError):
+                harvester([], delay=bad)
 
     def test_http_error_stops_without_retry(self):
         h, _ = harvester([PAGE1, m.HarvestError("HTTP 429 for u"), PAGE2])

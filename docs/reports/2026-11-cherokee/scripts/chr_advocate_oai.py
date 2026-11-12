@@ -118,7 +118,7 @@ def summarize(records):
 class Harvester:
     def __init__(self, endpoint, delay, max_requests, fetch=fetch_url, sleep=time.sleep, clock=time.monotonic,
                  raw_dir=None):
-        if delay < MIN_DELAY:
+        if not delay >= MIN_DELAY:  # also rejects NaN
             raise HarvestError(f"--delay-seconds must be at least {MIN_DELAY:g}")
         self.endpoint, self.delay, self.max_requests = endpoint, delay, max_requests
         self.fetch, self.sleep, self.clock, self.raw_dir = fetch, sleep, clock, raw_dir
