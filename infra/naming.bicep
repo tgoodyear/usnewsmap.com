@@ -222,6 +222,7 @@ var nameTypes = {
   serialSetJob: 'caj'
   serialSetWriterRole: 'role'
   releaseWriterRole: 'role'
+  releasePrunerRole: 'role'
   siteUnavailableAlert: 'alert'
   siteWebtest: 'webtest'
   spareApiApp: 'ca'
@@ -344,6 +345,7 @@ type Names = {
   serialSetJob: string
   serialSetWriterRole: string
   releaseWriterRole: string
+  releasePrunerRole: string
   siteUnavailableAlert: string
   siteWebtest: string
   spareApiApp: string
@@ -455,6 +457,7 @@ func names(env string, sfx string, pinned bool) Names => {
   serialSetJob: usnmName('sset', 'caj', env)
   serialSetWriterRole: usnmName('sset-writer', 'role', env)
   releaseWriterRole: usnmName('release-writer', 'role', env)
+  releasePrunerRole: usnmName('release-pruner', 'role', env)
   siteUnavailableAlert: usnmName('site-unavailable', 'alert', env)
   siteWebtest: usnmName('site', 'webtest', env)
   // The VNet-less Container Apps environment of the Azure spare, with its API and

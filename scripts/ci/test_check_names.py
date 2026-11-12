@@ -125,7 +125,8 @@ class Prod(unittest.TestCase):
         self.assertEqual(prod["apiWorkbookTitle"], "usnm API (prod)")
         exceptions = json.loads(cn.EXCEPTIONS.read_text())
         self.assertFalse(any(v["until"] == "phase-2" for v in exceptions.values()))
-        self.assertEqual({k for k, v in exceptions.items() if v["until"] == "phase-1"}, {"ocrExchange"})
+        self.assertFalse(any(v["until"] == "phase-1" for v in exceptions.values()))
+        self.assertEqual(exceptions["ocrExchange"]["until"], "never")
 
 
 class Exceptions(unittest.TestCase):

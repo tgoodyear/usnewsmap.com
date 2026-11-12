@@ -111,5 +111,6 @@
   "ocrDamageWriterRole": "usnm-ocr-damage-writer-role-prod",
   "ocrSyncLakeRole": "usnm-ocr-sync-lake-role-prod",
   "ocrSyncExchangeRole": "usnm-ocr-sync-exchange-role-prod",
-  "releaseWriterRole": "usnm-release-writer-role-prod"
+  "releaseWriterRole": "usnm-release-writer-role-prod",
+  "releasePrunerRole": "usnm-release-pruner-role-prod"
 }

@@ -24,6 +24,7 @@
 
 pub mod join;
 pub mod read;
+pub mod score;
 pub mod source;
 pub mod url;
 

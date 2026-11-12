@@ -301,7 +301,7 @@ async fn prune_deletes_what_no_kept_version_names_from_a_writer_node() {
     }
     // A rebuild stopped after it created its index, and an index of another name.
     let mut sink = QuickwitSink::new(&node.url, &root).unwrap();
-    sink.create("pages-base-20261029-1", MainLayout::default())
+    sink.create("pages-base-20261012-1", MainLayout::default())
         .await
         .unwrap();
     sink.create("other-index", MainLayout::default())
@@ -319,14 +319,14 @@ async fn prune_deletes_what_no_kept_version_names_from_a_writer_node() {
     assert_eq!(dry.kept.rollback.as_deref(), Some("pages-v20261015-1"));
     let gone = [
         "pages-base-20261001-1",
-        "pages-base-20261029-1",
+        "pages-base-20261012-1",
         "pages-delta-20261008-1",
     ];
     let ids: Vec<&str> = dry.candidates.iter().map(|c| c.index_id.as_str()).collect();
     assert_eq!(ids, gone);
     for c in &dry.candidates {
         // The stopped rebuild has no splits; the versions' indexes do.
-        assert_eq!(c.bytes > 0, c.index_id != "pages-base-20261029-1", "{c:?}");
+        assert_eq!(c.bytes > 0, c.index_id != "pages-base-20261012-1", "{c:?}");
     }
     assert_eq!(
         dry.total_bytes,

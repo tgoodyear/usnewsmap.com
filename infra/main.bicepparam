@@ -49,6 +49,7 @@ param serialSetOnPrem = bool(readEnvironmentVariable('USNM_SERIALSET_ONPREM', 'f
 param serialSetRunner = readEnvironmentVariable('USNM_SERIALSET_RUNNER', '')
 param onPremRelease = bool(readEnvironmentVariable('USNM_ONPREM_RELEASE', 'false'))
 param onPremReleaseHost = readEnvironmentVariable('USNM_ONPREM_RELEASE_HOST', '')
+param onPremReleasePrune = bool(readEnvironmentVariable('USNM_ONPREM_RELEASE_PRUNE', 'false'))
 param onPremServing = bool(readEnvironmentVariable('USNM_ONPREM_SERVING', 'false'))
 param onPremServingHost = readEnvironmentVariable('USNM_ONPREM_SERVING_HOST', '')
 param searchLogCopy = bool(readEnvironmentVariable('USNM_SEARCH_LOG_COPY', 'false'))
