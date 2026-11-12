@@ -40,7 +40,7 @@
 # may name another image for these steps, as sha256:<image id>, so a hand-off fix needn't wait for a
 # server image. It gets
 # HANDOFF_STEP and only the step's own inputs, mounts only the Arc agent's challenge
-# directory: no project tree, no database, no Key Vault. texts-export still runs in Azure.
+# directory: no project tree, no database, no Key Vault. texts-export runs on-prem too (texts-export-onprem.sh).
 #
 # --target scans --step receive (#1116) reads a tar of scans from stdin, as the controller's push
 # sends them over ssh: copies of the scan fetcher's files, named keep/<batch>/<lccn>/<date>/<ed>/

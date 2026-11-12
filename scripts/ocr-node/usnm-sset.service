@@ -1,6 +1,7 @@
 # The on-prem Serial Set fetch (#229; ADR-0008, amendment of October 2026):
-# `usnm-ingest congress-serialset` on an OCR node, as the node's Arc
-# identity, in place of the Azure job usnm-sset-caj-<env>. Enabled: it
+# `usnm-ingest congress-serialset` on an on-prem host (first OCR node 3,
+# now the batch container CT 215), as the host's Arc identity, in place of
+# the Azure job usnm-sset-caj-<env>. Enabled: it
 # starts at boot and runs until every volume is written or left out for
 # good, then writes /var/lib/usnm-sset/done and stops; with that marker it
 # no longer starts. To run the fetch again (new volumes on GovInfo):
