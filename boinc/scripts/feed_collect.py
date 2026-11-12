@@ -8,6 +8,7 @@ import argparse
 import contextlib
 from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime
+import hashlib
 import http.client
 import json
 import math
@@ -137,6 +138,20 @@ SIGNAL_FIELDS = ("caps", "ownership_conflicts", "progress", "tick_p90_s")
 PROGRESS_FIELDS = ("published_at", "first_tick_at", "pending")
 TICK_TREND_WINDOW_S = 3600
 MAX_CAPS = 16
+
+# Plans other than the live one (#1690): each ticks in a unit of its own, found by pattern.
+# Before the per-plan template the native plans tick in usnm-boinc-native-feed@PLAN.service and
+# the draining plans in one usnm-boinc-drain.service; after it every plan, native and draining
+# ones too, ticks in usnm-boinc-priority-controller@PLAN.service.
+PLAN_UNIT_GLOBS = ("usnm-boinc-priority-controller@*", "usnm-boinc-native-feed@*", "usnm-boinc-drain.*")
+PLAN_UNIT = re.compile(r"(?P<base>usnm-boinc-(?:priority-controller@|native-feed@)[a-z0-9][a-z0-9-]{0,63}"
+                       r"|usnm-boinc-drain)\.(?P<type>service|timer)")
+MAX_PLANS = 32
+# What a plan is, from its unit or its last tick; and the state its last tick shows. Only these
+# fixed words leave the host: a plan's name never does, and neither does a paused plan's reason.
+PLAN_KINDS = ("queue", "native", "drain")
+PLAN_STATES = ("active", "paused", "draining", "drained", "idle", "unknown")
+PLANS_ERROR = "plans_unavailable"
 
 
 def failure_reason(error):
@@ -355,6 +370,61 @@ def validate_dbbackup(document, now):
             raise ValueError("invalid drill record")
 
 
+def validate_tick(tick, now):
+    """One tick record: the live plan's, or a plan's in plans (#1690)."""
+    if not isinstance(tick, dict):
+        raise ValueError("invalid tick")
+    if tick["ok"] is not None and type(tick["ok"]) is not bool:
+        raise ValueError("invalid tick outcome")
+    if type(tick["seconds"]) not in (int, float) or not math.isfinite(tick["seconds"]) or tick["seconds"] < 0:
+        raise ValueError("invalid tick duration")
+    if not 0 <= now - natural(tick["finished_at"]) <= 900:
+        raise ValueError("stale controller evidence")
+    if any(natural(tick.get(key, 0)) > now for key in (
+            "last_failure_at", "controller_failure_at", "maintenance_failure_at")):
+        raise ValueError("future controller failure")
+    if "failed_in_a_row" in tick:
+        # The evaluator reads both together.
+        natural(tick["failed_in_a_row"])
+        natural(tick.get("maintenance_failure_at"))
+    if "failed_last_hour" in tick:
+        natural(tick["failed_last_hour"])
+        if tick.get("last_hour_reason") is not None and tick["last_hour_reason"] not in FAILURE_REASONS:
+            raise ValueError("invalid controller failure reason")
+    if "reason" in tick or "same_error_in_a_row" in tick:
+        # Read together (#1698): a class from the fixed list, never error text.
+        if tick.get("reason") is not None and tick.get("reason") not in FAILURE_REASONS:
+            raise ValueError("invalid controller failure reason")
+        natural(tick.get("same_error_in_a_row"))
+    if any(field in tick for field in SIGNAL_FIELDS):
+        validate_signals(tick, now)
+
+
+def validate_plans(plans, now):
+    """The per-plan ticks (#1690): ids and fixed words only, one entry per plan."""
+    if not isinstance(plans, list) or len(plans) > MAX_PLANS:
+        raise ValueError("invalid plans")
+    seen = set()
+    for plan in plans:
+        if (not isinstance(plan, dict) or set(plan) != {"id", "kind", "state", "paused_at", "tick", "error"}
+                or not isinstance(plan["id"], str) or not re.fullmatch(r"[0-9a-f]{8}", plan["id"])
+                or plan["id"] in seen or plan["kind"] not in PLAN_KINDS or plan["state"] not in PLAN_STATES):
+            raise ValueError("invalid plan")
+        seen.add(plan["id"])
+        # Paused is exactly the state with a time it began.
+        if (plan["state"] == "paused") != (plan["paused_at"] is not None):
+            raise ValueError("invalid plan pause")
+        if plan["paused_at"] is not None and natural(plan["paused_at"]) > now:
+            raise ValueError("future plan pause")
+        if plan["error"] not in (None, PLANS_ERROR) or (plan["error"] is not None) != (plan["state"] == "unknown"):
+            raise ValueError("invalid plan error")
+        if plan["tick"] is not None:
+            validate_tick(plan["tick"], now)
+            if "failed_in_a_row" not in plan["tick"] or "failed_last_hour" not in plan["tick"] \
+                    or "same_error_in_a_row" not in plan["tick"]:
+                raise ValueError("invalid plan tick")
+
+
 def fresh(document, now, kind):
     if not isinstance(document, dict):
         raise ValueError("source must be an object")
@@ -370,33 +440,11 @@ def fresh(document, now, kind):
             raise SourceFailed(document["error"])
         raise ValueError("source unavailable")
     if kind == "controller":
-        tick = document["tick"]
-        if not isinstance(tick, dict):
-            raise ValueError("invalid tick")
-        if tick["ok"] is not None and type(tick["ok"]) is not bool:
-            raise ValueError("invalid tick outcome")
-        if type(tick["seconds"]) not in (int, float) or not math.isfinite(tick["seconds"]) or tick["seconds"] < 0:
-            raise ValueError("invalid tick duration")
-        if not 0 <= now - natural(tick["finished_at"]) <= 900:
-            raise ValueError("stale controller evidence")
-        if any(natural(tick.get(key, 0)) > now for key in (
-                "last_failure_at", "controller_failure_at", "maintenance_failure_at")):
-            raise ValueError("future controller failure")
-        if "failed_in_a_row" in tick:
-            # The evaluator reads both together.
-            natural(tick["failed_in_a_row"])
-            natural(tick.get("maintenance_failure_at"))
-        if "failed_last_hour" in tick:
-            natural(tick["failed_last_hour"])
-            if tick.get("last_hour_reason") is not None and tick["last_hour_reason"] not in FAILURE_REASONS:
-                raise ValueError("invalid controller failure reason")
-        if "reason" in tick or "same_error_in_a_row" in tick:
-            # Read together (#1698): a class from the fixed list, never error text.
-            if tick.get("reason") is not None and tick.get("reason") not in FAILURE_REASONS:
-                raise ValueError("invalid controller failure reason")
-            natural(tick.get("same_error_in_a_row"))
-        if any(field in tick for field in SIGNAL_FIELDS):
-            validate_signals(tick, now)
+        validate_tick(document["tick"], now)
+        if "plans" in document:
+            validate_plans(document["plans"], now)
+        if "plans_error" in document and document["plans_error"] != PLANS_ERROR:
+            raise ValueError("invalid plan discovery failure")
     if kind == "dbbackup":
         validate_dbbackup(document, now)
     if kind == "backlog":
@@ -1315,6 +1363,92 @@ def paused_by(maintenance):
     return None
 
 
+def discover_plans(main_unit):
+    """The other plans' tick units, from systemd (#1690): every loaded service or timer named like
+    a plan's, whichever layout the host is in. Nothing is configured: a plan added with its timer
+    shows up on the next run, and one retired (its timer disabled and its unit gone from systemd)
+    drops out, taking its state with it. Returns the sorted service units."""
+    raw = run(["systemctl", "list-units", "--all", "--plain", "--no-legend", "--full", "--no-pager",
+               *PLAN_UNIT_GLOBS]).decode()
+    found = set()
+    for line in raw.splitlines():
+        fields = line.split()
+        match = PLAN_UNIT.fullmatch(fields[0]) if fields else None
+        if match and match["base"] + ".service" != main_unit:
+            found.add(match["base"] + ".service")
+    return sorted(found)
+
+
+def plan_journal(unit, now):
+    """What a plan's newest tick line says about the plan: (kind or None, state, paused_at).
+
+    A native plan with a held result is paused (`native.paused` in its tick line, with the time
+    it began) and still ticks and succeeds: a state, not a failure. A drain is `draining`, and
+    `drained` once it has nothing pending or uncollected (`observed_pending` and
+    `collection_backlog` are 0), which is how a finished drain looks until its timer is disabled.
+    No tick line in the window gives `idle`."""
+    raw = run(["journalctl", "--no-pager", "--quiet", "--all", "-u", unit, "-o", "json", "--since=-2h",
+               "-n", "300"])
+    newest, newest_at = None, -1
+    for line in raw.splitlines():
+        entry = json.loads(line)
+        try:
+            event = json.loads(entry.get("MESSAGE", ""))
+        except (ValueError, TypeError):
+            continue
+        at = int(entry["__REALTIME_TIMESTAMP"]) // 1000000
+        if isinstance(event, dict) and event.get("event") == "boinc_batch_tick" and at >= newest_at:
+            newest, newest_at = event, at
+    if newest is None:
+        return None, "idle", None
+    kind = "native" if isinstance(newest.get("native"), dict) else "drain" if newest.get("draining") is True else None
+    paused = (newest.get("native") or {}).get("paused") if kind == "native" else None
+    if isinstance(paused, dict):
+        since = paused.get("at")
+        return kind, "paused", since if type(since) is int and 0 <= since <= now else now
+    pending = sum(value for value in (newest.get("observed_pending"), newest.get("collection_backlog"))
+                  if type(value) is int and value >= 0)
+    if newest.get("draining") is True:
+        return kind, "drained" if pending == 0 else "draining", None
+    return kind, "active", None
+
+
+PLAN_TICK_FIELDS = ("ok", "seconds", "finished_at", "failed_in_a_row", "failed_last_hour", "last_hour_reason",
+                    "reason", "same_error_in_a_row", "last_failure_at", "controller_failure_at",
+                    "maintenance_failure_at")
+
+
+def plan_ticks(main_unit):
+    """Each other plan's tick health (#1690), in a stable order, as {id, kind, state, paused_at,
+    tick, error}. A plan's tick is controller()'s read of its own unit, so its failed runs, the
+    same error in a row and the hourly count are its own and never another plan's. `id` is the
+    first 8 hex digits of the sha256 of the unit's instance name: plan names stay on the host.
+    A plan with no tick in the last 15 minutes has tick None (state `idle`, or what its last
+    tick showed): a plan on a slower timer than the controller's five minutes isn't judged. A plan
+    that can't be read is `unknown` with `error`; it never stops the others being read."""
+    now = int(time.time())
+    plans = []
+    for unit in discover_plans(main_unit):
+        name = unit.rpartition("@")[2].removesuffix(".service") if "@" in unit else unit.removesuffix(".service")
+        entry = {"id": hashlib.sha256(name.encode()).hexdigest()[:8],
+                 "kind": "native" if "native-feed@" in unit else "drain" if "boinc-drain" in unit else "queue",
+                 "state": "unknown", "paused_at": None, "tick": None, "error": PLANS_ERROR}
+        try:
+            kind, state, paused_at = plan_journal(unit, now)
+            try:
+                tick = controller(unit)
+            except NoRecentTick:
+                tick = None
+            entry.update(kind=kind or entry["kind"], state=state, paused_at=paused_at, error=None,
+                         tick=None if tick is None else {key: tick[key] for key in PLAN_TICK_FIELDS})
+        except Exception:
+            pass
+        plans.append(entry)
+    if len(plans) > MAX_PLANS:
+        raise ValueError("too many plans")
+    return plans
+
+
 def backlog(dashboard, requests, outbox, selection=None):
     view = read_source(dashboard)
     azure = view["azure"]
@@ -1932,6 +2066,10 @@ def collect(config):
             "feeder_allocation", {"status": "unknown", "reason": reason, "app_ids": []})
     if "controller" in documents:
         facts["tick"] = documents["controller"]["tick"]
+        # Present only when the controller source runs with --discover-plans (#1690).
+        for key in ("plans", "plans_error"):
+            if key in documents["controller"]:
+                facts[key] = documents["controller"][key]
     if "backlog" in documents:
         facts["backlogs"] = documents["backlog"]["backlogs"]
     if "dbbackup" in documents:
@@ -1959,6 +2097,10 @@ def main(argv=None):
     p.add_argument("--port", type=int, default=31416)
     p = sub.add_parser("controller")
     p.add_argument("--unit", default="usnm-boinc-priority-controller.service")
+    p.add_argument("--discover-plans", action="store_true",
+                   help="Also report every other plan's tick health (#1690), found by unit name in either "
+                        "layout: usnm-boinc-priority-controller@PLAN, usnm-boinc-native-feed@PLAN and "
+                        "usnm-boinc-drain. Without it the document is what it was")
     p.add_argument("--maintenance-unit", action="append", default=[],
                    help="A unit that pauses the controller for upkeep, such as the held-page archive (#835): "
                         "its failures count as the controller's, and its pause isn't a missing tick")
@@ -1989,6 +2131,12 @@ def main(argv=None):
             result.update(client(args.data_dir, args.port, args.output.with_name(args.output.stem + ".session.json")))
         elif args.source == "controller":
             result["tick"] = controller(args.unit, tuple(args.maintenance_unit))
+            if args.discover_plans:
+                # Their own try: no plan's trouble may replace the live plan's observation.
+                try:
+                    result["plans"] = plan_ticks(args.unit)
+                except Exception:
+                    result["plans_error"] = PLANS_ERROR
         elif args.source == "dbbackup":
             result.update(dbbackup(args.replica_cnf, args.rclone, args.bucket, args.r2_env, args.drill_file,
                                    args.output.with_name(args.output.stem + ".r2.json"), result["observed_at"]))

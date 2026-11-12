@@ -37,9 +37,12 @@
 //   collection itself is a row only while the evaluator says something it
 //   counts (uncovered) has no cause row: a model or reset problem, not a
 //   dead source. A firing controller_tick with a failure class is
-//   Check = controller_tick:<reason>, so the email names it; every other
-//   check keeps its plain code as before, which a separate Reason dimension
-//   would not (Azure keys an alert on every dimension's value).
+//   Check = controller_tick:<reason>, so the email names it; so is a firing
+//   plan_tick:<id> (one check per other plan, in the line's plan_checks, which
+//   the dashboard ignores, #1690) as plan_tick:<id>:<reason>, which keeps each
+//   plan's failure its own alert; a line without plan_checks adds none.
+//   Every other check keeps its plain code as before, which a separate Reason
+//   dimension would not (Azure keys an alert on every dimension's value).
 //   Also Check = delivery_test for a boinc_feed_delivery_test line in the
 //   last 10 minutes (feed_status.py --delivery-test), the end-to-end
 //   notification check. That line never counts as a health event: it can't
@@ -132,14 +135,16 @@ FeedEvents
     | summarize CollectionFiring = countif(tostring(Held.state) == 'firing') > 0,
         Uncovered = max(coalesce(toint(Held.uncovered), 1))
 )
-| mv-expand Check = Feed.checks
+| extend AllChecks = array_concat(Feed.checks, iff(isnull(Feed.plan_checks), dynamic([]), Feed.plan_checks))
+| mv-expand Check = AllChecks
 | extend Code = tostring(Check.code), State = tostring(Check.state),
     Cause = tostring(Check.cause), Reason = tostring(Check.reason)
 | where (State == 'firing' and (Code != 'collection' or Uncovered > 0))
     or (State == 'unknown' and CollectionFiring and tostring(Check.excused) != 'true')
 | project Check = case(
     State == 'unknown' and isnotempty(Cause), Cause,
-    State == 'firing' and Code == 'controller_tick' and isnotempty(Reason), strcat(Code, ':', Reason),
+    State == 'firing' and (Code == 'controller_tick' or Code startswith 'plan_tick:') and isnotempty(Reason),
+        strcat(Code, ':', Reason),
     Code)
 | distinct Check
 | union (

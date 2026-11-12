@@ -26,6 +26,9 @@ TICK_HANG_S = 2 * TICK_LIMIT_S
 TICK_FAILURES_PER_HOUR = 4
 # Runs in a row that failed with the same error: a sticky failure, which the next tick won't clear.
 STICKY_FAILURES = 3
+PLAN_CHECK_PREFIX = "plan_"        # plan_discovery and plan_tick:<id>, kept out of `checks`
+# feed_collect.PLAN_STATES: the states plan_discovery counts, each a fixed word.
+PLAN_STATES_SEEN = ("active", "paused", "draining", "drained", "idle", "unknown")
 # The controller's own signals (#1698), opt-in with "controller_signals": true in the config.
 CONTROLLER_SIGNAL_CHECKS = ("controller_cap", "ownership_conflict", "controller_progress", "tick_trend")
 SIGNAL_FIELDS = ("caps", "ownership_conflicts", "progress", "tick_p90_s")  # feed_collect.SIGNAL_FIELDS
@@ -78,7 +81,7 @@ DRILL_MAX_AGE_S = 35 * 86400      # a monthly drill, with a few days of slack
 DEPENDS = (
     ("server", ("qwen_refill_window", "usnm_ocr_no_work", "usnm_qwen_no_work", "cpu_shortage",
                 "gpu_shortage", "feeder_allocation")),
-    ("controller", ("controller_tick",) + CONTROLLER_SIGNAL_CHECKS),
+    ("controller", ("controller_tick", "plan_discovery") + CONTROLLER_SIGNAL_CHECKS),
     ("backlog", ("usnm_ocr_no_work", "usnm_qwen_no_work")),
     ("clients", ("cpu_shortage", "gpu_shortage")),
     ("dbbackup", DB_CHECKS),
@@ -318,6 +321,7 @@ def evaluate(facts, previous, now, monotonic, boot_id, config_id, rotation=None)
           sticky=repeats is not None and repeats >= STICKY_FAILURES)
     if facts.get("controller_signals"):
         controller_signals(check, tick, now)
+    plan_checks(check, facts, now)
     if facts.get("dbbackup_checks"):
         db_checks(check, facts.get("dbbackup"), now)
     guard = facts.get("feeder_allocation")
@@ -363,10 +367,16 @@ def evaluate(facts, previous, now, monotonic, boot_id, config_id, rotation=None)
                    if unhealthy else "healthy", "duration_s": int(elapsed or 0),
                    "threshold_s": COLLECTION_HOLD_S, "reset": not continuous,
                    "uncovered": (sum(not covered(item) for item in unknown) + (not continuous)) if unhealthy else 0})
+    # The plans' checks (#1690) ride beside the others, not in them: the dashboard accepts only the
+    # check codes it knows and one per plan can't be listed, so it reads `checks` as before and
+    # ignores `plan_checks`; the alert reads both.
     document = {"schema_version": 1, "event": "boinc_feed_health", "observed_at": now,
-                "max_age_s": MAX_AGE, "checks": checks,
+                "max_age_s": MAX_AGE,
+                "checks": [c for c in checks if not c["code"].startswith(PLAN_CHECK_PREFIX)],
                 "sources": facts.get("sources", {}),
                 "healthy": all(c["state"] == "healthy" for c in checks)}
+    if any(c["code"].startswith(PLAN_CHECK_PREFIX) for c in checks):
+        document["plan_checks"] = [plan_row(c) for c in checks if c["code"].startswith(PLAN_CHECK_PREFIX)]
     if rotation:
         document["rotation"] = {"reason": rotation["reason"], "until": rotation["until"]}
     state = {"schema_version": 1, "config_id": config_id, "boot_id": boot_id,
@@ -423,6 +433,56 @@ def db_checks(check, parts, now):
         check("db_drill", reason is not None, generation=reason, reason=reason, seconds=age)
 
 
+def plan_row(check):
+    """A plan check as it is logged: the evaluator's line is one syslog message, so a healthy
+    plan carries only its state, and a failing one the numbers that explain it."""
+    row = {key: value for key, value in check.items() if value is not None and key != "threshold_s"}
+    if check["state"] == "healthy" and not check.get("failed_in_a_row") and not check.get("failed_last_hour"):
+        for key in ("seconds", "failed_in_a_row", "failed_last_hour", "same_error_in_a_row", "sticky"):
+            row.pop(key, None)
+    return row
+
+
+def plan_checks(check, facts, now):
+    """Every other plan's tick (#1690), when the controller source reports them (it runs with
+    --discover-plans): one `plan_tick:<id>` check per plan, listed in `plan_checks`, with the live plan's rules and its
+    own failed runs, same-error count and hourly count, so one plan's failure never hides or
+    resets another's. The id is opaque (feed_collect.plan_ticks); a retired plan has no check, so
+    its timers and its alert go with it.
+
+    States never fire: a paused native plan (`plan_state` paused, with `paused_age_s`), a draining
+    plan, a drained one and one with no tick in 15 minutes are healthy, and the failed ticks of any
+    of them fire like the live plan's. A plan that can't be read is unknown. `plan_discovery`
+    carries how many plans there are and how many are in each state."""
+    if "plans_error" in facts:
+        check("plan_discovery", None, reason=facts["plans_error"])
+        return
+    plans = facts.get("plans")
+    if plans is None:
+        return
+    states = {state: sum(plan["state"] == state for plan in plans) for state in PLAN_STATES_SEEN}
+    check("plan_discovery", False, plans=len(plans), **states)
+    for plan in sorted(plans, key=lambda plan: plan["id"]):
+        tick = plan["tick"]
+        shown = {"kind": plan["kind"], "plan_state": plan["state"]}
+        if plan["paused_at"] is not None:
+            shown["paused_age_s"] = max(0, now - plan["paused_at"])
+        code = "plan_tick:" + plan["id"]
+        if plan["error"] is not None:
+            check(code, None, reason=plan["error"], **shown)
+        elif tick is None:
+            check(code, False, **shown)
+        else:
+            hourly = tick["failed_last_hour"] >= TICK_FAILURES_PER_HOUR
+            fires = (tick["failed_in_a_row"] >= TICK_FAILURES_TO_FIRE or hourly
+                     or (tick["ok"] is None and tick["seconds"] > TICK_HANG_S))
+            check(code, fires, seconds=tick["seconds"], failed_in_a_row=tick["failed_in_a_row"],
+                  failed_last_hour=tick["failed_last_hour"],
+                  reason=tick["last_hour_reason"] if hourly else tick["reason"],
+                  same_error_in_a_row=tick["same_error_in_a_row"],
+                  sticky=tick["same_error_in_a_row"] >= STICKY_FAILURES, **shown)
+
+
 def controller_signals(check, tick, now):
     """The controller's own signals (#1698): unknown without a controller source, and
     not_reported from a collector that doesn't send them yet."""
@@ -460,13 +520,13 @@ def controller_signals(check, tick, now):
 
 def metrics(document):
     lines = [f'boinc_feed_observed_at_seconds {document["observed_at"]}']
-    for check in document["checks"]:
+    for check in (*document["checks"], *document.get("plan_checks", ())):
         label = json.dumps(check["code"])
         for state in ("healthy", "pending", "firing", "unknown"):
             lines.append(f'boinc_feed_check{{check={label},state="{state}"}} {int(check["state"] == state)}')
         lines.append(f'boinc_feed_condition_seconds{{check={label}}} {check["duration_s"]}')
         for field in ("remaining_s", "backlog", "last_workunit_at", "idle_slots", "eligible_results", "seconds",
-                      "percent"):
+                      "percent", "paused_age_s"):
             if check.get(field) is not None:
                 lines.append(f'boinc_feed_{field}{{check={label}}} {check[field]}')
     return "\n".join(lines) + "\n"
