@@ -12,6 +12,7 @@ export const DASHBOARD_URL = "https://ocr.usnewsmap.com/";
 export const PIPELINE_URL = "https://ocr.usnewsmap.com/api/pipeline.json";
 export const VIEW_URL = "https://ocr.usnewsmap.com/api/view.json";
 
+const FAILURE_SECS = 10; // how long a failed round is remembered, and the 502 may be reused
 const ANSWER_SECS = 60; // how long the feed's own answer is reused, here and by the client
 const UPSTREAM_TIMEOUT_MS = 2000; // the project site gives the whole exchange 3 seconds
 const UPSTREAM_MAX_BYTES = 4 * 1024 * 1024;
@@ -400,7 +401,7 @@ function reply(body, status, maxAge, extra = {}) {
 }
 
 // The upstream request: a short limit for the whole exchange, no redirects, and the edge cache
-// told to keep a good answer for a minute (and an error for none), so a location asks the
+// told to keep a good answer for a minute (and a server error for no more than ten seconds), so a location asks the
 // dashboard at most once a minute per endpoint however often the feed is asked for.
 async function upstream(fetchImpl, url, signal, max) {
   const response = await fetchImpl(url, {
@@ -408,7 +409,12 @@ async function upstream(fetchImpl, url, signal, max) {
     headers: { accept: "application/json" },
     redirect: "manual",
     signal,
-    cf: { cacheEverything: true, cacheTtlByStatus: { "200-299": ANSWER_SECS, "300-599": 0 } },
+    cf: {
+      cacheEverything: true,
+      // A good answer for a minute; a server error for as long as this Worker remembers its own
+      // failure; anything else not at all.
+      cacheTtlByStatus: { "200-299": ANSWER_SECS, "300-499": 0, "500-599": FAILURE_SECS },
+    },
   });
   if (response.status !== 200) throw new Error(`status ${response.status}`);
   const length = Number(response.headers.get("content-length"));
@@ -455,6 +461,11 @@ export function createHandler({
   // makes one round of upstream requests.
   let memo = null;
   let building = null;
+  // When the last round failed outright (neither endpoint could be read), and so how long the 502
+  // is given without trying again. It lives in the isolate only: a 502 is not worth storing in the
+  // Cache API, which does not work on every address, and a location with several isolates tries
+  // once per window in each.
+  let failedAt = null;
 
   async function fetchOne(url) {
     try {
@@ -490,17 +501,19 @@ export function createHandler({
     if (request.method !== "GET") return reply('{"error":"method not allowed"}', 405, 0, { allow: "GET" });
 
     if (fresh()) return answer(memo);
+    if (failing()) return unavailable();
     const key = new Request(`${url.origin}/feed.json`);
     const cached = await lookup(key);
     if (cached) return cached;
-    // The lookup took time: another request may have built the feed meanwhile.
+    // The lookup took time: another request may have built the feed, or failed to, meanwhile.
     if (fresh()) return answer(memo);
+    if (failing()) return unavailable();
 
-    building ??= build().finally(() => {
+    building ??= round().finally(() => {
       building = null;
     });
     const built = await building;
-    if (built === null) return reply('{"error":"dashboard unavailable"}', 502, 10);
+    if (built === null) return unavailable();
     memo = built;
     const response = answer(built);
     if (cache) {
@@ -512,6 +525,22 @@ export function createHandler({
     }
     return response;
   };
+
+  // One round of upstream requests, and what it leaves behind: the feed, or the time it failed. A
+  // success clears any failure, so a recovered dashboard waits at most the failure window.
+  async function round() {
+    const built = await build();
+    failedAt = built === null ? now() : null;
+    return built;
+  }
+
+  function failing() {
+    return failedAt !== null && now() - failedAt < FAILURE_SECS * 1000;
+  }
+
+  function unavailable() {
+    return reply('{"error":"dashboard unavailable"}', 502, FAILURE_SECS);
+  }
 
   function fresh() {
     return memo !== null && now() - memo.at < ANSWER_SECS * 1000;

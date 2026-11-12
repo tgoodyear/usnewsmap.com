@@ -595,7 +595,7 @@ test("upstream is asked with a short limit, no redirects and the edge cache told
     assert.equal(init.redirect, "manual");
     assert.ok(init.signal instanceof AbortSignal);
     assert.equal(init.cf.cacheEverything, true);
-    assert.deepEqual(init.cf.cacheTtlByStatus, { "200-299": 60, "300-599": 0 });
+    assert.deepEqual(init.cf.cacheTtlByStatus, { "200-299": 60, "300-499": 0, "500-599": 10 });
     assert.deepEqual(Object.keys(init.headers), ["accept"], "nothing is sent but the request");
   }
 });
@@ -723,6 +723,105 @@ test("one endpoint down keeps the other's sections; both down is a 502 that is n
   // It recovers on the next request.
   const up = createHandler({ fetchImpl: upstreamStub().fetchImpl, cache: null });
   assert.equal((await ask(up)).status, 200);
+});
+
+// Upstream that fails with a 500 until `state.up` is set, and counts its requests.
+function flakyUpstream() {
+  const state = { up: false, calls: 0 };
+  const good = upstreamStub().fetchImpl;
+  state.fetchImpl = async (url, init) => {
+    state.calls += 1;
+    return state.up ? good(url, init) : new Response("down", { status: 500 });
+  };
+  return state;
+}
+
+test("a double failure is remembered for ten seconds: one round per window, the 502 meanwhile", async (t) => {
+  quiet(t);
+  const up = flakyUpstream();
+  const clock = { t: Date.parse(view().generated_at) };
+  const handle = createHandler({ fetchImpl: up.fetchImpl, cache: null, now: () => clock.t });
+  assert.equal((await ask(handle)).status, 502);
+  assert.equal(up.calls, 2, "one round: both endpoints");
+  for (let i = 0; i < 9; i++) {
+    clock.t += 1000;
+    const again = await ask(handle);
+    assert.equal(again.status, 502);
+    assert.equal(again.headers.get("cache-control"), "public, max-age=10");
+  }
+  assert.equal(up.calls, 2, "nine seconds of requests made no new round");
+  clock.t += 1001; // ten seconds after the failure
+  assert.equal((await ask(handle)).status, 502);
+  assert.equal(up.calls, 4, "one round again once the window is over");
+});
+
+test("after a failure the next round after the window serves the recovered feed", async (t) => {
+  quiet(t);
+  const up = flakyUpstream();
+  const clock = { t: Date.parse(view().generated_at) };
+  const handle = createHandler({ fetchImpl: up.fetchImpl, cache: null, now: () => clock.t });
+  assert.equal((await ask(handle)).status, 502);
+  up.up = true;
+  clock.t += 5000;
+  assert.equal((await ask(handle)).status, 502, "inside the window the failure is still given");
+  assert.equal(up.calls, 2);
+  clock.t += 5001;
+  const ok = await ask(handle);
+  assert.equal(ok.status, 200, "no later than the window");
+  assert.equal(ok.headers.get("cache-control"), "public, max-age=60");
+  validateFeed(await ok.text(), Math.floor(clock.t / 1000));
+  // The success is kept for a minute, and a failure after it is a new one.
+  clock.t += 30_000;
+  assert.equal((await ask(handle)).status, 200);
+  assert.equal(up.calls, 4);
+});
+
+test("requests that arrive together during a failure share one round", async (t) => {
+  quiet(t);
+  const up = flakyUpstream();
+  const handle = createHandler({ fetchImpl: up.fetchImpl, cache: null });
+  const all = await Promise.all(Array.from({ length: 10 }, () => ask(handle)));
+  assert.ok(all.every((r) => r.status === 502));
+  assert.equal(up.calls, 2);
+  assert.equal((await ask(handle)).status, 502);
+  assert.equal(up.calls, 2, "and the failure is remembered for the ones after");
+});
+
+test("a failure is remembered when the cache lookup is slow too, and one endpoint up is a cached success", async (t) => {
+  quiet(t);
+  // A lookup that finishes after another request's failed round does not start another round.
+  const up = flakyUpstream();
+  let release;
+  const held = new Promise((resolve) => {
+    release = resolve;
+  });
+  let lookups = 0;
+  const cache = {
+    async match() {
+      lookups += 1;
+      return lookups === 1 ? held : undefined;
+    },
+    async put() {},
+  };
+  const handle = createHandler({ fetchImpl: up.fetchImpl, cache });
+  const slow = ask(handle);
+  assert.equal((await ask(handle)).status, 502);
+  release(undefined);
+  assert.equal((await slow).status, 502);
+  assert.equal(up.calls, 2);
+  // One endpoint up: a 200, kept for the full minute.
+  const good = upstreamStub().fetchImpl;
+  let calls = 0;
+  const fetchImpl = async (url, init) => {
+    calls += 1;
+    return url === VIEW_URL ? new Response("down", { status: 503 }) : good(url, init);
+  };
+  const clock = { t: Date.parse(view().generated_at) };
+  const partial = createHandler({ fetchImpl, cache: null, now: () => clock.t });
+  assert.equal((await ask(partial)).status, 200);
+  clock.t += 50_000;
+  assert.equal((await ask(partial)).status, 200);
+  assert.equal(calls, 2, "a partial result is cached for 60 seconds, not 10");
 });
 
 test("a slow upstream is given up on at the limit, and the answer keeps the other endpoint's figures", async (t) => {
