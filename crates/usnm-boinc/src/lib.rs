@@ -604,6 +604,10 @@ pub struct ExportOptions {
     pub line_read: Option<String>,
     /// LoC's bulk OCR, unpacked: `<lccn>/<yyyy>/<mm>/<dd>/ed-<n>/seq-<m>/ocr.xml`.
     pub loc_alto: Option<PathBuf>,
+    /// With `line_read`: read each word in its script (#1666), the line model on the line and
+    /// the English model on the words that are Latin, under profile `chr_phoenix+eng` and rule
+    /// `line-merge-v2`. Without it the line job is the one of #1621, `chr_phoenix` alone.
+    pub line_words: bool,
 }
 /// The Tesseract models the worker image holds, from the model lock.
 pub fn installed_models() -> BTreeSet<String> {
@@ -811,6 +815,9 @@ pub async fn export(
             _ => None,
         };
         let selected = match &line_read {
+            Some((read, ..)) if opts.line_words => {
+                engine::route_line_words(&read.language, &installed)
+            }
             Some((read, ..)) => engine::route_lines(&read.language, &installed),
             None => engine::route(&message.language, &installed),
         }

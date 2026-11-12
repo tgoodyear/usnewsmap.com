@@ -1,6 +1,6 @@
 # Cherokee: what is searchable, how good the OCR is, and a plan
 
-6 November 2026, updated 9 November with the _Phoenix_ model (step 3) and 12 November with the first production re-read (step 4). Follows [#1581](https://github.com/tgoodyear/usnewsmap.com/issues/1581) (the word lists and the engine tests) and [#1590](https://github.com/tgoodyear/usnewsmap.com/issues/1590) (the Georgia Historic Newspapers images).
+6 November 2026, updated 9 November with the _Phoenix_ model (step 3) and 12 November with the first production re-read and per-word script detection (step 4). Follows [#1581](https://github.com/tgoodyear/usnewsmap.com/issues/1581) (the word lists and the engine tests) and [#1590](https://github.com/tgoodyear/usnewsmap.com/issues/1590) (the Georgia Historic Newspapers images).
 
 ## Summary
 
@@ -234,7 +234,33 @@ The GHN-only pages have no layout. Find text lines with a layout model, classify
 
 **Scheduler batch check.** The first gold units could not be sent. The scheduler's batch patch expected batch 1 of every Docker plan class it didn't list, so it refused every unit in batch 1621 for the new `docker_lines` class, silently: the units never got a result row, and the scheduler's log said `App version for assigned WU not found` ([#1772](https://github.com/tgoodyear/usnewsmap.com/pull/1772)). With the batch bounds in `plan_class_spec.xml` now authoritative for any class that names them, the units went out and the run above followed. The runbook now lists the scheduler check, how long gold waits behind a machine's running OCR, and partial trust ([#1793](https://github.com/tgoodyear/usnewsmap.com/pull/1793)).
 
-**Script detection.** Tesseract's own fallback can't split the scripts. With `chr+eng` it re-reads low-confidence words in English and wrote 863 Latin words on test lines that have essentially none, because 16 of the type's letters are Latin small capitals. Per-word script detection is [#1666](https://github.com/tgoodyear/usnewsmap.com/issues/1666). Its classifier looks at the word crop and at the lines around it, since an English name usually follows its syllabary form in parentheses.
+**Script detection.** Tesseract's own fallback can't split the scripts. With `chr+eng` it re-reads low-confidence words in English and wrote 863 Latin words on test lines that have essentially none, because 16 of the type's letters are Latin small capitals. Per-word script detection is [#1666](https://github.com/tgoodyear/usnewsmap.com/issues/1666). An English name usually follows its syllabary form in parentheses, and Cherokee is cast at small-capital height with almost no ascenders or descenders, so the classifier looks at the word's ink and its neighbours as well as at what the engines read.
+
+**Per-word script detection, 12 November ([#1666](https://github.com/tgoodyear/usnewsmap.com/issues/1666)).** A line job can now read each word in its own script: `export --line-read chr --line-words` makes a job with profile `chr_phoenix+eng`, whose pages `line-merge-v2` decides. Jobs without the flag are the ones of the production run above, under `line-merge-v1`, and their results are unchanged. The worker does the following for each line crop (`crates/usnm-boinc/src/lines/script.rs`):
+
+1. `chr_phoenix` reads the crop at PSM 13, as before, and Tesseract's TSV gives each word its box and confidence.
+2. A word is a candidate for a second reading when it is not a New Testament form of two or more letters and the model is under 80% sure of it, or when it stands at least 1.3 times as tall as the line's other words with almost no ink in its top third. About 20% of the test set's words are candidates.
+3. The English model reads each candidate's box with ten pixels around it. The word is Latin when the evidence agrees, by one of four rules: four or more lowercase letters (three when the shape agrees, two inside brackets) at English confidence 70 or more, with the syllabary model under 70% sure; a hyphenated run of lowercase syllables such as `a-ska-ya`, which the paper prints beside Cherokee words on its vocabulary lesson; a reading of four or more letters at confidence 55 or more with the shape of English ink; or a neighbour of a Latin word with three lowercase letters and some confidence, so a run of English words is caught. A reading of only the 16 capitals the syllabary shares with Latin is never evidence, and neither is one with noise glyphs, or with a word the English word list and its letter pairs don't allow.
+4. The line is the syllabary reading with the Latin words replaced by the English model's. Nothing else changes, so a line with no Latin word is byte for byte what v1 gives.
+
+`line-merge-v2` is v1's page test. It differs in one place: when it holds a line's reading against LoC's text, the letters of the Latin words count with the syllabary letters, because LoC wrote a few syllabary letters for each Latin word. Without that, a line whose Latin words take most of its letters fails the half-as-many-letters test and keeps LoC's text. A reading with no syllabary letter at all gets no credit and falls back.
+
+Measured on test set v2 (2,160 line crops, 11,340 words) with the round-two model, Tesseract 5.5.0, PSM 13 (`chr_word_route_score.py`; `usnm-boinc line-crops` reads the crops):
+
+| Reading                          | Latin words written | Silver CER | All lines | Checked | Lines that keep LoC's text |
+| -------------------------------- | ------------------: | ---------: | --------: | ------: | -------------------------: |
+| `chr_phoenix` (v1, as in production) |                   0 |     10.22% |    27.61% |   6.56% |                125 (5.8%) |
+| `chr_phoenix+eng` (Tesseract's own) |                 863 |     12.86% |    29.67% |   8.92% |                          – |
+| Per-word route (v2)              |                   0 |     10.22% |    27.61% |   6.56% |                125 (5.8%) |
+
+- **No cost on Cherokee.** All 2,160 lines read as v1 reads them: the 2,264 words read again in English (20% of words) were all kept as syllabary. The fallback lines are the same 125 (2 empty, 25 few letters, 98 fewer known words), against 879 of 16,666 (5.3%) in the production run.
+- **What it finds.** The test set has no Latin, so recall comes from 754 Cherokee-marked lines, cut from the scans with the worker's padding, on four pages that have hand-labelled Latin words (`ocr/script-detect/labels/hand.jsonl`, two of the pages in the test set): 43 of 63 labelled Latin words are routed (55 of the 63 are on the vocabulary lesson). None of the 13 labelled syllabary or numeral words that were read again is. Of the 766 unlabelled words read again, 3 are routed: "pair", "Cherokee." and a fragment of a transliteration, all Latin. Of the 20 Latin words missed, 9 were not candidates and 11 were read again and not routed: mostly transliterations the English model read at low confidence with a stray digit or hyphen, and short words ("al", "C.").
+- **A look at other pages.** On 379 lines of four other pages, 554 words were read again and none were routed.
+- **Tuning.** The thresholds were chosen by looking at those two sets. An early version wrote 9 Latin words on the test set, and a later one routed four syllabary words on the labelled pages ("yon", "ona", "oar", "nib"). The rules above came from removing those cases, so the zeros are figures the rules were fitted to. A set of mixed lines that nothing was fitted to is the next test.
+- **Cost.** In a debug build on one thread the test set takes 129 s against 57 s for the line model alone.
+- **Against the router of [#1675](https://github.com/tgoodyear/usnewsmap.com/issues/1675).** That router, a trained CNN and gradient-boosted trees, caught 26 of 60 Latin words on pages it had not seen and gained one CER point over round two by also sending numerals and specks to English. It isn't in the worker, which carries no Python or trained model. These rules leave numerals to the syllabary model. Neither figure is on pages held out from its tuning, so the two aren't comparable.
+
+**Production.** The word route needs a new `usnm_ocr` worker image (`docker_lines`), because the worker now reads word boxes and runs the English model on them, and a native build would need the `eng` model in its plan. No app version has been published for it. A re-run of the 190 pages is not warranted for Cherokee accuracy: the test set's CER is the same, and the earlier survey found Latin on well under 0.1% of words (71 hand-confirmed words, 55 of them on one lesson). It would make those words searchable, at most about 70 known ones. It is worth doing together with the next worker release, for instance when the 699 pages with no LoC text are read.
 
 ### Step 5. The _Cherokee Advocate_ ([#1623](https://github.com/tgoodyear/usnewsmap.com/issues/1623))
 
@@ -281,6 +307,11 @@ python3 $S/chr_letter_pairs.py --tar dlc_misctopsn83020866_ver03.tar.bz2 --tar d
 python3 $S/chr_dict_compare.py --out-dir $D/dict-compare/out --refs $D/eval/nt-reference/nt-engine-sample/refs --wordlists ocr/ja-ocr/wordlists --baseline A_stock
 python3 $S/chr_checked_score.py --answers $D/hand-check/glyph-check-answers.jsonl --engine loc=$D/hand-check/loc.jsonl --engine stock=$D/testset-v2/baselines/tesseract-chr-stock.jsonl --out checked-v1.json
 python3 scripts/ocr-survey/cherokee_testset.py score --lines $D/testset-v2/crops/lines.jsonl --pred loc --pred chr_phoenix=$D/readings/phoenix-round2-psm13.jsonl --tier silver
+# Per-word script detection (#1666): read the crops with and without the word route (TESSDATA_PREFIX holds chr_phoenix and eng), then score
+usnm-boinc line-crops --lines $D/testset-v2/crops/lines.jsonl --crops $D/testset-v2/crops --out v1.jsonl
+usnm-boinc line-crops --lines $D/testset-v2/crops/lines.jsonl --crops $D/testset-v2/crops --out v2.jsonl --words --words-log v2-words.jsonl
+python3 $S/chr_checked_score.py --answers $D/hand-check/glyph-check-answers.jsonl --engine v2=v2.jsonl --out checked.json
+python3 $S/chr_word_route_score.py --lines $D/testset-v2/crops/lines.jsonl --checked checked.json --pred r2=$D/readings/phoenix-round2-psm13.jsonl --pred r2eng=$D/readings/phoenix-round2-eng-psm13.jsonl --pred v1=v1.jsonl --pred v2=v2.jsonl
 python3 $S/chr_ocr_variant_recall.py --tar dlc_misctopsn83020866_ver03.tar.bz2 --tar dlc_misctopsn83020874_ver02.tar.bz2 --wordlists ocr/ja-ocr/wordlists
 ```
 

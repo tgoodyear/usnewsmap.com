@@ -59,6 +59,12 @@ pub struct ExportArgs {
     /// for --line-read.
     #[arg(long, requires = "line_read")]
     loc_alto: Option<PathBuf>,
+    /// With --line-read: read each word of a line in its script (#1666). The line model reads
+    /// the line, and the English model reads the words that are Latin. The job's profile is
+    /// `chr_phoenix+eng` and its pages are decided by `line-merge-v2`. A worker built before
+    /// this refuses the job.
+    #[arg(long, requires = "line_read")]
+    line_words: bool,
 }
 
 pub async fn export(args: ExportArgs) -> anyhow::Result<()> {
@@ -79,6 +85,7 @@ pub async fn export(args: ExportArgs) -> anyhow::Result<()> {
         cosmos,
         line_read,
         loc_alto,
+        line_words,
     } = args;
     let docs: Arc<dyn DocStore> = if let Some(endpoint) = cosmos {
         usnm_state::docs::open_endpoint(&endpoint)?
@@ -103,6 +110,7 @@ pub async fn export(args: ExportArgs) -> anyhow::Result<()> {
             deadline_retries,
             line_read,
             loc_alto,
+            line_words,
         },
         &State::new(docs),
         store.as_ref(),
@@ -539,25 +547,28 @@ pub fn line_report(args: LineReportArgs) -> anyhow::Result<()> {
     let rows = crate::lines::report(&args.root, args.spool.as_deref())?;
     let mut verdicts = std::collections::BTreeMap::<String, usize>::new();
     let mut line_merge = std::collections::BTreeMap::<&str, usize>::new();
-    let (mut lines, mut model) = (0, 0);
+    let (mut lines, mut model, mut latin) = (0, 0, 0);
     for row in &rows {
         println!("{}", serde_json::to_string(row)?);
         *verdicts.entry(row.verdict.clone()).or_default() += 1;
         *line_merge.entry(row.line_merge.verdict).or_default() += 1;
         lines += row.stats.lines;
         model += row.stats.model;
+        latin += row.stats.latin_words;
     }
-    println!(
-        "{}",
-        serde_json::json!({
-            "pages": rows.len(),
-            "lines_read": lines,
-            "lines_model": model,
-            "lines_fallback": lines - model,
-            "line_merge_verdicts": line_merge,
-            "verdicts": verdicts,
-        })
-    );
+    let mut summary = serde_json::json!({
+        "pages": rows.len(),
+        "lines_read": lines,
+        "lines_model": model,
+        "lines_fallback": lines - model,
+        "line_merge_verdicts": line_merge,
+        "verdicts": verdicts,
+    });
+    // Only a words-route job (#1666) has Latin words; a line-merge-v1 summary is unchanged.
+    if latin > 0 {
+        summary["latin_words"] = latin.into();
+    }
+    println!("{summary}");
     Ok(())
 }
 
@@ -615,6 +626,131 @@ pub fn line_pages(args: LinePagesArgs) -> anyhow::Result<()> {
         "{} pages, {with_lines} with lines to read, {ready} of them with a local scan, {test_set} in the test set",
         pages.len()
     );
+    Ok(())
+}
+
+#[derive(Args)]
+pub struct LineCropsArgs {
+    /// JSONL with a `crop` file name on each line (the Cherokee test set's `lines.jsonl`).
+    #[arg(long)]
+    lines: PathBuf,
+    /// The directory the crops are in.
+    #[arg(long)]
+    crops: PathBuf,
+    /// One JSON line per crop: `{"crop", "text"}`.
+    #[arg(long)]
+    out: PathBuf,
+    /// Read each word in its script, as a `chr_phoenix+eng` job does (#1666).
+    #[arg(long)]
+    words: bool,
+    /// One JSON line per word read again in English, with the verdict, with --words.
+    #[arg(long, requires = "words")]
+    words_log: Option<PathBuf>,
+    /// The line model's language.
+    #[arg(long, default_value = "chr")]
+    language: String,
+    /// Crops in one Tesseract run.
+    #[arg(long, default_value_t = 200)]
+    chunk: usize,
+    /// Threads for Tesseract (`OMP_THREAD_LIMIT`).
+    #[arg(long, default_value_t = 1)]
+    threads: u32,
+}
+
+/// Reads the crops in `--lines` with the host's Tesseract at PSM 13.
+pub async fn line_crops(args: LineCropsArgs) -> anyhow::Result<()> {
+    use std::io::Write;
+    use usnm_ocr_worker::engine::{Runner, Tesseract, TesseractOptions};
+    let engine = Tesseract::detect(TesseractOptions {
+        runner: Runner::Host("tesseract".into()),
+        psm: usnm_ocr_contract::boinc::LINE_PSM,
+        dpi: 300,
+        threads: args.threads.max(1),
+        timeout: std::time::Duration::from_secs(3600),
+    })
+    .await?;
+    let (mut names, mut locs) = (Vec::new(), Vec::new());
+    for line in String::from_utf8(crate::read(&args.lines, 256 << 20)?)?.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let v: serde_json::Value = serde_json::from_str(line)?;
+        names.push(
+            v["crop"]
+                .as_str()
+                .context("a line without a crop")?
+                .to_owned(),
+        );
+        locs.push(v["loc_text"].as_str().unwrap_or_default().to_owned());
+    }
+    let rule = if args.words {
+        usnm_core::cherokee_type::MergeRule::V2
+    } else {
+        usnm_core::cherokee_type::MergeRule::V1
+    };
+    let mut out = std::io::BufWriter::new(std::fs::File::create(&args.out)?);
+    let mut log = match &args.words_log {
+        Some(p) => Some(std::io::BufWriter::new(std::fs::File::create(p)?)),
+        None => None,
+    };
+    for (n, chunk) in names.chunks(args.chunk.max(1)).enumerate() {
+        let scratch = tempfile::tempdir()?;
+        let mut paths = Vec::new();
+        for (i, name) in chunk.iter().enumerate() {
+            let to = scratch.path().join(format!("line-{i:05}.png"));
+            std::fs::copy(args.crops.join(name), &to).with_context(|| format!("crop {name}"))?;
+            paths.push(to);
+        }
+        let (readings, words) = if args.words {
+            crate::lines::read_words(&engine, &paths, &args.language, scratch.path()).await?
+        } else {
+            let r = crate::lines::LineEngine::read_lines(
+                &engine,
+                &paths,
+                &args.language,
+                scratch.path(),
+            )
+            .await?;
+            (r, Vec::new())
+        };
+        for (i, (name, reading)) in chunk.iter().zip(&readings).enumerate() {
+            let text = reading
+                .text
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            // Whether the line would keep LoC's text, under the rule this read belongs to.
+            let loc = &locs[n * args.chunk.max(1) + i];
+            let fallback = usnm_core::cherokee_type::reading_fails_with(rule, loc, &text)
+                .map(usnm_core::cherokee_type::Fallback::as_str);
+            writeln!(
+                out,
+                "{}",
+                serde_json::json!({"crop": name, "text": text, "conf": reading.conf,
+                    "fallback": fallback})
+            )?;
+        }
+        if let Some(log) = log.as_mut() {
+            for w in words {
+                writeln!(
+                    log,
+                    "{}",
+                    serde_json::json!({"crop": chunk[w.line], "word": w.word, "box": w.rect, "syllabary": w.syllabary,
+                        "syllabary_conf": w.syllabary_conf, "english": w.english,
+                        "english_conf": w.english_conf, "latin": w.latin})
+                )?;
+            }
+        }
+        eprintln!(
+            "{} of {} crops",
+            (n * args.chunk + chunk.len()),
+            names.len()
+        );
+    }
+    out.flush()?;
+    if let Some(mut log) = log {
+        log.flush()?;
+    }
     Ok(())
 }
 

@@ -12,7 +12,7 @@ mod sandbox;
 mod tesseract;
 
 pub use sandbox::{check_image_ref, Limits, Remote, Runner, ENGINE_USER};
-pub use tesseract::{LineReading, Tesseract, TesseractOptions};
+pub use tesseract::{LineReading, Tesseract, TesseractOptions, WordReading};
 
 pub(crate) use sandbox::{checked, podman_command, ContainerGuard, PageDir, Sandbox};
 
@@ -320,6 +320,12 @@ pub fn route_lines(language: &str, installed: &BTreeSet<String>) -> Option<Engin
     route_for(language, installed, RouteFor::Lines)
 }
 
+/// The route of a line job that reads each word in its script (#1666): profile
+/// `chr_phoenix+eng`, whose models are the syllabary line model and the English one.
+pub fn route_line_words(language: &str, installed: &BTreeSet<String>) -> Option<EngineRoute> {
+    route_for(language, installed, RouteFor::LineWords)
+}
+
 fn route_for(language: &str, installed: &BTreeSet<String>, read: RouteFor) -> Option<EngineRoute> {
     route_with_catalog(
         &usnm_ocr_route::ENGINES,
@@ -340,6 +346,9 @@ pub enum RouteFor {
     /// Skips a catalog profile marked `lines_only`.
     Page,
     Lines,
+    /// Only the profile that reads a line's words each in its script
+    /// ([`usnm_ocr_contract::boinc::LINE_WORDS_PROFILE`]).
+    LineWords,
 }
 
 fn route_with_catalog(
@@ -359,7 +368,11 @@ fn route_with_catalog(
         .iter()
         .find(|p| {
             p.languages.iter().any(|l| l == language)
-            && (read == RouteFor::Lines || !p.lines_only)
+            && match read {
+                RouteFor::Page => !p.lines_only,
+                RouteFor::Lines => true,
+                RouteFor::LineWords => p.id == usnm_ocr_contract::boinc::LINE_WORDS_PROFILE,
+            }
             && catalog.check_production(engine_id, &p.models).is_ok()
             && p.models.iter().all(|name| {
                 name.strip_prefix("tessdata/")

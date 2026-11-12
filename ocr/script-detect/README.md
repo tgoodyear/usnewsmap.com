@@ -162,6 +162,6 @@ The labels are in `labels/hand.jsonl` (page, LoC word ID, label, the sheet it ca
 
 Not done yet:
 
-- Routing inside the OCR worker.
+- Routing inside the OCR worker with this router. The worker has no Python or trained model, so #1666's worker route is rules instead (`crates/usnm-boinc/src/lines/script.rs`, report section 4 step 4). Their Latin recall and false Latin on the same labels and test set are in the report.
 - A transliteration source for the synthetic Latin, so the router learns that low-confidence lowercase non-words with Latin glyphs are Latin.
 - Fraktur and Cyrillic.

@@ -67,12 +67,25 @@ pub struct LineReading {
     pub text: String,
     /// The words' mean confidence, 0 to 1.
     pub conf: Option<f64>,
+    /// Each word with its box in the crop and its own confidence, in reading order. Words with
+    /// no text are left out, as in `text`.
+    pub words: Vec<WordReading>,
+}
+
+/// One word of a [`LineReading`] (#1666).
+#[derive(Debug, Clone, PartialEq)]
+pub struct WordReading {
+    pub text: String,
+    /// The word's confidence, 0 to 1; none when Tesseract gave none.
+    pub conf: Option<f64>,
+    /// `[left, top, right, bottom]` in pixels of the crop it was read from.
+    pub rect: [u32; 4],
 }
 
 /// Each image's words from Tesseract's TSV of a multi-image run: rows of level 5 are words,
 /// and `page_num` counts the images from 1.
 pub(crate) fn parse_line_tsv(tsv: &str, images: usize) -> anyhow::Result<Vec<LineReading>> {
-    let mut words: Vec<Vec<(String, Option<f64>)>> = vec![Vec::new(); images];
+    let mut words: Vec<Vec<WordReading>> = vec![Vec::new(); images];
     let mut lines = tsv.lines();
     let header = lines.next().unwrap_or_default();
     anyhow::ensure!(
@@ -96,19 +109,32 @@ pub(crate) fn parse_line_tsv(tsv: &str, images: usize) -> anyhow::Result<Vec<Lin
         }
         let conf: f64 = fields[10].parse().context("TSV conf")?;
         let conf = (conf >= 0.0).then(|| (conf / 100.0).clamp(0.0, 1.0));
-        words[page - 1].push((text.to_owned(), conf));
+        let num = |i: usize| -> anyhow::Result<u32> {
+            Ok(fields[i]
+                .parse::<i64>()
+                .context("TSV box")?
+                .clamp(0, i64::from(u32::MAX)) as u32)
+        };
+        let (left, top) = (num(6)?, num(7)?);
+        let (right, bottom) = (left.saturating_add(num(8)?), top.saturating_add(num(9)?));
+        words[page - 1].push(WordReading {
+            text: text.to_owned(),
+            conf,
+            rect: [left, top, right, bottom],
+        });
     }
     Ok(words
         .into_iter()
         .map(|w| {
-            let confs: Vec<f64> = w.iter().filter_map(|(_, c)| *c).collect();
+            let confs: Vec<f64> = w.iter().filter_map(|x| x.conf).collect();
             LineReading {
                 text: w
                     .iter()
-                    .map(|(t, _)| t.as_str())
+                    .map(|x| x.text.as_str())
                     .collect::<Vec<_>>()
                     .join(" "),
                 conf: (!confs.is_empty()).then(|| confs.iter().sum::<f64>() / confs.len() as f64),
+                words: w,
             }
         })
         .collect())
@@ -600,8 +626,24 @@ mod line_tests {
             got[1],
             LineReading {
                 text: String::new(),
-                conf: None
+                conf: None,
+                words: Vec::new()
             }
+        );
+        assert_eq!(
+            got[0].words,
+            vec![
+                WordReading {
+                    text: "ᏣᎳᎩ".into(),
+                    conf: Some(0.9),
+                    rect: [2, 2, 42, 22]
+                },
+                WordReading {
+                    text: "ᎦᏬᏂᎯᏍᏗ".into(),
+                    conf: Some(0.7),
+                    rect: [50, 2, 90, 22]
+                }
+            ]
         );
         assert_eq!(got[2].text, "Ꭰ");
         assert_eq!(got[2].conf, Some(0.5));

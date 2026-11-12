@@ -123,6 +123,10 @@ fn read_timeout(secs: u32) -> Duration {
 /// job's line language to its line route (#1621), whatever the page's language is.
 pub(crate) fn check_route(engine: &Tesseract, job: &Job) -> anyhow::Result<()> {
     let route = match &job.lines {
+        // The words route (#1666): the line model and the English model, by the job's profile.
+        Some(lines) if job.engine.profile == boinc::LINE_WORDS_PROFILE => {
+            engine::route_line_words(&lines.language, engine.installed())
+        }
         Some(lines) => engine::route_lines(&lines.language, engine.installed()),
         None => engine::route(&job.message.language, engine.installed()),
     };

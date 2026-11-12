@@ -26,8 +26,9 @@ use usnm_alto::{Block, BlockKind, Granularity, Line, Page, Rect, Word};
 use usnm_core::cherokee_type::{self, is_syllabary, LineSource};
 use usnm_core::ids::PageKey;
 use usnm_ocr_contract::boinc::{self, Job, LineBox, ResultManifest};
-use usnm_ocr_worker::engine::{LineReading, Tesseract};
+use usnm_ocr_worker::engine::{LineReading, Tesseract, WordReading};
 
+pub mod script;
 pub mod stage;
 
 /// Padding around a line box, in scan pixels, left and right.
@@ -324,9 +325,15 @@ pub async fn ocr_lines(
         crops.push(path);
     }
     drop(image);
-    let readings = engine
-        .read_lines(&crops, &lines.language, scratch.path())
-        .await?;
+    let readings = if job.engine.profile == boinc::LINE_WORDS_PROFILE {
+        read_words(engine, &crops, &lines.language, scratch.path())
+            .await?
+            .0
+    } else {
+        engine
+            .read_lines(&crops, &lines.language, scratch.path())
+            .await?
+    };
     ensure!(
         readings.len() == lines.lines.len(),
         "{} readings for {} lines",
@@ -388,6 +395,148 @@ pub async fn ocr_lines(
     Ok((result, text, alto))
 }
 
+/// The language the Latin words of a words-route line job are read in (#1666).
+pub const LATIN_LANGUAGE: &str = "eng";
+
+/// Reads `crops` (line crops in `work`) in `language`, then reads again in [`LATIN_LANGUAGE`] the
+/// words of each line that [`script`] finds Latin, and puts those readings in place of the
+/// syllabary model's (#1666). A line with no such word is the syllabary model's reading as it
+/// was. Each line's words keep their order; the line's confidence is the model's. The log has
+/// one entry for each word that was read again, whatever the verdict.
+pub async fn read_words(
+    engine: &dyn LineEngine,
+    crops: &[PathBuf],
+    language: &str,
+    work: &Path,
+) -> anyhow::Result<(Vec<LineReading>, Vec<WordLog>)> {
+    let mut readings = engine.read_lines(crops, language, work).await?;
+    anyhow::ensure!(readings.len() == crops.len(), "one reading per crop");
+    // The words worth a second reading, and the crop of each.
+    let mut asked: Vec<(usize, usize)> = Vec::new();
+    let mut word_crops: Vec<PathBuf> = Vec::new();
+    for (i, reading) in readings.iter().enumerate() {
+        let words = script_words(reading);
+        if words.is_empty() {
+            continue;
+        }
+        let image = image::open(&crops[i])?.to_luma8();
+        let want = script::candidates(&script::Ink::new(&image), &words);
+        for (k, (word, want)) in words.iter().zip(want).enumerate() {
+            if !want {
+                continue;
+            }
+            let [x0, y0, x1, y1] = word.rect;
+            let (w, h) = image.dimensions();
+            let pad = script::WORD_PAD;
+            let (x0, y0) = (x0.saturating_sub(pad), y0.saturating_sub(pad));
+            let (x1, y1) = (x1.saturating_add(pad).min(w), y1.saturating_add(pad).min(h));
+            if x0 >= x1 || y0 >= y1 {
+                continue;
+            }
+            let path = work.join(format!("word-{i:04}-{k:03}.png"));
+            image::imageops::crop_imm(&image, x0, y0, x1 - x0, y1 - y0)
+                .to_image()
+                .save(&path)?;
+            asked.push((i, k));
+            word_crops.push(path);
+        }
+    }
+    let mut log = Vec::new();
+    if word_crops.is_empty() {
+        return Ok((readings, log));
+    }
+    let english = engine.read_lines(&word_crops, LATIN_LANGUAGE, work).await?;
+    anyhow::ensure!(
+        english.len() == word_crops.len(),
+        "one reading per word crop"
+    );
+    let mut at = 0;
+    while at < asked.len() {
+        let line = asked[at].0;
+        let mut eng: Vec<Option<script::English>> = vec![None; readings[line].words.len()];
+        while at < asked.len() && asked[at].0 == line {
+            let reading = &english[at];
+            let conf = reading
+                .words
+                .iter()
+                .filter_map(|w| w.conf)
+                .fold(None, |m: Option<f64>, c| Some(m.map_or(c, |m| m.min(c))))
+                .or(reading.conf)
+                .unwrap_or(0.0);
+            eng[asked[at].1] = Some(script::English {
+                text: reading.text.clone(),
+                conf: conf * 100.0,
+            });
+            at += 1;
+        }
+        let words = script_words(&readings[line]);
+        let image = image::open(&crops[line])?.to_luma8();
+        let latin = script::verdicts(&script::Ink::new(&image), &words, &eng);
+        for (k, e) in eng.iter().enumerate() {
+            if let Some(e) = e {
+                log.push(WordLog {
+                    line,
+                    word: k,
+                    rect: words[k].rect,
+                    syllabary: words[k].text.clone(),
+                    syllabary_conf: words[k].conf,
+                    english: e.text.clone(),
+                    english_conf: e.conf,
+                    latin: latin[k],
+                });
+            }
+        }
+        if latin.iter().any(|l| *l) {
+            readings[line].text = script::assemble(&words, &eng, &latin);
+            // The word records follow the text: a routed word is the English reading's words,
+            // at the syllabary word's box. The syllabary reading stays in the log.
+            let mut routed = Vec::with_capacity(readings[line].words.len());
+            for ((w, e), l) in readings[line].words.iter().zip(&eng).zip(&latin) {
+                match (l, e) {
+                    (true, Some(e)) if !e.text.trim().is_empty() => {
+                        routed.extend(e.text.split_whitespace().map(|t| WordReading {
+                            text: t.to_owned(),
+                            conf: Some(e.conf / 100.0),
+                            rect: w.rect,
+                        }));
+                    }
+                    _ => routed.push(w.clone()),
+                }
+            }
+            readings[line].words = routed;
+        }
+    }
+    Ok((readings, log))
+}
+
+/// A word [`read_words`] read again in English, and what it decided.
+#[derive(Debug, Clone, Serialize)]
+pub struct WordLog {
+    /// The line's index among the crops, and the word's in its reading.
+    pub line: usize,
+    pub word: usize,
+    /// The word's box in the crop.
+    pub rect: [u32; 4],
+    pub syllabary: String,
+    pub syllabary_conf: Option<f64>,
+    pub english: String,
+    pub english_conf: f64,
+    pub latin: bool,
+}
+
+/// A reading's words as the classifier takes them, confidences 0 to 100.
+fn script_words(reading: &LineReading) -> Vec<script::Word> {
+    reading
+        .words
+        .iter()
+        .map(|w| script::Word {
+            text: w.text.clone(),
+            conf: w.conf.map(|c| c * 100.0),
+            rect: w.rect,
+        })
+        .collect()
+}
+
 /// How a page's lines were merged, written to [`MERGE_FILE`].
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct MergeStats {
@@ -399,6 +548,24 @@ pub struct MergeStats {
     pub fallback: BTreeMap<&'static str, usize>,
     /// Each line that kept LoC's text, by id, and why.
     pub fallback_lines: BTreeMap<String, &'static str>,
+    /// Latin words in the lines that took the model's reading: what a words-route job's
+    /// English reads put in them (#1666). Left out of `line-merge.json` when none.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub latin_words: usize,
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
+}
+
+/// The rule that holds a line job's reading against LoC's text: `line-merge-v2` for a words
+/// route (#1666), else `line-merge-v1`.
+fn merge_rule(job: &Job) -> cherokee_type::MergeRule {
+    if job.engine.profile == boinc::LINE_WORDS_PROFILE {
+        cherokee_type::MergeRule::V2
+    } else {
+        cherokee_type::MergeRule::V1
+    }
 }
 
 /// A line job's page after the merge.
@@ -450,7 +617,7 @@ pub fn merge(
         pairs.iter().filter(|(_, r)| r.is_some()).count() == readings.len(),
         "the job's lines are not this page's"
     );
-    let merged = cherokee_type::merge_lines(&pairs);
+    let merged = cherokee_type::merge_lines_with(merge_rule(job), &pairs);
     for (((bi, li, _), source), text) in ids.iter().zip(&merged.sources).zip(&merged.lines) {
         if *source != LineSource::Model {
             continue;
@@ -466,9 +633,17 @@ pub fn merge(
         page.granularity = Granularity::Line;
     }
     page.rescale(f64::from(record.scan_width), f64::from(record.scan_height));
+    let latin_words = merged
+        .lines
+        .iter()
+        .zip(&merged.sources)
+        .filter(|(_, s)| **s == LineSource::Model)
+        .map(|(text, _)| script::latin_words(text))
+        .sum();
     let stats = MergeStats {
         lines: readings.len(),
         model: merged.model(),
+        latin_words,
         fallback: merged
             .fallbacks()
             .into_iter()
@@ -662,7 +837,10 @@ pub fn admission(
     }
     let (counts, verdict) = line_merge::verdict(&lines);
     Ok(Admission {
-        rule: line_merge::VERSION,
+        rule: match merge_rule(job) {
+            cherokee_type::MergeRule::V1 => line_merge::VERSION,
+            cherokee_type::MergeRule::V2 => line_merge::VERSION_V2,
+        },
         verdict: match verdict {
             Ok(()) => "admit",
             Err(keep) => keep.as_str(),
@@ -887,6 +1065,7 @@ mod tests {
                             String::new()
                         },
                         conf: Some(0.5),
+                        words: Vec::new(),
                     }
                 })
                 .collect())
@@ -983,6 +1162,7 @@ mod tests {
                 model: 2,
                 fallback: BTreeMap::from([("fewer_known", 1)]),
                 fallback_lines: BTreeMap::from([("b2l0".to_owned(), "fewer_known")]),
+                latin_words: 0,
             }
         );
         let page =
@@ -1030,5 +1210,153 @@ mod tests {
         assert!(merge(&job, alto, &changed, result, None).is_err());
         let other = line_job(scan, &[("b9l9", [1, 1, 2, 2])]);
         assert!(merge(&other, alto, &record, "Ꭰ\n", None).is_err());
+    }
+
+    /// Reads crops as a line model and the English model would: each crop's reading is its
+    /// width, and a word crop is read by the `eng` stand-in.
+    struct Both {
+        chr: Vec<Vec<(&'static str, f64, [u32; 4])>>,
+        eng: Mutex<Vec<String>>,
+        said: Vec<(&'static str, f64)>,
+    }
+
+    #[async_trait]
+    impl LineEngine for Both {
+        async fn read_lines(
+            &self,
+            crops: &[PathBuf],
+            language: &str,
+            work: &Path,
+        ) -> anyhow::Result<Vec<LineReading>> {
+            for c in crops {
+                assert_eq!(c.parent(), Some(work));
+            }
+            if language == "chr" {
+                return Ok(self
+                    .chr
+                    .iter()
+                    .map(|words| {
+                        let words: Vec<usnm_ocr_worker::engine::WordReading> = words
+                            .iter()
+                            .map(|(t, c, r)| usnm_ocr_worker::engine::WordReading {
+                                text: (*t).into(),
+                                conf: Some(c / 100.0),
+                                rect: *r,
+                            })
+                            .collect();
+                        LineReading {
+                            text: words
+                                .iter()
+                                .map(|w| w.text.as_str())
+                                .collect::<Vec<_>>()
+                                .join(" "),
+                            conf: Some(0.5),
+                            words,
+                        }
+                    })
+                    .collect());
+            }
+            assert_eq!(language, "eng");
+            let mut seen = self.eng.lock().unwrap();
+            Ok(crops
+                .iter()
+                .enumerate()
+                .map(|(i, c)| {
+                    let img = image::open(c).unwrap().to_luma8();
+                    seen.push(format!("{}x{}", img.width(), img.height()));
+                    let (text, conf) = self.said[i];
+                    LineReading {
+                        text: text.into(),
+                        conf: Some(conf / 100.0),
+                        words: vec![usnm_ocr_worker::engine::WordReading {
+                            text: text.into(),
+                            conf: Some(conf / 100.0),
+                            rect: [0, 0, 1, 1],
+                        }],
+                    }
+                })
+                .collect())
+        }
+    }
+
+    #[tokio::test]
+    async fn words_the_classifier_finds_latin_are_read_in_english() {
+        let dir = tempfile::tempdir().unwrap();
+        // One line crop, 300 by 60, with a block of ink for each of its three words.
+        let mut img = image::GrayImage::from_pixel(300, 60, image::Luma([255]));
+        for (x0, x1) in [(10u32, 70u32), (90, 150), (170, 290)] {
+            for y in 20..40 {
+                for x in x0..x1 {
+                    img.put_pixel(x, y, image::Luma([0]));
+                }
+            }
+        }
+        let crop = dir.path().join("line-0000.png");
+        img.save(&crop).unwrap();
+        let engine = Both {
+            chr: vec![vec![
+                ("ᎤᏪᏟᏌᏁᏯ", 92.0, [8, 18, 72, 42]),
+                ("ᏣᎳ", 20.0, [88, 18, 152, 42]),
+                ("ᎤᏪᏟᏌᏁᏯ", 93.0, [168, 18, 292, 42]),
+            ]],
+            eng: Mutex::new(Vec::new()),
+            said: vec![("Judge", 90.0)],
+        };
+        let (readings, log) = read_words(&engine, std::slice::from_ref(&crop), "chr", dir.path())
+            .await
+            .unwrap();
+        // Only the unsure word is read again, from its box with ten pixels around it.
+        assert_eq!(engine.eng.lock().unwrap().as_slice(), ["84x44"]);
+        assert_eq!(readings[0].text, "ᎤᏪᏟᏌᏁᏯ Judge ᎤᏪᏟᏌᏁᏯ");
+        // The word records say the same as the text, and the log keeps what the model read.
+        let said: Vec<&str> = readings[0].words.iter().map(|w| w.text.as_str()).collect();
+        assert_eq!(said, ["ᎤᏪᏟᏌᏁᏯ", "Judge", "ᎤᏪᏟᏌᏁᏯ"]);
+        assert_eq!(readings[0].words[1].rect, [88, 18, 152, 42]);
+        assert_eq!(log[0].syllabary, "ᏣᎳ");
+        assert_eq!(log.len(), 1);
+        assert!(log[0].latin && log[0].word == 1);
+        // The same line when the English reading isn't sure: the syllabary model's stands.
+        let engine = Both {
+            said: vec![("Judge", 20.0)],
+            ..engine
+        };
+        let (readings, log) = read_words(&engine, &[crop], "chr", dir.path())
+            .await
+            .unwrap();
+        assert_eq!(readings[0].text, "ᎤᏪᏟᏌᏁᏯ ᏣᎳ ᎤᏪᏟᏌᏁᏯ");
+        assert!(!log[0].latin);
+    }
+
+    #[test]
+    fn a_words_route_page_keeps_a_line_with_latin_words_under_rule_v2() {
+        let scan = b"scan";
+        let alto = LOC_ALTO.as_bytes();
+        let boxes: Vec<(String, [u32; 4])> = select_lines(alto, (2000, 2000), "chr")
+            .unwrap()
+            .into_iter()
+            .map(|l| (l.id, l.rect))
+            .collect();
+        let refs: Vec<(&str, [u32; 4])> = boxes.iter().map(|(i, r)| (i.as_str(), *r)).collect();
+        let mut job = line_job(scan, &refs);
+        let record = LineReadRecord {
+            loc_alto_sha256: boinc::sha256(alto),
+            scan_height: 2000,
+            scan_width: 2000,
+            title_languages: vec!["eng".into(), "chr".into()],
+        };
+        // LoC's b1l0 is two syllabary words, five letters. The reading keeps the second and has
+        // a Latin first word: under v1 it has under half of LoC's letters.
+        let result = "ᎠᎴ (Cherokee)\nᎠᏍᎦᏯ\nᎦᏙᎯ\n";
+        let v1 = merge(&job, alto, &record, result, None).unwrap();
+        assert_eq!(v1.stats.fallback.get("few_letters"), Some(&1));
+        assert!(!v1.text.contains("Cherokee"));
+        job.engine.profile = boinc::LINE_WORDS_PROFILE.into();
+        let v2 = merge(&job, alto, &record, result, None).unwrap();
+        assert_eq!(v2.stats.fallback.get("few_letters"), None);
+        assert!(v2.text.contains("ᎠᎴ (Cherokee)"), "{}", v2.text);
+        assert_eq!(v2.stats.latin_words, 1);
+        let admit = admission(&job, alto, &record, &v2.alto, result).unwrap();
+        assert_eq!(admit.rule, "line-merge-v2");
+        assert_eq!(admit.verdict, "admit");
     }
 }
