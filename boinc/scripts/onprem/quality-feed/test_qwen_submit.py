@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import sys
 import tempfile
+import types
 import unittest
 from unittest import mock
 
@@ -87,6 +88,24 @@ class PhaseTest(unittest.TestCase):
         (submit,) = self.calls
         self.assertEqual(submit[0], "usnm-boinc")
         self.assertNotIn("--models-prechecked", submit)
+
+    def test_staging_holds_one_lock_across_roots(self):
+        import fcntl
+        seen = []
+
+        def staged(cmd, **kw):
+            with (self.share / "qwen" / ".stage-roots.lock").open("a") as other:
+                try:
+                    fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    seen.append((cmd[2], "free"))
+                except BlockingIOError:
+                    seen.append((cmd[2], "held"))
+
+        with mock.patch.object(qwen_submit.subprocess, "run", staged):
+            qwen_submit.stage_root(types.SimpleNamespace(
+                share=self.share, engine_plan=self.plan, stage_binary="/ops/s", bundle_size=1, prompt_version=3,
+                page_records=None), self.share / "qwen/camp", self.share / "quality/camp", 1)
+        self.assertEqual(seen, [("stage", "held")])
 
     def test_a_phase_is_not_a_preflight_or_a_transaction(self):
         argv = ["qwen_submit.py", "--share", str(self.share), "--campaign", "camp", "--engine-plan", str(self.plan),

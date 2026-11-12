@@ -6,6 +6,7 @@ uses the existing Rust stage/submit commands and shared pinned models, never a n
 quorum, retry identity or manually generated BOINC result.
 """
 import argparse
+import fcntl
 import hashlib
 import json
 import logging
@@ -931,7 +932,16 @@ def retire_parent(a):
 
 def stage_root(a, root, quality, new_pages):
     """The pages this run stages into `root`, after the checks that no page is English, unclassified
-    or already in another root."""
+    or already in another root. The checks and the staging hold one lock for every root: the bridge
+    step lock used to keep two campaigns' shippers from staging one page into two roots, and
+    `--phase prepare` no longer holds it."""
+    (a.share / "qwen").mkdir(parents=True, exist_ok=True)
+    with (a.share / "qwen" / ".stage-roots.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        _stage_root(a, root, quality, new_pages)
+
+
+def _stage_root(a, root, quality, new_pages):
     elsewhere = set()
     for path, job in jobs(a.share / "qwen"):
         if root not in path.parents:
