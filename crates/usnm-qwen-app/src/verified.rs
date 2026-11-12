@@ -271,7 +271,28 @@ pub(crate) fn lookup(
     if rident.mtime_ns < changed.saturating_add(margin_ns(policy)) {
         return Err("record_older_than_file");
     }
+    // A full hash that fails removes the record. Where it couldn't, a hit could vouch for
+    // bytes that just failed, so no record is used from a directory this process can't
+    // write to (a read-only mount, or permissions changed since the record was written).
+    if !record_removable(&rp) {
+        return Err("record_dir_not_writable");
+    }
     Ok(())
+}
+
+/// Whether this process could delete `record` now: write and search access to its
+/// directory.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn record_removable(record: &Path) -> bool {
+    use rustix::fs::{access, Access};
+    record
+        .parent()
+        .is_some_and(|dir| access(dir, Access::WRITE_OK | Access::EXEC_OK).is_ok())
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn record_removable(_record: &Path) -> bool {
+    false
 }
 
 fn hex(digest: &[u8]) -> String {
@@ -321,14 +342,14 @@ pub(crate) fn hash_and_record(
     if got != want {
         // A record left from an earlier good hash must not vouch for these bytes later
         // (silent corruption that kept the identity, caught here by a forced hash).
-        let removed = record_path(path).is_some_and(|rp| {
-            std::fs::symlink_metadata(&rp).is_ok_and(|m| !m.is_dir())
-                && std::fs::remove_file(&rp).is_ok()
-        });
-        let outcome = if removed {
-            "not written: mismatch, old record removed"
-        } else {
-            "not written: mismatch"
+        let old =
+            record_path(path).filter(|rp| std::fs::symlink_metadata(rp).is_ok_and(|m| !m.is_dir()));
+        let outcome = match old {
+            None => "not written: mismatch",
+            Some(rp) if std::fs::remove_file(&rp).is_ok() => {
+                "not written: mismatch, old record removed"
+            }
+            Some(_) => "not written: mismatch, old record not removed",
         };
         return Ok((got, outcome));
     }
@@ -933,6 +954,43 @@ mod tests {
             );
             assert!(!rp.exists());
             assert_eq!(miss_of(&run(&fx, &fx.want).1), "no_record");
+        }
+
+        #[test]
+        fn no_record_is_used_from_a_directory_it_cannot_be_removed_from() {
+            use std::os::unix::fs::PermissionsExt as _;
+            let fx = verified();
+            let rp = record_path(&fx.path).unwrap();
+            assert_eq!(run(&fx, &fx.want).1.kind, CheckKind::CacheHit);
+            std::fs::set_permissions(&fx.dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+            // Root ignores the mode bits, so there the record stays removable and usable.
+            let root = rustix::process::geteuid().is_root();
+            let (got, c) = check("model.gguf", &fx.path, &fx.want, false, TEST).unwrap();
+            if root {
+                assert_eq!(c.kind, CheckKind::CacheHit);
+            } else {
+                assert_eq!(miss_of(&c), "record_dir_not_writable");
+                assert_eq!(got.as_deref(), Some(fx.want.as_str()));
+                // A forced hash that finds bad bytes can't remove the record; the next
+                // unforced check still hashes in full and refuses them.
+                let mut bad = fx.good.clone();
+                bad[2] ^= 0xff;
+                std::fs::write(&fx.path, &bad).unwrap();
+                let (got, c) = check("model.gguf", &fx.path, &fx.want, true, TEST).unwrap();
+                assert_ne!(got.as_deref(), Some(fx.want.as_str()));
+                assert_eq!(
+                    c.kind,
+                    CheckKind::FullHash {
+                        miss: "forced",
+                        record: "not written: mismatch, old record not removed"
+                    }
+                );
+                assert!(rp.exists());
+                let (got, c) = run(&fx, &fx.want);
+                assert_eq!(miss_of(&c), "identity_changed");
+                assert_ne!(got.as_deref(), Some(fx.want.as_str()));
+            }
+            std::fs::set_permissions(&fx.dir, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
     }
 

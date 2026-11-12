@@ -129,7 +129,7 @@ Before reading, native `usnm_qwen` checks the chosen model and projector against
 - the file last changed at least 3 s (`RACY_MARGIN`) before the hash began, so a rewrite in the same timestamp tick can't leave the same identity behind;
 - the platform and filesystem are on the trusted list below.
 
-A failed write leaves no record and the task goes on. A full hash that does not match removes any record already beside the file, so a file found bad by a forced hash is never skipped afterwards.
+A failed write leaves no record and the task goes on. A full hash that does not match removes any record already beside the file, so a file found bad by a forced hash is never skipped afterwards. Because that removal can fail, no record is used from a directory the process cannot delete it from (a read-only mount, or permissions changed since).
 
 **A cache hit** needs every one of these; anything else is a full hash with the old code path and the old error message:
 
