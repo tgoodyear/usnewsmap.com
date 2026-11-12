@@ -65,9 +65,9 @@
     "reason": "Scheduled for Phase 3, during #283 preparation, with no execution running and the writer's lease free."
   },
   "ocrExchange": {
-    "until": "phase-1",
+    "until": "never",
     "adr": "ADR-0017, Exceptions",
-    "reason": "The original empty-account window has passed: OCR and BOINC use this account. Keep pinned until a reviewed live queue/blob inventory, quiesce/drain or migration plan and node/BOINC reconfiguration window are agreed (#309)."
+    "reason": "The original empty-account window has passed: OCR and BOINC use this account. The maintainer accepted keeping the name on 12 November 2026 (#309), since #1367 is moving its contents on-prem."
   },
   "registry": {
     "until": "phase-4",
