@@ -40,12 +40,13 @@ import urllib.request
 FROZEN = {"v1.0.0", "v1.1.0"}
 MAX_FFFD = 0.02
 BIDI = re.compile("[​-‏‪-‮⁠-⁩﻿]")
-CTRL = re.compile("[\x00-\x09\x0b-\x1f\x7f]")
+# every control character but LF (the worker removes the same set)
+CTRL = {c: None for c in [*range(0, 10), *range(11, 32), 127]}
 
 
 def normalize(text):
     """Same as normalizeReading in edge/check/transcribe.mjs (the two are tested against the same cases)."""
-    t = CTRL.sub("", BIDI.sub("", text.replace("\r\n", "\n").replace("\r", "\n")))
+    t = BIDI.sub("", text.replace("\r\n", "\n").replace("\r", "\n")).translate(CTRL)
     lines = [re.sub(r"[ \t]{2,}", " ", l.strip(" \t")) for l in t.split("\n")]
     while lines and lines[0] == "":
         lines.pop(0)
