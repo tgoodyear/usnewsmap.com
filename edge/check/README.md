@@ -194,7 +194,7 @@ Changing `SESSION_KEY` (`--rotate`) signs everyone out; their earlier answers st
 ## Tests
 
 ```sh
-node --test edge/check/worker.test.mjs edge/check/layout.test.mjs edge/check/languages.test.mjs
+node --test edge/check/worker.test.mjs edge/check/layout.test.mjs edge/check/languages.test.mjs edge/check/transcribe.test.mjs
 ```
 
 The `check site` job in `ci.yml` runs these, a Wrangler dry-run build (`npx wrangler@4.154.0 deploy --dry-run`), shellcheck of the scripts and the tools' unit tests whenever anything under `edge/check/` but its Markdown changes. `languages.test.mjs` checks each language configuration's fields and that its keys are sorted.
