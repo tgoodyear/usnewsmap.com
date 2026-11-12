@@ -1724,6 +1724,14 @@ class NativePlanTests(unittest.TestCase):
         self.assertEqual([host for _, host in self.native_submissions()], [5])
         self.assertNotIn(done, self.state["native_targets"])
 
+    def test_units_per_cpu_widens_a_hosts_room_up_to_pages_per_host(self):
+        # Host 13 has 24 CPUs: 3 units each is 72, capped at pages_per_host; host 5 has 2 CPUs: 6.
+        self.config.update(native_hosts=[13, 5], units_per_cpu=3, pages_per_host=50, max_pending=100)
+        self.fake.cpus = {13: 24, 5: 2}
+        event = self.tick()
+        self.assertEqual(event["native"]["slots"], {"13": 50, "5": 6})
+        self.assertEqual(event["target_pending"], 56)
+
     def test_max_pending_bounds_the_plan_below_its_hosts_cpus(self):
         self.config.update(pages_per_host=24, max_pending=5)
         event = self.tick()
@@ -1896,6 +1904,9 @@ class NativePlanTests(unittest.TestCase):
         loaded = load(self.config)
         self.assertEqual(loaded["native_hosts"], [13])
         self.assertEqual(load(native_config(hosts=()))["native_hosts"], [])
+        self.assertEqual(load({**self.config, "units_per_cpu": 4})["units_per_cpu"], 4)
+        # A plan without it keeps its digest; one with it is a different allocation.
+        self.assertNotEqual(batch.digest(self.config), batch.digest({**self.config, "units_per_cpu": 4}))
         # Widening the hosts one at a time needs no migration.
         self.assertEqual(batch.digest(native_config(hosts=(13,))), batch.digest(native_config(hosts=(13, 5))))
         bad = [
@@ -1908,6 +1919,11 @@ class NativePlanTests(unittest.TestCase):
             {**self.config, "pages_per_unit": {"ocr-bulk": 4}, "bundle_app_version": 106},
             {**self.config, "bundle_app_version": 106},
             {**queue_config(), "native_hosts": [13]},
+            {**self.config, "units_per_cpu": 0},
+            {**self.config, "units_per_cpu": 17},
+            {**self.config, "units_per_cpu": True},
+            {**self.config, "units_per_cpu": "2"},
+            {**queue_config(), "units_per_cpu": 2},
             {**queue_config(), "cohorts": {"native": {"app": "usnm_ocr_native"}}},
         ]
         for value in bad:
