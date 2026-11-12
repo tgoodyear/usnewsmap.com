@@ -738,6 +738,7 @@ pub fn exec_engine() -> anyhow::Error {
         limit(Resource::Core, 0, 0)?;
         Ok(real)
     };
+    use std::os::unix::process::CommandExt as _;
     match setup() {
         Ok(real) => Command::new(real)
             .args(std::env::args_os().skip(1))
