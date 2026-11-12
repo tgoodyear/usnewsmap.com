@@ -6,8 +6,15 @@
 # the licence of Qwen/Qwen3-VL-8B-Instruct and Qwen/Qwen3-VL-2B-Instruct; neither GGUF repository carries
 # the licence text, so it comes from the Apache Software Foundation and is kept beside the weights.
 # The image's USNM_QWEN_WEIGHTS is sha256: and the sha256 of this file's lines that are not comments.
+# Xiaomi-OCR-0 (#1776) is read by the native _x08 classes only, for benchmarks, and is not in the image:
+# xiaomi-research/Xiaomi-OCR-0 (Apache-2.0) at revision bbd8cf8d21f256b3644b44cb860f3a7cecb93c30, converted
+# at llama.cpp e1a9a6dcb with docs/reports/2026-11-gpu-studies/scripts/s9/convert.sh and converter.patch
+# (Q8_0, 811,842,912 bytes; F16 projector, 204,986,560 bytes). There is no upstream GGUF, so the URLs are
+# the project's own copies, under the physical names the BOINC download tree gives them.
 LICENSE https://www.apache.org/licenses/LICENSE-2.0.txt cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30
 Qwen3VL-8B-Instruct-Q4_K_M.gguf https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct-GGUF/resolve/f982a07559d4a2f6c8744d840bf6fccab30eea96/Qwen3VL-8B-Instruct-Q4_K_M.gguf 67d1659bfe71b89d50b45a4ad1a9e5b997e5bb16ce5da66a6a6167abd569e9e2
 mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct-GGUF/resolve/f982a07559d4a2f6c8744d840bf6fccab30eea96/mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf c6ba85508d82f42590e6eb77d5340369ab6fecf107a7561d809523d8aa5f3bfd
 Qwen3-VL-2B-Instruct-Q8_0.gguf https://huggingface.co/ggml-org/Qwen3-VL-2B-Instruct-GGUF/resolve/ea6a11058182570be6436b9a2e4ee7f7b49f908d/Qwen3-VL-2B-Instruct-Q8_0.gguf b7802e29f71a9e5b5e3f83f613df898a2204342dcea71a231ea501d481813c39
 mmproj-Qwen3-VL-2B-Instruct-Q8_0.gguf https://huggingface.co/ggml-org/Qwen3-VL-2B-Instruct-GGUF/resolve/ea6a11058182570be6436b9a2e4ee7f7b49f908d/mmproj-Qwen3-VL-2B-Instruct-Q8_0.gguf 69066c8f279ec85ff48ab4059f6ebba0d2932ca57667f2bbdac7d9805bca9e7b
+xiaomi-ocr-0-q8_0.gguf https://models.usnewsmap.com/usnm_qwen_61f0667bb08342f99fa83b56df7f5808b21aea3ebf6bae03462610b7d519b34a_xiaomi-ocr-0-q8_0.gguf 61f0667bb08342f99fa83b56df7f5808b21aea3ebf6bae03462610b7d519b34a
+mmproj-xiaomi-ocr-0-f16.gguf https://models.usnewsmap.com/usnm_qwen_77dc7cf20404cf95ae9015634d818159382549a69f655f798f803eb7ec08ac4e_mmproj-xiaomi-ocr-0-f16.gguf 77dc7cf20404cf95ae9015634d818159382549a69f655f798f803eb7ec08ac4e

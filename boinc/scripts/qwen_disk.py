@@ -60,8 +60,11 @@ def image_metadata(image, expected_model=None):
         raise ValueError("Image has no supported model-specific Qwen disk policy; legacy dual-model images cannot be released")
     if expected_model is not None and model != expected_model:
         raise ValueError(f"Plan class requires {expected_model}, image contains {model}")
+    # An image built before the lock last gained a model keeps the identity it was built with;
+    # its files and its units are unchanged, so a host may keep running it.
+    weights = {p["weights_identity"], *p.get("previous_weights_identities", [])}
     if (env.get("USNM_QWEN_MODEL") != model or env.get("USNM_QWEN_LLAMA_IMAGE") != p["base_index"]
-            or env.get("USNM_QWEN_WEIGHTS") != p["weights_identity"]):
+            or env.get("USNM_QWEN_WEIGHTS") not in weights):
         raise ValueError("Image environment does not match model/base policy")
     compressed = sum(layer["size"] for layer in manifest["layers"])
     payload = sum(p["models"][model]["files"].values())

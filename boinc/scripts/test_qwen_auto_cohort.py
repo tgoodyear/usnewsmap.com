@@ -1,5 +1,6 @@
 import copy
 import fcntl
+import hashlib
 import os
 import configparser
 import importlib.util
@@ -135,8 +136,15 @@ class BoincDb {
         b8799 = "sha256:d962a8228c42c84583150e809d654f9ec995cdf9f4e02e37365293642210a309"
         self.assertEqual(R.engine_for(119)["llama"], b8799)
         self.assertEqual(R.engine_for(120)["llama"], "sha256:" + lock["assets"]["ubuntu-vulkan-x64"]["sha256"])
-        self.assertEqual({k: v for k, v in R.engine_for(120).items() if k != "llama"},
-                         {k: v for k, v in R.engine_for(119).items() if k != "llama"})
+        # 1.20's weights.lock adds Xiaomi-OCR-0's lines (#1776), so its identity moves too.
+        weights = (ROOT / "boinc/apps/qwen/weights.lock").read_text()
+        identity = hashlib.sha256("".join(line + "\n" for line in weights.splitlines()
+                                          if not line.startswith("#")).encode()).hexdigest()
+        self.assertEqual(R.engine_for(119)["weights"],
+                         "sha256:969266d1c24656977e06a6efacae04deac6d5093c77227fe55ac28975035cddd")
+        self.assertEqual(R.engine_for(120)["weights"], "sha256:" + identity)
+        self.assertEqual({k: v for k, v in R.engine_for(120).items() if k not in ("llama", "weights")},
+                         {k: v for k, v in R.engine_for(119).items() if k not in ("llama", "weights")})
 
     def bundle(self, number, languages, campaign="qwen-nonenglish-v1"):
         """A unit as `qwen stage --bundle-size` stages it: each page's own unit under pages/<doc>,

@@ -44,7 +44,7 @@ COPY --from=weights /weights.digest /opt/qwen/weights.digest
 COPY boinc/apps/qwen/weights.lock boinc/apps/qwen/NOTICE /opt/qwen/
 COPY --from=build /src/target/release/usnm-boinc /usr/local/bin/usnm-boinc
 # USNM_QWEN_WEIGHTS must equal /opt/qwen/weights.digest; the build fails otherwise.
-ARG QWEN_WEIGHTS=sha256:969266d1c24656977e06a6efacae04deac6d5093c77227fe55ac28975035cddd
+ARG QWEN_WEIGHTS=sha256:f614f48b7a5154307ae5c34164a93e720b57bae02d16cc12ccd4d8aa60c242db
 RUN test "$(cat /opt/qwen/weights.digest)" = "$QWEN_WEIGHTS"
 ENV PATH=/app:$PATH HOME=/tmp \
     USNM_QWEN_LLAMA_IMAGE=${LLAMA_DIGEST} USNM_QWEN_WEIGHTS=${QWEN_WEIGHTS} \

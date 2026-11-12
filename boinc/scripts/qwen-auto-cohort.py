@@ -26,11 +26,18 @@ LLAMA_BY_FIRST_APP = (
     (120, "sha256:692bdad8c7743779ed89615472e2863005a12feabbe0b2d8225f5b4b38b12afd"),
     (0, ENGINE["llama"]),
 )
+# The weights identity a unit names: the sha256 of the non-comment lines of the weights.lock the
+# app versions embed. 1.20 adds Xiaomi-OCR-0's two lines (#1776); the Qwen files are unchanged.
+WEIGHTS_BY_FIRST_APP = (
+    (120, "sha256:f614f48b7a5154307ae5c34164a93e720b57bae02d16cc12ccd4d8aa60c242db"),
+    (0, ENGINE["weights"]),
+)
 
 
 def engine_for(app_version_num):
     llama = next(value for first, value in LLAMA_BY_FIRST_APP if app_version_num >= first)
-    return dict(ENGINE, llama=llama)
+    weights = next(value for first, value in WEIGHTS_BY_FIRST_APP if app_version_num >= first)
+    return dict(ENGINE, llama=llama, weights=weights)
 MODEL = {"file": "Qwen3VL-8B-Instruct-Q4_K_M.gguf", "min_gpu_mb": 7000,
          "mmproj": "mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf", "name": "qwen3-vl-8b-q4km"}
 MODELS = [MODEL, {"file": "Qwen3-VL-2B-Instruct-Q8_0.gguf", "min_gpu_mb": 0,
