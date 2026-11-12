@@ -15,8 +15,9 @@
 //! `--mode timing` reads a TSV of `profile page version rep user sys paragraphs` rows and prints
 //! the median, range and the ratio of the versions per profile and page.
 //!
-//! Every option is a named flag.
+//! Every option is a named flag (clap).
 
+use clap::Parser;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::process::ExitCode;
@@ -503,19 +504,44 @@ fn timing(args: &BTreeMap<String, String>) -> Result<(), String> {
     Ok(())
 }
 
+/// Every option is a named flag.
+#[derive(clap::Parser)]
+struct Cli {
+    /// `compare` or `timing`.
+    #[arg(long)]
+    mode: String,
+    #[arg(long)]
+    page: Option<String>,
+    #[arg(long)]
+    txt_a: Option<String>,
+    #[arg(long)]
+    txt_b: Option<String>,
+    #[arg(long)]
+    alto_a: Option<String>,
+    #[arg(long)]
+    alto_b: Option<String>,
+    #[arg(long = "ref")]
+    reference: Option<String>,
+    #[arg(long)]
+    tsv: Option<String>,
+}
+
 fn main() -> ExitCode {
+    let cli = Cli::parse();
     let mut args = BTreeMap::new();
-    let mut it = std::env::args().skip(1);
-    while let Some(flag) = it.next() {
-        let Some(key) = flag.strip_prefix("--") else {
-            eprintln!("unexpected argument {flag}: every option is a --flag");
-            return ExitCode::from(2);
-        };
-        let Some(value) = it.next() else {
-            eprintln!("--{key} needs a value");
-            return ExitCode::from(2);
-        };
-        args.insert(key.to_owned(), value);
+    args.insert("mode".to_owned(), cli.mode);
+    for (key, value) in [
+        ("page", cli.page),
+        ("txt-a", cli.txt_a),
+        ("txt-b", cli.txt_b),
+        ("alto-a", cli.alto_a),
+        ("alto-b", cli.alto_b),
+        ("ref", cli.reference),
+        ("tsv", cli.tsv),
+    ] {
+        if let Some(value) = value {
+            args.insert(key.to_owned(), value);
+        }
     }
     let result = match args.get("mode").map(String::as_str) {
         Some("compare") => compare(&args),

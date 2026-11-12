@@ -1,5 +1,5 @@
-# Compares the output of two Tesseract builds (#1835). Standalone, std only, outside the
-# repository's workspace: `cargo build --release` in this directory.
+# Compares the output of two Tesseract builds (#1835). Standalone, outside the
+# repository's workspace: `cargo build --release` in this directory (clap is its only dependency).
 [package]
 name = "tesseract-compare"
 version = "0.1.0"
@@ -9,3 +9,4 @@ publish = false
 [workspace]
 
 [dependencies]
+clap = { version = "4", features = ["derive"] }
