@@ -80,7 +80,7 @@ DRAINED_SERVER_STAGES = {"submitted", "published", "failed"}
 STATE_KEYS = ("claims", "selected", "held_since", "dead_lettered")
 # Pages archived while held (#835), kept in the controller state (batch_scheduler.QueueFeed).
 ARCHIVED_HELD = "archived_held"
-UNIT = "usnm-boinc-priority-controller"
+UNIT = "usnm-boinc-priority-controller@main"
 # Blob lease states a new lease can be taken in.
 FREE_LEASE_STATES = ("available", "expired", "broken")
 # The bridge steps' locks on the BOINC host (boinc/scripts/onprem-step.sh).

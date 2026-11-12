@@ -176,6 +176,21 @@ class HandoffWindowTests(unittest.TestCase):
             del records[index]
             self.assertFalse(window.audit(records, 0, window.DAY)["telemetry_window_passed"])
 
+    def test_default_unit_is_the_main_plans_and_the_old_shared_unit_does_not_count(self):
+        # One unit per plan since #1690; a journal of the old shared unit isn't the main plan's.
+        self.assertEqual(window.UNIT, "usnm-boinc-priority-controller@main.service")
+        old = "usnm-boinc-priority-controller.service"
+        records = fixture()
+        for record in records:
+            for key in ("UNIT", "_SYSTEMD_UNIT"):
+                if key in record:
+                    record[key] = old
+        report = window.audit(records, 0, window.DAY)
+        self.assertFalse(report["telemetry_window_passed"])
+        self.assertEqual(report["unit"], window.UNIT)
+        self.assertEqual(report["controller_invocations"], 0)
+        self.assertTrue(window.audit(records, 0, window.DAY, old)["telemetry_window_passed"])
+
     def test_cli_retains_input_hash_and_rejects_malformed_input(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "journal.jsonl"

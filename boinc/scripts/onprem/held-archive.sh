@@ -4,8 +4,11 @@
 # and bridge journals pile up toward the controller's caps (10,000 each); this moves them out,
 # as docs/boinc/server/batch-scheduler.md "Archive held pages (#835)" does by hand:
 #
-#   1. Stops usnm-boinc-priority-controller.timer and waits for a running tick to end. If the
-#      timer is already stopped, an operator has paused the controller: the run does nothing.
+#   1. Stops the main plan's timer, usnm-boinc-priority-controller@main.timer (#1690), and
+#      waits for a running tick to end. If the timer is already stopped, an operator has paused
+#      the controller: the run does nothing. If the old shared unit
+#      (usnm-boinc-priority-controller.timer) still runs instead, the run fails: the host hasn't
+#      moved to the per-plan units, so set USNM_CONTROLLER_UNIT to the old name or migrate.
 #   2. Bridges any batch dispatched earlier whose bridge receipt isn't here yet (a run that
 #      stopped between the two steps).
 #   3. Runs archive_history.py dispatch --include-held --apply, one batch at a time, under the
@@ -25,11 +28,12 @@
 #                   [--min-age-hours N] [--max-batches N] [--wait-mins N] [--tool FILE]
 #                   [--check-state-dir DIR]... [--tick-lock FILE]
 #
-# --tick-lock (or USNM_HELD_ARCHIVE_TICK_LOCK) names a flock file that every controller and
-# drain tick runs under (`flock -w ... FILE batch_scheduler.py ...`). Once the controller tick
-# it waited for has ended, the run takes that lock and holds it until it exits, so a drain tick
-# that was already queued on the lock can't take the controller's lease mid-run (CT 211, 11 Nov
-# 2026: "the controller lease is leased" at dispatch). Without it, nothing changes.
+# --tick-lock (or USNM_HELD_ARCHIVE_TICK_LOCK) names a flock file that every plan's tick runs
+# under (controller/controller-tick.sh; usnm-boinc-held-archive.service sets it). Once the
+# controller tick it waited for has ended, the run takes that lock and holds it until it exits,
+# so another plan's tick that was already queued on the lock can't take the controller's lease
+# mid-run (CT 211, 11 Nov 2026: "the controller lease is leased" at dispatch). Without it,
+# nothing changes.
 #
 # Other plans' state directories are passed to the dispatch step as --check-state-dir, so a page
 # another plan has claimed or selected is never archived (#1713). Without --check-state-dir, every
@@ -52,7 +56,9 @@ CONFIG=/etc/usnm/boinc-priority-controller.json
 STATE_DIR=/var/lib/usnm-priority-controller
 ARCHIVE=/srv/usnm-archive
 PAGES=1000 MIN_AGE=1 MAX_BATCHES=10 WAIT_MINS=60
-UNIT=${USNM_CONTROLLER_UNIT:-usnm-boinc-priority-controller}
+UNIT=${USNM_CONTROLLER_UNIT:-usnm-boinc-priority-controller@main}
+# The shared unit every plan ticked in before #1690.
+LEGACY_UNIT=usnm-boinc-priority-controller
 LOCK=${USNM_HELD_ARCHIVE_LOCK:-/run/usnm-boinc-held-archive.lock}
 TICK_LOCK=${USNM_HELD_ARCHIVE_TICK_LOCK:-}
 CHECK_DIRS=()
@@ -104,6 +110,12 @@ STEP=("${STEP[@]:1}")
 [ -n "$ENV_NAME" ] && [ ${#STEP[@]} -ge 1 ] || die "no env or step_command in $CONFIG"
 
 timer=$(systemctl is-active "$UNIT.timer" || true)
+if [ "$timer" != active ] && [ "$UNIT" != "$LEGACY_UNIT" ] &&
+  [ "$(systemctl is-active "$LEGACY_UNIT.timer" || true)" = active ]; then
+  # Not a pause: the controller still ticks in the shared unit, and skipping would let the
+  # journals grow to the cap unnoticed.
+  die "$UNIT.timer is $timer but the shared $LEGACY_UNIT.timer is active: migrate to the per-plan units (#1690) or set USNM_CONTROLLER_UNIT=$LEGACY_UNIT"
+fi
 if [ "$timer" != active ]; then
   printf '{"event": "boinc_held_archive", "skipped": "the controller timer is %s: an operator has paused the controller"}\n' "$timer"
   exit 0

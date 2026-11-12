@@ -68,16 +68,88 @@ Prod runs the queue-fed priority controller in the scan-fetch container (#866) a
 - `/var/lib/usnm-priority-controller`: state;
 - push command `/opt/usnm/scripts/ocr-node/push-boinc-scan.sh` (local).
 
-`usnm-boinc-priority-controller.service` runs one tick with `--apply`, `--server-status-url https://boinc.usnewsmap.com/server_status.php?xml=1` (without per-app status every app's work counts as OCR, which can block priority claims while unrelated GPU queues are full) and `--max-global-pending 3000` in drop-in `usnm-boinc-priority-controller.service.d/batch.conf` (2000 until 3 November, [#1474](https://github.com/tgoodyear/usnewsmap.com/issues/1474)). It sets `Environment=USNM_SETTINGS_HOME=/root/.config/usnewsmap`, since a system service needn't inherit `HOME` and the hand-off launcher then can't find its local environment file (the bridge launcher's stack discovery still works); verify hand-off `--what-if` under systemd, not only a shell. `usnm-boinc-priority-controller.timer` uses `OnBootSec=5min` and `OnUnitInactiveSec=5min`; events are in `journalctl -u usnm-boinc-priority-controller.service`. Stop the timer and let a tick finish before any configuration change or maintenance.
+Each plan ticks in its own unit, `usnm-boinc-priority-controller@PLAN.service`, from the template in `boinc/scripts/onprem/controller/` ([Per-plan ticks](#per-plan-ticks-1690)); the live plan is `@main`. Until a host is migrated, it runs every plan from one shared `usnm-boinc-priority-controller.service` (and the draining plans from `usnm-boinc-drain.service`). The live plan's tick runs with `--apply`, `--server-status-url https://boinc.usnewsmap.com/server_status.php?xml=1` (without per-app status every app's work counts as OCR, which can block priority claims while unrelated GPU queues are full) and `--max-global-pending 3000` (2000 until 3 November, [#1474](https://github.com/tgoodyear/usnewsmap.com/issues/1474)), from `/etc/usnm/boinc-priority-controller.flags` (on the shared service, `ExecStart` in drop-in `usnm-boinc-priority-controller.service.d/batch.conf`). The unit sets `Environment=USNM_SETTINGS_HOME=/root/.config/usnewsmap`, since a system service needn't inherit `HOME` and the hand-off launcher then can't find its local environment file (the bridge launcher's stack discovery still works); verify hand-off `--what-if` under systemd, not only a shell. Each plan's timer uses `OnBootSec=5min` and `OnUnitInactiveSec=5min`; the live plan's events are in `journalctl -u usnm-boinc-priority-controller@main.service`. Stop the plan's timer and let its tick finish before any configuration change; for maintenance that needs the controller paused, [pause every plan](#pausing-every-plan).
 
 Keep `max_pending: 40`, `pages_per_host: 2`, `batch_size: 10` (admission `min(40, active_hosts * 2)` under the global cap). A status fetch or parse failure stops the tick. Tune with runtime flags, never by changing the configuration hash or resetting state; shorten ticks with [`--refill-cap`](#refill-cap-1447).
 
 **Other apps' budget (#1474).** Stranded `usnm_qwen` replicas fill any cap, so `usnm_ocr` stops with `blocked_by: "global_safety_cap"`. `--other-app-budget B` counts other apps' unassimilated workunits (the inventory's `pending_workunits_by_app`) toward the cap only up to `B`, which must be below a cap set explicitly (flag or `max_global_pending` in the configuration), leaving the cohort `cap - B` less collection backlog. The count is per app, not the residual after OCR's named workunits, so unlisted OCR work counts in full. OCR plans only (Surya refuses it). Under a budget, all apps' work counted in full may not pass the feeder's 4,096 slots (`shmem_work_items`, reason `global_hard_cap`, which no cap setting lifts). Server images without the count discount nothing (`other_app_workunits: null`). Neither the pinned checkout nor the server image has it yet. To enable:
 
 1. Roll the server image past it ([release pipeline](onprem.md#reviewed-resumable-release-pipeline-551)) and [move the checkout](#moving-the-controller-checkout-1412), in either order.
-2. Add e.g. `--max-global-pending 3000 --other-app-budget 2500` to `ExecStart` (leaves `usnm_ocr` 500: the 300 high watermark in #1474 plus margin; the budget is the operator's choice).
-3. Dry-run (shows `other_app_budget`; an invalid budget fails), `systemctl daemon-reload`, run one tick.
+2. Add e.g. `--max-global-pending 3000 --other-app-budget 2500` to the live plan's flags file (leaves `usnm_ocr` 500: the 300 high watermark in #1474 plus margin; the budget is the operator's choice).
+3. Dry-run (`controller-tick.sh --plan main --dry-run` shows `other_app_budget`; an invalid budget fails), run one tick.
 4. Check `other_app_workunits` (not `null`), `global_pending_counted`, `global_hard_cap`, `backpressure_reason` before starting the timer. Removing the flag reverts.
+
+### Per-plan ticks (#1690)
+
+A oneshot service runs its `ExecStart` lines in order and stops at the first that fails, so in the shared service one plan's failed tick stopped the plans after it. Each plan now has its own unit and timer, from `boinc/scripts/onprem/controller/`:
+
+- `usnm-boinc-priority-controller@.service` runs `controller-tick.sh --plan %i` from `/opt/usnm`, with no start timeout: a tick killed mid-run leaves the controller lease held and every plan failing until it is broken by hand. Feed health fires `controller_tick` on a tick still running past its hang limit instead.
+- `usnm-boinc-priority-controller@.timer` starts the plan's next tick five minutes after its last one ended, failed or not. A plan whose bridge steps timed out (for example behind a long job on the BOINC host's step lock) tries again on its next tick, while the other plans go on ticking.
+- `controller-tick.sh --plan PLAN` reads `/etc/usnm/boinc-priority-controller.PLAN.json`, `/var/lib/usnm-priority-controller.PLAN` and the plan's flags in `/etc/usnm/boinc-priority-controller.PLAN.flags`. The plan `main` is the live plan in the unsuffixed paths the shared service used, so no configuration or state moves. The flags file holds one argument per line (a flag's value on the next line), with blank and `#` lines skipped; no shell reads it. It must exist, may be empty, and may not set `--config`, `--state-dir` or `--apply`, which the script sets. A draining plan's file has `--drain`. `--dry-run` runs the plan's tick without `--apply` or the lock, `--print-command` prints the command one argument per line, and `--add-flag ARG` (repeatable) adds an argument for one run, such as `--resume-native`.
+- `install.sh`, run as root from `/opt/usnm` once the checkout holds these files, installs the template and the held-page archive's units into `/etc/systemd/system` and reloads systemd. It enables and starts nothing and doesn't touch `/etc/usnm`.
+
+One plan per instance replaces the host-only units: the shared service for the live plan, `usnm-boinc-drain.service` for the draining plans (#1784), and `usnm-boinc-native-feed@PLAN` with `native-feed-tick.sh` for the native plans (#1780; their configuration and state paths are already the template's).
+
+To run a plan's tick by hand with an extra flag, stop its timer, wait for its service as below, then:
+
+```sh
+cd /opt/usnm
+USNM_SETTINGS_HOME=/root/.config/usnewsmap \
+  boinc/scripts/onprem/controller/controller-tick.sh --plan native-feed-3 --add-flag --resume-native
+systemctl start usnm-boinc-priority-controller@native-feed-3.timer
+```
+
+#### The tick lock
+
+Every plan's tick waits up to 30 minutes for `/run/usnm-boinc-controller-tick.lock` and holds it to the end, as the shared and drain services did, and `held-archive.sh` holds it for its whole run (#1766; `usnm-boinc-held-archive.service` sets `USNM_HELD_ARCHIVE_TICK_LOCK`). A tick that can't get it in time fails with a `boinc_batch_failure` that feed health classes as `lock_busy`. While the held-page archive runs, every plan other than `main` skips its tick (a `boinc_batch_skipped` line, exit 0) instead of waiting: the archive stops `main`'s timer and starts a `main` tick when it ends.
+
+The lock stays host-wide, so a native plan still waits for a `main` tick to end (10 to 20 minutes when it refills or runs gold). A narrower lock isn't safe while these hold:
+
+- `main()` holds the hand-off container's controller lease (`scheduler/controller.lock` in `boinc-handoff`, `Transport.lock`) for the whole tick and doesn't wait for it, and every plan but a Surya plan takes the same blob. A second plan's tick beside the first fails at once with "the controller lease is leased"; the tick lock makes it wait. Narrowing the host lock alone gains nothing.
+- `batch-inventory` writes one `scheduler/inventory.json` for the container, and `Transport.inventory` refuses one without its own nonce ("stale/concurrent inventory"), so two plans' inventories would overwrite each other.
+- A tick lists every plan's journals and decides ownership from that listing: `owned_records` and pages two plans claim (#1685), other plans' archives and claims (`--check-state-dir`, #1713, read under the lease for that reason), and the SQL/journal check. That needs no other plan exporting, collecting or archiving meanwhile.
+- The BOINC host runs one step at a time per lock (`onprem-step.sh`: `usnm-boinc-step.lock` for submit and gold, `usnm-boinc-handoff.lock` for hand-off steps, `spool-out` and `batch-inventory`) and waits at most `USNM_BOINC_STEP_LOCK_WAIT_SECS` (up to 300 s) before the step fails. Plans ticking side by side would queue there as well.
+
+Ticking plans side by side needs a lease and an inventory blob per plan (a `batch-inventory` change in the bridge image) and ownership checks that hold while another plan's journals change. Surya plans take no lease, but they take the tick lock as well.
+
+A plan's failure fails its own unit only. Its next tick starts on its own timer, so a failed tick needs no operator. A native plan's pause on an unpublished native result or a refused submission is the tick's own state ([Native OCR plans](#native-ocr-plans-1780)) and still needs `--resume-native` once, run by hand as above; don't leave it in the flags file.
+
+#### Pausing every plan
+
+Archive, reconcile, a checkout move and other maintenance that needs the controller paused stop every plan's timer, not only `main`'s. Keep the list of the timers that were running, so a plan an operator stopped stays stopped:
+
+```sh
+systemctl list-units --plain --no-legend --state=active 'usnm-boinc-priority-controller@*.timer' \
+  | awk '{print $1}' > /root/controller-timers.txt
+xargs -r systemctl stop < /root/controller-timers.txt
+# repeat until it prints nothing: no plan's tick is running
+systemctl list-units --plain --no-legend --state=activating,deactivating 'usnm-boinc-priority-controller@*.service'
+# ... the maintenance ...
+xargs -r systemctl start < /root/controller-timers.txt
+```
+
+#### Monitoring
+
+The controller feed source reads one unit: `SOURCE_ARGS="controller --unit usnm-boinc-priority-controller@main.service ..."` ([boundaries-and-monitoring.md](boundaries-and-monitoring.md)). A draining or native plan's failures stay in its own unit and never count toward the live plan's `failed_in_a_row`; feed health doesn't watch them yet. `systemctl list-units --state=failed 'usnm-boinc-priority-controller@*'` lists the plans whose last tick failed. `scripts/ocr-node/throughput-collect.py` reads `CONTROLLER_UNIT`, the shared unit's name, so its `ocr_collect_pages` series counts nothing from the per-plan units until it reads `@main` (#1784).
+
+#### Migration from the shared service
+
+The operator does this on the controller host between ticks. Nothing in `/var/lib` changes, so no state needs a reconcile, and rollback is putting the old units back.
+
+1. **Open a rotation window** for the whole migration, so the missing ticks don't page: `python3 /opt/usnm-feed-monitor/feed_status.py --rotation-start --minutes 60 --reason "per-plan controller units (#1690)"` on the evaluator host.
+2. **Save the old units**: `systemctl cat usnm-boinc-priority-controller.service usnm-boinc-priority-controller.timer usnm-boinc-drain.service usnm-boinc-drain.timer 'usnm-boinc-native-feed@*' usnm-boinc-held-archive.service > /root/controller-units-<date>.txt`, and copy those unit files and their `.d/` drop-in directories from `/etc/systemd/system` into `/root/controller-units-<date>/`.
+3. **Write the flags files** while the old units still run. For each plan, take the arguments after `batch_scheduler.py` in its old `ExecStart` (the shared service's drop-in for `main`, the drain service's line for each draining plan, `/etc/usnm/native-feed-PLAN.flags` for a native plan), leave out `--config`, `--state-dir` and `--apply`, and write one per line to `/etc/usnm/boinc-priority-controller.flags` (`main`) or `/etc/usnm/boinc-priority-controller.PLAN.flags`. Leave `--resume-native` out.
+4. **Pause everything old**: `systemctl stop usnm-boinc-held-archive.timer usnm-boinc-priority-controller.timer usnm-boinc-drain.timer 'usnm-boinc-native-feed@*.timer'`, then repeat `systemctl is-active usnm-boinc-held-archive.service usnm-boinc-priority-controller.service usnm-boinc-drain.service 'usnm-boinc-native-feed@*.service'` until none is active or activating.
+5. **Move the checkout** to a commit with this change ([Moving the controller checkout](#moving-the-controller-checkout-1412): steps 1 and 2, then step 3's commands up to the second `sha256sum`; the first tick comes in step 8). From that commit `held-archive.sh` and `archive_history.py` name `@main` by default; `held-archive.sh` fails rather than skip while only the shared timer is active.
+6. **Install**: `cd /opt/usnm && boinc/scripts/onprem/controller/install.sh`. Remove `/etc/systemd/system/usnm-boinc-held-archive.service.d/tick-lock.conf` (the unit now sets the same) and `systemctl daemon-reload`.
+7. **Check each plan's command** against its old line: `controller-tick.sh --plan PLAN --print-command` must show the same arguments, and `--dry-run` must report the `config_sha256` that the plan's `state.json` holds.
+8. **Start the plans one at a time**, `main` first: `systemctl start usnm-boinc-priority-controller@PLAN.service` (one tick; read `journalctl -u usnm-boinc-priority-controller@PLAN.service -n 50 --no-pager`), then `systemctl enable --now usnm-boinc-priority-controller@PLAN.timer`.
+9. **Retire the old units**: `systemctl disable usnm-boinc-priority-controller.timer usnm-boinc-drain.timer 'usnm-boinc-native-feed@PLAN.timer'` (each native plan), remove their unit files, drop-ins and `native-feed-tick.sh` (copies are in step 2's directory), and `systemctl daemon-reload`.
+10. **Point monitoring at `@main`**: set `--unit usnm-boinc-priority-controller@main.service` in the controller source's `/etc/usnm-boinc/feed-source-controller.env`, start `usnm-boinc-held-archive.timer`, and close the window with `feed_status.py --rotation-end` once a `main` tick is reported.
+
+No tick runs twice. The old timers are stopped and their services idle before any new timer starts, each plan's state directory has its own `controller.lock` (taken without waiting, so a second tick of the same plan fails instead of running beside it), and every tick takes the tick lock and the controller lease. An old timer left enabled by mistake only adds ticks one after another. The controller is paused from step 4 to step 8, about as long as a checkout move.
+
+**Rollback**: pause the new plans ([Pausing every plan](#pausing-every-plan)) and `systemctl disable` their timers. Copy the saved unit files and drop-ins back from `/root/controller-units-<date>/` (the held-archive unit and its `tick-lock.conf` too) and `systemctl daemon-reload`. If the checkout stays on the new commit, add `Environment=USNM_CONTROLLER_UNIT=usnm-boinc-priority-controller` to a `usnm-boinc-held-archive.service` drop-in, since `held-archive.sh` names `@main` by default; if it moves back, follow the checkout move's rollback. Set the controller source's `--unit` back to `usnm-boinc-priority-controller.service`, start the old timers and the held-archive timer, and check one tick of each. The flags files can stay; the old units don't read them.
 
 ### Moving the controller checkout (#1412)
 
@@ -103,7 +175,7 @@ Moving `/opt/usnm` deploys the controller (`boinc/scripts/batch_scheduler.py`, `
    python3 -m unittest boinc/scripts/test_batch_scheduler.py \
      boinc/images/server/test_batch_inventory.py
    python3 boinc/scripts/batch_scheduler.py --config /etc/usnm/boinc-priority-controller.json \
-     --state-dir /nonexistent <the drop-in's other flags, without --apply>
+     --state-dir /nonexistent <the live plan's flags file, without --apply>
    ```
 
    Then check both versions own the same jobs in the same stages, from a state copy taken between ticks (files only, since the journal cache is the last full listing a tick made, not the container now; never run a tick against the copy, even `--drain`, since a tick acts on the live feed):
@@ -144,11 +216,9 @@ Moving `/opt/usnm` deploys the controller (`boinc/scripts/batch_scheduler.py`, `
    PY
    ```
 
-3. **Move** detached; start the timer only after a clean tick, otherwise roll back (step 5):
+3. **Move** detached; start the timers only after a clean tick, otherwise roll back (step 5). Every plan runs from this checkout, so [pause every plan](#pausing-every-plan) first:
 
    ```sh
-   systemctl stop usnm-boinc-priority-controller.timer
-   systemctl is-active usnm-boinc-priority-controller.service   # repeat until neither active nor activating
    cd /opt/usnm
    git rev-parse HEAD                                            # the previous pin
    sha256sum boinc/scripts/batch_scheduler.py                    # the previous file
@@ -158,26 +228,28 @@ Moving `/opt/usnm` deploys the controller (`boinc/scripts/batch_scheduler.py`, `
    git checkout --detach <commit>
    git status --short                                            # must print nothing
    sha256sum boinc/scripts/batch_scheduler.py
-   systemctl start usnm-boinc-priority-controller.service        # one tick by hand
-   journalctl -u usnm-boinc-priority-controller.service -n 50 --no-pager
-   systemctl start usnm-boinc-priority-controller.timer
+   systemctl start usnm-boinc-priority-controller@main.service   # one tick by hand
+   journalctl -u usnm-boinc-priority-controller@main.service -n 50 --no-pager
+   xargs -r systemctl start < /root/controller-timers.txt
    ```
 
-4. **Record** both commits, both sums, the diff path, the empty status and the first tick on the issue; add this to the drop-in and `systemctl daemon-reload`:
+4. **Record** both commits, both sums, the diff path, the empty status and the first tick on the issue; add this as a comment to the live plan's flags file:
 
-   ```ini
+   ```sh
    # /opt/usnm at <commit> since <date> (#<issue>). Revert: <previous commit>, /root/usnm-checkout-<date>.diff.
    ```
 
-5. **Roll back**: stop the timer and wait for a running tick as in step 3. Never roll back the state directory; if step 1 showed state or journal changes, plan the reconcile before moving:
+5. **Roll back**: pause every plan as in step 3. Never roll back the state directory; if step 1 showed state or journal changes, plan the reconcile before moving:
 
    ```sh
    cd /opt/usnm
    git checkout --detach <previous commit>
    git apply /root/usnm-checkout-<date>.diff                     # if the previous checkout had local edits
    sha256sum boinc/scripts/batch_scheduler.py                    # must match the recorded previous file
-   systemctl start usnm-boinc-priority-controller.timer
+   xargs -r systemctl start < /root/controller-timers.txt
    ```
+
+   A previous commit from before the per-plan units has no `controller-tick.sh`: roll back the units first ([Migration from the shared service](#migration-from-the-shared-service), Rollback).
 
 ### Batched steps (#932)
 
@@ -207,7 +279,7 @@ The hand-off steps default to the Azure hand-off job, which prod no longer has (
 Summaries carry `timings.execution_routes`: the launcher actually used (`onprem` or `azure`), failed launches included, scan pushes apart from journal and lease operations, with no argv, credentials, page text or scan paths. A non-queue scan push still uses the Azure container. To audit a window:
 
 ```sh
-journalctl --all -u usnm-boinc-priority-controller.service --since "$START" --until "$END" \
+journalctl --all -u usnm-boinc-priority-controller@main.service --since "$START" --until "$END" \
   -o json --no-pager > controller-journal.jsonl
 python3 boinc/scripts/handoff-window.py --journal controller-journal.jsonl \
   --since "$START_UNIX_SECONDS" --until "$END_UNIX_SECONDS"
@@ -268,9 +340,9 @@ A plan with `"app": "usnm_ocr_native"` feeds the native build ([native-ocr.md](.
 - **CPU fill.** A host's room is `units_per_cpu` (default 1) times the CPUs its client reports (`batch-inventory`'s `host_cpus`, from `host.p_ncpus`, active hosts only), at most `pages_per_host`, less its units not yet settled. The target is the hosts' room, at most `max_pending`, under the global cap. Each unit goes to the host with the most room left, recorded in the state (`native_targets`) before submission. A bridge image without `host_cpus` gives every host none.
 - **Submission.** `submit-remote` with `NATIVE_UNITS=<job>=<host>,...` (allowed over ssh) runs `usnm-boinc submit --app usnm_ocr_native --target-host <host> --trust $SHARE_DIR/gold/trust.json` for each job. It creates the unit only if `Trust::refuse_job` admits the host for the job's scope and native digest, pins it to the newest `usnm_ocr_native` version the feeder loads (not deprecated, and at or above `min_version`, or else the highest of its platform and plan class) that packages the job's build, and stops at the first refusal.
 - **Pause.** A native result a collect attempt leaves unpublished (its host isn't trusted for the build, or its collect failed; a result past `batch_size` not yet tried is only backlog) or keeps under a held scope pauses the plan for as long as it is there, whether it came in this tick or before, and a failed or refused submission pauses it too. The tick doesn't stop: it reports `backpressure_reason` `native_paused` and a `native_paused` alert, and claims, exports and submits nothing until an operator passes `--resume-native` once. A result still held, or kept and not yet archived ([Archive held pages](#archive-held-pages-835)), pauses it again. A collect failure that leaves nothing unpublished still fails the tick. Tick lines carry `native` (hosts, room, units out, the pause).
-- **Lock.** Every plan takes the hand-off container's controller lease, so run a native plan's tick after the priority controller's, not beside it. Container plans count native workunits among OCR's pending work, so the native units also take a little of their room.
+- **Lock.** Every plan takes the hand-off container's controller lease, so a native plan's tick runs after the live plan's, not beside it: each waits for the host's tick lock ([The tick lock](#the-tick-lock)). Container plans count native workunits among OCR's pending work, so the native units also take a little of their room.
 - **Sizing.** `batch_size` is the most a tick refills, `max_pending` the most units out across hosts, and a host's room is `units_per_cpu` times its CPUs or `pages_per_host`, whichever is lower. Set `max_pending` to the sum of the hosts' rooms and `batch_size` to at least the most one tick refills. Units are sent only when a host asks, and a client whose request finds no work backs off before it asks again. On 12 November 2026 a 24-thread host with a room of 12 drained it in about two minutes, asked again with none left, and sat idle for 12 minutes while 12 new units waited. With a room of 24 it ran all 24 units at once, about 190 seconds each, and was idle for the 30 to 40 minutes between ticks, because ticks wait for the main controller's tick lock and a main tick that refills or runs gold holds it 10 to 20 minutes. After a tick a host stays busy for about the room divided by its CPUs, rounded up, times the measured unit time (here 24 units on 24 CPUs is one round of about 190 seconds). To cover a gap between ticks, set `units_per_cpu` to the gap divided by the unit time, rounded up, and check that `pages_per_host` and `max_pending` leave room for it.
-- **Changing a bound or adding a platform.** `batch_size`, `max_pending`, `pages_per_host`, `units_per_cpu` and `image` are in the allocation digest, so changing one is a new plan: drain the old one (`--drain` collects and sends nothing; a native plan's claims are exported and submitted in the tick that makes them, so a drain normally strands nothing for `archive_history.py reconcile`; dry-run it to be sure), start the new one with `--check-state-dir` for each plan it follows, and disable the old timer once its units are collected. Each platform's build has its own digest ([native-ocr.md](../apps/native-ocr.md#native-usnm_ocr-on-more-platforms)), so macOS and Windows hosts get plans of their own, each with the build's `image` and its hosts in `native_hosts`; more hosts of the same build only extend that list. The CT 211 operator tooling takes the plan name: `native-feed-tick.sh PLAN [flags]` (config `/etc/usnm/boinc-priority-controller.PLAN.json`, state `/var/lib/usnm-priority-controller.PLAN`, the plan's own flags in `/etc/usnm/native-feed-PLAN.flags`) run by `usnm-boinc-native-feed@PLAN.service` and its timer.
+- **Changing a bound or adding a platform.** `batch_size`, `max_pending`, `pages_per_host`, `units_per_cpu` and `image` are in the allocation digest, so changing one is a new plan: drain the old one (`--drain` collects and sends nothing; a native plan's claims are exported and submitted in the tick that makes them, so a drain normally strands nothing for `archive_history.py reconcile`; dry-run it to be sure), start the new one with `--check-state-dir` for each plan it follows, and disable the old timer once its units are collected. Each platform's build has its own digest ([native-ocr.md](../apps/native-ocr.md#native-usnm_ocr-on-more-platforms)), so macOS and Windows hosts get plans of their own, each with the build's `image` and its hosts in `native_hosts`; more hosts of the same build only extend that list. Each plan ticks in `usnm-boinc-priority-controller@PLAN.service` and its timer (config `/etc/usnm/boinc-priority-controller.PLAN.json`, state `/var/lib/usnm-priority-controller.PLAN`, the plan's own flags in `/etc/usnm/boinc-priority-controller.PLAN.flags`; [Per-plan ticks](#per-plan-ticks-1690)). Until CT 211 is migrated it runs `native-feed-tick.sh PLAN [flags]` from `usnm-boinc-native-feed@PLAN.service`, with the flags in `/etc/usnm/native-feed-PLAN.flags`.
 
 ### Separate hand-off runtime
 
@@ -387,8 +459,8 @@ Anything else is listed under `skipped` with its reason and left alone, as are b
 
 Before anything changes, every plan given (the draining one and each `--check-config`) must accept the journals and its own state as they will be, with `owned_records` as a tick runs it, no page passed over. The dry run shows both (`owned_records.before`, `owned_records.after`) and the pages two plans claim (`collisions`). A page whose draining job reached BOINC isn't given back, so a live plan that claimed it still refuses and the apply stops: collect it first, or settle it by hand.
 
-1. `systemctl stop usnm-boinc-priority-controller.timer`; wait until `systemctl is-active usnm-boinc-priority-controller.service` is inactive or failed. Every plan's tick runs from that service, so no plan ticks meanwhile.
-2. On the BOINC host, list the bridge journals into a file and copy it to the controller host: `ls /srv/usnm-boinc/project/handoff/jobs > bridge-jobs.txt`. Take it only after the timer is stopped and the service inactive (step 1), so no submission is missed; the apply plans again under the locks against this listing.
+1. [Pause every plan](#pausing-every-plan), so no plan ticks meanwhile.
+2. On the BOINC host, list the bridge journals into a file and copy it to the controller host: `ls /srv/usnm-boinc/project/handoff/jobs > bridge-jobs.txt`. Take it only after every plan is paused (step 1), so no submission is missed; the apply plans again under the locks against this listing.
 3. Dry-run, naming every plan on the hand-off container (each `--check-config` with its `--check-state-dir`, in order):
 
    ```sh
@@ -403,7 +475,7 @@ Before anything changes, every plan given (the draining one and each `--check-co
    Read `found`, `pages`, `skipped`, `collisions` and `owned_records.after` (every plan `ok`). Reconcile reads only the Azure hand-off, so it refuses a plan with a local `handoff_root`.
 
 4. Apply with the same arguments and `--apply --confirm-controller-paused --confirm-plan-draining`, plus the dry run's counts as `--expect-dead-lettered N --expect-journal-less N --expect-unsubmitted N` (one per kind asked for). It holds every plan's `controller.lock` and the controller lease, plans again and refuses if the counts differ or a plan would still refuse. The receipt is `receipts/reconcile.json`, with each plan's `owned_records` afterwards; a run stopped half way resumes when rerun. A submission changes only the bridge journal, so the hand-off checks can't see one: a resume of a run with `unsubmitted` pages needs a new `--bridge-jobs` listing, taken after the run was planned, and refuses if it names any of them. A resume also needs the same plans and configs it was planned with (the manifest's `checked_plan_digests`), holds all their locks, and runs every plan's `owned_records` again on what the run leaves before changing anything more.
-5. Start the timer and check the next tick reports `ownership_conflicts: 0`.
+5. Start the timers again (`xargs -r systemctl start < /root/controller-timers.txt`) and check the next tick reports `ownership_conflicts: 0`.
 
 `--kind dead-lettered --kind journal-less` needs no bridge listing. The archive is the only copy of what was given back; back it up with the controller state. To undo, restore the blobs from `handoff/` and the entries from `controller/state-entries.json` with the controller paused, before any plan claims the pages again.
 
@@ -477,7 +549,7 @@ python3 -m unittest -v boinc/scripts/test_batch_scheduler.py \
   boinc/images/server/test_batch_inventory.py
 ```
 
-For a new plan: run one approved `--apply` tick, check reservations, host IDs, trust, published ALTO and Parquet and `ocr-sync`, confirm a second tick duplicates nothing, then schedule it like prod's [timer](#on-prem-controller-host-ct-211).
+For a new plan: run one approved `--apply` tick, check reservations, host IDs, trust, published ALTO and Parquet and `ocr-sync`, confirm a second tick duplicates nothing, then schedule it with its own [per-plan unit](#per-plan-ticks-1690).
 
 State and journals are durable recovery state. After a crash the lease stays held: stop the schedule, inspect executions and journals, reconcile `submitting` jobs, and only once the former owner is confirmed stopped may the serialized operator break the stale `scheduler/controller.lock` lease. Never delete journals, reset state or break a live lease. A missing reply doesn't mean `create_work` failed.
 
@@ -511,7 +583,7 @@ az account get-access-token --resource https://storage.azure.com/ \
 
 The maintainer approves each live run:
 
-1. `systemctl stop usnm-boinc-priority-controller.timer`; wait until `systemctl is-active usnm-boinc-priority-controller.service` is inactive or failed.
+1. [Pause every plan](#pausing-every-plan): `--confirm-controller-paused` checks `usnm-boinc-priority-controller@main` (`--controller-unit`), and another plan's tick would hold the controller lease.
 2. Put `archive_history.py` beside the controller's `batch_scheduler.py` (e.g. `/root/usnm-archive`) and dry-run `dispatch`; read `pages.eligible`, `batch` and `outstanding_pages.unchanged`. Allow about 7 MB a page on an archive dataset off the root filesystem.
 
    ```sh
@@ -542,7 +614,7 @@ The maintainer approves each live run:
    # then the same with --apply --confirm-controller-paused
    ```
 
-6. Repeat until well under the cap, start the timer, and watch a tick end without `dispatch inventory limit/consistency failure`.
+6. Repeat until well under the cap, start the timers again, and watch a tick end without `dispatch inventory limit/consistency failure`.
 
 The archive is the only copy; back it up with the controller state.
 
@@ -559,10 +631,10 @@ python3 /root/usnm-archive/archive_history.py dispatch --include-held --min-age-
 
 `usnm-boinc-held-archive.timer` on the controller host runs this every 4 hours, at 00:30, 04:30, 08:30, 12:30, 16:30 and 20:30 UTC. Once a day was too slow: a main plan at a 150-page refill cap adds about 450 journals an hour and reached 90% of the 10,000 journal cap between runs. A run that is still going when the next one is due delays it; systemd doesn't start a second copy ([`held-archive.sh`](../../../boinc/scripts/onprem/held-archive.sh), unit files in `boinc/scripts/onprem/`):
 
-1. Stop the controller timer and wait for a tick (exit if it was already stopped).
+1. Stop the live plan's timer (`usnm-boinc-priority-controller@main.timer`) and wait for its tick (exit if it was already stopped), then take the tick lock, so no other plan ticks until the run ends; other plans skip their ticks meanwhile.
 2. Bridge any batch with a dispatch receipt but no `receipts/bridge.json`.
 3. Apply up to 10 batches (`--include-held --min-age-hours 1 --pages 1000`) into `/srv/usnm-archive`, each bridged via `usnm-boinc-step --target archive --step bridge --var ARCHIVE_BATCH=<NNNN>`.
-4. Restart the controller timer and a tick, however it ended.
+4. Restart the live plan's timer and a tick, however it ended.
 
 Without `--check-state-dir`, `held-archive.sh` checks every sibling `<state dir>.*` that holds a `state.json` (the drain plans), so it never archives a page another plan claimed (#1713). No db step (#1587). It logs one `boinc_held_archive` line (`journalctl -u usnm-boinc-held-archive`), and feed health watches it (`--maintenance-unit usnm-boinc-held-archive.service`; failures as `controller_tick`, #1441; no missed-tick alarm until 15 minutes after). Keep the BOINC host's `archive_history.py` in step. A failure fails the unit. 1,000 pages take about 15 minutes, with no refill meanwhile; pause with `systemctl stop usnm-boinc-held-archive.timer`, and a run stopped half way resumes on the next one.
 

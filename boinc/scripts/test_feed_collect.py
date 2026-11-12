@@ -965,7 +965,7 @@ class MaintenanceTests(unittest.TestCase):
 
     ARCHIVE = "usnm-boinc-held-archive.service"
 
-    def observe(self, events=(), native=(), archive=None, **status):
+    def observe(self, events=(), native=(), archive=None, unit="usnm-boinc-priority-controller.service", **status):
         properties = {"LoadState": "loaded", "SubState": "dead", "Result": "success",
                       "ExecMainStartTimestampMonotonic": 100000000,
                       "ExecMainExitTimestampMonotonic": 120000000}
@@ -981,7 +981,7 @@ class MaintenanceTests(unittest.TestCase):
         with patch.object(C, "run", side_effect=outputs) as run, \
                 patch.object(C.time, "time", return_value=NOW), \
                 patch.object(C.time, "clock_gettime", return_value=5000):
-            tick = C.controller("usnm-boinc-priority-controller.service", (self.ARCHIVE,))
+            tick = C.controller(unit, (self.ARCHIVE,))
         return tick, run
 
     def test_both_journals_are_read_and_an_archive_failure_is_the_controllers(self):
@@ -1028,6 +1028,24 @@ class MaintenanceTests(unittest.TestCase):
                 else:
                     with self.assertRaisesRegex(ValueError, "no recent completed controller tick"):
                         self.observe(old, archive=archive)
+
+    def test_another_plans_unit_is_not_the_live_plans(self):
+        # One unit per plan (#1690): a native or draining plan's failed ticks, in its own unit,
+        # never count towards the live plan's streak, and systemd is asked about the live unit.
+        main = "usnm-boinc-priority-controller@main.service"
+        native = "usnm-boinc-priority-controller@native-feed-3.service"
+        lines = [(NOW - 300 + n, native, {"event": "boinc_batch_failure", "error": "hand-off storage failed"})
+                 for n in range(3)]
+        lines.append((NOW - 4, main, {"event": "boinc_batch_tick", "timings": {"tick_seconds": 2}}))
+        tick, run = self.observe(lines, unit=main)
+        self.assertEqual((tick["ok"], tick["failed_in_a_row"], tick["controller_failure_at"]), (True, 0, 0))
+        self.assertEqual(run.call_args_list[1].args[0][:3], ["systemctl", "show", main])
+
+    def test_the_live_plans_unit_is_the_default(self):
+        with patch.object(C, "controller", return_value={"ok": True}) as controller, \
+                tempfile.TemporaryDirectory() as folder:
+            self.assertEqual(C.main(["controller", "--output", str(Path(folder) / "controller.json")]), 0)
+        controller.assert_called_once_with("usnm-boinc-priority-controller@main.service", ())
 
     def test_a_maintenance_unit_must_be_another_service(self):
         for maintenance in (("usnm-boinc-priority-controller.service",), ("bad unit",), ("x.timer",)):

@@ -11,7 +11,7 @@ import time
 
 DAY = 24 * 60 * 60
 MAX_GAP = 20 * 60
-UNIT = "usnm-boinc-priority-controller.service"
+UNIT = "usnm-boinc-priority-controller@main.service"
 STARTING = "7d4958e842da4a758f6c1cdc7b36dcc5"
 FINISHED = "39f53479d3a045ac8e11786248231fbf"
 REQUIRED_ROUTES = {

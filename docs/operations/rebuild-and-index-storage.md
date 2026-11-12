@@ -250,8 +250,8 @@ The #283/#245/#416 move ([ADR-0021](../design/adr/0021-separate-index-storage.md
    Record between BOINC priority-controller ticks. On the controller host ([the batch scheduler](../boinc/server/batch-scheduler.md#on-prem-controller-host-ct-211)):
 
    ```sh
-   systemctl stop usnm-boinc-priority-controller.timer
-   systemctl is-active usnm-boinc-priority-controller.service   # repeat until neither active nor activating
+   systemctl stop usnm-boinc-priority-controller@main.timer
+   systemctl is-active usnm-boinc-priority-controller@main.service   # repeat until neither active nor activating
    ```
 
    As root on the batch container's host:
@@ -263,7 +263,7 @@ The #283/#245/#416 move ([ADR-0021](../design/adr/0021-separate-index-storage.md
    Back on the controller host:
 
    ```sh
-   systemctl start usnm-boinc-priority-controller.timer
+   systemctl start usnm-boinc-priority-controller@main.timer
    ```
 
    This runs the batch container's installed release (`/usr/local/lib/usnm-ingest/current`), which must have `--current`. For another commit, install it (home-infra `scripts/lab/batch-ct-ingest.sh --install --tag <sha>`) and pass `--tag <sha>`. CI publishes an image only for commits that change the images, and only for main's head or an older commit when no newer one changes them, so not every commit has one. Check first; this prints the sha when the tag is there:

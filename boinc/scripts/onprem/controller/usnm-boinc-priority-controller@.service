@@ -1,0 +1,18 @@
+[Unit]
+Description=BOINC batch controller tick for plan %i (#1690)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# The controller's pinned checkout, identity (its az sign-in) and settings. A system service
+# needn't inherit HOME, so the hand-off launcher is told where its settings are.
+WorkingDirectory=/opt/usnm
+Environment=USNM_SETTINGS_HOME=/root/.config/usnewsmap
+# The plan's configuration, state and flags come from its name (see controller-tick.sh). Every
+# plan's tick waits on the host's tick lock, as held-archive.sh does.
+ExecStart=/usr/bin/bash /opt/usnm/boinc/scripts/onprem/controller/controller-tick.sh --plan %i
+# No start timeout: a tick killed mid-run leaves the hand-off container's controller lease held
+# (Transport.lock takes an infinite lease), and every plan then fails until it is broken by hand
+# (#1698). feed health fires controller_tick on a tick still running past its hang limit instead.
+TimeoutStartSec=infinity

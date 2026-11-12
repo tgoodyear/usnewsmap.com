@@ -77,6 +77,8 @@ echo "systemctl $*" >> "$FAKE_LOG"
 case "$1" in
   is-active)
     case "$2" in
+      # The shared unit from before #1690, when a test sets it apart.
+      usnm-boinc-priority-controller.timer) cat "${FAKE_LEGACY_TIMER:-$FAKE_TIMER}" ;;
       *.timer) cat "$FAKE_TIMER" ;;
       *) echo inactive ;;
     esac ;;
@@ -129,12 +131,12 @@ class HeldArchive(unittest.TestCase):
         done = self.run_archive()
         self.assertEqual(done.returncode, 0, done.stderr)
         log = self.log()
-        self.assertIn("systemctl stop usnm-boinc-priority-controller.timer", log)
-        stop = log.index("systemctl stop usnm-boinc-priority-controller.timer")
+        self.assertIn("systemctl stop usnm-boinc-priority-controller@main.timer", log)
+        stop = log.index("systemctl stop usnm-boinc-priority-controller@main.timer")
         first_apply = next(i for i, line in enumerate(log) if line.startswith("tool dispatch") and "--apply" in line)
         self.assertLess(stop, first_apply)
-        self.assertEqual(log[-2:], ["systemctl start usnm-boinc-priority-controller.timer",
-                                    "systemctl start --no-block usnm-boinc-priority-controller.service"])
+        self.assertEqual(log[-2:], ["systemctl start usnm-boinc-priority-controller@main.timer",
+                                    "systemctl start --no-block usnm-boinc-priority-controller@main.service"])
         steps = [line for line in log if line.startswith("step ")]
         self.assertEqual(steps, [f"step -- --env prod --target archive --step bridge --var ARCHIVE_BATCH={n} "
                                  "--wait-mins 1" for n in ("0001", "0002")])
@@ -161,6 +163,30 @@ class HeldArchive(unittest.TestCase):
         self.assertFalse(any(line.startswith(("tool", "step", "systemctl stop", "systemctl start"))
                              for line in self.log()))
         self.assertEqual((self.root / "timer").read_text().strip(), "inactive")
+
+    def test_the_main_plans_unit_is_the_default(self):
+        done = self.run_archive()
+        self.assertEqual(done.returncode, 0, done.stderr)
+        tool = [line for line in self.log() if line.startswith("tool dispatch")]
+        self.assertTrue(tool and all("--controller-unit usnm-boinc-priority-controller@main" in line
+                                     for line in tool))
+
+    def test_a_controller_still_on_the_shared_unit_fails_instead_of_skipping(self):
+        # #1690: before the host moves to the per-plan units, the main plan's timer isn't there
+        # but the shared one ticks. That isn't an operator's pause: skipping would let the
+        # journals reach the cap unnoticed.
+        (self.root / "timer").write_text("inactive\n")
+        (self.root / "legacy").write_text("active\n")
+        done = self.run_archive(FAKE_LEGACY_TIMER=str(self.root / "legacy"))
+        self.assertEqual(done.returncode, 1)
+        self.assertIn("migrate to the per-plan units", done.stdout)
+        self.assertFalse(any(line.startswith(("tool", "step", "systemctl stop", "systemctl start"))
+                             for line in self.log()))
+        # Named on purpose, the shared unit is still archived around.
+        done = self.run_archive(FAKE_LEGACY_TIMER=str(self.root / "legacy"),
+                                USNM_CONTROLLER_UNIT="usnm-boinc-priority-controller")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn("systemctl stop usnm-boinc-priority-controller.timer", self.log())
 
     def test_a_failed_bridge_fails_the_run_resumes_and_is_retried_first_next_time(self):
         done = self.run_archive(FAKE_BRIDGE_FAILS="1")
@@ -220,8 +246,8 @@ class HeldArchive(unittest.TestCase):
         self.assertLess(log.index("holder released"), first_tool, log)
         self.assertIn("tick lock held", log)
         self.assertNotIn("tick lock free", log)
-        self.assertEqual(log[-2:], ["systemctl start usnm-boinc-priority-controller.timer",
-                                    "systemctl start --no-block usnm-boinc-priority-controller.service"])
+        self.assertEqual(log[-2:], ["systemctl start usnm-boinc-priority-controller@main.timer",
+                                    "systemctl start --no-block usnm-boinc-priority-controller@main.service"])
         self.assertEqual(subprocess.run(["flock", "-n", str(tick), "true"]).returncode, 0)
 
     def test_a_stop_while_waiting_for_the_tick_lock_resumes_at_once(self):
@@ -328,7 +354,7 @@ class HeldArchive(unittest.TestCase):
         self.assertEqual(proc.returncode, 143)
         log = self.log()
         released = log.index("tool released the lease")
-        self.assertLess(released, log.index("systemctl start usnm-boinc-priority-controller.timer"))
+        self.assertLess(released, log.index("systemctl start usnm-boinc-priority-controller@main.timer"))
         self.assertEqual((root / "timer").read_text().strip(), "active")
 
     def test_a_stop_during_the_bridge_ends_it_and_resumes(self):

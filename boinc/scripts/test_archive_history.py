@@ -259,6 +259,21 @@ class DispatchTests(DispatchFixture):
         self.assertEqual(summary["outstanding_pages"], {"before": 1, "after": 1, "unchanged": True, "error": None})
         self.assertTrue(summary["controller"]["paused"])
 
+    def test_the_controller_checked_by_default_is_the_main_plans_unit(self):
+        # One unit per plan since #1690: the live plan ticks in usnm-boinc-priority-controller@main.
+        asked = []
+
+        def state(unit):
+            asked.append(unit)
+            return self.units[unit.rsplit(".", 1)[1]]
+
+        with mock.patch.object(archive, "unit_state", state):
+            code, summary, _ = run(self.argv(pages=3))
+        self.assertEqual(code, 0)
+        self.assertEqual(sorted(set(asked)), ["usnm-boinc-priority-controller@main.service",
+                                              "usnm-boinc-priority-controller@main.timer"])
+        self.assertTrue(summary["controller"]["paused"])
+
     def test_apply_refuses_unless_the_controller_is_paused_and_idle(self):
         before = self.snapshot()
         code, _, errors = run(self.argv("--apply"))
