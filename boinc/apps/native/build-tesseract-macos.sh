@@ -86,7 +86,8 @@ grep -v '^#' "$here/macos-sources.lock" | while read -r name url tag commit; do
 done
 
 build zlib -DZLIB_BUILD_EXAMPLES=OFF
-build libjpeg-turbo -DENABLE_SHARED=OFF -DENABLE_STATIC=ON -DWITH_SIMD=OFF -DWITH_TURBOJPEG=OFF
+# libjpeg-turbo resolves a relative CMAKE_INSTALL_LIBDIR against the working directory, not the prefix.
+build libjpeg-turbo -DCMAKE_INSTALL_LIBDIR="$prefix/lib" -DENABLE_SHARED=OFF -DENABLE_STATIC=ON -DWITH_SIMD=OFF -DWITH_TURBOJPEG=OFF
 build libpng -DPNG_SHARED=OFF -DPNG_STATIC=ON -DPNG_TESTS=OFF -DPNG_TOOLS=OFF -DPNG_FRAMEWORK=OFF
 build libtiff -Dtiff-tools=OFF -Dtiff-tests=OFF -Dtiff-contrib=OFF -Dtiff-docs=OFF -Dcxx=OFF \
   -Dzlib=ON -Djpeg=ON -Djpeg12=OFF -Djbig=OFF -Dlerc=OFF -Dlibdeflate=OFF -Dlzma=OFF -Dwebp=OFF -Dzstd=OFF
@@ -94,7 +95,22 @@ build openjpeg -DBUILD_STATIC_LIBS=ON -DBUILD_CODEC=OFF -DBUILD_TESTING=OFF -DBU
 build libwebp -DWEBP_BUILD_ANIM_UTILS=OFF -DWEBP_BUILD_CWEBP=OFF -DWEBP_BUILD_DWEBP=OFF \
   -DWEBP_BUILD_GIF2WEBP=OFF -DWEBP_BUILD_IMG2WEBP=OFF -DWEBP_BUILD_VWEBP=OFF -DWEBP_BUILD_WEBPINFO=OFF \
   -DWEBP_BUILD_WEBPMUX=OFF -DWEBP_BUILD_EXTRAS=OFF -DWEBP_BUILD_LIBWEBPMUX=ON
-build leptonica -DSW_BUILD=OFF -DBUILD_PROG=OFF -DENABLE_GIF=OFF -DCMAKE_DISABLE_FIND_PACKAGE_GIF=ON
+# The static libraries' installed configs don't import their own dependencies. libtiff's says
+# "TODO: import dependencies", so TIFF::tiff links JPEG::JPEG and a CMath::CMath no package
+# defines, and Leptonica's links WebP::webp, WebP::libwebpmux and ZLIB::ZLIB without loading
+# them. Leptonica and Tesseract both load this first (Tesseract's TIFF check recreates the
+# targets it finds). On macOS the maths library is part of libSystem, so an empty imported
+# target is the right CMath.
+cat >"$work/static-deps.cmake" <<'CMAKE'
+if(NOT TARGET CMath::CMath)
+  add_library(CMath::CMath INTERFACE IMPORTED)
+endif()
+find_package(ZLIB REQUIRED)
+find_package(JPEG REQUIRED)
+find_package(WebP CONFIG REQUIRED)
+CMAKE
+build leptonica -DSW_BUILD=OFF -DBUILD_PROG=OFF -DENABLE_GIF=OFF -DCMAKE_DISABLE_FIND_PACKAGE_GIF=ON \
+  -DCMAKE_PROJECT_INCLUDE="$work/static-deps.cmake"
 
 # Apple's linker resolves static archives in any order, so naming every library here covers
 # whatever Leptonica's exported target leaves out.
@@ -103,7 +119,7 @@ current="$work/build/tesseract.log"
 cmake -S "$src/tesseract" -B "$work/build/tesseract" "${common[@]}" \
   -DSW_BUILD=OFF -DOPENMP_BUILD=OFF -DBUILD_TRAINING_TOOLS=OFF -DBUILD_TESTS=OFF \
   -DDISABLE_ARCHIVE=ON -DDISABLE_CURL=ON -DENABLE_LTO=OFF -DENABLE_NATIVE=OFF -DINSTALL_CONFIGS=OFF \
-  -DCMAKE_EXE_LINKER_FLAGS="$libs" >"$work/build/tesseract.log"
+  -DCMAKE_PROJECT_INCLUDE="$work/static-deps.cmake" -DCMAKE_EXE_LINKER_FLAGS="$libs" >"$work/build/tesseract.log"
 cmake --build "$work/build/tesseract" --parallel "$jobs" --target tesseract >>"$work/build/tesseract.log"
 engine=$(find "$work/build/tesseract" -type f -name tesseract -perm -u+x | head -n 1)
 [ -n "$engine" ] || { echo "the Tesseract build made no executable" >&2; exit 1; }
