@@ -143,7 +143,11 @@ Then check `curl -fsS 127.0.0.1:7280/health/readyz` and `curl -fsS 127.0.0.1:808
 - **Egress:** the first 100 GB per month is free.
 - **Log Analytics:** the first 5 GB per month is free.
 
-### Lean profile (default, [ADR-0006](adr/0006-lean-hosting-profile.md)): target under $80
+### The cost ceiling
+
+The ceiling was $80 a month until 12 November 2026, and is now **$105 a month** (#1704). After the 6 November 2026 cuts (#308: the spare's private endpoints, its VNet, the spare's wakes and the controller's journal listing), prod's recurring Azure cost is estimated at about $105 a month, down from about $222 before them. The estimate settles when the cost data for the new configuration does. The maintainer decided to raise the ceiling rather than move the spare's index to the Cool tier or keep cutting (design 10 §10.4). The tables below keep the $80 target they were written against.
+
+### Lean profile (default, [ADR-0006](adr/0006-lean-hosting-profile.md)): designed against an $80 target
 
 | Item                                                                | Assumption                                                                                                                                                                                                                                                                                                                                                                                          | Low       | Typical   | High      |
 | ------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- | --------- | --------- |
