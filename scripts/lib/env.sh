@@ -762,31 +762,52 @@ ocr_nodes_off_check() {
 # USNM_APP_PRINCIPAL_ID and USNM_CI_PRINCIPAL_ID are used as the grantee of the
 # identities' role assignments, not only in their names (infra/main.bicep), so a
 # value that names some other existing service principal would grant it the
-# access. Each nonempty one must be the principalId of the identity of that name
-# (id-usnm-app-<env>, usnm-ci-id-<env>). Reads only. Returns 0 when both are
-# empty or match.
+# access. Each nonempty one must be the principalId of the identity the stack
+# manages under that role's name: the API identity (id-usnm-app-<env> when the
+# names are pinned, usnm-api-id-<env> otherwise) or the CI identity
+# (usnm-ci-id-<env>), found by its resource id in the stack, so one of the
+# same name in another resource group doesn't count. Reads only. Returns 0 when
+# both are empty or match.
 principal_ids_check() {
-  local pair key want name found err errf
-  for pair in "USNM_APP_PRINCIPAL_ID:id-usnm-app-$ENV_NAME" "USNM_CI_PRINCIPAL_ID:usnm-ci-id-$ENV_NAME"; do
+  local pair key want names ids id principal found err errf
+  ids=
+  for pair in "USNM_APP_PRINCIPAL_ID:id-usnm-app-$ENV_NAME usnm-api-id-$ENV_NAME" "USNM_CI_PRINCIPAL_ID:usnm-ci-id-$ENV_NAME"; do
     key=${pair%%:*}
-    name=${pair#*:}
+    names=${pair#*:}
     want=$(aget "$key") || return 1
     [ -n "$want" ] || continue
-    errf=$(mktemp)
-    if ! found=$(az identity list --query "[?principalId=='$want'].name | [0]" -o tsv 2> "$errf"); then
-      err=$(cat "$errf")
-      rm -f "$errf"
-      echo "error: can't check $key against the identities: $err" >&2
-      return 1
-    fi
-    rm -f "$errf"
-    if [ "$found" != "$name" ]; then
-      if [ -n "$found" ]; then
-        echo "error: $key=$want is the principal of $found, not $name" >&2
-      else
-        echo "error: $key=$want is the principal of no identity in this subscription, not $name" >&2
+    if [ -z "$ids" ]; then
+      errf=$(mktemp)
+      if ! ids=$(az stack sub show -n "$STACK" --query "resources[].id" -o tsv 2> "$errf"); then
+        err=$(cat "$errf")
+        rm -f "$errf"
+        echo "error: can't read the resources of $STACK to check $key: $err" >&2
+        return 1
       fi
-      echo "set it to $name's principalId (az identity show), or empty it to read the id at deploy time" >&2
+      rm -f "$errf"
+      [ -n "$ids" ] || ids=none
+    fi
+    found=
+    while IFS= read -r id; do
+      case "$id" in
+        */providers/Microsoft.ManagedIdentity/userAssignedIdentities/*/*) continue ;;
+        */providers/Microsoft.ManagedIdentity/userAssignedIdentities/*) ;;
+        *) continue ;;
+      esac
+      case " $names " in *" ${id##*/} "*) ;; *) continue ;; esac
+      errf=$(mktemp)
+      if ! principal=$(az identity show --ids "$id" --query principalId -o tsv 2> "$errf"); then
+        err=$(cat "$errf")
+        rm -f "$errf"
+        echo "error: can't read ${id##*/} to check $key: $err" >&2
+        return 1
+      fi
+      rm -f "$errf"
+      [ "$principal" != "$want" ] || found=$id
+    done <<< "$ids"
+    if [ -z "$found" ]; then
+      echo "error: $key=$want is not the principalId of the identity $STACK manages as ${names// / or }" >&2
+      echo "set it to that identity's principalId (az identity show), or empty it to read the id at deploy time" >&2
       return 1
     fi
   done

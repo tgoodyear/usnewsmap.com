@@ -73,8 +73,9 @@ if [ -n "${STUB_CAPTURE_API_TAG:-}" ]; then
   esac
 fi
 case "$1 $2" in
-  "identity list") if [ -n "${STUB_IDENTITY_ERROR:-}" ]; then echo "$STUB_IDENTITY_ERROR" >&2; exit 1; fi
-    printf '%s\n' "${STUB_IDENTITY:-}" ;;
+  "identity show") if [ -n "${STUB_IDENTITY_ERROR:-}" ]; then echo "$STUB_IDENTITY_ERROR" >&2; exit 1; fi
+    ident=$(sed 's/.*--ids \([^ ]*\).*/\1/' <<< "$*")
+    printf '%b\n' "${STUB_PRINCIPALS:-}" | awk -F= -v id="$ident" '$1==id{print $2}' ;;
   "account show") case "$*" in *"--query id"*) echo sub-1 ;; *"--query tenantId"*) echo tenant-1 ;; esac ;;
   "account set") s=$(sed 's/.*--subscription \([^ ]*\).*/\1/' <<< "$*")
     if [ -n "${STUB_ACCOUNTS:-}" ] && ! printf '%b\n' "$STUB_ACCOUNTS" | grep -qx "$s"; then
@@ -295,33 +296,56 @@ class Stubbed(unittest.TestCase):
 
 
 class PrincipalIdsCheck(Stubbed):
-    """principal_ids_check: the known principal ids must be those of the named identities."""
+    """principal_ids_check: the known principal ids must be those of the identities the stack manages."""
 
-    def check(self, app="", ci="", **extra):
+    RG = "/subscriptions/s/resourceGroups/rg-usnm-prod/providers/Microsoft.ManagedIdentity/userAssignedIdentities/"
+    OTHER = "/subscriptions/s/resourceGroups/rg-elsewhere/providers/Microsoft.ManagedIdentity/userAssignedIdentities/"
+
+    def check(self, app="", ci="", resources=(), principals=(), env_name="prod", **extra):
         fake = f'aget() {{ case "$1" in USNM_APP_PRINCIPAL_ID) echo "{app}" ;; USNM_CI_PRINCIPAL_ID) echo "{ci}" ;; esac; }}\n'
-        return self.lib(fake + "principal_ids_check", env_name="prod", **extra)
+        return self.lib(fake + "principal_ids_check", env_name=env_name, STUB_STACK="1",
+                        STUB_RESOURCE_IDS="\n".join(resources),
+                        STUB_PRINCIPALS="\\n".join(f"{i}={p}" for i, p in principals), **extra)
 
     def test_empty_ids_check_nothing(self):
         r = self.check()
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertFalse(os.path.exists(self.log))
 
-    def test_an_id_of_the_named_identity_passes(self):
-        r = self.check(app="p-1", STUB_IDENTITY="id-usnm-app-prod")
+    def test_the_pinned_api_identity_passes(self):
+        i = self.RG + "id-usnm-app-prod"
+        r = self.check(app="p-1", resources=[i], principals=[(i, "p-1")])
         self.assertEqual(r.returncode, 0, r.stderr)
 
-    def test_an_id_of_another_identity_stops(self):
-        r = self.check(app="p-1", STUB_IDENTITY="id-usnm-app-dev")
-        self.assertEqual(r.returncode, 1)
-        self.assertIn("the principal of id-usnm-app-dev, not id-usnm-app-prod", r.stderr)
+    def test_the_unpinned_api_name_and_the_ci_identity_pass(self):
+        a, c = self.RG + "usnm-api-id-dev", self.RG + "usnm-ci-id-dev"
+        r = self.check(app="p-1", ci="p-2", resources=[a, c], principals=[(a, "p-1"), (c, "p-2")], env_name="dev")
+        self.assertEqual(r.returncode, 0, r.stderr)
 
-    def test_an_id_of_no_identity_stops(self):
-        r = self.check(ci="p-2", STUB_IDENTITY="")
+    def test_another_principal_stops(self):
+        i = self.RG + "id-usnm-app-prod"
+        r = self.check(app="p-9", resources=[i], principals=[(i, "p-1")])
         self.assertEqual(r.returncode, 1)
-        self.assertIn("usnm-ci-id-prod", r.stderr)
+        self.assertIn("not the principalId of the identity usnm-prod manages", r.stderr)
+
+    def test_a_same_named_identity_outside_the_stack_does_not_count(self):
+        i = self.OTHER + "id-usnm-app-prod"
+        r = self.check(app="p-1", resources=[self.RG + "usnm-ci-id-prod"], principals=[(i, "p-1")])
+        self.assertEqual(r.returncode, 1)
+
+    def test_the_other_role_s_identity_does_not_count(self):
+        c = self.RG + "usnm-ci-id-prod"
+        r = self.check(app="p-2", resources=[c], principals=[(c, "p-2")])
+        self.assertEqual(r.returncode, 1)
+
+    def test_a_federated_credential_is_not_an_identity(self):
+        c = self.RG + "usnm-ci-id-prod/federatedIdentityCredentials/github-main"
+        r = self.check(ci="p-2", resources=[c], principals=[(c, "p-2")])
+        self.assertEqual(r.returncode, 1)
 
     def test_a_failed_read_stops(self):
-        r = self.check(app="p-1", STUB_IDENTITY_ERROR="boom")
+        i = self.RG + "id-usnm-app-prod"
+        r = self.check(app="p-1", resources=[i], STUB_IDENTITY_ERROR="boom")
         self.assertEqual(r.returncode, 1)
         self.assertIn("boom", r.stderr)
 
