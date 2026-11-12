@@ -2585,15 +2585,16 @@ def assign_native_hosts(job_ids, slots, outstanding):
     return units
 
 
-def native_submit_untouched(transport, job_ids, now):
+def native_submit_untouched(transport, job_ids, clock):
     """True only when a fresh inventory proves the server holds nothing for these jobs: no BOINC
     workunit named usnm_<job> and no bridge journal. Anything unreadable, or a workunit list cut
-    at its limit, is not proof."""
+    at its limit, is not proof. `clock()` is the time now, read after the inventory: the failed
+    step may have waited the lock for 20 minutes, so the tick's own start says nothing."""
     try:
         snapshot = transport.inventory()
         limit = snapshot.get("existing_jobs_limit", MAX_JOBS)
         existing, pending, journals = snapshot["existing_jobs"], snapshot["pending_jobs"], snapshot["jobs"]
-        if (snapshot["schema_version"] != 1 or not -60 <= now - snapshot["created_at"] <= 3600
+        if (snapshot["schema_version"] != 1 or not -60 <= clock() - snapshot["created_at"] <= 3600
                 or not isinstance(existing, list) or not isinstance(pending, list)
                 or not isinstance(journals, dict) or type(limit) is not int or len(existing) >= limit):
             return False
@@ -2629,6 +2630,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         feed.restore()
     snapshot = transport.inventory()
     now = time.time() if now is None else now
+    tick_started = time.monotonic()
     require(snapshot["schema_version"] == 1 and -60 <= now - snapshot["created_at"] <= 3600,
             "inventory is not fresh")
     if feed:
@@ -3085,7 +3087,8 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
                         # tick submits them again, up to NATIVE_LOCK_RETRY_LIMIT ticks in a row.
                         tries = (state.get("native_lock_retry") or {}).get("count", 0) + 1
                         if tries <= NATIVE_LOCK_RETRY_LIMIT and native_submit_untouched(
-                                transport, [job_id for job_id, _ in units], now):
+                                transport, [job_id for job_id, _ in units],
+                                lambda: now + (time.monotonic() - tick_started)):
                             state["native_lock_retry"] = {"at": int(now), "count": tries,
                                                           "jobs": to_submit[:5]}
                             persist()

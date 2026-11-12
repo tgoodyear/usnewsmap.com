@@ -1909,6 +1909,27 @@ class NativePlanTests(unittest.TestCase):
         self.assertNotIn("native_lock_retry", self.state)
         self.assertNotIn("native_paused", self.state)
 
+    def test_the_inventory_is_fresh_by_the_clock_after_a_long_lock_wait(self):
+        # The failed submit waited 20 minutes for the lock: the new inventory is made then, and
+        # is judged against that time, not against the tick's start.
+        clock = [1000.0]
+        original = self.fake.inventory
+
+        def inventory():
+            return {**original(), "created_at": NOW + (clock[0] - 1000.0)}
+
+        def submit_native(units):
+            self.fake.actions.append(("submit-native", list(units)))
+            clock[0] += 1200
+            raise batch.StepLockTimeout("lock held")
+        self.fake.inventory = inventory
+        self.fake.submit_native = submit_native
+        with patch.object(batch.time, "monotonic", side_effect=lambda: clock[0]):
+            event = self.tick()
+        self.assertNotIn("native_paused", self.state)
+        self.assertEqual(self.state["native_lock_retry"]["count"], 1)
+        self.assertNotEqual(event["backpressure_reason"], "native_paused")
+
     def test_a_step_lock_timeout_pauses_if_any_workunit_or_journal_exists(self):
         for kind in ("journal", "workunit"):
             with self.subTest(kind=kind):
