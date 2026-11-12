@@ -2331,6 +2331,83 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn strict_v2_demoted_pages_leave_the_unit_to_the_page_count_1463() {
+        use crate::qwen::{
+            ledger::tests::result,
+            validate::{compare_with, BundleVerdict, Compare, Rule, UNIT_VERDICT_FILE},
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("root");
+        let page_dir = root.join("pages");
+        let units_dir = units(&root);
+        std::fs::create_dir_all(&units_dir).unwrap();
+        let docs: Vec<String> = (1..=3)
+            .map(|i| format!("sn83045462_1890-05-03_ed-1_seq-{i}"))
+            .collect();
+        for d in &docs {
+            page_unit(&page_dir, d, 2);
+        }
+        let records = tmp.path().join("qwen/pages");
+        assert_eq!(
+            pack_bundles(
+                &page_dir,
+                &units_dir,
+                8,
+                Some(&records),
+                8,
+                NO_HOLD,
+                &held(&units_dir)
+            )
+            .unwrap(),
+            (1, 0)
+        );
+        let dir = std::fs::read_dir(&units_dir)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let job: Job = serde_json::from_slice(&std::fs::read(dir.join(JOB_FILE)).unwrap()).unwrap();
+        // Hosts differ on the punctuation of every page but the first two, which have words.
+        let wordless = |tag: &str, pages_with_words: usize| {
+            let docs = docs.clone();
+            result(tmp.path(), &job, tag, move |doc, crop| {
+                if docs[..pages_with_words].iter().any(|d| d == doc) {
+                    format!("{doc} {crop} the ship sailed for england")
+                } else if tag.starts_with('a') {
+                    ". , ;".into()
+                } else {
+                    "* * *".into()
+                }
+            })
+        };
+        let opts = |rule| Compare {
+            min_dice: 0.5,
+            rule,
+            bundle_verdict: BundleVerdict::PageV1,
+            log: None,
+            pages: Some(&records),
+            crop_states: None,
+        };
+        let marker = records.join(&job.id).join(UNIT_VERDICT_FILE);
+        // One worded page of three: strict-v1 passes the unit outright; strict-v2 demotes the
+        // two wordless pages, which leaves one of three, under half, so the unit is not settled.
+        let (a, b) = (wordless("a1", 1), wordless("b1", 1));
+        compare_with(&a, &b, opts(Rule::StrictV1)).unwrap();
+        assert!(!marker.exists());
+        let err = compare_with(&a, &b, opts(Rule::StrictV2))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("no crop with a word on either side"), "{err}");
+        assert!(!marker.exists());
+        // Two worded pages of three: the unit is inconclusive, but half or more agree, so
+        // the pages settle it and the marker is written.
+        let (a, b) = (wordless("a2", 2), wordless("b2", 2));
+        compare_with(&a, &b, opts(Rule::StrictV2)).unwrap();
+        assert!(marker.is_file());
+    }
+
+    #[test]
     fn a_result_short_of_a_crop_does_not_settle_a_bundle_by_pages() {
         use crate::qwen::{
             ledger::tests::result,
