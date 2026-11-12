@@ -165,12 +165,12 @@ Linux already has its build (above) and needs only the dispatch: `usnm_ocr_nativ
 
 Every platform runs the same worker, `usnm_ocr` from `crates/usnm-ocr-app`, which runs `crate::worker::run` against the job files the container uses (`request.json`, a bundle, or a gold job). The submit side doesn't change. A native unit is a container unit whose `engine.image` names the native build's digest, and it goes to `usnm_ocr_native` or `usnm_gold_native`, never to `usnm_ocr`.
 
-| Platform              | Worker                       | Tesseract                                                        | Supervision                                     |
-| --------------------- | ---------------------------- | ---------------------------------------------------------------- | ----------------------------------------------- |
-| `x86_64-pc-linux-gnu` | static musl                  | Debian's static libraries (`boinc/apps/native/Containerfile`)    | process group, parent-death signal, rlimits     |
-| `arm64-apple-darwin`  | Mach-O, ad hoc signed        | pinned upstream sources (`boinc/apps/native/static-sources.lock`) | process group, a parent watcher thread, rlimits |
-| `x86_64-apple-darwin` | Mach-O, ad hoc signed        | the same sources, built on an Intel runner                       | as arm64                                        |
-| `windows_x86_64`      | PE32+ x86-64, static CRT     | the same sources with MSVC and a static CRT (`build-tesseract-windows.ps1`) | a job object                          |
+| Platform              | Worker                   | Tesseract                                                                   | Supervision                                     |
+| --------------------- | ------------------------ | --------------------------------------------------------------------------- | ----------------------------------------------- |
+| `x86_64-pc-linux-gnu` | static musl              | Debian's static libraries (`boinc/apps/native/Containerfile`)               | process group, parent-death signal, rlimits     |
+| `arm64-apple-darwin`  | Mach-O, ad hoc signed    | pinned upstream sources (`boinc/apps/native/static-sources.lock`)           | process group, a parent watcher thread, rlimits |
+| `x86_64-apple-darwin` | Mach-O, ad hoc signed    | the same sources, built on an Intel runner                                  | as arm64                                        |
+| `windows_x86_64`      | PE32+ x86-64, static CRT | the same sources with MSVC and a static CRT (`build-tesseract-windows.ps1`) | a job object                                    |
 
 **Plan class.** None, as on Linux. A task uses one BOINC CPU (`OMP_THREAD_LIMIT=1`, one page or bundle at a time), and the client runs as many tasks as the host lets it, so a 24-thread host can run 24. An `mt` class would need an OpenMP Tesseract, which the parity run didn't measure, and gains nothing when the client already fills every CPU with one-thread tasks. `check_appver.py` refuses a plan class on these apps.
 
@@ -209,14 +209,14 @@ The worker differs from Linux in three places:
 
 **The worker.** `crates/usnm-boinc/src/native/win.rs` holds every Win32 call. Windows has no process groups, rlimits or `exec`, so the three-process layout of the other platforms becomes two:
 
-| Linux and macOS                                          | Windows                                                                                                                                                                                                                                                                  |
-| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Process group for the unit and the engine                | One job object for each start of the unit. The unit is created suspended, assigned to the job and then resumed, so nothing it starts is outside the job. It has no console window.                                                                                        |
-| Parent-death signal, or a watcher thread on macOS        | `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`. The worker holds the only handle, so if the client kills it the kernel ends the unit and the engine, running or suspended.                                                                                                          |
-| Client stop, suspend and resume signal the group         | The hook ends the job (stop), or suspends and resumes each process in it (`NtSuspendProcess`, `NtResumeProcess`), as the client does for one process.                                                                                                                     |
-| `tesseract` link that sets rlimits and execs the engine  | None: the unit runs `usnm_engine\usnm_tesseract.exe` directly (the build's `usnm_tesseract` is hard-linked or copied there under a name Windows will run). The job's limits apply to every process in it.                                                                    |
-| `RLIMIT_AS` and `RLIMIT_CPU` on the engine               | `JOB_OBJECT_LIMIT_PROCESS_MEMORY` of 1536 MiB, `JOB_OBJECT_LIMIT_PROCESS_TIME` of the job's `timeout_secs`, and 8 active processes, which also covers the container's `--pids-limit`.                                                                                       |
-| Crash dumps off (`RLIMIT_CORE`)                          | `SetErrorMode` with no fault dialog, inherited by every process, and `JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION`.                                                                                                                                                       |
+| Linux and macOS                                         | Windows                                                                                                                                                                                                   |
+| ------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Process group for the unit and the engine               | One job object for each start of the unit. The unit is created suspended, assigned to the job and then resumed, so nothing it starts is outside the job. It has no console window.                        |
+| Parent-death signal, or a watcher thread on macOS       | `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`. The worker holds the only handle, so if the client kills it the kernel ends the unit and the engine, running or suspended.                                          |
+| Client stop, suspend and resume signal the group        | The hook ends the job (stop), or suspends and resumes each process in it (`NtSuspendProcess`, `NtResumeProcess`), as the client does for one process.                                                     |
+| `tesseract` link that sets rlimits and execs the engine | None: the unit runs `usnm_engine\usnm_tesseract.exe` directly (the build's `usnm_tesseract` is hard-linked or copied there under a name Windows will run). The job's limits apply to every process in it. |
+| `RLIMIT_AS` and `RLIMIT_CPU` on the engine              | `JOB_OBJECT_LIMIT_PROCESS_MEMORY` of 1536 MiB, `JOB_OBJECT_LIMIT_PROCESS_TIME` of the job's `timeout_secs`, and 8 active processes, which also covers the container's `--pids-limit`.                     |
+| Crash dumps off (`RLIMIT_CORE`)                         | `SetErrorMode` with no fault dialog, inherited by every process, and `JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION`.                                                                                       |
 
 Differences that matter:
 
