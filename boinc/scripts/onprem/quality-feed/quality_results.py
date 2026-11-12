@@ -196,13 +196,19 @@ def run(args):
         return publish(args, root, collect_args, warm, locked_timeout)
     warm_parts(args, collect_args)
     # Warming took no host lock, so the partial loader keeps running while it does. Publishing
-    # needs it, and finding it taken defers the root instead of waiting behind the other loader.
+    # needs it, and the loader's runs are minutes long with gaps of a couple between them, so wait
+    # for a gap rather than lose the warm to a busy tick; still busy after the wait defers the root.
     with args.lock.open("a") as lock:
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            print(json.dumps({"phase": "host_lock_busy", "exit": 75}), file=sys.stderr, flush=True)
-            raise subprocess.CalledProcessError(75, ["host-lock"]) from None
+        give_up = time.monotonic() + getattr(args, "host_lock_wait_secs", 300)
+        while True:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= give_up:
+                    print(json.dumps({"phase": "host_lock_busy", "exit": 75}), file=sys.stderr, flush=True)
+                    raise subprocess.CalledProcessError(75, ["host-lock"]) from None
+                time.sleep(1)
         return publish(args, root, collect_args, warm, locked_timeout)
 
 
@@ -324,6 +330,8 @@ def main(argv=None):
     parser.add_argument("--ctid", type=int, default=215)
     parser.add_argument("--lock", type=Path, default=Path("/run/usnm-quality-results.lock"),
                         help="the host lock shared with the partial loader, around collect, pull and load")
+    parser.add_argument("--host-lock-wait-secs", type=int, default=300,
+                        help="with --warm-without-lock: how long a publication waits for the host lock")
     parser.add_argument("--warm-lock", type=Path, default=Path("/run/usnm-quality-results-warm.lock"),
                         help="with --warm-without-lock: held for the whole run instead, since warming "
                              "needs no host lock and must not keep the partial loader from running")

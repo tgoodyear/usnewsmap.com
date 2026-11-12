@@ -204,6 +204,7 @@ class ResultsTest(unittest.TestCase):
         directory = tempfile.TemporaryDirectory(dir=HERE)
         self.addCleanup(directory.cleanup)
         args.lock = Path(directory.name) / "host.lock"
+        args.host_lock_wait_secs = 0
         return args
 
     @staticmethod
@@ -292,6 +293,27 @@ class ResultsTest(unittest.TestCase):
         self.assertEqual(len(calls), 1)  # the warm round ran; no step lock, pull or load did
         self.assertNotIn("flock", calls[0][-1])
         self.assertIn("host_lock_busy", log.getvalue())
+
+    def test_publication_waits_for_a_gap_in_the_host_lock(self):
+        args = self.warm_args()
+        args.host_lock_wait_secs = 30
+        calls = []
+
+        def fake(command, **kwargs):
+            calls.append(command)
+            return subprocess.CompletedProcess(command, 0, stderr=self.progress(False)
+                                               if len(calls) == 1 else results.LOCK_ACQUIRED + " 2026-11-12T08:00:00Z\n")
+
+        with args.lock.open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            timer = threading.Timer(0.3, lambda: fcntl.flock(lock, fcntl.LOCK_UN))
+            timer.start()
+            try:
+                with mock.patch.object(results.subprocess, "run", side_effect=fake):
+                    self.assertEqual(results.run(args)["campaign"], "v1-test")
+            finally:
+                timer.join()
+        self.assertEqual(len(calls), 5)  # warm, publish, pull, load, cleanup
 
     def test_the_whole_run_of_a_warming_service_holds_its_own_lock_not_the_host_lock(self):
         path, warm_path = self.root_lock("host.lock"), self.root_lock("warm.lock")
