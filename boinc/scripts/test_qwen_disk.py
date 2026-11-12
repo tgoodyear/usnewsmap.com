@@ -127,6 +127,7 @@ class QwenDiskTest(unittest.TestCase):
         lock = (ROOT / "boinc/apps/qwen/weights.lock").read_text()
         identity = hashlib.sha256("".join(line + "\n" for line in lock.splitlines() if not line.startswith("#")).encode()).hexdigest()
         self.assertEqual(p["weights_identity"], "sha256:" + identity)
+        self.assertNotIn(p["weights_identity"], p["previous_weights_identities"])
         self.assertEqual(p["native_warm_incremental_bytes"], p["native_bundle_bound_bytes"] + p["warm_incremental_bytes"])
         locked = {line.split()[0] for line in lock.splitlines() if line and not line.startswith("#")} - {"LICENSE"}
         files_2b = set(p["models"]["2b"]["files"])
@@ -135,14 +136,14 @@ class QwenDiskTest(unittest.TestCase):
         self.assertFalse(files_2b & files_8b or (files_2b | files_8b) & files_x08)
         self.assertEqual(files_2b | files_8b | files_x08, locked)
 
-    def registry(self, model="2b", env_model=None, extra=0, legacy=False):
+    def registry(self, model="2b", env_model=None, extra=0, legacy=False, weights=None):
         p = disk.policy()
         config = {
             "os": "linux", "architecture": "amd64",
             "config": {
                 "Labels": {} if legacy else {"org.usnewsmap.qwen.model": model, "org.usnewsmap.qwen.disk-policy": "1"},
                 "Env": [f"USNM_QWEN_MODEL={env_model or model}", f"USNM_QWEN_LLAMA_IMAGE={p['base_index']}",
-                        f"USNM_QWEN_WEIGHTS={p['weights_identity']}"],
+                        f"USNM_QWEN_WEIGHTS={weights or p['weights_identity']}"],
             },
         }
         blobs = {}
@@ -168,6 +169,17 @@ class QwenDiskTest(unittest.TestCase):
             return io.BytesIO(blobs[url.rsplit("/", 1)[-1]])
 
         return disk.REPOSITORY + "@" + index, urlopen, calls, blobs
+
+    def test_an_image_built_on_the_previous_weights_identity_still_passes(self):
+        p = disk.policy()
+        for weights, ok in [(p["previous_weights_identities"][0], True), ("sha256:" + "e" * 64, False)]:
+            image, urlopen, _, _ = self.registry("8b", weights=weights)
+            with patch.object(disk.urllib.request, "urlopen", urlopen):
+                if ok:
+                    self.assertEqual(disk.image_metadata(image, "8b")["model"], "8b")
+                else:
+                    with self.assertRaises(ValueError):
+                        disk.image_metadata(image, "8b")
 
     def test_anonymous_metadata_is_pinned_deterministic_and_never_fetches_layers(self):
         for model in ("2b", "8b"):
