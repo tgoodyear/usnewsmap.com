@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import math
 import shutil
 import subprocess
 import sys
@@ -2434,6 +2435,52 @@ class QueueModeTests(unittest.TestCase):
         feed.settled_messages = found
         self.assertEqual(feed.held_pages()["sn1_1900-01-01_ed-1_seq-1"],
                          sorted(found["sn1_1900-01-01_ed-1_seq-1"]))
+
+    def test_a_journal_message_a_float_ulp_off_is_settled_by_the_claims_sha(self):
+        # 11 Nov 2026: the export parsed the queue message's score one ulp off for 13 % of the
+        # held srp pages, so the journal's message hashed to nothing `claim pull` had recorded.
+        sent = {"v": 1, "page": "sn85055101/1947-04-04/ed-1/seq-1", "batch": "dlc_friendship",
+                "language": "srp", "reason": "bulk", "score": 0.23529411764705882,
+                "queued_at": "2026-11-08T01:06:34.682771Z"}
+        journaled = {**sent, "score": math.nextafter(sent["score"], -math.inf)}
+        self.assertNotEqual(sent["score"], journaled["score"])
+        record = {"plan": "queue-feed-11", "stage": "reserved", "held": "scope held",
+                  "job": {"id": "a" * 64, "message": journaled}}
+        doc = "sn85055101_1947-04-04_ed-1_seq-1"
+        claimed = {sent["page"]: {batch.queue_message_sha256(sent)}}
+        self.assertEqual(batch.settled_messages([record], claimed)[doc],
+                         {batch.queue_message_sha256(journaled), batch.queue_message_sha256(sent)})
+        # With no claim to confirm it, only the journal's own sha256 is listed.
+        self.assertEqual(batch.settled_messages([record])[doc], {batch.queue_message_sha256(journaled)})
+        # A claim of another message of the page (a later enqueue) stays new work.
+        later = {**sent, "queued_at": "2026-11-20T01:06:34.682771Z"}
+        self.assertEqual(batch.settled_messages([record], {sent["page"]: {batch.queue_message_sha256(later)}})[doc],
+                         {batch.queue_message_sha256(journaled)})
+        # The journal's own sha256 among the claims: an adjacent score's claim is another message.
+        adjacent = {**sent, "score": math.nextafter(journaled["score"], -math.inf)}
+        both = {sent["page"]: {batch.queue_message_sha256(journaled), batch.queue_message_sha256(adjacent)}}
+        self.assertEqual(batch.settled_messages([record], both)[doc], {batch.queue_message_sha256(journaled)})
+        # An exact match needs no neighbour; a claim without a float score matches as before.
+        exact = {"plan": "queue-feed-11", "stage": "published", "job": {"id": "b" * 64, "message": sent}}
+        self.assertEqual(batch.settled_messages([exact], claimed)[doc], {batch.queue_message_sha256(sent)})
+
+    def test_claimed_messages_join_this_plans_claims_and_the_siblings(self):
+        sha = lambda c: c * 64
+        with tempfile.TemporaryDirectory() as tmp:
+            own, other = Path(tmp) / "own", Path(tmp) / "other"
+            other.mkdir()
+            (other / "state.json").write_text(json.dumps({"claims": {
+                "sn1/1900-01-01/ed-1/seq-1": {"message": sha("a")},
+                "sn1/1900-01-01/ed-1/seq-2": {"message": None},
+                "sn1/1900-01-01/ed-1/seq-3": {"message": "not a digest"}}}))
+            sibling = batch.sibling_claim_messages(own, [other])
+            self.assertEqual(sibling, {"sn1/1900-01-01/ed-1/seq-1": {sha("a")}})
+            joined = batch.claimed_messages({"sn1/1900-01-01/ed-1/seq-1": {"message": sha("b")},
+                                             "sn1/1900-01-01/ed-1/seq-4": {"message": sha("c")}}, sibling)
+            self.assertEqual(joined, {"sn1/1900-01-01/ed-1/seq-1": {sha("a"), sha("b")},
+                                      "sn1/1900-01-01/ed-1/seq-4": {sha("c")}})
+            with self.assertRaises(ValueError):
+                batch.sibling_claim_messages(other, [other])
 
     def test_the_held_pages_list_goes_out_before_the_claim(self):
         # #1751: archived held pages' messages, here and in a sibling plan, are named with their
