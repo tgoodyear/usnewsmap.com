@@ -165,12 +165,12 @@ Linux already has its build (above) and needs only the dispatch: `usnm_ocr_nativ
 
 Every platform runs the same worker, `usnm_ocr` from `crates/usnm-ocr-app`, which runs `crate::worker::run` against the job files the container uses (`request.json`, a bundle, or a gold job). The submit side doesn't change. A native unit is a container unit whose `engine.image` names the native build's digest, and it goes to `usnm_ocr_native` or `usnm_gold_native`, never to `usnm_ocr`.
 
-| Platform              | Worker                | Tesseract                                                        | Supervision                                     |
-| --------------------- | --------------------- | ---------------------------------------------------------------- | ----------------------------------------------- |
-| `x86_64-pc-linux-gnu` | static musl           | Debian's static libraries (`boinc/apps/native/Containerfile`)    | process group, parent-death signal, rlimits     |
-| `arm64-apple-darwin`  | Mach-O, ad hoc signed | pinned upstream sources (`boinc/apps/native/macos-sources.lock`) | process group, a parent watcher thread, rlimits |
-| `x86_64-apple-darwin` | Mach-O, ad hoc signed | the same sources, built on an Intel runner                       | as arm64                                        |
-| `windows_x86_64`      | PE32+ x86-64 (not built yet) | the same sources with MSVC and a static CRT (planned)     | a job object (planned)                          |
+| Platform              | Worker                       | Tesseract                                                        | Supervision                                     |
+| --------------------- | ---------------------------- | ---------------------------------------------------------------- | ----------------------------------------------- |
+| `x86_64-pc-linux-gnu` | static musl                  | Debian's static libraries (`boinc/apps/native/Containerfile`)    | process group, parent-death signal, rlimits     |
+| `arm64-apple-darwin`  | Mach-O, ad hoc signed        | pinned upstream sources (`boinc/apps/native/macos-sources.lock`) | process group, a parent watcher thread, rlimits |
+| `x86_64-apple-darwin` | Mach-O, ad hoc signed        | the same sources, built on an Intel runner                       | as arm64                                        |
+| `windows_x86_64`      | PE32+ x86-64 (not built yet) | the same sources with MSVC and a static CRT (planned)            | a job object (planned)                          |
 
 **Plan class.** None, as on Linux. A task uses one BOINC CPU (`OMP_THREAD_LIMIT=1`, one page or bundle at a time), and the client runs as many tasks as the host lets it, so a 24-thread host can run 24. An `mt` class would need an OpenMP Tesseract, which the parity run didn't measure, and gains nothing when the client already fills every CPU with one-thread tasks. `check_appver.py` refuses a plan class on these apps.
 
