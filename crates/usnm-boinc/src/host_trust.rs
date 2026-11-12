@@ -195,6 +195,44 @@ async fn canonical_host(c: &Config, workunit: &str) -> anyhow::Result<u64> {
 
 const MAX_ATTEMPTS: u32 = 10_000;
 
+/// Refuses a native campaign (#1418, docs/boinc/apps/native-ocr.md) for a build `builds` has no
+/// passing run of the scope's calibrated challenge for, or whose recorded Tesseract isn't the
+/// campaign's `engine.base`: no gold unit is issued and no host is admitted for it. A container
+/// campaign (no `native_hosts`) is unchanged.
+fn refuse_native_campaign(
+    c: &Config,
+    trust: &crate::trust::Trust,
+    scope: &crate::trust::Scope,
+    builds: &crate::trust::BuildTrust,
+) -> anyhow::Result<()> {
+    if c.native_hosts.is_empty() {
+        return Ok(());
+    }
+    let policy = trust
+        .policy_view(&scope.language, &scope.profile)
+        .context("a native campaign needs its scope calibrated in the trust list")?;
+    if let Some(reason) = builds.refuse(
+        &c.engine.image,
+        policy.manifest_sha256,
+        policy.max_cer,
+        true,
+    ) {
+        anyhow::bail!("native campaign refused: {reason}");
+    }
+    let build = builds
+        .builds
+        .get(&c.engine.image)
+        .context("a native campaign's build is recorded")?;
+    ensure!(
+        build.engine_base == c.engine.base,
+        "native campaign refused: {} records engine.base {}, not {}",
+        c.engine.image,
+        build.engine_base,
+        c.engine.base
+    );
+    Ok(())
+}
+
 /// Attempt 0 keeps the original per-host root; later attempts are fresh campaign roots
 /// because a targeted gold campaign root is bound to one assignment.
 fn attempt_root(host_root: &Path, attempt: u32) -> PathBuf {
@@ -332,5 +370,92 @@ mod tests {
         assert!(!sample(&format!("{}{}", "0".repeat(15), "1".repeat(49)), 100).unwrap());
         assert!(sample("../job", 1).is_err());
         assert!(sample(&"a".repeat(64), 0).is_err());
+    }
+
+    #[test]
+    fn a_native_campaign_needs_its_builds_passing_challenge() {
+        let linux = "sha256:4d6e2a3be41b3b9c9cf50e6404c6f056177cef547e9d9675298ee1fec94cc5d1";
+        let linux_base = "sha256:21877bc34785b43a6e405c8f41ee62261fb59ee377a1cc104d3577c792ba9904";
+        let macos = "sha256:78065a0a43d8f8bf67c00c014ae2b0540d51d0038e4050dbbd509e14b63fa836";
+        let macos_base = "sha256:4af660d0a8181c9734c1ac577f4d91089b5ceb17930b8a0a5a217beb99c82032";
+        let windows = format!("sha256:{}", "7".repeat(64));
+        let windows_base = format!("sha256:{}", "6".repeat(64));
+        let challenge = "d8cd7279090a6427c0cc6f0e82573e3771c27f90df6500bf5a44b268f6e0f05f";
+        let max_cer = 0.08734328574534386;
+        let config = |image: &str, base: &str, native: &[u64]| -> Config {
+            serde_json::from_value(serde_json::json!({
+                "root": "/r", "project": "/p", "jobs_root": "/j", "mysql_defaults": "/m",
+                "mysql_ca": "/c", "database": "d", "trust": "/t", "prepared": "/q",
+                "engine": {"base": base, "dpi": 300, "image": image, "psm": 3,
+                           "timeout_secs": 300, "version": "5.5.0"},
+                "native_hosts": native, "max_hosts": 1, "max_spots": 1, "sample_every": 1,
+            }))
+            .unwrap()
+        };
+        let scope = crate::trust::Scope {
+            language: "eng".into(),
+            profile: "eng".into(),
+            psm: 3,
+            dpi: 300,
+        };
+        let trust = |manifest: &str, max_cer: f64| crate::trust::Trust {
+            hosts: [(linux.to_owned(), [13].into())].into(),
+            manifest_sha256: Some(manifest.into()),
+            scope: Some(scope.clone()),
+            max_cer,
+            policies: Vec::new(),
+            v: crate::trust::TRUST_VERSION,
+        };
+        let builds = crate::trust::BuildTrust::embedded().unwrap();
+        let calibrated = trust(challenge, max_cer);
+        // Linux as today, and macOS on its own recorded run.
+        refuse_native_campaign(
+            &config(linux, linux_base, &[13]),
+            &calibrated,
+            &scope,
+            builds,
+        )
+        .unwrap();
+        refuse_native_campaign(
+            &config(macos, macos_base, &[21]),
+            &calibrated,
+            &scope,
+            builds,
+        )
+        .unwrap();
+        // Another challenge or threshold than the run was judged on, or another base: refused.
+        for (t, c) in [
+            (
+                trust(&"e".repeat(64), max_cer),
+                config(macos, macos_base, &[21]),
+            ),
+            (trust(challenge, 0.07), config(macos, macos_base, &[21])),
+            (calibrated.clone(), config(macos, linux_base, &[21])),
+        ] {
+            assert!(refuse_native_campaign(&c, &t, &scope, builds).is_err());
+        }
+        // A Windows build with no recorded run is refused; once recorded it takes Linux's path.
+        let windows_config = config(&windows, &windows_base, &[30]);
+        let error = refuse_native_campaign(&windows_config, &calibrated, &scope, builds)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("not a native build"), "{error}");
+        let recorded = crate::trust::builds::with_build(
+            builds.clone(),
+            &windows,
+            "windows_x86_64",
+            challenge,
+            max_cer,
+            Some(6000),
+        );
+        refuse_native_campaign(&windows_config, &calibrated, &scope, &recorded).unwrap();
+        // A container campaign is unchanged, whatever the image.
+        refuse_native_campaign(
+            &config(&windows, &windows_base, &[]),
+            &calibrated,
+            &scope,
+            builds,
+        )
+        .unwrap();
     }
 }

@@ -345,6 +345,7 @@ pub async fn submit(args: SubmitArgs) -> anyhow::Result<()> {
             download.as_ref(),
             target_host,
             trust,
+            crate::trust::BuildTrust::embedded()?,
             &native_versions,
         )
         .await?;

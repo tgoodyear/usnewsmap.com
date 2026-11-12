@@ -134,10 +134,12 @@ enum Build<'a> {
     /// `usnm_ocr`, the worker image.
     Container,
     /// [`NATIVE_APP`]: always for one host (`--target_host`), and only one `trust` already
-    /// admits for the job's exact scope and native digest.
+    /// admits for the job's exact scope and native digest, on a build `builds` records a
+    /// passing challenge for.
     Native {
         host: Option<u64>,
         trust: &'a crate::trust::Trust,
+        builds: &'a crate::trust::BuildTrust,
         registered: &'a [u32],
     },
 }
@@ -170,10 +172,13 @@ pub async fn submit_placed(
 /// Submits job `id` as a [`NATIVE_APP`] unit for `target_host` (#1780). A native unit is always
 /// targeted: with no host it is refused. Before anything is staged or created, `trust` must
 /// admit the host for the job's exact scope and native digest ([`crate::trust::Trust::refuse_job`]),
-/// so a host that isn't trusted for the native build is never sent a page. Line jobs, retries
+/// so a host that isn't trusted for the native build is never sent a page. The build must also
+/// have a passing run of the scope's calibrated challenge in `builds`
+/// ([`crate::trust::Trust::refuse_native_job`]). Line jobs, retries
 /// and bundles stay container work. `registered` are the live (registered, not deprecated)
 /// [`NATIVE_APP`] version numbers, from the database: the unit is pinned to the newest of them
 /// that packages the job's build.
+#[allow(clippy::too_many_arguments)]
 pub async fn submit_native(
     root: &Path,
     project: &Path,
@@ -181,6 +186,7 @@ pub async fn submit_native(
     download: Option<&Download>,
     target_host: Option<u64>,
     trust: &crate::trust::Trust,
+    builds: &crate::trust::BuildTrust,
     registered: &[u32],
 ) -> anyhow::Result<()> {
     submit_unit(
@@ -194,6 +200,7 @@ pub async fn submit_native(
         Build::Native {
             host: target_host,
             trust,
+            builds,
             registered,
         },
     )
@@ -271,7 +278,12 @@ async fn submit_unit(
     };
     let app = match build {
         Build::Container => "usnm_ocr",
-        Build::Native { host, trust, .. } => {
+        Build::Native {
+            host,
+            trust,
+            builds,
+            ..
+        } => {
             let Some(host) = host else {
                 anyhow::bail!(
                     "a {NATIVE_APP} unit needs --target-host: native units are only ever assigned to one host"
@@ -282,7 +294,7 @@ async fn submit_unit(
                 record.job.lines.is_none() && !is_retry && record.bundle.is_none(),
                 "line jobs, retries and bundles are container work, never {NATIVE_APP} units"
             );
-            if let Some(reason) = trust.refuse_job(&record.job, Some(host)) {
+            if let Some(reason) = trust.refuse_native_job(&record.job, Some(host), builds) {
                 anyhow::bail!("trust refuses host {host} for this {NATIVE_APP} job: {reason}");
             }
             NATIVE_APP
@@ -547,6 +559,19 @@ mod native_tests {
         crate::trust::Trust::load(&path).unwrap()
     }
 
+    /// The reviewed builds, with the test jobs' own digest as a Linux build that passed the
+    /// test lists' challenge.
+    fn builds() -> crate::trust::BuildTrust {
+        crate::trust::builds::with_build(
+            crate::trust::BuildTrust::embedded().unwrap().clone(),
+            &job(1).engine.image,
+            "x86_64-pc-linux-gnu",
+            &"b".repeat(64),
+            0.08734328574534386,
+            Some(5929),
+        )
+    }
+
     /// Trusts `hosts` for the test jobs' own digest.
     fn trust(dir: &Path, hosts: &[u64]) -> crate::trust::Trust {
         trust_for(dir, &job(1).engine.image, hosts)
@@ -574,18 +599,34 @@ mod native_tests {
         let (s, ids) = Server::new(&[1]);
         std::fs::write(s.project.join("config.xml"), ASSIGNMENT).unwrap();
         let trust = trust(&s.root, &[13]);
-        let error = submit_native(&s.root, &s.project, &ids[0], None, None, &trust, &[100])
-            .await
-            .unwrap_err();
+        let error = submit_native(
+            &s.root,
+            &s.project,
+            &ids[0],
+            None,
+            None,
+            &trust,
+            &builds(),
+            &[100],
+        )
+        .await
+        .unwrap_err();
         assert!(
             error.to_string().contains("needs --target-host"),
             "{error:#}"
         );
-        assert!(
-            submit_native(&s.root, &s.project, &ids[0], None, Some(0), &trust, &[100])
-                .await
-                .is_err()
-        );
+        assert!(submit_native(
+            &s.root,
+            &s.project,
+            &ids[0],
+            None,
+            Some(0),
+            &trust,
+            &builds(),
+            &[100]
+        )
+        .await
+        .is_err());
         assert!(s.calls().is_empty());
         assert_eq!(stage(&s, &ids[0]), Stage::Reserved);
     }
@@ -606,6 +647,7 @@ mod native_tests {
                 None,
                 Some(host),
                 &trust,
+                &builds(),
                 &[100],
             )
             .await
@@ -629,18 +671,34 @@ mod native_tests {
         let trust = trust(&s.root, &[13]);
         // Without assignment the unit could go to any host.
         std::fs::write(s.project.join("config.xml"), "<boinc><config/></boinc>").unwrap();
-        assert!(
-            submit_native(&s.root, &s.project, &ids[0], None, Some(13), &trust, &[100])
-                .await
-                .is_err()
-        );
+        assert!(submit_native(
+            &s.root,
+            &s.project,
+            &ids[0],
+            None,
+            Some(13),
+            &trust,
+            &builds(),
+            &[100]
+        )
+        .await
+        .is_err());
         assert!(s.calls().is_empty());
         std::fs::write(s.project.join("config.xml"), ASSIGNMENT).unwrap();
         // No published version packages the job's build: nothing is created.
         publish(&s, "1.1", &format!("sha256:{}", "c".repeat(64)));
-        let error = submit_native(&s.root, &s.project, &ids[0], None, Some(13), &trust, &[100])
-            .await
-            .unwrap_err();
+        let error = submit_native(
+            &s.root,
+            &s.project,
+            &ids[0],
+            None,
+            Some(13),
+            &trust,
+            &builds(),
+            &[100],
+        )
+        .await
+        .unwrap_err();
         assert!(
             error.to_string().contains("packages the build"),
             "{error:#}"
@@ -651,11 +709,18 @@ mod native_tests {
         // failed publication left unregistered: the unit is pinned to 1.0.
         publish(&s, "1.0", &job(1).engine.image);
         publish(&s, "1.2", &job(1).engine.image);
-        assert!(
-            submit_native(&s.root, &s.project, &ids[0], None, Some(13), &trust, &[])
-                .await
-                .is_err()
-        );
+        assert!(submit_native(
+            &s.root,
+            &s.project,
+            &ids[0],
+            None,
+            Some(13),
+            &trust,
+            &builds(),
+            &[]
+        )
+        .await
+        .is_err());
         submit_native(
             &s.root,
             &s.project,
@@ -663,6 +728,7 @@ mod native_tests {
             None,
             Some(13),
             &trust,
+            &builds(),
             &[100, 101],
         )
         .await
@@ -677,6 +743,68 @@ mod native_tests {
         assert!(calls[0].contains(&format!("--wu_name usnm_{}", ids[0])));
         assert!(calls[0].contains("--target_host 13"));
         assert!(calls[0].contains("--app_version_num 100 "), "{}", calls[0]);
+        assert_eq!(stage(&s, &ids[0]), Stage::Submitted);
+    }
+
+    #[tokio::test]
+    async fn a_build_without_a_passing_challenge_gets_nothing_created() {
+        let (s, ids) = Server::new(&[1]);
+        std::fs::write(s.project.join("config.xml"), ASSIGNMENT).unwrap();
+        publish(&s, "1.0", &job(1).engine.image);
+        // Host 13 is on the list for the job's digest, but the digest isn't a recorded build,
+        // or its recorded run is over the threshold.
+        let trust = trust(&s.root, &[13]);
+        let unlisted = crate::trust::BuildTrust::embedded().unwrap().clone();
+        let failed = crate::trust::builds::with_build(
+            unlisted.clone(),
+            &job(1).engine.image,
+            "x86_64-pc-linux-gnu",
+            &"b".repeat(64),
+            0.08734328574534386,
+            Some(7300),
+        );
+        for builds in [unlisted, failed] {
+            let error = submit_native(
+                &s.root,
+                &s.project,
+                &ids[0],
+                None,
+                Some(13),
+                &trust,
+                &builds,
+                &[100],
+            )
+            .await
+            .unwrap_err();
+            assert!(
+                error.to_string().contains("native-build-trust.json"),
+                "{error:#}"
+            );
+        }
+        assert!(s.calls().is_empty());
+        assert_eq!(stage(&s, &ids[0]), Stage::Reserved);
+        // The same digest as a Windows build with a passing run takes the same path as Linux.
+        let windows = crate::trust::builds::with_build(
+            crate::trust::BuildTrust::embedded().unwrap().clone(),
+            &job(1).engine.image,
+            "windows_x86_64",
+            &"b".repeat(64),
+            0.08734328574534386,
+            Some(6000),
+        );
+        submit_native(
+            &s.root,
+            &s.project,
+            &ids[0],
+            None,
+            Some(13),
+            &trust,
+            &windows,
+            &[100],
+        )
+        .await
+        .unwrap();
+        assert_eq!(s.calls().len(), 1);
         assert_eq!(stage(&s, &ids[0]), Stage::Submitted);
     }
 

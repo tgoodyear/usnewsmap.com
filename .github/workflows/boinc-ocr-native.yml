@@ -35,6 +35,7 @@ on:
       - "ocr/engines/ndlocr-lite/models.lock"
       - "ocr/routing/routes.toml"
       - "boinc/scripts/acceptance_server.py"
+      - "boinc/project/native-build-trust.json"
       - "boinc/project/plan_class_spec.xml"
       - "!**/*.md"
 

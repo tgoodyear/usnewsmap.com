@@ -84,7 +84,7 @@ base_inputs=(HEAD:boinc/images/base/Containerfile HEAD:boinc/scripts/patch-serve
   HEAD:boinc/scripts/patch-server-gold-routing.py HEAD:boinc/scripts/gold-engine-routing.h
   HEAD:boinc/scripts/patch-server-db-tls.py HEAD:boinc/images/base/mysql-tls.cnf)
 base_key=$(git rev-parse "${base_inputs[@]}" | git hash-object --stdin | cut -c1-16)
-bin_inputs=(HEAD:crates HEAD:Cargo.toml HEAD:Cargo.lock HEAD:boinc/apps HEAD:boinc/apps/qwen/weights.lock HEAD:fixtures/ocr-gold/bundle-v1.lock.json HEAD:boinc/scripts/acceptance_server.py HEAD:.dockerignore HEAD:boinc/images/bridge-bin/Containerfile)
+bin_inputs=(HEAD:crates HEAD:Cargo.toml HEAD:Cargo.lock HEAD:boinc/apps HEAD:boinc/apps/qwen/weights.lock HEAD:boinc/project/native-build-trust.json HEAD:fixtures/ocr-gold/bundle-v1.lock.json HEAD:boinc/scripts/acceptance_server.py HEAD:.dockerignore HEAD:boinc/images/bridge-bin/Containerfile)
 if git rev-parse -q --verify HEAD:rust-toolchain.toml > /dev/null; then bin_inputs+=(HEAD:rust-toolchain.toml); fi
 bin_key=$(git rev-parse "${bin_inputs[@]}" | git hash-object --stdin | cut -c1-16)
 

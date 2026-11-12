@@ -47,7 +47,15 @@ impl Trust {
         manifest_sha256: &str,
         scope: Scope,
     ) -> anyhow::Result<Self> {
-        Self::build_inner(reports, &[], max_cer, manifest_sha256, scope, false)
+        Self::build_inner(
+            reports,
+            &[],
+            max_cer,
+            manifest_sha256,
+            scope,
+            false,
+            super::BuildTrust::embedded()?,
+        )
     }
 
     /// Builds trust from canonical quality reports and native BOINC attempt metadata. Unlike
@@ -63,7 +71,41 @@ impl Trust {
             !outcomes.is_empty(),
             "native Gold outcome files are required"
         );
-        Self::build_inner(reports, outcomes, max_cer, manifest_sha256, scope, true)
+        Self::build_with_builds(
+            reports,
+            outcomes,
+            max_cer,
+            manifest_sha256,
+            scope,
+            super::BuildTrust::embedded()?,
+        )
+    }
+
+    /// [`Self::build_with_outcomes`] against `builds` (#1418): a host passes for a build only
+    /// if [`super::BuildTrust::refuse`] admits it. Evidence from `usnm_gold_native` is for a
+    /// native build, so its digest must be a recorded build with a passing run of this
+    /// challenge at this threshold. A worker image's evidence is judged as before.
+    pub fn build_with_builds(
+        reports: &[PathBuf],
+        outcomes: &[PathBuf],
+        max_cer: f64,
+        manifest_sha256: &str,
+        scope: Scope,
+        builds: &super::BuildTrust,
+    ) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            !outcomes.is_empty(),
+            "native Gold outcome files are required"
+        );
+        Self::build_inner(
+            reports,
+            outcomes,
+            max_cer,
+            manifest_sha256,
+            scope,
+            true,
+            builds,
+        )
     }
 
     fn build_inner(
@@ -73,6 +115,7 @@ impl Trust {
         manifest_sha256: &str,
         scope: Scope,
         require_native: bool,
+        builds: &super::BuildTrust,
     ) -> anyhow::Result<Self> {
         scope.validate()?;
         anyhow::ensure!(
@@ -281,9 +324,20 @@ impl Trust {
                 }
             }
         }
+        // The digests whose evidence came from the native gold app: native builds.
+        let native_builds: BTreeSet<&str> = native_results
+            .values()
+            .filter(|r| r.app == crate::gold::submit::NATIVE_APP)
+            .map(|r| r.engine_image.as_str())
+            .collect();
         let mut hosts: BTreeMap<String, BTreeSet<u64>> = BTreeMap::new();
         for ((image, host), (_, passed)) in latest {
-            if passed {
+            let native = native_builds.contains(image.as_str());
+            if passed
+                && builds
+                    .refuse(&image, manifest_sha256, max_cer, native)
+                    .is_none()
+            {
                 hosts.entry(image).or_default().insert(host);
             }
         }

@@ -244,8 +244,15 @@ else
       esac
       check_args=(--platform "$PLATFORM")
       for spec in "${EXTRA_FILES[@]+"${EXTRA_FILES[@]}"}"; do check_args+=(--extra-file "$spec"); done
-      python3 boinc/scripts/check-native-ocr-build.py --binary "$BINARY" "${check_args[@]+"${check_args[@]}"}" ||
+      identity=$(python3 boinc/scripts/check-native-ocr-build.py --binary "$BINARY" "${check_args[@]+"${check_args[@]}"}") ||
         die "the native OCR build isn't the container worker's engine and models, or its files aren't the manifest's"
+      printf '%s\n' "$identity"
+      # Each build digest is its own unit of trust (#1418): it's released only once its own run
+      # of the calibrated challenge is recorded in boinc/project/native-build-trust.json.
+      native_image=$(sed -n 's/.*engine\.image \(sha256:[0-9a-f]\{64\}\), engine\.base .*/\1/p' <<< "$identity")
+      native_base=$(sed -n 's/.*engine\.base \(sha256:[0-9a-f]\{64\}\)$/\1/p' <<< "$identity")
+      python3 boinc/scripts/check-build-trust.py --image "$native_image" --base "$native_base" --platform "$PLATFORM" ||
+        die "native $APP build ${native_image:-?} has no passing challenge recorded for $PLATFORM in boinc/project/native-build-trust.json (docs/boinc/apps/native-ocr.md)"
       ;;
   esac
 fi

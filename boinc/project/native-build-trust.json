@@ -1,0 +1,71 @@
+{
+  "builds": {
+    "sha256:4d6e2a3be41b3b9c9cf50e6404c6f056177cef547e9d9675298ee1fec94cc5d1": {
+      "challenges": [
+        {
+          "char_edits": 5929,
+          "crops": 30,
+          "evidence": "Run on the dev container (Intel i7-7700K) on 12 Nov 2026; every crop's edit counts equal the container worker 247c's (issue 1418, comment 6816703537)",
+          "manifest_sha256": "d8cd7279090a6427c0cc6f0e82573e3771c27f90df6500bf5a44b268f6e0f05f",
+          "max_cer": 0.08734328574534386,
+          "ref_chars": 82794
+        }
+      ],
+      "engine_base": "sha256:21877bc34785b43a6e405c8f41ee62261fb59ee377a1cc104d3577c792ba9904",
+      "platform": "x86_64-pc-linux-gnu",
+      "source": {
+        "artifact_sha256": "361d9aed538f27a9a595551a70651e4e63afc898c5852a6bc5f1d267ab5beef9",
+        "commit": "c622865e21d7ff6a8712cdcfb8db953866a2faa6",
+        "run": 43155081356
+      }
+    },
+    "sha256:78065a0a43d8f8bf67c00c014ae2b0540d51d0038e4050dbbd509e14b63fa836": {
+      "challenges": [
+        {
+          "char_edits": 5957,
+          "crops": 30,
+          "evidence": "Run on an Apple M1, one thread per task, on 12 Nov 2026 (gold job ce635f533496bc8040035409af7ebc0f1ec6e29d9a050f7cab182a67d617b614); 27 of 30 crops differ from Linux in edit counts (issue 1418, comment 6832303647)",
+          "manifest_sha256": "d8cd7279090a6427c0cc6f0e82573e3771c27f90df6500bf5a44b268f6e0f05f",
+          "max_cer": 0.08734328574534386,
+          "ref_chars": 82794
+        }
+      ],
+      "engine_base": "sha256:4af660d0a8181c9734c1ac577f4d91089b5ceb17930b8a0a5a217beb99c82032",
+      "platform": "arm64-apple-darwin",
+      "source": {
+        "artifact_sha256": "bd3ddd390c7273266fa40281a81b9b48f0606050778abb3a6e18470bea6347ee",
+        "commit": "c622865e21d7ff6a8712cdcfb8db953866a2faa6",
+        "run": 43155081356
+      }
+    },
+    "sha256:c353f7bff920d6d1ff2daff5bd3e2a8a27c589121fcdde0b7e2168bf3c174994": {
+      "challenges": [
+        {
+          "char_edits": 5929,
+          "crops": 30,
+          "evidence": "Run on the dev container (Intel i7-7700K) on 12 Nov 2026; every crop's edit counts equal the container worker 247c's (issue 1418, comment 6816703537)",
+          "manifest_sha256": "d8cd7279090a6427c0cc6f0e82573e3771c27f90df6500bf5a44b268f6e0f05f",
+          "max_cer": 0.08734328574534386,
+          "ref_chars": 82794
+        }
+      ],
+      "engine_base": "sha256:21877bc34785b43a6e405c8f41ee62261fb59ee377a1cc104d3577c792ba9904",
+      "platform": "x86_64-pc-linux-gnu",
+      "source": {
+        "artifact_sha256": "4435a4cec5351a5608a8fb1236cea0439e0acc1ac20cdb7a74b940af1d7dd833",
+        "commit": "f2f4a9d03f9d0c485100b7da9a4fed4e9d2f8a6d",
+        "run": 42290314510
+      }
+    }
+  },
+  "equivalent": [
+    {
+      "digests": [
+        "sha256:4d6e2a3be41b3b9c9cf50e6404c6f056177cef547e9d9675298ee1fec94cc5d1",
+        "sha256:dac9c123a52d7b10281d3204a815233da1fe9819afdadd4341a034a95441eb34"
+      ],
+      "evidence": "10 English JP2 pages (sn83030272, 7 to 11 Jul 1865): text and ALTO byte-identical on an Intel dev container and on an AMD volunteer host, 12 Nov 2026 (issue 1418, comment 6816703537)"
+    }
+  ],
+  "v": 1
+}
