@@ -436,6 +436,22 @@ class SchedulerTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "trust"):
             self.tick(drain=True)
 
+    def test_collect_logs_the_pages_it_published_before_the_tick_ends(self):
+        self.tick()
+        for job in self.fake.jobs.values():
+            job["spool"] = "/project/usnmocr/results/batch1"
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            event = self.tick()
+        lines = [json.loads(line) for line in err.getvalue().splitlines() if line.startswith("{")]
+        collected = [line for line in lines if line["event"] == "boinc_batch_collected"]
+        self.assertEqual([(line["pages"], line["plan"], line["at"]) for line in collected],
+                         [(event["newly_published"], self.config["plan"], event["at"])])
+        quiet = io.StringIO()
+        with contextlib.redirect_stderr(quiet):
+            self.tick()
+        self.assertNotIn("boinc_batch_collected", quiet.getvalue())
+
     def test_full_feed_collect_refill_and_replay(self):
         first = self.tick()
         self.assertEqual(first["selected"], 2)
