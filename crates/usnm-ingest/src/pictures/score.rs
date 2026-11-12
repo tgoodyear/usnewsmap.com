@@ -9,7 +9,10 @@
 //! height]` in pixels of its image. Only the five picture categories count
 //! (`Photograph`, `Illustration`, `Map`, `Comics/Cartoon`, `Editorial
 //! Cartoon`); `Headline`, `Advertisement` and crowd annotations are left out
-//! and counted.
+//! and counted. Images whose `date_captured` (month/day/year) is after the
+//! cutoff, 1 December 2019, are left out with their annotations, as
+//! `scripts/pictures/beyond_words.py` does: their picture boxes were not
+//! verified.
 //!
 //! Two kinds of prediction are read, each keyed to a page by the image `id`:
 //!
@@ -27,12 +30,14 @@
 //! unmatched annotation it overlaps most, if that overlap's IoU is at least
 //! the threshold. Class is not compared: ALTO has no picture classes.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 
 use anyhow::{bail, Context};
+use chrono::NaiveDate;
+use quick_xml::events::Event;
 use serde::{Deserialize, Serialize};
 use usnm_alto::{BlockKind, ParseOptions};
 
@@ -47,6 +52,9 @@ pub const PICTURE_CLASSES: [&str; 5] = [
 
 /// The largest annotations file read (the published ones are a few MB).
 const MAX_ANNOTATIONS_BYTES: u64 = 64 << 20;
+
+/// Beyond Words images captured after this day have unverified boxes.
+pub const VERIFIED_THROUGH: (i32, u32, u32) = (2019, 12, 1);
 
 /// The default IoU a prediction must reach to match an annotation.
 pub const DEFAULT_IOU: f64 = 0.5;
@@ -124,6 +132,7 @@ impl RawId {
 #[derive(Deserialize)]
 struct CocoImage {
     id: RawId,
+    date_captured: Option<String>,
     width: f64,
     height: f64,
 }
@@ -159,6 +168,10 @@ pub struct AnnotationCounts {
     /// `Headline`, `Advertisement` or any other class that is not a picture.
     pub other_class_annotations: usize,
     pub crowd_annotations: usize,
+    /// Images captured after the cutoff, left out whole.
+    pub post_cutoff_images: usize,
+    /// Their annotations, of any class.
+    pub annotations_on_post_cutoff_images: usize,
 }
 
 /// The verified picture boxes of each image, by image id.
@@ -178,7 +191,11 @@ impl Gold {
             .map(|c| (c.id, c.name.as_str()))
             .collect();
         let mut sizes: HashMap<String, (f64, f64)> = HashMap::new();
+        let (y, m, d) = VERIFIED_THROUGH;
+        let cutoff = NaiveDate::from_ymd_opt(y, m, d).expect("a real date");
+        let mut late: HashSet<String> = HashSet::new();
         let mut gold = Gold::default();
+        gold.counts.images = coco.images.len();
         for image in &coco.images {
             let key = image.id.key()?;
             if !(image.width.is_finite()
@@ -194,14 +211,28 @@ impl Gold {
             {
                 bail!("image id {key} appears twice");
             }
-            gold.pages.insert(key, Vec::new());
+            let Some(captured) = image.date_captured.as_deref() else {
+                bail!("image {key} has no date_captured");
+            };
+            let Ok(captured) = NaiveDate::parse_from_str(captured, "%m/%d/%Y") else {
+                bail!("image {key} has a date_captured that is not month/day/year");
+            };
+            if captured > cutoff {
+                late.insert(key);
+                gold.counts.post_cutoff_images += 1;
+            } else {
+                gold.pages.insert(key, Vec::new());
+            }
         }
-        gold.counts.images = gold.pages.len();
         for a in &coco.annotations {
             let key = a.image_id.key()?;
             let Some(&(width, height)) = sizes.get(&key) else {
                 bail!("an annotation names image {key}, which is not in `images`");
             };
+            if late.contains(&key) {
+                gold.counts.annotations_on_post_cutoff_images += 1;
+                continue;
+            }
             let Some(class) = classes.get(&a.category_id) else {
                 bail!(
                     "an annotation on image {key} has unknown category {}",
@@ -275,8 +306,50 @@ pub struct Predictions {
     pub counts: InputCounts,
 }
 
+/// For each `Illustration` element of an ALTO file, in document order,
+/// whether it is written with a finite `HPOS` and `VPOS` and a positive
+/// `WIDTH` and `HEIGHT`.
+fn written_illustrations(xml: &[u8]) -> anyhow::Result<Vec<bool>> {
+    let text = std::str::from_utf8(xml).context("not UTF-8")?;
+    let mut reader = quick_xml::Reader::from_str(text);
+    let mut out = Vec::new();
+    loop {
+        match reader.read_event().context("not well-formed XML")? {
+            Event::Eof => return Ok(out),
+            Event::Start(e) | Event::Empty(e) if e.local_name().as_ref() == "Illustration" => {
+                let (mut x, mut y, mut w, mut h) = (None, None, None, None);
+                for a in e.attributes().with_checks(true) {
+                    let a = a.context("a bad attribute")?;
+                    let value = a
+                        .normalized_value(quick_xml::XmlVersion::Implicit1_0)
+                        .ok()
+                        .and_then(|v| v.trim().parse::<f64>().ok())
+                        .filter(|v| v.is_finite());
+                    match a.key.as_ref() {
+                        "HPOS" => x = value,
+                        "VPOS" => y = value,
+                        "WIDTH" => w = value,
+                        "HEIGHT" => h = value,
+                        _ => {}
+                    }
+                }
+                out.push(
+                    x.is_some()
+                        && y.is_some()
+                        && w.is_some_and(|v| v > 0.0)
+                        && h.is_some_and(|v| v > 0.0),
+                );
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Read the `Illustration` blocks of `{id}.xml` in `dir` for each annotated page.
 pub fn read_alto(dir: &Path, gold: &Gold) -> anyhow::Result<Predictions> {
+    if !dir.is_dir() {
+        bail!("`{}` is not a directory", dir.display());
+    }
     let mut out = Predictions::default();
     for key in gold.pages.keys() {
         let path = dir.join(format!("{key}.xml"));
@@ -290,13 +363,30 @@ pub fn read_alto(dir: &Path, gold: &Gold) -> anyhow::Result<Predictions> {
         };
         let page = usnm_alto::parse(&xml, &ParseOptions::default())
             .with_context(|| format!("reading `{}`", path.display()))?;
-        let mut found = Vec::new();
-        for block in page
+        // The reader gives a block with no usable box the page's own, so the
+        // boxes as written are checked here.
+        let written =
+            written_illustrations(&xml).with_context(|| format!("reading `{}`", path.display()))?;
+        let blocks: Vec<_> = page
             .blocks
             .iter()
             .filter(|b| b.kind == BlockKind::Illustration)
-        {
+            .collect();
+        if written.len() != blocks.len() {
+            bail!(
+                "`{}` has {} Illustration elements but {} were read as blocks",
+                path.display(),
+                written.len(),
+                blocks.len()
+            );
+        }
+        let mut found = Vec::new();
+        for (block, written) in blocks.into_iter().zip(written) {
             out.counts.predictions_read += 1;
+            if !written {
+                out.counts.predictions_unusable += 1;
+                continue;
+            }
             let r = block.rect;
             match Region::clipped(
                 r.x0 / page.width,
@@ -318,9 +408,10 @@ pub fn read_alto(dir: &Path, gold: &Gold) -> anyhow::Result<Predictions> {
 #[derive(Deserialize)]
 struct NavigatorLine {
     page: RawId,
+    /// Read as any JSON, so one bad coordinate is counted, not fatal.
     #[serde(rename = "box")]
-    region: Option<Vec<f64>>,
-    score: Option<f64>,
+    region: Option<serde_json::Value>,
+    score: Option<serde_json::Value>,
 }
 
 /// Read Newspaper Navigator boxes from the JSON Lines file `path`, keeping
@@ -343,16 +434,24 @@ pub fn read_navigator(path: &Path, gold: &Gold, min_score: f64) -> anyhow::Resul
         }
         out.counts.predictions_read += 1;
         let found = out.pages.entry(key).or_default();
-        let score = l.score.unwrap_or(1.0);
-        if !score.is_finite() {
+        let score = match &l.score {
+            None | Some(serde_json::Value::Null) => Some(1.0),
+            Some(v) => v.as_f64().filter(|s| s.is_finite()),
+        };
+        let Some(score) = score else {
             out.counts.predictions_unusable += 1;
             continue;
-        }
+        };
         if score < min_score {
             out.counts.predictions_below_min_score += 1;
             continue;
         }
-        match l.region.as_deref() {
+        let coords: Option<Vec<f64>> = l
+            .region
+            .as_ref()
+            .and_then(|v| v.as_array())
+            .and_then(|a| a.iter().map(|c| c.as_f64()).collect());
+        match coords.as_deref() {
             Some(&[x0, y0, x1, y1]) => match Region::clipped(x0, y0, x1, y1) {
                 Some(region) => found.push(Prediction { region, score }),
                 None => out.counts.predictions_unusable += 1,
@@ -530,9 +629,10 @@ mod tests {
 
     const COCO: &str = r#"{
       "images": [
-        {"id": 1, "width": 1000, "height": 2000},
-        {"id": 2, "width": 500, "height": 500},
-        {"id": 3, "width": 500, "height": 500}
+        {"id": 1, "width": 1000, "height": 2000, "date_captured": "03/04/1915"},
+        {"id": 2, "width": 500, "height": 500, "date_captured": "12/01/2019"},
+        {"id": 3, "width": 500, "height": 500, "date_captured": "11/30/2019"},
+        {"id": 4, "width": 500, "height": 500, "date_captured": "12/02/2019"}
       ],
       "categories": [
         {"id": 0, "name": "Photograph"}, {"id": 1, "name": "Illustration"},
@@ -547,7 +647,9 @@ mod tests {
         {"id": 4, "image_id": 2, "category_id": 2, "bbox": [0, 0, 250, 250], "iscrowd": 0},
         {"id": 5, "image_id": 2, "category_id": 6, "bbox": [0, 0, 500, 500], "iscrowd": 0},
         {"id": 6, "image_id": 2, "category_id": 0, "bbox": [250, 250, 100, 100], "iscrowd": 1},
-        {"id": 7, "image_id": 2, "category_id": 3, "bbox": [400, 400, 300, 300]}
+        {"id": 7, "image_id": 2, "category_id": 3, "bbox": [400, 400, 300, 300]},
+        {"id": 8, "image_id": 4, "category_id": 0, "bbox": [0, 0, 100, 100]},
+        {"id": 9, "image_id": 4, "category_id": 5, "bbox": [0, 0, 100, 100]}
       ]
     }"#;
 
@@ -586,11 +688,13 @@ mod tests {
         assert_eq!(
             gold.counts,
             AnnotationCounts {
-                images: 3,
+                images: 4,
                 images_with_pictures: 2,
                 picture_annotations: 4,
                 other_class_annotations: 2,
                 crowd_annotations: 1,
+                post_cutoff_images: 1,
+                annotations_on_post_cutoff_images: 2,
             }
         );
         assert_eq!(
@@ -616,9 +720,11 @@ mod tests {
             swap(r#"[100, 200, 300, 400]"#, r#"[100, 200, 0, 400]"#),
             swap(r#"{"id": 2, "width": 500"#, r#"{"id": 1, "width": 500"#),
             swap(
-                r#"{"id": 3, "width": 500, "height": 500}"#,
-                r#"{"id": "../x", "width": 500, "height": 500}"#,
+                r#"{"id": 3, "width": 500"#,
+                r#"{"id": "../x", "width": 500"#,
             ),
+            swap(r#", "date_captured": "03/04/1915""#, ""),
+            swap(r#""03/04/1915""#, r#""1915-03-04""#),
             swap(r#""width": 1000"#, r#""width": 0"#),
         ] {
             assert!(Gold::parse(bad.as_bytes()).is_err(), "{bad}");
@@ -678,7 +784,9 @@ mod tests {
             &alto(
                 r#"<Illustration ID="a" HPOS="100" VPOS="200" WIDTH="300" HEIGHT="400"/>
                    <Illustration ID="b" HPOS="0" VPOS="1500" WIDTH="100" HEIGHT="100"/>
-                   <Illustration ID="c" HPOS="2000" VPOS="0" WIDTH="100" HEIGHT="100"/>"#,
+                   <Illustration ID="c" HPOS="2000" VPOS="0" WIDTH="100" HEIGHT="100"/>
+                   <Illustration ID="d" HPOS="0" VPOS="0" WIDTH="-1" HEIGHT="10"/>
+                   <Illustration ID="e" HPOS="0" VPOS="0" HEIGHT="10"/>"#,
             ),
         );
         // Image 2 has no file; image 3 has a file with no illustration.
@@ -689,9 +797,9 @@ mod tests {
             InputCounts {
                 pages_with_input: 2,
                 pages_without_input: 1,
-                predictions_read: 3,
+                predictions_read: 5,
                 predictions_below_min_score: 0,
-                predictions_unusable: 1,
+                predictions_unusable: 3,
                 predictions_off_annotated_pages: 0,
             }
         );
@@ -720,6 +828,14 @@ mod tests {
     }
 
     #[test]
+    fn a_missing_alto_directory_stops_the_run() {
+        let gold = Gold::parse(COCO.as_bytes()).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let err = read_alto(&dir.path().join("nope"), &gold).unwrap_err();
+        assert!(format!("{err:#}").contains("not a directory"));
+    }
+
+    #[test]
     fn alto_that_is_not_alto_stops_the_run() {
         let gold = Gold::parse(COCO.as_bytes()).unwrap();
         let dir = tempfile::tempdir().unwrap();
@@ -745,15 +861,24 @@ mod tests {
                 "\n",
                 r#"{"page": 2, "box": [0.0, 0.0, 0.5], "score": 0.8}"#,
                 "\n",
+                r#"{"page": 2, "box": [0.1, null, 0.4, 0.5], "score": 0.8}"#,
+                "\n",
+                r#"{"page": 2, "box": [0.1, 0.1, 0.4, 0.5], "score": "high"}"#,
+                "\n",
+                r#"{"page": 4, "box": [0.0, 0.0, 0.5, 0.5], "score": 0.8}"#,
+                "\n",
                 r#"{"page": 99, "box": [0.0, 0.0, 0.5, 0.5], "score": 0.8}"#,
                 "\n",
             ),
         )
         .unwrap();
         let all = read_navigator(&path, &gold, 0.0).unwrap();
-        assert_eq!(all.counts.predictions_read, 4);
-        assert_eq!(all.counts.predictions_unusable, 1);
-        assert_eq!(all.counts.predictions_off_annotated_pages, 1);
+        assert_eq!(all.counts.predictions_read, 6);
+        assert_eq!(all.counts.predictions_unusable, 3);
+        assert_eq!(
+            all.counts.predictions_off_annotated_pages, 2,
+            "an unknown page and one captured after the cutoff"
+        );
         assert_eq!(all.counts.pages_with_input, 2);
         assert_eq!(all.counts.pages_without_input, 1);
         let s = score_source(&gold, &all, 0.5);
