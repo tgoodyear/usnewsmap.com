@@ -83,10 +83,56 @@ Keep `max_pending: 40`, `pages_per_host: 2`, `batch_size: 10` (admission `min(40
 
 A oneshot service runs its `ExecStart` lines in order and stops at the first that fails, so in the shared service one plan's failed tick stopped the plans after it. Each plan now has its own unit and timer, from `boinc/scripts/onprem/controller/`:
 
-- `usnm-boinc-priority-controller@.service` runs `controller-tick.sh --plan %i` from `/opt/usnm`, with no start timeout: a tick killed mid-run leaves the controller lease held and every plan failing until it is broken by hand. Feed health fires `controller_tick` on a tick still running past its hang limit instead.
-- `usnm-boinc-priority-controller@.timer` starts the plan's next tick five minutes after its last one ended, failed or not. A plan whose bridge steps timed out (for example behind a long job on the BOINC host's step lock) tries again on its next tick, while the other plans go on ticking.
-- `controller-tick.sh --plan PLAN` reads `/etc/usnm/boinc-priority-controller.PLAN.json`, `/var/lib/usnm-priority-controller.PLAN` and the plan's flags in `/etc/usnm/boinc-priority-controller.PLAN.flags`. The plan `main` is the live plan in the unsuffixed paths the shared service used, so no configuration or state moves. The flags file holds one argument per line (a flag's value on the next line), with blank and `#` lines skipped; no shell reads it. It must exist, may be empty, and may not set `--config`, `--state-dir` or `--apply`, which the script sets. A draining plan's file has `--drain`. `--dry-run` runs the plan's tick without `--apply` or the lock, `--print-command` prints the command one argument per line, and `--add-flag ARG` (repeatable) adds an argument for one run, such as `--resume-native`.
-- `install.sh`, run as root from `/opt/usnm` once the checkout holds these files, installs the template and the held-page archive's units into `/etc/systemd/system` and reloads systemd. It enables and starts nothing and doesn't touch `/etc/usnm`.
+- `usnm-boinc-priority-controller@.service` runs `controller-tick.sh --plan %i` from `/opt/usnm` at `Nice=10`, as the shared and drain services did, with no start timeout: a tick killed mid-run leaves the controller lease held and every plan failing until it is broken by hand. Feed health fires `controller_tick` on a tick still running past its hang limit instead.
+- `usnm-boinc-priority-controller@.timer` starts the plan's next tick a set time after its last one ended, failed or not: each plan's cadence (below) is a drop-in, `usnm-boinc-priority-controller@PLAN.timer.d/cadence.conf`, and the template's own 5 minutes applies only without one. A plan whose bridge steps timed out (for example behind a long job on the BOINC host's step lock) tries again on its next tick, while the other plans go on ticking.
+- `controller-tick.sh --plan PLAN` reads `/etc/usnm/boinc-priority-controller.PLAN.json`, `/var/lib/usnm-priority-controller.PLAN` and the plan's flags in `/etc/usnm/boinc-priority-controller.PLAN.flags`. The plan `main` is the live plan in the unsuffixed paths the shared service used, so no configuration or state moves. `--dry-run` runs the plan's tick without `--apply` or the lock, `--print-command` prints the command one argument per line, `--print-timer` prints the plan's timer drop-in, and `--add-flag ARG` (repeatable) adds an argument for one run, such as `--resume-native`.
+- `install.sh`, run as root from `/opt/usnm` once the checkout holds these files, installs the template, the held-page archive's units and each plan's cadence drop-in (from every `boinc-priority-controller*.flags` in `/etc/usnm`) into `/etc/systemd/system`, and reloads systemd. It checks every flags file first and installs nothing if `controller-tick.sh` refuses one. It enables and starts nothing and doesn't write `/etc/usnm`. Run it again after changing a plan's cadence.
+
+#### Flags files by kind
+
+A flags file holds the plan's complete `batch_scheduler.py` flags. Each line is split on blanks, so a flag and its value can share a line, and a one-line, space-separated file (the native tick script's extras) works as it is. Blank lines and `#` lines are skipped. No shell reads it: quotes and backslashes are refused and nothing is expanded, so write paths and URLs plainly. It may not set `--config`, `--state-dir` or `--apply` (or an abbreviation of one), which the script sets, nor `--resume-native`, which goes in `--add-flag` for one run.
+
+Lines starting with `@` describe the plan:
+
+| Setting                         | Meaning                                                                  | Default                                     |
+| ------------------------------- | ------------------------------------------------------------------------ | ------------------------------------------- |
+| `@kind main`, `native`, `drain` | required                                                                 |                                             |
+| `@every TIME`                   | the timer's `OnUnitInactiveSec` (`TIME`: a number and `s`, `min` or `h`) | `main` and `native` `2min`, `drain` `30min` |
+| `@boot TIME`                    | the timer's `OnBootSec`                                                  | `main` and `native` `5min`, `drain` `17min` |
+
+The defaults are the cadences CT 211 ran on 12 November 2026 (`main` every 2 minutes since #529, `native-feed-4` every 2 minutes, the draining plans every 30 minutes). Every kind must have `--onprem-handoff claim`, `--onprem-handoff collect` and `--onprem-handoff export` in its file: without one, that hand-off step would go to the Azure hand-off job, which prod no longer has, so `controller-tick.sh` refuses to tick the plan (and `install.sh` refuses to install). A `drain` plan must have `--drain`, and only a `drain` plan may have it.
+
+`main`, transcribed from the shared service's `ExecStart` (drop-in `batch.conf`); keep every flag the live line has:
+
+```sh
+@kind main
+--server-status-url https://boinc.usnewsmap.com/server_status.php?xml=1
+--max-global-pending 3000
+--onprem-handoff claim
+--onprem-handoff collect
+--onprem-handoff export
+# ... the rest of batch.conf's flags, e.g. --claim-language srp, --refill-cap 175,
+# --check-state-dir /var/lib/usnm-priority-controller.queue-feed-10 (one per draining plan)
+```
+
+A native plan: the fixed flags from `native-feed-tick.sh`'s command line, then the plan's old extras file pasted as it is (on CT 211, `/etc/usnm/native-feed-native-feed-4.flags`, one line):
+
+```sh
+@kind native
+--server-status-url https://boinc.usnewsmap.com/server_status.php?xml=1 --max-global-pending 3000 --other-app-budget 2500
+--rest-journals --batch-spool-out --batch-collect --batch-export
+--onprem-handoff claim --onprem-handoff collect --onprem-handoff export --dead-letter-failed
+<the extras line, e.g. --check-state-dir ... --refill-cap 96>
+```
+
+`units_per_cpu` is in the plan's configuration, not its flags, so it carries over. A draining plan, from the drain service's line for it:
+
+```sh
+@kind drain
+--drain <the rest of that line, --onprem-handoff claim, collect and export included>
+```
+
+`boinc/scripts/onprem/controller/test_controller_units.py` runs files of these three shapes through `--print-command` and `--print-timer` and checks the exact command and cadence.
 
 One plan per instance replaces the host-only units: the shared service for the live plan, `usnm-boinc-drain.service` for the draining plans (#1784), and `usnm-boinc-native-feed@PLAN` with `native-feed-tick.sh` for the native plans (#1780; their configuration and state paths are already the template's).
 
@@ -101,7 +147,9 @@ systemctl start usnm-boinc-priority-controller@native-feed-3.timer
 
 #### The tick lock
 
-Every plan's tick waits up to 30 minutes for `/run/usnm-boinc-controller-tick.lock` and holds it to the end, as the shared and drain services did, and `held-archive.sh` holds it for its whole run (#1766; `usnm-boinc-held-archive.service` sets `USNM_HELD_ARCHIVE_TICK_LOCK`). A tick that can't get it in time fails with a `boinc_batch_failure` that feed health classes as `lock_busy`. While the held-page archive runs, every plan other than `main` skips its tick (a `boinc_batch_skipped` line, exit 0) instead of waiting: the archive stops `main`'s timer and starts a `main` tick when it ends.
+Every plan's tick waits up to 30 minutes for `/run/usnm-boinc-controller-tick.lock` and holds it to the end, as the shared and drain services did, and `held-archive.sh` holds it for its whole run (#1766; `usnm-boinc-held-archive.service` sets `USNM_HELD_ARCHIVE_TICK_LOCK`). A tick that can't get it in time fails with a `boinc_batch_failure` that feed health classes as `lock_busy`.
+
+A plan other than `main` skips its tick (a `boinc_batch_skipped` line, exit 0) instead of waiting while a held-page archive runs: the scheduled `usnm-boinc-held-archive.service`, a hand-run `usnm-held-archive-*` unit (such as `usnm-held-archive-queue-feed-11`), or any run that holds `held-archive.sh`'s own lock, `/run/usnm-boinc-held-archive.lock`. A `drain` plan also skips (`controller_paused`) while `usnm-boinc-priority-controller@main.timer` is stopped, as the shared drain service's `ExecCondition` did for the shared timer. Both are checked before the lock, every 30 seconds while waiting for it, and once it is taken. `main` doesn't skip: the archive stops `main`'s timer and starts a `main` tick when it ends. A native plan keeps ticking while only `main` is paused; to pause every plan, use [Pausing every plan](#pausing-every-plan).
 
 The lock stays host-wide, so a native plan still waits for a `main` tick to end (10 to 20 minutes when it refills or runs gold). A narrower lock isn't safe while these hold:
 
@@ -141,13 +189,19 @@ The controller feed source reads one unit: `SOURCE_ARGS="controller --unit usnm-
 
 The operator does this on the controller host between ticks. Nothing in `/var/lib` changes, so no state needs a reconcile, and rollback is putting the old units back.
 
+These outside pieces read the shared unit's name and change at the same time:
+
+- `scripts/ocr-node/throughput-collect.py` (`CONTROLLER_UNIT`, installed as `/usr/local/bin/usnm-throughput-collect`): until it reads `usnm-boinc-priority-controller@main.service` and is reinstalled, the dashboard's `ocr_collect_pages` counts nothing (#1784).
+- `/etc/usnm-boinc/feed-source-controller.env` passes `--unit usnm-boinc-priority-controller.service` explicitly, so the feed source's new default doesn't apply until step 10 edits it.
+- Feed health watches only the `--unit` it is given. Alerts on every plan's unit need the feed health change for all plans in `feed_collect.py` and `feed_status.py`; until it is in the monitor bundle (`/opt/usnm-feed-monitor`), only `main`'s failures alert.
+
 1. **Open a rotation window** for the whole migration, so the missing ticks don't page: `python3 /opt/usnm-feed-monitor/feed_status.py --rotation-start --minutes 60 --reason "per-plan controller units (#1690)"` on the evaluator host.
 2. **Save the old units**: `systemctl cat usnm-boinc-priority-controller.service usnm-boinc-priority-controller.timer usnm-boinc-drain.service usnm-boinc-drain.timer 'usnm-boinc-native-feed@*' usnm-boinc-held-archive.service > /root/controller-units-<date>.txt`, and copy those unit files and their `.d/` drop-in directories from `/etc/systemd/system`, `native-feed-tick.sh` and every `/etc/usnm/native-feed-*.flags` into `/root/controller-units-<date>/`, noting each one's original path. Record which timers start at boot: `systemctl is-enabled usnm-boinc-priority-controller.timer usnm-boinc-drain.timer 'usnm-boinc-native-feed@*.timer' usnm-boinc-held-archive.timer > /root/controller-units-<date>/enabled.txt` (one line per timer, in that order; name each native timer).
-3. **Write the flags files** while the old units still run. For each plan, take the arguments after `batch_scheduler.py` in its old `ExecStart` (the shared service's drop-in for `main`, the drain service's line for each draining plan, `/etc/usnm/native-feed-PLAN.flags` for a native plan), leave out `--config`, `--state-dir` and `--apply`, and write one per line to `/etc/usnm/boinc-priority-controller.flags` (`main`) or `/etc/usnm/boinc-priority-controller.PLAN.flags`. Leave `--resume-native` out.
+3. **Write the flags files** while the old units still run, one per plan, as in [Flags files by kind](#flags-files-by-kind): `/etc/usnm/boinc-priority-controller.flags` for `main` and `/etc/usnm/boinc-priority-controller.PLAN.flags` for the others. Each starts with its `@kind`, then every argument after `batch_scheduler.py` in the plan's old command except `--config`, `--state-dir` and `--apply`: for `main`, `ExecStart` in the shared service's `batch.conf`; for a draining plan, its line in `usnm-boinc-drain.service`; for a native plan, the command line in `native-feed-tick.sh` (the fixed flags, the hand-off ones included) followed by the plan's extras file, `/etc/usnm/native-feed-PLAN.flags` (`native-feed-native-feed-4.flags` on CT 211). Leave `--resume-native` out. Add `@every` or `@boot` only for a cadence other than the kind's default. Check a native plan's file against `native-feed-tick.sh` flag by flag: the extras file alone lacks the hand-off flags, and the plan refuses to tick without them.
 4. **Pause everything old**: first `systemctl stop usnm-boinc-held-archive.timer` and repeat `systemctl is-active usnm-boinc-held-archive.service` until it is inactive or failed (a running archive starts the shared timer again when it ends). Then `systemctl stop usnm-boinc-priority-controller.timer usnm-boinc-drain.timer 'usnm-boinc-native-feed@*.timer'` and repeat `systemctl is-active usnm-boinc-priority-controller.service usnm-boinc-drain.service 'usnm-boinc-native-feed@*.service'` until none is active or activating.
 5. **Move the checkout** to a commit with this change ([Moving the controller checkout](#moving-the-controller-checkout-1412): steps 1 and 2, then step 3's commands up to the second `sha256sum`; the first tick comes in step 8). From that commit `held-archive.sh` and `archive_history.py` name `@main` by default; `held-archive.sh` fails rather than skip while only the shared timer is active.
-6. **Install**: `cd /opt/usnm && boinc/scripts/onprem/controller/install.sh`. Remove `/etc/systemd/system/usnm-boinc-held-archive.service.d/tick-lock.conf` (the unit now sets the same) and `systemctl daemon-reload`.
-7. **Check each plan's command** against its old line: `controller-tick.sh --plan PLAN --print-command` must show the same arguments, and `--dry-run` must report the `config_sha256` that the plan's `state.json` holds.
+6. **Install**: `cd /opt/usnm && boinc/scripts/onprem/controller/install.sh`. It writes each plan's cadence drop-in from step 3's files; read them with `systemctl cat usnm-boinc-priority-controller@PLAN.timer` and compare with the old timers saved in step 2 (`main` and `native-feed-4` every 2 minutes, the draining plans every 30 minutes after 17 at boot). Remove `/etc/systemd/system/usnm-boinc-held-archive.service.d/tick-lock.conf` (the unit now sets the same) and `systemctl daemon-reload`.
+7. **Check each plan's command** against its old line: `controller-tick.sh --plan PLAN --print-command` (one argument per line) must show the same arguments as the old command (the position of `--apply` aside), each `--onprem-handoff` value on its own line, and `--dry-run` must report the `config_sha256` that the plan's `state.json` holds.
 8. **Start the plans one at a time**, `main` first: `systemctl start usnm-boinc-priority-controller@PLAN.service` (one tick; read `journalctl -u usnm-boinc-priority-controller@PLAN.service -n 50 --no-pager`), then `systemctl enable --now usnm-boinc-priority-controller@PLAN.timer`.
 9. **Retire the old units**: `systemctl disable usnm-boinc-priority-controller.timer usnm-boinc-drain.timer 'usnm-boinc-native-feed@PLAN.timer'` (each native plan), remove their unit files, drop-ins, `native-feed-tick.sh` and the `native-feed-*.flags` files (copies are in step 2's directory), and `systemctl daemon-reload`.
 10. **Point monitoring at `@main`**: set `--unit usnm-boinc-priority-controller@main.service` in the controller source's `/etc/usnm-boinc/feed-source-controller.env`, start `usnm-boinc-held-archive.timer`, and close the window with `feed_status.py --rotation-end` once a `main` tick is reported.
