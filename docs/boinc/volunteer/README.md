@@ -380,7 +380,12 @@ or work around an enforced Group Policy; ask your administrator instead.
   `nvidia_vulkan_6gb_8b` for NVIDIA cards under 7,000 MB). These are the Windows GPU classes
   ([app versions](../apps/quality.md#app-versions-and-plan-classes));
   no Windows version is currently available for Intel GPUs, though they get GPU
-  work on Linux. The helper reads each display adapter's
+  work on Linux. **No Windows version of the NVIDIA classes is released yet.** On
+  9 November 2026 the only live Windows GPU version was `amd_vulkan_8b`: the release
+  tooling allows `nvidia_vulkan_8b`, `nvidia_vulkan_6gb_8b` and `intel_vulkan_8b` on
+  `windows_x86_64` and the helper accepts NVIDIA cards, but until a version is
+  released ([#1672](https://github.com/tgoodyear/usnewsmap.com/issues/1672)) a
+  Windows PC with only an NVIDIA GPU gets no GPU work. The helper reads each display adapter's
   vendor and memory size from the Windows registry and checks for the driver's
   `vulkan-1.dll`. It cannot see free video memory; the app needs 7,000 MiB free
   when a task starts (5,120 MiB for the 6 GB class), so close GPU-heavy applications.
