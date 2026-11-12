@@ -1,0 +1,71 @@
+# The static Tesseract of the native build from upstream's source instead of Debian's (#1835).
+#
+# It differs from boinc/apps/native/Containerfile in the Tesseract version and nothing else. It
+# starts from that file's apt-native stage, so Leptonica, the image libraries, the compiler and
+# every other package are the same ones at the same versions. Debian's libtesseract.a is built
+# here from the upstream tarball with the flags and configure options of Debian's debian/rules
+# (hardening=+all, -g -fPIC, CXXFLAGS from dpkg-buildflags), and main() is compiled and linked as
+# the default build does, with the same stubs.c. Debian's own libtesseract and its headers are
+# deleted first, so none of the 5.5.0 library can be linked by accident.
+#
+# Use boinc/scripts/build-native-tesseract-upstream.sh, which reads tesseract-upstream.lock:
+#
+#   boinc/scripts/build-native-tesseract-upstream.sh --version 5.5.4 --out usnm_tesseract_5.5.4
+#
+# It builds the default Containerfile's apt-native stage and passes it as NATIVE_BASE (or takes
+# one with --native-base). The default build is untouched by this file.
+#
+# Debian's patches to 5.5.0 (debian/patches/series): 0001_helptext changes the --help text of
+# the command-line tool, which a task never prints. 0002_disable_NEON.diff is commented out of
+# the series and only applies to armel. Neither is carried here.
+ARG NATIVE_BASE
+FROM ${NATIVE_BASE}
+ARG TESSERACT_VERSION
+ARG TESSERACT_URL
+ARG TESSERACT_COMMIT
+ARG TESSERACT_SHA256
+RUN test -n "$TESSERACT_VERSION" && test -n "$TESSERACT_URL" && test -n "$TESSERACT_COMMIT" && test -n "$TESSERACT_SHA256"
+ADD --checksum=sha256:${TESSERACT_SHA256} ${TESSERACT_URL} /src/tesseract-upstream.tar.gz
+COPY stubs.c /src/stubs.c
+RUN set -eu; cd /src; \
+    gzip -dc tesseract-upstream.tar.gz | head -c 1024 | tr -d '\0' | grep -aq "comment=$TESSERACT_COMMIT" \
+      || { echo "the tarball is not commit $TESSERACT_COMMIT" >&2; exit 1; }; \
+    mkdir lib main; \
+    tar -xzf tesseract-upstream.tar.gz -C lib; mv lib/tesseract-* lib/tesseract; \
+    tar -xzf tesseract-upstream.tar.gz -C main; mv main/tesseract-* main/tesseract; \
+    rm -rf /usr/include/tesseract /usr/lib/x86_64-linux-gnu/libtesseract* /usr/lib/x86_64-linux-gnu/pkgconfig/tesseract.pc
+# libtesseract.a, as Debian's debian/rules builds it, except that the flags come from
+# dpkg-buildflags's CXXFLAGS, not its CFLAGS as debian/rules passes them: the two differ only by
+# -Werror=implicit-function-declaration, a C diagnostic that makes 5.5.4's configure reject the
+# compiler (its -std=c++17 probe runs with -Werror and g++ warns that the flag is not valid for
+# C++). No code generation flag differs.
+RUN set -eu; cd /src/lib/tesseract; export DEB_BUILD_MAINT_OPTIONS=hardening=+all; \
+    CFLAGS="$(dpkg-buildflags --get CXXFLAGS) -Wall -g -fPIC -DTESSDATA_PREFIX='\"/usr/share/tesseract-ocr/5\"'"; \
+    LDFLAGS="$(dpkg-buildflags --get LDFLAGS)"; \
+    ./autogen.sh >/dev/null; \
+    ./configure --disable-tessdata-prefix --prefix=/usr --libdir='${prefix}/lib/x86_64-linux-gnu' \
+      CXXFLAGS="$CFLAGS" LDFLAGS="-lleptonica -Wl,-z,defs $LDFLAGS" >/dev/null; \
+    make -j"$(nproc)" libtesseract.la >/dev/null; \
+    ls -l .libs/libtesseract.a
+# main(), as the default build compiles it.
+RUN set -eu; cd /src/main/tesseract; ./autogen.sh >/dev/null; \
+    ./configure --disable-tessdata-prefix --prefix=/usr >/dev/null; \
+    sed -i '/HAVE_FEENABLEEXCEPT/d; /HAVE_LIBCURL/d; /HAVE_LIBARCHIVE/d' include/config_auto.h; \
+    grep -q 'define HAVE_TIFFIO_H' include/config_auto.h; \
+    mkdir /out; \
+    gcc -O2 -Wall -Werror -c /src/stubs.c -o /src/stubs.o; \
+    g++ -O2 -std=c++17 -fopenmp -DHAVE_CONFIG_H -DTESSDATADIR='"/nonexistent"' \
+      -I. -Iinclude -Isrc/api -Isrc/arch -Isrc/ccmain -Isrc/ccstruct -Isrc/ccutil -Isrc/classify \
+      -Isrc/cutil -Isrc/dict -Isrc/lstm -Isrc/textord -Isrc/viewer -Isrc/wordrec \
+      -I/usr/include/leptonica \
+      -c src/tesseract.cpp -o /src/main.o; \
+    g++ -static -fopenmp -s -o /out/usnm_tesseract /src/main.o /src/stubs.o /src/lib/tesseract/.libs/libtesseract.a \
+      -lleptonica -ltiff -lwebpmux -lwebp -lsharpyuv -lpng16 -ljpeg -lgif -lopenjp2 \
+      -ldeflate -lzstd -llzma -lLerc -ljbig -lz -lm; \
+    file /out/usnm_tesseract; \
+    ! ldd /out/usnm_tesseract; \
+    { dpkg-query -W libleptonica-dev libtiff-dev libpng-dev libjpeg62-turbo-dev \
+        libopenjp2-7-dev libwebp-dev libgif-dev libc6-dev libgomp1 libstdc++-14-dev; \
+      echo "tesseract source $TESSERACT_VERSION $TESSERACT_COMMIT sha256:$TESSERACT_SHA256"; \
+    } > /out/usnm_tesseract.packages; \
+    sha256sum /out/usnm_tesseract
