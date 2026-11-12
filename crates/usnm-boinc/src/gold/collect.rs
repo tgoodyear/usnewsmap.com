@@ -250,8 +250,8 @@ fn parse_cancelled_rows(
 }
 
 /// The cancelled units, given what BOINC said of those it still has (`seen`): a cancelled one
-/// is recorded in its unit directory, one BOINC has and calls live is not, and one it no longer
-/// has is cancelled if it was recorded so.
+/// is recorded in its unit directory, one BOINC has and calls live has any record removed, and
+/// one it no longer has is cancelled if it was recorded so.
 fn settle_cancelled(
     root: &Path,
     jobs: &BTreeMap<String, Job>,
@@ -269,7 +269,15 @@ fn settle_cancelled(
                 }
                 true
             }
-            Some(false) => false,
+            Some(false) => {
+                // BOINC has it and calls it live (or successful): an old record is stale, and
+                // would otherwise outlive a purge to discard the unit's evidence.
+                if recorded.is_file() {
+                    std::fs::remove_file(&recorded)
+                        .with_context(|| format!("removing {}", recorded.display()))?;
+                }
+                false
+            }
             None => recorded.is_file(),
         };
         if is_cancelled {
@@ -1098,6 +1106,10 @@ mod tests {
         // While BOINC has the workunit and calls it live, a stale record doesn't count.
         let live = BTreeMap::from([(kept.clone(), false)]);
         assert!(settle_cancelled(&root, &by_name, &live).unwrap().is_empty());
+        // The stale record is gone, so a purge afterwards doesn't bring the cancel back.
+        assert!(settle_cancelled(&root, &by_name, &purged)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
