@@ -133,6 +133,9 @@ def completion_inventory(args, project, base, selected=None, deadline=None, limi
             pass
         with os.scandir(project / "usnmocr/results/8"):
             pass
+        # Likewise batch 108, where Xiaomi-OCR-0 results arrive (#1776).
+        with os.scandir(project / "usnmocr/results/108"):
+            pass
     command = [
         args.collector, "quality", "collect", "--campaign", args.campaign,
         "--root", str(project / "quality" / args.campaign),

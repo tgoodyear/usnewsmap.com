@@ -64,6 +64,22 @@ class PartialTest(unittest.TestCase):
             types.SimpleNamespace(stdout=json.dumps(loaded).encode()),
         ]
 
+    def test_inventory_needs_both_native_spools_readable(self):
+        project = self.root / "project"
+        (project / "qwen" / self.campaign / "units").mkdir(parents=True)
+        (project / "usnmocr/results/8").mkdir(parents=True)
+        args = types.SimpleNamespace(qwen_campaign=self.campaign, campaign="test", collector="collector")
+        with mock.patch.object(partial.subprocess, "run") as run:
+            with self.assertRaises(FileNotFoundError):
+                partial.completion_inventory(args, project, self.root / "base")
+            run.assert_not_called()
+            (project / "usnmocr/results/108").mkdir()
+            run.return_value = subprocess.CompletedProcess([], 0, stdout="{}", stderr="")
+            partial.completion_inventory(args, project, self.root / "base")
+            command = run.call_args.args[0]
+            self.assertEqual(command[command.index("--qwen-xiaomi-spool") + 1],
+                             str(project / "usnmocr/results/108"))
+
     def test_scoped_collection_rechecks_real_dependencies_and_never_uses_old_snapshot(self):
         root = self.root / "project"
         units = root / "quality/test/units"
