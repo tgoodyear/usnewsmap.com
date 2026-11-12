@@ -6,8 +6,66 @@ use anyhow::{bail, Context};
 
 use crate::engine::{checked, Sandbox};
 
+/// The page's out directory: a descriptor on Unix, which the checks below are relative to.
+#[cfg(unix)]
+pub(super) type DirHandle = rustix::fd::OwnedFd;
+
+/// The page's out directory: its path on other platforms. There the checks use
+/// `symlink_metadata`, which doesn't follow a link, so they are as strict but not race-free.
+#[cfg(not(unix))]
+pub(super) type DirHandle = std::path::PathBuf;
+
+#[cfg(not(unix))]
+pub(super) fn open_dir(path: &Path) -> anyhow::Result<DirHandle> {
+    let meta =
+        std::fs::symlink_metadata(path).with_context(|| format!("opening {}", path.display()))?;
+    if !meta.file_type().is_dir() {
+        bail!("{} isn't a directory", path.display());
+    }
+    Ok(path.to_path_buf())
+}
+
+#[cfg(not(unix))]
+pub(super) fn check_job_dir(dir: &DirHandle, max: u64) -> anyhow::Result<()> {
+    let mut total = 0u64;
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let meta = std::fs::symlink_metadata(entry.path())?;
+        if !meta.file_type().is_file() {
+            bail!(
+                "{:?} in the page's directory isn't a regular file",
+                entry.file_name()
+            );
+        }
+        total = total.saturating_add(meta.len());
+        if total > max {
+            bail!("the page's directory holds over {max} bytes");
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+pub(super) fn read_at(dir: &DirHandle, name: &str, max: u64) -> anyhow::Result<Vec<u8>> {
+    use std::io::Read;
+    let path = dir.join(name);
+    let meta = std::fs::symlink_metadata(&path).with_context(|| format!("opening {name}"))?;
+    if !meta.file_type().is_file() {
+        bail!("{name} isn't a regular file");
+    }
+    let mut buf = Vec::new();
+    std::fs::File::open(&path)?
+        .take(max + 1)
+        .read_to_end(&mut buf)?;
+    if buf.len() as u64 > max {
+        bail!("{name} is over {max} bytes");
+    }
+    Ok(buf)
+}
+
+#[cfg(unix)]
 /// Opens a page's out directory, refusing a symlink.
-pub(super) fn open_dir(path: &Path) -> anyhow::Result<rustix::fd::OwnedFd> {
+pub(super) fn open_dir(path: &Path) -> anyhow::Result<DirHandle> {
     use rustix::fs::{Mode, OFlags};
     rustix::fs::open(
         path,
@@ -17,9 +75,10 @@ pub(super) fn open_dir(path: &Path) -> anyhow::Result<rustix::fd::OwnedFd> {
     .with_context(|| format!("opening {}", path.display()))
 }
 
+#[cfg(unix)]
 /// Checks that a page's directory holds only regular files, `max` bytes
 /// in all (the adapter writes nothing else, 13 §13.4.1).
-pub(super) fn check_job_dir(dir: &rustix::fd::OwnedFd, max: u64) -> anyhow::Result<()> {
+pub(super) fn check_job_dir(dir: &DirHandle, max: u64) -> anyhow::Result<()> {
     use rustix::fs::{AtFlags, FileType};
     let mut total = 0u64;
     for entry in rustix::fs::Dir::read_from(dir)? {
@@ -40,9 +99,10 @@ pub(super) fn check_job_dir(dir: &rustix::fd::OwnedFd, max: u64) -> anyhow::Resu
     Ok(())
 }
 
+#[cfg(unix)]
 /// Reads the regular file `name` in `dir`, at most `max` bytes, without
 /// following a symlink.
-pub(super) fn read_at(dir: &rustix::fd::OwnedFd, name: &str, max: u64) -> anyhow::Result<Vec<u8>> {
+pub(super) fn read_at(dir: &DirHandle, name: &str, max: u64) -> anyhow::Result<Vec<u8>> {
     use rustix::fs::{FileType, Mode, OFlags};
     use std::io::Read;
     let fd = rustix::fs::openat(
@@ -73,6 +133,7 @@ pub(super) async fn make_out_dir(
     sandbox: Option<&Sandbox>,
     level: Option<&str>,
 ) -> anyhow::Result<()> {
+    #[cfg_attr(not(unix), allow(unused_mut))]
     let mut b = std::fs::DirBuilder::new();
     #[cfg(unix)]
     {

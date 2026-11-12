@@ -9,7 +9,7 @@ use usnm_ocr_contract::boinc::{self, Job, ResultManifest};
 use usnm_ocr_worker::engine::{self, Engine, Runner, Tesseract, TesseractOptions};
 
 pub async fn run(work: &Path) -> anyhow::Result<()> {
-    let work = work.canonicalize()?;
+    let work = crate::plain_path(work.canonicalize()?);
     if work.join(crate::assess::JOB_FILE).exists() {
         return crate::assess::work::run(&work).await;
     }
@@ -93,13 +93,24 @@ pub(crate) async fn tesseract(
     spec: &usnm_ocr_contract::boinc::Engine,
 ) -> anyhow::Result<Tesseract> {
     Tesseract::detect(TesseractOptions {
-        runner: Runner::Host("tesseract".into()),
+        runner: Runner::Host(engine_program()),
         psm: spec.psm,
         dpi: spec.dpi.into(),
         threads: 1,
         timeout: read_timeout(spec.timeout_secs),
     })
     .await
+}
+
+/// What runs the engine: `tesseract`, found on `PATH`, which is the container's engine and, on
+/// Linux and macOS, the native worker's link to its engine. Windows has no link, so the native
+/// worker's unit names the engine's path.
+fn engine_program() -> std::path::PathBuf {
+    #[cfg(all(windows, target_arch = "x86_64"))]
+    if let Some(path) = std::env::var_os(crate::native::REAL_TESSERACT_ENV) {
+        return path.into();
+    }
+    "tesseract".into()
 }
 
 /// Set in the native worker's unit to the deadline of one read, in CPU seconds

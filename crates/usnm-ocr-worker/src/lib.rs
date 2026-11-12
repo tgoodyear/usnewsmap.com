@@ -15,6 +15,7 @@ pub mod bulk;
 pub mod cache;
 /// Engines behind the engine contract: long-lived instances (#307).
 pub mod contract;
+mod disk;
 pub mod engine;
 /// Fetching outside content: host policies and one fetcher (#1413).
 pub mod fetcher;

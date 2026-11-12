@@ -3,6 +3,7 @@ use anyhow::{ensure, Context};
 use md5::{Digest, Md5};
 use reqwest::{Client, Url};
 use sha2::Sha256;
+#[cfg_attr(not(unix), allow(unused_imports))]
 use std::{
     fs::File,
     io::{Read, Write},

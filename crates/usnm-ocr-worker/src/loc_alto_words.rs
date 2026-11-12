@@ -888,8 +888,7 @@ struct Job {
 }
 
 fn free_bytes(dir: &Path) -> anyhow::Result<u64> {
-    let s = rustix::fs::statvfs(dir)?;
-    Ok(s.f_bavail.saturating_mul(s.f_frsize))
+    Ok(crate::disk::free_bytes(dir)?)
 }
 
 /// Reads every finished archive in `archives` not read yet (or whose size changed), in

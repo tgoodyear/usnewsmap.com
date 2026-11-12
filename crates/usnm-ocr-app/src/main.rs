@@ -4,15 +4,31 @@
 //! control channel and runs the unit in a child (`unit`) that reads pages with the same code as
 //! `usnm-boinc work` in the container. The child reaches Tesseract through a `tesseract` link
 //! to this same file, which sets the page's limits and execs the bundled engine.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "macos",
+    all(target_os = "windows", target_arch = "x86_64")
+))]
 use clap::{Parser, Subcommand};
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "macos",
+    all(target_os = "windows", target_arch = "x86_64")
+))]
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "macos",
+    all(target_os = "windows", target_arch = "x86_64")
+))]
 use usnm_boinc::native;
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "macos",
+    all(target_os = "windows", target_arch = "x86_64")
+))]
 #[derive(Parser)]
 #[command(
     name = "usnm_ocr",
@@ -23,7 +39,11 @@ struct Cli {
     command: Option<Command>,
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "macos",
+    all(target_os = "windows", target_arch = "x86_64")
+))]
 #[derive(Subcommand)]
 enum Command {
     /// Run the unit in the current directory. The task's parent process starts this.
@@ -34,7 +54,7 @@ enum Command {
         /// The `usnm_ocr` executable.
         #[arg(long)]
         worker: PathBuf,
-        /// The static Tesseract: boinc/apps/native/Containerfile on Linux, build-tesseract-macos.sh on macOS.
+        /// The static Tesseract: boinc/apps/native/Containerfile on Linux, build-tesseract-macos.sh on macOS, build-tesseract-windows.ps1 on Windows.
         #[arg(long)]
         tesseract: PathBuf,
         /// A directory holding every model in the Tesseract lock.
@@ -46,7 +66,11 @@ enum Command {
     },
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "macos",
+    all(target_os = "windows", target_arch = "x86_64")
+))]
 fn run() -> anyhow::Result<()> {
     match Cli::parse().command {
         None => native::run_slot(Path::new(".")),
@@ -68,16 +92,26 @@ fn run() -> anyhow::Result<()> {
     }
 }
 
-/// Linux and macOS only for now: Windows is a follow-up (docs/boinc/apps/native-ocr.md).
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+/// Linux, macOS and x86-64 Windows only (docs/boinc/apps/native-ocr.md).
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "macos",
+    all(target_os = "windows", target_arch = "x86_64")
+)))]
 fn main() -> ExitCode {
-    eprintln!("usnm_ocr runs on Linux and macOS only");
+    eprintln!("usnm_ocr runs on Linux, macOS and x86-64 Windows only");
     ExitCode::FAILURE
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "macos",
+    all(target_os = "windows", target_arch = "x86_64")
+))]
 fn main() -> ExitCode {
     // Started through the `tesseract` link: this only returns if the engine can't start.
+    // Windows has no link: the unit runs the engine itself.
+    #[cfg(unix)]
     if native::is_engine_launch() {
         eprintln!("{:#}", native::exec_engine());
         return ExitCode::FAILURE;

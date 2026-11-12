@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Builds the Tesseract of the native macOS `usnm_ocr` and `usnm_gold` app versions (#1418) from
-# the sources pinned in macos-sources.lock: one Mach-O executable, statically linked against
+# the sources pinned in static-sources.lock: one Mach-O executable, statically linked against
 # those libraries, that needs nothing but the system's libc++, libSystem and frameworks.
 #
 #   boinc/apps/native/build-tesseract-macos.sh --out build --work /tmp/tesseract-macos
@@ -81,7 +81,7 @@ build() { # name, then its own CMake options
 current=""
 trap '[ -n "$current" ] && [ -f "$current" ] && tail -n 60 "$current" >&2' ERR
 
-grep -v '^#' "$here/macos-sources.lock" | while read -r name url tag commit; do
+grep -v '^#' "$here/static-sources.lock" | while read -r name url tag commit; do
   [ -n "$name" ] && fetch "$name" "$url" "$tag" "$commit"
 done
 
@@ -140,7 +140,7 @@ file "$out/usnm_tesseract" | grep -q "Mach-O 64-bit executable $arch" ||
   { echo "usnm_tesseract is not Tesseract 5.5.0" >&2; exit 1; }
 
 {
-  grep -v '^#' "$here/macos-sources.lock" | awk 'NF {print "source", $1, $3, $4}'
+  grep -v '^#' "$here/static-sources.lock" | awk 'NF {print "source", $1, $3, $4}'
   echo "compiler $(clang --version | head -n 1)"
   echo "sdk $(xcrun --show-sdk-version)"
   echo "deployment-target $MACOSX_DEPLOYMENT_TARGET"

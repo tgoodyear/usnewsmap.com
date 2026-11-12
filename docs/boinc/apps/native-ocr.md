@@ -2,7 +2,7 @@
 
 Issue [#1418](https://github.com/tgoodyear/usnewsmap.com/issues/1418). `usnm_ocr` and `usnm_gold` ship only as container apps, so a host without Docker or Podman can't read pages. This doc covers the Linux x86_64 build that needs no container runtime, how a host running it can earn trust, and what has to happen before any host gets it.
 
-`usnm_gold_native` 1.0 is published for `x86_64-pc-linux-gnu` (rollout step 2). `usnm_ocr_native` is registered and its dispatch is built (#1780, rollout step 5), but no native OCR unit has been sent to a host. CI also builds macOS. Windows isn't built yet, but the release tooling accepts `windows_x86_64` ([Native usnm_ocr on more platforms](#native-usnm_ocr-on-more-platforms)).
+`usnm_gold_native` 1.0 is published for `x86_64-pc-linux-gnu` (rollout step 2). `usnm_ocr_native` is registered and its dispatch is built (#1780, rollout step 5), but no native OCR unit has been sent to a host. CI also builds macOS and Windows, and neither is released ([Native usnm_ocr on more platforms](#native-usnm_ocr-on-more-platforms)).
 
 ## The build
 
@@ -159,7 +159,7 @@ To roll back at any step, stop creating native work. Units already out finish an
 
 On 11 November 2026 the volunteer CPUs were about 5% busy. Over 6 hours they had about 600 CPU-thread-hours and ran about 31 hours of CPU tasks. `usnm_ocr`, the bulk CPU app, has container versions only, so a host without Docker or Podman gets no OCR. The idle hosts were a Linux host with 24 threads and no Docker, and three Windows hosts with 24, 16 and 16 threads.
 
-Linux already has its build (above) and needs only the dispatch: `usnm_ocr_native` isn't registered, and nothing creates its units (rollout step 5). CI (`boinc-ocr-native.yml`) now builds macOS for arm64 and x86_64, and neither is released yet. Windows is a follow-up, [#1779](https://github.com/tgoodyear/usnewsmap.com/issues/1779).
+Linux already has its build (above) and needs only the dispatch: `usnm_ocr_native` isn't registered, and nothing creates its units (rollout step 5). CI (`boinc-ocr-native.yml`) now builds macOS for arm64 and x86_64 and Windows for x86_64, and none of them is released yet. The Windows build is [#1779](https://github.com/tgoodyear/usnewsmap.com/issues/1779).
 
 ### The worker on each platform
 
@@ -168,9 +168,9 @@ Every platform runs the same worker, `usnm_ocr` from `crates/usnm-ocr-app`, whic
 | Platform              | Worker                       | Tesseract                                                        | Supervision                                     |
 | --------------------- | ---------------------------- | ---------------------------------------------------------------- | ----------------------------------------------- |
 | `x86_64-pc-linux-gnu` | static musl                  | Debian's static libraries (`boinc/apps/native/Containerfile`)    | process group, parent-death signal, rlimits     |
-| `arm64-apple-darwin`  | Mach-O, ad hoc signed        | pinned upstream sources (`boinc/apps/native/macos-sources.lock`) | process group, a parent watcher thread, rlimits |
+| `arm64-apple-darwin`  | Mach-O, ad hoc signed        | pinned upstream sources (`boinc/apps/native/static-sources.lock`) | process group, a parent watcher thread, rlimits |
 | `x86_64-apple-darwin` | Mach-O, ad hoc signed        | the same sources, built on an Intel runner                       | as arm64                                        |
-| `windows_x86_64`      | PE32+ x86-64 (not built yet) | the same sources with MSVC and a static CRT (planned)            | a job object (planned)                          |
+| `windows_x86_64`      | PE32+ x86-64, static CRT     | the same sources with MSVC and a static CRT (`build-tesseract-windows.ps1`) | a job object                          |
 
 **Plan class.** None, as on Linux. A task uses one BOINC CPU (`OMP_THREAD_LIMIT=1`, one page or bundle at a time), and the client runs as many tasks as the host lets it, so a 24-thread host can run 24. An `mt` class would need an OpenMP Tesseract, which the parity run didn't measure, and gains nothing when the client already fills every CPU with one-thread tasks. `check_appver.py` refuses a plan class on these apps.
 
@@ -183,7 +183,7 @@ Every platform runs the same worker, `usnm_ocr` from `crates/usnm-ocr-app`, whic
 Off Linux, output identical to the container's can't be assumed:
 
 - **macOS** uses upstream sources without Debian's patches, Apple's clang and libm, no OpenMP, libjpeg-turbo without SIMD, libtiff with only zlib and JPEG, and no GIF. The scans are JPEG and JP2. It is built from the same versions as the Linux build: Tesseract 5.5.0, Leptonica 1.84.1, libjpeg-turbo 2.1.5, libpng 1.6.48, libtiff 4.7.0, OpenJPEG 2.5.3, libwebp 1.5.0.
-- **Windows** will add MSVC and its C runtime.
+- **Windows** adds MSVC and its C runtime, with the same differences from the Linux build as macOS: no OpenMP, libjpeg-turbo without SIMD, libtiff with only zlib and JPEG, and no GIF.
 
 So before any host gets a platform's build, that build needs its own parity run against the container worker on the same pages, and its own run of the calibrated challenge. The per-crop edit counts are compared with the container's, as for Linux. If they aren't identical, the threshold doesn't carry over and that platform stops for a calibration decision.
 
@@ -203,7 +203,33 @@ The worker differs from Linux in three places:
 
 ### Windows
 
-Planned in [#1779](https://github.com/tgoodyear/usnewsmap.com/issues/1779). The release tooling is done: `install.py`, `check_appver.py`, `publish-appver.sh`, `boinc-app-release.sh` and `check-native-ocr-build.py --platform windows_x86_64` accept the platform, and the check requires the worker and the engine to be PE32+ x86-64 executables, not DLLs. The worker port, the Tesseract build and the CI job aren't written. A job object with `KILL_ON_JOB_CLOSE` replaces the process group and the parent-death signal. Its per-process memory, CPU time and process count limits replace the rlimits, and they also cover the container's `--pids-limit`. The worker runs `usnm_tesseract.exe` directly rather than through a link. Tesseract comes from the same pinned sources, built with MSVC and a static CRT. The issue rejects UB-Mannheim's installers, which are prebuilt and ship many DLLs, and vcpkg, which would be a second way to pin the same libraries.
+[#1779](https://github.com/tgoodyear/usnewsmap.com/issues/1779). CI builds, tests and smoke-tests the worker and Tesseract on `windows-2022` and stages the build for both apps as a release would, short of signing. It has not run under a BOINC client, and nobody has compared its text with the container's.
+
+**Tesseract.** `boinc/apps/native/build-tesseract-windows.ps1 -Out DIR -Work DIR` builds the sources in `static-sources.lock` with Visual Studio 2022's CMake generator. Every library and the engine use the static C runtime (`CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded`), so `usnm_tesseract.exe` is one file. The script then runs `check-windows-imports.ps1`, which refuses an executable that isn't x86-64 or that imports a DLL which isn't one of Windows's own (no `vcruntime`, `msvcp`, `vcomp` or UCRT redistributable), and checks that it reports Tesseract 5.5.0. The worker gets the same import check in CI, built with `+crt-static`. SIMD follows macOS: nothing is built for a CPU above the x86-64 baseline. Tesseract compiles its AVX, AVX2, FMA and SSE4.1 files with their own flags and picks among them at run time.
+
+**The worker.** `crates/usnm-boinc/src/native/win.rs` holds every Win32 call. Windows has no process groups, rlimits or `exec`, so the three-process layout of the other platforms becomes two:
+
+| Linux and macOS                                          | Windows                                                                                                                                                                                                                                                                  |
+| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Process group for the unit and the engine                | One job object for each start of the unit. The unit is created suspended, assigned to the job and then resumed, so nothing it starts is outside the job. It has no console window.                                                                                        |
+| Parent-death signal, or a watcher thread on macOS        | `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`. The worker holds the only handle, so if the client kills it the kernel ends the unit and the engine, running or suspended.                                                                                                          |
+| Client stop, suspend and resume signal the group         | The hook ends the job (stop), or suspends and resumes each process in it (`NtSuspendProcess`, `NtResumeProcess`), as the client does for one process.                                                                                                                     |
+| `tesseract` link that sets rlimits and execs the engine  | None: the unit runs `usnm_engine\usnm_tesseract.exe` directly (the build's `usnm_tesseract` is hard-linked or copied there under a name Windows will run). The job's limits apply to every process in it.                                                                    |
+| `RLIMIT_AS` and `RLIMIT_CPU` on the engine               | `JOB_OBJECT_LIMIT_PROCESS_MEMORY` of 1536 MiB, `JOB_OBJECT_LIMIT_PROCESS_TIME` of the job's `timeout_secs`, and 8 active processes, which also covers the container's `--pids-limit`.                                                                                       |
+| Crash dumps off (`RLIMIT_CORE`)                          | `SetErrorMode` with no fault dialog, inherited by every process, and `JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION`.                                                                                                                                                       |
+
+Differences that matter:
+
+- The memory limit is committed memory per process, and the CPU limit counts user-mode time per process. Both also apply to the unit, which spends little of either. `JOB_OBJECT_LIMIT_PROCESS_TIME` doesn't count kernel time, so an engine that spends it in the kernel gets a little longer.
+- There is no limit on file size or open files. The container's 512 MiB scratch limit has no Windows equivalent.
+- The job is nested in the one the client puts a task in, which Windows 8 and later allow.
+- The client's progress reports (`fraction_done`) go through the memory-mapped channel only, so a Windows task may show no progress.
+- Paths: the worker uses paths without the `\\?\` prefix `canonicalize` adds, because a working directory and a program's arguments don't take it. Tesseract reads the slot's path in the ANSI code page, so a slot under a user name with characters outside it can fail. BOINC's data directory is normally ASCII.
+- The token cache that shares Entra tokens between processes (`USNM_TOKEN_CACHE`) uses `flock` and Unix file modes and isn't built on Windows, and neither are the Linux-only fetchers' free-space checks. The native worker uses neither.
+
+`native::` tests run on `windows-2022`: the supervision tests use `cmd` and `ping` in a job, and the parent-death tests mirror macOS's. A test starts a stand-in task parent that creates the job and starts the unit, which starts an engine-like child. Killing the parent alone ends both, running or suspended. One test checks that the job ends a process that computes past its CPU limit.
+
+The tools in `boinc/scripts/` that start the worker in a slot, `native_ocr_parity.py` and `native_ocr_client_test.py`, are Linux tools. The smoke test has a PowerShell form, `smoke-native-ocr.ps1`.
 
 ### Release on each platform
 

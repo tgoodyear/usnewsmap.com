@@ -431,15 +431,18 @@ mod tests {
     /// A controller whose prepared campaign is the calibrated eng/eng challenge, with host 1
     /// trusted, and the root of its onboarding campaign.
     fn promotion_fixture(dir: &Path) -> (Config, PathBuf) {
-        use std::os::unix::fs::PermissionsExt;
         let prepared = gold::submit::tests::prepared();
         let engine = gold::submit::tests::engine();
         atomic(&dir.join("mysql.cnf"), b"[client]\n").unwrap();
-        std::fs::set_permissions(
-            dir.join("mysql.cnf"),
-            std::fs::Permissions::from_mode(0o600),
-        )
-        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(
+                dir.join("mysql.cnf"),
+                std::fs::Permissions::from_mode(0o600),
+            )
+            .unwrap();
+        }
         atomic(&dir.join("ca.pem"), b"ca").unwrap();
         atomic(
             &dir.join("prepared").join(gold::prepare::PREPARED),

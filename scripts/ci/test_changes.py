@@ -781,6 +781,17 @@ class BuildInputs(unittest.TestCase):
                 self.assertIn("boinc_ocr_native", on)
                 self.assertFalse(on & {"boinc_worker", "boinc_qwen", "boinc_surya", "boinc_ndlocr", "image"}, on)
 
+    def test_the_native_build_runs_for_the_windows_scripts(self):
+        # The Windows job (#1779) builds Tesseract with its own script and smoke-tests with a
+        # PowerShell port of the shell smoke test; the lock both builds read is under
+        # boinc/apps/native/ too.
+        for path in ["boinc/apps/native/build-tesseract-windows.ps1", "boinc/apps/native/static-sources.lock",
+                     "boinc/scripts/smoke-native-ocr.ps1", "boinc/scripts/smoke-native-ocr.sh"]:
+            with self.subTest(path=path):
+                on = self.select(path)
+                self.assertIn("boinc_ocr_native", on)
+                self.assertFalse(on & {"boinc_worker", "boinc_qwen", "boinc_surya", "boinc_ndlocr", "image"}, on)
+
     def test_the_tesseract_image_runs_the_worker_image_and_release_only(self):
         # The native OCR build also runs: it's checked against this image's Tesseract version.
         on = self.select("ocr/engines/tesseract/Containerfile")

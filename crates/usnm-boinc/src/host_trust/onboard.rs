@@ -703,10 +703,13 @@ mod tests {
         assert!(link_input_with(&source, &dir.path().join("host/8/bundle"), 64, denied).is_err());
         let linked = dir.path().join("host/9/bundle");
         link_input(&source, &linked, 64).unwrap();
-        use std::os::unix::fs::MetadataExt;
-        assert_eq!(
-            std::fs::metadata(&linked).unwrap().ino(),
-            std::fs::metadata(&source).unwrap().ino()
-        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            assert_eq!(
+                std::fs::metadata(&linked).unwrap().ino(),
+                std::fs::metadata(&source).unwrap().ino()
+            );
+        }
     }
 }

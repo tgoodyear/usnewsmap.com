@@ -108,8 +108,7 @@ fn with_state<T>(
         .create(true)
         .truncate(false)
         .open(path)?;
-    rustix::fs::flock(&file, rustix::fs::FlockOperation::LockExclusive)
-        .map_err(std::io::Error::from)?;
+    file.lock()?;
     let mut text = String::new();
     file.read_to_string(&mut text)?;
     // A new (empty) file starts from now. One that can't be read was cut off

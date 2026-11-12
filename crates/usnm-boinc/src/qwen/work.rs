@@ -29,13 +29,12 @@ use crate::surya::work::{
     boinc_info, container_info, gpu_info, gpu_mem_used, kill_all, llama_device, others, quick,
     reap, runner_stats, tail, Diag, TICKS,
 };
-use crate::{atomic, read};
+use crate::{atomic, read, OwnProcessGroup as _};
 use anyhow::{ensure, Context};
 use image::GenericImageView as _;
 use std::{
     collections::BTreeMap,
     fmt::Write as _,
-    os::unix::process::CommandExt as _,
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{
@@ -361,7 +360,7 @@ pub fn serve(
         .stdin(Stdio::null())
         .stdout(log_file.try_clone()?)
         .stderr(log_file)
-        .process_group(0)
+        .in_own_process_group()
         .spawn()
         .with_context(|| format!("starting {LLAMA_SERVER}"))?;
     let pgid = i32::try_from(child.id()).context("pid")?;
@@ -938,6 +937,7 @@ fn run_blocking(work: &Path) -> anyhow::Result<()> {
         &serde_json::to_vec_pretty(&result)?,
     )?;
     atomic(&work.join("fraction_done"), b"1.0\n")?;
+    #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
         for name in outputs().into_iter().chain(["fraction_done"]) {
