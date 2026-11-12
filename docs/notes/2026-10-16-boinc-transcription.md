@@ -212,6 +212,8 @@ scripts/start-boinc-bridge.sh --env prod --step qwen-benchmark-collect \
 
 `qwen-benchmark-prepare` and `qwen-benchmark-stage` also take `QWEN_DOC_IDS`, either `legacy` or `sample`; any other value fails before any work. The default, `legacy`, adds nothing to the `qwen benchmark-stage` command line, so ids stay `benchmark-<sha256>`. `sample` passes `--doc-ids sample`, which names each crop by its dataset sample id. Use it only with a new `QWEN_CAMPAIGN`: staging an existing campaign with the other spelling is refused. The bridge image must be rebuilt before the variable has any effect (#983).
 
+`qwen-submit` also takes `QWEN_TARGET` for a benchmark campaign. The default, `container`, sends units to the CPU container app. `native-8b`, `native-2b` and `native-xiaomi` send them to the native app's 8B, 2B and Xiaomi-OCR-0 plan classes (batches 8, 2 and 108), through `templates/usnm_qwen_8b_benchmark_in`, `..._2b_...` and `..._x08_...`. Each is its plain native template plus `NOTICE.txt` as the last input, and `submit` writes it into the project's `templates/` itself, as it does for the container one. The container worker reads request version 1 only, so a `container` or `container-8b` submit refuses a unit staged at any other version; the native app reads versions 1 to 4, and 5 for a job pinned to Xiaomi-OCR-0. A unit must match its target's model: `native-8b` takes jobs unpinned or pinned to `qwen3-vl-8b-q4km`, `native-2b` `qwen3-vl-2b-q8`, `native-xiaomi` only Xiaomi-OCR-0.
+
 `qwen-benchmark-prepare` replaces manual placement of the dataset and engine for
 a reviewed selection. It resolves the committed hash-only audit under
 `fixtures/ocr-gold/selections/` against the existing converted public cache at

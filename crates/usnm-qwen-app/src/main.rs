@@ -856,7 +856,8 @@ mod tests {
     #[cfg(windows)]
     use crate::report::DIAG_EXCERPT_BYTES;
     use crate::test_support::{
-        synthetic_jpeg, test_weights_lock_bytes, write_qwen_unit, FAKE_GGUF, FAKE_MMPROJ,
+        qwen_models, synthetic_jpeg, test_weights_lock_bytes, write_qwen_unit, write_unit,
+        FAKE_GGUF, FAKE_MMPROJ,
     };
     use std::io::{Read as _, Write as _};
     use std::net::TcpListener;
@@ -897,6 +898,20 @@ mod tests {
                         }
                         Err(_) => break,
                     }
+                }
+                // The loop guard (request versions 3 and 4) reads a streamed reply.
+                if String::from_utf8_lossy(&buf[..n]).contains("\"stream\":true") {
+                    let event = serde_json::json!({
+                        "choices": [{"delta": {"content": reply}, "finish_reason": "stop"}],
+                        "usage": {"completion_tokens": 5}
+                    });
+                    let _ = stream.write_all(
+                        format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\ndata: {event}\n\ndata: [DONE]\n\n"
+                        )
+                        .as_bytes(),
+                    );
+                    continue;
                 }
                 let body = serde_json::to_vec(&serde_json::json!({
                     "choices": [{"message": {"content": reply}}],
@@ -1402,6 +1417,76 @@ mod tests {
             serde_json::from_str(report.strip_prefix("USNM_QWEN_FAILURE ").unwrap()).unwrap();
         assert_eq!(report["model_pin_refused"], true);
         assert_eq!(job.model.as_deref(), Some("xiaomi-ocr-0-q8"));
+    }
+
+    /// A benchmark campaign's unit (`usnm-boinc qwen benchmark-stage`): one whole-image crop with
+    /// no LoC text, a `benchmark:` source and a `NOTICE.txt` beside the page. The native worker
+    /// reads it at every Qwen request version, the guarded ones (3, 4) included, and reports
+    /// the version the job asked for.
+    #[test]
+    fn a_benchmark_unit_reads_at_every_qwen_request_version() {
+        for (version, min_tokens, guard) in [
+            (1, "default", "none"),
+            (2, "1024", "none"),
+            (3, "default", "stop"),
+            (4, "1024", "stop"),
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            let slot = tmp.path().join("slot");
+            let mut job = write_unit(&slot, qwen_models(), version, None);
+            let page = std::fs::read(slot.join(PAGE_FILE)).unwrap();
+            let notice = b"Synthetic dataset authors\n";
+            std::fs::write(slot.join("NOTICE.txt"), notice).unwrap();
+            job.crops = vec![usnm_ocr_contract::qwen::Crop {
+                id: "public-001".into(),
+                rect: [0, 0, 200, 200],
+                loc_text: String::new(),
+                stratum: "benchmark".into(),
+            }];
+            job.input = Input::of(&page, &format!("benchmark:{}", sha256(notice)));
+            job.id = job.identity().unwrap();
+            job.validate().unwrap();
+            std::fs::write(slot.join(JOB_FILE), serde_json::to_vec(&job).unwrap()).unwrap();
+            std::fs::write(
+                slot.join("init_data.xml"),
+                "<app_init_data><plan_class>mt</plan_class></app_init_data>",
+            )
+            .unwrap();
+            write_model_files(&slot, &qwen_models());
+            let port = spawn_mock_llama_server(vec!["benchmark reading"]);
+            run_slot_with(&slot, Some(port), Some(Duration::from_secs(30))).unwrap();
+            let names: Vec<_> = std::fs::read_dir(&slot)
+                .unwrap()
+                .map(|e| e.unwrap().file_name())
+                .collect();
+            let result: ResultManifest = serde_json::from_slice(
+                &std::fs::read(slot.join(RESULT_FILE)).unwrap_or_else(|e| {
+                    panic!(
+                        "{e}: {names:?} {}",
+                        String::from_utf8_lossy(
+                            &std::fs::read(slot.join(DIAG_FILE)).unwrap_or_default()
+                        )
+                    )
+                }),
+            )
+            .unwrap();
+            let diag_bytes = std::fs::read(slot.join(DIAG_FILE)).unwrap();
+            assert_eq!(
+                result.outcome,
+                Outcome::Ok,
+                "v{version}: {}",
+                String::from_utf8_lossy(&diag_bytes)
+            );
+            let readings_bytes = std::fs::read(slot.join(READINGS_FILE)).unwrap();
+            assert_eq!(result.job_id, job.id);
+            let readings = result.check(&readings_bytes, &diag_bytes).unwrap();
+            assert_eq!(readings.prompt_version, version);
+            assert_eq!(readings.diag["image_min_tokens"], min_tokens, "v{version}");
+            assert_eq!(readings.diag["loop_guard"], guard, "v{version}");
+            assert_eq!(readings.readings.len(), 1);
+            assert_eq!(readings.readings[0].id, "public-001");
+            assert_eq!(readings.readings[0].text, "benchmark reading");
+        }
     }
 
     #[test]
