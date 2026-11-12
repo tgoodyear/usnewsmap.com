@@ -48,7 +48,13 @@ for flags in "$ROOT"/etc/usnm/boinc-priority-controller.flags "$ROOT"/etc/usnm/b
   name=$(basename "$flags" .flags)
   plan=${name#boinc-priority-controller}
   plan=${plan#.}
-  plan=${plan:-main}
+  # Only the unsuffixed file is main's; .main. or an empty name would be read as that file.
+  if [ -z "$plan" ]; then
+    [ "$name" = boinc-priority-controller ] || die "$flags: not a plan's flags file name; nothing installed"
+    plan=main
+  elif [ "$plan" = main ]; then
+    die "$flags: main's flags file is boinc-priority-controller.flags; nothing installed"
+  fi
   bash "$HERE/controller-tick.sh" --plan "$plan" --config-dir "$ROOT/etc/usnm" --print-timer \
     > "$staged/$plan.conf" || die "plan $plan's flags file $flags is refused (above); nothing installed"
   plans+=("$plan")

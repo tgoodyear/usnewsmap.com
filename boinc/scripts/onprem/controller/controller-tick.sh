@@ -176,7 +176,8 @@ for word in ${FLAGS[@]+"${FLAGS[@]}"}; do
     --onprem-handoff:*) handoff+=("$word") ;;
     *:--onprem-handoff=*) handoff+=("${word#--onprem-handoff=}") ;;
   esac
-  [ "$word" != --drain ] || drain=true
+  # argparse takes --dr, --dra and --drai as --drain too.
+  case $word in --dr | --dra | --drai | --drain) drain=true ;; esac
   previous=$word
 done
 for step in claim collect export; do
@@ -190,7 +191,8 @@ else
 fi
 
 if $PRINT_TIMER; then
-  printf '# From %s (@kind %s), written by install.sh (#1690).\n[Timer]\nOnBootSec=\nOnBootSec=%s\nOnUnitInactiveSec=\nOnUnitInactiveSec=%s\n' \
+  # An empty assignment clears every trigger of the timer (the template's), so one comes first.
+  printf '# From %s (@kind %s), written by install.sh (#1690).\n[Timer]\nOnBootSec=\nOnBootSec=%s\nOnUnitInactiveSec=%s\n' \
     "$FLAGS_FILE" "$KIND" "$BOOT" "$EVERY"
   exit 0
 fi

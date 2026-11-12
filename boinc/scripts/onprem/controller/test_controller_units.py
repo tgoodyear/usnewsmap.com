@@ -174,7 +174,7 @@ FIXED_NATIVE = ["--server-status-url", STATUS_URL, "--max-global-pending", "3000
 
 def timer_drop_in(path, kind, boot, every):
     return (f"# From {path} (@kind {kind}), written by install.sh (#1690).\n[Timer]\nOnBootSec=\n"
-            f"OnBootSec={boot}\nOnUnitInactiveSec=\nOnUnitInactiveSec={every}\n")
+            f"OnBootSec={boot}\nOnUnitInactiveSec={every}\n")
 
 
 class Fixture(unittest.TestCase):
@@ -309,6 +309,12 @@ class FlagsFiles(Fixture):
         self.assertIn("has no --drain", self.failure(self.tick("queue-feed-10", "--print-command")))
         self.flags("queue-feed-10", NATIVE_FLAGS + "--drain\n")
         self.assertIn("make it @kind drain", self.failure(self.tick("queue-feed-10", "--print-command")))
+        for drain in ("--dr", "--dra", "--drai", "--drain"):
+            with self.subTest(drain=drain):
+                self.flags("queue-feed-10", NATIVE_FLAGS + drain + "\n")
+                self.assertIn("make it @kind drain", self.failure(self.tick("queue-feed-10", "--print-command")))
+                self.flags("queue-feed-10", DRAIN_FLAGS.replace("--drain ", drain + " "))
+                self.assertEqual(self.tick("queue-feed-10", "--print-command").returncode, 0)
         self.flags("main", MAIN_FLAGS.replace("@kind main\n", ""))
         self.assertIn("has no @kind", self.failure(self.tick("main", "--print-command")))
         self.flags("main", MAIN_FLAGS.replace("@kind main", "@kind live"))
@@ -548,8 +554,12 @@ class Install(unittest.TestCase):
                 drop_in = self.units / f"usnm-boinc-priority-controller@{plan}.timer.d/cadence.conf"
                 self.assertEqual(drop_in.read_text(), timer_drop_in(etc / flags, kind, boot, every))
                 timer = parse_unit(drop_in)["Timer"]
-                # Each list is reset first, so the template's 5min doesn't also apply.
-                self.assertEqual(timer, {"OnBootSec": ["", boot], "OnUnitInactiveSec": ["", every]})
+                # One empty assignment clears all the template's triggers, before both are set: an
+                # empty assignment after OnBootSec would clear it again.
+                self.assertEqual(timer, {"OnBootSec": ["", boot], "OnUnitInactiveSec": [every]})
+                lines = drop_in.read_text().splitlines()
+                self.assertEqual(lines.index("OnBootSec="), 2)
+                self.assertEqual([line for line in lines if line.endswith("=")], ["OnBootSec="])
         self.assertEqual(sorted(p.name for p in self.units.glob("*.timer.d")),
                          ["usnm-boinc-priority-controller@main.timer.d",
                           "usnm-boinc-priority-controller@native-feed-4.timer.d",
@@ -565,6 +575,18 @@ class Install(unittest.TestCase):
         self.assertEqual(done.returncode, 1)
         self.assertIn("native-feed-4", done.stderr)
         self.assertFalse(self.units.exists())
+
+    def test_a_flags_file_name_read_as_another_plans_installs_nothing(self):
+        self.checkout()
+        etc = self.plans()
+        for name in ("boinc-priority-controller.main.flags", "boinc-priority-controller..flags"):
+            with self.subTest(name=name):
+                (etc / name).write_text("@kind main\n")
+                done = self.install()
+                self.assertEqual(done.returncode, 1)
+                self.assertIn(name, done.stderr)
+                self.assertFalse(self.units.exists())
+                (etc / name).unlink()
 
     def test_refuses_a_checkout_without_the_tick_script(self):
         done = self.install()
