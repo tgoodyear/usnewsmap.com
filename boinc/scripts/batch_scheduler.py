@@ -1807,7 +1807,7 @@ class QueueFeed:
             {"page": page, "batch": claim["batch"], "scan": claim["scan"],
              "scan_base": claim["scan_base"], "pushed_to": claim.get("pushed_to", "container"),
              **({"supersedes": claim["supersedes"]} if claim.get("supersedes") else {}),
-             **({"cut_short": True} if claim.get("export_truncated") else {})}
+             **({"cut_short": True} if "export_truncated" in claim else {})}
             for page, claim in sorted(self.claims.items()) if claim.get("scan")]
 
     @staticmethod
@@ -1963,7 +1963,10 @@ class QueueFeed:
                 and found["queued_at"] != job["message"].get("queued_at"),
                 f"invalid deadline retry record for job {job['id']} (page {page}, doc {claim['doc_id']}, "
                 f"message {claim['message']})")
-        self.claims[page] = {**self.claims[page], "message": claim["message"], "supersedes": job["id"]}
+        # The retry's scan is pushed and checked again: a cut-short mark of the old attempt goes.
+        self.claims[page] = {**{key: value for key, value in self.claims[page].items()
+                                if key != "export_truncated"},
+                             "message": claim["message"], "supersedes": job["id"]}
         self.state.setdefault("deadline_retries", {})[job["id"]] = {
             "page": page, "message": claim["message"], "queued_at": found["queued_at"],
             "timeout_secs": timeout}
@@ -1984,12 +1987,13 @@ class QueueFeed:
                 del self.claims[page]
             self.persist()
 
-    def settle_export_truncated(self, truncated, selected, now, journaled=()):
+    def settle_export_truncated(self, truncated, selected, now, journaled=None):
         """Pages whose scan export found cut short when it pushed them again (#1457), `truncated`
         being {page: reason}: dead-lettered and listed as a first push's are, and dropped from
         `selected` so they aren't waited for. A page this plan already has a journal for (a
         deadline retry's failed job, or a prepared one) is not settled: its allocation has to stay
         for the journal's ownership check. It is left claimed, not exported, and logged."""
+        journaled = journaled or {}
         kept = sorted(page for page in truncated if page in journaled)
         # A failed journal (a deadline retry's) is settled work and counts for nothing. A prepared
         # one would count as backlog for good: stop for an operator instead of holding it.
@@ -2010,6 +2014,8 @@ class QueueFeed:
             except (OSError, ValueError):
                 pass
         truncated = {page: reason for page, reason in truncated.items() if page not in journaled}
+        if not truncated:
+            return
         for page, reason in truncated.items():
             claim = self.claims.get(page)
             require(claim is not None, f"export found {page} cut short, and it has no claim")

@@ -2691,6 +2691,32 @@ class QueueModeTests(unittest.TestCase):
         self.assertEqual(self.fake.rows[self.fake.rows.index(retried[0])]["stage"], "published")
         self.assertNotIn(retried[0]["job"]["id"], self.state["dead_lettered"])
 
+    def test_a_deadline_retry_of_a_page_kept_as_cut_short_is_exported_again_and_checked(self):
+        # #1457: the old attempt's re-push found the scan cut short, and the page was kept. The
+        # operator's retry takes the claim without that mark: whole now, it is exported; still
+        # cut short, it is skipped and kept again.
+        for whole in (True, False):
+            with self.subTest(whole=whole):
+                self.state = {}
+                failed, newer = self.dead_lettered_page()
+                page, failed_id = newer["page"], failed["job"]["id"]
+                self.state["claims"][page]["export_truncated"] = "the codestream ends inside its main header"
+                self.fake.retries[(failed_id, "e" * 64)] = self.retry_record(failed, newer)
+                if not whole:
+                    self.fake.export = lambda pages, job_ids=(): {page: "still cut short"}
+                with contextlib.redirect_stderr(io.StringIO()) as err:
+                    self.tick()
+                claim = self.state["claims"][page]
+                self.assertEqual(claim["message"], "e" * 64)
+                if whole:
+                    self.assertNotIn("export_truncated", claim)
+                    self.assertIn(("export-retry", page, failed_id), self.fake.actions)
+                else:
+                    self.assertIn("boinc_batch_export_truncated_kept", err.getvalue())
+                    self.assertEqual(claim["export_truncated"], "still cut short")
+                    self.assertNotIn("source_truncated", self.state)
+                self.assertFalse([a for a in self.fake.actions if a[0] == "dead-letter-truncated"])
+
     def test_a_retried_job_that_fails_again_is_dead_lettered_as_usual(self):
         failed, newer = self.dead_lettered_page()
         failed_id = failed["job"]["id"]
