@@ -41,6 +41,31 @@ pub enum Target {
 pub const XIAOMI_BATCH: i32 = 108;
 
 impl Target {
+    /// The target's benchmark input template (the target's `wu_template` plus the
+    /// source `NOTICE.txt` as the last input): its project-relative path and the
+    /// bytes `submit` installs there. The native ones keep the sticky model
+    /// inputs of their plain template, so a benchmark unit stages the same files.
+    pub fn benchmark_template(self) -> (&'static str, &'static [u8]) {
+        match self {
+            Self::Container | Self::Container8b => (
+                "templates/usnm_qwen_benchmark_in",
+                include_bytes!("../../../../boinc/apps/usnm_qwen_benchmark_in"),
+            ),
+            Self::Native8b => (
+                "templates/usnm_qwen_8b_benchmark_in",
+                include_bytes!("../../../../boinc/apps/usnm_qwen_8b_benchmark_in"),
+            ),
+            Self::Native2b => (
+                "templates/usnm_qwen_2b_benchmark_in",
+                include_bytes!("../../../../boinc/apps/usnm_qwen_2b_benchmark_in"),
+            ),
+            Self::NativeXiaomi => (
+                "templates/usnm_qwen_x08_benchmark_in",
+                include_bytes!("../../../../boinc/apps/usnm_qwen_x08_benchmark_in"),
+            ),
+        }
+    }
+
     pub fn wu_template(self) -> &'static str {
         match self {
             Self::Container | Self::Container8b => "templates/usnm_qwen_in",
@@ -59,13 +84,21 @@ impl Target {
         let ok = match self {
             Self::NativeXiaomi => pin == Some(super::XIAOMI_MODEL),
             _ if pin.is_some_and(is_xiaomi_model) => false,
+            // The container worker encodes request version 1 only and refuses any other
+            // (`work::prepare`); a unit sent with one would only come back failed.
+            Self::Container | Self::Container8b
+                if job.prompt_version != usnm_ocr_contract::qwen::PROMPT_VERSION =>
+            {
+                false
+            }
             Self::Container | Self::Native2b => pin.is_none_or(|p| p == "qwen3-vl-2b-q8"),
             Self::Container8b | Self::Native8b => pin.is_none_or(|p| p == "qwen3-vl-8b-q4km"),
         };
         ensure!(
             ok,
-            "{}: a job pinned to {pin:?} is not for the {self:?} target",
-            job.doc_id
+            "{}: a job pinned to {pin:?} at request version {} is not for the {self:?} target",
+            job.doc_id,
+            job.prompt_version
         );
         Ok(())
     }
@@ -434,16 +467,13 @@ pub fn benchmark_work_args(job: &Job) -> Vec<String> {
 }
 
 pub fn benchmark_work_args_for_target(job: &Job, target: Target) -> anyhow::Result<Vec<String>> {
-    ensure!(
-        matches!(target, Target::Container | Target::Container8b),
-        "benchmark NOTICE input templates support container targets only; native benchmark templates are not installed"
-    );
     let mut args = create_work_args_with_lock(job, target, EMBEDDED_WEIGHTS_LOCK)?;
+    let (benchmark_template, _) = target.benchmark_template();
     let template = args
         .iter_mut()
-        .find(|s| *s == "templates/usnm_qwen_in")
+        .find(|s| *s == target.wu_template())
         .expect("Qwen input template");
-    *template = "templates/usnm_qwen_benchmark_in".into();
+    *template = benchmark_template.into();
     args.push(format!("{}_notice_txt", job.id));
     Ok(args)
 }
@@ -515,10 +545,8 @@ async fn run_selected_with_lock(
                 format!("{}_notice_txt", job.id),
                 super::benchmark::NOTICE_FILE,
             ));
-            atomic(
-                &project.join("templates/usnm_qwen_benchmark_in"),
-                include_bytes!("../../../../boinc/apps/usnm_qwen_benchmark_in"),
-            )?;
+            let (template, bytes) = opts.target.benchmark_template();
+            atomic(&project.join(template), bytes)?;
         }
         if !models_staged {
             stage_shared_models_with_lock(
@@ -669,8 +697,112 @@ mod tests {
             names[1].0.clone(),
             format!("{}_notice_txt", j.id)
         ]));
-        assert!(benchmark_work_args_for_target(&j, Target::Native2b).is_err());
-        assert!(benchmark_work_args_for_target(&j, Target::Native8b).is_err());
+        // The native targets take the same unit with their own template, batch and sticky models.
+        let lock = parse_weights_lock(EMBEDDED_WEIGHTS_LOCK).unwrap();
+        for (target, template, batch) in [
+            (Target::Native8b, "templates/usnm_qwen_8b_benchmark_in", "8"),
+            (Target::Native2b, "templates/usnm_qwen_2b_benchmark_in", "2"),
+        ] {
+            let args = benchmark_work_args_for_target(&j, target).unwrap();
+            assert!(args.contains(&template.to_string()), "{args:?}");
+            assert!(!args.contains(&target.wu_template().to_string()));
+            assert!(args.windows(2).any(|w| w == ["--batch", batch]));
+            let mut files: Vec<String> = names.iter().map(|n| n.0.clone()).collect();
+            files.extend(
+                target
+                    .model_files()
+                    .iter()
+                    .map(|f| model_physical_name(f, &lock[*f])),
+            );
+            files.push(format!("{}_notice_txt", j.id));
+            assert!(args.ends_with(&files), "{args:?}");
+        }
+    }
+
+    /// A benchmark unit at a request version the container worker refuses (the loop
+    /// guard's 3) goes to the native targets only, with its own template per target.
+    #[test]
+    fn a_guarded_benchmark_unit_reaches_native_targets_and_not_the_containers() {
+        let tmp = tempfile::tempdir().unwrap();
+        let unit = tmp.path().join("q");
+        crate::quality::work::tests::unit(&unit);
+        let mut j = super::super::stage::local_unit(
+            &unit.join("page.jpg"),
+            &unit.join("loc.xml"),
+            &tmp.path().join("u"),
+            super::super::stage::tests::engine(),
+            1,
+            4,
+            600,
+            4,
+        )
+        .unwrap();
+        for version in [3, 4] {
+            j.prompt_version = version;
+            j.id = j.identity().unwrap();
+            for target in [Target::Container, Target::Container8b] {
+                let e = benchmark_work_args_for_target(&j, target).unwrap_err();
+                assert!(format!("{e:#}").contains("request version"), "{e:#}");
+                assert!(create_work_args_with_lock(&j, target, EMBEDDED_WEIGHTS_LOCK).is_err());
+            }
+            for (target, batch) in [(Target::Native8b, "8"), (Target::Native2b, "2")] {
+                let args = benchmark_work_args_for_target(&j, target).unwrap();
+                assert!(args.windows(2).any(|w| w == ["--batch", batch]));
+                assert!(args.contains(&target.benchmark_template().0.to_string()));
+            }
+        }
+    }
+
+    /// Each benchmark template is its plain template plus the notice as the last, per-unit
+    /// input, and so lists the model files `create_work` is given in the same places.
+    #[test]
+    fn benchmark_templates_are_the_plain_templates_plus_the_notice() {
+        for target in [
+            Target::Container,
+            Target::Native8b,
+            Target::Native2b,
+            Target::NativeXiaomi,
+        ] {
+            let (path, bytes) = target.benchmark_template();
+            let text = std::str::from_utf8(bytes).unwrap();
+            assert_ne!(path, target.wu_template().to_string());
+            assert!(text.contains("<open_name>NOTICE.txt</open_name>"));
+            assert!(text.contains("<open_name>page.jpg</open_name>"));
+            assert!(text.contains("<open_name>qwen.json</open_name>"));
+            let n = target.model_files().len();
+            for (i, f) in target.model_files().iter().enumerate() {
+                assert!(
+                    text.contains(&format!(
+                        "<file_number>{}</file_number>\n            <open_name>{f}</open_name>",
+                        2 + i
+                    )),
+                    "{path}: {f}"
+                );
+            }
+            // The notice is numbered after the models, as create_work receives it.
+            let notice = text.find("<open_name>NOTICE.txt").unwrap();
+            let number = text[..notice].rfind("<file_number>").unwrap();
+            assert!(
+                text[number..].starts_with(&format!("<file_number>{}<", 2 + n)),
+                "{path}"
+            );
+            // Sticky models stay sticky; the per-unit inputs stay per-unit.
+            assert_eq!(text.matches("<sticky/>").count(), n, "{path}");
+            if n > 0 {
+                let plain = std::fs::read_to_string(
+                    Path::new(env!("CARGO_MANIFEST_DIR"))
+                        .join("../../boinc/apps")
+                        .join(Path::new(target.wu_template()).file_name().unwrap()),
+                )
+                .unwrap();
+                for line in plain
+                    .lines()
+                    .filter(|l| l.contains("<rsc_") || l.contains("quorum"))
+                {
+                    assert!(text.contains(line), "{path}: {line}");
+                }
+            }
+        }
     }
 
     #[test]
