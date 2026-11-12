@@ -73,6 +73,8 @@ if [ -n "${STUB_CAPTURE_API_TAG:-}" ]; then
   esac
 fi
 case "$1 $2" in
+  "identity list") if [ -n "${STUB_IDENTITY_ERROR:-}" ]; then echo "$STUB_IDENTITY_ERROR" >&2; exit 1; fi
+    printf '%s\n' "${STUB_IDENTITY:-}" ;;
   "account show") case "$*" in *"--query id"*) echo sub-1 ;; *"--query tenantId"*) echo tenant-1 ;; esac ;;
   "account set") s=$(sed 's/.*--subscription \([^ ]*\).*/\1/' <<< "$*")
     if [ -n "${STUB_ACCOUNTS:-}" ] && ! printf '%b\n' "$STUB_ACCOUNTS" | grep -qx "$s"; then
@@ -290,6 +292,38 @@ class Stubbed(unittest.TestCase):
     def calls(self):
         with open(self.log) as f:
             return f.read().splitlines()
+
+
+class PrincipalIdsCheck(Stubbed):
+    """principal_ids_check: the known principal ids must be those of the named identities."""
+
+    def check(self, app="", ci="", **extra):
+        fake = f'aget() {{ case "$1" in USNM_APP_PRINCIPAL_ID) echo "{app}" ;; USNM_CI_PRINCIPAL_ID) echo "{ci}" ;; esac; }}\n'
+        return self.lib(fake + "principal_ids_check", env_name="prod", **extra)
+
+    def test_empty_ids_check_nothing(self):
+        r = self.check()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse(os.path.exists(self.log))
+
+    def test_an_id_of_the_named_identity_passes(self):
+        r = self.check(app="p-1", STUB_IDENTITY="id-usnm-app-prod")
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_an_id_of_another_identity_stops(self):
+        r = self.check(app="p-1", STUB_IDENTITY="id-usnm-app-dev")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("the principal of id-usnm-app-dev, not id-usnm-app-prod", r.stderr)
+
+    def test_an_id_of_no_identity_stops(self):
+        r = self.check(ci="p-2", STUB_IDENTITY="")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("usnm-ci-id-prod", r.stderr)
+
+    def test_a_failed_read_stops(self):
+        r = self.check(app="p-1", STUB_IDENTITY_ERROR="boom")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("boom", r.stderr)
 
 
 class SearcherRollbackSettings(Stubbed):
@@ -1221,7 +1255,7 @@ class StackRenameGuard(Stubbed):
     def test_guard_failure_is_not_retried(self):
         r = self.lib("vaults_recover() { :; }; settings_store_ensure() { :; }; "
                      "load_store_after_create() { :; }; settings_check() { :; }; "
-                     "experiment_marker() { :; }; ocr_nodes_off_check() { :; }; api_pin_check() { :; }; "
+                     "experiment_marker() { :; }; ocr_nodes_off_check() { :; }; principal_ids_check() { :; }; api_pin_check() { :; }; "
                      "deploy_env_guardrails() { :; }; deploy_policy_exemptions() { :; }; "
                      "deploy_stack() { return 42; }; provision")
         self.assertEqual(r.returncode, 1, r.stderr)
@@ -1268,7 +1302,7 @@ class TeardownRenameGuard(Stubbed):
         with open(os.path.join(scripts, "lib", "env.sh"), "a") as f:
             for name in ("need_stack_az", "vaults_recover", "settings_store_ensure",
                          "load_store_after_create", "settings_check", "experiment_marker",
-                         "ocr_nodes_off_check", "deploy_env_guardrails",
+                         "ocr_nodes_off_check", "principal_ids_check", "deploy_env_guardrails",
                          "deploy_policy_exemptions", "save_outputs"):
                 f.write(f"\n{name}() {{ :; }}\n")
         for path, body in (
@@ -2570,7 +2604,7 @@ class ApiPinGuard(Stubbed):
     def test_provision_refuses_before_anything_changes(self):
         steps = "".join(f'{name}() {{ echo "ran {name}"; }}\n' for name in (
             "vaults_recover", "settings_store_ensure", "load_store_after_create", "settings_check",
-            "experiment_marker", "ocr_nodes_off_check", "deploy_env_guardrails", "deploy_policy_exemptions",
+            "experiment_marker", "ocr_nodes_off_check", "principal_ids_check", "deploy_env_guardrails", "deploy_policy_exemptions",
             "deploy_stack", "save_outputs"))
         r = self.lib(steps + "provision", STUB_API_IMAGE=self.LIVE)
         self.assertEqual(r.returncode, 1)
@@ -2583,7 +2617,7 @@ class ApiPinGuard(Stubbed):
     # The stack steps provision runs after the pin check, with the rest
     # stubbed: the deployment itself is the real one.
     STACK_ONLY = ("vaults_recover() { :; }; settings_store_ensure() { :; }; load_store_after_create() { :; }\n"
-                  "settings_check() { :; }; experiment_marker() { :; }; ocr_nodes_off_check() { :; }\n"
+                  "settings_check() { :; }; experiment_marker() { :; }; ocr_nodes_off_check() { :; }; principal_ids_check() { :; }\n"
                   "deploy_env_guardrails() { :; }; deploy_policy_exemptions() { :; }; save_outputs() { :; }\n")
 
     def seen_tags(self, *prefixes):

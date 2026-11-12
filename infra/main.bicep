@@ -86,7 +86,7 @@ param apiImageTag string = imageTag
 @description('Primary scheduled/manual ingest job image tag; defaults to imageTag. Does not change backfill, OCR sync, or other ingest-image jobs.')
 param scheduledIngestImageTag string = imageTag
 
-@description('Object id of the API identity (USNM_APP_PRINCIPAL_ID), known before the deployment. Role assignment names contain it, and a value read from the identity at deploy time short-circuits the stack what-if (it then lists those assignments as potential deletions). Empty reads it from the identity. Must equal the identity\'s principalId.')
+@description('Object id of the API identity (USNM_APP_PRINCIPAL_ID), known before the deployment. Role assignment names contain it, and a value read from the identity at deploy time short-circuits the stack what-if (it then lists those assignments as potential deletions). Empty reads it from the identity. provision.sh refuses a value that is not the identity\'s principalId.')
 param appPrincipalIdKnown string = ''
 
 @description('Object id of the CI identity (USNM_CI_PRINCIPAL_ID); as appPrincipalIdKnown.')

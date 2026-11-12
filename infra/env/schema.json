@@ -64,7 +64,7 @@
       "x-usnm-visibility": "public",
       "type": "string",
       "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-      "description": "The object id of id-usnm-app-<env> (the API identity). A value known before the deployment, so the what-if can compute the role assignment names that contain it (a runtime value there short-circuits the stack preview). Empty: read from the identity at deploy time. Must equal the identity's real principalId; a wrong value fails the deployment."
+      "description": "The object id of id-usnm-app-<env> (the API identity). A value known before the deployment, so the what-if can compute the role assignment names that contain it (a runtime value there short-circuits the stack preview). Empty: read from the identity at deploy time. provision.sh refuses a value that is not the principalId of the identity of that name."
     },
     "USNM_ARCHIVE_ACCOUNT": {
       "x-usnm-visibility": "private",
@@ -140,7 +140,7 @@
       "x-usnm-visibility": "public",
       "type": "string",
       "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-      "description": "The object id of usnm-ci-id-<env> (the CI identity). A value known before the deployment, so the what-if can compute the role assignment names that contain it (a runtime value there short-circuits the stack preview). Empty: read from the identity at deploy time. Must equal the identity's real principalId; a wrong value fails the deployment."
+      "description": "The object id of usnm-ci-id-<env> (the CI identity). A value known before the deployment, so the what-if can compute the role assignment names that contain it (a runtime value there short-circuits the stack preview). Empty: read from the identity at deploy time. provision.sh refuses a value that is not the principalId of the identity of that name."
     },
     "USNM_COMPUTE_CONCURRENCY": {
       "x-usnm-visibility": "public",
