@@ -1327,6 +1327,16 @@ mod tests {
                     assert_eq!(a, Analyzer::V1, "{c:?} folds to {folded:?}");
                     continue;
                 }
+                // Version 1 folds `𛄣` (U+1B123) and its neighbours to two
+                // Japanese characters (`こと`), which parse as a phrase and reparse as
+                // the term `こと`.
+                if a == Analyzer::V1
+                    && !ja::is_ja(c)
+                    && has_ja(&folded)
+                    && folded.chars().count() > 1
+                {
+                    continue;
+                }
                 assert_round_trips(&c.to_string(), a);
                 // Version 1 folds a character that isn't Japanese to a
                 // Japanese one (`㊀` is `一`): inside a Latin word that is
@@ -1368,7 +1378,7 @@ mod tests {
                 slop: 0,
             }
         );
-        for c in crate::text::folding_to_japanese() {
+        for c in crate::text::folding_to_japanese().filter(|c| c.is_alphanumeric()) {
             for q in [
                 format!("{c}"),
                 format!("a{c}"),

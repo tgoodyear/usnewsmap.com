@@ -421,12 +421,15 @@ pub(crate) fn vulgar_fractions() -> impl Iterator<Item = char> {
 
 /// The characters that aren't Japanese but fold to a Japanese one with
 /// [`Analyzer::V1`] (#241): the Hangzhou numerals U+3038–U+303A, the Kanbun
-/// marks U+3192–U+3195 and the circled ideographs U+3280–U+3289.
+/// marks U+3192–U+3195, the circled ideographs U+3280–U+3289 and the
+/// digraphs U+1B123–U+1B126 (`こと`, `トテ`, …; Unicode 17
+/// made them alphanumeric, so rustc 1.100 sees them and 1.99 doesn't).
 #[cfg(test)]
 pub(crate) fn folding_to_japanese() -> impl Iterator<Item = char> {
     ('\u{3038}'..='\u{303A}')
         .chain('\u{3192}'..='\u{3195}')
         .chain('\u{3280}'..='\u{3289}')
+        .chain('\u{1B123}'..='\u{1B126}')
 }
 
 #[cfg(test)]
@@ -791,8 +794,12 @@ mod tests {
             tokenize("Lot ㊀ and A㊁, 〸 ㆒ 一", v2),
             vec!["lot", "㊀", "and", "a㊁", "〸", "㆒", "一"]
         );
-        let all: String = folding_to_japanese().collect();
-        assert_eq!(all.chars().count(), 17);
+        // The digraphs are words only where the toolchain's Unicode tables
+        // call them alphanumeric (rustc 1.100+), so keep just those here.
+        let all: String = folding_to_japanese()
+            .filter(|c| c.is_alphanumeric())
+            .collect();
+        assert!(matches!(all.chars().count(), 17 | 21));
         assert_eq!(fold(&all, v2), all);
         // Version 1 folds them to the Japanese characters.
         assert_eq!(
@@ -805,7 +812,8 @@ mod tests {
         for c in (0..=0x10FFFF).filter_map(char::from_u32) {
             let f1 = fold(&c.to_string(), Analyzer::V1);
             let listed = folding_to_japanese().any(|x| x == c);
-            let to_ja = c.is_alphanumeric()
+            // The listed U+1B123–U+1B126 are alphanumeric only in newer Unicode tables.
+            let to_ja = (c.is_alphanumeric() || listed)
                 && !ja::is_ja(c)
                 && ja::has_ja(&f1)
                 && f1.chars().all(char::is_alphanumeric);

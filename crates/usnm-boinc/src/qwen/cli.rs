@@ -35,6 +35,14 @@ pub enum QwenCommands {
         /// it was staged with.
         #[arg(long, value_enum, default_value_t = crate::qwen::benchmark::DocIds::Legacy)]
         doc_ids: crate::qwen::benchmark::DocIds,
+        /// The request version every job carries: 1 as before, 3 for Study 5's loop guard,
+        /// 5 for Xiaomi-OCR-0. A campaign keeps the one it was staged with.
+        #[arg(long, default_value_t = 1)]
+        prompt_version: u32,
+        /// Pin every job to the engine's one model, by name; without it the host's plan class
+        /// chooses, as before.
+        #[arg(long)]
+        model: Option<String>,
     },
     /// Score canonical benchmark outputs; missing hypotheses count as deletions.
     BenchmarkCollect {
@@ -273,6 +281,8 @@ pub async fn run(command: QwenCommands) -> anyhow::Result<()> {
             max_crops,
             timeout_secs,
             doc_ids,
+            prompt_version,
+            model,
         } => {
             let engine = serde_json::from_slice(&std::fs::read(engine)?)?;
             let staged = x::benchmark::stage(&x::benchmark::Options {
@@ -282,6 +292,8 @@ pub async fn run(command: QwenCommands) -> anyhow::Result<()> {
                 max_crops,
                 timeout_secs,
                 doc_ids,
+                prompt_version,
+                model,
             })?;
             eprintln!("{staged} benchmark units staged");
         }

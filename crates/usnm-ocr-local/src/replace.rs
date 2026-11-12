@@ -10,8 +10,9 @@
 //!   normalizes it again for the row's engine and language, so a rule added
 //!   since the part was written (#1065) applies to pages already read.
 //! - **Revocations.** `ocr-local/revoked/<stamp>.json` files, create-only,
-//!   each naming a node, an engine, a time window or an import run, with a
-//!   reason and a reference ([`Revocation`]). Rows they match are left out
+//!   each naming a node, an engine, a time window, an import run or an
+//!   explicit list of pages, with a reason and a reference
+//!   ([`Revocation`]). Rows they match are left out
 //!   before a page's row is chosen.
 //! - **Rule.** [`super::rule`] on both texts scored again.
 //! - **Records.** [`Tally`] for the version's `ocr_local.json`; the pages
@@ -35,6 +36,7 @@ use super::rule::{self, Keep};
 use super::ROOT;
 use usnm_core::digest::hex;
 use usnm_core::text::normalize_ocr_for;
+use usnm_state::ocr_local::doc_hash;
 
 /// Where revocations are.
 pub fn revoked_prefix() -> String {
@@ -300,8 +302,28 @@ pub struct Revocation {
     /// Read before this time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub to: Option<DateTime<Utc>>,
+    /// An explicit page list: doc ids (`<lccn>_<date>_ed-<n>_seq-<n>`). A
+    /// row matches when its page is listed here or in `doc_hashes`. Needs
+    /// `at` and `source`. Combine with `engine` to withdraw only that
+    /// engine's readings of the listed pages.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc_ids: Option<Vec<String>>,
+    /// The same by `usnm_state::ocr_local::doc_hash`, 16 lowercase hex
+    /// digits each, the keys `ocr_local_pages.bin` holds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc_hashes: Option<Vec<String>>,
+    /// When the decision was made (a page list's provenance).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<DateTime<Utc>>,
+    /// Where the page list came from: the table, query or comparison that
+    /// produced it (a page list's provenance).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
     #[serde(skip)]
     pub path: String,
+    /// `doc_ids` and `doc_hashes` as hashes, built by `check`.
+    #[serde(skip)]
+    listed: HashSet<u64>,
 }
 
 impl Revocation {
@@ -315,16 +337,50 @@ impl Revocation {
             && self.run.as_ref().is_none_or(|r| r == run)
             && self.from.is_none_or(|f| at >= f)
             && self.to.is_none_or(|t| at < t)
+            && (!self.has_pages() || self.listed.contains(&doc_hash(&row.doc_id)))
     }
 
-    fn check(&self) -> anyhow::Result<()> {
+    /// Whether it names pages.
+    pub fn has_pages(&self) -> bool {
+        self.doc_ids.is_some() || self.doc_hashes.is_some()
+    }
+
+    /// How many distinct pages it names.
+    pub fn page_count(&self) -> usize {
+        self.listed.len()
+    }
+
+    fn check(&mut self) -> anyhow::Result<()> {
         if self.node.is_none()
             && self.engine.is_none()
             && self.run.is_none()
             && self.from.is_none()
             && self.to.is_none()
+            && !self.has_pages()
         {
-            bail!("names no node, engine, run or time");
+            bail!("names no node, engine, run, time or page");
+        }
+        self.listed.clear();
+        for id in self.doc_ids.iter().flatten() {
+            if id.trim().is_empty() || id.trim() != id {
+                bail!("lists an empty doc id or one with spaces around it: `{id}`");
+            }
+            self.listed.insert(doc_hash(id));
+        }
+        for h in self.doc_hashes.iter().flatten() {
+            if h.len() != 16 || !h.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+                bail!("has a doc hash that isn't 16 lowercase hex digits: `{h}`");
+            }
+            self.listed
+                .insert(u64::from_str_radix(h, 16).context("doc hash")?);
+        }
+        if self.has_pages() && self.listed.is_empty() {
+            bail!("has an empty page list, which would match every row instead of none");
+        }
+        if self.has_pages()
+            && (self.at.is_none() || self.source.as_ref().is_none_or(|s| s.trim().is_empty()))
+        {
+            bail!("lists pages without `at` (when) and `source` (where the list came from)");
         }
         if self.reason.trim().is_empty() || self.reference.trim().is_empty() {
             bail!("has no reason or reference");
@@ -333,6 +389,7 @@ impl Revocation {
             ("node", &self.node),
             ("engine", &self.engine),
             ("run", &self.run),
+            ("source", &self.source),
         ] {
             if v.as_ref().is_some_and(|v| v.trim().is_empty()) {
                 bail!("has an empty `{name}`, which matches nothing");
@@ -611,6 +668,65 @@ mod tests {
         assert!(window.check().is_err(), "an empty window");
         assert!(serde_json::from_value::<Revocation>(json!({
             "reason": "x", "reference": "y", "nodes": "z"
+        }))
+        .is_err());
+    }
+
+    #[test]
+    fn a_revocation_by_page_list_matches_listed_pages_only() {
+        let checked = |v: Value| -> anyhow::Result<Revocation> {
+            let mut r: Revocation = serde_json::from_value(v)?;
+            r.check()?;
+            Ok(r)
+        };
+        let x = row(Some(0.1), 1_000_000);
+        let other = StoredRow {
+            doc_id: "sn2_1900-01-02_ed-1_seq-1".into(),
+            ..x.clone()
+        };
+        let by_id = checked(json!({
+            "reason": "worse than LoC", "reference": "#835",
+            "at": "2026-11-12T15:00:00Z", "source": "wf1415 table, band 1890/worst",
+            "doc_ids": [x.doc_id],
+        }))
+        .unwrap();
+        assert!(by_id.matches(&x, "r"));
+        assert!(!by_id.matches(&other, "r"));
+        assert_eq!(by_id.page_count(), 1);
+        let by_hash = checked(json!({
+            "reason": "r", "reference": "#835", "at": "2026-11-12T15:00:00Z",
+            "source": "s",
+            "doc_hashes": [format!("{:016x}", doc_hash(&x.doc_id))],
+        }))
+        .unwrap();
+        assert!(by_hash.matches(&x, "r") && !by_hash.matches(&other, "r"));
+        let scoped = checked(json!({
+            "reason": "r", "reference": "#835", "at": "2026-11-12T15:00:00Z",
+            "source": "s", "doc_ids": [x.doc_id], "engine": "kraken/5 eng",
+        }))
+        .unwrap();
+        assert!(!scoped.matches(&x, "r"), "the engine must match too");
+        // An empty list must not widen the revocation to the whole engine.
+        for key in ["doc_ids", "doc_hashes"] {
+            assert!(checked(json!({
+                "reason": "r", "reference": "#835", "at": "2026-11-12T15:00:00Z",
+                "source": "s", "engine": "tesseract/5.5.1 eng", (key): [],
+            }))
+            .is_err());
+        }
+        // Provenance is required, and hashes must be well formed.
+        assert!(checked(json!({
+            "reason": "r", "reference": "#835", "doc_ids": [x.doc_id],
+        }))
+        .is_err());
+        assert!(checked(json!({
+            "reason": "r", "reference": "#835", "at": "2026-11-12T15:00:00Z",
+            "source": " ", "doc_ids": [x.doc_id],
+        }))
+        .is_err());
+        assert!(checked(json!({
+            "reason": "r", "reference": "#835", "at": "2026-11-12T15:00:00Z",
+            "source": "s", "doc_hashes": ["ABC"],
         }))
         .is_err());
     }

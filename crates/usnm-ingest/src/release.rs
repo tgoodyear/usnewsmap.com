@@ -2882,7 +2882,17 @@ impl Release {
             record["revocations"] = run
                 .revoked
                 .iter()
-                .map(|r| json!({"path": r.path, "reason": r.reason, "reference": r.reference}))
+                .map(|r| {
+                    let mut v =
+                        json!({"path": r.path, "reason": r.reason, "reference": r.reference});
+                    if r.has_pages() {
+                        v["pages"] = json!(r.page_count());
+                        v["at"] = json!(r.at);
+                        v["source"] = json!(r.source);
+                        v["engine"] = json!(r.engine);
+                    }
+                    v
+                })
                 .collect();
             // Of published batches, by stored scores (`Listing::estimate`).
             record["estimate_published"] = json!(run.estimate);
