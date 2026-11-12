@@ -691,7 +691,7 @@ def _tick(a):
         phase("retained_archive_filter", indexed_pages=total, retained_archive_pages=retained,
               source_request=request_id)
         raw, pages = select(count * CANDIDATES_PER_PAGE, *filters)
-        pages = concentrate(pages, count)
+        pages = concentrate(pages, count, a.max_archives)
         raw = "".join(json.dumps(p) + "\n" for p in pages).encode()
         if pages or request_id is None:
             break
@@ -758,6 +758,8 @@ def main():
     ap.add_argument("--max-unresolved", type=int, default=2000)
     ap.add_argument("--reserve-mib", type=int, default=64)
     ap.add_argument("--chunk-pages", type=int, default=100)
+    ap.add_argument("--max-archives", type=int, default=MAX_BATCHES,
+                    help="Archives (batch and version) a chunk is drawn from, 1 to 32 (#1435)")
     ap.add_argument("--max-pending", type=int, default=3)
     ap.add_argument("--yiddish-budget", type=int,
                     help="Total Yiddish pages to prepare, as chunks of their own; the normal order leaves "
@@ -776,7 +778,8 @@ def main():
                          "takes only these pages, worst damage first")
     a = ap.parse_args()
     if (not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,40}", a.campaign)
-            or not 1 <= a.chunk_pages <= 490 or a.min_free_gb < 1 or a.max_ready < 2 or a.max_pending < 1
+            or not 1 <= a.chunk_pages <= 490 or not 1 <= a.max_archives <= 32
+            or a.min_free_gb < 1 or a.max_ready < 2 or a.max_pending < 1
             or not 1 <= a.max_unresolved <= 10000 or a.reserve_mib < 64
             or (a.yiddish_budget is not None and a.yiddish_budget < 0)
             or (a.german_budget is not None and a.german_budget < 0)
