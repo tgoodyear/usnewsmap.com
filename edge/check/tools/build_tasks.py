@@ -200,7 +200,15 @@ def main() -> None:
             lines += 1
             a_words = [clean(w["text"]) for w in ln["a_words"]]
             b_words = clean(ln["b"]).split()
-            pairs, left = pair_words(a_words, b_words, equivalents, a.min_similarity)
+            if "words" in ln:
+                # The line says which words differ (the Cherokee sets build a and b from one word list, changing
+                # only those), so pair them by position: aligning would re-pair repeated words and shift the ids.
+                if len(a_words) != len(b_words):
+                    raise SystemExit(f"{ln['id']}: `words` needs readings of equal length")
+                pairs = [(k, b_words[k]) for k in ln["words"] if a_words[k] != b_words[k]]
+                left = 0
+            else:
+                pairs, left = pair_words(a_words, b_words, equivalents, a.min_similarity)
             kept = [(k, wb) for k, wb in pairs
                     if has_letter(a_words[k]) and has_letter(wb) and not stray_marks(a_words[k], wb, equivalents)
                     and not (a.skip_punctuation_only

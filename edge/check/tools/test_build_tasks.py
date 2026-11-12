@@ -140,6 +140,33 @@ class Build(unittest.TestCase):
             lang = json.load(open(os.path.join(out, "language.json"), encoding="utf-8"))
             self.assertEqual(lang, {"name": "Yiddish", "dir": "rtl", "examples": {}, "equivalents": {"װ": "וו"}})
 
+    def test_explicit_words_pair_by_position(self):
+        """Repeated words: aligning `ᎠᎵ ᎠᎴ ᎠᎴ` with `ᎠᎴ ᎠᎴ ᎠᎴ` finds no pair, but the line says word 0 differs."""
+        try:
+            from PIL import Image
+        except ImportError:
+            self.skipTest("Pillow not installed")
+        with tempfile.TemporaryDirectory() as d:
+            Image.new("L", (200, 40), 255).save(os.path.join(d, "l1.png"))
+            texts = ["ᎠᎵ", "ᎠᎴ", "ᎠᎴ"]
+            words = [{"text": t, "box": [10 + 60 * i, 5, 50, 30]} for i, t in enumerate(texts)]
+            line = {"id": "p1_l1", "image": "l1.png", "page": "sn1/1913-09-01/ed-1/seq-3", "source": "https://example.org/", "label": "L",
+                    "a": " ".join(texts), "a_words": words, "b": "ᎠᎴ ᎠᎴ ᎠᎴ"}
+            cfg = {"name": "Cherokee", "dir": "ltr"}
+            with open(os.path.join(d, "cfg.json"), "w", encoding="utf-8") as f:
+                json.dump(cfg, f)
+            runs = {}
+            for name, extra in (("aligned", {}), ("explicit", {"words": [0]})):
+                with open(os.path.join(d, name + ".jsonl"), "w", encoding="utf-8") as f:
+                    f.write(json.dumps({**line, **extra}, ensure_ascii=False) + "\n")
+                out = os.path.join(d, "out-" + name)
+                subprocess.run([sys.executable, os.path.join(os.path.dirname(__file__), "build_tasks.py"), "--lines", os.path.join(d, name + ".jsonl"),
+                                "--images", d, "--lang", "chr", "--set", "t1", "--a-is", "loc", "--b-is", "ours",
+                                "--language-config", os.path.join(d, "cfg.json"), "--out-dir", out], check=True, capture_output=True)
+                runs[name] = [json.loads(x) for x in open(os.path.join(out, "tasks.jsonl"), encoding="utf-8")]
+            self.assertEqual(runs["aligned"], [])
+            self.assertEqual([(t["id"], t["a"], t["b"]) for t in runs["explicit"]], [("chr/t1/p1_l1~0", "ᎠᎵ", "ᎠᎴ")])
+
     def test_line_sources_and_examples(self):
         try:
             from PIL import Image

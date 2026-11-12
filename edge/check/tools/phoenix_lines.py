@@ -368,6 +368,7 @@ def main() -> None:
             b_words = [swaps[k][1] if k in swaps else w["text"] for k, w in enumerate(loc)]
             row = {"id": sid, "image": f"images/{sid}.jpg", "page": ln["page"], "source": f"https://chroniclingamerica.loc.gov/lccn/{ln['page']}/",
                    "label": label(ln["page"]), "a": " ".join(w["text"] for w in a_words), "a_words": a_words, "b": " ".join(b_words),
+                   "words": sorted(swaps),  # build_tasks.py pairs exactly these by position, never re-aligning
                    "a_is": next(iter(swaps.values()))[2], "b_is": next(iter(swaps.values()))[3]}
             if not a.no_images:
                 from PIL import Image
