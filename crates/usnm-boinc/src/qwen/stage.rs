@@ -2369,11 +2369,13 @@ pub(crate) mod tests {
             .path();
         let job: Job = serde_json::from_slice(&std::fs::read(dir.join(JOB_FILE)).unwrap()).unwrap();
         // Hosts differ on the punctuation of every page but the first two, which have words.
-        let wordless = |tag: &str, pages_with_words: usize| {
+        let wordless = |tag: &str, pages_with_words: usize, blank_last: bool| {
             let docs = docs.clone();
             result(tmp.path(), &job, tag, move |doc, crop| {
                 if docs[..pages_with_words].iter().any(|d| d == doc) {
                     format!("{doc} {crop} the ship sailed for england")
+                } else if doc == docs[2] && blank_last {
+                    " ".into()
                 } else if tag.starts_with('a') {
                     ". , ;".into()
                 } else {
@@ -2392,7 +2394,7 @@ pub(crate) mod tests {
         let marker = records.join(&job.id).join(UNIT_VERDICT_FILE);
         // One worded page of three: strict-v1 passes the unit outright; strict-v2 demotes the
         // two wordless pages, which leaves one of three, under half, so the unit is not settled.
-        let (a, b) = (wordless("a1", 1), wordless("b1", 1));
+        let (a, b) = (wordless("a1", 1, false), wordless("b1", 1, false));
         compare_with(&a, &b, opts(Rule::StrictV1)).unwrap();
         assert!(!marker.exists());
         let err = compare_with(&a, &b, opts(Rule::StrictV2))
@@ -2402,9 +2404,18 @@ pub(crate) mod tests {
         assert!(!marker.exists());
         // Two worded pages of three: the unit is inconclusive, but half or more agree, so
         // the pages settle it and the marker is written.
-        let (a, b) = (wordless("a2", 2), wordless("b2", 2));
+        let (a, b) = (wordless("a2", 2, false), wordless("b2", 2, false));
         compare_with(&a, &b, opts(Rule::StrictV2)).unwrap();
         assert!(marker.is_file());
+        // One worded page and two blank or punctuation-only ones: a whitespace-only page is
+        // unread, not demoted, but it still leaves the unit inconclusive and under half.
+        let (a, b) = (wordless("a3", 1, true), wordless("b3", 1, true));
+        std::fs::remove_file(&marker).unwrap();
+        let err = compare_with(&a, &b, opts(Rule::StrictV2))
+            .unwrap_err()
+            .to_string();
+        assert!(!err.is_empty());
+        assert!(!marker.exists());
     }
 
     #[test]

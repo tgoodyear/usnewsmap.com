@@ -186,11 +186,16 @@ pub fn compare_with(a: &[PathBuf], b: &[PathBuf], opts: Compare<'_>) -> anyhow::
     }
     let mut page_verdicts = qwen::agree_pages(&la.result, &lb.result, &crops, min_dice);
     if let Some(worded) = &worded {
-        // A demoted page leaves the unit inconclusive, so under `page-v1` the
-        // pages' own count decides it and the settlement marker is written.
-        if let Some(why) = demote_wordless_pages(&mut page_verdicts, worded) {
-            if verdict.is_ok() {
-                verdict = Err(why);
+        // Any page that does not agree, a demoted one or a wholly unread one,
+        // leaves the unit inconclusive, so under `page-v1` the pages' own count
+        // decides it and the settlement marker is written.
+        demote_wordless_pages(&mut page_verdicts, worded);
+        if verdict.is_ok() {
+            if let Some(p) = page_verdicts.iter().find(|p| !p.agree) {
+                verdict = Err(p
+                    .reason
+                    .clone()
+                    .unwrap_or_else(|| format!("{}: page does not agree", p.doc_id)));
             }
         }
     }
@@ -305,21 +310,16 @@ fn worded_crops<'a>(
 
 /// Under `strict-v2`, a page that agreed only on crops with no word on
 /// either side no longer agrees.
-/// Returns the first demoted page's reason.
 fn demote_wordless_pages(
     pages: &mut [qwen::PageAgreement],
     worded: &std::collections::HashSet<&str>,
-) -> Option<String> {
-    let mut first = None;
+) {
     for p in pages.iter_mut().filter(|p| p.agree) {
         if !p.crops.iter().any(|c| worded.contains(c.id.as_str())) {
             p.agree = false;
-            let why = format!("{}: no crop with a word on either side", p.doc_id);
-            first.get_or_insert_with(|| why.clone());
-            p.reason = Some(why);
+            p.reason = Some(format!("{}: no crop with a word on either side", p.doc_id));
         }
     }
-    first
 }
 
 /// The crops both results read where neither reading has a letter or digit
@@ -984,11 +984,7 @@ pub(crate) mod tests {
         };
         let mut pages = vec![page("p1", &["c01", "c02"]), page("p2", &["c01", "c02"])];
         let worded: std::collections::HashSet<&str> = ["p1:c01"].into();
-        let why = demote_wordless_pages(&mut pages, &worded);
-        assert_eq!(
-            why.as_deref(),
-            Some("p2: no crop with a word on either side")
-        );
+        demote_wordless_pages(&mut pages, &worded);
         assert!(pages[0].agree && pages[0].reason.is_none());
         assert!(!pages[1].agree);
         assert_eq!(
