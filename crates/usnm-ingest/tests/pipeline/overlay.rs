@@ -311,6 +311,97 @@ async fn japanese_ocr_with_nothing_to_index_waits() {
     assert!(e.release(6, false).await.is_none());
 }
 
+/// A revocation by page list (`doc_ids`, scoped to an engine) sends the listed
+/// pages back to LoC's text at the next full release while an unlisted page of
+/// the same engine keeps ours, and the version records its provenance.
+#[tokio::test]
+async fn a_page_list_revocation_returns_only_the_listed_pages_to_locs_text() {
+    use usnm_ocr_local::{pages, pages_path};
+    use usnm_state::ocr_local::OCR_LOCAL_FILE;
+    let e = env().await;
+    let split = NaiveDate::from_ymd_opt(1897, 7, 1).unwrap();
+    let (mut early, _): (Vec<Page>, Vec<Page>) =
+        fixture_pages().into_iter().partition(|p| p.date < split);
+    let sel: Vec<usize> = early
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| p.lccn == "sn99000001" && !p.text.is_empty())
+        .map(|(i, _)| i)
+        .collect();
+    let (x, y) = (sel[0], sel[1]);
+    let (cx, cy) = (prose(0), prose(1));
+    early[x].text = garble(&cx);
+    early[y].text = garble(&cy);
+    let id = |p: &Page| format!("{}_{}_ed-1_seq-{}", p.lccn, p.date, p.seq);
+    let early_path = e.root.join("batch_fx_early_ver01.tar.gz");
+    write_archive(&early_path, &early.iter().collect::<Vec<_>>(), true, true);
+    curate(&e, vec![listed("batch_fx_early_ver01", &early_path, None)]).await;
+    let fx = "batch_fx_early";
+    let rows = [
+        local_row(&early[x], fx, &cx, &early[x].text, "node1", 10),
+        local_row(&early[y], fx, &cy, &early[y].text, "node1", 10),
+    ];
+    let body = pages::encode(&rows).unwrap();
+    e.curated
+        .put(
+            &pages_path("sn99000001", "20261011T000000Z-aaaa"),
+            body,
+            "application/octet-stream",
+        )
+        .await
+        .unwrap();
+    let release = |day| {
+        let r = Release {
+            ocr_local: true,
+            congress: false,
+            congress_manual: false,
+            ..e.releaser(day, true)
+        };
+        let root = e.root.clone();
+        async move {
+            let mut sink = JsonlSink::new(root.join("reference/indexes"));
+            r.run(&mut sink).await.unwrap().unwrap()
+        }
+    };
+    let v1 = release(5).await;
+    let docs = e.index(&v1.indexes[0]);
+    let text = |p: &Page| docs[&id(p)]["text"].as_str().unwrap().to_owned();
+    assert_eq!(text(&early[x]), cx, "before the revocation: ours");
+    assert_eq!(text(&early[y]), cy);
+
+    e.curated
+        .put(
+            "ocr-local/revoked/20261113T000000Z.json",
+            serde_json::to_vec(&serde_json::json!({
+                "reason": "worse than LoC's text in this damage band",
+                "reference": "#835",
+                "at": "2026-11-13T00:00:00Z",
+                "source": "usnm-wf1415-replaced-v20261026-1.tsv, band worst/1890",
+                "engine": "tesseract/5.5.1 eng",
+                "doc_ids": [id(&early[x])],
+            }))
+            .unwrap(),
+            "application/json",
+        )
+        .await
+        .unwrap();
+    let v2 = release(6).await;
+    let docs = e.index(&v2.indexes[0]);
+    let text = |p: &Page| docs[&id(p)]["text"].as_str().unwrap().to_owned();
+    assert_eq!(text(&early[x]), early[x].text, "listed: LoC's");
+    assert_eq!(text(&early[y]), cy, "unlisted, same engine: ours");
+    let record = e
+        .reference_json(&format!("{}/{OCR_LOCAL_FILE}", v2.index_version))
+        .await;
+    assert_eq!(record["pages"]["replaced"], 1, "{record}");
+    assert_eq!(record["pages"]["kept"]["revoked"], 1, "{record}");
+    let rev = &record["revocations"][0];
+    assert_eq!(rev["pages"], 1);
+    assert_eq!(rev["at"], "2026-11-13T00:00:00Z");
+    assert_eq!(rev["reference"], "#835");
+    assert!(rev["source"].as_str().unwrap().contains("wf1415"));
+}
+
 /// With `--ocr-local` (12 §12.5 Step 9) a release gives a page our OCR's
 /// text in place of LoC's where rule v1 prefers it, on the copy the version
 /// keeps, only for the batches it indexes: a garbled page and one LoC has
