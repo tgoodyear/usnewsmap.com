@@ -111,10 +111,13 @@
 #   BRIDGE_STEP=qwen-summary    writes <campaign>/summary.md from <project>/qwen
 #   BRIDGE_STEP=qwen-benchmark-stage QWEN_CROPS=<campaign>/test/crops.jsonl
 #                               QWEN_ENGINE=<campaign>/engine.json [QWEN_MAX=20]
+#                               [QWEN_DOC_IDS=legacy|sample] (default legacy; sample names each crop
+#                               by its dataset sample id and needs a new QWEN_CAMPAIGN, #983)
 #                               stages public gold crops; references stay on the share
 #   BRIDGE_STEP=qwen-benchmark-prepare [QWEN_SELECTION=transcription-audited-20261015]
 #                               resolves a committed audit against the converted gold cache,
 #                               verifies private references and stages without submitting work
+#                               [QWEN_DOC_IDS=legacy|sample] as for qwen-benchmark-stage
 #   BRIDGE_STEP=qwen-benchmark-collect QWEN_SPOOL=<canonical assimilator directory>
 #                               writes coverage and CER/WER to <campaign>/out
 #   BRIDGE_STEP=train-prepare TRAIN_CAMPAIGN=<name> TRAIN_WORKER_IMAGE=<public digest>
@@ -316,6 +319,16 @@ if [[ "$step" == qwen-* ]]; then
   [[ "${QWEN_CAMPAIGN:-}" =~ ^[a-z0-9][a-z0-9-]{0,40}$ ]] || fail "QWEN_CAMPAIGN must be 1-41 of [a-z0-9-]"
   QWEN="$SHARE_DIR/qwen/$QWEN_CAMPAIGN"
 fi
+# QWEN_DOC_IDS picks how benchmark staging spells each crop's doc_id (#983). The default,
+# legacy, adds no argument, so the command line is the one staged before the setting existed.
+doc_ids_args=()
+qwen_doc_ids_args() {
+  case "${QWEN_DOC_IDS:-legacy}" in
+    legacy) ;;
+    sample) doc_ids_args=(--doc-ids sample) ;;
+    *) fail "QWEN_DOC_IDS must be legacy or sample" ;;
+  esac
+}
 IRIS=""
 if [[ "$step" == iris-bundle-* ]]; then
   [[ "${IRIS_CAMPAIGN:-}" =~ ^[a-z0-9][a-z0-9-]{0,40}$ ]] || fail "IRIS_CAMPAIGN must be 1-41 of [a-z0-9-]"
@@ -511,17 +524,21 @@ case "$step" in
       --engine-weights "${QWEN_ENGINE_WEIGHTS:?set QWEN_ENGINE_WEIGHTS}" \
       --max-pages "${QWEN_MAX:-20}" --bundle-size "${QWEN_BUNDLE_SIZE:-16}" ;;
   qwen-benchmark-prepare)
+    qwen_doc_ids_args
     selection="${QWEN_SELECTION:-transcription-audited-20261015}"
     [[ "$selection" =~ ^[a-z0-9][a-z0-9-]{0,60}$ ]] || fail "invalid reviewed selection name"
     python3 /usr/local/lib/usnm-boinc/gold/scripts/ocr-survey/transcription.py \
       --selection "/usr/local/lib/usnm-boinc/gold/selections/$selection.json" \
       --cache "$SHARE_DIR/gold/build-v1/out" --out "$QWEN"
     exec usnm-boinc qwen benchmark-stage --root "$QWEN" \
-      --crops "$QWEN/test/crops.jsonl" --engine "$QWEN/engine.json" --max-crops "${QWEN_MAX:-20}" ;;
+      --crops "$QWEN/test/crops.jsonl" --engine "$QWEN/engine.json" --max-crops "${QWEN_MAX:-20}" \
+      ${doc_ids_args[@]+"${doc_ids_args[@]}"} ;;
   qwen-benchmark-stage)
+    qwen_doc_ids_args
     exec usnm-boinc qwen benchmark-stage --root "$QWEN" \
       --crops "${QWEN_CROPS:-$QWEN/test/crops.jsonl}" \
-      --engine "${QWEN_ENGINE:-$QWEN/engine.json}" --max-crops "${QWEN_MAX:-20}" ;;
+      --engine "${QWEN_ENGINE:-$QWEN/engine.json}" --max-crops "${QWEN_MAX:-20}" \
+      ${doc_ids_args[@]+"${doc_ids_args[@]}"} ;;
   qwen-benchmark-collect)
     exec usnm-boinc qwen benchmark-collect --root "$QWEN" \
       --spool "${QWEN_SPOOL:?set QWEN_SPOOL}" --out "$QWEN/out" ;;
