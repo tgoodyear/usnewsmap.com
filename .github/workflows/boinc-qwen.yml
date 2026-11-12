@@ -45,6 +45,7 @@ on:
       - "ocr/engines/ndlocr-lite/models.lock"
       - "ocr/engines/tesseract/models.lock"
       - "ocr/routing/routes.toml"
+      - "boinc/project/native-build-trust.json"
       - "boinc/project/plan_class_spec.xml"
       - "!**/*.md"
   # After a merge, for what pull requests leave to main (#1585): see scripts/ci/changes.sh.

@@ -304,18 +304,16 @@ mod tests {
     }
 
     #[test]
-    fn linux_keeps_its_challenge_and_its_proven_equivalences() {
+    fn linux_keeps_its_challenge_and_its_proven_equivalence() {
         let t = BuildTrust::embedded().unwrap();
         for image in [LINUX, C353] {
             assert_eq!(t.refuse(image, CHALLENGE, MAX_CER, true), None);
         }
-        assert!(t.comparable(LINUX, WORKER_247C) && t.comparable(WORKER_247C, LINUX));
-        assert!(t.comparable(LINUX, WORKER_DAC9));
-        assert!(t.comparable(C353, WORKER_247C));
-        // Only listed pairs: equivalence is not transitive.
+        // Byte-identical pages are listed; equal challenge edit counts alone are not.
+        assert!(t.comparable(LINUX, WORKER_DAC9) && t.comparable(WORKER_DAC9, LINUX));
+        assert!(!t.comparable(LINUX, WORKER_247C));
+        assert!(!t.comparable(C353, WORKER_247C));
         assert!(!t.comparable(C353, LINUX));
-        assert!(!t.comparable(C353, WORKER_DAC9));
-        assert!(!t.comparable(WORKER_247C, WORKER_DAC9));
         // A worker image is still judged by its own gold alone.
         assert_eq!(t.refuse(WORKER_247C, CHALLENGE, MAX_CER, false), None);
     }

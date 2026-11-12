@@ -324,7 +324,7 @@ mod tests {
     fn results_compare_only_within_a_digest_or_a_listed_pair() {
         let builds = crate::trust::BuildTrust::embedded().unwrap();
         let linux = "sha256:4d6e2a3be41b3b9c9cf50e6404c6f056177cef547e9d9675298ee1fec94cc5d1";
-        let worker = "sha256:247c131a599403645c4c96782c0556dc27f27a5d991c764b4b9565182a8c71aa";
+        let worker = "sha256:dac9c123a52d7b10281d3204a815233da1fe9819afdadd4341a034a95441eb34";
         let macos = "sha256:78065a0a43d8f8bf67c00c014ae2b0540d51d0038e4050dbbd509e14b63fa836";
         let windows = format!("sha256:{}", "7".repeat(64));
         let r = |image: &str, text: &str| (image.to_owned(), text.to_owned());
