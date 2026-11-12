@@ -99,6 +99,21 @@ class Tests(unittest.TestCase):
         self.assertEqual(h.requests, 2)
         self.assertEqual(len(h.fetch.bodies), 1)
 
+    def test_redirect_is_an_error(self):
+        import http.server, threading
+        class H(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(302); self.send_header("Location", "/elsewhere"); self.end_headers()
+            def log_message(self, *a): pass
+        srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=srv.handle_request, daemon=True).start()
+        try:
+            with self.assertRaises(m.HarvestError) as cm:
+                m.fetch_url(f"http://127.0.0.1:{srv.server_port}/oai/", timeout=5)
+            self.assertIn("HTTP 302", str(cm.exception))
+        finally:
+            srv.server_close()
+
     def test_max_requests(self):
         h, _ = harvester([PAGE1, PAGE2], max_requests=1)
         with self.assertRaises(m.HarvestError):

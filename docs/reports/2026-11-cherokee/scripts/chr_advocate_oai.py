@@ -4,7 +4,7 @@ Metadata only: no images, no OCR text. Pages through ListRecords for one set, fo
 tokens, and writes counts of issues, pages and years as JSON.
 
 Pace and safety: waits at least 3 seconds between requests (the site's robots.txt asks for a
-crawl delay of 3), makes no retries, and stops on any HTTP error (including 429), any OAI-PMH
+crawl delay of 3), makes no retries, and stops on any HTTP error (including 429 and redirects), any OAI-PMH
 error, or the request cap.
 
 Usage:
@@ -42,10 +42,19 @@ def build_url(endpoint, verb, token=None, **params):
     return endpoint + "?" + urllib.parse.urlencode(q)
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """A redirect would be a second request outside the pacing and the request cap: treat it as an error."""
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
 def fetch_url(url, timeout=60):
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "text/xml, application/xml"})
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        with _OPENER.open(req, timeout=timeout) as r:
             return r.read()
     except urllib.error.HTTPError as e:
         raise HarvestError(f"HTTP {e.code} for {url}") from None
