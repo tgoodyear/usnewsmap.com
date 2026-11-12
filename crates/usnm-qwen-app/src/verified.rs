@@ -136,8 +136,11 @@ pub(crate) fn trusted_fs_magic(magic: u32) -> bool {
     const BTRFS: u32 = 0x9123_683E;
     const ZFS: u32 = 0x2FC1_2FC1;
     const F2FS: u32 = 0xF2F5_2010;
-    const TMPFS: u32 = 0x0102_1994;
-    matches!(magic, EXT4 | XFS | BTRFS | ZFS | F2FS | TMPFS)
+    // Not tmpfs: its pages are never written back, so a page dirtied through a writable
+    // shared mapping stays writable and later stores through it never touch mtime or
+    // ctime. On disk filesystems writeback write-protects the page again and the next
+    // store moves both.
+    matches!(magic, EXT4 | XFS | BTRFS | ZFS | F2FS)
 }
 
 #[cfg(target_os = "macos")]
@@ -828,18 +831,12 @@ mod tests {
         #[cfg(target_os = "linux")]
         #[test]
         fn the_filesystem_list_is_the_documented_one() {
-            for magic in [
-                0xEF53,
-                0x5846_5342,
-                0x9123_683E,
-                0x2FC1_2FC1,
-                0xF2F5_2010,
-                0x0102_1994,
-            ] {
+            for magic in [0xEF53, 0x5846_5342, 0x9123_683E, 0x2FC1_2FC1, 0xF2F5_2010] {
                 assert!(trusted_fs_magic(magic), "{magic:#x}");
             }
-            // overlayfs, NFS, FUSE, SMB2, CIFS, vfat, exFAT
+            // tmpfs, overlayfs, NFS, FUSE, SMB2, CIFS, vfat, exFAT
             for magic in [
+                0x0102_1994,
                 0x794C_7630,
                 0x6969,
                 0x6573_5546,

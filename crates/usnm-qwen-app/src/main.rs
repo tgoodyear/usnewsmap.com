@@ -1121,8 +1121,8 @@ mod tests {
         assert_eq!(result.job_id, job.id);
         assert_eq!(result.model.as_deref(), Some("qwen3-vl-2b-q8"));
 
-        // Each model file's check is logged by its weights.lock name, never by path. The
-        // files were just written, so both are hashed in full and get no record yet.
+        // Each model file's check is logged by its weights.lock name, never by path. There
+        // is no record yet, so both are hashed in full.
         let diag_text = String::from_utf8(diag_bytes.clone()).unwrap();
         assert!(
             diag_text.contains("== weights check\nQwen3-VL-2B-Instruct-Q8_0.gguf: full hash, "),
@@ -1145,7 +1145,6 @@ mod tests {
             !section.contains('/') && !section.contains('\\'),
             "{section}"
         );
-        assert!(!crate::verified::record_path(&model_phys).unwrap().exists());
 
         let readings = result.check(&readings_bytes, &diag_bytes).unwrap();
         assert_eq!(readings.readings.len(), 2);
