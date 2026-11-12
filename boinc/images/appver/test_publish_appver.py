@@ -597,12 +597,12 @@ class BoincAppVersion { static function enum($query) {
                            'APPVER_PLAN_CLASS': '', 'DB_HOST': 'fixture', 'DB_NAME': 'fixture',
                            'MASTER_HOST': 'fixture', 'PATH': str(self.root) + os.pathsep + os.environ['PATH']}
                     result = subprocess.run(['bash', str(self.script)], capture_output=True, text=True, env=env)
-                    if platform in ('x86_64-pc-linux-gnu', 'arm64-apple-darwin', 'x86_64-apple-darwin'):
+                    if platform != 'aarch64-unknown-linux-gnu':
                         self.assertEqual(result.returncode, 0, result.stderr)
                         self.assertIn(f'Verified {app} 1.0 {platform} ', result.stdout)
                     else:
                         self.assertNotEqual(result.returncode, 0)
-                        self.assertIn(f'native {app} is built only for x86_64-pc-linux-gnu, arm64-apple-darwin', result.stderr)
+                        self.assertIn(f'native {app} is built only for x86_64-pc-linux-gnu, arm64-apple-darwin, x86_64-apple-darwin and windows_x86_64', result.stderr)
                         self.assertFalse((self.project / f'apps/{app}/1.0/{platform}').exists())
 
 

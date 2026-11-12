@@ -30,7 +30,7 @@ NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 APPS = ("usnm_ocr_native", "usnm_gold_native", "usnm_ndlocr", "usnm_ocr", "usnm_assess", "usnm_gold", "usnm_surya", "usnm_quality", "usnm_qwen_train", "usnm_qwen", "usnm_iris")
 NATIVE_OCR_APPS = ("usnm_ocr_native", "usnm_gold_native")
 # Each platform is its own build, digest and trust (docs/boinc/apps/native-ocr.md).
-NATIVE_OCR_PLATFORMS = ("x86_64-pc-linux-gnu", "arm64-apple-darwin", "x86_64-apple-darwin")
+NATIVE_OCR_PLATFORMS = ("x86_64-pc-linux-gnu", "arm64-apple-darwin", "x86_64-apple-darwin", "windows_x86_64")
 NATIVE_OCR_MANIFEST = "usnm_native_build.json"
 NATIVE_OCR_ENGINE = "usnm_tesseract"
 PLATFORMS = (

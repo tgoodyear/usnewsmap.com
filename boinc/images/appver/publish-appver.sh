@@ -47,8 +47,8 @@ case "$APPVER_KIND" in
     case "$APPVER_APP" in
       usnm_ocr_native|usnm_gold_native)
         case "$APPVER_PLATFORM" in
-          x86_64-pc-linux-gnu|arm64-apple-darwin|x86_64-apple-darwin) ;;
-          *) fail "native $APPVER_APP is built only for x86_64-pc-linux-gnu, arm64-apple-darwin and x86_64-apple-darwin" ;;
+          x86_64-pc-linux-gnu|arm64-apple-darwin|x86_64-apple-darwin|windows_x86_64) ;;
+          *) fail "native $APPVER_APP is built only for x86_64-pc-linux-gnu, arm64-apple-darwin, x86_64-apple-darwin and windows_x86_64" ;;
         esac ;;
     esac
     if [ -n "$APPVER_PLAN_CLASS" ]; then
