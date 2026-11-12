@@ -350,6 +350,10 @@ pub fn collect(root: &Path, spool: &Path, out: &Path) -> anyhow::Result<Summary>
                 result.job_id == job.id && result.engine == job.engine,
                 "result belongs to another job or engine"
             );
+            ensure!(
+                loaded.readings.prompt_version == job.prompt_version,
+                "reading was made at another request version"
+            );
             ensure!(result.crops == 1, "unexpected crop count");
             ensure!(
                 result.model.as_ref().is_none_or(|m| m == expected_model),
@@ -770,5 +774,77 @@ mod tests {
         )
         .unwrap();
         assert!(collect(&opts.root, &spool, &out).is_err());
+    }
+
+    #[test]
+    fn a_reading_at_another_request_version_is_refused() {
+        use usnm_ocr_contract::qwen::{Reading, Readings, ResultManifest};
+        let tmp = tempfile::tempdir().unwrap();
+        let mut opts = fixture(tmp.path());
+        opts.prompt_version = usnm_ocr_contract::qwen::PROMPT_VERSION_LOOP_GUARD;
+        opts.model = Some(opts.engine.models[0].name.clone());
+        stage(&opts).unwrap();
+        let manifest: Manifest =
+            serde_json::from_slice(&std::fs::read(opts.root.join(MANIFEST)).unwrap()).unwrap();
+        let job = &manifest.entries[0].job;
+        let spool = tmp.path().join("spool");
+        std::fs::create_dir(&spool).unwrap();
+        let out = tmp.path().join("out");
+        for (version, accepted) in [(1, false), (job.prompt_version, true)] {
+            let readings = Readings {
+                v: VERSION,
+                job_id: job.id.clone(),
+                device: "cpu".into(),
+                diag: BTreeMap::new(),
+                model: Some(job.engine.models[0].name.clone()),
+                outcome: Outcome::Ok,
+                prompt_version: version,
+                readings: vec![Reading {
+                    id: "public-001".into(),
+                    ms: 3,
+                    text: "HELLO NEWSPAPER".into(),
+                    tokens: 4,
+                }],
+            };
+            let rb = serde_json::to_vec(&readings).unwrap();
+            let result = ResultManifest {
+                v: VERSION,
+                job_id: job.id.clone(),
+                completed_at: "2026-10-15T00:00:00Z".into(),
+                crops: 1,
+                device: "cpu".into(),
+                diag_bytes: 4,
+                diag_sha256: sha256(b"diag"),
+                engine: job.engine.clone(),
+                engine_ms: 3,
+                gpu_mem_peak_mib: None,
+                host: Default::default(),
+                load_ms: 1,
+                model: readings.model.clone(),
+                outcome: Outcome::Ok,
+                peak_rss_kib: None,
+                read: 1,
+                readings_bytes: rb.len() as u64,
+                readings_sha256: sha256(&rb),
+                unit_error: None,
+            };
+            for (name, bytes) in outputs()
+                .iter()
+                .zip([rb, serde_json::to_vec(&result).unwrap(), b"diag".to_vec()])
+            {
+                std::fs::write(
+                    spool.join(format!("{}__file_{name}", job.workunit())),
+                    bytes,
+                )
+                .unwrap();
+            }
+            let got = collect(&opts.root, &spool, &out);
+            if accepted {
+                assert_eq!(got.unwrap().returned, 1);
+            } else {
+                let err = got.unwrap_err().to_string();
+                assert!(err.contains("another request version"), "{err}");
+            }
+        }
     }
 }
