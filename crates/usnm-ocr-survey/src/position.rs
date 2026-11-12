@@ -128,10 +128,15 @@ pub fn page_text(page: &Page) -> String {
     out
 }
 
-/// Whether `s` ends in `-` straight after a Latin letter.
+/// Whether `s` ends in `-` straight after a Latin letter, counting a letter with combining marks
+/// after it (`e` and U+0301) as the letter, so that it gives the same answer as the NFC form
+/// `text::normalize` makes of it (`\u{e9}`).
 fn ends_in_letter_hyphen(s: &str) -> bool {
     let mut it = s.chars().rev();
-    it.next() == Some('-') && it.next().is_some_and(is_latin_letter)
+    it.next() == Some('-')
+        && it
+            .find(|c| !matches!(c, '\u{300}'..='\u{36F}'))
+            .is_some_and(is_latin_letter)
 }
 
 /// A letter of the Latin script: Basic Latin through Latin Extended-B, and Latin Extended
@@ -906,6 +911,16 @@ mod tests {
         // The shared normalization alone drops the hyphen and leaves the word split.
         let p = two_blocks("Clare", true, "mont");
         assert_eq!(text::normalize(&usnm_alto::text(&p), false), "Clare mont");
+    }
+
+    #[test]
+    fn the_join_is_the_same_for_composed_and_combining_accents() {
+        let composed = joined("r\u{e9}-", false, "unir");
+        let combining = joined("re\u{301}-", false, "unir");
+        assert_eq!(composed, "r\u{e9}unir");
+        assert_eq!(combining, composed);
+        // A combining mark on a non-Latin letter still leaves it alone.
+        assert_eq!(joined("\u{3b1}\u{301}-", false, "x"), "\u{3ac} x");
     }
 
     #[test]
