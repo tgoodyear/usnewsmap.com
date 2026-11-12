@@ -48,7 +48,9 @@ MAX_HOURS = 336
 # the dashboard keeps, so a late retry isn't counted twice.
 CONTROLLER_LOOKBACK_HOURS = 48
 SHIP_LOOKBACK_HOURS = 336
-COMMAND_TIMEOUT = 60
+# journalctl reads up to SHIP_LOOKBACK_HOURS of several units' journals; under load on the controller host
+# it ran past 60 s (2026-11-12), so a collection pass failed.
+COMMAND_TIMEOUT = 180
 # Every unit that runs a controller tick, in both layouts (#1784): the old shared service, the
 # draining plans' unit and the per-plan template's instances (#1690), and the native plans'
 # feed instances. journalctl matches the patterns against the journal's own unit names, so a plan
