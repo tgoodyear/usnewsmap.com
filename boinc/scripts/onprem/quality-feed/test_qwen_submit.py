@@ -89,9 +89,12 @@ class PhaseTest(unittest.TestCase):
         self.assertNotIn("--models-prechecked", submit)
 
     def test_a_phase_is_not_a_preflight_or_a_transaction(self):
-        with mock.patch.object(sys, "argv", ["qwen_submit.py", "--phase", "publish", "--preflight"]):
-            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+        argv = ["qwen_submit.py", "--share", str(self.share), "--campaign", "camp", "--engine-plan", str(self.plan),
+                "--models", "/models", "--phase", "publish", "--preflight"]
+        with mock.patch.object(sys, "argv", argv), mock.patch.object(qwen_submit, "inventory", return_value={}):
+            with contextlib.redirect_stderr(io.StringIO()) as err, self.assertRaises(SystemExit):
                 qwen_submit.main()
+        self.assertIn("--phase is for a native submission", err.getvalue())
 
 
 if __name__ == "__main__":
