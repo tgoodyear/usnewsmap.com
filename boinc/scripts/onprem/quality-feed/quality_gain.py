@@ -230,6 +230,18 @@ def cells_of(pages, filters, weights=None):
     return cells
 
 
+def band_summary(pages, filters, weights, band):
+    """A band's page count and mean drop, weighted by the plans' weights as the cells are."""
+    xs, ws = [], []
+    for p in pages:
+        if (quality_campaign.band_of(p["loc_damage"], p["occurrences"], filters) or "low") == band:
+            xs.append(p["loc_damage"] - p["ours_damage"])
+            ws.append(weights.get(p["doc_id"], 1.0) if weights else 1.0)
+    if not xs:
+        return {"mean_drop": None, "n": 0}
+    return {"mean_drop": r4(weighted(xs, ws)[0]), "n": len(xs)}
+
+
 def r4(x):
     return None if x is None else round(x, 4)
 
@@ -288,11 +300,7 @@ def measure(a):
         "plans": a.plan, "readers": readers, "stopped_cells": len(stopped),
         "decisions": {f"{b}/{d}": decisions[(b, d)] for b, d in sorted(decisions)},
         "input_sha256": quality_campaign.input_digest(source),
-        "by_band": {b: {"n": sum(r["n"] for r in rows if r["band"] == b),
-                        "mean_drop": r4(mean_sd([p["loc_damage"] - p["ours_damage"] for p in pages
-                                                 if (quality_campaign.band_of(p["loc_damage"], p["occurrences"],
-                                                                              filters) or "low") == b])[0])}
-                    for b in ("worst", "moderate", "low")},
+        "by_band": {b: band_summary(pages, filters, only, b) for b in ("worst", "moderate", "low")},
     }
     quality_campaign.write_atomic(os.path.join(a.out_dir, "summary.json"),
                                   (json.dumps(summary, indent=1, sort_keys=True) + "\n").encode())

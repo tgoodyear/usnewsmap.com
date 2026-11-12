@@ -80,6 +80,8 @@ class GainTest(unittest.TestCase):
                                 for i in list(range(20)) + list(range(100, 120))))
         cells, _ = self.run_on(rows, "--plan", str(plan))
         self.assertAlmostEqual(float(cells[0]["mean_drop"]), 0.0297, places=4)
+        summary = json.loads((self.d / "out/summary.json").read_text())
+        self.assertAlmostEqual(summary["by_band"]["moderate"]["mean_drop"], 0.0297, places=4)
 
     def test_the_latest_output_is_taken_before_unscored_ones_are_dropped(self):
         sql = qg.export_sql(["ours-tesseract"])
