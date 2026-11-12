@@ -2655,15 +2655,16 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         records = read_records()
         owned = own(records)
     if native:
-        # A native result collection didn't publish (the trust list doesn't admit its host for
-        # the native build, or its collect failed), or one kept under a held scope, stays as it
-        # is, unpublished. While any is there, this plan stays paused with an alert, whether it
+        # A native result a collect attempt didn't publish (the trust list doesn't admit its host
+        # for the native build, or its collect failed), or one kept under a held scope, stays as
+        # it is, unpublished. While any is there, this plan stays paused with an alert, whether it
         # came in this tick or before, and --resume-native can't lift that; the tick goes on, and
-        # container plans are untouched (#1780).
+        # container plans are untouched (#1780). A result not yet tried (past batch_size) is only
+        # collection backlog: the attempted ones are kept on record (native_unpublished).
         collected = {job_id for job_id, _ in to_collect}
-        unpublished = sorted(record["job"]["id"] for record in owned.values() if not settled(record)
-                             and (record["job"]["id"] in collected
-                                  or server.get(record["job"]["id"], {}).get("spool")))
+        unsettled = {record["job"]["id"] for record in owned.values() if not settled(record)}
+        unpublished = sorted(unsettled & (collected | set(state.get("native_unpublished", []))))
+        state["native_unpublished"] = unpublished
         kept = sorted(record["job"]["id"] for record in owned.values() if kept_by_policy(record))
         if collect_error is not None and not collected & set(unpublished):
             raise collect_error

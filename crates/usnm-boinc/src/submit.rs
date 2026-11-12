@@ -138,6 +138,7 @@ enum Build<'a> {
     Native {
         host: Option<u64>,
         trust: &'a crate::trust::Trust,
+        registered: &'a [u32],
     },
 }
 
@@ -170,7 +171,9 @@ pub async fn submit_placed(
 /// targeted: with no host it is refused. Before anything is staged or created, `trust` must
 /// admit the host for the job's exact scope and native digest ([`crate::trust::Trust::refuse_job`]),
 /// so a host that isn't trusted for the native build is never sent a page. Line jobs, retries
-/// and bundles stay container work.
+/// and bundles stay container work. `registered` are the live (registered, not deprecated)
+/// [`NATIVE_APP`] version numbers, from the database: the unit is pinned to the newest of them
+/// that packages the job's build.
 pub async fn submit_native(
     root: &Path,
     project: &Path,
@@ -178,6 +181,7 @@ pub async fn submit_native(
     download: Option<&Download>,
     target_host: Option<u64>,
     trust: &crate::trust::Trust,
+    registered: &[u32],
 ) -> anyhow::Result<()> {
     submit_unit(
         root,
@@ -190,17 +194,20 @@ pub async fn submit_native(
         Build::Native {
             host: target_host,
             trust,
+            registered,
         },
     )
     .await
 }
 
-/// The `version_num` of the newest [`NATIVE_APP`] version in `project` that packages the build
-/// `image` names: one whose directory (`apps/usnm_ocr_native/<major.minor>/<platform>/`) holds
+/// The `version_num` of the newest of the `registered` [`NATIVE_APP`] versions in `project` that
+/// packages the build `image` names: one whose directory (`apps/usnm_ocr_native/<major.minor>/<platform>/`) holds
 /// its manifest under the physical name that carries the digest (`usnm_native_build_<sha256>.json`,
 /// boinc/scripts/install.py). A unit is pinned to it, so the scheduler never sends it a newer
 /// build whose worker would refuse the job. None packages it: an error.
-fn native_version(project: &Path, image: &str) -> anyhow::Result<u32> {
+/// A directory a failed publication left without its `app_version` row isn't in `registered`, so it
+/// is never chosen.
+fn native_version(project: &Path, image: &str, registered: &[u32]) -> anyhow::Result<u32> {
     let digest = image
         .strip_prefix("sha256:")
         .filter(|d| usnm_ocr_contract::boinc::is_sha256(d))
@@ -224,15 +231,15 @@ fn native_version(project: &Path, image: &str) -> anyhow::Result<u32> {
             let dir = platform?.path();
             let listed = std::fs::read_to_string(dir.join("version.xml"))
                 .is_ok_and(|xml| xml.contains(&manifest));
-            if dir.join(&manifest).is_file() || listed {
-                let number = 100 * major + minor;
+            let number = 100 * major + minor;
+            if registered.contains(&number) && (dir.join(&manifest).is_file() || listed) {
                 found = Some(found.map_or(number, |n: u32| n.max(number)));
             }
         }
     }
     found.with_context(|| {
         format!(
-            "no {NATIVE_APP} version in {} packages the build {image}",
+            "no registered {NATIVE_APP} version in {} packages the build {image}",
             apps.display()
         )
     })
@@ -264,7 +271,7 @@ async fn submit_unit(
     };
     let app = match build {
         Build::Container => "usnm_ocr",
-        Build::Native { host, trust } => {
+        Build::Native { host, trust, .. } => {
             let Some(host) = host else {
                 anyhow::bail!(
                     "a {NATIVE_APP} unit needs --target-host: native units are only ever assigned to one host"
@@ -284,10 +291,13 @@ async fn submit_unit(
     let native_unit = matches!(build, Build::Native { .. });
     // A native unit is pinned to the version that packages its build (#1780): with more than one
     // published, the scheduler would otherwise pick the newest.
-    let pin = if native_unit {
-        Some(native_version(&project, &record.job.engine.image)?)
-    } else {
-        pin
+    let pin = match build {
+        Build::Native { registered, .. } => Some(native_version(
+            &project,
+            &record.job.engine.image,
+            registered,
+        )?),
+        Build::Container => pin,
     };
     ensure!(
         record.job.lines.is_none() || is_retry || pin.is_some(),
@@ -564,7 +574,7 @@ mod native_tests {
         let (s, ids) = Server::new(&[1]);
         std::fs::write(s.project.join("config.xml"), ASSIGNMENT).unwrap();
         let trust = trust(&s.root, &[13]);
-        let error = submit_native(&s.root, &s.project, &ids[0], None, None, &trust)
+        let error = submit_native(&s.root, &s.project, &ids[0], None, None, &trust, &[100])
             .await
             .unwrap_err();
         assert!(
@@ -572,7 +582,7 @@ mod native_tests {
             "{error:#}"
         );
         assert!(
-            submit_native(&s.root, &s.project, &ids[0], None, Some(0), &trust)
+            submit_native(&s.root, &s.project, &ids[0], None, Some(0), &trust, &[100])
                 .await
                 .is_err()
         );
@@ -589,9 +599,17 @@ mod native_tests {
         let other = format!("sha256:{}", "c".repeat(64));
         for (image, host) in [(job(1).engine.image, 5), (other, 13)] {
             let trust = trust_for(&s.root, &image, &[13]);
-            let error = submit_native(&s.root, &s.project, &ids[0], None, Some(host), &trust)
-                .await
-                .unwrap_err();
+            let error = submit_native(
+                &s.root,
+                &s.project,
+                &ids[0],
+                None,
+                Some(host),
+                &trust,
+                &[100],
+            )
+            .await
+            .unwrap_err();
             assert!(
                 error.to_string().contains("trust refuses host"),
                 "{error:#}"
@@ -612,7 +630,7 @@ mod native_tests {
         // Without assignment the unit could go to any host.
         std::fs::write(s.project.join("config.xml"), "<boinc><config/></boinc>").unwrap();
         assert!(
-            submit_native(&s.root, &s.project, &ids[0], None, Some(13), &trust)
+            submit_native(&s.root, &s.project, &ids[0], None, Some(13), &trust, &[100])
                 .await
                 .is_err()
         );
@@ -620,7 +638,7 @@ mod native_tests {
         std::fs::write(s.project.join("config.xml"), ASSIGNMENT).unwrap();
         // No published version packages the job's build: nothing is created.
         publish(&s, "1.1", &format!("sha256:{}", "c".repeat(64)));
-        let error = submit_native(&s.root, &s.project, &ids[0], None, Some(13), &trust)
+        let error = submit_native(&s.root, &s.project, &ids[0], None, Some(13), &trust, &[100])
             .await
             .unwrap_err();
         assert!(
@@ -629,11 +647,26 @@ mod native_tests {
         );
         assert!(s.calls().is_empty());
         assert_eq!(stage(&s, &ids[0]), Stage::Reserved);
-        // 1.0 packages it, beside the newer 1.1 of another build: the unit is pinned to 1.0.
+        // 1.0 packages it, beside the newer 1.1 of another build and a 1.2 of this build that a
+        // failed publication left unregistered: the unit is pinned to 1.0.
         publish(&s, "1.0", &job(1).engine.image);
-        submit_native(&s.root, &s.project, &ids[0], None, Some(13), &trust)
-            .await
-            .unwrap();
+        publish(&s, "1.2", &job(1).engine.image);
+        assert!(
+            submit_native(&s.root, &s.project, &ids[0], None, Some(13), &trust, &[])
+                .await
+                .is_err()
+        );
+        submit_native(
+            &s.root,
+            &s.project,
+            &ids[0],
+            None,
+            Some(13),
+            &trust,
+            &[100, 101],
+        )
+        .await
+        .unwrap();
         let calls = s.calls();
         assert_eq!(calls.len(), 1);
         assert!(

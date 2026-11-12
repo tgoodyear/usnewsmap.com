@@ -2047,11 +2047,17 @@ class HandoffAndBridgeQualitySteps(unittest.TestCase):
         with open(os.path.join(bindir, "usnm-boinc"), "w") as f:
             f.write('#!/bin/sh\nprintf "%s\\n" "$*" >> "$STUB_LOG"\n')
         os.chmod(os.path.join(bindir, "usnm-boinc"), 0o755)
+        # The database's live usnm_ocr_native versions.
+        with open(os.path.join(bindir, "mysql"), "w") as f:
+            f.write('#!/bin/sh\nprintf "%s\\n" "$STUB_VERSIONS"\n')
+        os.chmod(os.path.join(bindir, "mysql"), 0o755)
         share = os.path.join(self.tmp, "native-share")
         os.makedirs(os.path.join(share, "gold"))
-        script = 'fail() { echo "error: $*" >&2; exit 1; }\n' + function + "submit_ocr_job\n"
+        script = ('fail() { echo "error: $*" >&2; exit 1; }\n'
+                  f'write_mycnf() {{ mycnf={self.tmp}/native.cnf; : > "$mycnf"; }}\n' + function + "submit_ocr_job\n")
         env = {**self.env, "PATH": bindir + os.pathsep + os.environ["PATH"], "STUB_LOG": self.log,
                "HANDOFF_DIR": "/h", "PROJ": "/p", "JOB_ID": "1" * 64, "SHARE_DIR": share,
+               "DB_NAME": "usnmocr", "STUB_VERSIONS": "100,101",
                "COSMOS_ENDPOINT": "https://c.documents.azure.com:443/", "CURATED_URL": "https://d/curated"}
 
         def run(**extra):
@@ -2068,7 +2074,13 @@ class HandoffAndBridgeQualitySteps(unittest.TestCase):
         r = run(NATIVE_TARGET_HOST="13")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(self.calls(), [f"submit --root /h --project /p --job {'1' * 64} --app usnm_ocr_native "
-                                        f"--target-host 13 --trust {share}/gold/trust.json"])
+                                        f"--target-host 13 --trust {share}/gold/trust.json --native-versions 100,101"])
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "native.cnf")))
+        # No live native version registered: nothing is submitted.
+        r = run(NATIVE_TARGET_HOST="13", STUB_VERSIONS="")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("no live usnm_ocr_native version", r.stderr)
+        self.assertEqual(self.calls(), [])
         for extra in ({"NATIVE_TARGET_HOST": "0"}, {"NATIVE_TARGET_HOST": "x"},
                       {"NATIVE_TARGET_HOST": "13", "LINE_APP_VERSION": "108"}):
             with self.subTest(extra=extra):

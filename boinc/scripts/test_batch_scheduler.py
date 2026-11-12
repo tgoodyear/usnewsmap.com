@@ -1801,6 +1801,35 @@ class NativePlanTests(unittest.TestCase):
         self.assertEqual(event["backpressure_reason"], "native_paused")
         self.assertEqual(self.native_submissions(), [])
 
+    def test_results_past_batch_size_are_backlog_not_a_pause(self):
+        # Ten results in, collected four a tick.
+        self.config["pages_per_host"] = 24
+        self.tick()
+        self.config["batch_size"] = 4
+        self.assertEqual(len(self.fake.jobs), 10)
+        self.results_in()
+        event = self.tick()
+        self.assertNotIn("native_paused", self.state)
+        self.assertEqual(event["backpressure_reason"], "collection_backlog")
+        event = self.tick()
+        self.assertNotIn("native_paused", self.state)
+        self.assertEqual(self.state["native_unpublished"], [])
+
+    def test_an_earlier_unpublished_result_keeps_the_plan_paused_after_resume(self):
+        self.tick()
+        self.results_in()
+        self.fake.hold = True
+        self.tick()
+        held = list(self.state["native_unpublished"])
+        self.assertTrue(held)
+        # Resumed in a tick that collects nothing (no spool reported): still paused.
+        for job in self.fake.jobs.values():
+            job["spool"] = None
+        self.fake.actions.clear()
+        event = self.tick(resume_native=True)
+        self.assertEqual(event["backpressure_reason"], "native_paused")
+        self.assertEqual(self.native_submissions(), [])
+
     def test_a_native_result_kept_by_a_held_scope_pauses_the_plan(self):
         self.tick()
         self.results_in()

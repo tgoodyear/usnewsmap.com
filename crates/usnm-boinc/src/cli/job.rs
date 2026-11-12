@@ -263,6 +263,10 @@ pub struct SubmitArgs {
     /// the target host for the job's exact scope and native digest.
     #[arg(long)]
     trust: Option<PathBuf>,
+    /// The live `usnm_ocr_native` version numbers, from the database (registered, not
+    /// deprecated): a native unit is pinned to the newest of them that packages its build.
+    #[arg(long, value_delimiter = ',')]
+    native_versions: Vec<u32>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -286,6 +290,7 @@ pub async fn submit(args: SubmitArgs) -> anyhow::Result<()> {
         target_host,
         app,
         trust,
+        native_versions,
     } = args;
     if app == SubmitApp::UsnmOcrNative {
         anyhow::ensure!(
@@ -296,6 +301,10 @@ pub async fn submit(args: SubmitArgs) -> anyhow::Result<()> {
             "a usnm_ocr_native unit takes no --app-version-num or retry stores"
         );
     }
+    anyhow::ensure!(
+        app == SubmitApp::UsnmOcrNative || native_versions.is_empty(),
+        "--native-versions is for usnm_ocr_native units"
+    );
     let trust = match (app, trust) {
         (SubmitApp::UsnmOcrNative, Some(path)) => Some(crate::trust::Trust::load(&path)?),
         (SubmitApp::UsnmOcrNative, None) => {
@@ -329,8 +338,16 @@ pub async fn submit(args: SubmitArgs) -> anyhow::Result<()> {
             curated: curated.as_ref(),
         });
     if let Some(trust) = &trust {
-        crate::submit::submit_native(&root, &project, &job, download.as_ref(), target_host, trust)
-            .await?;
+        crate::submit::submit_native(
+            &root,
+            &project,
+            &job,
+            download.as_ref(),
+            target_host,
+            trust,
+            &native_versions,
+        )
+        .await?;
         return Ok(());
     }
     let pin = match crate::load(&root, &job)?.job.lines {
