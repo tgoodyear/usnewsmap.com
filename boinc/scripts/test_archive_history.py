@@ -1052,6 +1052,91 @@ class DbTests(unittest.TestCase):
         self.assertEqual([row[0] for row in self.rows()[0]], [1, 2, 4, 6])
         self.assertEqual((receipt["deleted_workunits"], receipt["deferred"]), (1, 3))
 
+    def recheck(self):
+        return run(self.argv("--apply", "--confirm-controller-paused", "--recheck-deferred"))
+
+    def test_recheck_deletes_deferred_rows_that_are_now_finished(self):
+        self.assertEqual(self.apply()[0], 0)
+        first = self.rows()
+        self.assertEqual([row[0] for row in first[0]], [2, 4, 6])
+        # BOINC's file_deleter finished workunit 2's input files, but not workunit 6's results.
+        FakeMysql.db.execute("UPDATE workunit SET file_delete_state = 2 WHERE id = 2")
+        code, receipt, _ = self.recheck()
+        self.assertEqual(code, 0, receipt)
+        workunits, results = self.rows()
+        self.assertEqual([row[0] for row in workunits], [4, 6])
+        self.assertEqual([row[0] for row in results], [14, 15])
+        self.assertEqual((receipt["deleted_workunits"], receipt["deferred"]), (3, 1))
+        self.assertEqual(len(receipt["rechecks"]), 1)
+        self.assertEqual(receipt["rechecks"][0]["deleted_workunits"], 1)
+        self.assertEqual(archive.exported_ids(self.batch / "db/chunk-0001-attempt-2/workunit.tsv"), {2})
+        # The first attempt's export is untouched and still listed.
+        self.assertEqual(archive.exported_ids(self.batch / "db/chunk-0001-attempt-1/workunit.tsv"), {1, 3})
+        self.assertIn("chunk-0001-attempt-1/workunit.tsv", receipt["exports"])
+        on_disk = json.loads((self.batch / "receipts/db.json").read_text())
+        self.assertEqual(on_disk, {key: receipt[key] for key in on_disk})
+
+    def test_recheck_leaves_rows_that_are_still_deferred(self):
+        self.assertEqual(self.apply()[0], 0)
+        before = self.rows(), tree(self.batch)
+        code, receipt, _ = self.recheck()
+        self.assertEqual(code, 0, receipt)
+        self.assertEqual(before, (self.rows(), tree(self.batch)))
+        self.assertEqual((receipt["deleted_workunits"], receipt["deferred"]), (2, 2))
+        self.assertNotIn("rechecks", receipt)
+
+    def test_a_second_recheck_changes_nothing(self):
+        self.assertEqual(self.apply()[0], 0)
+        FakeMysql.db.execute("UPDATE workunit SET file_delete_state = 2 WHERE id = 2")
+        self.assertEqual(self.recheck()[0], 0)
+        after = self.rows(), tree(self.batch)
+        code, receipt, _ = self.recheck()
+        self.assertEqual(code, 0, receipt)
+        self.assertEqual(after, (self.rows(), tree(self.batch)))
+        self.assertEqual(len(receipt["rechecks"]), 1)
+
+    def test_recheck_never_deletes_a_row_the_receipt_has_as_done(self):
+        self.assertEqual(self.apply()[0], 0)
+        # A row the step deleted comes back, finished: the re-check does not plan it again,
+        # and the step's own check that archived rows are gone refuses.
+        FakeMysql.db.execute("INSERT INTO workunit VALUES (1, ?, 2, 2)", (f"usnm_{job_id(1)}",))
+        code, _, errors = self.recheck()
+        self.assertEqual(code, 1)
+        self.assertIn("still in the database", errors[-1]["error"])
+        self.assertEqual([row[0] for row in self.rows()[0]], [1, 2, 4, 6])
+
+    def test_recheck_refuses_a_changed_export(self):
+        self.assertEqual(self.apply()[0], 0)
+        FakeMysql.db.execute("UPDATE workunit SET file_delete_state = 2 WHERE id = 2")
+        (self.batch / "db/chunk-0001-attempt-1/workunit.tsv").write_text("damaged\n")
+        before = self.rows()
+        code, _, errors = self.recheck()
+        self.assertEqual(code, 1)
+        self.assertIn("missing or changed", errors[-1]["error"])
+        self.assertEqual(before, self.rows())
+        (self.batch / "db/chunk-0001-attempt-1/workunit.tsv").unlink()
+        self.assertEqual(self.recheck()[0], 1)
+        self.assertEqual(before, self.rows())
+
+    def test_recheck_with_no_deferred_rows(self):
+        FakeMysql.db.execute("UPDATE workunit SET file_delete_state = 2 WHERE id = 2")
+        FakeMysql.db.execute("UPDATE result SET file_delete_state = 2 WHERE id = 15")
+        self.assertEqual(self.apply()[0], 0)
+        self.assertEqual(json.loads((self.batch / "receipts/db.json").read_text())["deferred"], 0)
+        before = self.rows(), tree(self.batch)
+        code, receipt, _ = self.recheck()
+        self.assertEqual(code, 0, receipt)
+        self.assertEqual(before, (self.rows(), tree(self.batch)))
+        self.assertEqual(receipt["deferred"], 0)
+
+    def test_recheck_needs_a_complete_receipt(self):
+        before = self.rows()
+        code, _, errors = self.recheck()
+        self.assertEqual(code, 1)
+        self.assertIn("complete db receipt", errors[-1]["error"])
+        self.assertEqual(before, self.rows())
+        self.assertFalse((self.batch / "db").exists())
+
     def test_needs_this_batchs_bridge_step_first(self):
         receipt = json.loads((self.batch / "receipts/bridge.json").read_text())
         receipt["manifest_sha256"] = "0" * 64  # another batch's

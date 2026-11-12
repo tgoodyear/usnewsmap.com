@@ -240,6 +240,24 @@ The GHN-only pages have no layout. Find text lines with a layout model, classify
 
 895 issues, 1844–1906, the largest Cherokee newspaper online and absent from Chronicling America. Its host's robots.txt bars ClaudeBot by name and asks other crawlers for one request every 3 seconds. Start from its OAI-PMH metadata to count pages and issues; whether to fetch images at all is a decision for the maintainer (below). The _Advocate_ was printed decades after the _Phoenix_, so step 3's model may need a second round of fine-tuning on it.
 
+### Step 5 result: the _Advocate_'s holdings in the Gateway's metadata
+
+Harvested on 12 November 2026 from the Gateway's OAI-PMH endpoint, set `collection:CHRAD` ("Cherokee Advocate"), in two requests (`ListSets`, then one `ListRecords` that returned the whole set with no resumption token). Before the first request I read the site's robots.txt, which allows `/oai/` for crawlers without their own entry (it bars ClaudeBot by name and sets a crawl delay of 3 seconds for the rest), and its terms of use, which make the content available for research and say nothing against automated metadata access. The script sends a generic research-script User-Agent, waits 3 seconds between requests, and stops on any HTTP error. No images and no OCR text were fetched.
+
+| Count                               | Value                 |
+| ----------------------------------- | --------------------- |
+| Issues (records)                    | 895                   |
+| Pages (sum of each record's extent) | 3,578                 |
+| Years with at least one issue       | 42, from 1845 to 1906 |
+
+Every record carries an extent ("four pages", "six pages") and a date, so the page count is the sum of stated extents, not a count of page images. 863 issues are four pages, 16 are two, and 16 run from one to eight. By year, the holdings fall into three blocks:
+
+- 1845 to 1849: 6 issues, 26 pages. The early run is thin.
+- 1850 to 1869: none. The Gateway's metadata lists no issue for these 20 years.
+- 1870 to 1906: the other 889 issues. 1876 to 1883 has 354 of them, and 1900 to 1906 has 286.
+
+The metadata puts the first issue in 1845, not 1844 as the plan above says, and 3,578 stated pages is the size of the page-image set if a later step fetches images. The totals (first line) and per-year counts (one line each) are in [`advocate-holdings.jsonl`](advocate-holdings.jsonl), converted from the script's JSON output. Re-run with `python3 docs/reports/2026-11-cherokee/scripts/chr_advocate_oai.py --set-name "Cherokee Advocate" --out advocate-holdings.json`; its offline tests are `python3 -m unittest docs/reports/2026-11-cherokee/scripts/test_chr_advocate_oai.py`.
+
 ### Decisions
 
 Made on 6 November 2026:

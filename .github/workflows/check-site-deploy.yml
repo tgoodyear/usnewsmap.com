@@ -70,7 +70,7 @@ jobs:
           node-version: 24
       # ci skips the edge job when a push doesn't touch edge/, so its success alone doesn't
       # show that this tree's site passed its tests: run them on the commit being deployed.
-      - run: node --test edge/check/worker.test.mjs edge/check/layout.test.mjs
+      - run: node --test edge/check/worker.test.mjs edge/check/layout.test.mjs edge/check/deploy.test.mjs
       - run: |
           for attempt in 1 2 3; do
             sudo apt-get -o Acquire::Retries=3 update -qq \

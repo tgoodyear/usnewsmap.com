@@ -1,6 +1,6 @@
 # ADR-0016: Pluggable OCR engines behind one versioned contract
 
-- **Status:** Proposed
+- **Status:** Accepted. Built and in use (#1705).
 - **Date:** 2026-10
 - **Extends:** ADR-0004 (Rust) to the OCR pipeline, and ADR-0015 (on-prem OCR workers)
 - **Amends:** ADR-0015 §6, which keeps Python for the engine survey: the survey's runner and scorer move to Rust. Python stays inside engine images whose engine is a Python library, in one-off sampling tools, in audits, and in the Japanese cloud job until that job runs through the contract.
