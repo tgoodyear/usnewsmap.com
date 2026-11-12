@@ -10,3 +10,13 @@
 5.5.2 https://github.com/tesseract-ocr/tesseract/archive/refs/tags/5.5.2.tar.gz 6e1d56a847e697de07b38619356550e5cf4e8633 6235ea0dae45ea137f59c09320406f5888383741924d98855bd2ce0d16b54f21
 5.5.3 https://github.com/tesseract-ocr/tesseract/archive/refs/tags/5.5.3.tar.gz db0ec62f81b0737fbbe184d8fea40af5738f8eef 9218e62793116d42a9f6d14cd9348518b27f382096eea3d0f2d1a24616bb5884
 5.5.4 https://github.com/tesseract-ocr/tesseract/archive/refs/tags/5.5.4.tar.gz 7e548e6eff172f38f97664afe7f7ce40db36c8d6 a8dbf8b8c8ee427ff6ad1d99116502feaf59440af1adb893caf60a6576826cf4
+
+# Patches for Containerfile.patched (5.5.0 from Debian's source plus these), one per line:
+#   patch  file under patches/  upstream commit (squash-merged pull request)  sha256 of the file
+# Each is the src/ part of the upstream commit (its unit test left out), checked to apply to the
+# upstream 5.5.0 tag with `git apply --check` as well as to Debian's source. The build refuses a
+# patch whose sha256 differs from this line. They are applied in the order given to --patches.
+patch 0001-avoid-quadratic-paragraph-restart-scan-4599.patch 2cd9955ef1c6d2aa9974dfdbb5ff5c4e44603b26 58ae096db152c453adc86700359450df55db18dff8d66c0f4e662a7a5391b34d
+patch 0002-avoid-redundant-result-iterator-restarts-4601.patch fb87a84b6e3384b424b2169c76de9031046861e9 e588bfc2179569bb7c1d8ff04cbff4af2dc997b822a901295f52df6b03ea774c
+patch 0003-fix-use-after-free-in-replacecurrentword-4667.patch a95faa0078bcbb59357468f81e079814f8f28e74 ab5f8782511fd5eebf3c5ee721e4ad3f651f93fd4db24e3cc87708321448ed1e
+patch 0004-fix-position-dependent-paragraph-bounding-box-4632.patch 3dc583fa0106cb1fd6d953b5ff58816fc78b337c a55827a37169da5097fdbda08480ee071d1116a884fc97aa147f2d678cd1373d

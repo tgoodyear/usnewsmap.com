@@ -1,0 +1,56 @@
+# The static Tesseract of the native build, as the default Containerfile builds it, plus upstream
+# patches (#1835). Nothing else differs: the base is the default Containerfile's apt-native stage,
+# the source is the Debian 5.5.0 source it already unpacked in /src/tesseract-5.5.0 (with Debian's
+# patch), and the version stays 5.5.0.
+#
+# The patches change library code, so libtesseract.a is built here from the patched source with
+# the flags of Containerfile.upstream (Debian's debian/rules options) instead of linking Debian's
+# prebuilt library. main() and the link are the default build's. With no patch this is the 5.5.0
+# control of the upstream recipe.
+#
+#   boinc/scripts/build-native-tesseract-upstream.sh --patches "0001-... 0002-..." --out FILE
+#
+# The script checks each patch against tesseract-upstream.lock and passes the list as PATCHES.
+ARG NATIVE_BASE
+FROM ${NATIVE_BASE}
+ARG PATCHES=""
+COPY patches/ /patches/
+COPY stubs.c /src/stubs.c
+RUN set -eu; cd /src; \
+    mkdir lib main; cp -a tesseract-5.5.0 lib/tesseract; cp -a tesseract-5.5.0 main/tesseract; \
+    for p in $PATCHES; do \
+      for t in lib main; do (cd /src/$t/tesseract && patch -p1 --forward --no-backup-if-mismatch < /patches/$p >/dev/null) \
+        || { echo "patch $p does not apply" >&2; exit 1; }; done; \
+    done; \
+    rm -rf /usr/include/tesseract /usr/lib/x86_64-linux-gnu/libtesseract* /usr/lib/x86_64-linux-gnu/pkgconfig/tesseract.pc
+# libtesseract.a, as Containerfile.upstream builds it.
+RUN set -eu; cd /src/lib/tesseract; export DEB_BUILD_MAINT_OPTIONS=hardening=+all; \
+    CFLAGS="$(dpkg-buildflags --get CXXFLAGS) -Wall -g -fPIC -DTESSDATA_PREFIX='\"/usr/share/tesseract-ocr/5\"'"; \
+    LDFLAGS="$(dpkg-buildflags --get LDFLAGS)"; \
+    ./autogen.sh >/dev/null; \
+    ./configure --disable-tessdata-prefix --prefix=/usr --libdir='${prefix}/lib/x86_64-linux-gnu' \
+      CXXFLAGS="$CFLAGS" LDFLAGS="-lleptonica -Wl,-z,defs $LDFLAGS" >/dev/null; \
+    make -j"$(nproc)" libtesseract.la >/dev/null; \
+    ls -l .libs/libtesseract.a
+# main(), as the default build compiles it.
+RUN set -eu; cd /src/main/tesseract; ./autogen.sh >/dev/null; \
+    ./configure --disable-tessdata-prefix --prefix=/usr >/dev/null; \
+    sed -i '/HAVE_FEENABLEEXCEPT/d; /HAVE_LIBCURL/d; /HAVE_LIBARCHIVE/d' include/config_auto.h; \
+    grep -q 'define HAVE_TIFFIO_H' include/config_auto.h; \
+    mkdir /out; \
+    gcc -O2 -Wall -Werror -c /src/stubs.c -o /src/stubs.o; \
+    g++ -O2 -std=c++17 -fopenmp -DHAVE_CONFIG_H -DTESSDATADIR='"/nonexistent"' \
+      -I. -Iinclude -Isrc/api -Isrc/arch -Isrc/ccmain -Isrc/ccstruct -Isrc/ccutil -Isrc/classify \
+      -Isrc/cutil -Isrc/dict -Isrc/lstm -Isrc/textord -Isrc/viewer -Isrc/wordrec \
+      -I/usr/include/leptonica \
+      -c src/tesseract.cpp -o /src/main.o; \
+    g++ -static -fopenmp -s -o /out/usnm_tesseract /src/main.o /src/stubs.o /src/lib/tesseract/.libs/libtesseract.a \
+      -lleptonica -ltiff -lwebpmux -lwebp -lsharpyuv -lpng16 -ljpeg -lgif -lopenjp2 \
+      -ldeflate -lzstd -llzma -lLerc -ljbig -lz -lm; \
+    file /out/usnm_tesseract; \
+    ! ldd /out/usnm_tesseract; \
+    { dpkg-query -W libleptonica-dev libtiff-dev libpng-dev libjpeg62-turbo-dev \
+        libopenjp2-7-dev libwebp-dev libgif-dev libc6-dev libgomp1 libstdc++-14-dev; \
+      echo "tesseract source $(sed -n 's/^Version: //p' /src/tesseract_5.5.0-1.dsc) patches: $PATCHES"; \
+    } > /out/usnm_tesseract.packages; \
+    sha256sum /out/usnm_tesseract
