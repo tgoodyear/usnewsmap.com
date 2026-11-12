@@ -44,7 +44,7 @@ const WIDE: Geo = Geo {
 const NARROW: Geo = Geo {
     class: "narrow",
     width: 360.0,
-    left: 42.0,
+    left: 44.0,
     right: 8.0,
     heights: [170.0, 150.0, 170.0],
     day: "%b %-d",
@@ -387,10 +387,21 @@ pub(super) fn charts(v: &WeekView) -> String {
     let completed = |x: &Bucket| x.completed_total();
 
     // Each chart is drawn at both widths; the stylesheet shows one.
+    // The left margin fits the longest axis label of the three, so the
+    // charts' time axes line up and no label is cut off.
+    let tops = [
+        nice(max(&queued)),
+        nice(max(&volunteers).max(max(&volunteer_hosts)).max(max(&hosts))),
+        nice(max(&completed)),
+    ];
+    let room = tops.iter().map(|t| int(*t).len()).max().unwrap_or(1) as f64 * CHAR + 12.0;
     let each = |which: usize, top: u64, axis: bool| {
         [WIDE, NARROW].map(|geo| Chart {
             buckets: b,
-            geo,
+            geo: Geo {
+                left: geo.left.max(room.ceil()),
+                ..geo
+            },
             height: geo.heights[which],
             top,
             axis,
@@ -402,7 +413,7 @@ pub(super) fn charts(v: &WeekView) -> String {
          <h3>Queued jobs</h3>\
          <p class=\"note\">Jobs waiting for a volunteer's computer</p>",
     );
-    for c in each(0, nice(max(&queued)), false) {
+    for c in each(0, tops[0], false) {
         c.open(
             &mut o,
             "Queued jobs, the last 7 days in 3-hour steps",
@@ -418,8 +429,7 @@ pub(super) fn charts(v: &WeekView) -> String {
          <span class=\"key wk-key s2\"></span>Volunteer computers \
          <span class=\"key wk-key s3\"></span>All computers, the project's own included</p>",
     );
-    let top = nice(max(&volunteers).max(max(&volunteer_hosts)).max(max(&hosts)));
-    for c in each(1, top, false) {
+    for c in each(1, tops[1], false) {
         c.open(
             &mut o,
             "Active volunteers, volunteer computers and all computers, the last 7 days in 3-hour steps",
@@ -434,7 +444,7 @@ pub(super) fn charts(v: &WeekView) -> String {
     o.push_str(
         "<h3>Completed jobs</h3><p class=\"note\">Jobs a computer returned successfully</p>",
     );
-    for c in each(2, nice(max(&completed)), true) {
+    for c in each(2, tops[2], true) {
         c.open(
             &mut o,
             "Completed jobs, the last 7 days in 3-hour steps",
@@ -621,7 +631,7 @@ mod tests {
         assert_eq!(d["n"], 56);
         // The crosshair's geometry is on each chart, for its own width.
         assert!(html.contains("data-left=\"48\""));
-        assert!(html.contains("data-left=\"42\""));
+        assert!(html.contains("data-left=\"44\""));
         let tip = d["tips"][55].as_str().unwrap();
         assert!(tip.contains("(so far)"));
         assert!(tip.contains("AI snippet reading"));

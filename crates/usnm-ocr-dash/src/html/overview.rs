@@ -116,15 +116,26 @@ fn eastern(at: DateTime<Utc>) -> NaiveDateTime {
 /// The note above a daily chart: what it counts, and where its days end.
 fn daily_note(o: &mut String, what: &str, values: usize, start: Option<DateTime<Utc>>) {
     let _ = write!(o, "<p class=\"note\">{}, last {values} days. ", esc(what));
-    match start.map(|s| {
-        eastern(s + Duration::days(values as i64))
-            .format("%-I %p")
-            .to_string()
-    }) {
-        Some(end) => {
+    let ends = |i: usize| {
+        start.map(|s| {
+            eastern(s + Duration::days(i as i64))
+                .format("%-I %p")
+                .to_string()
+        })
+    };
+    match ends(values) {
+        // Bars are fixed 24-hour intervals, so across a clock change their
+        // Eastern end times differ.
+        Some(end) if (1..=values).all(|i| ends(i).as_deref() == Some(end.as_str())) => {
             let _ = write!(
                 o,
                 "Each bar is the 24 hours up to {end} Eastern on the day shown, the newest on the right.</p>"
+            );
+        }
+        Some(end) => {
+            let _ = write!(
+                o,
+                "Each bar is 24 hours, the newest on the right; the newest ends at {end} Eastern on the day shown, and a clock change moves the others by an hour.</p>"
             );
         }
         None => o.push_str("Each bar is 24 hours, the newest on the right.</p>"),
@@ -747,6 +758,14 @@ mod tests {
             o.contains("last 7 days. Each bar is the 24 hours up to 7 PM Eastern on the day shown"),
             "{o}"
         );
+        // Across a clock change the bars end at different Eastern hours.
+        let mut o = String::new();
+        let change = DateTime::parse_from_rfc3339("2026-10-28T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        daily_note(&mut o, "Pages fetched a day", values.len(), Some(change));
+        assert!(o.contains("the newest ends at 7 PM Eastern"), "{o}");
+        assert!(o.contains("clock change"), "{o}");
         let mut o = String::new();
         daily_bars(&mut o, "k", "Pages", "pages", &values, Some(start));
         // The scale: a round top and gridlines under it, on the axis's labels.
