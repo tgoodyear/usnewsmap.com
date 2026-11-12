@@ -1,6 +1,6 @@
 # ADR-0017: Resource naming: usnm-{function}-{type}-{env}
 
-- **Status:** Proposed
+- **Status:** Accepted. Built and in use (#1705).
 - **Date:** 2026-10
 - **Amends:** 08 §8.1 (resource names), ADR-0011 (adds a rename guard before each stack deployment)
 
