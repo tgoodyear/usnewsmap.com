@@ -111,11 +111,15 @@ pub const MIN_DAMAGE: f64 = 0.25;
 /// Days a page may stay outstanding before it is queued again.
 pub const REQUEUE_AFTER_DAYS: i64 = 14;
 
-/// How long after it was queued a settled page's message is assumed still hidden on
-/// `ocr-bulk`: a page waits up to [`REQUEUE_AFTER_DAYS`] to be claimed, then its message is
-/// hidden for the claim's lease, at most 7 days (`usnm-boinc`'s claim). The seeder can't
-/// read the claim, so this bound may discount a few messages a claim has already deleted.
-pub const HELD_HIDDEN_DAYS: i64 = REQUEUE_AFTER_DAYS + 7;
+/// The longest lease a claim may take, in days: `usnm-boinc`'s claim refuses more than
+/// 7 days (its `claim` module, the check on `Options::lease`).
+pub const MAX_CLAIM_LEASE_DAYS: i64 = 7;
+
+/// How long a settled page's message is assumed to stay hidden on `ocr-bulk`, counted from
+/// when the page was queued: up to [`REQUEUE_AFTER_DAYS`] to be claimed, then hidden for the
+/// claim's lease. The seeder can't read the claim, so a message a claim has already deleted
+/// may still be discounted inside this bound.
+pub const HELD_HIDDEN_DAYS: i64 = REQUEUE_AFTER_DAYS + MAX_CLAIM_LEASE_DAYS;
 /// Times a page is queued again after a timeout or a `dequeue_count`
 /// dead letter.
 pub const MAX_REQUEUES: u32 = 3;
@@ -782,7 +786,7 @@ pub struct SeedReport {
     /// (#1613).
     #[serde(default)]
     pub queue_ready: u64,
-    /// Settled pages queued within [`HELD_HIDDEN_DAYS`], whose messages may still be hidden
+    /// Settled pages queued less than [`HELD_HIDDEN_DAYS`] days ago, whose messages may still be hidden
     /// on `ocr-bulk` and counted in `queue_depth`. A claim deletes a settled page's message
     /// once its lease runs out, so older ones are no longer in the depth.
     #[serde(default)]
