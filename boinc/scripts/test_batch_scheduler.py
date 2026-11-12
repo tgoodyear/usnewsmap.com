@@ -4190,6 +4190,48 @@ class CohortWatermarksAndStarvationTests(unittest.TestCase):
         self.assertEqual(qfake.actions[0], ("claim", 2))
         self.assertEqual(len(qfake.jobs), 2)
 
+    def test_a_backlog_in_another_app_past_the_global_cap_is_backpressure_not_a_failure(self):
+        # #1698: status counters were bounded by MAX_GLOBAL_PENDING (100,000), so a larger
+        # backlog in another app failed every OCR tick with "out-of-range BOINC status".
+        big = batch.MAX_GLOBAL_PENDING + 50_000
+        self.fake.other = big
+        xml = status_xml(ocr_unsent=0, ocr_in_progress=0, qwen_unsent=big,
+                         quality_unsent=0, quality_in_progress=0, train_unsent=0)
+        self.assertEqual(batch.parse_server_status(xml.encode())["apps"]["usnm_qwen"]["unsent"], big)
+        blocked = self.tick(low_watermark=1, high_watermark=4, max_global_pending=3000, server_status=xml)
+        self.assertEqual(blocked["backpressure_reason"], "global_safety_cap")
+        self.assertEqual(self.fake.actions, [])
+
+    def test_status_counters_are_bounded_by_the_status_ceiling(self):
+        top = batch.MAX_STATUS_COUNT
+        self.assertGreater(top, batch.MAX_GLOBAL_PENDING)
+        app = "<app><name>usnm_qwen</name><unsent>{0}</unsent><in_progress>0</in_progress></app>"
+        xml = ("<server_status><database_file_states><results_ready_to_send>{0}</results_ready_to_send>"
+               "<zero_work_requests>{0}</zero_work_requests><tasks_by_app>" + app +
+               "</tasks_by_app></database_file_states></server_status>")
+        parsed = batch.parse_server_status(xml.format(top).encode())
+        self.assertEqual((parsed["apps"]["usnm_qwen"]["unsent"], parsed["results_ready_to_send"],
+                          parsed["zero_work_requests"]), (top, top, top))
+        good = (
+            {"tasks_by_app": [{"name": "usnm_qwen", "unsent": top, "in_progress": top}]},
+            {"apps": {"usnm_qwen": {"unsent": top, "in_progress": 0}}, "results_ready_to_send": top,
+             "results_in_progress": top, "zero_work_requests": top},
+        )
+        for status in good:
+            with self.subTest(status=status):
+                self.assertEqual(batch.parse_server_status(status)["apps"]["usnm_qwen"]["unsent"], top)
+        bad = (
+            xml.format(top + 1).encode(),
+            {"tasks_by_app": [{"name": "usnm_qwen", "unsent": top + 1, "in_progress": 0}]},
+            {"apps": {"usnm_qwen": {"unsent": 0, "in_progress": top + 1}}},
+            {"apps": {"usnm_qwen": {"unsent": 0, "in_progress": 0}}, "results_ready_to_send": top + 1},
+            {"apps": {"usnm_qwen": {"unsent": 0, "in_progress": 0}}, "results_in_progress": top + 1},
+            {"apps": {"usnm_qwen": {"unsent": 0, "in_progress": 0}}, "zero_work_requests": top + 1},
+        )
+        for status in bad:
+            with self.subTest(status=status), self.assertRaises(ValueError):
+                batch.parse_server_status(status)
+
     def test_global_safety_cap_halts_refill_with_explicit_diagnostic_reason(self):
         # 456 unsent usnm_qwen tasks exceed max_global_pending=400 even though usnm_ocr is 0/0.
         self.fake.other = 456
