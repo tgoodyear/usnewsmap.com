@@ -3,7 +3,8 @@
 
 Input, JSON lines (--items): one printed unit each:
   {"id": "...", "image": "relative/path.png", "page": "...", "source": "https://...", "label": "...",
-   "unit": "line" | "crop", "crop_id": "cze-01"}   (crop_id and unit are optional)
+   "unit": "line" | "crop", "crop_id": "cze-01", "priority": 0}   (crop_id, unit and priority are optional;
+   tasks with a lower priority number are served first)
 The images are read from --images. Nothing about any engine's reading may be in the file: the tool refuses
 `a`, `b`, `hints`, `text` and `loc` fields, so no machine text can reach a task.
 
@@ -60,8 +61,8 @@ def build(items, calibration, images, lang, set_name, config, out_dir):
             task = {"id": tid, "lang": lang, "set": set_name, "kind": "transcribe", "line": f"{lang}/{set_name}/{name}",
                     "label": row.get("label", ""), "unit": row.get("unit", "line")}
             if kind == "task":
-                for k in ("page", "source", "crop_id"):
-                    if row.get(k):
+                for k in ("page", "source", "crop_id", "priority"):
+                    if row.get(k) is not None and row.get(k) != "":
                         task[k] = row[k]
             else:
                 task["truth"] = row["truth"]
