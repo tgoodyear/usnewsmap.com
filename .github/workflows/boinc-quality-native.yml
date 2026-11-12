@@ -12,6 +12,7 @@ on:
       - ocr/contract/**
       - boinc/apps/qwen/llama.lock
       - boinc/apps/qwen/libgomp.lock
+      - boinc/apps/qwen/licenses/**
       - boinc/apps/qwen/weights.lock
       - boinc/apps/qwen/amd-device-map.cpp
       - boinc/apps/qwen/disk-policy.json
