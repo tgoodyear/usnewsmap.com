@@ -828,9 +828,10 @@ mod tests {
                 readings_sha256: sha256(&rb),
                 unit_error: None,
             };
-            for (name, bytes) in outputs()
-                .iter()
-                .zip([rb, serde_json::to_vec(&result).unwrap(), b"diag".to_vec()])
+            for (name, bytes) in
+                outputs()
+                    .iter()
+                    .zip([rb, serde_json::to_vec(&result).unwrap(), b"diag".to_vec()])
             {
                 std::fs::write(
                     spool.join(format!("{}__file_{name}", job.workunit())),
