@@ -2,55 +2,55 @@
   "schema_version": 1,
   "purpose": "Pre-built llama.cpp release archives pinned by SHA-256 for native cross-platform usnm_qwen BOINC app versions (#533).",
   "repository": "ggml-org/llama.cpp",
-  "tag": "b8799",
+  "tag": "b12084",
   "assets": {
     "macos-arm64": {
       "boinc_platform": "arm64-apple-darwin",
-      "file": "llama-b8799-bin-macos-arm64.tar.gz",
-      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b8799/llama-b8799-bin-macos-arm64.tar.gz",
-      "sha256": "e8ed79ec9c8652e9140647e3d035a4f8c2e7c2edf2c73b71e652fecc3afeb76e"
+      "file": "llama-b12084-bin-macos-arm64.tar.gz",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12084/llama-b12084-bin-macos-arm64.tar.gz",
+      "sha256": "a612717aeb41b41c2e231ec8d5715262cadfede5df67db2653e2df64032427a8"
     },
     "macos-x64": {
       "boinc_platform": "x86_64-apple-darwin",
-      "file": "llama-b8799-bin-macos-x64.tar.gz",
-      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b8799/llama-b8799-bin-macos-x64.tar.gz",
-      "sha256": "10c90669abdb8922f671d2e9d1918c53dac32618e70ffbbdf2bb2653606e7965"
+      "file": "llama-b12084-bin-macos-x64.tar.gz",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12084/llama-b12084-bin-macos-x64.tar.gz",
+      "sha256": "dfe2f7677b1a64e6615789b1fe297b1c04c8a2519ad0774bb8c7853ad8af7a27"
     },
     "win-cuda-12.4-x64": {
       "boinc_platform": "windows_x86_64",
-      "file": "llama-b8799-bin-win-cuda-12.4-x64.zip",
-      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b8799/llama-b8799-bin-win-cuda-12.4-x64.zip",
-      "sha256": "3ca2c685f85f60a9a3d1ac6e6b20621ffc4b02fb030b42f7cfe86f4eb148e314"
+      "file": "llama-b12084-bin-win-cuda-12.4-x64.zip",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12084/llama-b12084-bin-win-cuda-12.4-x64.zip",
+      "sha256": "ae3c22cdb7f5b7edaa0ea845cd76fbbf573a37470ab2ad4656a206a8b3b3cc40"
     },
     "win-cuda-12.4-runtime-x64": {
       "boinc_platform": "windows_x86_64",
       "file": "cudart-llama-bin-win-cuda-12.4-x64.zip",
-      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b8799/cudart-llama-bin-win-cuda-12.4-x64.zip",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12084/cudart-llama-bin-win-cuda-12.4-x64.zip",
       "sha256": "8c79a9b226de4b3cacfd1f83d24f962d0773be79f1e7b75c6af4ded7e32ae1d6"
     },
     "win-vulkan-x64": {
       "boinc_platform": "windows_x86_64",
-      "file": "llama-b8799-bin-win-vulkan-x64.zip",
-      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b8799/llama-b8799-bin-win-vulkan-x64.zip",
-      "sha256": "25d4999780b18f65f16c748c2e6d357c1f165eb5d9f0d719b5621c69b30dba0f"
+      "file": "llama-b12084-bin-win-vulkan-x64.zip",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12084/llama-b12084-bin-win-vulkan-x64.zip",
+      "sha256": "00cdee40de0b4f9d8f4bb0990d8b781ea816a0e4cb12fe40d598adeee22902d9"
     },
     "ubuntu-x64": {
       "boinc_platform": "x86_64-pc-linux-gnu",
-      "file": "llama-b8799-bin-ubuntu-x64.tar.gz",
-      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b8799/llama-b8799-bin-ubuntu-x64.tar.gz",
-      "sha256": "88e94bdf081ce08b520d55a316532b38c3e48b31ac6546f9521d00cc36b7480d"
+      "file": "llama-b12084-bin-ubuntu-x64.tar.gz",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12084/llama-b12084-bin-ubuntu-x64.tar.gz",
+      "sha256": "f97352d5a0b72e470de0f891d48ca91abf14c0532a4ca27c35bf39a2f107dcfe"
     },
     "ubuntu-vulkan-x64": {
       "boinc_platform": "x86_64-pc-linux-gnu",
-      "file": "llama-b8799-bin-ubuntu-vulkan-x64.tar.gz",
-      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b8799/llama-b8799-bin-ubuntu-vulkan-x64.tar.gz",
-      "sha256": "d962a8228c42c84583150e809d654f9ec995cdf9f4e02e37365293642210a309"
+      "file": "llama-b12084-bin-ubuntu-vulkan-x64.tar.gz",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12084/llama-b12084-bin-ubuntu-vulkan-x64.tar.gz",
+      "sha256": "692bdad8c7743779ed89615472e2863005a12feabbe0b2d8225f5b4b38b12afd"
     },
     "ubuntu-arm64": {
       "boinc_platform": "aarch64-unknown-linux-gnu",
-      "file": "llama-b8799-bin-ubuntu-arm64.tar.gz",
-      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b8799/llama-b8799-bin-ubuntu-arm64.tar.gz",
-      "sha256": "7b762a624d1f543f30d6f5494e613bde2f5f54d3e018efb57498fc521ce5f8cb"
+      "file": "llama-b12084-bin-ubuntu-arm64.tar.gz",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12084/llama-b12084-bin-ubuntu-arm64.tar.gz",
+      "sha256": "0d90c29c6c7dc9e82fa09ae31ef54ee1bdcb355cfecf421638335d41a7a540e4"
     }
   }
 }

@@ -11,11 +11,13 @@ from boinc.scripts import qwen_vulkan_bundle as bundle
 
 ROOT = Path(__file__).resolve().parents[2]
 COMMIT = "a" * 40
-LIBS = ["libggml-base.so.0.9.11", "libggml.so.0.9.11", "libggml-vulkan.so", "libllama.so.0.0.8799",
-        "libmtmd.so.0.0.8799", "libggml-cpu-x64.so"]
-LINKS = {"libggml-base.so.0": "libggml-base.so.0.9.11", "libggml-base.so": "libggml-base.so.0",
-         "libggml.so.0": "libggml.so.0.9.11", "libggml.so": "libggml.so.0", "libllama.so": "libllama.so.0.0.8799",
-         "libmtmd.so": "libmtmd.so.0.0.8799"}
+# b12084's layout: llama-server is a launcher for libllama-server-impl.so and libllama-common.so.
+LIBS = ["libggml-base.so.0.28.0", "libggml.so.0.28.0", "libggml-vulkan.so", "libllama.so.0.8.0",
+        "libmtmd.so.0.8.0", "libggml-cpu-x64.so", "libllama-server-impl.so", "libllama-common.so.0.8.0"]
+LINKS = {"libggml-base.so.0": "libggml-base.so.0.28.0", "libggml-base.so": "libggml-base.so.0",
+         "libggml.so.0": "libggml.so.0.28.0", "libggml.so": "libggml.so.0", "libllama.so": "libllama.so.0.8.0",
+         "libmtmd.so": "libmtmd.so.0.8.0", "libllama-common.so.0": "libllama-common.so.0.8.0",
+         "libllama-common.so": "libllama-common.so.0"}
 
 
 def add(packed, name, data=None, link=None, kind=tarfile.REGTYPE):
@@ -39,18 +41,18 @@ class Bundle(unittest.TestCase):
         self.folder.cleanup()
 
     def archive(self, extra=(), skip=()):
-        path = self.dir / "llama-b8799-bin-ubuntu-vulkan-x64.tar.gz"
+        path = self.dir / "llama-b12084-bin-ubuntu-vulkan-x64.tar.gz"
         with tarfile.open(path, "w:gz") as packed:
             add(packed, "./", kind=tarfile.DIRTYPE)
             for name in ["llama-server", "llama-cli", "LICENSE", *LIBS]:
                 if name not in skip:
-                    add(packed, f"llama-b8799/{name}", name.encode() * 3)
+                    add(packed, f"llama-b12084/{name}", name.encode() * 3)
             for name, target in LINKS.items():
-                add(packed, f"llama-b8799/{name}", link=target)
+                add(packed, f"llama-b12084/{name}", link=target)
             for args in extra:
                 add(packed, *args[:2], **args[2] if len(args) > 2 else {})
         lock = self.dir / "llama.lock"
-        lock.write_text(json.dumps({"repository": "ggml-org/llama.cpp", "tag": "b8799", "assets": {
+        lock.write_text(json.dumps({"repository": "ggml-org/llama.cpp", "tag": "b12084", "assets": {
             "ubuntu-vulkan-x64": {"file": path.name, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}}}))
         return path, lock
 
@@ -69,13 +71,13 @@ class Bundle(unittest.TestCase):
         self.assertEqual({p.name for p in extra.iterdir()},
                          {"llama-server", "llama.LICENSE", "llama.lock", "weights.lock", *LIBS, *LINKS})
         self.assertFalse(any(p.is_symlink() for p in extra.iterdir()))
-        self.assertEqual((extra / "libggml.so").read_bytes(), b"libggml.so.0.9.11" * 3)
+        self.assertEqual((extra / "libggml.so").read_bytes(), b"libggml.so.0.28.0" * 3)
         self.assertEqual((extra / "llama.LICENSE").read_bytes(), b"LICENSE" * 3)
         self.assertEqual(release["release"]["plan_class"], "nvidia_vulkan_2b")
         worker = release["worker"]
         self.assertEqual(worker["sha256"], hashlib.sha256(b"\x7fELF qwen").hexdigest())
         self.assertEqual(worker["extra_files"]["llama.lock"]["source_commit"], COMMIT)
-        self.assertEqual(worker["extra_files"]["libggml.so"]["source_commit"], bundle.LLAMA_SOURCE["b8799"])
+        self.assertEqual(worker["extra_files"]["libggml.so"]["source_commit"], bundle.LLAMA_SOURCE["b12084"])
         args = bundle.release_args(out)
         self.assertEqual(args[:4], ["--binary", str(out.resolve() / bundle.BINARY), "--binary-sha256", worker["sha256"]])
         self.assertIn(f"libggml.so={out.resolve() / 'extra/libggml.so'}", args)
@@ -111,10 +113,10 @@ class Bundle(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "not the llama.lock-pinned"):
             self.build(archive, lock)
         for extra, error in [
-            ([("llama-b8799/libevil.so", None, {"link": "../../etc/passwd"})], "outside the release"),
+            ([("llama-b12084/libevil.so", None, {"link": "../../etc/passwd"})], "outside the release"),
             ([("../escape", b"x")], "unexpected archive member"),
-            ([("llama-b8799/sub/libx.so", b"x")], "nested"),
-            ([("llama-b8799/libdev.so", None, {"kind": tarfile.FIFOTYPE})], "not a file or link"),
+            ([("llama-b12084/sub/libx.so", b"x")], "nested"),
+            ([("llama-b12084/libdev.so", None, {"kind": tarfile.FIFOTYPE})], "not a file or link"),
         ]:
             with self.subTest(error=error):
                 archive, lock = self.archive(extra)
@@ -128,8 +130,9 @@ class Bundle(unittest.TestCase):
 
 class WindowsBundle(unittest.TestCase):
     """build-windows (#1672): the pinned win-vulkan-x64 zip plus the Windows native CI artifact."""
-    RUNTIME = ["llama-server.exe", "ggml-vulkan.dll", "ggml-base.dll", "ggml.dll", "ggml-cpu-x64.dll",
-               "ggml-cpu-haswell.dll", "llama.dll", "mtmd.dll", "libomp140.x86_64.dll"]
+    RUNTIME = ["llama-server.exe", "llama-server-impl.dll", "llama-common.dll", "ggml-vulkan.dll",
+               "ggml-base.dll", "ggml.dll", "ggml-cpu-x64.dll", "ggml-cpu-haswell.dll", "llama.dll",
+               "mtmd.dll", "libomp.dll"]
     CRT = ["msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll", "concrt140.dll"]
 
     def setUp(self):
@@ -150,7 +153,7 @@ class WindowsBundle(unittest.TestCase):
 
     def archive(self, skip=(), extra=()):
         import zipfile
-        path = self.dir / "llama-b8799-bin-win-vulkan-x64.zip"
+        path = self.dir / "llama-b12084-bin-win-vulkan-x64.zip"
         with zipfile.ZipFile(path, "w") as packed:
             for name in [*self.RUNTIME, "llama-cli.exe", "rpc-server.exe"]:
                 if name not in skip:
@@ -158,7 +161,7 @@ class WindowsBundle(unittest.TestCase):
             for name in extra:
                 packed.writestr(name, b"x")
         lock = self.dir / "llama.lock"
-        lock.write_text(json.dumps({"repository": "ggml-org/llama.cpp", "tag": "b8799", "assets": {
+        lock.write_text(json.dumps({"repository": "ggml-org/llama.cpp", "tag": "b12084", "assets": {
             "win-vulkan-x64": {"file": path.name, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}}}))
         return path, lock
 
@@ -176,7 +179,7 @@ class WindowsBundle(unittest.TestCase):
         self.assertEqual((out / "extra/ggml-vulkan.dll").read_bytes(), b"ggml-vulkan.dll" * 3)
         self.assertEqual(release["release"]["platform"], "windows_x86_64")
         self.assertEqual(release["worker"]["extra_files"]["msvcp140.dll"]["source_commit"], COMMIT)
-        self.assertEqual(release["worker"]["extra_files"]["ggml.dll"]["source_commit"], bundle.LLAMA_SOURCE["b8799"])
+        self.assertEqual(release["worker"]["extra_files"]["ggml.dll"]["source_commit"], bundle.LLAMA_SOURCE["b12084"])
         bundle.verify(out)
         args = bundle.release_args(out)
         self.assertEqual(args[:2], ["--binary", str(out.resolve() / bundle.WIN_BINARY)])

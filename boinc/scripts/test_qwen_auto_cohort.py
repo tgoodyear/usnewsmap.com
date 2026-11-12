@@ -129,6 +129,15 @@ class BoincDb {
             "assignments": 0,
         }
 
+    def test_reviewed_engine_follows_the_llama_lock_of_the_admitted_app_version(self):
+        # 1.18 and 1.19 shipped on b8799; 1.20 is the first b12084 release.
+        lock = json.loads((ROOT / "boinc/apps/qwen/llama.lock").read_text())
+        b8799 = "sha256:d962a8228c42c84583150e809d654f9ec995cdf9f4e02e37365293642210a309"
+        self.assertEqual(R.engine_for(119)["llama"], b8799)
+        self.assertEqual(R.engine_for(120)["llama"], "sha256:" + lock["assets"]["ubuntu-vulkan-x64"]["sha256"])
+        self.assertEqual({k: v for k, v in R.engine_for(120).items() if k != "llama"},
+                         {k: v for k, v in R.engine_for(119).items() if k != "llama"})
+
     def bundle(self, number, languages, campaign="qwen-nonenglish-v1"):
         """A unit as `qwen stage --bundle-size` stages it: each page's own unit under pages/<doc>,
         the bundle under units/bundle-<n>-<first doc> with its pages end to end in page.jpg."""
