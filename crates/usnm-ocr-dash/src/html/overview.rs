@@ -153,8 +153,6 @@ fn daily_bars(
     values: &[Counted],
     start: Option<DateTime<Utc>>,
 ) {
-    const WIDTH: f64 = 380.0;
-    const RIGHT: f64 = 6.0;
     const TOP: f64 = 8.0;
     // The plot's height, and room under it for the day names.
     const H: f64 = 100.0;
@@ -166,46 +164,52 @@ fn daily_bars(
         .filter_map(|d| d.value)
         .fold(0.0_f64, |a, v| a.max(v));
     let scale = nice(top.ceil() as u64);
-    // Room on the left for the longest value.
-    let left = (int(scale).len() as f64 * CHAR + 12.0).ceil();
-    let slot = (WIDTH - left - RIGHT) / values.len().max(1) as f64;
-    let width = slot * 0.7;
-    let y = |n: f64| TOP + (H - TOP) * (1.0 - n / scale as f64);
+    let room = (int(scale).len() as f64 * CHAR + 12.0).ceil();
     let at = start.map_or_else(String::new, |t| {
         t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
     });
-    let _ = write!(
+    // Each chart is drawn at both widths, like the week charts, with the
+    // same left gutter and right edge, and the stylesheet shows one.
+    for (class, units, edge, gutter, fill) in [
+        ("wide", 1040.0, 12.0, 56.0_f64, 0.5),
+        ("narrow", 360.0, 8.0, 52.0, 0.7),
+    ] {
+        let left = gutter.max(room);
+        let slot = (units - left - edge) / values.len().max(1) as f64;
+        let width = slot * fill;
+        let y = |n: f64| TOP + (H - TOP) * (1.0 - n / scale as f64);
+        let _ = write!(
         o,
-        "<svg class=\"spark daily\" viewBox=\"0 0 {WIDTH} {}\" role=\"img\" tabindex=\"0\" data-chart=\"{key}\" \
+        "<svg class=\"spark daily {class}\" viewBox=\"0 0 {units} {}\" role=\"img\" tabindex=\"0\" data-chart=\"{key}\" \
          data-start=\"{at}\" data-hours=\"24\" aria-label=\"{}. Left and right arrow keys step through the days.\">",
         H + AXIS,
         esc(label)
     );
-    for v in ticks(scale) {
-        let _ = write!(
-            o,
-            "<line class=\"{}\" x1=\"{left}\" x2=\"{}\" y1=\"{:.1}\" y2=\"{:.1}\"/>\
+        for v in ticks(scale) {
+            let _ = write!(
+                o,
+                "<line class=\"{}\" x1=\"{left}\" x2=\"{}\" y1=\"{:.1}\" y2=\"{:.1}\"/>\
              <text x=\"{}\" y=\"{:.1}\" text-anchor=\"end\">{}</text>",
-            if v == 0 { "wk-axis" } else { "wk-grid" },
-            WIDTH - RIGHT,
-            y(v as f64),
-            y(v as f64),
-            left - 6.0,
-            y(v as f64) + 4.0,
-            int(v)
-        );
-    }
-    for (i, v) in values.iter().enumerate() {
-        let from = start.map(|s| s + Duration::days(i as i64));
-        let window = from.map_or_else(String::new, |f| {
-            format!(
-                "{} to {} UTC: ",
-                f.format("%b %-d %H:%M"),
-                (f + Duration::days(1)).format("%b %-d %H:%M")
-            )
-        });
-        let x = left + i as f64 * slot;
-        let (what, drawn) = match v.value {
+                if v == 0 { "wk-axis" } else { "wk-grid" },
+                units - edge,
+                y(v as f64),
+                y(v as f64),
+                left - 6.0,
+                y(v as f64) + 4.0,
+                int(v)
+            );
+        }
+        for (i, v) in values.iter().enumerate() {
+            let from = start.map(|s| s + Duration::days(i as i64));
+            let window = from.map_or_else(String::new, |f| {
+                format!(
+                    "{} to {} UTC: ",
+                    f.format("%b %-d %H:%M"),
+                    (f + Duration::days(1)).format("%b %-d %H:%M")
+                )
+            });
+            let x = left + i as f64 * slot;
+            let (what, drawn) = match v.value {
             None => (
                 "unknown".to_owned(),
                 format!(
@@ -244,23 +248,24 @@ fn daily_bars(
                 )
             }
         };
-        // The day it ends on, in Eastern, centred under the bar.
-        let name = from.map_or_else(String::new, |f| {
-            format!(
-                "<text x=\"{:.1}\" y=\"{:.1}\" text-anchor=\"middle\">{}</text>",
-                x + slot / 2.0,
-                H + 15.0,
-                eastern(f + Duration::days(1)).format("%b %-d")
-            )
-        });
-        let _ = write!(
+            // The day it ends on, in Eastern, centred under the bar.
+            let name = from.map_or_else(String::new, |f| {
+                format!(
+                    "<text x=\"{:.1}\" y=\"{:.1}\" text-anchor=\"middle\">{}</text>",
+                    x + slot / 2.0,
+                    H + 15.0,
+                    eastern(f + Duration::days(1)).format("%b %-d")
+                )
+            });
+            let _ = write!(
             o,
             "<g class=\"bar\"><title>{}{}</title><rect class=\"hit\" x=\"{x:.1}\" y=\"0\" width=\"{slot:.1}\" height=\"{H}\"/>{drawn}</g>{name}",
             esc(&window),
             esc(&what)
         );
+        }
+        o.push_str("</svg>");
     }
-    o.push_str("</svg>");
 }
 
 fn collection(v: &View, o: &mut String) {
@@ -781,15 +786,15 @@ mod tests {
             assert!(o.contains(&format!(">{name}</text>")), "{name}: {o}");
         }
         // Tips, the arrow keys and the unknown and partial days are as before.
-        assert_eq!(o.matches("<g class=\"bar\">").count(), 7);
-        assert_eq!(o.matches("class=\"unk\"").count(), 1);
-        assert_eq!(o.matches("class=\"v part\"").count(), 1);
+        assert_eq!(o.matches("<g class=\"bar\">").count(), 14);
+        assert_eq!(o.matches("class=\"unk\"").count(), 2);
+        assert_eq!(o.matches("class=\"v part\"").count(), 2);
         assert!(o.contains("data-start=\"2026-11-05T00:00:00Z\""));
         assert!(o.contains("Nov 5 00:00 to Nov 6 00:00 UTC: 30,000 pages"));
         // A day with none draws no bar; the scale still reaches the biggest.
-        assert_eq!(o.matches("class=\"v\"").count(), 4);
+        assert_eq!(o.matches("class=\"v\"").count(), 8);
         // Nothing is drawn past the chart's own width.
-        assert!(o.contains("viewBox=\"0 0 380 "));
+        assert!(o.contains("viewBox=\"0 0 360 ") && o.contains("viewBox=\"0 0 1040 "));
     }
 
     #[test]

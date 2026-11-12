@@ -35,7 +35,7 @@ struct Geo {
 const WIDE: Geo = Geo {
     class: "wide",
     width: 1040.0,
-    left: 48.0,
+    left: 56.0,
     right: 12.0,
     heights: [150.0, 130.0, 150.0],
     day: "%a %b %-d",
@@ -44,7 +44,7 @@ const WIDE: Geo = Geo {
 const NARROW: Geo = Geo {
     class: "narrow",
     width: 360.0,
-    left: 44.0,
+    left: 52.0,
     right: 8.0,
     heights: [170.0, 150.0, 170.0],
     day: "%b %-d",
@@ -630,8 +630,8 @@ mod tests {
         let d: serde_json::Value = serde_json::from_str(data).unwrap();
         assert_eq!(d["n"], 56);
         // The crosshair's geometry is on each chart, for its own width.
-        assert!(html.contains("data-left=\"48\""));
-        assert!(html.contains("data-left=\"44\""));
+        assert!(html.contains("data-left=\"56\""));
+        assert!(html.contains("data-left=\"52\""));
         let tip = d["tips"][55].as_str().unwrap();
         assert!(tip.contains("(so far)"));
         assert!(tip.contains("AI snippet reading"));

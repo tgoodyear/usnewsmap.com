@@ -79,21 +79,20 @@ section.wide svg.spark.hourly { width:288px; }
 .key.s2 { background:var(--series2); }
 /* The overview: a few numbers, a sentence and at most one chart a section. */
 section.overview { max-width:1100px; }
-section.overview > p { max-width:62em; }
-.figures { display:flex; flex-wrap:wrap; gap:10px 32px; margin:2px 0 8px; }
-.fig { display:flex; flex-direction:column; min-width:9em; }
+.figures, .flow { display:grid; grid-template-columns:repeat(auto-fill,minmax(17em,19em)); gap:10px 40px; margin:2px 0 8px; }
+.fig { display:flex; flex-direction:column; min-width:0; }
 .fig .n, .flow .n { font-size:24px; font-weight:650; font-variant-numeric:tabular-nums; line-height:1.2; }
-.fig .l, .flow .l { color:var(--ink2); font-size:13px; max-width:16em; }
-.flow { display:flex; flex-wrap:wrap; gap:8px 0; list-style:none; padding:0; margin:4px 0 8px; }
-.flow li { display:flex; flex-direction:column; min-width:10em; max-width:15em; padding-right:34px; position:relative; }
-.flow li + li::before { content:"→"; position:absolute; left:-26px; top:2px; font-size:20px; color:var(--muted); }
-.flow li + li { margin-left:26px; }
-section.wide svg.spark.daily { display:block; width:100%; max-width:380px; height:auto; margin:2px 0 10px; }
+.fig .l, .flow .l { color:var(--ink2); font-size:13px; }
+.flow { list-style:none; padding:0; }
+.flow li { display:flex; flex-direction:column; position:relative; }
+.flow li + li::before { content:"→"; position:absolute; left:-30px; top:2px; font-size:20px; color:var(--muted); }
+section.wide svg.spark.daily { display:block; width:100%; height:auto; margin:2px 0 10px; }
+section.wide svg.spark.daily.narrow { display:none; }
 /* The daily bars' scale and day names, in the week charts' style. */
 svg.daily text { fill:var(--muted); font-size:11px; }
 svg.daily .wk-grid { stroke:var(--grid); }
 svg.daily .wk-axis { stroke:var(--muted); }
-table.rates { width:auto; min-width:min(100%,360px); }
+table.rates { width:100%; }
 table.rates td:first-child { padding-right:24px; }
 /* The BOINC week: three charts on one time axis, one crosshair and tip. Each
    is drawn twice, a wide one and, for a phone, a narrow one with text the size
@@ -225,11 +224,11 @@ code { font-size:12.5px; overflow-wrap:anywhere; } a { color:var(--fill); }
   .steps .detail-block table.windows { width:100%; table-layout:fixed; }
   .steps .detail-block table.windows th, .steps .detail-block table.windows td { white-space:normal; padding-right:6px; }
   .fig .n, .flow .n { font-size:21px; }
-  .figures { gap:8px 20px; }
-  .fig { min-width:0; flex:1 1 40%; }
-  .flow { flex-direction:column; }
-  .flow li + li { margin-left:0; padding-top:18px; }
-  .flow li + li::before { content:"↓"; left:0; top:-4px; font-size:16px; }
+  .figures { grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px 20px; }
+  .flow { grid-template-columns:minmax(0,1fr); gap:20px; }
+  .flow li + li::before { content:"↓"; left:0; top:-20px; font-size:16px; }
+  section.wide svg.spark.daily.wide { display:none; }
+  section.wide svg.spark.daily.narrow { display:block; }
   section.wide svg.wk.wide { display:none; }
   section.wide svg.wk.narrow { display:block; }
 }
