@@ -42,7 +42,7 @@
 //!   third-party selections the seeder may skip once one is pinned
 //!   ([`supersession`]).
 //! - `ocr-local/revoked/<stamp>.json`: rows the release leaves out, by node,
-//!   engine, import run or time ([`replace::Revocation`]), written by hand.
+//!   engine, import run, time or an explicit page list ([`replace::Revocation`]), written by hand.
 //!
 //! The release (`--ocr-local`, Step 9) reads the merged parts batch by batch
 //! and gives a page our text in place of LoC's where rule v1 ([`rule`])
