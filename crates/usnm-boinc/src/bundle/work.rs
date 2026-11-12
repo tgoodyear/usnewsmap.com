@@ -408,13 +408,13 @@ pub(crate) mod tests {
     /// The checkpoint a task stopped after `pages` pages leaves, from a full run's results.
     fn stopped_after(work: &Path, bundle: &Bundle, results: &Results, pages: usize) -> Checkpoint {
         let mut cp = Checkpoint::new(bundle);
-        for i in 0..pages {
+        for (i, page) in results.pages.iter().take(pages).enumerate() {
             let t = format!("page{}", i + 1);
             atomic(&done(work, i, "txt"), t.as_bytes()).unwrap();
             atomic(&done(work, i, "xml"), &alto(&t)).unwrap();
             cp.texts += t.len() as u64;
             cp.layouts += alto(&t).len() as u64;
-            cp.pages.push(results.pages[i].clone());
+            cp.pages.push(page.clone());
         }
         cp.save(work).unwrap();
         cp
