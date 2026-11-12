@@ -324,13 +324,7 @@ fn tip(buckets: &[Bucket], i: usize) -> String {
     row(&mut o, "Queued", &int(b.queued_total()), false);
     by_app(&mut o, &b.queued);
     row(&mut o, "Volunteers", &int(b.volunteers), false);
-    row(
-        &mut o,
-        "Volunteer computers",
-        &int(b.volunteer_hosts),
-        false,
-    );
-    row(&mut o, "All computers", &int(b.hosts), false);
+    row(&mut o, "Computers", &int(b.hosts), false);
     row(&mut o, "Completed", &int(b.completed_total()), false);
     by_app(&mut o, &b.completed);
     o
@@ -382,7 +376,6 @@ pub(super) fn charts(v: &WeekView) -> String {
     let max = |f: &dyn Fn(&Bucket) -> u64| b.iter().map(f).max().unwrap_or(0);
     let queued = |x: &Bucket| x.queued_total();
     let volunteers = |x: &Bucket| x.volunteers;
-    let volunteer_hosts = |x: &Bucket| x.volunteer_hosts;
     let hosts = |x: &Bucket| x.hosts;
     let completed = |x: &Bucket| x.completed_total();
 
@@ -391,7 +384,7 @@ pub(super) fn charts(v: &WeekView) -> String {
     // charts' time axes line up and no label is cut off.
     let tops = [
         nice(max(&queued)),
-        nice(max(&volunteers).max(max(&volunteer_hosts)).max(max(&hosts))),
+        nice(max(&volunteers).max(max(&hosts))),
         nice(max(&completed)),
     ];
     let room = tops.iter().map(|t| int(*t).len()).max().unwrap_or(1) as f64 * CHAR + 12.0;
@@ -426,19 +419,17 @@ pub(super) fn charts(v: &WeekView) -> String {
     o.push_str(
         "<h3>Active volunteers and computers</h3><p class=\"note\">\
          <span class=\"key wk-key\"></span>Volunteers \
-         <span class=\"key wk-key s2\"></span>Volunteer computers \
-         <span class=\"key wk-key s3\"></span>All computers, the project's own included</p>",
+         <span class=\"key wk-key s2\"></span>Computers</p>",
     );
     for c in each(1, tops[1], false) {
         c.open(
             &mut o,
-            "Active volunteers, volunteer computers and all computers, the last 7 days in 3-hour steps",
-            &c.ys(&[&volunteers, &volunteer_hosts, &hosts]),
+            "Active volunteers and computers, the last 7 days in 3-hour steps",
+            &c.ys(&[&volunteers, &hosts]),
         );
         c.line(&mut o, "s1", volunteers);
-        c.line(&mut o, "s2", volunteer_hosts);
-        c.line(&mut o, "s3", hosts);
-        c.close(&mut o, &["s1", "s2", "s3"]);
+        c.line(&mut o, "s2", hosts);
+        c.close(&mut o, &["s1", "s2"]);
     }
 
     o.push_str(
@@ -461,7 +452,7 @@ pub(super) fn charts(v: &WeekView) -> String {
 
     o.push_str(
         "<p class=\"note\">A volunteer or computer counts as active if it was sent a job or returned one \
-         in those 3 hours. The project's own accounts and computers don't count as volunteers. The newest \
+         in those 3 hours. The newest \
          3 hours are still filling, so their bar is faded and the figures above leave them out. Hover, tap or \
          drag along a chart for the numbers by kind of job.</p>",
     );
@@ -470,19 +461,18 @@ pub(super) fn charts(v: &WeekView) -> String {
         "<details data-refresh-key=\"boinc-week-table\"><summary>Table view</summary>\
          <div class=\"scroll table-wide\" tabindex=\"0\" role=\"region\" aria-label=\"BOINC week table\">\
          <table><thead><tr><th>3-hour period (ET)</th><th class=\"r\">Queued</th><th class=\"r\">Volunteers</th>\
-         <th class=\"r\">Volunteer computers</th><th class=\"r\">All computers</th><th class=\"r\">Completed</th>\
+         <th class=\"r\">Computers</th><th class=\"r\">Completed</th>\
          <th>Queued, by kind</th><th>Completed, by kind</th></tr></thead><tbody>",
     );
     for (i, x) in b.iter().enumerate() {
         let _ = write!(
             o,
-            "<tr><td>{}{}</td><td class=\"r\">{}</td><td class=\"r\">{}</td><td class=\"r\">{}</td>\
+            "<tr><td>{}{}</td><td class=\"r\">{}</td><td class=\"r\">{}</td>\
              <td class=\"r\">{}</td><td class=\"r\">{}</td><td>{}</td><td>{}</td></tr>",
             esc(&window(b, i)),
             if x.partial { " (so far)" } else { "" },
             int(x.queued_total()),
             int(x.volunteers),
-            int(x.volunteer_hosts),
             int(x.hosts),
             int(x.completed_total()),
             esc(&in_words(&x.queued)),
@@ -545,7 +535,7 @@ mod tests {
         let buckets: Vec<_> = (0..56)
             .map(|i| {
                 serde_json::json!({
-                    "accounts": 4, "hosts": 7, "volunteers": 2, "volunteer_hosts": 3,
+                    "hosts": 7, "volunteers": 4,
                     "completed": {"usnm_quality": 200 + i}, "queued": {"usnm_qwen": 1700 - i},
                     "partial": i == 55, "start": end - (56 - i) * 10800, "utc_offset_minutes": -300,
                 })
@@ -614,7 +604,7 @@ mod tests {
         // Each chart at two widths.
         assert_eq!(html.matches("<svg class=\"wk wide\"").count(), 3);
         assert_eq!(html.matches("<svg class=\"wk narrow\"").count(), 3);
-        assert_eq!(html.matches("class=\"wk-line").count(), 8);
+        assert_eq!(html.matches("class=\"wk-line").count(), 6);
         assert_eq!(html.matches("class=\"wk-bar").count(), 112);
         assert_eq!(html.matches("wk-bar wk-partial").count(), 2);
         assert_eq!(html.matches("<tr><td>").count(), 56);
@@ -638,7 +628,8 @@ mod tests {
         assert!(!tip.contains("usnm_"));
         assert_eq!(app_label("usnm_surya"), "Retired engine trial");
         assert_eq!(app_label("usnm_new_thing"), "Other");
-        assert!(tip.contains("All computers"));
+        assert!(tip.contains("Computers"));
+        assert!(!html.contains("own accounts") && !html.contains("All computers"));
         assert!(!html.contains("stale"));
         let none = charts(&WeekView::default());
         assert!(none.contains("No counts from the BOINC server yet"));

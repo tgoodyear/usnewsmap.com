@@ -391,7 +391,6 @@ The chart of the BOINC server's last seven days comes from `scripts/ocr-node/boi
 
 ```sh
 USNM_BOINC_WEEK_PUSH_URL=http://<dashboard>/api/boinc-week
-USNM_BOINC_WEEK_PROJECT_USERS=<the project's own BOINC user ids, comma-separated>
 ```
 
 The dashboard takes the push only from the address configured for the `boinc` throughput source (`--throughput-push boinc=<host>`) and keeps the last document in its state directory (`boinc-week.json`). A run by hand with `--out FILE` and no `--push-url` writes the document without sending it. It is at `boinc_week` in `/api/view.json`.

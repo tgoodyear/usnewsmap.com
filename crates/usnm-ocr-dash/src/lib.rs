@@ -1113,8 +1113,8 @@ mod tests {
         assert_eq!(push("198.51.100.14").await.0, StatusCode::FORBIDDEN);
         assert_eq!(push("203.0.113.3").await.0, StatusCode::FORBIDDEN);
         let named = body.replacen(
-            "\"accounts\":4",
-            "\"accounts\":4,\"users\":[\"tgoodyear\"]",
+            "\"volunteers\":4",
+            "\"volunteers\":4,\"users\":[\"tgoodyear\"]",
             1,
         );
         assert_eq!(
@@ -1416,7 +1416,7 @@ mod tests {
             "usnm-release",
             "usnm-sset.service",
             "seed.env",
-            // The BOINC project's own accounts, and any account or host id.
+            // Any BOINC account name or host id.
             "tgoodyear",
             "boinc-test",
             "boinc-volunteer",

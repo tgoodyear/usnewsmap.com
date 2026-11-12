@@ -51,7 +51,7 @@ class AggregateTests(unittest.TestCase):
             completed=[[QWEN, LAST - 3 * HOUR, 7], [QWEN, LAST - HOUR, 4], [OCR, LAST - HOUR, 2], [9, LAST, 1]],
             active=[[LAST - 3 * HOUR, 2, 10], [LAST - 2 * HOUR, 2, 10], [LAST - 2 * HOUR, 40, 11],
                     [LAST - HOUR, 41, 12], [LAST - HOUR, 41, 13], [LAST, 3, 14]],
-        ), NOW, {2, 3, 5, 6})
+        ), NOW)
         self.assertEqual(doc["schema"], 1)
         self.assertEqual(doc["bucket_hours"], 3)
         buckets = doc["buckets"]
@@ -66,18 +66,16 @@ class AggregateTests(unittest.TestCase):
         self.assertEqual(full["completed"], {"usnm_ocr": 2, "usnm_qwen": 11})
         # An app that isn't a short name is left out.
         self.assertEqual(last["completed"], {})
-        self.assertEqual((full["accounts"], full["hosts"], full["volunteers"], full["volunteer_hosts"]), (3, 4, 2, 3))
-        self.assertEqual((last["accounts"], last["hosts"], last["volunteers"], last["volunteer_hosts"]), (1, 1, 0, 0))
+        self.assertEqual((full["volunteers"], full["hosts"]), (3, 4))
+        self.assertEqual((last["volunteers"], last["hosts"]), (1, 1))
+        self.assertNotIn("accounts", full)
+        self.assertNotIn("volunteer_hosts", full)
         self.assertEqual(full["utc_offset_minutes"], -300)
         self.assertEqual(doc["generated_utc_offset_minutes"], -300)
         # Counts and app names only.
         text = json.dumps(doc)
         for word in ("userid", "hostid", "Not An App"):
             self.assertNotIn(word, text)
-
-    def test_project_users_take_a_list(self):
-        self.assertEqual(collector.users("2,3, 5,6"), {2, 3, 5, 6})
-        self.assertEqual(collector.users(""), set())
 
 
 if __name__ == "__main__":
