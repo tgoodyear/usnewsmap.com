@@ -243,11 +243,12 @@ case "$STEP" in
   prune)
     [ "${USNM_RELEASE_PRUNE:-false}" = true ] ||
       die "--step prune is off: set USNM_RELEASE_PRUNE=true once the host has the prune role (USNM_ONPREM_RELEASE_PRUNE; docs/operations/rebuild-and-index-storage.md, \"Prune from the on-prem release\")"
-    ! { $DRY_RUN && $DELETE; } || die "--step prune: --dry-run and --delete conflict; without --delete the step is a dry run"
+    { [ "$DRY_RUN" != true ] || [ "$DELETE" != true ]; } || die "--step prune: --dry-run and --delete conflict; without --delete the step is a dry run"
     [ -n "$APP_URL" ] || die "--step prune needs --app-url (the app that serves the version)"
     [ -n "$VERSION" ] || die "--step prune needs --index-version (the version the app serves)"
     [ -x "$QUICKWIT" ] || die "no quickwit at $QUICKWIT"
     command -v jq > /dev/null 2>&1 || die "--step prune needs jq"
+    command -v awk > /dev/null 2>&1 || die "--step prune needs awk"
     # After a release is verified: the app answers on the version. Its own errors say why not.
     "$0" --run-dir "$RUN" --step ready --app-url "$APP_URL" --index-version "$VERSION"
     # Pipeline state is a fresh file: prune reads the serving version's run from its snapshot, and
@@ -280,7 +281,7 @@ case "$STEP" in
     [ "$rollback" != "$VERSION" ] || die "the rollback is the serving version: nothing is deleted"
     [ "$newer" = 0 ] || die "$newer published version(s) are newer than $VERSION (a hand rollback?): nothing is deleted"
     echo "prune keeps $VERSION (serving) and $rollback (rollback); candidates and sizes are above"
-    if ! $DELETE; then
+    if [ "$DELETE" != true ]; then
       echo "dry run only: rerun with --delete to delete the candidates"
       exit 0
     fi
