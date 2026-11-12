@@ -960,6 +960,12 @@ jobs:
           python3 -m unittest -v scripts/ocr-node/test_quality_jpeg_list.py
           python3 -m unittest -v scripts/ocr-node/test_repair_reading_order.py
           python3 -m unittest -v boinc/scripts/onprem/quality-feed/test_quality_campaign.py
+          python3 -m unittest -v boinc/scripts/onprem/quality-feed/test_quality_feed.py
+          python3 -m unittest -v boinc/scripts/onprem/quality-feed/test_quality_receive.py
+          python3 -m unittest -v boinc/scripts/onprem/quality-feed/test_quality_results.py
+          python3 -m unittest -v boinc/scripts/onprem/quality-feed/test_quality_results_partial.py
+          python3 -m unittest -v boinc/scripts/onprem/quality-feed/test_quality_retention.py
+          python3 -m unittest -v boinc/scripts/onprem/quality-feed/test_qwen_provenance.py
           shellcheck -x -S warning scripts/ocr-node/reboot-if-needed.sh scripts/ocr-node/push-boinc-scan.sh \
             scripts/ocr-node/check-scan-archive.sh scripts/ocr-node/grant-archive-uploader.sh \
             scripts/ocr-node/install-archive-host.sh scripts/ocr-node/restore-drill.sh
