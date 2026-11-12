@@ -4,6 +4,8 @@
 set -uo pipefail
 ONLY=all
 while [ $# -gt 0 ]; do case $1 in --arch) ARCH=$2;; --build) BUILD=$2;; --jobs) JOBS=$2;; --linux-ref) REF=$2;; --out) OUT=$2;; --only) ONLY=$2;; *) echo "bad $1"; exit 2;; esac; shift 2; done
+# Absolute paths: the worker runs inside each slot directory (added after the run, for review).
+mkdir -p "$OUT"; BUILD=$(cd "$BUILD" && pwd); JOBS=$(cd "$JOBS" && pwd); REF=$(cd "$REF" && pwd); OUT=$(cd "$OUT" && pwd)
 link() { for f in "$BUILD"/*; do b=$(basename $f); [ $b = usnm_ocr ] || echo "<soft_link>$f</soft_link>" > "$1/$b"; done; }
 if [ $ONLY != gold ]; then
 for d in "$JOBS"/pages/*; do

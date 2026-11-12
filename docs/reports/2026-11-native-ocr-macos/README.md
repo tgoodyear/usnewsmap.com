@@ -37,7 +37,7 @@ Challenge `d8cd7279…`, 30 crops, 82,794 reference characters, threshold 0.0873
 | Linux native `c353f7bf…`  |            5929 | 0.0716 |  0.199 |
 | Container `247c…`         |            5929 | 0.0716 |  0.199 |
 
-The three Linux builds have identical edit counts on all 30 crops. macOS matches them on 3 crops. On the other 27 the difference is between -7 and +8 character edits per crop.
+The three Linux builds have identical edit counts on all 30 crops. macOS has the same edit counts as Linux on 3 crops, which doesn't show the same text: the crop outputs weren't compared. On the other 27 the difference is between -7 and +8 character edits per crop. In `challenge-gold.json`, `identical_to_linux` and `crops_identical_to_linux` mean equal character and word edit counts, nothing more.
 
 ## Files
 
@@ -53,6 +53,6 @@ The three Linux builds have identical edit counts on all 30 crops. macOS matches
 | `sha256-models-arm64.txt`             | The sha256 of the models the macOS run used.                                                   |
 | `check-native-ocr-build-*.txt`        | What `check-native-ocr-build.py` printed for each artifact.                                    |
 | `repo-tools-commit.txt`               | The repository commit the tools came from, and the `models.lock` hash.                         |
-| `commands.txt`, `run-mac.sh`, `analyze.py`, `rsync-filter.txt` | How the run was made and analysed.                                    |
+| `commands.txt`, `run-mac.sh`, `analyze.py`, `rsync-filter.txt` | How the run was made and analysed. `run-mac.sh` now resolves its paths to absolute ones, which the relative paths in `commands.txt` need. |
 
 The macOS output files themselves (14 MB) are not in the repository. Their hashes are in `sha256-outputs-arm64.txt`, and each page's text hash is also in `parity-pages.json`.
