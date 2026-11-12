@@ -43,6 +43,10 @@ pub enum QwenCommands {
         /// chooses, as before.
         #[arg(long)]
         model: Option<String>,
+        /// Crops a unit carries: 1, one unit per crop, as before; up to 32 packs consecutive
+        /// crops into bundle units, each crop a page whose JPEG bytes are unchanged.
+        #[arg(long, default_value_t = 1)]
+        bundle_size: usize,
     },
     /// Score canonical benchmark outputs; missing hypotheses count as deletions.
     BenchmarkCollect {
@@ -283,6 +287,7 @@ pub async fn run(command: QwenCommands) -> anyhow::Result<()> {
             doc_ids,
             prompt_version,
             model,
+            bundle_size,
         } => {
             let engine = serde_json::from_slice(&std::fs::read(engine)?)?;
             let staged = x::benchmark::stage(&x::benchmark::Options {
@@ -294,6 +299,7 @@ pub async fn run(command: QwenCommands) -> anyhow::Result<()> {
                 doc_ids,
                 prompt_version,
                 model,
+                bundle_size,
             })?;
             eprintln!("{staged} benchmark units staged");
         }

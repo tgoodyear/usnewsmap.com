@@ -909,7 +909,7 @@ fn settings_key(j: &Job) -> anyhow::Result<String> {
 /// The bundle job for `pages` (staged single-page jobs, in bundle order),
 /// whose JPEGs lie end to end in that order in the `page.jpg` that `blob`
 /// describes. Each page's slice is its own job's input at its offset.
-fn bundle_job(pages: &[Job], blob: Input) -> anyhow::Result<Job> {
+pub(super) fn bundle_job(pages: &[Job], blob: Input) -> anyhow::Result<Job> {
     let first = pages.first().context("a qwen bundle needs a page")?;
     let mut offset = 0u64;
     let mut bundle_pages = Vec::with_capacity(pages.len());
@@ -969,7 +969,7 @@ pub fn bundle_deadline(per_page_secs: u32, pages: usize) -> u32 {
 /// The size of the `qwen.json` a bundle of `pages` would be written as,
 /// without reading a page: the blob's checksum is a placeholder of the same
 /// length as the real one.
-fn bundle_json_len(pages: &[Job]) -> anyhow::Result<usize> {
+pub(super) fn bundle_json_len(pages: &[Job]) -> anyhow::Result<usize> {
     let bytes = pages
         .iter()
         .try_fold(0u64, |n, p| n.checked_add(p.input.bytes))
@@ -988,7 +988,7 @@ fn bundle_json_len(pages: &[Job]) -> anyhow::Result<usize> {
 /// newline and tab, and serde_json writes other non-ASCII text unescaped), the
 /// largest time and token count, the longest device, model and outcome
 /// names, and [`READINGS_DIAG_RESERVE`] for the run's `diag` facts.
-fn longest_readings_len(pages: &[Job]) -> anyhow::Result<usize> {
+pub(super) fn longest_readings_len(pages: &[Job]) -> anyhow::Result<usize> {
     let first = pages.first().context("a qwen bundle needs a page")?;
     let readings = Readings {
         v: VERSION,

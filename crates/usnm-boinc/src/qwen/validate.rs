@@ -58,9 +58,29 @@ pub fn load(files: &[PathBuf]) -> anyhow::Result<Loaded> {
     })
 }
 
+/// Whether a result is a benchmark bundle's (`qwen benchmark-stage --bundle-size`, #968): it
+/// read at least one crop and every crop it read is `<doc_id>:<crop id>` with a doc id naming a
+/// dataset sample or a benchmark crop, never a LoC page. The validator judges such a pair as it
+/// judges any other but keeps nothing of it (no `seen` copy, crop states, page records, unit
+/// verdict or pair log line), so no production collector or publish can pick a benchmark up.
+pub fn is_benchmark(l: &Loaded) -> bool {
+    use super::doc_id::DocId;
+    use usnm_core::page_id::Source;
+    let not_loc = |doc: &str| match DocId::parse(doc) {
+        Ok(DocId::LegacyBenchmark { .. }) => true,
+        Ok(DocId::Page(p)) => p.source() == Source::Sample,
+        Err(_) => false,
+    };
+    !l.readings.readings.is_empty()
+        && l.readings
+            .readings
+            .iter()
+            .all(|r| r.id.split_once(':').is_some_and(|(doc, _)| not_loc(doc)))
+}
+
 pub fn check(files: &[PathBuf], keep: Option<&Path>) -> anyhow::Result<()> {
     let l = load(files)?;
-    if let Some(dir) = keep {
+    if let Some(dir) = keep.filter(|_| !is_benchmark(&l)) {
         super::retain::capture(files, &l, dir).map_err(super::retain::CaptureError)?;
     }
     Ok(())
@@ -155,6 +175,13 @@ pub fn compare_with(a: &[PathBuf], b: &[PathBuf], opts: Compare<'_>) -> anyhow::
         "--rule crop-consensus-v2 needs --crop-states"
     );
     let (la, lb) = (load(a)?, load(b)?);
+    // A benchmark pair is judged in memory only (see [`is_benchmark`]).
+    let benchmark = is_benchmark(&la) || is_benchmark(&lb);
+    let (log, pages, crop_states) = if benchmark {
+        (None, None, None)
+    } else {
+        (log, pages, crop_states)
+    };
     let (crops, mut strict) =
         qwen::agree(&la.result, &la.readings, &lb.result, &lb.readings, min_dice);
     let worded = (rule == Rule::StrictV2).then(|| worded_crops(&crops, &la, &lb));
@@ -231,7 +258,18 @@ pub fn compare_with(a: &[PathBuf], b: &[PathBuf], opts: Compare<'_>) -> anyhow::
     let agreed_pages = page_verdicts.iter().filter(|p| p.agree).count();
     // Whether this pair settled the bundle by its pages (`page-v1`).
     let mut settled_by_pages = false;
-    if bundle_verdict == BundleVerdict::PageV1
+    if benchmark
+        && bundle_verdict == BundleVerdict::PageV1
+        && verdict.is_err()
+        && !page_verdicts.is_empty()
+        && same_crops(&la, &lb)
+        && pages_settle(agreed_pages, page_verdicts.len())
+    {
+        // A benchmark bundle settles by its pages as any bundle does, in memory: nothing
+        // repacks its disagreeing pages, so it needs no marker.
+        verdict = Ok(());
+        settled_by_pages = true;
+    } else if bundle_verdict == BundleVerdict::PageV1
         && verdict.is_err()
         && all_recorded
         && same_crops(&la, &lb)
@@ -610,6 +648,200 @@ pub(crate) mod tests {
         assert!(lines[0].get("rule").is_none() && lines[0].get("crop_states").is_none());
         std::fs::write(&a[0], "tampered").unwrap();
         assert!(check(&a, None).is_err());
+    }
+
+    const LONG_A: &str = "the evening paper printed the news of the harbour and the market today";
+    const LONG_B: &str =
+        "five ships came into port on tuesday with grain and timber from the north";
+
+    #[test]
+    fn a_benchmark_bundle_pair_is_judged_but_leaves_nothing_behind() {
+        let tmp = tempfile::tempdir().unwrap();
+        let texts = |doc_a: &str, doc_b: &str| {
+            [
+                (format!("{doc_a}:c01"), LONG_A.to_string()),
+                (format!("{doc_b}:c02"), LONG_B.to_string()),
+            ]
+        };
+        let write_owned = |tag: &str, t: &[(String, String)]| {
+            let refs: Vec<(&str, &str)> = t.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+            let files = write(tmp.path(), tag, &refs);
+            // A bundle result lists exactly the crops it read.
+            let mut r: ResultManifest =
+                serde_json::from_slice(&std::fs::read(&files[1]).unwrap()).unwrap();
+            r.crops = r.read;
+            std::fs::write(&files[1], serde_json::to_vec(&r).unwrap()).unwrap();
+            files
+        };
+        let sample = texts(
+            "sample-synthetic-public_public-001",
+            "sample-synthetic-public_public-002",
+        );
+        let legacy = texts(
+            &format!("benchmark-{}", "a".repeat(64)),
+            &format!("benchmark-{}", "b".repeat(64)),
+        );
+        let loc = texts(
+            "sn85055101_1917-04-03_ed-1_seq-3",
+            "sn85055101_1917-04-03_ed-1_seq-4",
+        );
+        for (tag, t, benchmark) in [
+            ("s", &sample, true),
+            ("l", &legacy, true),
+            ("p", &loc, false),
+        ] {
+            let a = write_owned(&format!("{tag}a"), t);
+            let b = write_owned(&format!("{tag}b"), t);
+            assert_eq!(is_benchmark(&load(&a).unwrap()), benchmark, "{tag}");
+            let dir = tmp.path().join(format!("qwen-{tag}"));
+            let (seen, log, pages, states) = (
+                dir.join("seen"),
+                dir.join("pairs.jsonl"),
+                dir.join("pages"),
+                dir.join("crop-states"),
+            );
+            check(&a, Some(&seen)).unwrap();
+            check(&b, Some(&seen)).unwrap();
+            for rule in [Rule::StrictV1, Rule::CropConsensusV2] {
+                compare_with(
+                    &a,
+                    &b,
+                    Compare {
+                        min_dice: 0.7,
+                        rule,
+                        bundle_verdict: BundleVerdict::PageV1,
+                        log: Some(&log),
+                        pages: Some(&pages),
+                        crop_states: Some(&states),
+                    },
+                )
+                .unwrap();
+            }
+            for kept in [&seen, &log, &pages, &states] {
+                assert_eq!(kept.exists(), !benchmark, "{tag}: {}", kept.display());
+            }
+        }
+        // Under page-v1 a benchmark bundle that agrees on most pages settles, in memory only.
+        let mixed: Vec<(String, String)> = (0..4)
+            .map(|i| {
+                (
+                    format!("sample-synthetic-public_public-00{i}:c01"),
+                    if i % 2 == 0 { LONG_A } else { LONG_B }.to_string(),
+                )
+            })
+            .collect();
+        let mut off = mixed.clone();
+        off[3].1 = "nothing alike here at all".into();
+        let (a, b) = (write_owned("ma", &mixed), write_owned("mb", &off));
+        let dir = tmp.path().join("qwen-mixed");
+        for (verdict, settles) in [(BundleVerdict::Unit, false), (BundleVerdict::PageV1, true)] {
+            for rule in [Rule::StrictV1, Rule::CropConsensusV2] {
+                let got = compare_with(
+                    &a,
+                    &b,
+                    Compare {
+                        min_dice: 0.7,
+                        rule,
+                        bundle_verdict: verdict,
+                        log: Some(&dir.join("pairs.jsonl")),
+                        pages: Some(&dir.join("pages")),
+                        crop_states: Some(&dir.join("crop-states")),
+                    },
+                );
+                assert_eq!(got.is_ok(), settles, "{verdict:?} {rule:?}");
+            }
+        }
+        assert!(!dir.exists());
+        // A pair still has to agree: a benchmark bundle is judged like any other.
+        let other = [
+            (sample[0].0.clone(), "nothing alike here".to_string()),
+            (sample[1].0.clone(), LONG_B.to_string()),
+        ];
+        let a = write_owned("da", &sample);
+        let b = write_owned("db", &other);
+        assert!(compare(&a, &b, 0.7, None, None).is_err());
+    }
+
+    /// Rewrites `files` as a Xiaomi-OCR-0 reading at request version 5 (#1776).
+    fn as_xiaomi(files: &[PathBuf]) {
+        let mut readings: Readings =
+            serde_json::from_slice(&std::fs::read(&files[0]).unwrap()).unwrap();
+        readings.model = Some("xiaomi-ocr-0-q8".into());
+        readings.prompt_version = usnm_ocr_contract::qwen::PROMPT_VERSION_XIAOMI;
+        let rb = serde_json::to_vec(&readings).unwrap();
+        let mut r: ResultManifest =
+            serde_json::from_slice(&std::fs::read(&files[1]).unwrap()).unwrap();
+        r.model = readings.model.clone();
+        r.crops = r.read;
+        r.readings_bytes = rb.len() as u64;
+        r.readings_sha256 = sha256(&rb);
+        std::fs::write(&files[0], rb).unwrap();
+        std::fs::write(&files[1], serde_json::to_vec(&r).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn crop_consensus_v2_judges_two_xiaomi_v5_readings_crop_by_crop() {
+        let tmp = tempfile::tempdir().unwrap();
+        let doc = "sn85055101_1917-04-03_ed-1_seq-3";
+        let ids = [
+            format!("{doc}:c01"),
+            format!("{doc}:c02"),
+            format!("{doc}:c03"),
+        ];
+        let a = write(
+            tmp.path(),
+            "a",
+            &[
+                (&ids[0], "le journal de paris publie ce matin les dernieres nouvelles du front et de la ville"),
+                (&ids[1], "nouvelles du jour et de la nuit dans toute la france et dans les colonies lointaines"),
+                (&ids[2], "rien"),
+            ],
+        );
+        let b = write(
+            tmp.path(),
+            "b",
+            &[
+                (&ids[0], "le journal de paris publie ce matin les dernieres nouvelles du front et de la ville"),
+                (&ids[1], "nouvelles du jour et de la nuit dans toute la france et dans les colonies lointaines"),
+                // v5 has no loop guard; a looping reading is still caught by its tail.
+                (&ids[2], &"la la la la la la la la ".repeat(40)),
+            ],
+        );
+        as_xiaomi(&a);
+        as_xiaomi(&b);
+        let states = tmp.path().join("crop-states");
+        compare_with(
+            &a,
+            &b,
+            Compare {
+                min_dice: 0.7,
+                rule: Rule::CropConsensusV2,
+                bundle_verdict: BundleVerdict::Unit,
+                log: None,
+                pages: None,
+                crop_states: Some(&states),
+            },
+        )
+        .unwrap();
+        let job = load(&a).unwrap().result.job_id;
+        let paths = crate::qwen::consensus::record_paths(&states, &job).unwrap();
+        assert_eq!(paths.len(), 1);
+        let record: crate::qwen::consensus::Record =
+            serde_json::from_slice(&std::fs::read(&paths[0]).unwrap()).unwrap();
+        assert_eq!(record.basis, crate::qwen::consensus::Basis::CropConsensusV2);
+        assert!(record.agree);
+        let state = |id: &str| record.crops.iter().find(|c| c.id == id).unwrap().state;
+        assert_eq!(state(&ids[0]), crate::qwen::consensus::CropState::Agree);
+        assert_eq!(state(&ids[1]), crate::qwen::consensus::CropState::Agree);
+        assert_eq!(state(&ids[2]), crate::qwen::consensus::CropState::Looped);
+        // Only the agreeing crops are vouched for in the canonical result.
+        let vouch = crate::qwen::consensus::vouched(
+            &states,
+            &job,
+            &load(&a).unwrap().result.readings_sha256,
+        )
+        .unwrap();
+        assert!(vouch.vouches(&ids[0]) && !vouch.vouches(&ids[2]));
     }
 
     #[test]
