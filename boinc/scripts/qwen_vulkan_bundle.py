@@ -27,10 +27,12 @@ Nothing here signs, uploads or publishes.
 """
 import argparse
 import hashlib
+import io
 import json
 from pathlib import Path, PurePosixPath
 import re
 import shutil
+import subprocess
 import sys
 import tarfile
 
@@ -38,6 +40,7 @@ ROOT = Path(__file__).resolve().parents[2]
 LOCK = ROOT / "boinc/apps/qwen/llama.lock"
 WEIGHTS = ROOT / "boinc/apps/qwen/weights.lock"
 DISK_POLICY = ROOT / "boinc/apps/qwen/disk-policy.json"
+LIBGOMP_LOCK = ROOT / "boinc/apps/qwen/libgomp.lock"
 ASSET = "ubuntu-vulkan-x64"
 PLATFORM = "x86_64-pc-linux-gnu"
 # The llama.cpp source commit of each pinned tag (docs/boinc/apps/intel-gpu.md); a new pin is reviewed here.
@@ -66,7 +69,8 @@ WIN_REQUIRED = {"llama-server.exe", "llama-server-impl.dll", "llama-common.dll",
 LIBRARY = re.compile(r"lib[A-Za-z0-9_-]+\.so(\.[0-9]+)*")
 # What install.py requires of a Linux Vulkan bundle, and what llama-server links.
 REQUIRED = {"llama-server", "llama.LICENSE", "llama.lock", "weights.lock", "libggml.so", "libggml-base.so",
-            "libggml-vulkan.so", "libllama.so", "libmtmd.so", "libllama-server-impl.so", "libllama-common.so.0"}
+            "libggml-vulkan.so", "libllama.so", "libmtmd.so", "libllama-server-impl.so", "libllama-common.so.0",
+            "libgomp.so.1", "libgomp.LICENSE"}
 
 
 def sha256(path):
@@ -83,6 +87,44 @@ def logical_name(name):
     if name == "llama-server" or LIBRARY.fullmatch(name):
         return name
     return None
+
+
+def libgomp_from_deb(deb, lock_path=LIBGOMP_LOCK):
+    """The pinned libgomp.so.1 and its notice from the libgomp.lock-pinned Ubuntu package.
+
+    llama.cpp's CPU backends link libgomp.so.1, which isn't part of a base system, so the bundle
+    carries it: the slot is on LD_LIBRARY_PATH, where the CPU backend's loader finds it. Both the
+    package and the library inside it must match the lock."""
+    lock = json.loads(Path(lock_path).read_text())
+    if sha256(deb) != lock["sha256"]:
+        raise ValueError(f"{deb} is not the libgomp.lock-pinned {lock['package']} {lock['version']}")
+    data = Path(deb).read_bytes()
+    if not data.startswith(b"!<arch>\n"):
+        raise ValueError(f"{deb} is not a Debian package")
+    offset, payload = 8, None
+    while offset + 60 <= len(data):
+        header = data[offset:offset + 60]
+        name = header[:16].decode().strip().rstrip("/")
+        size = int(header[48:58].decode().strip())
+        if name == "data.tar.zst":
+            payload = data[offset + 60:offset + 60 + size]
+            break
+        offset += 60 + size + (size & 1)
+    if payload is None:
+        raise ValueError(f"{deb} has no data.tar.zst")
+    if shutil.which("zstd") is None:
+        raise ValueError("zstd is needed to read the libgomp package")
+    tar = subprocess.run(["zstd", "-dcq"], input=payload, capture_output=True, check=True).stdout
+    with tarfile.open(fileobj=io.BytesIO(tar)) as packed:
+        member = packed.getmember(lock["member"])
+        if not member.isfile():
+            raise ValueError(f"{lock['member']} is not a regular file in {deb}")
+        library = packed.extractfile(member).read()
+    if hashlib.sha256(library).hexdigest() != lock["member_sha256"]:
+        raise ValueError(f"{lock['member']} in {deb} differs from libgomp.lock")
+    notice = (f"libgomp.so.1 is {lock['package']} {lock['version']}, the GNU OpenMP runtime, under "
+              f"{lock['license']}.\nCorresponding source: {lock['source']}\nPackage: {lock['url']}\n")
+    return library, notice, lock
 
 
 def runtime_members(packed, prefix):
@@ -125,7 +167,8 @@ def runtime_members(packed, prefix):
         else:
             raise ValueError(f"{name} has too many links")
         chosen[logical] = member
-    missing = sorted(REQUIRED - {"llama.lock", "weights.lock"} - set(chosen))
+    # The locks and libgomp come from outside the llama.cpp archive.
+    missing = sorted(REQUIRED - {"llama.lock", "weights.lock", "libgomp.so.1", "libgomp.LICENSE"} - set(chosen))
     if missing:
         raise ValueError("archive lacks " + ", ".join(missing))
     return chosen
@@ -136,7 +179,7 @@ def write_sums(out, names):
     (out / "SHA256SUMS").write_text(lines)
 
 
-def build(archive, binary, source_commit, out, plan_class, lock_path=LOCK):
+def build(archive, binary, source_commit, out, plan_class, libgomp_deb, lock_path=LOCK, libgomp_lock=LIBGOMP_LOCK):
     if plan_class not in PLAN_CLASSES:
         raise ValueError(f"not a Linux Vulkan usnm_qwen plan class: {plan_class}")
     if not re.fullmatch(r"[0-9a-f]{40}", source_commit):
@@ -147,10 +190,14 @@ def build(archive, binary, source_commit, out, plan_class, lock_path=LOCK):
         raise ValueError("llama.lock pins a runtime this script has not reviewed")
     if Path(archive).name != asset["file"] or sha256(archive) != asset["sha256"]:
         raise ValueError(f"{archive} is not the llama.lock-pinned {asset['file']}")
+    library, notice, gomp = libgomp_from_deb(libgomp_deb, libgomp_lock)
     out = Path(out)
     out.mkdir()
     extra = out / "extra"
     extra.mkdir()
+    (extra / "libgomp.so.1").write_bytes(library)
+    (extra / "libgomp.so.1").chmod(0o644)
+    (extra / "libgomp.LICENSE").write_text(notice)
     with tarfile.open(archive, "r:gz") as packed:
         for logical, member in sorted(runtime_members(packed, f"llama-{lock['tag']}/").items()):
             with packed.extractfile(member) as source, open(extra / logical, "wb") as target:
@@ -171,7 +218,9 @@ def build(archive, binary, source_commit, out, plan_class, lock_path=LOCK):
             "sha256": sha256(out / BINARY),
             "source_commit": source_commit,
             "extra_files": {name: {"sha256": sha256(extra / name),
-                                   "source_commit": source_commit if name.endswith(".lock") else llama}
+                                   "source_commit": source_commit if name.endswith(".lock")
+                                   else f"{gomp['package']} {gomp['version']}" if name.startswith("libgomp.")
+                                   else llama}
                             for name in names},
         },
         "runtime": {"repository": lock["repository"], "tag": lock["tag"], "file": asset["file"],
@@ -315,6 +364,8 @@ def main(argv=None):
     make.add_argument("--source-commit", required=True)
     make.add_argument("--plan-class", required=True, choices=PLAN_CLASSES)
     make.add_argument("--out", type=Path, required=True)
+    make.add_argument("--libgomp-deb", type=Path, required=True,
+                      help="the libgomp.lock-pinned libgomp1 package (boinc/apps/qwen/libgomp.lock url)")
     win = commands.add_parser("build-windows")
     win.add_argument("--archive", type=Path, required=True, help="the llama.lock-pinned win-vulkan-x64 zip")
     win.add_argument("--artifact", type=Path, required=True,
@@ -330,7 +381,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         if args.command == "build":
-            release = build(args.archive, args.binary, args.source_commit, args.out, args.plan_class)
+            release = build(args.archive, args.binary, args.source_commit, args.out, args.plan_class,
+                            args.libgomp_deb)
             print(f"{release['worker']['sha256']}  {args.out / BINARY}")
             print(f"{len(release['worker']['extra_files'])} extra files; see {args.out / 'SHA256SUMS'}")
         elif args.command == "build-windows":

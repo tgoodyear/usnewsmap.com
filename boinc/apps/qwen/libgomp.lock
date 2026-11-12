@@ -1,0 +1,11 @@
+{
+  "purpose": "GNU OpenMP runtime shipped in Linux native usnm_qwen Vulkan bundles: llama.cpp's libggml-cpu-*.so need libgomp.so.1 (GOMP_4.0), and a host without the libgomp1 package loads no CPU backend ('make_cpu_buft_list: no CPU backend found', host 13, 11 Nov 2026).",
+  "package": "libgomp1",
+  "version": "12.3.0-1ubuntu1~22.04.3",
+  "url": "http://archive.ubuntu.com/ubuntu/pool/main/g/gcc-12/libgomp1_12.3.0-1ubuntu1~22.04.3_amd64.deb",
+  "sha256": "870c27299185a5dd4accad3b15bf82a7409fd7073cccaa8025875307da4d0ce2",
+  "member": "./usr/lib/x86_64-linux-gnu/libgomp.so.1.0.0",
+  "member_sha256": "d46f9225c1883039e8a6853e6d96ca1af11d034ce186a090952e4a7c8a7c2fdc",
+  "license": "GPL-3.0-or-later WITH GCC-exception-3.1",
+  "source": "Ubuntu source package gcc-12 12.3.0-1ubuntu1~22.04.3: https://launchpad.net/ubuntu/+source/gcc-12/12.3.0-1ubuntu1~22.04.3"
+}

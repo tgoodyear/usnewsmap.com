@@ -2,6 +2,8 @@
 import hashlib
 import io
 import json
+import shutil
+import subprocess
 from pathlib import Path
 import tarfile
 import tempfile
@@ -30,12 +32,39 @@ def add(packed, name, data=None, link=None, kind=tarfile.REGTYPE):
     packed.addfile(member, io.BytesIO(data) if data is not None else None)
 
 
+GOMP_MEMBER = "./usr/lib/x86_64-linux-gnu/libgomp.so.1.0.0"
+
+
+def fake_deb(path, library):
+    """A Debian package shaped like libgomp1's: an ar archive whose data.tar.zst holds the library."""
+    data = io.BytesIO()
+    with tarfile.open(fileobj=data, mode="w") as packed:
+        add(packed, GOMP_MEMBER, library)
+        add(packed, "./usr/lib/x86_64-linux-gnu/libgomp.so.1", link="libgomp.so.1.0.0")
+    zst = subprocess.run(["zstd", "-q", "-c"], input=data.getvalue(), capture_output=True, check=True).stdout
+
+    def entry(name, body):
+        header = f"{name + '/':<16}{0:<12}{0:<6}{0:<6}{100644:<8}{len(body):<10}`\n".encode()
+        return header + body + (b"\n" if len(body) % 2 else b"")
+    path.write_bytes(b"!<arch>\n" + entry("debian-binary", b"2.0\n") + entry("data.tar.zst", zst))
+
+
+@unittest.skipUnless(shutil.which("zstd"), "needs zstd to read the libgomp package")
 class Bundle(unittest.TestCase):
     def setUp(self):
         self.folder = tempfile.TemporaryDirectory(prefix=".qwen-bundle-", dir=ROOT)
         self.dir = Path(self.folder.name)
         self.binary = self.dir / "usnm_qwen"
         self.binary.write_bytes(b"\x7fELF qwen")
+        self.gomp = b"\x7fELF libgomp"
+        self.deb = self.dir / "libgomp1.deb"
+        fake_deb(self.deb, self.gomp)
+        self.gomp_lock = self.dir / "libgomp.lock"
+        self.gomp_lock.write_text(json.dumps({
+            "package": "libgomp1", "version": "12.3.0-test", "url": "http://example.invalid/libgomp1.deb",
+            "sha256": hashlib.sha256(self.deb.read_bytes()).hexdigest(), "member": GOMP_MEMBER,
+            "member_sha256": hashlib.sha256(self.gomp).hexdigest(),
+            "license": "GPL-3.0-or-later WITH GCC-exception-3.1", "source": "gcc-12 12.3.0-test source"}))
 
     def tearDown(self):
         self.folder.cleanup()
@@ -57,7 +86,36 @@ class Bundle(unittest.TestCase):
         return path, lock
 
     def build(self, archive, lock, out="out"):
-        return bundle.build(archive, self.binary, COMMIT, self.dir / out, "nvidia_vulkan_2b", lock)
+        return bundle.build(archive, self.binary, COMMIT, self.dir / out, "nvidia_vulkan_2b", self.deb,
+                            lock_path=lock, libgomp_lock=self.gomp_lock)
+
+    def test_the_bundle_carries_the_pinned_libgomp_and_its_notice(self):
+        # llama.cpp's CPU backends link libgomp.so.1; without it a host loads no CPU backend.
+        archive, lock = self.archive()
+        release = self.build(archive, lock)
+        extra = self.dir / "out" / "extra"
+        self.assertEqual((extra / "libgomp.so.1").read_bytes(), self.gomp)
+        notice = (extra / "libgomp.LICENSE").read_text()
+        self.assertIn("GCC-exception-3.1", notice)
+        self.assertIn("gcc-12 12.3.0-test source", notice)
+        self.assertEqual(release["worker"]["extra_files"]["libgomp.so.1"]["source_commit"], "libgomp1 12.3.0-test")
+        bundle.verify(self.dir / "out")
+
+    def test_a_package_or_library_that_differs_from_the_lock_is_refused(self):
+        archive, lock = self.archive()
+        other = self.dir / "other.deb"
+        fake_deb(other, b"\x7fELF other libgomp")
+        with self.assertRaisesRegex(ValueError, "not the libgomp.lock-pinned"):
+            bundle.build(archive, self.binary, COMMIT, self.dir / "a", "nvidia_vulkan_2b", other,
+                         lock_path=lock, libgomp_lock=self.gomp_lock)
+        # The package's digest matches, but the library inside doesn't.
+        tampered = json.loads(self.gomp_lock.read_text())
+        tampered["sha256"] = hashlib.sha256(other.read_bytes()).hexdigest()
+        self.gomp_lock.write_text(json.dumps(tampered))
+        with self.assertRaisesRegex(ValueError, "differs from libgomp.lock"):
+            bundle.build(archive, self.binary, COMMIT, self.dir / "b", "nvidia_vulkan_2b", other,
+                         lock_path=lock, libgomp_lock=self.gomp_lock)
+        self.assertFalse((self.dir / "a").exists() or (self.dir / "b").exists())
 
     def test_build_materializes_links_and_verifies_reproducibly(self):
         archive, lock = self.archive()
@@ -69,7 +127,8 @@ class Bundle(unittest.TestCase):
                 self.assertEqual(path.read_bytes(), (self.dir / "again" / path.relative_to(out)).read_bytes())
         extra = out / "extra"
         self.assertEqual({p.name for p in extra.iterdir()},
-                         {"llama-server", "llama.LICENSE", "llama.lock", "weights.lock", *LIBS, *LINKS})
+                         {"llama-server", "llama.LICENSE", "llama.lock", "weights.lock", "libgomp.so.1", "libgomp.LICENSE",
+                      *LIBS, *LINKS})
         self.assertFalse(any(p.is_symlink() for p in extra.iterdir()))
         self.assertEqual((extra / "libggml.so").read_bytes(), b"libggml.so.0.28.0" * 3)
         self.assertEqual((extra / "llama.LICENSE").read_bytes(), b"LICENSE" * 3)
