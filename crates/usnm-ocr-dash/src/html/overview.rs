@@ -6,8 +6,9 @@
 
 use std::fmt::Write as _;
 
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Datelike, Duration, NaiveDate, NaiveDateTime, Utc, Weekday};
 
+use super::boinc_week::{nice, ticks};
 use super::ecosystem::summary_stage;
 use super::fmt::{esc, int};
 use crate::boinc_week::Bucket;
@@ -92,8 +93,58 @@ fn days(s: &StepRate) -> Vec<Counted> {
     s.days.clone()
 }
 
-/// Seven bars, a day each, ending at the last full hour. Their tips come
-/// from the page's script, in Eastern time, like the step charts'.
+/// US Eastern wall time at `at`: daylight time from the second Sunday of
+/// March at 2 AM to the first Sunday of November at 2 AM, standard otherwise.
+fn eastern(at: DateTime<Utc>) -> NaiveDateTime {
+    let year = at.year();
+    let sunday = |month, nth| {
+        NaiveDate::from_weekday_of_month_opt(year, month, Weekday::Sun, nth).unwrap_or_default()
+    };
+    // 2 AM standard time is 07:00 UTC; 2 AM daylight time is 06:00 UTC.
+    let begins = sunday(3, 2)
+        .and_hms_opt(7, 0, 0)
+        .unwrap_or_default()
+        .and_utc();
+    let ends = sunday(11, 1)
+        .and_hms_opt(6, 0, 0)
+        .unwrap_or_default()
+        .and_utc();
+    let offset = if (begins..ends).contains(&at) { -4 } else { -5 };
+    (at + Duration::hours(offset)).naive_utc()
+}
+
+/// The note above a daily chart: what it counts, and where its days end.
+fn daily_note(o: &mut String, what: &str, values: usize, start: Option<DateTime<Utc>>) {
+    let _ = write!(o, "<p class=\"note\">{}, last {values} days. ", esc(what));
+    let ends = |i: usize| {
+        start.map(|s| {
+            eastern(s + Duration::days(i as i64))
+                .format("%-I %p")
+                .to_string()
+        })
+    };
+    match ends(values) {
+        // Bars are fixed 24-hour intervals, so across a clock change their
+        // Eastern end times differ.
+        Some(end) if (1..=values).all(|i| ends(i).as_deref() == Some(end.as_str())) => {
+            let _ = write!(
+                o,
+                "Each bar is the 24 hours up to {end} Eastern on the day shown, the newest on the right.</p>"
+            );
+        }
+        Some(end) => {
+            let _ = write!(
+                o,
+                "Each bar is 24 hours, the newest on the right; the newest ends at {end} Eastern on the day shown, and a clock change moves the others by an hour.</p>"
+            );
+        }
+        None => o.push_str("Each bar is 24 hours, the newest on the right.</p>"),
+    }
+}
+
+/// Seven bars, a day each, ending at the last full hour, on a scale with
+/// the day each ends on under it. Their tips come from the page's script,
+/// in Eastern time, like the step charts'.
 fn daily_bars(
     o: &mut String,
     key: &str,
@@ -102,45 +153,76 @@ fn daily_bars(
     values: &[Counted],
     start: Option<DateTime<Utc>>,
 ) {
-    const H: f64 = 72.0;
-    const SLOT: f64 = 40.0;
+    const TOP: f64 = 8.0;
+    // The plot's height, and room under it for the day names.
+    const H: f64 = 100.0;
+    const AXIS: f64 = 22.0;
+    // Pixels one character of an axis label takes, about, at 11px.
+    const CHAR: f64 = 6.2;
     let top = values
         .iter()
         .filter_map(|d| d.value)
         .fold(0.0_f64, |a, v| a.max(v));
+    let scale = nice(top.ceil() as u64);
+    let room = (int(scale).len() as f64 * CHAR + 12.0).ceil();
     let at = start.map_or_else(String::new, |t| {
         t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
     });
-    let _ = write!(
+    // Each chart is drawn at both widths, like the week charts, with the
+    // same left gutter and right edge, and the stylesheet shows one.
+    for (class, units, edge, gutter, fill) in [
+        ("wide", 1040.0, 12.0, 56.0_f64, 0.5),
+        ("narrow", 360.0, 8.0, 52.0, 0.7),
+    ] {
+        let left = gutter.max(room);
+        let slot = (units - left - edge) / values.len().max(1) as f64;
+        let width = slot * fill;
+        let y = |n: f64| TOP + (H - TOP) * (1.0 - n / scale as f64);
+        let _ = write!(
         o,
-        "<svg class=\"spark daily\" viewBox=\"0 0 {} {H}\" role=\"img\" tabindex=\"0\" data-chart=\"{key}\" \
+        "<svg class=\"spark daily {class}\" viewBox=\"0 0 {units} {}\" role=\"img\" tabindex=\"0\" data-chart=\"{key}-{class}\" \
          data-start=\"{at}\" data-hours=\"24\" aria-label=\"{}. Left and right arrow keys step through the days.\">",
-        values.len() as f64 * SLOT,
+        H + AXIS,
         esc(label)
     );
-    for (i, v) in values.iter().enumerate() {
-        let from = start.map(|s| s + Duration::days(i as i64));
-        let window = from.map_or_else(String::new, |f| {
-            format!(
-                "{} to {} UTC: ",
-                f.format("%b %-d %H:%M"),
-                (f + Duration::days(1)).format("%b %-d %H:%M")
-            )
-        });
-        let x = i as f64 * SLOT;
-        let (what, drawn) = match v.value {
+        for v in ticks(scale) {
+            let _ = write!(
+                o,
+                "<line class=\"{}\" x1=\"{left}\" x2=\"{}\" y1=\"{:.1}\" y2=\"{:.1}\"/>\
+             <text x=\"{}\" y=\"{:.1}\" text-anchor=\"end\">{}</text>",
+                if v == 0 { "wk-axis" } else { "wk-grid" },
+                units - edge,
+                y(v as f64),
+                y(v as f64),
+                left - 6.0,
+                y(v as f64) + 4.0,
+                int(v)
+            );
+        }
+        for (i, v) in values.iter().enumerate() {
+            let from = start.map(|s| s + Duration::days(i as i64));
+            let window = from.map_or_else(String::new, |f| {
+                format!(
+                    "{} to {} UTC: ",
+                    f.format("%b %-d %H:%M"),
+                    (f + Duration::days(1)).format("%b %-d %H:%M")
+                )
+            });
+            let x = left + i as f64 * slot;
+            let (what, drawn) = match v.value {
             None => (
                 "unknown".to_owned(),
                 format!(
-                    "<rect class=\"unk\" x=\"{x}\" y=\"0\" width=\"{}\" height=\"{H}\"/>",
-                    SLOT * 0.75
+                    "<rect class=\"unk\" x=\"{:.1}\" y=\"{TOP}\" width=\"{width:.1}\" height=\"{:.1}\"/>",
+                    x + (slot - width) / 2.0,
+                    H - TOP
                 ),
             ),
             Some(n) => {
-                let h = if top > 0.0 && n > 0.0 {
-                    (n / top * (H - 1.0)).max(2.0)
+                let h = if n > 0.0 {
+                    (H - y(n)).max(2.0)
                 } else {
-                    1.0
+                    0.0
                 };
                 let partial = v.hours_known < DAY_HOURS as u32;
                 (
@@ -153,23 +235,37 @@ fn daily_bars(
                     } else {
                         format!("{} {unit}", int(n.round() as u64))
                     },
-                    format!(
-                        "<rect class=\"v{}\" x=\"{x}\" y=\"{:.1}\" width=\"{}\" height=\"{h:.1}\"/>",
-                        if partial { " part" } else { "" },
-                        H - h,
-                        SLOT * 0.75
-                    ),
+                    if h > 0.0 {
+                        format!(
+                            "<rect class=\"v{}\" x=\"{:.1}\" y=\"{:.1}\" width=\"{width:.1}\" height=\"{h:.1}\"/>",
+                            if partial { " part" } else { "" },
+                            x + (slot - width) / 2.0,
+                            H - h
+                        )
+                    } else {
+                        String::new()
+                    },
                 )
             }
         };
-        let _ = write!(
+            // The day it ends on, in Eastern, centred under the bar.
+            let name = from.map_or_else(String::new, |f| {
+                format!(
+                    "<text x=\"{:.1}\" y=\"{:.1}\" text-anchor=\"middle\">{}</text>",
+                    x + slot / 2.0,
+                    H + 15.0,
+                    eastern(f + Duration::days(1)).format("%b %-d")
+                )
+            });
+            let _ = write!(
             o,
-            "<g class=\"bar\"><title>{}{}</title><rect class=\"hit\" x=\"{x}\" y=\"0\" width=\"{SLOT}\" height=\"{H}\"/>{drawn}</g>",
+            "<g class=\"bar\"><title>{}{}</title><rect class=\"hit\" x=\"{x:.1}\" y=\"0\" width=\"{slot:.1}\" height=\"{H}\"/>{drawn}</g>{name}",
             esc(&window),
             esc(&what)
         );
+        }
+        o.push_str("</svg>");
     }
-    o.push_str("</svg>");
 }
 
 fn collection(v: &View, o: &mut String) {
@@ -329,13 +425,19 @@ fn fetching(v: &View, o: &mut String) {
     }
     o.push_str("</p>");
     if let Some(s) = step(v, "scan_fetch") {
-        o.push_str("<p class=\"note\">Pages fetched a day, last 7 days; each bar is 24 hours, the newest on the right</p>");
+        let daily = days(s);
+        daily_note(
+            o,
+            "Pages fetched a day",
+            daily.len(),
+            v.throughput.days_start,
+        );
         daily_bars(
             o,
             "fetch-days",
             "Pages fetched a day, last 7 days",
             "pages",
-            &days(s),
+            &daily,
             v.throughput.days_start,
         );
     }
@@ -408,16 +510,20 @@ fn join(parts: &[String]) -> String {
 
 fn results(v: &View, o: &mut String) {
     open(o, "results", "Results");
-    // The same hourly counts as the throughput section, so the two agree.
-    let collected = week(v, "ocr_collect");
+    // The import log's own count (`ocr-sync`, one line per committed import),
+    // the same hourly counts as the throughput section, so the two agree. The
+    // collect step isn't shown: it adds up the controller's finished ticks and
+    // runs below what is imported (`docs/operations/onprem-ocr.md`).
     let imported = week(v, "ocr_import");
     let searchable = stage(v, "indexed");
     let scored = week(v, "quality_load");
     o.push_str("<ol class=\"flow\">");
     for (n, label) in [
-        (collected, "OCR pages returned and checked, last 7 days"),
-        (imported, "imported into our text collection, last 7 days"),
-        (searchable, "used in search so far"),
+        (
+            imported,
+            "OCR pages imported into our text collection, last 7 days",
+        ),
+        (searchable, "pages where search uses our OCR text, so far"),
     ] {
         let _ = write!(
             o,
@@ -430,39 +536,43 @@ fn results(v: &View, o: &mut String) {
     let _ = write!(
         o,
         "<p>Volunteers' OCR comes back to our server, where each page is checked before it is imported. \
-         A search release uses our text for a page when an automatic check scores it clearly better than \
-         the Library's. In the same 7 days the quality checks scored {} pages; the scores let us rank \
-         pages for OCR by how poor the Library's text is.</p>",
+         The second number is a running total, so it also counts pages imported earlier. An automatic \
+         check scores our text for each page against the Library's. Search uses ours when it scores \
+         clearly better, so not every imported page is used. In the same 7 days the quality checks \
+         scored {} pages; the scores let us rank pages for OCR by how poor the Library's text is.</p>",
         count_or(scored)
     );
     o.push_str("</section>");
 }
 
+/// The accuracy figures are measured, not computed here: `docs/reports/
+/// 2026-10-boinc-quality-pilot/report.md` §4.1 (the 345 clean Chronicling
+/// America snippets, Tesseract 5.5 reading each on its own, 3.68%; the
+/// Library's ALTO, 9.22%) and `docs/ocr/gold-set.md` (the gold bundle's
+/// version 1 baseline, 142 snippets, 11,336 edits in 125,622 characters).
 fn accuracy(o: &mut String) {
     open(o, "accuracy", "Accuracy");
     o.push_str("<div class=\"figures\">");
     figure(
         o,
-        "9.0%",
-        "characters wrong in our OCR, on 142 test snippets",
+        "3.7%",
+        "characters wrong in Tesseract, the engine our OCR runs, on 345 Chronicling America snippets",
     );
     figure(
         o,
         "9.2%",
-        "characters wrong in the Library's OCR, on 345 Chronicling America snippets",
+        "characters wrong in the Library's OCR, on the same 345 snippets",
     );
     o.push_str("</div>");
-    // docs/ocr/gold-set.md, the gold bundle's version 1 baseline (11,336
-    // edits in 125,622 characters); docs/reports/2026-10-boinc-quality-pilot/
-    // report.md §4.1, the 345 clean overproof-ca crops.
     o.push_str(
-        "<p>Both numbers compare OCR with people's transcriptions from public datasets, on snippets \
-         (lines and passages cut from pages) rather than whole pages. The 142 snippets come from six \
-         datasets of historical newspapers in English, French, Finnish, Swedish and German, read by our \
-         OCR worker in October 2026; the 345 come from 18 Chronicling America pages, where Tesseract, \
-         the engine our OCR runs, got 3.7% wrong reading one snippet at a time. We have no \
+        "<p>The snippets are lines and passages cut from 18 Chronicling America pages, compared with \
+         people's transcriptions from a public dataset. Tesseract read each snippet on its own; our OCR \
+         reads whole pages, so it can also make layout mistakes this test leaves out. A separate test of \
+         our OCR worker used 142 snippets from six datasets of historical newspapers in English, French, \
+         Finnish, Swedish and German. It got 9.0% of characters wrong. Most of that text is English from \
+         British newspapers, so the result can't be compared with the two figures above. We have no human \
          transcriptions for other languages, such as Czech, Serbian, Polish, Russian, Yiddish and \
-         Japanese, so we don't know how accurate our OCR is on them.</p></section>",
+         Japanese, so we haven't measured our OCR's accuracy on them.</p></section>",
     );
 }
 
@@ -495,7 +605,12 @@ fn throughput(v: &View, o: &mut String) {
          just before search.</p>",
     );
     if imported.is_some() {
-        o.push_str("<p class=\"note\">OCR pages imported a day, last 7 days; each bar is 24 hours, the newest on the right</p>");
+        daily_note(
+            o,
+            "OCR pages imported a day",
+            daily.len(),
+            v.throughput.days_start,
+        );
         daily_bars(
             o,
             "import-days",
@@ -508,7 +623,6 @@ fn throughput(v: &View, o: &mut String) {
     o.push_str("<table class=\"rates\"><thead><tr><th>Last 24 hours</th><th class=\"r\">Pages</th></tr></thead><tbody>");
     for (id, label) in [
         ("scan_fetch", "Scans fetched"),
-        ("ocr_collect", "OCR pages returned and checked"),
         ("ocr_import", "OCR pages imported"),
         ("quality_load", "Pages scored by the quality checks"),
     ] {
@@ -600,6 +714,153 @@ mod tests {
         assert!(o.contains("average of the 6 fully counted days"));
         assert!(o.contains("in the 3 of 24 hours counted"));
         assert!(o.contains("class=\"v part\""));
+    }
+
+    #[test]
+    fn eastern_time_follows_the_united_states_rule() {
+        let at = |s: &str| {
+            eastern(DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc))
+                .format("%Y-%m-%d %H:%M")
+                .to_string()
+        };
+        // Standard time in winter, daylight time in summer.
+        assert_eq!(at("2026-11-12T00:00:00Z"), "2026-11-11 19:00");
+        assert_eq!(at("2026-07-04T16:00:00Z"), "2026-07-04 12:00");
+        // 2026: daylight time began on 8 March at 2 AM and ended on 1 November at 2 AM.
+        assert_eq!(at("2026-03-08T06:59:59Z"), "2026-03-08 01:59");
+        assert_eq!(at("2026-03-08T07:00:00Z"), "2026-03-08 03:00");
+        assert_eq!(at("2026-11-01T05:59:59Z"), "2026-11-01 01:59");
+        assert_eq!(at("2026-11-01T06:00:00Z"), "2026-11-01 01:00");
+    }
+
+    #[test]
+    fn a_daily_chart_has_a_scale_and_the_day_each_bar_ends_on() {
+        let start = DateTime::parse_from_rfc3339("2026-11-05T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let day = |n: f64| Counted {
+            value: Some(n),
+            hours_known: 24,
+        };
+        let values = [
+            day(30_000.0),
+            day(0.0),
+            day(37_387.0),
+            Counted {
+                value: None,
+                hours_known: 0,
+            },
+            day(12_000.0),
+            day(500.0),
+            Counted {
+                value: Some(10.0),
+                hours_known: 3,
+            },
+        ];
+        let mut o = String::new();
+        daily_note(&mut o, "Pages fetched a day", values.len(), Some(start));
+        assert!(
+            o.contains("last 7 days. Each bar is the 24 hours up to 7 PM Eastern on the day shown"),
+            "{o}"
+        );
+        // Across a clock change the bars end at different Eastern hours.
+        let mut o = String::new();
+        let change = DateTime::parse_from_rfc3339("2026-10-28T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        daily_note(&mut o, "Pages fetched a day", values.len(), Some(change));
+        assert!(o.contains("the newest ends at 7 PM Eastern"), "{o}");
+        assert!(o.contains("clock change"), "{o}");
+        let mut o = String::new();
+        daily_bars(&mut o, "k", "Pages", "pages", &values, Some(start));
+        // The scale: a round top and gridlines under it, on the axis's labels.
+        for v in ["0", "10,000", "20,000", "30,000", "40,000", "50,000"] {
+            assert!(o.contains(&format!(">{v}</text>")), "{v}: {o}");
+        }
+        assert!(o.contains("class=\"wk-axis\""));
+        // A day's name is the day its 24 hours end on, in Eastern: the first
+        // ends at 7 PM on 5 November (EST), the last at 7 PM on 11 November.
+        for name in [
+            "Nov 5", "Nov 6", "Nov 7", "Nov 8", "Nov 9", "Nov 10", "Nov 11",
+        ] {
+            assert!(o.contains(&format!(">{name}</text>")), "{name}: {o}");
+        }
+        // Tips, the arrow keys and the unknown and partial days are as before.
+        assert_eq!(o.matches("<g class=\"bar\">").count(), 14);
+        assert_eq!(o.matches("class=\"unk\"").count(), 2);
+        assert_eq!(o.matches("class=\"v part\"").count(), 2);
+        // Each width has its own key, so a refresh restores focus to the shown one.
+        assert!(o.contains("data-chart=\"k-wide\"") && o.contains("data-chart=\"k-narrow\""));
+        assert!(o.contains("data-start=\"2026-11-05T00:00:00Z\""));
+        assert!(o.contains("Nov 5 00:00 to Nov 6 00:00 UTC: 30,000 pages"));
+        // A day with none draws no bar; the scale still reaches the biggest.
+        assert_eq!(o.matches("class=\"v\"").count(), 8);
+        // Nothing is drawn past the chart's own width.
+        assert!(o.contains("viewBox=\"0 0 360 ") && o.contains("viewBox=\"0 0 1040 "));
+    }
+
+    #[test]
+    fn results_count_imports_and_say_why_the_two_numbers_differ() {
+        let mut v = super::super::tests::summary_view();
+        let hours = crate::throughput::CHART_HOURS as u32;
+        v.throughput.steps = vec![
+            StepRate {
+                id: "ocr_import",
+                detail: crate::throughput::StepDetail {
+                    last_week: Counted {
+                        value: Some(7265.0),
+                        hours_known: hours,
+                    },
+                    ..Default::default()
+                },
+                ..StepRate::default()
+            },
+            // The tick-based count runs below the import's and isn't shown.
+            StepRate {
+                id: "ocr_collect",
+                detail: crate::throughput::StepDetail {
+                    last_week: Counted {
+                        value: Some(2706.0),
+                        hours_known: hours,
+                    },
+                    ..Default::default()
+                },
+                ..StepRate::default()
+            },
+        ];
+        let mut o = String::new();
+        results(&v, &mut o);
+        assert!(o.contains(">7,265<"), "{o}");
+        assert!(o.contains("OCR pages imported into our text collection, last 7 days"));
+        assert!(o.contains("so far"));
+        assert!(o.contains("running total"));
+        assert!(!o.contains("The first number"));
+        assert!(!o.contains("2,706"));
+        assert!(!o.contains("returned and checked"));
+        let mut o = String::new();
+        throughput(&v, &mut o);
+        assert!(!o.contains("returned and checked"));
+    }
+
+    #[test]
+    fn the_accuracy_pair_is_one_set_of_snippets_and_the_gold_set_is_context() {
+        let mut o = String::new();
+        accuracy(&mut o);
+        // The headline: the same 345 snippets for both.
+        assert!(o.contains(">3.7%<") && o.contains(">9.2%<"));
+        assert!(o.contains("on 345 Chronicling America snippets"));
+        assert!(o.contains("on the same 345 snippets"));
+        // The gold set is in the text, not beside the pair.
+        assert!(!o.contains(">9.0%<"));
+        assert!(o.contains("142 snippets") && o.contains("It got 9.0% of characters wrong"));
+        // Snippets, not whole pages, and the languages with no ground truth.
+        assert!(o.contains("reads whole pages"));
+        assert!(o.contains("haven't measured"));
+        for lang in [
+            "Czech", "Serbian", "Polish", "Russian", "Yiddish", "Japanese",
+        ] {
+            assert!(o.contains(lang), "{lang}");
+        }
     }
 
     #[test]
