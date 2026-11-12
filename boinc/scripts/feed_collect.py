@@ -31,6 +31,9 @@ MAX_ROWS = 8000
 MAX_MATCH_EDGES = 100000
 MAX_PROFILE_CHECKS = 1000000
 TIMEOUT = 15
+# When set (plan_ticks), a time after which no read starts and every running one ends, so the
+# plans can't keep the source past its unit's limit (TimeoutStartSec=75 in usnm-boinc-feed-source@.service).
+READ_DEADLINE = None
 # The server source's database inventory: four reads of at most 5 s each (the MAX_EXECUTION_TIME
 # hints in PHP), plus the container exec and PHP start-up. Under memory pressure on the server
 # host the old 2 s statement limit failed many minutes (11 Nov 2026), so the inventory gets its
@@ -144,9 +147,12 @@ MAX_CAPS = 16
 # the draining plans in one usnm-boinc-drain.service; after it every plan, native and draining
 # ones too, ticks in usnm-boinc-priority-controller@PLAN.service.
 PLAN_UNIT_GLOBS = ("usnm-boinc-priority-controller@*", "usnm-boinc-native-feed@*", "usnm-boinc-drain.*")
-PLAN_UNIT = re.compile(r"(?P<base>usnm-boinc-(?:priority-controller@|native-feed@)[a-z0-9][a-z0-9-]{0,63}"
+# An instance is a plan name as batch_scheduler.load_config accepts it: [A-Za-z0-9-]{1,64}.
+PLAN_UNIT = re.compile(r"(?P<base>usnm-boinc-(?:priority-controller@|native-feed@)[A-Za-z0-9-]{1,64}"
                        r"|usnm-boinc-drain)\.(?P<type>service|timer)")
 MAX_PLANS = 32
+# The plans' share of one source run: the unit's limit is 75 s and the live plan's read comes first.
+PLAN_BUDGET_S = 25
 # What a plan is, from its unit or its last tick; and the state its last tick shows. Only these
 # fixed words leave the host: a plan's name never does, and neither does a paused plan's reason.
 PLAN_KINDS = ("queue", "native", "drain")
@@ -190,6 +196,8 @@ def read_file(path, limit=MAX_BYTES):
 
 def run(argv, cwd=None, limit=MAX_BYTES, exits=(0,), timeout=None, env=None):
     """Bound reads and clean up the owned local process group before reaping."""
+    if READ_DEADLINE is not None and time.monotonic() >= READ_DEADLINE:
+        raise TimeoutError("source timeout")
     process = subprocess.Popen(argv, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                                start_new_session=True, env=env)
     output = bytearray()
@@ -197,6 +205,8 @@ def run(argv, cwd=None, limit=MAX_BYTES, exits=(0,), timeout=None, env=None):
         with selectors.DefaultSelector() as selector:
             selector.register(process.stdout, selectors.EVENT_READ)
             deadline = time.monotonic() + (TIMEOUT if timeout is None else timeout)
+            if READ_DEADLINE is not None:
+                deadline = min(deadline, READ_DEADLINE)
             while True:
                 left = deadline - time.monotonic()
                 if left <= 0 or not selector.select(left):
@@ -407,7 +417,7 @@ def validate_plans(plans, now):
     seen = set()
     for plan in plans:
         if (not isinstance(plan, dict) or set(plan) != {"id", "kind", "state", "paused_at", "tick", "error"}
-                or not isinstance(plan["id"], str) or not re.fullmatch(r"[0-9a-f]{8}", plan["id"])
+                or not isinstance(plan["id"], str) or not re.fullmatch(r"[0-9a-f]{8}|[0-9a-f]{16}", plan["id"])
                 or plan["id"] in seen or plan["kind"] not in PLAN_KINDS or plan["state"] not in PLAN_STATES):
             raise ValueError("invalid plan")
         seen.add(plan["id"])
@@ -1422,28 +1432,40 @@ def plan_ticks(main_unit):
     """Each other plan's tick health (#1690), in a stable order, as {id, kind, state, paused_at,
     tick, error}. A plan's tick is controller()'s read of its own unit, so its failed runs, the
     same error in a row and the hourly count are its own and never another plan's. `id` is the
-    first 8 hex digits of the sha256 of the unit's instance name: plan names stay on the host.
+    first 8 hex digits of the sha256 of the unit's name (16 if two collide), so a plan in both
+    layouts is two entries and no plan name leaves the host.
     A plan with no tick in the last 15 minutes has tick None (state `idle`, or what its last
     tick showed): a plan on a slower timer than the controller's five minutes isn't judged. A plan
-    that can't be read is `unknown` with `error`; it never stops the others being read."""
+    that can't be read, or isn't reached within PLAN_BUDGET_S, is `unknown` with `error`; it never
+    stops the others being read."""
+    global READ_DEADLINE
     now = int(time.time())
-    plans = []
-    for unit in discover_plans(main_unit):
-        name = unit.rpartition("@")[2].removesuffix(".service") if "@" in unit else unit.removesuffix(".service")
-        entry = {"id": hashlib.sha256(name.encode()).hexdigest()[:8],
-                 "kind": "native" if "native-feed@" in unit else "drain" if "boinc-drain" in unit else "queue",
-                 "state": "unknown", "paused_at": None, "tick": None, "error": PLANS_ERROR}
-        try:
-            kind, state, paused_at = plan_journal(unit, now)
+    plans, seen = [], set()
+    READ_DEADLINE = time.monotonic() + PLAN_BUDGET_S
+    try:
+        for unit in discover_plans(main_unit):
+            # The unit's whole name, so a plan in both layouts during a migration is two entries.
+            digest = hashlib.sha256(unit.removesuffix(".service").encode()).hexdigest()
+            plan_id = digest[:8] if digest[:8] not in seen else digest[:16]
+            seen.add(plan_id)
+            entry = {"id": plan_id,
+                     "kind": "native" if "native-feed@" in unit else "drain" if "boinc-drain" in unit else "queue",
+                     "state": "unknown", "paused_at": None, "tick": None, "error": PLANS_ERROR}
             try:
-                tick = controller(unit)
-            except NoRecentTick:
-                tick = None
-            entry.update(kind=kind or entry["kind"], state=state, paused_at=paused_at, error=None,
-                         tick=None if tick is None else {key: tick[key] for key in PLAN_TICK_FIELDS})
-        except Exception:
-            pass
-        plans.append(entry)
+                if time.monotonic() >= READ_DEADLINE:
+                    raise TimeoutError("source timeout")
+                kind, state, paused_at = plan_journal(unit, now)
+                try:
+                    tick = controller(unit)
+                except NoRecentTick:
+                    tick = None
+                entry.update(kind=kind or entry["kind"], state=state, paused_at=paused_at, error=None,
+                             tick=None if tick is None else {key: tick[key] for key in PLAN_TICK_FIELDS})
+            except Exception:
+                pass
+            plans.append(entry)
+    finally:
+        READ_DEADLINE = None
     if len(plans) > MAX_PLANS:
         raise ValueError("too many plans")
     return plans

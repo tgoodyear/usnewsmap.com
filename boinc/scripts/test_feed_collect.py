@@ -2618,6 +2618,42 @@ class PlanTickTests(unittest.TestCase):
         # The same host read with the old main name finds @main as one more plan.
         self.assertEqual(len(self.observe(units, main=self.MAIN, listed=listed)), 3)
 
+    def test_a_plan_in_both_layouts_is_two_entries_and_the_document_still_validates(self):
+        units = {self.NATIVE: self.healthy(native=True), self.NATIVE_AFTER: self.healthy(native=True)}
+        plans = self.observe(units, main=self.MAIN_AFTER)
+        self.assertEqual(len({plan["id"] for plan in plans}), 2)
+        self.evaluate(plans)
+        with patch.object(C.hashlib, "sha256") as digest:
+            digest.return_value.hexdigest.return_value = "0123456789abcdef" * 4
+            plans = self.observe(units, main=self.MAIN_AFTER)
+        self.assertEqual(sorted(len(plan["id"]) for plan in plans), [8, 16])
+        self.evaluate(plans)
+
+    def test_every_instance_name_the_scheduler_accepts_is_found(self):
+        names = ("Native-1", "-drain", "a" * 64)
+        units = {f"usnm-boinc-priority-controller@{name}.service": self.healthy() for name in names}
+        self.assertEqual(len(self.observe(units)), 3)
+        too_long = {f"usnm-boinc-priority-controller@{'a' * 65}.service": self.healthy(),
+                    "usnm-boinc-priority-controller@bad_name.service": self.healthy()}
+        self.assertEqual(self.observe(too_long), [])
+
+    def test_plans_not_reached_within_the_budget_are_unknown_and_nothing_more_is_read(self):
+        units = {self.QUEUE: self.healthy(), self.NATIVE_AFTER: self.healthy(native=True)}
+        reads = []
+        fake = self.host(units)
+        with patch.object(C, "run", side_effect=lambda argv, **kw: reads.append(argv[:2]) or fake(argv, **kw)), \
+                patch.object(C, "PLAN_BUDGET_S", 0), patch.object(C.time, "time", return_value=NOW):
+            plans = C.plan_ticks(self.MAIN)
+        self.assertEqual([plan["state"] for plan in plans], ["unknown", "unknown"])
+        self.assertEqual(reads, [["systemctl", "list-units"]])
+        self.assertIsNone(C.READ_DEADLINE)
+        C.validate_plans(plans, NOW)
+        # While the plans are read, a read that would start after the deadline never does.
+        with patch.object(C, "READ_DEADLINE", time.monotonic() - 1), patch.object(C.subprocess, "Popen") as popen:
+            with self.assertRaises(TimeoutError):
+                C.run(["true"])
+        popen.assert_not_called()
+
     def test_no_plan_name_leaves_the_host(self):
         units = {self.QUEUE: self.failing(), self.NATIVE_AFTER: self.healthy(native=True, paused={"at": NOW - 9, "reason": "r"})}
         plans = self.observe(units)
