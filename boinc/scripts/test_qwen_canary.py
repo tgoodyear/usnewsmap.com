@@ -111,6 +111,18 @@ class PlanPolicyRefresh(unittest.TestCase):
                     POLICY.refresh(self.source, self.target)
                 self.assertEqual(self.target.read_bytes(), payload)
 
+    def test_unknown_marker_extending_a_known_name_is_refused(self):
+        for extra in ("-v1", "_x", ".1", "-beta"):
+            with self.subTest(extra=extra):
+                marker = POLICY.INTEL_GENERAL_MARKER + extra
+                root = ET.fromstring(self.source.read_bytes())
+                root.append(ET.Comment(marker))
+                payload = ET.tostring(root)
+                self.target.write_bytes(payload)
+                with self.assertRaisesRegex(ValueError, "Unknown admission marker " + marker.replace(".", r"\.")):
+                    POLICY.refresh(self.source, self.target)
+                self.assertEqual(self.target.read_bytes(), payload)
+
     def test_known_markers_and_the_amd_first_marker_are_not_unknown(self):
         for marker in sorted(POLICY.KNOWN_ADMISSION_MARKERS):
             self.assertTrue(POLICY.ADMISSION_MARKER.fullmatch(marker), marker)

@@ -29,7 +29,7 @@ GENERAL_LABELS = {"amd_vulkan_8b": "AMD", "nvidia_vulkan_8b": "NVIDIA", "intel_v
 AMD_FIRST_MARKER = "usnm-amd-first-reservation-v1"
 # Any admission marker an operator tool can leave in the config. A refresh that does not
 # recognise one would drop it with the rest of the old plan class, so it stops instead.
-ADMISSION_MARKER = re.compile(r"usnm-[a-z0-9]+(?:-[a-z0-9]+)*-admission-[a-z0-9]+(?:[-.][a-z0-9]+)*")
+ADMISSION_MARKER = re.compile(r"usnm-\S*-admission-\S*")
 KNOWN_ADMISSION_MARKERS = frozenset(GENERAL_MARKERS.values())
 
 
