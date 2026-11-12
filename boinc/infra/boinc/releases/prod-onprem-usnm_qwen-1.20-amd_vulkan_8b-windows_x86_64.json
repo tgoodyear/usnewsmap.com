@@ -1,0 +1,179 @@
+{
+  "ct": "230",
+  "env": "prod",
+  "host": "pve.tjg.fyi",
+  "images": {
+    "base": "sha256:dc49f2267d8bfec9d7fdf503260b34897b4aad7edc1a4e5a5641d8a6e5da8f17",
+    "bin": "sha256:856f6f369bbc93514a944d4d2101efe1a850948a1c91ca6ada95daa10dcfdadb",
+    "bridge": "sha256:aa710e132cb058c5cb99edb5d7ac60f3e2499604dca9193ce961896a7065c925",
+    "server": "sha256:1c8345c719077a45ec4f72d5ae54ef3eab31f15dcd3477a0c98bb8d19b5f6500",
+    "worker": null
+  },
+  "release": {
+    "app": "usnm_qwen",
+    "kind": "native",
+    "plan_class": "amd_vulkan_8b",
+    "platform": "windows_x86_64",
+    "version": "1.20"
+  },
+  "schema": 1,
+  "source_commit": "615f162e43387da3b8bad6decd555762ce371971",
+  "worker": {
+    "extra_files": {
+      "AMD_RUNTIME_BUILD.json": {
+        "sha256": "664a7730fbaf5a248b80cbe8365af93791a7c53973528bcba801abceb75362f9",
+        "source_commit": "ca6faf967fb0925f5de341c3803ab930091e31e4"
+      },
+      "concrt140.dll": {
+        "sha256": "54716f0738af891f283d213b5c8d11b25896bb8ee3097d301eae718560cf974e",
+        "source_commit": "ca6faf967fb0925f5de341c3803ab930091e31e4"
+      },
+      "ggml-base.dll": {
+        "sha256": "70a904a50416b7297c35b32d6f83c2ec9deeabe19f6f4af1750d89064688a66e",
+        "source_commit": "f9448cddc48c129a4abc7ff9c2a84c2b4c101c61"
+      },
+      "ggml-cpu-alderlake.dll": {
+        "sha256": "b658ce0f571f08e2a79ba5769355d8ba40fc33df15b9cc0f20f0730e412cb842",
+        "source_commit": "f9448cddc48c129a4abc7ff9c2a84c2b4c101c61"
+      },
+      "ggml-cpu-cannonlake.dll": {
+        "sha256": "90a04a32534d0b3aba4c35187543b0a0ab93c5c7ac7adfef63368c5c1ae6653e",
+        "source_commit": "f9448cddc48c129a4abc7ff9c2a84c2b4c101c61"
+      },
+      "ggml-cpu-cascadelake.dll": {
+        "sha256": "8f8bce45a8493457423244f26f5e2905fc0315d6eeb48d94bf8c002cfadaaf06",
+        "source_commit": "f9448cddc48c129a4abc7ff9c2a84c2b4c101c61"
+      },
+      "ggml-cpu-cooperlake.dll": {
+        "sha256": "83c2dd515b52e4f8d85044822047a740cd491b89abd1e0b7f46392b277d4d4dd",
+        "source_commit": "f9448cddc48c129a4abc7ff9c2a84c2b4c101c61"
+      },
+      "ggml-cpu-haswell.dll": {
+        "sha256": "1901c878d79fbd9d5d50538ba25b5aca7c51e5433eac8c75e8fc95adf3ee0d53",
+        "source_commit": "f9448cddc48c129a4abc7ff9c2a84c2b4c101c61"
+      },
+      "ggml-cpu-icelake.dll": {
+        "sha256": "9f3bf2a7d26e9244c07b309899d672b707370550adc61e4f69ec9b5b7558fa14",
+        "source_commit": "f9448cddc48c129a4abc7ff9c2a84c2b4c101c61"
+      },
+      "ggml-cpu-ivybridge.dll": {
+        "sha256": "cb496ee67b5d0bd9d9d36f70fe0590aee79a1b3355d6a31c7a65f365f2012eca",
+        "source_commit": "f9448cddc48c129a4abc7ff9c2a84c2b4c101c61"
+      },
+      "ggml-cpu-piledriver.dll": {
+        "sha256": "b5233eb680279d0e8ccff00bca2204043ba1545924338b250896d9a8237be50c",
+        "source_commit": "f9448cddc48c129a4abc7ff9c2a84c2b4c101c61"
+      },
+      "ggml-cpu-sandybridge.dll": {
+        "sha256": "255130ed3aa2cc61d537d81779d57efd3ddced2a87099e037030235730e2bfcc",
+        "source_commit": "f9448cddc48c129a4abc7ff9c2a84c2b4c101c61"
+      },
+      "ggml-cpu-sapphirerapids.dll": {
+        "sha256": "01c3d42ace712d1b0d2e6e365c41259795f3f7005b578f117f956eeb8d8be576",
+        "source_commit": "f9448cddc48c129a4abc7ff9c2a84c2b4c101c61"
+      },
+      "ggml-cpu-skylakex.dll": {
+        "sha256": "124ca8ab2295fbea97d1465f24d8f33f506ab95b72e686361b87db923a766a57",
+        "source_commit": "f9448cddc48c129a4abc7ff9c2a84c2b4c101c61"
+      },
+      "ggml-cpu-sse42.dll": {
+        "sha256": "f0af405d3fe79996d8a1697c1fd541ab7469d5e7f709ce47f96fcb99a36dc453",
+        "source_commit": "f9448cddc48c129a4abc7ff9c2a84c2b4c101c61"
+      },
+      "ggml-cpu-x64.dll": {
+        "sha256": "a00ce1f3c9f122e1593b66f54dff3fcc64b359287e0e8cd503469efb62931726",
+        "source_commit": "f9448cddc48c129a4abc7ff9c2a84c2b4c101c61"
+      },
+      "ggml-cpu-zen4.dll": {
+        "sha256": "65f107440da9941554d8113d26c947a7eb88cd68fd0582e5a5902326709c9ad1",
+        "source_commit": "f9448cddc48c129a4abc7ff9c2a84c2b4c101c61"
+      },
+      "ggml-rpc.dll": {
+        "sha256": "68cc30188b016468d7f194270c6b86b8515f8efa85b95b0781a2bf83f090ee5b",
+        "source_commit": "f9448cddc48c129a4abc7ff9c2a84c2b4c101c61"
+      },
+      "ggml-vulkan.dll": {
+        "sha256": "edca434a0ab376d483a47805db5df4e61f6e850e8ff864fed7d8918c7636f836",
+        "source_commit": "ca6faf967fb0925f5de341c3803ab930091e31e4"
+      },
+      "ggml.dll": {
+        "sha256": "b976a90e0aa063030fcdca810b65b31423a33554de85d5e7c160d44834770dee",
+        "source_commit": "f9448cddc48c129a4abc7ff9c2a84c2b4c101c61"
+      },
+      "libomp.dll": {
+        "sha256": "a12116ba72d1d6820407cf30be23da04ce79d6bb8a71a5ee71759c5a1faa6f1c",
+        "source_commit": "f9448cddc48c129a4abc7ff9c2a84c2b4c101c61"
+      },
+      "llama-common.dll": {
+        "sha256": "387d99db04d8f2670874a8bb6de445108cf9cb94c0b7797282a6b8034391be6c",
+        "source_commit": "f9448cddc48c129a4abc7ff9c2a84c2b4c101c61"
+      },
+      "llama-server-impl.dll": {
+        "sha256": "9980053ad2952e9999ef8c549cae6cff97cee62942e1aa756b9231e3293f6c3d",
+        "source_commit": "f9448cddc48c129a4abc7ff9c2a84c2b4c101c61"
+      },
+      "llama-server.exe": {
+        "sha256": "f51e15b10325f6fed78c43bd03cd77c31ca7573474bdd023e3709b4bb87dea17",
+        "source_commit": "f9448cddc48c129a4abc7ff9c2a84c2b4c101c61"
+      },
+      "llama.dll": {
+        "sha256": "b0f2e70c6ada89d61e32884f9639d70d9ce704c849c4a1ba54210c5b96932196",
+        "source_commit": "f9448cddc48c129a4abc7ff9c2a84c2b4c101c61"
+      },
+      "llama.lock": {
+        "sha256": "019e48000a55442f61cbaae4d20c60edc6c28b080efb010dc174d2e77237262a",
+        "source_commit": "ca6faf967fb0925f5de341c3803ab930091e31e4"
+      },
+      "msvcp140.dll": {
+        "sha256": "7c26614e1d733892c2deac7e245ce115504b1d80592dd0a01b08e3e5a55f89ca",
+        "source_commit": "ca6faf967fb0925f5de341c3803ab930091e31e4"
+      },
+      "msvcp140_1.dll": {
+        "sha256": "206c931bf90fdad8816de3b5e2ef80b2bcaa9406c89ecc05fe6fddffe251e982",
+        "source_commit": "ca6faf967fb0925f5de341c3803ab930091e31e4"
+      },
+      "msvcp140_2.dll": {
+        "sha256": "d50d7883f20d1dc6191768d3746f52dd9cac89c346ffaed5be1f110c2f34a838",
+        "source_commit": "ca6faf967fb0925f5de341c3803ab930091e31e4"
+      },
+      "msvcp140_atomic_wait.dll": {
+        "sha256": "3d0cbfaa1bf3eecf5a3f4491d2960ee803cb994f30292c6adc4a07c498f60e2b",
+        "source_commit": "ca6faf967fb0925f5de341c3803ab930091e31e4"
+      },
+      "msvcp140_codecvt_ids.dll": {
+        "sha256": "8a65c7596ef2e6938731f5a1058e7e40145b6d97967cc649231a076b9a608d78",
+        "source_commit": "ca6faf967fb0925f5de341c3803ab930091e31e4"
+      },
+      "mtmd.dll": {
+        "sha256": "52bc3cdce1eecb61cd6b8f5032a6871aa10d708755cf34986c04fea6d6343017",
+        "source_commit": "f9448cddc48c129a4abc7ff9c2a84c2b4c101c61"
+      },
+      "usnm-amd-device-map.exe": {
+        "sha256": "0055a5624a24e30d14df7225dc66521854baa5d9e9214e29c5bed3c8281de320",
+        "source_commit": "ca6faf967fb0925f5de341c3803ab930091e31e4"
+      },
+      "vccorlib140.dll": {
+        "sha256": "09f93d5ff96ae09767f3e1af3cdd43a5a58f2598654fc63089429bb6f9f4737f",
+        "source_commit": "ca6faf967fb0925f5de341c3803ab930091e31e4"
+      },
+      "vcruntime140.dll": {
+        "sha256": "d1f4225df2cd877dbf130d5668a021dce3f94118455ff5ec952061c30afc9ce7",
+        "source_commit": "ca6faf967fb0925f5de341c3803ab930091e31e4"
+      },
+      "vcruntime140_1.dll": {
+        "sha256": "a7146c08f89fe5b04541ab507cdb59ff7b44534d4ba3c668a426c6450a03434e",
+        "source_commit": "ca6faf967fb0925f5de341c3803ab930091e31e4"
+      },
+      "vcruntime140_threads.dll": {
+        "sha256": "40f39e8cee5f5a531b4010e18b807e8fe265b908dc58f959ecb7ebc6ea6cb11a",
+        "source_commit": "ca6faf967fb0925f5de341c3803ab930091e31e4"
+      },
+      "weights.lock": {
+        "sha256": "72320dec77fcb16982a21f85fdc1003308ea818604625b909c05b3519b0480e7",
+        "source_commit": "ca6faf967fb0925f5de341c3803ab930091e31e4"
+      }
+    },
+    "sha256": "cbc714810377049d84f3837621865f4d904c30053e3656e7508e47d5b1bc6054",
+    "source_commit": "ca6faf967fb0925f5de341c3803ab930091e31e4"
+  }
+}
