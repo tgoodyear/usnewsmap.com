@@ -1,0 +1,663 @@
+{
+  "pages": [
+    {
+      "elapsed_ms": {
+        "linux_native": 348821,
+        "macos": 76240
+      },
+      "format": "jp2",
+      "page": "carson_sn83030272_1865-07-07_1_4.jp2",
+      "text_sha256": {
+        "linux_native": "268981ffa36771e62c51c7e29681cadb4c0bf6fb01bca45f2476a185bb4ee746",
+        "macos": "da419b5b7b356c9b35c2aa106528fa220017e31c60b8caa92d92d658aa6bab67"
+      },
+      "vs_linux_container": {
+        "alto": {
+          "coordinate_diffs_among_matched_words": 37,
+          "identical_bytes": false,
+          "metadata_differs": false,
+          "strings_linux": 7237,
+          "strings_mac": 7238,
+          "word_alignment_ratio": 0.9209,
+          "word_ops": {
+            "delete": 7,
+            "insert": 7,
+            "replace": 590
+          }
+        },
+        "alto_identical": false,
+        "text_bytes": [
+          38900,
+          38904
+        ],
+        "text_identical": false,
+        "text_word_ratio": 0.9209
+      },
+      "vs_linux_native": {
+        "alto": {
+          "coordinate_diffs_among_matched_words": 37,
+          "identical_bytes": false,
+          "metadata_differs": false,
+          "strings_linux": 7237,
+          "strings_mac": 7238,
+          "word_alignment_ratio": 0.9209,
+          "word_ops": {
+            "delete": 7,
+            "insert": 7,
+            "replace": 590
+          }
+        },
+        "alto_identical": false,
+        "text_bytes": [
+          38900,
+          38904
+        ],
+        "text_identical": false,
+        "text_word_ratio": 0.9209
+      }
+    },
+    {
+      "elapsed_ms": {
+        "linux_native": 188956,
+        "macos": 56689
+      },
+      "format": "jp2",
+      "page": "carson_sn83030272_1865-07-08_1_1.jp2",
+      "text_sha256": {
+        "linux_native": "ae422f529a62f0449485bed67ef744f4066273456d5a5fe91786c5aae98b81dc",
+        "macos": "ffae8319268159afb4cbe2af2d9a144d2905152d2b7d3c0041d3357dc5426c1c"
+      },
+      "vs_linux_container": {
+        "alto": {
+          "coordinate_diffs_among_matched_words": 57,
+          "identical_bytes": false,
+          "metadata_differs": false,
+          "strings_linux": 6087,
+          "strings_mac": 6097,
+          "word_alignment_ratio": 0.91957,
+          "word_ops": {
+            "delete": 5,
+            "insert": 5,
+            "replace": 501
+          }
+        },
+        "alto_identical": false,
+        "text_bytes": [
+          34038,
+          34089
+        ],
+        "text_identical": false,
+        "text_word_ratio": 0.91957
+      },
+      "vs_linux_native": {
+        "alto": {
+          "coordinate_diffs_among_matched_words": 57,
+          "identical_bytes": false,
+          "metadata_differs": false,
+          "strings_linux": 6087,
+          "strings_mac": 6097,
+          "word_alignment_ratio": 0.91957,
+          "word_ops": {
+            "delete": 5,
+            "insert": 5,
+            "replace": 501
+          }
+        },
+        "alto_identical": false,
+        "text_bytes": [
+          34038,
+          34089
+        ],
+        "text_identical": false,
+        "text_word_ratio": 0.91957
+      }
+    },
+    {
+      "elapsed_ms": {
+        "linux_native": 288754,
+        "macos": 76497
+      },
+      "format": "jp2",
+      "page": "carson_sn83030272_1865-07-08_1_2.jp2",
+      "text_sha256": {
+        "linux_native": "e23f795a87bcb5b9566c431c524c918b2f4b90a16d9d2df0f7f10633df1ae653",
+        "macos": "9b3e9073c8b5d22880c118dd54bda5310e5f23f92a04aa6dff215558aaf7f799"
+      },
+      "vs_linux_container": {
+        "alto": {
+          "coordinate_diffs_among_matched_words": 36,
+          "identical_bytes": false,
+          "metadata_differs": false,
+          "strings_linux": 6854,
+          "strings_mac": 6849,
+          "word_alignment_ratio": 0.89601,
+          "word_ops": {
+            "delete": 3,
+            "insert": 3,
+            "replace": 739
+          }
+        },
+        "alto_identical": false,
+        "text_bytes": [
+          37313,
+          37326
+        ],
+        "text_identical": false,
+        "text_word_ratio": 0.89601
+      },
+      "vs_linux_native": {
+        "alto": {
+          "coordinate_diffs_among_matched_words": 36,
+          "identical_bytes": false,
+          "metadata_differs": false,
+          "strings_linux": 6854,
+          "strings_mac": 6849,
+          "word_alignment_ratio": 0.89601,
+          "word_ops": {
+            "delete": 3,
+            "insert": 3,
+            "replace": 739
+          }
+        },
+        "alto_identical": false,
+        "text_bytes": [
+          37313,
+          37326
+        ],
+        "text_identical": false,
+        "text_word_ratio": 0.89601
+      }
+    },
+    {
+      "elapsed_ms": {
+        "linux_native": 290106,
+        "macos": 72582
+      },
+      "format": "jp2",
+      "page": "carson_sn83030272_1865-07-08_1_3.jp2",
+      "text_sha256": {
+        "linux_native": "2ade2fe874310f23ad1756eb915a23fe7188e766eae31414d0d8814459f77e2a",
+        "macos": "ee050ac6903993ad99509ebd6ce45167a96dc05af495b0ac015de64d407bd7a9"
+      },
+      "vs_linux_container": {
+        "alto": {
+          "coordinate_diffs_among_matched_words": 153,
+          "identical_bytes": false,
+          "metadata_differs": false,
+          "strings_linux": 8386,
+          "strings_mac": 8093,
+          "word_alignment_ratio": 0.02136,
+          "word_ops": {
+            "delete": 3255,
+            "insert": 3777,
+            "replace": 8509
+          }
+        },
+        "alto_identical": false,
+        "text_bytes": [
+          28277,
+          28340
+        ],
+        "text_identical": false,
+        "text_word_ratio": 0.02136
+      },
+      "vs_linux_native": {
+        "alto": {
+          "coordinate_diffs_among_matched_words": 153,
+          "identical_bytes": false,
+          "metadata_differs": false,
+          "strings_linux": 8386,
+          "strings_mac": 8093,
+          "word_alignment_ratio": 0.02136,
+          "word_ops": {
+            "delete": 3255,
+            "insert": 3777,
+            "replace": 8509
+          }
+        },
+        "alto_identical": false,
+        "text_bytes": [
+          28277,
+          28340
+        ],
+        "text_identical": false,
+        "text_word_ratio": 0.02136
+      }
+    },
+    {
+      "elapsed_ms": {
+        "linux_native": 302236,
+        "macos": 69699
+      },
+      "format": "jp2",
+      "page": "carson_sn83030272_1865-07-08_1_4.jp2",
+      "text_sha256": {
+        "linux_native": "9ec964eb3405b9a6a6facbaf47e4f92f8a51805b792f6b467fb682309cd4e476",
+        "macos": "f5bffecf3133ce15e3dfd46e261ca5a52376945afd18f5b704bc927968a767bc"
+      },
+      "vs_linux_container": {
+        "alto": {
+          "coordinate_diffs_among_matched_words": 25,
+          "identical_bytes": false,
+          "metadata_differs": false,
+          "strings_linux": 7000,
+          "strings_mac": 7008,
+          "word_alignment_ratio": 0.92504,
+          "word_ops": {
+            "delete": 1,
+            "insert": 6,
+            "replace": 547
+          }
+        },
+        "alto_identical": false,
+        "text_bytes": [
+          38330,
+          38323
+        ],
+        "text_identical": false,
+        "text_word_ratio": 0.92561
+      },
+      "vs_linux_native": {
+        "alto": {
+          "coordinate_diffs_among_matched_words": 25,
+          "identical_bytes": false,
+          "metadata_differs": false,
+          "strings_linux": 7000,
+          "strings_mac": 7008,
+          "word_alignment_ratio": 0.92504,
+          "word_ops": {
+            "delete": 1,
+            "insert": 6,
+            "replace": 547
+          }
+        },
+        "alto_identical": false,
+        "text_bytes": [
+          38330,
+          38323
+        ],
+        "text_identical": false,
+        "text_word_ratio": 0.92561
+      }
+    },
+    {
+      "elapsed_ms": {
+        "linux_native": 272989,
+        "macos": 61224
+      },
+      "format": "jp2",
+      "page": "carson_sn83030272_1865-07-10_1_1.jp2",
+      "text_sha256": {
+        "linux_native": "850e6b20793461b87d7ff89bfbc2ea54d05c38331a85e8fa31b48c8a2aed7d5b",
+        "macos": "27db5935e01f46f848495f17529cc4aa13dd15675d5240784e3d8b532a784a35"
+      },
+      "vs_linux_container": {
+        "alto": {
+          "coordinate_diffs_among_matched_words": 30,
+          "identical_bytes": false,
+          "metadata_differs": false,
+          "strings_linux": 6720,
+          "strings_mac": 6721,
+          "word_alignment_ratio": 0.93758,
+          "word_ops": {
+            "delete": 2,
+            "insert": 1,
+            "replace": 429
+          }
+        },
+        "alto_identical": false,
+        "text_bytes": [
+          37125,
+          37133
+        ],
+        "text_identical": false,
+        "text_word_ratio": 0.93773
+      },
+      "vs_linux_native": {
+        "alto": {
+          "coordinate_diffs_among_matched_words": 30,
+          "identical_bytes": false,
+          "metadata_differs": false,
+          "strings_linux": 6720,
+          "strings_mac": 6721,
+          "word_alignment_ratio": 0.93758,
+          "word_ops": {
+            "delete": 2,
+            "insert": 1,
+            "replace": 429
+          }
+        },
+        "alto_identical": false,
+        "text_bytes": [
+          37125,
+          37133
+        ],
+        "text_identical": false,
+        "text_word_ratio": 0.93773
+      }
+    },
+    {
+      "elapsed_ms": {
+        "linux_native": 246161,
+        "macos": 64160
+      },
+      "format": "jp2",
+      "page": "carson_sn83030272_1865-07-10_1_2.jp2",
+      "text_sha256": {
+        "linux_native": "e1516a0f7989067830d0f3e15c18ffc7c8409231da6af21ae3509737eb179230",
+        "macos": "717346d02705a4fd65c2d0742087327865e64ee8addbbaab6167115a4124908f"
+      },
+      "vs_linux_container": {
+        "alto": {
+          "coordinate_diffs_among_matched_words": 113,
+          "identical_bytes": false,
+          "metadata_differs": false,
+          "strings_linux": 6426,
+          "strings_mac": 6450,
+          "word_alignment_ratio": 0.84126,
+          "word_ops": {
+            "delete": 11,
+            "insert": 19,
+            "replace": 1134
+          }
+        },
+        "alto_identical": false,
+        "text_bytes": [
+          33865,
+          33756
+        ],
+        "text_identical": false,
+        "text_word_ratio": 0.84157
+      },
+      "vs_linux_native": {
+        "alto": {
+          "coordinate_diffs_among_matched_words": 113,
+          "identical_bytes": false,
+          "metadata_differs": false,
+          "strings_linux": 6426,
+          "strings_mac": 6450,
+          "word_alignment_ratio": 0.84126,
+          "word_ops": {
+            "delete": 11,
+            "insert": 19,
+            "replace": 1134
+          }
+        },
+        "alto_identical": false,
+        "text_bytes": [
+          33865,
+          33756
+        ],
+        "text_identical": false,
+        "text_word_ratio": 0.84157
+      }
+    },
+    {
+      "elapsed_ms": {
+        "linux_native": 508079,
+        "macos": 102654
+      },
+      "format": "jp2",
+      "page": "carson_sn83030272_1865-07-10_1_3.jp2",
+      "text_sha256": {
+        "linux_native": "bd0aa8010d59f6840aa8e60b8913cce9c76897cb02d41d135c74fa78cee44e48",
+        "macos": "3f069e91ecf1c94e07bb928a491af8aa9a98ee8baf97c7f42720871d63acdd7a"
+      },
+      "vs_linux_container": {
+        "alto": {
+          "coordinate_diffs_among_matched_words": 108,
+          "identical_bytes": false,
+          "metadata_differs": false,
+          "strings_linux": 6896,
+          "strings_mac": 6902,
+          "word_alignment_ratio": 0.80157,
+          "word_ops": {
+            "delete": 13,
+            "insert": 20,
+            "replace": 1529
+          }
+        },
+        "alto_identical": false,
+        "text_bytes": [
+          33768,
+          33743
+        ],
+        "text_identical": false,
+        "text_word_ratio": 0.80186
+      },
+      "vs_linux_native": {
+        "alto": {
+          "coordinate_diffs_among_matched_words": 108,
+          "identical_bytes": false,
+          "metadata_differs": false,
+          "strings_linux": 6896,
+          "strings_mac": 6902,
+          "word_alignment_ratio": 0.80157,
+          "word_ops": {
+            "delete": 13,
+            "insert": 20,
+            "replace": 1529
+          }
+        },
+        "alto_identical": false,
+        "text_bytes": [
+          33768,
+          33743
+        ],
+        "text_identical": false,
+        "text_word_ratio": 0.80186
+      }
+    },
+    {
+      "elapsed_ms": {
+        "linux_native": 373367,
+        "macos": 284236
+      },
+      "format": "jp2",
+      "page": "carson_sn83030272_1865-07-10_1_4.jp2",
+      "text_sha256": {
+        "linux_native": "d0d82a03fb1803a5574c42fd62741170a365490d57fe378d15649ec10089f922",
+        "macos": "0eb92ef0d47d3d421e460f502c19cd000a5fba9015332f6e00172578bd5f0a5c"
+      },
+      "vs_linux_container": {
+        "alto": {
+          "coordinate_diffs_among_matched_words": 47,
+          "identical_bytes": false,
+          "metadata_differs": false,
+          "strings_linux": 7431,
+          "strings_mac": 7440,
+          "word_alignment_ratio": 0.91346,
+          "word_ops": {
+            "delete": 3,
+            "insert": 5,
+            "replace": 666
+          }
+        },
+        "alto_identical": false,
+        "text_bytes": [
+          40392,
+          40360
+        ],
+        "text_identical": false,
+        "text_word_ratio": 0.91372
+      },
+      "vs_linux_native": {
+        "alto": {
+          "coordinate_diffs_among_matched_words": 47,
+          "identical_bytes": false,
+          "metadata_differs": false,
+          "strings_linux": 7431,
+          "strings_mac": 7440,
+          "word_alignment_ratio": 0.91346,
+          "word_ops": {
+            "delete": 3,
+            "insert": 5,
+            "replace": 666
+          }
+        },
+        "alto_identical": false,
+        "text_bytes": [
+          40392,
+          40360
+        ],
+        "text_identical": false,
+        "text_word_ratio": 0.91372
+      }
+    },
+    {
+      "elapsed_ms": {
+        "linux_native": 375211,
+        "macos": 152019
+      },
+      "format": "jp2",
+      "page": "carson_sn83030272_1865-07-11_1_1.jp2",
+      "text_sha256": {
+        "linux_native": "693339b121932f06d35fc9575fbbd1e8aa4e0e4c3e13dd32457dd060f5488839",
+        "macos": "8095ff760f8f03d21127432c7f4c7df3dd63b6d80b35c600f5bee4871d042421"
+      },
+      "vs_linux_container": {
+        "alto": {
+          "coordinate_diffs_among_matched_words": 23,
+          "identical_bytes": false,
+          "metadata_differs": false,
+          "strings_linux": 6715,
+          "strings_mac": 6712,
+          "word_alignment_ratio": 0.93766,
+          "word_ops": {
+            "delete": 0,
+            "insert": 4,
+            "replace": 429
+          }
+        },
+        "alto_identical": false,
+        "text_bytes": [
+          37459,
+          37488
+        ],
+        "text_identical": false,
+        "text_word_ratio": 0.93766
+      },
+      "vs_linux_native": {
+        "alto": {
+          "coordinate_diffs_among_matched_words": 23,
+          "identical_bytes": false,
+          "metadata_differs": false,
+          "strings_linux": 6715,
+          "strings_mac": 6712,
+          "word_alignment_ratio": 0.93766,
+          "word_ops": {
+            "delete": 0,
+            "insert": 4,
+            "replace": 429
+          }
+        },
+        "alto_identical": false,
+        "text_bytes": [
+          37459,
+          37488
+        ],
+        "text_identical": false,
+        "text_word_ratio": 0.93766
+      }
+    },
+    {
+      "format": "jpeg",
+      "page": "s9-en-asgold-001.jpg",
+      "vs_linux_native": {
+        "alto": {
+          "coordinate_diffs_among_matched_words": 0,
+          "identical_bytes": false,
+          "metadata_differs": false,
+          "strings_linux": 3802,
+          "strings_mac": 3799,
+          "word_alignment_ratio": 0.99119,
+          "word_ops": {
+            "delete": 0,
+            "insert": 3,
+            "replace": 32
+          }
+        },
+        "alto_identical": false,
+        "text_identical": false,
+        "text_word_ratio": 0.99119
+      }
+    },
+    {
+      "format": "jpeg",
+      "page": "s9-en-asgold-002.jpg",
+      "vs_linux_native": {
+        "alto": {
+          "identical_bytes": false,
+          "metadata_differs": false,
+          "strings_differing_by_class": {
+            "confidence": 227,
+            "coordinates": 0,
+            "other_attr": 0,
+            "text": 4
+          },
+          "strings_linux": 1451,
+          "strings_mac": 1451
+        },
+        "alto_identical": false,
+        "text_identical": false,
+        "text_word_ratio": 0.99724
+      }
+    },
+    {
+      "format": "jpeg",
+      "page": "s9-en-asgold-003.jpg",
+      "vs_linux_native": {
+        "alto": {
+          "coordinate_diffs_among_matched_words": 20,
+          "identical_bytes": false,
+          "metadata_differs": false,
+          "strings_linux": 5720,
+          "strings_mac": 5714,
+          "word_alignment_ratio": 0.97569,
+          "word_ops": {
+            "delete": 20,
+            "insert": 32,
+            "replace": 145
+          }
+        },
+        "alto_identical": false,
+        "text_identical": false,
+        "text_word_ratio": 0.97569
+      }
+    },
+    {
+      "format": "jpeg",
+      "page": "s9-en-asgold-004.jpg",
+      "vs_linux_native": {
+        "alto": {
+          "coordinate_diffs_among_matched_words": 3,
+          "identical_bytes": false,
+          "metadata_differs": false,
+          "strings_linux": 5967,
+          "strings_mac": 5963,
+          "word_alignment_ratio": 0.99111,
+          "word_ops": {
+            "delete": 0,
+            "insert": 1,
+            "replace": 54
+          }
+        },
+        "alto_identical": false,
+        "text_identical": false,
+        "text_word_ratio": 0.99111
+      }
+    }
+  ],
+  "summary": {
+    "vs_linux_container": {
+      "alto_identical": 0,
+      "pages": 10,
+      "text_identical": 0
+    },
+    "vs_linux_native": {
+      "alto_identical": 0,
+      "pages": 14,
+      "text_identical": 0
+    }
+  }
+}
