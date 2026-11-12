@@ -44,12 +44,12 @@ The exchange account and the scan archive keep their firewalls because nothing i
 
 From the amendments to ADR-0008 and #1425:
 
-| Option                                            | Why not                                                                                                                                                                     |
-| ------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Keep the VNet                                     | $21.90 a month for a path that is idle until a failover                                                                                                                     |
-| Remove only the lake's and Cosmos's endpoints     | Considered in #1425: it saved $15.10 a month and kept the index account closed. The maintainer authorized the full removal; the record does not say why this was not chosen |
-| IP rules for the environment's outbound addresses | A VNet-less environment's outbound addresses are shared with other tenants and can change, so a rule would admit others and could drop the spare during a failover          |
-| A NAT gateway for a fixed outbound address        | Needs the VNet, and costs more than the load balancer it would replace                                                                                                      |
+| Option                                            | Why not                                                                                                                                                                    |
+| ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Keep the VNet                                     | $21.90 a month for a path that is idle until a failover                                                                                                                    |
+| Remove only the lake's and Cosmos's endpoints     | Considered in #308: it saved $15.10 a month and kept the index account closed. The maintainer authorized the full removal; the record does not say why this was not chosen |
+| IP rules for the environment's outbound addresses | A VNet-less environment's outbound addresses are shared with other tenants and can change, so a rule would admit others and could drop the spare during a failover         |
+| A NAT gateway for a fixed outbound address        | Needs the VNet, and costs more than the load balancer it would replace                                                                                                     |
 
 ## Consequences
 
