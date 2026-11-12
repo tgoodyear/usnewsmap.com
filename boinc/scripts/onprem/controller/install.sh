@@ -23,6 +23,10 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ -d "$ROOT" ] || die "--root $ROOT is not a directory"
+# systemd is reloaded only for the real root; under any other root the files are only placed.
+RELOAD=false
+[ "$(cd "$ROOT" && pwd -P)" != / ] || RELOAD=true
+# Without a trailing slash, so $ROOT/etc names one path ("" for the real root).
 ROOT=${ROOT%/}
 tick=$ROOT/opt/usnm/boinc/scripts/onprem/controller/controller-tick.sh
 [ -f "$tick" ] || die "no $tick: move the checkout to a commit with the per-plan units first"
@@ -33,7 +37,7 @@ for file in "$HERE/usnm-boinc-priority-controller@.service" "$HERE/usnm-boinc-pr
   install -m 0644 "$file" "$units/$(basename "$file")"
   echo "installed $units/$(basename "$file")"
 done
-if [ -z "$ROOT" ]; then
+if $RELOAD; then
   systemctl daemon-reload
   echo "systemd reloaded; nothing enabled or started"
 fi

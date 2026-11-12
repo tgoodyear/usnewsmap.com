@@ -176,7 +176,7 @@ class HandoffWindowTests(unittest.TestCase):
             del records[index]
             self.assertFalse(window.audit(records, 0, window.DAY)["telemetry_window_passed"])
 
-    def test_default_unit_is_the_main_plans_and_the_old_shared_unit_does_not_count(self):
+    def test_default_unit_is_the_main_plans_unit_and_the_old_shared_unit_does_not_count(self):
         # One unit per plan since #1690; a journal of the old shared unit isn't the main plan's.
         self.assertEqual(window.UNIT, "usnm-boinc-priority-controller@main.service")
         old = "usnm-boinc-priority-controller.service"
