@@ -312,9 +312,16 @@ function dayValues(step) {
 
 function throughput(view, now) {
   const card = new Card("Throughput", HOURLY_STALE_SECS);
-  const t = isObject(view) && isObject(view.throughput) && view.throughput.error == null ? view.throughput : null;
+  // `throughput.error` is the warning from the dashboard's start, when it could not read its saved
+  // history. It stays set after new data comes in, and the dashboard still shows its steps beside
+  // it, so it does not hide them here either: the per-day and per-hour counts below say what was
+  // counted in full.
+  const t = isObject(view) && isObject(view.throughput) ? view.throughput : null;
+  // The oldest observation time any source has. A source with no time is left out of that, not
+  // allowed to erase the times the others have.
   const sources = t && Array.isArray(t.sources) ? t.sources.map((s) => (isObject(s) ? seconds(s.observed_at) : null)) : [];
-  const at = sources.length && sources.every((x) => x !== null) ? Math.min(...sources) : undefined;
+  const known = sources.filter((x) => x !== null);
+  const at = known.length ? Math.min(...known) : undefined;
   const fetchAt = seconds(view && view.generated_at) ?? undefined;
   const f = fetchCounts(view);
 
@@ -356,9 +363,10 @@ function throughput(view, now) {
     at,
   });
 
-  // Seven bars, a day each, from days_start: the 24 hours up to each day's end.
+  // Seven bars, a day each, from days_start: the 24 hours up to each day's end. The scan fetch's
+  // bars count the fetch index like its scalar above, so they wait for the same records.
   const start = t ? seconds(t.days_start) : null;
-  const fetched = dayValues(t && stepOf(view, "scan_fetch"));
+  const fetched = dayValues(f && t && stepOf(view, "scan_fetch"));
   card.line("Pages fetched a day, last 7 days", "pages", start, 86400, fetched);
   card.line("OCR pages imported a day, last 7 days", "pages", start, 86400, imported);
   return card.done(now);
@@ -394,7 +402,7 @@ function reply(body, status, maxAge, extra = {}) {
 // The upstream request: a short limit for the whole exchange, no redirects, and the edge cache
 // told to keep a good answer for a minute (and an error for none), so a location asks the
 // dashboard at most once a minute per endpoint however often the feed is asked for.
-async function upstream(fetchImpl, url, signal) {
+async function upstream(fetchImpl, url, signal, max) {
   const response = await fetchImpl(url, {
     method: "GET",
     headers: { accept: "application/json" },
@@ -405,14 +413,44 @@ async function upstream(fetchImpl, url, signal) {
   if (response.status !== 200) throw new Error(`status ${response.status}`);
   const length = Number(response.headers.get("content-length"));
   if (length > UPSTREAM_MAX_BYTES) throw new Error("too large");
-  const text = await response.text();
-  if (text.length > UPSTREAM_MAX_BYTES) throw new Error("too large");
-  return JSON.parse(text);
+  return JSON.parse(await readLimited(response, max));
+}
+
+// The body as text, read in pieces and counted in bytes: past the limit the stream is cancelled
+// and nothing more is read, so a body with no Content-Length cannot fill the Worker's memory.
+async function readLimited(response, max) {
+  if (!response.body) throw new Error("no body");
+  const reader = response.body.getReader();
+  const chunks = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > max) {
+      await reader.cancel().catch(() => {});
+      throw new Error("too large");
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(total);
+  let at = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, at);
+    at += chunk.byteLength;
+  }
+  return new TextDecoder().decode(bytes);
 }
 
 // The pieces a handler needs, so tests can supply them. `cache` is the Cache API's default
 // cache (or anything with match and put); `now` is in milliseconds.
-export function createHandler({ fetchImpl, cache, now = () => Date.now(), timeoutMs = UPSTREAM_TIMEOUT_MS }) {
+export function createHandler({
+  fetchImpl,
+  cache,
+  now = () => Date.now(),
+  timeoutMs = UPSTREAM_TIMEOUT_MS,
+  maxBytes = UPSTREAM_MAX_BYTES,
+}) {
   // The last document built in this isolate, and the build in progress, so a burst of requests
   // makes one round of upstream requests.
   let memo = null;
@@ -420,7 +458,7 @@ export function createHandler({ fetchImpl, cache, now = () => Date.now(), timeou
 
   async function fetchOne(url) {
     try {
-      return await upstream(fetchImpl, url, AbortSignal.timeout(timeoutMs));
+      return await upstream(fetchImpl, url, AbortSignal.timeout(timeoutMs), maxBytes);
     } catch (e) {
       // The reason only: never the address or the body.
       console.error("upstream unavailable:", e && e.name ? e.name : "error");
@@ -432,7 +470,13 @@ export function createHandler({ fetchImpl, cache, now = () => Date.now(), timeou
     const [pipeline, view] = await Promise.all([fetchOne(PIPELINE_URL), fetchOne(VIEW_URL)]);
     if (pipeline === null && view === null) return null;
     const builtAt = Math.floor(now() / 1000);
-    const body = JSON.stringify(buildFeed(pipeline, view, builtAt));
+    let body;
+    try {
+      body = JSON.stringify(buildFeed(pipeline, view, builtAt));
+    } catch (e) {
+      console.error("feed build failed:", e && e.name ? e.name : "error");
+      return null;
+    }
     if (new TextEncoder().encode(body).length > FEED_MAX_BYTES) {
       console.error("feed over the size limit");
       return null;
@@ -445,10 +489,12 @@ export function createHandler({ fetchImpl, cache, now = () => Date.now(), timeou
     if (url.pathname !== "/feed.json") return reply('{"error":"not found"}', 404, 0);
     if (request.method !== "GET") return reply('{"error":"method not allowed"}', 405, 0, { allow: "GET" });
 
-    if (memo && now() - memo.at < ANSWER_SECS * 1000) return answer(memo);
+    if (fresh()) return answer(memo);
     const key = new Request(`${url.origin}/feed.json`);
-    const cached = cache ? await cache.match(key) : undefined;
+    const cached = await lookup(key);
     if (cached) return cached;
+    // The lookup took time: another request may have built the feed meanwhile.
+    if (fresh()) return answer(memo);
 
     building ??= build().finally(() => {
       building = null;
@@ -466,6 +512,21 @@ export function createHandler({ fetchImpl, cache, now = () => Date.now(), timeou
     }
     return response;
   };
+
+  function fresh() {
+    return memo !== null && now() - memo.at < ANSWER_SECS * 1000;
+  }
+
+  // A cache that cannot be read is a cache with nothing in it.
+  async function lookup(key) {
+    if (!cache) return undefined;
+    try {
+      return await cache.match(key);
+    } catch (e) {
+      console.error("cache match failed:", e && e.name ? e.name : "error");
+      return undefined;
+    }
+  }
 
   function answer(built) {
     return reply(built.body, 200, ANSWER_SECS, { "x-feed-built-at": String(built.builtAt) });

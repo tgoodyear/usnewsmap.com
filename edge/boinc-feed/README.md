@@ -30,17 +30,17 @@ A figure the dashboard would not show is sent as `null`, which the project site 
 
 - a pipeline stage that is not observed, has no count, is marked historical, or has a stale or missing freshness entry (the dashboard's `summary_stage` rule);
 - a 14-day total the catalog did not have every hour of (the dashboard's `fortnight` rule);
-- the fetch counts while the dashboard is warming up or cannot read the fetcher's records, and the queue figures when the queue is not configured or reports an error;
+- the fetch counts, including the pages-fetched-a-day chart, while the dashboard is warming up or cannot read the fetcher's records, and the queue figures when the queue is not configured or reports an error;
 - the volunteer figures when the BOINC week is stale or missing;
 - a day of a daily series, and the 24-hour figures, when not every hour of it was counted.
 
 When one of the two endpoints cannot be read, its figures are unknown and the cards built from the other stay. When neither can be read the Worker answers 502.
 
-Each card's `updated` is the dashboard's own observation time for its oldest figure, so the project site's "stale" badge reflects the real age of the data. A card whose figures have no observation time has no `updated`.
+Each card's `updated` is the dashboard's own observation time for its oldest figure, so the project site's "stale" badge reflects the real age of the data. A source with no observation time is left out of that, so it cannot hide the times the others have. A card whose figures have no observation time has no `updated`.
 
 ## Caching
 
-The project site fetches the feed about once a minute for each data center. The Worker keeps its answer for 60 seconds (in the isolate, in the Cache API where it works, and with `Cache-Control: public, max-age=60`), shares one round of upstream requests between requests that arrive together, and asks the edge cache to keep each upstream answer for 60 seconds. A Cloudflare location therefore asks the dashboard at most about once a minute per endpoint, however often the feed is requested. Each upstream request has a 2-second limit, inside the project site's 3 seconds for the whole exchange. The answer is a few kilobytes against the feed's limit of 64.
+The project site fetches the feed about once a minute for each data center. The Worker keeps its answer for 60 seconds (in the isolate, in the Cache API where it works, and with `Cache-Control: public, max-age=60`), shares one round of upstream requests between requests that arrive together, and asks the edge cache to keep each upstream answer for 60 seconds. A Cloudflare location therefore asks the dashboard at most about once a minute per endpoint, however often the feed is requested. Each upstream request has a 2-second limit, inside the project site's 3 seconds for the whole exchange, and a 4 MiB limit counted in bytes as the body is read. A cache that cannot be read counts as empty. The answer is a few kilobytes against the feed's limit of 64.
 
 ## Deploy
 

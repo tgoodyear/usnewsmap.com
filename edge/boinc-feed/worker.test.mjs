@@ -398,6 +398,9 @@ test("the fetch figures are unknown while the dashboard warms up or cannot read 
     assert.equal(figures(card(doc, "What's been done"))["Page scans fetched so far"].value, null, name);
     assert.equal(figures(card(doc, "Throughput"))["Scans fetched"].value, null, name);
     assert.equal(figures(card(doc, "Throughput"))["OCR pages imported"].value, 400, name);
+    // The scan fetch's daily bars count the same fetch index as its scalar, so they wait too.
+    const bars = card(doc, "Throughput").series.map((r) => r.title);
+    assert.deepEqual(bars, ["OCR pages imported a day, last 7 days"], name);
   }
 });
 
@@ -458,19 +461,46 @@ test("a day not counted for all 24 hours is a gap in the series and out of the a
   assert.ok(!none.series.some((r) => r.title.startsWith("OCR pages imported")));
 });
 
-test("a throughput error or a missing day start gives no throughput figures or charts", () => {
+test("the dashboard's start-up warning about its throughput history does not hide the steps it still shows", () => {
+  // throughput.error is set when the saved history could not be read at start and stays set while
+  // new data comes in; the dashboard shows the warning above its steps. What was counted in full
+  // is told by hours_known.
   const v = view();
-  v.throughput.error = "no data";
-  let s = card(buildFeed(pipeline(), v, NOW), "Throughput");
-  assert.equal(figures(s)["Scans fetched"].value, v.fetch.last_day.pages, "the fetch's own 24 hours need no throughput");
-  assert.equal(figures(s)["OCR pages imported"].value, null);
-  assert.equal(figures(s)["Results back in the last full hour"].value, null);
-  assert.equal(s.series, undefined);
+  v.throughput.error = "throughput history unreadable; started empty";
+  v.throughput.steps.find((x) => x.id === "ocr_import").days[0].hours_known = 5;
+  const s = card(buildFeed(pipeline(), v, NOW), "Throughput");
+  const f = figures(s);
+  assert.equal(f["OCR pages imported"].value, 400);
+  assert.equal(f["Results back in the last full hour"].value, 100);
+  assert.equal(s.series.length, 2);
+  assert.equal(s.series[1].values[0], null, "a day that was not counted in full is still a gap");
+  assert.equal(f["OCR pages imported a day"].note, "Average of the 6 fully counted days of the last 7.");
+});
+
+test("a missing day start gives no charts, and no throughput gives no throughput figures", () => {
   const w = view();
   delete w.throughput.days_start;
-  s = card(buildFeed(pipeline(), w, NOW), "Throughput");
+  const s = card(buildFeed(pipeline(), w, NOW), "Throughput");
   assert.equal(s.series, undefined);
   assert.equal(figures(s)["OCR pages imported"].value, 400);
+  const v = view();
+  delete v.throughput;
+  const none = card(buildFeed(pipeline(), v, NOW), "Throughput");
+  assert.equal(figures(none)["Scans fetched"].value, v.fetch.last_day.pages, "the fetch's own 24 hours need no throughput");
+  assert.equal(figures(none)["OCR pages imported"].value, null);
+  assert.equal(none.series, undefined);
+});
+
+test("a source with no observation time does not erase the times the others have", () => {
+  const v = view();
+  v.throughput.sources[0].observed_at = null;
+  v.throughput.sources[1].observed_at = "2026-03-14T08:00:00Z";
+  let s = card(buildFeed(pipeline(), v, NOW), "Throughput");
+  assert.equal(s.updated, Math.floor(Date.parse("2026-03-14T08:00:00Z") / 1000), "the oldest known time");
+  for (const x of v.throughput.sources) x.observed_at = null;
+  s = card(buildFeed(pipeline(), v, NOW), "Throughput");
+  assert.equal(s.updated, Math.floor(Date.parse(v.generated_at) / 1000), "only the fetch's own time is left");
+  validateFeed(JSON.stringify(buildFeed(pipeline(), v, NOW)), NOW);
 });
 
 test("a time the clock cannot have reached is no observation time, and the feed still validates", () => {
@@ -610,7 +640,7 @@ test("the Cache API answer is used when there is one, and written when there is 
   assert.equal(calls.length, 2);
 });
 
-test("a cache that fails does not fail the answer", async (t) => {
+test("a cache that fails to write does not fail the answer", async (t) => {
   quiet(t);
   const cache = {
     async match() {
@@ -622,6 +652,50 @@ test("a cache that fails does not fail the answer", async (t) => {
   };
   const response = await ask(createHandler({ fetchImpl: upstreamStub().fetchImpl, cache }));
   assert.equal(response.status, 200);
+});
+
+test("a cache that fails to read is a miss, and the feed is still built and served", async (t) => {
+  quiet(t);
+  const cache = {
+    async match() {
+      throw new Error("no cache here");
+    },
+    async put() {
+      throw new Error("no cache here");
+    },
+  };
+  const { fetchImpl, calls } = upstreamStub();
+  const response = await ask(createHandler({ fetchImpl, cache }));
+  assert.equal(response.status, 200);
+  validateFeed(await response.text(), Math.floor(Date.now() / 1000));
+  assert.equal(calls.length, 2);
+});
+
+test("a request whose cache lookup finishes after another built the feed does not ask upstream again", async (t) => {
+  quiet(t);
+  const { fetchImpl, calls } = upstreamStub();
+  let release;
+  const held = new Promise((resolve) => {
+    release = resolve;
+  });
+  let lookups = 0;
+  const cache = {
+    async match() {
+      lookups += 1;
+      return lookups === 1 ? held : undefined;
+    },
+    async put() {},
+  };
+  const handle = createHandler({ fetchImpl, cache });
+  const slow = ask(handle); // its lookup is held
+  const quick = await ask(handle); // misses at once and builds
+  assert.equal(quick.status, 200);
+  assert.equal(calls.length, 2);
+  release(undefined);
+  const late = await slow;
+  assert.equal(late.status, 200);
+  assert.equal(calls.length, 2, "the late miss used the feed built meanwhile");
+  assert.equal(await late.text(), await quick.text());
 });
 
 test("one endpoint down keeps the other's sections; both down is a 502 that is not remembered", async (t) => {
@@ -663,6 +737,48 @@ test("a slow upstream is given up on at the limit, and the answer keeps the othe
   const doc = JSON.parse(await response.text());
   assert.ok(allNull(card(doc, "Volunteers")));
   assert.equal(figures(card(doc, "Jobs in flight"))["BOINC unsent result replicas"].value, 400);
+});
+
+// A body that never says how long it is: `chunks` pieces of `size` bytes, counting the pieces read
+// and whether the reader was cancelled.
+function endlessBody(size, chunks) {
+  const state = { pulled: 0, cancelled: false };
+  const body = new ReadableStream({
+    pull(controller) {
+      if (state.pulled >= chunks) return controller.close();
+      state.pulled += 1;
+      controller.enqueue(new Uint8Array(size).fill(0x20));
+    },
+    cancel() {
+      state.cancelled = true;
+    },
+  });
+  return { state, response: new Response(body, { status: 200 }) };
+}
+
+test("a body with no length is read in pieces and cancelled once past the limit", async (t) => {
+  quiet(t);
+  const { state, response: big } = endlessBody(1024, 1000);
+  const { fetchImpl } = upstreamStub({ viewBody: big });
+  const response = await ask(createHandler({ fetchImpl, cache: null, maxBytes: 16 * 1024 }));
+  assert.equal(response.status, 200);
+  assert.ok(allNull(card(JSON.parse(await response.text()), "Volunteers")));
+  assert.equal(state.cancelled, true);
+  assert.ok(state.pulled < 20, `read ${state.pulled} pieces of 1000`);
+});
+
+test("the limit counts bytes, not characters", async (t) => {
+  quiet(t);
+  // A view with 5000 characters of padding that take 15000 bytes: under a 16 KiB limit by length, over it by size.
+  const text = JSON.stringify({ ...view(), x: "\u20ac".repeat(5000) });
+  assert.ok(text.length < 16 * 1024 && new TextEncoder().encode(text).length > 16 * 1024);
+  const refusedView = upstreamStub({ viewBody: new Response(text, { status: 200 }) });
+  const response = await ask(createHandler({ fetchImpl: refusedView.fetchImpl, cache: null, maxBytes: 16 * 1024 }));
+  assert.ok(allNull(card(JSON.parse(await response.text()), "Volunteers")), "refused");
+  // The same text is fine under a limit it fits.
+  const accepted = upstreamStub({ viewBody: new Response(JSON.stringify({ ...view(), x: "\u20ac".repeat(30) }), { status: 200 }) });
+  const ok = await ask(createHandler({ fetchImpl: accepted.fetchImpl, cache: null, maxBytes: 64 * 1024 }));
+  assert.equal(figures(card(JSON.parse(await ok.text()), "Volunteers"))["Volunteers active in the last 3 hours"].value, 5);
 });
 
 test("an oversized upstream document is refused", async (t) => {
