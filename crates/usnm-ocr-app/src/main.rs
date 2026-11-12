@@ -119,7 +119,8 @@ fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("{error:#}");
+            // `{:?}` names every cause, and shows the backtrace when RUST_BACKTRACE asks for it.
+            eprintln!("{error:?}");
             ExitCode::FAILURE
         }
     }

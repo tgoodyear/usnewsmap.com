@@ -13,6 +13,8 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+# The worker's errors then name their causes and where they came from.
+$env:RUST_BACKTRACE = '1'
 $Build = (Resolve-Path $Build).Path
 $Fixture = (Resolve-Path $Fixture).Path
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path

@@ -605,9 +605,9 @@ pub fn run_slot(work: &Path) -> anyhow::Result<()> {
                 .arg("unit")
                 .current_dir(&work)
                 .env_clear()
-                // Without these two, Windows programs can fail to start or to find system DLLs.
+                // Without the first two, Windows programs can fail to start or to find system DLLs.
                 .envs(
-                    ["SystemRoot", "windir"]
+                    ["SystemRoot", "windir", "RUST_BACKTRACE"]
                         .into_iter()
                         .filter_map(|name| Some((name, std::env::var_os(name)?))),
                 )
