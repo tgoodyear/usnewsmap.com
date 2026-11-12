@@ -153,6 +153,89 @@ class PlanPolicyRefresh(unittest.TestCase):
         self.assertTrue(POLICY.refresh(source, self.target, log=lines.append))
         self.assertEqual(lines, [f"{removed}: admission no workunit bounds -> class absent"])
 
+    def test_xiaomi_classes_ship_closed_and_a_restart_keeps_a_one_workunit_window_only(self):
+        classes = POLICY.XIAOMI_CLASSES
+        self.assertEqual(len(classes), 5)
+        source = self.source.read_bytes()
+        _, shipped = POLICY.parse_policy(source)
+        for name in classes:
+            self.assertEqual((shipped[name].findtext("min_wu_id"), shipped[name].findtext("max_wu_id")), ("2", "1"))
+        # The server's held copy of an unchanged policy re-renders byte for byte.
+        held = POLICY.merge_policy(source, source)
+        self.assertEqual(POLICY.merge_policy(source, held), held)
+        # A restart keeps one operator-opened workunit and leaves the others closed.
+        root = ET.fromstring(held)
+        for tag, value in (("min_wu_id", "700"), ("max_wu_id", "700")):
+            root.find("plan_class[name='nvidia_vulkan_x08']").find(tag).text = value
+        opened = ET.tostring(root)
+        _, kept = POLICY.parse_policy(POLICY.merge_policy(source, opened))
+        self.assertEqual((kept["nvidia_vulkan_x08"].findtext("min_wu_id"),
+                          kept["nvidia_vulkan_x08"].findtext("max_wu_id")), ("700", "700"))
+        for name in classes:
+            if name != "nvidia_vulkan_x08":
+                self.assertEqual((kept[name].findtext("min_wu_id"), kept[name].findtext("max_wu_id")), ("2", "1"))
+        # More than one workunit, or an admission marker, is refused and nothing is replaced.
+        for low, high in (("700", "702"),):
+            root.find("plan_class[name='mt_x08']").find("min_wu_id").text = low
+            root.find("plan_class[name='mt_x08']").find("max_wu_id").text = high
+            with self.assertRaisesRegex(ValueError, "mt_x08 acceptance requires exactly one workunit"):
+                POLICY.merge_policy(source, ET.tostring(root))
+        self.assertEqual(self.target.read_bytes(), source)
+        # The Xiaomi classes are not in the general-admission table, so no marker is known for them.
+        for name in classes:
+            self.assertNotIn(name, POLICY.GENERAL_MARKERS)
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_cohort_helper_opens_and_closes_xiaomi_classes_one_workunit_at_a_time(self):
+        helper = ROOT / "boinc/scripts/native-qwen-cohort.php"
+        def php(expr):
+            code = "$_SERVER['SCRIPT_FILENAME'] = ''; require " + json.dumps(str(helper)) + "; echo " + expr + ";"
+            return subprocess.run(["php", "-r", code], text=True, capture_output=True)
+        source = json.dumps(self.source.read_text())
+        def windows(xml):
+            return {n.findtext("name"): (n.findtext("min_wu_id"), n.findtext("max_wu_id"))
+                    for n in ET.fromstring(xml).findall("plan_class")}
+        before = windows(self.source.read_text())
+        for name in POLICY.XIAOMI_CLASSES:
+            with self.subTest(plan=name):
+                result = php(f"native_qwen_cohort_xml({source}, {json.dumps(name)}, 700)")
+                self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+                after = windows(result.stdout)
+                self.assertEqual(after[name], ("700", "700"))
+                # Only that class changes: not the 8B classes, not the other Xiaomi classes.
+                self.assertEqual({k: v for k, v in after.items() if k != name},
+                                 {k: v for k, v in before.items() if k != name})
+                self.assertEqual(php(f"native_qwen_other_closed({json.dumps(result.stdout)}, {json.dumps(name)})").stdout, "1")
+                # Its own stop closes it again.
+                closed = php(f"native_qwen_cohort_xml({json.dumps(result.stdout)}, {json.dumps(name)}, 0)")
+                self.assertEqual(windows(closed.stdout), before)
+                # A range, or general admission, is not available.
+                ranged = php(f"native_qwen_cohort_xml({source}, {json.dumps(name)}, 700, 702)")
+                self.assertIn("Unsupported native cohort", ranged.stderr + ranged.stdout)
+                general = php(f"native_qwen_general_xml({source}, {json.dumps(name)})")
+                self.assertIn("No general admission", general.stderr + general.stdout)
+        # The shared stop and the shared window leave the Xiaomi classes alone.
+        shared = php(f"native_qwen_cohort_xml({source}, 'shared_8b', 200, 209)")
+        self.assertEqual({k: v for k, v in windows(shared.stdout).items() if k.endswith("_x08")},
+                         {k: v for k, v in before.items() if k.endswith("_x08")})
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_cohort_helper_accepts_only_batch_108_pairs_for_xiaomi_classes(self):
+        helper = ROOT / "boinc/scripts/native-qwen-cohort.php"
+        def validate(plan, batch, disk):
+            code = ("$_SERVER['SCRIPT_FILENAME'] = ''; require " + json.dumps(str(helper)) + "; "
+                    "$wu = (object)['batch' => %d, 'rsc_disk_bound' => %d, 'min_quorum' => 2, "
+                    "'target_nresults' => 2, 'canonical_resultid' => 0, 'error_mask' => 0]; "
+                    "$r = (object)['server_state' => 2, 'sent_time' => 0]; "
+                    "native_qwen_cohort_validate($wu, [$r, $r], %s); echo 'ok';") % (batch, disk, json.dumps(plan))
+            return subprocess.run(["php", "-r", code], text=True, capture_output=True)
+        for name in POLICY.XIAOMI_CLASSES:
+            with self.subTest(plan=name):
+                self.assertEqual(validate(name, 108, 12884901888).stdout, "ok")
+                self.assertNotEqual(validate(name, 8, 12884901888).returncode, 0)
+                self.assertNotEqual(validate(name, 2, 12884901888).returncode, 0)
+        self.assertNotEqual(validate("nvidia_vulkan_8b", 108, 12884901888).returncode, 0)
+
     def test_new_project_refresh_is_idempotent(self):
         self.target.unlink()
         self.assertTrue(POLICY.refresh(self.source, self.target))

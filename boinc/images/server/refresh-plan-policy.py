@@ -15,6 +15,11 @@ COHORT_CLASSES = (
     "nvidia_vulkan_8b", "nvidia_vulkan_6gb_8b", "nvidia_vulkan_2b", "amd_vulkan_8b",
     "docker_nvidia_cuda_8b",
 )
+# Xiaomi-OCR-0 classes (#1776): shipped closed and opened one workunit at a time, never generally,
+# so a restart keeps a bounded window and otherwise leaves them closed. Each is its own window,
+# like AMD's: it rides on no other class's admission.
+XIAOMI_CLASSES = ("mt_x08", "apple_gpu_x08", "nvidia_vulkan_x08", "intel_vulkan_x08", "amd_vulkan_x08")
+SINGLE_WORKUNIT_CLASSES = ("amd_vulkan_8b", "nvidia_vulkan_6gb_8b", "nvidia_vulkan_2b") + XIAOMI_CLASSES
 AMD_GENERAL_MARKER = "usnm-amd-general-admission-v1"
 NVIDIA_GENERAL_MARKER = "usnm-nvidia-general-admission-v1"
 # Classes an operator can open to all of the app's work (native-qwen-cohort.php --general).
@@ -85,7 +90,7 @@ def merge_policy(source: bytes, current: bytes) -> bytes:
     root, reviewed = parse_policy(source)
     old_root, existing = parse_policy(current)
     reject_unknown_admission_markers(current)
-    for name in COHORT_CLASSES:
+    for name in COHORT_CLASSES + XIAOMI_CLASSES:
         if name not in existing:
             continue
         old = existing[name]
@@ -110,7 +115,7 @@ def merge_policy(source: bytes, current: bytes) -> bytes:
         low, high = (int(field[0].text) for field in fields)
         if (low, high) != (2, 1) and not (2 <= low <= high and high - low < 10):
             raise ValueError(f"Invalid bounded cohort for {name}")
-        if name in ("amd_vulkan_8b", "nvidia_vulkan_6gb_8b", "nvidia_vulkan_2b") and (low, high) != (2, 1) and low != high:
+        if name in SINGLE_WORKUNIT_CLASSES and (low, high) != (2, 1) and low != high:
             raise ValueError(f"{name} acceptance requires exactly one workunit")
         for tag, value in (("min_wu_id", low), ("max_wu_id", high)):
             targets = reviewed[name].findall(tag)
