@@ -38,6 +38,12 @@ class BoincApp {
             file_put_contents(getenv("STUB_DB"), json_encode($rows));
             return true;
         }
+        if (preg_match("/^deprecated=1$/", $clause)) {
+            $rows = self::rows();
+            foreach ($rows as &$row) if ($row["name"] === $this->name) $row["deprecated"] = "1";
+            file_put_contents(getenv("STUB_DB"), json_encode($rows));
+            return true;
+        }
         preg_match("/^weight=([0-9]+)$/", $clause, $m) or die("bad update $clause\n");
         $rows = self::rows();
         foreach ($rows as &$row) if ($row["name"] === $this->name) $row["weight"] = $m[1];
@@ -113,6 +119,32 @@ class RegisterApps(unittest.TestCase):
         self.assertIn("set weight of app usnm_ocr_native, which has no app version, to 0", result.stdout)
         self.assertEqual(weights["usnm_ocr_native"], "0")
         self.assertEqual(weights, {name: str(weight) for name, weight in self.declared().items()})
+
+    def test_a_new_project_gets_only_the_live_apps_project_xml_declares(self):
+        # #1780: xadd inserts every app live, and the feeder holds at most MAX_APPS (10) live apps.
+        result, _ = self.run_script([])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        rows = {row["name"]: row["deprecated"] for row in json.loads(self.db.read_text())}
+        declared = {app.findtext("name"): app.findtext("deprecated")
+                    for app in ET.parse(PROJECT_XML).findall("app")}
+        self.assertEqual(rows, declared)
+        self.assertLessEqual(sum(value == "0" for value in rows.values()), 10)
+        for name in ("usnm_assess", "usnm_iris"):
+            self.assertIn(f"deprecated app {name}, which has no app version", result.stdout)
+
+    def test_an_app_with_versions_or_retired_by_hand_keeps_its_state(self):
+        rows = self.live()
+        for row in rows:
+            if row["name"] == "usnm_iris":
+                row["deprecated"], row["versions"] = "0", 1
+            if row["name"] == "usnm_surya":
+                row["deprecated"] = "1"
+        result, _ = self.run_script(rows)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        after = {row["name"]: row["deprecated"] for row in json.loads(self.db.read_text())}
+        self.assertEqual((after["usnm_iris"], after["usnm_surya"]), ("0", "1"))
+        self.assertIn("app usnm_iris is live in the database and deprecated in project.xml; not changed",
+                      result.stdout)
 
     def test_an_operator_set_min_version_survives_registration(self):
         # #1687: app-version-hold.php --action min-version keeps 106 loaded beside 107; xadd

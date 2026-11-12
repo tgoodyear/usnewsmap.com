@@ -35,6 +35,7 @@ if ($x === false) {
 }
 
 $declared = [];
+$retired = [];
 foreach ($x->app as $app) {
     $name = (string)$app->name;
     if (!preg_match('/^[a-z][a-z0-9_]{0,63}$/', $name)) {
@@ -45,6 +46,9 @@ foreach ($x->app as $app) {
         fail("app $name needs a <weight> of 0 to 9999 in project.xml");
     }
     $declared[$name] = (int)$weight;
+    if (trim((string)$app->deprecated) === "1") {
+        $retired[] = $name;
+    }
 }
 
 $kept = false;
@@ -90,4 +94,26 @@ foreach ($declared as $name => $weight) {
         fail("app $name has no app version, but its weight isn't $weight");
     }
     echo "set weight of app $name, which has no app version, to $weight\n";
+}
+
+// xadd inserts every app live (deprecated=0), whatever project.xml says, and the feeder holds at
+// most MAX_APPS (10 at the pinned commit, sched_shmem.h) live apps: past that it exits at start
+// (#1780). An app project.xml declares deprecated, and that has no app version, is deprecated
+// here. Nothing is ever made live again: an app retired by hand stays retired.
+foreach ($retired as $name) {
+    $row = BoincApp::lookup("name='$name'");
+    if (!$row || (int)$row->deprecated === 1) {
+        continue;
+    }
+    $id = (int)$row->id;
+    if (BoincAppVersion::lookup("appid=$id")) {
+        echo "app $name is live in the database and deprecated in project.xml; not changed, it has app versions\n";
+        continue;
+    }
+    $row->update("deprecated=1");
+    $row = BoincApp::lookup("name='$name'");
+    if (!$row || (int)$row->deprecated !== 1) {
+        fail("app $name has no app version, but it isn't deprecated");
+    }
+    echo "deprecated app $name, which has no app version, as project.xml declares\n";
 }

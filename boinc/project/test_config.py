@@ -110,6 +110,12 @@ class DaemonConfig(unittest.TestCase):
                 with self.subTest(app=name):
                     self.assertGreaterEqual(slots[name], 160)
 
+    def test_live_apps_fit_the_feeders_app_table(self):
+        # MAX_APPS in the pinned sched_shmem.h: an eleventh live app stops the feeder at start
+        # (#1780). register-apps.php deprecates the declared-retired apps xadd inserts live.
+        apps = ET.parse(Path(__file__).with_name("project.xml")).findall("app")
+        self.assertLessEqual(sum(app.findtext("deprecated") == "0" for app in apps), 10)
+
     def test_replicas_need_different_hosts_not_different_accounts(self):
         # The project's hosts share one account; a per-account rule starves them on quorum-2 work.
         config = ET.parse(Path(__file__).with_name("config.xml.template")).find("./config")
