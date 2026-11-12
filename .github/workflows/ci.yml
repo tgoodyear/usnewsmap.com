@@ -498,6 +498,14 @@ jobs:
           fi
       - if: failure() && matrix.suite == 'parity'
         run: tail -n 200 "$RUNNER_TEMP"/qw/*.log
+      # Keep Quickwit's own output when the pipeline suite fails (#1664).
+      - name: Upload Quickwit logs
+        if: failure() && matrix.suite == 'pipeline'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: quickwit-logs-${{ matrix.suite }}
+          path: ${{ runner.temp }}/qw/*.log
+          if-no-files-found: warn
 
   quickwit:
     name: quickwit (parity, ingest release)
